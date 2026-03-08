@@ -1,0 +1,39 @@
+# Elixir/OTP
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+/config/*.secret.exs
+.elixir_ls/
+
+# Node (if Phoenix assets)
+/assets/node_modules/
+
+# macOS
+.DS_Store
+._*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Release artifacts
+/rel/artifacts/
+*.dmg
+*.pkg
+
+# Database
+*.db
+*.db-journal
+/priv/repo/
+
+# Certificates (generated, not committed)
+/priv/certs/
+
+# Pi
+.pi/
