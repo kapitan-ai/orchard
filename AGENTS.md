@@ -43,9 +43,3 @@ Sovereign on-prem LLM orchestration platform for Apple Silicon macOS. Elixir/OTP
 | SPEC.md | Normative build contract (2,855 lines) |
 | AGENTS.md | This file — agent operating guide |
 | mix.exs | Umbrella project root |
-
-## Context
-
-- Previous iteration (v1): `~/Hacks/kapitan-orchard/` (Rust + Kafka, being superseded)
-- ops-kb research entry: `~/Hacks/ops-kb/docs/research/orchard-v2-sovereign-llm-spec.md`
-- DEVONthink: UUID `20DB89CF-C2B5-46CB-9215-F5FEEEDCA994`
