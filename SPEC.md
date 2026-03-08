@@ -1,6 +1,8 @@
-# Sovereign On-Prem LLM Orchestration Platform — Technical Specification
+# Orchard v2 — Technical Specification
 
-This document is a normative implementation spec for a sovereign LLM orchestration platform optimized for **1–4 Apple Silicon macOS nodes**. It is intended for a coding agent that will build the system incrementally. “MUST”, “SHALL”, and “MUST NOT” are mandatory requirements. “SHOULD” is a strong recommendation.
+This document is a normative implementation spec for Orchard, a sovereign on-prem LLM orchestration platform optimized for **1–4 Apple Silicon macOS nodes**. It is intended for a coding agent that will build the system incrementally. “MUST”, “SHALL”, and “MUST NOT” are mandatory requirements. “SHOULD” is a strong recommendation.
+
+Unless otherwise noted, implementation-facing names in this spec use the Orchard namespace: `Orchard.*` for Elixir modules, `orchard_*` for OTP apps and repositories, `orchard-*` for binaries/daemons, `orchardctl` for the CLI, and `com.orchard.*` for bundle identifiers, launchd labels, and similar platform identifiers. This naming policy does not apply to OpenAI-compatible wire protocol fields, endpoints, event names, or error envelopes, which SHALL remain unchanged for compatibility.
 
 The platform exposes **OpenAI-compatible** inference APIs. Internally, it SHALL treat **`/v1/responses` as the canonical inference abstraction** and implement **`/v1/chat/completions` as a compatibility facade**, because OpenAI currently recommends the Responses API for new projects while keeping Chat Completions supported, and streaming is based on server-sent events. ([OpenAI Developers][1])
 
@@ -31,6 +33,7 @@ Supported deployment modes:
 
    * 2 controller instances maximum
    * exactly 1 active leader at a time
+   * remains within the overall 1–4 Mac deployment limit
    * active/standby coordination via Postgres advisory lock
    * requires external VIP, reverse proxy, or operator-managed endpoint failover
 
@@ -114,36 +117,36 @@ The required v1 worker runtime is **MLX-based**. The default adapter SHALL targe
 
 | Component           | Process type         | Responsibility                                               |
 | ------------------- | -------------------- | ------------------------------------------------------------ |
-| `sov-controller`    | launchd LaunchDaemon | Main control plane daemon                                    |
-| `Sov.API`           | OTP app              | HTTP API surface: `/v1`, `/ops/v1`, `/admin/v1`              |
-| `Sov.Auth`          | OTP app              | API key auth, service account auth, RBAC                     |
-| `Sov.Admission`     | OTP app              | validation, tenant policy, quotas, idempotency               |
-| `Sov.Scheduler`     | OTP app              | node selection, queueing, fairness, placement decisions      |
-| `Sov.Dispatch`      | OTP app              | gRPC calls to node agents, stream fan-out to clients         |
-| `Sov.Catalog`       | OTP app              | model catalog, artifact manifests, routing policy resolution |
-| `Sov.Nodes`         | OTP app              | node registry, lifecycle, heartbeat snapshots                |
-| `Sov.Requests`      | OTP app              | per-request FSMs and request event logging                   |
-| `Sov.Observability` | OTP app              | metrics, traces, logs                                        |
-| `Sov.Governance`    | OTP app              | tenants, quotas, keys, audit logs                            |
+| `orchard-controller`    | launchd LaunchDaemon | Main control plane daemon                                    |
+| `Orchard.API`           | OTP app              | HTTP API surface: `/v1`, `/ops/v1`, `/admin/v1`              |
+| `Orchard.Auth`          | OTP app              | API key auth, service account auth, RBAC                     |
+| `Orchard.Admission`     | OTP app              | validation, tenant policy, quotas, idempotency               |
+| `Orchard.Scheduler`     | OTP app              | node selection, queueing, fairness, placement decisions      |
+| `Orchard.Dispatch`      | OTP app              | gRPC calls to node agents, stream fan-out to clients         |
+| `Orchard.Catalog`       | OTP app              | model catalog, artifact manifests, routing policy resolution |
+| `Orchard.Nodes`         | OTP app              | node registry, lifecycle, heartbeat snapshots                |
+| `Orchard.Requests`      | OTP app              | per-request FSMs and request event logging                   |
+| `Orchard.Observability` | OTP app              | metrics, traces, logs                                        |
+| `Orchard.Governance`    | OTP app              | tenants, quotas, keys, audit logs                            |
 
 ### 2.2 Node-side components
 
 | Component               | Process type         | Responsibility                                   |
 | ----------------------- | -------------------- | ------------------------------------------------ |
-| `sov-node-agent`        | launchd LaunchDaemon | Node control endpoint                            |
-| `SovNode.Register`      | OTP app              | join, cert renewal, heartbeat                    |
-| `SovNode.Models`        | OTP app              | artifact cache, verification, load/unload        |
-| `SovNode.Workers`       | OTP app              | worker supervisor, crash recovery                |
-| `SovNode.Diagnostics`   | OTP app              | health and support data                          |
-| `sov-worker-supervisor` | spawned child        | manages one or more worker runtime processes     |
-| `sov-worker-mlx`        | spawned child        | MLX runtime server for one loaded model instance |
+| `orchard-node-agent`        | launchd LaunchDaemon | Node control endpoint                            |
+| `Orchard.Node.Register`      | OTP app              | join, cert renewal, heartbeat                    |
+| `Orchard.Node.Models`        | OTP app              | artifact cache, verification, load/unload        |
+| `Orchard.Node.Workers`       | OTP app              | worker supervisor, crash recovery                |
+| `Orchard.Node.Diagnostics`   | OTP app              | health and support data                          |
+| `orchard-worker-supervisor` | spawned child        | manages one or more worker runtime processes     |
+| `orchard-worker-mlx`        | spawned child        | MLX runtime server for one loaded model instance |
 
 ### 2.3 End-user and operator components
 
 | Component               | Packaging                    | Responsibility                                             |
 | ----------------------- | ---------------------------- | ---------------------------------------------------------- |
 | Tray/menu bar app       | `.app` + LaunchAgent         | local status, onboarding, logs, support bundle entry point |
-| `sovctl` CLI            | binary                       | admin/operator automation, bootstrap, diagnostics          |
+| `orchardctl` CLI            | binary                       | admin/operator automation, bootstrap, diagnostics          |
 | Managed Postgres helper | LaunchDaemon in managed mode | local DB lifecycle only                                    |
 
 ### 2.4 Repository structure
@@ -152,13 +155,13 @@ The implementation SHOULD use an umbrella repository with separate Elixir releas
 
 ```text
 /apps
-  /sov_shared        # protobufs, common structs, config parsing
-  /sov_controller    # controller release
-  /sov_node_agent    # node agent release
-  /sov_cli           # CLI
+  /orchard_shared        # protobufs, common structs, config parsing
+  /orchard_controller    # controller release
+  /orchard_node_agent    # node agent release
+  /orchard_cli           # CLI
 /native
-  /sov_worker_mlx    # python runtime adapter
-  /sov_tokenizer     # tokenizer/render helper
+  /orchard_worker_mlx    # python runtime adapter
+  /orchard_tokenizer     # tokenizer/render helper
 /proto
   cluster/v1/*.proto
 /packaging
@@ -199,29 +202,29 @@ The controller SHALL be a Phoenix/Plug HTTP service plus a gRPC server and gRPC 
 ### 3.2 OTP supervision tree
 
 ```text
-SovController.Application
-├─ Sov.Repo
-├─ Sov.CacheSupervisor
-│  ├─ Sov.Cache.ApiKeys
-│  ├─ Sov.Cache.Models
-│  ├─ Sov.Cache.Tenants
-│  └─ Sov.Cache.NodeSnapshots
-├─ Sov.API.Endpoint
-├─ Sov.RPC.ControllerServer
-├─ Sov.RPC.NodeClientPool
-├─ Sov.RequestSupervisor
-├─ Sov.Scheduler.Supervisor
-│  ├─ Sov.Scheduler.QueueManager
-│  ├─ Sov.Scheduler.Dispatcher
-│  └─ Sov.Scheduler.PlacementReconciler
-├─ Sov.NodeSupervisor
-├─ Sov.AuditSupervisor
-├─ Sov.Observability.Supervisor
-└─ Sov.LeaderTasks
-   ├─ Sov.Leader.LockManager
-   ├─ Sov.Leader.RetentionSweeper
-   ├─ Sov.Leader.QuotaSweeper
-   └─ Sov.Leader.SupportBundleManager
+Orchard.Application
+├─ Orchard.Repo
+├─ Orchard.CacheSupervisor
+│  ├─ Orchard.Cache.ApiKeys
+│  ├─ Orchard.Cache.Models
+│  ├─ Orchard.Cache.Tenants
+│  └─ Orchard.Cache.NodeSnapshots
+├─ Orchard.API.Endpoint
+├─ Orchard.RPC.ControllerServer
+├─ Orchard.RPC.NodeClientPool
+├─ Orchard.RequestSupervisor
+├─ Orchard.Scheduler.Supervisor
+│  ├─ Orchard.Scheduler.QueueManager
+│  ├─ Orchard.Scheduler.Dispatcher
+│  └─ Orchard.Scheduler.PlacementReconciler
+├─ Orchard.NodeSupervisor
+├─ Orchard.AuditSupervisor
+├─ Orchard.Observability.Supervisor
+└─ Orchard.LeaderTasks
+   ├─ Orchard.Leader.LockManager
+   ├─ Orchard.Leader.RetentionSweeper
+   ├─ Orchard.Leader.QuotaSweeper
+   └─ Orchard.Leader.SupportBundleManager
 ```
 
 ### 3.3 Controller leadership
@@ -302,7 +305,7 @@ The controller SHALL perform **exact prompt rendering and exact token counting b
 
 Implementation requirement:
 
-* bundle a helper executable `sov-tokenizer`
+* bundle a helper executable `orchard-tokenizer`
 * it MUST support:
 
   * tokenizer.json
@@ -1481,8 +1484,8 @@ Response:
 ```json
 {
   "id": "uuid",
-  "key_prefix": "sov_kp_01J...",
-  "secret": "sov_sk_01J....<secret>",
+  "key_prefix": "orchard_kp_01J...",
+  "secret": "orchard_sk_01J....<secret>",
   "expires_at": "2026-12-31T00:00:00Z"
 }
 ```
@@ -2078,39 +2081,39 @@ Required metric families:
 
 **HTTP/API**
 
-* `sov_http_requests_total{endpoint,method,status}`
-* `sov_http_request_duration_seconds_bucket{endpoint,status}`
+* `orchard_http_requests_total{endpoint,method,status}`
+* `orchard_http_request_duration_seconds_bucket{endpoint,status}`
 
 **Inference**
 
-* `sov_inference_requests_total{endpoint,tenant,model,status}`
-* `sov_inference_request_duration_seconds_bucket{tenant,model,status}`
-* `sov_input_tokens_total{tenant,model}`
-* `sov_output_tokens_total{tenant,model}`
-* `sov_decode_tokens_per_second_bucket{model,node}`
+* `orchard_inference_requests_total{endpoint,tenant,model,status}`
+* `orchard_inference_request_duration_seconds_bucket{tenant,model,status}`
+* `orchard_input_tokens_total{tenant,model}`
+* `orchard_output_tokens_total{tenant,model}`
+* `orchard_decode_tokens_per_second_bucket{model,node}`
 
 **Scheduler**
 
-* `sov_scheduler_decisions_total{result,tier}`
-* `sov_scheduler_duration_seconds_bucket`
-* `sov_scheduler_queue_depth{tenant}`
-* `sov_scheduler_rejections_total{reason}`
+* `orchard_scheduler_decisions_total{result,tier}`
+* `orchard_scheduler_duration_seconds_bucket`
+* `orchard_scheduler_queue_depth{tenant}`
+* `orchard_scheduler_rejections_total{reason}`
 
 **Node/runtime**
 
-* `sov_node_heartbeat_lag_seconds{node}`
-* `sov_node_available_memory_bytes{node}`
-* `sov_node_swap_used_bytes{node}`
-* `sov_active_requests{node,model}`
-* `sov_model_load_duration_seconds_bucket{node,model}`
-* `sov_model_resident{node,model}`
-* `sov_worker_crashes_total{node,model}`
+* `orchard_node_heartbeat_lag_seconds{node}`
+* `orchard_node_available_memory_bytes{node}`
+* `orchard_node_swap_used_bytes{node}`
+* `orchard_active_requests{node,model}`
+* `orchard_model_load_duration_seconds_bucket{node,model}`
+* `orchard_model_resident{node,model}`
+* `orchard_worker_crashes_total{node,model}`
 
 **Quotas/governance**
 
-* `sov_quota_rejections_total{tenant,reason}`
-* `sov_api_key_auth_failures_total`
-* `sov_audit_events_total{action,outcome}`
+* `orchard_quota_rejections_total{tenant,reason}`
+* `orchard_api_key_auth_failures_total`
+* `orchard_audit_events_total{action,outcome}`
 
 ### 9.2 Tracing
 
@@ -2222,7 +2225,7 @@ Supported auth types:
 Key format:
 
 ```text
-sov_sk_<prefix>_<secret>
+orchard_sk_<prefix>_<secret>
 ```
 
 Requirements:
@@ -2369,32 +2372,32 @@ Apple recommends notarization for directly distributed macOS software, and signe
 Required installed artifacts:
 
 ```text
-/Applications/SovereignAI.app                    # tray/menu app
-/usr/local/bin/sovctl                           # CLI
-/Library/Application Support/SovereignAI/
+/Applications/Orchard.app                    # tray/menu app
+/usr/local/bin/orchardctl                           # CLI
+/Library/Application Support/Orchard/
   config/
   data/
   models/
   bundles/
   logs/
   support/
-/Library/LaunchDaemons/com.sovereignai.controller.plist
-/Library/LaunchDaemons/com.sovereignai.node-agent.plist
-/Library/LaunchDaemons/com.sovereignai.postgres.plist   # managed DB mode only
-/Library/LaunchAgents/com.sovereignai.tray.plist
+/Library/LaunchDaemons/com.orchard.controller.plist
+/Library/LaunchDaemons/com.orchard.node-agent.plist
+/Library/LaunchDaemons/com.orchard.postgres.plist   # managed DB mode only
+/Library/LaunchAgents/com.orchard.tray.plist
 ```
 
 ### 11.2 launchd services
 
 System daemons:
 
-* `com.sovereignai.controller`
-* `com.sovereignai.node-agent`
-* `com.sovereignai.postgres` (optional)
+* `com.orchard.controller`
+* `com.orchard.node-agent`
+* `com.orchard.postgres` (optional)
 
 User agent:
 
-* `com.sovereignai.tray`
+* `com.orchard.tray`
 
 Apple documents launchd as the daemon/agent manager on macOS, and distinguishes user agents from daemons. ([Apple Support][2])
 
@@ -2410,8 +2413,8 @@ Required launchd properties:
 
 DMG SHALL include:
 
-* `SovereignAI.pkg`
-* `SovereignAI Installer.app` optional bootstrap UI
+* `Orchard.pkg`
+* `Orchard Installer.app` optional bootstrap UI
 * release notes
 * checksums/signature metadata
 
@@ -2468,7 +2471,7 @@ Offline install flow:
 
 1. transfer signed installer media and model bundles
 2. install PKG
-3. run `sovctl cluster init`
+3. run `orchardctl cluster init`
 4. import model bundles from removable media
 5. bootstrap/join nodes via offline-generated token or imported certs
 
@@ -2488,14 +2491,14 @@ Tray app SHALL provide:
 
 Required commands:
 
-* `sovctl cluster init`
-* `sovctl node join`
-* `sovctl nodes list`
-* `sovctl nodes admit`
-* `sovctl models import`
-* `sovctl requests inspect`
-* `sovctl support bundle create`
-* `sovctl upgrade plan`
+* `orchardctl cluster init`
+* `orchardctl node join`
+* `orchardctl nodes list`
+* `orchardctl nodes admit`
+* `orchardctl models import`
+* `orchardctl requests inspect`
+* `orchardctl support bundle create`
+* `orchardctl upgrade plan`
 
 ---
 
@@ -2678,7 +2681,7 @@ No standalone worker upgrade path in v1.
 
 ### 13.7 Upgrade preflight checks
 
-`s o v c t l upgrade plan` SHALL validate:
+`orchardctl upgrade plan` SHALL validate:
 
 * backup exists
 * no node in `decommissioning`
@@ -2830,7 +2833,7 @@ Deliver:
 * standby controller mode
 * rolling worker-node upgrade procedures
 * migration lock and expand/contract enforcement
-* `sovctl upgrade plan`
+* `orchardctl upgrade plan`
 
 Acceptance:
 

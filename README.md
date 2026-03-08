@@ -1,0 +1,91 @@
+# Orchard
+
+**Your LLMs. Your hardware. Your rules.**
+
+Orchard is a sovereign on-prem LLM orchestration platform for 1–4 Apple Silicon macOS machines. It runs inference on your own hardware, behind your own firewall, with no cloud dependency.
+
+## What it does
+
+- Orchestrates LLM inference across 1–4 Mac nodes using [MLX](https://github.com/ml-explore/mlx)
+- Exposes OpenAI-compatible APIs with `/v1/responses` as the canonical abstraction and `/v1/chat/completions` as a compatibility facade
+- Multi-tenant with full RBAC, API key scoping, quotas, and audit logs
+- Ships as a native macOS DMG/PKG — no Docker or Kubernetes required for operators; managed Postgres uses local macOS containerization when enabled, and no cloud account is required
+- Runs as launchd services with a menu bar app for local status
+
+## Architecture
+
+```
+Clients (SDKs / curl / apps)
+        │
+   HTTPS / SSE
+        │
+   Controller (Elixir/OTP)
+   ├── Inference API    ── `/v1/responses` canonical, `/v1/chat/completions` facade
+   ├── Auth / RBAC      ── tenant-scoped keys + quotas
+   ├── Scheduler        ── placement, queueing, fairness
+   ├── Dispatch         ── gRPC fan-out to nodes
+   └── Observability    ── Prometheus, OTel, structured logs
+        │
+   gRPC / mTLS
+        │
+   Node Agent(s)
+   ├── Model cache + verification
+   ├── Worker supervisor
+   └── MLX runtime (Apple Silicon native)
+        │
+     Postgres (sole persistence + coordination layer)
+```
+
+**Key design rules:**
+
+- All durable state in Postgres. No distributed Erlang across machines.
+- All cross-node traffic over gRPC/mTLS. Workers never exposed on the network.
+- Token streams always pass through the controller for governance and accounting.
+- HA-lite only: exactly one active leader, active/standby via Postgres advisory locks, no active/active consensus.
+
+## Tech stack
+
+| Layer | Choice |
+|-------|--------|
+| Language | Elixir/OTP (umbrella app) |
+| Database | Postgres |
+| Inference | MLX-LM runtime adapter managed by the node agent |
+| Internal RPC | gRPC over mTLS |
+| APIs | Phoenix/Plug (HTTPS + SSE) |
+| Packaging | DMG, PKG, launchd |
+| CLI | `orchardctl` |
+
+## Deployment modes
+
+1. **All-in-one** — single Mac runs everything (controller + node agent + worker + Postgres)
+2. **Controller + workers** — 1 Mac as control plane, 1–3 Macs as worker nodes
+3. **HA-lite** — up to 2 controllers with exactly 1 active leader, still within the overall 1–4 Mac deployment limit, with operator-managed endpoint failover
+
+## Roadmap
+
+| Milestone | Scope |
+|-----------|-------|
+| M0 | Skeleton and packaging foundation (umbrella, Postgres, launchd, `/health/live`, `/health/ready`) |
+| M1 | Single-node inference MVP (`GET /v1/models`, `POST /v1/chat/completions`, SSE streaming, MLX worker; compatibility-first while the internal canonical abstraction remains Responses-based) |
+| M2 | Responses API and governance core (public `POST /v1/responses`, tenants, API keys, quotas, audit, idempotency) |
+| M3 | Node lifecycle and cluster join (bootstrap/cert join, heartbeats, pools, cordon/drain/maintenance) |
+| M4 | Multi-node scheduler and placements (tiered scoring, queueing, `EnsureModelLoaded`, pre-first-token retry) |
+| M5 | Observability and diagnostics (Prometheus, OTel tracing, structured logs, support bundles) |
+| M6 | Security hardening and air-gap (mTLS, cert renewal, retention modes, offline import/install) |
+| M7 | Upgrade safety and HA-lite controller (leadership locks, migration ownership, rolling upgrades, `orchardctl upgrade plan`) |
+
+## Status
+
+Pre-release. Building from spec.
+
+## Spec
+
+[`SPEC.md`](SPEC.md) is the normative build contract — every implementation decision traces back to it.
+
+## Background
+
+Orchard is a ground-up rewrite of [Kapitan Orchard](https://github.com/najibninaba/kapitan-orchard) (v1: Rust + Kafka + Redis + Tauri). The rewrite replaces the distributed streaming architecture with Elixir/OTP + Postgres for simpler operations, better fault tolerance, and native macOS integration.
+
+## License
+
+Proprietary. All rights reserved.
