@@ -7,6 +7,7 @@ config :orchard_controller,
   generators: [binary_id: true]
 
 config :orchard_controller, Orchard.API.Endpoint,
+  adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],
   render_errors: [formats: [json: Orchard.API.ErrorJSON], layout: false],
   pubsub_server: Orchard.PubSub,

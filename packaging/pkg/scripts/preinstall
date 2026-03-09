@@ -1,4 +1,24 @@
 #!/bin/sh
 set -eu
-# Placeholder preinstall hook for Orchard PKG assembly.
+# Orchard PKG preinstall — prepare directories and stop existing services.
+
+ORCHARD_ROOT="/Library/Application Support/Orchard"
+
+# Stop existing services if upgrading
+for svc in com.orchard.controller com.orchard.node-agent com.orchard.postgres; do
+  if launchctl list "$svc" >/dev/null 2>&1; then
+    launchctl bootout system/"$svc" 2>/dev/null || true
+  fi
+done
+
+# Stop tray agent for all console users
+for uid in $(ps -Ao uid= -o comm= | grep -i orchard | awk '{print $1}' | sort -u); do
+  launchctl bootout gui/"$uid"/com.orchard.tray 2>/dev/null || true
+done
+
+# Create required directory structure (SPEC.md §11.1)
+for dir in bin config data models bundles logs support releases; do
+  mkdir -p "$ORCHARD_ROOT/$dir"
+done
+
 exit 0

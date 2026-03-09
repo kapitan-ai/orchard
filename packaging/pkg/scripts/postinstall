@@ -1,9 +1,53 @@
 #!/bin/sh
 set -eu
-# Placeholder postinstall hook for Orchard PKG assembly.
-# Future responsibilities:
-# - install wrapper commands into /Library/Application Support/Orchard/bin/
-# - expose orchardctl via /usr/local/bin/orchardctl
-# - install and register launchd plists for controller/node-agent
-# - register com.orchard.postgres only when managed Postgres assets are present
+# Orchard PKG postinstall — install wrappers, plists, and register services.
+#
+# SPEC.md §11.4: postinstall creation of launchd plists,
+# optional managed DB enablement, optional controller-only or node-only modes.
+
+ORCHARD_ROOT="/Library/Application Support/Orchard"
+LAUNCHD_SRC="$ORCHARD_ROOT/share/launchd"
+
+# --- 1. Install wrapper commands into bin/ ---------------------------------
+for cmd in orchard-controller orchard-node-agent orchardctl orchard-managed-postgres; do
+  src="$ORCHARD_ROOT/share/bin/$cmd"
+  dst="$ORCHARD_ROOT/bin/$cmd"
+  if [ -f "$src" ]; then
+    install -m 0755 "$src" "$dst"
+  fi
+done
+
+# --- 2. Symlink orchardctl into PATH (/usr/local/bin) ----------------------
+mkdir -p /usr/local/bin
+ln -sf "$ORCHARD_ROOT/bin/orchardctl" /usr/local/bin/orchardctl
+
+# --- 3. Install launchd plists and register services ----------------------
+
+# System daemons: controller + node-agent (always installed)
+for svc in com.orchard.controller com.orchard.node-agent; do
+  plist="$LAUNCHD_SRC/$svc.plist"
+  if [ -f "$plist" ]; then
+    install -m 0644 "$plist" /Library/LaunchDaemons/"$svc".plist
+    launchctl bootstrap system /Library/LaunchDaemons/"$svc".plist 2>/dev/null || true
+  fi
+done
+
+# Managed Postgres daemon: only if the managed-postgres asset is present
+if [ -f "$LAUNCHD_SRC/com.orchard.postgres.plist" ] && \
+   [ -f "$ORCHARD_ROOT/bin/orchard-managed-postgres" ]; then
+  install -m 0644 "$LAUNCHD_SRC/com.orchard.postgres.plist" \
+    /Library/LaunchDaemons/com.orchard.postgres.plist
+  launchctl bootstrap system /Library/LaunchDaemons/com.orchard.postgres.plist 2>/dev/null || true
+fi
+
+# Tray user agent: install plist but do not bootstrap (runs per-user on login)
+if [ -f "$LAUNCHD_SRC/com.orchard.tray.plist" ]; then
+  install -m 0644 "$LAUNCHD_SRC/com.orchard.tray.plist" \
+    /Library/LaunchAgents/com.orchard.tray.plist
+fi
+
+# --- 4. Set ownership -----------------------------------------------------
+chown -R root:wheel "$ORCHARD_ROOT"
+
+echo "Orchard postinstall complete."
 exit 0
