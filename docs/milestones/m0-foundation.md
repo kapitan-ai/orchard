@@ -2,9 +2,11 @@
 
 ## Status
 
-- Phase: planned
-- Owner: TBD
+- Phase: complete
+- Owner: najib
 - Spec refs: `SPEC.md` §2.4, §3.1, §3.2, §8, §11, §14 (M0)
+- Completed: 2026-03-09
+- Final commit: 970ec51
 
 ## Planning note
 
