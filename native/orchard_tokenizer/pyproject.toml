@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "orchard-tokenizer"
+version = "0.1.0"
+description = "Orchard exact prompt rendering and token counting helper"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+orchard-tokenizer = "orchard_tokenizer.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3.5",
+  "pytest-cov>=6.0.0",
+  "ruff>=0.11.2",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["src/orchard_tokenizer"]
+
+[tool.coverage.report]
+show_missing = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/orchard_tokenizer"]

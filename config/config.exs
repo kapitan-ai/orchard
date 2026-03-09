@@ -1,5 +1,9 @@
 import Config
 
+Code.require_file("m1_runtime_defaults.exs", __DIR__)
+
+orchard_support_root = "/Library/Application Support/Orchard"
+
 config :phoenix, :json_library, Jason
 
 config :orchard_controller,
@@ -12,6 +16,14 @@ config :orchard_controller, Orchard.API.Endpoint,
   render_errors: [formats: [json: Orchard.API.ErrorJSON], layout: false],
   pubsub_server: Orchard.PubSub,
   live_view: [signing_salt: "m0signsalt"]
+
+config :orchard_controller,
+       :inference,
+       Orchard.Config.M1RuntimeDefaults.controller_inference(orchard_support_root)
+
+config :orchard_node_agent,
+       :runtime,
+       Orchard.Config.M1RuntimeDefaults.node_runtime(orchard_support_root)
 
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",

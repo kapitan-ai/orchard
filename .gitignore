@@ -35,5 +35,13 @@ erl_crash.dump
 # Certificates (generated, not committed)
 /priv/certs/
 
+# Python/native
+**/__pycache__/
+**/.venv/
+**/.pytest_cache/
+**/.ruff_cache/
+**/.coverage*
+**/htmlcov/
+
 # Pi
 .pi/

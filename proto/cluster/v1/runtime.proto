@@ -2,6 +2,63 @@ syntax = "proto3";
 
 package cluster.v1;
 
-// Placeholder for runtime.proto.
-// Contract details are defined in SPEC.md and will be filled in after the
-// Elixir gRPC/protobuf toolchain is chosen.
+import "cluster/v1/common.proto";
+import "cluster/v1/events.proto";
+
+service NodeRuntimeService {
+  rpc GetStatus(StatusRequest) returns (StatusResponse);
+  rpc EnsureModelLoaded(EnsureModelLoadedRequest) returns (EnsureModelLoadedResponse);
+  rpc UnloadModel(UnloadModelRequest) returns (Ack);
+  rpc ExecuteInference(ExecuteInferenceRequest) returns (stream InferenceEvent);
+  rpc CancelInference(CancelInferenceRequest) returns (Ack);
+}
+
+message StatusRequest {}
+
+// M1 assumes one effective worker/runtime path per node for the single-node MVP.
+message StatusResponse {
+  WorkerState worker_state = 1;
+  repeated ModelRef loaded_models = 2;
+  uint32 active_request_count = 3;
+}
+
+message EnsureModelLoadedRequest {
+  // Included per SPEC.md §7.5.3. The node agent should validate or ignore any
+  // mismatch against its own authenticated node identity.
+  string node_id = 1;
+  string model_id = 2;
+  string version = 3;
+  string artifact_sha256 = 4;
+  bool preload = 5;
+  uint64 deadline_unix_ms = 6;
+}
+
+message EnsureModelLoadedResponse {
+  bool already_loaded = 1;
+  PlacementState placement_state = 2;
+}
+
+message UnloadModelRequest {
+  string model_id = 1;
+  string version = 2;
+  bool force = 3;
+  bool evict = 4;
+}
+
+message ExecuteInferenceRequest {
+  string request_id = 1;
+  string controller_session_id = 2;
+  string model_id = 3;
+  string version = 4;
+  // Kept as bytes to match SPEC.md §7.5.3 verbatim.
+  bytes rendered_prompt_utf8 = 5;
+  uint32 input_tokens = 6;
+  GenerationParams params = 7;
+  uint64 deadline_unix_ms = 8;
+  bytes metadata_json = 9;
+}
+
+message CancelInferenceRequest {
+  string request_id = 1;
+  string controller_session_id = 2;
+}

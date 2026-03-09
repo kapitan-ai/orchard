@@ -2,6 +2,5 @@ syntax = "proto3";
 
 package cluster.v1;
 
-// Placeholder for membership.proto.
-// Contract details are defined in SPEC.md and will be filled in after the
-// Elixir gRPC/protobuf toolchain is chosen.
+// `membership.proto` remains deferred beyond the M1 runtime RPC subset.
+// Node registration, heartbeats, admission, and lifecycle flows land in M3.

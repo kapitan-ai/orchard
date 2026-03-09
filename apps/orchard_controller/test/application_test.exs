@@ -46,6 +46,21 @@ defmodule OrchardApplicationTest do
     refute Orchard.API.Endpoint in child_ids
   end
 
+  test "test environment config uses fake tokenizer and local runtime target" do
+    inference = Application.fetch_env!(:orchard_controller, :inference)
+
+    assert inference[:tokenizer_mode] == :fake
+    assert inference[:request_timeout_ms] == 5_000
+    assert inference[:runtime_client_target] == [host: "127.0.0.1", port: 50_071]
+    assert Path.type(inference[:artifacts_root]) == :absolute
+    assert String.ends_with?(inference[:artifacts_root], "/tmp/test/bundles")
+
+    assert String.ends_with?(
+             inference[:tokenizer_executable],
+             "/native/orchard_tokenizer/bin/orchard-tokenizer"
+           )
+  end
+
   defp stop_controller_app do
     case Application.stop(:orchard_controller) do
       :ok -> :ok

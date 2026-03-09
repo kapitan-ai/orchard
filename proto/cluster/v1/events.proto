@@ -2,6 +2,56 @@ syntax = "proto3";
 
 package cluster.v1;
 
-// Placeholder for events.proto.
-// Contract details are defined in SPEC.md and will be filled in after the
-// Elixir gRPC/protobuf toolchain is chosen.
+import "cluster/v1/common.proto";
+
+// ExecuteInference streams events in order:
+// - Accepted, before long-running prefill starts
+// - zero or more progress/usage/output deltas
+// - exactly one terminal Completed or Failed event
+// - no additional events after the terminal event
+message InferenceEvent {
+  oneof event {
+    Accepted accepted = 1;
+    OutputTextDelta output_text_delta = 2;
+    ToolCallDelta tool_call_delta = 3;
+    UsageUpdate usage = 4;
+    Completed completed = 5;
+    Failed failed = 6;
+    Progress progress = 7;
+  }
+}
+
+message Accepted {
+  uint64 accepted_at_unix_ms = 1;
+}
+
+message OutputTextDelta {
+  string delta = 1;
+}
+
+// Reserved in the M1 schema for spec-name alignment.
+// M1 text inference does not emit tool deltas yet.
+message ToolCallDelta {
+  string tool_call_id = 1;
+  string delta_json = 2;
+}
+
+message UsageUpdate {
+  TokenUsage usage = 1;
+}
+
+message Completed {
+  FinishReason finish_reason = 1;
+  TokenUsage usage = 2;
+}
+
+message Failed {
+  string code = 1;
+  string message = 2;
+  bool retryable = 3;
+}
+
+message Progress {
+  string stage = 1;
+  string message = 2;
+}

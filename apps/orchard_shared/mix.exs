@@ -14,7 +14,7 @@ defmodule OrchardShared.MixProject do
       # M0 exception: this shell is intentionally shallow and the threshold will
       # be raised once shared runtime behavior is added beyond the scaffold.
       test_coverage: [summary: [threshold: 0]],
-      deps: []
+      deps: deps()
     ]
   end
 
@@ -22,6 +22,13 @@ defmodule OrchardShared.MixProject do
     [
       mod: {OrchardShared.Application, []},
       extra_applications: [:logger]
+    ]
+  end
+
+  defp deps do
+    [
+      {:grpc, "~> 0.11.5"},
+      {:protobuf, "~> 0.16.0"}
     ]
   end
 end
