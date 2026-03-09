@@ -159,6 +159,8 @@ Validation and reporting follow `AGENTS.md`.
 
 For M0 work, run the applicable workflow from the repository root and report what passed, failed, or is not yet wired. If a tool such as Dialyzer or coverage is not configured yet, call that out explicitly and track the setup work instead of silently skipping it.
 
+During M0, shallow scaffold apps may carry temporary low or zero coverage thresholds where their runtime behavior is still placeholder-only. Treat those thresholds as milestone-scoped exceptions, not steady-state quality targets.
+
 ## Open questions
 
 - Phoenix vs lighter Plug-only endpoint shell for M0

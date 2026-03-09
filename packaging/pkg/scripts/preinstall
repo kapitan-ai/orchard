@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+# Placeholder preinstall hook for Orchard PKG assembly.
+exit 0

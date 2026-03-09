@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+# Placeholder Orchard CLI wrapper.
+# Packaging will eventually dispatch to the internal orchard_cli release.
+exec /Library/Application\ Support/Orchard/releases/orchard_cli/bin/orchard_cli "$@"

@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+# Placeholder Orchard controller wrapper.
+# Packaging will eventually dispatch to the internal orchard_controller release.
+exec /Library/Application\ Support/Orchard/releases/orchard_controller/bin/orchard_controller "$@"

@@ -1,0 +1,9 @@
+#!/bin/sh
+set -eu
+# Placeholder postinstall hook for Orchard PKG assembly.
+# Future responsibilities:
+# - install wrapper commands into /Library/Application Support/Orchard/bin/
+# - expose orchardctl via /usr/local/bin/orchardctl
+# - install and register launchd plists for controller/node-agent
+# - register com.orchard.postgres only when managed Postgres assets are present
+exit 0

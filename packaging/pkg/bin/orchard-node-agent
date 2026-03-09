@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+# Placeholder Orchard node-agent wrapper.
+# Packaging will eventually dispatch to the internal orchard_node_agent release.
+exec /Library/Application\ Support/Orchard/releases/orchard_node_agent/bin/orchard_node_agent "$@"
