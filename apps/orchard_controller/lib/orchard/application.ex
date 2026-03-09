@@ -10,6 +10,7 @@ defmodule Orchard.Application do
     children =
       []
       |> maybe_add_repo()
+      |> maybe_add_inference_stack()
       |> maybe_add_endpoint_stack()
 
     Supervisor.start_link(children,
@@ -30,6 +31,10 @@ defmodule Orchard.Application do
     else
       children
     end
+  end
+
+  defp maybe_add_inference_stack(children) do
+    children ++ [Orchard.Inference]
   end
 
   defp maybe_add_endpoint_stack(children) do

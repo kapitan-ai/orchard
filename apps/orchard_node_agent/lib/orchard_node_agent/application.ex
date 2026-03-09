@@ -3,10 +3,12 @@ defmodule Orchard.NodeAgent.Application do
 
   use Application
 
+  alias Orchard.Node.Supervisor, as: NodeSupervisor
+
   @impl true
   def start(_type, _args) do
     Supervisor.start_link(
-      [Orchard.Node.Supervisor],
+      [NodeSupervisor],
       strategy: :one_for_one,
       name: Orchard.NodeAgent.Supervisor
     )

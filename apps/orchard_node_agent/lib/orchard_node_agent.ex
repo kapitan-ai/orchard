@@ -1,6 +1,6 @@
 defmodule Orchard.NodeAgent do
   @moduledoc """
-  Bootable node-agent shell for Orchard Milestone 0.
+  Bootable node-agent shell for Orchard Milestone 1.
   """
 
   @type canonical_request :: Orchard.CanonicalRequest.t()

@@ -1,7 +1,13 @@
 defmodule Orchard.Node.Supervisor do
-  @moduledoc false
+  @moduledoc """
+  Node-agent supervision anchor for the runtime gRPC boundary.
+  """
 
   use Supervisor
+
+  alias Orchard.Node.{Endpoint, Status}
+
+  @grpc_server_id Orchard.Node.GRPCServer
 
   def start_link(init_arg \\ []) do
     Supervisor.start_link(__MODULE__, init_arg, name: __MODULE__)
@@ -9,6 +15,42 @@ defmodule Orchard.Node.Supervisor do
 
   @impl true
   def init(_init_arg) do
-    Supervisor.init([], strategy: :one_for_one)
+    children = [
+      Status,
+      Supervisor.child_spec({GRPC.Server.Supervisor, grpc_server_opts()}, id: @grpc_server_id)
+    ]
+
+    Supervisor.init(children, strategy: :one_for_one)
+  end
+
+  def grpc_server_id, do: @grpc_server_id
+
+  def grpc_server_opts do
+    listen_address = Orchard.Node.listen_address()
+
+    [
+      endpoint: Endpoint,
+      port: listen_address[:port] || raise("missing orchard_node_agent listen port"),
+      start_server: true,
+      adapter_opts: [ip: listen_ip(listen_address[:host])]
+    ]
+  end
+
+  defp listen_ip({_, _, _, _} = ip), do: ip
+  defp listen_ip({_, _, _, _, _, _, _, _} = ip), do: ip
+  defp listen_ip(nil), do: {127, 0, 0, 1}
+
+  defp listen_ip(host) when is_binary(host) do
+    case :inet.parse_address(String.to_charlist(host)) do
+      {:ok, ip} ->
+        ip
+
+      {:error, :einval} when host == "localhost" ->
+        {127, 0, 0, 1}
+
+      {:error, reason} ->
+        raise ArgumentError,
+              "invalid orchard_node_agent listen host #{inspect(host)}: #{inspect(reason)}"
+    end
   end
 end

@@ -22,7 +22,6 @@ defmodule Orchard.DataCase do
   end
 
   def setup_sandbox(tags) do
-    ensure_repo_started!()
     :ok = Sandbox.checkout(Orchard.Repo)
 
     unless tags[:async] do
@@ -32,16 +31,11 @@ defmodule Orchard.DataCase do
     :ok
   end
 
-  defp ensure_repo_started! do
-    case Process.whereis(Orchard.Repo) do
-      nil ->
-        case Orchard.Repo.start_link() do
-          {:ok, _pid} -> :ok
-          {:error, {:already_started, _pid}} -> :ok
-        end
-
-      _pid ->
-        :ok
-    end
+  def errors_on(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
+      Regex.replace(~r/%{(\w+)}/, message, fn _match, key ->
+        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      end)
+    end)
   end
 end

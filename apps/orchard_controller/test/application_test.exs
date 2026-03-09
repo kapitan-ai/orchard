@@ -31,7 +31,7 @@ defmodule OrchardApplicationTest do
     :ok
   end
 
-  test "controller application boots without repo or endpoint children" do
+  test "controller application boots with inference supervision but without repo or endpoint children" do
     assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
 
     supervisor = Process.whereis(Orchard.Supervisor)
@@ -41,9 +41,13 @@ defmodule OrchardApplicationTest do
       Supervisor.which_children(supervisor)
       |> Enum.map(fn {id, _pid, _type, _modules} -> id end)
 
+    assert Orchard.Inference in child_ids
     refute Orchard.Repo in child_ids
     refute Orchard.PubSub in child_ids
     refute Orchard.API.Endpoint in child_ids
+
+    assert is_pid(Process.whereis(Orchard.Inference))
+    assert is_pid(Process.whereis(Orchard.Requests.Supervisor))
   end
 
   test "test environment config uses fake tokenizer and local runtime target" do
