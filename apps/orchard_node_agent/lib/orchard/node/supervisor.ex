@@ -1,6 +1,10 @@
 defmodule Orchard.Node.Supervisor do
   @moduledoc """
   Node-agent supervision anchor for the runtime gRPC boundary.
+
+  Uses `:rest_for_one` strategy with `ModelManager` before `WorkerSupervisor`:
+  if the manager crashes, all workers are torn down and restarted, preventing
+  orphaned workers that the new manager would not know about.
   """
 
   use Supervisor
@@ -16,12 +20,12 @@ defmodule Orchard.Node.Supervisor do
   @impl true
   def init(_init_arg) do
     children = [
-      WorkerSupervisor,
       ModelManager,
+      WorkerSupervisor,
       Supervisor.child_spec({GRPC.Server.Supervisor, grpc_server_opts()}, id: @grpc_server_id)
     ]
 
-    Supervisor.init(children, strategy: :one_for_one)
+    Supervisor.init(children, strategy: :rest_for_one)
   end
 
   def grpc_server_id, do: @grpc_server_id
