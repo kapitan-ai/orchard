@@ -58,23 +58,29 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     caller = Keyword.get(opts, :caller, self())
     event_handler = Keyword.get(opts, :event_handler)
 
-    with {:ok, channel} <- Client.connect(target),
-         :ok <- do_ensure_model_loaded(channel, model_load_request, model_load_timeout) do
-      result =
-        do_execute_and_stream(
-          channel,
-          execute_request,
-          request_id,
-          timeout_ms,
-          caller,
-          event_handler
-        )
+    case Client.connect(target) do
+      {:ok, channel} ->
+        try do
+          case do_ensure_model_loaded(channel, model_load_request, model_load_timeout) do
+            :ok ->
+              do_execute_and_stream(
+                channel,
+                execute_request,
+                request_id,
+                timeout_ms,
+                caller,
+                event_handler
+              )
 
-      Client.disconnect(channel)
-      result
-    else
-      {:error, {:connect_failed, _} = reason} -> {:error, reason}
-      {:error, reason} -> {:error, {:model_load_failed, reason}}
+            {:error, reason} ->
+              {:error, {:model_load_failed, reason}}
+          end
+        after
+          Client.disconnect(channel)
+        end
+
+      {:error, {:connect_failed, _} = reason} ->
+        {:error, reason}
     end
   end
 
