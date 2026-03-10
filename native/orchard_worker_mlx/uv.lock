@@ -245,7 +245,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "grpcio", specifier = ">=1.71.0" }]
+requires-dist = [{ name = "grpcio", specifier = ">=1.78.0" }]
 
 [package.metadata.requires-dev]
 dev = [

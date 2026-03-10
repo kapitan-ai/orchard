@@ -84,7 +84,7 @@ defmodule Orchard.Tokenizer.Client do
            extract_manifest_assets(manifest),
          {:ok, resolved_tokenizer_path} <- resolve_asset_path(tokenizer_path, bundle_root),
          {:ok, resolved_chat_template_path} <-
-           resolve_optional_asset_path(chat_template_path, bundle_root) do
+           resolve_asset_path(chat_template_path, bundle_root) do
       {:ok,
        %{
          tokenizer_kind: tokenizer_kind,
@@ -119,7 +119,11 @@ defmodule Orchard.Tokenizer.Client do
     {:error, {:missing_assets, "model manifest tokenizer must include non-empty kind and path"}}
   end
 
-  defp extract_chat_template_asset(nil), do: {:ok, nil}
+  defp extract_chat_template_asset(nil) do
+    {:error,
+     {:missing_assets,
+      "model manifest must include chat_template with a non-empty path for port-mode tokenization"}}
+  end
 
   defp extract_chat_template_asset(%{path: path}) when is_binary(path) and path != "" do
     {:ok, path}
@@ -129,9 +133,6 @@ defmodule Orchard.Tokenizer.Client do
     {:error,
      {:missing_assets, "model manifest chat_template must include a non-empty path when present"}}
   end
-
-  defp resolve_optional_asset_path(nil, _bundle_root), do: {:ok, nil}
-  defp resolve_optional_asset_path(path, bundle_root), do: resolve_asset_path(path, bundle_root)
 
   defp resolve_asset_path(path, bundle_root) when is_binary(path) and path != "" do
     case bundle_root do
@@ -164,15 +165,89 @@ defmodule Orchard.Tokenizer.Client do
   end
 
   defp resolve_bundle_asset_path(path, bundle_root) do
-    expanded_root = Path.expand(bundle_root)
-    expanded_path = Path.expand(path, expanded_root)
+    with {:ok, real_root} <- realpath_bundle_root(bundle_root) do
+      expanded_path = Path.expand(path, real_root)
 
-    case Path.relative_to(expanded_path, expanded_root) do
+      case realpath_asset(expanded_path) do
+        {:ok, real_asset} ->
+          ensure_confined(real_asset, real_root, path)
+
+        {:error, _posix} ->
+          {:error,
+           {:missing_assets,
+            "tokenizer asset not found or inaccessible: #{inspect(path)}"}}
+      end
+    end
+  end
+
+  defp realpath_bundle_root(bundle_root) do
+    case resolve_realpath(Path.expand(bundle_root)) do
+      {:ok, real_root} ->
+        {:ok, real_root}
+
+      {:error, _posix} ->
+        {:error,
+         {:invalid_input,
+          "bundle_root does not exist or is inaccessible: #{inspect(bundle_root)}"}}
+    end
+  end
+
+  defp realpath_asset(expanded_path) do
+    resolve_realpath(expanded_path)
+  end
+
+  # Canonicalize a path by walking each component and resolving symlinks.
+  # Returns {:ok, canonical_path} or {:error, posix_reason}.
+  @max_symlink_depth 40
+  defp resolve_realpath(path) do
+    path
+    |> Path.expand()
+    |> Path.split()
+    |> resolve_realpath_components("/", @max_symlink_depth)
+  end
+
+  defp resolve_realpath_components([], acc, _depth), do: {:ok, acc}
+  defp resolve_realpath_components(_rest, _acc, 0), do: {:error, :eloop}
+
+  defp resolve_realpath_components([component | rest], acc, depth) do
+    current = Path.join(acc, component)
+
+    case File.lstat(current) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        case File.read_link(current) do
+          {:ok, target} ->
+            resolved = Path.expand(target, acc)
+            # Re-split the resolved target to walk through it (handles chained symlinks)
+            new_components = Path.split(resolved) ++ rest
+            resolve_realpath_components(tl(new_components), "/", depth - 1)
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:ok, _stat} ->
+        resolve_realpath_components(rest, current, depth)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp ensure_confined(real_asset, real_root, original_path) do
+    case Path.relative_to(real_asset, real_root) do
       <<"..", _rest::binary>> ->
-        {:error, {:invalid_input, "tokenizer asset path escapes bundle_root: #{inspect(path)}"}}
+        {:error,
+         {:invalid_input,
+          "tokenizer asset path escapes bundle_root: #{inspect(original_path)}"}}
+
+      ^real_asset ->
+        # Path.relative_to returns the path unchanged when it's not relative to root
+        {:error,
+         {:invalid_input,
+          "tokenizer asset path escapes bundle_root: #{inspect(original_path)}"}}
 
       _relative_path ->
-        {:ok, expanded_path}
+        {:ok, real_asset}
     end
   end
 

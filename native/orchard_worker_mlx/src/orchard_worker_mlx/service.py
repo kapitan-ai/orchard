@@ -56,13 +56,23 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
     def Generate(
         self, request: runtime_pb2.ExecuteInferenceRequest, context: grpc.ServicerContext
     ) -> Iterator[events_pb2.InferenceEvent]:
-        cancel_event = threading.Event()
-
         with self._lock:
-            self._cancel_events[request.request_id] = cancel_event
+            cancel_event = self._cancel_events.get(request.request_id)
+            if cancel_event is None:
+                cancel_event = threading.Event()
+                self._cancel_events[request.request_id] = cancel_event
 
+        # Short-circuit if Cancel arrived before Generate.
+        if cancel_event.is_set():
+            yield build_failed_event("cancelled", "request cancelled", False)
+            with self._lock:
+                self._cancel_events.pop(request.request_id, None)
+            return
+
+        generation_started = False
         try:
             self._backend.start_generation()
+            generation_started = True
             for event in self._backend.generate(request, cancel_event):
                 yield build_inference_event(event)
         except BackendError as exc:
@@ -71,16 +81,19 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
             with self._lock:
                 self._cancel_events.pop(request.request_id, None)
 
-            self._backend.finish_generation()
+            if generation_started:
+                self._backend.finish_generation()
 
     def Cancel(
         self, request: runtime_pb2.CancelInferenceRequest, context: grpc.ServicerContext
     ) -> common_pb2.Ack:
         with self._lock:
             cancel_event = self._cancel_events.get(request.request_id)
+            if cancel_event is None:
+                cancel_event = threading.Event()
+                self._cancel_events[request.request_id] = cancel_event
 
-        if cancel_event is not None:
-            cancel_event.set()
+        cancel_event.set()
 
         return common_pb2.Ack(ok=True, message="cancel accepted")
 

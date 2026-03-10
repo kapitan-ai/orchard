@@ -90,6 +90,58 @@ def test_worker_server_smoke_supports_load_generate_cancel_and_unload(tmp_path: 
         assert not socket_path.exists()
 
 
+def test_cancel_before_generate_returns_cancelled_immediately(tmp_path: Path) -> None:
+    """Cancel arriving before Generate should produce an immediate cancelled failure."""
+    socket_path = Path("/tmp") / f"orchard-worker-{uuid4().hex[:8]}.sock"
+    model_path = tmp_path / "models" / "phi-3" / "main"
+    model_path.mkdir(parents=True)
+
+    process = start_worker(socket_path)
+
+    try:
+        channel = wait_for_channel(socket_path)
+        stub = worker_runtime_pb2_grpc.WorkerRuntimeServiceStub(channel)
+
+        # Load model first (required for generation)
+        ack = stub.LoadModel(
+            worker_runtime_pb2.LoadModelRequest(
+                model_id="mlx-community/phi-3",
+                version="main",
+                model_path=str(model_path),
+            )
+        )
+        assert ack.ok is True
+
+        # Cancel BEFORE Generate
+        request_id = "req-pre-cancel"
+        cancel_ack = stub.Cancel(
+            runtime_pb2.CancelInferenceRequest(
+                request_id=request_id,
+                controller_session_id="controller-session-pre",
+            )
+        )
+        assert cancel_ack.ok is True
+
+        # Now Generate with the same request_id — should return cancelled immediately
+        request = runtime_pb2.ExecuteInferenceRequest(
+            request_id=request_id,
+            controller_session_id="controller-session-pre",
+            model_id="mlx-community/phi-3",
+            version="main",
+            rendered_prompt_utf8=b"hello orchard",
+            input_tokens=2,
+            metadata_json=b'{"worker_delay_ms":2000}',
+        )
+
+        events = list(stub.Generate(request))
+        assert len(events) == 1
+        assert events[0].failed.code == "cancelled"
+        assert events[0].failed.message == "request cancelled"
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+
 def test_build_failed_event_maps_expected_shape() -> None:
     event = build_failed_event("worker_failed", "boom", False)
     assert event.failed.code == "worker_failed"

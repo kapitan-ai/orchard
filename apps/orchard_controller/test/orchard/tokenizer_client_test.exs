@@ -138,6 +138,35 @@ defmodule Orchard.Tokenizer.ClientTest do
     )
   end
 
+  test "port mode rejects manifest without chat_template" do
+    no_chat_template_manifest = %{huggingface_manifest() | chat_template: nil}
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: tokenizer_executable()
+      ],
+      fn ->
+        assert {:error, {:missing_assets, message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: no_chat_template_manifest,
+                   bundle_root: huggingface_fixture_root()
+                 )
+
+        assert message =~ "chat_template"
+      end
+    )
+  end
+
+  test "fake mode still succeeds without chat_template in manifest" do
+    # Fake mode does not use manifest assets, so missing chat_template is fine
+    assert {:ok,
+            %{
+              rendered_prompt: "system orchard\nuser hello orchard\nassistant",
+              input_token_count: 6
+            }} = Client.tokenize(canonical_request())
+  end
+
   test "port mode rejects malformed executable output" do
     malformed_executable = write_malformed_executable!()
 
@@ -156,6 +185,53 @@ defmodule Orchard.Tokenizer.ClientTest do
                    manifest: huggingface_manifest(),
                    bundle_root: huggingface_fixture_root()
                  )
+      end
+    )
+  end
+
+  test "port mode rejects symlinked assets that escape bundle_root" do
+    # Create isolated temp directory with two siblings:
+    # parent/
+    #   bundle/        <- bundle_root
+    #     tokenizer.json -> ../outside/tokenizer.json  (symlink escape)
+    #     chat_template.jinja  (normal file)
+    #   outside/
+    #     tokenizer.json  (real file, outside bundle_root)
+    parent_dir = Path.join(System.tmp_dir!(), "orchard-symlink-test-#{System.unique_integer([:positive])}")
+    bundle_dir = Path.join(parent_dir, "bundle")
+    outside_dir = Path.join(parent_dir, "outside")
+
+    File.mkdir_p!(bundle_dir)
+    File.mkdir_p!(outside_dir)
+
+    on_exit(fn -> File.rm_rf!(parent_dir) end)
+
+    # Create real tokenizer file outside bundle_root
+    outside_tokenizer = Path.join(outside_dir, "tokenizer.json")
+    File.write!(outside_tokenizer, "{\"model_type\": \"escaped\"}")
+
+    # Create symlink inside bundle_root pointing outside
+    symlink_path = Path.join(bundle_dir, "tokenizer.json")
+    File.ln_s!(outside_tokenizer, symlink_path)
+
+    # Create normal chat_template inside bundle_root
+    File.write!(Path.join(bundle_dir, "chat_template.jinja"), "{{ content }}")
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: tokenizer_executable()
+      ],
+      fn ->
+        manifest = huggingface_manifest()
+
+        assert {:error, {:invalid_input, message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: bundle_dir
+                 )
+
+        assert message =~ "escapes bundle_root"
       end
     )
   end

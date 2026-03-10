@@ -9,7 +9,7 @@ description = "Orchard MLX worker runtime scaffold"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "grpcio>=1.71.0",
+  "grpcio>=1.78.0",
 ]
 
 [project.scripts]
