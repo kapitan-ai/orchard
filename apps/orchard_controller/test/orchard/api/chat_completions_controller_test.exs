@@ -221,6 +221,61 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
   end
 
+  describe "POST /v1/chat/completions (streaming persistence, T4)" do
+    @tag :db
+    test "streaming request persists request row and state events" do
+      {:ok, _model} =
+        Orchard.Models.create_model(%{
+          model_id: "persist-model",
+          version: "v1",
+          display_name: "Persist Model",
+          artifact_uri: "file:///tmp/persist-model",
+          artifact_sha256: "abc123",
+          state: :active,
+          format: "mlx",
+          backend: "mlx",
+          capabilities: ["chat"],
+          artifact_size_bytes: 1024,
+          resident_memory_bytes: 2048,
+          kv_cache_bytes_per_token: 128,
+          prefill_workspace_bytes_per_token: 64,
+          max_context_tokens: 4096
+        })
+
+      conn =
+        post_chat(%{
+          "model" => "persist-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      assert conn.status == 200
+
+      # Verify a request row was persisted
+      requests = Orchard.Repo.all(Orchard.Requests.Request)
+      assert length(requests) == 1
+      [request] = requests
+
+      assert request.tenant_id == "00000000-0000-0000-0000-000000000000"
+      assert request.requested_model == "persist-model@v1"
+      assert request.stream == true
+      assert request.endpoint == :chat_completions
+      # Terminal state after successful completion
+      assert request.state in [:completed, :streaming]
+
+      # Verify request_events reflect a state sequence
+      events =
+        Orchard.Repo.all(Orchard.Requests.RequestEvent)
+        |> Enum.filter(&(&1.request_id == request.id))
+        |> Enum.sort_by(& &1.seq)
+
+      event_states = Enum.map(events, & &1.state)
+      # Should include forward progression through the FSM
+      assert length(events) >= 2
+      assert :validated in event_states
+    end
+  end
+
   describe "stream_options.include_usage normalization" do
     test "stream_include_usage defaults to false" do
       {:ok, canonical} =
