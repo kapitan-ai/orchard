@@ -56,7 +56,7 @@ class StubBackend:
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         metadata = decode_metadata(getattr(request, "metadata_json", b""))
         chunks = metadata.get("worker_chunks") or ["mlx ", "ready"]
-        delay_ms = int(metadata.get("worker_delay_ms", 0))
+        delay_ms = safe_int(metadata.get("worker_delay_ms", 0))
 
         for chunk in chunks:
             if cancel_event.is_set():
@@ -110,17 +110,25 @@ def decode_metadata(metadata_json: bytes | str | None) -> dict[str, Any]:
     if metadata_json in (None, b"", ""):
         return {}
 
-    if isinstance(metadata_json, bytes):
-        payload = metadata_json.decode("utf-8")
-    else:
-        payload = metadata_json
-
     try:
+        if isinstance(metadata_json, bytes):
+            payload = metadata_json.decode("utf-8")
+        else:
+            payload = metadata_json
+
         decoded = json.loads(payload)
-    except json.JSONDecodeError:
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
         return {}
 
     return decoded if isinstance(decoded, dict) else {}
+
+
+def safe_int(value: object, default: int = 0) -> int:
+    """Convert *value* to int, returning *default* on failure."""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
 
 
 def cancelled_event() -> dict[str, Any]:
