@@ -31,19 +31,44 @@ defmodule Orchard.API.ChatCompletionsController do
           handle_non_streaming(conn, canonical, model)
         end
 
-      {:error, {:validation, errors}} ->
-        send_validation_error(conn, errors)
-
-      {:error, {:model_not_found, model_ref}} ->
-        send_error(
-          conn,
-          :not_found,
-          "Model not found: #{model_ref}",
-          "invalid_request_error",
-          param: "model",
-          code: "model_not_found"
-        )
+      {:error, reason} ->
+        send_prepare_error(conn, reason)
     end
+  end
+
+  defp send_prepare_error(conn, {:validation, errors}),
+    do: send_validation_error(conn, errors)
+
+  defp send_prepare_error(conn, {:model_not_found, model_ref}) do
+    send_error(conn, :not_found, "Model not found: #{model_ref}", "invalid_request_error",
+      param: "model",
+      code: "model_not_found"
+    )
+  end
+
+  defp send_prepare_error(conn, {:context_overflow, detail}) do
+    send_error(conn, :bad_request, detail, "invalid_request_error",
+      code: "context_length_exceeded"
+    )
+  end
+
+  defp send_prepare_error(conn, {:tokenization, {cat, message}})
+       when is_binary(message) and cat in [:invalid_input, :unsupported_tokenizer] do
+    send_error(conn, :bad_request, message, "invalid_request_error", [])
+  end
+
+  defp send_prepare_error(conn, {:tokenization, {_cat, message}}) when is_binary(message) do
+    send_error(conn, :internal_server_error, "Tokenization failed: #{message}", "server_error",
+      code: "internal_error"
+    )
+  end
+
+  defp send_prepare_error(conn, {:tokenization, reason}) do
+    send_error(
+      conn,
+      :internal_server_error,
+      "Tokenization failed: #{inspect(reason)}",
+      "server_error", code: "internal_error")
   end
 
   # -- Non-streaming response ------------------------------------------------
@@ -51,7 +76,34 @@ defmodule Orchard.API.ChatCompletionsController do
   defp handle_non_streaming(conn, canonical, model) do
     case ChatOrchestrator.execute(canonical, model) do
       {:ok, canonical, events} ->
-        send_completion_response(conn, canonical, events)
+        # Check if the terminal event indicates failure — if so, return an
+        # error envelope instead of a completion object (P0 review fix).
+        case terminal_outcome(events) do
+          :completed ->
+            send_completion_response(conn, canonical, events)
+
+          {:failed, message} ->
+            send_error(
+              conn,
+              :internal_server_error,
+              "Inference failed: #{message}",
+              "server_error",
+              code: "internal_error"
+            )
+
+          :cancelled ->
+            send_error(conn, :internal_server_error, "Request was cancelled", "server_error",
+              code: "request_cancelled"
+            )
+
+          :timed_out ->
+            send_error(conn, :gateway_timeout, "Request timed out", "server_error",
+              code: "request_timeout"
+            )
+
+          :unknown ->
+            send_completion_response(conn, canonical, events)
+        end
 
       {:error, reason} ->
         send_error(
@@ -293,6 +345,27 @@ defmodule Orchard.API.ChatCompletionsController do
 
   defp format_model_display(canonical) do
     "#{canonical.model_ref.model_id}@#{canonical.model_ref.version}"
+  end
+
+  # Determine the terminal outcome from event list.
+  # Returns :completed, {:failed, message}, :cancelled, :timed_out, or :unknown.
+  defp terminal_outcome(events) do
+    terminal = Enum.find(events, &InferenceEvent.terminal?/1)
+
+    case terminal do
+      nil ->
+        :unknown
+
+      %{event: %InferenceEvent.Completed{}} ->
+        :completed
+
+      %{event: %InferenceEvent.Failed{code: code, message: message}} ->
+        cond do
+          code in ["cancelled", "request_cancelled"] -> :cancelled
+          code in ["timed_out", "request_timeout", "deadline_exceeded"] -> :timed_out
+          true -> {:failed, message}
+        end
+    end
   end
 
   defp collect_deltas(events) do

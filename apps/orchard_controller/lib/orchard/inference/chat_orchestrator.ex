@@ -10,9 +10,9 @@ defmodule Orchard.Inference.ChatOrchestrator do
 
   ## Flow
 
-      validate → normalize → resolve model → persist request row
-      → start FSM → transition validated → schedule → transition scheduled
-      → transition dispatching → dispatch → collect events
+      validate → normalize → resolve model → tokenize → enforce context window
+      → persist request row → start FSM → transition validated → schedule
+      → transition scheduled → transition dispatching → dispatch → collect events
       → transition terminal → persist usage
 
   ## Error Handling
@@ -30,9 +30,11 @@ defmodule Orchard.Inference.ChatOrchestrator do
   alias Orchard.Inference.{ChatRequestNormalizer, ChatRequestValidator}
   alias Orchard.InferenceEvent
   alias Orchard.Models
+  alias Orchard.Models.ManifestParser
   alias Orchard.Requests
   alias Orchard.Requests.RequestServer
   alias Orchard.Scheduler.SingleNode
+  alias Orchard.Tokenizer.Client, as: TokenizerClient
 
   @type orchestrate_result ::
           {:ok, CanonicalRequest.t(), [InferenceEvent.t()]}
@@ -51,13 +53,17 @@ defmodule Orchard.Inference.ChatOrchestrator do
 
   Returns `{:error, {:validation, errors}}` for request validation failures,
   `{:error, {:model_not_found, model_ref}}` when the requested model doesn't
-  exist or isn't active.
+  exist or isn't active, `{:error, {:tokenization, reason}}` for prompt
+  rendering/tokenizer failures, and `{:error, {:context_overflow, detail}}`
+  when input tokens + max output tokens exceed the model's context window.
   """
   @spec prepare(map(), keyword()) :: {:ok, CanonicalRequest.t(), map()} | {:error, term()}
   def prepare(params, caller_context \\ []) do
     with {:ok, params} <- validate(params),
          {:ok, canonical} <- normalize(params, caller_context),
-         {:ok, model} <- resolve_model(canonical) do
+         {:ok, model} <- resolve_model(canonical),
+         {:ok, canonical} <- tokenize(canonical, model),
+         :ok <- enforce_context_window(canonical, model) do
       {:ok, canonical, model}
     end
   end
@@ -160,6 +166,55 @@ defmodule Orchard.Inference.ChatOrchestrator do
     end
   end
 
+  defp tokenize(canonical, model) do
+    tokenizer_opts = build_tokenizer_opts(model)
+
+    case TokenizerClient.tokenize(canonical, tokenizer_opts) do
+      {:ok, %{rendered_prompt: prompt, input_token_count: count}} ->
+        {:ok, CanonicalRequest.with_tokenization(canonical, prompt, count)}
+
+      {:error, reason} ->
+        {:error, {:tokenization, reason}}
+    end
+  end
+
+  # In fake mode, the tokenizer doesn't need model assets.
+  # In port mode, resolve the bundle root from the model's artifact_uri
+  # and parse the manifest for tokenizer/chat-template asset paths.
+  defp build_tokenizer_opts(model) do
+    case TokenizerClient.mode() do
+      :fake ->
+        []
+
+      :port ->
+        bundle_root = uri_to_local_path(model.artifact_uri)
+
+        case ManifestParser.parse_from_bundle(bundle_root) do
+          {:ok, manifest} -> [manifest: manifest, bundle_root: bundle_root]
+          {:error, _reason} -> []
+        end
+
+      _other ->
+        []
+    end
+  end
+
+  defp uri_to_local_path("file://" <> path), do: path
+  defp uri_to_local_path(path), do: path
+
+  defp enforce_context_window(canonical, model) do
+    max_output = canonical.sampling.max_output_tokens || 0
+    total = canonical.input_token_count + max_output
+
+    if total > model.max_context_tokens do
+      {:error,
+       {:context_overflow,
+        "request requires #{total} tokens (#{canonical.input_token_count} input + #{max_output} output) but model supports at most #{model.max_context_tokens}"}}
+    else
+      :ok
+    end
+  end
+
   defp persist_request(canonical, model) do
     attrs = %{
       id: canonical.internal_id,
@@ -173,7 +228,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
       stream: canonical.stream?,
       payload_capture_mode: :metadata,
       sampling_params: sampling_to_map(canonical.sampling),
-      input_tokens: 0
+      input_tokens: canonical.input_token_count
     }
 
     Requests.create_request(attrs)
@@ -286,7 +341,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
       controller_session_id: canonical.internal_id,
       model_id: canonical.model_ref.model_id,
       version: canonical.model_ref.version,
-      rendered_prompt_utf8: canonical.rendered_prompt || "",
+      rendered_prompt_utf8: canonical.rendered_prompt,
       input_tokens: canonical.input_token_count,
       params: build_generation_params(canonical.sampling),
       deadline_unix_ms: deadline_ms,

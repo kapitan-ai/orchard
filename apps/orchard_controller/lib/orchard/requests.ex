@@ -41,22 +41,41 @@ defmodule Orchard.Requests do
   def append_request_event(request_id, attrs) do
     Repo.transaction(fn ->
       case lock_request(request_id) do
-        {:ok, _request} ->
-          attrs =
-            attrs
-            |> normalize_request_event_attrs()
-            |> Map.put("request_id", request_id)
-            |> Map.put("seq", next_request_event_seq(request_id))
-
-          %RequestEvent{}
-          |> RequestEvent.changeset(attrs)
-          |> Repo.insert()
+        {:ok, request} ->
+          insert_event_and_sync_state(request, request_id, attrs)
 
         {:error, :request_not_found} ->
           Repo.rollback(:request_not_found)
       end
     end)
     |> unwrap_transaction_result()
+  end
+
+  defp insert_event_and_sync_state(request, request_id, attrs) do
+    event_attrs =
+      attrs
+      |> normalize_request_event_attrs()
+      |> Map.put("request_id", request_id)
+      |> Map.put("seq", next_request_event_seq(request_id))
+
+    # Atomically advance requests.state when the event carries a
+    # state value. This keeps the row in sync with events for
+    # active-state queries and index correctness (P1 review fix).
+    sync_request_state(request, event_attrs, attrs)
+
+    %RequestEvent{}
+    |> RequestEvent.changeset(event_attrs)
+    |> Repo.insert()
+  end
+
+  defp sync_request_state(request, event_attrs, raw_attrs) do
+    new_state = Map.get(event_attrs, "state") || Map.get(raw_attrs, :state)
+
+    if new_state && new_state != request.state do
+      request
+      |> Ecto.Changeset.change(state: new_state)
+      |> Repo.update!()
+    end
   end
 
   @spec mark_terminal(struct(), map()) ::
@@ -75,12 +94,22 @@ defmodule Orchard.Requests do
   end
 
   defp apply_terminal_update(%Request{} = request, attrs) do
-    if request.state in Request.terminal_states() do
-      Repo.rollback(:already_terminal)
-    else
-      request
-      |> Request.terminal_changeset(attrs)
-      |> Repo.update()
+    # Allow idempotent terminal updates: if the row is already in a terminal
+    # state (set by append_request_event's atomic state sync), still apply
+    # the terminal metadata (usage, timestamps, error fields). Only reject
+    # if this would overwrite a *different* terminal state.
+    target_state = Map.get(attrs, :state) || Map.get(attrs, "state")
+
+    cond do
+      request.state not in Request.terminal_states() ->
+        request |> Request.terminal_changeset(attrs) |> Repo.update()
+
+      target_state != nil and request.state == target_state ->
+        # Same terminal state — apply metadata update idempotently
+        request |> Request.terminal_changeset(attrs) |> Repo.update()
+
+      true ->
+        Repo.rollback(:already_terminal)
     end
   end
 
