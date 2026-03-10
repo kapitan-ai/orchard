@@ -40,4 +40,5 @@ defmodule Orchard.Inference do
   def tokenizer_executable, do: config()[:tokenizer_executable]
   def runtime_client_target, do: config()[:runtime_client_target]
   def request_timeout_ms, do: config()[:request_timeout_ms]
+  def model_load_timeout_ms, do: config()[:model_load_timeout_ms] || 120_000
 end

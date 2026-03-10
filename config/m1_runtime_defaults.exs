@@ -7,6 +7,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
   @default_runtime_host "127.0.0.1"
   @default_runtime_port 50_061
   @default_request_timeout_ms 120_000
+  @default_model_load_timeout_ms 120_000
   @default_worker_ready_timeout_ms 5_000
   @default_worker_shutdown_timeout_ms 1_000
 
@@ -16,7 +17,8 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       tokenizer_executable: "orchard-tokenizer",
       artifacts_root: Path.join(root, "bundles"),
       runtime_client_target: [host: @default_runtime_host, port: @default_runtime_port],
-      request_timeout_ms: @default_request_timeout_ms
+      request_timeout_ms: @default_request_timeout_ms,
+      model_load_timeout_ms: @default_model_load_timeout_ms
     ]
   end
 

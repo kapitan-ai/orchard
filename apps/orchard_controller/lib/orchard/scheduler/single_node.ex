@@ -22,7 +22,8 @@ defmodule Orchard.Scheduler.SingleNode do
        strategy: :single_node,
        request_id: request.public_id,
        runtime_client_target: target(),
-       request_timeout_ms: Orchard.Inference.request_timeout_ms()
+       request_timeout_ms: Orchard.Inference.request_timeout_ms(),
+       model_load_timeout_ms: Orchard.Inference.model_load_timeout_ms()
      }}
   end
 end

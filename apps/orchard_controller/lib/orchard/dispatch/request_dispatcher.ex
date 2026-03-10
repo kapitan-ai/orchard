@@ -54,11 +54,12 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     target = Map.fetch!(schedule, :runtime_client_target)
     request_id = Map.fetch!(schedule, :request_id)
     timeout_ms = Map.fetch!(schedule, :request_timeout_ms)
+    model_load_timeout = Map.get(schedule, :model_load_timeout_ms, 120_000)
     caller = Keyword.get(opts, :caller, self())
     event_handler = Keyword.get(opts, :event_handler)
 
     with {:ok, channel} <- Client.connect(target),
-         :ok <- do_ensure_model_loaded(channel, model_load_request) do
+         :ok <- do_ensure_model_loaded(channel, model_load_request, model_load_timeout) do
       result =
         do_execute_and_stream(
           channel,
@@ -79,8 +80,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   # -- Private ---------------------------------------------------------------
 
-  defp do_ensure_model_loaded(channel, request) do
-    case Client.ensure_model_loaded(channel, request) do
+  defp do_ensure_model_loaded(channel, request, timeout_ms) do
+    case Client.ensure_model_loaded(channel, request, timeout: timeout_ms) do
       {:ok, _response} -> :ok
       {:error, reason} -> {:error, reason}
     end

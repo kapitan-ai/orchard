@@ -50,6 +50,7 @@ defmodule Orchard.InferenceTest do
     assert schedule.request_id == request.public_id
     assert schedule.runtime_client_target == [host: "127.0.0.1", port: 50_071]
     assert schedule.request_timeout_ms == 5_000
+    assert schedule.model_load_timeout_ms == 5_000
 
     assert Client.mode() == :fake
 
