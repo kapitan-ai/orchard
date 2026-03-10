@@ -5,18 +5,15 @@ defmodule Orchard.Node.RuntimeServer do
 
   use GRPC.Server, service: Orchard.Cluster.V1.NodeRuntimeService.Service
 
-  alias Orchard.Cluster.V1.{
-    Accepted,
-    CancelInferenceRequest,
-    Completed,
-    EnsureModelLoadedRequest,
-    ExecuteInferenceRequest,
-    InferenceEvent,
-    StatusRequest,
-    TokenUsage,
-    UnloadModelRequest
-  }
-
+  alias Orchard.Cluster.V1.Accepted
+  alias Orchard.Cluster.V1.CancelInferenceRequest
+  alias Orchard.Cluster.V1.EnsureModelLoadedRequest
+  alias Orchard.Cluster.V1.ExecuteInferenceRequest
+  alias Orchard.Cluster.V1.InferenceEvent
+  alias Orchard.Cluster.V1.InferenceEventMapper
+  alias Orchard.Cluster.V1.StatusRequest
+  alias Orchard.Cluster.V1.UnloadModelRequest
+  alias Orchard.InferenceEvent, as: DomainInferenceEvent
   alias Orchard.Node.Status
 
   @spec get_status(StatusRequest.t(), GRPC.Server.Stream.t()) ::
@@ -36,14 +33,20 @@ defmodule Orchard.Node.RuntimeServer do
 
   @spec execute_inference(ExecuteInferenceRequest.t(), GRPC.Server.Stream.t()) :: :ok
   def execute_inference(%ExecuteInferenceRequest{} = request, stream) do
-    :ok = Status.begin_request(request.request_id)
+    case Status.prepare_request(request, self()) do
+      :ok ->
+        send_accepted(stream)
 
-    try do
-      send_accepted(stream)
-      send_completed(stream, request.input_tokens)
-      :ok
-    after
-      :ok = Status.finish_request(request.request_id)
+        case Status.start_request(request) do
+          :ok ->
+            forward_runtime_events(stream, request.request_id)
+
+          {:error, reason} ->
+            send_failed(stream, reason)
+        end
+
+      {:error, reason} ->
+        send_failed(stream, reason)
     end
   end
 
@@ -59,6 +62,19 @@ defmodule Orchard.Node.RuntimeServer do
     Status.cancel_request(request_id, controller_session_id)
   end
 
+  defp forward_runtime_events(stream, request_id) do
+    receive do
+      {:node_runtime_event, ^request_id, %DomainInferenceEvent{} = event} ->
+        GRPC.Server.send_reply(stream, InferenceEventMapper.to_proto(event))
+
+        if DomainInferenceEvent.terminal?(event) do
+          :ok
+        else
+          forward_runtime_events(stream, request_id)
+        end
+    end
+  end
+
   defp send_accepted(stream) do
     GRPC.Server.send_reply(
       stream,
@@ -68,18 +84,15 @@ defmodule Orchard.Node.RuntimeServer do
     )
   end
 
-  defp send_completed(stream, input_tokens) do
-    usage = %TokenUsage{
-      input_tokens: input_tokens,
-      output_tokens: 0,
-      total_tokens: input_tokens
-    }
+  defp send_failed(stream, reason) do
+    failed_event =
+      DomainInferenceEvent.failed(
+        "runtime_error",
+        "runtime request failed: #{inspect(reason)}",
+        false
+      )
 
-    GRPC.Server.send_reply(
-      stream,
-      %InferenceEvent{
-        event: {:completed, %Completed{finish_reason: :FINISH_REASON_STOP, usage: usage}}
-      }
-    )
+    GRPC.Server.send_reply(stream, InferenceEventMapper.to_proto(failed_event))
+    :ok
   end
 end

@@ -7,6 +7,8 @@ defmodule Orchard.Config.M1RuntimeDefaults do
   @default_runtime_host "127.0.0.1"
   @default_runtime_port 50_061
   @default_request_timeout_ms 120_000
+  @default_worker_ready_timeout_ms 5_000
+  @default_worker_shutdown_timeout_ms 1_000
 
   def controller_inference(root) do
     [
@@ -23,6 +25,10 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       listen_address: [host: @default_runtime_host, port: @default_runtime_port],
       models_root: Path.join(root, "models"),
       worker_socket_dir: Path.join([root, "data", "worker-sockets"]),
+      worker_executable: "orchard-worker-mlx",
+      worker_backend: "mlx",
+      worker_ready_timeout_ms: @default_worker_ready_timeout_ms,
+      worker_shutdown_timeout_ms: @default_worker_shutdown_timeout_ms,
       fake_runtime?: false
     ]
   end

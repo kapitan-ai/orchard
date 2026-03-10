@@ -32,6 +32,11 @@ config :orchard_node_agent,
     Keyword.merge(
       Orchard.Config.M1RuntimeDefaults.node_runtime(test_root),
       listen_address: [host: "127.0.0.1", port: 50_071],
+      worker_executable:
+        Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
+      worker_backend: "stub",
+      worker_ready_timeout_ms: 5_000,
+      worker_shutdown_timeout_ms: 1_000,
       fake_runtime?: true
     )
 

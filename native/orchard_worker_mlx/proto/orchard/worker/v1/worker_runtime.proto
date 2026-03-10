@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package orchard.worker.v1;
+
+import "cluster/v1/common.proto";
+import "cluster/v1/events.proto";
+import "cluster/v1/runtime.proto";
+
+message WorkerStatusRequest {}
+
+message WorkerStatusResponse {
+  bool loaded = 1;
+  uint32 active_request_count = 2;
+}
+
+message LoadModelRequest {
+  string model_id = 1;
+  string version = 2;
+  string model_path = 3;
+}
+
+service WorkerRuntimeService {
+  rpc GetStatus(WorkerStatusRequest) returns (WorkerStatusResponse);
+  rpc LoadModel(LoadModelRequest) returns (cluster.v1.Ack);
+  rpc UnloadModel(cluster.v1.UnloadModelRequest) returns (cluster.v1.Ack);
+  rpc Generate(cluster.v1.ExecuteInferenceRequest) returns (stream cluster.v1.InferenceEvent);
+  rpc Cancel(cluster.v1.CancelInferenceRequest) returns (cluster.v1.Ack);
+}

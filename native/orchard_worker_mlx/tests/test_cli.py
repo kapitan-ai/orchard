@@ -1,26 +1,136 @@
 from __future__ import annotations
 
-import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+from uuid import uuid4
+
+import grpc
 
 from orchard_worker_mlx import __version__
-from orchard_worker_mlx.cli import build_placeholder_response, main
+from orchard_worker_mlx.generated.cluster.v1 import runtime_pb2
+from orchard_worker_mlx.generated.orchard.worker.v1 import (
+    worker_runtime_pb2,
+    worker_runtime_pb2_grpc,
+)
+from orchard_worker_mlx.service import build_failed_event
 
 
-def test_build_placeholder_response_includes_optional_socket_path() -> None:
-    payload = build_placeholder_response(socket_path="/tmp/orchard.sock")
+def test_worker_server_smoke_supports_load_generate_cancel_and_unload(tmp_path: Path) -> None:
+    socket_path = Path("/tmp") / f"orchard-worker-{uuid4().hex[:8]}.sock"
+    model_path = tmp_path / "models" / "phi-3" / "main"
+    model_path.mkdir(parents=True)
 
-    assert payload["component"] == "orchard_worker_mlx"
-    assert payload["socket_path"] == "/tmp/orchard.sock"
+    process = start_worker(socket_path)
+
+    try:
+        channel = wait_for_channel(socket_path)
+        stub = worker_runtime_pb2_grpc.WorkerRuntimeServiceStub(channel)
+
+        status = stub.GetStatus(worker_runtime_pb2.WorkerStatusRequest())
+        assert status.loaded is False
+        assert status.active_request_count == 0
+
+        ack = stub.LoadModel(
+            worker_runtime_pb2.LoadModelRequest(
+                model_id="mlx-community/phi-3",
+                version="main",
+                model_path=str(model_path),
+            )
+        )
+        assert ack.ok is True
+
+        status = stub.GetStatus(worker_runtime_pb2.WorkerStatusRequest())
+        assert status.loaded is True
+
+        request = runtime_pb2.ExecuteInferenceRequest(
+            request_id="req-worker-generate",
+            controller_session_id="controller-session-1",
+            model_id="mlx-community/phi-3",
+            version="main",
+            rendered_prompt_utf8=b"hello orchard",
+            input_tokens=2,
+            metadata_json=b'{"worker_chunks":["mlx ","worker"]}',
+        )
+
+        events = list(stub.Generate(request))
+        assert [event.output_text_delta.delta for event in events[:-1]] == ["mlx ", "worker"]
+        assert events[-1].completed.usage.total_tokens == 4
+
+        cancel_request = runtime_pb2.ExecuteInferenceRequest(
+            request_id="req-worker-cancel",
+            controller_session_id="controller-session-2",
+            model_id="mlx-community/phi-3",
+            version="main",
+            rendered_prompt_utf8=b"hello orchard",
+            input_tokens=2,
+            metadata_json=b'{"worker_delay_ms":50}',
+        )
+
+        stream = stub.Generate.future(cancel_request)
+        time.sleep(0.05)
+        cancel_ack = stub.Cancel(
+            runtime_pb2.CancelInferenceRequest(
+                request_id="req-worker-cancel",
+                controller_session_id="controller-session-2",
+            )
+        )
+        assert cancel_ack.ok is True
+        cancelled_events = list(stream.result())
+        assert cancelled_events[-1].failed.code == "cancelled"
+
+        unload_ack = stub.UnloadModel(
+            runtime_pb2.UnloadModelRequest(model_id="mlx-community/phi-3", version="main")
+        )
+        assert unload_ack.ok is True
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+        assert not socket_path.exists()
 
 
-def test_main_prints_placeholder_json(capsys) -> None:
-    assert main(["--socket-path", "/tmp/orchard.sock"]) == 0
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "not_implemented"
-    assert payload["socket_path"] == "/tmp/orchard.sock"
+def test_build_failed_event_maps_expected_shape() -> None:
+    event = build_failed_event("worker_failed", "boom", False)
+    assert event.failed.code == "worker_failed"
+    assert event.failed.message == "boom"
 
 
 def test_main_prints_version(capsys) -> None:
-    assert main(["--version"]) == 0
+    from orchard_worker_mlx.cli import main
+
+    assert main(["--socket-path", "/tmp/orchard-worker.sock", "--version"]) == 0
     assert capsys.readouterr().out.strip() == __version__
+
+
+def start_worker(socket_path: Path) -> subprocess.Popen[str]:
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "orchard_worker_mlx.cli",
+            "--socket-path",
+            str(socket_path),
+            "--backend",
+            "stub",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+
+
+def wait_for_channel(socket_path: Path) -> grpc.Channel:
+    deadline = time.monotonic() + 5.0
+    target = f"unix://{socket_path}"
+    channel = grpc.insecure_channel(target)
+    stub = worker_runtime_pb2_grpc.WorkerRuntimeServiceStub(channel)
+
+    while time.monotonic() < deadline:
+        try:
+            stub.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), timeout=0.2)
+            return channel
+        except grpc.RpcError:
+            time.sleep(0.05)
+
+    raise AssertionError("worker server did not become ready in time")

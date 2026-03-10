@@ -41,6 +41,10 @@ default_node_runtime = fn root ->
     listen_address: [host: "127.0.0.1", port: 50_061],
     models_root: Path.join(root, "models"),
     worker_socket_dir: Path.join([root, "data", "worker-sockets"]),
+    worker_executable: "orchard-worker-mlx",
+    worker_backend: "mlx",
+    worker_ready_timeout_ms: 5_000,
+    worker_shutdown_timeout_ms: 1_000,
     fake_runtime?: false
   ]
 end
@@ -103,6 +107,11 @@ if config_env() == :prod do
             worker_socket_dir:
               System.get_env("ORCHARD_WORKER_SOCKET_DIR") ||
                 Path.join([orchard_support_root, "data", "worker-sockets"]),
+            worker_executable:
+              System.get_env("ORCHARD_WORKER_EXECUTABLE") || "orchard-worker-mlx",
+            worker_backend: System.get_env("ORCHARD_WORKER_BACKEND") || "mlx",
+            worker_ready_timeout_ms: env_int.("ORCHARD_WORKER_READY_TIMEOUT_MS", "5000"),
+            worker_shutdown_timeout_ms: env_int.("ORCHARD_WORKER_SHUTDOWN_TIMEOUT_MS", "1000"),
             fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false)
           )
 

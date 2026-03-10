@@ -8,7 +8,11 @@ version = "0.1.0"
 description = "Orchard exact prompt rendering and token counting helper"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+  "Jinja2>=3.1.6",
+  "sentencepiece>=0.2.0",
+  "tokenizers>=0.21.1",
+]
 
 [project.scripts]
 orchard-tokenizer = "orchard_tokenizer.cli:main"

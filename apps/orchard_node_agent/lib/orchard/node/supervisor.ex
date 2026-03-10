@@ -5,7 +5,7 @@ defmodule Orchard.Node.Supervisor do
 
   use Supervisor
 
-  alias Orchard.Node.{Endpoint, Status}
+  alias Orchard.Node.{Endpoint, ModelManager, WorkerSupervisor}
 
   @grpc_server_id Orchard.Node.GRPCServer
 
@@ -16,7 +16,8 @@ defmodule Orchard.Node.Supervisor do
   @impl true
   def init(_init_arg) do
     children = [
-      Status,
+      WorkerSupervisor,
+      ModelManager,
       Supervisor.child_spec({GRPC.Server.Supervisor, grpc_server_opts()}, id: @grpc_server_id)
     ]
 
