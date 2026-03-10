@@ -1,6 +1,14 @@
 defmodule Orchard.Requests.Request do
   @moduledoc """
   Ecto schema for durable inference request records.
+
+  ## M1 nullability note
+
+  In M1, rows are inserted at the `:received` state before the model is fully
+  resolved — so `model_id` and `canonical_request` may be `nil` on early rows.
+  `create_changeset/2` intentionally does not require these fields.
+  M2 should tighten this once the orchestration pipeline resolves the model
+  before persistence.
   """
 
   use Ecto.Schema
