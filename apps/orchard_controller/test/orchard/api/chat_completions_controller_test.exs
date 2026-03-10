@@ -1,5 +1,5 @@
 defmodule Orchard.API.ChatCompletionsControllerTest do
-  use Orchard.ConnCase, async: true
+  use Orchard.ConnCase, async: false
 
   alias Orchard.API.Router
 
@@ -17,7 +17,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
   describe "POST /v1/chat/completions" do
     test "rejects request missing model field with OpenAI error envelope" do
-      conn = post_chat(%{"messages" => []})
+      conn = post_chat(%{"messages" => [%{"role" => "user", "content" => "hi"}]})
 
       assert conn.status == 400
       body = Jason.decode!(conn.resp_body)
@@ -28,7 +28,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
 
     test "rejects request missing messages field with OpenAI error envelope" do
-      conn = post_chat(%{"model" => "test-model"})
+      conn = post_chat(%{"model" => "test-model@v1"})
 
       assert conn.status == 400
       body = Jason.decode!(conn.resp_body)
@@ -37,18 +37,37 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert body["error"]["code"] == "missing_required_field"
     end
 
-    test "returns not-implemented for valid request shape" do
-      conn = post_chat(%{"model" => "test-model", "messages" => []})
+    @tag :db
+    test "returns model_not_found for valid request with unknown model" do
+      # No models are imported, so this should return 404
+      conn =
+        post_chat(%{
+          "model" => "nonexistent@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
 
-      # Stub returns 501 until dispatch is wired in A4
-      assert conn.status == 501
+      assert conn.status == 404
       body = Jason.decode!(conn.resp_body)
-      assert body["error"]["type"] == "api_error"
-      assert body["error"]["code"] == "not_implemented"
+      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "model_not_found"
+      assert body["error"]["param"] == "model"
+    end
+
+    test "rejects unsupported parameter" do
+      conn =
+        post_chat(%{
+          "model" => "test@v1",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "logprobs" => true
+        })
+
+      assert conn.status == 400
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["code"] == "unsupported_parameter"
     end
 
     test "error envelope always has message, type, param, code keys" do
-      conn = post_chat(%{})
+      conn = post_chat(%{"messages" => [%{"role" => "user", "content" => "hi"}]})
 
       body = Jason.decode!(conn.resp_body)
       error = body["error"]

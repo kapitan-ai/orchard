@@ -19,7 +19,10 @@ defmodule Orchard.API.RouterTest do
     end
 
     test "POST /v1/chat/completions is routed" do
-      params = %{"model" => "test", "messages" => []}
+      params = %{
+        "model" => "nonexistent@v1",
+        "messages" => [%{"role" => "user", "content" => "hello"}]
+      }
 
       conn =
         build_conn(:post, "/v1/chat/completions")
@@ -29,11 +32,11 @@ defmodule Orchard.API.RouterTest do
         |> Map.put(:body_params, params)
         |> Router.call(Router.init([]))
 
-      # Returns 501 until dispatch is wired in A4
-      assert conn.status == 501
+      # Route is wired and reaches the orchestrator (model not found)
+      assert conn.status == 404
       body = Jason.decode!(conn.resp_body)
-      assert body["error"]["type"] == "api_error"
-      assert body["error"]["code"] == "not_implemented"
+      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "model_not_found"
     end
 
     test "health endpoints still work" do
