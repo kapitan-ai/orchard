@@ -1,6 +1,18 @@
 #!/usr/bin/env sh
 set -eu
 
+# Dev-source wrapper: exec the venv entrypoint directly so the BEAM port's
+# os_pid is the Python process itself (no intermediate `uv run` parent).
+# This is required for clean signal-based shutdown from Elixir.
+
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-cd "$SCRIPT_DIR/.."
-exec uv run orchard-worker-mlx "$@"
+PACKAGE_DIR="$SCRIPT_DIR/.."
+VENV_ENTRY="$PACKAGE_DIR/.venv/bin/orchard-worker-mlx"
+
+if [ ! -x "$VENV_ENTRY" ]; then
+    echo "error: venv entrypoint not found at $VENV_ENTRY" >&2
+    echo "       Run 'cd $PACKAGE_DIR && uv sync' to create the virtual environment." >&2
+    exit 1
+fi
+
+exec "$VENV_ENTRY" "$@"

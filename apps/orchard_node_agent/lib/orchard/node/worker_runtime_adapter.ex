@@ -70,8 +70,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   def unload_model(%{} = state, opts) do
     shutdown_timeout_ms = Keyword.get(opts, :shutdown_timeout_ms, state.shutdown_timeout_ms)
+    skip_rpc? = Keyword.get(opts, :skip_rpc, false)
 
-    unload_result = unload_model_rpc(state.channel, state.model_ref)
+    unload_result = if skip_rpc?, do: :ok, else: unload_model_rpc(state.channel, state.model_ref)
     stop_result = stop_runtime(state.port, state.os_pid, shutdown_timeout_ms)
 
     cleanup_generation_tasks(state.generations)
@@ -170,10 +171,19 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp resolve_model_path(%ModelRef{model_id: model_id, version: version}, models_root)
        when is_binary(model_id) and is_binary(version) do
     expanded_root = Path.expand(models_root)
-    model_path = Path.expand(Path.join([expanded_root, model_id, version]))
 
-    if model_path == expanded_root or String.starts_with?(model_path, expanded_root <> "/") do
-      {:ok, model_path}
+    with {:ok, real_root} <- resolve_realpath(expanded_root),
+         candidate = Path.expand(Path.join([real_root, model_id, version])),
+         {:ok, real_path} <- resolve_realpath(candidate) do
+      ensure_model_path_confined(real_path, real_root)
+    else
+      {:error, _reason} -> {:error, :invalid_model_path}
+    end
+  end
+
+  defp ensure_model_path_confined(real_path, real_root) do
+    if real_path == real_root or String.starts_with?(real_path, real_root <> "/") do
+      {:ok, real_path}
     else
       {:error, :invalid_model_path}
     end
@@ -245,29 +255,35 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         if remaining_ms <= 0 do
           {:error, :worker_ready_timeout}
         else
-          case GRPC.Stub.connect(socket_path) do
-            {:ok, channel} ->
-              timeout_ms = min(remaining_ms, @rpc_timeout_ms)
-
-              case WorkerRuntimeService.Stub.get_status(
-                     channel,
-                     %WorkerStatusRequest{},
-                     timeout: timeout_ms
-                   ) do
-                {:ok, _status} ->
-                  {:ok, channel}
-
-                {:error, _reason} ->
-                  _ = disconnect_channel(channel)
-                  Process.sleep(@poll_interval_ms)
-                  do_wait_for_worker_ready(socket_path, port, deadline)
-              end
-
-            {:error, _reason} ->
-              Process.sleep(@poll_interval_ms)
-              do_wait_for_worker_ready(socket_path, port, deadline)
-          end
+          try_connect_and_check(socket_path, port, deadline)
         end
+    end
+  end
+
+  defp try_connect_and_check(socket_path, port, deadline) do
+    remaining_ms = deadline - System.monotonic_time(:millisecond)
+
+    case GRPC.Stub.connect(socket_path) do
+      {:ok, channel} ->
+        timeout_ms = min(remaining_ms, @rpc_timeout_ms)
+
+        case WorkerRuntimeService.Stub.get_status(
+               channel,
+               %WorkerStatusRequest{},
+               timeout: timeout_ms
+             ) do
+          {:ok, _status} ->
+            {:ok, channel}
+
+          {:error, _reason} ->
+            _ = disconnect_channel(channel)
+            Process.sleep(@poll_interval_ms)
+            do_wait_for_worker_ready(socket_path, port, deadline)
+        end
+
+      {:error, _reason} ->
+        Process.sleep(@poll_interval_ms)
+        do_wait_for_worker_ready(socket_path, port, deadline)
     end
   end
 
@@ -332,48 +348,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     case WorkerRuntimeService.Stub.generate(channel, request, timeout: :infinity) do
       {:ok, stream} ->
         terminal_sent? =
-          Enum.reduce_while(stream, false, fn
-            {:ok, proto_event}, terminal_sent? ->
-              case InferenceEventMapper.from_proto(proto_event) do
-                {:ok, event} ->
-                  send(owner, {:runtime_adapter_event, generation_ref, event})
-                  {:cont, terminal_sent? or InferenceEvent.terminal?(event)}
-
-                {:error, reason} ->
-                  send(
-                    owner,
-                    {:runtime_adapter_event, generation_ref,
-                     InferenceEvent.failed(
-                       "runtime_invalid_event",
-                       "worker emitted an invalid event: #{inspect(reason)}",
-                       false
-                     )}
-                  )
-
-                  {:halt, true}
-              end
-
-            {:error, reason}, terminal_sent? ->
-              cond do
-                terminal_sent? ->
-                  {:halt, terminal_sent?}
-
-                normalize_rpc_error(reason) == :worker_unavailable ->
-                  {:halt, true}
-
-                true ->
-                  send(
-                    owner,
-                    {:runtime_adapter_event, generation_ref,
-                     InferenceEvent.failed(
-                       "runtime_stream_error",
-                       "worker stream failed: #{format_rpc_error(reason)}",
-                       false
-                     )}
-                  )
-
-                  {:halt, true}
-              end
+          Enum.reduce_while(stream, false, fn item, terminal_sent? ->
+            handle_stream_item(item, terminal_sent?, owner, generation_ref)
           end)
 
         unless terminal_sent? do
@@ -381,55 +357,103 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         end
 
       {:error, reason} ->
-        if normalize_rpc_error(reason) == :worker_unavailable do
-          :ok
-        else
-          send(
-            owner,
-            {:runtime_adapter_event, generation_ref,
-             InferenceEvent.failed(
-               "runtime_stream_error",
-               "worker stream failed: #{format_rpc_error(reason)}",
-               false
-             )}
-          )
-
-          send(owner, {:runtime_adapter_done, generation_ref})
-        end
+        handle_stream_open_failure(reason, owner, generation_ref)
     end
   end
 
-  defp stop_runtime(port, nil, timeout_ms) do
-    cond do
-      not port_open?(port) ->
-        :ok
+  defp handle_stream_item({:ok, proto_event}, terminal_sent?, owner, generation_ref) do
+    case InferenceEventMapper.from_proto(proto_event) do
+      {:ok, event} ->
+        send(owner, {:runtime_adapter_event, generation_ref, event})
+        {:cont, terminal_sent? or InferenceEvent.terminal?(event)}
 
-      true ->
-        case wait_for_port_exit(port, timeout_ms) do
-          {:ok, _status} -> :ok
-          {:error, :timeout} -> {:error, :worker_shutdown_timeout}
-        end
+      {:error, reason} ->
+        emit_runtime_failure(
+          owner,
+          generation_ref,
+          "runtime_invalid_event",
+          "worker emitted an invalid event: #{inspect(reason)}"
+        )
+
+        {:halt, true}
+    end
+  end
+
+  defp handle_stream_item({:error, _reason}, true = terminal_sent?, _owner, _generation_ref) do
+    {:halt, terminal_sent?}
+  end
+
+  defp handle_stream_item({:error, reason}, _terminal_sent?, owner, generation_ref) do
+    if normalize_rpc_error(reason) == :worker_unavailable do
+      {:halt, true}
+    else
+      emit_runtime_failure(
+        owner,
+        generation_ref,
+        "runtime_stream_error",
+        "worker stream failed: #{format_rpc_error(reason)}"
+      )
+
+      {:halt, true}
+    end
+  end
+
+  defp handle_stream_open_failure(reason, owner, generation_ref) do
+    unless normalize_rpc_error(reason) == :worker_unavailable do
+      emit_runtime_failure(
+        owner,
+        generation_ref,
+        "runtime_stream_error",
+        "worker stream failed: #{format_rpc_error(reason)}"
+      )
+
+      send(owner, {:runtime_adapter_done, generation_ref})
+    end
+  end
+
+  defp emit_runtime_failure(owner, generation_ref, code, message) do
+    send(
+      owner,
+      {:runtime_adapter_event, generation_ref, InferenceEvent.failed(code, message, false)}
+    )
+  end
+
+  defp stop_runtime(port, nil, timeout_ms) do
+    if port_open?(port) do
+      case wait_for_port_exit(port, timeout_ms) do
+        {:ok, _status} -> :ok
+        {:error, :timeout} -> {:error, :worker_shutdown_timeout}
+      end
+    else
+      :ok
     end
   end
 
   defp stop_runtime(port, os_pid, timeout_ms) do
-    if not port_open?(port) do
-      :ok
+    if port_open?(port) do
+      stop_runtime_with_escalation(port, os_pid, timeout_ms)
     else
-      send_signal(os_pid, "-TERM")
+      :ok
+    end
+  end
 
-      case wait_for_port_exit(port, timeout_ms) do
-        {:ok, _status} ->
-          :ok
+  # Attempt graceful SIGTERM, then escalate to tree-wide SIGKILL.
+  # The tree-kill is defense-in-depth against intermediate launchers
+  # (e.g. `uv run`) that swallow signals without forwarding to children.
+  defp stop_runtime_with_escalation(port, os_pid, timeout_ms) do
+    send_signal(os_pid, "-TERM")
 
-        {:error, :timeout} ->
-          send_signal(os_pid, "-KILL")
+    case wait_for_port_exit(port, timeout_ms) do
+      {:ok, _status} ->
+        :ok
 
-          case wait_for_port_exit(port, timeout_ms) do
-            {:ok, _status} -> :ok
-            {:error, :timeout} -> {:error, :worker_shutdown_timeout}
-          end
-      end
+      {:error, :timeout} ->
+        kill_process_tree(os_pid)
+
+        case wait_for_port_exit(port, timeout_ms) do
+          {:ok, _status} -> :ok
+          {:error, :timeout} -> {:error, :worker_shutdown_timeout}
+        end
     end
   end
 
@@ -448,6 +472,28 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       {_output, _exit_status} -> :ok
     end
   end
+
+  # Recursively kill a process tree bottom-up (children first, then parent)
+  # using SIGKILL. This guards against intermediate launcher processes
+  # (e.g. `uv run`) that may not forward signals to their children.
+  defp kill_process_tree(os_pid) when is_integer(os_pid) and os_pid >= 0 do
+    {children_output, _} =
+      System.cmd("pgrep", ["-P", Integer.to_string(os_pid)], stderr_to_stdout: true)
+
+    children_output
+    |> String.trim()
+    |> String.split("\n", trim: true)
+    |> Enum.each(fn child_pid_str ->
+      case Integer.parse(child_pid_str) do
+        {child_pid, _} -> kill_process_tree(child_pid)
+        :error -> :ok
+      end
+    end)
+
+    send_signal(os_pid, "-KILL")
+  end
+
+  defp kill_process_tree(_), do: :ok
 
   defp port_open?(port) do
     not is_nil(Port.info(port))
@@ -500,4 +546,40 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp format_rpc_error(other), do: inspect(other)
+
+  # Canonicalize a path by walking each component and resolving symlinks.
+  # Returns {:ok, canonical_path} or {:error, posix_reason}.
+  @max_symlink_depth 40
+  defp resolve_realpath(path) do
+    path
+    |> Path.expand()
+    |> Path.split()
+    |> resolve_realpath_components("/", @max_symlink_depth)
+  end
+
+  defp resolve_realpath_components([], acc, _depth), do: {:ok, acc}
+  defp resolve_realpath_components(_rest, _acc, 0), do: {:error, :eloop}
+
+  defp resolve_realpath_components([component | rest], acc, depth) do
+    current = Path.join(acc, component)
+
+    case File.lstat(current) do
+      {:ok, %File.Stat{type: :symlink}} ->
+        case File.read_link(current) do
+          {:ok, target} ->
+            resolved = Path.expand(target, acc)
+            new_components = Path.split(resolved) ++ rest
+            resolve_realpath_components(tl(new_components), "/", depth - 1)
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {:ok, _stat} ->
+        resolve_realpath_components(rest, current, depth)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
 end

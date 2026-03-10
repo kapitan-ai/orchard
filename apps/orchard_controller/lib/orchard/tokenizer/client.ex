@@ -174,8 +174,7 @@ defmodule Orchard.Tokenizer.Client do
 
         {:error, _posix} ->
           {:error,
-           {:missing_assets,
-            "tokenizer asset not found or inaccessible: #{inspect(path)}"}}
+           {:missing_assets, "tokenizer asset not found or inaccessible: #{inspect(path)}"}}
       end
     end
   end
@@ -237,14 +236,12 @@ defmodule Orchard.Tokenizer.Client do
     case Path.relative_to(real_asset, real_root) do
       <<"..", _rest::binary>> ->
         {:error,
-         {:invalid_input,
-          "tokenizer asset path escapes bundle_root: #{inspect(original_path)}"}}
+         {:invalid_input, "tokenizer asset path escapes bundle_root: #{inspect(original_path)}"}}
 
       ^real_asset ->
         # Path.relative_to returns the path unchanged when it's not relative to root
         {:error,
-         {:invalid_input,
-          "tokenizer asset path escapes bundle_root: #{inspect(original_path)}"}}
+         {:invalid_input, "tokenizer asset path escapes bundle_root: #{inspect(original_path)}"}}
 
       _relative_path ->
         {:ok, real_asset}

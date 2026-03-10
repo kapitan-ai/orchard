@@ -53,9 +53,7 @@ class StubBackend:
         with self._lock:
             self._active_request_count = max(0, self._active_request_count - 1)
 
-    def generate(
-        self, request: Any, cancel_event: threading.Event
-    ) -> Iterator[dict[str, Any]]:
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         metadata = decode_metadata(getattr(request, "metadata_json", b""))
         chunks = metadata.get("worker_chunks") or ["mlx ", "ready"]
         delay_ms = int(metadata.get("worker_delay_ms", 0))

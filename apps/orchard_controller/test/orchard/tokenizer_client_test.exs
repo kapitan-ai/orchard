@@ -197,7 +197,9 @@ defmodule Orchard.Tokenizer.ClientTest do
     #     chat_template.jinja  (normal file)
     #   outside/
     #     tokenizer.json  (real file, outside bundle_root)
-    parent_dir = Path.join(System.tmp_dir!(), "orchard-symlink-test-#{System.unique_integer([:positive])}")
+    parent_dir =
+      Path.join(System.tmp_dir!(), "orchard-symlink-test-#{System.unique_integer([:positive])}")
+
     bundle_dir = Path.join(parent_dir, "bundle")
     outside_dir = Path.join(parent_dir, "outside")
 

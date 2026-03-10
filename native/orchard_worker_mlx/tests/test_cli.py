@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from uuid import uuid4
 
@@ -68,17 +69,20 @@ def test_worker_server_smoke_supports_load_generate_cancel_and_unload(tmp_path: 
             metadata_json=b'{"worker_delay_ms":50}',
         )
 
-        stream = stub.Generate.future(cancel_request)
-        time.sleep(0.05)
-        cancel_ack = stub.Cancel(
-            runtime_pb2.CancelInferenceRequest(
-                request_id="req-worker-cancel",
-                controller_session_id="controller-session-2",
+        # Server-streaming RPCs don't support .future(); run Generate in a
+        # background thread so we can send Cancel concurrently.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(lambda: list(stub.Generate(cancel_request)))
+            time.sleep(0.05)
+            cancel_ack = stub.Cancel(
+                runtime_pb2.CancelInferenceRequest(
+                    request_id="req-worker-cancel",
+                    controller_session_id="controller-session-2",
+                )
             )
-        )
-        assert cancel_ack.ok is True
-        cancelled_events = list(stream.result())
-        assert cancelled_events[-1].failed.code == "cancelled"
+            assert cancel_ack.ok is True
+            cancelled_events = future.result(timeout=5)
+            assert cancelled_events[-1].failed.code == "cancelled"
 
         unload_ack = stub.UnloadModel(
             runtime_pb2.UnloadModelRequest(model_id="mlx-community/phi-3", version="main")
@@ -175,14 +179,18 @@ def start_worker(socket_path: Path) -> subprocess.Popen[str]:
 def wait_for_channel(socket_path: Path) -> grpc.Channel:
     deadline = time.monotonic() + 5.0
     target = f"unix://{socket_path}"
-    channel = grpc.insecure_channel(target)
-    stub = worker_runtime_pb2_grpc.WorkerRuntimeServiceStub(channel)
 
+    # Create a fresh channel on each attempt.  gRPC channels that receive
+    # GOAWAY during initial setup may enter a broken state where subsequent
+    # RPCs on the same channel never reconnect.
     while time.monotonic() < deadline:
+        channel = grpc.insecure_channel(target)
+        stub = worker_runtime_pb2_grpc.WorkerRuntimeServiceStub(channel)
         try:
-            stub.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), timeout=0.2)
+            stub.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), timeout=0.5)
             return channel
         except grpc.RpcError:
-            time.sleep(0.05)
+            channel.close()
+            time.sleep(0.1)
 
     raise AssertionError("worker server did not become ready in time")

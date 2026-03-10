@@ -192,11 +192,15 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   @impl true
-  def terminate(_reason, %{adapter: adapter, adapter_state: adapter_state}) do
+  def terminate(reason, %{adapter: adapter, adapter_state: adapter_state}) do
     if is_nil(adapter_state) do
       :ok
     else
-      _ = adapter.unload_model(adapter_state, force: true)
+      # When the worker has already exited, skip the unload RPC to avoid a
+      # wasted timeout against a dead process.  Local cleanup (kill tasks,
+      # disconnect channel, remove socket) still runs inside the adapter.
+      opts = [force: true, skip_rpc: reason == :runtime_worker_exited]
+      _ = adapter.unload_model(adapter_state, opts)
       :ok
     end
   end
