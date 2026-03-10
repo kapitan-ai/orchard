@@ -117,6 +117,30 @@ defmodule Orchard.Models.ImporterTest do
       assert Models.list_active_models() == []
     end
 
+    test "SHA-256 is deterministic across imports with different staging paths", %{
+      artifacts_root: artifacts_root
+    } do
+      # Import the same bundle into two separate roots. The random staging-*
+      # directory name must NOT leak into the hash.
+      root2 =
+        System.tmp_dir!()
+        |> Path.join("orchard_sha_test_#{:rand.uniform(1_000_000)}")
+
+      File.mkdir_p!(root2)
+      on_exit(fn -> File.rm_rf!(root2) end)
+
+      assert {:ok, m1} =
+               Importer.import_bundle(@fixture_bundle, artifacts_root: artifacts_root)
+
+      # Delete the catalog record so the duplicate check passes for the second import
+      Orchard.Repo.delete!(m1)
+
+      assert {:ok, m2} =
+               Importer.import_bundle(@fixture_bundle, artifacts_root: root2)
+
+      assert m1.artifact_sha256 == m2.artifact_sha256
+    end
+
     test "no staging directory remains on success", %{artifacts_root: artifacts_root} do
       assert {:ok, _model} =
                Importer.import_bundle(@fixture_bundle, artifacts_root: artifacts_root)

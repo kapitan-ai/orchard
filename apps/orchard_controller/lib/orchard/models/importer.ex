@@ -189,10 +189,12 @@ defmodule Orchard.Models.Importer do
   # -- SHA-256 computation --------------------------------------------------
 
   defp compute_sha256(dir_path) do
+    root_prefix = String.trim_trailing(dir_path, "/") <> "/"
+
     case collect_file_paths(dir_path) do
       {:ok, paths} ->
         sorted = Enum.sort(paths)
-        hash = hash_files(sorted, :crypto.hash_init(:sha256))
+        hash = hash_files(sorted, root_prefix, :crypto.hash_init(:sha256))
         {:ok, Base.encode16(hash, case: :lower)}
 
       {:error, _} = err ->
@@ -222,14 +224,16 @@ defmodule Orchard.Models.Importer do
     if File.dir?(path), do: collect_file_paths(path), else: {:ok, [path]}
   end
 
-  defp hash_files([], state), do: :crypto.hash_final(state)
+  defp hash_files([], _root_prefix, state), do: :crypto.hash_final(state)
 
-  defp hash_files([path | rest], state) do
-    # Hash relative path + file contents for deterministic ordering
+  defp hash_files([path | rest], root_prefix, state) do
+    # Hash relative path (stripped of staging root) + file contents
+    # so the same bundle always produces the same digest.
+    relative = String.replace_leading(path, root_prefix, "")
     content = File.read!(path)
-    state = :crypto.hash_update(state, path)
+    state = :crypto.hash_update(state, relative)
     state = :crypto.hash_update(state, content)
-    hash_files(rest, state)
+    hash_files(rest, root_prefix, state)
   end
 
   # -- Finalize staging → destination --------------------------------------
