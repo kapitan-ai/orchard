@@ -34,7 +34,7 @@ defmodule Orchard.Application do
   end
 
   defp maybe_add_inference_stack(children) do
-    children ++ [Orchard.Inference]
+    children ++ [{GRPC.Client.Supervisor, []}, Orchard.Inference]
   end
 
   defp maybe_add_endpoint_stack(children) do
