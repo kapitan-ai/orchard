@@ -19,6 +19,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.Worker.V1.{LoadModelRequest, WorkerRuntimeService, WorkerStatusRequest}
+  alias Orchard.PathUtils
 
   @poll_interval_ms 50
   @rpc_timeout_ms 1_000
@@ -172,9 +173,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
        when is_binary(model_id) and is_binary(version) do
     expanded_root = Path.expand(models_root)
 
-    with {:ok, real_root} <- resolve_realpath(expanded_root),
+    with {:ok, real_root} <- PathUtils.resolve_realpath(expanded_root),
          candidate = Path.expand(Path.join([real_root, model_id, version])),
-         {:ok, real_path} <- resolve_realpath(candidate) do
+         {:ok, real_path} <- PathUtils.resolve_realpath(candidate) do
       ensure_model_path_confined(real_path, real_root)
     else
       {:error, _reason} -> {:error, :invalid_model_path}
@@ -546,40 +547,4 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp format_rpc_error(other), do: inspect(other)
-
-  # Canonicalize a path by walking each component and resolving symlinks.
-  # Returns {:ok, canonical_path} or {:error, posix_reason}.
-  @max_symlink_depth 40
-  defp resolve_realpath(path) do
-    path
-    |> Path.expand()
-    |> Path.split()
-    |> resolve_realpath_components("/", @max_symlink_depth)
-  end
-
-  defp resolve_realpath_components([], acc, _depth), do: {:ok, acc}
-  defp resolve_realpath_components(_rest, _acc, 0), do: {:error, :eloop}
-
-  defp resolve_realpath_components([component | rest], acc, depth) do
-    current = Path.join(acc, component)
-
-    case File.lstat(current) do
-      {:ok, %File.Stat{type: :symlink}} ->
-        case File.read_link(current) do
-          {:ok, target} ->
-            resolved = Path.expand(target, acc)
-            new_components = Path.split(resolved) ++ rest
-            resolve_realpath_components(tl(new_components), "/", depth - 1)
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      {:ok, _stat} ->
-        resolve_realpath_components(rest, current, depth)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
 end

@@ -5,6 +5,7 @@ defmodule Orchard.Tokenizer.Client do
 
   alias Orchard.CanonicalRequest
   alias Orchard.ModelManifest
+  alias Orchard.PathUtils
 
   @contract_version 1
   @default_timeout_ms 5_000
@@ -180,7 +181,7 @@ defmodule Orchard.Tokenizer.Client do
   end
 
   defp realpath_bundle_root(bundle_root) do
-    case resolve_realpath(Path.expand(bundle_root)) do
+    case PathUtils.resolve_realpath(Path.expand(bundle_root)) do
       {:ok, real_root} ->
         {:ok, real_root}
 
@@ -192,44 +193,7 @@ defmodule Orchard.Tokenizer.Client do
   end
 
   defp realpath_asset(expanded_path) do
-    resolve_realpath(expanded_path)
-  end
-
-  # Canonicalize a path by walking each component and resolving symlinks.
-  # Returns {:ok, canonical_path} or {:error, posix_reason}.
-  @max_symlink_depth 40
-  defp resolve_realpath(path) do
-    path
-    |> Path.expand()
-    |> Path.split()
-    |> resolve_realpath_components("/", @max_symlink_depth)
-  end
-
-  defp resolve_realpath_components([], acc, _depth), do: {:ok, acc}
-  defp resolve_realpath_components(_rest, _acc, 0), do: {:error, :eloop}
-
-  defp resolve_realpath_components([component | rest], acc, depth) do
-    current = Path.join(acc, component)
-
-    case File.lstat(current) do
-      {:ok, %File.Stat{type: :symlink}} ->
-        case File.read_link(current) do
-          {:ok, target} ->
-            resolved = Path.expand(target, acc)
-            # Re-split the resolved target to walk through it (handles chained symlinks)
-            new_components = Path.split(resolved) ++ rest
-            resolve_realpath_components(tl(new_components), "/", depth - 1)
-
-          {:error, reason} ->
-            {:error, reason}
-        end
-
-      {:ok, _stat} ->
-        resolve_realpath_components(rest, current, depth)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
+    PathUtils.resolve_realpath(expanded_path)
   end
 
   defp ensure_confined(real_asset, real_root, original_path) do

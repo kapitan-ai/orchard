@@ -211,9 +211,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     end
   end
 
-  defp emit_event(event, request_id, nil) do
-    send(self(), {:inference_event, request_id, event})
-  end
+  defp emit_event(_event, _request_id, nil), do: :ok
 
   defp emit_event(event, request_id, handler) when is_function(handler, 2) do
     handler.(request_id, event)

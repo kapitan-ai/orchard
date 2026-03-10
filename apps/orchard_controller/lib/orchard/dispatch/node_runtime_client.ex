@@ -2,9 +2,10 @@ defmodule Orchard.Dispatch.NodeRuntimeClient do
   @moduledoc """
   Injectable seam for controller dispatch into the node runtime boundary.
 
-  This module retains the R1-era callback/injectable pattern for tests that
-  need a lightweight fake. Real dispatch goes through `RequestDispatcher`
-  which uses `GrpcNodeRuntimeClient` directly.
+  **Deprecated:** This module retains the R1-era callback/injectable pattern
+  for tests that need a lightweight fake. Real dispatch goes through
+  `RequestDispatcher` which uses `GrpcNodeRuntimeClient` directly.
+  Scheduled for removal after M1.
   """
 
   @callback status() :: {:ok, map()} | {:error, term()}
