@@ -156,11 +156,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
   end
 
-  describe "POST /v1/chat/completions (streaming post-start error)" do
+  describe "POST /v1/chat/completions (streaming happy path)" do
     @tag :db
-    test "stream=true with valid model emits SSE error when dispatch fails" do
-      # Insert a model so prepare() succeeds, but dispatch will fail
-      # (no node-agent running in test).
+    test "stream=true with valid model emits SSE chunks then [DONE]" do
       {:ok, _model} =
         Orchard.Models.create_model(%{
           model_id: "test-stream-model",
@@ -195,18 +193,31 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       # Parse SSE body
       events = parse_sse_body(conn.resp_body)
 
-      # Should contain an error event (dispatch failed, no node-agent)
-      error_events = Enum.filter(events, fn {type, _} -> type == :error end)
-      assert error_events != []
-
-      # Error envelope has the right shape
-      {:error, error_data} = List.first(error_events)
-      assert error_data["error"]["type"] == "server_error"
-      assert error_data["error"]["code"] == "internal_error"
-
-      # No [DONE] after error per §7.2.4
+      # Should have data chunks followed by [DONE]
+      data_events = Enum.filter(events, fn {type, _} -> type == :data end)
       done_events = Enum.filter(events, fn {type, _} -> type == :done end)
-      assert done_events == []
+
+      # At least: role chunk + content chunk(s) + finish chunk
+      assert length(data_events) >= 3
+
+      # First chunk should be the role marker
+      {:data, first_chunk} = List.first(data_events)
+      assert first_chunk["object"] == "chat.completion.chunk"
+      assert first_chunk["model"] == "test-stream-model@v1"
+      [first_choice] = first_chunk["choices"]
+      assert first_choice["delta"]["role"] == "assistant"
+
+      # Last data chunk should have a finish_reason
+      {:data, last_chunk} = List.last(data_events)
+      [last_choice] = last_chunk["choices"]
+      assert last_choice["finish_reason"] != nil
+
+      # Stream ends with [DONE]
+      assert done_events == [{:done, nil}]
+
+      # No error events
+      error_events = Enum.filter(events, fn {type, _} -> type == :error end)
+      assert error_events == []
     end
   end
 

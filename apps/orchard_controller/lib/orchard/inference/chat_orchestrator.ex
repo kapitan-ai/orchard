@@ -44,14 +44,19 @@ defmodule Orchard.Inference.ChatOrchestrator do
   Returns `{:ok, canonical_request, model}` if all pre-dispatch checks pass.
   This step does not persist anything or start dispatch — use `execute/3` for that.
 
+  `caller_context` is a keyword list from the request context plug:
+    * `:tenant_id` — resolved tenant (default: `"default"` in M1)
+    * `:principal_id` — resolved principal (nil in M1)
+    * `:api_key_id` — resolved API key (nil in M1)
+
   Returns `{:error, {:validation, errors}}` for request validation failures,
   `{:error, {:model_not_found, model_ref}}` when the requested model doesn't
   exist or isn't active.
   """
-  @spec prepare(map()) :: {:ok, CanonicalRequest.t(), map()} | {:error, term()}
-  def prepare(params) do
+  @spec prepare(map(), keyword()) :: {:ok, CanonicalRequest.t(), map()} | {:error, term()}
+  def prepare(params, caller_context \\ []) do
     with {:ok, params} <- validate(params),
-         {:ok, canonical} <- normalize(params),
+         {:ok, canonical} <- normalize(params, caller_context),
          {:ok, model} <- resolve_model(canonical) do
       {:ok, canonical, model}
     end
@@ -90,7 +95,9 @@ defmodule Orchard.Inference.ChatOrchestrator do
   """
   @spec orchestrate(map(), keyword()) :: orchestrate_result()
   def orchestrate(params, opts \\ []) do
-    with {:ok, canonical, model} <- prepare(params) do
+    caller_context = Keyword.get(opts, :caller_context, [])
+
+    with {:ok, canonical, model} <- prepare(params, caller_context) do
       execute(canonical, model, opts)
     end
   end
@@ -135,8 +142,8 @@ defmodule Orchard.Inference.ChatOrchestrator do
     end
   end
 
-  defp normalize(params) do
-    ChatRequestNormalizer.normalize(params)
+  defp normalize(params, caller_context) do
+    ChatRequestNormalizer.normalize(params, caller_context)
   end
 
   defp resolve_model(%CanonicalRequest{model_ref: model_ref}) do
@@ -159,6 +166,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
       public_id: canonical.public_id,
       endpoint: :chat_completions,
       tenant_id: canonical.tenant_id,
+      api_key_id: canonical.api_key_id,
       requested_model: "#{canonical.model_ref.model_id}@#{canonical.model_ref.version}",
       model_id: model.id,
       state: :received,

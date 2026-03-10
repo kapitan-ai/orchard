@@ -21,7 +21,9 @@ defmodule Orchard.API.ChatCompletionsController do
 
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def create(conn, params) do
-    case ChatOrchestrator.prepare(params) do
+    caller_context = extract_caller_context(conn)
+
+    case ChatOrchestrator.prepare(params, caller_context) do
       {:ok, canonical, model} ->
         if canonical.stream? do
           handle_streaming(conn, canonical, model)
@@ -280,6 +282,14 @@ defmodule Orchard.API.ChatCompletionsController do
   end
 
   # -- Shared helpers --------------------------------------------------------
+
+  defp extract_caller_context(conn) do
+    [
+      tenant_id: conn.assigns[:tenant_id],
+      principal_id: conn.assigns[:principal_id],
+      api_key_id: conn.assigns[:api_key_id]
+    ]
+  end
 
   defp format_model_display(canonical) do
     "#{canonical.model_ref.model_id}@#{canonical.model_ref.version}"

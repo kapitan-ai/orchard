@@ -9,7 +9,7 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
   - `model` string → `ModelRef` parsing (`model_id@version` or bare `model_id`)
   - Default value population
   - ID generation (internal_id, public_id)
-  - M1 single-tenant defaults (tenant_id: "default")
+  - M1 single-tenant defaults (tenant_id: nil UUID sentinel)
   """
 
   alias Orchard.CanonicalRequest
@@ -18,9 +18,14 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
   @doc """
   Normalizes validated params into a `CanonicalRequest`.
 
-  ## Options
+  ## Options (caller context)
 
-    * `:tenant_id` — override tenant (default: `"default"` for M1)
+    * `:tenant_id` — resolved tenant (default: nil UUID sentinel for M1)
+    * `:principal_id` — resolved principal (default: `nil` for M1)
+    * `:api_key_id` — resolved API key (default: `nil` for M1)
+
+  ## Options (test overrides)
+
     * `:internal_id` — override internal UUID (default: generated)
     * `:public_id` — override public ID (default: `"chatcmpl-" <> uuid`)
   """
@@ -28,7 +33,10 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
   def normalize(params, opts \\ []) when is_map(params) do
     internal_id = Keyword.get(opts, :internal_id, Ecto.UUID.generate())
     public_id = Keyword.get(opts, :public_id, "chatcmpl-" <> internal_id)
-    tenant_id = Keyword.get(opts, :tenant_id, "default")
+    # M1 sentinel UUID — matches RequestContext plug default.
+    tenant_id = Keyword.get(opts, :tenant_id, "00000000-0000-0000-0000-000000000000")
+    principal_id = Keyword.get(opts, :principal_id)
+    api_key_id = Keyword.get(opts, :api_key_id)
 
     canonical =
       CanonicalRequest.new(
@@ -36,6 +44,8 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
         public_id: public_id,
         endpoint: :chat_completions,
         tenant_id: tenant_id,
+        principal_id: principal_id,
+        api_key_id: api_key_id,
         model_ref: parse_model_ref(params["model"]),
         input_items: params["messages"],
         stream?: Map.get(params, "stream", false),

@@ -17,7 +17,7 @@ defmodule Orchard.Inference.ChatRequestNormalizerTest do
       assert {:ok, %CanonicalRequest{} = req} = ChatRequestNormalizer.normalize(@valid_params)
 
       assert req.endpoint == :chat_completions
-      assert req.tenant_id == "default"
+      assert req.tenant_id == "00000000-0000-0000-0000-000000000000"
       assert req.model_ref == %ModelRef{model_id: "llama-3.1-8b-instruct", version: "mlx-q4-v1"}
       assert req.input_items == [%{"role" => "user", "content" => "Hello"}]
       assert req.stream? == false
