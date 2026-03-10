@@ -39,6 +39,7 @@ defmodule Orchard.Inference do
 
   def request_supervisor, do: RequestsSupervisor
 
+  def artifacts_root, do: config()[:artifacts_root]
   def tokenizer_mode, do: config()[:tokenizer_mode]
   def tokenizer_executable, do: config()[:tokenizer_executable]
   def runtime_client_target, do: config()[:runtime_client_target]

@@ -28,7 +28,8 @@ defmodule OrchardCLI.MixProject do
 
   defp deps do
     [
-      {:orchard_shared, in_umbrella: true}
+      {:orchard_shared, in_umbrella: true},
+      {:orchard_controller, in_umbrella: true}
     ]
   end
 end

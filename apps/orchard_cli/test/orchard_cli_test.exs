@@ -11,12 +11,18 @@ defmodule OrchardCLITest do
   end
 
   test "dispatches each placeholder command module" do
-    commands = ["cluster", "nodes", "models", "requests", "support", "upgrade"]
+    # Commands that still show M0 placeholder messages
+    placeholder_commands = ["cluster", "nodes", "requests", "support", "upgrade"]
 
-    for command <- commands do
+    for command <- placeholder_commands do
       output = capture_io(fn -> OrchardCLI.main([command]) end)
       assert output =~ "not implemented yet"
     end
+  end
+
+  test "models command shows usage without subcommand" do
+    output = capture_io(fn -> OrchardCLI.main(["models"]) end)
+    assert output =~ "orchardctl models"
   end
 
   test "cli application supervisor is running" do

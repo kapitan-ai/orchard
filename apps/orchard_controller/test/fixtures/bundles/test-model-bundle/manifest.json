@@ -1,0 +1,26 @@
+{
+  "model_id": "test-org/tiny-llm",
+  "version": "mlx-q4-v1",
+  "format": "mlx",
+  "artifact_layout": "directory",
+  "entrypoint": "weights/",
+  "sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+  "size_bytes": 1024000,
+  "resident_memory_bytes": 2048000,
+  "kv_cache_bytes_per_token": 16384,
+  "prefill_workspace_bytes_per_token": 2048,
+  "max_context_tokens": 4096,
+  "capabilities": ["chat"],
+  "tokenizer": {
+    "kind": "huggingface_tokenizer_json",
+    "path": "tokenizer.json"
+  },
+  "chat_template": {
+    "path": "chat_template.jinja",
+    "sha256": "def0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc"
+  },
+  "runtime_requirements": {
+    "adapter": "mlx_lm",
+    "min_agent_capability": "mlx"
+  }
+}
