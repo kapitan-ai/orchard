@@ -6,5 +6,12 @@ defmodule Orchard.API.Endpoint do
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:orchard, :api])
   plug(Plug.Head)
+
+  plug(Plug.Parsers,
+    parsers: [:json],
+    pass: ["application/json"],
+    json_decoder: Jason
+  )
+
   plug(Orchard.API.Router)
 end

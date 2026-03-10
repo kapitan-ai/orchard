@@ -13,4 +13,11 @@ defmodule Orchard.API.Router do
     get("/health/live", Orchard.API.HealthController, :live)
     get("/health/ready", Orchard.API.HealthController, :ready)
   end
+
+  scope "/v1", Orchard.API do
+    pipe_through(:api)
+
+    get("/models", ModelsController, :index)
+    post("/chat/completions", ChatCompletionsController, :create)
+  end
 end
