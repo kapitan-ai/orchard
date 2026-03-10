@@ -33,10 +33,6 @@ defmodule Orchard.Inference do
     config()[:scheduler_impl] || Orchard.Scheduler.SingleNode
   end
 
-  def node_runtime_client do
-    config()[:node_runtime_client_impl] || Orchard.Dispatch.NodeRuntimeClient
-  end
-
   def request_supervisor, do: RequestsSupervisor
 
   def artifacts_root, do: config()[:artifacts_root]

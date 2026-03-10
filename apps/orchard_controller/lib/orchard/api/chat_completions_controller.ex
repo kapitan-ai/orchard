@@ -68,7 +68,9 @@ defmodule Orchard.API.ChatCompletionsController do
       conn,
       :internal_server_error,
       "Tokenization failed: #{inspect(reason)}",
-      "server_error", code: "internal_error")
+      "server_error",
+      code: "internal_error"
+    )
   end
 
   # -- Non-streaming response ------------------------------------------------
