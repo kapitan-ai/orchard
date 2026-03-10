@@ -39,6 +39,7 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
         model_ref: parse_model_ref(params["model"]),
         input_items: params["messages"],
         stream?: Map.get(params, "stream", false),
+        stream_include_usage: extract_stream_include_usage(params),
         sampling: build_sampling(params),
         response_format: build_response_format(params),
         tooling: build_tooling(params),
@@ -46,6 +47,15 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
       )
 
     {:ok, canonical}
+  end
+
+  # -- Stream options --
+
+  defp extract_stream_include_usage(params) do
+    case get_in(params, ["stream_options", "include_usage"]) do
+      true -> true
+      _ -> false
+    end
   end
 
   # -- Model ref parsing --

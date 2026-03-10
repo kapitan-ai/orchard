@@ -234,7 +234,11 @@ defmodule Orchard.Models.Importer do
 
   # -- Finalize staging → destination --------------------------------------
 
-  defp finalize_staged(staged_path, %ModelManifest{model_id: model_id, version: version}, artifacts_root) do
+  defp finalize_staged(
+         staged_path,
+         %ModelManifest{model_id: model_id, version: version},
+         artifacts_root
+       ) do
     dest_path = Path.join([artifacts_root, model_id, version])
 
     with :ok <- validate_dest_contained(dest_path, artifacts_root, staged_path),

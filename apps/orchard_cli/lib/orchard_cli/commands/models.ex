@@ -36,7 +36,9 @@ defmodule OrchardCLI.Commands.Models do
       IO.puts("No active models.")
     else
       Enum.each(models, fn model ->
-        IO.puts("#{model.model_id}@#{model.version}  state=#{model.state}  format=#{model.format}")
+        IO.puts(
+          "#{model.model_id}@#{model.version}  state=#{model.state}  format=#{model.format}"
+        )
       end)
     end
 

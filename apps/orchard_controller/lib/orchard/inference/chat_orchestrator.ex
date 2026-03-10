@@ -39,7 +39,46 @@ defmodule Orchard.Inference.ChatOrchestrator do
           | {:error, term()}
 
   @doc """
-  Orchestrates a non-streaming chat completion request from raw HTTP params.
+  Prepares a chat completion request: validates, normalizes, resolves model.
+
+  Returns `{:ok, canonical_request, model}` if all pre-dispatch checks pass.
+  This step does not persist anything or start dispatch — use `execute/3` for that.
+
+  Returns `{:error, {:validation, errors}}` for request validation failures,
+  `{:error, {:model_not_found, model_ref}}` when the requested model doesn't
+  exist or isn't active.
+  """
+  @spec prepare(map()) :: {:ok, CanonicalRequest.t(), map()} | {:error, term()}
+  def prepare(params) do
+    with {:ok, params} <- validate(params),
+         {:ok, canonical} <- normalize(params),
+         {:ok, model} <- resolve_model(canonical) do
+      {:ok, canonical, model}
+    end
+  end
+
+  @doc """
+  Executes the dispatch pipeline for a prepared request.
+
+  Persists the request row, starts the FSM, dispatches to the runtime,
+  and finalizes terminal state.
+
+  ## Options
+
+    * `:event_handler` — optional callback `fun(request_id, event)` called
+      with each `InferenceEvent` as it arrives from dispatch
+  """
+  @spec execute(CanonicalRequest.t(), map(), keyword()) :: orchestrate_result()
+  def execute(canonical, model, opts \\ []) do
+    event_handler = Keyword.get(opts, :event_handler)
+    execute_with_persistence(canonical, model, event_handler)
+  end
+
+  @doc """
+  Orchestrates a complete chat completion request from raw HTTP params.
+
+  Convenience that calls `prepare/1` then `execute/3`. Suitable for
+  non-streaming callers that don't need to start SSE between the two phases.
 
   Returns `{:ok, canonical_request, events}` on success, where `events`
   includes terminal (completed/failed/cancelled) events with usage data.
@@ -47,16 +86,12 @@ defmodule Orchard.Inference.ChatOrchestrator do
   ## Options
 
     * `:event_handler` — optional callback `fun(request_id, event)` for
-      streaming-style event delivery (used by A5)
+      streaming-style event delivery
   """
   @spec orchestrate(map(), keyword()) :: orchestrate_result()
   def orchestrate(params, opts \\ []) do
-    event_handler = Keyword.get(opts, :event_handler)
-
-    with {:ok, params} <- validate(params),
-         {:ok, canonical} <- normalize(params),
-         {:ok, model} <- resolve_model(canonical) do
-      execute_with_persistence(canonical, model, event_handler)
+    with {:ok, canonical, model} <- prepare(params) do
+      execute(canonical, model, opts)
     end
   end
 
@@ -114,8 +149,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
 
       %{state: state} ->
         {:error,
-         {:model_not_found,
-          "#{model_ref.model_id}@#{model_ref.version} is #{state}, not active"}}
+         {:model_not_found, "#{model_ref.model_id}@#{model_ref.version} is #{state}, not active"}}
     end
   end
 

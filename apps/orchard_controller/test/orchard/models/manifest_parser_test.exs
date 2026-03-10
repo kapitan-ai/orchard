@@ -8,7 +8,8 @@ defmodule Orchard.Models.ManifestParserTest do
 
   describe "parse_from_bundle/1" do
     test "parses a valid bundle manifest" do
-      assert {:ok, %ModelManifest{} = manifest} = ManifestParser.parse_from_bundle(@fixture_bundle)
+      assert {:ok, %ModelManifest{} = manifest} =
+               ManifestParser.parse_from_bundle(@fixture_bundle)
 
       assert manifest.model_id == "test-org/tiny-llm"
       assert manifest.version == "mlx-q4-v1"
@@ -52,7 +53,9 @@ defmodule Orchard.Models.ManifestParserTest do
   describe "parse_json/1" do
     test "parses valid JSON" do
       json = valid_manifest_json()
-      assert {:ok, %ModelManifest{model_id: "test-org/tiny-llm"}} = ManifestParser.parse_json(json)
+
+      assert {:ok, %ModelManifest{model_id: "test-org/tiny-llm"}} =
+               ManifestParser.parse_json(json)
     end
 
     test "rejects non-object JSON" do

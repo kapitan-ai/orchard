@@ -2,6 +2,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   use Orchard.ConnCase, async: false
 
   alias Orchard.API.Router
+  alias Orchard.Inference.ChatRequestNormalizer
 
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
@@ -15,7 +16,31 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     |> Router.call(Router.init([]))
   end
 
-  describe "POST /v1/chat/completions" do
+  # Parse SSE response body into a list of parsed events.
+  # Returns [{:data, decoded_map}, {:done, nil}, {:error, decoded_map}]
+  defp parse_sse_body(body) do
+    body
+    |> String.split("\n")
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(&parse_sse_line/1)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp parse_sse_line("data: [DONE]"), do: {:done, nil}
+
+  defp parse_sse_line("data: " <> json) do
+    decoded = Jason.decode!(json)
+
+    if Map.has_key?(decoded, "error") do
+      {:error, decoded}
+    else
+      {:data, decoded}
+    end
+  end
+
+  defp parse_sse_line(_), do: nil
+
+  describe "POST /v1/chat/completions (non-streaming)" do
     test "rejects request missing model field with OpenAI error envelope" do
       conn = post_chat(%{"messages" => [%{"role" => "user", "content" => "hi"}]})
 
@@ -75,6 +100,152 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert Map.has_key?(error, "type")
       assert Map.has_key?(error, "param")
       assert Map.has_key?(error, "code")
+    end
+  end
+
+  describe "POST /v1/chat/completions (streaming pre-stream errors)" do
+    test "stream=true with missing model returns JSON error, not SSE" do
+      conn =
+        post_chat(%{
+          "stream" => true,
+          "messages" => [%{"role" => "user", "content" => "hi"}]
+        })
+
+      # Pre-stream validation errors are returned as normal JSON, not SSE
+      assert conn.status == 400
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["code"] == "missing_required_field"
+      assert body["error"]["param"] == "model"
+      # Verify it's NOT SSE
+      refute get_resp_header(conn, "content-type")
+             |> Enum.any?(&String.contains?(&1, "text/event-stream"))
+    end
+
+    test "stream=true with unsupported parameter returns JSON error, not SSE" do
+      conn =
+        post_chat(%{
+          "model" => "test@v1",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "stream" => true,
+          "logprobs" => true
+        })
+
+      assert conn.status == 400
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["code"] == "unsupported_parameter"
+
+      refute get_resp_header(conn, "content-type")
+             |> Enum.any?(&String.contains?(&1, "text/event-stream"))
+    end
+
+    @tag :db
+    test "stream=true with unknown model returns JSON 404, not SSE" do
+      conn =
+        post_chat(%{
+          "model" => "nonexistent@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      assert conn.status == 404
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["code"] == "model_not_found"
+
+      refute get_resp_header(conn, "content-type")
+             |> Enum.any?(&String.contains?(&1, "text/event-stream"))
+    end
+  end
+
+  describe "POST /v1/chat/completions (streaming post-start error)" do
+    @tag :db
+    test "stream=true with valid model emits SSE error when dispatch fails" do
+      # Insert a model so prepare() succeeds, but dispatch will fail
+      # (no node-agent running in test).
+      {:ok, _model} =
+        Orchard.Models.create_model(%{
+          model_id: "test-stream-model",
+          version: "v1",
+          display_name: "Test Stream Model",
+          artifact_uri: "file:///tmp/test-stream-model",
+          artifact_sha256: "abc123",
+          state: :active,
+          format: "mlx",
+          backend: "mlx",
+          capabilities: ["chat"],
+          artifact_size_bytes: 1024,
+          resident_memory_bytes: 2048,
+          kv_cache_bytes_per_token: 128,
+          prefill_workspace_bytes_per_token: 64,
+          max_context_tokens: 4096
+        })
+
+      conn =
+        post_chat(%{
+          "model" => "test-stream-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      # SSE started (chunked 200)
+      assert conn.status == 200
+
+      assert get_resp_header(conn, "content-type")
+             |> Enum.any?(&String.contains?(&1, "text/event-stream"))
+
+      # Parse SSE body
+      events = parse_sse_body(conn.resp_body)
+
+      # Should contain an error event (dispatch failed, no node-agent)
+      error_events = Enum.filter(events, fn {type, _} -> type == :error end)
+      assert error_events != []
+
+      # Error envelope has the right shape
+      {:error, error_data} = List.first(error_events)
+      assert error_data["error"]["type"] == "server_error"
+      assert error_data["error"]["code"] == "internal_error"
+
+      # No [DONE] after error per §7.2.4
+      done_events = Enum.filter(events, fn {type, _} -> type == :done end)
+      assert done_events == []
+    end
+  end
+
+  describe "stream_options.include_usage normalization" do
+    test "stream_include_usage defaults to false" do
+      {:ok, canonical} =
+        ChatRequestNormalizer.normalize(%{
+          "model" => "test@v1",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "stream" => true
+        })
+
+      assert canonical.stream? == true
+      assert canonical.stream_include_usage == false
+    end
+
+    test "stream_include_usage is true when stream_options.include_usage is true" do
+      {:ok, canonical} =
+        ChatRequestNormalizer.normalize(%{
+          "model" => "test@v1",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "stream" => true,
+          "stream_options" => %{"include_usage" => true}
+        })
+
+      assert canonical.stream? == true
+      assert canonical.stream_include_usage == true
+    end
+
+    test "stream_include_usage is false for non-boolean include_usage" do
+      {:ok, canonical} =
+        ChatRequestNormalizer.normalize(%{
+          "model" => "test@v1",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "stream" => true,
+          "stream_options" => %{"include_usage" => "yes"}
+        })
+
+      assert canonical.stream_include_usage == false
     end
   end
 end

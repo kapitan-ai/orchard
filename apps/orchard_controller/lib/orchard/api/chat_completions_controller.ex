@@ -7,21 +7,27 @@ defmodule Orchard.API.ChatCompletionsController do
   concerns: content-type, error envelope shaping, and response framing.
 
   Non-streaming: returns a single JSON response with the full completion.
-  Streaming (SSE): will be wired in A5.
+  Streaming (SSE): emits `chat.completion.chunk` events per §7.2.4, with
+  optional usage chunk when `stream_options.include_usage=true`.
   """
 
   use Phoenix.Controller, formats: [:json]
 
   import Orchard.API.ErrorHelpers, only: [send_error: 5]
 
+  alias Orchard.API.SSE
   alias Orchard.Inference.ChatOrchestrator
   alias Orchard.InferenceEvent
 
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def create(conn, params) do
-    case ChatOrchestrator.orchestrate(params) do
-      {:ok, canonical, events} ->
-        send_completion_response(conn, canonical, events)
+    case ChatOrchestrator.prepare(params) do
+      {:ok, canonical, model} ->
+        if canonical.stream? do
+          handle_streaming(conn, canonical, model)
+        else
+          handle_non_streaming(conn, canonical, model)
+        end
 
       {:error, {:validation, errors}} ->
         send_validation_error(conn, errors)
@@ -35,6 +41,15 @@ defmodule Orchard.API.ChatCompletionsController do
           param: "model",
           code: "model_not_found"
         )
+    end
+  end
+
+  # -- Non-streaming response ------------------------------------------------
+
+  defp handle_non_streaming(conn, canonical, model) do
+    case ChatOrchestrator.execute(canonical, model) do
+      {:ok, canonical, events} ->
+        send_completion_response(conn, canonical, events)
 
       {:error, reason} ->
         send_error(
@@ -47,8 +62,6 @@ defmodule Orchard.API.ChatCompletionsController do
     end
   end
 
-  # -- Non-streaming response ------------------------------------------------
-
   defp send_completion_response(conn, canonical, events) do
     deltas = collect_deltas(events)
     content = Enum.join(deltas, "")
@@ -58,7 +71,7 @@ defmodule Orchard.API.ChatCompletionsController do
       id: canonical.public_id,
       object: "chat.completion",
       created: System.system_time(:second),
-      model: "#{canonical.model_ref.model_id}@#{canonical.model_ref.version}",
+      model: format_model_display(canonical),
       choices: [
         %{
           index: 0,
@@ -72,6 +85,206 @@ defmodule Orchard.API.ChatCompletionsController do
     json(conn, response)
   end
 
+  # -- Streaming (SSE) response ----------------------------------------------
+
+  defp handle_streaming(conn, canonical, model) do
+    case SSE.start(conn) do
+      {:ok, conn} ->
+        stream_completion(conn, canonical, model)
+
+      {:error, :closed} ->
+        conn
+    end
+  end
+
+  defp stream_completion(conn, canonical, model) do
+    model_display = format_model_display(canonical)
+    created = System.system_time(:second)
+
+    # Track mutable state across synchronous event_handler callbacks.
+    # All calls happen in this process, so Process dictionary is safe.
+    state_key = make_ref()
+
+    Process.put(state_key, %{
+      conn: conn,
+      closed: false,
+      errored: false,
+      role_sent: false,
+      usage: nil
+    })
+
+    handler = fn _request_id, event ->
+      state = Process.get(state_key)
+
+      unless state.closed or state.errored do
+        new_state =
+          handle_stream_event(state, event, canonical.public_id, model_display, created)
+
+        Process.put(state_key, new_state)
+      end
+    end
+
+    result = ChatOrchestrator.execute(canonical, model, event_handler: handler)
+    state = Process.get(state_key)
+    Process.delete(state_key)
+
+    finalize_stream(state, result, canonical, model_display, created)
+  end
+
+  defp handle_stream_event(state, event, public_id, model_display, created) do
+    case InferenceEvent.kind(event) do
+      :output_text_delta ->
+        state
+        |> maybe_emit_role_chunk(public_id, model_display, created)
+        |> emit_content_chunk(event.event.delta, public_id, model_display, created)
+
+      :completed ->
+        state
+        |> maybe_emit_role_chunk(public_id, model_display, created)
+        |> emit_finish_chunk(event, public_id, model_display, created)
+        |> store_usage(event)
+
+      :failed ->
+        emit_stream_error(state, event)
+
+      :usage ->
+        store_usage_from_update(state, event)
+
+      _other ->
+        # Skip :accepted, :progress, :tool_call_delta for M1
+        state
+    end
+  end
+
+  defp maybe_emit_role_chunk(%{role_sent: true} = state, _id, _model, _created), do: state
+
+  defp maybe_emit_role_chunk(state, public_id, model_display, created) do
+    chunk =
+      build_chunk(public_id, model_display, created, [
+        %{index: 0, delta: %{role: "assistant", content: ""}, finish_reason: nil}
+      ])
+
+    send_sse_chunk(state, chunk)
+    |> Map.put(:role_sent, true)
+  end
+
+  defp emit_content_chunk(state, delta, public_id, model_display, created) do
+    chunk =
+      build_chunk(public_id, model_display, created, [
+        %{index: 0, delta: %{content: delta}, finish_reason: nil}
+      ])
+
+    send_sse_chunk(state, chunk)
+  end
+
+  defp emit_finish_chunk(state, event, public_id, model_display, created) do
+    finish_reason = map_finish_reason(event)
+
+    chunk =
+      build_chunk(public_id, model_display, created, [
+        %{index: 0, delta: %{}, finish_reason: finish_reason}
+      ])
+
+    send_sse_chunk(state, chunk)
+  end
+
+  defp emit_stream_error(state, event) do
+    case SSE.send_error(
+           state.conn,
+           event.event.message,
+           "server_error",
+           code: event.event.code
+         ) do
+      {:ok, conn} -> %{state | conn: conn, errored: true}
+      {:error, :closed} -> %{state | closed: true, errored: true}
+    end
+  end
+
+  defp store_usage(state, event) do
+    case event.event do
+      %InferenceEvent.Completed{usage: nil} -> state
+      %InferenceEvent.Completed{usage: usage} -> %{state | usage: usage}
+    end
+  end
+
+  defp store_usage_from_update(state, event) do
+    %{state | usage: event.event.usage}
+  end
+
+  defp send_sse_chunk(state, chunk_data) do
+    case SSE.send_chunk(state.conn, chunk_data) do
+      {:ok, conn} -> %{state | conn: conn}
+      {:error, :closed} -> %{state | closed: true}
+    end
+  end
+
+  defp build_chunk(public_id, model_display, created, choices) do
+    %{
+      id: public_id,
+      object: "chat.completion.chunk",
+      created: created,
+      model: model_display,
+      choices: choices
+    }
+  end
+
+  defp finalize_stream(state, _result, _canonical, _model_display, _created)
+       when state.closed do
+    state.conn
+  end
+
+  defp finalize_stream(state, _result, _canonical, _model_display, _created)
+       when state.errored do
+    # Error already emitted via SSE — do NOT send [DONE] per §7.2.4
+    state.conn
+  end
+
+  defp finalize_stream(state, {:error, reason}, _canonical, _model_display, _created) do
+    # Post-start error: dispatch/persistence failed after SSE started
+    case SSE.send_error(
+           state.conn,
+           "Internal error: #{inspect(reason)}",
+           "server_error",
+           code: "internal_error"
+         ) do
+      {:ok, conn} -> conn
+      {:error, :closed} -> state.conn
+    end
+  end
+
+  defp finalize_stream(state, {:ok, _canonical, _events}, canonical, model_display, created) do
+    conn =
+      if canonical.stream_include_usage do
+        emit_usage_chunk(state, canonical.public_id, model_display, created)
+      else
+        state.conn
+      end
+
+    case SSE.send_done(conn) do
+      {:ok, conn} -> conn
+      {:error, :closed} -> state.conn
+    end
+  end
+
+  defp emit_usage_chunk(state, public_id, model_display, created) do
+    usage = format_usage(state.usage)
+
+    chunk =
+      build_chunk(public_id, model_display, created, [])
+      |> Map.put(:usage, usage)
+
+    case SSE.send_chunk(state.conn, chunk) do
+      {:ok, conn} -> conn
+      {:error, :closed} -> state.conn
+    end
+  end
+
+  # -- Shared helpers --------------------------------------------------------
+
+  defp format_model_display(canonical) do
+    "#{canonical.model_ref.model_id}@#{canonical.model_ref.version}"
+  end
+
   defp collect_deltas(events) do
     events
     |> Enum.filter(&(InferenceEvent.kind(&1) == :output_text_delta))
@@ -79,27 +292,30 @@ defmodule Orchard.API.ChatCompletionsController do
   end
 
   defp extract_usage(events) do
+    format_usage(find_usage(events))
+  end
+
+  defp find_usage(events) do
     usage_event = Enum.find(events, &(InferenceEvent.kind(&1) == :usage))
     completed_event = Enum.find(events, &(InferenceEvent.kind(&1) == :completed))
 
-    usage =
-      cond do
-        usage_event != nil -> usage_event.event.usage
-        completed_event != nil && completed_event.event.usage != nil -> completed_event.event.usage
-        true -> nil
-      end
-
-    case usage do
-      nil ->
-        %{prompt_tokens: 0, completion_tokens: 0, total_tokens: 0}
-
-      u ->
-        %{
-          prompt_tokens: u.input_tokens,
-          completion_tokens: u.output_tokens,
-          total_tokens: u.total_tokens
-        }
+    cond do
+      usage_event != nil -> usage_event.event.usage
+      completed_event != nil && completed_event.event.usage != nil -> completed_event.event.usage
+      true -> nil
     end
+  end
+
+  defp format_usage(nil) do
+    %{prompt_tokens: 0, completion_tokens: 0, total_tokens: 0}
+  end
+
+  defp format_usage(usage) do
+    %{
+      prompt_tokens: usage.input_tokens,
+      completion_tokens: usage.output_tokens,
+      total_tokens: usage.total_tokens
+    }
   end
 
   defp extract_finish_reason(events) do
@@ -154,16 +370,6 @@ defmodule Orchard.API.ChatCompletionsController do
       "Invalid value for #{field}: #{reason}",
       "invalid_request_error",
       param: field,
-      code: "invalid_value"
-    )
-  end
-
-  defp send_validation_error(conn, error) do
-    send_error(
-      conn,
-      :bad_request,
-      "Validation error: #{inspect(error)}",
-      "invalid_request_error",
       code: "invalid_value"
     )
   end

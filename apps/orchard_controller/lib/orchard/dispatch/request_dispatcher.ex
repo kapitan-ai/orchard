@@ -149,7 +149,25 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         if events == [] do
           {:error, {:dispatch_failed, reason}}
         else
-          {:ok, Enum.reverse(events)}
+          # Stream had prior events but ended with an error and no terminal
+          # event. Synthesize a :failed event so callers always see a
+          # terminal outcome rather than treating a truncated stream as
+          # completed.
+          has_terminal? = Enum.any?(events, &InferenceEvent.terminal?/1)
+
+          if has_terminal? do
+            {:ok, Enum.reverse(events)}
+          else
+            failed_event =
+              InferenceEvent.failed(
+                "stream_error",
+                "stream ended with error: #{inspect(reason)}",
+                false
+              )
+
+            emit_event(failed_event, request_id, event_handler)
+            {:ok, Enum.reverse([failed_event | events])}
+          end
         end
 
       {:dispatch_timeout, ^timer_ref} ->
