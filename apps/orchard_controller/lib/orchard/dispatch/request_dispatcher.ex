@@ -33,7 +33,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   Options:
   - `:caller` — PID to monitor for disconnect (default: `self()`)
-  - `:event_handler` — function called with each `InferenceEvent`
+  - `:event_handler` — function called with each `InferenceEvent`.
+                        Return `:cancel` to abort dispatch (e.g. on SSE client disconnect).
                         (default: sends `{:inference_event, request_id, event}` to caller)
 
   Returns `{:ok, events}` with the list of all events received (including terminal),
@@ -132,21 +133,34 @@ defmodule Orchard.Dispatch.RequestDispatcher do
        ) do
     receive do
       {:dispatch_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
-        emit_event(event, request_id, event_handler)
+        handler_result = emit_event(event, request_id, event_handler)
         events = [event | events]
 
-        if InferenceEvent.terminal?(event) do
-          {:ok, Enum.reverse(events)}
-        else
-          receive_loop(
-            channel,
-            request_id,
-            task_ref,
-            timer_ref,
-            caller_ref,
-            event_handler,
-            events
-          )
+        cond do
+          InferenceEvent.terminal?(event) ->
+            {:ok, Enum.reverse(events)}
+
+          cancelled_by_handler?(handler_result) ->
+            _ = Client.cancel_inference(channel, request_id)
+
+            drain_until_terminal_or_done(
+              task_ref,
+              request_id,
+              event_handler,
+              events,
+              :client_disconnect
+            )
+
+          true ->
+            receive_loop(
+              channel,
+              request_id,
+              task_ref,
+              timer_ref,
+              caller_ref,
+              event_handler,
+              events
+            )
         end
 
       {:dispatch_done, ^task_ref, :ok} ->
@@ -241,6 +255,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp emit_event(event, request_id, handler) when is_function(handler, 2) do
     handler.(request_id, event)
   end
+
+  defp cancelled_by_handler?(handler_result), do: handler_result == :cancel
 
   defp start_timeout_timer(timeout_ms) when is_integer(timeout_ms) and timeout_ms > 0 do
     ref = make_ref()

@@ -170,14 +170,7 @@ defmodule Orchard.API.ChatCompletionsController do
     })
 
     handler = fn _request_id, event ->
-      state = Process.get(state_key)
-
-      unless state.closed or state.errored do
-        new_state =
-          handle_stream_event(state, event, canonical.public_id, model_display, created)
-
-        Process.put(state_key, new_state)
-      end
+      dispatch_stream_event(state_key, event, canonical.public_id, model_display, created)
     end
 
     result = ChatOrchestrator.execute(canonical, model, event_handler: handler)
@@ -185,6 +178,20 @@ defmodule Orchard.API.ChatCompletionsController do
     Process.delete(state_key)
 
     finalize_stream(state, result, canonical, model_display, created)
+  end
+
+  # Checks whether the SSE connection is still alive, delegates to
+  # handle_stream_event, and returns :cancel when the client has gone.
+  defp dispatch_stream_event(state_key, event, public_id, model_display, created) do
+    state = Process.get(state_key)
+
+    if state.closed or state.errored do
+      :cancel
+    else
+      new_state = handle_stream_event(state, event, public_id, model_display, created)
+      Process.put(state_key, new_state)
+      if new_state.closed, do: :cancel, else: :ok
+    end
   end
 
   defp handle_stream_event(state, event, public_id, model_display, created) do
