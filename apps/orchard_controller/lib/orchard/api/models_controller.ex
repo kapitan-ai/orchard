@@ -2,13 +2,34 @@ defmodule Orchard.API.ModelsController do
   @moduledoc """
   OpenAI-compatible model listing.
 
-  Stub — full implementation in A2.
+  `GET /v1/models` returns all active catalog models in OpenAI list
+  format per SPEC.md §7.2.3.
   """
 
   use Phoenix.Controller, formats: [:json]
 
+  alias Orchard.Models
+
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _params) do
-    json(conn, %{object: "list", data: []})
+    models = Models.list_active_models()
+    data = Enum.map(models, &to_openai_model/1)
+    json(conn, %{object: "list", data: data})
   end
+
+  defp to_openai_model(model) do
+    %{
+      id: model_display_id(model),
+      object: "model",
+      created: to_unix_seconds(model.inserted_at),
+      owned_by: "local"
+    }
+  end
+
+  defp model_display_id(model) do
+    "#{model.model_id}@#{model.version}"
+  end
+
+  defp to_unix_seconds(%DateTime{} = dt), do: DateTime.to_unix(dt)
+  defp to_unix_seconds(_), do: 0
 end
