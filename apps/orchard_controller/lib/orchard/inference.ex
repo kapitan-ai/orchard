@@ -13,7 +13,12 @@ defmodule Orchard.Inference do
 
   @impl true
   def init(_init_arg) do
-    Supervisor.init([RequestsSupervisor], strategy: :one_for_one)
+    children = [
+      {Registry, keys: :unique, name: Orchard.Requests.Registry},
+      RequestsSupervisor
+    ]
+
+    Supervisor.init(children, strategy: :one_for_one)
   end
 
   def config do
