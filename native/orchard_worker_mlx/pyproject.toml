@@ -12,6 +12,14 @@ dependencies = [
   "grpcio>=1.78.0",
 ]
 
+[project.optional-dependencies]
+mlx = [
+  "mlx>=0.22.0",
+  "mlx-lm>=0.22.0",
+  "transformers>=4.40.0",
+  "numpy>=1.26.0",
+]
+
 [project.scripts]
 orchard-worker-mlx = "orchard_worker_mlx.cli:main"
 

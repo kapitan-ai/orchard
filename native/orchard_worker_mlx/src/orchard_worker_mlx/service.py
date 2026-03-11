@@ -76,7 +76,11 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
     def UnloadModel(
         self, request: runtime_pb2.UnloadModelRequest, context: grpc.ServicerContext
     ) -> common_pb2.Ack:
-        self._backend.unload_model()
+        try:
+            self._backend.unload_model()
+        except BackendError as exc:
+            return common_pb2.Ack(ok=False, message=f"{exc.code}: {exc.message}")
+
         return common_pb2.Ack(ok=True, message="model unloaded")
 
     def Generate(

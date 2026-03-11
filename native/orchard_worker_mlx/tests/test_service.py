@@ -325,6 +325,43 @@ def test_cancel_tombstone_pruned_from_internal_state() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Test: UnloadModel during active generation
+# ---------------------------------------------------------------------------
+
+
+class BusyBackend(HappyBackend):
+    """A backend that reports active generation on unload."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._loaded = True
+        self._busy = True
+
+    def unload_model(self) -> None:
+        if self._busy:
+            raise BackendError("model_busy", "cannot unload: active generation in progress")
+        self._loaded = False
+
+
+def test_unload_model_during_generation_returns_ack_false() -> None:
+    servicer = _make_servicer(BusyBackend())
+    request = MagicMock()
+    context = MagicMock()
+    ack = servicer.UnloadModel(request, context)
+    assert ack.ok is False
+    assert "model_busy" in ack.message
+
+
+def test_unload_model_success_returns_ack_true() -> None:
+    servicer = _make_servicer(HappyBackend())
+    request = MagicMock()
+    context = MagicMock()
+    ack = servicer.UnloadModel(request, context)
+    assert ack.ok is True
+    assert ack.message == "model unloaded"
+
+
+# ---------------------------------------------------------------------------
 # Test: build_inference_event validation
 # ---------------------------------------------------------------------------
 

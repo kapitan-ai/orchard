@@ -43,6 +43,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     executable = Keyword.get(opts, :executable, Node.worker_executable())
     backend = Keyword.get(opts, :backend, Node.worker_backend())
     ready_timeout_ms = Keyword.get(opts, :ready_timeout_ms, Node.worker_ready_timeout_ms())
+    load_timeout_ms = Keyword.get(opts, :load_timeout_ms, Node.worker_load_timeout_ms())
 
     shutdown_timeout_ms =
       Keyword.get(opts, :shutdown_timeout_ms, Node.worker_shutdown_timeout_ms())
@@ -61,6 +62,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         backend,
         socket_path,
         ready_timeout_ms,
+        load_timeout_ms,
         shutdown_timeout_ms
       )
     end
@@ -137,13 +139,14 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          backend,
          socket_path,
          ready_timeout_ms,
+         load_timeout_ms,
          shutdown_timeout_ms
        ) do
     {:ok, port, os_pid} = start_worker_port(executable, socket_path, backend)
 
     case wait_for_worker_ready(socket_path, port, ready_timeout_ms) do
       {:ok, channel} ->
-        case load_model_rpc(channel, model_ref, model_path, ready_timeout_ms) do
+        case load_model_rpc(channel, model_ref, model_path, load_timeout_ms) do
           :ok ->
             {:ok,
              %{

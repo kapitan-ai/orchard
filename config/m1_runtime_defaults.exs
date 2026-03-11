@@ -9,6 +9,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
   @default_request_timeout_ms 120_000
   @default_model_load_timeout_ms 120_000
   @default_worker_ready_timeout_ms 5_000
+  @default_worker_load_timeout_ms 120_000
   @default_worker_shutdown_timeout_ms 1_000
 
   def controller_inference(root) do
@@ -30,6 +31,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       worker_executable: "orchard-worker-mlx",
       worker_backend: "mlx",
       worker_ready_timeout_ms: @default_worker_ready_timeout_ms,
+      worker_load_timeout_ms: @default_worker_load_timeout_ms,
       worker_shutdown_timeout_ms: @default_worker_shutdown_timeout_ms,
       fake_runtime?: false
     ]

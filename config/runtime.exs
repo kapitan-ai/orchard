@@ -44,6 +44,7 @@ default_node_runtime = fn root ->
     worker_executable: "orchard-worker-mlx",
     worker_backend: "mlx",
     worker_ready_timeout_ms: 5_000,
+    worker_load_timeout_ms: 120_000,
     worker_shutdown_timeout_ms: 1_000,
     fake_runtime?: false
   ]
@@ -111,6 +112,7 @@ if config_env() == :prod do
               System.get_env("ORCHARD_WORKER_EXECUTABLE") || "orchard-worker-mlx",
             worker_backend: System.get_env("ORCHARD_WORKER_BACKEND") || "mlx",
             worker_ready_timeout_ms: env_int.("ORCHARD_WORKER_READY_TIMEOUT_MS", "5000"),
+            worker_load_timeout_ms: env_int.("ORCHARD_WORKER_LOAD_TIMEOUT_MS", "120000"),
             worker_shutdown_timeout_ms: env_int.("ORCHARD_WORKER_SHUTDOWN_TIMEOUT_MS", "1000"),
             fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false)
           )

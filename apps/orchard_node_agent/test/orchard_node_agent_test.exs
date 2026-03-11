@@ -111,9 +111,44 @@ defmodule OrchardNodeAgentTest do
     end
   end
 
+  defmodule LoadTimeoutCapturingAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+    alias Orchard.InferenceEvent
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, opts) do
+      if pid = Process.whereis(:load_timeout_test_pid) do
+        send(pid, {:captured_load_timeout_ms, Keyword.get(opts, :load_timeout_ms)})
+      end
+
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
   setup do
     :ok = NodeStatus.reset()
     wait_until(fn -> worker_count() == 0 end)
+
+    # Register the test process so adapters can send messages back.
+    if Process.whereis(:load_timeout_test_pid), do: Process.unregister(:load_timeout_test_pid)
+    Process.register(self(), :load_timeout_test_pid)
+
     :ok
   end
 
@@ -199,6 +234,7 @@ defmodule OrchardNodeAgentTest do
 
     assert runtime[:worker_backend] == "stub"
     assert runtime[:worker_ready_timeout_ms] == 5_000
+    assert runtime[:worker_load_timeout_ms] == 5_000
     assert runtime[:worker_shutdown_timeout_ms] == 1_000
 
     assert Node.listen_host() == "127.0.0.1"
@@ -207,7 +243,18 @@ defmodule OrchardNodeAgentTest do
     assert Node.runtime_adapter_impl() == Orchard.Node.FakeRuntimeAdapter
     assert Node.worker_backend() == "stub"
     assert Node.worker_ready_timeout_ms() == 5_000
+    assert Node.worker_load_timeout_ms() == 5_000
     assert Node.worker_shutdown_timeout_ms() == 1_000
+  end
+
+  test "ensure_model_loaded passes worker_load_timeout_ms to adapter" do
+    with_runtime_adapter(LoadTimeoutCapturingAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request())
+
+      assert_receive {:captured_load_timeout_ms, timeout_ms}, 1_000
+      assert timeout_ms == Node.worker_load_timeout_ms()
+    end)
   end
 
   test "get_status responds over gRPC" do

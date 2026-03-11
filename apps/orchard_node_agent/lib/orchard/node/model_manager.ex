@@ -52,7 +52,7 @@ defmodule Orchard.Node.ModelManager do
 
   @spec ensure_model_loaded(EnsureModelLoadedRequest.t()) :: EnsureModelLoadedResponse.t()
   def ensure_model_loaded(%EnsureModelLoadedRequest{} = request) do
-    GenServer.call(__MODULE__, {:ensure_model_loaded, request})
+    GenServer.call(__MODULE__, {:ensure_model_loaded, request}, load_call_timeout_ms())
   end
 
   @spec unload_model(UnloadModelRequest.t()) :: Ack.t()
@@ -489,7 +489,7 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp safe_ensure_loaded(pid, request) do
-    safe_worker_call(fn -> WorkerProcess.ensure_loaded(pid, request) end)
+    safe_worker_call(fn -> WorkerProcess.ensure_loaded(pid, request, load_call_timeout_ms()) end)
   end
 
   defp safe_start_request(pid, request_id, request, subscriber) do
@@ -562,5 +562,12 @@ defmodule Orchard.Node.ModelManager do
 
   defp initial_state do
     %{workers: %{}, worker_refs: %{}, active_requests: %{}, subscriber_refs: %{}}
+  end
+
+  # Buffer above the adapter-level load timeout so the GenServer.call does not
+  # race the RPC deadline.  The adapter owns the canonical timeout; this margin
+  # only prevents the BEAM call from expiring first.
+  defp load_call_timeout_ms do
+    Orchard.Node.worker_load_timeout_ms() + 5_000
   end
 end

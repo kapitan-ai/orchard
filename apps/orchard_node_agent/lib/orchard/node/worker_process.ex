@@ -9,6 +9,7 @@ defmodule Orchard.Node.WorkerProcess do
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.InferenceEvent
+  alias Orchard.Node
   alias Orchard.Node.RuntimeAdapter
 
   @type state :: %{
@@ -24,10 +25,10 @@ defmodule Orchard.Node.WorkerProcess do
     GenServer.start_link(__MODULE__, opts)
   end
 
-  @spec ensure_loaded(pid(), EnsureModelLoadedRequest.t()) ::
+  @spec ensure_loaded(pid(), EnsureModelLoadedRequest.t(), timeout()) ::
           :loaded | :already_loaded | {:error, term()}
-  def ensure_loaded(pid, %EnsureModelLoadedRequest{} = request) do
-    GenServer.call(pid, {:ensure_loaded, request})
+  def ensure_loaded(pid, %EnsureModelLoadedRequest{} = request, timeout \\ :infinity) do
+    GenServer.call(pid, {:ensure_loaded, request}, timeout)
   end
 
   @spec unload(pid(), keyword()) :: :ok | {:error, term()}
@@ -68,7 +69,10 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   def handle_call({:ensure_loaded, %EnsureModelLoadedRequest{}}, _from, state) do
-    case state.adapter.load_model(state.model_ref, owner: self()) do
+    case state.adapter.load_model(state.model_ref,
+           owner: self(),
+           load_timeout_ms: Node.worker_load_timeout_ms()
+         ) do
       {:ok, adapter_state} ->
         {:reply, :loaded, %{state | loaded?: true, adapter_state: adapter_state}}
 

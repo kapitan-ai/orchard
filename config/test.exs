@@ -37,6 +37,7 @@ config :orchard_node_agent,
         Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
       worker_backend: "stub",
       worker_ready_timeout_ms: 5_000,
+      worker_load_timeout_ms: 5_000,
       worker_shutdown_timeout_ms: 1_000,
       fake_runtime?: true
     )

@@ -9,6 +9,7 @@ defmodule Orchard.Node do
   @default_worker_executable "orchard-worker-mlx"
   @default_worker_backend "mlx"
   @default_worker_ready_timeout_ms 5_000
+  @default_worker_load_timeout_ms 120_000
   @default_worker_shutdown_timeout_ms 1_000
   @worker_socket_prefix "orchard-worker-"
   @worker_socket_suffix ".sock"
@@ -28,6 +29,10 @@ defmodule Orchard.Node do
 
   def worker_ready_timeout_ms do
     runtime_config()[:worker_ready_timeout_ms] || @default_worker_ready_timeout_ms
+  end
+
+  def worker_load_timeout_ms do
+    runtime_config()[:worker_load_timeout_ms] || @default_worker_load_timeout_ms
   end
 
   def worker_shutdown_timeout_ms do

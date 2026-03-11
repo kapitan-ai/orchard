@@ -159,7 +159,65 @@ def test_main_prints_version(capsys) -> None:
     assert capsys.readouterr().out.strip() == __version__
 
 
-def start_worker(socket_path: Path) -> subprocess.Popen[str]:
+# ---------------------------------------------------------------------------
+# Opt-in MLX smoke test (requires mlx extra + real model bundle)
+# ---------------------------------------------------------------------------
+
+import os
+import pytest
+
+_MLX_SMOKE_MODEL_PATH = os.environ.get("ORCHARD_MLX_SMOKE_MODEL_PATH")
+
+
+@pytest.mark.skipif(
+    _MLX_SMOKE_MODEL_PATH is None,
+    reason="Set ORCHARD_MLX_SMOKE_MODEL_PATH to a real Orchard bundle to run MLX smoke tests",
+)
+def test_mlx_backend_real_load_unload(tmp_path: Path) -> None:
+    """Opt-in smoke: prove real MLX load/unload works end-to-end via gRPC."""
+    from orchard_worker_mlx.model_loader import load_manifest
+
+    bundle_path = Path(_MLX_SMOKE_MODEL_PATH)  # type: ignore[arg-type]
+    manifest = load_manifest(bundle_path)
+
+    socket_path = Path("/tmp") / f"orchard-worker-mlx-smoke-{uuid4().hex[:8]}.sock"
+    process = start_worker(socket_path, backend="mlx")
+
+    try:
+        channel = wait_for_channel(socket_path, timeout=30.0)
+        stub = worker_runtime_pb2_grpc.WorkerRuntimeServiceStub(channel)
+
+        # Load
+        ack = stub.LoadModel(
+            worker_runtime_pb2.LoadModelRequest(
+                model_id=manifest.model_id,
+                version=manifest.version,
+                model_path=str(bundle_path),
+            ),
+            timeout=120,
+        )
+        assert ack.ok is True, f"LoadModel failed: {ack.message}"
+
+        status = stub.GetStatus(worker_runtime_pb2.WorkerStatusRequest())
+        assert status.loaded is True
+
+        # Unload
+        unload_ack = stub.UnloadModel(
+            runtime_pb2.UnloadModelRequest(
+                model_id=manifest.model_id,
+                version=manifest.version,
+            )
+        )
+        assert unload_ack.ok is True
+
+        status = stub.GetStatus(worker_runtime_pb2.WorkerStatusRequest())
+        assert status.loaded is False
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
+def start_worker(socket_path: Path, *, backend: str = "stub") -> subprocess.Popen[str]:
     return subprocess.Popen(
         [
             sys.executable,
@@ -168,7 +226,7 @@ def start_worker(socket_path: Path) -> subprocess.Popen[str]:
             "--socket-path",
             str(socket_path),
             "--backend",
-            "stub",
+            backend,
         ],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -176,8 +234,8 @@ def start_worker(socket_path: Path) -> subprocess.Popen[str]:
     )
 
 
-def wait_for_channel(socket_path: Path) -> grpc.Channel:
-    deadline = time.monotonic() + 5.0
+def wait_for_channel(socket_path: Path, *, timeout: float = 5.0) -> grpc.Channel:
+    deadline = time.monotonic() + timeout
     target = f"unix://{socket_path}"
 
     # Create a fresh channel on each attempt.  gRPC channels that receive
