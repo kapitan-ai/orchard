@@ -42,6 +42,17 @@ defmodule Orchard.Config.M1RuntimeDefaults do
         connect_timeout_ms: 10_000,
         receive_timeout_ms: 30_000,
         req_options: []
+      ],
+      s3: [
+        endpoint: nil,
+        region: "us-east-1",
+        access_key_id: nil,
+        secret_access_key: nil,
+        session_token: nil,
+        force_path_style?: false,
+        connect_timeout_ms: 10_000,
+        receive_timeout_ms: 60_000,
+        req_options: []
       ]
     ]
   end

@@ -43,6 +43,8 @@ defmodule Orchard.Node do
 
   def hf_config, do: runtime_config()[:hf] || []
 
+  def s3_config, do: runtime_config()[:s3] || []
+
   def runtime_adapter_impl do
     runtime_config()[:runtime_adapter_impl] || default_runtime_adapter_impl()
   end

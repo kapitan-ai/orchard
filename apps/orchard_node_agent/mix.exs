@@ -28,7 +28,8 @@ defmodule OrchardNodeAgent.MixProject do
   defp deps do
     [
       {:orchard_shared, in_umbrella: true},
-      {:req, "~> 0.5"}
+      {:req, "~> 0.5"},
+      {:req_s3, "~> 0.2"}
     ]
   end
 end

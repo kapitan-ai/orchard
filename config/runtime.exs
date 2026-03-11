@@ -56,6 +56,17 @@ default_node_runtime = fn root ->
       connect_timeout_ms: 10_000,
       receive_timeout_ms: 30_000,
       req_options: []
+    ],
+    s3: [
+      endpoint: nil,
+      region: "us-east-1",
+      access_key_id: nil,
+      secret_access_key: nil,
+      session_token: nil,
+      force_path_style?: false,
+      connect_timeout_ms: 10_000,
+      receive_timeout_ms: 60_000,
+      req_options: []
     ]
   ]
 end
@@ -145,6 +156,32 @@ if config_env() == :prod do
                     receive_timeout_ms:
                       if(System.get_env("ORCHARD_HF_RECEIVE_TIMEOUT_MS"),
                         do: env_int.("ORCHARD_HF_RECEIVE_TIMEOUT_MS", "30000")
+                      )
+                  ],
+                  fn {_k, v} -> is_nil(v) end
+                )
+              ),
+            s3:
+              Keyword.merge(
+                Keyword.get(default_node_runtime.(orchard_support_root), :s3, []),
+                Enum.reject(
+                  [
+                    endpoint: System.get_env("ORCHARD_S3_ENDPOINT"),
+                    region: System.get_env("ORCHARD_S3_REGION"),
+                    access_key_id: System.get_env("ORCHARD_S3_ACCESS_KEY_ID"),
+                    secret_access_key: System.get_env("ORCHARD_S3_SECRET_ACCESS_KEY"),
+                    session_token: System.get_env("ORCHARD_S3_SESSION_TOKEN"),
+                    force_path_style?:
+                      if(System.get_env("ORCHARD_S3_FORCE_PATH_STYLE"),
+                        do: env_bool.("ORCHARD_S3_FORCE_PATH_STYLE", false)
+                      ),
+                    connect_timeout_ms:
+                      if(System.get_env("ORCHARD_S3_CONNECT_TIMEOUT_MS"),
+                        do: env_int.("ORCHARD_S3_CONNECT_TIMEOUT_MS", "10000")
+                      ),
+                    receive_timeout_ms:
+                      if(System.get_env("ORCHARD_S3_RECEIVE_TIMEOUT_MS"),
+                        do: env_int.("ORCHARD_S3_RECEIVE_TIMEOUT_MS", "60000")
                       )
                   ],
                   fn {_k, v} -> is_nil(v) end
