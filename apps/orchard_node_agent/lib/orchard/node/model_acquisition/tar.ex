@@ -8,6 +8,10 @@ defmodule Orchard.Node.ModelAcquisition.Tar do
   - Rejects absolute paths and path traversal (`..`)
   - Post-extraction scan verifies no symlinks were created
   - Normalizes single-wrapper-directory archives to flat layout
+
+  Extraction scratch work uses a sibling directory outside the target
+  `staging_path` to avoid collisions between archive entries and
+  internal temp names (e.g. an archive entry named `.extract`).
   """
 
   require Logger
@@ -17,15 +21,28 @@ defmodule Orchard.Node.ModelAcquisition.Tar do
   @doc """
   Extract an archive into `staging_path`, enforcing safety rules.
 
-  The archive is first extracted into a temporary `.extract` subdirectory
-  inside `staging_path`, validated, then normalized into `staging_path` root.
+  Uses a sibling temporary directory (outside `staging_path`) for extraction
+  scratch work, then normalizes the layout into `staging_path`. This avoids
+  collisions between archive entries and internal temp names.
+
+  An optional 4th argument `extract_root` can supply a caller-managed
+  extraction directory; otherwise a unique sibling directory is created
+  and cleaned up automatically.
 
   Returns `:ok` or `{:error, reason}`.
   """
   @spec extract_archive(String.t(), String.t(), archive_format()) :: :ok | {:error, term()}
   def extract_archive(archive_path, staging_path, archive_format) do
-    extract_root = Path.join(staging_path, ".extract")
+    # Derive a sibling temp directory outside staging_path to avoid
+    # collisions with archive entries named `.extract` etc.
+    unique = System.unique_integer([:positive]) |> Integer.to_string()
+    extract_root = Path.join(Path.dirname(staging_path), ".orchard-extract-#{unique}")
+    extract_archive(archive_path, staging_path, archive_format, extract_root)
+  end
 
+  @spec extract_archive(String.t(), String.t(), archive_format(), String.t()) ::
+          :ok | {:error, term()}
+  def extract_archive(archive_path, staging_path, archive_format, extract_root) do
     with :ok <- mkdir_p(extract_root),
          {:ok, entries} <- list_archive_entries(archive_path, archive_format),
          :ok <- validate_entries(entries),

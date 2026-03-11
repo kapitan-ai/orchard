@@ -37,12 +37,30 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
   @impl true
   def materialize(%Request{} = request) do
-    with {:ok, source_spec} <- parse_s3_uri(request.artifact_source_uri),
-         {:ok, effective_config} <- resolve_config(source_spec),
-         {:ok, head_meta} <- head_object(source_spec, effective_config),
-         {:ok, archive_path} <- download_object(source_spec, head_meta, request, effective_config),
-         :ok <- extract_and_cleanup(archive_path, request.staging_path, source_spec.archive_format) do
-      :ok
+    # Use a sibling temp directory for archive download + extraction scratch
+    # work so that no temp names (`.source_archive.*`, extract dirs) can
+    # collide with legitimate archive entries inside staging_path.
+    unique = System.unique_integer([:positive]) |> Integer.to_string()
+    tmp_root = Path.join(Path.dirname(request.staging_path), ".orchard-s3-tmp-#{unique}")
+
+    try do
+      with :ok <- mkdir_p(tmp_root),
+           {:ok, source_spec} <- parse_s3_uri(request.artifact_source_uri),
+           {:ok, effective_config} <- resolve_config(source_spec),
+           {:ok, head_meta} <- head_object(source_spec, effective_config),
+           {:ok, archive_path} <-
+             download_object(source_spec, head_meta, request, effective_config, tmp_root),
+           :ok <-
+             extract_and_cleanup(
+               archive_path,
+               request.staging_path,
+               source_spec.archive_format,
+               tmp_root
+             ) do
+        :ok
+      end
+    after
+      File.rm_rf(tmp_root)
     end
   end
 
@@ -80,8 +98,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
   defp parse_object_key(nil), do: ""
   defp parse_object_key("/"), do: ""
-  defp parse_object_key("/" <> rest), do: rest
-  defp parse_object_key(path), do: path
+  defp parse_object_key("/" <> rest), do: URI.decode(rest)
+  defp parse_object_key(path), do: URI.decode(path)
 
   defp parse_query_params(nil), do: {:ok, %{}}
   defp parse_query_params(""), do: {:ok, %{}}
@@ -108,6 +126,15 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
   # -- Config Resolution -----------------------------------------------------
 
+  # Security/Trust: The effective endpoint can come from either the runtime
+  # config (`Node.s3_config/0`) or the `artifact_source_uri` query string
+  # (`?endpoint=http://...`). Both redirect the node-agent's outbound
+  # request destination, and SigV4 credentials will be attached to that
+  # request if configured. Therefore `artifact_source_uri` must be treated
+  # as an admin-controlled, trusted input — it comes from the controller's
+  # model registry, not from end-users. This is intentionally permissive
+  # to support MinIO and other S3-compatible stores. If `artifact_source_uri`
+  # ever becomes user-supplied, add an endpoint allowlist here.
   defp resolve_config(source_spec) do
     base = Node.s3_config()
 
@@ -240,13 +267,13 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
   # -- GET Object (Streaming Download) ---------------------------------------
 
-  defp download_object(source_spec, head_meta, request, config) do
+  defp download_object(source_spec, head_meta, request, config, tmp_root) do
     %{content_length: expected_size, etag: _head_etag, url: url} = head_meta
     %{archive_format: format} = source_spec
 
     archive_ext = if format == :tar_gz, do: ".tar.gz", else: ".tar"
-    partial_path = Path.join(request.staging_path, ".source_archive.partial")
-    archive_path = Path.join(request.staging_path, ".source_archive#{archive_ext}")
+    partial_path = Path.join(tmp_root, ".source_archive.partial")
+    archive_path = Path.join(tmp_root, ".source_archive#{archive_ext}")
 
     Logger.info("S3: GET #{url} (#{expected_size} bytes)")
 
@@ -254,55 +281,68 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
       {:ok, file_pid} ->
         bytes_counter = :counters.new(1, [:atomics])
         last_progress = :counters.new(1, [:atomics])
+        write_error = :atomics.new(1, [])
 
         into_fun = fn {:data, chunk}, {req, resp} ->
-          IO.binwrite(file_pid, chunk)
-          chunk_size = byte_size(chunk)
-          :counters.add(bytes_counter, 1, chunk_size)
+          case IO.binwrite(file_pid, chunk) do
+            :ok ->
+              chunk_size = byte_size(chunk)
+              :counters.add(bytes_counter, 1, chunk_size)
 
-          # Emit progress if threshold crossed
-          current = :counters.get(bytes_counter, 1)
-          last = :counters.get(last_progress, 1)
+              # Emit progress if threshold crossed
+              current = :counters.get(bytes_counter, 1)
+              last = :counters.get(last_progress, 1)
 
-          if current - last >= @progress_threshold_bytes do
-            :counters.put(last_progress, 1, current)
-            emit_progress(current, expected_size, request, source_spec.object_key)
+              if current - last >= @progress_threshold_bytes do
+                :counters.put(last_progress, 1, current)
+                emit_progress(current, expected_size, 0, request, source_spec.object_key)
+              end
+
+              {:cont, {req, resp}}
+
+            {:error, _reason} ->
+              # Record write failure; halt will propagate via Req response
+              :atomics.put(write_error, 1, 1)
+              {:halt, {req, resp}}
           end
-
-          {:cont, {req, resp}}
         end
 
         result = s3_request(:get, url, config, into: into_fun)
         File.close(file_pid)
         bytes_written = :counters.get(bytes_counter, 1)
 
-        case result do
-          {:ok, %{status: 200}} ->
-            if bytes_written != expected_size do
-              {:error,
-               {:download_incomplete,
-                "expected #{expected_size} bytes, got #{bytes_written}"}}
-            else
-              # Emit final progress
-              emit_progress(bytes_written, expected_size, request, source_spec.object_key)
+        # Check for write errors first
+        if :atomics.get(write_error, 1) == 1 do
+          {:error, {:filesystem_error, "write #{partial_path}: disk write failed"}}
+        else
+          case result do
+            {:ok, %{status: 200}} ->
+              if bytes_written != expected_size do
+                {:error,
+                 {:download_incomplete,
+                  "expected #{expected_size} bytes, got #{bytes_written}"}}
+              else
+                # Emit final progress with files_completed: 1
+                emit_progress(bytes_written, expected_size, 1, request, source_spec.object_key)
 
-              case File.rename(partial_path, archive_path) do
-                :ok -> {:ok, archive_path}
-                {:error, reason} -> {:error, {:filesystem_error, "rename partial: #{inspect(reason)}"}}
+                case File.rename(partial_path, archive_path) do
+                  :ok -> {:ok, archive_path}
+                  {:error, reason} -> {:error, {:filesystem_error, "rename partial: #{inspect(reason)}"}}
+                end
               end
-            end
 
-          {:ok, %{status: status}} when status in [401, 403] ->
-            {:error, {:source_unauthorized, "S3 returned #{status} during download"}}
+            {:ok, %{status: status}} when status in [401, 403] ->
+              {:error, {:source_unauthorized, "S3 returned #{status} during download"}}
 
-          {:ok, %{status: 404}} ->
-            {:error, {:source_not_found, "S3 object not found during download"}}
+            {:ok, %{status: 404}} ->
+              {:error, {:source_not_found, "S3 object not found during download"}}
 
-          {:ok, %{status: status}} ->
-            {:error, {:source_unavailable, "S3 GET returned #{status}"}}
+            {:ok, %{status: status}} ->
+              {:error, {:source_unavailable, "S3 GET returned #{status}"}}
 
-          {:error, reason} ->
-            {:error, {:download_failed, "S3 download failed: #{inspect(reason)}"}}
+            {:error, reason} ->
+              {:error, {:download_failed, "S3 download failed: #{inspect(reason)}"}}
+          end
         end
 
       {:error, reason} ->
@@ -312,8 +352,10 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
   # -- Extract & Cleanup -----------------------------------------------------
 
-  defp extract_and_cleanup(archive_path, staging_path, archive_format) do
-    case Tar.extract_archive(archive_path, staging_path, archive_format) do
+  defp extract_and_cleanup(archive_path, staging_path, archive_format, tmp_root) do
+    extract_root = Path.join(tmp_root, ".extract")
+
+    case Tar.extract_archive(archive_path, staging_path, archive_format, extract_root) do
       :ok ->
         File.rm(archive_path)
         :ok
@@ -376,13 +418,13 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
   # -- Progress Telemetry ----------------------------------------------------
 
-  defp emit_progress(bytes_downloaded, total_bytes, request, object_key) do
+  defp emit_progress(bytes_downloaded, total_bytes, files_completed, request, object_key) do
     :telemetry.execute(
       [:orchard, :node, :model_acquisition, :progress],
       %{
         bytes_downloaded: bytes_downloaded,
         total_bytes: total_bytes,
-        files_completed: 0,
+        files_completed: files_completed,
         total_files: 1
       },
       %{
@@ -400,4 +442,10 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
     etag |> String.trim_leading("\"") |> String.trim_trailing("\"")
   end
 
+  defp mkdir_p(path) do
+    case File.mkdir_p(path) do
+      :ok -> :ok
+      {:error, reason} -> {:error, {:filesystem_error, "mkdir_p #{path}: #{inspect(reason)}"}}
+    end
+  end
 end

@@ -409,42 +409,36 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
          progress, partial_path, etag_path, expected_size,
          offset, resume?, extra_headers, bytes_counter, file_pid
        ) do
+    write_error = :atomics.new(1, [])
+
     into_fun = fn {:data, chunk}, {req, resp} ->
-      IO.binwrite(file_pid, chunk)
-      :counters.add(bytes_counter, 1, byte_size(chunk))
-      {:cont, {req, resp}}
+      case IO.binwrite(file_pid, chunk) do
+        :ok ->
+          :counters.add(bytes_counter, 1, byte_size(chunk))
+          {:cont, {req, resp}}
+
+        {:error, _reason} ->
+          :atomics.put(write_error, 1, 1)
+          {:halt, {req, resp}}
+      end
     end
 
     result = hf_request(:get, url, config, headers: extra_headers, into: into_fun)
     File.close(file_pid)
     bytes_written = :counters.get(bytes_counter, 1)
 
-    case result do
-      {:ok, %{status: 200}} when resume? and offset > 0 ->
-        # Server ignored Range header and sent the full file, but we appended
-        # it to the existing partial — the file is now corrupt.
-        # Delete the partial and restart this attempt from scratch.
-        File.rm(partial_path)
-        File.rm(etag_path)
+    # Filesystem write failures are non-retryable; surface immediately
+    if :atomics.get(write_error, 1) == 1 do
+      {:error, {:filesystem_error, "write #{partial_path}: disk write failed"}}
+    else
+      case result do
+        {:ok, %{status: 200}} when resume? and offset > 0 ->
+          # Server ignored Range header and sent the full file, but we appended
+          # it to the existing partial — the file is now corrupt.
+          # Delete the partial and restart this attempt from scratch.
+          File.rm(partial_path)
+          File.rm(etag_path)
 
-        if attempt < max_attempts do
-          backoff(attempt)
-
-          do_download_retry(
-            url, dest, file_meta, request, config,
-            attempt + 1, max_attempts, progress
-          )
-        else
-          {:error,
-           {:download_failed,
-            "server ignored Range header for #{file_meta.path}, resume not supported"}}
-        end
-
-      {:ok, %{status: status}} when status in [200, 206] ->
-        effective_size = bytes_written
-
-        # Verify size if known
-        if expected_size && effective_size != expected_size do
           if attempt < max_attempts do
             backoff(attempt)
 
@@ -454,68 +448,87 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
             )
           else
             {:error,
-             {:download_incomplete,
-              "expected #{expected_size} bytes, got #{effective_size} for #{file_meta.path}"}}
+             {:download_failed,
+              "server ignored Range header for #{file_meta.path}, resume not supported"}}
           end
-        else
-          # Promote partial to final
-          case File.rename(partial_path, dest) do
-            :ok ->
-              File.rm(etag_path)
 
-              file_bytes = file_meta[:content_length] || file_meta.size || 0
+        {:ok, %{status: status}} when status in [200, 206] ->
+          effective_size = bytes_written
 
-              final_progress = %{
-                progress
-                | bytes_downloaded: progress.bytes_downloaded + file_bytes,
-                  files_completed: progress.files_completed + 1
-              }
+          # Verify size if known
+          if expected_size && effective_size != expected_size do
+            if attempt < max_attempts do
+              backoff(attempt)
 
-              emit_progress(final_progress, request, file_meta.path)
-              {:ok, final_progress}
+              do_download_retry(
+                url, dest, file_meta, request, config,
+                attempt + 1, max_attempts, progress
+              )
+            else
+              {:error,
+               {:download_incomplete,
+                "expected #{expected_size} bytes, got #{effective_size} for #{file_meta.path}"}}
+            end
+          else
+            # Promote partial to final
+            case File.rename(partial_path, dest) do
+              :ok ->
+                File.rm(etag_path)
 
-            {:error, reason} ->
-              {:error, {:filesystem_error, "rename #{partial_path}: #{inspect(reason)}"}}
+                file_bytes = file_meta[:content_length] || file_meta.size || 0
+
+                final_progress = %{
+                  progress
+                  | bytes_downloaded: progress.bytes_downloaded + file_bytes,
+                    files_completed: progress.files_completed + 1
+                }
+
+                emit_progress(final_progress, request, file_meta.path)
+                {:ok, final_progress}
+
+              {:error, reason} ->
+                {:error, {:filesystem_error, "rename #{partial_path}: #{inspect(reason)}"}}
+            end
           end
-        end
 
-      {:ok, %{status: status}} when status in [401, 403] ->
-        {:error, {:source_unauthorized, "HF returned #{status} downloading #{file_meta.path}"}}
+        {:ok, %{status: status}} when status in [401, 403] ->
+          {:error, {:source_unauthorized, "HF returned #{status} downloading #{file_meta.path}"}}
 
-      {:ok, %{status: 404}} ->
-        {:error, {:source_not_found, "HF file not found: #{file_meta.path}"}}
+        {:ok, %{status: 404}} ->
+          {:error, {:source_not_found, "HF file not found: #{file_meta.path}"}}
 
-      {:ok, %{status: status}} when status in [429] and attempt < max_attempts ->
-        backoff(attempt)
+        {:ok, %{status: status}} when status in [429] and attempt < max_attempts ->
+          backoff(attempt)
 
-        do_download_retry(
-          url, dest, file_meta, request, config,
-          attempt + 1, max_attempts, progress
-        )
+          do_download_retry(
+            url, dest, file_meta, request, config,
+            attempt + 1, max_attempts, progress
+          )
 
-      {:ok, %{status: status}} when status >= 500 and attempt < max_attempts ->
-        backoff(attempt)
+        {:ok, %{status: status}} when status >= 500 and attempt < max_attempts ->
+          backoff(attempt)
 
-        do_download_retry(
-          url, dest, file_meta, request, config,
-          attempt + 1, max_attempts, progress
-        )
+          do_download_retry(
+            url, dest, file_meta, request, config,
+            attempt + 1, max_attempts, progress
+          )
 
-      {:ok, %{status: status}} ->
-        {:error, {:download_failed, "HF download returned #{status} for #{file_meta.path}"}}
+        {:ok, %{status: status}} ->
+          {:error, {:download_failed, "HF download returned #{status} for #{file_meta.path}"}}
 
-      {:error, _} when attempt < max_attempts ->
-        backoff(attempt)
+        {:error, _} when attempt < max_attempts ->
+          backoff(attempt)
 
-        do_download_retry(
-          url, dest, file_meta, request, config,
-          attempt + 1, max_attempts, progress
-        )
+          do_download_retry(
+            url, dest, file_meta, request, config,
+            attempt + 1, max_attempts, progress
+          )
 
-      {:error, reason} ->
-        {:error,
-         {:download_failed,
-          "HF download failed for #{file_meta.path}: #{inspect(reason)}"}}
+        {:error, reason} ->
+          {:error,
+           {:download_failed,
+            "HF download failed for #{file_meta.path}: #{inspect(reason)}"}}
+      end
     end
   end
 

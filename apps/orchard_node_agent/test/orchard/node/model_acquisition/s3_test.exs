@@ -94,6 +94,16 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
                S3.parse_s3_uri("s3://my-bucket/model.tar.gz?region=eu-west-1&endpoint=http://minio:9000")
     end
 
+    test "decodes percent-encoded object keys" do
+      assert {:ok, %{bucket: "my-bucket", object_key: "models/my model.tar.gz"}} =
+               S3.parse_s3_uri("s3://my-bucket/models/my%20model.tar.gz")
+    end
+
+    test "decodes percent-encoded path segments without double-encoding" do
+      assert {:ok, %{bucket: "my-bucket", object_key: "special chars/model+v1.tar.gz"}} =
+               S3.parse_s3_uri("s3://my-bucket/special%20chars/model+v1.tar.gz")
+    end
+
     test "rejects missing bucket" do
       assert {:error, :invalid_source_uri} = S3.parse_s3_uri("s3:///key.tar.gz")
     end
@@ -217,6 +227,39 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
 
       File.rm_rf!(tmp)
     end
+
+    test "archive entries named .extract or .source_archive do not collide with temp names" do
+      tmp = System.tmp_dir!() |> Path.join("collision_tar_#{:rand.uniform(1_000_000)}")
+      File.mkdir_p!(tmp)
+      staging = Path.join(tmp, "staging")
+      File.mkdir_p!(staging)
+
+      # Create a source dir with files that used to collide with internal temp names
+      source_dir = Path.join(tmp, "source")
+      File.mkdir_p!(Path.join(source_dir, ".extract"))
+      File.write!(Path.join(source_dir, ".extract/nested.txt"), "nested")
+      File.write!(Path.join(source_dir, "config.json"), "{}")
+
+      archive_path = Path.join(tmp, "collision.tar.gz")
+      file_list = [
+        {~c".extract/nested.txt", String.to_charlist(Path.join(source_dir, ".extract/nested.txt"))},
+        {~c"config.json", String.to_charlist(Path.join(source_dir, "config.json"))}
+      ]
+      :ok = :erl_tar.create(String.to_charlist(archive_path), file_list, [:compressed])
+
+      assert :ok = Tar.extract_archive(archive_path, staging, :tar_gz)
+
+      # Both files should be present in staging
+      assert File.exists?(Path.join(staging, "config.json"))
+      assert File.exists?(Path.join(staging, ".extract/nested.txt"))
+
+      # No leftover temp dirs in staging
+      staging_entries = File.ls!(staging) |> Enum.sort()
+      assert ".extract" in staging_entries
+      assert "config.json" in staging_entries
+
+      File.rm_rf!(tmp)
+    end
   end
 
   # ============================================================================
@@ -254,6 +297,37 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
       assert {:ok, final_path, :materialized} = ModelAcquisition.ensure_cached(request)
       assert File.exists?(Path.join(final_path, "config.json"))
       refute File.exists?(Path.join(final_path, "model-v1"))
+    end
+
+    test "final progress telemetry reports files_completed: 1", ctx do
+      stub_s3_success(ctx.stub_name, ctx.tar_gz_bytes)
+
+      test_pid = self()
+
+      handler_id = "test-s3-progress-#{System.unique_integer([:positive])}"
+
+      :telemetry.attach(
+        handler_id,
+        [:orchard, :node, :model_acquisition, :progress],
+        fn _event, measurements, metadata, _config ->
+          send(test_pid, {:progress, measurements, metadata})
+        end,
+        nil
+      )
+
+      request = build_s3_request(ctx, artifact_source_uri: "s3://#{@bucket}/#{@object_key}")
+      assert {:ok, _path, :materialized} = ModelAcquisition.ensure_cached(request)
+
+      :telemetry.detach(handler_id)
+
+      # Collect all progress events and verify the last one shows completion
+      events = collect_progress_events()
+      assert length(events) >= 1
+
+      {last_measurements, last_metadata} = List.last(events)
+      assert last_measurements.files_completed == 1
+      assert last_measurements.total_files == 1
+      assert last_metadata.source_scheme == "s3"
     end
   end
 
@@ -536,5 +610,15 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
 
     updated_runtime = Keyword.put(current_runtime, :s3, s3_config)
     Application.put_env(:orchard_node_agent, :runtime, updated_runtime)
+  end
+
+  defp collect_progress_events do
+    receive do
+      {:progress, measurements, metadata} ->
+        [{measurements, metadata} | collect_progress_events()]
+    after
+      100 -> []
+    end
+    |> Enum.reverse()
   end
 end
