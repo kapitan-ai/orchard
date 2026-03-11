@@ -33,7 +33,16 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       worker_ready_timeout_ms: @default_worker_ready_timeout_ms,
       worker_load_timeout_ms: @default_worker_load_timeout_ms,
       worker_shutdown_timeout_ms: @default_worker_shutdown_timeout_ms,
-      fake_runtime?: false
+      fake_runtime?: false,
+      hf: [
+        base_url: "https://huggingface.co",
+        api_base_url: "https://huggingface.co/api",
+        token: nil,
+        retry_attempts: 3,
+        connect_timeout_ms: 10_000,
+        receive_timeout_ms: 30_000,
+        req_options: []
+      ]
     ]
   end
 end

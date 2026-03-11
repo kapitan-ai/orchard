@@ -152,6 +152,7 @@ defmodule Orchard.Node.ModelAcquisition do
   end
 
   defp select_adapter("file"), do: {:ok, Source.File}
+  defp select_adapter("hf"), do: {:ok, Source.HuggingFace}
   defp select_adapter(nil), do: {:error, :missing_artifact_source_uri}
   defp select_adapter(scheme), do: {:error, {:unsupported_source_scheme, scheme}}
 

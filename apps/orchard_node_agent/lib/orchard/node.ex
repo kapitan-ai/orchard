@@ -41,6 +41,8 @@ defmodule Orchard.Node do
 
   def fake_runtime?, do: runtime_config()[:fake_runtime?]
 
+  def hf_config, do: runtime_config()[:hf] || []
+
   def runtime_adapter_impl do
     runtime_config()[:runtime_adapter_impl] || default_runtime_adapter_impl()
   end

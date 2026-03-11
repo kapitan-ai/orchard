@@ -116,7 +116,31 @@ if config_env() == :prod do
             worker_ready_timeout_ms: env_int.("ORCHARD_WORKER_READY_TIMEOUT_MS", "5000"),
             worker_load_timeout_ms: env_int.("ORCHARD_WORKER_LOAD_TIMEOUT_MS", "120000"),
             worker_shutdown_timeout_ms: env_int.("ORCHARD_WORKER_SHUTDOWN_TIMEOUT_MS", "1000"),
-            fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false)
+            fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false),
+            hf:
+              Keyword.merge(
+                Keyword.get(default_node_runtime.(orchard_support_root), :hf, []),
+                Enum.reject(
+                  [
+                    base_url: System.get_env("ORCHARD_HF_BASE_URL"),
+                    api_base_url: System.get_env("ORCHARD_HF_API_BASE_URL"),
+                    token: System.get_env("HF_TOKEN"),
+                    retry_attempts:
+                      if(System.get_env("ORCHARD_HF_RETRY_ATTEMPTS"),
+                        do: env_int.("ORCHARD_HF_RETRY_ATTEMPTS", "3")
+                      ),
+                    connect_timeout_ms:
+                      if(System.get_env("ORCHARD_HF_CONNECT_TIMEOUT_MS"),
+                        do: env_int.("ORCHARD_HF_CONNECT_TIMEOUT_MS", "10000")
+                      ),
+                    receive_timeout_ms:
+                      if(System.get_env("ORCHARD_HF_RECEIVE_TIMEOUT_MS"),
+                        do: env_int.("ORCHARD_HF_RECEIVE_TIMEOUT_MS", "30000")
+                      )
+                  ],
+                  fn {_k, v} -> is_nil(v) end
+                )
+              )
           )
 
     _other_release ->
