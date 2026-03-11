@@ -651,7 +651,8 @@ defmodule OrchardNodeAgentTest do
       version: "main",
       artifact_sha256: "sha256:test",
       preload: true,
-      deadline_unix_ms: System.system_time(:millisecond) + 5_000
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+      artifact_source_uri: "file:///tmp/test-model"
     }
   end
 

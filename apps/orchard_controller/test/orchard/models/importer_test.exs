@@ -39,6 +39,8 @@ defmodule Orchard.Models.ImporterTest do
       assert model.artifact_uri ==
                "file://#{Path.join([artifacts_root, "test-org/tiny-llm", "mlx-q4-v1"])}"
 
+      assert model.artifact_source_uri == model.artifact_uri
+
       # Verify the bundle was actually copied
       dest = Path.join([artifacts_root, "test-org/tiny-llm", "mlx-q4-v1"])
       assert File.exists?(Path.join(dest, "manifest.json"))

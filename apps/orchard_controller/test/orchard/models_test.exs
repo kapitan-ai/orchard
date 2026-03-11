@@ -18,6 +18,16 @@ defmodule Orchard.ModelsTest do
     assert %{artifact_uri: ["can't be blank"]} = errors_on(changeset)
   end
 
+  test "create_model/1 persists artifact_source_uri when provided" do
+    assert {:ok, model} = Models.create_model(model_attrs())
+    assert model.artifact_source_uri == "file:///tmp/phi-3"
+  end
+
+  test "create_model/1 succeeds when artifact_source_uri is nil" do
+    assert {:ok, model} = Models.create_model(model_attrs(%{artifact_source_uri: nil}))
+    assert model.artifact_source_uri == nil
+  end
+
   test "create_model/1 rejects malformed capabilities instead of raising" do
     assert {:error, changeset} = Models.create_model(model_attrs(%{capabilities: nil}))
     assert %{capabilities: ["must contain non-empty strings"]} = errors_on(changeset)
@@ -46,6 +56,7 @@ defmodule Orchard.ModelsTest do
         capabilities: ["chat"],
         tokenizer: %{"kind" => "huggingface_tokenizer_json", "path" => "tokenizer.json"},
         artifact_uri: "file:///tmp/phi-3",
+        artifact_source_uri: "file:///tmp/phi-3",
         artifact_sha256: String.duplicate("a", 64),
         artifact_size_bytes: 1_024,
         resident_memory_bytes: 2_048,

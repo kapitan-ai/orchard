@@ -31,6 +31,7 @@ message EnsureModelLoadedRequest {
   string artifact_sha256 = 4;
   bool preload = 5;
   uint64 deadline_unix_ms = 6;
+  string artifact_source_uri = 7;
 }
 
 message EnsureModelLoadedResponse {

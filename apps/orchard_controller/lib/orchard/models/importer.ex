@@ -307,6 +307,7 @@ defmodule Orchard.Models.Importer do
       capabilities: manifest.capabilities,
       tokenizer: tokenizer_to_map(manifest.tokenizer),
       artifact_uri: artifact_uri,
+      artifact_source_uri: artifact_uri,
       artifact_sha256: computed_sha256,
       artifact_size_bytes: manifest.size_bytes || 0,
       resident_memory_bytes: manifest.resident_memory_bytes || 0,

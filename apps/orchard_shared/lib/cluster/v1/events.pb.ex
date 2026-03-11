@@ -6,26 +6,24 @@ defmodule Orchard.Cluster.V1.InferenceEvent do
     protoc_gen_elixir_version: "0.16.0",
     syntax: :proto3
 
-  oneof(:event, 0)
+  oneof :event, 0
 
-  field(:accepted, 1, type: Orchard.Cluster.V1.Accepted, oneof: 0)
+  field :accepted, 1, type: Orchard.Cluster.V1.Accepted, oneof: 0
 
-  field(:output_text_delta, 2,
+  field :output_text_delta, 2,
     type: Orchard.Cluster.V1.OutputTextDelta,
     json_name: "outputTextDelta",
     oneof: 0
-  )
 
-  field(:tool_call_delta, 3,
+  field :tool_call_delta, 3,
     type: Orchard.Cluster.V1.ToolCallDelta,
     json_name: "toolCallDelta",
     oneof: 0
-  )
 
-  field(:usage, 4, type: Orchard.Cluster.V1.UsageUpdate, oneof: 0)
-  field(:completed, 5, type: Orchard.Cluster.V1.Completed, oneof: 0)
-  field(:failed, 6, type: Orchard.Cluster.V1.Failed, oneof: 0)
-  field(:progress, 7, type: Orchard.Cluster.V1.Progress, oneof: 0)
+  field :usage, 4, type: Orchard.Cluster.V1.UsageUpdate, oneof: 0
+  field :completed, 5, type: Orchard.Cluster.V1.Completed, oneof: 0
+  field :failed, 6, type: Orchard.Cluster.V1.Failed, oneof: 0
+  field :progress, 7, type: Orchard.Cluster.V1.Progress, oneof: 0
 end
 
 defmodule Orchard.Cluster.V1.Accepted do
@@ -36,7 +34,7 @@ defmodule Orchard.Cluster.V1.Accepted do
     protoc_gen_elixir_version: "0.16.0",
     syntax: :proto3
 
-  field(:accepted_at_unix_ms, 1, type: :uint64, json_name: "acceptedAtUnixMs")
+  field :accepted_at_unix_ms, 1, type: :uint64, json_name: "acceptedAtUnixMs"
 end
 
 defmodule Orchard.Cluster.V1.OutputTextDelta do
@@ -47,7 +45,7 @@ defmodule Orchard.Cluster.V1.OutputTextDelta do
     protoc_gen_elixir_version: "0.16.0",
     syntax: :proto3
 
-  field(:delta, 1, type: :string)
+  field :delta, 1, type: :string
 end
 
 defmodule Orchard.Cluster.V1.ToolCallDelta do
@@ -58,8 +56,8 @@ defmodule Orchard.Cluster.V1.ToolCallDelta do
     protoc_gen_elixir_version: "0.16.0",
     syntax: :proto3
 
-  field(:tool_call_id, 1, type: :string, json_name: "toolCallId")
-  field(:delta_json, 2, type: :string, json_name: "deltaJson")
+  field :tool_call_id, 1, type: :string, json_name: "toolCallId"
+  field :delta_json, 2, type: :string, json_name: "deltaJson"
 end
 
 defmodule Orchard.Cluster.V1.UsageUpdate do
@@ -70,7 +68,7 @@ defmodule Orchard.Cluster.V1.UsageUpdate do
     protoc_gen_elixir_version: "0.16.0",
     syntax: :proto3
 
-  field(:usage, 1, type: Orchard.Cluster.V1.TokenUsage)
+  field :usage, 1, type: Orchard.Cluster.V1.TokenUsage
 end
 
 defmodule Orchard.Cluster.V1.Completed do
@@ -81,13 +79,12 @@ defmodule Orchard.Cluster.V1.Completed do
     protoc_gen_elixir_version: "0.16.0",
     syntax: :proto3
 
-  field(:finish_reason, 1,
+  field :finish_reason, 1,
     type: Orchard.Cluster.V1.FinishReason,
     json_name: "finishReason",
     enum: true
-  )
 
-  field(:usage, 2, type: Orchard.Cluster.V1.TokenUsage)
+  field :usage, 2, type: Orchard.Cluster.V1.TokenUsage
 end
 
 defmodule Orchard.Cluster.V1.Failed do
@@ -98,9 +95,9 @@ defmodule Orchard.Cluster.V1.Failed do
     protoc_gen_elixir_version: "0.16.0",
     syntax: :proto3
 
-  field(:code, 1, type: :string)
-  field(:message, 2, type: :string)
-  field(:retryable, 3, type: :bool)
+  field :code, 1, type: :string
+  field :message, 2, type: :string
+  field :retryable, 3, type: :bool
 end
 
 defmodule Orchard.Cluster.V1.Progress do
@@ -111,6 +108,6 @@ defmodule Orchard.Cluster.V1.Progress do
     protoc_gen_elixir_version: "0.16.0",
     syntax: :proto3
 
-  field(:stage, 1, type: :string)
-  field(:message, 2, type: :string)
+  field :stage, 1, type: :string
+  field :message, 2, type: :string
 end

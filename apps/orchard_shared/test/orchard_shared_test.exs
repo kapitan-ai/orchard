@@ -36,6 +36,9 @@ defmodule OrchardSharedTest do
     assert %EnsureModelLoadedRequest{artifact_sha256: "sha256", preload: true} =
              struct(EnsureModelLoadedRequest, artifact_sha256: "sha256", preload: true)
 
+    assert %EnsureModelLoadedRequest{artifact_source_uri: "hf://org/repo"} =
+             struct(EnsureModelLoadedRequest, artifact_source_uri: "hf://org/repo")
+
     assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
              struct(EnsureModelLoadedResponse, placement_state: :PLACEMENT_STATE_LOADED)
 
@@ -95,5 +98,20 @@ defmodule OrchardSharedTest do
 
     assert completed_event ==
              completed_event |> InferenceEvent.encode() |> InferenceEvent.decode()
+
+    ensure_request = %EnsureModelLoadedRequest{
+      node_id: "node-1",
+      model_id: "mlx-community/phi-3",
+      version: "main",
+      artifact_sha256: "sha256:abc",
+      preload: false,
+      deadline_unix_ms: 1_700_000_000,
+      artifact_source_uri: "hf://mlx-community/phi-3"
+    }
+
+    assert ensure_request ==
+             ensure_request
+             |> EnsureModelLoadedRequest.encode()
+             |> EnsureModelLoadedRequest.decode()
   end
 end

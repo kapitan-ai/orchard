@@ -89,8 +89,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp do_ensure_model_loaded(channel, request, timeout_ms) do
     case Client.ensure_model_loaded(channel, request, timeout: timeout_ms) do
-      {:ok, _response} -> :ok
-      {:error, reason} -> {:error, reason}
+      {:ok, %{placement_state: :PLACEMENT_STATE_LOADED}} ->
+        :ok
+
+      {:ok, %{placement_state: placement_state}} ->
+        {:error, {:unexpected_placement_state, placement_state}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 

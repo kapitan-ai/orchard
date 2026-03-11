@@ -21,6 +21,7 @@ defmodule Orchard.Models.Model do
     field(:capabilities, {:array, :string}, default: [])
     field(:tokenizer, :map, default: %{})
     field(:artifact_uri, :string)
+    field(:artifact_source_uri, :string)
     field(:artifact_sha256, :string)
     field(:artifact_size_bytes, :integer)
     field(:resident_memory_bytes, :integer)
@@ -49,6 +50,7 @@ defmodule Orchard.Models.Model do
       :capabilities,
       :tokenizer,
       :artifact_uri,
+      :artifact_source_uri,
       :artifact_sha256,
       :artifact_size_bytes,
       :resident_memory_bytes,

@@ -32,7 +32,8 @@ default_controller_inference = fn root ->
     tokenizer_executable: "orchard-tokenizer",
     artifacts_root: Path.join(root, "bundles"),
     runtime_client_target: [host: "127.0.0.1", port: 50_061],
-    request_timeout_ms: 120_000
+    request_timeout_ms: 120_000,
+    model_load_timeout_ms: 120_000
   ]
 end
 
@@ -85,7 +86,8 @@ if config_env() == :prod do
               host: System.get_env("ORCHARD_RUNTIME_CLIENT_HOST") || "127.0.0.1",
               port: env_int.("ORCHARD_RUNTIME_CLIENT_PORT", "50061")
             ],
-            request_timeout_ms: env_int.("ORCHARD_REQUEST_TIMEOUT_MS", "120000")
+            request_timeout_ms: env_int.("ORCHARD_REQUEST_TIMEOUT_MS", "120000"),
+            model_load_timeout_ms: env_int.("ORCHARD_MODEL_LOAD_TIMEOUT_MS", "120000")
           )
 
       config :orchard_controller, Orchard.API.Endpoint,

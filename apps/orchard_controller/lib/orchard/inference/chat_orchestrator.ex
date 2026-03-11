@@ -352,7 +352,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
   defp build_model_load_request(model, schedule) do
     deadline_ms =
       System.system_time(:millisecond) +
-        Map.get(schedule, :request_timeout_ms, Inference.request_timeout_ms())
+        Map.get(schedule, :model_load_timeout_ms, Inference.model_load_timeout_ms())
 
     %EnsureModelLoadedRequest{
       node_id: "",
@@ -360,7 +360,8 @@ defmodule Orchard.Inference.ChatOrchestrator do
       version: model.version,
       artifact_sha256: model.artifact_sha256,
       preload: false,
-      deadline_unix_ms: deadline_ms
+      deadline_unix_ms: deadline_ms,
+      artifact_source_uri: model.artifact_source_uri || ""
     }
   end
 

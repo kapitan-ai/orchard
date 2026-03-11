@@ -187,6 +187,30 @@ defmodule Orchard.Dispatch.DispatchTest do
       # Clean up
       if Process.alive?(dispatch_pid), do: Process.exit(dispatch_pid, :kill)
     end
+
+    test "dispatch returns error when ensure-load placement state is not LOADED" do
+      schedule = build_schedule("req-dispatch-fail-load")
+
+      execute =
+        %ExecuteInferenceRequest{
+          request_id: "req-dispatch-fail-load",
+          controller_session_id: "controller-session-dispatch",
+          model_id: "fail-load/test-model",
+          version: "v1",
+          rendered_prompt_utf8: "hello",
+          input_tokens: 1
+        }
+
+      model_load =
+        %EnsureModelLoadedRequest{
+          node_id: "local",
+          model_id: "fail-load/test-model",
+          version: "v1"
+        }
+
+      assert {:error, {:model_load_failed, {:unexpected_placement_state, :PLACEMENT_STATE_FAILED}}} =
+               RequestDispatcher.dispatch(schedule, execute, model_load)
+    end
   end
 
   # -- Helpers ---------------------------------------------------------------
@@ -215,7 +239,8 @@ defmodule Orchard.Dispatch.DispatchTest do
       strategy: :single_node,
       request_id: request_id,
       runtime_client_target: Inference.runtime_client_target(),
-      request_timeout_ms: Keyword.get(opts, :request_timeout_ms, 5_000)
+      request_timeout_ms: Keyword.get(opts, :request_timeout_ms, 5_000),
+      model_load_timeout_ms: Keyword.get(opts, :model_load_timeout_ms, 5_000)
     }
   end
 
