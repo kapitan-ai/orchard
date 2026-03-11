@@ -60,7 +60,12 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
     # Configure Req.Test stub name and HF config
     stub_name = :"hf_test_#{:rand.uniform(1_000_000)}"
 
+    previous_runtime = Application.get_env(:orchard_node_agent, :runtime, [])
     override_hf_config(stub_name)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+    end)
 
     %{
       tmp_dir: tmp_dir,
@@ -376,6 +381,168 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
     end
   end
 
+  describe "sanitize_entry_paths/1" do
+    test "accepts clean relative paths" do
+      entries = [
+        %{path: "config.json", size: 100, oid: "a"},
+        %{path: "model.safetensors", size: 1000, oid: "b"},
+        %{path: "subdir/weights.safetensors", size: 2000, oid: "c"}
+      ]
+
+      assert {:ok, ^entries} = HuggingFace.sanitize_entry_paths(entries)
+    end
+
+    test "rejects path traversal with .." do
+      entries = [
+        %{path: "config.json", size: 100, oid: "a"},
+        %{path: "../evil.json", size: 50, oid: "b"},
+        %{path: "model.safetensors", size: 1000, oid: "c"}
+      ]
+
+      assert {:error, {:invalid_source_layout, msg}} =
+               HuggingFace.sanitize_entry_paths(entries)
+
+      assert msg =~ "path traversal"
+      assert msg =~ "../evil.json"
+    end
+
+    test "rejects nested path traversal" do
+      entries = [
+        %{path: "weights/../../../etc/passwd", size: 100, oid: "a"}
+      ]
+
+      assert {:error, {:invalid_source_layout, msg}} =
+               HuggingFace.sanitize_entry_paths(entries)
+
+      assert msg =~ "path traversal"
+    end
+
+    test "rejects absolute paths" do
+      entries = [
+        %{path: "/etc/passwd", size: 100, oid: "a"}
+      ]
+
+      assert {:error, {:invalid_source_layout, msg}} =
+               HuggingFace.sanitize_entry_paths(entries)
+
+      assert msg =~ "absolute path"
+    end
+  end
+
+  describe "path traversal integration" do
+    test "materialize rejects tree entry with path traversal", ctx do
+      tree_with_traversal = [
+        %{"type" => "file", "oid" => "aaa", "size" => 100, "path" => "config.json"},
+        %{"type" => "file", "oid" => "bbb", "size" => 1000, "path" => "model.safetensors"},
+        %{"type" => "file", "oid" => "ccc", "size" => 50, "path" => "../evil.json"}
+      ]
+
+      Req.Test.stub(ctx.stub_name, fn conn ->
+        if String.contains?(conn.request_path, "/tree/") do
+          Req.Test.json(conn, tree_with_traversal)
+        else
+          Plug.Conn.send_resp(conn, 404, "")
+        end
+      end)
+
+      request = build_hf_request(ctx)
+
+      assert {:error, {:invalid_source_layout, msg}} =
+               ModelAcquisition.ensure_cached(request)
+
+      assert msg =~ "path traversal"
+    end
+  end
+
+  describe "resume on 200 (server ignores Range)" do
+    test "retries from scratch when server returns 200 instead of 206", ctx do
+      file_contents = ctx.file_contents
+      tree_response = ctx.tree_response
+      safetensors_get_count = :counters.new(1, [:atomics])
+
+      Req.Test.stub(ctx.stub_name, fn conn ->
+        cond do
+          String.contains?(conn.request_path, "/tree/") ->
+            Req.Test.json(conn, tree_response)
+
+          conn.method == "HEAD" && String.contains?(conn.request_path, "/resolve/") ->
+            file_path = extract_file_path(conn.request_path)
+
+            case Map.get(file_contents, file_path) do
+              nil ->
+                Plug.Conn.send_resp(conn, 404, "")
+
+              content ->
+                conn
+                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+                |> Plug.Conn.put_resp_header("etag", "\"test-etag-#{file_path}\"")
+                |> Plug.Conn.send_resp(200, "")
+            end
+
+          conn.method == "GET" && String.contains?(conn.request_path, "/resolve/") ->
+            file_path = extract_file_path(conn.request_path)
+            content = Map.get(file_contents, file_path, "")
+
+            if file_path == "model.safetensors" do
+              :counters.add(safetensors_get_count, 1, 1)
+              attempt = :counters.get(safetensors_get_count, 1)
+
+              if attempt == 1 do
+                # First attempt: return partial data (less than content-length)
+                partial = binary_part(content, 0, div(byte_size(content), 2))
+
+                conn
+                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+                |> Plug.Conn.send_resp(200, partial)
+              else
+                # Retry: server ignores Range header and returns 200 with full content
+                # (simulates server that doesn't support Range)
+                conn
+                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+                |> Plug.Conn.send_resp(200, content)
+              end
+            else
+              conn
+              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+              |> Plug.Conn.send_resp(200, content)
+            end
+
+          true ->
+            Plug.Conn.send_resp(conn, 404, "")
+        end
+      end)
+
+      # Need enough retry attempts for: partial fail + 200-on-resume restart + success
+      current_runtime = Application.get_env(:orchard_node_agent, :runtime, [])
+      hf_config = Keyword.merge(current_runtime[:hf] || [], retry_attempts: 5)
+
+      Application.put_env(
+        :orchard_node_agent,
+        :runtime,
+        Keyword.put(current_runtime, :hf, hf_config)
+      )
+
+      request = build_hf_request(ctx)
+
+      assert {:ok, final_path, :materialized} = ModelAcquisition.ensure_cached(request)
+
+      # Verify content is correct (not corrupted by append-then-200)
+      expected_hash = ctx.hash
+      assert {:ok, ^expected_hash} = ArtifactBundle.tree_sha256(final_path)
+
+      # model.safetensors GET was called at least 3 times
+      # (1: partial, 2: 200-on-resume detected+restart, 3: success)
+      assert :counters.get(safetensors_get_count, 1) >= 3
+    end
+  end
+
+  describe "URI encoding" do
+    test "parse_hf_uri accepts revision with slashes" do
+      assert {:ok, %{repo_id: "mlx-community/phi-3", revision: "refs/pr/1"}} =
+               HuggingFace.parse_hf_uri("hf://mlx-community/phi-3?revision=refs/pr/1")
+    end
+  end
+
   # -- Helpers ---------------------------------------------------------------
 
   defp build_hf_request(ctx, overrides \\ []) do
@@ -488,6 +655,5 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
     updated_runtime = Keyword.put(current_runtime, :hf, hf_config)
     Application.put_env(:orchard_node_agent, :runtime, updated_runtime)
 
-    # No on_exit restore needed since each test overrides fresh
   end
 end

@@ -44,7 +44,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
          config = hf_config(),
          {:ok, file_entries} <- list_repo_tree(repo_spec, config),
          {:ok, retained} <- filter_and_validate(file_entries),
-         {:ok, file_metas} <- preflight_head(retained, repo_spec, config),
+         {:ok, sanitized} <- sanitize_entry_paths(retained),
+         {:ok, file_metas} <- preflight_head(sanitized, repo_spec, config),
          :ok <- download_all(file_metas, repo_spec, request, config) do
       :ok
     end
@@ -100,9 +101,14 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
   # -- Repo Tree Listing -----------------------------------------------------
 
+  # NOTE: HF tree endpoint may paginate for repos with 1000+ files.
+  # Currently we assume a single response contains all entries, which is
+  # sufficient for typical MLX model repos. If false `invalid_source_layout`
+  # errors appear for large sharded repos, add cursor/Link-header pagination.
   defp list_repo_tree(%{repo_id: repo_id, revision: revision}, config) do
     api_base = Keyword.get(config, :api_base_url, "https://huggingface.co/api")
-    url = "#{api_base}/models/#{repo_id}/tree/#{revision}"
+    encoded_revision = URI.encode(revision, &URI.char_unreserved?/1)
+    url = "#{api_base}/models/#{repo_id}/tree/#{encoded_revision}"
 
     Logger.info("HF: listing repo tree for #{repo_id}@#{revision}")
 
@@ -171,6 +177,34 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
       true ->
         {:ok, retained}
+    end
+  end
+
+  # -- Path Sanitization -----------------------------------------------------
+
+  @doc false
+  def sanitize_entry_paths(entries) do
+    Enum.reduce_while(entries, {:ok, []}, fn %{path: path} = entry, {:ok, acc} ->
+      segments = Path.split(path)
+
+      cond do
+        Path.type(path) == :absolute ->
+          {:halt,
+           {:error,
+            {:invalid_source_layout, "absolute path in repo tree entry: #{path}"}}}
+
+        Enum.any?(segments, &(&1 in ["..", ".", ""])) ->
+          {:halt,
+           {:error,
+            {:invalid_source_layout, "path traversal in repo tree entry: #{path}"}}}
+
+        true ->
+          {:cont, {:ok, [entry | acc]}}
+      end
+    end)
+    |> case do
+      {:ok, sanitized} -> {:ok, Enum.reverse(sanitized)}
+      error -> error
     end
   end
 
@@ -294,17 +328,28 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
       total_files: total_files
     }
 
+    staging_root = Path.expand(request.staging_path)
+
     result =
       Enum.reduce_while(file_metas, {:ok, progress}, fn file_meta, {:ok, prog} ->
         url = resolve_url(base_url, repo_spec, file_meta.path)
         dest = Path.join(request.staging_path, file_meta.path)
+        expanded_dest = Path.expand(dest)
 
-        case download_file(url, dest, file_meta, request, config, retry_attempts, prog) do
-          {:ok, updated_prog} ->
-            {:cont, {:ok, updated_prog}}
+        # Belt-and-suspenders containment check (sanitize_entry_paths is the primary guard)
+        if String.starts_with?(expanded_dest, staging_root <> "/") do
+          case download_file(url, dest, file_meta, request, config, retry_attempts, prog) do
+            {:ok, updated_prog} ->
+              {:cont, {:ok, updated_prog}}
 
-          {:error, _} = err ->
-            {:halt, err}
+            {:error, _} = err ->
+              {:halt, err}
+          end
+        else
+          {:halt,
+           {:error,
+            {:invalid_source_layout,
+             "path escapes staging directory: #{file_meta.path}"}}}
         end
       end)
 
@@ -315,8 +360,13 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
   end
 
   defp download_file(url, dest, file_meta, request, config, max_attempts, progress) do
-    File.mkdir_p!(Path.dirname(dest))
-    do_download_retry(url, dest, file_meta, request, config, 1, max_attempts, progress)
+    case File.mkdir_p(Path.dirname(dest)) do
+      :ok ->
+        do_download_retry(url, dest, file_meta, request, config, 1, max_attempts, progress)
+
+      {:error, reason} ->
+        {:error, {:filesystem_error, "mkdir_p #{Path.dirname(dest)}: #{inspect(reason)}"}}
+    end
   end
 
   defp do_download_retry(url, dest, file_meta, request, config, attempt, max_attempts, progress) do
@@ -332,7 +382,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
     extra_headers = if resume? and offset > 0, do: [{"range", "bytes=#{offset}-"}], else: []
 
     # Store ETag sidecar for resume on retry
-    if remote_etag, do: File.write!(etag_path, remote_etag)
+    if remote_etag, do: File.write(etag_path, remote_etag)
 
     # Stream download to file using Req's `into: fun` callback
     bytes_counter = :counters.new(1, [:atomics])
@@ -340,8 +390,25 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
     # Determine file open mode: append for resume, write for fresh start
     write_mode = if resume? and offset > 0, do: [:binary, :append], else: [:binary, :write]
-    file_pid = File.open!(partial_path, write_mode)
 
+    case File.open(partial_path, write_mode) do
+      {:ok, file_pid} ->
+        do_download_stream(
+          url, dest, file_meta, request, config, attempt, max_attempts,
+          progress, partial_path, etag_path, expected_size,
+          offset, resume?, extra_headers, bytes_counter, file_pid
+        )
+
+      {:error, reason} ->
+        {:error, {:filesystem_error, "open #{partial_path}: #{inspect(reason)}"}}
+    end
+  end
+
+  defp do_download_stream(
+         url, dest, file_meta, request, config, attempt, max_attempts,
+         progress, partial_path, etag_path, expected_size,
+         offset, resume?, extra_headers, bytes_counter, file_pid
+       ) do
     into_fun = fn {:data, chunk}, {req, resp} ->
       IO.binwrite(file_pid, chunk)
       :counters.add(bytes_counter, 1, byte_size(chunk))
@@ -353,9 +420,27 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
     bytes_written = :counters.get(bytes_counter, 1)
 
     case result do
+      {:ok, %{status: 200}} when resume? and offset > 0 ->
+        # Server ignored Range header and sent the full file, but we appended
+        # it to the existing partial — the file is now corrupt.
+        # Delete the partial and restart this attempt from scratch.
+        File.rm(partial_path)
+        File.rm(etag_path)
+
+        if attempt < max_attempts do
+          backoff(attempt)
+
+          do_download_retry(
+            url, dest, file_meta, request, config,
+            attempt + 1, max_attempts, progress
+          )
+        else
+          {:error,
+           {:download_failed,
+            "server ignored Range header for #{file_meta.path}, resume not supported"}}
+        end
+
       {:ok, %{status: status}} when status in [200, 206] ->
-        # If we got 200 with a Range request, server ignored resume — bytes_written
-        # includes only what was actually received this time plus any prior offset
         effective_size = bytes_written
 
         # Verify size if known
@@ -374,19 +459,24 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
           end
         else
           # Promote partial to final
-          File.rename!(partial_path, dest)
-          File.rm(etag_path)
+          case File.rename(partial_path, dest) do
+            :ok ->
+              File.rm(etag_path)
 
-          file_bytes = file_meta[:content_length] || file_meta.size || 0
+              file_bytes = file_meta[:content_length] || file_meta.size || 0
 
-          final_progress = %{
-            progress
-            | bytes_downloaded: progress.bytes_downloaded + file_bytes,
-              files_completed: progress.files_completed + 1
-          }
+              final_progress = %{
+                progress
+                | bytes_downloaded: progress.bytes_downloaded + file_bytes,
+                  files_completed: progress.files_completed + 1
+              }
 
-          emit_progress(final_progress, request, file_meta.path)
-          {:ok, final_progress}
+              emit_progress(final_progress, request, file_meta.path)
+              {:ok, final_progress}
+
+            {:error, reason} ->
+              {:error, {:filesystem_error, "rename #{partial_path}: #{inspect(reason)}"}}
+          end
         end
 
       {:ok, %{status: status}} when status in [401, 403] ->
@@ -434,8 +524,10 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
       case {File.read(etag_path), remote_etag} do
         {{:ok, stored_etag}, etag} when stored_etag == etag and etag != nil ->
           # ETag matches — safe to resume
-          %{size: size} = File.stat!(partial_path)
-          {size, true}
+          case File.stat(partial_path) do
+            {:ok, %{size: size}} -> {size, true}
+            {:error, _} -> {0, false}
+          end
 
         _ ->
           # ETag mismatch or unknown — restart
@@ -501,7 +593,15 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
   # -- Utility ---------------------------------------------------------------
 
   defp resolve_url(base_url, %{repo_id: repo_id, revision: revision}, file_path) do
-    "#{base_url}/#{repo_id}/resolve/#{revision}/#{file_path}"
+    encoded_revision = URI.encode(revision, &URI.char_unreserved?/1)
+
+    encoded_path =
+      file_path
+      |> Path.split()
+      |> Enum.map(fn seg -> URI.encode(seg, &URI.char_unreserved?/1) end)
+      |> Enum.join("/")
+
+    "#{base_url}/#{repo_id}/resolve/#{encoded_revision}/#{encoded_path}"
   end
 
   defp backoff(attempt) do
