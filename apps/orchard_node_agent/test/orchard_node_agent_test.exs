@@ -499,6 +499,92 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  test "prepare_request rejects second request for same model with model_busy" do
+    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request())
+
+      request1 = execute_inference_request("req-busy-first")
+      request2 = execute_inference_request("req-busy-second")
+
+      assert :ok = NodeStatus.prepare_request(request1, self())
+
+      # Second request for same model should be rejected as model_busy.
+      assert {:error, :model_busy} = NodeStatus.prepare_request(request2, self())
+
+      # Clean up: cancel the first request so the model is released.
+      assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
+    end)
+  end
+
+  test "gRPC execute_inference streams model_busy failure without Accepted when model is busy" do
+    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request())
+
+      # Start a blocking first request via direct API (not gRPC) to hold the model.
+      request1 = execute_inference_request("req-grpc-busy-first")
+      assert :ok = NodeStatus.prepare_request(request1, self())
+      assert :ok = NodeStatus.start_request(request1)
+
+      wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+
+      # Second request via gRPC should get a failed event with model_busy, no Accepted.
+      with_channel(fn channel ->
+        request2 = execute_inference_request("req-grpc-busy-second")
+        assert {:ok, event_stream} = NodeRuntimeStub.execute_inference(channel, request2)
+        events = Enum.to_list(event_stream)
+
+        # Should have exactly one event: a failed with model_busy
+        assert [{:ok, %RPCInferenceEvent{event: {:failed, failed}}}] = events
+        assert failed.code == "model_busy"
+
+        # No accepted event
+        accepted_events =
+          Enum.filter(events, fn
+            {:ok, %RPCInferenceEvent{event: {:accepted, _}}} -> true
+            _ -> false
+          end)
+
+        assert accepted_events == []
+      end)
+
+      # Release the blocking request.
+      generation_ref = get_blocking_generation_ref()
+      send_release(generation_ref)
+
+      assert_receive {:node_runtime_event, "req-grpc-busy-first",
+                      %OrchardInferenceEvent{event: %OrchardInferenceEvent.OutputTextDelta{}}},
+                     1_000
+
+      assert_receive {:node_runtime_event, "req-grpc-busy-first",
+                      %OrchardInferenceEvent{event: %OrchardInferenceEvent.Completed{}}},
+                     1_000
+    end)
+  end
+
+  defp get_blocking_generation_ref do
+    pid = worker_pid()
+    state = :sys.get_state(pid)
+
+    state.requests
+    |> Map.values()
+    |> hd()
+    |> Map.fetch!(:generation_ref)
+  end
+
+  defp send_release(generation_ref) do
+    pid = worker_pid()
+    state = :sys.get_state(pid)
+
+    gen_state =
+      Enum.find_value(state.adapter_state.generations, fn {ref, gen} ->
+        if ref == generation_ref, do: gen
+      end)
+
+    send(gen_state.pid, {:release, generation_ref})
+  end
+
   defp with_channel(fun) when is_function(fun, 1) do
     target = "#{Node.listen_host()}:#{Node.listen_port()}"
 

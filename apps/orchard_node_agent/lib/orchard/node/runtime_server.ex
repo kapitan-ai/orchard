@@ -85,14 +85,27 @@ defmodule Orchard.Node.RuntimeServer do
   end
 
   defp send_failed(stream, reason) do
-    failed_event =
-      DomainInferenceEvent.failed(
-        "runtime_error",
-        "runtime request failed: #{inspect(reason)}",
-        false
-      )
-
+    {code, message} = normalize_failure_reason(reason)
+    failed_event = DomainInferenceEvent.failed(code, message, false)
     GRPC.Server.send_reply(stream, InferenceEventMapper.to_proto(failed_event))
     :ok
   end
+
+  defp normalize_failure_reason(:model_busy),
+    do: {"model_busy", "model already has an active request"}
+
+  defp normalize_failure_reason(:model_not_loaded),
+    do: {"model_not_loaded", "model is not loaded"}
+
+  defp normalize_failure_reason(:request_already_active),
+    do: {"request_already_active", "request is already active"}
+
+  defp normalize_failure_reason(:request_not_prepared),
+    do: {"request_not_prepared", "request is not prepared"}
+
+  defp normalize_failure_reason(:worker_unavailable),
+    do: {"worker_unavailable", "worker process became unavailable"}
+
+  defp normalize_failure_reason(reason),
+    do: {"runtime_error", "runtime request failed: #{inspect(reason)}"}
 end

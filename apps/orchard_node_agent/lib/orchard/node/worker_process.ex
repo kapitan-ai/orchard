@@ -109,6 +109,9 @@ defmodule Orchard.Node.WorkerProcess do
       Map.has_key?(state.requests, request_id) ->
         {:reply, {:error, :already_running}, state}
 
+      map_size(state.requests) > 0 ->
+        {:reply, {:error, :model_busy}, state}
+
       true ->
         start_generation(request_id, request, subscriber, state)
     end

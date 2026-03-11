@@ -145,28 +145,32 @@ defmodule Orchard.Node.ModelManager do
     else
       case Map.get(state.workers, key) do
         %{placement_state: :PLACEMENT_STATE_LOADED, pid: pid} ->
-          subscriber_monitor_ref = Process.monitor(subscriber)
+          if model_has_active_request?(state.active_requests, key) do
+            {:reply, {:error, :model_busy}, state}
+          else
+            subscriber_monitor_ref = Process.monitor(subscriber)
 
-          active_requests =
-            Map.put(state.active_requests, request.request_id, %{
-              controller_session_id: request.controller_session_id,
-              model_key: key,
-              phase: :prepared,
-              pid: pid,
-              subscriber: subscriber,
-              subscriber_monitor_ref: subscriber_monitor_ref
-            })
+            active_requests =
+              Map.put(state.active_requests, request.request_id, %{
+                controller_session_id: request.controller_session_id,
+                model_key: key,
+                phase: :prepared,
+                pid: pid,
+                subscriber: subscriber,
+                subscriber_monitor_ref: subscriber_monitor_ref
+              })
 
-          subscriber_refs =
-            Map.put(state.subscriber_refs, subscriber_monitor_ref, request.request_id)
+            subscriber_refs =
+              Map.put(state.subscriber_refs, subscriber_monitor_ref, request.request_id)
 
-          next_state = %{
-            state
-            | active_requests: active_requests,
-              subscriber_refs: subscriber_refs
-          }
+            next_state = %{
+              state
+              | active_requests: active_requests,
+                subscriber_refs: subscriber_refs
+            }
 
-          {:reply, :ok, next_state}
+            {:reply, :ok, next_state}
+          end
 
         _other ->
           {:reply, {:error, :model_not_loaded}, state}
@@ -510,6 +514,12 @@ defmodule Orchard.Node.ModelManager do
 
   defp active_request_count_for_model(active_requests, key) do
     Enum.count(active_requests, fn {_request_id, active_request} ->
+      active_request.model_key == key
+    end)
+  end
+
+  defp model_has_active_request?(active_requests, key) do
+    Enum.any?(active_requests, fn {_request_id, active_request} ->
       active_request.model_key == key
     end)
   end

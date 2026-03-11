@@ -5,7 +5,7 @@ import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, TypedDict, runtime_checkable
 
 
 @dataclass(slots=True)
@@ -18,18 +18,37 @@ class BackendError(Exception):
         return self.message
 
 
+class BackendStatus(TypedDict):
+    loaded: bool
+    active_request_count: int
+
+
+@runtime_checkable
+class Backend(Protocol):
+    """Structural contract that all worker backends must satisfy."""
+
+    def status(self) -> BackendStatus: ...
+    def load_model(self, *, model_id: str, version: str, model_path: str) -> None: ...
+    def unload_model(self) -> None: ...
+    def start_generation(self) -> None: ...
+    def finish_generation(self) -> None: ...
+    def generate(
+        self, request: Any, cancel_event: threading.Event
+    ) -> Iterator[dict[str, Any]]: ...
+
+
 class StubBackend:
     def __init__(self) -> None:
         self._loaded_model: tuple[str, str, str] | None = None
         self._active_request_count = 0
         self._lock = threading.Lock()
 
-    def status(self) -> dict[str, int | bool]:
+    def status(self) -> BackendStatus:
         with self._lock:
-            return {
-                "loaded": self._loaded_model is not None,
-                "active_request_count": self._active_request_count,
-            }
+            return BackendStatus(
+                loaded=self._loaded_model is not None,
+                active_request_count=self._active_request_count,
+            )
 
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
         if not Path(model_path).exists():
@@ -47,7 +66,10 @@ class StubBackend:
             if self._loaded_model is None:
                 raise BackendError("model_not_loaded", "model is not loaded")
 
-            self._active_request_count += 1
+            if self._active_request_count > 0:
+                raise BackendError("worker_busy", "worker already has an active generation")
+
+            self._active_request_count = 1
 
     def finish_generation(self) -> None:
         with self._lock:
@@ -83,7 +105,15 @@ class StubBackend:
         }
 
 
-class MLXBackend(StubBackend):
+class MLXBackend:
+    """Real MLX backend. Task 1 delivers the protocol boundary; Task 2+ adds real MLX."""
+
+    def __init__(self) -> None:
+        self._stub = StubBackend()
+
+    def status(self) -> BackendStatus:
+        return self._stub.status()
+
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
         try:
             __import__("mlx_lm")
@@ -93,10 +123,24 @@ class MLXBackend(StubBackend):
                 "mlx_lm is not available in this environment",
             ) from exc
 
-        super().load_model(model_id=model_id, version=version, model_path=model_path)
+        self._stub.load_model(model_id=model_id, version=version, model_path=model_path)
+
+    def unload_model(self) -> None:
+        self._stub.unload_model()
+
+    def start_generation(self) -> None:
+        self._stub.start_generation()
+
+    def finish_generation(self) -> None:
+        self._stub.finish_generation()
+
+    def generate(
+        self, request: Any, cancel_event: threading.Event
+    ) -> Iterator[dict[str, Any]]:
+        return self._stub.generate(request, cancel_event)
 
 
-def build_backend(name: str) -> StubBackend:
+def build_backend(name: str) -> Backend:
     if name == "stub":
         return StubBackend()
 

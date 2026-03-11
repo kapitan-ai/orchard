@@ -1,8 +1,91 @@
-"""Unit tests for backends.py hardened parsing."""
+"""Unit tests for backends.py: protocol, single-flight, and parsing helpers."""
 
 from __future__ import annotations
 
-from orchard_worker_mlx.backends import decode_metadata, safe_int
+import threading
+from pathlib import Path
+
+import pytest
+
+from orchard_worker_mlx.backends import (
+    Backend,
+    BackendError,
+    MLXBackend,
+    StubBackend,
+    build_backend,
+    decode_metadata,
+    safe_int,
+)
+
+
+# -- Backend protocol conformance --------------------------------------------
+
+
+def test_stub_backend_satisfies_protocol() -> None:
+    assert isinstance(StubBackend(), Backend)
+
+
+def test_mlx_backend_satisfies_protocol() -> None:
+    assert isinstance(MLXBackend(), Backend)
+
+
+def test_build_backend_stub_returns_backend() -> None:
+    backend = build_backend("stub")
+    assert isinstance(backend, Backend)
+
+
+def test_build_backend_mlx_returns_backend() -> None:
+    backend = build_backend("mlx")
+    assert isinstance(backend, Backend)
+
+
+def test_build_backend_unsupported_raises() -> None:
+    with pytest.raises(BackendError, match="unsupported backend"):
+        build_backend("unknown")
+
+
+# -- Single-flight enforcement -----------------------------------------------
+
+
+def test_start_generation_requires_loaded_model() -> None:
+    backend = StubBackend()
+    with pytest.raises(BackendError) as exc_info:
+        backend.start_generation()
+    assert exc_info.value.code == "model_not_loaded"
+
+
+def test_start_generation_rejects_second_concurrent(tmp_path: Path) -> None:
+    backend = StubBackend()
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    backend.load_model(model_id="m", version="v", model_path=str(model_path))
+
+    backend.start_generation()
+    with pytest.raises(BackendError) as exc_info:
+        backend.start_generation()
+    assert exc_info.value.code == "worker_busy"
+
+
+def test_finish_generation_allows_next(tmp_path: Path) -> None:
+    backend = StubBackend()
+    model_path = tmp_path / "model"
+    model_path.mkdir()
+    backend.load_model(model_id="m", version="v", model_path=str(model_path))
+
+    backend.start_generation()
+    backend.finish_generation()
+    # Should succeed after finish
+    backend.start_generation()
+    backend.finish_generation()
+
+    status = backend.status()
+    assert status["active_request_count"] == 0
+
+
+def test_finish_generation_clamps_to_zero() -> None:
+    backend = StubBackend()
+    backend.finish_generation()  # No-op when count is already 0
+    assert backend.status()["active_request_count"] == 0
 
 
 # -- decode_metadata ---------------------------------------------------------
