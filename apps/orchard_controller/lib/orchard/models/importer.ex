@@ -19,6 +19,7 @@ defmodule Orchard.Models.Importer do
   keeping import logic in one place.
   """
 
+  alias Orchard.ArtifactBundle
   alias Orchard.ModelManifest
   alias Orchard.Models
   alias Orchard.Models.ManifestParser
@@ -121,7 +122,7 @@ defmodule Orchard.Models.Importer do
 
     case File.mkdir_p(staging_dir) do
       :ok ->
-        case safe_copy_directory(source_path, staging_dir, source_path) do
+        case ArtifactBundle.copy_directory(source_path, staging_dir) do
           :ok ->
             {:ok, staging_dir}
 
@@ -135,105 +136,10 @@ defmodule Orchard.Models.Importer do
     end
   end
 
-  defp safe_copy_directory(source, dest, bundle_root) do
-    with {:ok, entries} <- list_dir(source) do
-      copy_entries(entries, source, dest, bundle_root)
-    end
-  end
-
-  defp list_dir(dir) do
-    case File.ls(dir) do
-      {:ok, _} = ok -> ok
-      {:error, reason} -> {:error, {:copy_failed, "failed to list #{dir}: #{inspect(reason)}"}}
-    end
-  end
-
-  defp copy_entries([], _source, _dest, _bundle_root), do: :ok
-
-  defp copy_entries([entry | rest], source, dest, bundle_root) do
-    case safe_copy_entry(Path.join(source, entry), Path.join(dest, entry), bundle_root) do
-      :ok -> copy_entries(rest, source, dest, bundle_root)
-      {:error, _} = err -> err
-    end
-  end
-
-  defp safe_copy_entry(src, dst, bundle_root) do
-    case File.lstat(src) do
-      {:ok, stat} -> copy_by_type(stat.type, src, dst, bundle_root)
-      {:error, reason} -> {:error, {:copy_failed, "stat #{src}: #{inspect(reason)}"}}
-    end
-  end
-
-  defp copy_by_type(:symlink, src, _dst, _bundle_root) do
-    {:error, {:symlink_rejected, "symlinks not allowed in bundle: #{src}"}}
-  end
-
-  defp copy_by_type(:directory, src, dst, bundle_root) do
-    case File.mkdir_p(dst) do
-      :ok -> safe_copy_directory(src, dst, bundle_root)
-      {:error, reason} -> {:error, {:copy_failed, "mkdir #{dst}: #{inspect(reason)}"}}
-    end
-  end
-
-  defp copy_by_type(:regular, src, dst, _bundle_root) do
-    case File.cp(src, dst) do
-      :ok -> :ok
-      {:error, reason} -> {:error, {:copy_failed, "copy #{src}: #{inspect(reason)}"}}
-    end
-  end
-
-  defp copy_by_type(type, src, _dst, _bundle_root) do
-    {:error, {:copy_failed, "unsupported file type #{type} at #{src}"}}
-  end
-
   # -- SHA-256 computation --------------------------------------------------
 
   defp compute_sha256(dir_path) do
-    root_prefix = String.trim_trailing(dir_path, "/") <> "/"
-
-    case collect_file_paths(dir_path) do
-      {:ok, paths} ->
-        sorted = Enum.sort(paths)
-        hash = hash_files(sorted, root_prefix, :crypto.hash_init(:sha256))
-        {:ok, Base.encode16(hash, case: :lower)}
-
-      {:error, _} = err ->
-        err
-    end
-  end
-
-  defp collect_file_paths(dir) do
-    case File.ls(dir) do
-      {:ok, entries} -> collect_entries(entries, dir, [])
-      {:error, reason} -> {:error, {:hash_failed, "failed to list #{dir}: #{inspect(reason)}"}}
-    end
-  end
-
-  defp collect_entries([], _dir, acc), do: {:ok, acc}
-
-  defp collect_entries([entry | rest], dir, acc) do
-    full = Path.join(dir, entry)
-
-    case classify_and_collect(full) do
-      {:ok, paths} -> collect_entries(rest, dir, acc ++ paths)
-      {:error, _} = err -> err
-    end
-  end
-
-  defp classify_and_collect(path) do
-    if File.dir?(path), do: collect_file_paths(path), else: {:ok, [path]}
-  end
-
-  defp hash_files([], _root_prefix, state), do: :crypto.hash_final(state)
-
-  defp hash_files([path | rest], root_prefix, state) do
-    # Hash relative path (stripped of staging root) + file contents
-    # so the same bundle always produces the same digest.
-    relative = String.replace_leading(path, root_prefix, "")
-    content = File.read!(path)
-    state = :crypto.hash_update(state, relative)
-    state = :crypto.hash_update(state, content)
-    hash_files(rest, root_prefix, state)
+    ArtifactBundle.tree_sha256(dir_path)
   end
 
   # -- Finalize staging → destination --------------------------------------

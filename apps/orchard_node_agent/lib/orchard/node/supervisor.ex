@@ -21,6 +21,7 @@ defmodule Orchard.Node.Supervisor do
   def init(_init_arg) do
     children = [
       ModelManager,
+      {Task.Supervisor, name: Orchard.Node.ModelLoadTaskSupervisor},
       WorkerSupervisor,
       Supervisor.child_spec({GRPC.Server.Supervisor, grpc_server_opts()}, id: @grpc_server_id)
     ]

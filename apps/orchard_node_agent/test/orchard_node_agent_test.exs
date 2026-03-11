@@ -1,6 +1,7 @@
 defmodule OrchardNodeAgentTest do
   use ExUnit.Case, async: false
 
+  alias Orchard.ArtifactBundle
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef, as: CanonicalModelRef
   alias Orchard.Cluster.V1.Accepted
@@ -29,6 +30,9 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Node.Supervisor, as: NodeSupervisor
   alias Orchard.Node.WorkerSupervisor
   alias Orchard.NodeAgent.Supervisor, as: NodeAgentSupervisor
+
+  @test_model_id "mlx-community/phi-3"
+  @test_version "main"
 
   defmodule BlockingRuntimeAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
@@ -141,15 +145,56 @@ defmodule OrchardNodeAgentTest do
     def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
   end
 
+  defmodule SlowLoadAdapter do
+    @moduledoc false
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      # Block long enough for single-flight and cancel tests
+      receive do
+        :finish_load -> {:ok, %{model_ref: model_ref, generations: %{}}}
+      after
+        30_000 -> {:error, :load_timeout}
+      end
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
   setup do
     :ok = NodeStatus.reset()
     wait_until(fn -> worker_count() == 0 end)
+
+    # Create a real test bundle at both the cache path and a source path.
+    # The async ModelManager pipeline runs acquisition which checks cache hash.
+    bundle = stage_test_bundle!()
 
     # Register the test process so adapters can send messages back.
     if Process.whereis(:load_timeout_test_pid), do: Process.unregister(:load_timeout_test_pid)
     Process.register(self(), :load_timeout_test_pid)
 
-    :ok
+    on_exit(fn ->
+      File.rm_rf(bundle.cache_path)
+      File.rm_rf(bundle.source_path)
+      File.rm_rf(Path.join(Node.models_root(), ".staging"))
+    end)
+
+    %{bundle: bundle}
   end
 
   test "node agent version is exposed" do
@@ -163,10 +208,11 @@ defmodule OrchardNodeAgentTest do
     assert {:error, {:already_started, ^pid}} = NodeSupervisor.start_link([])
   end
 
-  test "node supervisor boots the model manager, worker supervisor, and gRPC server child" do
+  test "node supervisor boots the model manager, worker supervisor, task supervisor, and gRPC server child" do
     assert is_pid(Process.whereis(NodeSupervisor))
     assert is_pid(Process.whereis(ModelManager))
     assert is_pid(Process.whereis(WorkerSupervisor))
+    assert is_pid(Process.whereis(Orchard.Node.ModelLoadTaskSupervisor))
 
     child_ids =
       Supervisor.which_children(NodeSupervisor)
@@ -175,6 +221,7 @@ defmodule OrchardNodeAgentTest do
     assert NodeSupervisor.grpc_server_id() in child_ids
     assert ModelManager in child_ids
     assert WorkerSupervisor in child_ids
+    assert Orchard.Node.ModelLoadTaskSupervisor in child_ids
   end
 
   test "node agent application supervisor is running" do
@@ -247,13 +294,19 @@ defmodule OrchardNodeAgentTest do
     assert Node.worker_shutdown_timeout_ms() == 1_000
   end
 
-  test "ensure_model_loaded passes worker_load_timeout_ms to adapter" do
+  test "ensure_model_loaded passes remaining deadline budget as load_timeout_ms to adapter", %{
+    bundle: bundle
+  } do
     with_runtime_adapter(LoadTimeoutCapturingAdapter, fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
-               NodeStatus.ensure_model_loaded(ensure_model_loaded_request())
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
       assert_receive {:captured_load_timeout_ms, timeout_ms}, 1_000
-      assert timeout_ms == Node.worker_load_timeout_ms()
+      # The remaining deadline budget is approximately 5000ms minus acquisition time.
+      # Acquisition is a cache-hit (fast), so timeout should be close to 5000.
+      assert is_integer(timeout_ms)
+      assert timeout_ms > 0
+      assert timeout_ms <= 5_000
     end)
   end
 
@@ -268,8 +321,10 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
-  test "ensure_model_loaded is idempotent and does not create duplicate workers" do
-    request = ensure_model_loaded_request()
+  test "ensure_model_loaded is idempotent and does not create duplicate workers", %{
+    bundle: bundle
+  } do
+    request = ensure_model_loaded_request(bundle)
 
     with_channel(fn channel ->
       assert {:ok,
@@ -284,18 +339,23 @@ defmodule OrchardNodeAgentTest do
       assert {:ok, %StatusResponse{loaded_models: [%RPCModelRef{} = loaded_model]}} =
                NodeRuntimeStub.get_status(channel, %StatusRequest{})
 
-      assert loaded_model.model_id == "mlx-community/phi-3"
-      assert loaded_model.version == "main"
+      assert loaded_model.model_id == @test_model_id
+      assert loaded_model.version == @test_version
       assert worker_count() == 1
     end)
   end
 
-  test "execute_inference streams accepted, deterministic deltas, and terminal completion" do
+  test "execute_inference streams accepted, deterministic deltas, and terminal completion", %{
+    bundle: bundle
+  } do
     request = execute_inference_request("req-r3-execute")
 
     with_channel(fn channel ->
       assert {:ok, _response} =
-               NodeRuntimeStub.ensure_model_loaded(channel, ensure_model_loaded_request())
+               NodeRuntimeStub.ensure_model_loaded(
+                 channel,
+                 ensure_model_loaded_request(bundle)
+               )
 
       assert {:ok, event_stream} = NodeRuntimeStub.execute_inference(channel, request)
 
@@ -334,11 +394,10 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
-  test "real worker runtime adapter streams stub worker events and unload cleans up the socket" do
+  test "real worker runtime adapter streams stub worker events and unload cleans up the socket",
+       %{bundle: bundle} do
     with_real_worker_runtime(fn ->
-      ensure_test_model_dir!()
       socket_path = real_worker_socket_path()
-      request = execute_inference_request("req-r5-real-runtime")
 
       refute File.exists?(socket_path)
 
@@ -347,10 +406,15 @@ defmodule OrchardNodeAgentTest do
                 %EnsureModelLoadedResponse{
                   already_loaded: false,
                   placement_state: :PLACEMENT_STATE_LOADED
-                }} = NodeRuntimeStub.ensure_model_loaded(channel, ensure_model_loaded_request())
+                }} =
+                 NodeRuntimeStub.ensure_model_loaded(
+                   channel,
+                   ensure_model_loaded_request(bundle)
+                 )
 
         wait_until(fn -> File.exists?(socket_path) end)
 
+        request = execute_inference_request("req-r5-real-runtime")
         assert {:ok, event_stream} = NodeRuntimeStub.execute_inference(channel, request)
 
         assert [
@@ -384,8 +448,8 @@ defmodule OrchardNodeAgentTest do
                  NodeRuntimeStub.unload_model(
                    channel,
                    %UnloadModelRequest{
-                     model_id: "mlx-community/phi-3",
-                     version: "main",
+                     model_id: @test_model_id,
+                     version: @test_version,
                      force: false,
                      evict: false
                    }
@@ -397,13 +461,13 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
-  test "real worker runtime adapter worker death emits a terminal failure and clears runtime state" do
+  test "real worker runtime adapter worker death emits a terminal failure and clears runtime state",
+       %{bundle: bundle} do
     with_real_worker_runtime(fn ->
-      ensure_test_model_dir!()
       socket_path = real_worker_socket_path()
 
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
-               NodeStatus.ensure_model_loaded(ensure_model_loaded_request())
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
       request =
         execute_inference_request("req-r5-worker-down")
@@ -412,18 +476,10 @@ defmodule OrchardNodeAgentTest do
       assert :ok = NodeStatus.prepare_request(request, self())
       assert :ok = NodeStatus.start_request(request)
 
-      # Wait for the first streamed delta to confirm the worker is mid-generation,
-      # then kill it. With the generator-based stub backend, each chunk is yielded
-      # individually with a delay between them, so the worker is still alive and
-      # sleeping before the second chunk when we send SIGKILL.
       assert_receive {:node_runtime_event, "req-r5-worker-down",
                       %Orchard.InferenceEvent{event: %Orchard.InferenceEvent.OutputTextDelta{}}},
                      5_000
 
-      # Kill the entire process tree: `uv run` spawns the Python worker as a
-      # child process. Killing only the `uv run` parent leaves the child alive
-      # (holding the port's stdout pipe open), so the BEAM port driver never
-      # sends `{port, {:exit_status, _}}`. Kill children first, then parent.
       os_pid = worker_os_pid()
       kill_process_tree(os_pid)
 
@@ -437,10 +493,11 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
-  test "worker death during a running request emits a terminal failure and clears runtime state" do
+  test "worker death during a running request emits a terminal failure and clears runtime state",
+       %{bundle: bundle} do
     with_runtime_adapter(BlockingRuntimeAdapter, fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
-               NodeStatus.ensure_model_loaded(ensure_model_loaded_request())
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
       request = execute_inference_request("req-r3-worker-down")
 
@@ -458,10 +515,11 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
-  test "force unload during a running request emits a terminal failure and clears runtime state" do
+  test "force unload during a running request emits a terminal failure and clears runtime state",
+       %{bundle: bundle} do
     with_runtime_adapter(BlockingRuntimeAdapter, fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
-               NodeStatus.ensure_model_loaded(ensure_model_loaded_request())
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
       request = execute_inference_request("req-r3-force-unload")
 
@@ -472,8 +530,8 @@ defmodule OrchardNodeAgentTest do
 
       assert %{ok: true, message: "unload accepted"} =
                NodeStatus.unload_model(%UnloadModelRequest{
-                 model_id: "mlx-community/phi-3",
-                 version: "main",
+                 model_id: @test_model_id,
+                 version: @test_version,
                  force: true,
                  evict: false
                })
@@ -486,10 +544,11 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
-  test "subscriber disconnect before start_request does not leave stale prepared runtime state" do
+  test "subscriber disconnect before start_request does not leave stale prepared runtime state",
+       %{bundle: bundle} do
     with_runtime_adapter(BlockingRuntimeAdapter, fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
-               NodeStatus.ensure_model_loaded(ensure_model_loaded_request())
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
       subscriber =
         spawn(fn ->
@@ -508,18 +567,20 @@ defmodule OrchardNodeAgentTest do
 
       assert %{ok: true, message: "unload accepted"} =
                NodeStatus.unload_model(%UnloadModelRequest{
-                 model_id: "mlx-community/phi-3",
-                 version: "main",
+                 model_id: @test_model_id,
+                 version: @test_version,
                  force: false,
                  evict: false
                })
     end)
   end
 
-  test "cancelling a prepared request prevents later start_request from launching it" do
+  test "cancelling a prepared request prevents later start_request from launching it", %{
+    bundle: bundle
+  } do
     with_runtime_adapter(BlockingRuntimeAdapter, fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
-               NodeStatus.ensure_model_loaded(ensure_model_loaded_request())
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
       request = execute_inference_request("req-r3-prepared-cancel")
 
@@ -546,10 +607,12 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
-  test "prepare_request rejects second request for same model with model_busy" do
+  test "prepare_request rejects second request for same model with model_busy", %{
+    bundle: bundle
+  } do
     with_runtime_adapter(BlockingRuntimeAdapter, fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
-               NodeStatus.ensure_model_loaded(ensure_model_loaded_request())
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
       request1 = execute_inference_request("req-busy-first")
       request2 = execute_inference_request("req-busy-second")
@@ -564,10 +627,11 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
-  test "gRPC execute_inference streams model_busy failure without Accepted when model is busy" do
+  test "gRPC execute_inference streams model_busy failure without Accepted when model is busy",
+       %{bundle: bundle} do
     with_runtime_adapter(BlockingRuntimeAdapter, fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
-               NodeStatus.ensure_model_loaded(ensure_model_loaded_request())
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
       # Start a blocking first request via direct API (not gRPC) to hold the model.
       request1 = execute_inference_request("req-grpc-busy-first")
@@ -610,6 +674,149 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  # -- Acquisition-specific tests ---------------------------------------------
+
+  test "ensure_model_loaded with missing source and no cache returns FAILED", %{bundle: bundle} do
+    # Remove the pre-staged cache so acquisition must fetch from source
+    File.rm_rf!(bundle.cache_path)
+
+    request = %EnsureModelLoadedRequest{
+      node_id: "node-local",
+      model_id: @test_model_id,
+      version: @test_version,
+      artifact_sha256: bundle.hash,
+      preload: true,
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+      artifact_source_uri: ""
+    }
+
+    assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_FAILED} =
+             NodeStatus.ensure_model_loaded(request)
+  end
+
+  test "ensure_model_loaded acquires from file:// source when cache is missing", %{
+    bundle: bundle
+  } do
+    # Remove the pre-staged cache so acquisition must fetch from source
+    File.rm_rf!(bundle.cache_path)
+
+    assert %EnsureModelLoadedResponse{
+             already_loaded: false,
+             placement_state: :PLACEMENT_STATE_LOADED
+           } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+    # Cache should now exist
+    assert File.dir?(bundle.cache_path)
+    expected_hash = bundle.hash
+    assert {:ok, ^expected_hash} = ArtifactBundle.tree_sha256(bundle.cache_path)
+  end
+
+  test "ensure_model_loaded hash mismatch returns FAILED", %{bundle: bundle} do
+    # Remove cache and request with wrong hash
+    File.rm_rf!(bundle.cache_path)
+
+    request = %EnsureModelLoadedRequest{
+      node_id: "node-local",
+      model_id: @test_model_id,
+      version: @test_version,
+      artifact_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+      preload: true,
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+      artifact_source_uri: bundle.source_uri
+    }
+
+    assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_FAILED} =
+             NodeStatus.ensure_model_loaded(request)
+
+    # Staging directory should be cleaned up
+    staging_dir = Path.join([Node.models_root(), ".staging"])
+
+    if File.exists?(staging_dir) do
+      assert File.ls!(staging_dir) == []
+    end
+  end
+
+  test "concurrent ensure_model_loaded calls single-flight to one acquisition task", %{
+    bundle: bundle
+  } do
+    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+      request = ensure_model_loaded_request(bundle)
+
+      # Spawn two concurrent ensure calls
+      task1 =
+        Task.async(fn ->
+          NodeStatus.ensure_model_loaded(request)
+        end)
+
+      task2 =
+        Task.async(fn ->
+          NodeStatus.ensure_model_loaded(request)
+        end)
+
+      # Both should succeed
+      result1 = Task.await(task1, 10_000)
+      result2 = Task.await(task2, 10_000)
+
+      assert result1.placement_state == :PLACEMENT_STATE_LOADED
+      assert result2.placement_state == :PLACEMENT_STATE_LOADED
+
+      # Only one worker should exist
+      assert worker_count() == 1
+    end)
+  end
+
+  test "reset cancels inflight ensure_model_loaded and replies FAILED", %{bundle: bundle} do
+    with_runtime_adapter(SlowLoadAdapter, fn ->
+      # Start an ensure that will block in load_model
+      ensure_task =
+        Task.async(fn ->
+          NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+        end)
+
+      # Wait until we see the inflight load in progress
+      wait_until(fn -> NodeStatus.current().worker_state == :WORKER_STATE_STARTING end)
+
+      # Reset should cancel the inflight load
+      :ok = NodeStatus.reset()
+
+      # The blocked caller should receive FAILED
+      result = Task.await(ensure_task, 5_000)
+      assert result.placement_state == :PLACEMENT_STATE_FAILED
+
+      # State should be clean
+      assert %StatusResponse{worker_state: :WORKER_STATE_IDLE, loaded_models: []} =
+               NodeStatus.current()
+    end)
+  end
+
+  test "unload cancels inflight ensure_model_loaded for that model", %{bundle: bundle} do
+    with_runtime_adapter(SlowLoadAdapter, fn ->
+      # Start an ensure that will block in load_model
+      ensure_task =
+        Task.async(fn ->
+          NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+        end)
+
+      # Wait until we see the inflight load in progress
+      wait_until(fn -> NodeStatus.current().worker_state == :WORKER_STATE_STARTING end)
+
+      # Unload should cancel the inflight load
+      assert %{ok: true, message: "unload accepted"} =
+               NodeStatus.unload_model(%UnloadModelRequest{
+                 model_id: @test_model_id,
+                 version: @test_version,
+                 force: false,
+                 evict: false
+               })
+
+      # The blocked caller should receive FAILED
+      result = Task.await(ensure_task, 5_000)
+      assert result.placement_state == :PLACEMENT_STATE_FAILED
+    end)
+  end
+
+  # -- Private helpers -------------------------------------------------------
+
   defp get_blocking_generation_ref do
     pid = worker_pid()
     state = :sys.get_state(pid)
@@ -644,15 +851,44 @@ defmodule OrchardNodeAgentTest do
     end
   end
 
-  defp ensure_model_loaded_request do
+  defp stage_test_bundle! do
+    models_root = Node.models_root()
+    cache_path = Path.join([models_root, @test_model_id, @test_version])
+    source_path = Path.join([models_root, ".test-source", "bundle"])
+
+    # Clean previous
+    File.rm_rf(cache_path)
+    File.rm_rf(source_path)
+
+    # Create source bundle with dummy files
+    File.mkdir_p!(source_path)
+    File.write!(Path.join(source_path, "config.json"), ~s({"model_type":"test"}))
+    File.write!(Path.join(source_path, "tokenizer.json"), ~s({"version":"1.0"}))
+    weights_dir = Path.join(source_path, "weights")
+    File.mkdir_p!(weights_dir)
+    File.write!(Path.join(weights_dir, "model.safetensors"), "fake-weights-data")
+
+    # Compute hash
+    {:ok, hash} = ArtifactBundle.tree_sha256(source_path)
+
+    # Pre-stage at cache location (cache hit path)
+    File.mkdir_p!(cache_path)
+    :ok = ArtifactBundle.copy_directory(source_path, cache_path)
+
+    source_uri = "file://#{source_path}"
+
+    %{cache_path: cache_path, source_path: source_path, source_uri: source_uri, hash: hash}
+  end
+
+  defp ensure_model_loaded_request(bundle) do
     %EnsureModelLoadedRequest{
       node_id: "node-local",
-      model_id: "mlx-community/phi-3",
-      version: "main",
-      artifact_sha256: "sha256:test",
+      model_id: @test_model_id,
+      version: @test_version,
+      artifact_sha256: bundle.hash,
       preload: true,
       deadline_unix_ms: System.system_time(:millisecond) + 5_000,
-      artifact_source_uri: "file:///tmp/test-model"
+      artifact_source_uri: bundle.source_uri
     }
   end
 
@@ -660,8 +896,8 @@ defmodule OrchardNodeAgentTest do
     %ExecuteInferenceRequest{
       request_id: request_id,
       controller_session_id: "controller-session-1",
-      model_id: "mlx-community/phi-3",
-      version: "main",
+      model_id: @test_model_id,
+      version: @test_version,
       rendered_prompt_utf8: "hello orchard",
       input_tokens: 2,
       params: %GenerationParams{max_output_tokens: 16},
@@ -708,14 +944,8 @@ defmodule OrchardNodeAgentTest do
     end
   end
 
-  defp ensure_test_model_dir! do
-    model_path = Path.join([Node.models_root(), "mlx-community", "phi-3", "main"])
-    File.mkdir_p!(model_path)
-    model_path
-  end
-
   defp real_worker_socket_path do
-    Node.worker_socket_path("mlx-community/phi-3", "main")
+    Node.worker_socket_path(@test_model_id, @test_version)
   end
 
   defp worker_os_pid do
@@ -737,10 +967,6 @@ defmodule OrchardNodeAgentTest do
   defp wait_until(_fun, 0), do: flunk("condition not reached before timeout")
 
   defp kill_process_tree(os_pid) when is_integer(os_pid) do
-    # `uv run` spawns the Python worker as a child process. Killing only
-    # the parent leaves the child alive (holding the port's stdout pipe open),
-    # so the BEAM port driver never delivers `{port, {:exit_status, _}}`.
-    # Kill children first (recursively), then the parent.
     {children_output, _} =
       System.cmd("pgrep", ["-P", Integer.to_string(os_pid)], stderr_to_stdout: true)
 

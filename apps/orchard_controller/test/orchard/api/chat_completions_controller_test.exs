@@ -1,8 +1,11 @@
 defmodule Orchard.API.ChatCompletionsControllerTest do
   use Orchard.ConnCase, async: false
 
+  alias Orchard.ArtifactBundle
   alias Orchard.API.Router
   alias Orchard.Inference.ChatRequestNormalizer
+  alias Orchard.Node
+  alias Orchard.Node.ModelManager
 
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
@@ -39,6 +42,21 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   end
 
   defp parse_sse_line(_), do: nil
+
+  setup do
+    # Reset node-agent state and stage a test bundle so model acquisition
+    # succeeds for any model_id when the bundle is pre-cached.
+    ModelManager.reset()
+    bundle = stage_test_bundle!()
+
+    on_exit(fn ->
+      Enum.each(bundle.cache_paths, &File.rm_rf/1)
+      File.rm_rf(bundle.source_path)
+      File.rm_rf(Path.join(Node.models_root(), ".staging"))
+    end)
+
+    %{bundle: bundle}
+  end
 
   describe "POST /v1/chat/completions (non-streaming)" do
     test "rejects request missing model field with OpenAI error envelope" do
@@ -158,14 +176,14 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
   describe "POST /v1/chat/completions (streaming happy path)" do
     @tag :db
-    test "stream=true with valid model emits SSE chunks then [DONE]" do
+    test "stream=true with valid model emits SSE chunks then [DONE]", %{bundle: bundle} do
       {:ok, _model} =
         Orchard.Models.create_model(%{
           model_id: "test-stream-model",
           version: "v1",
           display_name: "Test Stream Model",
           artifact_uri: "file:///tmp/test-stream-model",
-          artifact_sha256: "abc123",
+          artifact_sha256: bundle.hash,
           state: :active,
           format: "mlx",
           backend: "mlx",
@@ -223,14 +241,14 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
   describe "POST /v1/chat/completions (streaming persistence, T4)" do
     @tag :db
-    test "streaming request persists request row and state events" do
+    test "streaming request persists request row and state events", %{bundle: bundle} do
       {:ok, _model} =
         Orchard.Models.create_model(%{
           model_id: "persist-model",
           version: "v1",
           display_name: "Persist Model",
           artifact_uri: "file:///tmp/persist-model",
-          artifact_sha256: "abc123",
+          artifact_sha256: bundle.hash,
           state: :active,
           format: "mlx",
           backend: "mlx",
@@ -313,5 +331,36 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
       assert canonical.stream_include_usage == false
     end
+  end
+
+  # Stage a test bundle at the cache path for model_ids used in streaming tests.
+  # Returns %{hash, source_path, cache_paths} so tests can use the real hash.
+  defp stage_test_bundle! do
+    models_root = Node.models_root()
+    source_path = Path.join([models_root, ".test-source", "chat-bundle"])
+
+    File.rm_rf(source_path)
+    File.mkdir_p!(source_path)
+    File.write!(Path.join(source_path, "config.json"), ~s({"model_type":"test"}))
+    File.write!(Path.join(source_path, "tokenizer.json"), ~s({"version":"1.0"}))
+    weights_dir = Path.join(source_path, "weights")
+    File.mkdir_p!(weights_dir)
+    File.write!(Path.join(weights_dir, "model.safetensors"), "fake-weights-data")
+
+    {:ok, hash} = ArtifactBundle.tree_sha256(source_path)
+
+    # Pre-stage at cache locations for all model_ids these tests use
+    model_ids = [{"test-stream-model", "v1"}, {"persist-model", "v1"}]
+
+    cache_paths =
+      Enum.map(model_ids, fn {model_id, version} ->
+        cache_path = Path.join([models_root, model_id, version])
+        File.rm_rf(cache_path)
+        File.mkdir_p!(cache_path)
+        :ok = ArtifactBundle.copy_directory(source_path, cache_path)
+        cache_path
+      end)
+
+    %{hash: hash, source_path: source_path, cache_paths: cache_paths}
   end
 end

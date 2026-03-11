@@ -9,6 +9,8 @@ defmodule Orchard.Dispatch.DispatchTest do
 
   use ExUnit.Case, async: false
 
+  alias Orchard.ArtifactBundle
+
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
     ExecuteInferenceRequest,
@@ -19,6 +21,7 @@ defmodule Orchard.Dispatch.DispatchTest do
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.Inference
   alias Orchard.InferenceEvent
+  alias Orchard.Node
   alias Orchard.Node.ModelManager
 
   @model_id "mlx-community/phi-3"
@@ -27,7 +30,15 @@ defmodule Orchard.Dispatch.DispatchTest do
   setup do
     # Reset node-agent state between tests to avoid model-already-loaded
     ModelManager.reset()
-    :ok
+    bundle = stage_test_bundle!()
+
+    on_exit(fn ->
+      File.rm_rf(bundle.cache_path)
+      File.rm_rf(bundle.source_path)
+      File.rm_rf(Path.join(Node.models_root(), ".staging"))
+    end)
+
+    %{bundle: bundle}
   end
 
   describe "GrpcNodeRuntimeClient" do
@@ -42,11 +53,11 @@ defmodule Orchard.Dispatch.DispatchTest do
       Client.disconnect(channel)
     end
 
-    test "ensure_model_loaded loads a model via gRPC" do
+    test "ensure_model_loaded loads a model via gRPC", %{bundle: bundle} do
       target = Inference.runtime_client_target()
       {:ok, channel} = Client.connect(target)
 
-      request = model_load_request()
+      request = model_load_request(bundle)
       assert {:ok, response} = Client.ensure_model_loaded(channel, request)
       refute response.already_loaded
       assert response.placement_state == :PLACEMENT_STATE_LOADED
@@ -58,12 +69,12 @@ defmodule Orchard.Dispatch.DispatchTest do
       Client.disconnect(channel)
     end
 
-    test "execute_inference streams events to the caller" do
+    test "execute_inference streams events to the caller", %{bundle: bundle} do
       target = Inference.runtime_client_target()
       {:ok, channel} = Client.connect(target)
 
       # Load model first
-      {:ok, _} = Client.ensure_model_loaded(channel, model_load_request())
+      {:ok, _} = Client.ensure_model_loaded(channel, model_load_request(bundle))
 
       # Execute inference
       request = execute_request("req-dispatch-stream")
@@ -79,11 +90,11 @@ defmodule Orchard.Dispatch.DispatchTest do
       Client.disconnect(channel)
     end
 
-    test "cancel_inference sends cancellation to node-agent" do
+    test "cancel_inference sends cancellation to node-agent", %{bundle: bundle} do
       target = Inference.runtime_client_target()
       {:ok, channel} = Client.connect(target)
 
-      {:ok, _} = Client.ensure_model_loaded(channel, model_load_request())
+      {:ok, _} = Client.ensure_model_loaded(channel, model_load_request(bundle))
 
       assert :ok = Client.cancel_inference(channel, "req-nonexistent")
 
@@ -92,10 +103,10 @@ defmodule Orchard.Dispatch.DispatchTest do
   end
 
   describe "RequestDispatcher" do
-    test "dispatches a request and returns all events including terminal" do
+    test "dispatches a request and returns all events including terminal", %{bundle: bundle} do
       schedule = build_schedule("req-dispatch-e2e")
       execute = execute_request("req-dispatch-e2e")
-      model_load = model_load_request()
+      model_load = model_load_request(bundle)
 
       assert {:ok, events} = RequestDispatcher.dispatch(schedule, execute, model_load)
 
@@ -112,10 +123,10 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert deltas == ["orchard ", "ready"]
     end
 
-    test "dispatches with event_handler callback" do
+    test "dispatches with event_handler callback", %{bundle: bundle} do
       schedule = build_schedule("req-dispatch-handler")
       execute = execute_request("req-dispatch-handler")
-      model_load = model_load_request()
+      model_load = model_load_request(bundle)
 
       test_pid = self()
 
@@ -134,11 +145,11 @@ defmodule Orchard.Dispatch.DispatchTest do
       end)
     end
 
-    test "timeout fires cancellation and returns events with terminal" do
+    test "timeout fires cancellation and returns events with terminal", %{bundle: bundle} do
       # Use a very short timeout to trigger it
       schedule = build_schedule("req-dispatch-timeout", request_timeout_ms: 1)
       execute = execute_request("req-dispatch-timeout")
-      model_load = model_load_request()
+      model_load = model_load_request(bundle)
 
       assert {:ok, events} = RequestDispatcher.dispatch(schedule, execute, model_load)
 
@@ -148,10 +159,10 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert InferenceEvent.terminal?(terminal)
     end
 
-    test "caller disconnect triggers cancellation" do
+    test "caller disconnect triggers cancellation", %{bundle: bundle} do
       schedule = build_schedule("req-dispatch-disconnect")
       execute = execute_request("req-dispatch-disconnect")
-      model_load = model_load_request()
+      model_load = model_load_request(bundle)
 
       test_pid = self()
 
@@ -215,11 +226,14 @@ defmodule Orchard.Dispatch.DispatchTest do
 
   # -- Helpers ---------------------------------------------------------------
 
-  defp model_load_request do
+  defp model_load_request(bundle) do
     %EnsureModelLoadedRequest{
       node_id: "local",
       model_id: @model_id,
-      version: @version
+      version: @version,
+      artifact_sha256: bundle.hash,
+      artifact_source_uri: bundle.source_uri,
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000
     }
   end
 
@@ -261,5 +275,30 @@ defmodule Orchard.Dispatch.DispatchTest do
       5_000 ->
         flunk("timed out waiting for dispatch events")
     end
+  end
+
+  defp stage_test_bundle! do
+    models_root = Node.models_root()
+    cache_path = Path.join([models_root, @model_id, @version])
+    source_path = Path.join([models_root, ".test-source", "bundle"])
+
+    File.rm_rf(cache_path)
+    File.rm_rf(source_path)
+
+    File.mkdir_p!(source_path)
+    File.write!(Path.join(source_path, "config.json"), ~s({"model_type":"test"}))
+    File.write!(Path.join(source_path, "tokenizer.json"), ~s({"version":"1.0"}))
+    weights_dir = Path.join(source_path, "weights")
+    File.mkdir_p!(weights_dir)
+    File.write!(Path.join(weights_dir, "model.safetensors"), "fake-weights-data")
+
+    {:ok, hash} = ArtifactBundle.tree_sha256(source_path)
+
+    File.mkdir_p!(cache_path)
+    :ok = ArtifactBundle.copy_directory(source_path, cache_path)
+
+    source_uri = "file://#{source_path}"
+
+    %{cache_path: cache_path, source_path: source_path, source_uri: source_uri, hash: hash}
   end
 end

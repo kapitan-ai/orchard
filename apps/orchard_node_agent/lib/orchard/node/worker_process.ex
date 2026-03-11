@@ -25,10 +25,12 @@ defmodule Orchard.Node.WorkerProcess do
     GenServer.start_link(__MODULE__, opts)
   end
 
-  @spec ensure_loaded(pid(), EnsureModelLoadedRequest.t(), timeout()) ::
+  @spec ensure_loaded(pid(), EnsureModelLoadedRequest.t(), keyword()) ::
           :loaded | :already_loaded | {:error, term()}
-  def ensure_loaded(pid, %EnsureModelLoadedRequest{} = request, timeout \\ :infinity) do
-    GenServer.call(pid, {:ensure_loaded, request}, timeout)
+  def ensure_loaded(pid, %EnsureModelLoadedRequest{} = request, opts \\ []) do
+    call_timeout = Keyword.get(opts, :call_timeout, :infinity)
+    load_timeout_ms = Keyword.get(opts, :load_timeout_ms, Node.worker_load_timeout_ms())
+    GenServer.call(pid, {:ensure_loaded, request, load_timeout_ms}, call_timeout)
   end
 
   @spec unload(pid(), keyword()) :: :ok | {:error, term()}
@@ -64,14 +66,14 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   @impl true
-  def handle_call({:ensure_loaded, %EnsureModelLoadedRequest{}}, _from, %{loaded?: true} = state) do
+  def handle_call({:ensure_loaded, %EnsureModelLoadedRequest{}, _load_timeout_ms}, _from, %{loaded?: true} = state) do
     {:reply, :already_loaded, state}
   end
 
-  def handle_call({:ensure_loaded, %EnsureModelLoadedRequest{}}, _from, state) do
+  def handle_call({:ensure_loaded, %EnsureModelLoadedRequest{}, load_timeout_ms}, _from, state) do
     case state.adapter.load_model(state.model_ref,
            owner: self(),
-           load_timeout_ms: Node.worker_load_timeout_ms()
+           load_timeout_ms: load_timeout_ms
          ) do
       {:ok, adapter_state} ->
         {:reply, :loaded, %{state | loaded?: true, adapter_state: adapter_state}}
