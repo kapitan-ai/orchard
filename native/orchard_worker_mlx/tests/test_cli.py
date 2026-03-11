@@ -10,7 +10,7 @@ from uuid import uuid4
 import grpc
 
 from orchard_worker_mlx import __version__
-from orchard_worker_mlx.generated.cluster.v1 import runtime_pb2
+from orchard_worker_mlx.generated.cluster.v1 import common_pb2, runtime_pb2
 from orchard_worker_mlx.generated.orchard.worker.v1 import (
     worker_runtime_pb2,
     worker_runtime_pb2_grpc,
@@ -212,6 +212,89 @@ def test_mlx_backend_real_load_unload(tmp_path: Path) -> None:
 
         status = stub.GetStatus(worker_runtime_pb2.WorkerStatusRequest())
         assert status.loaded is False
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
+@pytest.mark.skipif(
+    _MLX_SMOKE_MODEL_PATH is None,
+    reason="Set ORCHARD_MLX_SMOKE_MODEL_PATH to a real Orchard bundle to run MLX smoke tests",
+)
+def test_mlx_backend_real_generation(tmp_path: Path) -> None:
+    """Opt-in smoke: prove real MLX generation works end-to-end via gRPC."""
+    from orchard_worker_mlx.model_loader import load_manifest
+
+    bundle_path = Path(_MLX_SMOKE_MODEL_PATH)  # type: ignore[arg-type]
+    manifest = load_manifest(bundle_path)
+
+    socket_path = Path("/tmp") / f"orchard-worker-mlx-gen-{uuid4().hex[:8]}.sock"
+    process = start_worker(socket_path, backend="mlx")
+
+    try:
+        channel = wait_for_channel(socket_path, timeout=30.0)
+        stub = worker_runtime_pb2_grpc.WorkerRuntimeServiceStub(channel)
+
+        # Load model
+        ack = stub.LoadModel(
+            worker_runtime_pb2.LoadModelRequest(
+                model_id=manifest.model_id,
+                version=manifest.version,
+                model_path=str(bundle_path),
+            ),
+            timeout=120,
+        )
+        assert ack.ok is True, f"LoadModel failed: {ack.message}"
+
+        # Generate
+        request = runtime_pb2.ExecuteInferenceRequest(
+            request_id="req-mlx-gen-smoke",
+            controller_session_id="smoke-session",
+            model_id=manifest.model_id,
+            version=manifest.version,
+            rendered_prompt_utf8=b"The capital of France is",
+            input_tokens=6,
+            params=common_pb2.GenerationParams(
+                max_output_tokens=8,
+                temperature=0.0,
+            ),
+        )
+
+        events = list(stub.Generate(request, timeout=60))
+        assert len(events) >= 2, f"Expected at least 2 events (delta + terminal), got {len(events)}"
+
+        # Verify at least one output_text_delta
+        delta_events = [e for e in events if e.HasField("output_text_delta")]
+        assert len(delta_events) >= 1, "Expected at least one output_text_delta"
+
+        # Verify no accepted event from worker
+        accepted_events = [e for e in events if e.HasField("accepted")]
+        assert len(accepted_events) == 0, "Worker must not emit accepted events"
+
+        # Verify terminal event is completed
+        terminal = events[-1]
+        assert terminal.HasField("completed"), f"Expected completed, got: {terminal}"
+
+        # Verify usage arithmetic
+        usage = terminal.completed.usage
+        assert usage.input_tokens == 6
+        assert usage.output_tokens > 0
+        assert usage.total_tokens == usage.input_tokens + usage.output_tokens
+
+        # Verify finish_reason is valid
+        fr = terminal.completed.finish_reason
+        assert fr in (
+            common_pb2.FINISH_REASON_STOP,
+            common_pb2.FINISH_REASON_LENGTH,
+        )
+
+        # Unload
+        stub.UnloadModel(
+            runtime_pb2.UnloadModelRequest(
+                model_id=manifest.model_id,
+                version=manifest.version,
+            )
+        )
     finally:
         process.terminate()
         process.wait(timeout=10)

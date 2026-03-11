@@ -815,6 +815,113 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  # -- Opt-in MLX real generation smoke test ----------------------------------
+
+  # Set ORCHARD_MLX_SMOKE_MODEL_PATH to a real Orchard bundle directory.
+  @mlx_smoke_model_path System.get_env("ORCHARD_MLX_SMOKE_MODEL_PATH")
+
+  if @mlx_smoke_model_path do
+    @tag :mlx_smoke
+    test "opt-in MLX real generation through full node-agent path" do
+      mlx_bundle_path = unquote(@mlx_smoke_model_path)
+
+      # Read manifest from the real bundle
+      manifest_json = File.read!(Path.join(mlx_bundle_path, "manifest.json"))
+      manifest_data = Jason.decode!(manifest_json)
+      model_id = manifest_data["model_id"]
+      version = manifest_data["version"]
+
+      # Compute hash for the real bundle
+      {:ok, hash} = ArtifactBundle.tree_sha256(mlx_bundle_path)
+
+      source_uri = "file://#{mlx_bundle_path}"
+
+      with_runtime_config(
+        [
+          runtime_adapter_impl: Orchard.Node.WorkerRuntimeAdapter,
+          fake_runtime?: false,
+          worker_backend: "mlx",
+          worker_load_timeout_ms: 120_000,
+          worker_ready_timeout_ms: 30_000
+        ],
+        fn ->
+          with_channel(fn channel ->
+            # Ensure model loaded via file:// acquisition
+            ensure_req = %EnsureModelLoadedRequest{
+              node_id: "node-local",
+              model_id: model_id,
+              version: version,
+              artifact_sha256: hash,
+              preload: true,
+              deadline_unix_ms: System.system_time(:millisecond) + 120_000,
+              artifact_source_uri: source_uri
+            }
+
+            assert {:ok,
+                    %EnsureModelLoadedResponse{
+                      placement_state: :PLACEMENT_STATE_LOADED
+                    }} = NodeRuntimeStub.ensure_model_loaded(channel, ensure_req)
+
+            # Execute real generation
+            gen_req = %ExecuteInferenceRequest{
+              request_id: "req-mlx-smoke-gen",
+              controller_session_id: "mlx-smoke-session",
+              model_id: model_id,
+              version: version,
+              rendered_prompt_utf8: "The capital of France is",
+              input_tokens: 6,
+              params: %GenerationParams{max_output_tokens: 8, temperature: 0.0},
+              deadline_unix_ms: System.system_time(:millisecond) + 60_000,
+              metadata_json: ~s({"source":"mlx_smoke"})
+            }
+
+            assert {:ok, event_stream} =
+                     NodeRuntimeStub.execute_inference(channel, gen_req)
+
+            events = Enum.to_list(event_stream)
+            assert length(events) >= 3, "Expected accepted + delta(s) + completed"
+
+            # First event: Accepted from node (not worker)
+            assert {:ok, %RPCInferenceEvent{event: {:accepted, %Accepted{}}}} =
+                     hd(events)
+
+            # At least one output_text_delta
+            deltas =
+              Enum.filter(events, fn
+                {:ok, %RPCInferenceEvent{event: {:output_text_delta, _}}} -> true
+                _ -> false
+              end)
+
+            assert length(deltas) >= 1, "Expected at least one output_text_delta"
+
+            # Terminal: completed with valid usage
+            {:ok, %RPCInferenceEvent{event: {:completed, %Completed{} = completed}}} =
+              List.last(events)
+
+            assert completed.finish_reason in [
+                     :FINISH_REASON_STOP,
+                     :FINISH_REASON_LENGTH
+                   ]
+
+            usage = completed.usage
+            assert usage.input_tokens == 6
+            assert usage.output_tokens > 0
+            assert usage.total_tokens == usage.input_tokens + usage.output_tokens
+
+            # Unload
+            assert {:ok, %{ok: true}} =
+                     NodeRuntimeStub.unload_model(channel, %UnloadModelRequest{
+                       model_id: model_id,
+                       version: version,
+                       force: false,
+                       evict: false
+                     })
+          end)
+        end
+      )
+    end
+  end
+
   # -- Private helpers -------------------------------------------------------
 
   defp get_blocking_generation_ref do

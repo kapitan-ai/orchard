@@ -313,9 +313,65 @@ class LoadedModelSession:
     tokenizer_path: Path
     model: Any
     tokenizer: Any
+    model_config: Any | None = None
+    eos_token_ids: tuple[int, ...] = ()
     clear_cache: Callable[[], None] | None = None
     decode_cancel_stride: int = 1
     prefix_cache: Any | None = None
+
+
+def _normalize_eos_token_ids(tokenizer: Any, model_config: Any) -> tuple[int, ...]:
+    """Extract and normalize EOS token IDs from tokenizer and model config.
+
+    Precedence: tokenizer first, model config second.  De-duplicates while
+    preserving first-seen order.  Returns empty tuple if no valid IDs found
+    (does not fail).
+    """
+    raw_ids: list[int] = []
+
+    for source in (tokenizer, model_config):
+        if source is None:
+            continue
+        for attr_name in ("eos_token_ids", "eos_token_id"):
+            val = None
+            if isinstance(source, dict):
+                val = source.get(attr_name)
+            else:
+                val = getattr(source, attr_name, None)
+            if val is None:
+                continue
+            _collect_eos_ids(val, raw_ids)
+
+    # De-duplicate preserving order.
+    seen: set[int] = set()
+    result: list[int] = []
+    for eid in raw_ids:
+        if eid not in seen:
+            seen.add(eid)
+            result.append(eid)
+    return tuple(result)
+
+
+def _collect_eos_ids(val: Any, out: list[int]) -> None:
+    """Append valid int EOS IDs from *val* into *out*, skipping booleans."""
+    if isinstance(val, bool):
+        return
+    if isinstance(val, int):
+        out.append(val)
+        return
+    if isinstance(val, str):
+        # Strings are iterable but never valid EOS IDs.
+        return
+    if isinstance(val, set):
+        # Sort for deterministic ordering from sets.
+        for item in sorted(val):
+            _collect_eos_ids(item, out)
+        return
+    try:
+        for item in val:
+            _collect_eos_ids(item, out)
+    except TypeError:
+        pass
 
 
 def _resolve_bundle_subpath(bundle_root: Path, relative: str, label: str) -> Path:
@@ -414,8 +470,9 @@ def load_session(
 
     model = None
     tokenizer = None
+    model_config = None
     try:
-        model, _config = deps.load_model(
+        model, model_config = deps.load_model(
             str(entrypoint_path),
             lazy=True,
             strict=False,
@@ -447,6 +504,8 @@ def load_session(
                 f"model load failed: {exc}",
             ) from exc
 
+    eos_token_ids = _normalize_eos_token_ids(tokenizer, model_config)
+
     return LoadedModelSession(
         manifest=manifest,
         bundle_path=bundle,
@@ -454,6 +513,8 @@ def load_session(
         tokenizer_path=tokenizer_path,
         model=model,
         tokenizer=tokenizer,
+        model_config=model_config,
+        eos_token_ids=eos_token_ids,
         clear_cache=deps.clear_cache,
         decode_cancel_stride=1,
         prefix_cache=None,
@@ -476,6 +537,7 @@ def unload_session(
     # Drop references so GC can reclaim.
     session.model = None
     session.tokenizer = None
+    session.model_config = None
     session.prefix_cache = None
     session.clear_cache = None
 

@@ -113,11 +113,11 @@ def _stub_generate(
 
 
 class MLXBackend:
-    """Real MLX backend with session-based model lifecycle.
+    """Real MLX backend with session-based model lifecycle and generation.
 
-    Task 2 delivers real load/unload via ``LoadedModelSession``;
-    generation still delegates to the deterministic stub helper
-    until Task 3 wires real MLX inference.
+    Tasks 1–2.5 delivered contract hardening, real load/unload, and model
+    acquisition.  Task 3 wires real MLX inference via an injectable
+    ``generation_runner``.
     """
 
     def __init__(
@@ -125,12 +125,14 @@ class MLXBackend:
         *,
         session_loader: Callable[..., Any] | None = None,
         session_unloader: Callable[..., None] | None = None,
+        generation_runner: Callable[..., Iterator[dict[str, Any]]] | None = None,
     ) -> None:
         from orchard_worker_mlx.model_loader import load_session as _load_session
         from orchard_worker_mlx.model_loader import unload_session as _unload_session
 
         self._session_loader = session_loader or _load_session
         self._session_unloader = session_unloader or _unload_session
+        self._generation_runner = generation_runner or _default_generation_runner()
         self._session: Any | None = None
         self._active_request_count = 0
         self._lock = threading.Lock()
@@ -204,9 +206,17 @@ class MLXBackend:
     def generate(
         self, request: Any, cancel_event: threading.Event
     ) -> Iterator[dict[str, Any]]:
-        # Task 2: still use deterministic stub generation.
-        # Task 3 will replace this with real MLX inference.
-        return _stub_generate(request, cancel_event)
+        with self._lock:
+            session = self._session
+        if session is None:
+            raise BackendError("model_not_loaded", "model is not loaded")
+        yield from self._generation_runner(session, request, cancel_event)
+
+
+def _default_generation_runner() -> Callable[..., Iterator[dict[str, Any]]]:
+    """Lazily import the real generation runner."""
+    from orchard_worker_mlx.generation import generate_events
+    return generate_events
 
 
 def build_backend(name: str) -> Backend:

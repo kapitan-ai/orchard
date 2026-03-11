@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -320,22 +321,54 @@ def test_mlx_backend_single_flight() -> None:
     backend.finish_generation()
 
 
-def test_mlx_backend_generate_uses_stub_helper() -> None:
-    """MLXBackend.generate still returns deterministic stub events in Task 2."""
-    backend = _make_mlx_backend()
+def test_mlx_backend_generate_delegates_to_runner() -> None:
+    """MLXBackend.generate delegates to the injected generation_runner."""
+    captured: list[tuple] = []
+
+    def fake_runner(session, request, cancel_event):
+        captured.append((session, request, cancel_event))
+        yield {"kind": "output_text_delta", "delta": "hello"}
+        yield {
+            "kind": "completed",
+            "finish_reason": "FINISH_REASON_STOP",
+            "usage": {"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+        }
+
+    backend = MLXBackend(
+        session_loader=lambda **kw: _make_fake_session(
+            model_id=kw["model_id"], version=kw["version"], bundle_path=kw["model_path"]
+        ),
+        session_unloader=lambda s: None,
+        generation_runner=fake_runner,
+    )
     backend.load_model(model_id="m", version="v", model_path="/fake/path")
     backend.start_generation()
 
-    import threading
-    from unittest.mock import MagicMock
-
     request = MagicMock()
-    request.metadata_json = b''
-    request.input_tokens = 3
+    cancel = threading.Event()
 
-    events = list(backend.generate(request, threading.Event()))
+    events = list(backend.generate(request, cancel))
     backend.finish_generation()
 
-    kinds = [e["kind"] for e in events]
-    assert "output_text_delta" in kinds
-    assert kinds[-1] == "completed"
+    # Runner received session, request, and cancel_event
+    assert len(captured) == 1
+    assert captured[0][0].manifest.model_id == "m"
+    assert captured[0][1] is request
+    assert captured[0][2] is cancel
+
+    # Events forwarded unchanged
+    assert events[0] == {"kind": "output_text_delta", "delta": "hello"}
+    assert events[-1]["kind"] == "completed"
+
+
+def test_mlx_backend_generate_requires_loaded_session() -> None:
+    """MLXBackend.generate raises model_not_loaded when no session is loaded."""
+    backend = MLXBackend(
+        session_loader=lambda **kw: _make_fake_session(),
+        session_unloader=lambda s: None,
+        generation_runner=lambda s, r, c: iter([]),
+    )
+    # Don't load model — generate should fail
+    with pytest.raises(BackendError) as exc_info:
+        list(backend.generate(MagicMock(), threading.Event()))
+    assert exc_info.value.code == "model_not_loaded"

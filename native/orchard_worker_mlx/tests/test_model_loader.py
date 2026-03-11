@@ -65,14 +65,24 @@ def _make_fake_deps(
     *,
     load_model_side_effect: Any = None,
     load_tokenizer_side_effect: Any = None,
+    model_config: Any = None,
+    tokenizer_eos_token_id: Any = None,
 ) -> MLXDeps:
     fake_model = MagicMock(name="FakeModel")
     fake_tokenizer = MagicMock(name="FakeTokenizer")
+    # Set up tokenizer EOS attribute for normalization tests.
+    if tokenizer_eos_token_id is not None:
+        fake_tokenizer.eos_token_id = tokenizer_eos_token_id
+    else:
+        # Remove the attribute so getattr returns None.
+        del fake_tokenizer.eos_token_id
+
+    effective_config = model_config if model_config is not None else {}
 
     def _load_model(model_path: str, **kwargs: Any) -> tuple[Any, Any]:
         if load_model_side_effect is not None:
             raise load_model_side_effect
-        return (fake_model, {})
+        return (fake_model, effective_config)
 
     def _load_tokenizer(tokenizer_path: Any) -> Any:
         if load_tokenizer_side_effect is not None:
@@ -371,6 +381,102 @@ def test_load_session_success(writable_bundle: Path) -> None:
     deps.eval_fn.assert_called_once()
     deps.clear_cache.assert_called_once()
 
+    # New Task 3 fields: model_config and eos_token_ids.
+    assert session.model_config == {}
+    assert session.eos_token_ids == ()
+
+
+def test_load_session_retains_model_config(writable_bundle: Path) -> None:
+    """load_session stores the config returned by deps.load_model."""
+    config = {"model_type": "llama", "eos_token_id": 2}
+    deps = _make_fake_deps(model_config=config)
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.model_config is config
+
+
+def test_load_session_eos_from_tokenizer(writable_bundle: Path) -> None:
+    """EOS from tokenizer takes precedence."""
+    deps = _make_fake_deps(tokenizer_eos_token_id=42)
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert 42 in session.eos_token_ids
+
+
+def test_load_session_eos_from_config(writable_bundle: Path) -> None:
+    """EOS from model config when tokenizer has none."""
+    deps = _make_fake_deps(model_config={"eos_token_id": 128001})
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.eos_token_ids == (128001,)
+
+
+def test_load_session_eos_merged_and_deduped(writable_bundle: Path) -> None:
+    """EOS IDs from tokenizer and config are merged and de-duplicated."""
+    deps = _make_fake_deps(
+        tokenizer_eos_token_id=2,
+        model_config={"eos_token_id": 2, "eos_token_ids": [2, 128001]},
+    )
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    # De-duplicated: tokenizer's 2 first, then config's 128001
+    assert session.eos_token_ids == (2, 128001)
+
+
+def test_load_session_eos_invalid_values_ignored(writable_bundle: Path) -> None:
+    """Invalid EOS values (booleans, strings) are silently ignored."""
+    deps = _make_fake_deps(
+        model_config={"eos_token_id": True, "eos_token_ids": ["not_an_int", 7]},
+    )
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    # True is a bool — skipped.  "not_an_int" — skipped.  7 is valid.
+    assert session.eos_token_ids == (7,)
+
+
+def test_load_session_tokenizer_receives_resolved_path(writable_bundle: Path) -> None:
+    """Lock: load_tokenizer receives the resolved tokenizer file path."""
+    captured_paths: list = []
+
+    def capturing_loader(tokenizer_path: Any) -> Any:
+        captured_paths.append(str(tokenizer_path))
+        return MagicMock(name="FakeTokenizer")
+
+    deps = MLXDeps(
+        load_model=lambda model_path, **kw: (MagicMock(), {}),
+        load_tokenizer=capturing_loader,
+        eval_fn=MagicMock(),
+        clear_cache=MagicMock(),
+    )
+    load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert len(captured_paths) == 1
+    assert captured_paths[0].endswith("tokenizer.json")
+
 
 def test_load_session_model_load_failure(writable_bundle: Path) -> None:
     deps = _make_fake_deps(load_model_side_effect=RuntimeError("Metal OOM"))
@@ -446,6 +552,7 @@ def test_unload_session_clears_references() -> None:
 
     assert session.model is None
     assert session.tokenizer is None
+    assert session.model_config is None
     assert session.prefix_cache is None
     clear_cache.assert_called_once()
     collect.assert_called_once()
