@@ -6,6 +6,13 @@ terminal event emission, usage accounting, and decode-phase cancel checks.
 
 It does NOT own model lifecycle, gRPC/proto conversion, accepted/progress
 events, stop-sequence buffering (Task 4), or prefix cache (Task 6).
+
+Key invariant — add_special_tokens=False:
+    ``request.rendered_prompt_utf8`` arrives fully rendered by the controller
+    (chat template, system prompt scaffolding, BOS tokens already applied).
+    This module tokenizes the rendered prompt **without** adding tokenizer-
+    level special tokens.  Violating this would duplicate BOS/chat-template
+    tokens, alter prompt semantics, and skew usage counts.
 """
 
 from __future__ import annotations
@@ -101,6 +108,15 @@ def generate_events(
         yield cancelled_event()
         return
 
+    # NOTE(task-4): session.eos_token_ids contains merged EOS IDs from both
+    # tokenizer and model_config (computed by _normalize_eos_token_ids at load
+    # time).  However, mlx_lm.stream_generate() does NOT accept an
+    # eos_token_ids kwarg — it wraps the tokenizer in TokenizerWrapper
+    # internally and defaults to {tokenizer.eos_token_id} (singular).
+    # Models with config-only EOS IDs (e.g. additional stop tokens in
+    # generation_config) will NOT be detected by mlx_lm's built-in EOS check.
+    # Task 4's stop-sequence buffering should implement Orchard-level EOS
+    # detection using session.eos_token_ids for comprehensive stop handling.
     stream = deps.stream_generate(
         session.model,
         session.tokenizer,
@@ -120,11 +136,15 @@ def generate_events(
         delta_text = response.text
         finish_reason = response.finish_reason
 
+        # Every yielded GenerationResponse represents one generated token,
+        # even when detokenization buffers produce empty text.  Count it
+        # unconditionally for usage; only emit a delta when text is present.
+        output_tokens += 1
+
         if finish_reason is not None:
             # This is the final response from stream_generate.
             # Emit any remaining text delta.
             if delta_text:
-                output_tokens += 1
                 yield {"kind": "output_text_delta", "delta": delta_text}
 
             # Map mlx_lm finish reasons to our proto constants.
@@ -136,7 +156,6 @@ def generate_events(
 
         # Non-terminal: emit text delta if non-empty.
         if delta_text:
-            output_tokens += 1
             yield {"kind": "output_text_delta", "delta": delta_text}
 
     # --- Step 7: iterator exhaustion without finish_reason ---
@@ -185,10 +204,12 @@ def _decode_prompt(payload: bytes | str | None) -> str:
 def _encode_prompt(tokenizer: Any, prompt_text: str) -> list[int]:
     """Encode prompt text into token IDs.
 
-    Uses ``add_special_tokens=False`` because prompts are already rendered
-    by the controller.
+    Uses ``add_special_tokens=False`` because the controller already renders
+    the final prompt (chat template, BOS, system scaffolding).  Do not change
+    this without coordinating with the controller's prompt pipeline.
     """
     try:
+        # WARNING: add_special_tokens must stay False — see module docstring.
         return tokenizer.encode(prompt_text, add_special_tokens=False)
     except Exception as exc:
         raise BackendError(

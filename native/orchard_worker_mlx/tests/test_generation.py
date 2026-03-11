@@ -119,8 +119,8 @@ def test_basic_generation_emits_deltas_and_completed() -> None:
     assert completed["kind"] == "completed"
     assert completed["finish_reason"] == "FINISH_REASON_STOP"
     assert completed["usage"]["input_tokens"] == 5
-    assert completed["usage"]["output_tokens"] == 2
-    assert completed["usage"]["total_tokens"] == 7
+    assert completed["usage"]["output_tokens"] == 3  # all 3 responses counted (incl. empty-text terminal)
+    assert completed["usage"]["total_tokens"] == 8
 
 
 def test_input_tokens_from_request_not_retokenized() -> None:
@@ -140,20 +140,25 @@ def test_input_tokens_from_request_not_retokenized() -> None:
 
 
 def test_empty_text_chunks_not_emitted() -> None:
-    """Empty text segments from stream_generate are suppressed."""
+    """Empty text segments are suppressed for deltas but still counted in usage."""
     responses = [
         FakeGenerationResponse(text="", token=10),  # empty prefill segment
         FakeGenerationResponse(text="Hi", token=11),
         FakeGenerationResponse(text="", token=12, finish_reason="stop"),
     ]
     session = _make_fake_session()
-    request = _make_fake_request()
+    request = _make_fake_request(input_tokens=5)
     deps = _make_deps(responses)
 
     events = _collect_events(session, request, deps)
     deltas = [e for e in events if e["kind"] == "output_text_delta"]
     assert len(deltas) == 1
     assert deltas[0]["delta"] == "Hi"
+
+    # All 3 responses count toward usage, even empty-text ones.
+    completed = events[-1]
+    assert completed["usage"]["output_tokens"] == 3
+    assert completed["usage"]["total_tokens"] == 8
 
 
 # ===========================================================================
@@ -455,7 +460,7 @@ def test_usage_total_equals_sum() -> None:
     completed = events[-1]
     usage = completed["usage"]
     assert usage["input_tokens"] == 10
-    assert usage["output_tokens"] == 3
+    assert usage["output_tokens"] == 4  # all 4 responses counted (incl. empty-text terminal)
     assert usage["total_tokens"] == usage["input_tokens"] + usage["output_tokens"]
 
 
@@ -481,3 +486,40 @@ def test_final_response_text_is_emitted() -> None:
 
     completed = events[-1]
     assert completed["usage"]["output_tokens"] == 2
+
+
+# ===========================================================================
+# Buffered detokenization (regression: output_tokens must count all responses)
+# ===========================================================================
+
+
+def test_buffered_detokenization_counts_all_tokens() -> None:
+    """Multiple empty-text responses (BPE buffering) are counted in usage.
+
+    With byte-pair encoding, stream_generate may yield several responses
+    with empty text before a non-empty flush.  Each response represents
+    one generated token and must be counted in usage.output_tokens, even
+    though only the non-empty flush emits a delta event.
+    """
+    responses = [
+        FakeGenerationResponse(text="", token=1),      # buffered
+        FakeGenerationResponse(text="", token=2),      # buffered
+        FakeGenerationResponse(text="flush", token=3), # flush
+        FakeGenerationResponse(text="", token=4, finish_reason="stop"),  # terminal, empty
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request(input_tokens=7)
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    # Only one delta emitted (the flush).
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    assert len(deltas) == 1
+    assert deltas[0]["delta"] == "flush"
+
+    # All 4 generated tokens counted in usage.
+    completed = events[-1]
+    assert completed["kind"] == "completed"
+    assert completed["usage"]["output_tokens"] == 4
+    assert completed["usage"]["total_tokens"] == 11  # 7 + 4

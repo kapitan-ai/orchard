@@ -86,6 +86,20 @@ class CrashingBackend(HappyBackend):
         raise RuntimeError("unexpected kaboom")
 
 
+class MidIterationBackendErrorBackend(HappyBackend):
+    """Raises BackendError mid-iteration after yielding one valid delta."""
+
+    def generate(
+        self, request: Any, cancel_event: threading.Event
+    ) -> Iterator[dict[str, Any]]:
+        yield {"kind": "output_text_delta", "delta": "partial output"}
+        raise BackendError(
+            "generation_failed",
+            "generation runner failed mid-stream",
+            retryable=True,
+        )
+
+
 class MissingTerminalBackend(HappyBackend):
     """Yields only non-terminal events then stops."""
 
@@ -194,6 +208,23 @@ def test_backend_crash_produces_terminal_failure() -> None:
     assert kinds[-1] == "failed"
     assert events[-1].failed.code == "backend_crash"
     assert "kaboom" in events[-1].failed.message
+
+
+def test_backend_error_mid_iteration_produces_terminal_failure() -> None:
+    """BackendError raised mid-iteration preserves prior deltas and synthesizes terminal."""
+    servicer = _make_servicer(MidIterationBackendErrorBackend())
+    events = _collect_events(servicer)
+
+    kinds = [e.WhichOneof("event") for e in events]
+    assert kinds == ["output_text_delta", "failed"]
+
+    # Prior delta preserved.
+    assert events[0].output_text_delta.delta == "partial output"
+
+    # Terminal failure from BackendError fields (not generic crash).
+    assert events[-1].failed.code == "generation_failed"
+    assert "mid-stream" in events[-1].failed.message
+    assert events[-1].failed.retryable is True
 
 
 def test_start_generation_crash_produces_terminal_failure() -> None:
