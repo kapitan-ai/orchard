@@ -27,7 +27,7 @@ from cluster.v1 import events_pb2 as cluster_dot_v1_dot_events__pb2
 from cluster.v1 import runtime_pb2 as cluster_dot_v1_dot_runtime__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n&orchard/worker/v1/worker_runtime.proto\x12\x11orchard.worker.v1\x1a\x17\x63luster/v1/common.proto\x1a\x17\x63luster/v1/events.proto\x1a\x18\x63luster/v1/runtime.proto\"\x15\n\x13WorkerStatusRequest\"D\n\x14WorkerStatusResponse\x12\x0e\n\x06loaded\x18\x01 \x01(\x08\x12\x1c\n\x14\x61\x63tive_request_count\x18\x02 \x01(\r\"I\n\x10LoadModelRequest\x12\x10\n\x08model_id\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x12\n\nmodel_path\x18\x03 \x01(\t2\x85\x03\n\x14WorkerRuntimeService\x12\\\n\tGetStatus\x12&.orchard.worker.v1.WorkerStatusRequest\x1a\'.orchard.worker.v1.WorkerStatusResponse\x12\x41\n\tLoadModel\x12#.orchard.worker.v1.LoadModelRequest\x1a\x0f.cluster.v1.Ack\x12>\n\x0bUnloadModel\x12\x1e.cluster.v1.UnloadModelRequest\x1a\x0f.cluster.v1.Ack\x12M\n\x08Generate\x12#.cluster.v1.ExecuteInferenceRequest\x1a\x1a.cluster.v1.InferenceEvent0\x01\x12=\n\x06\x43\x61ncel\x12\".cluster.v1.CancelInferenceRequest\x1a\x0f.cluster.v1.Ackb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n&orchard/worker/v1/worker_runtime.proto\x12\x11orchard.worker.v1\x1a\x17\x63luster/v1/common.proto\x1a\x17\x63luster/v1/events.proto\x1a\x18\x63luster/v1/runtime.proto\"\x15\n\x13WorkerStatusRequest\"\x80\x01\n\x14WorkerStatusResponse\x12\x0e\n\x06loaded\x18\x01 \x01(\x08\x12\x1c\n\x14\x61\x63tive_request_count\x18\x02 \x01(\r\x12\r\n\x05ready\x18\x03 \x01(\x08\x12\x13\n\x0bhealth_code\x18\x04 \x01(\t\x12\x16\n\x0ehealth_message\x18\x05 \x01(\t\"I\n\x10LoadModelRequest\x12\x10\n\x08model_id\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\x12\n\nmodel_path\x18\x03 \x01(\t2\x85\x03\n\x14WorkerRuntimeService\x12\\\n\tGetStatus\x12&.orchard.worker.v1.WorkerStatusRequest\x1a\'.orchard.worker.v1.WorkerStatusResponse\x12\x41\n\tLoadModel\x12#.orchard.worker.v1.LoadModelRequest\x1a\x0f.cluster.v1.Ack\x12>\n\x0bUnloadModel\x12\x1e.cluster.v1.UnloadModelRequest\x1a\x0f.cluster.v1.Ack\x12M\n\x08Generate\x12#.cluster.v1.ExecuteInferenceRequest\x1a\x1a.cluster.v1.InferenceEvent0\x01\x12=\n\x06\x43\x61ncel\x12\".cluster.v1.CancelInferenceRequest\x1a\x0f.cluster.v1.Ackb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -36,10 +36,10 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_WORKERSTATUSREQUEST']._serialized_start=137
   _globals['_WORKERSTATUSREQUEST']._serialized_end=158
-  _globals['_WORKERSTATUSRESPONSE']._serialized_start=160
-  _globals['_WORKERSTATUSRESPONSE']._serialized_end=228
-  _globals['_LOADMODELREQUEST']._serialized_start=230
-  _globals['_LOADMODELREQUEST']._serialized_end=303
-  _globals['_WORKERRUNTIMESERVICE']._serialized_start=306
-  _globals['_WORKERRUNTIMESERVICE']._serialized_end=695
+  _globals['_WORKERSTATUSRESPONSE']._serialized_start=161
+  _globals['_WORKERSTATUSRESPONSE']._serialized_end=289
+  _globals['_LOADMODELREQUEST']._serialized_start=291
+  _globals['_LOADMODELREQUEST']._serialized_end=364
+  _globals['_WORKERRUNTIMESERVICE']._serialized_start=367
+  _globals['_WORKERRUNTIMESERVICE']._serialized_end=756
 # @@protoc_insertion_point(module_scope)

@@ -338,6 +338,81 @@ def _default_mlx_deps() -> MLXDeps:
 
 
 # ---------------------------------------------------------------------------
+# MLX environment probe
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True, frozen=True)
+class MLXProbeDeps:
+    """Narrow DI seam for MLX environment probing.
+
+    Keeps probe tests hermetic — no real MLX imports when fakes are injected.
+    """
+
+    zeros_fn: Callable[[tuple[int, ...]], Any]
+    eval_fn: Callable[[Any], None] | None = None
+    clear_cache: Callable[[], None] | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class MLXEnvironmentHealth:
+    """Immutable, cached result of a one-shot MLX environment probe."""
+
+    ready: bool
+    code: str = ""
+    message: str = ""
+
+
+def _default_mlx_probe_deps() -> MLXProbeDeps:
+    """Import real MLX dependencies for probing.
+
+    Raises ``ImportError`` if MLX is not available.
+    """
+    import mlx.core as mx
+
+    return MLXProbeDeps(
+        zeros_fn=mx.zeros,
+        eval_fn=mx.eval,
+        clear_cache=lambda: mx.metal.clear_cache() if hasattr(mx, "metal") else None,
+    )
+
+
+def probe_mlx_environment(*, deps: MLXProbeDeps | None = None) -> MLXEnvironmentHealth:
+    """One-shot probe of MLX runtime availability.
+
+    Checks that MLX can be imported and that a tiny tensor can be allocated
+    and evaluated.  Returns an immutable health snapshot.  Never raises.
+    """
+    try:
+        if deps is None:
+            deps = _default_mlx_probe_deps()
+    except ImportError as exc:
+        return MLXEnvironmentHealth(
+            ready=False,
+            code="mlx_backend_unavailable",
+            message=f"MLX dependencies not available: {exc}",
+        )
+
+    try:
+        tensor = deps.zeros_fn((1,))
+        if deps.eval_fn is not None:
+            deps.eval_fn(tensor)
+        return MLXEnvironmentHealth(ready=True)
+    except Exception as exc:
+        return MLXEnvironmentHealth(
+            ready=False,
+            code="metal_unavailable",
+            message=f"MLX tensor allocation failed: {exc}",
+        )
+    finally:
+        if deps.clear_cache is not None:
+            try:
+                deps.clear_cache()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Session lifecycle
 # ---------------------------------------------------------------------------
 

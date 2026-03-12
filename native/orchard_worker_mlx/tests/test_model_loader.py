@@ -15,6 +15,8 @@ from orchard_worker_mlx.model_loader import (
     ChatTemplateSpec,
     LoadedModelSession,
     MLXDeps,
+    MLXEnvironmentHealth,
+    MLXProbeDeps,
     ModelLoaderError,
     RuntimeRequirementsSpec,
     TokenizerSpec,
@@ -23,6 +25,7 @@ from orchard_worker_mlx.model_loader import (
     load_manifest,
     load_session,
     parse_manifest_json,
+    probe_mlx_environment,
     unload_session,
 )
 from orchard_worker_mlx.prefix_cache import KVPrefixCache
@@ -1017,3 +1020,114 @@ def _patch_manifest(
     if runtime_adapter is not None:
         data["runtime_requirements"]["adapter"] = runtime_adapter
     manifest_path.write_text(json.dumps(data))
+
+
+# ---------------------------------------------------------------------------
+# MLX environment probe
+# ---------------------------------------------------------------------------
+
+
+class TestProbeMlxEnvironment:
+    """Unit tests for ``probe_mlx_environment()``."""
+
+    def test_healthy_probe(self):
+        """Successful probe returns ready=True."""
+        deps = MLXProbeDeps(zeros_fn=lambda shape: [0.0] * shape[0])
+        result = probe_mlx_environment(deps=deps)
+        assert result == MLXEnvironmentHealth(ready=True)
+        assert result.code == ""
+        assert result.message == ""
+
+    def test_healthy_probe_with_eval(self):
+        """Eval function is called when provided."""
+        eval_called = []
+        deps = MLXProbeDeps(
+            zeros_fn=lambda shape: [0.0] * shape[0],
+            eval_fn=lambda t: eval_called.append(t),
+        )
+        result = probe_mlx_environment(deps=deps)
+        assert result.ready is True
+        assert len(eval_called) == 1
+
+    def test_import_failure_returns_mlx_backend_unavailable(self):
+        """When deps is None and import fails, returns mlx_backend_unavailable."""
+        # We can't easily force an import failure with deps=None in CI,
+        # so test the explicit import-error code path by passing None
+        # and mocking _default_mlx_probe_deps to raise ImportError.
+        import orchard_worker_mlx.model_loader as ml
+
+        original = ml._default_mlx_probe_deps
+        try:
+            ml._default_mlx_probe_deps = lambda: (_ for _ in ()).throw(
+                ImportError("no mlx")
+            )
+            result = probe_mlx_environment(deps=None)
+            assert result.ready is False
+            assert result.code == "mlx_backend_unavailable"
+            assert "no mlx" in result.message
+        finally:
+            ml._default_mlx_probe_deps = original
+
+    def test_allocation_failure_returns_metal_unavailable(self):
+        """Tensor allocation failure returns metal_unavailable."""
+        def bad_zeros(shape):
+            raise RuntimeError("Metal device not found")
+
+        deps = MLXProbeDeps(zeros_fn=bad_zeros)
+        result = probe_mlx_environment(deps=deps)
+        assert result.ready is False
+        assert result.code == "metal_unavailable"
+        assert "Metal device not found" in result.message
+
+    def test_eval_failure_returns_metal_unavailable(self):
+        """Eval failure returns metal_unavailable."""
+        def bad_eval(tensor):
+            raise RuntimeError("eval failed")
+
+        deps = MLXProbeDeps(
+            zeros_fn=lambda shape: [0.0] * shape[0],
+            eval_fn=bad_eval,
+        )
+        result = probe_mlx_environment(deps=deps)
+        assert result.ready is False
+        assert result.code == "metal_unavailable"
+
+    def test_clear_cache_called_on_success(self):
+        """clear_cache is called after successful probe."""
+        cleared = []
+        deps = MLXProbeDeps(
+            zeros_fn=lambda shape: [0.0] * shape[0],
+            clear_cache=lambda: cleared.append(True),
+        )
+        probe_mlx_environment(deps=deps)
+        assert len(cleared) == 1
+
+    def test_clear_cache_called_on_failure(self):
+        """clear_cache is called even when probe fails."""
+        cleared = []
+        deps = MLXProbeDeps(
+            zeros_fn=lambda shape: (_ for _ in ()).throw(RuntimeError("fail")),
+            clear_cache=lambda: cleared.append(True),
+        )
+        probe_mlx_environment(deps=deps)
+        assert len(cleared) == 1
+
+    def test_clear_cache_exception_swallowed(self):
+        """Exceptions in clear_cache are swallowed."""
+        deps = MLXProbeDeps(
+            zeros_fn=lambda shape: [0.0] * shape[0],
+            clear_cache=lambda: (_ for _ in ()).throw(RuntimeError("cache fail")),
+        )
+        result = probe_mlx_environment(deps=deps)
+        assert result.ready is True
+
+    def test_never_raises(self):
+        """Probe never raises, always returns MLXEnvironmentHealth."""
+        deps = MLXProbeDeps(
+            zeros_fn=lambda shape: (_ for _ in ()).throw(RuntimeError("boom")),
+            eval_fn=lambda t: (_ for _ in ()).throw(RuntimeError("boom2")),
+            clear_cache=lambda: (_ for _ in ()).throw(RuntimeError("boom3")),
+        )
+        result = probe_mlx_environment(deps=deps)
+        assert isinstance(result, MLXEnvironmentHealth)
+        assert result.ready is False

@@ -368,8 +368,15 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
                %WorkerStatusRequest{},
                timeout: timeout_ms
              ) do
-          {:ok, _status} ->
-            {:ok, channel}
+          {:ok, status} ->
+            case classify_worker_status(status) do
+              :ready ->
+                {:ok, channel}
+
+              {:error, _reason} = err ->
+                _ = disconnect_channel(channel)
+                err
+            end
 
           {:error, _reason} ->
             _ = disconnect_channel(channel)
@@ -382,6 +389,13 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         do_wait_for_worker_ready(socket_path, port, deadline)
     end
   end
+
+  defp classify_worker_status(%{ready: false, health_code: code, health_message: message})
+       when is_binary(code) and code != "" do
+    {:error, {:worker_unhealthy, code, message || ""}}
+  end
+
+  defp classify_worker_status(_status), do: :ready
 
   defp poll_port(port) do
     receive do

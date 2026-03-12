@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Minimal gRPC worker that always reports ready=false.
+
+Used by Elixir integration tests to verify fail-fast readiness polling.
+Accepts the same CLI args as the real worker (--socket-path, --backend, --log-file)
+but ignores --backend and --log-file.
+"""
+
+import argparse
+import signal
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+# Add the worker package source to sys.path so we can import generated protos.
+_pkg_root = Path(__file__).resolve().parents[4] / "native" / "orchard_worker_mlx" / "src"
+sys.path.insert(0, str(_pkg_root))
+
+import grpc  # noqa: E402
+from orchard_worker_mlx.generated.cluster.v1 import common_pb2  # noqa: E402
+from orchard_worker_mlx.generated.orchard.worker.v1 import (  # noqa: E402
+    worker_runtime_pb2,
+    worker_runtime_pb2_grpc,
+)
+
+
+class UnhealthyServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer):
+    def GetStatus(self, request, context):
+        return worker_runtime_pb2.WorkerStatusResponse(
+            loaded=False,
+            active_request_count=0,
+            ready=False,
+            health_code="mlx_backend_unavailable",
+            health_message="MLX dependencies not available (test fixture)",
+        )
+
+    def LoadModel(self, request, context):
+        return common_pb2.Ack(
+            ok=False,
+            message="mlx_backend_unavailable: worker is unhealthy",
+        )
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--socket-path", required=True)
+    parser.add_argument("--backend", default="stub")
+    parser.add_argument("--log-file", default=None)
+    args = parser.parse_args()
+
+    socket_path = Path(args.socket_path)
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    if socket_path.exists():
+        socket_path.unlink()
+
+    server = grpc.server(ThreadPoolExecutor(max_workers=2))
+    worker_runtime_pb2_grpc.add_WorkerRuntimeServiceServicer_to_server(
+        UnhealthyServicer(), server
+    )
+    server.add_insecure_port(f"unix://{args.socket_path}")
+
+    def shutdown(signum, frame):
+        server.stop(grace=0)
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+
+    server.start()
+    print(f"unhealthy worker listening on {args.socket_path}", flush=True)
+    server.wait_for_termination()
+
+
+if __name__ == "__main__":
+    main()

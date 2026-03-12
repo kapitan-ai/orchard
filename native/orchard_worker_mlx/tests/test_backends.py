@@ -11,12 +11,14 @@ import pytest
 from orchard_worker_mlx.backends import (
     Backend,
     BackendError,
+    BackendHealth,
     MLXBackend,
     StubBackend,
     build_backend,
     decode_metadata,
     safe_int,
 )
+from orchard_worker_mlx.model_loader import MLXEnvironmentHealth
 
 
 # -- Backend protocol conformance --------------------------------------------
@@ -372,3 +374,98 @@ def test_mlx_backend_generate_requires_loaded_session() -> None:
     with pytest.raises(BackendError) as exc_info:
         list(backend.generate(MagicMock(), threading.Event()))
     assert exc_info.value.code == "model_not_loaded"
+
+
+# -- Backend health contract -------------------------------------------------
+
+
+def test_stub_backend_health_always_ready() -> None:
+    """StubBackend always reports healthy."""
+    backend = StubBackend()
+    health = backend.health()
+    assert health == BackendHealth(ready=True, code="", message="")
+
+
+def test_mlx_backend_health_ready_when_di_seams_injected() -> None:
+    """MLXBackend skips real probe when DI seams are injected."""
+    backend = MLXBackend(
+        session_loader=lambda **kw: _make_fake_session(),
+        session_unloader=lambda s: None,
+    )
+    health = backend.health()
+    assert health["ready"] is True
+    assert health["code"] == ""
+    assert health["message"] == ""
+
+
+def test_mlx_backend_health_ready_with_explicit_healthy_probe() -> None:
+    """MLXBackend uses explicit health_probe when provided."""
+    probe = lambda: MLXEnvironmentHealth(ready=True)
+    backend = MLXBackend(health_probe=probe)
+    health = backend.health()
+    assert health["ready"] is True
+
+
+def test_mlx_backend_health_unhealthy_with_explicit_probe() -> None:
+    """MLXBackend reports unhealthy when probe returns unhealthy."""
+    probe = lambda: MLXEnvironmentHealth(
+        ready=False, code="mlx_backend_unavailable", message="no mlx"
+    )
+    backend = MLXBackend(health_probe=probe)
+    health = backend.health()
+    assert health["ready"] is False
+    assert health["code"] == "mlx_backend_unavailable"
+    assert health["message"] == "no mlx"
+
+
+def test_mlx_backend_health_probe_exception_becomes_unhealthy() -> None:
+    """If health_probe raises, backend reports metal_unavailable."""
+    def bad_probe():
+        raise RuntimeError("probe crashed")
+
+    backend = MLXBackend(health_probe=bad_probe)
+    health = backend.health()
+    assert health["ready"] is False
+    assert health["code"] == "metal_unavailable"
+    assert "probe crashed" in health["message"]
+
+
+def test_mlx_backend_health_is_cached() -> None:
+    """Health probe is called exactly once at construction."""
+    call_count = [0]
+
+    def counting_probe():
+        call_count[0] += 1
+        return MLXEnvironmentHealth(ready=True)
+
+    backend = MLXBackend(health_probe=counting_probe)
+    assert call_count[0] == 1
+
+    # Subsequent health() calls do not re-probe.
+    backend.health()
+    backend.health()
+    assert call_count[0] == 1
+
+
+def test_mlx_backend_health_returns_copy() -> None:
+    """Each health() call returns a fresh dict copy."""
+    backend = MLXBackend(
+        session_loader=lambda **kw: _make_fake_session(),
+        session_unloader=lambda s: None,
+    )
+    h1 = backend.health()
+    h2 = backend.health()
+    assert h1 == h2
+    assert h1 is not h2  # different dict objects
+
+
+def test_build_backend_stub_health() -> None:
+    """build_backend("stub") returns a backend with healthy health."""
+    backend = build_backend("stub")
+    health = backend.health()
+    assert health["ready"] is True
+
+
+def test_protocol_requires_health() -> None:
+    """Backend protocol requires a health() method."""
+    assert hasattr(Backend, "health")

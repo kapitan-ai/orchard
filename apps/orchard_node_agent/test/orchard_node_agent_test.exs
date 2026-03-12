@@ -909,6 +909,49 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  # -- Unhealthy worker fail-fast test -----------------------------------------
+
+  test "unhealthy worker returns {:error, {:worker_unhealthy, ...}} and cleans up fast",
+       %{bundle: bundle} do
+    unhealthy_executable =
+      Path.expand(
+        "test/support/unhealthy-worker",
+        Application.app_dir(:orchard_node_agent, "..")
+      )
+
+    with_runtime_config(
+      [
+        runtime_adapter_impl: Orchard.Node.WorkerRuntimeAdapter,
+        fake_runtime?: false,
+        worker_executable: unhealthy_executable
+      ],
+      fn ->
+        start_time = System.monotonic_time(:millisecond)
+
+        with_channel(fn channel ->
+          result =
+            NodeRuntimeStub.ensure_model_loaded(
+              channel,
+              ensure_model_loaded_request(bundle)
+            )
+
+          elapsed = System.monotonic_time(:millisecond) - start_time
+
+          # Should fail — unhealthy worker detected during readiness polling.
+          assert {:ok, %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_FAILED}} =
+                   result
+
+          # Should fail fast — well under the default ready timeout (5000ms).
+          # The unhealthy worker should be detected on the first GetStatus call.
+          assert elapsed < 4_000,
+                 "Expected fail-fast but took #{elapsed}ms (near full ready timeout)"
+        end)
+
+        wait_until(fn -> worker_count() == 0 end)
+      end
+    )
+  end
+
   # -- Worker lifecycle telemetry tests ----------------------------------------
 
   describe "worker lifecycle telemetry" do

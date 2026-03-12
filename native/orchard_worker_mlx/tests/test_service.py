@@ -10,7 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from orchard_worker_mlx.backends import Backend, BackendError, BackendStatus, StubBackend
+from orchard_worker_mlx.backends import Backend, BackendError, BackendHealth, BackendStatus, StubBackend
+from orchard_worker_mlx.generated.orchard.worker.v1 import worker_runtime_pb2
 from orchard_worker_mlx.service import (
     CancelEntry,
     WorkerRuntimeServicer,
@@ -47,6 +48,9 @@ class HappyBackend:
 
     def status(self) -> BackendStatus:
         return BackendStatus(loaded=self._loaded, active_request_count=int(self._active))
+
+    def health(self) -> BackendHealth:
+        return BackendHealth(ready=True, code="", message="")
 
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
         self._loaded = True
@@ -643,3 +647,85 @@ def test_cancel_logs_request_id(caplog: pytest.LogCaptureFixture) -> None:
     assert ack.ok is True
     messages = [r.message for r in caplog.records]
     assert any("cancel request_id=req-log-test" in m for m in messages)
+
+
+# ---------------------------------------------------------------------------
+# GetStatus health fields + LoadModel health gate
+# ---------------------------------------------------------------------------
+
+
+class UnhealthyBackend(HappyBackend):
+    """Backend that reports unhealthy."""
+
+    def health(self) -> BackendHealth:
+        return BackendHealth(
+            ready=False,
+            code="mlx_backend_unavailable",
+            message="MLX not installed",
+        )
+
+
+def test_get_status_includes_health_fields_healthy() -> None:
+    """GetStatus includes ready=True and empty code/message for healthy backend."""
+    servicer = _make_servicer(HappyBackend())
+    status = servicer.GetStatus(
+        worker_runtime_pb2.WorkerStatusRequest(), None
+    )
+    assert status.ready is True
+    assert status.health_code == ""
+    assert status.health_message == ""
+
+
+def test_get_status_includes_health_fields_unhealthy() -> None:
+    """GetStatus includes ready=False with code/message for unhealthy backend."""
+    servicer = _make_servicer(UnhealthyBackend())
+    status = servicer.GetStatus(
+        worker_runtime_pb2.WorkerStatusRequest(), None
+    )
+    assert status.ready is False
+    assert status.health_code == "mlx_backend_unavailable"
+    assert status.health_message == "MLX not installed"
+
+
+def test_load_model_rejected_when_unhealthy() -> None:
+    """LoadModel returns ok=False when backend is unhealthy."""
+    servicer = _make_servicer(UnhealthyBackend())
+    ack = servicer.LoadModel(
+        worker_runtime_pb2.LoadModelRequest(
+            model_id="m", version="v", model_path="/fake"
+        ),
+        None,
+    )
+    assert ack.ok is False
+    assert "mlx_backend_unavailable" in ack.message
+
+
+def test_load_model_unhealthy_does_not_call_backend_load() -> None:
+    """LoadModel should not call backend.load_model when unhealthy."""
+    load_called = [False]
+
+    class TrackingUnhealthyBackend(UnhealthyBackend):
+        def load_model(self, **kwargs):
+            load_called[0] = True
+
+    servicer = _make_servicer(TrackingUnhealthyBackend())
+    ack = servicer.LoadModel(
+        worker_runtime_pb2.LoadModelRequest(
+            model_id="m", version="v", model_path="/fake"
+        ),
+        None,
+    )
+    assert ack.ok is False
+    assert not load_called[0]
+
+
+def test_load_model_succeeds_when_healthy() -> None:
+    """LoadModel proceeds normally when backend is healthy."""
+    servicer = _make_servicer(HappyBackend())
+    ack = servicer.LoadModel(
+        worker_runtime_pb2.LoadModelRequest(
+            model_id="m", version="v", model_path="/fake"
+        ),
+        None,
+    )
+    assert ack.ok is True

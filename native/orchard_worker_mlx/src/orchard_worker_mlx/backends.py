@@ -26,11 +26,18 @@ class BackendStatus(TypedDict):
     active_request_count: int
 
 
+class BackendHealth(TypedDict):
+    ready: bool
+    code: str
+    message: str
+
+
 @runtime_checkable
 class Backend(Protocol):
     """Structural contract that all worker backends must satisfy."""
 
     def status(self) -> BackendStatus: ...
+    def health(self) -> BackendHealth: ...
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None: ...
     def unload_model(self) -> None: ...
     def start_generation(self) -> None: ...
@@ -52,6 +59,9 @@ class StubBackend:
                 loaded=self._loaded_model is not None,
                 active_request_count=self._active_request_count,
             )
+
+    def health(self) -> BackendHealth:
+        return BackendHealth(ready=True, code="", message="")
 
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
         logger.info("stub load_model model_id=%s version=%s", model_id, version)
@@ -122,9 +132,10 @@ def _stub_generate(
 class MLXBackend:
     """Real MLX backend with session-based model lifecycle and generation.
 
-    Tasks 1–2.5 delivered contract hardening, real load/unload, and model
-    acquisition.  Task 3 wires real MLX inference via an injectable
-    ``generation_runner``.
+    Health is probed once at construction (one-shot ``probe_mlx_environment``)
+    and cached forever.  When DI seams are injected (test mode), the probe is
+    skipped and health defaults to ready.  An explicit ``health_probe``
+    callable overrides both paths.
     """
 
     def __init__(
@@ -133,9 +144,14 @@ class MLXBackend:
         session_loader: Callable[..., Any] | None = None,
         session_unloader: Callable[..., None] | None = None,
         generation_runner: Callable[..., Iterator[dict[str, Any]]] | None = None,
+        health_probe: Callable[[], "MLXEnvironmentHealth"] | None = None,
     ) -> None:
-        from orchard_worker_mlx.model_loader import load_session as _load_session
-        from orchard_worker_mlx.model_loader import unload_session as _unload_session
+        from orchard_worker_mlx.model_loader import (
+            MLXEnvironmentHealth,
+            load_session as _load_session,
+            probe_mlx_environment,
+            unload_session as _unload_session,
+        )
 
         self._session_loader = session_loader or _load_session
         self._session_unloader = session_unloader or _unload_session
@@ -144,12 +160,45 @@ class MLXBackend:
         self._active_request_count = 0
         self._lock = threading.Lock()
 
+        # --- one-shot health probe, cached forever ---
+        has_injected_seams = (
+            session_loader is not None
+            or session_unloader is not None
+            or generation_runner is not None
+        )
+
+        if health_probe is not None:
+            try:
+                env = health_probe()
+            except Exception as exc:
+                env = MLXEnvironmentHealth(
+                    ready=False,
+                    code="metal_unavailable",
+                    message=f"health probe failed: {exc}",
+                )
+        elif has_injected_seams:
+            # Test seams injected — skip real MLX probe.
+            env = MLXEnvironmentHealth(ready=True)
+        else:
+            env = probe_mlx_environment()
+
+        self._health: BackendHealth = BackendHealth(
+            ready=env.ready, code=env.code, message=env.message,
+        )
+
     def status(self) -> BackendStatus:
         with self._lock:
             return BackendStatus(
                 loaded=self._session is not None,
                 active_request_count=self._active_request_count,
             )
+
+    def health(self) -> BackendHealth:
+        return BackendHealth(
+            ready=self._health["ready"],
+            code=self._health["code"],
+            message=self._health["message"],
+        )
 
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
         from orchard_worker_mlx.model_loader import ModelLoaderError

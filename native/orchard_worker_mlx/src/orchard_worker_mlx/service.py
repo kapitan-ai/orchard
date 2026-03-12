@@ -57,9 +57,13 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         self, request: worker_runtime_pb2.WorkerStatusRequest, context: grpc.ServicerContext
     ) -> worker_runtime_pb2.WorkerStatusResponse:
         status = self._backend.status()
+        health = self._backend.health()
         return worker_runtime_pb2.WorkerStatusResponse(
             loaded=bool(status["loaded"]),
             active_request_count=int(status["active_request_count"]),
+            ready=bool(health["ready"]),
+            health_code=str(health["code"]),
+            health_message=str(health["message"]),
         )
 
     def LoadModel(
@@ -71,6 +75,21 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
             request.version,
             request.model_path,
         )
+
+        # --- health gate: reject load when backend is unhealthy ---
+        health = self._backend.health()
+        if not health["ready"]:
+            code = health["code"] or "worker_unhealthy"
+            message = health["message"] or "worker reported not ready"
+            logger.error(
+                "load_model rejected: backend unhealthy model_id=%s version=%s code=%s message=%s",
+                request.model_id,
+                request.version,
+                code,
+                message,
+            )
+            return common_pb2.Ack(ok=False, message=f"{code}: {message}")
+
         try:
             self._backend.load_model(
                 model_id=request.model_id,

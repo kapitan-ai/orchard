@@ -11,6 +11,9 @@ message WorkerStatusRequest {}
 message WorkerStatusResponse {
   bool loaded = 1;
   uint32 active_request_count = 2;
+  bool ready = 3;
+  string health_code = 4;
+  string health_message = 5;
 }
 
 message LoadModelRequest {

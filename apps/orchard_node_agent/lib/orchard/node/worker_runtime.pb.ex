@@ -17,6 +17,9 @@ defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do
 
   field(:loaded, 1, type: :bool)
   field(:active_request_count, 2, type: :uint32, json_name: "activeRequestCount")
+  field(:ready, 3, type: :bool)
+  field(:health_code, 4, type: :string, json_name: "healthCode")
+  field(:health_message, 5, type: :string, json_name: "healthMessage")
 end
 
 defmodule Orchard.Node.Worker.V1.LoadModelRequest do
