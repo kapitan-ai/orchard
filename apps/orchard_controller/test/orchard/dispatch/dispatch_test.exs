@@ -157,6 +157,10 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert events != []
       terminal = List.last(events)
       assert InferenceEvent.terminal?(terminal)
+
+      # Exactly one terminal event in the stream (Task 4 guarantee)
+      terminal_count = Enum.count(events, &InferenceEvent.terminal?/1)
+      assert terminal_count == 1, "expected exactly 1 terminal, got #{terminal_count}"
     end
 
     test "caller disconnect triggers cancellation", %{bundle: bundle} do
@@ -194,6 +198,10 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert events != []
       terminal = List.last(events)
       assert InferenceEvent.terminal?(terminal)
+
+      # Exactly one terminal event in the stream (Task 4 guarantee)
+      terminal_count = Enum.count(events, &InferenceEvent.terminal?/1)
+      assert terminal_count == 1, "expected exactly 1 terminal, got #{terminal_count}"
 
       # Clean up
       if Process.alive?(dispatch_pid), do: Process.exit(dispatch_pid, :kill)

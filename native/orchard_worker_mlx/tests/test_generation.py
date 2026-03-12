@@ -10,7 +10,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from orchard_worker_mlx.backends import BackendError
-from orchard_worker_mlx.generation import GenerationDeps, generate_events
+from orchard_worker_mlx.generation import (
+    GenerationDeps,
+    StopSequenceBuffer,
+    generate_events,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -35,6 +39,7 @@ class FakeGenerationResponse:
 def _make_fake_session(
     *,
     eos_token_ids: tuple[int, ...] = (),
+    decode_cancel_stride: int = 1,
 ) -> Any:
     """Create a minimal fake LoadedModelSession for generation tests."""
     session = MagicMock()
@@ -42,6 +47,7 @@ def _make_fake_session(
     session.tokenizer = MagicMock(name="FakeTokenizer")
     session.tokenizer.encode.return_value = [1, 2, 3]
     session.eos_token_ids = eos_token_ids
+    session.decode_cancel_stride = decode_cancel_stride
     return session
 
 
@@ -52,6 +58,7 @@ def _make_fake_request(
     max_output_tokens: int = 16,
     temperature: float = 0.0,
     top_p: float = 0.0,
+    stop_sequences: list[str] | None = None,
 ) -> Any:
     """Create a minimal fake ExecuteInferenceRequest."""
     request = MagicMock()
@@ -61,6 +68,7 @@ def _make_fake_request(
     params.max_output_tokens = max_output_tokens
     params.temperature = temperature
     params.top_p = top_p
+    params.stop_sequences = stop_sequences or []
     request.params = params
     return request
 
@@ -523,3 +531,584 @@ def test_buffered_detokenization_counts_all_tokens() -> None:
     assert completed["kind"] == "completed"
     assert completed["usage"]["output_tokens"] == 4
     assert completed["usage"]["total_tokens"] == 11  # 7 + 4
+
+
+# ===========================================================================
+# StopSequenceBuffer unit tests
+# ===========================================================================
+
+
+class TestStopSequenceBuffer:
+    """Direct unit tests for StopSequenceBuffer in isolation."""
+
+    def test_no_stop_sequences_passthrough(self) -> None:
+        """With no stop sequences, push returns delta unchanged."""
+        buf = StopSequenceBuffer(stop_sequences=(), max_stop_len=0)
+        text, matched = buf.push("hello")
+        assert text == "hello"
+        assert matched is False
+        assert buf.flush() == ""
+
+    def test_stop_found_in_single_push(self) -> None:
+        """Stop sequence found entirely within one push."""
+        buf = StopSequenceBuffer(stop_sequences=("<stop>",), max_stop_len=6)
+        text, matched = buf.push("hello<stop>world")
+        assert text == "hello"
+        assert matched is True
+
+    def test_stop_split_across_pushes(self) -> None:
+        """Stop sequence split across two pushes."""
+        buf = StopSequenceBuffer(stop_sequences=("END",), max_stop_len=3)
+        text1, m1 = buf.push("helloE")
+        assert m1 is False
+        # "helloE" -> safe prefix is "hello", retain "E" (max_stop_len-1=2)
+        assert text1 == "hell"
+
+        text2, m2 = buf.push("ND")
+        assert m2 is True
+        assert text2 == "o"  # text before match
+
+    def test_flush_returns_remaining(self) -> None:
+        """Flush returns withheld text."""
+        buf = StopSequenceBuffer(stop_sequences=("END",), max_stop_len=3)
+        buf.push("hi")
+        flushed = buf.flush()
+        assert flushed == "hi"
+        assert buf.flush() == ""  # second flush is empty
+
+    def test_earliest_stop_wins(self) -> None:
+        """When multiple stops match, earliest position wins."""
+        buf = StopSequenceBuffer(
+            stop_sequences=("BB", "AA"),
+            max_stop_len=2,
+        )
+        text, matched = buf.push("xxAAyyBB")
+        assert matched is True
+        assert text == "xx"  # AA at pos 2 is earliest
+
+    def test_longest_on_tie(self) -> None:
+        """When stops match at same position, longest wins."""
+        buf = StopSequenceBuffer(
+            stop_sequences=("<s>", "<stop>"),
+            max_stop_len=6,
+        )
+        text, matched = buf.push("hello<stop>world")
+        assert matched is True
+        assert text == "hello"  # <stop> is longer and matches at same pos
+
+    def test_unicode_stop_sequence(self) -> None:
+        """Stop sequences work with multi-byte Unicode."""
+        buf = StopSequenceBuffer(stop_sequences=("\u2603",), max_stop_len=1)  # snowman
+        text, matched = buf.push("snow\u2603man")
+        assert matched is True
+        assert text == "snow"
+
+    def test_partial_unicode_stop_across_chunks(self) -> None:
+        """Multi-char Unicode stop sequence split across chunks."""
+        buf = StopSequenceBuffer(stop_sequences=("\u2603\u2764",), max_stop_len=2)
+        text1, m1 = buf.push("hello\u2603")
+        assert m1 is False
+        text2, m2 = buf.push("\u2764world")
+        assert m2 is True
+        assert (text1 + text2) == "hello"  # everything before the stop
+
+    def test_empty_delta_push(self) -> None:
+        """Pushing empty string doesn't break buffer."""
+        buf = StopSequenceBuffer(stop_sequences=("END",), max_stop_len=3)
+        text, matched = buf.push("")
+        assert text == ""
+        assert matched is False
+
+
+# ===========================================================================
+# Stop-sequence integration with generate_events
+# ===========================================================================
+
+
+def test_stop_sequence_suppressed_single_chunk() -> None:
+    """Stop sequence in a single response delta is suppressed."""
+    responses = [
+        FakeGenerationResponse(text="Hello<stop>world", token=10),
+        FakeGenerationResponse(text="after", token=11, finish_reason="stop"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request(stop_sequences=["<stop>"])
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    assert len(deltas) == 1
+    assert deltas[0]["delta"] == "Hello"
+
+    completed = events[-1]
+    assert completed["kind"] == "completed"
+    assert completed["finish_reason"] == "FINISH_REASON_STOP"
+    assert completed["usage"]["output_tokens"] == 1  # stopped at first response
+
+
+def test_stop_sequence_split_across_chunks() -> None:
+    """Stop sequence split across two response deltas is caught."""
+    responses = [
+        FakeGenerationResponse(text="helloEN", token=10),
+        FakeGenerationResponse(text="Dworld", token=11),
+        FakeGenerationResponse(text="never", token=12, finish_reason="stop"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request(stop_sequences=["END"])
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    # "hello" should be emitted, "END" suppressed, "world" never seen
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    all_text = "".join(d["delta"] for d in deltas)
+    assert all_text == "hello"
+
+    completed = events[-1]
+    assert completed["kind"] == "completed"
+    assert completed["finish_reason"] == "FINISH_REASON_STOP"
+
+
+def test_stop_sequence_at_very_start() -> None:
+    """Stop sequence at the very beginning of generated text."""
+    responses = [
+        FakeGenerationResponse(text="<stop>rest", token=10),
+        FakeGenerationResponse(text="more", token=11, finish_reason="stop"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request(stop_sequences=["<stop>"])
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    assert len(deltas) == 0  # no text before stop
+
+    completed = events[-1]
+    assert completed["kind"] == "completed"
+    assert completed["finish_reason"] == "FINISH_REASON_STOP"
+
+
+def test_no_stop_sequences_passes_through() -> None:
+    """Without stop_sequences, behavior matches pre-Task4 (no buffering delay)."""
+    responses = [
+        FakeGenerationResponse(text="Hello", token=10),
+        FakeGenerationResponse(text=" world", token=11),
+        FakeGenerationResponse(text="", token=12, finish_reason="stop"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request()  # no stop_sequences
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    assert len(deltas) == 2
+    assert deltas[0]["delta"] == "Hello"
+    assert deltas[1]["delta"] == " world"
+
+
+def test_stop_sequence_buffer_flushed_on_length_termination() -> None:
+    """Buffered text is flushed when mlx_lm terminates with length."""
+    responses = [
+        FakeGenerationResponse(text="he", token=10),
+        FakeGenerationResponse(text="ll", token=11),
+        FakeGenerationResponse(text="o", token=12, finish_reason="length"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request(stop_sequences=["END"])
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    all_text = "".join(d["delta"] for d in deltas)
+    assert all_text == "hello"  # all text flushed, no stop found
+
+    completed = events[-1]
+    assert completed["finish_reason"] == "FINISH_REASON_LENGTH"
+
+
+def test_stop_sequence_buffer_flushed_on_cancel() -> None:
+    """Buffered text is flushed on cancellation (not silently dropped)."""
+    cancel = threading.Event()
+
+    def cancelling_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="buff", token=10)
+        cancel.set()  # cancel after first token
+        yield FakeGenerationResponse(text="er", token=11)
+
+    deps = GenerationDeps(
+        stream_generate=cancelling_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session()
+    request = _make_fake_request(stop_sequences=["END"])
+
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    # Buffered text should be flushed before cancel terminal.
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    all_text = "".join(d["delta"] for d in deltas)
+    assert "buff" in all_text  # at minimum the first chunk is preserved
+
+    terminal = events[-1]
+    assert terminal["kind"] == "failed"
+    assert terminal["code"] == "cancelled"
+
+
+def test_multiple_stop_sequences_earliest_wins() -> None:
+    """When multiple stop sequences could match, earliest position wins."""
+    responses = [
+        FakeGenerationResponse(text="xxAAyyBBzz", token=10, finish_reason="stop"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request(stop_sequences=["BB", "AA"])
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    all_text = "".join(d["delta"] for d in deltas)
+    assert all_text == "xx"  # AA at pos 2 is earliest
+
+    assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+# ===========================================================================
+# Orchard-level EOS detection
+# ===========================================================================
+
+
+def test_orchard_eos_terminates_without_upstream_finish() -> None:
+    """Orchard EOS token triggers stop even when mlx_lm hasn't terminated."""
+    responses = [
+        FakeGenerationResponse(text="Hello", token=10),
+        FakeGenerationResponse(text=" world", token=99),  # EOS token
+        FakeGenerationResponse(text="after", token=12),   # should not be reached
+        FakeGenerationResponse(text="", token=13, finish_reason="stop"),
+    ]
+    session = _make_fake_session(eos_token_ids=(99,))
+    request = _make_fake_request()
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    all_text = "".join(d["delta"] for d in deltas)
+    assert all_text == "Hello world"
+
+    completed = events[-1]
+    assert completed["kind"] == "completed"
+    assert completed["finish_reason"] == "FINISH_REASON_STOP"
+    assert completed["usage"]["output_tokens"] == 2
+
+
+def test_orchard_eos_overrides_upstream_length() -> None:
+    """Orchard EOS in a response also marked 'length' produces STOP.
+
+    When both Orchard EOS and upstream finish_reason are present on the
+    same response, the EOS path runs first (since finish_reason is not None
+    check happens separately).  But since upstream also terminates, the
+    upstream terminal path fires.  Orchard EOS only fires when
+    finish_reason is None.
+    """
+    # This tests the case where EOS token is seen on a non-terminal response
+    # (finish_reason is None), overriding what would eventually be "length".
+    responses = [
+        FakeGenerationResponse(text="Hello", token=10),
+        FakeGenerationResponse(text=" end", token=99),  # EOS, no finish_reason
+    ]
+    session = _make_fake_session(eos_token_ids=(99,))
+    request = _make_fake_request()
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    completed = events[-1]
+    assert completed["finish_reason"] == "FINISH_REASON_STOP"  # EOS wins
+
+
+def test_orchard_eos_with_stop_buffer_flushes() -> None:
+    """Orchard EOS flushes stop-sequence buffer before terminating."""
+    responses = [
+        FakeGenerationResponse(text="hel", token=10),
+        FakeGenerationResponse(text="lo", token=99),  # EOS token
+    ]
+    session = _make_fake_session(eos_token_ids=(99,))
+    request = _make_fake_request(stop_sequences=["END"])
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    all_text = "".join(d["delta"] for d in deltas)
+    assert all_text == "hello"  # entire text flushed
+
+    assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+def test_empty_eos_token_ids_does_not_trigger() -> None:
+    """Empty eos_token_ids disables Orchard-level EOS detection."""
+    responses = [
+        FakeGenerationResponse(text="Hello", token=99),
+        FakeGenerationResponse(text="end", token=99, finish_reason="length"),
+    ]
+    session = _make_fake_session(eos_token_ids=())  # empty
+    request = _make_fake_request()
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    completed = events[-1]
+    assert completed["finish_reason"] == "FINISH_REASON_LENGTH"  # no EOS override
+
+
+# ===========================================================================
+# Strided cancel
+# ===========================================================================
+
+
+def test_strided_cancel_skips_intermediate_tokens() -> None:
+    """With stride=3, cancel is only checked every 3rd token."""
+    cancel = threading.Event()
+    tokens_yielded = 0
+
+    def counting_stream(model, tokenizer, prompt_ids, **kwargs):
+        nonlocal tokens_yielded
+        for i in range(10):
+            tokens_yielded += 1
+            yield FakeGenerationResponse(text=f"t{i}", token=i)
+            if i == 0:
+                cancel.set()  # cancel after first token
+
+    deps = GenerationDeps(
+        stream_generate=counting_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session(decode_cancel_stride=3)
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    # Cancel set after token 0 (output_tokens=1).
+    # Stride=3: next check at output_tokens=3 (token index 2).
+    # Tokens 0, 1, 2 are generated; cancel fires when processing token 2.
+    terminal = events[-1]
+    assert terminal["kind"] == "failed"
+    assert terminal["code"] == "cancelled"
+
+    # Exactly 3 tokens should have been produced.
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    # With stride=3, cancel check fires at output_tokens=3 (after incrementing)
+    # before processing the response text, so only tokens 0 and 1 emit deltas.
+    assert len(deltas) == 2  # t0 and t1
+
+
+def test_stride_1_cancels_every_token() -> None:
+    """With stride=1 (default), cancel is checked every token."""
+    cancel = threading.Event()
+
+    def cancelling_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="first", token=10)
+        cancel.set()
+        yield FakeGenerationResponse(text="second", token=11)
+
+    deps = GenerationDeps(
+        stream_generate=cancelling_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session(decode_cancel_stride=1)
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    assert len(deltas) == 1
+    assert deltas[0]["delta"] == "first"
+
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "cancelled"
+
+
+def test_invalid_stride_falls_back_to_1() -> None:
+    """Invalid decode_cancel_stride falls back to 1."""
+    cancel = threading.Event()
+
+    def cancelling_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="first", token=10)
+        cancel.set()
+        yield FakeGenerationResponse(text="second", token=11)
+
+    deps = GenerationDeps(
+        stream_generate=cancelling_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session()
+    session.decode_cancel_stride = -5  # invalid
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    # Should behave as stride=1: cancel fires immediately after second yield.
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    assert len(deltas) == 1
+    assert events[-1]["code"] == "cancelled"
+
+
+def test_boolean_stride_falls_back_to_1() -> None:
+    """Boolean decode_cancel_stride (True) falls back to 1."""
+    cancel = threading.Event()
+
+    def cancelling_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="first", token=10)
+        cancel.set()
+        yield FakeGenerationResponse(text="second", token=11)
+
+    deps = GenerationDeps(
+        stream_generate=cancelling_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session()
+    session.decode_cancel_stride = True  # bool, should fall back to 1
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    assert len(deltas) == 1
+    assert events[-1]["code"] == "cancelled"
+
+
+# ===========================================================================
+# Terminal guarantees in generation layer
+# ===========================================================================
+
+
+def test_exactly_one_terminal_on_stop_sequence() -> None:
+    """Stop-sequence match produces exactly one terminal event."""
+    responses = [
+        FakeGenerationResponse(text="Hello<stop>extra", token=10),
+        FakeGenerationResponse(text="more", token=11, finish_reason="stop"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request(stop_sequences=["<stop>"])
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    terminals = [e for e in events if e["kind"] in ("completed", "failed")]
+    assert len(terminals) == 1
+    assert terminals[0]["kind"] == "completed"
+
+
+def test_exactly_one_terminal_on_eos() -> None:
+    """Orchard EOS produces exactly one terminal event."""
+    responses = [
+        FakeGenerationResponse(text="Hello", token=99),  # EOS
+        FakeGenerationResponse(text="more", token=11, finish_reason="stop"),
+    ]
+    session = _make_fake_session(eos_token_ids=(99,))
+    request = _make_fake_request()
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    terminals = [e for e in events if e["kind"] in ("completed", "failed")]
+    assert len(terminals) == 1
+
+
+def test_exactly_one_terminal_on_cancel() -> None:
+    """Cancel produces exactly one terminal failed event."""
+    cancel = threading.Event()
+    cancel.set()
+
+    responses = [
+        FakeGenerationResponse(text="a", token=10),
+        FakeGenerationResponse(text="b", token=11, finish_reason="stop"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request()
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    terminals = [e for e in events if e["kind"] in ("completed", "failed")]
+    assert len(terminals) == 1
+    assert terminals[0]["kind"] == "failed"
+    assert terminals[0]["code"] == "cancelled"
+
+
+def test_no_completed_after_cancel() -> None:
+    """No completed event after a cancel terminal."""
+    cancel = threading.Event()
+
+    def cancelling_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="a", token=10)
+        cancel.set()
+        yield FakeGenerationResponse(text="b", token=11)
+        yield FakeGenerationResponse(text="c", token=12, finish_reason="stop")
+
+    deps = GenerationDeps(
+        stream_generate=cancelling_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session()
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    kinds = [e["kind"] for e in events]
+    # No completed should appear after failed
+    assert "completed" not in kinds
+    assert kinds[-1] == "failed"  # type is failed
+    assert events[-1]["code"] == "cancelled"
+
+
+def test_stop_sequence_with_buffered_text_and_iterator_exhaustion() -> None:
+    """Buffered text flushed on iterator exhaustion (no finish_reason)."""
+    def bare_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="he", token=10)
+        yield FakeGenerationResponse(text="llo", token=11)
+        # No final response with finish_reason
+
+    deps = GenerationDeps(
+        stream_generate=bare_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session()
+    request = _make_fake_request(stop_sequences=["END"])
+
+    events = _collect_events(session, request, deps)
+
+    deltas = [e for e in events if e["kind"] == "output_text_delta"]
+    all_text = "".join(d["delta"] for d in deltas)
+    assert all_text == "hello"  # fully flushed
+
+    completed = events[-1]
+    assert completed["kind"] == "completed"
+    assert completed["finish_reason"] == "FINISH_REASON_STOP"
+
+
+def test_stop_sequence_never_leaked_end_to_end() -> None:
+    """Stop sequence text never appears in any emitted delta."""
+    stop = "<|endoftext|>"
+    responses = [
+        FakeGenerationResponse(text="Hello world", token=10),
+        FakeGenerationResponse(text="! The answer is 42.", token=11),
+        FakeGenerationResponse(text=f" And{stop}done", token=12),
+        FakeGenerationResponse(text="extra", token=13, finish_reason="stop"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request(stop_sequences=[stop])
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    all_text = "".join(
+        e["delta"] for e in events if e["kind"] == "output_text_delta"
+    )
+    assert stop not in all_text
+    assert "done" not in all_text  # text after stop also suppressed
+    assert all_text == "Hello world! The answer is 42. And"

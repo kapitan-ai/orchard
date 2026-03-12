@@ -1,11 +1,12 @@
 """Real MLX token generation via mlx_lm.stream_generate().
 
 This module owns request-time generation only: prompt decode/encode, sampler
-construction, stream_generate invocation, delta normalization, EOS detection,
-terminal event emission, usage accounting, and decode-phase cancel checks.
+construction, stream_generate invocation, stop-sequence buffering, Orchard-
+level EOS detection, delta normalization, terminal event emission, usage
+accounting, and strided decode-phase cancel checks.
 
 It does NOT own model lifecycle, gRPC/proto conversion, accepted/progress
-events, stop-sequence buffering (Task 4), or prefix cache (Task 6).
+events, or prefix cache (Task 6).
 
 Key invariant — add_special_tokens=False:
     ``request.rendered_prompt_utf8`` arrives fully rendered by the controller
@@ -13,6 +14,20 @@ Key invariant — add_special_tokens=False:
     This module tokenizes the rendered prompt **without** adding tokenizer-
     level special tokens.  Violating this would duplicate BOS/chat-template
     tokens, alter prompt semantics, and skew usage counts.
+
+Stop-sequence buffering (Task 4):
+    Deltas emitted to downstream consumers are irreversible (gRPC stream).
+    ``StopSequenceBuffer`` withholds a trailing suffix that could still match
+    a configured stop sequence, emitting only the safe prefix.  When a stop
+    is found the marker is suppressed and ``finish_reason = STOP`` is set.
+    On non-stop terminals (EOS, length, cancel) the buffer is flushed.
+
+Orchard-level EOS detection (Task 4):
+    ``mlx_lm.stream_generate()`` only honors ``tokenizer.eos_token_id``
+    (singular).  Models with config-only EOS IDs are not covered.  This
+    module checks each ``response.token`` against ``session.eos_token_ids``
+    (computed at load time by ``_normalize_eos_token_ids()``) for
+    comprehensive stop handling.
 """
 
 from __future__ import annotations
@@ -56,6 +71,125 @@ def _default_generation_deps() -> GenerationDeps:
 
 
 # ---------------------------------------------------------------------------
+# Stop-sequence buffer
+# ---------------------------------------------------------------------------
+
+
+@dataclass(slots=True)
+class StopSequenceBuffer:
+    """Buffer that withholds text that could still match a stop sequence.
+
+    Operates on Python ``str`` (already decoded from MLX).  Multi-byte UTF-8
+    is safe because Python string indexing operates on Unicode code points.
+
+    When no stop sequences are configured, ``push()`` passes text through
+    immediately and ``flush()`` is a no-op.
+    """
+
+    stop_sequences: tuple[str, ...]
+    max_stop_len: int
+    pending: str = ""
+
+    def push(self, delta: str) -> tuple[str, bool]:
+        """Append *delta* and return ``(safe_text, matched_stop)``.
+
+        *safe_text* is the prefix that cannot be part of a stop sequence.
+        *matched_stop* is ``True`` when a stop sequence was found and
+        suppressed.
+        """
+        if not self.stop_sequences:
+            return (delta, False)
+
+        self.pending += delta
+
+        # Search for the earliest (and longest on tie) stop sequence.
+        best_pos: int | None = None
+        best_len: int = 0
+        for seq in self.stop_sequences:
+            pos = self.pending.find(seq)
+            if pos != -1:
+                if best_pos is None or pos < best_pos or (
+                    pos == best_pos and len(seq) > best_len
+                ):
+                    best_pos = pos
+                    best_len = len(seq)
+
+        if best_pos is not None:
+            emit = self.pending[:best_pos]
+            self.pending = ""
+            return (emit, True)
+
+        # No match: retain a suffix that could still become a partial match.
+        retain = self.max_stop_len - 1
+        if retain <= 0:
+            emit = self.pending
+            self.pending = ""
+            return (emit, False)
+
+        if len(self.pending) <= retain:
+            return ("", False)
+
+        emit = self.pending[:-retain]
+        self.pending = self.pending[-retain:]
+        return (emit, False)
+
+    def flush(self) -> str:
+        """Return all remaining pending text and clear the buffer."""
+        text = self.pending
+        self.pending = ""
+        return text
+
+
+# ---------------------------------------------------------------------------
+# Stop / cancel / EOS helpers
+# ---------------------------------------------------------------------------
+
+
+def _normalize_stop_sequences(params: Any) -> tuple[str, ...]:
+    """Extract and deduplicate stop sequences from request params.
+
+    Returns an empty tuple when no valid stop sequences are present.
+    Invalid entries (non-string, empty) are silently dropped.
+    """
+    raw = getattr(params, "stop_sequences", None) if params else None
+    if not raw:
+        return ()
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in raw:
+        if isinstance(item, str) and item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return tuple(result)
+
+
+def _decode_cancel_stride(session: Any) -> int:
+    """Read cancel stride from session, clamping invalid values to 1."""
+    raw = getattr(session, "decode_cancel_stride", 1)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        return 1
+    return raw
+
+
+def _response_token_id(response: Any) -> int | None:
+    """Extract token ID from a generation response, or None."""
+    token = getattr(response, "token", None)
+    if isinstance(token, bool) or not isinstance(token, int):
+        return None
+    return token
+
+
+def _close_stream(stream: Any) -> None:
+    """Best-effort close of a stream_generate iterator."""
+    close = getattr(stream, "close", None)
+    if close is not None:
+        try:
+            close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -76,6 +210,10 @@ def generate_events(
     - ``{"kind": "completed", "finish_reason": "...", "usage": {...}}``
     - ``{"kind": "failed", "code": "...", ...}``  (via ``cancelled_event()``)
 
+    Stop sequences are suppressed via ``StopSequenceBuffer``.  Orchard-level
+    EOS detection checks ``session.eos_token_ids`` per response.  Cancel is
+    checked every ``session.decode_cancel_stride`` tokens.
+
     Raises ``BackendError`` for setup-time failures (invalid prompt, etc.).
     """
     if deps is None:
@@ -90,6 +228,7 @@ def generate_events(
     temperature = _safe_float(getattr(params, "temperature", 0.0) if params else 0.0)
     top_p = _safe_float(getattr(params, "top_p", 0.0) if params else 0.0)
     input_tokens = _safe_int(getattr(request, "input_tokens", 0))
+    stop_sequences = _normalize_stop_sequences(params)
 
     # max_output_tokens <= 0: immediate completed with FINISH_REASON_LENGTH
     if max_output_tokens <= 0:
@@ -102,21 +241,21 @@ def generate_events(
     # --- Step 4: build sampler ---
     sampler = _build_sampler(temperature, top_p, deps)
 
-    # --- Step 5: call stream_generate ---
+    # --- Step 5: prepare request-local state ---
+    stride = _decode_cancel_stride(session)
+    eos_ids: frozenset[int] = frozenset(getattr(session, "eos_token_ids", ()))
+    max_stop_len = max((len(s) for s in stop_sequences), default=0)
+    buf = StopSequenceBuffer(
+        stop_sequences=stop_sequences,
+        max_stop_len=max_stop_len,
+    )
+
     # Pre-cancel check
     if cancel_event.is_set():
         yield cancelled_event()
         return
 
-    # NOTE(task-4): session.eos_token_ids contains merged EOS IDs from both
-    # tokenizer and model_config (computed by _normalize_eos_token_ids at load
-    # time).  However, mlx_lm.stream_generate() does NOT accept an
-    # eos_token_ids kwarg — it wraps the tokenizer in TokenizerWrapper
-    # internally and defaults to {tokenizer.eos_token_id} (singular).
-    # Models with config-only EOS IDs (e.g. additional stop tokens in
-    # generation_config) will NOT be detected by mlx_lm's built-in EOS check.
-    # Task 4's stop-sequence buffering should implement Orchard-level EOS
-    # detection using session.eos_token_ids for comprehensive stop handling.
+    # --- Step 6: call stream_generate ---
     stream = deps.stream_generate(
         session.model,
         session.tokenizer,
@@ -125,42 +264,88 @@ def generate_events(
         sampler=sampler,
     )
 
-    # --- Step 6: per-item decode loop ---
+    # --- Step 7: per-item decode loop ---
     output_tokens = 0
     for response in stream:
-        # Cancel check (every token for now; Task 5 will stride)
-        if cancel_event.is_set():
+        # Every yielded GenerationResponse represents one generated token,
+        # even when detokenization buffers produce empty text.  Count it
+        # unconditionally for usage; only emit a delta when text is present.
+        output_tokens += 1
+
+        # --- Strided cancel check ---
+        if output_tokens % stride == 0 and cancel_event.is_set():
+            # Flush buffered text: cancellation removes future ambiguity,
+            # so withheld text should not be silently dropped.
+            flush_text = buf.flush()
+            if flush_text:
+                yield {"kind": "output_text_delta", "delta": flush_text}
+            _close_stream(stream)
             yield cancelled_event()
             return
 
         delta_text = response.text
         finish_reason = response.finish_reason
 
-        # Every yielded GenerationResponse represents one generated token,
-        # even when detokenization buffers produce empty text.  Count it
-        # unconditionally for usage; only emit a delta when text is present.
-        output_tokens += 1
+        # --- Orchard-level EOS detection ---
+        # mlx_lm only honors tokenizer.eos_token_id (singular); check the
+        # full session.eos_token_ids set for config-only stop tokens.
+        token_id = _response_token_id(response)
+        orchard_eos = (
+            token_id is not None
+            and bool(eos_ids)
+            and token_id in eos_ids
+            and finish_reason is None  # upstream didn't already terminate
+        )
+
+        # --- Push text through stop-sequence buffer ---
+        if delta_text:
+            safe_text, stop_matched = buf.push(delta_text)
+        else:
+            safe_text, stop_matched = "", False
+
+        if stop_matched:
+            # Stop sequence found: emit pre-match text, suppress marker.
+            if safe_text:
+                yield {"kind": "output_text_delta", "delta": safe_text}
+            _close_stream(stream)
+            yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
+            return
+
+        if orchard_eos:
+            # Orchard-level EOS: flush buffer and terminate.
+            if safe_text:
+                yield {"kind": "output_text_delta", "delta": safe_text}
+            flush_text = buf.flush()
+            if flush_text:
+                yield {"kind": "output_text_delta", "delta": flush_text}
+            _close_stream(stream)
+            yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
+            return
 
         if finish_reason is not None:
-            # This is the final response from stream_generate.
-            # Emit any remaining text delta.
-            if delta_text:
-                yield {"kind": "output_text_delta", "delta": delta_text}
+            # Upstream terminal from mlx_lm.  Flush all buffered text.
+            if safe_text:
+                yield {"kind": "output_text_delta", "delta": safe_text}
+            flush_text = buf.flush()
+            if flush_text:
+                yield {"kind": "output_text_delta", "delta": flush_text}
 
-            # Map mlx_lm finish reasons to our proto constants.
             if finish_reason == "stop":
                 yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
             else:  # "length"
                 yield _completed_event("FINISH_REASON_LENGTH", input_tokens, output_tokens)
             return
 
-        # Non-terminal: emit text delta if non-empty.
-        if delta_text:
-            yield {"kind": "output_text_delta", "delta": delta_text}
+        # Non-terminal: emit safe text if non-empty.
+        if safe_text:
+            yield {"kind": "output_text_delta", "delta": safe_text}
 
-    # --- Step 7: iterator exhaustion without finish_reason ---
-    # This shouldn't normally happen with mlx_lm.stream_generate (it always
-    # yields a final response with finish_reason set), but handle defensively.
+    # --- Step 8: iterator exhaustion without finish_reason ---
+    # Defensive: mlx_lm should always yield a final response with
+    # finish_reason set, but handle gracefully.
+    flush_text = buf.flush()
+    if flush_text:
+        yield {"kind": "output_text_delta", "delta": flush_text}
     if cancel_event.is_set():
         yield cancelled_event()
     else:

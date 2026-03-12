@@ -458,3 +458,117 @@ def test_build_inference_event_usage_happy_path() -> None:
         "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
     })
     assert event.usage.usage.total_tokens == 15
+
+
+# ---------------------------------------------------------------------------
+# Test: cancel-during-active-generation at service level (Task 4)
+# ---------------------------------------------------------------------------
+
+
+class SlowBackend(HappyBackend):
+    """Backend that yields with a delay, allowing Cancel to arrive mid-stream."""
+
+    def __init__(self, *, cancel_event_ref: list[threading.Event]) -> None:
+        super().__init__(events=[])
+        self._cancel_event_ref = cancel_event_ref
+
+    def generate(
+        self, request: Any, cancel_event: threading.Event
+    ) -> Iterator[dict[str, Any]]:
+        self._cancel_event_ref.append(cancel_event)
+        yield {"kind": "output_text_delta", "delta": "first"}
+        # Wait for cancel to be set externally
+        cancel_event.wait(timeout=2.0)
+        if cancel_event.is_set():
+            yield {
+                "kind": "failed",
+                "code": "cancelled",
+                "message": "request cancelled",
+                "retryable": False,
+            }
+            return
+        yield {
+            "kind": "completed",
+            "finish_reason": "FINISH_REASON_STOP",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+
+def test_cancel_mid_stream_produces_single_terminal() -> None:
+    """Cancel RPC arriving mid-stream produces exactly one terminal failure."""
+    cancel_event_ref: list[threading.Event] = []
+    backend = SlowBackend(cancel_event_ref=cancel_event_ref)
+    servicer = _make_servicer(backend)
+    context = MagicMock()
+    request = _make_request("req-mid")
+
+    # Start generate in a thread
+    collected: list[Any] = []
+    generate_done = threading.Event()
+
+    def run_generate():
+        for event in servicer.Generate(request, context):
+            collected.append(event)
+        generate_done.set()
+
+    t = threading.Thread(target=run_generate)
+    t.start()
+
+    # Wait for the cancel event reference to be set (backend is running)
+    import time
+    for _ in range(100):
+        if cancel_event_ref:
+            break
+        time.sleep(0.01)
+
+    # Send Cancel RPC
+    servicer.Cancel(_make_cancel_request("req-mid"), context)
+
+    generate_done.wait(timeout=5.0)
+    t.join(timeout=1.0)
+
+    assert generate_done.is_set(), "Generate did not complete"
+
+    kinds = [e.WhichOneof("event") for e in collected]
+    # Should have the first delta + exactly one terminal
+    assert "output_text_delta" in kinds
+    terminals = [k for k in kinds if k in ("completed", "failed")]
+    assert len(terminals) == 1
+    assert terminals[0] == "failed"
+    assert collected[-1].failed.code == "cancelled"
+
+
+# ---------------------------------------------------------------------------
+# Test: post-failed events suppressed at service level (Task 4)
+# ---------------------------------------------------------------------------
+
+
+class PostFailedBackend(HappyBackend):
+    """Emits a failed event followed by more events."""
+
+    def __init__(self) -> None:
+        super().__init__(events=[
+            {"kind": "output_text_delta", "delta": "before"},
+            {
+                "kind": "failed",
+                "code": "generation_failed",
+                "message": "something went wrong",
+                "retryable": False,
+            },
+            {"kind": "output_text_delta", "delta": "after failed"},
+            {
+                "kind": "completed",
+                "finish_reason": "FINISH_REASON_STOP",
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            },
+        ])
+
+
+def test_post_failed_events_suppressed() -> None:
+    """Events after a failed terminal are suppressed by service layer."""
+    servicer = _make_servicer(PostFailedBackend())
+    events = _collect_events(servicer)
+
+    kinds = [e.WhichOneof("event") for e in events]
+    assert kinds == ["output_text_delta", "failed"]
+    assert events[-1].failed.code == "generation_failed"
