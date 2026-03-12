@@ -45,3 +45,6 @@ erl_crash.dump
 
 # Pi
 .pi/
+
+# Test artifacts
+/tmp/

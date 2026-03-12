@@ -572,3 +572,74 @@ def test_post_failed_events_suppressed() -> None:
     kinds = [e.WhichOneof("event") for e in events]
     assert kinds == ["output_text_delta", "failed"]
     assert events[-1].failed.code == "generation_failed"
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle logging tests
+# ---------------------------------------------------------------------------
+
+import logging
+
+
+def test_load_model_logs_lifecycle(caplog: pytest.LogCaptureFixture) -> None:
+    """LoadModel emits start and ok log lines."""
+    from orchard_worker_mlx.generated.orchard.worker.v1 import worker_runtime_pb2
+
+    servicer = _make_servicer(StubBackend())
+    # Create a model path that exists
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        with caplog.at_level(logging.INFO):
+            ack = servicer.LoadModel(
+                worker_runtime_pb2.LoadModelRequest(
+                    model_id="test/model", version="v1", model_path=td
+                ),
+                None,
+            )
+    assert ack.ok is True
+    messages = [r.message for r in caplog.records]
+    assert any("load_model start" in m for m in messages)
+    assert any("load_model ok" in m for m in messages)
+
+
+def test_unload_model_logs_lifecycle(caplog: pytest.LogCaptureFixture) -> None:
+    """UnloadModel emits start and ok log lines."""
+    from orchard_worker_mlx.generated.cluster.v1 import runtime_pb2
+    from orchard_worker_mlx.generated.orchard.worker.v1 import worker_runtime_pb2
+
+    servicer = _make_servicer(StubBackend())
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        servicer.LoadModel(
+            worker_runtime_pb2.LoadModelRequest(
+                model_id="test/model", version="v1", model_path=td
+            ),
+            None,
+        )
+    with caplog.at_level(logging.INFO):
+        ack = servicer.UnloadModel(
+            runtime_pb2.UnloadModelRequest(model_id="test/model", version="v1"),
+            None,
+        )
+    assert ack.ok is True
+    messages = [r.message for r in caplog.records]
+    assert any("unload_model start" in m for m in messages)
+    assert any("unload_model ok" in m for m in messages)
+
+
+def test_cancel_logs_request_id(caplog: pytest.LogCaptureFixture) -> None:
+    """Cancel emits a log line with the request_id."""
+    from orchard_worker_mlx.generated.cluster.v1 import runtime_pb2
+
+    servicer = _make_servicer(StubBackend())
+    with caplog.at_level(logging.INFO):
+        ack = servicer.Cancel(
+            runtime_pb2.CancelInferenceRequest(
+                request_id="req-log-test",
+                controller_session_id="s1",
+            ),
+            None,
+        )
+    assert ack.ok is True
+    messages = [r.message for r in caplog.records]
+    assert any("cancel request_id=req-log-test" in m for m in messages)

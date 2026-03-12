@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypedDict, runtime_checkable
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -51,15 +54,19 @@ class StubBackend:
             )
 
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
+        logger.info("stub load_model model_id=%s version=%s", model_id, version)
         if not Path(model_path).exists():
             raise BackendError("model_path_missing", f"model path is missing: {model_path}")
 
         with self._lock:
             self._loaded_model = (model_id, version, model_path)
+        logger.info("stub load_model ok model_id=%s version=%s", model_id, version)
 
     def unload_model(self) -> None:
+        logger.info("stub unload_model")
         with self._lock:
             self._loaded_model = None
+        logger.info("stub unload_model ok")
 
     def start_generation(self) -> None:
         with self._lock:
@@ -147,6 +154,7 @@ class MLXBackend:
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
         from orchard_worker_mlx.model_loader import ModelLoaderError
 
+        logger.info("mlx load_model model_id=%s version=%s", model_id, version)
         with self._lock:
             if self._session is not None:
                 # Idempotent same-model reload.
@@ -172,8 +180,10 @@ class MLXBackend:
                 raise BackendError(exc.code, exc.message, exc.retryable) from exc
 
             self._session = session
+        logger.info("mlx load_model ok model_id=%s version=%s", model_id, version)
 
     def unload_model(self) -> None:
+        logger.info("mlx unload_model")
         with self._lock:
             if self._session is None:
                 return
@@ -190,6 +200,7 @@ class MLXBackend:
             self._session_unloader(session)
         except Exception:
             pass
+        logger.info("mlx unload_model ok")
 
     def start_generation(self) -> None:
         with self._lock:

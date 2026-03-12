@@ -12,13 +12,19 @@ defmodule Orchard.Node.WorkerProcess do
   alias Orchard.Node
   alias Orchard.Node.RuntimeAdapter
 
+  require Logger
+
   @type state :: %{
           adapter: module(),
           adapter_state: term(),
           loaded?: boolean(),
           manager: pid(),
           model_ref: ModelRef.t(),
-          requests: %{optional(String.t()) => %{generation_ref: reference(), subscriber: pid()}}
+          port_log_buffer: binary(),
+          requests: %{optional(String.t()) => %{generation_ref: reference(), subscriber: pid()}},
+          worker_log_path: String.t() | nil,
+          worker_model: String.t(),
+          worker_socket_path: String.t() | nil
         }
 
   def start_link(opts) do
@@ -54,6 +60,8 @@ defmodule Orchard.Node.WorkerProcess do
     model_ref = Keyword.fetch!(opts, :model_ref)
     manager = Keyword.fetch!(opts, :manager)
 
+    worker_model = "#{model_ref.model_id}@#{model_ref.version}"
+
     {:ok,
      %{
        adapter: RuntimeAdapter.impl(),
@@ -61,7 +69,11 @@ defmodule Orchard.Node.WorkerProcess do
        loaded?: false,
        manager: manager,
        model_ref: model_ref,
-       requests: %{}
+       port_log_buffer: <<>>,
+       requests: %{},
+       worker_log_path: Node.worker_log_path(model_ref),
+       worker_model: worker_model,
+       worker_socket_path: Node.worker_socket_path(model_ref)
      }}
   end
 
@@ -180,14 +192,25 @@ defmodule Orchard.Node.WorkerProcess do
     end
   end
 
-  def handle_info({port, {:data, _data}}, %{adapter_state: %{port: port}} = state) do
-    {:noreply, state}
+  # --- Port data: line-buffered Logger forwarding ---
+  # With {:line, N} mode, complete lines arrive as {:eol, line} and
+  # buffer-overflow fragments as {:noeol, partial}.
+
+  def handle_info({port, {:data, {:eol, line}}}, %{adapter_state: %{port: port}} = state) do
+    full_line = state.port_log_buffer <> line
+    log_worker_line(full_line, state)
+    {:noreply, %{state | port_log_buffer: <<>>}}
+  end
+
+  def handle_info({port, {:data, {:noeol, partial}}}, %{adapter_state: %{port: port}} = state) do
+    {:noreply, %{state | port_log_buffer: state.port_log_buffer <> partial}}
   end
 
   def handle_info({port, {:exit_status, _status}}, %{adapter_state: %{port: port}} = state) do
     {:stop, :runtime_worker_exited, state}
   end
 
+  # Port data from a non-active port (e.g. stale port after adapter swap)
   def handle_info({port, {:data, _data}}, state) when is_port(port) do
     {:noreply, state}
   end
@@ -201,15 +224,18 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   @impl true
-  def terminate(reason, %{adapter: adapter, adapter_state: adapter_state}) do
-    if is_nil(adapter_state) do
+  def terminate(reason, state) do
+    # Flush any trailing partial line from the port buffer.
+    flush_port_log_buffer(state)
+
+    if is_nil(state.adapter_state) do
       :ok
     else
       # When the worker has already exited, skip the unload RPC to avoid a
       # wasted timeout against a dead process.  Local cleanup (kill tasks,
       # disconnect channel, remove socket) still runs inside the adapter.
       opts = [force: true, skip_rpc: reason == :runtime_worker_exited]
-      _ = adapter.unload_model(adapter_state, opts)
+      _ = state.adapter.unload_model(state.adapter_state, opts)
       :ok
     end
   end
@@ -274,5 +300,53 @@ defmodule Orchard.Node.WorkerProcess do
 
   defp notify_request_finished(manager, request_id) do
     send(manager, {:worker_request_finished, self(), request_id})
+  end
+
+  # -- Port log forwarding helpers -------------------------------------------
+
+  @log_level_map %{
+    "DEBUG" => :debug,
+    "INFO" => :info,
+    "WARNING" => :warning,
+    "ERROR" => :error,
+    "CRITICAL" => :error
+  }
+
+  defp log_worker_line(<<>>, _state), do: :ok
+
+  defp log_worker_line(line, state) do
+    line = String.trim_trailing(line, "\r")
+    if line == "", do: :ok, else: do_log_worker_line(line, state)
+  end
+
+  defp do_log_worker_line(line, state) do
+    {level, _msg} = parse_log_level(line)
+
+    metadata = [
+      worker_model: state.worker_model,
+      worker_socket: state.worker_socket_path,
+      worker_log_path: state.worker_log_path
+    ]
+
+    Logger.log(level, line, metadata)
+  end
+
+  defp parse_log_level("[" <> rest) do
+    case String.split(rest, "]", parts: 2) do
+      [level_str, _remainder] ->
+        level = Map.get(@log_level_map, level_str, :info)
+        {level, rest}
+
+      _no_close_bracket ->
+        {:info, rest}
+    end
+  end
+
+  defp parse_log_level(line), do: {:info, line}
+
+  defp flush_port_log_buffer(%{port_log_buffer: <<>>}), do: :ok
+
+  defp flush_port_log_buffer(%{port_log_buffer: buffer} = state) do
+    log_worker_line(buffer, state)
   end
 end

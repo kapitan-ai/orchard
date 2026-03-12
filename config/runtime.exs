@@ -47,6 +47,7 @@ default_node_runtime = fn root ->
     worker_ready_timeout_ms: 5_000,
     worker_load_timeout_ms: 120_000,
     worker_shutdown_timeout_ms: 1_000,
+    worker_log_dir: Path.join([root, "logs", "workers"]),
     fake_runtime?: false,
     hf: [
       base_url: "https://huggingface.co",
@@ -136,6 +137,9 @@ if config_env() == :prod do
             worker_ready_timeout_ms: env_int.("ORCHARD_WORKER_READY_TIMEOUT_MS", "5000"),
             worker_load_timeout_ms: env_int.("ORCHARD_WORKER_LOAD_TIMEOUT_MS", "120000"),
             worker_shutdown_timeout_ms: env_int.("ORCHARD_WORKER_SHUTDOWN_TIMEOUT_MS", "1000"),
+            worker_log_dir:
+              System.get_env("ORCHARD_WORKER_LOG_DIR") ||
+                Path.join([orchard_support_root, "logs", "workers"]),
             fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false),
             hf:
               Keyword.merge(

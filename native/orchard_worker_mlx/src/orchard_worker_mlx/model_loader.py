@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import json
+import logging
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from orchard_worker_mlx.prefix_cache import KVPrefixCache
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -575,6 +578,7 @@ def load_session(
     Raises ``ModelLoaderError`` on failure.  Performs best-effort cleanup of
     partial allocations before re-raising.
     """
+    logger.info("load_session start model_id=%s version=%s path=%s", model_id, version, model_path)
     bundle = Path(model_path)
     if not bundle.is_dir():
         raise ModelLoaderError(
@@ -634,6 +638,7 @@ def load_session(
         )
 
     # --- load MLX model and tokenizer ---
+    logger.info("load_session loading model and tokenizer")
     if deps is None:
         deps = _default_mlx_deps()
 
@@ -679,7 +684,9 @@ def load_session(
     # Non-fatal: failure falls back to stride=1.  Warmup consumes part of
     # the existing worker_load_timeout_ms budget enforced by the outer
     # gRPC LoadModel RPC timeout in WorkerRuntimeAdapter.
+    logger.info("load_session warmup start")
     decode_cancel_stride = _run_warmup(model, tokenizer, deps=deps)
+    logger.info("load_session warmup ok decode_cancel_stride=%d", decode_cancel_stride)
 
     # Post-warmup cache cleanup (separate from warmup's own cleanup to
     # cover edge cases where warmup returns successfully but left MLX
@@ -689,6 +696,7 @@ def load_session(
     # --- prefix cache eligibility probe (fail-open) ---
     prefix_cache = _build_prefix_cache(model, deps=deps)
 
+    logger.info("load_session ok model_id=%s version=%s", model_id, version)
     return LoadedModelSession(
         manifest=manifest,
         bundle_path=bundle,
@@ -713,6 +721,8 @@ def unload_session(
     """Best-effort cleanup of a loaded model session."""
     if session is None:
         return
+
+    logger.info("unload_session start")
 
     # Use session-stored clear_cache if caller doesn't override.
     effective_clear_cache = clear_cache or session.clear_cache

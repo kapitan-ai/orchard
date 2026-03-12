@@ -31,6 +31,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           channel: GRPC.Channel.t(),
           executable: String.t(),
           generations: %{optional(reference()) => generation_entry()},
+          log_path: String.t(),
           model_path: String.t(),
           model_ref: ModelRef.t(),
           os_pid: non_neg_integer() | nil,
@@ -50,6 +51,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       Keyword.get(opts, :shutdown_timeout_ms, Node.worker_shutdown_timeout_ms())
 
     socket_path = Keyword.get(opts, :socket_path, Node.worker_socket_path(model_ref))
+    log_path = Keyword.get(opts, :log_path, Node.worker_log_path(model_ref))
     models_root = Keyword.get(opts, :models_root, Node.models_root())
 
     load_meta = %{
@@ -70,6 +72,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       with {:ok, resolved_model_path} <- resolve_model_path(model_ref, models_root),
            {:ok, resolved_executable} <- resolve_executable(executable),
            :ok <- ensure_socket_parent(socket_path),
+           :ok <- ensure_log_parent(log_path),
            :ok <- cleanup_socket(socket_path) do
         start_runtime(
           model_ref,
@@ -77,6 +80,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           resolved_executable,
           backend,
           socket_path,
+          log_path,
           ready_timeout_ms,
           load_timeout_ms,
           shutdown_timeout_ms
@@ -216,11 +220,12 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          executable,
          backend,
          socket_path,
+         log_path,
          ready_timeout_ms,
          load_timeout_ms,
          shutdown_timeout_ms
        ) do
-    {:ok, port, os_pid} = start_worker_port(executable, socket_path, backend)
+    {:ok, port, os_pid} = start_worker_port(executable, socket_path, backend, log_path)
 
     case wait_for_worker_ready(socket_path, port, ready_timeout_ms) do
       {:ok, channel} ->
@@ -232,6 +237,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
                channel: channel,
                executable: executable,
                generations: %{},
+               log_path: log_path,
                model_path: model_path,
                model_ref: model_ref,
                os_pid: os_pid,
@@ -291,6 +297,12 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     |> File.mkdir_p()
   end
 
+  defp ensure_log_parent(log_path) do
+    log_path
+    |> Path.dirname()
+    |> File.mkdir_p()
+  end
+
   defp cleanup_socket(socket_path) do
     case File.rm(socket_path) do
       :ok -> :ok
@@ -299,14 +311,15 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-  defp start_worker_port(executable, socket_path, backend) do
-    args = Enum.map(["--socket-path", socket_path, "--backend", backend], &String.to_charlist/1)
+  defp start_worker_port(executable, socket_path, backend, log_path) do
+    cli_args = ["--socket-path", socket_path, "--backend", backend, "--log-file", log_path]
+    args = Enum.map(cli_args, &String.to_charlist/1)
 
     port =
       Port.open({:spawn_executable, String.to_charlist(executable)}, [
         :binary,
         :exit_status,
-        :hide,
+        {:line, 4096},
         args: args
       ])
 
@@ -378,6 +391,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       0 -> :none
     end
   end
+
 
   defp load_model_rpc(channel, %ModelRef{} = model_ref, model_path, timeout_ms) do
     case WorkerRuntimeService.Stub.load_model(

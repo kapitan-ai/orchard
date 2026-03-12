@@ -283,6 +283,8 @@ defmodule OrchardNodeAgentTest do
     assert runtime[:worker_ready_timeout_ms] == 5_000
     assert runtime[:worker_load_timeout_ms] == 5_000
     assert runtime[:worker_shutdown_timeout_ms] == 1_000
+    assert Path.type(runtime[:worker_log_dir]) == :absolute
+    assert String.ends_with?(runtime[:worker_log_dir], "/tmp/test/logs/workers")
 
     assert Node.listen_host() == "127.0.0.1"
     assert Node.listen_port() == 50_071
@@ -292,6 +294,8 @@ defmodule OrchardNodeAgentTest do
     assert Node.worker_ready_timeout_ms() == 5_000
     assert Node.worker_load_timeout_ms() == 5_000
     assert Node.worker_shutdown_timeout_ms() == 1_000
+    assert is_binary(Node.worker_log_dir())
+    assert is_binary(Node.worker_log_path(@test_model_id, @test_version))
   end
 
   test "ensure_model_loaded passes remaining deadline budget as load_timeout_ms to adapter", %{
@@ -458,6 +462,93 @@ defmodule OrchardNodeAgentTest do
 
       wait_until(fn -> worker_count() == 0 end)
       refute File.exists?(socket_path)
+    end)
+  end
+
+  test "real worker runtime forwards Python lifecycle logs to Elixir Logger",
+       %{bundle: bundle} do
+    with_real_worker_runtime(fn ->
+      # Temporarily lower Logger level — test.exs sets :warning, but we need :info.
+      Logger.configure(level: :info)
+
+      log =
+        ExUnit.CaptureLog.capture_log([level: :info], fn ->
+          with_channel(fn channel ->
+            assert {:ok,
+                    %EnsureModelLoadedResponse{
+                      placement_state: :PLACEMENT_STATE_LOADED
+                    }} =
+                     NodeRuntimeStub.ensure_model_loaded(
+                       channel,
+                       ensure_model_loaded_request(bundle)
+                     )
+
+            # Give the GenServer a moment to process port data messages
+            # that arrived during the gRPC call.
+            Process.sleep(100)
+
+            assert {:ok, %{ok: true}} =
+                     NodeRuntimeStub.unload_model(
+                       channel,
+                       %UnloadModelRequest{
+                         model_id: @test_model_id,
+                         version: @test_version,
+                         force: false,
+                         evict: false
+                       }
+                     )
+          end)
+
+          wait_until(fn -> worker_count() == 0 end)
+        end)
+
+      Logger.configure(level: :warning)
+
+      # Assert on load_model logs emitted during the LoadModel RPC.
+      # Bootstrap logs ("worker starting", "worker listening") may be consumed
+      # by the adapter's readiness polling receive loop.
+      assert log =~ "load_model start"
+      assert log =~ "load_model ok"
+    end)
+  end
+
+  test "real worker runtime creates deterministic log file under worker_log_dir",
+       %{bundle: bundle} do
+    with_real_worker_runtime(fn ->
+      log_path = Node.worker_log_path(@test_model_id, @test_version)
+
+      with_channel(fn channel ->
+        assert {:ok,
+                %EnsureModelLoadedResponse{
+                  placement_state: :PLACEMENT_STATE_LOADED
+                }} =
+                 NodeRuntimeStub.ensure_model_loaded(
+                   channel,
+                   ensure_model_loaded_request(bundle)
+                 )
+
+        assert {:ok, %{ok: true}} =
+                 NodeRuntimeStub.unload_model(
+                   channel,
+                   %UnloadModelRequest{
+                     model_id: @test_model_id,
+                     version: @test_version,
+                     force: false,
+                     evict: false
+                   }
+                 )
+      end)
+
+      wait_until(fn -> worker_count() == 0 end)
+
+      assert File.exists?(log_path), "deterministic log file should exist at #{log_path}"
+      content = File.read!(log_path)
+      assert content =~ "load_model start"
+      assert content =~ "load_model ok"
+      assert content =~ "[INFO]"
+
+      # Cleanup
+      File.rm(log_path)
     end)
   end
 

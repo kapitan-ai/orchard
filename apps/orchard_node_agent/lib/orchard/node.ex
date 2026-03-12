@@ -13,7 +13,9 @@ defmodule Orchard.Node do
   @default_worker_shutdown_timeout_ms 1_000
   @worker_socket_prefix "orchard-worker-"
   @worker_socket_suffix ".sock"
-  @worker_socket_hash_length 16
+  @worker_log_prefix "orchard-worker-"
+  @worker_log_suffix ".log"
+  @worker_identity_hash_length 16
 
   def runtime_config do
     Application.fetch_env!(:orchard_node_agent, :runtime)
@@ -49,20 +51,38 @@ defmodule Orchard.Node do
     runtime_config()[:runtime_adapter_impl] || default_runtime_adapter_impl()
   end
 
+  def worker_log_dir, do: runtime_config()[:worker_log_dir]
+
   def worker_socket_path(%ModelRef{model_id: model_id, version: version}) do
     worker_socket_path(model_id, version)
   end
 
   def worker_socket_path(model_id, version) when is_binary(model_id) and is_binary(version) do
-    digest =
-      :crypto.hash(:sha256, model_id <> "@" <> version)
-      |> Base.encode16(case: :lower)
-      |> binary_part(0, @worker_socket_hash_length)
+    digest = worker_identity_digest(model_id, version)
 
     Path.join(
       worker_socket_dir(),
       @worker_socket_prefix <> digest <> @worker_socket_suffix
     )
+  end
+
+  def worker_log_path(%ModelRef{model_id: model_id, version: version}) do
+    worker_log_path(model_id, version)
+  end
+
+  def worker_log_path(model_id, version) when is_binary(model_id) and is_binary(version) do
+    digest = worker_identity_digest(model_id, version)
+
+    Path.join(
+      worker_log_dir(),
+      @worker_log_prefix <> digest <> @worker_log_suffix
+    )
+  end
+
+  defp worker_identity_digest(model_id, version) do
+    :crypto.hash(:sha256, model_id <> "@" <> version)
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, @worker_identity_hash_length)
   end
 
   defp default_runtime_adapter_impl do

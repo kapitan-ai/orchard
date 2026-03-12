@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import signal
 import threading
 import time
@@ -13,6 +14,8 @@ from typing import Any, Literal
 import grpc
 
 from orchard_worker_mlx.backends import Backend, BackendError, build_backend
+
+logger = logging.getLogger(__name__)
 from orchard_worker_mlx.generated.cluster.v1 import common_pb2, events_pb2, runtime_pb2
 from orchard_worker_mlx.generated.orchard.worker.v1 import (
     worker_runtime_pb2,
@@ -62,6 +65,12 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
     def LoadModel(
         self, request: worker_runtime_pb2.LoadModelRequest, context: grpc.ServicerContext
     ) -> common_pb2.Ack:
+        logger.info(
+            "load_model start model_id=%s version=%s model_path=%s",
+            request.model_id,
+            request.version,
+            request.model_path,
+        )
         try:
             self._backend.load_model(
                 model_id=request.model_id,
@@ -69,23 +78,35 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
                 model_path=request.model_path,
             )
         except BackendError as exc:
+            logger.error(
+                "load_model error model_id=%s version=%s code=%s message=%s",
+                request.model_id,
+                request.version,
+                exc.code,
+                exc.message,
+            )
             return common_pb2.Ack(ok=False, message=f"{exc.code}: {exc.message}")
 
+        logger.info("load_model ok model_id=%s version=%s", request.model_id, request.version)
         return common_pb2.Ack(ok=True, message="model loaded")
 
     def UnloadModel(
         self, request: runtime_pb2.UnloadModelRequest, context: grpc.ServicerContext
     ) -> common_pb2.Ack:
+        logger.info("unload_model start")
         try:
             self._backend.unload_model()
         except BackendError as exc:
+            logger.error("unload_model error code=%s message=%s", exc.code, exc.message)
             return common_pb2.Ack(ok=False, message=f"{exc.code}: {exc.message}")
 
+        logger.info("unload_model ok")
         return common_pb2.Ack(ok=True, message="model unloaded")
 
     def Generate(
         self, request: runtime_pb2.ExecuteInferenceRequest, context: grpc.ServicerContext
     ) -> Iterator[events_pb2.InferenceEvent]:
+        logger.info("generate start request_id=%s", request.request_id)
         # --- claim or create cancel entry ---
         with self._lock:
             self._prune_expired_tombstones()
@@ -153,6 +174,7 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
                 )
                 terminal_emitted = True
         finally:
+            logger.info("generate done request_id=%s", request.request_id)
             with self._lock:
                 self._cancel_entries.pop(request.request_id, None)
 
@@ -165,6 +187,7 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
     def Cancel(
         self, request: runtime_pb2.CancelInferenceRequest, context: grpc.ServicerContext
     ) -> common_pb2.Ack:
+        logger.info("cancel request_id=%s", request.request_id)
         with self._lock:
             self._prune_expired_tombstones()
             entry = self._cancel_entries.get(request.request_id)
@@ -218,6 +241,7 @@ def build_server(
 
 
 def serve(socket_path: str, backend_name: str) -> None:
+    logger.info("worker starting backend=%s socket_path=%s", backend_name, socket_path)
     socket = Path(socket_path)
     socket.parent.mkdir(parents=True, exist_ok=True)
 
@@ -233,10 +257,12 @@ def serve(socket_path: str, backend_name: str) -> None:
 
     previous_handlers = install_signal_handlers(server)
     server.start()
+    logger.info("worker listening backend=%s socket_path=%s", backend_name, socket_path)
 
     try:
         server.wait_for_termination()
     finally:
+        logger.info("worker stopping socket_path=%s", socket_path)
         restore_signal_handlers(previous_handlers)
         server.stop(grace=0).wait(timeout=1.0)
         if socket.exists():

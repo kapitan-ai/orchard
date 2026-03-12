@@ -159,6 +159,109 @@ def test_main_prints_version(capsys) -> None:
     assert capsys.readouterr().out.strip() == __version__
 
 
+def test_log_file_written_with_lifecycle_logs(tmp_path: Path) -> None:
+    """Worker subprocess writes lifecycle logs to --log-file."""
+    socket_path = Path("/tmp") / f"orchard-worker-{uuid4().hex[:8]}.sock"
+    model_path = tmp_path / "models" / "phi-3" / "main"
+    model_path.mkdir(parents=True)
+    log_file = tmp_path / "worker.log"
+
+    process = start_worker(socket_path, log_file=log_file)
+
+    try:
+        channel = wait_for_channel(socket_path)
+        stub = worker_runtime_pb2_grpc.WorkerRuntimeServiceStub(channel)
+
+        # Load + Unload to produce lifecycle logs
+        ack = stub.LoadModel(
+            worker_runtime_pb2.LoadModelRequest(
+                model_id="mlx-community/phi-3",
+                version="main",
+                model_path=str(model_path),
+            )
+        )
+        assert ack.ok is True
+
+        stub.UnloadModel(
+            runtime_pb2.UnloadModelRequest(model_id="mlx-community/phi-3", version="main")
+        )
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+    assert log_file.exists(), "log file should be created"
+    content = log_file.read_text()
+    assert "[INFO]" in content, "log file should contain INFO-level lines"
+    assert "load_model" in content, "log file should contain load_model lifecycle logs"
+    assert "unload_model" in content, "log file should contain unload_model lifecycle logs"
+
+
+def test_log_file_truncated_per_spawn(tmp_path: Path) -> None:
+    """Each worker spawn truncates the log file (mode='w')."""
+    socket_path = Path("/tmp") / f"orchard-worker-{uuid4().hex[:8]}.sock"
+    model_path = tmp_path / "models" / "phi-3" / "main"
+    model_path.mkdir(parents=True)
+    log_file = tmp_path / "worker.log"
+
+    # First spawn
+    p1 = start_worker(socket_path, log_file=log_file)
+    try:
+        ch = wait_for_channel(socket_path)
+        stub = worker_runtime_pb2_grpc.WorkerRuntimeServiceStub(ch)
+        stub.LoadModel(
+            worker_runtime_pb2.LoadModelRequest(
+                model_id="mlx-community/phi-3",
+                version="main",
+                model_path=str(model_path),
+            )
+        )
+    finally:
+        p1.terminate()
+        p1.wait(timeout=5)
+
+    first_content = log_file.read_text()
+    first_load_count = first_content.count("load_model start")
+
+    # Second spawn — same log file should be truncated
+    p2 = start_worker(socket_path, log_file=log_file)
+    try:
+        ch2 = wait_for_channel(socket_path)
+        stub2 = worker_runtime_pb2_grpc.WorkerRuntimeServiceStub(ch2)
+        stub2.LoadModel(
+            worker_runtime_pb2.LoadModelRequest(
+                model_id="mlx-community/phi-3",
+                version="main",
+                model_path=str(model_path),
+            )
+        )
+    finally:
+        p2.terminate()
+        p2.wait(timeout=5)
+
+    second_content = log_file.read_text()
+    second_load_count = second_content.count("load_model start")
+
+    # If truncated, second file should have the same count (1), not accumulated (2)
+    assert first_load_count == 1
+    assert second_load_count == 1
+
+
+def test_configure_logging_direct(tmp_path: Path) -> None:
+    """Direct test of _configure_logging writing to file."""
+    import logging
+
+    from orchard_worker_mlx.cli import _configure_logging
+
+    log_file = tmp_path / "test.log"
+    _configure_logging(str(log_file))
+
+    test_logger = logging.getLogger("test_configure_logging_direct")
+    test_logger.info("hello from test")
+
+    content = log_file.read_text()
+    assert "[INFO] test_configure_logging_direct hello from test" in content
+
+
 # ---------------------------------------------------------------------------
 # Opt-in MLX smoke test (requires mlx extra + real model bundle)
 # ---------------------------------------------------------------------------
@@ -300,17 +403,25 @@ def test_mlx_backend_real_generation(tmp_path: Path) -> None:
         process.wait(timeout=10)
 
 
-def start_worker(socket_path: Path, *, backend: str = "stub") -> subprocess.Popen[str]:
+def start_worker(
+    socket_path: Path,
+    *,
+    backend: str = "stub",
+    log_file: Path | None = None,
+) -> subprocess.Popen[str]:
+    cmd = [
+        sys.executable,
+        "-m",
+        "orchard_worker_mlx.cli",
+        "--socket-path",
+        str(socket_path),
+        "--backend",
+        backend,
+    ]
+    if log_file is not None:
+        cmd.extend(["--log-file", str(log_file)])
     return subprocess.Popen(
-        [
-            sys.executable,
-            "-m",
-            "orchard_worker_mlx.cli",
-            "--socket-path",
-            str(socket_path),
-            "--backend",
-            backend,
-        ],
+        cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         text=True,

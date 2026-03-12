@@ -15,4 +15,4 @@ if [ ! -x "$VENV_ENTRY" ]; then
     exit 1
 fi
 
-exec "$VENV_ENTRY" "$@"
+exec "$VENV_ENTRY" "$@" 2>&1
