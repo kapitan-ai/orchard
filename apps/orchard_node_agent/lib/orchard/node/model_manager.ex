@@ -45,6 +45,10 @@ defmodule Orchard.Node.ModelManager do
   @type inflight_load :: %{
           request_fingerprint: {String.t(), String.t() | nil},
           leader_deadline_unix_ms: non_neg_integer(),
+          started_monotonic_ms: integer(),
+          source_scheme: String.t() | nil,
+          preload: boolean(),
+          backend: String.t(),
           task_pid: pid(),
           task_ref: reference(),
           waiters: [GenServer.from()],
@@ -111,7 +115,7 @@ defmodule Orchard.Node.ModelManager do
 
   def handle_call(:reset, _from, state) do
     # Cancel all inflight acquisition tasks and reply waiters
-    state = cancel_all_inflight_loads(state)
+    state = cancel_all_inflight_loads(state, :reset)
 
     # Terminate all loaded workers
     Enum.each(state.workers, fn {_key, entry} ->
@@ -149,7 +153,7 @@ defmodule Orchard.Node.ModelManager do
     cond do
       # Cancel inflight load if one exists for this key
       Map.has_key?(state.inflight_loads, key) ->
-        next_state = cancel_inflight_load(state, key)
+        next_state = cancel_inflight_load(state, key, :unload_request)
         {:reply, %Ack{ok: true, message: "unload accepted"}, next_state}
 
       # Loaded worker exists — unload it
@@ -385,14 +389,24 @@ defmodule Orchard.Node.ModelManager do
         run_load_pipeline(key, request, models_root, manager)
       end)
 
+    backend = Node.worker_backend()
+    source_scheme = extract_source_scheme(request.artifact_source_uri)
+    preload = request.preload || false
+
     inflight = %{
       request_fingerprint: request_fingerprint(request),
       leader_deadline_unix_ms: request.deadline_unix_ms || 0,
+      started_monotonic_ms: System.monotonic_time(:millisecond),
+      source_scheme: source_scheme,
+      preload: preload,
+      backend: backend,
       task_pid: task.pid,
       task_ref: task.ref,
       waiters: [from],
       worker_pid: nil
     }
+
+    emit_load_start(key, inflight)
 
     next_state = %{
       state
@@ -466,6 +480,12 @@ defmodule Orchard.Node.ModelManager do
             state
           end
 
+        emit_load_stop(key, inflight, %{
+          outcome: :loaded,
+          waiter_count: length(inflight.waiters),
+          worker_started: inflight.worker_pid != nil
+        })
+
         reply_all_waiters(inflight.waiters, %EnsureModelLoadedResponse{
           already_loaded: false,
           placement_state: :PLACEMENT_STATE_LOADED
@@ -473,9 +493,15 @@ defmodule Orchard.Node.ModelManager do
 
         state
 
-      {:error, _reason} ->
+      {:error, reason} ->
         # Clean up partial worker if one was started
         state = cleanup_failed_worker(state, key)
+
+        emit_load_exception(key, inflight, %{
+          waiter_count: length(inflight.waiters),
+          worker_started: inflight.worker_pid != nil,
+          reason: reason
+        })
 
         reply_all_waiters(inflight.waiters, failed_load_response(:acquisition_failed))
 
@@ -491,7 +517,7 @@ defmodule Orchard.Node.ModelManager do
 
   # -- Inflight cancellation -------------------------------------------------
 
-  defp cancel_inflight_load(state, key) do
+  defp cancel_inflight_load(state, key, cancel_reason) do
     case Map.get(state.inflight_loads, key) do
       nil ->
         state
@@ -503,7 +529,14 @@ defmodule Orchard.Node.ModelManager do
 
         # Drain any pending worker-started message the task may have sent
         # before being killed — prevents orphaned workers under WorkerSupervisor.
-        state = drain_pending_worker_started(state, key, inflight.task_pid)
+        {state, worker_drained?} = drain_pending_worker_started(state, key, inflight.task_pid)
+
+        emit_load_stop(key, inflight, %{
+          outcome: :cancelled,
+          waiter_count: length(inflight.waiters),
+          worker_started: inflight.worker_pid != nil or worker_drained?,
+          cancel_reason: cancel_reason
+        })
 
         # Reply all blocked waiters with failure
         reply_all_waiters(inflight.waiters, failed_load_response(:load_cancelled))
@@ -527,15 +560,15 @@ defmodule Orchard.Node.ModelManager do
         model_ref = %ModelRef{model_id: elem(key, 0), version: elem(key, 1)}
         monitor_ref = Process.monitor(worker_pid)
         state = put_worker(state, key, model_ref, worker_pid, monitor_ref)
-        state
+        {state, true}
     after
-      0 -> state
+      0 -> {state, false}
     end
   end
 
-  defp cancel_all_inflight_loads(state) do
+  defp cancel_all_inflight_loads(state, cancel_reason) do
     Enum.reduce(Map.keys(state.inflight_loads), state, fn key, acc ->
-      cancel_inflight_load(acc, key)
+      cancel_inflight_load(acc, key, cancel_reason)
     end)
   end
 
@@ -836,5 +869,75 @@ defmodule Orchard.Node.ModelManager do
       inflight_loads: %{},
       load_refs: %{}
     }
+  end
+
+  # -- Telemetry helpers -----------------------------------------------------
+
+  defp emit_load_start(key, inflight) do
+    {model_id, version} = key
+
+    :telemetry.execute(
+      [:orchard, :node, :model_manager, :load, :start],
+      %{system_time: System.system_time()},
+      %{
+        model_id: model_id,
+        version: version,
+        source_scheme: inflight.source_scheme,
+        preload: inflight.preload,
+        backend: inflight.backend
+      }
+    )
+  end
+
+  defp emit_load_stop(key, inflight, extra) do
+    {model_id, version} = key
+
+    :telemetry.execute(
+      [:orchard, :node, :model_manager, :load, :stop],
+      %{duration_ms: load_duration_ms(inflight)},
+      Map.merge(
+        %{
+          model_id: model_id,
+          version: version,
+          source_scheme: inflight.source_scheme,
+          preload: inflight.preload,
+          backend: inflight.backend
+        },
+        extra
+      )
+    )
+  end
+
+  defp emit_load_exception(key, inflight, extra) do
+    {model_id, version} = key
+
+    :telemetry.execute(
+      [:orchard, :node, :model_manager, :load, :exception],
+      %{duration_ms: load_duration_ms(inflight)},
+      Map.merge(
+        %{
+          model_id: model_id,
+          version: version,
+          source_scheme: inflight.source_scheme,
+          preload: inflight.preload,
+          backend: inflight.backend
+        },
+        extra
+      )
+    )
+  end
+
+  defp load_duration_ms(inflight) do
+    System.monotonic_time(:millisecond) - inflight.started_monotonic_ms
+  end
+
+  defp extract_source_scheme(nil), do: nil
+  defp extract_source_scheme(""), do: nil
+
+  defp extract_source_scheme(uri) when is_binary(uri) do
+    case URI.parse(uri) do
+      %URI{scheme: scheme} when is_binary(scheme) and scheme != "" -> scheme
+      _ -> nil
+    end
   end
 end

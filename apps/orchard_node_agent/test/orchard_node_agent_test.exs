@@ -815,6 +815,205 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  # -- Worker lifecycle telemetry tests ----------------------------------------
+
+  describe "worker lifecycle telemetry" do
+    test "successful load emits manager and runtime start/stop telemetry", %{bundle: bundle} do
+      with_real_worker_runtime(fn ->
+        events = with_telemetry_collector(all_lifecycle_events(), fn ->
+          with_channel(fn channel ->
+            assert {:ok,
+                    %EnsureModelLoadedResponse{
+                      already_loaded: false,
+                      placement_state: :PLACEMENT_STATE_LOADED
+                    }} =
+                     NodeRuntimeStub.ensure_model_loaded(
+                       channel,
+                       ensure_model_loaded_request(bundle)
+                     )
+
+            # Unload
+            assert {:ok, %{ok: true}} =
+                     NodeRuntimeStub.unload_model(
+                       channel,
+                       %UnloadModelRequest{
+                         model_id: @test_model_id,
+                         version: @test_version,
+                         force: false,
+                         evict: false
+                       }
+                     )
+          end)
+
+          wait_until(fn -> worker_count() == 0 end)
+        end)
+
+        # Manager load lifecycle
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m, meta ->
+          assert meta.model_id == @test_model_id
+          assert meta.version == @test_version
+          assert meta.backend == "stub"
+        end)
+
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop], fn m, meta ->
+          assert m.duration_ms >= 0
+          assert meta.model_id == @test_model_id
+          assert meta.version == @test_version
+          assert meta.outcome == :loaded
+          assert meta.worker_started == true
+          assert meta.waiter_count == 1
+        end)
+
+        # Runtime load lifecycle
+        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :start], fn _m, meta ->
+          assert meta.model_id == @test_model_id
+          assert meta.version == @test_version
+          assert meta.backend == "stub"
+          assert meta.adapter == Orchard.Node.WorkerRuntimeAdapter
+        end)
+
+        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :stop], fn m, meta ->
+          assert m.duration_ms >= 0
+          assert meta.outcome == :loaded
+        end)
+
+        # Runtime unload lifecycle
+        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :unload, :start], fn _m, meta ->
+          assert meta.model_id == @test_model_id
+          assert meta.skip_rpc == false
+        end)
+
+        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :unload, :stop], fn m, meta ->
+          assert m.duration_ms >= 0
+          assert meta.outcome == :unloaded
+          assert meta.rpc_result == :ok
+          assert meta.stop_result == :ok
+          assert meta.skip_rpc == false
+        end)
+      end)
+    end
+
+    test "failed load emits manager and runtime exception telemetry", %{bundle: _bundle} do
+      with_runtime_config(
+        [
+          runtime_adapter_impl: Orchard.Node.WorkerRuntimeAdapter,
+          fake_runtime?: false,
+          worker_executable: "/nonexistent/orchard-worker-mlx"
+        ],
+        fn ->
+          events = with_telemetry_collector(all_lifecycle_events(), fn ->
+            # Build a request that will fail at executable resolution
+            request = %EnsureModelLoadedRequest{
+              model_id: @test_model_id,
+              version: @test_version,
+              artifact_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+              artifact_source_uri: "",
+              deadline_unix_ms: System.system_time(:millisecond) + 30_000
+            }
+
+            result = NodeStatus.ensure_model_loaded(request)
+            assert result.placement_state == :PLACEMENT_STATE_FAILED
+          end)
+
+          # Manager should emit start + exception
+          assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m, meta ->
+            assert meta.model_id == @test_model_id
+          end)
+
+          assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :exception], fn m, meta ->
+            assert m.duration_ms >= 0
+            assert meta.model_id == @test_model_id
+            assert is_atom(meta.reason) or is_tuple(meta.reason)
+            assert meta.worker_started == false
+          end)
+
+          # No manager stop (it was a failure)
+          refute_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop])
+        end
+      )
+    end
+
+    test "reset cancellation emits manager load stop with cancelled outcome", %{bundle: bundle} do
+      with_runtime_adapter(SlowLoadAdapter, fn ->
+        events = with_telemetry_collector(
+          [
+            [:orchard, :node, :model_manager, :load, :start],
+            [:orchard, :node, :model_manager, :load, :stop],
+            [:orchard, :node, :model_manager, :load, :exception]
+          ],
+          fn ->
+            ensure_task =
+              Task.async(fn ->
+                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+              end)
+
+            wait_until(fn -> NodeStatus.current().worker_state == :WORKER_STATE_STARTING end)
+            :ok = NodeStatus.reset()
+
+            result = Task.await(ensure_task, 5_000)
+            assert result.placement_state == :PLACEMENT_STATE_FAILED
+          end
+        )
+
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m, meta ->
+          assert meta.model_id == @test_model_id
+        end)
+
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop], fn m, meta ->
+          assert m.duration_ms >= 0
+          assert meta.outcome == :cancelled
+          assert meta.cancel_reason == :reset
+        end)
+
+        # No exception (cancellation is stop, not exception)
+        refute_telemetry_event(events, [:orchard, :node, :model_manager, :load, :exception])
+      end)
+    end
+
+    test "unload cancellation emits manager load stop with unload_request reason", %{bundle: bundle} do
+      with_runtime_adapter(SlowLoadAdapter, fn ->
+        events = with_telemetry_collector(
+          [
+            [:orchard, :node, :model_manager, :load, :start],
+            [:orchard, :node, :model_manager, :load, :stop],
+            [:orchard, :node, :model_manager, :load, :exception]
+          ],
+          fn ->
+            ensure_task =
+              Task.async(fn ->
+                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+              end)
+
+            wait_until(fn -> NodeStatus.current().worker_state == :WORKER_STATE_STARTING end)
+
+            assert %{ok: true} =
+                     NodeStatus.unload_model(%UnloadModelRequest{
+                       model_id: @test_model_id,
+                       version: @test_version,
+                       force: false,
+                       evict: false
+                     })
+
+            result = Task.await(ensure_task, 5_000)
+            assert result.placement_state == :PLACEMENT_STATE_FAILED
+          end
+        )
+
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m, meta ->
+          assert meta.model_id == @test_model_id
+        end)
+
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop], fn m, meta ->
+          assert m.duration_ms >= 0
+          assert meta.outcome == :cancelled
+          assert meta.cancel_reason == :unload_request
+        end)
+
+        refute_telemetry_event(events, [:orchard, :node, :model_manager, :load, :exception])
+      end)
+    end
+  end
+
   # -- Opt-in MLX real generation smoke test ----------------------------------
 
   # Set ORCHARD_MLX_SMOKE_MODEL_PATH to a real Orchard bundle directory.
@@ -1088,5 +1287,71 @@ defmodule OrchardNodeAgentTest do
     end)
 
     System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+  end
+
+  # -- Telemetry test helpers -------------------------------------------------
+
+  defp all_lifecycle_events do
+    [
+      [:orchard, :node, :model_manager, :load, :start],
+      [:orchard, :node, :model_manager, :load, :stop],
+      [:orchard, :node, :model_manager, :load, :exception],
+      [:orchard, :node, :worker_runtime, :load, :start],
+      [:orchard, :node, :worker_runtime, :load, :stop],
+      [:orchard, :node, :worker_runtime, :load, :exception],
+      [:orchard, :node, :worker_runtime, :unload, :start],
+      [:orchard, :node, :worker_runtime, :unload, :stop],
+      [:orchard, :node, :worker_runtime, :unload, :exception]
+    ]
+  end
+
+  defp with_telemetry_collector(event_names, fun) do
+    test_pid = self()
+    handler_id = "lifecycle-telemetry-#{System.unique_integer([:positive])}"
+    ref = make_ref()
+
+    :telemetry.attach_many(
+      handler_id,
+      event_names,
+      fn event_name, measurements, metadata, _config ->
+        send(test_pid, {:telemetry_event, ref, event_name, measurements, metadata})
+      end,
+      nil
+    )
+
+    try do
+      fun.()
+    after
+      :telemetry.detach(handler_id)
+    end
+
+    collect_telemetry_events(ref)
+  end
+
+  defp collect_telemetry_events(ref) do
+    receive do
+      {:telemetry_event, ^ref, event_name, measurements, metadata} ->
+        [{event_name, measurements, metadata} | collect_telemetry_events(ref)]
+    after
+      0 -> []
+    end
+    |> Enum.reverse()
+  end
+
+  defp assert_telemetry_event(events, event_name, assertion_fn) do
+    matching = Enum.filter(events, fn {name, _m, _meta} -> name == event_name end)
+
+    assert length(matching) >= 1,
+           "Expected at least one #{inspect(event_name)} event, got #{length(matching)}.\nAll events: #{inspect(Enum.map(events, &elem(&1, 0)))}"
+
+    {^event_name, measurements, metadata} = hd(matching)
+    assertion_fn.(measurements, metadata)
+  end
+
+  defp refute_telemetry_event(events, event_name) do
+    matching = Enum.filter(events, fn {name, _m, _meta} -> name == event_name end)
+
+    assert length(matching) == 0,
+           "Expected no #{inspect(event_name)} events, got #{length(matching)}: #{inspect(matching)}"
   end
 end

@@ -27,6 +27,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   @type generation_entry :: %{pid: pid(), request_id: String.t()}
 
   @type state :: %{
+          backend: String.t(),
           channel: GRPC.Channel.t(),
           executable: String.t(),
           generations: %{optional(reference()) => generation_entry()},
@@ -51,21 +52,56 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     socket_path = Keyword.get(opts, :socket_path, Node.worker_socket_path(model_ref))
     models_root = Keyword.get(opts, :models_root, Node.models_root())
 
-    with {:ok, resolved_model_path} <- resolve_model_path(model_ref, models_root),
-         {:ok, resolved_executable} <- resolve_executable(executable),
-         :ok <- ensure_socket_parent(socket_path),
-         :ok <- cleanup_socket(socket_path) do
-      start_runtime(
-        model_ref,
-        resolved_model_path,
-        resolved_executable,
-        backend,
-        socket_path,
-        ready_timeout_ms,
-        load_timeout_ms,
-        shutdown_timeout_ms
-      )
+    load_meta = %{
+      model_id: model_ref.model_id,
+      version: model_ref.version,
+      backend: backend,
+      worker_executable: executable,
+      ready_timeout_ms: ready_timeout_ms,
+      load_timeout_ms: load_timeout_ms,
+      shutdown_timeout_ms: shutdown_timeout_ms,
+      adapter: __MODULE__
+    }
+
+    emit_runtime_start([:orchard, :node, :worker_runtime, :load, :start], load_meta)
+    start_time = System.monotonic_time(:millisecond)
+
+    result =
+      with {:ok, resolved_model_path} <- resolve_model_path(model_ref, models_root),
+           {:ok, resolved_executable} <- resolve_executable(executable),
+           :ok <- ensure_socket_parent(socket_path),
+           :ok <- cleanup_socket(socket_path) do
+        start_runtime(
+          model_ref,
+          resolved_model_path,
+          resolved_executable,
+          backend,
+          socket_path,
+          ready_timeout_ms,
+          load_timeout_ms,
+          shutdown_timeout_ms
+        )
+      end
+
+    duration_ms = System.monotonic_time(:millisecond) - start_time
+
+    case result do
+      {:ok, _adapter_state} ->
+        emit_runtime_stop(
+          [:orchard, :node, :worker_runtime, :load, :stop],
+          duration_ms,
+          Map.put(load_meta, :outcome, :loaded)
+        )
+
+      {:error, reason} ->
+        emit_runtime_exception(
+          [:orchard, :node, :worker_runtime, :load, :exception],
+          duration_ms,
+          Map.put(load_meta, :reason, reason)
+        )
     end
+
+    result
   end
 
   @impl true
@@ -74,6 +110,21 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   def unload_model(%{} = state, opts) do
     shutdown_timeout_ms = Keyword.get(opts, :shutdown_timeout_ms, state.shutdown_timeout_ms)
     skip_rpc? = Keyword.get(opts, :skip_rpc, false)
+    force? = Keyword.get(opts, :force, false)
+
+    unload_meta = %{
+      model_id: state.model_ref.model_id,
+      version: state.model_ref.version,
+      backend: state.backend,
+      worker_executable: state.executable,
+      shutdown_timeout_ms: shutdown_timeout_ms,
+      skip_rpc: skip_rpc?,
+      force: force?,
+      adapter: __MODULE__
+    }
+
+    emit_runtime_start([:orchard, :node, :worker_runtime, :unload, :start], unload_meta)
+    start_time = System.monotonic_time(:millisecond)
 
     unload_result = if skip_rpc?, do: :ok, else: unload_model_rpc(state.channel, state.model_ref)
     stop_result = stop_runtime(state.port, state.os_pid, shutdown_timeout_ms)
@@ -82,7 +133,30 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     _ = disconnect_channel(state.channel)
     :ok = cleanup_socket(state.socket_path)
 
-    pick_result(unload_result, stop_result)
+    final_result = pick_result(unload_result, stop_result)
+    duration_ms = System.monotonic_time(:millisecond) - start_time
+
+    case final_result do
+      :ok ->
+        emit_runtime_stop(
+          [:orchard, :node, :worker_runtime, :unload, :stop],
+          duration_ms,
+          Map.merge(unload_meta, %{outcome: :unloaded, rpc_result: :ok, stop_result: :ok})
+        )
+
+      {:error, reason} ->
+        emit_runtime_exception(
+          [:orchard, :node, :worker_runtime, :unload, :exception],
+          duration_ms,
+          Map.merge(unload_meta, %{
+            reason: reason,
+            rpc_result: unload_result,
+            stop_result: stop_result
+          })
+        )
+    end
+
+    final_result
   end
 
   @impl true
@@ -150,6 +224,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           :ok ->
             {:ok,
              %{
+               backend: backend,
                channel: channel,
                executable: executable,
                generations: %{},
@@ -550,4 +625,18 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp format_rpc_error(other), do: inspect(other)
+
+  # -- Telemetry helpers -----------------------------------------------------
+
+  defp emit_runtime_start(event, metadata) do
+    :telemetry.execute(event, %{system_time: System.system_time()}, metadata)
+  end
+
+  defp emit_runtime_stop(event, duration_ms, metadata) do
+    :telemetry.execute(event, %{duration_ms: duration_ms}, metadata)
+  end
+
+  defp emit_runtime_exception(event, duration_ms, metadata) do
+    :telemetry.execute(event, %{duration_ms: duration_ms}, metadata)
+  end
 end
