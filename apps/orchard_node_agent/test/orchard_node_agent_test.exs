@@ -853,12 +853,16 @@ defmodule OrchardNodeAgentTest do
           assert meta.model_id == @test_model_id
           assert meta.version == @test_version
           assert meta.backend == "stub"
+          assert meta.source_scheme == "file"
+          assert meta.preload == true
         end)
 
         assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop], fn m, meta ->
           assert m.duration_ms >= 0
           assert meta.model_id == @test_model_id
           assert meta.version == @test_version
+          assert meta.source_scheme == "file"
+          assert meta.preload == true
           assert meta.outcome == :loaded
           assert meta.worker_started == true
           assert meta.waiter_count == 1
@@ -893,7 +897,7 @@ defmodule OrchardNodeAgentTest do
       end)
     end
 
-    test "failed load emits manager and runtime exception telemetry", %{bundle: _bundle} do
+    test "failed load emits manager and runtime exception telemetry", %{bundle: bundle} do
       with_runtime_config(
         [
           runtime_adapter_impl: Orchard.Node.WorkerRuntimeAdapter,
@@ -902,33 +906,45 @@ defmodule OrchardNodeAgentTest do
         ],
         fn ->
           events = with_telemetry_collector(all_lifecycle_events(), fn ->
-            # Build a request that will fail at executable resolution
-            request = %EnsureModelLoadedRequest{
-              model_id: @test_model_id,
-              version: @test_version,
-              artifact_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
-              artifact_source_uri: "",
-              deadline_unix_ms: System.system_time(:millisecond) + 30_000
-            }
-
-            result = NodeStatus.ensure_model_loaded(request)
+            # Use correct hash so acquisition cache check passes,
+            # letting the invalid executable cause the runtime failure.
+            result = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
             assert result.placement_state == :PLACEMENT_STATE_FAILED
           end)
 
           # Manager should emit start + exception
           assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m, meta ->
             assert meta.model_id == @test_model_id
+            assert meta.version == @test_version
+            assert meta.source_scheme == "file"
+            assert meta.preload == true
           end)
 
           assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :exception], fn m, meta ->
             assert m.duration_ms >= 0
             assert meta.model_id == @test_model_id
-            assert is_atom(meta.reason) or is_tuple(meta.reason)
-            assert meta.worker_started == false
+            assert meta.version == @test_version
+            assert meta.reason == :worker_executable_not_found
+            # worker_started is true: WorkerProcess GenServer starts before
+            # the adapter's load_model/2 runs and fails
+            assert meta.worker_started == true
           end)
 
-          # No manager stop (it was a failure)
+          # Runtime adapter should also emit start + exception
+          assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :start], fn _m, meta ->
+            assert meta.model_id == @test_model_id
+            assert meta.backend == "stub"
+            assert meta.adapter == Orchard.Node.WorkerRuntimeAdapter
+          end)
+
+          assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :exception], fn m, meta ->
+            assert m.duration_ms >= 0
+            assert meta.reason == :worker_executable_not_found
+          end)
+
+          # No stop events (failures only)
           refute_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop])
+          refute_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :stop])
         end
       )
     end

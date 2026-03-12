@@ -141,7 +141,11 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         emit_runtime_stop(
           [:orchard, :node, :worker_runtime, :unload, :stop],
           duration_ms,
-          Map.merge(unload_meta, %{outcome: :unloaded, rpc_result: :ok, stop_result: :ok})
+          Map.merge(unload_meta, %{
+            outcome: :unloaded,
+            rpc_result: if(skip_rpc?, do: :skipped, else: :ok),
+            stop_result: :ok
+          })
         )
 
       {:error, reason} ->
