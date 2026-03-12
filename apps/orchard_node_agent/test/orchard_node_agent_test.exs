@@ -914,10 +914,12 @@ defmodule OrchardNodeAgentTest do
   test "unhealthy worker returns {:error, {:worker_unhealthy, ...}} and cleans up fast",
        %{bundle: bundle} do
     unhealthy_executable =
-      Path.expand(
-        "test/support/unhealthy-worker",
-        Application.app_dir(:orchard_node_agent, "..")
-      )
+      Path.expand("support/unhealthy-worker", Path.dirname(__ENV__.file))
+
+    # Guard: ensure the fixture actually exists so this test exercises the
+    # unhealthy-worker code path, not :worker_executable_not_found.
+    assert File.exists?(unhealthy_executable),
+           "unhealthy-worker fixture not found at #{unhealthy_executable}"
 
     with_runtime_config(
       [

@@ -288,13 +288,34 @@ class MLXDeps:
     can_trim_prompt_cache: Callable[[Any], bool] | None = None
 
 
+def _import_required_mlx_runtime_modules() -> tuple:
+    """Import the mandatory Python modules for MLX worker readiness.
+
+    Returns ``(mx, stream_generate, mlx_lm_load, AutoTokenizer)``.
+    Raises ``ImportError`` if any mandatory dependency is missing.
+
+    This helper is the single source of truth for mandatory runtime
+    imports.  Both ``_default_mlx_deps()`` (load-time wiring) and
+    ``_default_mlx_probe_deps()`` (health probe) call it, so the
+    probe cannot drift from what ``load_session()`` actually needs.
+
+    Optional deps (e.g. ``mlx_lm.models.cache``) are NOT included;
+    they are handled fail-open in ``_default_mlx_deps()``.
+    """
+    import mlx.core as mx
+    from mlx_lm.generate import stream_generate
+    from mlx_lm.utils import load as mlx_lm_load
+    from transformers import AutoTokenizer
+
+    return mx, stream_generate, mlx_lm_load, AutoTokenizer
+
+
 def _default_mlx_deps() -> MLXDeps:
     """Import real MLX dependencies lazily."""
     try:
-        import mlx.core as mx
-        from mlx_lm.generate import stream_generate
-        from mlx_lm.utils import load as mlx_lm_load
-        from transformers import AutoTokenizer
+        mx, stream_generate, mlx_lm_load, AutoTokenizer = (
+            _import_required_mlx_runtime_modules()
+        )
     except ImportError as exc:
         raise ModelLoaderError(
             "mlx_backend_unavailable",
@@ -366,9 +387,15 @@ class MLXEnvironmentHealth:
 def _default_mlx_probe_deps() -> MLXProbeDeps:
     """Import real MLX dependencies for probing.
 
-    Raises ``ImportError`` if MLX is not available.
+    Uses ``_import_required_mlx_runtime_modules()`` to validate all
+    mandatory runtime imports (``mlx.core``, ``mlx_lm``, ``transformers``),
+    then builds a ``MLXProbeDeps`` from the ``mlx.core`` subset.
+
+    Raises ``ImportError`` if any mandatory dependency is missing.
     """
-    import mlx.core as mx
+    mx, _stream_generate, _mlx_lm_load, _AutoTokenizer = (
+        _import_required_mlx_runtime_modules()
+    )
 
     return MLXProbeDeps(
         zeros_fn=mx.zeros,
@@ -391,6 +418,12 @@ def probe_mlx_environment(*, deps: MLXProbeDeps | None = None) -> MLXEnvironment
             ready=False,
             code="mlx_backend_unavailable",
             message=f"MLX dependencies not available: {exc}",
+        )
+    except Exception as exc:
+        return MLXEnvironmentHealth(
+            ready=False,
+            code="mlx_probe_failed",
+            message=f"MLX probe setup failed: {exc}",
         )
 
     try:

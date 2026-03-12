@@ -136,6 +136,14 @@ class MLXBackend:
     and cached forever.  When DI seams are injected (test mode), the probe is
     skipped and health defaults to ready.  An explicit ``health_probe``
     callable overrides both paths.
+
+    **Why one-shot / no re-probe:**  The probe validates that mandatory
+    Python dependencies (``mlx.core``, ``mlx_lm``, ``transformers``) can be
+    imported and that Metal tensor allocation works.  These are process-level
+    invariants: if they fail at construction, they won't self-heal later.
+    Sleep/wake GPU recovery is handled at the OS level before the Python
+    process is affected; if Metal truly becomes unavailable mid-process, the
+    worker should be killed and restarted by the node agent.
     """
 
     def __init__(

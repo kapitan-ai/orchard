@@ -50,3 +50,11 @@ package prefix). **Update it by hand** when the proto changes.
 2. Run `mix proto.gen.worker` to regenerate Python bindings.
 3. Manually update the Elixir binding to match.
 4. Commit proto source and all generated outputs together.
+
+### Drift risk
+
+The manual Elixir binding can drift from the proto source. To mitigate:
+- Always update `worker_runtime.pb.ex` in the same commit as proto changes.
+- Review the proto field list against the Elixir struct in code review.
+- Long-term: consider renaming the proto package or adding a CI check that
+  diffs proto field names against the Elixir module definition.

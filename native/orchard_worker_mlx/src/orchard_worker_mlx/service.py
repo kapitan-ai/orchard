@@ -77,6 +77,10 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         )
 
         # --- health gate: reject load when backend is unhealthy ---
+        # This reads the one-shot probe result cached at backend construction.
+        # No re-probe happens here — MLX runtime deps don't become healthy
+        # mid-process, so the cached result is authoritative for the worker's
+        # lifetime.
         health = self._backend.health()
         if not health["ready"]:
             code = health["code"] or "worker_unhealthy"

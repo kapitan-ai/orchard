@@ -8,17 +8,15 @@ but ignores --backend and --log-file.
 
 import argparse
 import signal
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-# Add the worker package source to sys.path so we can import generated protos.
-_pkg_root = Path(__file__).resolve().parents[4] / "native" / "orchard_worker_mlx" / "src"
-sys.path.insert(0, str(_pkg_root))
-
-import grpc  # noqa: E402
-from orchard_worker_mlx.generated.cluster.v1 import common_pb2  # noqa: E402
-from orchard_worker_mlx.generated.orchard.worker.v1 import (  # noqa: E402
+# Imports resolve via ``uv run --directory .../native/orchard_worker_mlx``
+# in the shell wrapper (unhealthy-worker), which puts the worker package
+# on the Python path automatically.
+import grpc
+from orchard_worker_mlx.generated.cluster.v1 import common_pb2
+from orchard_worker_mlx.generated.orchard.worker.v1 import (
     worker_runtime_pb2,
     worker_runtime_pb2_grpc,
 )

@@ -1131,3 +1131,83 @@ class TestProbeMlxEnvironment:
         result = probe_mlx_environment(deps=deps)
         assert isinstance(result, MLXEnvironmentHealth)
         assert result.ready is False
+
+    def test_non_import_error_deps_construction_returns_mlx_probe_failed(self):
+        """Non-ImportError during deps construction maps to mlx_probe_failed."""
+        import orchard_worker_mlx.model_loader as ml
+
+        original = ml._default_mlx_probe_deps
+        try:
+            ml._default_mlx_probe_deps = lambda: (_ for _ in ()).throw(
+                RuntimeError("probe setup boom")
+            )
+            result = probe_mlx_environment(deps=None)
+            assert result.ready is False
+            assert result.code == "mlx_probe_failed"
+            assert "probe setup boom" in result.message
+        finally:
+            ml._default_mlx_probe_deps = original
+
+    def test_missing_mlx_lm_returns_mlx_backend_unavailable(self):
+        """Missing mlx_lm import surfaces as mlx_backend_unavailable.
+
+        The shared helper _import_required_mlx_runtime_modules validates
+        mlx_lm alongside mlx.core, so a missing mlx_lm should cause the
+        probe to report unavailable.
+        """
+        import orchard_worker_mlx.model_loader as ml
+
+        original = ml._import_required_mlx_runtime_modules
+        try:
+            def _raise_missing_mlx_lm():
+                raise ImportError("No module named 'mlx_lm'")
+
+            ml._import_required_mlx_runtime_modules = _raise_missing_mlx_lm
+            result = probe_mlx_environment(deps=None)
+            assert result.ready is False
+            assert result.code == "mlx_backend_unavailable"
+            assert "mlx_lm" in result.message
+        finally:
+            ml._import_required_mlx_runtime_modules = original
+
+    def test_missing_transformers_returns_mlx_backend_unavailable(self):
+        """Missing transformers import surfaces as mlx_backend_unavailable."""
+        import orchard_worker_mlx.model_loader as ml
+
+        original = ml._import_required_mlx_runtime_modules
+        try:
+            def _raise_missing_transformers():
+                raise ImportError("No module named 'transformers'")
+
+            ml._import_required_mlx_runtime_modules = _raise_missing_transformers
+            result = probe_mlx_environment(deps=None)
+            assert result.ready is False
+            assert result.code == "mlx_backend_unavailable"
+            assert "transformers" in result.message
+        finally:
+            ml._import_required_mlx_runtime_modules = original
+
+    def test_probe_deps_uses_shared_import_helper(self):
+        """_default_mlx_probe_deps delegates to _import_required_mlx_runtime_modules.
+
+        Guards against future drift where probe construction reverts to
+        importing only mlx.core.
+        """
+        import orchard_worker_mlx.model_loader as ml
+
+        original = ml._import_required_mlx_runtime_modules
+        called = []
+        try:
+            def _tracking_helper():
+                called.append(True)
+                raise ImportError("tracking call")
+
+            ml._import_required_mlx_runtime_modules = _tracking_helper
+            # _default_mlx_probe_deps should call the shared helper
+            try:
+                ml._default_mlx_probe_deps()
+            except ImportError:
+                pass
+            assert len(called) == 1, "_default_mlx_probe_deps must use shared import helper"
+        finally:
+            ml._import_required_mlx_runtime_modules = original

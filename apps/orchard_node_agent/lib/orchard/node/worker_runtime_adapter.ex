@@ -390,6 +390,16 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
+  # Classify worker health from GetStatus response.
+  #
+  # Proto3 default values: ready defaults to false, health_code defaults
+  # to "".  A worker that hasn't set health fields explicitly (e.g. a
+  # legacy or pre-health-check worker) will have ready=false + health_code="".
+  # We treat that as "not yet declared unhealthy" (indeterminate) and fall
+  # through to :ready, letting the normal readiness poll continue.
+  #
+  # Only ready=false WITH a non-empty health_code is a definitive "unhealthy"
+  # declaration that triggers fail-fast.
   defp classify_worker_status(%{ready: false, health_code: code, health_message: message})
        when is_binary(code) and code != "" do
     {:error, {:worker_unhealthy, code, message || ""}}
