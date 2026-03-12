@@ -44,6 +44,7 @@ def _make_fake_session(
     decode_cancel_stride: int = 1,
     prefill_step_size: int = 2048,
     clear_cache: Any = None,
+    prefix_cache: Any = None,
 ) -> Any:
     """Create a minimal fake LoadedModelSession for generation tests."""
     session = MagicMock()
@@ -54,6 +55,7 @@ def _make_fake_session(
     session.decode_cancel_stride = decode_cancel_stride
     session.prefill_step_size = prefill_step_size
     session.clear_cache = clear_cache if clear_cache is not None else MagicMock(name="clear_cache")
+    session.prefix_cache = prefix_cache
     return session
 
 
@@ -79,7 +81,12 @@ def _make_fake_request(
     return request
 
 
-def _make_deps(responses: list[FakeGenerationResponse]) -> GenerationDeps:
+def _make_deps(
+    responses: list[FakeGenerationResponse],
+    *,
+    make_prompt_cache: Any = None,
+    trim_prompt_cache: Any = None,
+) -> GenerationDeps:
     """Create GenerationDeps that yields the given responses."""
 
     def fake_stream_generate(model, tokenizer, prompt_ids, **kwargs):
@@ -91,6 +98,8 @@ def _make_deps(responses: list[FakeGenerationResponse]) -> GenerationDeps:
     return GenerationDeps(
         stream_generate=fake_stream_generate,
         make_sampler=fake_make_sampler,
+        make_prompt_cache=make_prompt_cache,
+        trim_prompt_cache=trim_prompt_cache,
     )
 
 
@@ -1491,3 +1500,456 @@ def test_clear_cache_called_on_mid_iteration_exception() -> None:
 
     # Despite the exception, cache cleanup must have run via finally.
     clear_mock.assert_called_once()
+
+
+# ===========================================================================
+# KV prefix-cache integration (Task 6 Phase 3)
+# ===========================================================================
+
+
+class FakePrefixCache:
+    """Spy/fake for KVPrefixCache used by generation integration tests.
+
+    Verifies orchestration logic without re-testing prefix_cache.py internals.
+    """
+
+    def __init__(
+        self,
+        *,
+        lookup_result: Any = None,
+        lookup_side_effect: Exception | None = None,
+        store_side_effect: Exception | None = None,
+    ) -> None:
+        self.lookup_result = lookup_result
+        self.lookup_side_effect = lookup_side_effect
+        self.store_side_effect = store_side_effect
+        self.lookup_calls: list[tuple[list[int], Any]] = []
+        self.store_calls: list[tuple[list[int], Any]] = []
+
+    def lookup(self, token_ids, *, trim_fn):
+        self.lookup_calls.append((list(token_ids), trim_fn))
+        if self.lookup_side_effect is not None:
+            raise self.lookup_side_effect
+        return self.lookup_result
+
+    def store(self, token_ids, prompt_cache):
+        self.store_calls.append((list(token_ids), prompt_cache))
+        if self.store_side_effect is not None:
+            raise self.store_side_effect
+
+
+@dataclass
+class FakeCacheHit:
+    """Minimal stand-in for prefix_cache.CacheHit."""
+    prompt_cache: Any
+    matched_length: int
+    remaining_ids: list[int]
+
+
+def _cache_deps(
+    responses: list[FakeGenerationResponse],
+    *,
+    captured_kwargs: list[dict[str, Any]] | None = None,
+) -> tuple[GenerationDeps, MagicMock, MagicMock]:
+    """Create deps with prompt-cache helpers for prefix cache tests.
+
+    Returns ``(deps, make_prompt_cache_mock, trim_prompt_cache_mock)``.
+    The ``make_prompt_cache_mock`` returns a fresh MagicMock per call.
+    """
+    make_mock = MagicMock(name="make_prompt_cache")
+    make_mock.side_effect = lambda model: MagicMock(name="FreshCache")
+    trim_mock = MagicMock(name="trim_prompt_cache")
+
+    def fake_stream(model, tokenizer, prompt_ids, **kwargs):
+        if captured_kwargs is not None:
+            captured_kwargs.append(kwargs)
+        yield from responses
+
+    deps = GenerationDeps(
+        stream_generate=fake_stream,
+        make_sampler=lambda **kw: MagicMock(name="Sampler"),
+        make_prompt_cache=make_mock,
+        trim_prompt_cache=trim_mock,
+    )
+    return deps, make_mock, trim_mock
+
+
+# --- Cache preparation / stream input tests ---
+
+
+def test_cache_miss_creates_fresh_prompt_cache() -> None:
+    """Cache enabled, lookup miss → stream_generate receives fresh prompt_cache."""
+    captured_kwargs: list[dict[str, Any]] = []
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+    fake_cache = FakePrefixCache(lookup_result=None)  # miss
+    deps, make_mock, _ = _cache_deps(responses, captured_kwargs=captured_kwargs)
+
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    # make_prompt_cache called once (for fresh cache on miss)
+    make_mock.assert_called_once()
+    # stream_generate received prompt_cache kwarg
+    assert len(captured_kwargs) == 1
+    assert "prompt_cache" in captured_kwargs[0]
+
+
+def test_cache_hit_uses_restored_cache_and_remaining_ids() -> None:
+    """Cache hit → stream_generate receives restored cache and remaining IDs."""
+    restored_cache = MagicMock(name="RestoredCache")
+    hit = FakeCacheHit(
+        prompt_cache=restored_cache,
+        matched_length=2,
+        remaining_ids=[3],
+    )
+    fake_cache = FakePrefixCache(lookup_result=hit)
+    captured_kwargs: list[dict[str, Any]] = []
+    captured_prompt_ids: list[list[int]] = []
+
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+
+    def stream_with_capture(model, tokenizer, prompt_ids, **kwargs):
+        captured_prompt_ids.append(list(prompt_ids))
+        captured_kwargs.append(kwargs)
+        yield from responses
+
+    deps = GenerationDeps(
+        stream_generate=stream_with_capture,
+        make_sampler=lambda **kw: MagicMock(),
+        make_prompt_cache=MagicMock(),
+        trim_prompt_cache=MagicMock(),
+    )
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    # stream_generate received remaining_ids, not original prompt_ids
+    assert captured_prompt_ids[0] == [3]
+    # stream_generate received the restored cache
+    assert captured_kwargs[0]["prompt_cache"] is restored_cache
+
+
+def test_exact_hit_honors_single_token_remaining() -> None:
+    """Full-query coverage hit returns remaining_ids=[last_token]."""
+    restored = MagicMock(name="TrimmedCache")
+    hit = FakeCacheHit(
+        prompt_cache=restored,
+        matched_length=3,
+        remaining_ids=[3],  # exact hit: only last token
+    )
+    fake_cache = FakePrefixCache(lookup_result=hit)
+    captured_prompt_ids: list[list[int]] = []
+
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+
+    def stream_capture(model, tokenizer, prompt_ids, **kwargs):
+        captured_prompt_ids.append(list(prompt_ids))
+        yield from responses
+
+    deps = GenerationDeps(
+        stream_generate=stream_capture,
+        make_sampler=lambda **kw: MagicMock(),
+        make_prompt_cache=MagicMock(),
+        trim_prompt_cache=MagicMock(),
+    )
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+    _collect_events(session, request, deps)
+
+    assert captured_prompt_ids[0] == [3]
+
+
+def test_lookup_failure_falls_back_uncached() -> None:
+    """prefix_cache.lookup raises → generation completes without prompt_cache."""
+    fake_cache = FakePrefixCache(lookup_side_effect=RuntimeError("boom"))
+    captured_kwargs: list[dict[str, Any]] = []
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+    deps, _, _ = _cache_deps(responses, captured_kwargs=captured_kwargs)
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    # No prompt_cache kwarg since lookup exception triggers full fallback
+    assert "prompt_cache" not in captured_kwargs[0]
+
+
+def test_make_prompt_cache_failure_falls_back_uncached() -> None:
+    """make_prompt_cache raises on miss → generation completes without prompt_cache."""
+    fake_cache = FakePrefixCache(lookup_result=None)  # miss
+    captured_kwargs: list[dict[str, Any]] = []
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+    failing_make = MagicMock(side_effect=RuntimeError("OOM"))
+
+    def fake_stream(model, tokenizer, prompt_ids, **kwargs):
+        captured_kwargs.append(kwargs)
+        yield from responses
+
+    deps = GenerationDeps(
+        stream_generate=fake_stream,
+        make_sampler=lambda **kw: MagicMock(),
+        make_prompt_cache=failing_make,
+        trim_prompt_cache=MagicMock(),
+    )
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    # Fell back to uncached generation
+    assert "prompt_cache" not in captured_kwargs[0]
+
+
+def test_cache_disabled_omits_prompt_cache_kwarg() -> None:
+    """With prefix_cache=None, stream_generate gets no prompt_cache kwarg."""
+    captured_kwargs: list[dict[str, Any]] = []
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+    deps, _, _ = _cache_deps(responses, captured_kwargs=captured_kwargs)
+    session = _make_fake_session(prefix_cache=None)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert "prompt_cache" not in captured_kwargs[0]
+
+
+def test_deps_missing_cache_helpers_falls_back_uncached() -> None:
+    """prefix_cache live but deps lack make/trim helpers → uncached generation."""
+    fake_cache = FakePrefixCache(lookup_result=None)
+    captured_kwargs: list[dict[str, Any]] = []
+
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+
+    def fake_stream(model, tokenizer, prompt_ids, **kwargs):
+        captured_kwargs.append(kwargs)
+        yield from responses
+
+    # Deps with make_prompt_cache=None, trim_prompt_cache=None (defaults)
+    deps = GenerationDeps(
+        stream_generate=fake_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert "prompt_cache" not in captured_kwargs[0]
+    # No lookup attempted because deps lack helpers
+    assert len(fake_cache.lookup_calls) == 0
+    assert len(fake_cache.store_calls) == 0
+
+
+def test_pre_cancel_skips_cache_lookup() -> None:
+    """cancel_event already set before generation → no cache work at all."""
+    cancel = threading.Event()
+    cancel.set()  # pre-cancelled
+
+    fake_cache = FakePrefixCache(lookup_result=None)
+    deps, make_mock, _ = _cache_deps([])
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    assert len(events) == 1
+    assert events[0]["kind"] == "failed"
+    assert events[0]["code"] == "cancelled"
+    # No cache interactions at all
+    assert len(fake_cache.lookup_calls) == 0
+    assert len(fake_cache.store_calls) == 0
+    make_mock.assert_not_called()
+
+
+# --- Store-on-success tests ---
+
+
+def test_completed_stores_full_sequence_key() -> None:
+    """Successful generation stores prompt_ids + generated_token_ids."""
+    fake_cache = FakePrefixCache(lookup_result=None)
+    responses = [
+        FakeGenerationResponse(text="A", token=50),
+        FakeGenerationResponse(text="B", token=51),
+        FakeGenerationResponse(text="", token=52, finish_reason="stop"),
+    ]
+    deps, _, _ = _cache_deps(responses)
+    session = _make_fake_session(prefix_cache=fake_cache)
+    session.tokenizer.encode.return_value = [1, 2, 3]
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert len(fake_cache.store_calls) == 1
+    stored_key, stored_cache = fake_cache.store_calls[0]
+    # Key is prompt_ids + generated_token_ids
+    assert stored_key == [1, 2, 3, 50, 51, 52]
+
+
+def test_stop_sequence_terminal_stores() -> None:
+    """Stop-sequence match still stores the cache."""
+    fake_cache = FakePrefixCache(lookup_result=None)
+    responses = [
+        FakeGenerationResponse(text="Hello<stop>world", token=50),
+    ]
+    deps, _, _ = _cache_deps(responses)
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request(stop_sequences=["<stop>"])
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+    assert len(fake_cache.store_calls) == 1
+
+
+def test_orchard_eos_terminal_stores() -> None:
+    """Orchard EOS early termination still stores the cache."""
+    fake_cache = FakePrefixCache(lookup_result=None)
+    responses = [
+        FakeGenerationResponse(text="end", token=999),
+    ]
+    deps, _, _ = _cache_deps(responses)
+    session = _make_fake_session(eos_token_ids=(999,), prefix_cache=fake_cache)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert len(fake_cache.store_calls) == 1
+
+
+def test_iterator_exhaustion_success_stores() -> None:
+    """Defensive iterator exhaustion (no finish_reason, no cancel) stores."""
+    fake_cache = FakePrefixCache(lookup_result=None)
+
+    def bare_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="hello", token=10)
+
+    deps = GenerationDeps(
+        stream_generate=bare_stream,
+        make_sampler=lambda **kw: MagicMock(),
+        make_prompt_cache=MagicMock(side_effect=lambda m: MagicMock(name="Fresh")),
+        trim_prompt_cache=MagicMock(),
+    )
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert len(fake_cache.store_calls) == 1
+
+
+# --- No-store tests ---
+
+
+def test_cancel_does_not_store() -> None:
+    """Mid-generation cancel → store never called."""
+    cancel = threading.Event()
+    fake_cache = FakePrefixCache(lookup_result=None)
+
+    def cancelling_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="first", token=10)
+        cancel.set()
+        yield FakeGenerationResponse(text="second", token=11)
+
+    deps = GenerationDeps(
+        stream_generate=cancelling_stream,
+        make_sampler=lambda **kw: MagicMock(),
+        make_prompt_cache=MagicMock(side_effect=lambda m: MagicMock()),
+        trim_prompt_cache=MagicMock(),
+    )
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "cancelled"
+    assert len(fake_cache.store_calls) == 0
+
+
+def test_stream_exception_does_not_store() -> None:
+    """Stream iterator raises → store never called, exception propagates."""
+    fake_cache = FakePrefixCache(lookup_result=None)
+
+    def exploding_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="partial", token=10)
+        raise RuntimeError("Metal error")
+
+    deps = GenerationDeps(
+        stream_generate=exploding_stream,
+        make_sampler=lambda **kw: MagicMock(),
+        make_prompt_cache=MagicMock(side_effect=lambda m: MagicMock()),
+        trim_prompt_cache=MagicMock(),
+    )
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+
+    with pytest.raises(RuntimeError, match="Metal error"):
+        _collect_events(session, request, deps)
+
+    assert len(fake_cache.store_calls) == 0
+
+
+def test_immediate_length_completion_does_not_store() -> None:
+    """max_output_tokens <= 0 → no cache prep, no store."""
+    fake_cache = FakePrefixCache(lookup_result=None)
+    deps, make_mock, _ = _cache_deps([])
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request(max_output_tokens=0)
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_LENGTH"
+    assert len(fake_cache.store_calls) == 0
+    assert len(fake_cache.lookup_calls) == 0
+    make_mock.assert_not_called()
+
+
+def test_missing_token_id_disables_store() -> None:
+    """A response with token=None disables store for entire request."""
+    fake_cache = FakePrefixCache(lookup_result=None)
+    responses = [
+        FakeGenerationResponse(text="A", token=50),
+        FakeGenerationResponse(text="B", token=None),  # type: ignore[arg-type]  # intentionally invalid
+        FakeGenerationResponse(text="C", token=52, finish_reason="stop"),
+    ]
+    deps, _, _ = _cache_deps(responses)
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert len(fake_cache.store_calls) == 0
+
+
+def test_store_failure_is_fail_open() -> None:
+    """prefix_cache.store raises → completed event still emitted."""
+    fake_cache = FakePrefixCache(
+        lookup_result=None,
+        store_side_effect=RuntimeError("store boom"),
+    )
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+    deps, _, _ = _cache_deps(responses)
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+    events = _collect_events(session, request, deps)
+
+    # completed still emitted despite store failure
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"

@@ -5,8 +5,14 @@ construction, stream_generate invocation, prefill progress bridging, stop-
 sequence buffering, Orchard-level EOS detection, delta normalization, terminal
 event emission, usage accounting, and strided decode-phase cancel checks.
 
-It does NOT own model lifecycle, gRPC/proto conversion, accepted events,
-or prefix cache (Task 6).
+It does NOT own model lifecycle, gRPC/proto conversion, or accepted events.
+
+Request-local KV prefix-cache lookup/store (Task 6):
+    When ``session.prefix_cache`` is a live ``KVPrefixCache`` and the
+    generation deps include prompt-cache helpers, this module performs
+    cache lookup before ``stream_generate()`` and stores the mutated
+    cache on successful completion only.  All cache operations are
+    fail-open: errors fall through to uncached generation.
 
 Key invariant — add_special_tokens=False:
     ``request.rendered_prompt_utf8`` arrives fully rendered by the controller
@@ -70,6 +76,8 @@ class GenerationDeps:
 
     stream_generate: Callable[..., Iterator[Any]]
     make_sampler: Callable[..., Any]
+    make_prompt_cache: Callable[[Any], Any] | None = None
+    trim_prompt_cache: Callable[[Any, int], int] | None = None
 
 
 def _default_generation_deps() -> GenerationDeps:
@@ -83,9 +91,24 @@ def _default_generation_deps() -> GenerationDeps:
             f"MLX generation dependencies not available: {exc}",
         ) from exc
 
+    # Optional prompt-cache helpers — fail-open if unavailable.
+    _make_prompt_cache: Callable[[Any], Any] | None = None
+    _trim_prompt_cache: Callable[[Any, int], int] | None = None
+    try:
+        from mlx_lm.models.cache import (
+            make_prompt_cache as _make,
+            trim_prompt_cache as _trim,
+        )
+        _make_prompt_cache = _make
+        _trim_prompt_cache = _trim
+    except (ImportError, AttributeError):
+        pass
+
     return GenerationDeps(
         stream_generate=stream_generate,
         make_sampler=make_sampler,
+        make_prompt_cache=_make_prompt_cache,
+        trim_prompt_cache=_trim_prompt_cache,
     )
 
 
@@ -299,6 +322,63 @@ def _safe_clear_session_cache(session: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# KV prefix-cache helpers (Task 6)
+# ---------------------------------------------------------------------------
+
+
+def _prepare_prompt_cache(
+    session: Any,
+    prompt_ids: list[int],
+    *,
+    deps: GenerationDeps,
+) -> tuple[Any | None, list[int]]:
+    """Prepare a request-local prompt cache and adjusted prompt IDs.
+
+    Returns ``(request_prompt_cache, ids_for_stream)``.  On any failure
+    or when caching is disabled, returns ``(None, prompt_ids)`` so the
+    caller falls through to uncached generation.
+    """
+    prefix_cache = getattr(session, "prefix_cache", None)
+    if prefix_cache is None:
+        return (None, prompt_ids)
+    if deps.make_prompt_cache is None or deps.trim_prompt_cache is None:
+        return (None, prompt_ids)
+
+    try:
+        hit = prefix_cache.lookup(prompt_ids, trim_fn=deps.trim_prompt_cache)
+        if hit is not None:
+            return (hit.prompt_cache, hit.remaining_ids)
+        # Miss: create a fresh request-local prompt cache so a successful
+        # generation can seed a future store.
+        fresh = deps.make_prompt_cache(session.model)
+        return (fresh, prompt_ids)
+    except Exception:
+        return (None, prompt_ids)
+
+
+def _maybe_store_prompt_cache(
+    session: Any,
+    prompt_ids: list[int],
+    generated_token_ids: list[int],
+    *,
+    prompt_cache: Any | None,
+) -> None:
+    """Best-effort store of mutated prompt cache after successful generation.
+
+    Stores the full sequence (``prompt_ids + generated_token_ids``) as the
+    cache key.  All exceptions are swallowed (fail-open).
+    """
+    prefix_cache = getattr(session, "prefix_cache", None)
+    if prefix_cache is None or prompt_cache is None:
+        return
+    try:
+        full_key = prompt_ids + generated_token_ids
+        prefix_cache.store(full_key, prompt_cache)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -376,18 +456,29 @@ def generate_events(
         yield cancelled_event()
         return
 
+    # --- Step 5b: prefix-cache lookup (Task 6) ---
+    request_prompt_cache, stream_prompt_ids = _prepare_prompt_cache(
+        session, prompt_ids, deps=deps,
+    )
+
     # --- Step 6: call stream_generate ---
     # NOTE(task-5): prefill_step_size and prompt_progress_callback are
     # forwarded by stream_generate() to generate_step().  Upstream handles
     # chunked prefill; Orchard bridges the callback into yielded events.
+    stream_kwargs: dict[str, Any] = {
+        "max_tokens": max_output_tokens,
+        "sampler": sampler,
+        "prefill_step_size": _prefill_step_size(session),
+        "prompt_progress_callback": progress_callback,
+    }
+    if request_prompt_cache is not None:
+        stream_kwargs["prompt_cache"] = request_prompt_cache
+
     stream = deps.stream_generate(
         session.model,
         session.tokenizer,
-        prompt_ids,
-        max_tokens=max_output_tokens,
-        sampler=sampler,
-        prefill_step_size=_prefill_step_size(session),
-        prompt_progress_callback=progress_callback,
+        stream_prompt_ids,
+        **stream_kwargs,
     )
 
     # --- Step 7: per-item decode loop ---
@@ -397,6 +488,8 @@ def generate_events(
     # propagate to service.py without cleanup.
     try:
         output_tokens = 0
+        generated_token_ids: list[int] = []
+        can_store = True
         for response in stream:
             # Drain any queued prefill progress before handling token deltas.
             # The callback is synchronous — all prefill updates are already
@@ -433,6 +526,12 @@ def generate_events(
                 and finish_reason is None  # upstream didn't already terminate
             )
 
+            # --- Cache store key tracking (Task 6) ---
+            if token_id is None:
+                can_store = False
+            elif can_store:
+                generated_token_ids.append(token_id)
+
             # --- Push text through stop-sequence buffer ---
             if delta_text:
                 safe_text, stop_matched = buf.push(delta_text)
@@ -444,6 +543,11 @@ def generate_events(
                 if safe_text:
                     yield {"kind": "output_text_delta", "delta": safe_text}
                 _close_stream(stream)
+                if can_store:
+                    _maybe_store_prompt_cache(
+                        session, prompt_ids, generated_token_ids,
+                        prompt_cache=request_prompt_cache,
+                    )
                 yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
                 return
 
@@ -455,6 +559,11 @@ def generate_events(
                 if flush_text:
                     yield {"kind": "output_text_delta", "delta": flush_text}
                 _close_stream(stream)
+                if can_store:
+                    _maybe_store_prompt_cache(
+                        session, prompt_ids, generated_token_ids,
+                        prompt_cache=request_prompt_cache,
+                    )
                 yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
                 return
 
@@ -466,6 +575,11 @@ def generate_events(
                 if flush_text:
                     yield {"kind": "output_text_delta", "delta": flush_text}
 
+                if can_store:
+                    _maybe_store_prompt_cache(
+                        session, prompt_ids, generated_token_ids,
+                        prompt_cache=request_prompt_cache,
+                    )
                 if finish_reason == "stop":
                     yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
                 else:  # "length"
@@ -487,6 +601,11 @@ def generate_events(
         if cancel_event.is_set():
             yield cancelled_event()
         else:
+            if can_store:
+                _maybe_store_prompt_cache(
+                    session, prompt_ids, generated_token_ids,
+                    prompt_cache=request_prompt_cache,
+                )
             yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
     finally:
         _safe_clear_session_cache(session)
