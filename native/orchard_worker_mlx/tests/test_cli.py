@@ -262,6 +262,40 @@ def test_configure_logging_direct(tmp_path: Path) -> None:
     assert "[INFO] test_configure_logging_direct hello from test" in content
 
 
+def test_configure_logging_writes_to_stdout_not_stderr(capsys) -> None:
+    """StreamHandler must target stdout explicitly, not stderr (the stdlib default)."""
+    import logging
+
+    from orchard_worker_mlx.cli import _configure_logging
+
+    _configure_logging()  # no file, just stream handler
+
+    test_logger = logging.getLogger("test_stdout_check")
+    test_logger.info("stdout marker")
+
+    captured = capsys.readouterr()
+    assert "stdout marker" in captured.out, "log output should appear on stdout"
+    assert "stdout marker" not in captured.err, "log output must not appear on stderr"
+
+
+def test_configure_logging_bare_filename(tmp_path, monkeypatch) -> None:
+    """Bare filename (no directory component) must not crash on os.makedirs('')."""
+    import logging
+
+    from orchard_worker_mlx.cli import _configure_logging
+
+    monkeypatch.chdir(tmp_path)
+    _configure_logging("worker.log")
+
+    test_logger = logging.getLogger("test_bare_filename")
+    test_logger.info("bare file test")
+
+    log_path = tmp_path / "worker.log"
+    assert log_path.exists(), "bare filename log file should be created in cwd"
+    content = log_path.read_text()
+    assert "bare file test" in content
+
+
 # ---------------------------------------------------------------------------
 # Opt-in MLX smoke test (requires mlx extra + real model bundle)
 # ---------------------------------------------------------------------------

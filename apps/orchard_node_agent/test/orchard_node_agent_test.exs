@@ -469,46 +469,49 @@ defmodule OrchardNodeAgentTest do
        %{bundle: bundle} do
     with_real_worker_runtime(fn ->
       # Temporarily lower Logger level — test.exs sets :warning, but we need :info.
+      previous_level = Logger.level()
       Logger.configure(level: :info)
 
-      log =
-        ExUnit.CaptureLog.capture_log([level: :info], fn ->
-          with_channel(fn channel ->
-            assert {:ok,
-                    %EnsureModelLoadedResponse{
-                      placement_state: :PLACEMENT_STATE_LOADED
-                    }} =
-                     NodeRuntimeStub.ensure_model_loaded(
-                       channel,
-                       ensure_model_loaded_request(bundle)
-                     )
+      try do
+        log =
+          ExUnit.CaptureLog.capture_log([level: :info], fn ->
+            with_channel(fn channel ->
+              assert {:ok,
+                      %EnsureModelLoadedResponse{
+                        placement_state: :PLACEMENT_STATE_LOADED
+                      }} =
+                       NodeRuntimeStub.ensure_model_loaded(
+                         channel,
+                         ensure_model_loaded_request(bundle)
+                       )
 
-            # Give the GenServer a moment to process port data messages
-            # that arrived during the gRPC call.
-            Process.sleep(100)
+              # Give the GenServer a moment to process port data messages
+              # that arrived during the gRPC call.
+              Process.sleep(100)
 
-            assert {:ok, %{ok: true}} =
-                     NodeRuntimeStub.unload_model(
-                       channel,
-                       %UnloadModelRequest{
-                         model_id: @test_model_id,
-                         version: @test_version,
-                         force: false,
-                         evict: false
-                       }
-                     )
+              assert {:ok, %{ok: true}} =
+                       NodeRuntimeStub.unload_model(
+                         channel,
+                         %UnloadModelRequest{
+                           model_id: @test_model_id,
+                           version: @test_version,
+                           force: false,
+                           evict: false
+                         }
+                       )
+            end)
+
+            wait_until(fn -> worker_count() == 0 end)
           end)
 
-          wait_until(fn -> worker_count() == 0 end)
-        end)
-
-      Logger.configure(level: :warning)
-
-      # Assert on load_model logs emitted during the LoadModel RPC.
-      # Bootstrap logs ("worker starting", "worker listening") may be consumed
-      # by the adapter's readiness polling receive loop.
-      assert log =~ "load_model start"
-      assert log =~ "load_model ok"
+        # Assert on load_model logs emitted during the LoadModel RPC.
+        # Bootstrap logs ("worker starting", "worker listening") may be consumed
+        # by the adapter's readiness polling receive loop.
+        assert log =~ "load_model start"
+        assert log =~ "load_model ok"
+      after
+        Logger.configure(level: previous_level)
+      end
     end)
   end
 

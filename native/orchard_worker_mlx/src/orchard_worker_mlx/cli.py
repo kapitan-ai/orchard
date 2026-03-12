@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sys
 from collections.abc import Sequence
 
 from orchard_worker_mlx import __version__
@@ -20,12 +21,14 @@ def _configure_logging(log_file: str | None = None) -> None:
 
     formatter = logging.Formatter(_LOG_FORMAT)
 
-    stdout_handler = logging.StreamHandler()
+    stdout_handler = logging.StreamHandler(stream=sys.stdout)
     stdout_handler.setFormatter(formatter)
     root.addHandler(stdout_handler)
 
     if log_file is not None:
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        parent_dir = os.path.dirname(log_file)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
         file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
