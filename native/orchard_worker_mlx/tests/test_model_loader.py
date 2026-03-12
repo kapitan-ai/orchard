@@ -730,6 +730,35 @@ def test_warmup_empty_encode_falls_back_to_stride_1(writable_bundle: Path) -> No
     assert session.decode_cancel_stride == 1
 
 
+def test_warmup_zero_decode_tokens_falls_back_to_stride_1(writable_bundle: Path) -> None:
+    """Non-empty prompt but zero decode tokens → stride=1.
+
+    Covers the edge case where prompt encodes successfully but
+    stream_generate yields an empty iterator (no tokens generated).
+    _derive_decode_cancel_stride(0, positive_elapsed) returns 1.
+    """
+    def empty_stream(*args, **kwargs):
+        return iter([])  # yields nothing
+
+    deps = _make_fake_deps()
+    # Override stream_generate to return empty iterator.
+    deps = MLXDeps(
+        load_model=deps.load_model,
+        load_tokenizer=deps.load_tokenizer,
+        stream_generate=empty_stream,
+        eval_fn=deps.eval_fn,
+        clear_cache=deps.clear_cache,
+        monotonic=deps.monotonic,
+    )
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.decode_cancel_stride == 1
+
+
 def test_warmup_uses_add_special_tokens_false(writable_bundle: Path) -> None:
     """Warmup must encode with add_special_tokens=False."""
     deps = _make_fake_deps()

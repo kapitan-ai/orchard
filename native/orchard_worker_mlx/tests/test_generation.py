@@ -1454,3 +1454,40 @@ def test_clear_cache_failure_does_not_block_terminal() -> None:
 
     # Terminal event should still appear despite cache cleanup failure.
     assert events[-1]["kind"] == "completed"
+
+
+def test_clear_cache_called_on_mid_iteration_exception() -> None:
+    """session.clear_cache called when stream iterator raises mid-iteration.
+
+    Regression test for review finding MF1: if stream_generate()'s iterator
+    raises (e.g., MLX Metal error, OOM), the exception propagates to
+    service.py which synthesizes a terminal failed event.  The try/finally
+    in generate_events() guarantees cache cleanup on this path.
+    """
+    clear_mock = MagicMock(name="clear_cache")
+
+    def stream_then_explode(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="partial", token=10)
+        raise RuntimeError("MLX Metal error")
+
+    deps = GenerationDeps(
+        stream_generate=stream_then_explode,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session(clear_cache=clear_mock)
+    request = _make_fake_request()
+
+    # Use staged iteration to prove the exception happens after a successful yield.
+    it = generate_events(session, request, threading.Event(), deps=deps)
+
+    # First event should be the output_text_delta from the successful yield.
+    first = next(it)
+    assert first["kind"] == "output_text_delta"
+    assert first["delta"] == "partial"
+
+    # Consuming the rest should raise the RuntimeError from the stream.
+    with pytest.raises(RuntimeError, match="MLX Metal error"):
+        list(it)
+
+    # Despite the exception, cache cleanup must have run via finally.
+    clear_mock.assert_called_once()

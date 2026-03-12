@@ -266,6 +266,11 @@ class MLXDeps:
     during load to derive ``decode_cancel_stride``.  Tests inject fakes
     for deterministic stride computation without real MLX or wall-clock
     timing.
+
+    NOTE: ``stream_generate`` is also injected in
+    ``generation.GenerationDeps`` for request-time generation.  The two
+    injection points are intentionally separate (different lifecycle).
+    Keep them in sync if the upstream API changes.
     """
 
     load_model: Callable[..., tuple[Any, Any]]  # (model, tokenizer_or_config)
@@ -430,6 +435,14 @@ def _run_warmup(
     Returns the computed stride (>= 1).  On any failure returns 1.
     This function is non-fatal: exceptions are caught and result in
     a safe fallback stride.
+
+    NOTE: Elapsed time includes prefill + iterator setup overhead, not just
+    decode.  With the trivial warmup prompt (``_WARMUP_PROMPT = "Warmup"``,
+    ~1 token), prefill is negligible and the stride approximation is valid.
+    This is an intentional conservative bias — if prefill were ever
+    significant, the stride would be underestimated (more frequent cancel
+    checks), which is safer than the alternative.  The warmup prompt is
+    permanently trivial by design (Q1 answer).
     """
     try:
         prompt_ids = _encode_warmup_prompt(tokenizer, _WARMUP_PROMPT)

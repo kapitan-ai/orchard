@@ -58,7 +58,15 @@ from orchard_worker_mlx.backends import BackendError, cancelled_event
 
 @dataclass(slots=True, frozen=True)
 class GenerationDeps:
-    """Narrow test seam for mocked MLX generation."""
+    """Narrow test seam for mocked MLX generation.
+
+    NOTE: ``stream_generate`` is also injected in ``model_loader.MLXDeps``
+    for warmup inference during load.  The two injection points are
+    intentionally separate (different lifecycle: load-time warmup vs
+    request-time generation), but both import from
+    ``mlx_lm.generate.stream_generate`` in production.  Keep them in sync
+    if the upstream API changes.
+    """
 
     stream_generate: Callable[..., Iterator[Any]]
     make_sampler: Callable[..., Any]
@@ -216,6 +224,17 @@ def _make_prefill_progress_callback(
     The callback is invoked synchronously by ``mlx_lm.generate_step()``
     during chunked prefill with ``(processed_tokens, total_tokens)``.
 
+    THREAD-SAFETY: Both ``queue`` (``collections.deque``) and ``last``
+    (plain list used as mutable closure cell) are **unsynchronized**.  This
+    is correct because upstream ``mlx_lm.stream_generate()`` invokes the
+    callback synchronously on the same thread that drives the iterator.
+    All callback invocations complete before the first ``yield`` from the
+    iterator, so there is no concurrent access between callback writes
+    and ``generate_events()``'s drain reads.  If upstream ever changes to
+    invoke the callback from a background thread, this bridge must be
+    updated to use a ``threading.Lock`` around ``last`` and a thread-safe
+    queue.
+
     Sanitization rules:
     - Reject booleans and non-ints.
     - Reject ``total <= 0``.
@@ -372,103 +391,105 @@ def generate_events(
     )
 
     # --- Step 7: per-item decode loop ---
-    output_tokens = 0
-    for response in stream:
-        # Drain any queued prefill progress before handling token deltas.
-        # The callback is synchronous — all prefill updates are already
-        # queued by the time the first response arrives.
-        yield from _drain_prefill_progress(progress_queue)
+    # Wrap stream consumption in try/finally to guarantee post-generation
+    # cache cleanup on ALL exit paths — including mid-iteration exceptions
+    # from the MLX stream (e.g., Metal errors, OOM) which would otherwise
+    # propagate to service.py without cleanup.
+    try:
+        output_tokens = 0
+        for response in stream:
+            # Drain any queued prefill progress before handling token deltas.
+            # The callback is synchronous — all prefill updates are already
+            # queued by the time the first response arrives.
+            yield from _drain_prefill_progress(progress_queue)
 
-        # Every yielded GenerationResponse represents one generated token,
-        # even when detokenization buffers produce empty text.  Count it
-        # unconditionally for usage; only emit a delta when text is present.
-        output_tokens += 1
+            # Every yielded GenerationResponse represents one generated token,
+            # even when detokenization buffers produce empty text.  Count it
+            # unconditionally for usage; only emit a delta when text is present.
+            output_tokens += 1
 
-        # --- Strided cancel check ---
-        if output_tokens % stride == 0 and cancel_event.is_set():
-            # Flush buffered text: cancellation removes future ambiguity,
-            # so withheld text should not be silently dropped.
-            flush_text = buf.flush()
-            if flush_text:
-                yield {"kind": "output_text_delta", "delta": flush_text}
-            _close_stream(stream)
-            _safe_clear_session_cache(session)
-            yield cancelled_event()
-            return
+            # --- Strided cancel check ---
+            if output_tokens % stride == 0 and cancel_event.is_set():
+                # Flush buffered text: cancellation removes future ambiguity,
+                # so withheld text should not be silently dropped.
+                flush_text = buf.flush()
+                if flush_text:
+                    yield {"kind": "output_text_delta", "delta": flush_text}
+                _close_stream(stream)
+                yield cancelled_event()
+                return
 
-        delta_text = response.text
-        finish_reason = response.finish_reason
+            delta_text = response.text
+            finish_reason = response.finish_reason
 
-        # --- Orchard-level EOS detection ---
-        # mlx_lm only honors tokenizer.eos_token_id (singular); check the
-        # full session.eos_token_ids set for config-only stop tokens.
-        token_id = _response_token_id(response)
-        orchard_eos = (
-            token_id is not None
-            and bool(eos_ids)
-            and token_id in eos_ids
-            and finish_reason is None  # upstream didn't already terminate
-        )
+            # --- Orchard-level EOS detection ---
+            # mlx_lm only honors tokenizer.eos_token_id (singular); check the
+            # full session.eos_token_ids set for config-only stop tokens.
+            token_id = _response_token_id(response)
+            orchard_eos = (
+                token_id is not None
+                and bool(eos_ids)
+                and token_id in eos_ids
+                and finish_reason is None  # upstream didn't already terminate
+            )
 
-        # --- Push text through stop-sequence buffer ---
-        if delta_text:
-            safe_text, stop_matched = buf.push(delta_text)
-        else:
-            safe_text, stop_matched = "", False
+            # --- Push text through stop-sequence buffer ---
+            if delta_text:
+                safe_text, stop_matched = buf.push(delta_text)
+            else:
+                safe_text, stop_matched = "", False
 
-        if stop_matched:
-            # Stop sequence found: emit pre-match text, suppress marker.
-            if safe_text:
-                yield {"kind": "output_text_delta", "delta": safe_text}
-            _close_stream(stream)
-            _safe_clear_session_cache(session)
-            yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
-            return
-
-        if orchard_eos:
-            # Orchard-level EOS: flush buffer and terminate.
-            if safe_text:
-                yield {"kind": "output_text_delta", "delta": safe_text}
-            flush_text = buf.flush()
-            if flush_text:
-                yield {"kind": "output_text_delta", "delta": flush_text}
-            _close_stream(stream)
-            _safe_clear_session_cache(session)
-            yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
-            return
-
-        if finish_reason is not None:
-            # Upstream terminal from mlx_lm.  Flush all buffered text.
-            if safe_text:
-                yield {"kind": "output_text_delta", "delta": safe_text}
-            flush_text = buf.flush()
-            if flush_text:
-                yield {"kind": "output_text_delta", "delta": flush_text}
-
-            _safe_clear_session_cache(session)
-            if finish_reason == "stop":
+            if stop_matched:
+                # Stop sequence found: emit pre-match text, suppress marker.
+                if safe_text:
+                    yield {"kind": "output_text_delta", "delta": safe_text}
+                _close_stream(stream)
                 yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
-            else:  # "length"
-                yield _completed_event("FINISH_REASON_LENGTH", input_tokens, output_tokens)
-            return
+                return
 
-        # Non-terminal: emit safe text if non-empty.
-        if safe_text:
-            yield {"kind": "output_text_delta", "delta": safe_text}
+            if orchard_eos:
+                # Orchard-level EOS: flush buffer and terminate.
+                if safe_text:
+                    yield {"kind": "output_text_delta", "delta": safe_text}
+                flush_text = buf.flush()
+                if flush_text:
+                    yield {"kind": "output_text_delta", "delta": flush_text}
+                _close_stream(stream)
+                yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
+                return
 
-    # --- Step 8: iterator exhaustion without finish_reason ---
-    # Defensive: mlx_lm should always yield a final response with
-    # finish_reason set, but handle gracefully.
-    # Drain any remaining prefill progress (edge case: zero decode tokens).
-    yield from _drain_prefill_progress(progress_queue)
-    flush_text = buf.flush()
-    if flush_text:
-        yield {"kind": "output_text_delta", "delta": flush_text}
-    _safe_clear_session_cache(session)
-    if cancel_event.is_set():
-        yield cancelled_event()
-    else:
-        yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
+            if finish_reason is not None:
+                # Upstream terminal from mlx_lm.  Flush all buffered text.
+                if safe_text:
+                    yield {"kind": "output_text_delta", "delta": safe_text}
+                flush_text = buf.flush()
+                if flush_text:
+                    yield {"kind": "output_text_delta", "delta": flush_text}
+
+                if finish_reason == "stop":
+                    yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
+                else:  # "length"
+                    yield _completed_event("FINISH_REASON_LENGTH", input_tokens, output_tokens)
+                return
+
+            # Non-terminal: emit safe text if non-empty.
+            if safe_text:
+                yield {"kind": "output_text_delta", "delta": safe_text}
+
+        # --- Step 8: iterator exhaustion without finish_reason ---
+        # Defensive: mlx_lm should always yield a final response with
+        # finish_reason set, but handle gracefully.
+        # Drain any remaining prefill progress (edge case: zero decode tokens).
+        yield from _drain_prefill_progress(progress_queue)
+        flush_text = buf.flush()
+        if flush_text:
+            yield {"kind": "output_text_delta", "delta": flush_text}
+        if cancel_event.is_set():
+            yield cancelled_event()
+        else:
+            yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
+    finally:
+        _safe_clear_session_cache(session)
 
 
 # ---------------------------------------------------------------------------
