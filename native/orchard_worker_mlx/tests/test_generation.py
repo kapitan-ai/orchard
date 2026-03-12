@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from collections import deque
 from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock
@@ -13,6 +14,7 @@ from orchard_worker_mlx.backends import BackendError
 from orchard_worker_mlx.generation import (
     GenerationDeps,
     StopSequenceBuffer,
+    _make_prefill_progress_callback,
     generate_events,
 )
 
@@ -40,6 +42,8 @@ def _make_fake_session(
     *,
     eos_token_ids: tuple[int, ...] = (),
     decode_cancel_stride: int = 1,
+    prefill_step_size: int = 2048,
+    clear_cache: Any = None,
 ) -> Any:
     """Create a minimal fake LoadedModelSession for generation tests."""
     session = MagicMock()
@@ -48,6 +52,8 @@ def _make_fake_session(
     session.tokenizer.encode.return_value = [1, 2, 3]
     session.eos_token_ids = eos_token_ids
     session.decode_cancel_stride = decode_cancel_stride
+    session.prefill_step_size = prefill_step_size
+    session.clear_cache = clear_cache if clear_cache is not None else MagicMock(name="clear_cache")
     return session
 
 
@@ -1112,3 +1118,339 @@ def test_stop_sequence_never_leaked_end_to_end() -> None:
     assert stop not in all_text
     assert "done" not in all_text  # text after stop also suppressed
     assert all_text == "Hello world! The answer is 42. And"
+
+
+# ===========================================================================
+# Prefill progress callback bridge (Task 5)
+# ===========================================================================
+
+
+def test_prefill_progress_emitted_before_first_delta() -> None:
+    """Progress events from callback appear before first output_text_delta."""
+    progress_calls: list[tuple[int, int]] = []
+
+    def stream_with_callback(model, tokenizer, prompt_ids, **kwargs):
+        # The callback is invoked synchronously during prefill.
+        cb = kwargs.get("prompt_progress_callback")
+        if cb:
+            cb(0, 100)    # initial zero — should be filtered
+            cb(50, 100)   # real progress
+            cb(100, 100)  # done
+            progress_calls.extend([(50, 100), (100, 100)])
+        # Then yield decode tokens.
+        yield FakeGenerationResponse(text="Hello", token=10)
+        yield FakeGenerationResponse(text=" world", token=11, finish_reason="stop")
+
+    deps = GenerationDeps(
+        stream_generate=stream_with_callback,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session()
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps)
+
+    kinds = [e["kind"] for e in events]
+    # Progress events come first, then deltas, then terminal.
+    progress_events = [e for e in events if e["kind"] == "progress"]
+    assert len(progress_events) == 2
+    assert progress_events[0]["stage"] == "prefill"
+    assert "50/100" in progress_events[0]["message"]
+    assert "100/100" in progress_events[1]["message"]
+
+    # Verify ordering: all progress before first delta.
+    first_delta_idx = kinds.index("output_text_delta")
+    for i, k in enumerate(kinds):
+        if k == "progress":
+            assert i < first_delta_idx
+
+
+def test_prefill_progress_multiple_chunks() -> None:
+    """Multiple callback updates emit multiple progress events in order."""
+
+    def stream_with_multi_chunk(model, tokenizer, prompt_ids, **kwargs):
+        cb = kwargs.get("prompt_progress_callback")
+        if cb:
+            cb(2048, 8192)
+            cb(4096, 8192)
+            cb(6144, 8192)
+            cb(8192, 8192)
+        yield FakeGenerationResponse(text="ok", token=10, finish_reason="stop")
+
+    deps = GenerationDeps(
+        stream_generate=stream_with_multi_chunk,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session()
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps)
+
+    progress_events = [e for e in events if e["kind"] == "progress"]
+    assert len(progress_events) == 4
+    assert "2048/8192" in progress_events[0]["message"]
+    assert "8192/8192" in progress_events[3]["message"]
+
+
+def test_prefill_progress_no_callback_no_progress_events() -> None:
+    """When no callback is invoked, no progress events are emitted."""
+    responses = [
+        FakeGenerationResponse(text="Hi", token=10, finish_reason="stop"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request()
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    progress_events = [e for e in events if e["kind"] == "progress"]
+    assert len(progress_events) == 0
+
+
+def test_prefill_progress_no_events_after_terminal() -> None:
+    """No progress events appear after any terminal event."""
+
+    def stream_with_progress(model, tokenizer, prompt_ids, **kwargs):
+        cb = kwargs.get("prompt_progress_callback")
+        if cb:
+            cb(100, 100)
+        yield FakeGenerationResponse(text="done", token=10, finish_reason="stop")
+
+    deps = GenerationDeps(
+        stream_generate=stream_with_progress,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session()
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps)
+
+    # Find terminal event.
+    terminal_idx = None
+    for i, e in enumerate(events):
+        if e["kind"] in ("completed", "failed"):
+            terminal_idx = i
+            break
+    assert terminal_idx is not None
+    # No progress after terminal.
+    for e in events[terminal_idx + 1:]:
+        assert e["kind"] != "progress"
+
+
+def test_prefill_progress_passes_prefill_step_size() -> None:
+    """stream_generate receives prefill_step_size from session."""
+    captured_kwargs: list[dict[str, Any]] = []
+
+    def capturing_stream(model, tokenizer, prompt_ids, **kwargs):
+        captured_kwargs.append(kwargs)
+        yield FakeGenerationResponse(text="x", token=10, finish_reason="stop")
+
+    deps = GenerationDeps(
+        stream_generate=capturing_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session(prefill_step_size=4096)
+    request = _make_fake_request()
+
+    _collect_events(session, request, deps)
+
+    assert len(captured_kwargs) == 1
+    assert captured_kwargs[0]["prefill_step_size"] == 4096
+    assert "prompt_progress_callback" in captured_kwargs[0]
+    assert callable(captured_kwargs[0]["prompt_progress_callback"])
+
+
+def test_prefill_progress_default_step_size() -> None:
+    """Default prefill_step_size is 2048 when session has no attribute."""
+    captured_kwargs: list[dict[str, Any]] = []
+
+    def capturing_stream(model, tokenizer, prompt_ids, **kwargs):
+        captured_kwargs.append(kwargs)
+        yield FakeGenerationResponse(text="x", token=10, finish_reason="stop")
+
+    deps = GenerationDeps(
+        stream_generate=capturing_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    # Session without prefill_step_size attribute.
+    session = MagicMock()
+    session.model = MagicMock()
+    session.tokenizer = MagicMock()
+    session.tokenizer.encode.return_value = [1, 2, 3]
+    session.eos_token_ids = ()
+    session.decode_cancel_stride = 1
+    session.clear_cache = MagicMock()
+    del session.prefill_step_size  # remove auto-created attr
+
+    request = _make_fake_request()
+    _collect_events(session, request, deps)
+
+    assert captured_kwargs[0]["prefill_step_size"] == 2048
+
+
+# ===========================================================================
+# Prefill progress callback sanitization (unit tests)
+# ===========================================================================
+
+
+def test_callback_rejects_zero_processed() -> None:
+    q: deque[tuple[int, int]] = deque()
+    cb = _make_prefill_progress_callback(q)
+    cb(0, 100)
+    assert len(q) == 0
+
+
+def test_callback_rejects_negative_total() -> None:
+    q: deque[tuple[int, int]] = deque()
+    cb = _make_prefill_progress_callback(q)
+    cb(5, -1)
+    assert len(q) == 0
+
+
+def test_callback_rejects_boolean_values() -> None:
+    q: deque[tuple[int, int]] = deque()
+    cb = _make_prefill_progress_callback(q)
+    cb(True, 100)  # type: ignore[arg-type]
+    cb(50, False)  # type: ignore[arg-type]
+    assert len(q) == 0
+
+
+def test_callback_clamps_processed_to_total() -> None:
+    q: deque[tuple[int, int]] = deque()
+    cb = _make_prefill_progress_callback(q)
+    cb(200, 100)  # processed > total
+    assert len(q) == 1
+    assert q[0] == (100, 100)  # clamped
+
+
+def test_callback_drops_non_monotonic_updates() -> None:
+    q: deque[tuple[int, int]] = deque()
+    cb = _make_prefill_progress_callback(q)
+    cb(50, 100)
+    cb(30, 100)  # backwards — dropped
+    cb(50, 100)  # same as last — dropped
+    assert len(q) == 1
+
+
+def test_callback_drops_decreasing_total() -> None:
+    q: deque[tuple[int, int]] = deque()
+    cb = _make_prefill_progress_callback(q)
+    cb(50, 100)
+    cb(40, 80)  # total decreased — dropped
+    assert len(q) == 1
+
+
+def test_callback_accepts_increasing_total() -> None:
+    """Total can increase (model reestimates total tokens)."""
+    q: deque[tuple[int, int]] = deque()
+    cb = _make_prefill_progress_callback(q)
+    cb(50, 100)
+    cb(60, 200)  # total increased, processed also advanced
+    assert len(q) == 2
+
+
+# ===========================================================================
+# Post-generation memory cleanup (Task 5)
+# ===========================================================================
+
+
+def test_clear_cache_called_on_completed() -> None:
+    """session.clear_cache called on normal completion."""
+    clear_mock = MagicMock(name="clear_cache")
+    responses = [
+        FakeGenerationResponse(text="Hi", token=10, finish_reason="stop"),
+    ]
+    session = _make_fake_session(clear_cache=clear_mock)
+    request = _make_fake_request()
+    deps = _make_deps(responses)
+
+    _collect_events(session, request, deps)
+    clear_mock.assert_called()
+
+
+def test_clear_cache_called_on_cancel() -> None:
+    """session.clear_cache called on cancellation during decode."""
+    clear_mock = MagicMock(name="clear_cache")
+    cancel = threading.Event()
+
+    def stream_then_cancel(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="a", token=10)
+        # Set cancel after first token so pre-cancel check passes.
+        cancel.set()
+        yield FakeGenerationResponse(text="b", token=11)
+
+    deps = GenerationDeps(
+        stream_generate=stream_then_cancel,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session(decode_cancel_stride=1, clear_cache=clear_mock)
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "cancelled"
+    clear_mock.assert_called()
+
+
+def test_clear_cache_called_on_stop_sequence() -> None:
+    """session.clear_cache called when stop sequence terminates generation."""
+    clear_mock = MagicMock(name="clear_cache")
+    responses = [
+        FakeGenerationResponse(text="Hello STOP world", token=10),
+    ]
+    session = _make_fake_session(clear_cache=clear_mock)
+    request = _make_fake_request(stop_sequences=["STOP"])
+    deps = _make_deps(responses)
+
+    _collect_events(session, request, deps)
+    clear_mock.assert_called()
+
+
+def test_clear_cache_called_on_eos() -> None:
+    """session.clear_cache called on Orchard EOS detection."""
+    clear_mock = MagicMock(name="clear_cache")
+    responses = [
+        FakeGenerationResponse(text="end", token=999),
+    ]
+    session = _make_fake_session(eos_token_ids=(999,), clear_cache=clear_mock)
+    request = _make_fake_request()
+    deps = _make_deps(responses)
+
+    _collect_events(session, request, deps)
+    clear_mock.assert_called()
+
+
+def test_clear_cache_called_on_iterator_exhaustion() -> None:
+    """session.clear_cache called when iterator exhausts without finish_reason."""
+    clear_mock = MagicMock(name="clear_cache")
+
+    def bare_stream(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="partial", token=10)
+        # No finish_reason on final response.
+
+    deps = GenerationDeps(
+        stream_generate=bare_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session(clear_cache=clear_mock)
+    request = _make_fake_request()
+
+    _collect_events(session, request, deps)
+    clear_mock.assert_called()
+
+
+def test_clear_cache_failure_does_not_block_terminal() -> None:
+    """clear_cache exception does not prevent terminal event emission."""
+    clear_mock = MagicMock(side_effect=RuntimeError("cache boom"))
+    responses = [
+        FakeGenerationResponse(text="Hi", token=10, finish_reason="stop"),
+    ]
+    session = _make_fake_session(clear_cache=clear_mock)
+    request = _make_fake_request()
+    deps = _make_deps(responses)
+
+    events = _collect_events(session, request, deps)
+
+    # Terminal event should still appear despite cache cleanup failure.
+    assert events[-1]["kind"] == "completed"

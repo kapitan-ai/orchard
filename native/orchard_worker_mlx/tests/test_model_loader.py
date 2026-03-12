@@ -18,6 +18,8 @@ from orchard_worker_mlx.model_loader import (
     ModelLoaderError,
     RuntimeRequirementsSpec,
     TokenizerSpec,
+    _derive_decode_cancel_stride,
+    _run_warmup,
     load_manifest,
     load_session,
     parse_manifest_json,
@@ -67,6 +69,10 @@ def _make_fake_deps(
     load_tokenizer_side_effect: Any = None,
     model_config: Any = None,
     tokenizer_eos_token_id: Any = None,
+    warmup_responses: int = 10,
+    warmup_elapsed_s: float = 0.5,
+    warmup_stream_error: Exception | None = None,
+    warmup_encode_result: list[int] | None = None,
 ) -> MLXDeps:
     fake_model = MagicMock(name="FakeModel")
     fake_tokenizer = MagicMock(name="FakeTokenizer")
@@ -76,6 +82,12 @@ def _make_fake_deps(
     else:
         # Remove the attribute so getattr returns None.
         del fake_tokenizer.eos_token_id
+
+    # Configure tokenizer.encode for warmup.
+    if warmup_encode_result is not None:
+        fake_tokenizer.encode = MagicMock(return_value=warmup_encode_result)
+    else:
+        fake_tokenizer.encode = MagicMock(return_value=[1, 2, 3])  # default non-empty
 
     effective_config = model_config if model_config is not None else {}
 
@@ -89,11 +101,33 @@ def _make_fake_deps(
             raise load_tokenizer_side_effect
         return fake_tokenizer
 
+    def _stream_generate(*args: Any, **kwargs: Any) -> Any:
+        if warmup_stream_error is not None:
+            raise warmup_stream_error
+        # Yield fake responses (simple objects with .text and .finish_reason).
+        for i in range(warmup_responses):
+            resp = MagicMock(name=f"WarmupResponse_{i}")
+            resp.text = "x"
+            resp.finish_reason = None if i < warmup_responses - 1 else "length"
+            yield resp
+
+    # Deterministic timing: returns t0 on first call, t0 + elapsed on second.
+    _time_calls: list[float] = []
+
+    def _monotonic() -> float:
+        if not _time_calls:
+            _time_calls.append(100.0)
+            return 100.0
+        _time_calls.append(100.0 + warmup_elapsed_s)
+        return 100.0 + warmup_elapsed_s
+
     return MLXDeps(
         load_model=_load_model,
         load_tokenizer=_load_tokenizer,
+        stream_generate=_stream_generate,
         eval_fn=MagicMock(name="eval_fn"),
         clear_cache=MagicMock(name="clear_cache"),
+        monotonic=_monotonic,
     )
 
 
@@ -374,12 +408,16 @@ def test_load_session_success(writable_bundle: Path) -> None:
     assert session.bundle_path == writable_bundle
     assert session.model is not None
     assert session.tokenizer is not None
-    assert session.decode_cancel_stride == 1
+    # decode_cancel_stride is derived from warmup (no longer always 1).
+    assert isinstance(session.decode_cancel_stride, int)
+    assert session.decode_cancel_stride >= 1
+    assert session.prefill_step_size == 2048
     assert session.prefix_cache is None
 
     # Verify deps were called correctly.
     deps.eval_fn.assert_called_once()
-    deps.clear_cache.assert_called_once()
+    # clear_cache called: 1x after eval, 1x inside warmup, 1x post-warmup
+    assert deps.clear_cache.call_count >= 1
 
     # New Task 3 fields: model_config and eos_token_ids.
     assert session.model_config == {}
@@ -465,8 +503,10 @@ def test_load_session_tokenizer_receives_resolved_path(writable_bundle: Path) ->
     deps = MLXDeps(
         load_model=lambda model_path, **kw: (MagicMock(), {}),
         load_tokenizer=capturing_loader,
+        stream_generate=lambda *a, **kw: iter([]),
         eval_fn=MagicMock(),
         clear_cache=MagicMock(),
+        monotonic=lambda: 0.0,
     )
     load_session(
         model_id="test-org/tiny-llm",
@@ -621,6 +661,180 @@ def test_unload_session_swallows_exceptions() -> None:
     )
     # Should not raise; references still cleared.
     assert session.model is None
+
+
+# ===========================================================================
+# Warmup inference & stride derivation
+# ===========================================================================
+
+
+def test_warmup_success_sets_stride(writable_bundle: Path) -> None:
+    """Warmup with 10 tokens in 0.5s → 20 tok/s → stride = floor(20 * 0.05) = 1."""
+    deps = _make_fake_deps(warmup_responses=10, warmup_elapsed_s=0.5)
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.decode_cancel_stride == 1
+
+
+def test_warmup_high_throughput_stride(writable_bundle: Path) -> None:
+    """Warmup with 50 tokens in 0.1s → 500 tok/s → stride = floor(500 * 0.05) = 25."""
+    deps = _make_fake_deps(warmup_responses=50, warmup_elapsed_s=0.1)
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.decode_cancel_stride == 25
+
+
+def test_warmup_stride_capped_at_max(writable_bundle: Path) -> None:
+    """Stride is capped at 32 even for very high throughput."""
+    deps = _make_fake_deps(warmup_responses=50, warmup_elapsed_s=0.01)
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.decode_cancel_stride == 32
+
+
+def test_warmup_failure_falls_back_to_stride_1(writable_bundle: Path) -> None:
+    """stream_generate error during warmup → stride=1, session still valid."""
+    deps = _make_fake_deps(warmup_stream_error=RuntimeError("MLX boom"))
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.decode_cancel_stride == 1
+    assert session.model is not None
+    assert session.tokenizer is not None
+
+
+def test_warmup_empty_encode_falls_back_to_stride_1(writable_bundle: Path) -> None:
+    """Empty prompt encoding → stride=1, session still valid."""
+    deps = _make_fake_deps(warmup_encode_result=[])
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.decode_cancel_stride == 1
+
+
+def test_warmup_uses_add_special_tokens_false(writable_bundle: Path) -> None:
+    """Warmup must encode with add_special_tokens=False."""
+    deps = _make_fake_deps()
+    load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    # The fake tokenizer's encode is a MagicMock; check the call.
+    # load_tokenizer returns the same fake_tokenizer; warmup calls encode.
+    # But the tokenizer is created inside _make_fake_deps, so we access it
+    # indirectly via the session returned by load_session.
+    # Instead, test the warmup helper directly:
+    fake_tok = MagicMock(name="tok")
+    fake_tok.encode = MagicMock(return_value=[1, 2, 3])
+    fake_deps = MLXDeps(
+        load_model=lambda *a, **kw: (MagicMock(), {}),
+        load_tokenizer=lambda p: fake_tok,
+        stream_generate=lambda *a, **kw: iter([]),
+        eval_fn=MagicMock(),
+        clear_cache=MagicMock(),
+        monotonic=lambda: 0.0,
+    )
+    _run_warmup(MagicMock(), fake_tok, deps=fake_deps)
+    fake_tok.encode.assert_called_once_with("Warmup", add_special_tokens=False)
+
+
+def test_warmup_passes_prefill_step_size(writable_bundle: Path) -> None:
+    """Warmup must pass prefill_step_size=2048 to stream_generate."""
+    captured_kwargs: list[dict[str, Any]] = []
+
+    def capturing_stream(*args: Any, **kwargs: Any) -> Any:
+        captured_kwargs.append(kwargs)
+        return iter([])
+
+    fake_tok = MagicMock(name="tok")
+    fake_tok.encode = MagicMock(return_value=[1, 2, 3])
+    fake_deps = MLXDeps(
+        load_model=lambda *a, **kw: (MagicMock(), {}),
+        load_tokenizer=lambda p: fake_tok,
+        stream_generate=capturing_stream,
+        eval_fn=MagicMock(),
+        clear_cache=MagicMock(),
+        monotonic=lambda: 0.0,
+    )
+    _run_warmup(MagicMock(), fake_tok, deps=fake_deps)
+    assert len(captured_kwargs) == 1
+    assert captured_kwargs[0]["prefill_step_size"] == 2048
+    assert captured_kwargs[0]["max_tokens"] == 50
+
+
+def test_warmup_clear_cache_called(writable_bundle: Path) -> None:
+    """clear_cache is called after initial load eval AND after warmup."""
+    deps = _make_fake_deps(warmup_responses=5, warmup_elapsed_s=0.1)
+    load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    # clear_cache called: 1x after eval, 1x inside _run_warmup, 1x post-warmup in load_session
+    assert deps.clear_cache.call_count >= 3
+
+
+def test_session_prefill_step_size_default(writable_bundle: Path) -> None:
+    """LoadedModelSession.prefill_step_size defaults to 2048."""
+    deps = _make_fake_deps()
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.prefill_step_size == 2048
+
+
+# --- stride derivation unit tests ---
+
+
+def test_derive_stride_normal() -> None:
+    # 100 tokens in 1s → 100 tok/s → stride = floor(100 * 0.05) = 5
+    assert _derive_decode_cancel_stride(100, 1.0) == 5
+
+
+def test_derive_stride_zero_tokens() -> None:
+    assert _derive_decode_cancel_stride(0, 1.0) == 1
+
+
+def test_derive_stride_zero_elapsed() -> None:
+    assert _derive_decode_cancel_stride(10, 0.0) == 1
+
+
+def test_derive_stride_negative_elapsed() -> None:
+    assert _derive_decode_cancel_stride(10, -1.0) == 1
+
+
+def test_derive_stride_clamped_to_max_32() -> None:
+    # 10000 tokens in 0.01s → 1000000 tok/s → would be 50000 → capped at 32
+    assert _derive_decode_cancel_stride(10000, 0.01) == 32
+
+
+def test_derive_stride_minimum_is_1() -> None:
+    # 1 token in 100s → 0.01 tok/s → stride = floor(0.01 * 0.05) = 0 → clamped to 1
+    assert _derive_decode_cancel_stride(1, 100.0) == 1
 
 
 # ===========================================================================

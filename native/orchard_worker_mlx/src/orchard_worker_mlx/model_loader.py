@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import gc
 import json
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -259,18 +260,27 @@ def _parse_nested(
 
 @dataclass(slots=True, frozen=True)
 class MLXDeps:
-    """Narrow test seam for mocked MLX loading."""
+    """Narrow test seam for mocked MLX loading.
+
+    ``stream_generate`` and ``monotonic`` are used by warmup inference
+    during load to derive ``decode_cancel_stride``.  Tests inject fakes
+    for deterministic stride computation without real MLX or wall-clock
+    timing.
+    """
 
     load_model: Callable[..., tuple[Any, Any]]  # (model, tokenizer_or_config)
     load_tokenizer: Callable[[str | Path], Any]
+    stream_generate: Callable[..., Iterator[Any]]
     eval_fn: Callable[[Any], None]
     clear_cache: Callable[[], None]
+    monotonic: Callable[[], float]
 
 
 def _default_mlx_deps() -> MLXDeps:
     """Import real MLX dependencies lazily."""
     try:
         import mlx.core as mx
+        from mlx_lm.generate import stream_generate
         from mlx_lm.utils import load as mlx_lm_load
         from transformers import AutoTokenizer
     except ImportError as exc:
@@ -293,8 +303,10 @@ def _default_mlx_deps() -> MLXDeps:
     return MLXDeps(
         load_model=_load_model,
         load_tokenizer=_load_tokenizer,
+        stream_generate=stream_generate,
         eval_fn=mx.eval,
         clear_cache=lambda: mx.metal.clear_cache() if hasattr(mx, "metal") else None,
+        monotonic=time.monotonic,
     )
 
 
@@ -317,6 +329,7 @@ class LoadedModelSession:
     eos_token_ids: tuple[int, ...] = ()
     clear_cache: Callable[[], None] | None = None
     decode_cancel_stride: int = 1
+    prefill_step_size: int = 2048
     prefix_cache: Any | None = None
 
 
@@ -392,6 +405,102 @@ def _resolve_bundle_subpath(bundle_root: Path, relative: str, label: str) -> Pat
         )
 
     return resolved
+
+
+# ---------------------------------------------------------------------------
+# Warmup helpers
+# ---------------------------------------------------------------------------
+
+# Fixed constants for warmup inference.
+_WARMUP_PROMPT = "Warmup"
+_WARMUP_MAX_TOKENS = 50
+_WARMUP_PREFILL_STEP_SIZE = 2048
+_WARMUP_TARGET_CANCEL_INTERVAL_S = 0.05
+_WARMUP_MAX_STRIDE = 32
+
+
+def _run_warmup(
+    model: Any,
+    tokenizer: Any,
+    *,
+    deps: MLXDeps,
+) -> int:
+    """Run warmup inference and derive ``decode_cancel_stride``.
+
+    Returns the computed stride (>= 1).  On any failure returns 1.
+    This function is non-fatal: exceptions are caught and result in
+    a safe fallback stride.
+    """
+    try:
+        prompt_ids = _encode_warmup_prompt(tokenizer, _WARMUP_PROMPT)
+        if not prompt_ids:
+            return 1
+
+        t0 = deps.monotonic()
+        stream = deps.stream_generate(
+            model,
+            tokenizer,
+            prompt_ids,
+            max_tokens=_WARMUP_MAX_TOKENS,
+            prefill_step_size=_WARMUP_PREFILL_STEP_SIZE,
+        )
+
+        output_tokens = 0
+        try:
+            for _response in stream:
+                output_tokens += 1
+        finally:
+            # Best-effort close regardless of how iteration ended.
+            close_fn = getattr(stream, "close", None)
+            if close_fn is not None:
+                try:
+                    close_fn()
+                except Exception:
+                    pass
+
+        elapsed = deps.monotonic() - t0
+        stride = _derive_decode_cancel_stride(output_tokens, elapsed)
+
+        # Post-warmup cache cleanup.
+        _safe_clear_cache(deps.clear_cache)
+
+        return stride
+    except Exception:
+        # Warmup is non-fatal.  Fall back to stride=1.
+        _safe_clear_cache(deps.clear_cache)
+        return 1
+
+
+def _encode_warmup_prompt(tokenizer: Any, prompt_text: str) -> list[int]:
+    """Encode the warmup prompt.  Returns [] on failure."""
+    try:
+        # WARNING: add_special_tokens must stay False — matches generation.py
+        # contract.  See generation.py module docstring.
+        return tokenizer.encode(prompt_text, add_special_tokens=False)
+    except Exception:
+        return []
+
+
+def _derive_decode_cancel_stride(output_tokens: int, elapsed_s: float) -> int:
+    """Compute stride from warmup throughput.
+
+    Returns 1 on degenerate input (no tokens, zero/negative elapsed).
+    """
+    if output_tokens <= 0 or elapsed_s <= 0:
+        return 1
+    tokens_per_second = output_tokens / elapsed_s
+    stride = int(tokens_per_second * _WARMUP_TARGET_CANCEL_INTERVAL_S)
+    # Clamp to [1, MAX_STRIDE].
+    return max(1, min(stride, _WARMUP_MAX_STRIDE))
+
+
+def _safe_clear_cache(clear_cache: Callable[[], None] | None) -> None:
+    """Best-effort cache cleanup.  Swallows all exceptions."""
+    if clear_cache is not None:
+        try:
+            clear_cache()
+        except Exception:
+            pass
 
 
 def load_session(
@@ -506,6 +615,17 @@ def load_session(
 
     eos_token_ids = _normalize_eos_token_ids(tokenizer, model_config)
 
+    # --- warmup inference to derive decode_cancel_stride ---
+    # Non-fatal: failure falls back to stride=1.  Warmup consumes part of
+    # the existing worker_load_timeout_ms budget enforced by the outer
+    # gRPC LoadModel RPC timeout in WorkerRuntimeAdapter.
+    decode_cancel_stride = _run_warmup(model, tokenizer, deps=deps)
+
+    # Post-warmup cache cleanup (separate from warmup's own cleanup to
+    # cover edge cases where warmup returns successfully but left MLX
+    # temporaries allocated).
+    _safe_clear_cache(deps.clear_cache)
+
     return LoadedModelSession(
         manifest=manifest,
         bundle_path=bundle,
@@ -516,7 +636,7 @@ def load_session(
         model_config=model_config,
         eos_token_ids=eos_token_ids,
         clear_cache=deps.clear_cache,
-        decode_cancel_stride=1,
+        decode_cancel_stride=decode_cancel_stride,
         prefix_cache=None,
     )
 

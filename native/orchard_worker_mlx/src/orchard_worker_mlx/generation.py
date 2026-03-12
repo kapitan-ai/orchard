@@ -1,12 +1,12 @@
 """Real MLX token generation via mlx_lm.stream_generate().
 
 This module owns request-time generation only: prompt decode/encode, sampler
-construction, stream_generate invocation, stop-sequence buffering, Orchard-
-level EOS detection, delta normalization, terminal event emission, usage
-accounting, and strided decode-phase cancel checks.
+construction, stream_generate invocation, prefill progress bridging, stop-
+sequence buffering, Orchard-level EOS detection, delta normalization, terminal
+event emission, usage accounting, and strided decode-phase cancel checks.
 
-It does NOT own model lifecycle, gRPC/proto conversion, accepted/progress
-events, or prefix cache (Task 6).
+It does NOT own model lifecycle, gRPC/proto conversion, accepted events,
+or prefix cache (Task 6).
 
 Key invariant — add_special_tokens=False:
     ``request.rendered_prompt_utf8`` arrives fully rendered by the controller
@@ -28,11 +28,22 @@ Orchard-level EOS detection (Task 4):
     module checks each ``response.token`` against ``session.eos_token_ids``
     (computed at load time by ``_normalize_eos_token_ids()``) for
     comprehensive stop handling.
+
+Prefill progress bridging (Task 5):
+    ``mlx_lm.stream_generate()`` accepts ``prompt_progress_callback`` and
+    ``prefill_step_size`` kwargs.  The callback is invoked synchronously
+    during prefill with ``(processed_tokens, total_tokens)``.  This module
+    bridges the synchronous callback into yielded ``progress`` events by
+    queuing updates in a request-local deque and draining them before each
+    token delta.  Prefill cancel is NOT cleanly interruptible — upstream
+    ``generate_step()`` has no cancel hook; cancellation applies only after
+    control returns from prefill (i.e., during decode).
 """
 
 from __future__ import annotations
 
 import threading
+from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -189,6 +200,85 @@ def _close_stream(stream: Any) -> None:
             pass
 
 
+def _prefill_step_size(session: Any) -> int:
+    """Read prefill step size from session, defaulting to 2048."""
+    raw = getattr(session, "prefill_step_size", 2048)
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 1:
+        return 2048
+    return raw
+
+
+def _make_prefill_progress_callback(
+    queue: deque[tuple[int, int]],
+) -> Callable[[int, int], None]:
+    """Build a callback for ``prompt_progress_callback`` that queues updates.
+
+    The callback is invoked synchronously by ``mlx_lm.generate_step()``
+    during chunked prefill with ``(processed_tokens, total_tokens)``.
+
+    Sanitization rules:
+    - Reject booleans and non-ints.
+    - Reject ``total <= 0``.
+    - Clamp ``processed`` to ``[0, total]``.
+    - Reject ``processed == 0`` (initial zero-progress call is noise).
+    - Drop duplicate or non-monotonic updates.
+    """
+    last: list[tuple[int, int]] = []  # mutable cell: [(last_processed, last_total)]
+
+    def callback(processed: int, total: int) -> None:
+        # Type guards.
+        if isinstance(processed, bool) or not isinstance(processed, int):
+            return
+        if isinstance(total, bool) or not isinstance(total, int):
+            return
+        if total <= 0:
+            return
+
+        # Clamp processed into [0, total].
+        processed = max(0, min(processed, total))
+
+        # Skip initial zero-progress call.
+        if processed == 0:
+            return
+
+        # Monotonicity check.
+        if last:
+            prev_processed, prev_total = last[0]
+            if total < prev_total:
+                return  # total decreased — nonsensical
+            if total == prev_total and processed <= prev_processed:
+                return  # not advancing
+
+        last.clear()
+        last.append((processed, total))
+        queue.append((processed, total))
+
+    return callback
+
+
+def _drain_prefill_progress(
+    queue: deque[tuple[int, int]],
+) -> Iterator[dict[str, Any]]:
+    """Yield queued prefill progress as ``progress`` event dicts."""
+    while queue:
+        processed, total = queue.popleft()
+        yield {
+            "kind": "progress",
+            "stage": "prefill",
+            "message": f"processed {processed}/{total} prompt tokens",
+        }
+
+
+def _safe_clear_session_cache(session: Any) -> None:
+    """Best-effort post-generation memory cleanup."""
+    clear_fn = getattr(session, "clear_cache", None)
+    if callable(clear_fn):
+        try:
+            clear_fn()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -206,13 +296,21 @@ def generate_events(
     Yields dicts matching ``service.py``'s ``build_inference_event()``
     expectations:
 
+    - ``{"kind": "progress", "stage": "prefill", "message": "..."}``
     - ``{"kind": "output_text_delta", "delta": "..."}``
     - ``{"kind": "completed", "finish_reason": "...", "usage": {...}}``
     - ``{"kind": "failed", "code": "...", ...}``  (via ``cancelled_event()``)
 
-    Stop sequences are suppressed via ``StopSequenceBuffer``.  Orchard-level
-    EOS detection checks ``session.eos_token_ids`` per response.  Cancel is
-    checked every ``session.decode_cancel_stride`` tokens.
+    Prefill progress is bridged from ``prompt_progress_callback`` into
+    yielded ``progress`` events before token deltas.  Stop sequences are
+    suppressed via ``StopSequenceBuffer``.  Orchard-level EOS detection
+    checks ``session.eos_token_ids`` per response.  Cancel is checked every
+    ``session.decode_cancel_stride`` tokens during decode.
+
+    NOTE(task-5): Prefill cancel is NOT cleanly interruptible.  Upstream
+    ``generate_step()`` has no cancel hook.  Cancellation applies only
+    after control returns from prefill (i.e., during decode).  This is a
+    known limitation documented rather than worked around.
 
     Raises ``BackendError`` for setup-time failures (invalid prompt, etc.).
     """
@@ -250,23 +348,37 @@ def generate_events(
         max_stop_len=max_stop_len,
     )
 
+    # Prefill progress queue: callback appends, loop drains before deltas.
+    progress_queue: deque[tuple[int, int]] = deque()
+    progress_callback = _make_prefill_progress_callback(progress_queue)
+
     # Pre-cancel check
     if cancel_event.is_set():
         yield cancelled_event()
         return
 
     # --- Step 6: call stream_generate ---
+    # NOTE(task-5): prefill_step_size and prompt_progress_callback are
+    # forwarded by stream_generate() to generate_step().  Upstream handles
+    # chunked prefill; Orchard bridges the callback into yielded events.
     stream = deps.stream_generate(
         session.model,
         session.tokenizer,
         prompt_ids,
         max_tokens=max_output_tokens,
         sampler=sampler,
+        prefill_step_size=_prefill_step_size(session),
+        prompt_progress_callback=progress_callback,
     )
 
     # --- Step 7: per-item decode loop ---
     output_tokens = 0
     for response in stream:
+        # Drain any queued prefill progress before handling token deltas.
+        # The callback is synchronous — all prefill updates are already
+        # queued by the time the first response arrives.
+        yield from _drain_prefill_progress(progress_queue)
+
         # Every yielded GenerationResponse represents one generated token,
         # even when detokenization buffers produce empty text.  Count it
         # unconditionally for usage; only emit a delta when text is present.
@@ -280,6 +392,7 @@ def generate_events(
             if flush_text:
                 yield {"kind": "output_text_delta", "delta": flush_text}
             _close_stream(stream)
+            _safe_clear_session_cache(session)
             yield cancelled_event()
             return
 
@@ -308,6 +421,7 @@ def generate_events(
             if safe_text:
                 yield {"kind": "output_text_delta", "delta": safe_text}
             _close_stream(stream)
+            _safe_clear_session_cache(session)
             yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
             return
 
@@ -319,6 +433,7 @@ def generate_events(
             if flush_text:
                 yield {"kind": "output_text_delta", "delta": flush_text}
             _close_stream(stream)
+            _safe_clear_session_cache(session)
             yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
             return
 
@@ -330,6 +445,7 @@ def generate_events(
             if flush_text:
                 yield {"kind": "output_text_delta", "delta": flush_text}
 
+            _safe_clear_session_cache(session)
             if finish_reason == "stop":
                 yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
             else:  # "length"
@@ -343,9 +459,12 @@ def generate_events(
     # --- Step 8: iterator exhaustion without finish_reason ---
     # Defensive: mlx_lm should always yield a final response with
     # finish_reason set, but handle gracefully.
+    # Drain any remaining prefill progress (edge case: zero decode tokens).
+    yield from _drain_prefill_progress(progress_queue)
     flush_text = buf.flush()
     if flush_text:
         yield {"kind": "output_text_delta", "delta": flush_text}
+    _safe_clear_session_cache(session)
     if cancel_event.is_set():
         yield cancelled_event()
     else:
