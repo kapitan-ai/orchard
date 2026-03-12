@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from orchard_worker_mlx.prefix_cache import KVPrefixCache
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -279,6 +281,8 @@ class MLXDeps:
     eval_fn: Callable[[Any], None]
     clear_cache: Callable[[], None]
     monotonic: Callable[[], float]
+    make_prompt_cache: Callable[[Any], Any] | None = None
+    can_trim_prompt_cache: Callable[[Any], bool] | None = None
 
 
 def _default_mlx_deps() -> MLXDeps:
@@ -293,6 +297,19 @@ def _default_mlx_deps() -> MLXDeps:
             "mlx_backend_unavailable",
             f"MLX dependencies not available: {exc}",
         ) from exc
+
+    # Optional prompt-cache helpers — fail-open if unavailable.
+    _make_prompt_cache: Callable[[Any], Any] | None = None
+    _can_trim_prompt_cache: Callable[[Any], bool] | None = None
+    try:
+        from mlx_lm.models.cache import (
+            can_trim_prompt_cache as _can_trim,
+            make_prompt_cache as _make,
+        )
+        _make_prompt_cache = _make
+        _can_trim_prompt_cache = _can_trim
+    except (ImportError, AttributeError):
+        pass
 
     def _load_model(model_path: str, **kwargs: Any) -> tuple[Any, Any]:
         return mlx_lm_load(model_path, **kwargs)
@@ -312,6 +329,8 @@ def _default_mlx_deps() -> MLXDeps:
         eval_fn=mx.eval,
         clear_cache=lambda: mx.metal.clear_cache() if hasattr(mx, "metal") else None,
         monotonic=time.monotonic,
+        make_prompt_cache=_make_prompt_cache,
+        can_trim_prompt_cache=_can_trim_prompt_cache,
     )
 
 
@@ -335,7 +354,7 @@ class LoadedModelSession:
     clear_cache: Callable[[], None] | None = None
     decode_cancel_stride: int = 1
     prefill_step_size: int = 2048
-    prefix_cache: Any | None = None
+    prefix_cache: KVPrefixCache | None = None
 
 
 def _normalize_eos_token_ids(tokenizer: Any, model_config: Any) -> tuple[int, ...]:
@@ -516,6 +535,34 @@ def _safe_clear_cache(clear_cache: Callable[[], None] | None) -> None:
             pass
 
 
+def _build_prefix_cache(model: Any, *, deps: MLXDeps) -> KVPrefixCache | None:
+    """Probe whether *model* supports trimmable prompt caches.
+
+    Returns a ``KVPrefixCache`` when the model's cache is trimmable, ``None``
+    otherwise.  All failures are swallowed (fail-open): inability to probe
+    must never prevent a model from loading.
+    """
+    if deps.make_prompt_cache is None or deps.can_trim_prompt_cache is None:
+        return None
+
+    probe_cache = None
+    try:
+        probe_cache = deps.make_prompt_cache(model)
+        trimmable = deps.can_trim_prompt_cache(probe_cache)
+    except Exception:
+        return None
+    finally:
+        # Drop the temporary probe cache regardless of outcome.
+        probe_cache = None  # noqa: F841  — intentional ref drop
+        _safe_clear_cache(deps.clear_cache)
+        gc.collect()
+
+    if not trimmable:
+        return None
+
+    return KVPrefixCache()
+
+
 def load_session(
     *,
     model_id: str,
@@ -639,6 +686,9 @@ def load_session(
     # temporaries allocated).
     _safe_clear_cache(deps.clear_cache)
 
+    # --- prefix cache eligibility probe (fail-open) ---
+    prefix_cache = _build_prefix_cache(model, deps=deps)
+
     return LoadedModelSession(
         manifest=manifest,
         bundle_path=bundle,
@@ -650,7 +700,7 @@ def load_session(
         eos_token_ids=eos_token_ids,
         clear_cache=deps.clear_cache,
         decode_cancel_stride=decode_cancel_stride,
-        prefix_cache=None,
+        prefix_cache=prefix_cache,
     )
 
 

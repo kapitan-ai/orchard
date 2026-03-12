@@ -25,6 +25,7 @@ from orchard_worker_mlx.model_loader import (
     parse_manifest_json,
     unload_session,
 )
+from orchard_worker_mlx.prefix_cache import KVPrefixCache
 
 # ---------------------------------------------------------------------------
 # Fixture paths
@@ -73,6 +74,9 @@ def _make_fake_deps(
     warmup_elapsed_s: float = 0.5,
     warmup_stream_error: Exception | None = None,
     warmup_encode_result: list[int] | None = None,
+    make_prompt_cache_side_effect: Exception | None = None,
+    can_trim_prompt_cache_return: bool = True,
+    can_trim_prompt_cache_side_effect: Exception | None = None,
 ) -> MLXDeps:
     fake_model = MagicMock(name="FakeModel")
     fake_tokenizer = MagicMock(name="FakeTokenizer")
@@ -121,6 +125,17 @@ def _make_fake_deps(
         _time_calls.append(100.0 + warmup_elapsed_s)
         return 100.0 + warmup_elapsed_s
 
+    # Prompt-cache probe helpers for prefix cache eligibility.
+    def _make_prompt_cache(model: Any) -> Any:
+        if make_prompt_cache_side_effect is not None:
+            raise make_prompt_cache_side_effect
+        return MagicMock(name="ProbeCache")
+
+    def _can_trim_prompt_cache(cache: Any) -> bool:
+        if can_trim_prompt_cache_side_effect is not None:
+            raise can_trim_prompt_cache_side_effect
+        return can_trim_prompt_cache_return
+
     return MLXDeps(
         load_model=_load_model,
         load_tokenizer=_load_tokenizer,
@@ -128,6 +143,8 @@ def _make_fake_deps(
         eval_fn=MagicMock(name="eval_fn"),
         clear_cache=MagicMock(name="clear_cache"),
         monotonic=_monotonic,
+        make_prompt_cache=_make_prompt_cache,
+        can_trim_prompt_cache=_can_trim_prompt_cache,
     )
 
 
@@ -412,7 +429,7 @@ def test_load_session_success(writable_bundle: Path) -> None:
     assert isinstance(session.decode_cancel_stride, int)
     assert session.decode_cancel_stride >= 1
     assert session.prefill_step_size == 2048
-    assert session.prefix_cache is None
+    assert isinstance(session.prefix_cache, KVPrefixCache)
 
     # Verify deps were called correctly.
     deps.eval_fn.assert_called_once()
@@ -661,6 +678,109 @@ def test_unload_session_swallows_exceptions() -> None:
     )
     # Should not raise; references still cleared.
     assert session.model is None
+
+
+# ===========================================================================
+# Prefix cache eligibility (Phase 2)
+# ===========================================================================
+
+
+def test_load_session_trimmable_model_initializes_prefix_cache(writable_bundle: Path) -> None:
+    """Trimmable model → prefix_cache is a KVPrefixCache instance."""
+    deps = _make_fake_deps(can_trim_prompt_cache_return=True)
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert isinstance(session.prefix_cache, KVPrefixCache)
+
+
+def test_load_session_non_trimmable_model_disables_prefix_cache(writable_bundle: Path) -> None:
+    """Non-trimmable model (SSM/Mamba) → prefix_cache is None, load succeeds."""
+    deps = _make_fake_deps(can_trim_prompt_cache_return=False)
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.prefix_cache is None
+    assert session.model is not None  # load still succeeded
+
+
+def test_load_session_make_prompt_cache_failure_disables_prefix_cache(writable_bundle: Path) -> None:
+    """make_prompt_cache raises → prefix_cache is None, load succeeds."""
+    deps = _make_fake_deps(
+        make_prompt_cache_side_effect=RuntimeError("probe boom"),
+    )
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.prefix_cache is None
+    assert session.model is not None
+
+
+def test_load_session_can_trim_prompt_cache_failure_disables_prefix_cache(writable_bundle: Path) -> None:
+    """can_trim_prompt_cache raises → prefix_cache is None, load succeeds."""
+    deps = _make_fake_deps(
+        can_trim_prompt_cache_side_effect=RuntimeError("trim check boom"),
+    )
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.prefix_cache is None
+    assert session.model is not None
+
+
+def test_load_session_missing_prompt_cache_probes_disables_prefix_cache(
+    writable_bundle: Path,
+) -> None:
+    """MLXDeps with make_prompt_cache=None → prefix_cache is None."""
+    deps = MLXDeps(
+        load_model=lambda model_path, **kw: (MagicMock(), {}),
+        load_tokenizer=lambda p: MagicMock(name="tok", **{"encode.return_value": [1, 2, 3]}),
+        stream_generate=lambda *a, **kw: iter([]),
+        eval_fn=MagicMock(),
+        clear_cache=MagicMock(),
+        monotonic=lambda: 0.0,
+        make_prompt_cache=None,
+        can_trim_prompt_cache=None,
+    )
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.prefix_cache is None
+    assert session.model is not None
+
+
+def test_unload_session_clears_populated_prefix_cache() -> None:
+    """Unloading a session with a live KVPrefixCache sets prefix_cache to None."""
+    cache = KVPrefixCache(max_entries=4)
+    session = LoadedModelSession(
+        manifest=parse_manifest_json(_read_fixture_manifest()),
+        bundle_path=_FIXTURE_BUNDLE,
+        entrypoint_path=_FIXTURE_BUNDLE / "weights",
+        tokenizer_path=_FIXTURE_BUNDLE / "tokenizer.json",
+        model=MagicMock(),
+        tokenizer=MagicMock(),
+        prefix_cache=cache,
+    )
+    assert session.prefix_cache is cache
+
+    unload_session(session, clear_cache=MagicMock(), collect=MagicMock(return_value=0))
+
+    assert session.prefix_cache is None
 
 
 # ===========================================================================
