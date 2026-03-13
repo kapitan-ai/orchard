@@ -318,7 +318,7 @@ def test_mlx_backend_real_load_unload(tmp_path: Path) -> None:
     manifest = load_manifest(bundle_path)
 
     socket_path = Path("/tmp") / f"orchard-worker-mlx-smoke-{uuid4().hex[:8]}.sock"
-    process = start_worker(socket_path, backend="mlx")
+    process = start_worker(socket_path, backend="mlx", verbose=True)
 
     try:
         channel = wait_for_channel(socket_path, timeout=30.0)
@@ -366,7 +366,7 @@ def test_mlx_backend_real_generation(tmp_path: Path) -> None:
     manifest = load_manifest(bundle_path)
 
     socket_path = Path("/tmp") / f"orchard-worker-mlx-gen-{uuid4().hex[:8]}.sock"
-    process = start_worker(socket_path, backend="mlx")
+    process = start_worker(socket_path, backend="mlx", verbose=True)
 
     try:
         channel = wait_for_channel(socket_path, timeout=30.0)
@@ -442,6 +442,7 @@ def start_worker(
     *,
     backend: str = "stub",
     log_file: Path | None = None,
+    verbose: bool = False,
 ) -> subprocess.Popen[str]:
     cmd = [
         sys.executable,
@@ -456,8 +457,8 @@ def start_worker(
         cmd.extend(["--log-file", str(log_file)])
     return subprocess.Popen(
         cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=None if verbose else subprocess.DEVNULL,
+        stderr=None if verbose else subprocess.DEVNULL,
         text=True,
     )
 

@@ -138,6 +138,96 @@ mix credo --strict
 mix dialyzer
 ```
 
+## Apple Silicon MLX Smoke Tests
+
+Opt-in smoke tests verify real MLX inference on Apple Silicon hardware. These are
+separate from `mix test`, which uses the fake/stub runtime and requires no GPU.
+
+### Prerequisites
+
+- Apple Silicon Mac (M1/M2/M3/M4)
+- A local Orchard model bundle directory (not downloaded by the script)
+- `uv` installed
+- `mix deps.get` already run in the repo
+
+### Required Environment Variable
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ORCHARD_MLX_SMOKE_MODEL_PATH` | Yes | Absolute path to an Orchard model bundle directory containing `manifest.json` |
+
+Both Python and Elixir smoke tests gate on this variable. When unset, the smoke
+tests are skipped (Python) or not compiled (Elixir).
+
+### Running the Smoke Script
+
+```bash
+export ORCHARD_MLX_SMOKE_MODEL_PATH=/path/to/your/orchard-bundle
+./scripts/smoke-mlx.sh
+```
+
+The script can be invoked from any directory — it resolves the repo root from
+its own location.
+
+### What the Script Does
+
+1. **Validates** platform (macOS arm64), tooling (`uv`, `mix`), repo layout,
+   and the bundle path (exists, is a directory, contains `manifest.json`)
+2. **Python smoke** (step 1/2): installs MLX extras (`uv sync --extra mlx`)
+   then runs `pytest tests/test_cli.py -k mlx_backend_real -v` in the worker
+   package — exercises real model load/unload and streaming generation via gRPC
+3. **Elixir smoke** (step 2/2): runs
+   `mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke`
+   from the repo root — exercises the full node-agent stack including acquisition,
+   worker lifecycle, and gRPC inference
+
+Python runs first because it tests the lower-level worker directly. If Python
+fails, Elixir smoke is skipped (the full stack depends on a working worker).
+
+### Expected Output
+
+Test runner output streams live. The script ends with a summary block:
+
+```text
+=== Orchard MLX smoke summary ===
+Bundle:        /path/to/your/orchard-bundle
+Python smoke:  PASS
+Elixir smoke:  PASS
+Overall:       PASS
+```
+
+On failure:
+
+```text
+=== Orchard MLX smoke summary ===
+Bundle:        /path/to/your/orchard-bundle
+Python smoke:  FAIL (exit 1)
+Elixir smoke:  NOT RUN
+Overall:       FAIL
+Reason:        Python smoke tests failed
+```
+
+### Exit Codes
+
+- **0** — all smoke tests passed
+- **1** — validation failure or any smoke test failure
+
+### Running Individual Smoke Tests
+
+You can also run each smoke suite independently:
+
+```bash
+export ORCHARD_MLX_SMOKE_MODEL_PATH=/path/to/your/orchard-bundle
+
+# Python only
+cd native/orchard_worker_mlx
+uv sync --extra mlx
+uv run pytest tests/test_cli.py -k mlx_backend_real -v
+
+# Elixir only
+mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke
+```
+
 ## Releases (Production)
 
 Three release targets are defined:
