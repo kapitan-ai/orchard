@@ -335,7 +335,8 @@ def _default_mlx_deps() -> MLXDeps:
     except (ImportError, AttributeError):
         pass
 
-    def _load_model(model_path: str, **kwargs: Any) -> tuple[Any, Any]:
+    def _load_model(model_path: str | Path, **kwargs: Any) -> tuple[Any, Any]:
+        """Wrap mlx_lm.utils.load_model; returns (model, config)."""
         return mlx_lm_load(Path(model_path), **kwargs)
 
     def _load_tokenizer(tokenizer_path: str | Path) -> Any:
@@ -351,7 +352,7 @@ def _default_mlx_deps() -> MLXDeps:
         load_tokenizer=_load_tokenizer,
         stream_generate=stream_generate,
         eval_fn=mx.eval,
-        clear_cache=mx.clear_cache,
+        clear_cache=mx.clear_cache,  # stable since mlx 0.22; see pyproject.toml floor
         monotonic=time.monotonic,
         make_prompt_cache=_make_prompt_cache,
         can_trim_prompt_cache=_can_trim_prompt_cache,
@@ -400,7 +401,7 @@ def _default_mlx_probe_deps() -> MLXProbeDeps:
     return MLXProbeDeps(
         zeros_fn=mx.zeros,
         eval_fn=mx.eval,
-        clear_cache=mx.clear_cache,
+        clear_cache=mx.clear_cache,  # stable since mlx 0.22; see pyproject.toml floor
     )
 
 
@@ -755,7 +756,7 @@ def load_session(
     model_config = None
     try:
         model, model_config = deps.load_model(
-            str(entrypoint_path),
+            entrypoint_path,
             lazy=True,
             strict=False,
         )

@@ -46,8 +46,9 @@ if [ -f "$LAUNCHD_SRC/com.orchard.tray.plist" ]; then
     /Library/LaunchAgents/com.orchard.tray.plist
 fi
 
-# --- 4. Set ownership -----------------------------------------------------
+# --- 4. Set ownership and permissions --------------------------------------
 chown -R root:wheel "$ORCHARD_ROOT"
+chmod 0700 "$ORCHARD_ROOT/config"  # env override files are root-only
 
 echo "Orchard postinstall complete."
 exit 0

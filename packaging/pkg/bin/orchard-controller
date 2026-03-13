@@ -2,14 +2,27 @@
 set -eu
 # Orchard controller wrapper.
 # Loads optional env overrides from config dir before starting the release.
+# Env files must be root-owned with no group/world permissions (e.g. 0600).
 
 ORCHARD_ROOT="/Library/Application Support/Orchard"
 ENV_FILE="$ORCHARD_ROOT/config/controller.env"
 
 if [ -f "$ENV_FILE" ]; then
-    set -a
-    . "$ENV_FILE"
-    set +a
+    # Validate ownership and permissions before sourcing (MF1 hardening).
+    _env_meta=$(stat -f '%u:%Lp' "$ENV_FILE" 2>/dev/null) || _env_meta=""
+    _env_uid=${_env_meta%%:*}
+    _env_mode=${_env_meta#*:}
+    if [ -z "$_env_meta" ]; then
+        printf 'orchard-controller: WARNING: could not inspect env file %s; skipping overrides\n' "$ENV_FILE" >&2
+    elif [ "$_env_uid" != "0" ]; then
+        printf 'orchard-controller: WARNING: ignoring env file %s (owner uid=%s, expected 0); skipping overrides\n' "$ENV_FILE" "$_env_uid" >&2
+    elif [ "${_env_mode#?}" != "00" ]; then
+        printf 'orchard-controller: WARNING: ignoring env file %s (mode=%s, group/world bits set); skipping overrides\n' "$ENV_FILE" "$_env_mode" >&2
+    else
+        set -a
+        . "$ENV_FILE"
+        set +a
+    fi
 fi
 
 exec "$ORCHARD_ROOT/releases/orchard_controller/bin/orchard_controller" "$@"

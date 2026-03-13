@@ -320,11 +320,16 @@ Verify: the node-agent log will show `worker starting backend=stub`.
 
 ### Packaged Install (launchd)
 
+Env file overrides let you change service configuration without editing
+launchd plists. The node-agent env file controls the worker backend; the
+controller env file can override database URL, ports, or other settings.
+
 ```bash
-# 1. Create/edit the node-agent env file
+# 1. Create/edit the node-agent env file (must be root-owned, mode 0600)
 sudo mkdir -p "/Library/Application Support/Orchard/config"
 echo 'ORCHARD_WORKER_BACKEND=stub' | sudo tee \
   "/Library/Application Support/Orchard/config/node-agent.env"
+sudo chmod 600 "/Library/Application Support/Orchard/config/node-agent.env"
 
 # 2. Restart the node-agent service
 sudo launchctl kickstart -k system/com.orchard.node-agent
@@ -337,6 +342,10 @@ To restore MLX:
 sudo rm "/Library/Application Support/Orchard/config/node-agent.env"
 sudo launchctl kickstart -k system/com.orchard.node-agent
 ```
+
+> **Note:** The wrapper scripts validate env file ownership and permissions
+> before sourcing. Files not owned by root or with group/world permissions
+> are ignored with a warning in the service logs.
 
 ### Verification After Rollback
 
