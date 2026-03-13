@@ -223,7 +223,7 @@ defmodule OrchardNodeAgentTest do
     # The async ModelManager pipeline runs acquisition which checks cache hash.
     bundle = stage_test_bundle!()
 
-    # Register the test process so adapters can send messages back.
+    # Register the test process so adapters and ModelManager can send messages back.
     if Process.whereis(:load_timeout_test_pid), do: Process.unregister(:load_timeout_test_pid)
     Process.register(self(), :load_timeout_test_pid)
 
@@ -1059,6 +1059,7 @@ defmodule OrchardNodeAgentTest do
           assert meta.outcome == :loaded
           assert meta.worker_started == true
           assert meta.waiter_count == 1
+          assert meta.replied_waiter_count == 1
         end)
 
         # Runtime load lifecycle
@@ -1194,6 +1195,8 @@ defmodule OrchardNodeAgentTest do
           assert m.duration_ms >= 0
           assert meta.outcome == :cancelled
           assert meta.cancel_reason == :reset
+          assert meta.waiter_count == 1
+          assert meta.replied_waiter_count == 1
         end)
 
         # No exception (cancellation is stop, not exception)
@@ -1245,6 +1248,8 @@ defmodule OrchardNodeAgentTest do
           assert m.duration_ms >= 0
           assert meta.outcome == :cancelled
           assert meta.cancel_reason == :unload_request
+          assert meta.waiter_count == 1
+          assert meta.replied_waiter_count == 1
         end)
 
         refute_telemetry_event(events, [:orchard, :node, :model_manager, :load, :exception])
@@ -1411,6 +1416,109 @@ defmodule OrchardNodeAgentTest do
         status = NodeStatus.current()
         assert status.worker_state != :WORKER_STATE_STARTING
         assert length(status.loaded_models) == 1
+      end)
+    end
+
+    test "restart telemetry reports correct waiter counts per attempt", %{bundle: bundle} do
+      with_runtime_adapter(DeadlineTestAdapter, fn ->
+        events = with_telemetry_collector(all_lifecycle_events(), fn ->
+          # Short leader: 300ms, long follower: 10s
+          leader_task =
+            Task.async(fn ->
+              NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 300))
+            end)
+
+          assert_receive {:load_attempt_started, _worker_pid_1}, 5_000
+
+          follower_task =
+            Task.async(fn ->
+              NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 10_000))
+            end)
+
+          Process.sleep(50)
+
+          # Leader times out → abort + restart
+          leader_result = Task.await(leader_task, 5_000)
+          assert leader_result.placement_state == :PLACEMENT_STATE_FAILED
+
+          # Second attempt starts
+          assert_receive {:load_attempt_started, worker_pid_2}, 5_000
+          send(worker_pid_2, :finish_load)
+
+          follower_result = Task.await(follower_task, 5_000)
+          assert follower_result.placement_state == :PLACEMENT_STATE_LOADED
+        end)
+
+        # Filter manager load stop events by outcome
+        stop_events =
+          Enum.filter(events, fn {name, _m, _meta} ->
+            name == [:orchard, :node, :model_manager, :load, :stop]
+          end)
+
+        assert length(stop_events) == 2,
+               "Expected 2 manager load stop events, got #{length(stop_events)}"
+
+        # Aborted first attempt: 2 total waiters, 1 replied (leader expired before abort)
+        {_, _m1, cancelled_meta} =
+          Enum.find(stop_events, fn {_, _, meta} -> meta.outcome == :cancelled end)
+
+        assert cancelled_meta.cancel_reason == :leader_deadline_exceeded
+        assert cancelled_meta.waiter_count == 2
+        assert cancelled_meta.replied_waiter_count == 1
+
+        # Successful second attempt: 1 total waiter, 1 replied
+        {_, _m2, loaded_meta} =
+          Enum.find(stop_events, fn {_, _, meta} -> meta.outcome == :loaded end)
+
+        assert loaded_meta.waiter_count == 1
+        assert loaded_meta.replied_waiter_count == 1
+      end)
+    end
+
+    test "restarted load attempt preserves original request fields", %{bundle: bundle} do
+      with_runtime_adapter(DeadlineTestAdapter, fn ->
+        # Short leader: 300ms, long follower: 10s
+        leader_task =
+          Task.async(fn ->
+            NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 300))
+          end)
+
+        assert_receive {:load_attempt_started, _worker_pid_1}, 5_000
+
+        follower_task =
+          Task.async(fn ->
+            NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 10_000))
+          end)
+
+        Process.sleep(50)
+
+        # Collect the request used for the first attempt
+        assert_receive {:load_pipeline_request, _key, first_request}, 5_000
+
+        # Leader times out → restart
+        leader_result = Task.await(leader_task, 5_000)
+        assert leader_result.placement_state == :PLACEMENT_STATE_FAILED
+
+        # Collect the request used for the restarted attempt
+        assert_receive {:load_pipeline_request, _key, restart_request}, 5_000
+
+        # Core R4 assertion: artifact identity fields are preserved exactly
+        assert restart_request.artifact_sha256 == first_request.artifact_sha256
+        assert restart_request.artifact_source_uri == first_request.artifact_source_uri
+        assert restart_request.model_id == first_request.model_id
+        assert restart_request.version == first_request.version
+        assert restart_request.node_id == first_request.node_id
+        assert restart_request.preload == first_request.preload
+
+        # Only deadline should differ (follower's longer deadline)
+        assert restart_request.deadline_unix_ms > first_request.deadline_unix_ms
+
+        # Release second attempt
+        assert_receive {:load_attempt_started, worker_pid_2}, 5_000
+        send(worker_pid_2, :finish_load)
+
+        follower_result = Task.await(follower_task, 5_000)
+        assert follower_result.placement_state == :PLACEMENT_STATE_LOADED
       end)
     end
   end
