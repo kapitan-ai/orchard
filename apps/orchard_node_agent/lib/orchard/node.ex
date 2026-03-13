@@ -43,6 +43,14 @@ defmodule Orchard.Node do
 
   def fake_runtime?, do: runtime_config()[:fake_runtime?]
 
+  @spec max_loaded_models() :: pos_integer() | nil
+  def max_loaded_models do
+    case runtime_config()[:max_loaded_models] do
+      n when is_integer(n) and n > 0 -> n
+      _ -> nil
+    end
+  end
+
   def hf_config, do: runtime_config()[:hf] || []
 
   def s3_config, do: runtime_config()[:s3] || []

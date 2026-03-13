@@ -335,6 +335,10 @@ defmodule OrchardNodeAgentTest do
     assert Node.worker_shutdown_timeout_ms() == 1_000
     assert is_binary(Node.worker_log_dir())
     assert is_binary(Node.worker_log_path(@test_model_id, @test_version))
+
+    # Eviction: disabled by default (0 normalizes to nil)
+    assert runtime[:max_loaded_models] == 0
+    assert Node.max_loaded_models() == nil
   end
 
   test "ensure_model_loaded passes remaining deadline budget as load_timeout_ms to adapter", %{
@@ -1630,6 +1634,305 @@ defmodule OrchardNodeAgentTest do
     end
   end
 
+  # -- Eviction tests --------------------------------------------------------
+
+  @eviction_model_id "eviction-test/model-b"
+  @eviction_version "v1"
+
+  describe "count-based model eviction" do
+    setup %{bundle: bundle_a} do
+      # Create a second bundle for eviction tests
+      bundle_b = stage_test_bundle!(@eviction_model_id, @eviction_version)
+
+      on_exit(fn ->
+        File.rm_rf(bundle_b.cache_path)
+        File.rm_rf(bundle_b.source_path)
+      end)
+
+      %{bundle_a: bundle_a, bundle_b: bundle_b}
+    end
+
+    test "with limit 1, loading model B evicts idle model A", %{
+      bundle_a: bundle_a,
+      bundle_b: bundle_b
+    } do
+      with_runtime_config([max_loaded_models: 1], fn ->
+        # Load model A
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_a))
+
+        assert worker_count() == 1
+
+        # Load model B — should evict A
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_b))
+
+        # Only B should remain
+        assert worker_count() == 1
+
+        status = ModelManager.current()
+        assert length(status.loaded_models) == 1
+        [loaded] = status.loaded_models
+        assert loaded.model_id == @eviction_model_id
+        assert loaded.version == @eviction_version
+      end)
+    end
+
+    test "with limit 1, loading B while A has active request fails with capacity exhausted", %{
+      bundle_a: bundle_a,
+      bundle_b: bundle_b
+    } do
+      with_runtime_config(
+        [max_loaded_models: 1, runtime_adapter_impl: BlockingRuntimeAdapter],
+        fn ->
+          # Load model A
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_a))
+
+          # Start an active request on A
+          inference_req = %ExecuteInferenceRequest{
+            request_id: "evict-busy-req",
+            controller_session_id: "ctrl-1",
+            model_id: bundle_a.model_id,
+            version: bundle_a.version,
+            rendered_prompt_utf8: "hello",
+            input_tokens: 2,
+            params: %GenerationParams{max_output_tokens: 16},
+            deadline_unix_ms: System.system_time(:millisecond) + 5_000
+          }
+
+          assert :ok = ModelManager.prepare_request(inference_req, self())
+          assert :ok = ModelManager.start_request(inference_req)
+
+          # Attempt to load B — should fail with capacity exhausted
+          response = ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_b))
+
+          assert %EnsureModelLoadedResponse{
+                   placement_state: :PLACEMENT_STATE_FAILED,
+                   failure_category: :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED,
+                   failure_code: "model_capacity_exhausted"
+                 } = response
+
+          # A should still be loaded
+          assert worker_count() == 1
+          status = ModelManager.current()
+          [loaded] = status.loaded_models
+          assert loaded.model_id == bundle_a.model_id
+        end
+      )
+    end
+
+    test "with limit disabled, both models remain loaded", %{
+      bundle_a: bundle_a,
+      bundle_b: bundle_b
+    } do
+      with_runtime_config([max_loaded_models: 0], fn ->
+        # Load both models
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_a))
+
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_b))
+
+        # Both should be loaded
+        assert worker_count() == 2
+
+        status = ModelManager.current()
+        assert length(status.loaded_models) == 2
+      end)
+    end
+
+    test "eviction telemetry is emitted on successful eviction", %{
+      bundle_a: bundle_a,
+      bundle_b: bundle_b
+    } do
+      with_runtime_config([max_loaded_models: 1], fn ->
+        # Load model A first (outside telemetry collection)
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_a))
+
+        # Collect eviction telemetry while loading B
+        events =
+          with_telemetry_collector(all_eviction_events(), fn ->
+            assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                     ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_b))
+          end)
+
+        # Verify eviction start
+        assert_telemetry_event(
+          events,
+          [:orchard, :node, :eviction, :start],
+          fn measurements, metadata ->
+            assert is_integer(measurements.system_time)
+            assert metadata.incoming_model_id == @eviction_model_id
+            assert metadata.incoming_version == @eviction_version
+            assert metadata.victim_model_id == nil
+            assert metadata.victim_version == nil
+            assert metadata.max_loaded_models == 1
+            assert metadata.reserved_model_count_before == 1
+          end
+        )
+
+        # Verify eviction stop
+        assert_telemetry_event(
+          events,
+          [:orchard, :node, :eviction, :stop],
+          fn measurements, metadata ->
+            assert is_integer(measurements.duration_ms)
+            assert metadata.incoming_model_id == @eviction_model_id
+            assert metadata.incoming_version == @eviction_version
+            assert metadata.victim_model_id == @test_model_id
+            assert metadata.victim_version == @test_version
+            assert metadata.outcome == :evicted
+          end
+        )
+
+        # No exception event
+        refute_telemetry_event(events, [:orchard, :node, :eviction, :exception])
+      end)
+    end
+
+    test "eviction telemetry exception emitted when no idle victim exists", %{
+      bundle_a: bundle_a,
+      bundle_b: bundle_b
+    } do
+      with_runtime_config(
+        [max_loaded_models: 1, runtime_adapter_impl: BlockingRuntimeAdapter],
+        fn ->
+          # Load A and start an active request
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_a))
+
+          inference_req = %ExecuteInferenceRequest{
+            request_id: "evict-telem-req",
+            controller_session_id: "ctrl-1",
+            model_id: bundle_a.model_id,
+            version: bundle_a.version,
+            rendered_prompt_utf8: "hello",
+            input_tokens: 2,
+            params: %GenerationParams{max_output_tokens: 16},
+            deadline_unix_ms: System.system_time(:millisecond) + 5_000
+          }
+
+          assert :ok = ModelManager.prepare_request(inference_req, self())
+          assert :ok = ModelManager.start_request(inference_req)
+
+          # Collect eviction telemetry
+          events =
+            with_telemetry_collector(all_eviction_events(), fn ->
+              _response =
+                ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_b))
+            end)
+
+          # Verify eviction start
+          assert_telemetry_event(
+            events,
+            [:orchard, :node, :eviction, :start],
+            fn _measurements, metadata ->
+              assert metadata.incoming_model_id == @eviction_model_id
+              assert metadata.max_loaded_models == 1
+            end
+          )
+
+          # Verify eviction exception
+          assert_telemetry_event(
+            events,
+            [:orchard, :node, :eviction, :exception],
+            fn measurements, metadata ->
+              assert is_integer(measurements.duration_ms)
+              assert metadata.reason == :model_capacity_exhausted
+              assert metadata.victim_model_id == nil
+              assert metadata.victim_version == nil
+            end
+          )
+
+          # No stop event
+          refute_telemetry_event(events, [:orchard, :node, :eviction, :stop])
+        end
+      )
+    end
+
+    test "evicts least recently used model when multiple are loaded", %{
+      bundle_a: bundle_a,
+      bundle_b: bundle_b
+    } do
+      with_runtime_config([max_loaded_models: 2], fn ->
+        # Load A, then B
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_a))
+
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_b))
+
+        assert worker_count() == 2
+
+        # Touch A via fast path to make B the LRU
+        assert %EnsureModelLoadedResponse{already_loaded: true} =
+                 ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_a))
+
+        # Create a third bundle
+        bundle_c = stage_test_bundle!("eviction-test/model-c", "v1")
+
+        try do
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_c))
+
+          # B should have been evicted (LRU), A and C remain
+          assert worker_count() == 2
+          status = ModelManager.current()
+          loaded_ids = Enum.map(status.loaded_models, & &1.model_id) |> Enum.sort()
+          assert loaded_ids == [bundle_a.model_id, bundle_c.model_id] |> Enum.sort()
+        after
+          File.rm_rf(bundle_c.cache_path)
+          File.rm_rf(bundle_c.source_path)
+        end
+      end)
+    end
+
+    test "inflight load for model A blocks model B from starting under capacity limit", %{
+      bundle_a: bundle_a,
+      bundle_b: bundle_b
+    } do
+      with_runtime_config(
+        [max_loaded_models: 1, runtime_adapter_impl: DeadlineTestAdapter],
+        fn ->
+          # Start async load for model A — blocks in load_model
+          task_a =
+            Task.async(fn ->
+              ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_a, 10_000))
+            end)
+
+          # Wait until A's load is actually in progress
+          assert_receive {:load_attempt_started, worker_pid_a}, 2_000
+
+          # Attempt to load B while A is still loading — should fail with capacity exhausted
+          response = ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_b))
+
+          assert %EnsureModelLoadedResponse{
+                   placement_state: :PLACEMENT_STATE_FAILED,
+                   failure_category: :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED,
+                   failure_code: "model_capacity_exhausted"
+                 } = response
+
+          # No load attempt should have started for B
+          refute_receive {:load_attempt_started, _other_pid}, 200
+
+          # Release A and confirm it loads successfully
+          send(worker_pid_a, :finish_load)
+          result_a = Task.await(task_a, 5_000)
+
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} = result_a
+          assert worker_count() == 1
+
+          status = ModelManager.current()
+          assert length(status.loaded_models) == 1
+          [loaded] = status.loaded_models
+          assert loaded.model_id == bundle_a.model_id
+        end
+      )
+    end
+  end
+
   # -- Private helpers -------------------------------------------------------
 
   defp get_blocking_generation_ref do
@@ -1667,9 +1970,13 @@ defmodule OrchardNodeAgentTest do
   end
 
   defp stage_test_bundle! do
+    stage_test_bundle!(@test_model_id, @test_version)
+  end
+
+  defp stage_test_bundle!(model_id, version) do
     models_root = Node.models_root()
-    cache_path = Path.join([models_root, @test_model_id, @test_version])
-    source_path = Path.join([models_root, ".test-source", "bundle"])
+    cache_path = Path.join([models_root, model_id, version])
+    source_path = Path.join([models_root, ".test-source", "#{model_id}-#{version}"])
 
     # Clean previous
     File.rm_rf(cache_path)
@@ -1692,26 +1999,25 @@ defmodule OrchardNodeAgentTest do
 
     source_uri = "file://#{source_path}"
 
-    %{cache_path: cache_path, source_path: source_path, source_uri: source_uri, hash: hash}
+    %{
+      model_id: model_id,
+      version: version,
+      cache_path: cache_path,
+      source_path: source_path,
+      source_uri: source_uri,
+      hash: hash
+    }
   end
 
   defp ensure_model_loaded_request(bundle) do
-    %EnsureModelLoadedRequest{
-      node_id: "node-local",
-      model_id: @test_model_id,
-      version: @test_version,
-      artifact_sha256: bundle.hash,
-      preload: true,
-      deadline_unix_ms: System.system_time(:millisecond) + 5_000,
-      artifact_source_uri: bundle.source_uri
-    }
+    ensure_model_loaded_request(bundle, 5_000)
   end
 
   defp ensure_model_loaded_request(bundle, deadline_offset_ms) do
     %EnsureModelLoadedRequest{
       node_id: "node-local",
-      model_id: @test_model_id,
-      version: @test_version,
+      model_id: bundle.model_id,
+      version: bundle.version,
       artifact_sha256: bundle.hash,
       preload: true,
       deadline_unix_ms: System.system_time(:millisecond) + deadline_offset_ms,
@@ -1823,6 +2129,14 @@ defmodule OrchardNodeAgentTest do
       [:orchard, :node, :worker_runtime, :unload, :start],
       [:orchard, :node, :worker_runtime, :unload, :stop],
       [:orchard, :node, :worker_runtime, :unload, :exception]
+    ] ++ all_eviction_events()
+  end
+
+  defp all_eviction_events do
+    [
+      [:orchard, :node, :eviction, :start],
+      [:orchard, :node, :eviction, :stop],
+      [:orchard, :node, :eviction, :exception]
     ]
   end
 

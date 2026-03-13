@@ -48,6 +48,7 @@ default_node_runtime = fn root ->
     worker_load_timeout_ms: 120_000,
     worker_shutdown_timeout_ms: 1_000,
     worker_log_dir: Path.join([root, "logs", "workers"]),
+    max_loaded_models: 0,
     fake_runtime?: false,
     hf: [
       base_url: "https://huggingface.co",
@@ -140,6 +141,7 @@ if config_env() == :prod do
             worker_log_dir:
               System.get_env("ORCHARD_WORKER_LOG_DIR") ||
                 Path.join([orchard_support_root, "logs", "workers"]),
+            max_loaded_models: env_int.("ORCHARD_MAX_LOADED_MODELS", "0"),
             fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false),
             hf:
               Keyword.merge(

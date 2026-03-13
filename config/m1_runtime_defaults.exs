@@ -34,6 +34,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       worker_load_timeout_ms: @default_worker_load_timeout_ms,
       worker_shutdown_timeout_ms: @default_worker_shutdown_timeout_ms,
       worker_log_dir: Path.join([root, "logs", "workers"]),
+      max_loaded_models: 0,
       fake_runtime?: false,
       hf: [
         base_url: "https://huggingface.co",

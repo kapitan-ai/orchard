@@ -29,7 +29,8 @@ defmodule Orchard.Node.ModelManager do
           model_ref: ModelRef.t(),
           monitor_ref: reference(),
           pid: pid(),
-          placement_state: atom()
+          placement_state: atom(),
+          last_used_monotonic_ms: integer()
         }
 
   @type request_phase :: :prepared | :running
@@ -146,15 +147,21 @@ defmodule Orchard.Node.ModelManager do
          %EnsureModelLoadedResponse{
            already_loaded: true,
            placement_state: :PLACEMENT_STATE_LOADED
-         }, state}
+         }, touch_worker_last_used(state, key)}
 
       # Inflight load exists — join or reject
       Map.has_key?(state.inflight_loads, key) ->
         handle_inflight_join(key, request, from, state)
 
-      # No worker, no inflight — start new acquisition task
+      # No worker, no inflight — evict if needed, then start new acquisition task
       true ->
-        start_load_task(key, request, from, state)
+        case maybe_evict_before_load(state, key) do
+          {:ok, state} ->
+            start_load_task(key, request, from, state)
+
+          {:error, reason, state} ->
+            {:reply, ModelLoadFailure.to_response(reason), state}
+        end
     end
   end
 
@@ -215,11 +222,13 @@ defmodule Orchard.Node.ModelManager do
             subscriber_refs =
               Map.put(state.subscriber_refs, subscriber_monitor_ref, request.request_id)
 
-            next_state = %{
-              state
-              | active_requests: active_requests,
-                subscriber_refs: subscriber_refs
-            }
+            next_state =
+              %{
+                state
+                | active_requests: active_requests,
+                  subscriber_refs: subscriber_refs
+              }
+              |> touch_worker_last_used(key)
 
             {:reply, :ok, next_state}
           end
@@ -312,7 +321,7 @@ defmodule Orchard.Node.ModelManager do
 
   def handle_info({:worker_request_finished, worker_pid, request_id}, state) do
     case Map.fetch(state.active_requests, request_id) do
-      {:ok, %{pid: ^worker_pid} = active_request} ->
+      {:ok, %{pid: ^worker_pid, model_key: model_key} = active_request} ->
         {active_requests, subscriber_refs} =
           remove_active_request(
             state.active_requests,
@@ -321,7 +330,11 @@ defmodule Orchard.Node.ModelManager do
             active_request
           )
 
-        {:noreply, %{state | active_requests: active_requests, subscriber_refs: subscriber_refs}}
+        next_state =
+          %{state | active_requests: active_requests, subscriber_refs: subscriber_refs}
+          |> touch_worker_last_used(model_key)
+
+        {:noreply, next_state}
 
       _other ->
         {:noreply, state}
@@ -534,10 +547,12 @@ defmodule Orchard.Node.ModelManager do
         # Clean up inflight tracking
         state = remove_inflight(state, key, inflight)
 
-        # Mark worker as LOADED
+        # Mark worker as LOADED and touch LRU timestamp
         state =
           if Map.has_key?(state.workers, key) do
-            put_worker_state(state, key, :PLACEMENT_STATE_LOADED)
+            state
+            |> put_worker_state(key, :PLACEMENT_STATE_LOADED)
+            |> touch_worker_last_used(key)
           else
             state
           end
@@ -922,7 +937,8 @@ defmodule Orchard.Node.ModelManager do
       model_ref: model_ref,
       monitor_ref: monitor_ref,
       pid: pid,
-      placement_state: :PLACEMENT_STATE_LOADING
+      placement_state: :PLACEMENT_STATE_LOADING,
+      last_used_monotonic_ms: System.monotonic_time(:millisecond)
     }
 
     %{
@@ -934,6 +950,13 @@ defmodule Orchard.Node.ModelManager do
 
   defp put_worker_state(state, key, placement_state) do
     update_in(state, [:workers, key, :placement_state], fn _current -> placement_state end)
+  end
+
+  defp touch_worker_last_used(state, key, at_ms \\ System.monotonic_time(:millisecond)) do
+    case Map.get(state.workers, key) do
+      nil -> state
+      _entry -> put_in(state, [:workers, key, :last_used_monotonic_ms], at_ms)
+    end
   end
 
   defp drop_worker(state, key, monitor_ref) do
@@ -1148,7 +1171,177 @@ defmodule Orchard.Node.ModelManager do
     }
   end
 
+  # -- Eviction helpers ------------------------------------------------------
+
+  # Evicts synchronously before the async load task starts. If the incoming
+  # load subsequently fails (bad hash, runtime error, etc.), the evicted model
+  # is NOT restored — the slot will be reclaimed by the next successful load.
+  # This is intentional: deferring eviction until after acquisition would
+  # require cross-process coordination between the async load task and the
+  # GenServer's capacity state.
+  defp maybe_evict_before_load(state, target_key) do
+    case Node.max_loaded_models() do
+      nil ->
+        {:ok, state}
+
+      limit ->
+        reserved_count = count_capacity_reserved(state)
+
+        if reserved_count < limit do
+          {:ok, state}
+        else
+          do_evict(state, target_key, limit, reserved_count)
+        end
+    end
+  end
+
+  defp do_evict(state, target_key, limit, reserved_count) do
+    start_time = System.monotonic_time(:millisecond)
+    {incoming_model_id, incoming_version} = target_key
+
+    # victim_model_id/victim_version are nil at start — filled in stop/exception
+    # events after select_eviction_candidate runs.
+    base_meta = %{
+      incoming_model_id: incoming_model_id,
+      incoming_version: incoming_version,
+      victim_model_id: nil,
+      victim_version: nil,
+      max_loaded_models: limit,
+      reserved_model_count_before: reserved_count
+    }
+
+    emit_eviction_start(base_meta)
+
+    case select_eviction_candidate(state, target_key) do
+      {:ok, victim_key, victim_entry} ->
+        {victim_model_id, victim_version} = victim_key
+
+        eviction_meta =
+          Map.merge(base_meta, %{
+            victim_model_id: victim_model_id,
+            victim_version: victim_version
+          })
+
+        evict_request = %UnloadModelRequest{
+          model_id: victim_model_id,
+          version: victim_version,
+          force: false,
+          evict: true
+        }
+
+        case unload_worker_entry(state, victim_key, victim_entry, evict_request) do
+          {:ok, next_state} ->
+            duration_ms = System.monotonic_time(:millisecond) - start_time
+            emit_eviction_stop(eviction_meta, duration_ms)
+            {:ok, next_state}
+
+          {:error, reason, next_state} ->
+            duration_ms = System.monotonic_time(:millisecond) - start_time
+            emit_eviction_exception(eviction_meta, duration_ms, reason)
+            {:error, reason, next_state}
+        end
+
+      :none ->
+        duration_ms = System.monotonic_time(:millisecond) - start_time
+
+        emit_eviction_exception(
+          Map.merge(base_meta, %{victim_model_id: nil, victim_version: nil}),
+          duration_ms,
+          :model_capacity_exhausted
+        )
+
+        {:error, :model_capacity_exhausted, state}
+    end
+  end
+
+  defp select_eviction_candidate(state, target_key) do
+    candidates =
+      state.workers
+      |> Enum.filter(fn {key, entry} ->
+        key != target_key and
+          entry.placement_state == :PLACEMENT_STATE_LOADED and
+          active_request_count_for_model(state.active_requests, key) == 0
+      end)
+      |> Enum.sort_by(fn {key, entry} ->
+        {entry.last_used_monotonic_ms, key}
+      end)
+
+    case candidates do
+      [{key, entry} | _] -> {:ok, key, entry}
+      [] -> :none
+    end
+  end
+
+  # Unlike perform_unload/5 (the explicit unload path), this does NOT call
+  # maybe_cleanup_unloaded_requests — select_eviction_candidate/2 guarantees
+  # the victim has zero active requests, so cleanup would be a no-op.
+  defp unload_worker_entry(state, key, entry, request) do
+    case safe_unload(entry.pid, force: request.force, evict: request.evict) do
+      :ok ->
+        _ = DynamicSupervisor.terminate_child(WorkerSupervisor, entry.pid)
+        next_state = drop_worker(state, key, entry.monitor_ref)
+        {:ok, next_state}
+
+      {:error, :worker_unavailable} ->
+        # Worker already gone — slot is freed, treat as success
+        next_state =
+          cleanup_worker_unavailable(
+            drop_worker(state, key, entry.monitor_ref),
+            key,
+            :worker_unavailable
+          )
+
+        {:ok, next_state}
+
+      {:error, reason} ->
+        {:error, reason, state}
+    end
+  end
+
+  # Counts unique model slots reserved by inflight loads OR workers in
+  # LOADING/LOADED state. This is the correct capacity metric for admission
+  # gating: a model key in `inflight_loads` has reserved a slot even before
+  # its worker process exists or reaches LOADED. Keys present in both maps
+  # (during the brief LOADING overlap) are counted once.
+  defp count_capacity_reserved(state) do
+    inflight_keys = Map.keys(state.inflight_loads) |> MapSet.new()
+
+    worker_keys =
+      state.workers
+      |> Enum.filter(fn {_key, entry} ->
+        entry.placement_state in [:PLACEMENT_STATE_LOADING, :PLACEMENT_STATE_LOADED]
+      end)
+      |> Enum.map(fn {key, _entry} -> key end)
+      |> MapSet.new()
+
+    MapSet.union(inflight_keys, worker_keys) |> MapSet.size()
+  end
+
   # -- Telemetry helpers -----------------------------------------------------
+
+  defp emit_eviction_start(meta) do
+    :telemetry.execute(
+      [:orchard, :node, :eviction, :start],
+      %{system_time: System.system_time()},
+      meta
+    )
+  end
+
+  defp emit_eviction_stop(meta, duration_ms) do
+    :telemetry.execute(
+      [:orchard, :node, :eviction, :stop],
+      %{duration_ms: duration_ms},
+      Map.put(meta, :outcome, :evicted)
+    )
+  end
+
+  defp emit_eviction_exception(meta, duration_ms, reason) do
+    :telemetry.execute(
+      [:orchard, :node, :eviction, :exception],
+      %{duration_ms: duration_ms},
+      Map.put(meta, :reason, reason)
+    )
+  end
 
   defp emit_load_start(key, inflight) do
     {model_id, version} = key

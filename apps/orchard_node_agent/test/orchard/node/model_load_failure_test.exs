@@ -212,6 +212,25 @@ defmodule Orchard.Node.ModelLoadFailureTest do
     assert f.code == "worker_ready_timeout"
   end
 
+  # -- RESOURCE_EXHAUSTED --
+
+  test "model_capacity_exhausted -> RESOURCE_EXHAUSTED" do
+    f = ModelLoadFailure.from_reason(:model_capacity_exhausted)
+    assert f.category == :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED
+    assert f.code == "model_capacity_exhausted"
+    assert f.message == "node runtime is at loaded-model capacity"
+  end
+
+  test "to_response for model_capacity_exhausted" do
+    response = ModelLoadFailure.to_response(:model_capacity_exhausted)
+    assert %EnsureModelLoadedResponse{} = response
+    assert response.already_loaded == false
+    assert response.placement_state == :PLACEMENT_STATE_FAILED
+    assert response.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED
+    assert response.failure_code == "model_capacity_exhausted"
+    assert response.failure_message == "node runtime is at loaded-model capacity"
+  end
+
   # -- INTERNAL --
 
   test "task_crashed -> INTERNAL" do

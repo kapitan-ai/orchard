@@ -178,6 +178,10 @@ defmodule Orchard.Node.ModelLoadFailure do
   def from_reason(:worker_ready_timeout),
     do: new(:MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT, "worker_ready_timeout", "model runtime did not become ready in time")
 
+  # --- RESOURCE_EXHAUSTED ---
+  def from_reason(:model_capacity_exhausted),
+    do: new(:MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED, "model_capacity_exhausted", "node runtime is at loaded-model capacity")
+
   # --- INTERNAL: manager-level ---
   def from_reason(:task_crashed),
     do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "task_crashed", "model load task crashed unexpectedly")
