@@ -27,7 +27,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest, GenerationParams}
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.Inference
-  alias Orchard.Inference.{ChatRequestNormalizer, ChatRequestValidator}
+  alias Orchard.Inference.{ChatRequestNormalizer, ChatRequestValidator, ModelLoadFailure}
   alias Orchard.InferenceEvent
   alias Orchard.Models
   alias Orchard.Models.ManifestParser
@@ -282,6 +282,15 @@ defmodule Orchard.Inference.ChatOrchestrator do
     case Requests.mark_terminal(db_request, terminal_attrs) do
       {:ok, _updated} -> {:ok, canonical, events}
       {:error, reason} -> {:error, {:terminal_persist_failed, reason}}
+    end
+  end
+
+  defp fail_request(db_request, {:model_load_failed, %ModelLoadFailure{} = failure}) do
+    advance_fsm_best_effort_terminal(db_request.id, :failed)
+
+    case Requests.mark_terminal(db_request, ModelLoadFailure.terminal_attrs(failure)) do
+      {:ok, _} -> :ok
+      {:error, err} -> log_warn("fail_request mark_terminal error: #{inspect(err)}")
     end
   end
 

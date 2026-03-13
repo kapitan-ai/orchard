@@ -38,6 +38,24 @@ defmodule Orchard.Cluster.V1.PlacementState do
   field :PLACEMENT_STATE_FAILED, 10
 end
 
+defmodule Orchard.Cluster.V1.ModelLoadFailureCategory do
+  @moduledoc false
+
+  use Protobuf,
+    enum: true,
+    full_name: "cluster.v1.ModelLoadFailureCategory",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field :MODEL_LOAD_FAILURE_CATEGORY_UNSPECIFIED, 0
+  field :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, 1
+  field :MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED, 2
+  field :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE, 3
+  field :MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT, 4
+  field :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED, 5
+  field :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, 6
+end
+
 defmodule Orchard.Cluster.V1.FinishReason do
   @moduledoc false
 

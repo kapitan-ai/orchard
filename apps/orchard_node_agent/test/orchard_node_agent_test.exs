@@ -784,8 +784,11 @@ defmodule OrchardNodeAgentTest do
       artifact_source_uri: ""
     }
 
-    assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_FAILED} =
-             NodeStatus.ensure_model_loaded(request)
+    result = NodeStatus.ensure_model_loaded(request)
+    assert result.placement_state == :PLACEMENT_STATE_FAILED
+    assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED
+    assert result.failure_code == "missing_artifact_source_uri"
+    assert result.failure_message != ""
   end
 
   test "ensure_model_loaded acquires from file:// source when cache is missing", %{
@@ -819,8 +822,11 @@ defmodule OrchardNodeAgentTest do
       artifact_source_uri: bundle.source_uri
     }
 
-    assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_FAILED} =
-             NodeStatus.ensure_model_loaded(request)
+    result = NodeStatus.ensure_model_loaded(request)
+    assert result.placement_state == :PLACEMENT_STATE_FAILED
+    assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID
+    assert result.failure_code == "artifact_hash_mismatch"
+    assert result.failure_message != ""
 
     # Staging directory should be cleaned up
     staging_dir = Path.join([Node.models_root(), ".staging"])
@@ -873,9 +879,11 @@ defmodule OrchardNodeAgentTest do
       # Reset should cancel the inflight load
       :ok = NodeStatus.reset()
 
-      # The blocked caller should receive FAILED
+      # The blocked caller should receive FAILED with cancellation category
       result = Task.await(ensure_task, 5_000)
       assert result.placement_state == :PLACEMENT_STATE_FAILED
+      assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL
+      assert result.failure_code == "load_cancelled"
 
       # State should be clean
       assert %StatusResponse{worker_state: :WORKER_STATE_IDLE, loaded_models: []} =
@@ -903,9 +911,11 @@ defmodule OrchardNodeAgentTest do
                  evict: false
                })
 
-      # The blocked caller should receive FAILED
+      # The blocked caller should receive FAILED with cancellation category
       result = Task.await(ensure_task, 5_000)
       assert result.placement_state == :PLACEMENT_STATE_FAILED
+      assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL
+      assert result.failure_code == "load_cancelled"
     end)
   end
 
@@ -940,8 +950,10 @@ defmodule OrchardNodeAgentTest do
           elapsed = System.monotonic_time(:millisecond) - start_time
 
           # Should fail — unhealthy worker detected during readiness polling.
-          assert {:ok, %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_FAILED}} =
-                   result
+          assert {:ok, %EnsureModelLoadedResponse{} = response} = result
+          assert response.placement_state == :PLACEMENT_STATE_FAILED
+          assert response.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE
+          assert response.failure_code == "mlx_backend_unavailable"
 
           # Should fail fast — well under the default ready timeout (5000ms).
           # The unhealthy worker should be detected on the first GetStatus call.
@@ -1049,6 +1061,8 @@ defmodule OrchardNodeAgentTest do
             # letting the invalid executable cause the runtime failure.
             result = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
             assert result.placement_state == :PLACEMENT_STATE_FAILED
+            assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE
+            assert result.failure_code == "worker_executable_not_found"
           end)
 
           # Manager should emit start + exception
@@ -1107,6 +1121,8 @@ defmodule OrchardNodeAgentTest do
 
             result = Task.await(ensure_task, 5_000)
             assert result.placement_state == :PLACEMENT_STATE_FAILED
+            assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL
+            assert result.failure_code == "load_cancelled"
           end
         )
 
@@ -1151,6 +1167,8 @@ defmodule OrchardNodeAgentTest do
 
             result = Task.await(ensure_task, 5_000)
             assert result.placement_state == :PLACEMENT_STATE_FAILED
+            assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL
+            assert result.failure_code == "load_cancelled"
           end
         )
 

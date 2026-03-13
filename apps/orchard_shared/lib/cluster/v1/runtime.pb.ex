@@ -59,6 +59,14 @@ defmodule Orchard.Cluster.V1.EnsureModelLoadedResponse do
     type: Orchard.Cluster.V1.PlacementState,
     json_name: "placementState",
     enum: true
+
+  field :failure_category, 3,
+    type: Orchard.Cluster.V1.ModelLoadFailureCategory,
+    json_name: "failureCategory",
+    enum: true
+
+  field :failure_code, 4, type: :string, json_name: "failureCode"
+  field :failure_message, 5, type: :string, json_name: "failureMessage"
 end
 
 defmodule Orchard.Cluster.V1.UnloadModelRequest do

@@ -11,13 +11,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - Caller process exit → sends CancelInference to the node
   """
 
-  alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest}
+  alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, EnsureModelLoadedResponse, ExecuteInferenceRequest}
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: Client
+  alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
 
   @type dispatch_result ::
           {:ok, [InferenceEvent.t()]}
-          | {:error, :connect_failed | :model_load_failed | :dispatch_failed | term()}
+          | {:error, {:model_load_failed, ModelLoadFailure.t()} | {:dispatch_failed, term()} | term()}
 
   @doc """
   Dispatch an inference request to a node and stream events back to the caller.
@@ -80,8 +81,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
           Client.disconnect(channel)
         end
 
-      {:error, {:connect_failed, _} = reason} ->
-        {:error, reason}
+      {:error, {:connect_failed, _reason}} ->
+        {:error, {:model_load_failed, ModelLoadFailure.from_transport_reason(:node_unavailable)}}
     end
   end
 
@@ -89,16 +90,28 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp do_ensure_model_loaded(channel, request, timeout_ms) do
     case Client.ensure_model_loaded(channel, request, timeout: timeout_ms) do
-      {:ok, %{placement_state: :PLACEMENT_STATE_LOADED}} ->
-        :ok
+      {:ok, %EnsureModelLoadedResponse{} = response} ->
+        case normalize_placement_state(response.placement_state) do
+          :loaded ->
+            :ok
 
-      {:ok, %{placement_state: placement_state}} ->
-        {:error, {:unexpected_placement_state, placement_state}}
+          :failed ->
+            {:error, ModelLoadFailure.from_response(response)}
+
+          {:unexpected, placement_state} ->
+            {:error, ModelLoadFailure.from_transport_reason({:unexpected_placement_state, placement_state})}
+        end
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, ModelLoadFailure.from_transport_reason(reason)}
     end
   end
+
+  defp normalize_placement_state(:PLACEMENT_STATE_LOADED), do: :loaded
+  defp normalize_placement_state(7), do: :loaded
+  defp normalize_placement_state(:PLACEMENT_STATE_FAILED), do: :failed
+  defp normalize_placement_state(10), do: :failed
+  defp normalize_placement_state(other), do: {:unexpected, other}
 
   defp do_execute_and_stream(
          channel,

@@ -11,6 +11,7 @@ defmodule OrchardSharedTest do
     FinishReason,
     GenerationParams,
     InferenceEvent,
+    ModelLoadFailureCategory,
     ModelRef,
     NodeRuntimeService,
     OutputTextDelta,
@@ -60,6 +61,7 @@ defmodule OrchardSharedTest do
     assert Code.ensure_loaded?(PlacementState)
     assert %TokenUsage{total_tokens: 42} = struct(TokenUsage, total_tokens: 42)
     assert Code.ensure_loaded?(WorkerState)
+    assert Code.ensure_loaded?(ModelLoadFailureCategory)
     assert Code.ensure_loaded?(NodeRuntimeService.Service)
     assert Code.ensure_loaded?(NodeRuntimeService.Stub)
   end
@@ -113,5 +115,32 @@ defmodule OrchardSharedTest do
              ensure_request
              |> EnsureModelLoadedRequest.encode()
              |> EnsureModelLoadedRequest.decode()
+  end
+
+  test "round-trips EnsureModelLoadedResponse with failure metadata" do
+    response = %EnsureModelLoadedResponse{
+      already_loaded: false,
+      placement_state: :PLACEMENT_STATE_FAILED,
+      failure_category: :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
+      failure_code: "mlx_backend_unavailable",
+      failure_message: "Runtime unavailable"
+    }
+
+    assert response ==
+             response
+             |> EnsureModelLoadedResponse.encode()
+             |> EnsureModelLoadedResponse.decode()
+  end
+
+  test "EnsureModelLoadedResponse proto3 defaults for unset failure fields" do
+    decoded =
+      %EnsureModelLoadedResponse{}
+      |> EnsureModelLoadedResponse.encode()
+      |> EnsureModelLoadedResponse.decode()
+
+    assert decoded.placement_state == :PLACEMENT_STATE_UNSPECIFIED
+    assert decoded.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_UNSPECIFIED
+    assert decoded.failure_code == ""
+    assert decoded.failure_message == ""
   end
 end

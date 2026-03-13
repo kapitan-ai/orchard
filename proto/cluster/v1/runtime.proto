@@ -37,6 +37,11 @@ message EnsureModelLoadedRequest {
 message EnsureModelLoadedResponse {
   bool already_loaded = 1;
   PlacementState placement_state = 2;
+
+  // Meaningful when placement_state == PLACEMENT_STATE_FAILED.
+  ModelLoadFailureCategory failure_category = 3;
+  string failure_code = 4;
+  string failure_message = 5;
 }
 
 message UnloadModelRequest {

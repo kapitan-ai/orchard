@@ -21,6 +21,7 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Node
   alias Orchard.Node.ModelAcquisition
   alias Orchard.Node.ModelAcquisition.Request, as: AcquisitionRequest
+  alias Orchard.Node.ModelLoadFailure
   alias Orchard.Node.WorkerProcess
   alias Orchard.Node.WorkerSupervisor
 
@@ -376,7 +377,7 @@ defmodule Orchard.Node.ModelManager do
       {:noreply, %{state | inflight_loads: Map.put(state.inflight_loads, key, inflight)}}
     else
       # Conflicting request — reject immediately
-      {:reply, failed_load_response(:conflicting_request), state}
+      {:reply, ModelLoadFailure.to_response(:conflicting_request), state}
     end
   end
 
@@ -503,7 +504,7 @@ defmodule Orchard.Node.ModelManager do
           reason: reason
         })
 
-        reply_all_waiters(inflight.waiters, failed_load_response(:acquisition_failed))
+        reply_all_waiters(inflight.waiters, ModelLoadFailure.to_response(reason))
 
         state
     end
@@ -539,7 +540,7 @@ defmodule Orchard.Node.ModelManager do
         })
 
         # Reply all blocked waiters with failure
-        reply_all_waiters(inflight.waiters, failed_load_response(:load_cancelled))
+        reply_all_waiters(inflight.waiters, ModelLoadFailure.to_response(:load_cancelled))
 
         # Clean up partial worker if started
         state = %{
@@ -794,10 +795,6 @@ defmodule Orchard.Node.ModelManager do
   end
 
   # -- Response helpers ------------------------------------------------------
-
-  defp failed_load_response(_reason) do
-    %EnsureModelLoadedResponse{already_loaded: false, placement_state: :PLACEMENT_STATE_FAILED}
-  end
 
   defp status_response(state) do
     %StatusResponse{

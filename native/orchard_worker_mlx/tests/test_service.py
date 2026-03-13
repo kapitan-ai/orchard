@@ -729,3 +729,54 @@ def test_load_model_succeeds_when_healthy() -> None:
         None,
     )
     assert ack.ok is True
+
+
+# ---------------------------------------------------------------------------
+# Task 4.5: Ack.message contract lock
+# ---------------------------------------------------------------------------
+
+import re
+
+_ACK_MESSAGE_PATTERN = re.compile(r"^[a-z_]+: .+")
+
+
+def test_load_model_health_gate_ack_message_format() -> None:
+    """Health-gated LoadModel failure follows 'code: message' format."""
+    servicer = _make_servicer(UnhealthyBackend())
+    ack = servicer.LoadModel(
+        worker_runtime_pb2.LoadModelRequest(
+            model_id="m", version="v", model_path="/fake"
+        ),
+        None,
+    )
+    assert ack.ok is False
+    assert _ACK_MESSAGE_PATTERN.match(ack.message), (
+        f"Ack.message does not follow 'code: message' format: {ack.message!r}"
+    )
+
+
+class LoadFailingBackend(HappyBackend):
+    """Backend that raises BackendError during load_model."""
+
+    def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
+        raise BackendError(
+            code="manifest_not_found",
+            message="manifest.json not found in bundle",
+        )
+
+
+def test_load_model_backend_error_ack_message_format() -> None:
+    """BackendError-triggered LoadModel failure follows 'code: message' format."""
+    servicer = _make_servicer(LoadFailingBackend())
+    ack = servicer.LoadModel(
+        worker_runtime_pb2.LoadModelRequest(
+            model_id="m", version="v", model_path="/fake"
+        ),
+        None,
+    )
+    assert ack.ok is False
+    assert _ACK_MESSAGE_PATTERN.match(ack.message), (
+        f"Ack.message does not follow 'code: message' format: {ack.message!r}"
+    )
+    # Verify exact code is preserved
+    assert ack.message.startswith("manifest_not_found:")

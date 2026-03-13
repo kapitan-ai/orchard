@@ -20,6 +20,7 @@ defmodule Orchard.Dispatch.DispatchTest do
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: Client
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.Inference
+  alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.ModelManager
@@ -207,6 +208,33 @@ defmodule Orchard.Dispatch.DispatchTest do
       if Process.alive?(dispatch_pid), do: Process.exit(dispatch_pid, :kill)
     end
 
+    test "dispatch returns sanitized error when node connection fails" do
+      # Use a target that will fail to connect — port 1 is privileged and won't have a gRPC server
+      schedule = %{
+        strategy: :single_node,
+        request_id: "req-connect-fail",
+        runtime_client_target: [host: "127.0.0.1", port: 1],
+        request_timeout_ms: 5_000,
+        model_load_timeout_ms: 5_000
+      }
+
+      execute = execute_request("req-connect-fail")
+
+      model_load =
+        %EnsureModelLoadedRequest{
+          node_id: "local",
+          model_id: "test/model",
+          version: "v1"
+        }
+
+      assert {:error, {:model_load_failed, %ModelLoadFailure{} = failure}} =
+               RequestDispatcher.dispatch(schedule, execute, model_load)
+
+      assert failure.category == :runtime_unavailable
+      assert failure.code == "node_unavailable"
+      assert failure.message == "node runtime is unavailable"
+    end
+
     test "dispatch returns error when ensure-load placement state is not LOADED" do
       schedule = build_schedule("req-dispatch-fail-load")
 
@@ -227,8 +255,13 @@ defmodule Orchard.Dispatch.DispatchTest do
           version: "v1"
         }
 
-      assert {:error, {:model_load_failed, {:unexpected_placement_state, :PLACEMENT_STATE_FAILED}}} =
+      assert {:error, {:model_load_failed, %ModelLoadFailure{} = failure}} =
                RequestDispatcher.dispatch(schedule, execute, model_load)
+
+      assert failure.category in [:model_invalid, :acquisition_failed, :runtime_unavailable,
+                                   :timeout, :resource_exhausted, :internal]
+      assert is_binary(failure.code) and failure.code != ""
+      assert is_binary(failure.message) and failure.message != ""
     end
   end
 

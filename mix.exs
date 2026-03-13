@@ -89,6 +89,14 @@ defmodule Orchard.MixProject do
     end
   end
 
+  defp cluster_proto_sources do
+    [
+      Path.absname("proto/cluster/v1/common.proto"),
+      Path.absname("proto/cluster/v1/events.proto"),
+      Path.absname("proto/cluster/v1/runtime.proto")
+    ]
+  end
+
   defp proto_gen_worker(_args) do
     uv_path =
       executable!(
@@ -102,6 +110,10 @@ defmodule Orchard.MixProject do
     worker_proto = Path.absname(Path.join(worker_proto_root, "orchard/worker/v1/worker_runtime.proto"))
     output_dir = Path.absname(Path.join(worker_pkg, "src/orchard_worker_mlx/generated"))
 
+    File.mkdir_p!(output_dir)
+
+    proto_inputs = cluster_proto_sources() ++ [worker_proto]
+
     case System.cmd(
            uv_path,
            [
@@ -110,15 +122,14 @@ defmodule Orchard.MixProject do
              "-I", proto_root,
              "-I", worker_proto_root,
              "--python_out=#{output_dir}",
-             "--grpc_python_out=#{output_dir}",
-             worker_proto
-           ],
+             "--grpc_python_out=#{output_dir}"
+           ] ++ proto_inputs,
            into: IO.stream(:stdio, :line),
            stderr_to_stdout: true
          ) do
       {_output, 0} ->
         Mix.shell().info("""
-        Python worker bindings generated.
+        Python cluster + worker bindings generated.
         NOTE: Elixir binding (apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex)
         is maintained manually — update it by hand when the proto changes.
         """)

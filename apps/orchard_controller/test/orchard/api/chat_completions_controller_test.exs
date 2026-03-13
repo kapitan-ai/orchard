@@ -294,6 +294,105 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
   end
 
+  describe "POST /v1/chat/completions (model load failure mapping)" do
+    @tag :db
+    test "non-streaming model load failure returns mapped HTTP status and error envelope", %{bundle: bundle} do
+      # Create a model in DB but don't stage cache, and give a source URI
+      # pointing to a nonexistent path so model acquisition fails.
+      {:ok, _model} =
+        Orchard.Models.create_model(%{
+          model_id: "fail-model",
+          version: "v1",
+          display_name: "Fail Model",
+          artifact_uri: "file:///nonexistent/fail-model",
+          artifact_sha256: bundle.hash,
+          state: :active,
+          format: "mlx",
+          backend: "mlx",
+          capabilities: ["chat"],
+          artifact_size_bytes: 1024,
+          resident_memory_bytes: 2048,
+          kv_cache_bytes_per_token: 128,
+          prefill_workspace_bytes_per_token: 64,
+          max_context_tokens: 4096
+        })
+
+      # Remove any cached bundle for this model
+      File.rm_rf(Path.join([Node.models_root(), "fail-model", "v1"]))
+
+      conn =
+        post_chat(%{
+          "model" => "fail-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+
+      # Should get 503 (acquisition failed) not generic 500
+      assert conn.status == 503
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "server_error"
+      assert body["error"]["code"] != nil
+      assert body["error"]["message"] != nil
+
+      # Verify persisted request row has mapped terminal fields
+      requests = Orchard.Repo.all(Orchard.Requests.Request)
+      failed_requests = Enum.filter(requests, &(&1.state == :failed))
+      assert length(failed_requests) == 1
+      [request] = failed_requests
+      assert request.http_status == 503
+      assert request.error_code != nil
+      assert request.error_message != nil
+    end
+
+    @tag :db
+    test "streaming model load failure emits SSE error with mapped code and no [DONE]", %{bundle: bundle} do
+      {:ok, _model} =
+        Orchard.Models.create_model(%{
+          model_id: "fail-stream-model",
+          version: "v1",
+          display_name: "Fail Stream Model",
+          artifact_uri: "file:///nonexistent/fail-stream-model",
+          artifact_sha256: bundle.hash,
+          state: :active,
+          format: "mlx",
+          backend: "mlx",
+          capabilities: ["chat"],
+          artifact_size_bytes: 1024,
+          resident_memory_bytes: 2048,
+          kv_cache_bytes_per_token: 128,
+          prefill_workspace_bytes_per_token: 64,
+          max_context_tokens: 4096
+        })
+
+      File.rm_rf(Path.join([Node.models_root(), "fail-stream-model", "v1"]))
+
+      conn =
+        post_chat(%{
+          "model" => "fail-stream-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      # HTTP status is 200 because SSE headers already sent
+      assert conn.status == 200
+      assert get_resp_header(conn, "content-type")
+             |> Enum.any?(&String.contains?(&1, "text/event-stream"))
+
+      events = parse_sse_body(conn.resp_body)
+
+      # Should have an error event with mapped type/code
+      error_events = Enum.filter(events, fn {type, _} -> type == :error end)
+      assert length(error_events) == 1
+      {:error, error_payload} = hd(error_events)
+      assert error_payload["error"]["type"] == "server_error"
+      assert error_payload["error"]["code"] != nil
+      assert error_payload["error"]["message"] != nil
+
+      # Must NOT emit [DONE] after error
+      done_events = Enum.filter(events, fn {type, _} -> type == :done end)
+      assert done_events == []
+    end
+  end
+
   describe "stream_options.include_usage normalization" do
     test "stream_include_usage defaults to false" do
       {:ok, canonical} =

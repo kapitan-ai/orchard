@@ -16,7 +16,7 @@ defmodule Orchard.API.ChatCompletionsController do
   import Orchard.API.ErrorHelpers, only: [send_error: 5]
 
   alias Orchard.API.SSE
-  alias Orchard.Inference.ChatOrchestrator
+  alias Orchard.Inference.{ChatOrchestrator, ModelLoadFailure}
   alias Orchard.InferenceEvent
 
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
@@ -106,6 +106,12 @@ defmodule Orchard.API.ChatCompletionsController do
           :unknown ->
             send_completion_response(conn, canonical, events)
         end
+
+      {:error, {:model_load_failed, %ModelLoadFailure{} = failure}} ->
+        %{status: status, type: type, code: code, message: message} =
+          ModelLoadFailure.api_mapping(failure)
+
+        send_error(conn, status, message, type, code: code)
 
       {:error, reason} ->
         send_error(
@@ -302,11 +308,22 @@ defmodule Orchard.API.ChatCompletionsController do
     state.conn
   end
 
-  defp finalize_stream(state, {:error, reason}, _canonical, _model_display, _created) do
-    # Post-start error: dispatch/persistence failed after SSE started
+  defp finalize_stream(state, {:error, {:model_load_failed, %ModelLoadFailure{} = failure}}, _canonical, _model_display, _created) do
+    %{type: type, code: code, message: message} = ModelLoadFailure.api_mapping(failure)
+
+    case SSE.send_error(state.conn, message, type, code: code) do
+      {:ok, conn} -> conn
+      {:error, :closed} -> state.conn
+    end
+  end
+
+  defp finalize_stream(state, {:error, _reason}, _canonical, _model_display, _created) do
+    # Post-start error: dispatch/persistence failed after SSE started.
+    # Use a fixed message — never interpolate internal error details into
+    # client-visible SSE payloads.
     case SSE.send_error(
            state.conn,
-           "Internal error: #{inspect(reason)}",
+           "Internal error",
            "server_error",
            code: "internal_error"
          ) do

@@ -431,10 +431,11 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         :ok
 
       {:ok, %{ok: false, message: message}} ->
-        {:error, {:worker_load_failed, message}}
+        {code, detail} = parse_ack_failure(message)
+        {:error, {:worker_load_failed, code, detail}}
 
       {:error, reason} ->
-        {:error, normalize_rpc_error(reason)}
+        {:error, normalize_load_rpc_error(reason)}
     end
   end
 
@@ -652,8 +653,36 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp pick_result({:error, reason}, _other), do: {:error, reason}
   defp pick_result(:ok, {:error, reason}), do: {:error, reason}
 
+  # Load-specific RPC error normalization: preserves :deadline_exceeded as a
+  # distinct reason so ModelLoadFailure classifies it as TIMEOUT (504), not
+  # RUNTIME_UNAVAILABLE (503).  Other RPC paths (unload, cancel, stream)
+  # intentionally coalesce deadline into :worker_unavailable.
+  defp normalize_load_rpc_error(%RPCError{status: :deadline_exceeded}), do: :deadline_exceeded
+  defp normalize_load_rpc_error(error), do: normalize_rpc_error(error)
+
   defp normalize_rpc_error(%RPCError{status: status}), do: normalize_rpc_status(status)
   defp normalize_rpc_error(other), do: {:rpc_error, inspect(other)}
+
+  # Parses "code: detail" format from worker Ack.message into {code, detail}.
+  # Falls back to {"worker_load_failed", raw_message} for malformed messages.
+  defp parse_ack_failure(message) when is_binary(message) do
+    case String.split(message, ":", parts: 2) do
+      [code_part, detail_part] ->
+        code = String.trim(code_part)
+        detail = String.trim(detail_part)
+
+        if code != "" and Regex.match?(~r/^[a-z0-9_]+$/, code) do
+          {code, detail}
+        else
+          {"worker_load_failed", String.trim(message)}
+        end
+
+      _ ->
+        {"worker_load_failed", String.trim(message)}
+    end
+  end
+
+  defp parse_ack_failure(_), do: {"worker_load_failed", ""}
 
   defp normalize_rpc_status(status)
        when status in [:unavailable, :cancelled, :deadline_exceeded] do
