@@ -304,7 +304,7 @@ def _import_required_mlx_runtime_modules() -> tuple:
     """
     import mlx.core as mx
     from mlx_lm.generate import stream_generate
-    from mlx_lm.utils import load as mlx_lm_load
+    from mlx_lm.utils import load_model as mlx_lm_load
     from transformers import AutoTokenizer
 
     return mx, stream_generate, mlx_lm_load, AutoTokenizer
@@ -336,7 +336,7 @@ def _default_mlx_deps() -> MLXDeps:
         pass
 
     def _load_model(model_path: str, **kwargs: Any) -> tuple[Any, Any]:
-        return mlx_lm_load(model_path, **kwargs)
+        return mlx_lm_load(Path(model_path), **kwargs)
 
     def _load_tokenizer(tokenizer_path: str | Path) -> Any:
         # from_pretrained expects a directory containing tokenizer files,
@@ -351,7 +351,7 @@ def _default_mlx_deps() -> MLXDeps:
         load_tokenizer=_load_tokenizer,
         stream_generate=stream_generate,
         eval_fn=mx.eval,
-        clear_cache=lambda: mx.metal.clear_cache() if hasattr(mx, "metal") else None,
+        clear_cache=mx.clear_cache,
         monotonic=time.monotonic,
         make_prompt_cache=_make_prompt_cache,
         can_trim_prompt_cache=_can_trim_prompt_cache,
@@ -400,7 +400,7 @@ def _default_mlx_probe_deps() -> MLXProbeDeps:
     return MLXProbeDeps(
         zeros_fn=mx.zeros,
         eval_fn=mx.eval,
-        clear_cache=lambda: mx.metal.clear_cache() if hasattr(mx, "metal") else None,
+        clear_cache=mx.clear_cache,
     )
 
 

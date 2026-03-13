@@ -1,5 +1,15 @@
 #!/bin/sh
 set -eu
-# Placeholder Orchard node-agent wrapper.
-# Packaging will eventually dispatch to the internal orchard_node_agent release.
-exec /Library/Application\ Support/Orchard/releases/orchard_node_agent/bin/orchard_node_agent "$@"
+# Orchard node-agent wrapper.
+# Loads optional env overrides from config dir before starting the release.
+
+ORCHARD_ROOT="/Library/Application Support/Orchard"
+ENV_FILE="$ORCHARD_ROOT/config/node-agent.env"
+
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    . "$ENV_FILE"
+    set +a
+fi
+
+exec "$ORCHARD_ROOT/releases/orchard_node_agent/bin/orchard_node_agent" "$@"

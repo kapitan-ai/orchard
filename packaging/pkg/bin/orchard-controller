@@ -1,5 +1,15 @@
 #!/bin/sh
 set -eu
-# Placeholder Orchard controller wrapper.
-# Packaging will eventually dispatch to the internal orchard_controller release.
-exec /Library/Application\ Support/Orchard/releases/orchard_controller/bin/orchard_controller "$@"
+# Orchard controller wrapper.
+# Loads optional env overrides from config dir before starting the release.
+
+ORCHARD_ROOT="/Library/Application Support/Orchard"
+ENV_FILE="$ORCHARD_ROOT/config/controller.env"
+
+if [ -f "$ENV_FILE" ]; then
+    set -a
+    . "$ENV_FILE"
+    set +a
+fi
+
+exec "$ORCHARD_ROOT/releases/orchard_controller/bin/orchard_controller" "$@"

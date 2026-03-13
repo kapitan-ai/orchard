@@ -228,6 +228,136 @@ uv run pytest tests/test_cli.py -k mlx_backend_real -v
 mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke
 ```
 
+## Preparing a Smoke Test Bundle from HuggingFace
+
+The smoke tests require an **Orchard bundle** — a directory containing a
+`manifest.json` plus model files. HuggingFace MLX models don't include this
+manifest, so you must create a wrapper bundle.
+
+### Quick Setup
+
+```bash
+# 1. Download a small MLX model (if not already cached)
+pip install huggingface-hub
+huggingface-cli download mlx-community/Llama-3.2-1B-Instruct-4bit
+
+# 2. Create a bundle directory with copies of the model files
+BUNDLE_DIR="$HOME/Models/orchard-smoke/llama-3.2-1b-instruct-4bit"
+mkdir -p "$BUNDLE_DIR"
+
+HF_SNAPSHOT="$HOME/.cache/huggingface/hub/models--mlx-community--Llama-3.2-1B-Instruct-4bit/snapshots/<commit-hash>"
+for f in config.json model.safetensors model.safetensors.index.json \
+         tokenizer.json tokenizer_config.json special_tokens_map.json; do
+    cp -L "$HF_SNAPSHOT/$f" "$BUNDLE_DIR/$f"
+done
+
+# 3. Create manifest.json
+cat > "$BUNDLE_DIR/manifest.json" << 'EOF'
+{
+  "model_id": "mlx-community/Llama-3.2-1B-Instruct-4bit",
+  "version": "08231374eeacb049a0eade7922910865b8fce912",
+  "format": "mlx",
+  "artifact_layout": "directory",
+  "entrypoint": ".",
+  "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "size_bytes": 696254464,
+  "max_context_tokens": 131072,
+  "capabilities": ["chat"],
+  "tokenizer": {
+    "kind": "huggingface_tokenizer_json",
+    "path": "tokenizer.json"
+  },
+  "runtime_requirements": {
+    "adapter": "mlx_lm",
+    "min_agent_capability": "mlx"
+  }
+}
+EOF
+```
+
+**Important:** Use `cp -L` (follow symlinks), not `ln -s`. The worker's
+bundle-path validation rejects symlinks that resolve outside the bundle root.
+
+### Manifest Field Reference
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| `model_id` | HF repo name | e.g. `mlx-community/Llama-3.2-1B-Instruct-4bit` |
+| `version` | HF commit hash | Pin for reproducibility |
+| `format` | `"mlx"` | Required |
+| `artifact_layout` | `"directory"` | Required |
+| `entrypoint` | `"."` | Path to model weights dir (`.` = bundle root) |
+| `sha256` | 64-char hex | Placeholder OK for smoke; real value for production |
+| `max_context_tokens` | From `config.json` `max_position_embeddings` | |
+| `tokenizer.kind` | `"huggingface_tokenizer_json"` | Required |
+| `tokenizer.path` | `"tokenizer.json"` | Relative to bundle root |
+| `runtime_requirements.adapter` | `"mlx_lm"` | Required |
+| `runtime_requirements.min_agent_capability` | `"mlx"` | Required |
+
+### Recommended Smoke Models
+
+| Model | Size | Load Time (M3 Max) | Notes |
+|-------|------|--------------------|-------|
+| `mlx-community/Llama-3.2-1B-Instruct-4bit` | ~664 MB | ~1.5s | Fastest, recommended for CI |
+| `mlx-community/Qwen2.5-7B-Instruct-4bit` | ~4.5 GB | ~5s | Good mid-size validation |
+
+## Rollback Procedure
+
+Orchard supports a binary backend switch: `mlx` (real inference) or `stub`
+(no-op responses). Rollback means switching the worker backend.
+
+### Development (Source Checkout)
+
+```bash
+# Switch to stub backend
+export ORCHARD_WORKER_BACKEND=stub
+
+# Restart the app
+iex -S mix phx.server
+```
+
+Verify: the node-agent log will show `worker starting backend=stub`.
+
+### Packaged Install (launchd)
+
+```bash
+# 1. Create/edit the node-agent env file
+sudo mkdir -p "/Library/Application Support/Orchard/config"
+echo 'ORCHARD_WORKER_BACKEND=stub' | sudo tee \
+  "/Library/Application Support/Orchard/config/node-agent.env"
+
+# 2. Restart the node-agent service
+sudo launchctl kickstart -k system/com.orchard.node-agent
+```
+
+To restore MLX:
+
+```bash
+# Remove the override (or set back to mlx)
+sudo rm "/Library/Application Support/Orchard/config/node-agent.env"
+sudo launchctl kickstart -k system/com.orchard.node-agent
+```
+
+### Verification After Rollback
+
+1. Check service is running: `sudo launchctl list | grep orchard`
+2. Check backend in logs: look for `worker starting backend=stub` or `backend=mlx`
+3. Test inference: `curl http://localhost:4000/health/ready`
+4. Run a chat completion — stub returns canned responses, mlx returns real inference
+
+## Smoke Test Troubleshooting
+
+| Failure | Likely Cause | Where to Look |
+|---------|-------------|---------------|
+| `Bundle is missing manifest.json` | Bundle not prepared correctly | Re-run bundle prep steps above |
+| `bundle_path_escape` | Symlinks in bundle dir | Use `cp -L` instead of `ln -s` |
+| `model_load_failed` | MLX/mlx-lm version mismatch | Check `uv sync --extra mlx` ran, inspect worker logs |
+| `unsupported_runtime_adapter` | Wrong `adapter` in manifest | Must be `"mlx_lm"` |
+| `tokenizer_missing` | Wrong `tokenizer.path` | Check `tokenizer.json` exists in bundle |
+| Python smoke timeout | Model too large for hardware | Use smaller model (1B recommended) |
+| Elixir smoke failure | Node-agent/worker lifecycle issue | Check worker stdout/stderr |
+| `mlx_backend_unavailable` | MLX extras not installed | Run `uv sync --extra mlx` |
+
 ## Releases (Production)
 
 Three release targets are defined:
