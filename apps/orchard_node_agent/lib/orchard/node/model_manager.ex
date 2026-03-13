@@ -43,16 +43,23 @@ defmodule Orchard.Node.ModelManager do
           subscriber_monitor_ref: reference()
         }
 
+  @type inflight_waiter :: %{
+          id: reference(),
+          from: GenServer.from(),
+          deadline_unix_ms: non_neg_integer(),
+          timer_ref: reference() | nil
+        }
+
   @type inflight_load :: %{
           request_fingerprint: {String.t(), String.t() | nil},
-          leader_deadline_unix_ms: non_neg_integer(),
+          leader_waiter_id: reference(),
           started_monotonic_ms: integer(),
           source_scheme: String.t() | nil,
           preload: boolean(),
           backend: String.t(),
           task_pid: pid(),
           task_ref: reference(),
-          waiters: [GenServer.from()],
+          waiters: [inflight_waiter()],
           worker_pid: pid() | nil
         }
 
@@ -326,6 +333,17 @@ defmodule Orchard.Node.ModelManager do
     {:noreply, state}
   end
 
+  def handle_info({:inflight_waiter_timeout, key, task_ref, _waiter_id}, state) do
+    case Map.get(state.inflight_loads, key) do
+      %{task_ref: ^task_ref} = inflight ->
+        {:noreply, handle_waiter_expiry(state, key, inflight)}
+
+      _stale_or_missing ->
+        # Stale timer from a previous attempt or cancelled inflight — ignore
+        {:noreply, state}
+    end
+  end
+
   def handle_info({:DOWN, monitor_ref, :process, pid, _reason}, state) do
     cond do
       # Load task crashed
@@ -372,9 +390,18 @@ defmodule Orchard.Node.ModelManager do
     fingerprint = request_fingerprint(request)
 
     if inflight.request_fingerprint == fingerprint do
-      # Same request — add as waiter
-      inflight = %{inflight | waiters: inflight.waiters ++ [from]}
-      {:noreply, %{state | inflight_loads: Map.put(state.inflight_loads, key, inflight)}}
+      now_ms = System.system_time(:millisecond)
+
+      case build_waiter(request, from, now_ms) do
+        {:error, :deadline_exceeded} ->
+          # Already-expired request — reply immediately, don't join
+          {:reply, ModelLoadFailure.to_response(:deadline_exceeded), state}
+
+        {:ok, waiter} ->
+          waiter = schedule_waiter_timer(waiter, key, inflight.task_ref, now_ms)
+          inflight = %{inflight | waiters: inflight.waiters ++ [waiter]}
+          {:noreply, %{state | inflight_loads: Map.put(state.inflight_loads, key, inflight)}}
+      end
     else
       # Conflicting request — reject immediately
       {:reply, ModelLoadFailure.to_response(:conflicting_request), state}
@@ -382,40 +409,50 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp start_load_task(key, request, from, state) do
-    manager = self()
-    models_root = Node.models_root()
+    now_ms = System.system_time(:millisecond)
 
-    task =
-      Task.Supervisor.async_nolink(@task_supervisor, fn ->
-        run_load_pipeline(key, request, models_root, manager)
-      end)
+    case build_waiter(request, from, now_ms) do
+      {:error, :deadline_exceeded} ->
+        {:reply, ModelLoadFailure.to_response(:deadline_exceeded), state}
 
-    backend = Node.worker_backend()
-    source_scheme = extract_source_scheme(request.artifact_source_uri)
-    preload = request.preload || false
+      {:ok, waiter} ->
+        manager = self()
+        models_root = Node.models_root()
 
-    inflight = %{
-      request_fingerprint: request_fingerprint(request),
-      leader_deadline_unix_ms: request.deadline_unix_ms || 0,
-      started_monotonic_ms: System.monotonic_time(:millisecond),
-      source_scheme: source_scheme,
-      preload: preload,
-      backend: backend,
-      task_pid: task.pid,
-      task_ref: task.ref,
-      waiters: [from],
-      worker_pid: nil
-    }
+        task =
+          Task.Supervisor.async_nolink(@task_supervisor, fn ->
+            run_load_pipeline(key, request, models_root, manager)
+          end)
 
-    emit_load_start(key, inflight)
+        backend = Node.worker_backend()
+        source_scheme = extract_source_scheme(request.artifact_source_uri)
+        preload = request.preload || false
 
-    next_state = %{
-      state
-      | inflight_loads: Map.put(state.inflight_loads, key, inflight),
-        load_refs: Map.put(state.load_refs, task.ref, key)
-    }
+        waiter = schedule_waiter_timer(waiter, key, task.ref, now_ms)
 
-    {:noreply, next_state}
+        inflight = %{
+          request_fingerprint: request_fingerprint(request),
+          leader_waiter_id: waiter.id,
+          started_monotonic_ms: System.monotonic_time(:millisecond),
+          source_scheme: source_scheme,
+          preload: preload,
+          backend: backend,
+          task_pid: task.pid,
+          task_ref: task.ref,
+          waiters: [waiter],
+          worker_pid: nil
+        }
+
+        emit_load_start(key, inflight)
+
+        next_state = %{
+          state
+          | inflight_loads: Map.put(state.inflight_loads, key, inflight),
+            load_refs: Map.put(state.load_refs, task.ref, key)
+        }
+
+        {:noreply, next_state}
+    end
   end
 
   defp run_load_pipeline(key, request, models_root, manager) do
@@ -462,18 +499,18 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp complete_inflight_load(state, key, inflight, result) do
-    # Clean up inflight tracking
-    state = %{
-      state
-      | inflight_loads: Map.delete(state.inflight_loads, key),
-        load_refs: Map.delete(state.load_refs, inflight.task_ref)
-    }
+    now_ms = System.system_time(:millisecond)
+    {expired, valid} = partition_waiters(inflight.waiters, now_ms)
 
-    Process.demonitor(inflight.task_ref, [:flush])
+    # Cancel all waiter timers first
+    cancel_all_waiter_timers(inflight.waiters)
 
     case result do
       {:ok, _worker_pid} ->
-        # Mark worker as LOADED and reply all waiters success
+        # Clean up inflight tracking
+        state = remove_inflight(state, key, inflight)
+
+        # Mark worker as LOADED
         state =
           if Map.has_key?(state.workers, key) do
             put_worker_state(state, key, :PLACEMENT_STATE_LOADED)
@@ -483,19 +520,44 @@ defmodule Orchard.Node.ModelManager do
 
         emit_load_stop(key, inflight, %{
           outcome: :loaded,
-          waiter_count: length(inflight.waiters),
+          waiter_count: length(valid),
           worker_started: inflight.worker_pid != nil
         })
 
-        reply_all_waiters(inflight.waiters, %EnsureModelLoadedResponse{
+        # Reply expired waiters with deadline_exceeded, valid ones with success
+        reply_waiters(expired, ModelLoadFailure.to_response(:deadline_exceeded))
+
+        reply_waiters(valid, %EnsureModelLoadedResponse{
           already_loaded: false,
           placement_state: :PLACEMENT_STATE_LOADED
         })
 
         state
 
+      {:error, :deadline_exceeded} ->
+        if valid == [] do
+          # All waiters expired — full cleanup
+          state = remove_inflight(state, key, inflight)
+          state = cleanup_failed_worker(state, key)
+
+          emit_load_exception(key, inflight, %{
+            waiter_count: length(expired),
+            worker_started: inflight.worker_pid != nil,
+            reason: :deadline_exceeded
+          })
+
+          reply_waiters(expired, ModelLoadFailure.to_response(:deadline_exceeded))
+          state
+        else
+          # Valid followers remain — restart with new leader
+          reply_waiters(expired, ModelLoadFailure.to_response(:deadline_exceeded))
+          state = abort_inflight_attempt(state, key, inflight, :leader_deadline_exceeded)
+          restart_inflight_load(state, key, valid, inflight)
+        end
+
       {:error, reason} ->
-        # Clean up partial worker if one was started
+        # Non-deadline failure — fail everyone
+        state = remove_inflight(state, key, inflight)
         state = cleanup_failed_worker(state, key)
 
         emit_load_exception(key, inflight, %{
@@ -504,16 +566,189 @@ defmodule Orchard.Node.ModelManager do
           reason: reason
         })
 
-        reply_all_waiters(inflight.waiters, ModelLoadFailure.to_response(reason))
-
+        reply_waiters(expired, ModelLoadFailure.to_response(:deadline_exceeded))
+        reply_waiters(valid, ModelLoadFailure.to_response(reason))
         state
     end
   end
 
-  defp reply_all_waiters(waiters, reply) do
-    Enum.each(waiters, fn from ->
-      GenServer.reply(from, reply)
+  defp reply_waiters(waiters, reply) do
+    Enum.each(waiters, fn waiter ->
+      GenServer.reply(waiter.from, reply)
     end)
+  end
+
+  # -- Waiter helpers --------------------------------------------------------
+
+  defp handle_waiter_expiry(state, key, inflight) do
+    now_ms = System.system_time(:millisecond)
+    {expired, valid} = partition_waiters(inflight.waiters, now_ms)
+
+    # Reply all expired waiters with deadline_exceeded
+    reply_waiters(expired, ModelLoadFailure.to_response(:deadline_exceeded))
+
+    leader_expired? = Enum.any?(expired, fn w -> w.id == inflight.leader_waiter_id end)
+
+    cond do
+      valid == [] ->
+        # No remaining waiters — abort the attempt entirely
+        state = abort_inflight_attempt(state, key, inflight, :all_waiters_expired)
+        cleanup_failed_worker(state, key)
+
+      leader_expired? ->
+        # Leader expired — restart with valid followers
+        cancel_all_waiter_timers(valid)
+        state = abort_inflight_attempt(state, key, inflight, :leader_deadline_exceeded)
+        restart_inflight_load(state, key, valid, inflight)
+
+      true ->
+        # Non-leader waiter expired — just remove them, keep task running
+        inflight = %{inflight | waiters: valid}
+        %{state | inflight_loads: Map.put(state.inflight_loads, key, inflight)}
+    end
+  end
+
+  defp build_waiter(request, from, now_ms) do
+    deadline_ms = effective_deadline_ms(request, now_ms)
+
+    if deadline_ms <= now_ms do
+      {:error, :deadline_exceeded}
+    else
+      {:ok,
+       %{
+         id: make_ref(),
+         from: from,
+         deadline_unix_ms: deadline_ms,
+         timer_ref: nil
+       }}
+    end
+  end
+
+  defp effective_deadline_ms(%EnsureModelLoadedRequest{deadline_unix_ms: d}, _now_ms)
+       when is_integer(d) and d > 0,
+       do: d
+
+  defp effective_deadline_ms(_request, now_ms),
+    do: now_ms + Node.worker_load_timeout_ms()
+
+  defp schedule_waiter_timer(waiter, key, task_ref, now_ms) do
+    delay = max(waiter.deadline_unix_ms - now_ms, 0)
+    msg = {:inflight_waiter_timeout, key, task_ref, waiter.id}
+    timer_ref = Process.send_after(self(), msg, delay)
+    %{waiter | timer_ref: timer_ref}
+  end
+
+  defp cancel_all_waiter_timers(waiters) do
+    Enum.each(waiters, fn waiter ->
+      if waiter.timer_ref, do: Process.cancel_timer(waiter.timer_ref)
+    end)
+  end
+
+  defp partition_waiters(waiters, now_ms) do
+    {valid, expired} =
+      Enum.split_with(waiters, fn w -> w.deadline_unix_ms > now_ms end)
+
+    {expired, valid}
+  end
+
+  defp remove_inflight(state, key, inflight) do
+    Process.demonitor(inflight.task_ref, [:flush])
+
+    %{
+      state
+      | inflight_loads: Map.delete(state.inflight_loads, key),
+        load_refs: Map.delete(state.load_refs, inflight.task_ref)
+    }
+  end
+
+  defp abort_inflight_attempt(state, key, inflight, cancel_reason) do
+    # Terminate the supervised task
+    Task.Supervisor.terminate_child(@task_supervisor, inflight.task_pid)
+    Process.demonitor(inflight.task_ref, [:flush])
+
+    # Drain any pending worker-started message
+    {state, worker_drained?} = drain_pending_worker_started(state, key, inflight.task_pid)
+
+    emit_load_stop(key, inflight, %{
+      outcome: :cancelled,
+      waiter_count: length(inflight.waiters),
+      worker_started: inflight.worker_pid != nil or worker_drained?,
+      cancel_reason: cancel_reason
+    })
+
+    # Remove inflight tracking
+    state = %{
+      state
+      | inflight_loads: Map.delete(state.inflight_loads, key),
+        load_refs: Map.delete(state.load_refs, inflight.task_ref)
+    }
+
+    # Clean up partial worker if one was started
+    cleanup_failed_worker(state, key)
+  end
+
+  defp restart_inflight_load(state, key, valid_waiters, prev_inflight) do
+    now_ms = System.system_time(:millisecond)
+
+    # Re-check deadlines at restart time
+    {still_expired, still_valid} = partition_waiters(valid_waiters, now_ms)
+    reply_waiters(still_expired, ModelLoadFailure.to_response(:deadline_exceeded))
+
+    if still_valid == [] do
+      # Everyone expired during cleanup
+      state
+    else
+      # Choose new leader: highest deadline, tie-break by list position (first wins)
+      new_leader =
+        Enum.max_by(still_valid, fn w -> w.deadline_unix_ms end)
+
+      # Build a new request from the leader's deadline
+      # We re-use the original request shape but with the leader's deadline
+      leader_request = %EnsureModelLoadedRequest{
+        node_id: "node-local",
+        model_id: elem(key, 0),
+        version: elem(key, 1),
+        artifact_sha256: elem(prev_inflight.request_fingerprint, 0) || "",
+        artifact_source_uri: elem(prev_inflight.request_fingerprint, 1) || "",
+        preload: prev_inflight.preload,
+        deadline_unix_ms: new_leader.deadline_unix_ms
+      }
+
+      manager = self()
+      models_root = Node.models_root()
+
+      task =
+        Task.Supervisor.async_nolink(@task_supervisor, fn ->
+          run_load_pipeline(key, leader_request, models_root, manager)
+        end)
+
+      # Reschedule all waiter timers with new task_ref
+      rescheduled_waiters =
+        Enum.map(still_valid, fn w ->
+          schedule_waiter_timer(w, key, task.ref, now_ms)
+        end)
+
+      inflight = %{
+        request_fingerprint: prev_inflight.request_fingerprint,
+        leader_waiter_id: new_leader.id,
+        started_monotonic_ms: System.monotonic_time(:millisecond),
+        source_scheme: prev_inflight.source_scheme,
+        preload: prev_inflight.preload,
+        backend: prev_inflight.backend,
+        task_pid: task.pid,
+        task_ref: task.ref,
+        waiters: rescheduled_waiters,
+        worker_pid: nil
+      }
+
+      emit_load_start(key, inflight)
+
+      %{
+        state
+        | inflight_loads: Map.put(state.inflight_loads, key, inflight),
+          load_refs: Map.put(state.load_refs, task.ref, key)
+      }
+    end
   end
 
   # -- Inflight cancellation -------------------------------------------------
@@ -524,6 +759,9 @@ defmodule Orchard.Node.ModelManager do
         state
 
       inflight ->
+        # Cancel all waiter timers
+        cancel_all_waiter_timers(inflight.waiters)
+
         # Shut down the task
         Task.Supervisor.terminate_child(@task_supervisor, inflight.task_pid)
         Process.demonitor(inflight.task_ref, [:flush])
@@ -540,7 +778,7 @@ defmodule Orchard.Node.ModelManager do
         })
 
         # Reply all blocked waiters with failure
-        reply_all_waiters(inflight.waiters, ModelLoadFailure.to_response(:load_cancelled))
+        reply_waiters(inflight.waiters, ModelLoadFailure.to_response(:load_cancelled))
 
         # Clean up partial worker if started
         state = %{

@@ -176,6 +176,45 @@ defmodule OrchardNodeAgentTest do
     def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
   end
 
+  defmodule DeadlineTestAdapter do
+    @moduledoc """
+    Adapter that blocks in load_model until the test process sends a release
+    message. Supports multiple attempts by tracking attempt count and notifying
+    the test process of each load start.
+    """
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      if pid = Process.whereis(:load_timeout_test_pid) do
+        send(pid, {:load_attempt_started, self()})
+      end
+
+      receive do
+        :finish_load -> {:ok, %{model_ref: model_ref, generations: %{}}}
+        :fail_load -> {:error, :load_failed}
+      after
+        30_000 -> {:error, :load_timeout}
+      end
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
   setup do
     :ok = NodeStatus.reset()
     wait_until(fn -> worker_count() == 0 end)
@@ -971,36 +1010,38 @@ defmodule OrchardNodeAgentTest do
   describe "worker lifecycle telemetry" do
     test "successful load emits manager and runtime start/stop telemetry", %{bundle: bundle} do
       with_real_worker_runtime(fn ->
-        events = with_telemetry_collector(all_lifecycle_events(), fn ->
-          with_channel(fn channel ->
-            assert {:ok,
-                    %EnsureModelLoadedResponse{
-                      already_loaded: false,
-                      placement_state: :PLACEMENT_STATE_LOADED
-                    }} =
-                     NodeRuntimeStub.ensure_model_loaded(
-                       channel,
-                       ensure_model_loaded_request(bundle)
-                     )
+        events =
+          with_telemetry_collector(all_lifecycle_events(), fn ->
+            with_channel(fn channel ->
+              assert {:ok,
+                      %EnsureModelLoadedResponse{
+                        already_loaded: false,
+                        placement_state: :PLACEMENT_STATE_LOADED
+                      }} =
+                       NodeRuntimeStub.ensure_model_loaded(
+                         channel,
+                         ensure_model_loaded_request(bundle)
+                       )
 
-            # Unload
-            assert {:ok, %{ok: true}} =
-                     NodeRuntimeStub.unload_model(
-                       channel,
-                       %UnloadModelRequest{
-                         model_id: @test_model_id,
-                         version: @test_version,
-                         force: false,
-                         evict: false
-                       }
-                     )
+              # Unload
+              assert {:ok, %{ok: true}} =
+                       NodeRuntimeStub.unload_model(
+                         channel,
+                         %UnloadModelRequest{
+                           model_id: @test_model_id,
+                           version: @test_version,
+                           force: false,
+                           evict: false
+                         }
+                       )
+            end)
+
+            wait_until(fn -> worker_count() == 0 end)
           end)
 
-          wait_until(fn -> worker_count() == 0 end)
-        end)
-
         # Manager load lifecycle
-        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m, meta ->
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m,
+                                                                                            meta ->
           assert meta.model_id == @test_model_id
           assert meta.version == @test_version
           assert meta.backend == "stub"
@@ -1008,7 +1049,8 @@ defmodule OrchardNodeAgentTest do
           assert meta.preload == true
         end)
 
-        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop], fn m, meta ->
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop], fn m,
+                                                                                           meta ->
           assert m.duration_ms >= 0
           assert meta.model_id == @test_model_id
           assert meta.version == @test_version
@@ -1020,25 +1062,29 @@ defmodule OrchardNodeAgentTest do
         end)
 
         # Runtime load lifecycle
-        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :start], fn _m, meta ->
+        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :start], fn _m,
+                                                                                             meta ->
           assert meta.model_id == @test_model_id
           assert meta.version == @test_version
           assert meta.backend == "stub"
           assert meta.adapter == Orchard.Node.WorkerRuntimeAdapter
         end)
 
-        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :stop], fn m, meta ->
+        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :stop], fn m,
+                                                                                            meta ->
           assert m.duration_ms >= 0
           assert meta.outcome == :loaded
         end)
 
         # Runtime unload lifecycle
-        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :unload, :start], fn _m, meta ->
+        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :unload, :start], fn _m,
+                                                                                               meta ->
           assert meta.model_id == @test_model_id
           assert meta.skip_rpc == false
         end)
 
-        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :unload, :stop], fn m, meta ->
+        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :unload, :stop], fn m,
+                                                                                              meta ->
           assert m.duration_ms >= 0
           assert meta.outcome == :unloaded
           assert meta.rpc_result == :ok
@@ -1056,44 +1102,55 @@ defmodule OrchardNodeAgentTest do
           worker_executable: "/nonexistent/orchard-worker-mlx"
         ],
         fn ->
-          events = with_telemetry_collector(all_lifecycle_events(), fn ->
-            # Use correct hash so acquisition cache check passes,
-            # letting the invalid executable cause the runtime failure.
-            result = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
-            assert result.placement_state == :PLACEMENT_STATE_FAILED
-            assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE
-            assert result.failure_code == "worker_executable_not_found"
-          end)
+          events =
+            with_telemetry_collector(all_lifecycle_events(), fn ->
+              # Use correct hash so acquisition cache check passes,
+              # letting the invalid executable cause the runtime failure.
+              result = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+              assert result.placement_state == :PLACEMENT_STATE_FAILED
+              assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE
+              assert result.failure_code == "worker_executable_not_found"
+            end)
 
           # Manager should emit start + exception
-          assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m, meta ->
+          assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m,
+                                                                                              meta ->
             assert meta.model_id == @test_model_id
             assert meta.version == @test_version
             assert meta.source_scheme == "file"
             assert meta.preload == true
           end)
 
-          assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :exception], fn m, meta ->
-            assert m.duration_ms >= 0
-            assert meta.model_id == @test_model_id
-            assert meta.version == @test_version
-            assert meta.reason == :worker_executable_not_found
-            # worker_started is true: WorkerProcess GenServer starts before
-            # the adapter's load_model/2 runs and fails
-            assert meta.worker_started == true
-          end)
+          assert_telemetry_event(
+            events,
+            [:orchard, :node, :model_manager, :load, :exception],
+            fn m, meta ->
+              assert m.duration_ms >= 0
+              assert meta.model_id == @test_model_id
+              assert meta.version == @test_version
+              assert meta.reason == :worker_executable_not_found
+              # worker_started is true: WorkerProcess GenServer starts before
+              # the adapter's load_model/2 runs and fails
+              assert meta.worker_started == true
+            end
+          )
 
           # Runtime adapter should also emit start + exception
-          assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :start], fn _m, meta ->
+          assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :start], fn _m,
+                                                                                               meta ->
             assert meta.model_id == @test_model_id
             assert meta.backend == "stub"
             assert meta.adapter == Orchard.Node.WorkerRuntimeAdapter
           end)
 
-          assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :exception], fn m, meta ->
-            assert m.duration_ms >= 0
-            assert meta.reason == :worker_executable_not_found
-          end)
+          assert_telemetry_event(
+            events,
+            [:orchard, :node, :worker_runtime, :load, :exception],
+            fn m, meta ->
+              assert m.duration_ms >= 0
+              assert meta.reason == :worker_executable_not_found
+            end
+          )
 
           # No stop events (failures only)
           refute_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop])
@@ -1104,33 +1161,36 @@ defmodule OrchardNodeAgentTest do
 
     test "reset cancellation emits manager load stop with cancelled outcome", %{bundle: bundle} do
       with_runtime_adapter(SlowLoadAdapter, fn ->
-        events = with_telemetry_collector(
-          [
-            [:orchard, :node, :model_manager, :load, :start],
-            [:orchard, :node, :model_manager, :load, :stop],
-            [:orchard, :node, :model_manager, :load, :exception]
-          ],
-          fn ->
-            ensure_task =
-              Task.async(fn ->
-                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
-              end)
+        events =
+          with_telemetry_collector(
+            [
+              [:orchard, :node, :model_manager, :load, :start],
+              [:orchard, :node, :model_manager, :load, :stop],
+              [:orchard, :node, :model_manager, :load, :exception]
+            ],
+            fn ->
+              ensure_task =
+                Task.async(fn ->
+                  NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+                end)
 
-            wait_until(fn -> NodeStatus.current().worker_state == :WORKER_STATE_STARTING end)
-            :ok = NodeStatus.reset()
+              wait_until(fn -> NodeStatus.current().worker_state == :WORKER_STATE_STARTING end)
+              :ok = NodeStatus.reset()
 
-            result = Task.await(ensure_task, 5_000)
-            assert result.placement_state == :PLACEMENT_STATE_FAILED
-            assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL
-            assert result.failure_code == "load_cancelled"
-          end
-        )
+              result = Task.await(ensure_task, 5_000)
+              assert result.placement_state == :PLACEMENT_STATE_FAILED
+              assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL
+              assert result.failure_code == "load_cancelled"
+            end
+          )
 
-        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m, meta ->
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m,
+                                                                                            meta ->
           assert meta.model_id == @test_model_id
         end)
 
-        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop], fn m, meta ->
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop], fn m,
+                                                                                           meta ->
           assert m.duration_ms >= 0
           assert meta.outcome == :cancelled
           assert meta.cancel_reason == :reset
@@ -1141,48 +1201,216 @@ defmodule OrchardNodeAgentTest do
       end)
     end
 
-    test "unload cancellation emits manager load stop with unload_request reason", %{bundle: bundle} do
+    test "unload cancellation emits manager load stop with unload_request reason", %{
+      bundle: bundle
+    } do
       with_runtime_adapter(SlowLoadAdapter, fn ->
-        events = with_telemetry_collector(
-          [
-            [:orchard, :node, :model_manager, :load, :start],
-            [:orchard, :node, :model_manager, :load, :stop],
-            [:orchard, :node, :model_manager, :load, :exception]
-          ],
-          fn ->
-            ensure_task =
-              Task.async(fn ->
-                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
-              end)
+        events =
+          with_telemetry_collector(
+            [
+              [:orchard, :node, :model_manager, :load, :start],
+              [:orchard, :node, :model_manager, :load, :stop],
+              [:orchard, :node, :model_manager, :load, :exception]
+            ],
+            fn ->
+              ensure_task =
+                Task.async(fn ->
+                  NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+                end)
 
-            wait_until(fn -> NodeStatus.current().worker_state == :WORKER_STATE_STARTING end)
+              wait_until(fn -> NodeStatus.current().worker_state == :WORKER_STATE_STARTING end)
 
-            assert %{ok: true} =
-                     NodeStatus.unload_model(%UnloadModelRequest{
-                       model_id: @test_model_id,
-                       version: @test_version,
-                       force: false,
-                       evict: false
-                     })
+              assert %{ok: true} =
+                       NodeStatus.unload_model(%UnloadModelRequest{
+                         model_id: @test_model_id,
+                         version: @test_version,
+                         force: false,
+                         evict: false
+                       })
 
-            result = Task.await(ensure_task, 5_000)
-            assert result.placement_state == :PLACEMENT_STATE_FAILED
-            assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL
-            assert result.failure_code == "load_cancelled"
-          end
-        )
+              result = Task.await(ensure_task, 5_000)
+              assert result.placement_state == :PLACEMENT_STATE_FAILED
+              assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL
+              assert result.failure_code == "load_cancelled"
+            end
+          )
 
-        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m, meta ->
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m,
+                                                                                            meta ->
           assert meta.model_id == @test_model_id
         end)
 
-        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop], fn m, meta ->
+        assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :stop], fn m,
+                                                                                           meta ->
           assert m.duration_ms >= 0
           assert meta.outcome == :cancelled
           assert meta.cancel_reason == :unload_request
         end)
 
         refute_telemetry_event(events, [:orchard, :node, :model_manager, :load, :exception])
+      end)
+    end
+  end
+
+  # -- Single-flight deadline compatibility tests (Task 5) ---------------------
+
+  describe "single-flight deadline compatibility" do
+    test "short-deadline joiner fails by its own deadline without cancelling shared task", %{
+      bundle: bundle
+    } do
+      with_runtime_adapter(DeadlineTestAdapter, fn ->
+        # Long leader: 10s deadline
+        leader_task =
+          Task.async(fn ->
+            NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 10_000))
+          end)
+
+        # Wait for the load attempt to start
+        assert_receive {:load_attempt_started, worker_pid}, 5_000
+
+        # Short follower: 200ms deadline
+        follower_task =
+          Task.async(fn ->
+            NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 200))
+          end)
+
+        # Short follower should fail by its own deadline with TIMEOUT
+        follower_result = Task.await(follower_task, 5_000)
+        assert follower_result.placement_state == :PLACEMENT_STATE_FAILED
+        assert follower_result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT
+        assert follower_result.failure_code == "deadline_exceeded"
+
+        # Leader's load should still be in progress (task not cancelled)
+        assert NodeStatus.current().worker_state == :WORKER_STATE_STARTING
+
+        # Release the worker load — leader should succeed
+        send(worker_pid, :finish_load)
+
+        leader_result = Task.await(leader_task, 5_000)
+        assert leader_result.placement_state == :PLACEMENT_STATE_LOADED
+
+        # One worker should be loaded
+        assert worker_count() == 1
+      end)
+    end
+
+    test "long-deadline joiner survives leader expiry and succeeds via restart", %{
+      bundle: bundle
+    } do
+      with_runtime_adapter(DeadlineTestAdapter, fn ->
+        # Short leader: 300ms deadline
+        leader_task =
+          Task.async(fn ->
+            NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 300))
+          end)
+
+        # Wait for first load attempt
+        assert_receive {:load_attempt_started, _worker_pid_1}, 5_000
+
+        # Long follower: 10s deadline
+        follower_task =
+          Task.async(fn ->
+            NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 10_000))
+          end)
+
+        # Give the follower time to join
+        Process.sleep(50)
+
+        # Leader should time out and receive deadline_exceeded
+        leader_result = Task.await(leader_task, 5_000)
+        assert leader_result.placement_state == :PLACEMENT_STATE_FAILED
+        assert leader_result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT
+        assert leader_result.failure_code == "deadline_exceeded"
+
+        # A second load attempt should start (restart with follower as new leader)
+        assert_receive {:load_attempt_started, worker_pid_2}, 5_000
+
+        # Release the second attempt
+        send(worker_pid_2, :finish_load)
+
+        # Long follower should succeed
+        follower_result = Task.await(follower_task, 5_000)
+        assert follower_result.placement_state == :PLACEMENT_STATE_LOADED
+
+        # One worker loaded, no inflight
+        assert worker_count() == 1
+        assert NodeStatus.current().worker_state != :WORKER_STATE_STARTING
+      end)
+    end
+
+    test "all-waiters-expire cleans up task and partial worker", %{bundle: bundle} do
+      with_runtime_adapter(DeadlineTestAdapter, fn ->
+        # Both callers have short deadlines: 300ms
+        task1 =
+          Task.async(fn ->
+            NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 300))
+          end)
+
+        assert_receive {:load_attempt_started, _worker_pid}, 5_000
+
+        task2 =
+          Task.async(fn ->
+            NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 300))
+          end)
+
+        # Both should fail with deadline_exceeded
+        result1 = Task.await(task1, 5_000)
+        result2 = Task.await(task2, 5_000)
+
+        assert result1.placement_state == :PLACEMENT_STATE_FAILED
+        assert result1.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT
+        assert result1.failure_code == "deadline_exceeded"
+
+        assert result2.placement_state == :PLACEMENT_STATE_FAILED
+        assert result2.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT
+        assert result2.failure_code == "deadline_exceeded"
+
+        # Wait for cleanup
+        wait_until(fn -> worker_count() == 0 end)
+        assert NodeStatus.current().worker_state == :WORKER_STATE_IDLE
+        assert NodeStatus.current().loaded_models == []
+      end)
+    end
+
+    test "no timer leaks or stale timeout messages after restart", %{bundle: bundle} do
+      with_runtime_adapter(DeadlineTestAdapter, fn ->
+        # Short leader: 300ms, long follower: 10s
+        leader_task =
+          Task.async(fn ->
+            NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 300))
+          end)
+
+        assert_receive {:load_attempt_started, _worker_pid_1}, 5_000
+
+        follower_task =
+          Task.async(fn ->
+            NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 10_000))
+          end)
+
+        Process.sleep(50)
+
+        # Leader times out, restart happens
+        leader_result = Task.await(leader_task, 5_000)
+        assert leader_result.placement_state == :PLACEMENT_STATE_FAILED
+
+        # Second attempt starts
+        assert_receive {:load_attempt_started, worker_pid_2}, 5_000
+
+        # Release the second attempt
+        send(worker_pid_2, :finish_load)
+
+        follower_result = Task.await(follower_task, 5_000)
+        assert follower_result.placement_state == :PLACEMENT_STATE_LOADED
+
+        # Wait well past where the original leader's timer would have fired
+        # (the leader had a 300ms deadline, already long past)
+        Process.sleep(500)
+
+        # Worker should still be loaded — no stale timer should have caused cleanup
+        assert worker_count() == 1
+        status = NodeStatus.current()
+        assert status.worker_state != :WORKER_STATE_STARTING
+        assert length(status.loaded_models) == 1
       end)
     end
   end
@@ -1367,6 +1595,18 @@ defmodule OrchardNodeAgentTest do
       artifact_sha256: bundle.hash,
       preload: true,
       deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+      artifact_source_uri: bundle.source_uri
+    }
+  end
+
+  defp ensure_model_loaded_request(bundle, deadline_offset_ms) do
+    %EnsureModelLoadedRequest{
+      node_id: "node-local",
+      model_id: @test_model_id,
+      version: @test_version,
+      artifact_sha256: bundle.hash,
+      preload: true,
+      deadline_unix_ms: System.system_time(:millisecond) + deadline_offset_ms,
       artifact_source_uri: bundle.source_uri
     }
   end
