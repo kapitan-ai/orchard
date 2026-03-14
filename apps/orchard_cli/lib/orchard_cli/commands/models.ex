@@ -9,7 +9,7 @@ defmodule OrchardCLI.Commands.Models do
 
   alias Orchard.Models.Importer
 
-  @spec run([String.t()]) :: :ok
+  @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(["import" | rest]) do
     {opts, args} = parse_import_args(rest)
 
@@ -18,36 +18,30 @@ defmodule OrchardCLI.Commands.Models do
         run_import(source_path, opts)
 
       [] ->
-        IO.puts(:stderr, "Error: missing bundle path")
-        IO.puts(:stderr, "Usage: orchardctl models import <path> [--activate]")
+        {:error, "Error: missing bundle path\nUsage: orchardctl models import <path> [--activate]", 1}
 
       _ ->
-        IO.puts(:stderr, "Error: expected exactly one bundle path")
-        IO.puts(:stderr, "Usage: orchardctl models import <path> [--activate]")
+        {:error, "Error: expected exactly one bundle path\nUsage: orchardctl models import <path> [--activate]", 1}
     end
-
-    :ok
   end
 
   def run(["list"]) do
     models = Orchard.Models.list_active_models()
 
     if models == [] do
-      IO.puts("No active models.")
+      {:ok, "No active models."}
     else
-      Enum.each(models, fn model ->
-        IO.puts(
+      lines =
+        Enum.map_join(models, "\n", fn model ->
           "#{model.model_id}@#{model.version}  state=#{model.state}  format=#{model.format}"
-        )
-      end)
-    end
+        end)
 
-    :ok
+      {:ok, lines}
+    end
   end
 
   def run(_args) do
-    IO.puts("Usage: orchardctl models <import|list>")
-    :ok
+    {:error, "Usage: orchardctl models <import|list>", 1}
   end
 
   defp run_import(source_path, opts) do
@@ -60,28 +54,28 @@ defmodule OrchardCLI.Commands.Models do
 
     case Importer.import_bundle(source_path, import_opts) do
       {:ok, model} ->
-        IO.puts("Imported #{model.model_id}@#{model.version} (state: #{model.state})")
+        {:ok, "Imported #{model.model_id}@#{model.version} (state: #{model.state})"}
 
       {:error, {:duplicate, message}} ->
-        IO.puts(:stderr, "Error: #{message}")
+        {:error, "Error: #{message}", 1}
 
       {:error, {:source_not_found, path}} ->
-        IO.puts(:stderr, "Error: source path not found: #{path}")
+        {:error, "Error: source path not found: #{path}", 1}
 
       {:error, {:source_not_directory, message}} ->
-        IO.puts(:stderr, "Error: #{message}")
+        {:error, "Error: #{message}", 1}
 
       {:error, {:manifest_not_found, path}} ->
-        IO.puts(:stderr, "Error: manifest.json not found at #{path}")
+        {:error, "Error: manifest.json not found at #{path}", 1}
 
       {:error, {:validation, message}} ->
-        IO.puts(:stderr, "Error: invalid manifest: #{message}")
+        {:error, "Error: invalid manifest: #{message}", 1}
 
       {:error, {:json_decode, message}} ->
-        IO.puts(:stderr, "Error: failed to parse manifest.json: #{message}")
+        {:error, "Error: failed to parse manifest.json: #{message}", 1}
 
       {:error, reason} ->
-        IO.puts(:stderr, "Error: import failed: #{inspect(reason)}")
+        {:error, "Error: import failed: #{inspect(reason)}", 1}
     end
   end
 

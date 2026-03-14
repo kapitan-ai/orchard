@@ -5,18 +5,38 @@ defmodule OrchardCLI do
 
   alias OrchardCLI.Commands.{Cluster, Models, Nodes, Requests, Support, Upgrade}
 
-  @spec main([String.t()]) :: :ok
-  def main(args) do
-    case args do
-      ["cluster" | rest] -> Cluster.run(rest)
-      ["nodes" | rest] -> Nodes.run(rest)
-      ["models" | rest] -> Models.run(rest)
-      ["requests" | rest] -> Requests.run(rest)
-      ["support" | rest] -> Support.run(rest)
-      ["upgrade" | rest] -> Upgrade.run(rest)
-      _ -> print_usage()
-    end
+  @type command_result :: :ok | {:ok, String.t()} | {:error, String.t(), pos_integer()}
 
+  @spec main([String.t()]) :: :ok | no_return()
+  def main(args), do: main(args, &System.halt/1)
+
+  @doc false
+  @spec main([String.t()], (non_neg_integer() -> any())) :: :ok
+  def main(args, halt_fn) do
+    result =
+      case args do
+        ["cluster" | rest] -> Cluster.run(rest)
+        ["nodes" | rest] -> Nodes.run(rest)
+        ["models" | rest] -> Models.run(rest)
+        ["requests" | rest] -> Requests.run(rest)
+        ["support" | rest] -> Support.run(rest)
+        ["upgrade" | rest] -> Upgrade.run(rest)
+        _ -> print_usage()
+      end
+
+    handle_result(result, halt_fn)
+  end
+
+  defp handle_result(:ok, _halt_fn), do: :ok
+
+  defp handle_result({:ok, message}, _halt_fn) do
+    IO.puts(message)
+    :ok
+  end
+
+  defp handle_result({:error, message, exit_code}, halt_fn) do
+    IO.puts(:stderr, message)
+    halt_fn.(exit_code)
     :ok
   end
 
