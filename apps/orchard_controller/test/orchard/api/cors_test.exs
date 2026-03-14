@@ -97,6 +97,53 @@ defmodule Orchard.API.CORSTest do
     end
   end
 
+  describe "no origin header" do
+    test "request without Origin header passes through unchanged" do
+      put_cors_origins(["http://trusted.local:3000"])
+
+      conn =
+        build_conn(:get, "/v1/models", [])
+        |> call_cors()
+
+      refute_cors_headers(conn)
+      refute conn.halted
+    end
+  end
+
+  describe "multiple allowed origins" do
+    test "echoes the matching origin when multiple are configured" do
+      put_cors_origins(["http://first.local:3000", "http://second.local:4000"])
+
+      conn =
+        build_conn(:get, "/v1/models", [{"origin", "http://second.local:4000"}])
+        |> call_cors()
+
+      assert get_resp_header(conn, "access-control-allow-origin") == ["http://second.local:4000"]
+      refute conn.halted
+    end
+
+    test "rejects origin not in multi-origin allowlist" do
+      put_cors_origins(["http://first.local:3000", "http://second.local:4000"])
+
+      conn =
+        build_conn(:get, "/v1/models", [{"origin", "http://evil.com"}])
+        |> call_cors()
+
+      refute_cors_headers(conn)
+    end
+  end
+
+  describe "invalid config" do
+    test "raises ArgumentError when cors_origins is a non-list non-nil value" do
+      put_cors_origins("http://not-a-list.com")
+
+      assert_raise ArgumentError, ~r/expected cors_origins to be a list/, fn ->
+        build_conn(:get, "/v1/models", [{"origin", "http://not-a-list.com"}])
+        |> call_cors()
+      end
+    end
+  end
+
   describe "chunked response compatibility" do
     test "CORS headers survive when downstream uses send_chunked" do
       put_cors_origins(["http://trusted.local:3000"])
