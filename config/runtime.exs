@@ -25,6 +25,204 @@ env_bool = fn env_name, default ->
   end
 end
 
+env_csv = fn env_name, default ->
+  case System.get_env(env_name) do
+    nil -> default
+    "" -> default
+
+    value ->
+      value
+      |> String.split(",")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+  end
+end
+
+env_ip = fn env_name, default_string ->
+  ip_string = System.get_env(env_name) || default_string
+
+  case :inet.parse_address(String.to_charlist(ip_string)) do
+    {:ok, ip_tuple} ->
+      ip_tuple
+
+    {:error, _} ->
+      raise "environment variable #{env_name} must be a valid IP address, got: #{inspect(ip_string)}"
+  end
+end
+
+validate_cors_origin! = fn origin ->
+  cond do
+    origin == "*" ->
+      raise "Wildcard '*' CORS origin is not allowed — use explicit origin allowlist in ORCHARD_CORS_ORIGINS"
+
+    origin == "null" ->
+      raise "'null' CORS origin is not allowed in ORCHARD_CORS_ORIGINS"
+
+    true ->
+      uri = URI.parse(origin)
+
+      unless uri.scheme in ["http", "https"] do
+        raise "Invalid CORS origin #{inspect(origin)} — must use http or https scheme"
+      end
+
+      unless is_binary(uri.host) and uri.host != "" do
+        raise "Invalid CORS origin #{inspect(origin)} — missing host"
+      end
+
+      if uri.path not in [nil, "", "/"] do
+        raise "Invalid CORS origin #{inspect(origin)} — must not include a path (got #{inspect(uri.path)})"
+      end
+
+      if String.ends_with?(origin, "/") do
+        raise "Invalid CORS origin #{inspect(origin)} — must not have trailing slash"
+      end
+
+      if uri.query do
+        raise "Invalid CORS origin #{inspect(origin)} — must not include query string"
+      end
+
+      if uri.fragment do
+        raise "Invalid CORS origin #{inspect(origin)} — must not include fragment"
+      end
+
+      if uri.userinfo do
+        raise "Invalid CORS origin #{inspect(origin)} — must not include userinfo"
+      end
+
+      :ok
+  end
+end
+
+# Parse X.509 certificate time value ({:utcTime, charlist} or {:generalTime, charlist})
+# into a NaiveDateTime.
+parse_cert_time = fn
+  {:utcTime, time_chars} ->
+    time_str = List.to_string(time_chars)
+
+    <<yy::binary-2, mm::binary-2, dd::binary-2, hh::binary-2, min::binary-2, ss::binary-2,
+      "Z">> = time_str
+
+    year = String.to_integer(yy)
+    year = if year >= 50, do: 1900 + year, else: 2000 + year
+
+    NaiveDateTime.new!(
+      year,
+      String.to_integer(mm),
+      String.to_integer(dd),
+      String.to_integer(hh),
+      String.to_integer(min),
+      String.to_integer(ss)
+    )
+
+  {:generalTime, time_chars} ->
+    time_str = List.to_string(time_chars)
+
+    <<yyyy::binary-4, mm::binary-2, dd::binary-2, hh::binary-2, min::binary-2, ss::binary-2,
+      "Z">> = time_str
+
+    NaiveDateTime.new!(
+      String.to_integer(yyyy),
+      String.to_integer(mm),
+      String.to_integer(dd),
+      String.to_integer(hh),
+      String.to_integer(min),
+      String.to_integer(ss)
+    )
+end
+
+validate_tls_material! = fn certfile, keyfile ->
+  # --- Validate certificate file ---
+  unless File.exists?(certfile) do
+    raise "TLS certificate file not found: #{certfile}\nGenerate with: orchardctl tls init"
+  end
+
+  unless File.regular?(certfile) do
+    raise "TLS certificate path is not a regular file: #{certfile}"
+  end
+
+  cert_pem = File.read!(certfile)
+  cert_entries = :public_key.pem_decode(cert_pem)
+
+  cert_entry =
+    Enum.find(cert_entries, fn
+      {:Certificate, _, :not_encrypted} -> true
+      _ -> false
+    end)
+
+  unless cert_entry do
+    raise "TLS certificate file contains no certificate PEM entry: #{certfile}"
+  end
+
+  {:Certificate, cert_der, :not_encrypted} = cert_entry
+  otp_cert = :public_key.pkix_decode_cert(cert_der, :otp)
+
+  # Navigate OTP record structure (positions are ASN.1-standardized, stable across OTP versions):
+  #   OTPCertificate{tbsCertificate, ...}  -> elem 1
+  #   OTPTBSCertificate{..., validity, ...} -> elem 5
+  #   Validity{notBefore, notAfter}         -> elems 1, 2
+  tbs = elem(otp_cert, 1)
+  validity = elem(tbs, 5)
+  not_before_raw = elem(validity, 1)
+  not_after_raw = elem(validity, 2)
+  not_before = parse_cert_time.(not_before_raw)
+  not_after = parse_cert_time.(not_after_raw)
+  now = NaiveDateTime.utc_now()
+
+  if NaiveDateTime.compare(not_before, now) == :gt do
+    raise "TLS certificate is not yet valid (notBefore: #{NaiveDateTime.to_iso8601(not_before)}Z): #{certfile}"
+  end
+
+  if NaiveDateTime.compare(not_after, now) == :lt do
+    raise "TLS certificate has expired (#{NaiveDateTime.to_iso8601(not_after)}Z): #{certfile}"
+  end
+
+  seconds_remaining = NaiveDateTime.diff(not_after, now)
+  days_remaining = div(seconds_remaining, 86400)
+
+  if days_remaining < 30 do
+    IO.puts(:stderr, """
+    ⚠️  TLS certificate expires in #{days_remaining} day(s) \
+    (#{NaiveDateTime.to_iso8601(not_after)}Z): #{certfile}
+    """)
+  end
+
+  # --- Validate private key file ---
+  unless File.exists?(keyfile) do
+    raise "TLS private key file not found: #{keyfile}\nGenerate with: orchardctl tls init"
+  end
+
+  unless File.regular?(keyfile) do
+    raise "TLS private key path is not a regular file: #{keyfile}"
+  end
+
+  key_pem = File.read!(keyfile)
+  key_entries = :public_key.pem_decode(key_pem)
+
+  key_entry =
+    Enum.find(key_entries, fn
+      {:RSAPrivateKey, _, :not_encrypted} -> true
+      {:ECPrivateKey, _, :not_encrypted} -> true
+      {:PrivateKeyInfo, _, :not_encrypted} -> true
+      _ -> false
+    end)
+
+  unless key_entry do
+    encrypted? =
+      Enum.any?(key_entries, fn
+        {_, _, :not_encrypted} -> false
+        _ -> true
+      end)
+
+    if encrypted? do
+      raise "TLS private key is encrypted (passphrase-protected keys are not supported): #{keyfile}"
+    else
+      raise "TLS private key file contains no supported private key PEM entry: #{keyfile}"
+    end
+  end
+
+  :ok
+end
+
 # Keep these release-safe defaults aligned with config/m1_runtime_defaults.exs.
 default_controller_inference = fn root ->
   [
@@ -87,8 +285,23 @@ if config_env() == :prod do
         System.get_env("SECRET_KEY_BASE") ||
           raise "environment variable SECRET_KEY_BASE is missing for Orchard controller releases"
 
-      host = System.get_env("PHX_HOST") || "localhost"
-      port = env_int.("PORT", "4000")
+      # --- TLS / HTTPS configuration ---
+      tls_disabled? = env_bool.("ORCHARD_TLS_DISABLED", false)
+      public_host = System.get_env("ORCHARD_PUBLIC_HOST") || System.get_env("PHX_HOST") || "localhost"
+
+      # CORS origins — strict validation at boot
+      cors_origins =
+        env_csv.("ORCHARD_CORS_ORIGINS", [])
+        |> Enum.uniq()
+
+      Enum.each(cors_origins, validate_cors_origin!)
+
+      # TLS file paths
+      tls_dir = Path.join([orchard_support_root, "config", "tls"])
+      certfile = System.get_env("ORCHARD_TLS_CERTFILE") || Path.join(tls_dir, "controller.crt")
+      keyfile = System.get_env("ORCHARD_TLS_KEYFILE") || Path.join(tls_dir, "controller.key")
+      cacertfile = System.get_env("ORCHARD_TLS_CACERTFILE") || Path.join(tls_dir, "ca.crt")
+      ca_meta_path = Path.join(Path.dirname(cacertfile), ".orchard-tls-meta.json")
 
       config :orchard_controller, Orchard.Repo,
         url: database_url,
@@ -112,11 +325,50 @@ if config_env() == :prod do
             model_load_timeout_ms: env_int.("ORCHARD_MODEL_LOAD_TIMEOUT_MS", "120000")
           )
 
+      # --- Transport listener configuration ---
+      {transport_config, url_config, transport_degraded?} =
+        if tls_disabled? do
+          # Emergency recovery mode — loopback-only HTTP
+          http_port = env_int.("PORT", "4000")
+
+          IO.puts(:stderr, """
+
+          ╔══════════════════════════════════════════════════════════════╗
+          ║  ⚠️  TLS DISABLED — EMERGENCY RECOVERY MODE               ║
+          ║                                                            ║
+          ║  ORCHARD_TLS_DISABLED=true                                 ║
+          ║  Controller listening on HTTP 127.0.0.1:#{String.pad_trailing(to_string(http_port), 5)}             ║
+          ║  This is NOT secure for production use.                    ║
+          ║  Generate certificates: orchardctl tls init                ║
+          ╚══════════════════════════════════════════════════════════════╝
+          """)
+
+          {[http: [ip: {127, 0, 0, 1}, port: http_port]],
+           [host: "localhost", port: http_port, scheme: "http"],
+           true}
+        else
+          # Normal HTTPS mode — validate TLS material before starting
+          https_port = env_int.("ORCHARD_API_HTTPS_PORT", "8443")
+          bind_ip = env_ip.("ORCHARD_API_BIND_IP", "0.0.0.0")
+          validate_tls_material!.(certfile, keyfile)
+
+          {[https: [ip: bind_ip, port: https_port, certfile: certfile, keyfile: keyfile, cipher_suite: :strong]],
+           [host: public_host, port: https_port, scheme: "https"],
+           false}
+        end
+
+      config :orchard_controller, transport_degraded: transport_degraded?
+
       config :orchard_controller, Orchard.API.Endpoint,
-        server: true,
-        http: [ip: {0, 0, 0, 0}, port: port],
-        url: [host: host, port: 443, scheme: "https"],
-        secret_key_base: secret_key_base
+        transport_config ++
+          [
+            server: true,
+            url: url_config,
+            secret_key_base: secret_key_base,
+            cors_origins: cors_origins,
+            ca_certfile: cacertfile,
+            ca_cert_metadata_path: ca_meta_path
+          ]
 
     "orchard_node_agent" ->
       config :orchard_node_agent,

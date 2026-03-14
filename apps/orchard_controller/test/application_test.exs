@@ -50,6 +50,20 @@ defmodule OrchardApplicationTest do
     assert is_pid(Process.whereis(Orchard.Requests.Supervisor))
   end
 
+  test "test environment uses deterministic endpoint config defaults" do
+    endpoint_config = Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
+
+    # Loopback HTTP only in test
+    assert endpoint_config[:http] == [ip: {127, 0, 0, 1}, port: 4002]
+    assert endpoint_config[:https] == nil
+
+    # CORS explicitly empty
+    assert endpoint_config[:cors_origins] == []
+
+    # Transport not degraded
+    assert Application.get_env(:orchard_controller, :transport_degraded, false) == false
+  end
+
   test "test environment config uses fake tokenizer and local runtime target" do
     inference = Application.fetch_env!(:orchard_controller, :inference)
 

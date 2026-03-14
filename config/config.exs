@@ -8,7 +8,8 @@ config :phoenix, :json_library, Jason
 
 config :orchard_controller,
   ecto_repos: [Orchard.Repo],
-  generators: [binary_id: true]
+  generators: [binary_id: true],
+  transport_degraded: false
 
 config :orchard_controller, Orchard.API.Endpoint,
   adapter: Bandit.PhoenixAdapter,

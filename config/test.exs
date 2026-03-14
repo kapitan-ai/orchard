@@ -45,6 +45,7 @@ config :orchard_node_agent,
 
 config :orchard_controller, Orchard.API.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
+  cors_origins: [],
   secret_key_base: String.duplicate("test-secret-", 8),
   server: false
 

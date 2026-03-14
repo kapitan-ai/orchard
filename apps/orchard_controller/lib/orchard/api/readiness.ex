@@ -15,7 +15,8 @@ defmodule Orchard.API.Readiness do
     checks = %{
       controller_boot_completed: true,
       postgres_reachable: postgres_reachable?(),
-      migrations_current: migrations_current?()
+      migrations_current: migrations_current?(),
+      public_api_https_enabled: public_api_https_enabled?()
     }
 
     if Enum.all?(checks, fn {_check, status} -> status end) do
@@ -44,6 +45,10 @@ defmodule Orchard.API.Readiness do
 
   defp db_checks_enabled? do
     Application.get_env(:orchard_controller, @db_checks_key, true)
+  end
+
+  defp public_api_https_enabled? do
+    not Application.get_env(:orchard_controller, :transport_degraded, false)
   end
 
   defp first_failure(checks) do

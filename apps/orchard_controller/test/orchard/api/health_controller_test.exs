@@ -1,5 +1,5 @@
 defmodule Orchard.API.HealthControllerTest do
-  use Orchard.ConnCase, async: true
+  use Orchard.ConnCase, async: false
 
   alias Orchard.API.Router
 
@@ -27,5 +27,26 @@ defmodule Orchard.API.HealthControllerTest do
     assert body["checks"]["controller_boot_completed"] == true
     assert body["checks"]["postgres_reachable"] == false
     assert body["checks"]["migrations_current"] == false
+    assert body["checks"]["public_api_https_enabled"] == true
+  end
+
+  test "health ready endpoint reflects transport degraded state", %{conn: _conn} do
+    previous = Application.get_env(:orchard_controller, :transport_degraded, false)
+    Application.put_env(:orchard_controller, :transport_degraded, true)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :transport_degraded, previous)
+    end)
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    body = Jason.decode!(conn.resp_body)
+
+    assert conn.status == 503
+    assert body["status"] == "error"
+    assert body["checks"]["public_api_https_enabled"] == false
   end
 end
