@@ -167,5 +167,8 @@ defmodule Orchard.API.CORSTest do
 
   defp refute_cors_headers(conn) do
     assert get_resp_header(conn, "access-control-allow-origin") == []
+    assert get_resp_header(conn, "access-control-allow-methods") == []
+    assert get_resp_header(conn, "access-control-allow-headers") == []
+    assert get_resp_header(conn, "access-control-expose-headers") == []
   end
 end

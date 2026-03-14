@@ -112,6 +112,8 @@ defmodule Orchard.API.CACertControllerTest do
 
       assert disposition =~ "attachment"
       assert disposition =~ "orchard-ca.crt"
+
+      assert conn.resp_body == pem_content
     end
 
     test "route works without JSON Accept header", %{tmp_dir: tmp_dir} do

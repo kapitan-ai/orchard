@@ -169,6 +169,7 @@ defmodule OrchardCLI.Commands.TLSTest do
     assert message =~ "CA certificate not found"
   end
 
+  @tag :integration
   test "trust-ca as non-root returns error" do
     dir = make_tmp_dir()
 
@@ -182,6 +183,7 @@ defmodule OrchardCLI.Commands.TLSTest do
 
   # ── Init: Existing State Logic ────────────────────────────────────
 
+  @tag :integration
   test "init refuses when CA and server cert exist without --force" do
     dir = make_tmp_dir()
     generate_test_certs(dir)
@@ -192,6 +194,7 @@ defmodule OrchardCLI.Commands.TLSTest do
     assert message =~ "already exist"
   end
 
+  @tag :integration
   test "init refuses --ca-days when reusing existing CA" do
     dir = make_tmp_dir()
     generate_test_certs(dir)
@@ -215,7 +218,7 @@ defmodule OrchardCLI.Commands.TLSTest do
     File.write!(Path.join(dir, "ca.key"), "fake-key")
 
     assert {:error, message, 1} =
-             TLS.run(["init", "--no-trust", "--output-dir", dir], real_runtime())
+             TLS.run(["init", "--no-trust", "--output-dir", dir], test_runtime())
 
     assert message =~ "inconsistent CA state"
   end
@@ -443,7 +446,7 @@ defmodule OrchardCLI.Commands.TLSTest do
     File.write!(server_crt, "external-cert")
 
     assert {:error, message, 1} =
-             TLS.run(["init", "--no-trust", "--output-dir", dir], real_runtime())
+             TLS.run(["init", "--no-trust", "--output-dir", dir], test_runtime())
 
     assert message =~ "existing server certificate files"
     assert message =~ "--force"
@@ -458,13 +461,14 @@ defmodule OrchardCLI.Commands.TLSTest do
     File.write!(Path.join(dir, "controller.key"), "external-key")
 
     assert {:error, message, 1} =
-             TLS.run(["init", "--no-trust", "--output-dir", dir], real_runtime())
+             TLS.run(["init", "--no-trust", "--output-dir", dir], test_runtime())
 
     assert message =~ "existing server certificate files"
   end
 
   # ── Review Regression: R2 — Corrupt metadata ─────────────────────
 
+  @tag :integration
   test "trust-ca rejects corrupt metadata JSON" do
     dir = make_tmp_dir()
     generate_test_certs(dir)
@@ -486,7 +490,7 @@ defmodule OrchardCLI.Commands.TLSTest do
     File.write!(blocked_dir, "not a directory")
 
     assert {:error, message, 1} =
-             TLS.run(["init", "--no-trust", "--output-dir", blocked_dir], real_runtime())
+             TLS.run(["init", "--no-trust", "--output-dir", blocked_dir], test_runtime())
 
     assert message =~ "filesystem error"
   end
