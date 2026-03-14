@@ -32,6 +32,7 @@ defmodule OrchardController.MixProject do
     [
       {:orchard_shared, in_umbrella: true},
       {:bandit, "~> 1.5"},
+      {:cors_plug, "~> 3.0"},
       {:ecto_sql, "~> 3.11"},
       {:jason, "~> 1.4"},
       {:phoenix, "~> 1.7.20"},

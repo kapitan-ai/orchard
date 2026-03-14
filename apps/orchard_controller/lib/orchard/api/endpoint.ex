@@ -6,6 +6,7 @@ defmodule Orchard.API.Endpoint do
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:orchard, :api])
   plug(Plug.Head)
+  plug(Orchard.API.CORS)
 
   plug(Plug.Parsers,
     parsers: [:json],

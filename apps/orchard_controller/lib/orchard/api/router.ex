@@ -12,6 +12,9 @@ defmodule Orchard.API.Router do
     plug(Orchard.API.RequestContext)
   end
 
+  # CA cert download — outside pipelines (no JSON Accept requirement)
+  get("/ca.crt", Orchard.API.CACertController, :show)
+
   scope "/" do
     pipe_through(:api)
 

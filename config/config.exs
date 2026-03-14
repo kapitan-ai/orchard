@@ -15,7 +15,10 @@ config :orchard_controller, Orchard.API.Endpoint,
   url: [host: "localhost"],
   render_errors: [formats: [json: Orchard.API.ErrorJSON], layout: false],
   pubsub_server: Orchard.PubSub,
-  live_view: [signing_salt: "m0signsalt"]
+  live_view: [signing_salt: "m0signsalt"],
+  cors_origins: [],
+  ca_certfile: nil,
+  ca_cert_metadata_path: nil
 
 config :orchard_controller,
        :inference,
