@@ -3,10 +3,16 @@ set -eu
 # Orchard controller wrapper.
 # Loads optional env overrides from config dir before starting the release.
 # Env files must be root-owned with no group/world permissions (e.g. 0600).
+#
+# TLS boot gate (Task 4): validates TLS file presence before exec'ing the
+# release. Uses the same TLS mode classification as postinstall. Does NOT
+# perform X.509 parsing — that remains in config/runtime.exs.
 
 ORCHARD_ROOT="/Library/Application Support/Orchard"
 ENV_FILE="$ORCHARD_ROOT/config/controller.env"
+TLS_DIR="$ORCHARD_ROOT/config/tls"
 
+# --- Secure env-file sourcing ---------------------------------------------
 if [ -f "$ENV_FILE" ]; then
     # Validate ownership and permissions before sourcing (MF1 hardening).
     _env_meta=$(stat -f '%u:%Lp' "$ENV_FILE" 2>/dev/null) || _env_meta=""
@@ -22,6 +28,102 @@ if [ -f "$ENV_FILE" ]; then
         set -a
         . "$ENV_FILE"
         set +a
+    fi
+fi
+
+# --- TLS boot gate --------------------------------------------------------
+# Matches config/runtime.exs env_bool semantics exactly.
+# Callers must pass raw value; empty string is invalid (runtime.exs raises).
+_tls_is_truthy() {
+  case "$1" in
+    1|true|TRUE|yes|YES|on|ON)      return 0 ;;
+    0|false|FALSE|no|NO|off|OFF)    return 1 ;;
+    *)                               return 2 ;;
+  esac
+}
+
+# Distinguish unset (default false) from set-to-empty (invalid per runtime.exs).
+_tls_disabled=false
+if [ -n "${ORCHARD_TLS_DISABLED+x}" ]; then
+    # Variable is set — validate its value
+    if _tls_is_truthy "$ORCHARD_TLS_DISABLED"; then
+        _tls_disabled=true
+    else
+        _tls_rc=$?
+        if [ "$_tls_rc" -eq 2 ]; then
+            printf 'orchard-controller: ERROR: ORCHARD_TLS_DISABLED has invalid value: %s\n' \
+                "$ORCHARD_TLS_DISABLED" >&2
+            printf 'orchard-controller: Accepted values: 1,true,TRUE,yes,YES,on,ON,0,false,FALSE,no,NO,off,OFF\n' >&2
+            exit 78  # EX_CONFIG
+        fi
+    fi
+fi
+
+if [ "$_tls_disabled" = false ]; then
+    # Determine TLS mode: managed_default vs external_override vs invalid
+    _cert_set=false
+    _key_set=false
+    if [ -n "${ORCHARD_TLS_CERTFILE+x}" ]; then _cert_set=true; fi
+    if [ -n "${ORCHARD_TLS_KEYFILE+x}" ]; then _key_set=true; fi
+
+    # Invalid: exactly one override set
+    if [ "$_cert_set" != "$_key_set" ]; then
+        printf 'orchard-controller: ERROR: ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set or both unset\n' >&2
+        printf 'orchard-controller:   ORCHARD_TLS_CERTFILE=%s\n' "${ORCHARD_TLS_CERTFILE:-<unset>}" >&2
+        printf 'orchard-controller:   ORCHARD_TLS_KEYFILE=%s\n' "${ORCHARD_TLS_KEYFILE:-<unset>}" >&2
+        exit 78
+    fi
+
+    # Reject set-to-empty cert/key (runtime.exs would fail on empty path)
+    if [ "$_cert_set" = true ]; then
+        if [ -z "$ORCHARD_TLS_CERTFILE" ] || [ -z "$ORCHARD_TLS_KEYFILE" ]; then
+            printf 'orchard-controller: ERROR: ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must not be empty\n' >&2
+            exit 78
+        fi
+    fi
+
+    # Resolve effective paths (only use defaults for truly unset vars)
+    _eff_cert="${ORCHARD_TLS_CERTFILE:-$TLS_DIR/controller.crt}"
+    _eff_key="${ORCHARD_TLS_KEYFILE:-$TLS_DIR/controller.key}"
+    _eff_ca="${ORCHARD_TLS_CACERTFILE:-$TLS_DIR/ca.crt}"
+
+    # Determine if we're in managed or external mode
+    _is_managed=true
+    if [ "$_cert_set" = true ]; then
+        if [ "$ORCHARD_TLS_CERTFILE" != "$TLS_DIR/controller.crt" ] || \
+           [ "$ORCHARD_TLS_KEYFILE" != "$TLS_DIR/controller.key" ]; then
+            _is_managed=false
+        fi
+    fi
+
+    # Validate cert file
+    if [ ! -f "$_eff_cert" ]; then
+        printf 'orchard-controller: ERROR: TLS certificate not found: %s\n' "$_eff_cert" >&2
+        if [ "$_is_managed" = true ]; then
+            printf 'orchard-controller: Run: sudo orchardctl tls init --no-trust\n' >&2
+        fi
+        exit 78
+    fi
+
+    # Validate key file
+    if [ ! -f "$_eff_key" ]; then
+        printf 'orchard-controller: ERROR: TLS private key not found: %s\n' "$_eff_key" >&2
+        if [ "$_is_managed" = true ]; then
+            printf 'orchard-controller: Run: sudo orchardctl tls init --no-trust\n' >&2
+        fi
+        exit 78
+    fi
+
+    # Validate CA cert (managed: required; external: only if explicitly set)
+    if [ "$_is_managed" = true ]; then
+        if [ ! -f "$_eff_ca" ]; then
+            printf 'orchard-controller: WARNING: CA certificate not found: %s (/ca.crt endpoint may be unavailable)\n' "$_eff_ca" >&2
+        fi
+    elif [ -n "${ORCHARD_TLS_CACERTFILE+x}" ] && [ -n "${ORCHARD_TLS_CACERTFILE}" ]; then
+        if [ ! -f "$_eff_ca" ]; then
+            printf 'orchard-controller: ERROR: CA certificate not found: %s\n' "$_eff_ca" >&2
+            exit 78
+        fi
     fi
 fi
 

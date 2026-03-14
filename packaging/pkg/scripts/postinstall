@@ -1,14 +1,171 @@
 #!/bin/sh
 set -eu
-# Orchard PKG postinstall — install wrappers, plists, and register services.
+# Orchard PKG postinstall — install wrappers, plists, resolve TLS state,
+# generate managed TLS if needed, and register services.
 #
 # SPEC.md §11.4: postinstall creation of launchd plists,
 # optional managed DB enablement, optional controller-only or node-only modes.
+#
+# Flow (Sub-tasks 2–4 of Task 4):
+#   1. Install wrapper binaries and symlinks
+#   2. Install launchd plists (no bootstrap yet)
+#   3. Normalize directory ownership/permissions
+#   4. Read install context marker (diagnostic)
+#   5. Securely source controller.env if valid
+#   6. Resolve TLS mode and act (generate / validate / skip)
+#   7. Bootstrap services in dependency order with rollback
+#   8. Write completion marker and clean up context marker
 
 ORCHARD_ROOT="/Library/Application Support/Orchard"
 LAUNCHD_SRC="$ORCHARD_ROOT/share/launchd"
+TLS_DIR="$ORCHARD_ROOT/config/tls"
 
-# --- 1. Install wrapper commands into bin/ ---------------------------------
+# ===========================================================================
+# Helper functions
+# ===========================================================================
+
+# is_truthy VALUE — returns 0 (true), 1 (false), or 2 (invalid).
+# Matches config/runtime.exs env_bool semantics exactly.
+# Callers must pass the raw value; empty string is invalid (runtime.exs raises).
+is_truthy() {
+  case "$1" in
+    1|true|TRUE|yes|YES|on|ON)      return 0 ;;
+    0|false|FALSE|no|NO|off|OFF)    return 1 ;;
+    *)                               return 2 ;;
+  esac
+}
+
+# secure_source_env FILE — sources FILE only if root-owned with no
+# group/world permission bits. Mirrors orchard-controller wrapper logic.
+secure_source_env() {
+  _ssf="$1"
+  if [ ! -f "$_ssf" ]; then
+    return 0  # absent is fine — no overrides
+  fi
+  _meta=$(stat -f '%u:%Lp' "$_ssf" 2>/dev/null) || _meta=""
+  _uid=${_meta%%:*}
+  _mode=${_meta#*:}
+  if [ -z "$_meta" ]; then
+    printf 'postinstall: WARNING: could not inspect env file %s; skipping overrides\n' "$_ssf" >&2
+    return 0
+  fi
+  if [ "$_uid" != "0" ]; then
+    printf 'postinstall: WARNING: ignoring env file %s (owner uid=%s, expected 0)\n' "$_ssf" "$_uid" >&2
+    return 0
+  fi
+  if [ "${_mode#?}" != "00" ]; then
+    printf 'postinstall: WARNING: ignoring env file %s (mode=%s, group/world bits set)\n' "$_ssf" "$_mode" >&2
+    return 0
+  fi
+  set -a
+  . "$_ssf"
+  set +a
+}
+
+# resolve_tls_mode — prints one of:
+#   disabled  managed_default  external_override  invalid_override  invalid_boolean
+# Uses ORCHARD_TLS_DISABLED, ORCHARD_TLS_CERTFILE, ORCHARD_TLS_KEYFILE.
+resolve_tls_mode() {
+  # 1. Check ORCHARD_TLS_DISABLED
+  # Distinguish unset (default false) from set-to-empty (invalid per runtime.exs).
+  if [ -n "${ORCHARD_TLS_DISABLED+x}" ]; then
+    # Variable is set — validate its value (empty string -> invalid)
+    _is_rc=0
+    is_truthy "$ORCHARD_TLS_DISABLED" || _is_rc=$?
+    if [ "$_is_rc" -eq 0 ]; then
+      printf 'disabled'
+      return 0
+    fi
+    if [ "$_is_rc" -eq 2 ]; then
+      printf 'invalid_boolean'
+      return 0
+    fi
+    # _is_rc == 1: explicitly set to false, continue
+  fi
+  # If unset, default is false (TLS enabled) — continue
+
+  # 2. Check cert/key overrides
+  # Use ${VAR+x} to detect set-ness. Fail on set-to-empty.
+  _cert_set=false
+  _key_set=false
+  if [ -n "${ORCHARD_TLS_CERTFILE+x}" ]; then _cert_set=true; fi
+  if [ -n "${ORCHARD_TLS_KEYFILE+x}" ]; then _key_set=true; fi
+
+  # 3. Exactly one set -> invalid
+  if [ "$_cert_set" != "$_key_set" ]; then
+    printf 'invalid_override'
+    return 0
+  fi
+
+  # 4. Neither set -> managed
+  if [ "$_cert_set" = false ]; then
+    printf 'managed_default'
+    return 0
+  fi
+
+  # 5. Both set — reject empty values (runtime.exs would fail on empty path)
+  if [ -z "$ORCHARD_TLS_CERTFILE" ] || [ -z "$ORCHARD_TLS_KEYFILE" ]; then
+    printf 'invalid_override'
+    return 0
+  fi
+
+  # 6. Both set non-empty — check if they match managed defaults
+  _default_cert="$TLS_DIR/controller.crt"
+  _default_key="$TLS_DIR/controller.key"
+  if [ "$ORCHARD_TLS_CERTFILE" = "$_default_cert" ] && \
+     [ "$ORCHARD_TLS_KEYFILE" = "$_default_key" ]; then
+    printf 'managed_default'
+    return 0
+  fi
+
+  printf 'external_override'
+}
+
+# inspect_managed_tls_state — prints: empty | complete | partial
+inspect_managed_tls_state() {
+  _found=0
+  _expected=4
+  for _f in "$TLS_DIR/ca.key" "$TLS_DIR/ca.crt" \
+            "$TLS_DIR/controller.key" "$TLS_DIR/controller.crt"; do
+    if [ -f "$_f" ]; then
+      _found=$(( _found + 1 ))
+    elif [ -e "$_f" ] || [ -L "$_f" ]; then
+      # Exists but is not a regular file (directory, broken symlink, etc.)
+      printf 'partial'
+      return 0
+    fi
+  done
+  if [ "$_found" -eq 0 ]; then
+    printf 'empty'
+  elif [ "$_found" -eq "$_expected" ]; then
+    printf 'complete'
+  else
+    printf 'partial'
+  fi
+}
+
+# require_regular_file VAR_NAME PATH — aborts with message if missing/non-regular.
+require_regular_file() {
+  _var="$1"
+  _path="$2"
+  if [ ! -f "$_path" ]; then
+    printf 'postinstall: ERROR: %s=%s is not a regular file or does not exist\n' "$_var" "$_path" >&2
+    return 1
+  fi
+}
+
+# bootstrap_service LABEL PLIST — bootstraps one launchd service.
+# Returns 0 on success, non-zero on failure.
+bootstrap_service() {
+  _label="$1"
+  _plist="$2"
+  printf 'postinstall: bootstrapping %s\n' "$_label"
+  launchctl bootstrap system "$_plist"
+}
+
+# ===========================================================================
+# 1. Install wrapper commands into bin/
+# ===========================================================================
 for cmd in orchard-controller orchard-node-agent orchardctl orchard-managed-postgres; do
   src="$ORCHARD_ROOT/share/bin/$cmd"
   dst="$ORCHARD_ROOT/bin/$cmd"
@@ -17,27 +174,30 @@ for cmd in orchard-controller orchard-node-agent orchardctl orchard-managed-post
   fi
 done
 
-# --- 2. Symlink orchardctl into PATH (/usr/local/bin) ----------------------
+# ===========================================================================
+# 2. Symlink orchardctl into PATH (/usr/local/bin)
+# ===========================================================================
 mkdir -p /usr/local/bin
 ln -sf "$ORCHARD_ROOT/bin/orchardctl" /usr/local/bin/orchardctl
 
-# --- 3. Install launchd plists and register services ----------------------
+# ===========================================================================
+# 3. Install launchd plists (no bootstrap yet)
+# ===========================================================================
 
 # System daemons: controller + node-agent (always installed)
 for svc in com.orchard.controller com.orchard.node-agent; do
   plist="$LAUNCHD_SRC/$svc.plist"
   if [ -f "$plist" ]; then
     install -m 0644 "$plist" /Library/LaunchDaemons/"$svc".plist
-    launchctl bootstrap system /Library/LaunchDaemons/"$svc".plist 2>/dev/null || true
   fi
 done
 
 # Managed Postgres daemon: only if the managed-postgres asset is present
-if [ -f "$LAUNCHD_SRC/com.orchard.postgres.plist" ] && \
-   [ -f "$ORCHARD_ROOT/bin/orchard-managed-postgres" ]; then
-  install -m 0644 "$LAUNCHD_SRC/com.orchard.postgres.plist" \
+postgres_plist="$LAUNCHD_SRC/com.orchard.postgres.plist"
+if [ -f "$postgres_plist" ] && \
+   [ -f "$ORCHARD_ROOT/share/bin/orchard-managed-postgres" ]; then
+  install -m 0644 "$postgres_plist" \
     /Library/LaunchDaemons/com.orchard.postgres.plist
-  launchctl bootstrap system /Library/LaunchDaemons/com.orchard.postgres.plist 2>/dev/null || true
 fi
 
 # Tray user agent: install plist but do not bootstrap (runs per-user on login)
@@ -46,9 +206,183 @@ if [ -f "$LAUNCHD_SRC/com.orchard.tray.plist" ]; then
     /Library/LaunchAgents/com.orchard.tray.plist
 fi
 
-# --- 4. Set ownership and permissions --------------------------------------
-chown -R root:wheel "$ORCHARD_ROOT"
-chmod 0700 "$ORCHARD_ROOT/config"  # env override files are root-only
+# ===========================================================================
+# 4. Normalize directory ownership and permissions
+# ===========================================================================
+# Targeted hardening — do NOT recursive-chown before env inspection, as that
+# would mask insecure controller.env ownership.
+chown root:wheel "$ORCHARD_ROOT"
+chown root:wheel "$ORCHARD_ROOT/bin" "$ORCHARD_ROOT/support"
+chown root:wheel "$ORCHARD_ROOT/config"
+chown root:wheel "$ORCHARD_ROOT/config/tls"
+chmod 0700 "$ORCHARD_ROOT/config"
+chmod 0700 "$ORCHARD_ROOT/config/tls"
 
-echo "Orchard postinstall complete."
+# ===========================================================================
+# 5. Read install context marker (diagnostic)
+# ===========================================================================
+install_mode="unknown"
+install_reason="unknown"
+context_file="$ORCHARD_ROOT/support/.pkg-install-context"
+if [ -f "$context_file" ]; then
+  # Parse key=value lines
+  while IFS='=' read -r _key _val; do
+    case "$_key" in
+      mode)   install_mode="$_val" ;;
+      reason) install_reason="$_val" ;;
+    esac
+  done < "$context_file"
+else
+  printf 'postinstall: WARNING: install context marker not found; proceeding anyway\n' >&2
+fi
+printf 'postinstall: install_mode=%s reason=%s\n' "$install_mode" "$install_reason"
+
+# ===========================================================================
+# 6. Securely source controller.env if valid
+# ===========================================================================
+secure_source_env "$ORCHARD_ROOT/config/controller.env"
+
+# ===========================================================================
+# 7. Resolve TLS mode and act
+# ===========================================================================
+tls_mode=$(resolve_tls_mode)
+printf 'postinstall: tls_mode=%s\n' "$tls_mode"
+
+case "$tls_mode" in
+  invalid_boolean)
+    printf 'postinstall: ERROR: ORCHARD_TLS_DISABLED has invalid value: %s\n' \
+      "${ORCHARD_TLS_DISABLED:-}" >&2
+    printf 'postinstall: Accepted values: 1,true,TRUE,yes,YES,on,ON,0,false,FALSE,no,NO,off,OFF\n' >&2
+    exit 1
+    ;;
+
+  invalid_override)
+    printf 'postinstall: ERROR: ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set (non-empty) or both unset\n' >&2
+    printf 'postinstall:   ORCHARD_TLS_CERTFILE=%s\n' "${ORCHARD_TLS_CERTFILE:-<unset>}" >&2
+    printf 'postinstall:   ORCHARD_TLS_KEYFILE=%s\n' "${ORCHARD_TLS_KEYFILE:-<unset>}" >&2
+    exit 1
+    ;;
+
+  disabled)
+    printf 'postinstall: TLS is disabled (ORCHARD_TLS_DISABLED=%s); skipping TLS setup\n' \
+      "${ORCHARD_TLS_DISABLED:-}" >&2
+    ;;
+
+  managed_default)
+    tls_state=$(inspect_managed_tls_state)
+    printf 'postinstall: managed TLS state=%s\n' "$tls_state"
+
+    case "$tls_state" in
+      empty)
+        printf 'postinstall: generating managed TLS certificates...\n'
+        if [ ! -x "$ORCHARD_ROOT/bin/orchardctl" ]; then
+          printf 'postinstall: ERROR: orchardctl not found at %s\n' \
+            "$ORCHARD_ROOT/bin/orchardctl" >&2
+          exit 1
+        fi
+        ORCHARD_SUPPORT_ROOT="$ORCHARD_ROOT" \
+          PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH" \
+          "$ORCHARD_ROOT/bin/orchardctl" tls init --no-trust || {
+            printf 'postinstall: ERROR: TLS certificate generation failed; aborting install\n' >&2
+            exit 1
+          }
+        printf '\n'
+        printf 'Orchard TLS certificates generated successfully.\n'
+        printf 'To trust the CA on this machine:  sudo orchardctl tls trust-ca\n'
+        printf 'To install CA on LAN clients:     distribute the CA certificate\n'
+        printf '\n'
+        ;;
+      complete)
+        printf 'postinstall: existing managed TLS certificates found; preserving\n'
+        ;;
+      partial)
+        printf 'postinstall: ERROR: partial managed TLS state in %s\n' "$TLS_DIR" >&2
+        printf 'postinstall: Expected all four files: ca.key, ca.crt, controller.key, controller.crt\n' >&2
+        printf 'postinstall: Found:\n' >&2
+        for _f in ca.key ca.crt controller.key controller.crt; do
+          if [ -f "$TLS_DIR/$_f" ]; then
+            printf '  [present] %s\n' "$_f" >&2
+          else
+            printf '  [MISSING] %s\n' "$_f" >&2
+          fi
+        done
+        printf 'postinstall: Remove all TLS files and rerun install, or provide all four files\n' >&2
+        exit 1
+        ;;
+    esac
+    ;;
+
+  external_override)
+    printf 'postinstall: external TLS override configured; validating files\n'
+    require_regular_file "ORCHARD_TLS_CERTFILE" "$ORCHARD_TLS_CERTFILE" || exit 1
+    require_regular_file "ORCHARD_TLS_KEYFILE" "$ORCHARD_TLS_KEYFILE" || exit 1
+    if [ -n "${ORCHARD_TLS_CACERTFILE+x}" ] && [ -n "${ORCHARD_TLS_CACERTFILE}" ]; then
+      require_regular_file "ORCHARD_TLS_CACERTFILE" "$ORCHARD_TLS_CACERTFILE" || exit 1
+    fi
+    printf 'postinstall: external TLS files validated\n'
+    ;;
+esac
+
+# ===========================================================================
+# 8. Bootstrap services in dependency order with rollback
+# ===========================================================================
+bootstrapped=""  # space-delimited labels, prepended for reverse-order rollback
+
+rollback_and_exit() {
+  _rc="$1"
+  if [ -n "$bootstrapped" ]; then
+    printf 'postinstall: rolling back bootstrapped services...\n' >&2
+    for _svc in $bootstrapped; do
+      printf 'postinstall: bootout %s\n' "$_svc" >&2
+      launchctl bootout system/"$_svc" 2>/dev/null || true
+    done
+  fi
+  exit "$_rc"
+}
+
+# 8a. Managed Postgres (optional, first in dependency order)
+if [ -f /Library/LaunchDaemons/com.orchard.postgres.plist ] && \
+   [ -x "$ORCHARD_ROOT/bin/orchard-managed-postgres" ]; then
+  if bootstrap_service com.orchard.postgres /Library/LaunchDaemons/com.orchard.postgres.plist; then
+    bootstrapped="com.orchard.postgres $bootstrapped"
+  else
+    printf 'postinstall: ERROR: failed to bootstrap com.orchard.postgres\n' >&2
+    rollback_and_exit 1
+  fi
+fi
+
+# 8b. Node agent
+if [ -f /Library/LaunchDaemons/com.orchard.node-agent.plist ]; then
+  if bootstrap_service com.orchard.node-agent /Library/LaunchDaemons/com.orchard.node-agent.plist; then
+    bootstrapped="com.orchard.node-agent $bootstrapped"
+  else
+    printf 'postinstall: ERROR: failed to bootstrap com.orchard.node-agent\n' >&2
+    rollback_and_exit 1
+  fi
+fi
+
+# 8c. Controller (last)
+if [ -f /Library/LaunchDaemons/com.orchard.controller.plist ]; then
+  if bootstrap_service com.orchard.controller /Library/LaunchDaemons/com.orchard.controller.plist; then
+    bootstrapped="com.orchard.controller $bootstrapped"
+  else
+    printf 'postinstall: ERROR: failed to bootstrap com.orchard.controller\n' >&2
+    rollback_and_exit 1
+  fi
+fi
+
+# ===========================================================================
+# 9. Write completion marker and clean up
+# ===========================================================================
+complete_file="$ORCHARD_ROOT/support/.pkg-install-complete"
+complete_tmp="$ORCHARD_ROOT/support/.pkg-install-complete.tmp"
+
+printf 'version=1\ncompleted_at=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$complete_tmp"
+chmod 0600 "$complete_tmp"
+mv -f "$complete_tmp" "$complete_file"
+
+# Remove transient context marker
+rm -f "$ORCHARD_ROOT/support/.pkg-install-context"
+
+printf 'Orchard postinstall complete.\n'
 exit 0
