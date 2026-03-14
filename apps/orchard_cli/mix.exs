@@ -28,6 +28,7 @@ defmodule OrchardCLI.MixProject do
 
   defp deps do
     [
+      {:jason, "~> 1.4"},
       {:orchard_shared, in_umbrella: true},
       {:orchard_controller, in_umbrella: true}
     ]

@@ -15,7 +15,7 @@ defmodule OrchardCLITest do
     output = capture_io(fn -> OrchardCLI.main([], &no_halt/1) end)
 
     assert output =~ "orchardctl (M0 scaffold)"
-    assert output =~ "cluster, nodes, models, requests, support, upgrade"
+    assert output =~ "cluster, nodes, models, requests, support, tls, upgrade"
   end
 
   test "dispatches each placeholder command module" do

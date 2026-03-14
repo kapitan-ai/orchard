@@ -3,7 +3,7 @@ defmodule OrchardCLI do
   Placeholder `orchardctl` entrypoint for Milestone 0.
   """
 
-  alias OrchardCLI.Commands.{Cluster, Models, Nodes, Requests, Support, Upgrade}
+  alias OrchardCLI.Commands.{Cluster, Models, Nodes, Requests, Support, TLS, Upgrade}
 
   @type command_result :: :ok | {:ok, String.t()} | {:error, String.t(), pos_integer()}
 
@@ -20,6 +20,7 @@ defmodule OrchardCLI do
         ["models" | rest] -> Models.run(rest)
         ["requests" | rest] -> Requests.run(rest)
         ["support" | rest] -> Support.run(rest)
+        ["tls" | rest] -> TLS.run(rest)
         ["upgrade" | rest] -> Upgrade.run(rest)
         _ -> print_usage()
       end
@@ -42,6 +43,6 @@ defmodule OrchardCLI do
 
   defp print_usage do
     IO.puts("orchardctl (M0 scaffold)")
-    IO.puts("Available command groups: cluster, nodes, models, requests, support, upgrade")
+    IO.puts("Available command groups: cluster, nodes, models, requests, support, tls, upgrade")
   end
 end
