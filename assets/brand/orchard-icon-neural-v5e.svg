@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bgV5e" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#1565C0"/>
+      <stop offset="100%" style="stop-color:#0D47A1"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1024" height="1024" rx="224" fill="url(#bgV5e)"/>
+  
+  <!-- v5e: Balanced - clean curves, moderate complexity, good scaling -->
+  
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Trunk -->
+    <path d="M512 800 L512 580" stroke="#1B5E20" stroke-width="32"/>
+    
+    <!-- Main branches with gentle curves -->
+    <path d="M512 580 Q380 500 280 380" stroke="#2E7D32" stroke-width="20"/>
+    <path d="M512 580 Q512 460 512 320" stroke="#2E7D32" stroke-width="22"/>
+    <path d="M512 580 Q644 500 744 380" stroke="#2E7D32" stroke-width="20"/>
+    
+    <!-- Secondary branches -->
+    <path d="M280 380 Q240 320 220 240" stroke="#81C784" stroke-width="14"/>
+    <path d="M280 380 Q340 320 380 260" stroke="#81C784" stroke-width="12"/>
+    <path d="M744 380 Q684 320 644 260" stroke="#81C784" stroke-width="12"/>
+    <path d="M744 380 Q784 320 804 240" stroke="#81C784" stroke-width="14"/>
+    
+    <!-- Neural cross-links -->
+    <path d="M380 260 Q446 280 512 320" stroke="#A5D6A7" stroke-width="8" opacity="0.65"/>
+    <path d="M644 260 Q578 280 512 320" stroke="#A5D6A7" stroke-width="8" opacity="0.65"/>
+  </g>
+  
+  <!-- Nodes -->
+  <!-- Root (input) -->
+  <circle cx="512" cy="800" r="52" fill="#1B5E20"/>
+  <circle cx="512" cy="800" r="28" fill="#2E7D32"/>
+  
+  <!-- Central junction -->
+  <circle cx="512" cy="580" r="40" fill="#2E7D32"/>
+  <circle cx="512" cy="580" r="20" fill="#81C784"/>
+  
+  <!-- Branch junctions -->
+  <circle cx="280" cy="380" r="32" fill="#81C784"/>
+  <circle cx="744" cy="380" r="32" fill="#81C784"/>
+  
+  <!-- Intermediate nodes -->
+  <circle cx="380" cy="260" r="26" fill="#A5D6A7"/>
+  <circle cx="644" cy="260" r="26" fill="#A5D6A7"/>
+  
+  <!-- Output nodes (fruit) -->
+  <circle cx="220" cy="240" r="42" fill="#FDD835"/>
+  <circle cx="512" cy="320" r="48" fill="#FDD835"/>
+  <circle cx="804" cy="240" r="42" fill="#FDD835"/>
+</svg>
