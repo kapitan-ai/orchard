@@ -52,6 +52,190 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/node-agent.env'
 The `config/` directory is set to mode `0700` by the installer, so only root
 can create or modify files within it.
 
+## Controller Transport Behavior
+
+The packaged controller defaults to **HTTPS**. Transport mode is resolved
+at both install time (`postinstall`) and each service start (wrapper boot gate
+and `config/runtime.exs`).
+
+### Mode resolution
+
+| Mode | Condition | Listener |
+|------|-----------|----------|
+| `managed_default` | No cert/key overrides, or overrides match managed defaults | HTTPS on `ORCHARD_API_BIND_IP`:`ORCHARD_API_HTTPS_PORT` |
+| `external_override` | Both `ORCHARD_TLS_CERTFILE` and `ORCHARD_TLS_KEYFILE` set to non-default paths | HTTPS on `ORCHARD_API_BIND_IP`:`ORCHARD_API_HTTPS_PORT` |
+| `disabled` | `ORCHARD_TLS_DISABLED` set to a truthy value | HTTP on `127.0.0.1`:`PORT` (loopback only) |
+
+**Invalid configurations that prevent startup:**
+
+- `ORCHARD_TLS_DISABLED` set to an unrecognized value (not truthy or falsy)
+- Only one of `ORCHARD_TLS_CERTFILE` / `ORCHARD_TLS_KEYFILE` set
+- Either cert or key override set to an empty string
+
+These exit with code `78` (`EX_CONFIG`) from the wrapper boot gate.
+
+### Validation responsibilities
+
+| Stage | What it checks |
+|-------|----------------|
+| Wrapper boot gate | File presence and config shape; exits `78` before BEAM starts |
+| Runtime (`config/runtime.exs`) | PEM content, cert validity window, key type; warns to stderr if cert expires within 30 days |
+
+### Controller transport environment
+
+All variables are set via `controller.env` or the process environment:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port |
+| `ORCHARD_API_BIND_IP` | `0.0.0.0` | HTTPS bind IP address |
+| `ORCHARD_PUBLIC_HOST` | `localhost` | Public hostname for URL generation |
+| `PORT` | `4000` | HTTP port (only used when TLS is disabled) |
+| `ORCHARD_TLS_CERTFILE` | `config/tls/controller.crt` | Server certificate path |
+| `ORCHARD_TLS_KEYFILE` | `config/tls/controller.key` | Server private key path |
+| `ORCHARD_TLS_CACERTFILE` | `config/tls/ca.crt` | CA certificate path (for `/ca.crt` endpoint and validation) |
+| `ORCHARD_TLS_DISABLED` | `false` | Set to a truthy value for emergency loopback HTTP mode |
+| `ORCHARD_CORS_ORIGINS` | _(empty)_ | Comma-separated CORS origin allowlist (see below) |
+
+Truthy values for `ORCHARD_TLS_DISABLED`: `1`, `true`, `TRUE`, `yes`, `YES`, `on`, `ON`
+Falsy values: `0`, `false`, `FALSE`, `no`, `NO`, `off`, `OFF`
+
+Default TLS file paths are relative to `ORCHARD_SUPPORT_ROOT` (default
+`/Library/Application Support/Orchard`).
+
+> **Note:** `ORCHARD_PUBLIC_HOST` controls the advertised URL hostname.
+> `ORCHARD_API_BIND_IP` controls the network interface the server binds to.
+> `PORT` is only used in disabled (emergency HTTP) mode; it has no effect when
+> TLS is enabled.
+
+## CORS Allowlist Configuration
+
+CORS is **disabled by default**. When `ORCHARD_CORS_ORIGINS` is empty or
+unset, the controller does not add any CORS response headers.
+
+To allow browser-based clients from specific origins, set a comma-separated
+allowlist in `controller.env`:
+
+```bash
+sudo tee '/Library/Application Support/Orchard/config/controller.env' <<'EOF'
+ORCHARD_PUBLIC_HOST=orchard.local
+ORCHARD_CORS_ORIGINS=https://app.example.com,https://admin.example.com:3000
+EOF
+sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
+```
+
+### Origin validation rules
+
+Each origin is validated at controller boot. Invalid origins abort startup.
+
+**Required:**
+- Scheme must be `http` or `https`
+- Must include a host
+
+**Rejected:**
+- `*` (wildcard)
+- `null`
+- Trailing slash (e.g., `https://app.example.com/`)
+- Path component (e.g., `https://app.example.com/api`)
+- Query string, fragment, or userinfo
+
+### CORS response behavior
+
+- **Empty allowlist:** no CORS headers on any request (no-op)
+- **Allowed origin:** `Access-Control-Allow-Origin` set to the request origin;
+  `x-request-id` exposed
+- **Allowed preflight** (`OPTIONS` with `Origin` and
+  `Access-Control-Request-Method`): responds `204 No Content` with allowed
+  methods (`GET`, `POST`, `OPTIONS`) and halts
+- **Disallowed origin:** no CORS headers added; request continues normally
+
+## LAN Client Trust and `/ca.crt`
+
+When using managed TLS (the default), the controller exposes its CA
+certificate for LAN client trust bootstrap:
+
+```
+GET /ca.crt
+```
+
+This endpoint serves the CA PEM file **only when all of the following are
+true:**
+
+- The endpoint is configured with `ca_certfile` and `ca_cert_metadata_path`
+- The TLS metadata file exists and contains valid JSON
+- The metadata `"source"` field is exactly `"generated_local_ca"`
+- The CA certificate file is readable
+
+All other cases return `404`. This includes external certificate deployments,
+missing metadata, and broken managed TLS state.
+
+### Operator workflow
+
+1. **Install Orchard** — the PKG installer generates managed TLS material
+   (CA + controller certs) under `config/tls/`
+2. **Trust CA on the Orchard host** (optional):
+   ```bash
+   sudo orchardctl tls trust-ca
+   ```
+3. **Distribute CA to LAN clients** — either download from the running
+   controller:
+   ```bash
+   curl -k -o orchard-ca.crt https://<controller-host>:8443/ca.crt
+   ```
+   or copy `config/tls/ca.crt` out-of-band
+4. **Install the CA on each client** according to the client OS/browser trust
+   store procedures
+5. **Verify access:**
+   ```bash
+   curl --cacert orchard-ca.crt https://<controller-host>:8443/health/ready
+   ```
+
+> **External certificate deployments** should distribute trust through their
+> own CA/PKI workflow. The `/ca.crt` endpoint is not served for externally
+> managed certificates.
+
+### Certificate regeneration
+
+To regenerate managed certificates (e.g., after hostname change or expiry):
+
+```bash
+sudo orchardctl tls init --force
+sudo launchctl kickstart -k system/com.orchard.controller
+```
+
+Add `--no-trust` to skip the interactive Keychain trust prompt. LAN clients
+will need the new CA after regeneration.
+
+## Permission Expectations
+
+### Directories
+
+| Path | Mode | Owner | Set by |
+|------|------|-------|--------|
+| `config/` | `0700` | `root:wheel` | preinstall, postinstall |
+| `config/tls/` | `0700` | `root:wheel` | preinstall, postinstall |
+
+### TLS files
+
+| File | Mode | Set by |
+|------|------|--------|
+| `ca.key` | `0600` | `orchardctl tls init` |
+| `ca.crt` | `0644` | `orchardctl tls init` |
+| `controller.key` | `0600` | `orchardctl tls init` |
+| `controller.crt` | `0644` | `orchardctl tls init` |
+| `.orchard-tls-meta.json` | `0644` | `orchardctl tls init` |
+
+### Env files
+
+Env override files (`controller.env`, `node-agent.env`) must be:
+
+- Owned by root (uid `0`)
+- Free of group and world permission bits (recommended: `0600`)
+
+Files that fail these checks are **ignored with a warning** to stderr. The
+service starts without the overrides. This is a security measure — env files
+are sourced by root-owned shell scripts, so untrusted files are not executed.
+
 ## TLS Certificate Management
 
 The installer integrates with `orchardctl tls init` (Task 4) to manage TLS
@@ -104,15 +288,9 @@ during launchd restarts without waiting for the BEAM boot to fail.
 
 ### TLS env vars
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ORCHARD_TLS_CERTFILE` | `config/tls/controller.crt` | Server certificate path |
-| `ORCHARD_TLS_KEYFILE` | `config/tls/controller.key` | Server private key path |
-| `ORCHARD_TLS_CACERTFILE` | `config/tls/ca.crt` | CA certificate path |
-| `ORCHARD_TLS_DISABLED` | `false` | Emergency HTTP-only mode (loopback only) |
-
-Truthy values: `1, true, TRUE, yes, YES, on, ON`
-Falsy values: `0, false, FALSE, no, NO, off, OFF`
+See the consolidated [Controller transport environment](#controller-transport-environment)
+table above for all TLS, transport, and CORS variables with defaults and
+truthy/falsy value lists.
 
 ### External certificate setup
 

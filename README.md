@@ -51,9 +51,23 @@ Clients (SDKs / curl / apps)
 | Database | Postgres |
 | Inference | MLX-LM runtime adapter managed by the node agent |
 | Internal RPC | gRPC over mTLS |
-| APIs | Phoenix/Plug (HTTPS + SSE) |
+| APIs | Phoenix/Plug (loopback HTTP in source dev; HTTPS + SSE in packaged installs) |
 | Packaging | DMG, PKG, launchd |
 | CLI | `orchardctl` |
+
+### Current transport behavior
+
+- **Source dev:** controller runs on loopback HTTP (`127.0.0.1:4000`); CORS
+  disabled unless explicitly configured
+- **Packaged installs:** controller defaults to HTTPS with managed or
+  operator-supplied TLS certificates; `ORCHARD_TLS_DISABLED=true` forces
+  emergency loopback HTTP mode
+- **CORS:** explicit origin allowlist via `ORCHARD_CORS_ORIGINS` (empty =
+  disabled)
+
+See [docs/m1-local-dev.md](docs/m1-local-dev.md) for dev setup and
+[packaging/pkg/README.md](packaging/pkg/README.md) for operator transport
+configuration.
 
 ## Deployment modes
 

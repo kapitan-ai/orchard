@@ -37,6 +37,35 @@ iex -S mix phx.server
 The controller listens on `http://localhost:4000` and the node-agent
 gRPC server on `127.0.0.1:50061`.
 
+## Transport Modes
+
+Orchard has two transport profiles:
+
+### Source dev (this page)
+
+When running from a source checkout (`iex -S mix phx.server`):
+
+- Controller listens on **HTTP** at `http://127.0.0.1:4000`
+- Node-agent gRPC listens on `127.0.0.1:50061`
+- CORS is disabled (empty allowlist in `config/dev.exs`)
+- No TLS setup is required
+
+All `curl` examples in this document use plain HTTP because they target the
+source dev controller.
+
+### Packaged install
+
+When installed via the macOS PKG:
+
+- Controller defaults to **HTTPS** on `0.0.0.0:8443` with managed TLS
+  certificates
+- Supports managed TLS, external certificate override, or emergency disabled
+  (loopback HTTP) mode
+- CORS is configurable via `ORCHARD_CORS_ORIGINS`
+
+See [packaging/pkg/README.md](../packaging/pkg/README.md) for full operator
+documentation on transport modes, TLS management, and CORS configuration.
+
 ## Configuration
 
 ### Environment Variables
@@ -68,6 +97,24 @@ gRPC server on `127.0.0.1:50061`.
 | `ORCHARD_WORKER_EXECUTABLE` | `orchard-worker-mlx` | Worker binary |
 | `ORCHARD_WORKER_BACKEND` | `mlx` | Inference backend |
 | `ORCHARD_FAKE_RUNTIME` | `false` | Use fake runtime (for testing without GPU) |
+
+#### Packaged Controller Transport (release only)
+
+These variables apply to packaged/release controller installs, not source dev:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port |
+| `ORCHARD_API_BIND_IP` | `0.0.0.0` | HTTPS bind IP address |
+| `ORCHARD_PUBLIC_HOST` | `localhost` | Public hostname for URL generation |
+| `ORCHARD_TLS_CERTFILE` | `config/tls/controller.crt` | Server certificate path |
+| `ORCHARD_TLS_KEYFILE` | `config/tls/controller.key` | Server private key path |
+| `ORCHARD_TLS_CACERTFILE` | `config/tls/ca.crt` | CA certificate path |
+| `ORCHARD_TLS_DISABLED` | `false` | Emergency loopback HTTP mode |
+| `ORCHARD_CORS_ORIGINS` | _(empty)_ | Comma-separated CORS origin allowlist |
+
+See [packaging/pkg/README.md](../packaging/pkg/README.md) for full details
+on transport modes, truthy/falsy values, and validation behavior.
 
 ### Config Files
 
@@ -123,6 +170,60 @@ curl -N -X POST http://localhost:4000/v1/chat/completions \
     "stream": true
   }'
 ```
+
+## CORS Allowlist
+
+The packaged controller supports an explicit CORS origin allowlist for
+browser-based LAN clients. CORS is **disabled by default** — when
+`ORCHARD_CORS_ORIGINS` is empty or unset, no CORS headers are added to any
+response.
+
+To enable CORS, set a comma-separated list of allowed origins:
+
+```bash
+ORCHARD_CORS_ORIGINS=https://app.example.com,https://admin.example.com:3000
+```
+
+Each origin must be a full `http(s)://host[:port]` value. The following are
+**rejected** at controller boot:
+
+- `*` (wildcard) and `null`
+- Origins with a path, trailing slash, query string, fragment, or userinfo
+
+Source dev does not require CORS configuration — the dev controller listens
+on localhost only.
+
+## LAN Client Trust Workflow
+
+Packaged installs using managed TLS can bootstrap LAN client trust:
+
+1. **Generate certificates** — the PKG installer runs `orchardctl tls init`
+   automatically on fresh install
+2. **Trust CA locally** (optional):
+   ```bash
+   sudo orchardctl tls trust-ca
+   ```
+3. **Download CA on LAN clients** — the controller serves its CA at
+   `GET /ca.crt` (only for Orchard-generated certificates; returns `404` for
+   external certificate deployments)
+4. **Verify:**
+   ```bash
+   curl --cacert orchard-ca.crt https://<controller-host>:8443/health/ready
+   ```
+
+Managed TLS files are stored under
+`/Library/Application Support/Orchard/config/tls/`. To regenerate after a
+hostname change or expiry:
+
+```bash
+sudo orchardctl tls init --force
+```
+
+Source dev does not require TLS setup — the dev controller uses plain HTTP on
+localhost.
+
+See [packaging/pkg/README.md](../packaging/pkg/README.md) for the full
+operator workflow, permission expectations, and external certificate setup.
 
 ## Testing
 
@@ -408,8 +509,10 @@ All-in-one local boot (dev):
 
 ## M1 Limitations
 
+- Source dev controller uses loopback HTTP (`127.0.0.1:4000`); packaged
+  installs default to HTTPS (see [Transport Modes](#transport-modes))
+- Node-agent gRPC remains loopback and non-TLS in M1
 - Single implicit tenant (no auth/RBAC — deferred to M2)
 - Single local node (no multi-node scheduling — deferred to M4)
 - No distributed Erlang across machines
-- No TLS on HTTP or gRPC (loopback only)
 - Model import from local filesystem only (no remote download)
