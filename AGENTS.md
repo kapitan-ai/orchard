@@ -60,6 +60,28 @@ Rules:
 - Every spec-defined behavior change SHOULD include or update tests that cite the relevant `SPEC.md` section in test names, comments, or surrounding notes.
 - For state machines, APIs, scheduling, quotas, auth, and persistence flows, cover both happy-path and failure-path behavior.
 
+### Code quality plugins (ex_slop + ex_dna)
+
+Two Credo plugins enforce code quality standards specific to AI-assisted development. Both run as part of `mix credo --strict`.
+
+- **ex_slop** — detects AI-generated code patterns (blanket rescues, narrator docs, obvious comments, identity passthroughs, step comments, etc.). 20 checks enabled; 3 skipped (2 Ecto-specific, 1 GenServer).
+- **ex_dna** — AST-level code duplication detection. Finds exact, renamed-variable, and near-miss structural clones. Configured at `min_mass: 80`.
+
+Rules:
+
+- New code MUST pass both plugins with zero findings before handoff.
+- **Fix first, suppress last.** Prefer fixing the code (remove obvious comments, extract duplicated logic, document public functions) over suppression.
+- When suppressing a false positive, use the narrowest scope and include a rationale:
+  ```elixir
+  # credo:disable-for-lines:3 ExSlop.Check.Readability.ObviousComment
+  # Server ignored Range header — file is now corrupt.
+  # Delete partial and restart from scratch.
+  ```
+- Do NOT suppress findings to avoid refactoring. If ex_dna flags genuine duplication, extract a shared module.
+- When adding new modules, run `mix credo --strict` before committing — the plugins catch patterns that are invisible during normal development.
+
+See `docs/code-quality.md` for detailed tuning rationale, suppression patterns, and guidance on evolving the check configuration.
+
 ### Python/native workflow
 
 For code under `native/`, use `uv`-managed tooling only. Prefer **Ruff** for formatting/linting and **ty** for static typing. Run these in order once the package is configured:
@@ -98,3 +120,4 @@ Rules:
 | AGENTS.md | This file — agent operating guide |
 | README.md | High-level product and roadmap overview |
 | mix.exs | Umbrella project root |
+| docs/code-quality.md | ex_slop + ex_dna plugin reference and tuning guide |
