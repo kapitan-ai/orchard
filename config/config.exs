@@ -18,7 +18,9 @@ config :orchard_controller, :console,
   enabled: true,
   auth: :none,
   username: nil,
-  password: nil
+  password: nil,
+  runtime_impl: OrchardConsole.Runtime,
+  refresh_interval_ms: 5_000
 
 config :orchard_controller, Orchard.API.Endpoint,
   adapter: Bandit.PhoenixAdapter,

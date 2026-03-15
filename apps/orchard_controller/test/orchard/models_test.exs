@@ -1,15 +1,20 @@
 defmodule Orchard.ModelsTest do
   use Orchard.DataCase, async: false
 
+  import Orchard.TestSupport.ModelRequestFixtures
+
   alias Orchard.Models
+  alias Orchard.Models.Model
 
   test "create_model/1 persists a model and enforces uniqueness on identity" do
-    assert {:ok, model} = Models.create_model(model_attrs())
+    attrs = model_attrs()
+    assert {:ok, model} = Models.create_model(attrs)
     assert model.state == :registered
-    assert model.model_id == "mlx-community/phi-3"
+    assert model.model_id == attrs.model_id
     assert model.version == "main"
 
-    assert {:error, changeset} = Models.create_model(model_attrs())
+    # Same attrs → uniqueness violation
+    assert {:error, changeset} = Models.create_model(attrs)
     assert %{model_id: ["has already been taken"]} = errors_on(changeset)
   end
 
@@ -19,8 +24,9 @@ defmodule Orchard.ModelsTest do
   end
 
   test "create_model/1 persists artifact_source_uri when provided" do
-    assert {:ok, model} = Models.create_model(model_attrs())
-    assert model.artifact_source_uri == "file:///tmp/phi-3"
+    attrs = model_attrs()
+    assert {:ok, model} = Models.create_model(attrs)
+    assert model.artifact_source_uri == attrs.artifact_source_uri
   end
 
   test "create_model/1 succeeds when artifact_source_uri is nil" do
@@ -46,27 +52,29 @@ defmodule Orchard.ModelsTest do
     assert listed.state == :active
   end
 
-  defp model_attrs(overrides \\ %{}) do
-    Map.merge(
-      %{
-        model_id: "mlx-community/phi-3",
-        version: "main",
-        state: :registered,
-        format: "mlx",
-        capabilities: ["chat"],
-        tokenizer: %{"kind" => "huggingface_tokenizer_json", "path" => "tokenizer.json"},
-        artifact_uri: "file:///tmp/phi-3",
-        artifact_source_uri: "file:///tmp/phi-3",
-        artifact_sha256: String.duplicate("a", 64),
-        artifact_size_bytes: 1_024,
-        resident_memory_bytes: 2_048,
-        kv_cache_bytes_per_token: 16,
-        prefill_workspace_bytes_per_token: 8,
-        max_context_tokens: 32_768,
-        default_parameters: %{"temperature" => 0.7},
-        runtime_requirements: %{"adapter" => "mlx_lm", "min_agent_capability" => "mlx"}
-      },
-      overrides
-    )
+  test "catalog_summary/0 returns zero-filled counts when DB is empty" do
+    summary = Models.catalog_summary()
+
+    assert summary.total == 0
+
+    for state <- Model.states() do
+      assert Map.has_key?(summary.by_state, state), "missing state: #{state}"
+      assert summary.by_state[state] == 0
+    end
+  end
+
+  test "catalog_summary/0 returns grouped counts and derived total" do
+    create_model!(%{model_id: "reg-1"})
+    create_model!(%{model_id: "reg-2"})
+    create_model!(%{model_id: "active-1", state: :active})
+    create_model!(%{model_id: "retired-1", state: :retired})
+
+    summary = Models.catalog_summary()
+
+    assert summary.total == 4
+    assert summary.by_state.registered == 2
+    assert summary.by_state.active == 1
+    assert summary.by_state.deprecated == 0
+    assert summary.by_state.retired == 1
   end
 end

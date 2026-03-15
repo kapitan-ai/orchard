@@ -84,6 +84,10 @@ defmodule Orchard.Requests.Request do
   @spec terminal_states() :: [atom()]
   def terminal_states, do: @terminal_states
 
+  @doc "Returns the non-terminal (active) lifecycle states."
+  @spec active_states() :: [atom()]
+  def active_states, do: @states -- @terminal_states
+
   @spec create_changeset(struct(), map()) :: Ecto.Changeset.t()
   def create_changeset(request, attrs) do
     request

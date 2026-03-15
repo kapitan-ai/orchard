@@ -36,9 +36,35 @@ defmodule Orchard.Models do
     |> Repo.insert()
   end
 
+  @doc """
+  Returns a summary of model catalog counts grouped by state.
+
+  All states from `Model.states/0` are present in `by_state`, zero-filled
+  when no rows exist for that state.
+  """
+  @spec catalog_summary() :: %{
+          total: non_neg_integer(),
+          by_state: %{required(atom()) => non_neg_integer()}
+        }
+  def catalog_summary do
+    counts =
+      Model
+      |> group_by([m], m.state)
+      |> select([m], {m.state, count(m.id)})
+      |> Repo.all()
+      |> Map.new()
+
+    by_state = zero_fill_states(counts, Model.states())
+    %{total: by_state |> Map.values() |> Enum.sum(), by_state: by_state}
+  end
+
   defp maybe_filter_state(query, nil), do: query
 
   defp maybe_filter_state(query, state) do
     where(query, [model], model.state == ^state)
+  end
+
+  defp zero_fill_states(counts, states) do
+    Map.new(states, fn state -> {state, Map.get(counts, state, 0)} end)
   end
 end

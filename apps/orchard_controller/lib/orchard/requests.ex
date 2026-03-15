@@ -146,6 +146,43 @@ defmodule Orchard.Requests do
     end
   end
 
+  @doc """
+  Returns a summary of request counts grouped by lifecycle state.
+
+  All states from `Request.states/0` are present in `by_state`, zero-filled
+  when no rows exist for that state. `active` and `terminal` are derived
+  from the canonical state partitions.
+  """
+  @spec summary() :: %{
+          total: non_neg_integer(),
+          active: non_neg_integer(),
+          terminal: non_neg_integer(),
+          by_state: %{required(atom()) => non_neg_integer()}
+        }
+  def summary do
+    counts =
+      Request
+      |> group_by([r], r.state)
+      |> select([r], {r.state, count(r.id)})
+      |> Repo.all()
+      |> Map.new()
+
+    by_state = zero_fill_states(counts, Request.states())
+    total = by_state |> Map.values() |> Enum.sum()
+    active = sum_states(by_state, Request.active_states())
+    terminal = sum_states(by_state, Request.terminal_states())
+
+    %{total: total, active: active, terminal: terminal, by_state: by_state}
+  end
+
+  defp zero_fill_states(counts, states) do
+    Map.new(states, fn state -> {state, Map.get(counts, state, 0)} end)
+  end
+
+  defp sum_states(by_state, states) do
+    Enum.reduce(states, 0, fn state, acc -> acc + Map.get(by_state, state, 0) end)
+  end
+
   defp unwrap_transaction_result({:ok, {:ok, value}}), do: {:ok, value}
   defp unwrap_transaction_result({:ok, {:error, changeset}}), do: {:error, changeset}
   defp unwrap_transaction_result({:error, :request_not_found}), do: {:error, :request_not_found}
