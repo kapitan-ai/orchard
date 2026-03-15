@@ -20,6 +20,7 @@ config :orchard_controller, :console,
   username: nil,
   password: nil,
   runtime_impl: OrchardConsole.Runtime,
+  playground_impl: OrchardConsole.Playground,
   refresh_interval_ms: 5_000
 
 config :orchard_controller, Orchard.API.Endpoint,
