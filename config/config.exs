@@ -11,6 +11,15 @@ config :orchard_controller,
   generators: [binary_id: true],
   transport_degraded: false
 
+# Console feature flag and auth defaults.
+# Dev/test: enabled with no auth for frictionless local development.
+# Prod: overridden in runtime.exs with Basic Auth and env var credentials.
+config :orchard_controller, :console,
+  enabled: true,
+  auth: :none,
+  username: nil,
+  password: nil
+
 config :orchard_controller, Orchard.API.Endpoint,
   adapter: Bandit.PhoenixAdapter,
   url: [host: "localhost"],

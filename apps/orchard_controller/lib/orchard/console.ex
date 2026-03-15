@@ -15,6 +15,25 @@ defmodule OrchardConsole do
   def static_paths, do: ~w(assets fonts images favicon.ico favicon.png robots.txt)
 
   @doc """
+  LiveView `on_mount` hook that gates console access on mount/reconnect.
+
+  Checks both the feature flag (`console_enabled`) and the session auth
+  marker (for `:basic` auth mode). Redirects to `/console` on denial,
+  which re-enters the HTTP plug for proper 404 or 401 handling.
+  """
+  def on_mount(:ensure_console_access, _params, session, socket) do
+    config = OrchardConsole.Auth.console_config()
+
+    case OrchardConsole.Auth.authorize_live_session(session, config) do
+      :ok ->
+        {:cont, socket}
+
+      {:error, _reason} ->
+        {:halt, Phoenix.LiveView.redirect(socket, to: "/console")}
+    end
+  end
+
+  @doc """
   Shared helpers for console LiveViews and components.
 
   Imports Phoenix LiveView, HTML, and component helpers.

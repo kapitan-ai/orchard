@@ -25,6 +25,13 @@ config :orchard_controller,
 config :orchard_node_agent,
   runtime: Orchard.Config.M1RuntimeDefaults.node_runtime(dev_root)
 
+# Console: enabled with no auth for frictionless local development.
+config :orchard_controller, :console,
+  enabled: true,
+  auth: :none,
+  username: nil,
+  password: nil
+
 config :orchard_controller, Orchard.API.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.get_env("PORT") || "4000")],
   check_origin: false,

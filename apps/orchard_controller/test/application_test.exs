@@ -64,6 +64,15 @@ defmodule OrchardApplicationTest do
     assert Application.get_env(:orchard_controller, :transport_degraded, false) == false
   end
 
+  test "test environment has deterministic console config defaults" do
+    console = Application.fetch_env!(:orchard_controller, :console)
+
+    assert console[:enabled] == true
+    assert console[:auth] == :none
+    assert console[:username] == nil
+    assert console[:password] == nil
+  end
+
   test "test environment config uses fake tokenizer and local runtime target" do
     inference = Application.fetch_env!(:orchard_controller, :inference)
 

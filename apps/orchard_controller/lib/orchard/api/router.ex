@@ -17,6 +17,7 @@ defmodule Orchard.API.Router do
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
+    plug(OrchardConsole.Auth)
     plug(:fetch_live_flash)
     plug(:put_root_layout, html: {OrchardConsole.Layouts, :root})
     plug(:protect_from_forgery)
@@ -44,6 +45,8 @@ defmodule Orchard.API.Router do
   scope "/console" do
     pipe_through(:browser)
 
-    live("/", OrchardConsole.OverviewLive, :index)
+    live_session :console, on_mount: [{OrchardConsole, :ensure_console_access}] do
+      live("/", OrchardConsole.OverviewLive, :index)
+    end
   end
 end

@@ -43,6 +43,13 @@ config :orchard_node_agent,
       fake_runtime?: true
     )
 
+# Console: enabled with no auth for deterministic test behavior.
+config :orchard_controller, :console,
+  enabled: true,
+  auth: :none,
+  username: nil,
+  password: nil
+
 config :orchard_controller, Orchard.API.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],
   cors_origins: [],

@@ -288,6 +288,30 @@ if config_env() == :prod do
         System.get_env("SECRET_KEY_BASE") ||
           raise "environment variable SECRET_KEY_BASE is missing for Orchard controller releases"
 
+      # --- Console configuration ---
+      console_enabled? = env_bool.("ORCHARD_CONSOLE_ENABLED", false)
+
+      console_config =
+        if console_enabled? do
+          username = System.get_env("ORCHARD_CONSOLE_USERNAME") || ""
+          password = System.get_env("ORCHARD_CONSOLE_PASSWORD") || ""
+
+          if username == "" or password == "" do
+            raise """
+            ORCHARD_CONSOLE_ENABLED=true but credentials are missing.
+
+            Set both ORCHARD_CONSOLE_USERNAME and ORCHARD_CONSOLE_PASSWORD \
+            environment variables to enable the console with Basic Auth.
+            """
+          end
+
+          [enabled: true, auth: :basic, username: username, password: password]
+        else
+          [enabled: false, auth: :basic, username: nil, password: nil]
+        end
+
+      config :orchard_controller, :console, console_config
+
       # --- TLS / HTTPS configuration ---
       tls_disabled? = env_bool.("ORCHARD_TLS_DISABLED", false)
 
