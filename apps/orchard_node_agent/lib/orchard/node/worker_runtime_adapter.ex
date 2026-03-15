@@ -416,7 +416,6 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-
   defp load_model_rpc(channel, %ModelRef{} = model_ref, model_path, timeout_ms) do
     case WorkerRuntimeService.Stub.load_model(
            channel,

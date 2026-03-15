@@ -187,8 +187,6 @@ defmodule Orchard.CanonicalRequest do
     end
   end
 
-
-
   defp validate_required!(struct, keys) do
     Enum.each(keys, fn key ->
       if is_nil(Map.fetch!(struct, key)) do

@@ -172,10 +172,18 @@ defmodule Orchard.Inference.ModelLoadFailure do
   # can decide whether to trust node-provided failure_message content.
   # UNSPECIFIED, unknown integers, and nil map to {:internal, false}.
   defp normalize_category(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID), do: {:model_invalid, true}
-  defp normalize_category(:MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED), do: {:acquisition_failed, true}
-  defp normalize_category(:MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE), do: {:runtime_unavailable, true}
+
+  defp normalize_category(:MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED),
+    do: {:acquisition_failed, true}
+
+  defp normalize_category(:MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE),
+    do: {:runtime_unavailable, true}
+
   defp normalize_category(:MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT), do: {:timeout, true}
-  defp normalize_category(:MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED), do: {:resource_exhausted, true}
+
+  defp normalize_category(:MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED),
+    do: {:resource_exhausted, true}
+
   defp normalize_category(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL), do: {:internal, true}
   # Raw integer fallback (future-proofing for unknown proto values)
   defp normalize_category(1), do: {:model_invalid, true}
@@ -207,11 +215,20 @@ defmodule Orchard.Inference.ModelLoadFailure do
   defp normalize_message(_, default), do: default
 
   defp defaults_for_category(:model_invalid), do: {"model_invalid", "model artifact is invalid"}
-  defp defaults_for_category(:acquisition_failed), do: {"acquisition_failed", "model acquisition failed"}
-  defp defaults_for_category(:runtime_unavailable), do: {"runtime_unavailable", "model runtime is unavailable"}
+
+  defp defaults_for_category(:acquisition_failed),
+    do: {"acquisition_failed", "model acquisition failed"}
+
+  defp defaults_for_category(:runtime_unavailable),
+    do: {"runtime_unavailable", "model runtime is unavailable"}
+
   defp defaults_for_category(:timeout), do: {"timeout", "model load timed out"}
-  defp defaults_for_category(:resource_exhausted), do: {"resource_exhausted", "resources exhausted"}
-  defp defaults_for_category(:internal), do: {"internal_error", "model load failed due to an internal error"}
+
+  defp defaults_for_category(:resource_exhausted),
+    do: {"resource_exhausted", "resources exhausted"}
+
+  defp defaults_for_category(:internal),
+    do: {"internal_error", "model load failed due to an internal error"}
 
   defp http_mapping(:model_invalid), do: {:service_unavailable, "server_error"}
   defp http_mapping(:acquisition_failed), do: {:service_unavailable, "server_error"}

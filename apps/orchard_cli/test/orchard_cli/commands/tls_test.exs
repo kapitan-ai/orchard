@@ -115,21 +115,30 @@ defmodule OrchardCLI.Commands.TLSTest do
 
   test "init with invalid --ip returns error" do
     assert {:error, message, 1} =
-             TLS.run(["init", "--ip", "not-an-ip", "--output-dir", "/tmp/tls-test"], test_runtime())
+             TLS.run(
+               ["init", "--ip", "not-an-ip", "--output-dir", "/tmp/tls-test"],
+               test_runtime()
+             )
 
     assert message =~ "invalid IP"
   end
 
   test "init with --host that is an IP literal returns error" do
     assert {:error, message, 1} =
-             TLS.run(["init", "--host", "192.168.1.1", "--output-dir", "/tmp/tls-test"], test_runtime())
+             TLS.run(
+               ["init", "--host", "192.168.1.1", "--output-dir", "/tmp/tls-test"],
+               test_runtime()
+             )
 
     assert message =~ "must not be an IP"
   end
 
   test "init with --server-days 0 returns error" do
     assert {:error, message, 1} =
-             TLS.run(["init", "--server-days", "0", "--output-dir", "/tmp/tls-test"], test_runtime())
+             TLS.run(
+               ["init", "--server-days", "0", "--output-dir", "/tmp/tls-test"],
+               test_runtime()
+             )
 
     assert message =~ "positive integer"
   end
@@ -137,7 +146,15 @@ defmodule OrchardCLI.Commands.TLSTest do
   test "init with --server-days exceeding --ca-days returns error" do
     assert {:error, message, 1} =
              TLS.run(
-               ["init", "--server-days", "4000", "--ca-days", "3000", "--output-dir", "/tmp/tls-test"],
+               [
+                 "init",
+                 "--server-days",
+                 "4000",
+                 "--ca-days",
+                 "3000",
+                 "--output-dir",
+                 "/tmp/tls-test"
+               ],
                test_runtime()
              )
 
@@ -269,24 +286,28 @@ defmodule OrchardCLI.Commands.TLSTest do
 
     # Verify cert chain with openssl
     {output, 0} =
-      System.cmd("openssl", [
-        "verify",
-        "-CAfile",
-        Path.join(dir, "ca.crt"),
-        Path.join(dir, "controller.crt")
-      ], stderr_to_stdout: true)
+      System.cmd(
+        "openssl",
+        [
+          "verify",
+          "-CAfile",
+          Path.join(dir, "ca.crt"),
+          Path.join(dir, "controller.crt")
+        ], stderr_to_stdout: true)
 
     assert output =~ "OK"
 
     # Verify SANs are in the server cert
     {san_output, 0} =
-      System.cmd("openssl", [
-        "x509",
-        "-in",
-        Path.join(dir, "controller.crt"),
-        "-noout",
-        "-text"
-      ], stderr_to_stdout: true)
+      System.cmd(
+        "openssl",
+        [
+          "x509",
+          "-in",
+          Path.join(dir, "controller.crt"),
+          "-noout",
+          "-text"
+        ], stderr_to_stdout: true)
 
     assert san_output =~ "DNS:localhost"
     assert san_output =~ "DNS:test.local"
@@ -368,12 +389,14 @@ defmodule OrchardCLI.Commands.TLSTest do
 
     # Verify new server cert is valid against same CA
     {output, 0} =
-      System.cmd("openssl", [
-        "verify",
-        "-CAfile",
-        Path.join(dir, "ca.crt"),
-        Path.join(dir, "controller.crt")
-      ], stderr_to_stdout: true)
+      System.cmd(
+        "openssl",
+        [
+          "verify",
+          "-CAfile",
+          Path.join(dir, "ca.crt"),
+          Path.join(dir, "controller.crt")
+        ], stderr_to_stdout: true)
 
     assert output =~ "OK"
   end
@@ -497,8 +520,10 @@ defmodule OrchardCLI.Commands.TLSTest do
     dir = make_tmp_dir()
     File.write!(Path.join(dir, "ca.crt"), "this is not a PEM file")
     # Valid metadata so check_metadata_source passes
-    File.write!(Path.join(dir, ".orchard-tls-meta.json"),
-      Jason.encode!(%{"source" => "generated_local_ca"}))
+    File.write!(
+      Path.join(dir, ".orchard-tls-meta.json"),
+      Jason.encode!(%{"source" => "generated_local_ca"})
+    )
 
     runtime = test_runtime(%{uid: fn -> 0 end})
     assert {:error, message, 1} = TLS.run(["trust-ca", "--output-dir", dir], runtime)

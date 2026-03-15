@@ -95,14 +95,10 @@ defmodule Orchard.Node.ModelAcquisition.Tar do
         :ok
 
       :symlink ->
-        {:error,
-         {:invalid_source_layout,
-          "archive contains symlink: #{to_string(name)}"}}
+        {:error, {:invalid_source_layout, "archive contains symlink: #{to_string(name)}"}}
 
       :link ->
-        {:error,
-         {:invalid_source_layout,
-          "archive contains hardlink: #{to_string(name)}"}}
+        {:error, {:invalid_source_layout, "archive contains hardlink: #{to_string(name)}"}}
 
       other ->
         {:error,
@@ -117,14 +113,10 @@ defmodule Orchard.Node.ModelAcquisition.Tar do
 
     cond do
       Path.type(path) == :absolute ->
-        {:error,
-         {:invalid_source_layout,
-          "archive contains absolute path: #{path}"}}
+        {:error, {:invalid_source_layout, "archive contains absolute path: #{path}"}}
 
       Enum.any?(segments, &(&1 in ["..", ".", ""])) ->
-        {:error,
-         {:invalid_source_layout,
-          "archive contains path traversal: #{path}"}}
+        {:error, {:invalid_source_layout, "archive contains path traversal: #{path}"}}
 
       true ->
         :ok
@@ -226,9 +218,7 @@ defmodule Orchard.Node.ModelAcquisition.Tar do
 
             {:error, reason} ->
               {:halt,
-               {:error,
-                {:filesystem_error,
-                 "rename #{src} -> #{dst}: #{inspect(reason)}"}}}
+               {:error, {:filesystem_error, "rename #{src} -> #{dst}: #{inspect(reason)}"}}}
           end
         end)
 

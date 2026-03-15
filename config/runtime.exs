@@ -27,8 +27,11 @@ end
 
 env_csv = fn env_name, default ->
   case System.get_env(env_name) do
-    nil -> default
-    "" -> default
+    nil ->
+      default
+
+    "" ->
+      default
 
     value ->
       value
@@ -99,8 +102,8 @@ parse_cert_time = fn
   {:utcTime, time_chars} ->
     time_str = List.to_string(time_chars)
 
-    <<yy::binary-2, mm::binary-2, dd::binary-2, hh::binary-2, min::binary-2, ss::binary-2,
-      "Z">> = time_str
+    <<yy::binary-2, mm::binary-2, dd::binary-2, hh::binary-2, min::binary-2, ss::binary-2, "Z">> =
+      time_str
 
     year = String.to_integer(yy)
     year = if year >= 50, do: 1900 + year, else: 2000 + year
@@ -117,8 +120,8 @@ parse_cert_time = fn
   {:generalTime, time_chars} ->
     time_str = List.to_string(time_chars)
 
-    <<yyyy::binary-4, mm::binary-2, dd::binary-2, hh::binary-2, min::binary-2, ss::binary-2,
-      "Z">> = time_str
+    <<yyyy::binary-4, mm::binary-2, dd::binary-2, hh::binary-2, min::binary-2, ss::binary-2, "Z">> =
+      time_str
 
     NaiveDateTime.new!(
       String.to_integer(yyyy),
@@ -287,7 +290,9 @@ if config_env() == :prod do
 
       # --- TLS / HTTPS configuration ---
       tls_disabled? = env_bool.("ORCHARD_TLS_DISABLED", false)
-      public_host = System.get_env("ORCHARD_PUBLIC_HOST") || System.get_env("PHX_HOST") || "localhost"
+
+      public_host =
+        System.get_env("ORCHARD_PUBLIC_HOST") || System.get_env("PHX_HOST") || "localhost"
 
       # CORS origins — strict validation at boot
       cors_origins =
@@ -344,31 +349,37 @@ if config_env() == :prod do
           """)
 
           {[http: [ip: {127, 0, 0, 1}, port: http_port]],
-           [host: "localhost", port: http_port, scheme: "http"],
-           true}
+           [host: "localhost", port: http_port, scheme: "http"], true}
         else
           # Normal HTTPS mode — validate TLS material before starting
           https_port = env_int.("ORCHARD_API_HTTPS_PORT", "8443")
           bind_ip = env_ip.("ORCHARD_API_BIND_IP", "0.0.0.0")
           validate_tls_material!.(certfile, keyfile)
 
-          {[https: [ip: bind_ip, port: https_port, certfile: certfile, keyfile: keyfile, cipher_suite: :strong]],
-           [host: public_host, port: https_port, scheme: "https"],
-           false}
+          {[
+             https: [
+               ip: bind_ip,
+               port: https_port,
+               certfile: certfile,
+               keyfile: keyfile,
+               cipher_suite: :strong
+             ]
+           ], [host: public_host, port: https_port, scheme: "https"], false}
         end
 
       config :orchard_controller, transport_degraded: transport_degraded?
 
-      config :orchard_controller, Orchard.API.Endpoint,
-        transport_config ++
-          [
-            server: true,
-            url: url_config,
-            secret_key_base: secret_key_base,
-            cors_origins: cors_origins,
-            ca_certfile: cacertfile,
-            ca_cert_metadata_path: ca_meta_path
-          ]
+      config :orchard_controller,
+             Orchard.API.Endpoint,
+             transport_config ++
+               [
+                 server: true,
+                 url: url_config,
+                 secret_key_base: secret_key_base,
+                 cors_origins: cors_origins,
+                 ca_certfile: cacertfile,
+                 ca_cert_metadata_path: ca_meta_path
+               ]
 
     "orchard_node_agent" ->
       config :orchard_node_agent,

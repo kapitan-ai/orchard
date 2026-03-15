@@ -18,10 +18,13 @@ defmodule OrchardCLI.Commands.Models do
         run_import(source_path, opts)
 
       [] ->
-        {:error, "Error: missing bundle path\nUsage: orchardctl models import <path> [--activate]", 1}
+        {:error,
+         "Error: missing bundle path\nUsage: orchardctl models import <path> [--activate]", 1}
 
       _ ->
-        {:error, "Error: expected exactly one bundle path\nUsage: orchardctl models import <path> [--activate]", 1}
+        {:error,
+         "Error: expected exactly one bundle path\nUsage: orchardctl models import <path> [--activate]",
+         1}
     end
   end
 

@@ -130,8 +130,6 @@ defmodule Orchard.ModelManifest do
   @spec identity(t()) :: {String.t(), String.t()}
   def identity(%__MODULE__{model_id: model_id, version: version}), do: {model_id, version}
 
-
-
   defp validate_required!(struct, keys) do
     Enum.each(keys, fn key ->
       if is_nil(Map.fetch!(struct, key)) do

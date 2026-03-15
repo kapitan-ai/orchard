@@ -88,7 +88,11 @@ defmodule Orchard.Node.ModelLoadFailureTest do
   # -- MODEL_INVALID via worker load codes --
 
   test "worker_load_failed with manifest_not_found -> MODEL_INVALID" do
-    f = ModelLoadFailure.from_reason({:worker_load_failed, "manifest_not_found", "manifest.json missing"})
+    f =
+      ModelLoadFailure.from_reason(
+        {:worker_load_failed, "manifest_not_found", "manifest.json missing"}
+      )
+
     assert f.category == :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID
     assert f.code == "manifest_not_found"
     assert f.message == "model manifest is missing"
@@ -171,7 +175,11 @@ defmodule Orchard.Node.ModelLoadFailureTest do
   end
 
   test "worker_unhealthy with mlx_backend_unavailable -> RUNTIME_UNAVAILABLE" do
-    f = ModelLoadFailure.from_reason({:worker_unhealthy, "mlx_backend_unavailable", "worker is unhealthy"})
+    f =
+      ModelLoadFailure.from_reason(
+        {:worker_unhealthy, "mlx_backend_unavailable", "worker is unhealthy"}
+      )
+
     assert f.category == :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE
     assert f.code == "mlx_backend_unavailable"
     assert f.message == "MLX backend is unavailable on this node"

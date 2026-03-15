@@ -258,8 +258,15 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert {:error, {:model_load_failed, %ModelLoadFailure{} = failure}} =
                RequestDispatcher.dispatch(schedule, execute, model_load)
 
-      assert failure.category in [:model_invalid, :acquisition_failed, :runtime_unavailable,
-                                   :timeout, :resource_exhausted, :internal]
+      assert failure.category in [
+               :model_invalid,
+               :acquisition_failed,
+               :runtime_unavailable,
+               :timeout,
+               :resource_exhausted,
+               :internal
+             ]
+
       assert is_binary(failure.code) and failure.code != ""
       assert is_binary(failure.message) and failure.message != ""
     end

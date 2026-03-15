@@ -41,8 +41,11 @@ defmodule Orchard.Node.ModelAcquisition.Source.File do
 
   defp resolve_source(path) do
     case PathUtils.resolve_realpath(path) do
-      {:ok, _} = ok -> ok
-      {:error, reason} -> {:error, {:source_not_found, "cannot resolve #{path}: #{inspect(reason)}"}}
+      {:ok, _} = ok ->
+        ok
+
+      {:error, reason} ->
+        {:error, {:source_not_found, "cannot resolve #{path}: #{inspect(reason)}"}}
     end
   end
 

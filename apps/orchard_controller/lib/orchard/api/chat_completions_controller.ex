@@ -308,7 +308,13 @@ defmodule Orchard.API.ChatCompletionsController do
     state.conn
   end
 
-  defp finalize_stream(state, {:error, {:model_load_failed, %ModelLoadFailure{} = failure}}, _canonical, _model_display, _created) do
+  defp finalize_stream(
+         state,
+         {:error, {:model_load_failed, %ModelLoadFailure{} = failure}},
+         _canonical,
+         _model_display,
+         _created
+       ) do
     %{type: type, code: code, message: message} = ModelLoadFailure.api_mapping(failure)
 
     case SSE.send_error(state.conn, message, type, code: code) do

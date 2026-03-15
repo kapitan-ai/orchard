@@ -12,7 +12,12 @@ defmodule Orchard.API.CORSTest do
 
   defp put_cors_origins(origins) do
     config = Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
-    Application.put_env(:orchard_controller, Orchard.API.Endpoint, Keyword.put(config, :cors_origins, origins))
+
+    Application.put_env(
+      :orchard_controller,
+      Orchard.API.Endpoint,
+      Keyword.put(config, :cors_origins, origins)
+    )
   end
 
   defp build_conn(method, path, headers) do
@@ -155,7 +160,9 @@ defmodule Orchard.API.CORSTest do
       # Simulate what SSE.start does: send_chunked preserves resp_headers
       chunked_conn = Plug.Conn.send_chunked(conn, 200)
 
-      assert get_resp_header(chunked_conn, "access-control-allow-origin") == ["http://trusted.local:3000"]
+      assert get_resp_header(chunked_conn, "access-control-allow-origin") == [
+               "http://trusted.local:3000"
+             ]
     end
   end
 

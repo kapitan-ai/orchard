@@ -11,14 +11,20 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - Caller process exit → sends CancelInference to the node
   """
 
-  alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, EnsureModelLoadedResponse, ExecuteInferenceRequest}
+  alias Orchard.Cluster.V1.{
+    EnsureModelLoadedRequest,
+    EnsureModelLoadedResponse,
+    ExecuteInferenceRequest
+  }
+
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: Client
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
 
   @type dispatch_result ::
           {:ok, [InferenceEvent.t()]}
-          | {:error, {:model_load_failed, ModelLoadFailure.t()} | {:dispatch_failed, term()} | term()}
+          | {:error,
+             {:model_load_failed, ModelLoadFailure.t()} | {:dispatch_failed, term()} | term()}
 
   @doc """
   Dispatch an inference request to a node and stream events back to the caller.
@@ -99,7 +105,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             {:error, ModelLoadFailure.from_response(response)}
 
           {:unexpected, placement_state} ->
-            {:error, ModelLoadFailure.from_transport_reason({:unexpected_placement_state, placement_state})}
+            {:error,
+             ModelLoadFailure.from_transport_reason(
+               {:unexpected_placement_state, placement_state}
+             )}
         end
 
       {:error, reason} ->

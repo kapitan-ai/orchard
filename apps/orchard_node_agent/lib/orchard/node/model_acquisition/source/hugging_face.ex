@@ -189,14 +189,11 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
       cond do
         Path.type(path) == :absolute ->
-          {:halt,
-           {:error,
-            {:invalid_source_layout, "absolute path in repo tree entry: #{path}"}}}
+          {:halt, {:error, {:invalid_source_layout, "absolute path in repo tree entry: #{path}"}}}
 
         Enum.any?(segments, &(&1 in ["..", ".", ""])) ->
           {:halt,
-           {:error,
-            {:invalid_source_layout, "path traversal in repo tree entry: #{path}"}}}
+           {:error, {:invalid_source_layout, "path traversal in repo tree entry: #{path}"}}}
 
         true ->
           {:cont, {:ok, [entry | acc]}}
@@ -347,9 +344,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
           end
         else
           {:halt,
-           {:error,
-            {:invalid_source_layout,
-             "path escapes staging directory: #{file_meta.path}"}}}
+           {:error, {:invalid_source_layout, "path escapes staging directory: #{file_meta.path}"}}}
         end
       end)
 
@@ -394,9 +389,22 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
     case File.open(partial_path, write_mode) do
       {:ok, file_pid} ->
         do_download_stream(
-          url, dest, file_meta, request, config, attempt, max_attempts,
-          progress, partial_path, etag_path, expected_size,
-          offset, resume?, extra_headers, bytes_counter, file_pid
+          url,
+          dest,
+          file_meta,
+          request,
+          config,
+          attempt,
+          max_attempts,
+          progress,
+          partial_path,
+          etag_path,
+          expected_size,
+          offset,
+          resume?,
+          extra_headers,
+          bytes_counter,
+          file_pid
         )
 
       {:error, reason} ->
@@ -405,9 +413,22 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
   end
 
   defp do_download_stream(
-         url, dest, file_meta, request, config, attempt, max_attempts,
-         progress, partial_path, etag_path, expected_size,
-         offset, resume?, extra_headers, bytes_counter, file_pid
+         url,
+         dest,
+         file_meta,
+         request,
+         config,
+         attempt,
+         max_attempts,
+         progress,
+         partial_path,
+         etag_path,
+         expected_size,
+         offset,
+         resume?,
+         extra_headers,
+         bytes_counter,
+         file_pid
        ) do
     write_error = :atomics.new(1, [])
 
@@ -444,8 +465,14 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
             backoff(attempt)
 
             do_download_retry(
-              url, dest, file_meta, request, config,
-              attempt + 1, max_attempts, progress
+              url,
+              dest,
+              file_meta,
+              request,
+              config,
+              attempt + 1,
+              max_attempts,
+              progress
             )
           else
             {:error,
@@ -462,8 +489,14 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
               backoff(attempt)
 
               do_download_retry(
-                url, dest, file_meta, request, config,
-                attempt + 1, max_attempts, progress
+                url,
+                dest,
+                file_meta,
+                request,
+                config,
+                attempt + 1,
+                max_attempts,
+                progress
               )
             else
               {:error,
@@ -502,16 +535,28 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
           backoff(attempt)
 
           do_download_retry(
-            url, dest, file_meta, request, config,
-            attempt + 1, max_attempts, progress
+            url,
+            dest,
+            file_meta,
+            request,
+            config,
+            attempt + 1,
+            max_attempts,
+            progress
           )
 
         {:ok, %{status: status}} when status >= 500 and attempt < max_attempts ->
           backoff(attempt)
 
           do_download_retry(
-            url, dest, file_meta, request, config,
-            attempt + 1, max_attempts, progress
+            url,
+            dest,
+            file_meta,
+            request,
+            config,
+            attempt + 1,
+            max_attempts,
+            progress
           )
 
         {:ok, %{status: status}} ->
@@ -521,14 +566,19 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
           backoff(attempt)
 
           do_download_retry(
-            url, dest, file_meta, request, config,
-            attempt + 1, max_attempts, progress
+            url,
+            dest,
+            file_meta,
+            request,
+            config,
+            attempt + 1,
+            max_attempts,
+            progress
           )
 
         {:error, reason} ->
           {:error,
-           {:download_failed,
-            "HF download failed for #{file_meta.path}: #{inspect(reason)}"}}
+           {:download_failed, "HF download failed for #{file_meta.path}: #{inspect(reason)}"}}
       end
     end
   end

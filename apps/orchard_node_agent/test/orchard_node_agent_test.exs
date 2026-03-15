@@ -1425,33 +1425,34 @@ defmodule OrchardNodeAgentTest do
 
     test "restart telemetry reports correct waiter counts per attempt", %{bundle: bundle} do
       with_runtime_adapter(DeadlineTestAdapter, fn ->
-        events = with_telemetry_collector(all_lifecycle_events(), fn ->
-          # Short leader: 300ms, long follower: 10s
-          leader_task =
-            Task.async(fn ->
-              NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 300))
-            end)
+        events =
+          with_telemetry_collector(all_lifecycle_events(), fn ->
+            # Short leader: 300ms, long follower: 10s
+            leader_task =
+              Task.async(fn ->
+                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 300))
+              end)
 
-          assert_receive {:load_attempt_started, _worker_pid_1}, 5_000
+            assert_receive {:load_attempt_started, _worker_pid_1}, 5_000
 
-          follower_task =
-            Task.async(fn ->
-              NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 10_000))
-            end)
+            follower_task =
+              Task.async(fn ->
+                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 10_000))
+              end)
 
-          Process.sleep(50)
+            Process.sleep(50)
 
-          # Leader times out → abort + restart
-          leader_result = Task.await(leader_task, 5_000)
-          assert leader_result.placement_state == :PLACEMENT_STATE_FAILED
+            # Leader times out → abort + restart
+            leader_result = Task.await(leader_task, 5_000)
+            assert leader_result.placement_state == :PLACEMENT_STATE_FAILED
 
-          # Second attempt starts
-          assert_receive {:load_attempt_started, worker_pid_2}, 5_000
-          send(worker_pid_2, :finish_load)
+            # Second attempt starts
+            assert_receive {:load_attempt_started, worker_pid_2}, 5_000
+            send(worker_pid_2, :finish_load)
 
-          follower_result = Task.await(follower_task, 5_000)
-          assert follower_result.placement_state == :PLACEMENT_STATE_LOADED
-        end)
+            follower_result = Task.await(follower_task, 5_000)
+            assert follower_result.placement_state == :PLACEMENT_STATE_LOADED
+          end)
 
         # Filter manager load stop events by outcome
         stop_events =

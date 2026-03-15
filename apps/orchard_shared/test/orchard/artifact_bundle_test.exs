@@ -6,7 +6,10 @@ defmodule Orchard.ArtifactBundleTest do
   # Pre-computed hash of the controller test fixture bundle.
   # This value was captured from the original importer hash logic and serves
   # as a regression lock ensuring extracted shared logic is identical.
-  @fixture_bundle Path.expand("../../../../apps/orchard_controller/test/fixtures/bundles/test-model-bundle", __DIR__)
+  @fixture_bundle Path.expand(
+                    "../../../../apps/orchard_controller/test/fixtures/bundles/test-model-bundle",
+                    __DIR__
+                  )
   @fixture_hash "41691cf32524c1837cee1ec7409916090ec3a3645a81761fcc048edddaba3c10"
 
   setup do

@@ -109,7 +109,10 @@ defmodule Orchard.MixProject do
     worker_pkg = "native/orchard_worker_mlx"
     proto_root = Path.absname("proto")
     worker_proto_root = Path.absname(Path.join(worker_pkg, "proto"))
-    worker_proto = Path.absname(Path.join(worker_proto_root, "orchard/worker/v1/worker_runtime.proto"))
+
+    worker_proto =
+      Path.absname(Path.join(worker_proto_root, "orchard/worker/v1/worker_runtime.proto"))
+
     output_dir = Path.absname(Path.join(worker_pkg, "src/orchard_worker_mlx/generated"))
 
     File.mkdir_p!(output_dir)
@@ -119,10 +122,16 @@ defmodule Orchard.MixProject do
     case System.cmd(
            uv_path,
            [
-             "run", "--directory", worker_pkg,
-             "python", "-m", "grpc_tools.protoc",
-             "-I", proto_root,
-             "-I", worker_proto_root,
+             "run",
+             "--directory",
+             worker_pkg,
+             "python",
+             "-m",
+             "grpc_tools.protoc",
+             "-I",
+             proto_root,
+             "-I",
+             worker_proto_root,
              "--python_out=#{output_dir}",
              "--grpc_python_out=#{output_dir}"
            ] ++ proto_inputs,

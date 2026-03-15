@@ -118,9 +118,14 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
   defp detect_archive_format(object_key) do
     cond do
-      String.ends_with?(object_key, ".tar.gz") -> {:ok, :tar_gz}
-      String.ends_with?(object_key, ".tar") -> {:ok, :tar}
-      true -> {:error, {:unsupported_archive_extension, "expected .tar or .tar.gz, got: #{object_key}"}}
+      String.ends_with?(object_key, ".tar.gz") ->
+        {:ok, :tar_gz}
+
+      String.ends_with?(object_key, ".tar") ->
+        {:ok, :tar}
+
+      true ->
+        {:error, {:unsupported_archive_extension, "expected .tar or .tar.gz, got: #{object_key}"}}
     end
   end
 
@@ -148,7 +153,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
     receive_timeout_ms = Keyword.get(base, :receive_timeout_ms, 60_000)
     req_options = Keyword.get(base, :req_options, [])
 
-    with {:ok, signing_mode} <- validate_credentials(access_key_id, secret_access_key, session_token) do
+    with {:ok, signing_mode} <-
+           validate_credentials(access_key_id, secret_access_key, session_token) do
       {:ok,
        %{
          region: region,
@@ -199,6 +205,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
       endpoint != nil ->
         # virtual-hosted style with custom endpoint
         uri = URI.parse(endpoint)
+
         "#{uri.scheme}://#{bucket}.#{uri.host}#{if uri.port && uri.port not in [80, 443], do: ":#{uri.port}", else: ""}/#{encoded_key}"
 
       force_path_style? ->
@@ -319,15 +326,17 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
             {:ok, %{status: 200}} ->
               if bytes_written != expected_size do
                 {:error,
-                 {:download_incomplete,
-                  "expected #{expected_size} bytes, got #{bytes_written}"}}
+                 {:download_incomplete, "expected #{expected_size} bytes, got #{bytes_written}"}}
               else
                 # Emit final progress with files_completed: 1
                 emit_progress(bytes_written, expected_size, 1, request, source_spec.object_key)
 
                 case File.rename(partial_path, archive_path) do
-                  :ok -> {:ok, archive_path}
-                  {:error, reason} -> {:error, {:filesystem_error, "rename partial: #{inspect(reason)}"}}
+                  :ok ->
+                    {:ok, archive_path}
+
+                  {:error, reason} ->
+                    {:error, {:filesystem_error, "rename partial: #{inspect(reason)}"}}
                 end
               end
 

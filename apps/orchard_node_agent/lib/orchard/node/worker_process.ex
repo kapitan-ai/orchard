@@ -78,7 +78,11 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   @impl true
-  def handle_call({:ensure_loaded, %EnsureModelLoadedRequest{}, _load_timeout_ms}, _from, %{loaded?: true} = state) do
+  def handle_call(
+        {:ensure_loaded, %EnsureModelLoadedRequest{}, _load_timeout_ms},
+        _from,
+        %{loaded?: true} = state
+      ) do
     {:reply, :already_loaded, state}
   end
 

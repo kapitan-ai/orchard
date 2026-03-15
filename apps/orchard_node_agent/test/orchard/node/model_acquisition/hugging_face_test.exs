@@ -325,7 +325,12 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
       # Override config with retry_attempts: 3 to allow retry
       current_runtime = Application.get_env(:orchard_node_agent, :runtime, [])
       hf_config = Keyword.merge(current_runtime[:hf] || [], retry_attempts: 3)
-      Application.put_env(:orchard_node_agent, :runtime, Keyword.put(current_runtime, :hf, hf_config))
+
+      Application.put_env(
+        :orchard_node_agent,
+        :runtime,
+        Keyword.put(current_runtime, :hf, hf_config)
+      )
 
       request = build_hf_request(ctx)
 
@@ -367,8 +372,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
       assert {:ok, _path, :materialized} = ModelAcquisition.ensure_cached(request)
 
       # Should receive at least one progress event
-      assert_received {:telemetry, [:orchard, :node, :model_acquisition, :progress],
-                        measurements, metadata}
+      assert_received {:telemetry, [:orchard, :node, :model_acquisition, :progress], measurements,
+                       metadata}
 
       assert measurements.files_completed > 0
       assert measurements.total_files > 0
@@ -652,6 +657,5 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
 
     updated_runtime = Keyword.put(current_runtime, :hf, hf_config)
     Application.put_env(:orchard_node_agent, :runtime, updated_runtime)
-
   end
 end

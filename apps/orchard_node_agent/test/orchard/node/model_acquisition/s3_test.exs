@@ -70,7 +70,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
 
   describe "parse_s3_uri/1" do
     test "parses bucket/key.tar.gz" do
-      assert {:ok, %{bucket: "my-bucket", object_key: "models/model.tar.gz", archive_format: :tar_gz}} =
+      assert {:ok,
+              %{bucket: "my-bucket", object_key: "models/model.tar.gz", archive_format: :tar_gz}} =
                S3.parse_s3_uri("s3://my-bucket/models/model.tar.gz")
     end
 
@@ -91,7 +92,9 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
 
     test "parses region and endpoint together" do
       assert {:ok, %{region: "eu-west-1", endpoint: "http://minio:9000"}} =
-               S3.parse_s3_uri("s3://my-bucket/model.tar.gz?region=eu-west-1&endpoint=http://minio:9000")
+               S3.parse_s3_uri(
+                 "s3://my-bucket/model.tar.gz?region=eu-west-1&endpoint=http://minio:9000"
+               )
     end
 
     test "decodes percent-encoded object keys" do
@@ -241,10 +244,13 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
       File.write!(Path.join(source_dir, "config.json"), "{}")
 
       archive_path = Path.join(tmp, "collision.tar.gz")
+
       file_list = [
-        {~c".extract/nested.txt", String.to_charlist(Path.join(source_dir, ".extract/nested.txt"))},
+        {~c".extract/nested.txt",
+         String.to_charlist(Path.join(source_dir, ".extract/nested.txt"))},
         {~c"config.json", String.to_charlist(Path.join(source_dir, "config.json"))}
       ]
+
       :ok = :erl_tar.create(String.to_charlist(archive_path), file_list, [:compressed])
 
       assert :ok = Tar.extract_archive(archive_path, staging, :tar_gz)

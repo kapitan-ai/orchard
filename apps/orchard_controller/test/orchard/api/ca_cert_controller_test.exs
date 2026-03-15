@@ -8,7 +8,9 @@ defmodule Orchard.API.CACertControllerTest do
     original = Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
     on_exit(fn -> Application.put_env(:orchard_controller, Orchard.API.Endpoint, original) end)
 
-    tmp_dir = Path.join(System.tmp_dir!(), "orchard_ca_test_#{System.unique_integer([:positive])}")
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "orchard_ca_test_#{System.unique_integer([:positive])}")
+
     File.mkdir_p!(tmp_dir)
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
 

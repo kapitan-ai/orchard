@@ -295,7 +295,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
   describe "POST /v1/chat/completions (model load failure mapping)" do
     @tag :db
-    test "non-streaming model load failure returns mapped HTTP status and error envelope", %{bundle: bundle} do
+    test "non-streaming model load failure returns mapped HTTP status and error envelope", %{
+      bundle: bundle
+    } do
       # Create a model in DB but don't stage cache, and give a source URI
       # pointing to a nonexistent path so model acquisition fails.
       {:ok, _model} =
@@ -343,7 +345,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
 
     @tag :db
-    test "streaming model load failure emits SSE error with mapped code and no [DONE]", %{bundle: bundle} do
+    test "streaming model load failure emits SSE error with mapped code and no [DONE]", %{
+      bundle: bundle
+    } do
       {:ok, _model} =
         Orchard.Models.create_model(%{
           model_id: "fail-stream-model",
@@ -373,6 +377,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
       # HTTP status is 200 because SSE headers already sent
       assert conn.status == 200
+
       assert get_resp_header(conn, "content-type")
              |> Enum.any?(&String.contains?(&1, "text/event-stream"))
 

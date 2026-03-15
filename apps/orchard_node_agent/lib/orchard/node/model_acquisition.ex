@@ -121,9 +121,7 @@ defmodule Orchard.Node.ModelAcquisition do
          :ok <- materialize_source(request),
          :ok <- verify_staging(request),
          :ok <- finalize_staging(request) do
-      Logger.info(
-        "Materialized #{request.model_id}@#{request.version} at #{request.final_path}"
-      )
+      Logger.info("Materialized #{request.model_id}@#{request.version} at #{request.final_path}")
 
       {:ok, request.final_path, :materialized}
     else

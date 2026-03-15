@@ -23,27 +23,27 @@ defmodule Orchard.Node.ModelLoadFailure do
   # Worker error codes from Python model_loader.py / backends.py that indicate
   # the model artifact itself is invalid (not a runtime problem).
   @worker_model_invalid_codes MapSet.new([
-    "manifest_not_found",
-    "manifest_read_failed",
-    "manifest_decode_error",
-    "manifest_validation_error",
-    "model_identity_mismatch",
-    "unsupported_model_format",
-    "unsupported_artifact_layout",
-    "unsupported_runtime_adapter",
-    "unsupported_tokenizer_kind",
-    "bundle_path_escape",
-    "entrypoint_missing",
-    "tokenizer_missing",
-    "model_path_missing"
-  ])
+                                "manifest_not_found",
+                                "manifest_read_failed",
+                                "manifest_decode_error",
+                                "manifest_validation_error",
+                                "model_identity_mismatch",
+                                "unsupported_model_format",
+                                "unsupported_artifact_layout",
+                                "unsupported_runtime_adapter",
+                                "unsupported_tokenizer_kind",
+                                "bundle_path_escape",
+                                "entrypoint_missing",
+                                "tokenizer_missing",
+                                "model_path_missing"
+                              ])
 
   # Worker error codes indicating the runtime environment is unavailable.
   @worker_runtime_unavailable_codes MapSet.new([
-    "mlx_backend_unavailable",
-    "mlx_probe_failed",
-    "metal_unavailable"
-  ])
+                                      "mlx_backend_unavailable",
+                                      "mlx_probe_failed",
+                                      "metal_unavailable"
+                                    ])
 
   @worker_model_invalid_messages %{
     "manifest_not_found" => "model manifest is missing",
@@ -77,76 +77,191 @@ defmodule Orchard.Node.ModelLoadFailure do
 
   # --- MODEL_INVALID: request validation ---
   def from_reason(:missing_model_id),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "missing_model_id", "model identifier is missing")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "missing_model_id",
+        "model identifier is missing"
+      )
 
   def from_reason(:missing_version),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "missing_version", "model version is missing")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "missing_version",
+        "model version is missing"
+      )
 
   def from_reason(:missing_artifact_sha256),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "missing_artifact_sha256", "model artifact digest is missing")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "missing_artifact_sha256",
+        "model artifact digest is missing"
+      )
 
   def from_reason(:invalid_source_uri),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "invalid_source_uri", "model artifact source URI is invalid")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "invalid_source_uri",
+        "model artifact source URI is invalid"
+      )
 
   def from_reason({:unsupported_source_scheme, _scheme}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "unsupported_source_scheme", "model artifact source scheme is unsupported")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "unsupported_source_scheme",
+        "model artifact source scheme is unsupported"
+      )
 
   def from_reason(:path_escape),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "path_escape", "model identifier or version contains an invalid path segment")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "path_escape",
+        "model identifier or version contains an invalid path segment"
+      )
 
   # --- MODEL_INVALID: artifact verification ---
   def from_reason(:artifact_hash_mismatch),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "artifact_hash_mismatch", "model artifact verification failed")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "artifact_hash_mismatch",
+        "model artifact verification failed"
+      )
 
   def from_reason({:cache_verification_failed, _reason}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "cache_verification_failed", "cached model artifact verification failed")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "cache_verification_failed",
+        "cached model artifact verification failed"
+      )
 
   def from_reason({:verification_failed, _reason}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "verification_failed", "model artifact verification failed")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "verification_failed",
+        "model artifact verification failed"
+      )
 
   def from_reason({:invalid_source_layout, _msg}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "invalid_source_layout", "model artifact layout is invalid")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "invalid_source_layout",
+        "model artifact layout is invalid"
+      )
 
   def from_reason({:archive_extract_failed, _msg}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "archive_extract_failed", "model artifact archive could not be extracted")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "archive_extract_failed",
+        "model artifact archive could not be extracted"
+      )
 
   def from_reason({:source_not_directory, _msg}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "source_not_directory", "model artifact source has an invalid layout")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "source_not_directory",
+        "model artifact source has an invalid layout"
+      )
 
   def from_reason({:unsupported_archive_extension, _msg}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID, "unsupported_archive_extension", "model artifact archive format is unsupported")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID,
+        "unsupported_archive_extension",
+        "model artifact archive format is unsupported"
+      )
 
   # --- ACQUISITION_FAILED ---
   def from_reason(:missing_artifact_source_uri),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED, "missing_artifact_source_uri", "model artifact source URI is not configured")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED,
+        "missing_artifact_source_uri",
+        "model artifact source URI is not configured"
+      )
 
   def from_reason({:source_not_found, _msg}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED, "source_not_found", "model artifact source was not found")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED,
+        "source_not_found",
+        "model artifact source was not found"
+      )
 
   def from_reason({:source_unauthorized, _msg}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED, "source_unauthorized", "node is not authorized to access model artifacts")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED,
+        "source_unauthorized",
+        "node is not authorized to access model artifacts"
+      )
 
   def from_reason({:source_unavailable, _msg}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED, "source_unavailable", "model artifact source is unavailable")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED,
+        "source_unavailable",
+        "model artifact source is unavailable"
+      )
 
   def from_reason({:download_failed, _msg}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED, "download_failed", "model artifact download failed")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED,
+        "download_failed",
+        "model artifact download failed"
+      )
 
   def from_reason({:download_incomplete, _msg}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED, "download_incomplete", "model artifact download was incomplete")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED,
+        "download_incomplete",
+        "model artifact download was incomplete"
+      )
 
   # --- RUNTIME_UNAVAILABLE ---
   def from_reason(:worker_executable_not_found),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE, "worker_executable_not_found", "model runtime executable is not available on this node")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
+        "worker_executable_not_found",
+        "model runtime executable is not available on this node"
+      )
 
   def from_reason(:worker_unavailable),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE, "worker_unavailable", "model runtime is unavailable on this node")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
+        "worker_unavailable",
+        "model runtime is unavailable on this node"
+      )
 
   def from_reason({:worker_exited, _status}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE, "worker_exited", "model runtime exited unexpectedly")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
+        "worker_exited",
+        "model runtime exited unexpectedly"
+      )
 
   def from_reason({:rpc_error, _reason}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE, "rpc_error", "model runtime RPC failed")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE,
+        "rpc_error",
+        "model runtime RPC failed"
+      )
 
   def from_reason({:worker_unhealthy, code, _message}) when is_binary(code) do
     sanitized_code = sanitize_code(code, "worker_unhealthy")
@@ -169,54 +284,124 @@ defmodule Orchard.Node.ModelLoadFailure do
 
   # Legacy 2-tuple from pre-Task-4.2 adapter (defensive)
   def from_reason({:worker_load_failed, message}) when is_binary(message),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "worker_load_failed", "model runtime failed to load the model")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
+        "worker_load_failed",
+        "model runtime failed to load the model"
+      )
 
   # --- TIMEOUT ---
   def from_reason(:deadline_exceeded),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT, "deadline_exceeded", "model load exceeded its deadline")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT,
+        "deadline_exceeded",
+        "model load exceeded its deadline"
+      )
 
   def from_reason(:worker_ready_timeout),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT, "worker_ready_timeout", "model runtime did not become ready in time")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT,
+        "worker_ready_timeout",
+        "model runtime did not become ready in time"
+      )
 
   # --- RESOURCE_EXHAUSTED ---
   def from_reason(:model_capacity_exhausted),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED, "model_capacity_exhausted", "node runtime is at loaded-model capacity")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED,
+        "model_capacity_exhausted",
+        "node runtime is at loaded-model capacity"
+      )
 
   # --- INTERNAL: manager-level ---
   def from_reason(:task_crashed),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "task_crashed", "model load task crashed unexpectedly")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
+        "task_crashed",
+        "model load task crashed unexpectedly"
+      )
 
   def from_reason(:load_cancelled),
     do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "load_cancelled", "model load was cancelled")
 
   def from_reason(:conflicting_request),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "conflicting_request", "another load request for this model is already in progress")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
+        "conflicting_request",
+        "another load request for this model is already in progress"
+      )
 
   # --- INTERNAL: staging/filesystem ---
   def from_reason({:staging_failed, _reason}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "staging_failed", "node failed to prepare model staging storage")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
+        "staging_failed",
+        "node failed to prepare model staging storage"
+      )
 
   def from_reason({:finalize_failed, _reason}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "finalize_failed", "node failed to finalize the model artifact")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
+        "finalize_failed",
+        "node failed to finalize the model artifact"
+      )
 
   def from_reason({:filesystem_error, _reason}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "filesystem_error", "node encountered a local filesystem error")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
+        "filesystem_error",
+        "node encountered a local filesystem error"
+      )
 
   def from_reason({:invalid_source_config, _msg}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "invalid_source_config", "node model source configuration is invalid")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
+        "invalid_source_config",
+        "node model source configuration is invalid"
+      )
 
   def from_reason(:invalid_model_path),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "invalid_model_path", "node could not access the prepared model path")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
+        "invalid_model_path",
+        "node could not access the prepared model path"
+      )
 
   def from_reason({:socket_cleanup_failed, _reason}),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "socket_cleanup_failed", "node failed to prepare the worker runtime socket")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
+        "socket_cleanup_failed",
+        "node failed to prepare the worker runtime socket"
+      )
 
   def from_reason(:runtime_adapter_not_implemented),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "runtime_adapter_not_implemented", "model runtime is not configured on this node")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
+        "runtime_adapter_not_implemented",
+        "model runtime is not configured on this node"
+      )
 
   # --- Catch-all ---
   def from_reason(_reason),
-    do: new(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL, "internal_error", "model load failed due to an internal error")
+    do:
+      new(
+        :MODEL_LOAD_FAILURE_CATEGORY_INTERNAL,
+        "internal_error",
+        "model load failed due to an internal error"
+      )
 
   @doc """
   Converts a raw error reason into a failed `EnsureModelLoadedResponse`.

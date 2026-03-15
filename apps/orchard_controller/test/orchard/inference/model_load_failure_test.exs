@@ -151,14 +151,20 @@ defmodule Orchard.Inference.ModelLoadFailureTest do
   end
 
   test "from_transport_reason unexpected_placement_state -> internal" do
-    failure = ModelLoadFailure.from_transport_reason({:unexpected_placement_state, :PLACEMENT_STATE_LOADING})
+    failure =
+      ModelLoadFailure.from_transport_reason(
+        {:unexpected_placement_state, :PLACEMENT_STATE_LOADING}
+      )
+
     assert failure.category == :internal
     assert failure.code == "unexpected_placement_state"
     assert failure.message =~ "PLACEMENT_STATE_LOADING"
   end
 
   test "from_transport_reason rpc_error with resource_exhausted" do
-    failure = ModelLoadFailure.from_transport_reason({:rpc_error, :resource_exhausted, "too many"})
+    failure =
+      ModelLoadFailure.from_transport_reason({:rpc_error, :resource_exhausted, "too many"})
+
     assert failure.category == :resource_exhausted
     assert failure.code == "rpc_resource_exhausted"
   end
@@ -184,7 +190,12 @@ defmodule Orchard.Inference.ModelLoadFailureTest do
   # -- api_mapping/1 ----------------------------------------------------------
 
   test "api_mapping for runtime_unavailable -> 503 server_error" do
-    failure = %ModelLoadFailure{category: :runtime_unavailable, code: "mlx_backend_unavailable", message: "MLX unavailable"}
+    failure = %ModelLoadFailure{
+      category: :runtime_unavailable,
+      code: "mlx_backend_unavailable",
+      message: "MLX unavailable"
+    }
+
     mapping = ModelLoadFailure.api_mapping(failure)
     assert mapping.status == :service_unavailable
     assert mapping.type == "server_error"
@@ -193,7 +204,12 @@ defmodule Orchard.Inference.ModelLoadFailureTest do
   end
 
   test "api_mapping for timeout -> 504 server_error" do
-    failure = %ModelLoadFailure{category: :timeout, code: "deadline_exceeded", message: "timed out"}
+    failure = %ModelLoadFailure{
+      category: :timeout,
+      code: "deadline_exceeded",
+      message: "timed out"
+    }
+
     mapping = ModelLoadFailure.api_mapping(failure)
     assert mapping.status == :gateway_timeout
     assert mapping.type == "server_error"
@@ -209,7 +225,12 @@ defmodule Orchard.Inference.ModelLoadFailureTest do
   # -- terminal_attrs/1 -------------------------------------------------------
 
   test "terminal_attrs sets state failed and correct http_status" do
-    failure = %ModelLoadFailure{category: :timeout, code: "deadline_exceeded", message: "timed out"}
+    failure = %ModelLoadFailure{
+      category: :timeout,
+      code: "deadline_exceeded",
+      message: "timed out"
+    }
+
     attrs = ModelLoadFailure.terminal_attrs(failure)
     assert attrs.state == :failed
     assert attrs.http_status == 504
@@ -218,7 +239,12 @@ defmodule Orchard.Inference.ModelLoadFailureTest do
   end
 
   test "terminal_attrs for model_invalid returns 503" do
-    failure = %ModelLoadFailure{category: :model_invalid, code: "manifest_not_found", message: "missing"}
+    failure = %ModelLoadFailure{
+      category: :model_invalid,
+      code: "manifest_not_found",
+      message: "missing"
+    }
+
     attrs = ModelLoadFailure.terminal_attrs(failure)
     assert attrs.http_status == 503
   end
