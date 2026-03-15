@@ -154,6 +154,96 @@ defmodule OrchardConsole.AuthTest do
     end
   end
 
+  describe "console subpaths" do
+    test "returns 404 for /console/playground when console is disabled", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: false,
+        auth: :none,
+        username: nil,
+        password: nil
+      )
+
+      conn = get(conn, "/console/playground")
+      assert conn.status == 404
+    end
+
+    test "returns 404 for /console/requests/:id when console is disabled", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: false,
+        auth: :none,
+        username: nil,
+        password: nil
+      )
+
+      conn = get(conn, "/console/requests/req_auth_test")
+      assert conn.status == 404
+    end
+
+    test "returns 401 for /console/playground in basic auth without credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn = get(conn, "/console/playground")
+      assert conn.status == 401
+    end
+
+    test "returns 401 for /console/requests/:id in basic auth without credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn = get(conn, "/console/requests/req_auth_test")
+      assert conn.status == 401
+    end
+
+    test "returns 200 for subpaths with valid basic auth credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn =
+        conn
+        |> put_req_header(
+          "authorization",
+          Plug.BasicAuth.encode_basic_auth("operator", "secret")
+        )
+        |> get("/console/playground")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "Playground"
+    end
+
+    test "returns 200 for request detail with valid basic auth credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn =
+        conn
+        |> put_req_header(
+          "authorization",
+          Plug.BasicAuth.encode_basic_auth("operator", "secret")
+        )
+        |> get("/console/requests/req_auth_test")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "req_auth_test"
+    end
+  end
+
   describe "non-console paths" do
     test "does not affect API routes", %{conn: conn} do
       Application.put_env(:orchard_controller, :console,

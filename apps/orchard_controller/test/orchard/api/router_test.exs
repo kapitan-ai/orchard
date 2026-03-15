@@ -74,4 +74,30 @@ defmodule Orchard.API.RouterTest do
       assert conn.body_params["messages"] == []
     end
   end
+
+  describe "console LiveView routes" do
+    @describetag :live
+    @describetag :db
+
+    setup do
+      Ecto.Adapters.SQL.Sandbox.mode(Orchard.Repo, {:shared, self()})
+      :ok
+    end
+
+    test "GET /console/playground is routed", %{conn: conn} do
+      conn = get(conn, "/console/playground")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "Playground"
+      assert conn.resp_body =~ "The console playground is not implemented yet."
+    end
+
+    test "GET /console/requests/:public_id is routed", %{conn: conn} do
+      conn = get(conn, "/console/requests/req_router_test")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "req_router_test"
+      assert conn.resp_body =~ "Request detail view is not implemented yet."
+    end
+  end
 end

@@ -115,7 +115,13 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "marks future pages as disabled", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
+      # Models and Requests are still disabled
       assert html =~ ~s(aria-disabled="true")
+      assert html =~ "Models \u2014 coming soon"
+      assert html =~ "Requests \u2014 coming soon"
+      # Playground is now enabled
+      assert html =~ "/console/playground"
+      refute html =~ "Playground \u2014 coming soon"
     end
 
     test "renders sidebar toggle button", %{conn: conn} do

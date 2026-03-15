@@ -422,12 +422,21 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ ~s(aria-current="page")
     end
 
-    test "marks disabled items with aria-disabled" do
+    test "renders Playground as enabled link" do
       assigns = %{}
       html = render_heex(~H|<.sidebar_nav active={:overview} />|)
 
-      # Playground, Models, Requests are disabled
+      assert html =~ "/console/playground"
+      refute html =~ "Playground \u2014 coming soon"
+    end
+
+    test "marks Models and Requests as disabled" do
+      assigns = %{}
+      html = render_heex(~H|<.sidebar_nav active={:overview} />|)
+
       assert html =~ ~s(aria-disabled="true")
+      assert html =~ "Models \u2014 coming soon"
+      assert html =~ "Requests \u2014 coming soon"
     end
 
     test "active item uses navy accent" do
@@ -435,6 +444,35 @@ defmodule OrchardConsole.CoreComponentsTest do
       html = render_heex(~H|<.sidebar_nav active={:overview} />|)
 
       assert html =~ "text-navy"
+    end
+
+    test "Playground shows active styling when active" do
+      assigns = %{}
+      html = render_heex(~H|<.sidebar_nav active={:playground} />|)
+
+      assert html =~ ~s(aria-current="page")
+      assert html =~ "bg-navy/10"
+    end
+
+    test "disabled Requests shows active styling when active" do
+      assigns = %{}
+      html = render_heex(~H|<.sidebar_nav active={:requests} />|)
+
+      # Requests is still non-clickable (no link/navigate)
+      refute html =~ "/console/requests"
+      # Active item drops disabled semantics and "coming soon" tooltip
+      refute html =~ "Requests \u2014 coming soon"
+      # Shows active styling
+      assert html =~ ~s(aria-current="page")
+      assert html =~ "text-navy"
+    end
+
+    test "enabled links have hover classes" do
+      assigns = %{}
+      html = render_heex(~H|<.sidebar_nav active={:playground} />|)
+
+      # Overview (inactive enabled) should have hover classes
+      assert html =~ "hover:bg-slate-100"
     end
   end
 

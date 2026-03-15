@@ -724,8 +724,8 @@ defmodule OrchardConsole.CoreComponents do
       key: :playground,
       label: "Playground",
       icon: "hero-command-line",
-      path: nil,
-      enabled: false
+      path: "/console/playground",
+      enabled: true
     },
     %{key: :models, label: "Models", icon: "hero-cube-transparent", path: nil, enabled: false},
     %{key: :requests, label: "Requests", icon: "hero-document-text", path: nil, enabled: false}
@@ -756,12 +756,7 @@ defmodule OrchardConsole.CoreComponents do
           aria-current={item.key == @active && "page"}
           class={[
             "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-            if(item.key == @active,
-              do:
-                "bg-navy/10 text-navy dark:bg-sky-500/10 dark:text-sky-400",
-              else:
-                "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
-            )
+            nav_item_classes(item.key, @active, true)
           ]}
         >
           <.icon name={item.icon} class="h-5 w-5 flex-shrink-0" />
@@ -769,9 +764,13 @@ defmodule OrchardConsole.CoreComponents do
         </.link>
         <span
           :if={!item.enabled}
-          aria-disabled="true"
-          title={"#{item.label} \u2014 coming soon"}
-          class="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-slate-400 dark:text-slate-600 cursor-default"
+          aria-disabled={item.key != @active && "true"}
+          aria-current={item.key == @active && "page"}
+          title={if(item.key != @active, do: "#{item.label} \u2014 coming soon")}
+          class={[
+            "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium cursor-default",
+            nav_item_classes(item.key, @active, false)
+          ]}
         >
           <.icon name={item.icon} class="h-5 w-5 flex-shrink-0" />
           <span class="sidebar-label truncate">{item.label}</span>
@@ -779,6 +778,18 @@ defmodule OrchardConsole.CoreComponents do
       </div>
     </nav>
     """
+  end
+
+  defp nav_item_classes(key, active, _interactive?) when key == active do
+    "bg-navy/10 text-navy dark:bg-sky-500/10 dark:text-sky-400"
+  end
+
+  defp nav_item_classes(_key, _active, true = _interactive?) do
+    "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+  end
+
+  defp nav_item_classes(_key, _active, false = _interactive?) do
+    "text-slate-400 dark:text-slate-600"
   end
 
   # ===========================================================================
