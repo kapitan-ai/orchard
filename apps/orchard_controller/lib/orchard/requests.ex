@@ -57,6 +57,7 @@ defmodule Orchard.Requests do
       |> normalize_request_event_attrs()
       |> Map.put("request_id", request_id)
       |> Map.put("seq", next_request_event_seq(request_id))
+      |> default_occurred_at()
 
     # Atomically advance requests.state when the event carries a
     # state value. This keeps the row in sync with events for
@@ -133,6 +134,16 @@ defmodule Orchard.Requests do
       {key, value} when is_atom(key) -> {Atom.to_string(key), value}
       {key, value} -> {key, value}
     end)
+  end
+
+  defp default_occurred_at(%{"occurred_at" => nil} = attrs),
+    do: Map.put(attrs, "occurred_at", utc_now())
+
+  defp default_occurred_at(%{"occurred_at" => _occurred_at} = attrs), do: attrs
+  defp default_occurred_at(attrs), do: Map.put(attrs, "occurred_at", utc_now())
+
+  defp utc_now do
+    DateTime.utc_now() |> DateTime.truncate(:microsecond)
   end
 
   defp next_request_event_seq(request_id) do

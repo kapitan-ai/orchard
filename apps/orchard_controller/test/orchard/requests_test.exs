@@ -17,7 +17,7 @@ defmodule Orchard.RequestsTest do
     assert request.requested_model == attrs.requested_model
   end
 
-  test "append_request_event/2 auto-assigns per-request sequence numbers" do
+  test "append_request_event/2 auto-assigns per-request sequence numbers and default occurred_at" do
     assert {:ok, request} =
              Requests.create_request(request_attrs(%{public_id: "req_event_test"}))
 
@@ -35,6 +35,8 @@ defmodule Orchard.RequestsTest do
 
     assert first.seq == 1
     assert second.seq == 2
+    assert match?(%DateTime{}, first.occurred_at)
+    assert match?(%DateTime{}, second.occurred_at)
 
     assert Enum.map(Requests.list_request_events(request), & &1.event_type) == [
              "request.received",
@@ -68,16 +70,38 @@ defmodule Orchard.RequestsTest do
     assert {:ok, request} =
              Requests.create_request(request_attrs(%{public_id: "req_event_string_keys_test"}))
 
+    occurred_at = ~U[2026-03-15 12:34:56.000000Z]
+
     assert {:ok, event} =
              Requests.append_request_event(request.id, %{
                "event_type" => "request.received",
                "state" => :received,
+               "occurred_at" => occurred_at,
                "payload" => %{"phase" => "ingress"}
              })
 
     assert event.seq == 1
     assert event.event_type == "request.received"
+    assert event.occurred_at == occurred_at
     assert event.payload == %{"phase" => "ingress"}
+  end
+
+  test "append_request_event/2 preserves atom-keyed occurred_at when provided" do
+    assert {:ok, request} =
+             Requests.create_request(
+               request_attrs(%{public_id: "req_event_explicit_occurred_at_test"})
+             )
+
+    occurred_at = ~U[2026-03-15 01:02:03.000000Z]
+
+    assert {:ok, event} =
+             Requests.append_request_event(request.id, %{
+               event_type: "request.received",
+               state: :received,
+               occurred_at: occurred_at
+             })
+
+    assert event.occurred_at == occurred_at
   end
 
   test "append_request_event/2 returns a handled error for unknown requests" do

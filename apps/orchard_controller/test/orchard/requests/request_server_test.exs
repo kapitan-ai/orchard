@@ -83,6 +83,7 @@ defmodule Orchard.Requests.RequestServerTest do
         |> Enum.sort_by(& &1.seq)
 
       assert length(events) == 2
+      assert Enum.all?(events, &match?(%DateTime{}, &1.occurred_at))
       assert Enum.at(events, 0).event_type == "state_transition"
       assert Enum.at(events, 0).state == :scheduled || Enum.at(events, 0).state == :validated
     end

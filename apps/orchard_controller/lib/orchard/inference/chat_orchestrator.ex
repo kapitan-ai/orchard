@@ -27,7 +27,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest, GenerationParams}
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.Inference
-  alias Orchard.Inference.{ChatRequestNormalizer, ChatRequestValidator, ModelLoadFailure}
+  alias Orchard.Inference.{ChatError, ChatRequestNormalizer, ChatRequestValidator}
   alias Orchard.InferenceEvent
   alias Orchard.Models
   alias Orchard.Models.ManifestParser
@@ -78,11 +78,14 @@ defmodule Orchard.Inference.ChatOrchestrator do
 
     * `:event_handler` — optional callback `fun(request_id, event)` called
       with each `InferenceEvent` as it arrives from dispatch
+    * `:caller` — optional pid to monitor for dispatch cancellation semantics
+      (defaults to the current process)
   """
   @spec execute(CanonicalRequest.t(), map(), keyword()) :: orchestrate_result()
   def execute(canonical, model, opts \\ []) do
     event_handler = Keyword.get(opts, :event_handler)
-    execute_with_persistence(canonical, model, event_handler)
+    caller = Keyword.get(opts, :caller, self())
+    execute_with_persistence(canonical, model, caller, event_handler)
   end
 
   @doc """
@@ -98,6 +101,8 @@ defmodule Orchard.Inference.ChatOrchestrator do
 
     * `:event_handler` — optional callback `fun(request_id, event)` for
       streaming-style event delivery
+    * `:caller` — optional pid forwarded to the dispatcher for cancellation
+      monitoring
   """
   @spec orchestrate(map(), keyword()) :: orchestrate_result()
   def orchestrate(params, opts \\ []) do
@@ -110,20 +115,20 @@ defmodule Orchard.Inference.ChatOrchestrator do
 
   # After validation passes and model is resolved, we enter the persistence
   # boundary. From here, any failure must clean up the request row and FSM.
-  defp execute_with_persistence(canonical, model, event_handler) do
+  defp execute_with_persistence(canonical, model, caller, event_handler) do
     with {:ok, db_request} <- persist_request(canonical, model),
          {:ok, _pid} <- start_fsm(db_request) do
-      run_dispatch_pipeline(db_request, canonical, model, event_handler)
+      run_dispatch_pipeline(db_request, canonical, model, caller, event_handler)
     end
   end
 
-  defp run_dispatch_pipeline(db_request, canonical, model, event_handler) do
+  defp run_dispatch_pipeline(db_request, canonical, model, caller, event_handler) do
     result =
       with :ok <- advance_fsm(db_request.id, :validated),
            {:ok, schedule} <- schedule_request(canonical),
            :ok <- advance_fsm(db_request.id, :scheduled),
            :ok <- advance_fsm(db_request.id, :dispatching),
-           {:ok, events} <- dispatch(canonical, model, schedule, event_handler) do
+           {:ok, events} <- dispatch(canonical, model, schedule, caller, event_handler) do
         finalize(db_request, canonical, events)
       end
 
@@ -227,6 +232,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
       state: :received,
       stream: canonical.stream?,
       payload_capture_mode: :metadata,
+      canonical_request: safe_serialize_canonical_request(canonical),
       sampling_params: sampling_to_map(canonical.sampling),
       input_tokens: canonical.input_token_count
     }
@@ -250,7 +256,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
     SingleNode.schedule(canonical)
   end
 
-  defp dispatch(canonical, model, schedule, event_handler) do
+  defp dispatch(canonical, model, schedule, caller, event_handler) do
     execute_request = build_execute_request(canonical, schedule)
     model_load_request = build_model_load_request(model, schedule)
 
@@ -258,26 +264,19 @@ defmodule Orchard.Inference.ChatOrchestrator do
       schedule,
       execute_request,
       model_load_request,
+      caller: caller,
       event_handler: event_handler
     )
   end
 
   defp finalize(db_request, canonical, events) do
-    {fsm_state, usage} = extract_terminal_info(events)
+    terminal_attrs = terminal_attrs_from_events(events)
 
     # Advance FSM through intermediate states, then terminal.
     # Intermediate transitions are best-effort — the terminal transition
     # and DB update are what matter for durable correctness.
     advance_fsm_best_effort(db_request.id, events)
-    advance_fsm_best_effort_terminal(db_request.id, fsm_state)
-
-    # Persist terminal state and usage on the request row
-    terminal_attrs = %{
-      state: fsm_state,
-      input_tokens: usage.input_tokens,
-      output_tokens: usage.output_tokens,
-      http_status: if(fsm_state == :completed, do: 200, else: 500)
-    }
+    advance_fsm_best_effort_terminal(db_request.id, terminal_attrs.state)
 
     case Requests.mark_terminal(db_request, terminal_attrs) do
       {:ok, _updated} -> {:ok, canonical, events}
@@ -285,27 +284,16 @@ defmodule Orchard.Inference.ChatOrchestrator do
     end
   end
 
-  defp fail_request(db_request, {:model_load_failed, %ModelLoadFailure{} = failure}) do
-    advance_fsm_best_effort_terminal(db_request.id, :failed)
-
-    case Requests.mark_terminal(db_request, ModelLoadFailure.terminal_attrs(failure)) do
-      {:ok, _} -> :ok
-      {:error, err} -> log_warn("fail_request mark_terminal error: #{inspect(err)}")
-    end
-  end
-
   defp fail_request(db_request, reason) do
-    # Best-effort: move FSM to :failed and mark DB row terminal.
+    # Best-effort: move FSM to a terminal state and mark DB row terminal.
     # This runs after an orchestration error, so failures here are logged
     # but not propagated (the original error is returned to the caller).
-    advance_fsm_best_effort_terminal(db_request.id, :failed)
+    terminal_attrs =
+      reason
+      |> ChatError.from_execute_error()
+      |> ChatError.terminal_attrs()
 
-    terminal_attrs = %{
-      state: :failed,
-      http_status: 500,
-      error_code: "orchestration_error",
-      error_message: inspect(reason)
-    }
+    advance_fsm_best_effort_terminal(db_request.id, terminal_attrs.state)
 
     case Requests.mark_terminal(db_request, terminal_attrs) do
       {:ok, _} -> :ok
@@ -385,17 +373,24 @@ defmodule Orchard.Inference.ChatOrchestrator do
 
   # -- Event analysis --------------------------------------------------------
 
-  defp extract_terminal_info(events) do
-    terminal = Enum.find(events, &InferenceEvent.terminal?/1)
+  defp terminal_attrs_from_events(events) do
     usage = extract_usage(events)
 
-    state =
-      case terminal do
-        nil -> :completed
-        event -> map_terminal_state(event)
+    base_attrs =
+      case Enum.find(events, &InferenceEvent.terminal?/1) do
+        nil ->
+          %{state: :completed, http_status: 200}
+
+        %{event: %InferenceEvent.Completed{}} ->
+          %{state: :completed, http_status: 200}
+
+        %{event: %InferenceEvent.Failed{}} = event ->
+          event
+          |> ChatError.from_failed_event()
+          |> ChatError.terminal_attrs()
       end
 
-    {state, usage}
+    Map.merge(base_attrs, usage)
   end
 
   defp extract_usage(events) do
@@ -417,22 +412,116 @@ defmodule Orchard.Inference.ChatOrchestrator do
     end
   end
 
-  defp map_terminal_state(event) do
-    case InferenceEvent.kind(event) do
-      :completed -> :completed
-      :failed -> :failed
-      _ -> :completed
-    end
+  # -- Helpers ---------------------------------------------------------------
+
+  defp safe_serialize_canonical_request(canonical) do
+    serialize_canonical_request(canonical)
+  rescue
+    e in ArgumentError ->
+      log_warn("canonical_request serialization failed: #{Exception.message(e)}")
+      nil
   end
 
-  # -- Helpers ---------------------------------------------------------------
+  defp serialize_canonical_request(%CanonicalRequest{} = canonical) do
+    %{
+      "internal_id" => canonical.internal_id,
+      "public_id" => canonical.public_id,
+      "endpoint" => Atom.to_string(canonical.endpoint),
+      "tenant_id" => canonical.tenant_id,
+      "principal_id" => canonical.principal_id,
+      "api_key_id" => canonical.api_key_id,
+      "model_ref" => serialize_model_ref(canonical.model_ref),
+      "input_items" => normalize_plain_data(canonical.input_items),
+      "rendered_prompt" => canonical.rendered_prompt,
+      "input_token_count" => canonical.input_token_count,
+      "stream" => canonical.stream?,
+      "stream_include_usage" => canonical.stream_include_usage,
+      "sampling" => serialize_sampling(canonical.sampling),
+      "response_format" => serialize_response_format(canonical.response_format),
+      "tooling" => serialize_tooling(canonical.tooling),
+      "metadata" => normalize_plain_data(canonical.metadata),
+      "admission" => serialize_admission(canonical.admission),
+      "resolved_policy" => serialize_resolved_policy(canonical.resolved_policy)
+    }
+  end
+
+  defp serialize_model_ref(%CanonicalRequest.ModelRef{} = model_ref) do
+    %{
+      "model_id" => model_ref.model_id,
+      "version" => model_ref.version
+    }
+  end
+
+  defp serialize_sampling(%CanonicalRequest.Sampling{} = sampling) do
+    %{
+      "temperature" => sampling.temperature,
+      "top_p" => sampling.top_p,
+      "max_output_tokens" => sampling.max_output_tokens,
+      "stop" => normalize_plain_data(sampling.stop),
+      "seed" => sampling.seed
+    }
+  end
+
+  defp serialize_response_format(%CanonicalRequest.ResponseFormat{} = response_format) do
+    %{"type" => Atom.to_string(response_format.type)}
+  end
+
+  defp serialize_tooling(%CanonicalRequest.Tooling{} = tooling) do
+    %{
+      "tools" => normalize_plain_data(tooling.tools),
+      "tool_choice" => normalize_plain_data(tooling.tool_choice)
+    }
+  end
+
+  defp serialize_admission(%CanonicalRequest.Admission{} = admission) do
+    %{
+      "timeout_ms" => admission.timeout_ms,
+      "queue_wait_ms" => admission.queue_wait_ms,
+      "max_cold_start_ms" => admission.max_cold_start_ms
+    }
+  end
+
+  defp serialize_resolved_policy(%CanonicalRequest.ResolvedPolicy{} = resolved_policy) do
+    %{
+      "quota_id" => resolved_policy.quota_id,
+      "routing_policy_id" => resolved_policy.routing_policy_id,
+      "allowed_pool_ids" => normalize_plain_data(resolved_policy.allowed_pool_ids),
+      "residency_preference" => Atom.to_string(resolved_policy.residency_preference)
+    }
+  end
+
+  defp normalize_plain_data(nil), do: nil
+
+  defp normalize_plain_data(value) when is_binary(value) or is_number(value) or is_boolean(value),
+    do: value
+
+  defp normalize_plain_data(value) when is_atom(value), do: Atom.to_string(value)
+
+  defp normalize_plain_data(values) when is_list(values),
+    do: Enum.map(values, &normalize_plain_data/1)
+
+  defp normalize_plain_data(%{__struct__: struct_name}) do
+    raise ArgumentError,
+          "expected plain map data while serializing canonical request, got struct: #{inspect(struct_name)}"
+  end
+
+  defp normalize_plain_data(map) when is_map(map) do
+    Map.new(map, fn {key, value} ->
+      {normalize_map_key(key), normalize_plain_data(value)}
+    end)
+  end
 
   defp sampling_to_map(sampling) do
     %{
       "temperature" => sampling.temperature,
       "top_p" => sampling.top_p,
       "max_output_tokens" => sampling.max_output_tokens,
-      "stop" => sampling.stop
+      "stop" => sampling.stop,
+      "seed" => sampling.seed
     }
   end
+
+  defp normalize_map_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp normalize_map_key(key) when is_binary(key), do: key
+  defp normalize_map_key(key), do: to_string(key)
 end

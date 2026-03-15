@@ -277,6 +277,19 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert request.requested_model == "persist-model@v1"
       assert request.stream == true
       assert request.endpoint == :chat_completions
+      assert is_map(request.canonical_request)
+      assert request.canonical_request["public_id"] == request.public_id
+
+      assert request.canonical_request["model_ref"] == %{
+               "model_id" => "persist-model",
+               "version" => "v1"
+             }
+
+      assert request.canonical_request["sampling"]["temperature"] == 1.0
+      assert request.canonical_request["response_format"] == %{"type" => "text"}
+      assert request.canonical_request["stream"] == true
+      assert request.canonical_request["stream_include_usage"] == false
+      refute_struct_artifacts!(request.canonical_request)
       # Terminal state after successful completion
       assert request.state in [:completed, :streaming]
 
@@ -289,6 +302,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       event_states = Enum.map(events, & &1.state)
       # Should include forward progression through the FSM
       assert length(events) >= 2
+      assert Enum.all?(events, &match?(%DateTime{}, &1.occurred_at))
       assert :validated in event_states
     end
   end
@@ -342,6 +356,14 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert request.http_status == 503
       assert request.error_code != nil
       assert request.error_message != nil
+      assert is_map(request.canonical_request)
+
+      assert request.canonical_request["model_ref"] == %{
+               "model_id" => "fail-model",
+               "version" => "v1"
+             }
+
+      refute_struct_artifacts!(request.canonical_request)
     end
 
     @tag :db
@@ -435,6 +457,21 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert canonical.stream_include_usage == false
     end
   end
+
+  defp refute_struct_artifacts!(value) when is_map(value) do
+    refute Map.has_key?(value, "__struct__")
+    refute Map.has_key?(value, :__struct__)
+
+    Enum.each(value, fn {_key, nested} ->
+      refute_struct_artifacts!(nested)
+    end)
+  end
+
+  defp refute_struct_artifacts!(value) when is_list(value) do
+    Enum.each(value, &refute_struct_artifacts!/1)
+  end
+
+  defp refute_struct_artifacts!(_value), do: :ok
 
   # Stage a test bundle at the cache path for model_ids used in streaming tests.
   # Returns %{hash, source_path, cache_paths} so tests can use the real hash.

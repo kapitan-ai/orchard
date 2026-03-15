@@ -16,7 +16,7 @@ defmodule Orchard.API.ChatCompletionsController do
   import Orchard.API.ErrorHelpers, only: [send_error: 5]
 
   alias Orchard.API.SSE
-  alias Orchard.Inference.{ChatOrchestrator, ModelLoadFailure}
+  alias Orchard.Inference.{ChatError, ChatOrchestrator}
   alias Orchard.InferenceEvent
 
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
@@ -36,41 +36,11 @@ defmodule Orchard.API.ChatCompletionsController do
     end
   end
 
-  defp send_prepare_error(conn, {:validation, errors}),
-    do: send_validation_error(conn, errors)
-
-  defp send_prepare_error(conn, {:model_not_found, model_ref}) do
-    send_error(conn, :not_found, "Model not found: #{model_ref}", "invalid_request_error",
-      param: "model",
-      code: "model_not_found"
-    )
-  end
-
-  defp send_prepare_error(conn, {:context_overflow, detail}) do
-    send_error(conn, :bad_request, detail, "invalid_request_error",
-      code: "context_length_exceeded"
-    )
-  end
-
-  defp send_prepare_error(conn, {:tokenization, {cat, message}})
-       when is_binary(message) and cat in [:invalid_input, :unsupported_tokenizer] do
-    send_error(conn, :bad_request, message, "invalid_request_error", [])
-  end
-
-  defp send_prepare_error(conn, {:tokenization, {_cat, message}}) when is_binary(message) do
-    send_error(conn, :internal_server_error, "Tokenization failed: #{message}", "server_error",
-      code: "internal_error"
-    )
-  end
-
-  defp send_prepare_error(conn, {:tokenization, reason}) do
-    send_error(
-      conn,
-      :internal_server_error,
-      "Tokenization failed: #{inspect(reason)}",
-      "server_error",
-      code: "internal_error"
-    )
+  defp send_prepare_error(conn, reason) do
+    reason
+    |> ChatError.from_prepare_reason()
+    |> ChatError.api_mapping()
+    |> send_chat_error(conn)
   end
 
   # -- Non-streaming response ------------------------------------------------
@@ -78,49 +48,22 @@ defmodule Orchard.API.ChatCompletionsController do
   defp handle_non_streaming(conn, canonical, model) do
     case ChatOrchestrator.execute(canonical, model) do
       {:ok, canonical, events} ->
-        # Check if the terminal event indicates failure — if so, return an
-        # error envelope instead of a completion object (P0 review fix).
-        case terminal_outcome(events) do
-          :completed ->
-            send_completion_response(conn, canonical, events)
+        case Enum.find(events, &InferenceEvent.terminal?/1) do
+          %{event: %InferenceEvent.Failed{}} = terminal ->
+            terminal
+            |> ChatError.from_failed_event()
+            |> ChatError.api_mapping()
+            |> send_chat_error(conn)
 
-          {:failed, message} ->
-            send_error(
-              conn,
-              :internal_server_error,
-              "Inference failed: #{message}",
-              "server_error",
-              code: "internal_error"
-            )
-
-          :cancelled ->
-            send_error(conn, :internal_server_error, "Request was cancelled", "server_error",
-              code: "request_cancelled"
-            )
-
-          :timed_out ->
-            send_error(conn, :gateway_timeout, "Request timed out", "server_error",
-              code: "request_timeout"
-            )
-
-          :unknown ->
+          _other ->
             send_completion_response(conn, canonical, events)
         end
 
-      {:error, {:model_load_failed, %ModelLoadFailure{} = failure}} ->
-        %{status: status, type: type, code: code, message: message} =
-          ModelLoadFailure.api_mapping(failure)
-
-        send_error(conn, status, message, type, code: code)
-
       {:error, reason} ->
-        send_error(
-          conn,
-          :internal_server_error,
-          "Internal error: #{inspect(reason)}",
-          "api_error",
-          code: "internal_error"
-        )
+        reason
+        |> ChatError.from_execute_error()
+        |> ChatError.api_mapping()
+        |> send_chat_error(conn)
     end
   end
 
@@ -258,11 +201,14 @@ defmodule Orchard.API.ChatCompletionsController do
   end
 
   defp emit_stream_error(state, event) do
-    case SSE.send_error(
-           state.conn,
-           event.event.message,
-           "server_error",
-           code: event.event.code
+    mapping =
+      event
+      |> ChatError.from_failed_event()
+      |> ChatError.sse_mapping()
+
+    case SSE.send_error(state.conn, mapping.message, mapping.type,
+           code: mapping.code,
+           param: mapping.param
          ) do
       {:ok, conn} -> %{state | conn: conn, errored: true}
       {:error, :closed} -> %{state | closed: true, errored: true}
@@ -308,30 +254,15 @@ defmodule Orchard.API.ChatCompletionsController do
     state.conn
   end
 
-  defp finalize_stream(
-         state,
-         {:error, {:model_load_failed, %ModelLoadFailure{} = failure}},
-         _canonical,
-         _model_display,
-         _created
-       ) do
-    %{type: type, code: code, message: message} = ModelLoadFailure.api_mapping(failure)
+  defp finalize_stream(state, {:error, reason}, _canonical, _model_display, _created) do
+    mapping =
+      reason
+      |> ChatError.from_execute_error()
+      |> ChatError.sse_mapping()
 
-    case SSE.send_error(state.conn, message, type, code: code) do
-      {:ok, conn} -> conn
-      {:error, :closed} -> state.conn
-    end
-  end
-
-  defp finalize_stream(state, {:error, _reason}, _canonical, _model_display, _created) do
-    # Post-start error: dispatch/persistence failed after SSE started.
-    # Use a fixed message — never interpolate internal error details into
-    # client-visible SSE payloads.
-    case SSE.send_error(
-           state.conn,
-           "Internal error",
-           "server_error",
-           code: "internal_error"
+    case SSE.send_error(state.conn, mapping.message, mapping.type,
+           code: mapping.code,
+           param: mapping.param
          ) do
       {:ok, conn} -> conn
       {:error, :closed} -> state.conn
@@ -379,25 +310,11 @@ defmodule Orchard.API.ChatCompletionsController do
     "#{canonical.model_ref.model_id}@#{canonical.model_ref.version}"
   end
 
-  # Determine the terminal outcome from event list.
-  # Returns :completed, {:failed, message}, :cancelled, :timed_out, or :unknown.
-  defp terminal_outcome(events) do
-    terminal = Enum.find(events, &InferenceEvent.terminal?/1)
-
-    case terminal do
-      nil ->
-        :unknown
-
-      %{event: %InferenceEvent.Completed{}} ->
-        :completed
-
-      %{event: %InferenceEvent.Failed{code: code, message: message}} ->
-        cond do
-          code in ["cancelled", "request_cancelled"] -> :cancelled
-          code in ["timed_out", "request_timeout", "deadline_exceeded"] -> :timed_out
-          true -> {:failed, message}
-        end
-    end
+  defp send_chat_error(mapping, conn) do
+    send_error(conn, mapping.status, mapping.message, mapping.type,
+      param: mapping.param,
+      code: mapping.code
+    )
   end
 
   defp collect_deltas(events) do
@@ -453,39 +370,4 @@ defmodule Orchard.API.ChatCompletionsController do
   defp map_proto_finish_reason(:finish_reason_stop), do: "stop"
   defp map_proto_finish_reason(:finish_reason_length), do: "length"
   defp map_proto_finish_reason(_), do: "stop"
-
-  # -- Error response helpers ------------------------------------------------
-
-  defp send_validation_error(conn, {:missing_required_field, field}) do
-    send_error(
-      conn,
-      :bad_request,
-      "Missing required field: #{field}",
-      "invalid_request_error",
-      param: field,
-      code: "missing_required_field"
-    )
-  end
-
-  defp send_validation_error(conn, {:unsupported_parameter, field}) do
-    send_error(
-      conn,
-      :bad_request,
-      "Unsupported parameter: #{field}",
-      "invalid_request_error",
-      param: field,
-      code: "unsupported_parameter"
-    )
-  end
-
-  defp send_validation_error(conn, {:invalid_value, field, reason}) do
-    send_error(
-      conn,
-      :bad_request,
-      "Invalid value for #{field}: #{reason}",
-      "invalid_request_error",
-      param: field,
-      code: "invalid_value"
-    )
-  end
 end

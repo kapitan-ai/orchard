@@ -26,7 +26,7 @@ defmodule Orchard.API.Endpoint do
 
   # Tidewave AI — runtime intelligence for coding agents (dev only)
   if Mix.env() == :dev do
-    plug Tidewave
+    plug(Tidewave)
   end
 
   # Code reloading in development
