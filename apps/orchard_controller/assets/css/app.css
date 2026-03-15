@@ -15,9 +15,11 @@
   /* Forest (Secondary — success/healthy) */
   --color-forest-50: #E8F5E9;
   --color-forest-100: #C8E6C9;
+  --color-forest-300: #81C784;
   --color-forest-400: #66BB6A;
   --color-forest-600: #1B5E20;
   --color-forest-700: #145A19;
+  --color-forest-900: #0A290B;
   --color-forest: #1B5E20;
 
   /* Sage (Tertiary — highlights) */

@@ -20,6 +20,10 @@ defmodule Orchard.ConnCase do
       Orchard.DataCase.setup_sandbox(tags)
     end
 
+    if tags[:live] do
+      start_supervised!(Orchard.API.Endpoint)
+    end
+
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 end

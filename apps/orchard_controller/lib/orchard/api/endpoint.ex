@@ -3,6 +3,9 @@ defmodule Orchard.API.Endpoint do
 
   use Phoenix.Endpoint, otp_app: :orchard_controller
 
+  # Lax is correct for LAN console access: operators navigate directly to
+  # https://<host>:8443/console (top-level navigation). Strict would break
+  # bookmarks and links. None is unnecessary (no cross-origin embedding).
   @session_options [
     store: :cookie,
     key: "_orchard_console_key",
@@ -34,12 +37,10 @@ defmodule Orchard.API.Endpoint do
   plug(Orchard.API.CORS)
 
   plug(Plug.Parsers,
-    parsers: [:urlencoded, :multipart, :json],
+    parsers: [:json],
     pass: ["*/*"],
     json_decoder: Jason
   )
-
-  plug(Plug.MethodOverride)
 
   plug(Plug.Session, @session_options)
 

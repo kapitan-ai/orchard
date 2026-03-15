@@ -3,12 +3,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
   import Phoenix.LiveViewTest
 
-  @endpoint Orchard.API.Endpoint
-
-  setup do
-    start_supervised!(Orchard.API.Endpoint)
-    :ok
-  end
+  @moduletag :live
 
   describe "GET /console" do
     test "renders overview page", %{conn: conn} do
@@ -19,10 +14,10 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "Console Online"
     end
 
-    test "has correct page title", %{conn: conn} do
+    test "has correct page title with suffix", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
-      assert html =~ "<title>Orchard Console</title>"
+      assert html =~ "Overview \u2014 Orchard Console"
     end
 
     test "includes brand bar", %{conn: conn} do
