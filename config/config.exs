@@ -29,6 +29,26 @@ config :orchard_node_agent,
        :runtime,
        Orchard.Config.M1RuntimeDefaults.node_runtime(orchard_support_root)
 
+# esbuild (JS bundling for LiveView client hooks)
+config :esbuild,
+  version: "0.25.0",
+  orchard: [
+    args: ~w(js/app.js --bundle --target=es2020 --outdir=../priv/static/assets),
+    cd: Path.expand("../apps/orchard_controller/assets", __DIR__),
+    env: %{"NODE_PATH" => Path.expand("../deps", __DIR__)}
+  ]
+
+# tailwind (CSS compilation with brand palette)
+config :tailwind,
+  version: "4.1.3",
+  orchard: [
+    args: ~w(
+      --input=css/app.css
+      --output=../priv/static/assets/app.css
+    ),
+    cd: Path.expand("../apps/orchard_controller/assets", __DIR__)
+  ]
+
 config :logger, :default_formatter,
   format: "$time $metadata[$level] $message\n",
   metadata: [:request_id]

@@ -3,6 +3,8 @@ defmodule Orchard.API.Router do
 
   use Phoenix.Router
 
+  import Phoenix.LiveView.Router
+
   pipeline :api do
     plug(:accepts, ["json"])
   end
@@ -10,6 +12,15 @@ defmodule Orchard.API.Router do
   pipeline :authenticated_api do
     plug(:accepts, ["json"])
     plug(Orchard.API.RequestContext)
+  end
+
+  pipeline :browser do
+    plug(:accepts, ["html"])
+    plug(:fetch_session)
+    plug(:fetch_live_flash)
+    plug(:put_root_layout, html: {OrchardConsole.Layouts, :root})
+    plug(:protect_from_forgery)
+    plug(:put_secure_browser_headers)
   end
 
   # CA cert download — outside pipelines (no JSON Accept requirement)
@@ -27,5 +38,12 @@ defmodule Orchard.API.Router do
 
     get("/models", ModelsController, :index)
     post("/chat/completions", ChatCompletionsController, :create)
+  end
+
+  # Console — LiveView operator UI
+  scope "/console" do
+    pipe_through(:browser)
+
+    live("/", OrchardConsole.OverviewLive, :index)
   end
 end

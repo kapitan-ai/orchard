@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content={get_csrf_token()} />
+    <title>Orchard Console</title>
+    <link rel="icon" type="image/png" sizes="32x32" href={~p"/images/favicon-32x32.png"} />
+    <link rel="apple-touch-icon" sizes="180x180" href={~p"/images/apple-touch-icon.png"} />
+    <link rel="icon" type="image/png" sizes="192x192" href={~p"/images/icon-192.png"} />
+    <link rel="stylesheet" href={~p"/assets/app.css"} />
+    <script defer phx-track-static type="text/javascript" src={~p"/assets/app.js"}>
+    </script>
+  </head>
+  <body class="h-full bg-slate-50 text-slate-900 dark:bg-slate-900 dark:text-slate-50 antialiased">
+    <!-- Brand bar: 3px gradient at top of viewport -->
+    <div class="h-[3px] bg-gradient-to-r from-navy via-forest via-sage to-gold flex-shrink-0">
+    </div>
+    {@inner_content}
+  </body>
+</html>

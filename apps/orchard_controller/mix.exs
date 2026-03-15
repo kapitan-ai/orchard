@@ -34,10 +34,23 @@ defmodule OrchardController.MixProject do
       {:bandit, "~> 1.5"},
       {:cors_plug, "~> 3.0"},
       {:ecto_sql, "~> 3.11"},
+      {:esbuild, "~> 0.9", runtime: Mix.env() == :dev},
+      {:heroicons,
+       github: "tailwindlabs/heroicons",
+       tag: "v2.2.0",
+       sparse: "optimized",
+       app: false,
+       compile: false,
+       depth: 1},
       {:jason, "~> 1.4"},
+      {:lazy_html, ">= 0.1.0", only: :test},
       {:phoenix, "~> 1.7.20"},
+      {:phoenix_html, "~> 4.2"},
+      {:phoenix_live_reload, "~> 1.5", only: :dev},
+      {:phoenix_live_view, "~> 1.0"},
       {:phoenix_pubsub, "~> 2.1"},
       {:postgrex, ">= 0.0.0"},
+      {:tailwind, "~> 0.2", runtime: Mix.env() == :dev},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"}
     ]
@@ -45,9 +58,16 @@ defmodule OrchardController.MixProject do
 
   defp aliases do
     [
-      setup: ["deps.get"],
+      setup: ["deps.get", "assets.setup", "ecto.setup"],
       "ecto.setup": ["ecto.create", "ecto.migrate"],
-      "ecto.reset": ["ecto.drop", "ecto.setup"]
+      "ecto.reset": ["ecto.drop", "ecto.setup"],
+      "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
+      "assets.build": ["tailwind orchard", "esbuild orchard"],
+      "assets.deploy": [
+        "tailwind orchard --minify",
+        "esbuild orchard --minify",
+        "phx.digest"
+      ]
     ]
   end
 end

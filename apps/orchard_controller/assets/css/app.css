@@ -1,0 +1,45 @@
+/* Orchard Console — Tailwind v4 entry point */
+@import "tailwindcss";
+
+/* Brand palette — semantic/accent colors per docs/brand-identity.md */
+@theme {
+  /* Navy (Primary) */
+  --color-navy-50: #E3F2FD;
+  --color-navy-100: #BBDEFB;
+  --color-navy-400: #42A5F5;
+  --color-navy-600: #1565C0;
+  --color-navy-700: #0D47A1;
+  --color-navy-800: #0A3A8A;
+  --color-navy: #1565C0;
+
+  /* Forest (Secondary — success/healthy) */
+  --color-forest-50: #E8F5E9;
+  --color-forest-100: #C8E6C9;
+  --color-forest-400: #66BB6A;
+  --color-forest-600: #1B5E20;
+  --color-forest-700: #145A19;
+  --color-forest: #1B5E20;
+
+  /* Sage (Tertiary — highlights) */
+  --color-sage-50: #F1F8E9;
+  --color-sage-100: #DCEDC8;
+  --color-sage-200: #A5D6A7;
+  --color-sage-300: #81C784;
+  --color-sage-400: #66BB6A;
+  --color-sage: #81C784;
+
+  /* Gold (Accent — CTAs, attention) */
+  --color-gold-50: #FFFDE7;
+  --color-gold-100: #FFF9C4;
+  --color-gold-300: #FDE047;
+  --color-gold-400: #FDD835;
+  --color-gold-500: #FBC02D;
+  --color-gold: #FDD835;
+
+  /* Font stack */
+  --font-mono: 'SF Mono', 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Scan HEEx templates for Tailwind class extraction */
+@source "../../lib/orchard/console/**/*.ex";
+@source "../../lib/orchard/console/**/*.heex";

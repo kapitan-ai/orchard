@@ -32,4 +32,15 @@ config :orchard_controller, Orchard.API.Endpoint,
   code_reloader: true,
   debug_errors: true,
   secret_key_base: String.duplicate("dev-secret-", 8),
-  server: false
+  server: false,
+  watchers: [
+    esbuild: {Esbuild, :install_and_run, [:orchard, ~w(--sourcemap=inline --watch)]},
+    tailwind: {Tailwind, :install_and_run, [:orchard, ~w(--watch)]}
+  ],
+  live_reload: [
+    patterns: [
+      ~r"priv/static/(?!uploads/).*(js|css|png|jpeg|jpg|gif|svg)$",
+      ~r"lib/orchard/console/.*(ex)$",
+      ~r"lib/orchard/console/.*(heex)$"
+    ]
+  ]
