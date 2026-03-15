@@ -51,6 +51,7 @@ defmodule OrchardController.MixProject do
       {:phoenix_pubsub, "~> 2.1"},
       {:postgrex, ">= 0.0.0"},
       {:tailwind, "~> 0.2", runtime: Mix.env() == :dev},
+      {:tidewave, "~> 0.5", only: :dev},
       {:telemetry_metrics, "~> 1.0"},
       {:telemetry_poller, "~> 1.0"}
     ]

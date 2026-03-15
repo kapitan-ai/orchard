@@ -24,6 +24,11 @@ defmodule Orchard.API.Endpoint do
     only: OrchardConsole.static_paths()
   )
 
+  # Tidewave AI — runtime intelligence for coding agents (dev only)
+  if Mix.env() == :dev do
+    plug Tidewave
+  end
+
   # Code reloading in development
   if code_reloading? do
     socket("/phoenix/live_reload/socket", Phoenix.LiveReloader.Socket)
