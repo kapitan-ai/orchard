@@ -46,5 +46,8 @@ erl_crash.dump
 # Pi
 .pi/
 
+# ex_dna cache
+.ex_dna_cache
+
 # Test artifacts
 /tmp/

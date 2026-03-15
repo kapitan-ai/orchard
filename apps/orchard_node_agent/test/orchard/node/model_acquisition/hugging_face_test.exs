@@ -32,7 +32,6 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
 
     {:ok, hash} = ArtifactBundle.tree_sha256(source_dir)
 
-    # Build the file content map for serving
     file_contents = %{
       "config.json" => config_content,
       "tokenizer.json" => tokenizer_content,
@@ -332,7 +331,6 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
 
       assert {:ok, final_path, :materialized} = ModelAcquisition.ensure_cached(request)
 
-      # Verify the final content is correct
       expected_hash = ctx.hash
       assert {:ok, ^expected_hash} = ArtifactBundle.tree_sha256(final_path)
 

@@ -15,13 +15,11 @@ defmodule Orchard.Release do
 
   @spec migrations_current?() :: boolean()
   def migrations_current? do
-    case db_checks_enabled?() and Application.get_env(:orchard_controller, :start_repo, true) do
-      true ->
-        load_app()
-        repos() |> Enum.all?(&repo_migrations_current?/1)
-
-      false ->
-        false
+    if db_checks_enabled?() and Application.get_env(:orchard_controller, :start_repo, true) do
+      load_app()
+      repos() |> Enum.all?(&repo_migrations_current?/1)
+    else
+      false
     end
   rescue
     _ -> false

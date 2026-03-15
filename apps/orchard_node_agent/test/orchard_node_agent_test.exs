@@ -1641,7 +1641,6 @@ defmodule OrchardNodeAgentTest do
 
   describe "count-based model eviction" do
     setup %{bundle: bundle_a} do
-      # Create a second bundle for eviction tests
       bundle_b = stage_test_bundle!(@eviction_model_id, @eviction_version)
 
       on_exit(fn ->
@@ -1870,7 +1869,6 @@ defmodule OrchardNodeAgentTest do
         assert %EnsureModelLoadedResponse{already_loaded: true} =
                  ModelManager.ensure_model_loaded(ensure_model_loaded_request(bundle_a))
 
-        # Create a third bundle
         bundle_c = stage_test_bundle!("eviction-test/model-c", "v1")
 
         try do

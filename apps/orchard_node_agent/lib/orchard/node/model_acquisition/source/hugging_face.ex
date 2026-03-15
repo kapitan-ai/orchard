@@ -53,7 +53,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
   # -- URI Parsing -----------------------------------------------------------
 
-  @doc false
+  @doc "Parses an `hf://org/repo` URI into its components."
   def parse_hf_uri(uri) when is_binary(uri) do
     case URI.parse(uri) do
       %URI{scheme: "hf", host: host, path: path, query: query}
@@ -151,7 +151,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
   # -- Allowlist Filtering ---------------------------------------------------
 
-  @doc false
+  @doc "Filters manifest entries to model-relevant files and validates paths."
   def filter_and_validate(entries) do
     retained =
       Enum.filter(entries, fn %{path: path} ->
@@ -182,7 +182,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
   # -- Path Sanitization -----------------------------------------------------
 
-  @doc false
+  @doc "Strips leading directory prefixes from entry paths for flat bundle layout."
   def sanitize_entry_paths(entries) do
     Enum.reduce_while(entries, {:ok, []}, fn %{path: path} = entry, {:ok, acc} ->
       segments = Path.split(path)
@@ -433,6 +433,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
     else
       case result do
         {:ok, %{status: 200}} when resume? and offset > 0 ->
+          # credo:disable-for-lines:3 ExSlop.Check.Readability.ObviousComment
           # Server ignored Range header and sent the full file, but we appended
           # it to the existing partial — the file is now corrupt.
           # Delete the partial and restart this attempt from scratch.

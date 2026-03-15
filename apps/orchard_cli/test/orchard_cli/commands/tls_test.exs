@@ -383,7 +383,6 @@ defmodule OrchardCLI.Commands.TLSTest do
     dir = make_tmp_dir()
     lock_path = Path.join(Path.dirname(dir), ".tls.lock")
 
-    # Create the lock manually
     File.mkdir_p!(lock_path)
 
     assert {:error, message, 1} =
@@ -486,7 +485,6 @@ defmodule OrchardCLI.Commands.TLSTest do
   test "init returns error tuple (not raise) when output_dir is a file" do
     dir = make_tmp_dir()
     blocked_dir = Path.join(dir, "blocked")
-    # Create a regular file where a directory is expected
     File.write!(blocked_dir, "not a directory")
 
     assert {:error, message, 1} =

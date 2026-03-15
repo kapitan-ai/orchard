@@ -17,7 +17,6 @@ defmodule Orchard.Node.ModelAcquisitionTest do
     File.mkdir_p!(models_root)
     File.mkdir_p!(source_dir)
 
-    # Create a source bundle
     File.write!(Path.join(source_dir, "config.json"), ~s({"model_type":"test"}))
     File.write!(Path.join(source_dir, "tokenizer.json"), ~s({"version":"1.0"}))
     weights_dir = Path.join(source_dir, "weights")
@@ -110,7 +109,6 @@ defmodule Orchard.Node.ModelAcquisitionTest do
     test "stale staging directory is removed before retry", ctx do
       request = build_request(ctx)
 
-      # Create a stale staging directory with junk
       File.mkdir_p!(request.staging_path)
       File.write!(Path.join(request.staging_path, "stale.txt"), "old data")
 

@@ -269,7 +269,6 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
       assert conn.status == 200
 
-      # Verify a request row was persisted
       requests = Orchard.Repo.all(Orchard.Requests.Request)
       assert length(requests) == 1
       [request] = requests

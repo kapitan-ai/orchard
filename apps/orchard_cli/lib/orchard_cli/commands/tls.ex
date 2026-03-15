@@ -400,7 +400,6 @@ defmodule OrchardCLI.Commands.TLS do
     staging_dir = create_staging_dir(output_dir)
 
     try do
-      # Step 1: CA material
       ca_key = Path.join(staging_dir, "ca.key")
       ca_crt = Path.join(staging_dir, "ca.crt")
 
@@ -415,19 +414,16 @@ defmodule OrchardCLI.Commands.TLS do
         end
       end
 
-      # Step 2: Server cert
       case generate_server_cert(staging_dir, common_name, san_dns, san_ip, server_days, runtime) do
         :ok -> :ok
         {:error, _, _} = err -> throw(err)
       end
 
-      # Step 3: Verify chain
       case verify_chain(staging_dir, runtime) do
         :ok -> :ok
         {:error, _, _} = err -> throw(err)
       end
 
-      # Step 4: Compute metadata
       ca_fingerprint = compute_fingerprint(ca_crt)
       server_fingerprint = compute_fingerprint(Path.join(staging_dir, "controller.crt"))
       ca_not_after = parse_cert_not_after(ca_crt)
@@ -449,14 +445,13 @@ defmodule OrchardCLI.Commands.TLS do
       meta_path = Path.join(staging_dir, ".orchard-tls-meta.json")
       File.write!(meta_path, Jason.encode!(metadata, pretty: true))
 
-      # Step 5: Set file modes in staging
       File.chmod!(Path.join(staging_dir, "ca.key"), 0o600)
       File.chmod!(Path.join(staging_dir, "ca.crt"), 0o644)
       File.chmod!(Path.join(staging_dir, "controller.key"), 0o600)
       File.chmod!(Path.join(staging_dir, "controller.crt"), 0o644)
       File.chmod!(meta_path, 0o644)
 
-      # Step 6: Publish files (atomic rename)
+      # Atomic rename from staging to final output
       files = ["ca.key", "ca.crt", "controller.key", "controller.crt", ".orchard-tls-meta.json"]
 
       for file <- files do

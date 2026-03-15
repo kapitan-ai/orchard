@@ -555,7 +555,6 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
     staging = Path.join(tmp, "staging")
     File.mkdir_p!(staging)
 
-    # Create a temp file to add to the tar
     content_file = Path.join(tmp, "content.txt")
     File.write!(content_file, "malicious content")
 
@@ -569,7 +568,6 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
       end
 
     if type == :symlink do
-      # Create a symlink tar entry
       symlink_dir = Path.join(tmp, "symlink_source")
       File.mkdir_p!(symlink_dir)
       File.write!(Path.join(symlink_dir, "legit.txt"), "legit")

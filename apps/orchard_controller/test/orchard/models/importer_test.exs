@@ -7,7 +7,6 @@ defmodule Orchard.Models.ImporterTest do
   @fixture_bundle Path.expand("../../fixtures/bundles/test-model-bundle", __DIR__)
 
   setup do
-    # Create a temporary artifacts_root for each test
     artifacts_root =
       System.tmp_dir!()
       |> Path.join("orchard_importer_test_#{:rand.uniform(1_000_000)}")
@@ -41,7 +40,6 @@ defmodule Orchard.Models.ImporterTest do
 
       assert model.artifact_source_uri == model.artifact_uri
 
-      # Verify the bundle was actually copied
       dest = Path.join([artifacts_root, "test-org/tiny-llm", "mlx-q4-v1"])
       assert File.exists?(Path.join(dest, "manifest.json"))
       assert File.exists?(Path.join(dest, "tokenizer.json"))
@@ -158,7 +156,6 @@ defmodule Orchard.Models.ImporterTest do
 
   describe "import_bundle/2 security" do
     test "rejects model_id with path traversal", %{artifacts_root: artifacts_root} do
-      # Create a bundle with traversal in model_id
       evil_bundle = create_bundle(artifacts_root, %{"model_id" => "../escape"})
 
       assert {:error, {:validation, message}} =
@@ -186,13 +183,11 @@ defmodule Orchard.Models.ImporterTest do
     end
 
     test "rejects symlinks in bundle contents", %{artifacts_root: artifacts_root} do
-      # Create a bundle with a symlink
       bundle_dir = Path.join(artifacts_root, "symlink_bundle")
       File.mkdir_p!(bundle_dir)
 
       write_manifest(bundle_dir, %{"model_id" => "safe-model", "version" => "v1"})
 
-      # Create a symlink pointing outside the bundle
       outside_file = Path.join(artifacts_root, "secret.txt")
       File.write!(outside_file, "secret data")
       File.ln_s!(outside_file, Path.join(bundle_dir, "linked.txt"))
