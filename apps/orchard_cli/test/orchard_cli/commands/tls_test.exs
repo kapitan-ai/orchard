@@ -293,7 +293,9 @@ defmodule OrchardCLI.Commands.TLSTest do
           "-CAfile",
           Path.join(dir, "ca.crt"),
           Path.join(dir, "controller.crt")
-        ], stderr_to_stdout: true)
+        ],
+        stderr_to_stdout: true
+      )
 
     assert output =~ "OK"
 
@@ -307,7 +309,9 @@ defmodule OrchardCLI.Commands.TLSTest do
           Path.join(dir, "controller.crt"),
           "-noout",
           "-text"
-        ], stderr_to_stdout: true)
+        ],
+        stderr_to_stdout: true
+      )
 
     assert san_output =~ "DNS:localhost"
     assert san_output =~ "DNS:test.local"
@@ -396,7 +400,9 @@ defmodule OrchardCLI.Commands.TLSTest do
           "-CAfile",
           Path.join(dir, "ca.crt"),
           Path.join(dir, "controller.crt")
-        ], stderr_to_stdout: true)
+        ],
+        stderr_to_stdout: true
+      )
 
     assert output =~ "OK"
   end

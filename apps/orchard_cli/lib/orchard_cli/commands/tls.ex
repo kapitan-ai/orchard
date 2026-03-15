@@ -527,7 +527,9 @@ defmodule OrchardCLI.Commands.TLS do
              to_string(ca_days),
              "-config",
              ca_cnf
-           ], cd: staging_dir) do
+           ],
+           cd: staging_dir
+         ) do
       {:ok, _} ->
         :ok
 
@@ -586,7 +588,9 @@ defmodule OrchardCLI.Commands.TLS do
              server_csr,
              "-subj",
              "/CN=#{common_name}"
-           ], cd: staging_dir) do
+           ],
+           cd: staging_dir
+         ) do
       {:ok, _} ->
         :ok
 
@@ -620,7 +624,9 @@ defmodule OrchardCLI.Commands.TLS do
              ext_cnf,
              "-set_serial",
              "0x#{serial_hex}"
-           ], cd: staging_dir) do
+           ],
+           cd: staging_dir
+         ) do
       {:ok, _} ->
         :ok
 
