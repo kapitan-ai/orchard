@@ -1,4 +1,47 @@
-<main class="min-h-screen">
-  <.flash_group flash={@flash} />
-  {@inner_content}
-</main>
+<.flash_group flash={@flash} />
+
+<div id="console-shell" class="flex h-[calc(100vh-3px)]">
+  <%!-- Sidebar --%>
+  <aside
+    id="console-sidebar"
+    class="flex flex-col border-r border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800 overflow-hidden"
+  >
+    <%!-- Logo lockup --%>
+    <div class="flex items-center h-16 px-4 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
+      <.logo size={:md} />
+    </div>
+
+    <%!-- Navigation --%>
+    <.sidebar_nav active={assigns[:active_nav] || :overview} />
+
+    <%!-- Collapse toggle --%>
+    <div class="p-3 border-t border-slate-200 dark:border-slate-700 flex-shrink-0">
+      <button
+        id="sidebar-toggle"
+        phx-click={toggle_sidebar()}
+        aria-label="Toggle sidebar"
+        class="flex items-center justify-center w-full rounded-md p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-700 dark:hover:text-slate-300 transition-colors"
+      >
+        <.icon name="hero-chevron-double-left" class="h-5 w-5 sidebar-toggle-icon" />
+      </button>
+    </div>
+  </aside>
+
+  <%!-- Main content area --%>
+  <main class="flex-1 overflow-auto bg-slate-50 dark:bg-slate-900">
+    <%!-- Page header --%>
+    <header
+      :if={assigns[:page_title]}
+      class="border-b border-slate-200 bg-white px-6 py-4 dark:border-slate-700 dark:bg-slate-800"
+    >
+      <h1 class="text-lg font-semibold text-slate-900 dark:text-slate-100">
+        {assigns[:page_title]}
+      </h1>
+    </header>
+
+    <%!-- Page content --%>
+    <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6">
+      {@inner_content}
+    </div>
+  </main>
+</div>

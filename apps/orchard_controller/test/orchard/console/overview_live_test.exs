@@ -23,7 +23,7 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "has correct page title with suffix", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
-      assert html =~ "Overview \u2014 Orchard Console"
+      assert html =~ "Overview — Orchard Console"
     end
 
     test "includes brand bar", %{conn: conn} do
@@ -37,6 +37,75 @@ defmodule OrchardConsole.OverviewLiveTest do
       {:ok, _view, html} = live(conn, "/console")
 
       assert html =~ "favicon-32x32.png"
+    end
+  end
+
+  describe "app shell" do
+    test "renders sidebar with logo lockup", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ "console-sidebar"
+      assert html =~ "icon-192.png"
+      # Logo wordmark in monospace bold
+      assert html =~ "Orchard"
+      assert html =~ "font-mono"
+    end
+
+    test "renders sidebar navigation with all items", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ "Overview"
+      assert html =~ "Playground"
+      assert html =~ "Models"
+      assert html =~ "Requests"
+    end
+
+    test "marks Overview as active nav item", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ ~s(aria-current="page")
+    end
+
+    test "marks future pages as disabled", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ ~s(aria-disabled="true")
+    end
+
+    test "renders sidebar toggle button", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ "sidebar-toggle"
+      assert html =~ "Toggle sidebar"
+    end
+
+    test "renders page header with title", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      # Page header rendered by the shell layout
+      assert html =~ "<h1"
+      assert html =~ "Overview"
+    end
+
+    test "renders card and badge components", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      # Card: System Status
+      assert html =~ "System Status"
+      # Badge: Console Online with success tone
+      assert html =~ "Console Online"
+      assert html =~ "forest"
+    end
+
+    test "sidebar toggle button has JS toggle_class command wired", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      # The toggle button should have phx-click with JS.toggle_class targeting console-shell
+      assert html =~ "sidebar-toggle"
+      assert html =~ "phx-click"
+      # The JS command data includes the target and class name
+      assert html =~ "sidebar-collapsed"
+      assert html =~ "console-shell"
     end
   end
 

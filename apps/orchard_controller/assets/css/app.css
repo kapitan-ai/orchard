@@ -45,3 +45,53 @@
 /* Scan HEEx templates for Tailwind class extraction */
 @source "../../lib/orchard/console/**/*.ex";
 @source "../../lib/orchard/console/**/*.heex";
+
+/* ==========================================================================
+   Console Shell — sidebar transitions
+   ========================================================================== */
+
+#console-sidebar {
+  width: 16rem;
+  min-width: 16rem;
+  transition: width 200ms ease-out, min-width 200ms ease-out;
+}
+
+.sidebar-collapsed #console-sidebar {
+  width: 4.5rem;
+  min-width: 4.5rem;
+}
+
+.sidebar-label {
+  transition: opacity 150ms ease-out;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.sidebar-collapsed .sidebar-label {
+  opacity: 0;
+  width: 0;
+  overflow: hidden;
+}
+
+/* Center logo icon when sidebar is collapsed */
+.sidebar-collapsed .logo-lockup {
+  gap: 0;
+  justify-content: center;
+}
+
+.sidebar-toggle-icon {
+  transition: transform 200ms ease-out;
+}
+
+.sidebar-collapsed .sidebar-toggle-icon {
+  transform: rotate(180deg);
+}
+
+/* Respect reduced-motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  #console-sidebar,
+  .sidebar-label,
+  .sidebar-toggle-icon {
+    transition: none;
+  }
+}
