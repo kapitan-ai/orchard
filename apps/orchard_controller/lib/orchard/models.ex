@@ -109,14 +109,15 @@ defmodule Orchard.Models do
       allowed_sources = allowed_source_states(target_state)
       now = DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
-      {count, _} =
+      {count, rows} =
         Model
         |> where([m], m.id == ^id and m.state in ^allowed_sources)
+        |> select([m], m)
         |> Repo.update_all(set: [state: target_state, updated_at: now])
 
       case count do
         1 ->
-          {:ok, Repo.get!(Model, id)}
+          {:ok, hd(rows)}
 
         0 ->
           case Repo.get(Model, id) do

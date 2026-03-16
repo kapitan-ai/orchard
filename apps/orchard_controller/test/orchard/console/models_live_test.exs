@@ -159,6 +159,29 @@ defmodule OrchardConsole.ModelsLiveTest do
     end
   end
 
+  describe "error handling" do
+    test "shows error flash when model state changed behind the UI", %{conn: conn} do
+      model = create_model!(%{model_id: "stale-model", state: :registered})
+
+      {:ok, view, _html} = live(conn, "/console/models")
+
+      # Mutate state behind the LiveView's back (simulate concurrent operator)
+      {:ok, _} = Orchard.Models.retire_model(model.id)
+
+      # Click Activate on the now-stale row
+      view
+      |> element("#model-#{model.id} button", "Activate")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "Unable to update model:"
+
+      # Row should show current (retired) state after reload
+      row = view |> element("#model-#{model.id}") |> render()
+      assert row =~ "retired"
+    end
+  end
+
   describe "navigation" do
     test "marks Models as active nav item", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/models")

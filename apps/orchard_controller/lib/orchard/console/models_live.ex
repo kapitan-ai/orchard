@@ -148,6 +148,11 @@ defmodule OrchardConsole.ModelsLive do
         |> put_flash(:error, transition_error_message(changeset))
         |> load_models()
     end
+  rescue
+    _ ->
+      socket
+      |> put_flash(:error, "Model update unavailable.")
+      |> load_models()
   end
 
   defp row_actions(model) do
