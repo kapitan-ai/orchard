@@ -111,6 +111,34 @@ window.addEventListener("phx:page-loading-stop",  _info => topbar.hide())
 // connect if there are any LiveViews on the page
 liveSocket.connect()
 
+// ===========================================================================
+// Connection State Tracking
+// ===========================================================================
+// Track websocket connection lifecycle via body data attributes.
+// CSS selectors on body[data-lv-*] drive the reconnect banner visibility.
+// Initial state is set server-side in root.html.heex:
+//   data-lv-connected-once="false"  data-lv-connection-state="connecting"
+
+let rawSocket = liveSocket.socket
+if (rawSocket) {
+  rawSocket.onOpen(() => {
+    document.body.dataset.lvConnectedOnce = "true"
+    document.body.dataset.lvConnectionState = "connected"
+  })
+
+  rawSocket.onClose(() => {
+    if (document.body.dataset.lvConnectedOnce === "true") {
+      document.body.dataset.lvConnectionState = "disconnected"
+    }
+  })
+
+  rawSocket.onError(() => {
+    if (document.body.dataset.lvConnectedOnce === "true") {
+      document.body.dataset.lvConnectionState = "disconnected"
+    }
+  })
+}
+
 // expose liveSocket on window for web console debug logs and latency simulation:
 // >> liveSocket.enableDebug()
 // >> liveSocket.enableLatencySim(1000)  // enabled for duration of browser session

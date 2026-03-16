@@ -29,8 +29,7 @@ defmodule OrchardConsole.OverviewLive do
       |> assign(build_version: build_version())
 
     if connected?(socket) do
-      schedule_refresh(refresh_interval_ms())
-      {:ok, load_overview(socket)}
+      {:ok, socket |> load_overview() |> schedule_refresh()}
     else
       {:ok, assign_loading_state(socket)}
     end
@@ -38,8 +37,13 @@ defmodule OrchardConsole.OverviewLive do
 
   @impl true
   def handle_info(:refresh_overview, socket) do
-    schedule_refresh(refresh_interval_ms())
-    {:noreply, load_overview(socket)}
+    {:noreply, socket |> load_overview() |> schedule_refresh()}
+  end
+
+  @impl true
+  def handle_event("refresh_now", _params, socket) do
+    # Cancel existing timer and re-arm after reload so there's always exactly one poll
+    {:noreply, socket |> cancel_refresh() |> load_overview() |> schedule_refresh()}
   end
 
   @impl true
@@ -69,6 +73,21 @@ defmodule OrchardConsole.OverviewLive do
             <.metric_tile label="Loaded models" value={format_count(runtime_loaded_count(@runtime))} />
             <.metric_tile label="Catalog models" value={format_count(@model_catalog.total)} />
             <.metric_tile label="Total requests" value={format_count(@request_summary.total)} />
+          </div>
+
+          <div id="overview-freshness" class="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+            <span class="font-mono">
+              {freshness_text(@last_updated_at)}
+            </span>
+            <span>· Auto-refreshing every {refresh_interval_label()}</span>
+            <.button
+              id="overview-refresh-now"
+              variant={:ghost}
+              size={:sm}
+              phx-click="refresh_now"
+            >
+              Refresh now
+            </.button>
           </div>
         </div>
       </.card>
@@ -172,7 +191,8 @@ defmodule OrchardConsole.OverviewLive do
       readiness: fetch_readiness(),
       runtime: fetch_runtime(),
       model_catalog: fetch_model_catalog(),
-      request_summary: fetch_request_summary()
+      request_summary: fetch_request_summary(),
+      last_updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
     )
   end
 
@@ -207,7 +227,8 @@ defmodule OrchardConsole.OverviewLive do
         terminal: nil,
         rows: [],
         message: nil
-      }
+      },
+      last_updated_at: nil
     )
   end
 
@@ -383,6 +404,20 @@ defmodule OrchardConsole.OverviewLive do
   defp format_count(count) when is_integer(count), do: Integer.to_string(count)
   defp format_count(other) when is_binary(other), do: other
 
+  defp freshness_text(nil), do: "Waiting for first live update"
+
+  defp freshness_text(%DateTime{} = dt) do
+    "Last updated #{Calendar.strftime(dt, "%H:%M:%S")} UTC"
+  end
+
+  defp refresh_interval_label do
+    ms = refresh_interval_ms()
+
+    if rem(ms, 1000) == 0,
+      do: "#{div(ms, 1000)}s",
+      else: "#{ms}ms"
+  end
+
   defp build_version do
     case Application.spec(:orchard_controller, :vsn) do
       nil -> "dev"
@@ -394,8 +429,18 @@ defmodule OrchardConsole.OverviewLive do
   # Refresh / config
   # ===========================================================================
 
-  defp schedule_refresh(interval_ms) do
-    Process.send_after(self(), :refresh_overview, interval_ms)
+  defp schedule_refresh(socket) do
+    ref = Process.send_after(self(), :refresh_overview, refresh_interval_ms())
+    assign(socket, refresh_timer: ref)
+  end
+
+  defp cancel_refresh(socket) do
+    case socket.assigns[:refresh_timer] do
+      ref when is_reference(ref) -> Process.cancel_timer(ref)
+      _ -> :ok
+    end
+
+    assign(socket, refresh_timer: nil)
   end
 
   defp refresh_interval_ms do

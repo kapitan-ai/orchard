@@ -91,9 +91,48 @@
 @media (prefers-reduced-motion: reduce) {
   #console-sidebar,
   .sidebar-label,
-  .sidebar-toggle-icon {
+  .sidebar-toggle-icon,
+  .console-connection-banner {
     transition: none;
   }
+}
+
+/* ==========================================================================
+   Console Shell — connection banner
+   ========================================================================== */
+
+.console-connection-banner {
+  display: none;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0 1.5rem;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: #92400e; /* amber-800 */
+  background-color: #fffbeb; /* amber-50 */
+  border-bottom: 1px solid #fde68a; /* amber-200 */
+  transition: max-height 200ms ease-out, opacity 200ms ease-out, padding 200ms ease-out;
+}
+
+/* Dark mode banner */
+@media (prefers-color-scheme: dark) {
+  .console-connection-banner {
+    color: #fde68a; /* amber-200 */
+    background-color: rgba(120, 53, 15, 0.3); /* amber-900/30 */
+    border-bottom-color: rgba(180, 83, 9, 0.4); /* amber-700/40 */
+  }
+}
+
+/* Show banner only after first successful connect + subsequent disconnect */
+body[data-lv-connected-once="true"][data-lv-connection-state="disconnected"] .console-connection-banner {
+  display: flex;
+  max-height: 3rem;
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+  opacity: 1;
 }
 
 /* ==========================================================================

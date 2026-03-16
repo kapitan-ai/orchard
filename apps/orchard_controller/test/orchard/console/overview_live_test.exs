@@ -311,6 +311,62 @@ defmodule OrchardConsole.OverviewLiveTest do
     end
   end
 
+  # ===========================================================================
+  # Connection banner and freshness (Task 3)
+  # ===========================================================================
+
+  describe "connection banner and freshness" do
+    test "shell includes connection banner markup", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ "console-connection-banner"
+      assert html =~ "Live connection lost"
+      assert html =~ "reconnecting"
+    end
+
+    test "shell body has connection state data attributes", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ ~s(data-lv-connected-once="false")
+      assert html =~ ~s(data-lv-connection-state="connecting")
+    end
+
+    test "overview renders freshness row with auto-refresh text", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ "overview-freshness"
+      assert html =~ "Auto-refreshing every 60s"
+      assert html =~ "Last updated"
+      assert html =~ "UTC"
+    end
+
+    test "overview renders manual refresh button", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ "overview-refresh-now"
+      assert html =~ "Refresh now"
+    end
+
+    test "manual refresh updates overview data", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      # Capture pre-refresh state
+      html_before = render(view)
+
+      # Create a request so counts change
+      create_request!(%{state: :completed})
+
+      # Click refresh
+      view |> element("#overview-refresh-now") |> render_click()
+      html_after = render(view)
+
+      # Total requests count should have changed (pre vs post)
+      assert html_after =~ "Last updated"
+      # The count changed from the initial render
+      refute html_before == html_after
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------

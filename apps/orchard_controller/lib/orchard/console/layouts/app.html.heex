@@ -1,6 +1,18 @@
 <.flash_group flash={@flash} />
 
-<div id="console-shell" class="flex h-[calc(100vh-3px)]">
+<div id="console-app" class="flex flex-col h-[calc(100vh-3px)]">
+  <%!-- Connection banner — hidden by default, shown via CSS when disconnected after first connect --%>
+  <div
+    id="console-connection-banner"
+    class="console-connection-banner"
+    role="status"
+    aria-live="polite"
+  >
+    <.icon name="hero-bars-3" class="h-4 w-4 flex-shrink-0" />
+    <span>Live connection lost — reconnecting. Displayed data may be stale.</span>
+  </div>
+
+  <div id="console-shell" class="flex flex-1 min-h-0">
   <%!-- Sidebar --%>
   <aside
     id="console-sidebar"
@@ -44,4 +56,5 @@
       {@inner_content}
     </div>
   </main>
+</div>
 </div>

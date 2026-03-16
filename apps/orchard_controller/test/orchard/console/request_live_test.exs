@@ -563,6 +563,48 @@ defmodule OrchardConsole.RequestLiveTest do
       assert html =~ "/console/playground"
     end
 
+    test "freshness shows auto-refreshing for active request", %{conn: conn} do
+      request = create_request!(%{state: :running})
+
+      {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
+
+      assert html =~ "request-freshness"
+      assert html =~ "Auto-refreshing every"
+      assert html =~ "Last checked"
+      assert html =~ "UTC"
+    end
+
+    test "freshness shows auto-refresh stopped for terminal request", %{conn: conn} do
+      request = create_request!(%{state: :completed})
+
+      {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
+
+      assert html =~ "request-freshness"
+      assert html =~ "Auto-refresh stopped"
+    end
+
+    test "freshness renders on not-found page", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console/requests/nonexistent-id")
+
+      assert html =~ "request-freshness"
+    end
+
+    test "freshness transitions from polling to stopped when request becomes terminal", %{conn: conn} do
+      request = create_request!(%{state: :running})
+
+      {:ok, view, html} = live(conn, "/console/requests/#{request.public_id}")
+      assert html =~ "Auto-refreshing every"
+
+      # Mark the request as terminal
+      Requests.mark_terminal(request, %{state: :completed, http_status: 200})
+
+      # Trigger a refresh
+      send(view.pid, :refresh_request)
+      html = render(view)
+
+      assert html =~ "Auto-refresh stopped"
+    end
+
     test "sections appear in proof-point order on :ok", %{conn: conn} do
       request =
         create_request!(%{

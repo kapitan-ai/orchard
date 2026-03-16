@@ -67,7 +67,7 @@ defmodule OrchardConsole.RequestLive do
   def render(assigns) do
     ~H"""
     <div class="space-y-6">
-      <.request_tools_row />
+      <.request_tools_row last_checked_at={@last_checked_at} refresh_mode={@refresh_mode} />
 
       <%= case @request_status do %>
         <% :loading -> %>
@@ -119,9 +119,12 @@ defmodule OrchardConsole.RequestLive do
   # Utility row
   # ===========================================================================
 
+  attr(:last_checked_at, :any, default: nil)
+  attr(:refresh_mode, :atom, default: :static)
+
   defp request_tools_row(assigns) do
     ~H"""
-    <div id="request-tools-row" class="flex items-center gap-3">
+    <div id="request-tools-row" class="flex flex-wrap items-center justify-between gap-3">
       <.link
         id="request-back-to-playground"
         navigate={~p"/console/playground"}
@@ -130,6 +133,10 @@ defmodule OrchardConsole.RequestLive do
         <.icon name="hero-arrow-left" class="h-4 w-4" />
         Back to Playground
       </.link>
+
+      <span id="request-freshness" class="text-xs text-slate-500 dark:text-slate-400 font-mono">
+        {request_freshness_text(@last_checked_at, @refresh_mode)}
+      </span>
     </div>
     """
   end
@@ -504,12 +511,15 @@ defmodule OrchardConsole.RequestLive do
       request_status: :loading,
       request: nil,
       events: [],
-      load_error: nil
+      load_error: nil,
+      last_checked_at: nil,
+      refresh_mode: :static
     )
   end
 
   defp load_request(socket) do
     public_id = socket.assigns.public_id
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     case Requests.get_request_by_public_id(public_id) do
       nil ->
@@ -517,17 +527,22 @@ defmodule OrchardConsole.RequestLive do
           request_status: :not_found,
           request: nil,
           events: [],
-          load_error: nil
+          load_error: nil,
+          last_checked_at: now,
+          refresh_mode: :static
         )
 
       %Request{} = request ->
         events = Requests.list_request_events(request)
+        mode = if should_poll?(%{request_status: :ok, request: request}), do: :polling, else: :static
 
         assign(socket,
           request_status: :ok,
           request: request,
           events: events,
-          load_error: nil
+          load_error: nil,
+          last_checked_at: now,
+          refresh_mode: mode
         )
     end
   rescue
@@ -536,7 +551,9 @@ defmodule OrchardConsole.RequestLive do
         request_status: :error,
         request: nil,
         events: [],
-        load_error: "Request details unavailable: #{Exception.message(e)}"
+        load_error: "Request details unavailable: #{Exception.message(e)}",
+        last_checked_at: DateTime.utc_now() |> DateTime.truncate(:second),
+        refresh_mode: :static
       )
   end
 
@@ -571,6 +588,27 @@ defmodule OrchardConsole.RequestLive do
 
   defp error_terminal_state?(state) do
     state in Request.terminal_states() and state != :completed
+  end
+
+  # ===========================================================================
+  # Freshness helpers
+  # ===========================================================================
+
+  defp request_freshness_text(nil, :polling),
+    do: "Waiting for first live check \u00b7 Auto-refreshing every #{request_refresh_interval_label()}"
+
+  defp request_freshness_text(nil, :static),
+    do: "Waiting for first live check"
+
+  defp request_freshness_text(%DateTime{} = dt, :polling),
+    do: "Last checked #{Calendar.strftime(dt, "%H:%M:%S")} UTC \u00b7 Auto-refreshing every #{request_refresh_interval_label()}"
+
+  defp request_freshness_text(%DateTime{} = dt, :static),
+    do: "Last checked #{Calendar.strftime(dt, "%H:%M:%S")} UTC \u00b7 Auto-refresh stopped"
+
+  defp request_refresh_interval_label do
+    ms = refresh_interval_ms()
+    if rem(ms, 1000) == 0, do: "#{div(ms, 1000)}s", else: "#{ms}ms"
   end
 
   # ===========================================================================
