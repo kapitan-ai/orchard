@@ -97,7 +97,7 @@ defmodule Orchard.API.RouterTest do
 
       assert conn.status == 200
       assert conn.resp_body =~ "req_router_test"
-      assert conn.resp_body =~ "Request detail view is not implemented yet."
+      assert conn.resp_body =~ "request-loading-card"
     end
   end
 end
