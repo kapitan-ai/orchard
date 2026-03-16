@@ -430,13 +430,15 @@ defmodule OrchardConsole.CoreComponentsTest do
       refute html =~ "Playground \u2014 coming soon"
     end
 
-    test "marks Models and Requests as disabled" do
+    test "marks only Requests as disabled" do
       assigns = %{}
       html = render_heex(~H|<.sidebar_nav active={:overview} />|)
 
       assert html =~ ~s(aria-disabled="true")
-      assert html =~ "Models \u2014 coming soon"
       assert html =~ "Requests \u2014 coming soon"
+      # Models is now enabled
+      assert html =~ "/console/models"
+      refute html =~ "Models \u2014 coming soon"
     end
 
     test "active item uses navy accent" do

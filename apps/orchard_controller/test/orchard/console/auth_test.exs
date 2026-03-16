@@ -242,6 +242,50 @@ defmodule OrchardConsole.AuthTest do
       assert conn.status == 200
       assert conn.resp_body =~ "req_auth_test"
     end
+
+    test "returns 404 for /console/models when console is disabled", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: false,
+        auth: :none,
+        username: nil,
+        password: nil
+      )
+
+      conn = get(conn, "/console/models")
+      assert conn.status == 404
+    end
+
+    test "returns 401 for /console/models in basic auth without credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn = get(conn, "/console/models")
+      assert conn.status == 401
+    end
+
+    test "returns 200 for /console/models with valid basic auth credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn =
+        conn
+        |> put_req_header(
+          "authorization",
+          Plug.BasicAuth.encode_basic_auth("operator", "secret")
+        )
+        |> get("/console/models")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "Model Catalog"
+    end
   end
 
   describe "non-console paths" do

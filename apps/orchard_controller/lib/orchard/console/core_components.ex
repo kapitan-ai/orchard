@@ -727,7 +727,13 @@ defmodule OrchardConsole.CoreComponents do
       path: "/console/playground",
       enabled: true
     },
-    %{key: :models, label: "Models", icon: "hero-cube-transparent", path: nil, enabled: false},
+    %{
+      key: :models,
+      label: "Models",
+      icon: "hero-cube-transparent",
+      path: "/console/models",
+      enabled: true
+    },
     %{key: :requests, label: "Requests", icon: "hero-document-text", path: nil, enabled: false}
   ]
 

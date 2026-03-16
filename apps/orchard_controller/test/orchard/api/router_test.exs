@@ -99,5 +99,12 @@ defmodule Orchard.API.RouterTest do
       assert conn.resp_body =~ "req_router_test"
       assert conn.resp_body =~ "request-loading-card"
     end
+
+    test "GET /console/models is routed", %{conn: conn} do
+      conn = get(conn, "/console/models")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "Model Catalog"
+    end
   end
 end
