@@ -67,6 +67,8 @@ defmodule OrchardConsole.RequestLive do
   def render(assigns) do
     ~H"""
     <div class="space-y-6">
+      <.request_tools_row />
+
       <%= case @request_status do %>
         <% :loading -> %>
           <div id="request-loading-card">
@@ -101,14 +103,33 @@ defmodule OrchardConsole.RequestLive do
 
         <% :ok -> %>
           <.request_summary request={@request} />
-          <.request_execution_metadata request={@request} />
           <.request_usage request={@request} />
+          <.request_timeline events={@events} />
+          <.request_execution_metadata request={@request} />
           <.request_errors request={@request} />
+          <.request_provenance request={@request} />
           <.request_response_debug request={@request} />
           <.request_canonical request={@request} />
-          <.request_provenance request={@request} />
-          <.request_timeline events={@events} />
       <% end %>
+    </div>
+    """
+  end
+
+  # ===========================================================================
+  # Utility row
+  # ===========================================================================
+
+  defp request_tools_row(assigns) do
+    ~H"""
+    <div id="request-tools-row" class="flex items-center gap-3">
+      <.link
+        id="request-back-to-playground"
+        navigate={~p"/console/playground"}
+        class="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+      >
+        <.icon name="hero-arrow-left" class="h-4 w-4" />
+        Back to Playground
+      </.link>
     </div>
     """
   end
@@ -250,54 +271,56 @@ defmodule OrchardConsole.RequestLive do
   attr(:request, :map, required: true)
 
   defp request_response_debug(assigns) do
+    assigns = assign(assigns, :default_open, error_terminal_state?(assigns.request.state))
+
     ~H"""
-    <div id="request-response-debug-card">
-      <.card>
-        <:title>Response &amp; Debug</:title>
-
-        <div class="space-y-6">
-          <div>
-            <h4 class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
-              Response Preview
-            </h4>
-            <div :if={present_text?(@request.response_preview)} id="request-response-preview">
-              <pre class="overflow-x-auto rounded-md bg-slate-50 p-4 text-sm font-mono text-slate-800 whitespace-pre-wrap dark:bg-slate-900/60 dark:text-slate-200">{format_text(@request.response_preview)}</pre>
-            </div>
-            <p
-              :if={!present_text?(@request.response_preview)}
-              id="request-response-preview-fallback"
-              class="text-sm text-slate-400 dark:text-slate-500"
-            >
-              Not captured for this request.
-            </p>
+    <.disclosure_section
+      wrapper_id="request-response-debug-card"
+      title="Response & Debug"
+      default_open={@default_open}
+    >
+      <div class="space-y-6">
+        <div>
+          <h4 class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
+            Response Preview
+          </h4>
+          <div :if={present_text?(@request.response_preview)} id="request-response-preview">
+            <pre class="overflow-x-auto rounded-md bg-slate-50 p-4 text-sm font-mono text-slate-800 whitespace-pre-wrap dark:bg-slate-900/60 dark:text-slate-200">{format_text(@request.response_preview)}</pre>
           </div>
-
-          <div>
-            <h4 class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
-              Response Payload
-            </h4>
-            <.json_block
-              data={@request.response_payload}
-              content_id="request-response-payload"
-              fallback_id="request-response-payload-fallback"
-              fallback_text="Not captured for this request."
-            />
-          </div>
-
-          <div>
-            <h4 class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
-              Scheduler Decision
-            </h4>
-            <.json_block
-              data={@request.scheduler_decision}
-              content_id="request-scheduler-decision"
-              fallback_id="request-scheduler-decision-fallback"
-              fallback_text="Not recorded for this request."
-            />
-          </div>
+          <p
+            :if={!present_text?(@request.response_preview)}
+            id="request-response-preview-fallback"
+            class="text-sm text-slate-400 dark:text-slate-500"
+          >
+            Not captured for this request.
+          </p>
         </div>
-      </.card>
-    </div>
+
+        <div>
+          <h4 class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
+            Response Payload
+          </h4>
+          <.json_block
+            data={@request.response_payload}
+            content_id="request-response-payload"
+            fallback_id="request-response-payload-fallback"
+            fallback_text="Not captured for this request."
+          />
+        </div>
+
+        <div>
+          <h4 class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
+            Scheduler Decision
+          </h4>
+          <.json_block
+            data={@request.scheduler_decision}
+            content_id="request-scheduler-decision"
+            fallback_id="request-scheduler-decision-fallback"
+            fallback_text="Not recorded for this request."
+          />
+        </div>
+      </div>
+    </.disclosure_section>
     """
   end
 
@@ -305,18 +328,18 @@ defmodule OrchardConsole.RequestLive do
 
   defp request_canonical(assigns) do
     ~H"""
-    <div id="request-canonical-card">
-      <.card>
-        <:title>Canonical Request</:title>
-
-        <.json_block
-          data={@request.canonical_request}
-          content_id="request-canonical-request"
-          fallback_id="request-canonical-fallback"
-          fallback_text="Not captured for this request."
-        />
-      </.card>
-    </div>
+    <.disclosure_section
+      wrapper_id="request-canonical-card"
+      title="Canonical Request"
+      default_open={false}
+    >
+      <.json_block
+        data={@request.canonical_request}
+        content_id="request-canonical-request"
+        fallback_id="request-canonical-fallback"
+        fallback_text="Not captured for this request."
+      />
+    </.disclosure_section>
     """
   end
 
@@ -390,6 +413,29 @@ defmodule OrchardConsole.RequestLive do
   # ===========================================================================
   # Local function components
   # ===========================================================================
+
+  attr(:wrapper_id, :string, required: true)
+  attr(:title, :string, required: true)
+  attr(:default_open, :boolean, default: false)
+  slot(:inner_block, required: true)
+
+  defp disclosure_section(assigns) do
+    ~H"""
+    <div id={@wrapper_id}>
+      <details
+        class="rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800"
+        {if @default_open, do: [{:open, true}], else: []}
+      >
+        <summary class="cursor-pointer select-none px-4 py-3 text-base font-semibold text-slate-900 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg">
+          {@title}
+        </summary>
+        <div class="border-t border-slate-200 px-4 py-4 dark:border-slate-700">
+          {render_slot(@inner_block)}
+        </div>
+      </details>
+    </div>
+    """
+  end
 
   attr(:data, :map, default: nil)
   attr(:content_id, :string, required: true)
@@ -517,6 +563,14 @@ defmodule OrchardConsole.RequestLive do
 
   defp console_config do
     Application.get_env(:orchard_controller, :console, [])
+  end
+
+  # ===========================================================================
+  # State helpers
+  # ===========================================================================
+
+  defp error_terminal_state?(state) do
+    state in Request.terminal_states() and state != :completed
   end
 
   # ===========================================================================

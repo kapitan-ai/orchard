@@ -542,6 +542,138 @@ defmodule OrchardConsole.RequestLiveTest do
   end
 
   # ===========================================================================
+  # Back-link and section order (Task 2)
+  # ===========================================================================
+
+  describe "back-link and section order" do
+    test "back-link renders on :ok request page", %{conn: conn} do
+      request = create_request!(%{state: :completed})
+
+      {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
+
+      assert html =~ "request-back-to-playground"
+      assert html =~ "/console/playground"
+      assert html =~ "Back to Playground"
+    end
+
+    test "back-link renders on not-found page", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console/requests/nonexistent-id")
+
+      assert html =~ "request-back-to-playground"
+      assert html =~ "/console/playground"
+    end
+
+    test "sections appear in proof-point order on :ok", %{conn: conn} do
+      request =
+        create_request!(%{
+          state: :failed,
+          error_code: "test_error",
+          error_message: "Something failed",
+          response_payload: %{"error" => true},
+          canonical_request: %{"model" => "test"},
+          scheduler_decision: %{"reason" => "test"}
+        })
+
+      append_event!(request, %{
+        seq: 1,
+        event_type: "state_transition",
+        occurred_at: DateTime.utc_now()
+      })
+
+      {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
+
+      # Verify proof-point order by checking relative positions of wrapper IDs
+      summary_pos = :binary.match(html, "request-summary-card") |> elem(0)
+      usage_pos = :binary.match(html, "request-usage-card") |> elem(0)
+      timeline_pos = :binary.match(html, "request-timeline-card") |> elem(0)
+      execution_pos = :binary.match(html, "request-execution-metadata-card") |> elem(0)
+      error_pos = :binary.match(html, "request-error-details-card") |> elem(0)
+      provenance_pos = :binary.match(html, "request-provenance-card") |> elem(0)
+      debug_pos = :binary.match(html, "request-response-debug-card") |> elem(0)
+      canonical_pos = :binary.match(html, "request-canonical-card") |> elem(0)
+
+      assert summary_pos < usage_pos
+      assert usage_pos < timeline_pos
+      assert timeline_pos < execution_pos
+      assert execution_pos < error_pos
+      assert error_pos < provenance_pos
+      assert provenance_pos < debug_pos
+      assert debug_pos < canonical_pos
+    end
+  end
+
+  # ===========================================================================
+  # Disclosure sections (Task 2)
+  # ===========================================================================
+
+  describe "disclosure sections" do
+    test "response/debug section uses native disclosure", %{conn: conn} do
+      request = create_request!(%{state: :completed})
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      debug_html = view |> element("#request-response-debug-card") |> render()
+      assert debug_html =~ "<details"
+      assert debug_html =~ "<summary"
+      assert debug_html =~ "Response &amp; Debug"
+    end
+
+    test "canonical section uses native disclosure", %{conn: conn} do
+      request = create_request!(%{state: :completed})
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      canonical_html = view |> element("#request-canonical-card") |> render()
+      assert canonical_html =~ "<details"
+      assert canonical_html =~ "<summary"
+      assert canonical_html =~ "Canonical Request"
+    end
+
+    test "response/debug defaults open for failed request", %{conn: conn} do
+      request = create_request!(%{state: :failed, error_code: "e", error_message: "fail"})
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      debug_html = view |> element("#request-response-debug-card") |> render()
+      assert debug_html =~ ~r/<details[^>]*\bopen\b/
+    end
+
+    test "response/debug defaults closed for completed request", %{conn: conn} do
+      request = create_request!(%{state: :completed})
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      debug_html = view |> element("#request-response-debug-card") |> render()
+      refute debug_html =~ ~r/<details[^>]*\bopen\b/
+    end
+
+    test "canonical section defaults closed", %{conn: conn} do
+      request = create_request!(%{state: :completed})
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      canonical_html = view |> element("#request-canonical-card") |> render()
+      refute canonical_html =~ ~r/<details[^>]*\bopen\b/
+    end
+
+    test "disclosure preserves inner content IDs and fallback text", %{conn: conn} do
+      request = create_request!(%{state: :completed})
+
+      {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
+
+      # Response/debug fallbacks
+      assert html =~ "request-response-preview-fallback"
+      assert html =~ "request-response-payload-fallback"
+      assert html =~ "request-scheduler-decision-fallback"
+      assert html =~ "Not captured for this request."
+      assert html =~ "Not recorded for this request."
+
+      # Canonical fallback
+      assert html =~ "request-canonical-fallback"
+    end
+  end
+
+  # ===========================================================================
   # Helpers
   # ===========================================================================
 
