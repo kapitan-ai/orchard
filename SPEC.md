@@ -1585,6 +1585,25 @@ message EnsureModelLoadedRequest {
   string artifact_sha256 = 4;
   bool preload = 5;
   uint64 deadline_unix_ms = 6;
+  string artifact_source_uri = 7;
+}
+
+enum ModelLoadFailureCategory {
+  MODEL_LOAD_FAILURE_CATEGORY_UNSPECIFIED = 0;
+  MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID = 1;
+  MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED = 2;
+  MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE = 3;
+  MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT = 4;
+  MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED = 5;
+  MODEL_LOAD_FAILURE_CATEGORY_INTERNAL = 6;
+}
+
+message EnsureModelLoadedResponse {
+  bool already_loaded = 1;
+  PlacementState placement_state = 2;
+  ModelLoadFailureCategory failure_category = 3;
+  string failure_code = 4;
+  string failure_message = 5;
 }
 
 message ExecuteInferenceRequest {

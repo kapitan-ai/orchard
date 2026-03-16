@@ -52,6 +52,11 @@ defmodule Orchard.API.ModelsControllerTest do
       assert model_obj["object"] == "model"
       assert is_integer(model_obj["created"])
       assert model_obj["owned_by"] == "local"
+
+      # Internal artifact fields must not leak to the API
+      refute Map.has_key?(model_obj, "artifact_source_uri")
+      refute Map.has_key?(model_obj, "artifact_uri")
+      refute Map.has_key?(model_obj, "artifact_sha256")
     end
 
     test "excludes non-active models" do
