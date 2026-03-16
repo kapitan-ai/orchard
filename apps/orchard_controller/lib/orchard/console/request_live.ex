@@ -101,9 +101,12 @@ defmodule OrchardConsole.RequestLive do
 
         <% :ok -> %>
           <.request_summary request={@request} />
+          <.request_execution_metadata request={@request} />
           <.request_usage request={@request} />
           <.request_errors request={@request} />
+          <.request_response_debug request={@request} />
           <.request_canonical request={@request} />
+          <.request_provenance request={@request} />
           <.request_timeline events={@events} />
       <% end %>
     </div>
@@ -153,6 +156,36 @@ defmodule OrchardConsole.RequestLive do
           </.detail_field>
           <.detail_field id="request-state" label="State">
             {format_state(@request.state)}
+          </.detail_field>
+        </dl>
+      </.card>
+    </div>
+    """
+  end
+
+  attr(:request, :map, required: true)
+
+  defp request_execution_metadata(assigns) do
+    ~H"""
+    <div id="request-execution-metadata-card">
+      <.card>
+        <:title>Execution Metadata</:title>
+
+        <dl class="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-5">
+          <.detail_field id="request-model-id" label="Model ID" mono>
+            {format_text(@request.model_id)}
+          </.detail_field>
+          <.detail_field id="request-node-id" label="Node ID" mono>
+            {format_text(@request.node_id)}
+          </.detail_field>
+          <.detail_field id="request-worker-id" label="Worker ID" mono>
+            {format_text(@request.worker_id)}
+          </.detail_field>
+          <.detail_field id="request-first-token-at" label="First Token At" mono>
+            {format_datetime(@request.first_token_at)}
+          </.detail_field>
+          <.detail_field id="request-execution-http-status" label="HTTP Status" mono>
+            {format_integer(@request.http_status)}
           </.detail_field>
         </dl>
       </.card>
@@ -216,22 +249,110 @@ defmodule OrchardConsole.RequestLive do
 
   attr(:request, :map, required: true)
 
+  defp request_response_debug(assigns) do
+    ~H"""
+    <div id="request-response-debug-card">
+      <.card>
+        <:title>Response &amp; Debug</:title>
+
+        <div class="space-y-6">
+          <div>
+            <h4 class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
+              Response Preview
+            </h4>
+            <div :if={present_text?(@request.response_preview)} id="request-response-preview">
+              <pre class="overflow-x-auto rounded-md bg-slate-50 p-4 text-sm font-mono text-slate-800 whitespace-pre-wrap dark:bg-slate-900/60 dark:text-slate-200">{format_text(@request.response_preview)}</pre>
+            </div>
+            <p
+              :if={!present_text?(@request.response_preview)}
+              id="request-response-preview-fallback"
+              class="text-sm text-slate-400 dark:text-slate-500"
+            >
+              Not captured for this request.
+            </p>
+          </div>
+
+          <div>
+            <h4 class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
+              Response Payload
+            </h4>
+            <.json_block
+              data={@request.response_payload}
+              content_id="request-response-payload"
+              fallback_id="request-response-payload-fallback"
+              fallback_text="Not captured for this request."
+            />
+          </div>
+
+          <div>
+            <h4 class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
+              Scheduler Decision
+            </h4>
+            <.json_block
+              data={@request.scheduler_decision}
+              content_id="request-scheduler-decision"
+              fallback_id="request-scheduler-decision-fallback"
+              fallback_text="Not recorded for this request."
+            />
+          </div>
+        </div>
+      </.card>
+    </div>
+    """
+  end
+
+  attr(:request, :map, required: true)
+
   defp request_canonical(assigns) do
     ~H"""
     <div id="request-canonical-card">
       <.card>
         <:title>Canonical Request</:title>
 
-        <div :if={present_map?(@request.canonical_request)} id="request-canonical-request">
-          <pre class="overflow-x-auto rounded-md bg-slate-50 p-4 text-xs font-mono text-slate-800 dark:bg-slate-900/60 dark:text-slate-200"><code>{format_json(@request.canonical_request)}</code></pre>
-        </div>
-        <p
-          :if={!present_map?(@request.canonical_request)}
-          id="request-canonical-fallback"
-          class="text-sm text-slate-400 dark:text-slate-500"
-        >
-          Not captured for this request.
-        </p>
+        <.json_block
+          data={@request.canonical_request}
+          content_id="request-canonical-request"
+          fallback_id="request-canonical-fallback"
+          fallback_text="Not captured for this request."
+        />
+      </.card>
+    </div>
+    """
+  end
+
+  attr(:request, :map, required: true)
+
+  defp request_provenance(assigns) do
+    ~H"""
+    <div id="request-provenance-card">
+      <.card>
+        <:title>Request Provenance</:title>
+
+        <dl class="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-3">
+          <.detail_field id="request-retry-of" label="Retry Of">
+            <%= cond do %>
+              <% match?(%Orchard.Requests.Request{}, @request.retry_of_request) and
+                   present_text?(@request.retry_of_request.public_id) -> %>
+                <.link
+                  id="request-retry-of-link"
+                  navigate={~p"/console/requests/#{@request.retry_of_request.public_id}"}
+                  class="text-navy underline hover:text-navy/80 dark:text-gold dark:hover:text-gold/80"
+                >
+                  <span class="font-mono">{@request.retry_of_request.public_id}</span>
+                </.link>
+              <% present_text?(@request.retry_of_request_id) -> %>
+                <span class="font-mono">{@request.retry_of_request_id}</span>
+              <% true -> %>
+                <span>—</span>
+            <% end %>
+          </.detail_field>
+          <.detail_field id="request-payload-capture-mode" label="Payload Capture">
+            {format_atom(@request.payload_capture_mode)}
+          </.detail_field>
+          <.detail_field id="request-reserved-output-tokens" label="Reserved Output Tokens" mono>
+            {format_integer(@request.reserved_output_tokens)}
+          </.detail_field>
+        </dl>
       </.card>
     </div>
     """
@@ -269,6 +390,26 @@ defmodule OrchardConsole.RequestLive do
   # ===========================================================================
   # Local function components
   # ===========================================================================
+
+  attr(:data, :map, default: nil)
+  attr(:content_id, :string, required: true)
+  attr(:fallback_id, :string, required: true)
+  attr(:fallback_text, :string, default: "Not captured for this request.")
+
+  defp json_block(assigns) do
+    ~H"""
+    <div :if={present_map?(@data)} id={@content_id}>
+      <pre class="overflow-x-auto rounded-md bg-slate-50 p-4 text-xs font-mono text-slate-800 dark:bg-slate-900/60 dark:text-slate-200"><code>{format_json(@data)}</code></pre>
+    </div>
+    <p
+      :if={!present_map?(@data)}
+      id={@fallback_id}
+      class="text-sm text-slate-400 dark:text-slate-500"
+    >
+      {@fallback_text}
+    </p>
+    """
+  end
 
   attr(:id, :string, required: true)
   attr(:label, :string, required: true)

@@ -20,7 +20,10 @@ defmodule Orchard.Requests do
 
   @spec get_request_by_public_id(String.t()) :: struct() | nil
   def get_request_by_public_id(public_id) do
-    Repo.get_by(Request, public_id: public_id)
+    Request
+    |> where([r], r.public_id == ^public_id)
+    |> preload([:retry_of_request])
+    |> Repo.one()
   end
 
   @spec list_request_events(struct() | Ecto.UUID.t()) :: [struct()]

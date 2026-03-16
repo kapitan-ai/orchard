@@ -226,4 +226,36 @@ defmodule Orchard.RequestsTest do
     assert summary.by_state.streaming == 0
     assert summary.active + summary.terminal == summary.total
   end
+
+  describe "get_request_by_public_id/1" do
+    test "preloads retry_of_request association" do
+      parent = create_request!(%{public_id: "req_parent_preload"})
+
+      child =
+        create_request!(%{
+          public_id: "req_child_preload",
+          retry_of_request_id: parent.id
+        })
+
+      fetched = Requests.get_request_by_public_id(child.public_id)
+
+      assert fetched != nil
+      assert fetched.retry_of_request.id == parent.id
+      assert fetched.retry_of_request.public_id == parent.public_id
+      refute match?(%Ecto.Association.NotLoaded{}, fetched.retry_of_request)
+    end
+
+    test "returns nil retry_of_request when no retry source" do
+      request = create_request!(%{public_id: "req_no_retry"})
+
+      fetched = Requests.get_request_by_public_id(request.public_id)
+
+      assert fetched != nil
+      assert fetched.retry_of_request == nil
+    end
+
+    test "returns nil for unknown public_id" do
+      assert Requests.get_request_by_public_id("nonexistent-id") == nil
+    end
+  end
 end

@@ -124,6 +124,70 @@ defmodule OrchardConsole.RequestLiveTest do
   end
 
   # ===========================================================================
+  # Execution metadata
+  # ===========================================================================
+
+  describe "execution metadata" do
+    test "renders populated execution metadata fields", %{conn: conn} do
+      model = create_model!()
+
+      request =
+        create_request!(%{
+          state: :completed,
+          model_id: model.id,
+          node_id: "550e8400-e29b-41d4-a716-446655440000",
+          worker_id: "660e8400-e29b-41d4-a716-446655440000",
+          first_token_at: ~U[2026-03-15 12:30:45.123456Z],
+          http_status: 200
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      metadata_html = element(view, "#request-execution-metadata-card") |> render()
+      assert metadata_html =~ "Execution Metadata"
+
+      model_html = element(view, "#request-model-id") |> render()
+      assert model_html =~ model.id
+      assert model_html =~ "font-mono"
+
+      node_html = element(view, "#request-node-id") |> render()
+      assert node_html =~ "550e8400-e29b-41d4-a716-446655440000"
+      assert node_html =~ "font-mono"
+
+      worker_html = element(view, "#request-worker-id") |> render()
+      assert worker_html =~ "660e8400-e29b-41d4-a716-446655440000"
+      assert worker_html =~ "font-mono"
+
+      first_token_html = element(view, "#request-first-token-at") |> render()
+      assert first_token_html =~ "2026-03-15T12:30:45"
+
+      http_html = element(view, "#request-execution-http-status") |> render()
+      assert http_html =~ "200"
+    end
+
+    test "renders dash fallbacks when execution metadata fields are nil", %{conn: conn} do
+      request = create_request!(%{state: :received, http_status: nil})
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      # Card still renders
+      assert element(view, "#request-execution-metadata-card") |> render() =~ "Execution Metadata"
+
+      # All fields show dash
+      for field_id <- [
+            "request-model-id",
+            "request-node-id",
+            "request-worker-id",
+            "request-first-token-at",
+            "request-execution-http-status"
+          ] do
+        field_html = element(view, "##{field_id}") |> render()
+        assert field_html =~ "\u2014", "expected #{field_id} to display dash"
+      end
+    end
+  end
+
+  # ===========================================================================
   # Canonical request
   # ===========================================================================
 
@@ -151,6 +215,148 @@ defmodule OrchardConsole.RequestLiveTest do
       assert html =~ "request-canonical-fallback"
       assert html =~ "Not captured for this request"
       refute html =~ "request-canonical-request"
+    end
+  end
+
+  # ===========================================================================
+  # Response & debug
+  # ===========================================================================
+
+  describe "response and debug" do
+    test "renders populated response preview, payload, and scheduler decision", %{conn: conn} do
+      request =
+        create_request!(%{
+          state: :completed,
+          response_preview: "Hello! How can I help you today?",
+          response_payload: %{"id" => "resp_123", "choices" => [%{"index" => 0}]},
+          scheduler_decision: %{"node_id" => "node-1", "reason" => "local_capacity"}
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      card_html = element(view, "#request-response-debug-card") |> render()
+      assert card_html =~ "Response"
+
+      preview_html = element(view, "#request-response-preview") |> render()
+      assert preview_html =~ "Hello! How can I help you today?"
+
+      payload_html = element(view, "#request-response-payload") |> render()
+      assert payload_html =~ "resp_123"
+
+      refute element(view, "#request-response-debug-card") |> render() =~
+               "request-response-payload-fallback"
+
+      scheduler_html = element(view, "#request-scheduler-decision") |> render()
+      assert scheduler_html =~ "local_capacity"
+
+      refute element(view, "#request-response-debug-card") |> render() =~
+               "request-scheduler-decision-fallback"
+    end
+
+    test "renders fallbacks when response/debug fields are nil", %{conn: conn} do
+      request =
+        create_request!(%{
+          state: :completed,
+          response_preview: nil,
+          response_payload: nil,
+          scheduler_decision: nil
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      card_html = element(view, "#request-response-debug-card") |> render()
+      assert card_html =~ "Response"
+
+      # Fallbacks render
+      assert card_html =~ "request-response-preview-fallback"
+      assert card_html =~ "request-response-payload-fallback"
+      assert card_html =~ "request-scheduler-decision-fallback"
+
+      # Content blocks do not render
+      refute card_html =~ "\"request-response-preview\""
+      refute card_html =~ "\"request-response-payload\""
+      refute card_html =~ "\"request-scheduler-decision\""
+    end
+  end
+
+  # ===========================================================================
+  # Provenance
+  # ===========================================================================
+
+  describe "provenance" do
+    test "renders retry link to parent request", %{conn: conn} do
+      parent = create_request!(%{state: :completed})
+
+      child =
+        create_request!(%{
+          state: :completed,
+          retry_of_request_id: parent.id,
+          payload_capture_mode: :full,
+          reserved_output_tokens: 256
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{child.public_id}")
+
+      provenance_html = element(view, "#request-provenance-card") |> render()
+      assert provenance_html =~ "Request Provenance"
+
+      retry_html = element(view, "#request-retry-of") |> render()
+      assert retry_html =~ parent.public_id
+      assert retry_html =~ "request-retry-of-link"
+      assert retry_html =~ "/console/requests/#{parent.public_id}"
+
+      capture_html = element(view, "#request-payload-capture-mode") |> render()
+      assert capture_html =~ "full"
+
+      tokens_html = element(view, "#request-reserved-output-tokens") |> render()
+      assert tokens_html =~ "256"
+      assert tokens_html =~ "font-mono"
+    end
+
+    test "renders dash when no retry source and zero for reserved tokens", %{conn: conn} do
+      request =
+        create_request!(%{
+          state: :received,
+          retry_of_request_id: nil,
+          reserved_output_tokens: 0,
+          payload_capture_mode: :metadata
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      retry_html = element(view, "#request-retry-of") |> render()
+      assert retry_html =~ "\u2014"
+      refute retry_html =~ "request-retry-of-link"
+
+      tokens_html = element(view, "#request-reserved-output-tokens") |> render()
+      assert tokens_html =~ "0"
+      refute tokens_html =~ "\u2014"
+
+      capture_html = element(view, "#request-payload-capture-mode") |> render()
+      assert capture_html =~ "metadata"
+    end
+
+    test "retry link navigates to parent request page", %{conn: conn} do
+      parent = create_request!(%{state: :completed})
+
+      child =
+        create_request!(%{
+          state: :completed,
+          retry_of_request_id: parent.id
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{child.public_id}")
+
+      # Click the retry link (navigate tears down old process, mounts fresh)
+      {:ok, new_view, html} =
+        view |> element("#request-retry-of-link") |> render_click() |> follow_redirect(conn)
+
+      assert html =~ parent.public_id
+      assert html =~ "Request Summary"
+
+      # Verify the new view is showing the parent request
+      summary_html = element(new_view, "#request-summary-card") |> render()
+      assert summary_html =~ parent.public_id
     end
   end
 
