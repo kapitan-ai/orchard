@@ -38,7 +38,8 @@ defmodule OrchardConsole.PlaygroundLive do
       request_id: nil,
       usage: nil,
       run_error: nil,
-      msg_seq: 0
+      msg_seq: 0,
+      run_metrics: nil
     )
   end
 
@@ -115,7 +116,8 @@ defmodule OrchardConsole.PlaygroundLive do
           request_id: nil,
           usage: nil,
           run_error: nil,
-          msg_seq: 0
+          msg_seq: 0,
+          run_metrics: nil
         )
 
       {:noreply, socket}
@@ -179,7 +181,8 @@ defmodule OrchardConsole.PlaygroundLive do
         run_error: nil,
         form: to_form(Map.put(params, "prompt", ""), as: :playground),
         form_errors: %{},
-        msg_seq: seq + 2
+        msg_seq: seq + 2,
+        run_metrics: new_run_metrics()
       )
 
     case playground_impl().start_stream(self(), run_ref, chat_params) do
@@ -189,6 +192,7 @@ defmodule OrchardConsole.PlaygroundLive do
       _ ->
         socket =
           socket
+          |> put_run_metric_once(:finished_at_ms)
           |> assign(
             active_run: nil,
             run_status: :error,
@@ -238,47 +242,20 @@ defmodule OrchardConsole.PlaygroundLive do
     socket =
       socket
       |> assign(request_id: request_id)
+      |> put_run_metric_once(:accepted_at_ms)
       |> put_in([Access.key(:assigns), :active_run, :accepted], true)
 
     {:noreply, socket}
   end
 
   defp handle_stream(:event, %InferenceEvent{} = event, socket) do
-    case InferenceEvent.kind(event) do
-      :output_text_delta ->
-        delta = event.event.delta
-        {:noreply, append_delta(socket, delta)}
-
-      :usage ->
-        usage = map_usage(event.event.usage)
-        {:noreply, assign(socket, usage: usage, run_status: :streaming)}
-
-      :completed ->
-        usage =
-          if event.event.usage, do: map_usage(event.event.usage), else: socket.assigns.usage
-
-        socket =
-          socket
-          |> assign(usage: usage, run_status: :completed)
-          |> mark_assistant(:complete)
-          |> put_in([Access.key(:assigns), :active_run, :terminal_seen], true)
-
-        {:noreply, socket}
-
-      :failed ->
-        error = normalize_failed_event(event)
-
-        socket =
-          socket
-          |> assign(run_status: :error, run_error: error)
-          |> handle_failed_assistant()
-          |> put_in([Access.key(:assigns), :active_run, :terminal_seen], true)
-
-        {:noreply, socket}
-
-      _ ->
-        # Ignore :accepted, :progress, :tool_call_delta
-        {:noreply, assign(socket, run_status: :streaming)}
+    # Once a terminal event has been seen, ignore late non-terminal events
+    # to prevent run_status from reverting (e.g. late :usage after :completed).
+    if socket.assigns.active_run.terminal_seen and
+         InferenceEvent.kind(event) not in [:completed, :failed] do
+      {:noreply, socket}
+    else
+      handle_event_by_kind(InferenceEvent.kind(event), event, socket)
     end
   end
 
@@ -287,7 +264,10 @@ defmodule OrchardConsole.PlaygroundLive do
       if socket.assigns.active_run.terminal_seen do
         socket
       else
-        socket |> assign(run_status: :completed) |> mark_assistant(:complete)
+        socket
+        |> put_run_metric_once(:finished_at_ms)
+        |> assign(run_status: :completed)
+        |> mark_assistant(:complete)
       end
 
     {:noreply, assign(socket, active_run: nil)}
@@ -299,12 +279,65 @@ defmodule OrchardConsole.PlaygroundLive do
         socket
       else
         socket
+        |> put_run_metric_once(:finished_at_ms)
         |> assign(run_status: :error, run_error: error)
         |> handle_failed_assistant()
         |> maybe_remove_unaccepted_user()
       end
 
     {:noreply, assign(socket, active_run: nil)}
+  end
+
+  # ===========================================================================
+  # Stream event dispatch (called from handle_stream :event)
+  # ===========================================================================
+
+  defp handle_event_by_kind(:output_text_delta, event, socket) do
+    delta = event.event.delta
+
+    socket =
+      if delta != "",
+        do: put_run_metric_once(socket, :first_token_at_ms),
+        else: socket
+
+    {:noreply, append_delta(socket, delta)}
+  end
+
+  defp handle_event_by_kind(:usage, event, socket) do
+    usage = map_usage(event.event.usage)
+    {:noreply, assign(socket, usage: usage, run_status: :streaming)}
+  end
+
+  defp handle_event_by_kind(:completed, event, socket) do
+    usage =
+      if event.event.usage, do: map_usage(event.event.usage), else: socket.assigns.usage
+
+    socket =
+      socket
+      |> put_run_metric_once(:finished_at_ms)
+      |> assign(usage: usage, run_status: :completed)
+      |> mark_assistant(:complete)
+      |> put_in([Access.key(:assigns), :active_run, :terminal_seen], true)
+
+    {:noreply, socket}
+  end
+
+  defp handle_event_by_kind(:failed, event, socket) do
+    error = normalize_failed_event(event)
+
+    socket =
+      socket
+      |> put_run_metric_once(:finished_at_ms)
+      |> assign(run_status: :error, run_error: error)
+      |> handle_failed_assistant()
+      |> put_in([Access.key(:assigns), :active_run, :terminal_seen], true)
+
+    {:noreply, socket}
+  end
+
+  defp handle_event_by_kind(_kind, _event, socket) do
+    # Ignore :accepted, :progress, :tool_call_delta
+    {:noreply, assign(socket, run_status: :streaming)}
   end
 
   # ===========================================================================
@@ -412,6 +445,58 @@ defmodule OrchardConsole.PlaygroundLive do
   end
 
   # ===========================================================================
+  # Timing helpers
+  # ===========================================================================
+
+  defp now_ms, do: System.monotonic_time(:millisecond)
+
+  defp new_run_metrics do
+    %{
+      submitted_at_ms: now_ms(),
+      accepted_at_ms: nil,
+      first_token_at_ms: nil,
+      finished_at_ms: nil
+    }
+  end
+
+  defp put_run_metric_once(socket, key) do
+    case socket.assigns.run_metrics do
+      %{^key => nil} = metrics ->
+        assign(socket, run_metrics: %{metrics | key => now_ms()})
+
+      _ ->
+        socket
+    end
+  end
+
+  defp duration_ms(nil, _key), do: nil
+
+  defp duration_ms(metrics, key) do
+    case Map.get(metrics, key) do
+      nil -> nil
+      ts -> ts - metrics.submitted_at_ms
+    end
+  end
+
+  defp format_duration(nil), do: "\u2014"
+  defp format_duration(ms) when ms < 1000, do: "#{ms} ms"
+
+  defp format_duration(ms) do
+    seconds = ms / 1000
+    :erlang.float_to_binary(seconds, decimals: 1) <> " s"
+  end
+
+  defp result_rail_visible?(assigns) do
+    assigns.run_metrics != nil or assigns.request_id != nil or
+      assigns.usage != nil or assigns.run_error != nil
+  end
+
+  defp terminal_cta_visible?(assigns) do
+    assigns.request_id != nil and assigns.active_run == nil and
+      assigns.run_status in [:completed, :error]
+  end
+
+  # ===========================================================================
   # Render
   # ===========================================================================
 
@@ -480,28 +565,24 @@ defmodule OrchardConsole.PlaygroundLive do
                 type="textarea"
                 label="Message"
                 rows={3}
+                phx-hook="SubmitOnModEnter"
               />
               <p :if={@form_errors[:prompt]} id="playground-prompt-error" class="-mt-2 text-sm text-red-600 dark:text-red-400">
                 {@form_errors[:prompt]}
               </p>
+              <p id="playground-submit-hint" class="-mt-2 text-xs text-slate-500 dark:text-slate-400">
+                Press Cmd/Ctrl + Enter to send.
+              </p>
               <:actions>
                 <.button
                   id="playground-send"
+                  type="submit"
                   disabled={@active_run != nil || @models == []}
                 >
                   Send
                 </.button>
               </:actions>
             </.simple_form>
-
-            <div :if={@request_id} id="playground-request-link" class="mt-2">
-              <.link
-                navigate={"/console/requests/#{@request_id}"}
-                class="text-sm font-medium text-navy hover:underline dark:text-sky-400"
-              >
-                View request {@request_id} →
-              </.link>
-            </div>
           </div>
         </.card>
 
@@ -509,9 +590,15 @@ defmodule OrchardConsole.PlaygroundLive do
         <.card>
           <:title>Transcript</:title>
 
-          <div id="playground-transcript" class="space-y-4 min-h-[200px]" aria-live="polite">
+          <div
+            id="playground-transcript"
+            phx-hook="AutoScrollBottom"
+            data-auto-scroll={to_string(@active_run != nil)}
+            class="playground-transcript-scroll space-y-4 min-h-[200px]"
+            aria-live="polite"
+          >
             <p :if={@transcript == []} class="text-sm text-slate-400 dark:text-slate-500 italic">
-              Send a message to start a conversation.
+              Send a prompt to start a conversation. Streamed responses appear here in real time.
             </p>
 
             <div :for={entry <- @transcript} id={"playground-message-#{entry.id}"} class={[
@@ -534,23 +621,61 @@ defmodule OrchardConsole.PlaygroundLive do
             </div>
           </div>
 
-          <div :if={@usage} id="playground-usage" class="mt-4 border-t border-slate-200 dark:border-slate-700 pt-3">
-            <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-2">
-              Usage
-            </p>
-            <div class="grid grid-cols-3 gap-2 text-center">
+          <%!-- Result Rail --%>
+          <div :if={result_rail_visible?(assigns)} id="playground-result-rail" class="mt-4 border-t border-slate-200 dark:border-slate-700 pt-3">
+            <div class="playground-result-grid">
               <div>
-                <p class="text-xs text-slate-500 dark:text-slate-400">Prompt</p>
-                <p class="font-mono text-sm text-slate-900 dark:text-slate-100">{@usage.prompt_tokens}</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Request ID</p>
+                <p id="playground-result-request-id" class="font-mono text-sm text-slate-900 dark:text-slate-100 truncate">
+                  {@request_id || "\u2014"}
+                </p>
+              </div>
+              <div>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Accepted</p>
+                <p id="playground-result-accepted" class="font-mono text-sm text-slate-900 dark:text-slate-100">
+                  {format_duration(duration_ms(@run_metrics, :accepted_at_ms))}
+                </p>
+              </div>
+              <div>
+                <p class="text-xs text-slate-500 dark:text-slate-400">First token</p>
+                <p id="playground-result-first-token" class="font-mono text-sm text-slate-900 dark:text-slate-100">
+                  {format_duration(duration_ms(@run_metrics, :first_token_at_ms))}
+                </p>
+              </div>
+              <div>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Total time</p>
+                <p id="playground-result-total" class="font-mono text-sm text-slate-900 dark:text-slate-100">
+                  {format_duration(duration_ms(@run_metrics, :finished_at_ms))}
+                </p>
+              </div>
+              <div>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Prompt tokens</p>
+                <p id="playground-result-prompt-tokens" class="font-mono text-sm text-slate-900 dark:text-slate-100">
+                  {if @usage, do: @usage.prompt_tokens, else: "\u2014"}
+                </p>
               </div>
               <div>
                 <p class="text-xs text-slate-500 dark:text-slate-400">Completion</p>
-                <p class="font-mono text-sm text-slate-900 dark:text-slate-100">{@usage.completion_tokens}</p>
+                <p id="playground-result-completion-tokens" class="font-mono text-sm text-slate-900 dark:text-slate-100">
+                  {if @usage, do: @usage.completion_tokens, else: "\u2014"}
+                </p>
               </div>
               <div>
-                <p class="text-xs text-slate-500 dark:text-slate-400">Total</p>
-                <p class="font-mono text-sm text-slate-900 dark:text-slate-100">{@usage.total_tokens}</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Total tokens</p>
+                <p id="playground-result-total-tokens" class="font-mono text-sm text-slate-900 dark:text-slate-100">
+                  {if @usage, do: @usage.total_tokens, else: "\u2014"}
+                </p>
               </div>
+            </div>
+
+            <div :if={terminal_cta_visible?(assigns)} class="mt-3">
+              <.link
+                id="playground-view-request"
+                navigate={"/console/requests/#{@request_id}"}
+                class="inline-flex items-center rounded-md bg-navy px-3 py-1.5 text-sm font-medium text-white hover:bg-navy-700 dark:bg-sky-500 dark:hover:bg-sky-400"
+              >
+                View request {@request_id} →
+              </.link>
             </div>
           </div>
         </.card>

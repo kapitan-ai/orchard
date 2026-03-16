@@ -118,16 +118,18 @@ defmodule OrchardConsole.PlaygroundLiveTest do
   # ===========================================================================
 
   describe "streaming and transcript" do
-    test ":started message stores request_id and renders deep-link", %{conn: conn} do
+    test ":started message stores request_id in result rail", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/playground")
       ref = submit_prompt(view)
 
       send(view.pid, {:playground, ref, :started, %{request_id: "req_play_123"}})
       html = render(view)
 
-      assert html =~ "playground-request-link"
+      assert html =~ "playground-result-rail"
+      assert html =~ "playground-result-request-id"
       assert html =~ "req_play_123"
-      assert html =~ "/console/requests/req_play_123"
+      # Terminal CTA should NOT appear yet (still streaming)
+      refute html =~ "playground-view-request"
     end
 
     test "OutputTextDelta events append to assistant message", %{conn: conn} do
@@ -143,7 +145,7 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       assert html =~ "streaming"
     end
 
-    test "UsageUpdate events update usage summary", %{conn: conn} do
+    test "UsageUpdate events update usage in result rail", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/playground")
       ref = submit_prompt(view)
 
@@ -151,7 +153,10 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       send(view.pid, {:playground, ref, :event, InferenceEvent.usage_update(usage)})
       html = render(view)
 
-      assert html =~ "playground-usage"
+      assert html =~ "playground-result-rail"
+      assert html =~ "playground-result-prompt-tokens"
+      assert html =~ "playground-result-completion-tokens"
+      assert html =~ "playground-result-total-tokens"
       assert html =~ "10"
       assert html =~ "5"
       assert html =~ "15"
@@ -245,11 +250,10 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       view |> element("#playground-reset") |> render_click()
       html = render(view)
 
-      # Transcript should be cleared
-      refute html =~ "playground-usage"
-      refute html =~ "playground-request-link"
+      # Transcript and result rail should be cleared
+      refute html =~ "playground-result-rail"
       assert html =~ "Ready"
-      assert html =~ "Send a message"
+      assert html =~ "Send a prompt to start a conversation"
     end
 
     test "new chat preserves model selection", %{conn: conn} do
@@ -271,18 +275,34 @@ defmodule OrchardConsole.PlaygroundLiveTest do
   # ===========================================================================
 
   describe "deep-link and summary" do
-    test "deep-link appears after started with request_id", %{conn: conn} do
+    test "request ID appears in rail after :started, CTA only after terminal", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/playground")
       ref = submit_prompt(view)
 
       send(view.pid, {:playground, ref, :started, %{request_id: "req_deep"}})
       html = render(view)
 
+      # Request ID visible in rail
+      assert html =~ "playground-result-request-id"
+      assert html =~ "req_deep"
+      # CTA should NOT appear while run is active
+      refute html =~ "playground-view-request"
+
+      # Complete the run
+      send(view.pid, {:playground, ref, :event, InferenceEvent.output_text_delta("done")})
+      completed = InferenceEvent.completed(:finish_reason_stop, %InferenceEvent.Usage{
+        input_tokens: 5, output_tokens: 3, total_tokens: 8
+      })
+      send(view.pid, {:playground, ref, :event, completed})
+      send(view.pid, {:playground, ref, :finished, {:ok, %{events: []}}})
+      html = render(view)
+
+      # Now CTA should appear
+      assert html =~ "playground-view-request"
       assert html =~ "/console/requests/req_deep"
-      assert html =~ "View request req_deep"
     end
 
-    test "deep-link persists after failure when request_id was set", %{conn: conn} do
+    test "CTA appears after failure when request_id was set", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/playground")
       ref = submit_prompt(view)
 
@@ -301,9 +321,12 @@ defmodule OrchardConsole.PlaygroundLiveTest do
 
       assert html =~ "req_fail"
       assert html =~ "Something broke"
+      # CTA should appear because run is terminal and request_id exists
+      assert html =~ "playground-view-request"
+      assert html =~ "/console/requests/req_fail"
     end
 
-    test "usage summary shows token counts", %{conn: conn} do
+    test "usage summary shows token counts in result rail", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/playground")
       ref = submit_prompt(view)
 
@@ -318,9 +341,77 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       send(view.pid, {:playground, ref, :finished, {:ok, %{events: []}}})
       html = render(view)
 
+      assert html =~ "playground-result-rail"
       assert html =~ "42"
       assert html =~ "18"
       assert html =~ "60"
+    end
+  end
+
+  # ===========================================================================
+  # Result Rail & Hooks
+  # ===========================================================================
+
+  describe "result rail and hooks" do
+    test "submit shows result rail with timing placeholders", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+      _ref = submit_prompt(view)
+
+      html = render(view)
+      assert html =~ "playground-result-rail"
+      assert html =~ "playground-result-request-id"
+      assert html =~ "playground-result-accepted"
+      assert html =~ "playground-result-first-token"
+      assert html =~ "playground-result-total"
+    end
+
+    test "first token timing cell populates after output delta", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+      ref = submit_prompt(view)
+
+      send(view.pid, {:playground, ref, :started, %{request_id: "r1"}})
+      send(view.pid, {:playground, ref, :event, InferenceEvent.output_text_delta("Hi")})
+
+      # First token timing should show a value (ms or s), not a dash
+      first_token_el = element(view, "#playground-result-first-token") |> render()
+      assert first_token_el =~ ~r/(ms| s)/
+    end
+
+    test "transcript container has auto-scroll hook", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console/playground")
+
+      assert html =~ ~s(phx-hook="AutoScrollBottom")
+      assert html =~ ~s(data-auto-scroll="false")
+    end
+
+    test "transcript auto-scroll enabled during active run", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+      _ref = submit_prompt(view)
+
+      html = render(view)
+      assert html =~ ~s(data-auto-scroll="true")
+    end
+
+    test "prompt textarea has submit shortcut hook and hint", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console/playground")
+
+      assert html =~ ~s(phx-hook="SubmitOnModEnter")
+      assert html =~ "playground-submit-hint"
+      assert html =~ "Cmd/Ctrl + Enter"
+    end
+
+    test "reset clears result rail", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+      ref = submit_prompt(view)
+
+      complete_run(view, ref)
+      html = render(view)
+      assert html =~ "playground-result-rail"
+
+      # Reset
+      view |> element("#playground-reset") |> render_click()
+      html = render(view)
+      refute html =~ "playground-result-rail"
     end
   end
 

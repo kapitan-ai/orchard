@@ -95,3 +95,24 @@
     transition: none;
   }
 }
+
+/* ==========================================================================
+   Playground — transcript scroll container
+   ========================================================================== */
+
+.playground-transcript-scroll {
+  max-height: 32rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+/* ==========================================================================
+   Playground — result rail grid
+   ========================================================================== */
+
+.playground-result-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.75rem;
+}
