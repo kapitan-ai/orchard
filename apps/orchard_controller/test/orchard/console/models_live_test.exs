@@ -20,9 +20,11 @@ defmodule OrchardConsole.ModelsLiveTest do
       assert html =~ "Models \u2014 Orchard Console"
     end
 
-    test "renders empty state when no models exist", %{conn: conn} do
+    test "renders empty state with CLI hint when no models exist", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/models")
       assert html =~ "No models imported yet."
+      assert html =~ "orchardctl models import"
+      assert html =~ "bundle-path"
     end
 
     test "renders catalog table with model data", %{conn: conn} do
@@ -51,6 +53,129 @@ defmodule OrchardConsole.ModelsLiveTest do
       assert html =~ "registered"
       assert html =~ "deprecated"
       assert html =~ "retired"
+    end
+  end
+
+  describe "summary strip" do
+    test "renders summary strip with all count tiles when models exist", %{conn: conn} do
+      create_model!(%{model_id: "m-active", state: :active})
+      create_model!(%{model_id: "m-registered", state: :registered})
+      create_model!(%{model_id: "m-deprecated", state: :deprecated})
+
+      {:ok, view, _html} = live(conn, "/console/models")
+
+      # Summary strip exists
+      summary = view |> element("#models-summary") |> render()
+      assert summary =~ "Total"
+      assert summary =~ "Registered"
+      assert summary =~ "Active"
+      assert summary =~ "Deprecated"
+      assert summary =~ "Retired"
+
+      # Check tile counts
+      total_tile = view |> element("#models-summary-total") |> render()
+      assert total_tile =~ "3"
+
+      active_tile = view |> element("#models-summary-active") |> render()
+      assert active_tile =~ "1"
+
+      retired_tile = view |> element("#models-summary-retired") |> render()
+      assert retired_tile =~ "0"
+    end
+
+    test "renders zero-filled summary strip when no models exist", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models")
+
+      summary = view |> element("#models-summary") |> render()
+      assert summary =~ "Total"
+
+      total_tile = view |> element("#models-summary-total") |> render()
+      assert total_tile =~ "0"
+
+      active_tile = view |> element("#models-summary-active") |> render()
+      assert active_tile =~ "0"
+    end
+
+    test "summary counts update after lifecycle transition", %{conn: conn} do
+      model = create_model!(%{model_id: "trans-model", state: :registered})
+
+      {:ok, view, _html} = live(conn, "/console/models")
+
+      # Before: 1 registered, 0 active
+      registered_tile = view |> element("#models-summary-registered") |> render()
+      assert registered_tile =~ "1"
+      active_tile = view |> element("#models-summary-active") |> render()
+      assert active_tile =~ "0"
+
+      # Activate the model
+      view
+      |> element("#model-#{model.id} button", "Activate")
+      |> render_click()
+
+      # After: 0 registered, 1 active
+      registered_tile = view |> element("#models-summary-registered") |> render()
+      assert registered_tile =~ "0"
+      active_tile = view |> element("#models-summary-active") |> render()
+      assert active_tile =~ "1"
+    end
+  end
+
+  describe "active-row highlighting" do
+    test "active model row has highlight class", %{conn: conn} do
+      model = create_model!(%{model_id: "highlighted", state: :active})
+
+      {:ok, view, _html} = live(conn, "/console/models")
+      row = view |> element("#model-#{model.id}") |> render()
+
+      assert row =~ "bg-forest-50/50"
+      assert row =~ "dark:bg-emerald-900/20"
+    end
+
+    test "non-active model rows do not have highlight class", %{conn: conn} do
+      model = create_model!(%{model_id: "not-highlighted", state: :registered})
+
+      {:ok, view, _html} = live(conn, "/console/models")
+      row = view |> element("#model-#{model.id}") |> render()
+
+      refute row =~ "bg-forest-50/50"
+    end
+
+    test "highlight appears after activating a model", %{conn: conn} do
+      model = create_model!(%{model_id: "to-activate", state: :registered})
+
+      {:ok, view, _html} = live(conn, "/console/models")
+
+      # Before: no highlight
+      row = view |> element("#model-#{model.id}") |> render()
+      refute row =~ "bg-forest-50/50"
+
+      # Activate
+      view
+      |> element("#model-#{model.id} button", "Activate")
+      |> render_click()
+
+      # After: has highlight
+      row = view |> element("#model-#{model.id}") |> render()
+      assert row =~ "bg-forest-50/50"
+    end
+
+    test "highlight disappears after deprecating an active model", %{conn: conn} do
+      model = create_model!(%{model_id: "to-deprecate", state: :active})
+
+      {:ok, view, _html} = live(conn, "/console/models")
+
+      # Before: has highlight
+      row = view |> element("#model-#{model.id}") |> render()
+      assert row =~ "bg-forest-50/50"
+
+      # Deprecate
+      view
+      |> element("#model-#{model.id} button", "Deprecate")
+      |> render_click()
+
+      # After: no highlight
+      row = view |> element("#model-#{model.id}") |> render()
+      refute row =~ "bg-forest-50/50"
     end
   end
 

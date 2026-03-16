@@ -341,9 +341,12 @@ defmodule OrchardConsole.CoreComponents do
   Monospace font is applied to columns with `mono` attribute set,
   per brand identity rule: "monospace for data, sans-serif for UI."
 
+  Accepts an optional `row_class` callback for per-row styling (e.g. highlighting
+  active rows). The callback receives a row and returns a class string or nil.
+
   ## Examples
 
-      <.table id="models" rows={@models}>
+      <.table id="models" rows={@models} row_class={&row_highlight/1}>
         <:col :let={model} label="Name">{model.name}</:col>
         <:col :let={model} label="State" mono>{model.state}</:col>
       </.table>
@@ -351,6 +354,12 @@ defmodule OrchardConsole.CoreComponents do
   attr(:id, :string, required: true)
   attr(:rows, :list, required: true)
   attr(:row_id, :any, default: nil, doc: "function to generate unique row ID from a row")
+
+  attr(:row_class, :any,
+    default: nil,
+    doc: "function (row -> class string | nil) for per-row styling"
+  )
+
   attr(:class, :string, default: "")
 
   slot :col, required: true do
@@ -392,7 +401,10 @@ defmodule OrchardConsole.CoreComponents do
           <tr
             :for={row <- @rows}
             id={@row_id && @row_id.(row)}
-            class="group hover:bg-slate-50 dark:hover:bg-slate-800/50"
+            class={[
+              "group hover:bg-slate-50 dark:hover:bg-slate-800/50",
+              @row_class && @row_class.(row)
+            ]}
           >
             <td
               :for={col <- @col}

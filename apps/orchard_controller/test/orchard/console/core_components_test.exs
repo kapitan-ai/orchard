@@ -291,6 +291,50 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "uppercase"
       assert html =~ "Model Name"
     end
+
+    test "applies row_class callback to matching rows" do
+      assigns = %{
+        rows: [
+          %{name: "Active", highlighted: true},
+          %{name: "Inactive", highlighted: false}
+        ]
+      }
+
+      row_class = fn
+        %{highlighted: true} -> "bg-green-50"
+        _ -> nil
+      end
+
+      assigns = Map.put(assigns, :row_class, row_class)
+
+      html =
+        render_heex(~H"""
+        <.table id="rc-test" rows={@rows} row_class={@row_class}>
+          <:col :let={row} label="Name">{row.name}</:col>
+        </.table>
+        """)
+
+      # Highlighted row gets custom class
+      assert html =~ "bg-green-50"
+      # Both rows still get the default group/hover classes
+      assert html =~ "group"
+      assert html =~ "hover:bg-slate-50"
+    end
+
+    test "row_class nil leaves default classes intact" do
+      assigns = %{rows: [%{name: "Plain"}]}
+
+      html =
+        render_heex(~H"""
+        <.table id="no-rc" rows={@rows}>
+          <:col :let={row} label="Name">{row.name}</:col>
+        </.table>
+        """)
+
+      assert html =~ "group"
+      assert html =~ "hover:bg-slate-50"
+      refute html =~ "bg-green"
+    end
   end
 
   # ===========================================================================
