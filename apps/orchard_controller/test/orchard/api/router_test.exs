@@ -89,7 +89,7 @@ defmodule Orchard.API.RouterTest do
 
       assert conn.status == 200
       assert conn.resp_body =~ "Playground"
-      assert conn.resp_body =~ "The console playground is not implemented yet."
+      assert conn.resp_body =~ "playground-form"
     end
 
     test "GET /console/requests/:public_id is routed", %{conn: conn} do
