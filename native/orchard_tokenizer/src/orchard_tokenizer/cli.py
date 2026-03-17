@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Final
 
 import sentencepiece as sentencepiece
-from jinja2 import Environment, StrictUndefined, TemplateError
+from jinja2 import Environment, TemplateError, Undefined
 from tokenizers import Tokenizer
 
 from orchard_tokenizer import __version__
@@ -260,7 +260,7 @@ def render_prompt(
         ) from exc
 
     environment = Environment(
-        autoescape=False, lstrip_blocks=True, trim_blocks=True, undefined=StrictUndefined
+        autoescape=False, lstrip_blocks=True, trim_blocks=True, undefined=Undefined
     )
 
     # Extract special tokens from tokenizer_config.json for Jinja context
