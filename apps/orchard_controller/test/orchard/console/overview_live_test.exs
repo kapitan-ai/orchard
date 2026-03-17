@@ -174,11 +174,15 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "renders degraded state when runtime is unavailable", %{conn: conn} do
       put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeUnavailableStub)
 
-      {:ok, _view, html} = live(conn, "/console")
+      {:ok, view, html} = live(conn, "/console")
 
       assert html =~ "Unavailable"
       assert html =~ "node runtime is unavailable"
-      assert html =~ "Runtime unavailable."
+
+      # Uses shared state_message component
+      unavailable = view |> element("#overview-runtime-unavailable") |> render()
+      assert unavailable =~ "Runtime unavailable."
+      assert unavailable =~ "node runtime is unavailable"
     end
   end
 

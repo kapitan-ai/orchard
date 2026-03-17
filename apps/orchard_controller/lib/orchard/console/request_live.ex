@@ -71,35 +71,31 @@ defmodule OrchardConsole.RequestLive do
 
       <%= case @request_status do %>
         <% :loading -> %>
-          <div id="request-loading-card">
-            <.card>
-              <:title>Loading request</:title>
-              <p class="text-sm text-slate-500 dark:text-slate-400">
-                Request details will appear when the LiveView connects.
-              </p>
-            </.card>
-          </div>
+          <.state_message
+            id="request-loading-card"
+            kind={:loading}
+            layout={:panel}
+            title="Loading request"
+            body="Request details will appear when the LiveView connects."
+          />
 
         <% :not_found -> %>
-          <div id="request-not-found-card">
-            <.card>
-              <:title>Request not found</:title>
-              <p class="text-sm text-slate-500 dark:text-slate-400">
-                No persisted request exists for public ID
-                <span class="font-mono">{@public_id}</span>.
-              </p>
-            </.card>
-          </div>
+          <.state_message
+            id="request-not-found-card"
+            kind={:empty}
+            layout={:panel}
+            title="Request not found"
+            body={"No persisted request exists for public ID #{@public_id}."}
+          />
 
         <% :error -> %>
-          <div id="request-error-card">
-            <.card>
-              <:title>Request unavailable</:title>
-              <p class="text-sm text-slate-500 dark:text-slate-400">
-                {@load_error}
-              </p>
-            </.card>
-          </div>
+          <.state_message
+            id="request-error-card"
+            kind={:error}
+            layout={:panel}
+            title="Request unavailable"
+            body={@load_error}
+          />
 
         <% :ok -> %>
           <.request_summary request={@request} />
@@ -534,7 +530,9 @@ defmodule OrchardConsole.RequestLive do
 
       %Request{} = request ->
         events = Requests.list_request_events(request)
-        mode = if should_poll?(%{request_status: :ok, request: request}), do: :polling, else: :static
+
+        mode =
+          if should_poll?(%{request_status: :ok, request: request}), do: :polling, else: :static
 
         assign(socket,
           request_status: :ok,
@@ -595,13 +593,15 @@ defmodule OrchardConsole.RequestLive do
   # ===========================================================================
 
   defp request_freshness_text(nil, :polling),
-    do: "Waiting for first live check \u00b7 Auto-refreshing every #{request_refresh_interval_label()}"
+    do:
+      "Waiting for first live check \u00b7 Auto-refreshing every #{request_refresh_interval_label()}"
 
   defp request_freshness_text(nil, :static),
     do: "Waiting for first live check"
 
   defp request_freshness_text(%DateTime{} = dt, :polling),
-    do: "Last checked #{Calendar.strftime(dt, "%H:%M:%S")} UTC \u00b7 Auto-refreshing every #{request_refresh_interval_label()}"
+    do:
+      "Last checked #{Calendar.strftime(dt, "%H:%M:%S")} UTC \u00b7 Auto-refreshing every #{request_refresh_interval_label()}"
 
   defp request_freshness_text(%DateTime{} = dt, :static),
     do: "Last checked #{Calendar.strftime(dt, "%H:%M:%S")} UTC \u00b7 Auto-refresh stopped"

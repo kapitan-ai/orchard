@@ -21,10 +21,14 @@ defmodule OrchardConsole.ModelsLiveTest do
     end
 
     test "renders empty state with CLI hint when no models exist", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console/models")
+      {:ok, view, html} = live(conn, "/console/models")
       assert html =~ "No models imported yet."
       assert html =~ "orchardctl models import"
       assert html =~ "bundle-path"
+
+      # Uses shared state_message component
+      empty = view |> element("#models-empty-state") |> render()
+      assert empty =~ "No models imported yet."
     end
 
     test "renders catalog table with model data", %{conn: conn} do

@@ -93,7 +93,13 @@ defmodule OrchardConsole.CoreComponents do
       "M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z",
     "hero-arrow-left" => "M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18",
     "hero-chevron-double-left" => "m18.75 4.5-7.5 7.5 7.5 7.5m-6-15L5.25 12l7.5 7.5",
-    "hero-bars-3" => "M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5"
+    "hero-bars-3" => "M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25h16.5",
+    "hero-arrow-path" =>
+      "M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99",
+    "hero-inbox" =>
+      "M2.25 13.5h3.86a2.25 2.25 0 0 1 2.012 1.244l.256.512a2.25 2.25 0 0 0 2.013 1.244h3.218a2.25 2.25 0 0 0 2.013-1.244l.256-.512a2.25 2.25 0 0 1 2.013-1.244h3.859m-19.5.338V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18v-4.162c0-.224-.034-.447-.1-.661L19.24 5.338a2.25 2.25 0 0 0-2.15-1.588H6.911a2.25 2.25 0 0 0-2.15 1.588L2.35 13.177a2.25 2.25 0 0 0-.1.661Z",
+    "hero-exclamation-triangle" =>
+      "M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"
   }
 
   @doc """
@@ -427,6 +433,110 @@ defmodule OrchardConsole.CoreComponents do
     </div>
     """
   end
+
+  # ===========================================================================
+  # State Message
+  # ===========================================================================
+
+  @doc """
+  Renders a consistent loading, empty, or error state message.
+
+  Supports two layouts:
+  - `:panel` — full-width card for page-level states (loading/error pages)
+  - `:compact` — inline bordered box for in-card or table-empty states
+
+  ## Examples
+
+      <.state_message id="loading" kind={:loading} layout={:panel} title="Loading…" />
+      <.state_message id="empty" kind={:empty} layout={:compact} title="No items.">
+        <:action>Hint text here</:action>
+      </.state_message>
+  """
+  attr(:id, :string, required: true)
+  attr(:kind, :atom, required: true, values: [:loading, :empty, :error])
+  attr(:layout, :atom, default: :panel, values: [:panel, :compact])
+  attr(:title, :string, default: nil)
+  attr(:body, :string, default: nil)
+
+  slot(:action, doc: "optional action content below body")
+
+  def state_message(%{layout: :panel} = assigns) do
+    ~H"""
+    <div id={@id}>
+      <.card>
+        <div class="flex items-start gap-4 px-2 py-4">
+          <div class={state_icon_badge_class(@kind)}>
+            <.icon name={state_icon(@kind)} class={state_icon_class(@kind)} />
+          </div>
+          <div class="min-w-0 flex-1">
+            <p :if={@title} class={["text-sm font-medium", state_title_class(@kind)]}>
+              {@title}
+            </p>
+            <p :if={@body} class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              {@body}
+            </p>
+            <div :if={@action != []} class="mt-2">
+              {render_slot(@action)}
+            </div>
+          </div>
+        </div>
+      </.card>
+    </div>
+    """
+  end
+
+  def state_message(%{layout: :compact} = assigns) do
+    ~H"""
+    <div id={@id} class={["mx-auto max-w-sm rounded-lg border p-3", state_compact_class(@kind)]}>
+      <div class="flex items-start gap-2.5">
+        <.icon name={state_icon(@kind)} class={state_icon_class(@kind)} />
+        <div class="min-w-0 flex-1">
+          <p :if={@title} class={["text-sm", state_title_class(@kind)]}>
+            {@title}
+          </p>
+          <p :if={@body} class={["text-xs", if(@title, do: "mt-0.5 text-slate-500 dark:text-slate-400", else: state_title_class(@kind))]}>
+            {@body}
+          </p>
+          <div :if={@action != []} class="mt-1.5 text-xs">
+            {render_slot(@action)}
+          </div>
+        </div>
+      </div>
+    </div>
+    """
+  end
+
+  defp state_icon(:loading), do: "hero-arrow-path"
+  defp state_icon(:empty), do: "hero-inbox"
+  defp state_icon(:error), do: "hero-exclamation-triangle"
+
+  defp state_icon_class(:loading), do: "h-5 w-5 animate-spin"
+  defp state_icon_class(_kind), do: "h-5 w-5"
+
+  defp state_icon_badge_class(:loading),
+    do:
+      "flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-sky-50 text-sky-600 dark:bg-sky-900/30 dark:text-sky-400"
+
+  defp state_icon_badge_class(:empty),
+    do:
+      "flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-400 dark:bg-slate-800 dark:text-slate-500"
+
+  defp state_icon_badge_class(:error),
+    do:
+      "flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-50 text-red-600 dark:bg-red-900/30 dark:text-red-400"
+
+  defp state_compact_class(:loading),
+    do: "border-sky-200 bg-sky-50/50 dark:border-sky-800 dark:bg-sky-900/20"
+
+  defp state_compact_class(:empty),
+    do: "border-slate-200 bg-slate-50/50 dark:border-slate-700 dark:bg-slate-800/30"
+
+  defp state_compact_class(:error),
+    do: "border-red-200 bg-red-50/50 dark:border-red-800 dark:bg-red-900/20"
+
+  defp state_title_class(:loading), do: "text-sky-700 dark:text-sky-300"
+  defp state_title_class(:empty), do: "text-slate-600 dark:text-slate-400"
+  defp state_title_class(:error), do: "text-red-700 dark:text-red-300"
 
   # ===========================================================================
   # Button

@@ -155,17 +155,20 @@ defmodule OrchardConsole.OverviewLive do
             </span>
           </div>
 
-          <p :if={@runtime.message} class="mb-3 text-sm text-amber-700 dark:text-amber-300">
-            {@runtime.message}
-          </p>
-
-          <.table id="overview-runtime-models" rows={@runtime.loaded_models}>
-            <:col :let={m} label="Model" mono>{m.model_id}</:col>
-            <:col :let={m} label="Version" mono>{m.version}</:col>
-            <:empty>
-              {runtime_empty_text(@runtime.status)}
-            </:empty>
-          </.table>
+          <%= cond do %>
+            <% @runtime.status == :loading -> %>
+              <.state_message id="overview-runtime-loading" kind={:loading} layout={:compact} title="Loading runtime snapshot." />
+            <% @runtime.status == :ok -> %>
+              <.table id="overview-runtime-models" rows={@runtime.loaded_models}>
+                <:col :let={m} label="Model" mono>{m.model_id}</:col>
+                <:col :let={m} label="Version" mono>{m.version}</:col>
+                <:empty>
+                  <.state_message id="overview-runtime-empty" kind={:empty} layout={:compact} title="No loaded models." />
+                </:empty>
+              </.table>
+            <% true -> %>
+              <.state_message id="overview-runtime-unavailable" kind={:error} layout={:compact} title="Runtime unavailable." body={@runtime.message} />
+          <% end %>
         </.card>
 
         <%!-- Model Catalog --%>
@@ -173,16 +176,19 @@ defmodule OrchardConsole.OverviewLive do
           <:title>Model Catalog</:title>
           <:subtitle>Catalog totals by lifecycle state.</:subtitle>
 
-          <p :if={@model_catalog.message} class="mb-3 text-sm text-amber-700 dark:text-amber-300">
-            {@model_catalog.message}
-          </p>
-
-          <.table :if={@model_catalog.status == :ok} id="overview-model-counts" rows={@model_catalog.rows}>
-            <:col :let={row} label="State" mono>{row.state}</:col>
-            <:col :let={row} label="Count" mono class="text-right" header_class="text-right">
-              {row.count}
-            </:col>
-          </.table>
+          <%= cond do %>
+            <% @model_catalog.status == :loading -> %>
+              <.state_message id="overview-model-catalog-loading" kind={:loading} layout={:compact} title="Loading model catalog." />
+            <% @model_catalog.status == :ok -> %>
+              <.table id="overview-model-counts" rows={@model_catalog.rows}>
+                <:col :let={row} label="State" mono>{row.state}</:col>
+                <:col :let={row} label="Count" mono class="text-right" header_class="text-right">
+                  {row.count}
+                </:col>
+              </.table>
+            <% true -> %>
+              <.state_message id="overview-model-catalog-error" kind={:error} layout={:compact} title={@model_catalog.message || "Model catalog data unavailable."} />
+          <% end %>
         </.card>
 
         <%!-- Request Counts --%>
@@ -190,21 +196,23 @@ defmodule OrchardConsole.OverviewLive do
           <:title>Request Counts</:title>
           <:subtitle>Durable request rows by lifecycle state.</:subtitle>
 
-          <div :if={@request_summary.status == :ok} class="mb-4 flex flex-wrap items-center gap-3">
-            <.badge tone={:info}>{@request_summary.active} active</.badge>
-            <.badge tone={:neutral}>{@request_summary.terminal} terminal</.badge>
-          </div>
-
-          <p :if={@request_summary.message} class="mb-3 text-sm text-amber-700 dark:text-amber-300">
-            {@request_summary.message}
-          </p>
-
-          <.table :if={@request_summary.status == :ok} id="overview-request-counts" rows={@request_summary.rows}>
-            <:col :let={row} label="State" mono>{row.state}</:col>
-            <:col :let={row} label="Count" mono class="text-right" header_class="text-right">
-              {row.count}
-            </:col>
-          </.table>
+          <%= cond do %>
+            <% @request_summary.status == :loading -> %>
+              <.state_message id="overview-request-summary-loading" kind={:loading} layout={:compact} title="Loading request summary." />
+            <% @request_summary.status == :ok -> %>
+              <div class="mb-4 flex flex-wrap items-center gap-3">
+                <.badge tone={:info}>{@request_summary.active} active</.badge>
+                <.badge tone={:neutral}>{@request_summary.terminal} terminal</.badge>
+              </div>
+              <.table id="overview-request-counts" rows={@request_summary.rows}>
+                <:col :let={row} label="State" mono>{row.state}</:col>
+                <:col :let={row} label="Count" mono class="text-right" header_class="text-right">
+                  {row.count}
+                </:col>
+              </.table>
+            <% true -> %>
+              <.state_message id="overview-request-summary-error" kind={:error} layout={:compact} title={@request_summary.message || "Request summary unavailable."} />
+          <% end %>
         </.card>
       </div>
     </div>
@@ -420,10 +428,6 @@ defmodule OrchardConsole.OverviewLive do
 
   defp runtime_loaded_count(%{status: :ok, loaded_models: models}), do: length(models)
   defp runtime_loaded_count(_), do: nil
-
-  defp runtime_empty_text(:ok), do: "No loaded models."
-  defp runtime_empty_text(:loading), do: "Loading runtime snapshot."
-  defp runtime_empty_text(_), do: "Runtime unavailable."
 
   # ===========================================================================
   # Hero helpers

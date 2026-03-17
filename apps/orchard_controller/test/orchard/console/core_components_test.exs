@@ -64,7 +64,7 @@ defmodule OrchardConsole.CoreComponentsTest do
 
     test "renders all registered icons without error" do
       for name <-
-            ~w(hero-squares-2x2 hero-command-line hero-cube-transparent hero-document-text hero-chevron-double-left hero-bars-3) do
+            ~w(hero-squares-2x2 hero-command-line hero-cube-transparent hero-document-text hero-chevron-double-left hero-bars-3 hero-arrow-left hero-arrow-path hero-inbox hero-exclamation-triangle) do
         assigns = %{name: name}
         html = render_heex(~H|<.icon name={@name} />|)
         assert html =~ "<svg", "icon #{name} should render an SVG"
@@ -334,6 +334,90 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "group"
       assert html =~ "hover:bg-slate-50"
       refute html =~ "bg-green"
+    end
+  end
+
+  # ===========================================================================
+  # State Message
+  # ===========================================================================
+
+  describe "state_message/1" do
+    test "renders panel layout with card structure" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.state_message id="test-panel" kind={:loading} layout={:panel} title="Loading…" body="Please wait.">
+          <:action>Retry</:action>
+        </.state_message>
+        """)
+
+      assert html =~ ~s(id="test-panel")
+      assert html =~ "Loading…"
+      assert html =~ "Please wait."
+      assert html =~ "Retry"
+    end
+
+    test "renders compact layout with bordered box" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.state_message id="test-compact" kind={:empty} layout={:compact} title="No items." />
+        """)
+
+      assert html =~ ~s(id="test-compact")
+      assert html =~ "No items."
+      assert html =~ "mx-auto"
+      assert html =~ "rounded-lg"
+    end
+
+    test "loading kind renders spinner icon" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.state_message id="spin" kind={:loading} layout={:panel} title="Loading" />
+        """)
+
+      assert html =~ "animate-spin"
+      assert html =~ "bg-sky-50"
+    end
+
+    test "error kind renders red tones" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.state_message id="err" kind={:error} layout={:compact} title="Failed" />
+        """)
+
+      assert html =~ "border-red-200"
+      assert html =~ "text-red-700"
+    end
+
+    test "empty kind renders neutral tones" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.state_message id="mt" kind={:empty} layout={:compact} title="Nothing here" />
+        """)
+
+      assert html =~ "border-slate-200"
+      assert html =~ "text-slate-600"
+    end
+
+    test "body-only compact renders body with title class when no title" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.state_message id="body-only" kind={:empty} layout={:compact} body="Some descriptive text." />
+        """)
+
+      assert html =~ "Some descriptive text."
+      assert html =~ "text-slate-600"
     end
   end
 

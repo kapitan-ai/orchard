@@ -39,27 +39,25 @@ defmodule OrchardConsole.ModelsLive do
   @impl true
   def render(%{models_status: :loading} = assigns) do
     ~H"""
-    <div id="models-loading-card">
-      <.card>
-        <:title>Model Catalog</:title>
-        <p class="text-sm text-slate-500 dark:text-slate-400">
-          Loading model catalog\u2026
-        </p>
-      </.card>
-    </div>
+    <.state_message
+      id="models-loading-card"
+      kind={:loading}
+      layout={:panel}
+      title="Model Catalog"
+      body="Loading model catalog…"
+    />
     """
   end
 
   def render(%{models_status: :error} = assigns) do
     ~H"""
-    <div id="models-error-card">
-      <.card>
-        <:title>Models unavailable</:title>
-        <p class="text-sm text-slate-500 dark:text-slate-400">
-          {@load_error}
-        </p>
-      </.card>
-    </div>
+    <.state_message
+      id="models-error-card"
+      kind={:error}
+      layout={:panel}
+      title="Models unavailable"
+      body={@load_error}
+    />
     """
   end
 
@@ -122,10 +120,11 @@ defmodule OrchardConsole.ModelsLive do
           </:action>
 
           <:empty>
-            <span>No models imported yet.</span>
-            <span class="block mt-1 text-xs">
-              Use <code class="font-mono bg-slate-100 dark:bg-slate-700 px-1 py-0.5 rounded">orchardctl models import &lt;bundle-path&gt;</code> to add your first model bundle.
-            </span>
+            <.state_message id="models-empty-state" kind={:empty} layout={:compact} title="No models imported yet.">
+              <:action>
+                Use <code class="font-mono bg-slate-100 dark:bg-slate-700 px-1 py-0.5 rounded">orchardctl models import &lt;bundle-path&gt;</code> to add your first model bundle.
+              </:action>
+            </.state_message>
           </:empty>
         </.table>
       </.card>

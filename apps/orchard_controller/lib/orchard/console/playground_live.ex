@@ -29,6 +29,7 @@ defmodule OrchardConsole.PlaygroundLive do
   defp assign_defaults(socket) do
     assign(socket,
       models: [],
+      models_status: :idle,
       models_error: nil,
       form: to_form(%{"model" => "", "system" => "", "prompt" => ""}, as: :playground),
       form_errors: %{},
@@ -50,7 +51,11 @@ defmodule OrchardConsole.PlaygroundLive do
   defp load_models(socket) do
     case playground_impl().list_models() do
       {:ok, []} ->
-        assign(socket, models: [], models_error: "No active models available.")
+        assign(socket,
+          models: [],
+          models_status: :empty,
+          models_error: "No active models available."
+        )
 
       {:ok, models} ->
         options = Enum.map(models, &model_option/1)
@@ -58,18 +63,23 @@ defmodule OrchardConsole.PlaygroundLive do
         form_data = current_form_data(socket) |> Map.put("model", first)
 
         socket
-        |> assign(models: options, models_error: nil)
+        |> assign(models: options, models_status: :ok, models_error: nil)
         |> assign(form: to_form(form_data, as: :playground))
 
       {:error, error} ->
         assign(socket,
           models: [],
+          models_status: :error,
           models_error: error.message || "Active model list unavailable."
         )
     end
   rescue
     _ ->
-      assign(socket, models: [], models_error: "Active model list unavailable.")
+      assign(socket,
+        models: [],
+        models_status: :error,
+        models_error: "Active model list unavailable."
+      )
   end
 
   defp model_option(%{model_id: model_id, version: version}) do
@@ -526,13 +536,21 @@ defmodule OrchardConsole.PlaygroundLive do
           </:actions>
 
           <div class="space-y-4">
-            <div :if={@models_error} id="playground-models-error" class="rounded-md bg-amber-50 p-3 text-sm text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-              {@models_error}
-            </div>
+            <.state_message
+              :if={@models_status in [:empty, :error]}
+              id="playground-models-error"
+              kind={if @models_status == :empty, do: :empty, else: :error}
+              layout={:compact}
+              title={@models_error}
+            />
 
-            <div :if={@run_error} id="playground-error" class="rounded-md bg-red-50 p-3 text-sm text-red-700 dark:bg-red-900/30 dark:text-red-300">
-              {@run_error.message}
-            </div>
+            <.state_message
+              :if={@run_error}
+              id="playground-error"
+              kind={:error}
+              layout={:compact}
+              title={@run_error.message}
+            />
 
             <.simple_form
               id="playground-form"
@@ -597,9 +615,13 @@ defmodule OrchardConsole.PlaygroundLive do
             class="playground-transcript-scroll space-y-4 min-h-[200px]"
             aria-live="polite"
           >
-            <p :if={@transcript == []} class="text-sm text-slate-400 dark:text-slate-500 italic">
-              Send a prompt to start a conversation. Streamed responses appear here in real time.
-            </p>
+            <.state_message
+              :if={@transcript == []}
+              id="playground-transcript-empty"
+              kind={:empty}
+              layout={:compact}
+              body="Send a prompt to start a conversation. Streamed responses appear here in real time."
+            />
 
             <div :for={entry <- @transcript} id={"playground-message-#{entry.id}"} class={[
               "rounded-lg p-3 text-sm",
