@@ -81,7 +81,7 @@ defmodule OrchardConsole.OverviewLive do
 
           <div class="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3 dark:border-slate-700/50">
             <div id="overview-primary-model" class="flex items-center gap-2">
-              <span class="text-xs text-slate-500 dark:text-slate-400">Primary model:</span>
+              <span class="text-xs text-slate-500 dark:text-slate-400">Loaded model:</span>
               <span class="text-sm font-mono text-slate-900 dark:text-slate-100">
                 {primary_loaded_model(@runtime)}
               </span>
@@ -484,6 +484,10 @@ defmodule OrchardConsole.OverviewLive do
        when state in [:idle, :busy],
        do: "Runtime is reachable, but one or more controller readiness checks are failing."
 
+  defp hero_status_copy(_readiness, %{status: :ok, worker_state: state})
+       when state in [:starting, :stopping],
+       do: "Controller readiness checks are failing. Runtime is transitioning."
+
   defp hero_status_copy(_, _),
     do: "System is degraded: controller readiness is failing and the node runtime is unavailable."
 
@@ -506,6 +510,10 @@ defmodule OrchardConsole.OverviewLive do
 
   defp hero_status_copy_class(%{status: :ok}, _),
     do: "text-red-600 dark:text-red-400"
+
+  defp hero_status_copy_class(_, %{status: :ok, worker_state: state})
+       when state in [:starting, :stopping],
+       do: "text-amber-700 dark:text-amber-300"
 
   defp hero_status_copy_class(_, %{status: :ok}),
     do: "text-amber-700 dark:text-amber-300"

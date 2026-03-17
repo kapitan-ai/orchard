@@ -40,6 +40,19 @@ defmodule OrchardConsole.OverviewLiveTest.RuntimeNoModelsStub do
   end
 end
 
+defmodule OrchardConsole.OverviewLiveTest.RuntimeStartingStub do
+  @moduledoc false
+
+  def snapshot do
+    {:ok,
+     %{
+       worker_state: :starting,
+       loaded_models: [%{model_id: "mlx-community/phi-3", version: "main"}],
+       active_request_count: 0
+     }}
+  end
+end
+
 defmodule OrchardConsole.OverviewLiveTest do
   use Orchard.ConnCase, async: false
 
@@ -389,11 +402,13 @@ defmodule OrchardConsole.OverviewLiveTest do
   # ===========================================================================
 
   describe "hero primary model" do
-    test "shows loaded model ID and version from runtime", %{conn: conn} do
+    test "shows loaded model ID and version with correct label", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
       field = view |> element("#overview-primary-model") |> render()
 
       assert field =~ "mlx-community/phi-3@main"
+      assert field =~ "Loaded model:"
+      refute field =~ "Primary model:"
     end
 
     test "shows fallback when no models loaded", %{conn: conn} do
@@ -450,6 +465,22 @@ defmodule OrchardConsole.OverviewLiveTest do
       {:ok, view2, _html} = live(conn, "/console")
       copy2 = view2 |> element("#overview-hero-status-copy") |> render()
       assert copy2 =~ "text-red-600"
+    end
+
+    test "shows transitional copy when readiness degraded and runtime is starting", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeStartingStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+      copy = view |> element("#overview-hero-status-copy") |> render()
+
+      assert copy =~ "readiness checks are failing"
+      assert copy =~ "Runtime is transitioning"
+      # Must NOT fall through to unavailable/degraded
+      refute copy =~ "runtime is unavailable"
+      refute copy =~ "System is degraded"
+      # Amber warning, not red
+      assert copy =~ "text-amber-700"
+      refute copy =~ "text-red-600"
     end
   end
 
