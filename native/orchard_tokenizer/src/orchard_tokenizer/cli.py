@@ -129,7 +129,11 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
 
     messages = normalize_messages(request)
     prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
-    rendered_prompt = render_prompt(messages, prompt_lines, chat_template_path)
+    # Derive tokenizer_config.json path from the tokenizer directory
+    tokenizer_config_path = tokenizer_path.parent / "tokenizer_config.json"
+    rendered_prompt = render_prompt(
+        messages, prompt_lines, chat_template_path, tokenizer_config_path
+    )
     input_token_count = count_tokens(rendered_prompt, tokenizer_kind, tokenizer_path)
 
     return {
@@ -234,7 +238,10 @@ def normalize_content(content: Any, item_index: int) -> str:
 
 
 def render_prompt(
-    messages: list[dict[str, str]], prompt_lines: list[str], chat_template_path: Path
+    messages: list[dict[str, str]],
+    prompt_lines: list[str],
+    chat_template_path: Path,
+    tokenizer_config_path: Path | None = None,
 ) -> str:
     if not chat_template_path.is_file():
         raise TokenizerCliError(
@@ -256,9 +263,31 @@ def render_prompt(
         autoescape=False, lstrip_blocks=True, trim_blocks=True, undefined=StrictUndefined
     )
 
+    # Extract special tokens from tokenizer_config.json for Jinja context
+    special_tokens: dict[str, str] = {}
+    if tokenizer_config_path is not None and tokenizer_config_path.is_file():
+        try:
+            import json
+
+            tc = json.loads(tokenizer_config_path.read_text(encoding="utf-8"))
+            for key in ("bos_token", "eos_token", "pad_token", "unk_token"):
+                val = tc.get(key)
+                if isinstance(val, str):
+                    special_tokens[key] = val
+                elif isinstance(val, dict):
+                    # HF format: {"content": "<|begin_of_text|>", ...}
+                    special_tokens[key] = val.get("content", "")
+        except Exception:
+            pass  # best-effort; template may still work without them
+
     try:
         template = environment.from_string(template_text)
-        return template.render(messages=messages, prompt_lines=prompt_lines)
+        return template.render(
+            messages=messages,
+            prompt_lines=prompt_lines,
+            add_generation_prompt=True,
+            **special_tokens,
+        )
     except TemplateError as exc:
         raise TokenizerCliError(
             "missing_assets",

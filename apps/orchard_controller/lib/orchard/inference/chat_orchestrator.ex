@@ -364,7 +364,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
 
   defp build_generation_params(sampling) do
     %GenerationParams{
-      max_output_tokens: sampling.max_output_tokens || 0,
+      max_output_tokens: sampling.max_output_tokens || 4096,
       temperature: sampling.temperature,
       top_p: sampling.top_p,
       stop_sequences: sampling.stop
