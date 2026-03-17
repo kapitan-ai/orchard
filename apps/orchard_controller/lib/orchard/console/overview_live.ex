@@ -75,6 +75,35 @@ defmodule OrchardConsole.OverviewLive do
             <.metric_tile label="Total requests" value={format_count(@request_summary.total)} />
           </div>
 
+          <p id="overview-hero-status-copy" class={["text-sm", hero_status_copy_class(@readiness, @runtime)]}>
+            {hero_status_copy(@readiness, @runtime)}
+          </p>
+
+          <div class="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3 dark:border-slate-700/50">
+            <div id="overview-primary-model" class="flex items-center gap-2">
+              <span class="text-xs text-slate-500 dark:text-slate-400">Primary model:</span>
+              <span class="text-sm font-mono text-slate-900 dark:text-slate-100">
+                {primary_loaded_model(@runtime)}
+              </span>
+            </div>
+            <div class="ml-auto flex items-center gap-2">
+              <.link
+                id="overview-open-playground"
+                navigate={~p"/console/playground"}
+                class="inline-flex items-center gap-1 rounded-md bg-gold/10 px-3 py-1.5 text-xs font-medium text-gold-700 ring-1 ring-gold/30 hover:bg-gold/20 dark:text-gold-300 dark:ring-gold/40 dark:hover:bg-gold/30"
+              >
+                Open Playground
+              </.link>
+              <.link
+                id="overview-open-models"
+                navigate={~p"/console/models"}
+                class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                Open Models
+              </.link>
+            </div>
+          </div>
+
           <div id="overview-freshness" class="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
             <span class="font-mono">
               {freshness_text(@last_updated_at)}
@@ -395,6 +424,90 @@ defmodule OrchardConsole.OverviewLive do
   defp runtime_empty_text(:ok), do: "No loaded models."
   defp runtime_empty_text(:loading), do: "Loading runtime snapshot."
   defp runtime_empty_text(_), do: "Runtime unavailable."
+
+  # ===========================================================================
+  # Hero helpers
+  # ===========================================================================
+
+  defp primary_loaded_model(%{status: :ok, loaded_models: [first | _]}),
+    do: format_loaded_model(first)
+
+  defp primary_loaded_model(%{status: :ok, loaded_models: []}),
+    do: "No model loaded"
+
+  defp primary_loaded_model(_), do: "Runtime unavailable"
+
+  defp format_loaded_model(%{model_id: id, version: vsn})
+       when is_binary(id) and id != "" and is_binary(vsn) and vsn != "",
+       do: "#{id}@#{vsn}"
+
+  defp format_loaded_model(%{model_id: id}) when is_binary(id) and id != "", do: id
+  defp format_loaded_model(%{version: vsn}) when is_binary(vsn) and vsn != "", do: vsn
+  defp format_loaded_model(_), do: "Unknown model"
+
+  # Deterministic status copy derived from combined readiness + runtime state.
+  # Evaluated on every render — not stored in assigns.
+  defp hero_status_copy(%{status: :loading}, _),
+    do: "Connecting to live controller and runtime status."
+
+  defp hero_status_copy(_, %{status: :loading}),
+    do: "Connecting to live controller and runtime status."
+
+  defp hero_status_copy(
+         %{status: :ok},
+         %{status: :ok, worker_state: :idle, loaded_models: [_ | _]}
+       ),
+       do: "System ready. Runtime is idle and a model is loaded for operator testing."
+
+  defp hero_status_copy(
+         %{status: :ok},
+         %{status: :ok, worker_state: :busy, loaded_models: [_ | _]}
+       ),
+       do: "System ready. Runtime is serving active requests."
+
+  defp hero_status_copy(%{status: :ok}, %{status: :ok, loaded_models: []}),
+    do: "System ready, but no model is currently loaded in the runtime."
+
+  defp hero_status_copy(%{status: :ok}, %{status: :ok, worker_state: state})
+       when state in [:starting, :stopping],
+       do:
+         "Controller checks are passing. Runtime is transitioning and may not accept requests yet."
+
+  defp hero_status_copy(%{status: :ok}, _runtime),
+    do: "Controller checks are passing, but the node runtime is unavailable for inference."
+
+  defp hero_status_copy(_readiness, %{status: :ok, worker_state: state})
+       when state in [:idle, :busy],
+       do: "Runtime is reachable, but one or more controller readiness checks are failing."
+
+  defp hero_status_copy(_, _),
+    do: "System is degraded: controller readiness is failing and the node runtime is unavailable."
+
+  defp hero_status_copy_class(%{status: :ok}, %{
+         status: :ok,
+         worker_state: state,
+         loaded_models: models
+       })
+       when state in [:idle, :busy] and models != [],
+       do: "text-slate-600 dark:text-slate-400"
+
+  defp hero_status_copy_class(%{status: :loading}, _),
+    do: "text-slate-500 dark:text-slate-400"
+
+  defp hero_status_copy_class(_, %{status: :loading}),
+    do: "text-slate-500 dark:text-slate-400"
+
+  defp hero_status_copy_class(%{status: :ok}, %{status: :ok}),
+    do: "text-amber-700 dark:text-amber-300"
+
+  defp hero_status_copy_class(%{status: :ok}, _),
+    do: "text-red-600 dark:text-red-400"
+
+  defp hero_status_copy_class(_, %{status: :ok}),
+    do: "text-amber-700 dark:text-amber-300"
+
+  defp hero_status_copy_class(_, _),
+    do: "text-red-600 dark:text-red-400"
 
   # ===========================================================================
   # Format helpers

@@ -27,6 +27,19 @@ defmodule OrchardConsole.OverviewLiveTest.RuntimeUnavailableStub do
   end
 end
 
+defmodule OrchardConsole.OverviewLiveTest.RuntimeNoModelsStub do
+  @moduledoc false
+
+  def snapshot do
+    {:ok,
+     %{
+       worker_state: :idle,
+       loaded_models: [],
+       active_request_count: 0
+     }}
+  end
+end
+
 defmodule OrchardConsole.OverviewLiveTest do
   use Orchard.ConnCase, async: false
 
@@ -364,6 +377,102 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html_after =~ "Last updated"
       # The count changed from the initial render
       refute html_before == html_after
+    end
+  end
+
+  # ===========================================================================
+  # Hero polish (Task 5)
+  # ===========================================================================
+
+  describe "hero primary model" do
+    test "shows loaded model ID and version from runtime", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+      field = view |> element("#overview-primary-model") |> render()
+
+      assert field =~ "mlx-community/phi-3@main"
+    end
+
+    test "shows fallback when no models loaded", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeNoModelsStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+      field = view |> element("#overview-primary-model") |> render()
+
+      assert field =~ "No model loaded"
+    end
+
+    test "shows unavailable when runtime is down", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeUnavailableStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+      field = view |> element("#overview-primary-model") |> render()
+
+      assert field =~ "Runtime unavailable"
+    end
+  end
+
+  describe "hero status copy" do
+    # NOTE: In test env, readiness.status is :error because public_api_https_enabled
+    # check fails (no HTTPS in test). Hero copy reflects this combined state.
+
+    test "shows readiness-degraded copy when runtime is healthy", %{conn: conn} do
+      # Default RuntimeStub: idle + loaded model, but readiness is degraded in test
+      {:ok, view, _html} = live(conn, "/console")
+      copy = view |> element("#overview-hero-status-copy") |> render()
+
+      assert copy =~ "Runtime is reachable"
+      assert copy =~ "readiness checks are failing"
+    end
+
+    test "shows fully-degraded copy when runtime is unavailable", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeUnavailableStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+      copy = view |> element("#overview-hero-status-copy") |> render()
+
+      assert copy =~ "System is degraded"
+      assert copy =~ "readiness is failing"
+      assert copy =~ "runtime is unavailable"
+    end
+
+    test "applies severity color class based on state", %{conn: conn} do
+      # Readiness degraded + runtime ok → amber warning
+      {:ok, view, _html} = live(conn, "/console")
+      copy = view |> element("#overview-hero-status-copy") |> render()
+      assert copy =~ "text-amber-700"
+
+      # Both degraded → red
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeUnavailableStub)
+      {:ok, view2, _html} = live(conn, "/console")
+      copy2 = view2 |> element("#overview-hero-status-copy") |> render()
+      assert copy2 =~ "text-red-600"
+    end
+  end
+
+  describe "hero CTA links" do
+    test "renders Open Playground link to /console/playground", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+      link = view |> element("#overview-open-playground") |> render()
+
+      assert link =~ "Open Playground"
+      assert link =~ "/console/playground"
+    end
+
+    test "renders Open Models link to /console/models", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+      link = view |> element("#overview-open-models") |> render()
+
+      assert link =~ "Open Models"
+      assert link =~ "/console/models"
+    end
+
+    test "CTA links render even when runtime is unavailable", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeUnavailableStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      assert view |> element("#overview-open-playground") |> render() =~ "Open Playground"
+      assert view |> element("#overview-open-models") |> render() =~ "Open Models"
     end
   end
 
