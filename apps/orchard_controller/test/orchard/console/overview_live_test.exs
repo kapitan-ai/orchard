@@ -89,8 +89,8 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "includes brand bar", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
-      assert html =~ "from-navy"
-      assert html =~ "to-gold"
+      assert html =~ ~s(id="brand-bar")
+      assert html =~ "brand-bar"
     end
 
     test "includes favicon meta", %{conn: conn} do

@@ -47,6 +47,25 @@
 @source "../../lib/orchard/console/**/*.heex";
 
 /* ==========================================================================
+   Brand Bar — decorative 4-color strip at top of viewport
+   Per docs/brand-identity.md: Navy, Forest, Sage, Gold in equal bands.
+   ========================================================================== */
+
+.brand-bar {
+  background: linear-gradient(
+    to right,
+    var(--color-navy) 0%,
+    var(--color-navy) 25%,
+    var(--color-forest) 25%,
+    var(--color-forest) 50%,
+    var(--color-sage) 50%,
+    var(--color-sage) 75%,
+    var(--color-gold) 75%,
+    var(--color-gold) 100%
+  );
+}
+
+/* ==========================================================================
    Console Shell — sidebar transitions
    ========================================================================== */
 

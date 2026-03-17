@@ -535,8 +535,8 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
-      assert html =~ "from-navy"
-      assert html =~ "to-gold"
+      assert html =~ ~s(id="brand-bar")
+      assert html =~ "brand-bar"
       assert html =~ "console-sidebar"
     end
   end
