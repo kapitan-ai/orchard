@@ -39,7 +39,6 @@ config :orchard_controller, Orchard.API.Endpoint,
   code_reloader: true,
   debug_errors: true,
   secret_key_base: String.duplicate("dev-secret-", 8),
-  server: false,
   watchers: [
     esbuild: {Esbuild, :install_and_run, [:orchard, ~w(--sourcemap=inline --watch)]},
     tailwind: {Tailwind, :install_and_run, [:orchard, ~w(--watch)]}
