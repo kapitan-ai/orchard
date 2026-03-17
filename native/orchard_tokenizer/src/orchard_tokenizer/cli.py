@@ -9,10 +9,20 @@ from pathlib import Path
 from typing import Any, Final
 
 import sentencepiece as sentencepiece
-from jinja2 import Environment, TemplateError, Undefined
+from jinja2 import Environment, TemplateError, Undefined, meta as jinja_meta
 from tokenizers import Tokenizer
 
 from orchard_tokenizer import __version__
+
+# Prompt-shaping tokens that must be resolved when referenced by a template.
+# If a template uses {{ bos_token }} or {{ eos_token }}, the value MUST come
+# from tokenizer_config.json; silent empty-string fallback corrupts the prompt.
+_REQUIRED_SPECIAL_TOKENS: Final[frozenset[str]] = frozenset({"bos_token", "eos_token"})
+
+# All special-token keys we attempt to extract from tokenizer_config.json.
+_EXTRACTABLE_SPECIAL_TOKENS: Final[frozenset[str]] = frozenset({
+    "bos_token", "eos_token", "pad_token", "unk_token",
+})
 
 CONTRACT_VERSION: Final[int] = 1
 HF_TOKENIZER_KINDS: Final[set[str]] = {"huggingface_tokenizer_json", "tokenizer_json"}
@@ -263,22 +273,18 @@ def render_prompt(
         autoescape=False, lstrip_blocks=True, trim_blocks=True, undefined=Undefined
     )
 
-    # Extract special tokens from tokenizer_config.json for Jinja context
-    special_tokens: dict[str, str] = {}
-    if tokenizer_config_path is not None and tokenizer_config_path.is_file():
-        try:
-            import json
+    # Discover which variables the template references via AST introspection.
+    referenced_vars = _discover_template_variables(template_text, environment)
 
-            tc = json.loads(tokenizer_config_path.read_text(encoding="utf-8"))
-            for key in ("bos_token", "eos_token", "pad_token", "unk_token"):
-                val = tc.get(key)
-                if isinstance(val, str):
-                    special_tokens[key] = val
-                elif isinstance(val, dict):
-                    # HF format: {"content": "<|begin_of_text|>", ...}
-                    special_tokens[key] = val.get("content", "")
-        except Exception:
-            pass  # best-effort; template may still work without them
+    # Determine which prompt-shaping tokens this template requires.
+    required_tokens = referenced_vars & _REQUIRED_SPECIAL_TOKENS
+
+    # Load special tokens — strict when required tokens are referenced,
+    # best-effort otherwise.
+    special_tokens = _load_special_tokens(tokenizer_config_path, required=required_tokens)
+
+    # Fail deterministically if any required prompt-shaping token is unresolved.
+    _ensure_required_tokens(required_tokens, special_tokens)
 
     try:
         template = environment.from_string(template_text)
@@ -294,6 +300,75 @@ def render_prompt(
             f"chat template asset is invalid: {exc}",
             3,
         ) from exc
+
+
+def _discover_template_variables(template_text: str, environment: Environment) -> set[str]:
+    """Return undeclared variable names referenced by a Jinja template."""
+    try:
+        ast = environment.parse(template_text)
+        return jinja_meta.find_undeclared_variables(ast)
+    except TemplateError:
+        # Let the main render call produce the user-facing error.
+        return set()
+
+
+def _load_special_tokens(
+    tokenizer_config_path: Path | None,
+    *,
+    required: frozenset[str],
+) -> dict[str, str]:
+    """Extract special-token values from tokenizer_config.json.
+
+    When *required* is non-empty AND the config file is missing/unreadable,
+    raises a deterministic ``TokenizerCliError``.  When *required* is empty,
+    failures are silently tolerated (best-effort extraction).
+    """
+    if tokenizer_config_path is None or not tokenizer_config_path.is_file():
+        if required:
+            raise TokenizerCliError(
+                "missing_assets",
+                f"chat template requires special tokens {sorted(required)} "
+                f"but tokenizer_config.json is missing at {tokenizer_config_path}",
+                3,
+            )
+        return {}
+
+    try:
+        tc = json.loads(tokenizer_config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        if required:
+            raise TokenizerCliError(
+                "missing_assets",
+                f"chat template requires special tokens {sorted(required)} "
+                f"but tokenizer_config.json could not be read: {exc}",
+                3,
+            ) from exc
+        return {}
+
+    tokens: dict[str, str] = {}
+    for key in _EXTRACTABLE_SPECIAL_TOKENS:
+        val = tc.get(key)
+        if isinstance(val, str) and val:
+            tokens[key] = val
+        elif isinstance(val, dict):
+            content = val.get("content", "")
+            if isinstance(content, str) and content:
+                tokens[key] = content
+    return tokens
+
+
+def _ensure_required_tokens(
+    required: frozenset[str],
+    resolved: dict[str, str],
+) -> None:
+    """Raise if any required prompt-shaping token is unresolved."""
+    missing = sorted(required - resolved.keys())
+    if missing:
+        raise TokenizerCliError(
+            "missing_assets",
+            f"chat template requires unresolved special tokens: {', '.join(missing)}",
+            3,
+        )
 
 
 def count_tokens(rendered_prompt: str, tokenizer_kind: str, tokenizer_path: Path) -> int:

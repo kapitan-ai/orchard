@@ -165,3 +165,119 @@ def tokenization_payload(
             ]
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Special-token extraction & undefined-variable hardening (P1-2 / P2-3)
+# ---------------------------------------------------------------------------
+
+
+def _make_bundle(
+    tmp_path: Path,
+    *,
+    template: str,
+    tokenizer_config: dict[str, Any] | None = None,
+) -> dict[str, Path]:
+    """Create a minimal test bundle with optional tokenizer_config.json."""
+    # Reuse the shared HF tokenizer fixture for token counting.
+    tok_src = fixture_root() / "tokenizer.json"
+    tok_dst = tmp_path / "tokenizer.json"
+    tok_dst.write_bytes(tok_src.read_bytes())
+
+    tmpl_path = tmp_path / "chat_template.jinja"
+    tmpl_path.write_text(template, encoding="utf-8")
+
+    if tokenizer_config is not None:
+        cfg_path = tmp_path / "tokenizer_config.json"
+        cfg_path.write_text(json.dumps(tokenizer_config), encoding="utf-8")
+
+    return {"tokenizer_path": tok_dst, "chat_template_path": tmpl_path}
+
+
+def test_special_tokens_extracted_from_tokenizer_config(tmp_path: Path, capsys) -> None:
+    """Template referencing bos_token and eos_token renders correctly
+    when tokenizer_config.json provides them (both string and dict forms)."""
+    bundle = _make_bundle(
+        tmp_path,
+        template="{{ bos_token }}{{ messages[0]['content'] }}{{ eos_token }}",
+        tokenizer_config={
+            "bos_token": "<s>",
+            "eos_token": {"content": "</s>"},
+        },
+    )
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=bundle["tokenizer_path"],
+        chat_template_path=bundle["chat_template_path"],
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    assert response["result"]["rendered_prompt"] == "<s>orchard</s>"
+
+
+def test_required_special_tokens_fail_when_config_missing(tmp_path: Path, capsys) -> None:
+    """Template referencing bos_token fails deterministically when
+    tokenizer_config.json is absent."""
+    bundle = _make_bundle(
+        tmp_path,
+        template="{{ bos_token }}hello",
+        tokenizer_config=None,  # no config file
+    )
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=bundle["tokenizer_path"],
+        chat_template_path=bundle["chat_template_path"],
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 3
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "missing_assets"
+    assert "bos_token" in response["error"]["message"]
+
+
+def test_required_special_tokens_fail_when_config_lacks_key(tmp_path: Path, capsys) -> None:
+    """Template referencing eos_token fails when tokenizer_config.json
+    exists but does not contain the required key."""
+    bundle = _make_bundle(
+        tmp_path,
+        template="{{ eos_token }}done",
+        tokenizer_config={"bos_token": "<s>"},  # eos_token missing
+    )
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=bundle["tokenizer_path"],
+        chat_template_path=bundle["chat_template_path"],
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 3
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "missing_assets"
+    assert "eos_token" in response["error"]["message"]
+
+
+def test_optional_undefined_variables_tolerated(tmp_path: Path, capsys) -> None:
+    """Templates referencing optional vars like 'tools' succeed without error
+    even when those variables are not supplied."""
+    bundle = _make_bundle(
+        tmp_path,
+        template=(
+            "{%- if tools %}TOOLS{% endif %}"
+            "{{ messages[0]['content'] }}"
+        ),
+        tokenizer_config=None,  # no config needed; no required tokens referenced
+    )
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=bundle["tokenizer_path"],
+        chat_template_path=bundle["chat_template_path"],
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    assert "TOOLS" not in response["result"]["rendered_prompt"]
+    assert "orchard" in response["result"]["rendered_prompt"]
