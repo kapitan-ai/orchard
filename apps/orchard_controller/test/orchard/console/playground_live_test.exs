@@ -290,9 +290,14 @@ defmodule OrchardConsole.PlaygroundLiveTest do
 
       # Complete the run
       send(view.pid, {:playground, ref, :event, InferenceEvent.output_text_delta("done")})
-      completed = InferenceEvent.completed(:finish_reason_stop, %InferenceEvent.Usage{
-        input_tokens: 5, output_tokens: 3, total_tokens: 8
-      })
+
+      completed =
+        InferenceEvent.completed(:finish_reason_stop, %InferenceEvent.Usage{
+          input_tokens: 5,
+          output_tokens: 3,
+          total_tokens: 8
+        })
+
       send(view.pid, {:playground, ref, :event, completed})
       send(view.pid, {:playground, ref, :finished, {:ok, %{events: []}}})
       html = render(view)
@@ -442,6 +447,80 @@ defmodule OrchardConsole.PlaygroundLiveTest do
 
       # Return a dummy task pid — the test will drive messages manually
       {:ok, spawn(fn -> :timer.sleep(:infinity) end)}
+    end
+  end
+
+  # ===========================================================================
+  # Sample prompt chips (Task 7)
+  # ===========================================================================
+
+  describe "sample prompt chips" do
+    test "renders chip row with stable IDs", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+
+      chips = view |> element("#playground-sample-prompts") |> render()
+      assert chips =~ "Sample prompts:"
+      assert chips =~ "playground-sample-prompt-orchard-summary"
+      assert chips =~ "playground-sample-prompt-deployment-brief"
+      assert chips =~ "Orchard summary"
+      assert chips =~ "Deployment brief"
+    end
+
+    test "clicking a chip fills system and prompt fields, preserves model", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+
+      # Select model v2 first
+      view
+      |> form("#playground-form", playground: %{model: "test-model@v2"})
+      |> render_change()
+
+      # Click the deployment brief chip
+      view
+      |> element("#playground-sample-prompt-deployment-brief")
+      |> render_click()
+
+      html = render(view)
+
+      # Sample content is filled
+      assert html =~ "operations analyst"
+      assert html =~ "12-person support team"
+
+      # Model is preserved
+      assert html =~ "test-model@v2"
+
+      # No stream started (no auto-submit)
+      refute_receive {:stub_run_ref, _}, 100
+    end
+
+    test "clicking a chip clears form errors", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+
+      # Submit with blank prompt to trigger error
+      view
+      |> form("#playground-form", playground: %{model: "test-model@v1", prompt: ""})
+      |> render_submit()
+
+      html = render(view)
+      assert html =~ "Please enter a prompt"
+
+      # Click a chip — error should clear
+      view
+      |> element("#playground-sample-prompt-orchard-summary")
+      |> render_click()
+
+      html = render(view)
+      refute html =~ "Please enter a prompt"
+    end
+
+    test "chips are disabled during active run", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+
+      # Start a run
+      _ref = submit_prompt(view)
+
+      # Check chip is disabled
+      chip = view |> element("#playground-sample-prompt-orchard-summary") |> render()
+      assert chip =~ "disabled"
     end
   end
 

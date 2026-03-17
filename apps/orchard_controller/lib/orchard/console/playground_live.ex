@@ -8,6 +8,23 @@ defmodule OrchardConsole.PlaygroundLive do
   alias Orchard.Inference.ChatError
   alias Orchard.InferenceEvent
 
+  @sample_prompts [
+    %{
+      id: "orchard-summary",
+      label: "Orchard summary",
+      system: "You are a concise assistant. Answer in 2 short sentences.",
+      prompt: "What does Orchard do, and why would a support engineer use it?"
+    },
+    %{
+      id: "deployment-brief",
+      label: "Deployment brief",
+      system:
+        "You are an operations analyst. Respond in markdown with exactly three sections: Summary, Risks, Next steps.",
+      prompt:
+        "A 12-person support team wants to deploy a local LLM gateway for internal troubleshooting. Provide a brief covering latency, reliability, and auditability."
+    }
+  ]
+
   # ===========================================================================
   # Mount
   # ===========================================================================
@@ -131,6 +148,29 @@ defmodule OrchardConsole.PlaygroundLive do
         )
 
       {:noreply, socket}
+    end
+  end
+
+  def handle_event("apply_sample_prompt", %{"sample_id" => sample_id}, socket) do
+    if socket.assigns.active_run != nil do
+      {:noreply, socket}
+    else
+      case Enum.find(@sample_prompts, &(&1.id == sample_id)) do
+        nil ->
+          {:noreply, socket}
+
+        sample ->
+          form_data =
+            current_form_data(socket)
+            |> Map.put("system", sample.system)
+            |> Map.put("prompt", sample.prompt)
+
+          {:noreply,
+           assign(socket,
+             form: to_form(form_data, as: :playground),
+             form_errors: %{}
+           )}
+      end
     end
   end
 
@@ -446,6 +486,8 @@ defmodule OrchardConsole.PlaygroundLive do
     }
   end
 
+  defp sample_prompts, do: @sample_prompts
+
   defp playground_impl do
     console_config()[:playground_impl] || OrchardConsole.Playground
   end
@@ -577,6 +619,21 @@ defmodule OrchardConsole.PlaygroundLive do
                 rows={2}
                 disabled={@active_run != nil}
               />
+              <div id="playground-sample-prompts" class="flex flex-wrap items-center gap-2">
+                <span class="text-xs text-slate-500 dark:text-slate-400">Sample prompts:</span>
+                <.button
+                  :for={sample <- sample_prompts()}
+                  id={"playground-sample-prompt-#{sample.id}"}
+                  type="button"
+                  variant={:secondary}
+                  size={:sm}
+                  phx-click="apply_sample_prompt"
+                  phx-value-sample_id={sample.id}
+                  disabled={@active_run != nil}
+                >
+                  {sample.label}
+                </.button>
+              </div>
               <.input
                 id="playground-prompt"
                 field={@form[:prompt]}
