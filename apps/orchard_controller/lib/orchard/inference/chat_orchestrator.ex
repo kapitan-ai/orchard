@@ -36,6 +36,11 @@ defmodule Orchard.Inference.ChatOrchestrator do
   alias Orchard.Scheduler.SingleNode
   alias Orchard.Tokenizer.Client, as: TokenizerClient
 
+  # Default max output tokens when the client omits max_tokens / max_completion_tokens.
+  # Applied at orchestration time for both context-window enforcement and runtime dispatch.
+  # Canonical sampling keeps nil to preserve the distinction between "omitted" and "explicit".
+  @default_max_output_tokens 4096
+
   @type orchestrate_result ::
           {:ok, CanonicalRequest.t(), [InferenceEvent.t()]}
           | {:error, term()}
@@ -208,7 +213,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
   defp uri_to_local_path(path), do: path
 
   defp enforce_context_window(canonical, model) do
-    max_output = canonical.sampling.max_output_tokens || 0
+    max_output = effective_max_output_tokens(canonical.sampling)
     total = canonical.input_token_count + max_output
 
     if total > model.max_context_tokens do
@@ -219,6 +224,13 @@ defmodule Orchard.Inference.ChatOrchestrator do
       :ok
     end
   end
+
+  defp effective_max_output_tokens(%CanonicalRequest.Sampling{max_output_tokens: n})
+       when is_integer(n) and n > 0,
+       do: n
+
+  defp effective_max_output_tokens(%CanonicalRequest.Sampling{}),
+    do: @default_max_output_tokens
 
   defp persist_request(canonical, model) do
     attrs = %{
@@ -364,7 +376,7 @@ defmodule Orchard.Inference.ChatOrchestrator do
 
   defp build_generation_params(sampling) do
     %GenerationParams{
-      max_output_tokens: sampling.max_output_tokens || 4096,
+      max_output_tokens: effective_max_output_tokens(sampling),
       temperature: sampling.temperature,
       top_p: sampling.top_p,
       stop_sequences: sampling.stop

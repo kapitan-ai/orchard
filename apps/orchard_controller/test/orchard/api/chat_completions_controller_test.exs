@@ -192,7 +192,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           resident_memory_bytes: 2048,
           kv_cache_bytes_per_token: 128,
           prefill_workspace_bytes_per_token: 64,
-          max_context_tokens: 4096
+          max_context_tokens: 131_072
         })
 
       conn =
@@ -257,7 +257,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           resident_memory_bytes: 2048,
           kv_cache_bytes_per_token: 128,
           prefill_workspace_bytes_per_token: 64,
-          max_context_tokens: 4096
+          max_context_tokens: 131_072
         })
 
       conn =
@@ -329,7 +329,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           resident_memory_bytes: 2048,
           kv_cache_bytes_per_token: 128,
           prefill_workspace_bytes_per_token: 64,
-          max_context_tokens: 4096
+          max_context_tokens: 131_072
         })
 
       # Remove any cached bundle for this model
@@ -385,7 +385,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
           resident_memory_bytes: 2048,
           kv_cache_bytes_per_token: 128,
           prefill_workspace_bytes_per_token: 64,
-          max_context_tokens: 4096
+          max_context_tokens: 131_072
         })
 
       File.rm_rf(Path.join([Node.models_root(), "fail-stream-model", "v1"]))
