@@ -56,7 +56,7 @@ defmodule OrchardConsole.AuthTest do
       assert conn.status == 401
     end
 
-    test "returns 200 with valid credentials and sets session marker", %{conn: conn} do
+    test "first successful basic auth redirects to strip credentials", %{conn: conn} do
       conn =
         conn
         |> put_req_header(
@@ -65,12 +65,31 @@ defmodule OrchardConsole.AuthTest do
         )
         |> get("/console")
 
-      assert conn.status == 200
-      assert conn.resp_body =~ "Orchard Console"
+      assert conn.status == 302
+      assert redirected_to(conn) == "/console"
       assert get_session(conn, OrchardConsole.Auth.session_marker_key()) == true
     end
 
-    test "allows access with session marker without Authorization header", %{conn: conn} do
+    test "follow-up request after redirect loads console without re-auth", %{conn: conn} do
+      # First request: authenticate and get redirect
+      auth_conn =
+        conn
+        |> put_req_header(
+          "authorization",
+          Plug.BasicAuth.encode_basic_auth("operator", "secret")
+        )
+        |> get("/console")
+
+      assert auth_conn.status == 302
+
+      # Follow-up: recycle conn (carries session cookie), no Authorization header
+      follow_up = auth_conn |> recycle() |> get("/console")
+
+      assert follow_up.status == 200
+      assert follow_up.resp_body =~ "Orchard Console"
+    end
+
+    test "already-authenticated session does not redirect", %{conn: conn} do
       conn =
         conn
         |> Plug.Test.init_test_session(%{
@@ -80,6 +99,19 @@ defmodule OrchardConsole.AuthTest do
 
       assert conn.status == 200
       assert conn.resp_body =~ "Orchard Console"
+    end
+
+    test "redirect preserves query string", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header(
+          "authorization",
+          Plug.BasicAuth.encode_basic_auth("operator", "secret")
+        )
+        |> get("/console/playground?tab=foo&bar=baz")
+
+      assert conn.status == 302
+      assert redirected_to(conn) == "/console/playground?tab=foo&bar=baz"
     end
   end
 
@@ -203,7 +235,7 @@ defmodule OrchardConsole.AuthTest do
       assert conn.status == 401
     end
 
-    test "returns 200 for subpaths with valid basic auth credentials", %{conn: conn} do
+    test "redirects on first auth for /console/playground", %{conn: conn} do
       Application.put_env(:orchard_controller, :console,
         enabled: true,
         auth: :basic,
@@ -219,11 +251,16 @@ defmodule OrchardConsole.AuthTest do
         )
         |> get("/console/playground")
 
-      assert conn.status == 200
-      assert conn.resp_body =~ "Playground"
+      assert conn.status == 302
+      assert redirected_to(conn) == "/console/playground"
+
+      # Follow-up loads the page
+      follow_up = conn |> recycle() |> get("/console/playground")
+      assert follow_up.status == 200
+      assert follow_up.resp_body =~ "Playground"
     end
 
-    test "returns 200 for request detail with valid basic auth credentials", %{conn: conn} do
+    test "redirects on first auth for /console/requests/:id", %{conn: conn} do
       Application.put_env(:orchard_controller, :console,
         enabled: true,
         auth: :basic,
@@ -239,8 +276,13 @@ defmodule OrchardConsole.AuthTest do
         )
         |> get("/console/requests/req_auth_test")
 
-      assert conn.status == 200
-      assert conn.resp_body =~ "req_auth_test"
+      assert conn.status == 302
+      assert redirected_to(conn) == "/console/requests/req_auth_test"
+
+      # Follow-up loads the page
+      follow_up = conn |> recycle() |> get("/console/requests/req_auth_test")
+      assert follow_up.status == 200
+      assert follow_up.resp_body =~ "req_auth_test"
     end
 
     test "returns 404 for /console/models when console is disabled", %{conn: conn} do
@@ -267,7 +309,7 @@ defmodule OrchardConsole.AuthTest do
       assert conn.status == 401
     end
 
-    test "returns 200 for /console/models with valid basic auth credentials", %{conn: conn} do
+    test "redirects on first auth for /console/models", %{conn: conn} do
       Application.put_env(:orchard_controller, :console,
         enabled: true,
         auth: :basic,
@@ -283,8 +325,13 @@ defmodule OrchardConsole.AuthTest do
         )
         |> get("/console/models")
 
-      assert conn.status == 200
-      assert conn.resp_body =~ "Model Catalog"
+      assert conn.status == 302
+      assert redirected_to(conn) == "/console/models"
+
+      # Follow-up loads the page
+      follow_up = conn |> recycle() |> get("/console/models")
+      assert follow_up.status == 200
+      assert follow_up.resp_body =~ "Model Catalog"
     end
   end
 

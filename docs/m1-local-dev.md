@@ -106,7 +106,7 @@ These variables apply to packaged/release controller installs, not source dev:
 |----------|---------|-------------|
 | `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port |
 | `ORCHARD_API_BIND_IP` | `0.0.0.0` | HTTPS bind IP address |
-| `ORCHARD_PUBLIC_HOST` | `localhost` | Public hostname for URL generation |
+| `ORCHARD_PUBLIC_HOST` | `localhost` | Browser-visible hostname or IP. **Required for console access** when not using `localhost`. See [packaging README](../packaging/pkg/README.md#console-troubleshooting). |
 | `ORCHARD_TLS_CERTFILE` | `config/tls/controller.crt` | Server certificate path |
 | `ORCHARD_TLS_KEYFILE` | `config/tls/controller.key` | Server private key path |
 | `ORCHARD_TLS_CACERTFILE` | `config/tls/ca.crt` | CA certificate path |

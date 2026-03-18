@@ -153,7 +153,7 @@ All variables are set via `controller.env` or the process environment:
 |----------|---------|-------------|
 | `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port |
 | `ORCHARD_API_BIND_IP` | `0.0.0.0` | HTTPS bind IP address |
-| `ORCHARD_PUBLIC_HOST` | `localhost` | Public hostname for URL generation |
+| `ORCHARD_PUBLIC_HOST` | `localhost` | **Required for console access.** The hostname or IP that operators use in the browser URL (e.g. Tailscale IP, domain name). Must match the browser origin exactly. |
 | `PORT` | `4000` | HTTP port (only used when TLS is disabled) |
 | `ORCHARD_TLS_CERTFILE` | `config/tls/controller.crt` | Server certificate path |
 | `ORCHARD_TLS_KEYFILE` | `config/tls/controller.key` | Server private key path |
@@ -167,10 +167,20 @@ Falsy values: `0`, `false`, `FALSE`, `no`, `NO`, `off`, `OFF`
 Default TLS file paths are relative to `ORCHARD_SUPPORT_ROOT` (default
 `/Library/Application Support/Orchard`).
 
-> **Note:** `ORCHARD_PUBLIC_HOST` controls the advertised URL hostname.
-> `ORCHARD_API_BIND_IP` controls the network interface the server binds to.
-> `PORT` is only used in disabled (emergency HTTP) mode; it has no effect when
-> TLS is enabled.
+> **⚠️ `ORCHARD_PUBLIC_HOST` is required for console access.** Set it to the
+> exact hostname or IP that operators type in the browser (e.g. `100.86.198.38`
+> for Tailscale, `orchard.local` for mDNS). If left as the default `localhost`
+> and accessed from a different host, the console HTML will load but LiveView
+> will stay disconnected — data shows "Loading" / "Unknown" with no visible
+> error. See [Console troubleshooting](#console-troubleshooting) below.
+>
+> **Variable roles:**
+> - `ORCHARD_PUBLIC_HOST` — the browser-visible hostname (used for URL
+>   generation and LiveView websocket origin checks)
+> - `ORCHARD_API_BIND_IP` — the network interface the server listens on
+>   (default `0.0.0.0` = all interfaces)
+> - `ORCHARD_API_HTTPS_PORT` — the HTTPS port (default `8443`)
+> - `PORT` — HTTP port, only used in emergency TLS-disabled mode
 
 ## CORS Allowlist Configuration
 
@@ -269,6 +279,43 @@ sudo launchctl kickstart -k system/com.orchard.controller
 
 Add `--no-trust` to skip the interactive Keychain trust prompt. LAN clients
 will need the new CA after regeneration.
+
+## Console Troubleshooting
+
+### Console loads but data stays "Loading" / "Unknown"
+
+**Symptom:** The console shell and sidebar render, but all data tiles show
+"Loading", readiness checks show "Unknown", and the connection banner may
+appear: *"Live connection lost — reconnecting. Displayed data may be stale."*
+
+**Cause:** `ORCHARD_PUBLIC_HOST` does not match the hostname/IP in the browser
+URL. Phoenix rejects the LiveView websocket connection because the `Origin`
+header doesn't match the configured public host.
+
+**Diagnosis:** Open the browser console (F12) and run:
+
+```js
+window.liveSocket.isConnected()   // expected: true; if false, origin mismatch
+window.liveSocket.getSocket().connectionState()  // "connecting" = stuck
+```
+
+**Fix:**
+
+1. Set `ORCHARD_PUBLIC_HOST` in `controller.env` to the exact host used in the
+   browser (e.g. `100.86.198.38` for Tailscale, `orchard.local` for mDNS).
+2. Restart the controller: `sudo launchctl kickstart -k system/com.orchard.controller`
+3. If using managed TLS and the hostname changed, regenerate certificates:
+   `orchardctl tls init --force` then restart again.
+
+### Basic Auth credentials persist in browser URL
+
+**Symptom:** After entering Basic Auth credentials, the browser URL shows
+`https://user:pass@host:8443/console`.
+
+**Fix:** The controller now redirects after successful Basic Auth to strip
+credentials from the URL automatically. If you see this on an older version,
+navigate to the clean URL manually after authenticating — the session cookie
+persists.
 
 ## Permission Expectations
 

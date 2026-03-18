@@ -112,8 +112,26 @@ defmodule OrchardConsole.Auth do
     else
       conn = Plug.BasicAuth.basic_auth(conn, username: username, password: password)
 
-      # On successful auth (not halted), write the session marker.
-      if conn.halted, do: conn, else: Plug.Conn.put_session(conn, @session_key, true)
+      if conn.halted do
+        # Invalid/missing credentials — 401 challenge sent by Plug.BasicAuth.
+        conn
+      else
+        # First successful auth — write session marker and redirect to strip
+        # any credentials from the browser URL. Without this, Basic Auth
+        # credentials in the URL (https://user:pass@host/console) leak into
+        # LiveView _track_static params, breaking websocket establishment.
+        conn
+        |> Plug.Conn.put_session(@session_key, true)
+        |> Phoenix.Controller.redirect(to: redirect_target(conn))
+        |> Plug.Conn.halt()
+      end
+    end
+  end
+
+  defp redirect_target(conn) do
+    case conn.query_string do
+      "" -> conn.request_path
+      qs -> conn.request_path <> "?" <> qs
     end
   end
 
