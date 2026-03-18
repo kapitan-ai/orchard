@@ -12,6 +12,19 @@ Milestone 0 packaging placeholder for Orchard enterprise/unattended installs.
   - `orchard-managed-postgres`
 - The PKG is expected to provide these external commands as wrapper scripts under `/Library/Application Support/Orchard/bin/`.
 
+## Prerequisites
+
+The packaged controller requires an **external PostgreSQL** server. Orchard does
+not currently ship a managed Postgres runtime — the `orchard-managed-postgres`
+wrapper is a placeholder that exits with an error.
+
+Before starting the controller for the first time:
+
+1. Ensure PostgreSQL is running and accessible from the host.
+2. Create a database for the controller (e.g. `orchard_controller`).
+3. Create `controller.env` with the required variables (see below).
+4. Run release migrations (see below).
+
 ## Env File Overrides
 
 Wrapper scripts (`bin/orchard-node-agent`, `bin/orchard-controller`) source
@@ -51,6 +64,57 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/node-agent.env'
 
 The `config/` directory is set to mode `0700` by the installer, so only root
 can create or modify files within it.
+
+### Controller env file lifecycle
+
+**Fresh install:** The installer does not create `controller.env`. The operator
+must create it before the controller can start successfully in prod mode:
+
+```bash
+sudo tee '/Library/Application Support/Orchard/config/controller.env' >/dev/null <<'EOF'
+DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/DB_NAME
+SECRET_KEY_BASE=<generate-with-mix-phx-gen-secret>
+EOF
+sudo chown root:wheel '/Library/Application Support/Orchard/config/controller.env'
+sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
+```
+
+Then run migrations:
+
+```bash
+sudo /Library/Application\ Support/Orchard/bin/orchard-controller eval 'Orchard.Release.migrate()'
+```
+
+**Required variables:**
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | Postgres connection URL (required) |
+| `SECRET_KEY_BASE` | Phoenix secret key base (required) |
+
+**Optional variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORCHARD_CONSOLE_ENABLED` | `false` | Enable the operator console UI |
+| `ORCHARD_CONSOLE_USERNAME` | — | Console Basic Auth username (required when console enabled) |
+| `ORCHARD_CONSOLE_PASSWORD` | — | Console Basic Auth password (required when console enabled) |
+| `POOL_SIZE` | `10` | Ecto connection pool size |
+| `ECTO_IPV6` | — | Set to `true` for IPv6 socket options |
+
+See the Controller Transport section below for TLS-related variables.
+
+**Upgrade:** The installer preserves existing `controller.env` files. They are
+not overwritten during package upgrades.
+
+**Troubleshooting:**
+
+| Symptom | Likely cause | Fix |
+|---------|-------------|-----|
+| Controller crash-loops with `DATABASE_URL is missing` | `controller.env` absent or ignored | Create the file with correct ownership/permissions |
+| Readiness reports `postgres_reachable: false` | Wrong DB URL, DB not running, or DB does not exist | Verify with `psql "$DATABASE_URL" -c 'select 1'` |
+| Readiness reports `migrations_current: false` (with DB reachable) | Migrations not run | Run `sudo "/Library/Application Support/Orchard/bin/orchard-controller" eval 'Orchard.Release.migrate()'` |
+| `WARNING: ignoring env file` in controller.log | File not root-owned or has group/world permission bits | `sudo chown root:wheel <file> && sudo chmod 600 <file>` |
 
 ## Controller Transport Behavior
 

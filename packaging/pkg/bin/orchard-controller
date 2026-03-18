@@ -13,6 +13,7 @@ ENV_FILE="$ORCHARD_ROOT/config/controller.env"
 TLS_DIR="$ORCHARD_ROOT/config/tls"
 
 # --- Secure env-file sourcing ---------------------------------------------
+_env_provenance="missing"
 if [ -f "$ENV_FILE" ]; then
     # Validate ownership and permissions before sourcing (MF1 hardening).
     _env_meta=$(stat -f '%u:%Lp' "$ENV_FILE" 2>/dev/null) || _env_meta=""
@@ -20,16 +21,29 @@ if [ -f "$ENV_FILE" ]; then
     _env_mode=${_env_meta#*:}
     if [ -z "$_env_meta" ]; then
         printf 'orchard-controller: WARNING: could not inspect env file %s; skipping overrides\n' "$ENV_FILE" >&2
+        _env_provenance="ignored"
     elif [ "$_env_uid" != "0" ]; then
         printf 'orchard-controller: WARNING: ignoring env file %s (owner uid=%s, expected 0); skipping overrides\n' "$ENV_FILE" "$_env_uid" >&2
+        _env_provenance="ignored"
     elif [ "${_env_mode#?}" != "00" ]; then
         printf 'orchard-controller: WARNING: ignoring env file %s (mode=%s, group/world bits set); skipping overrides\n' "$ENV_FILE" "$_env_mode" >&2
+        _env_provenance="ignored"
     else
         set -a
         . "$ENV_FILE"
         set +a
+        _env_provenance="sourced"
     fi
 fi
+
+case "$_env_provenance" in
+    sourced)
+        printf 'orchard-controller: sourced %s\n' "$ENV_FILE" >&2
+        ;;
+    missing)
+        printf 'orchard-controller: %s missing; proceeding with inherited env only\n' "$ENV_FILE" >&2
+        ;;
+esac
 
 # --- TLS boot gate --------------------------------------------------------
 # Matches config/runtime.exs env_bool semantics exactly.

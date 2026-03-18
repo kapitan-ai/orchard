@@ -47,6 +47,10 @@ defmodule Orchard.API.HealthControllerTest do
 
     assert conn.status == 503
     assert body["status"] == "error"
+    # Causal priority: postgres_reachable fails before public_api_https_enabled
+    assert body["reason"] == "postgres_reachable"
+    assert body["checks"]["postgres_reachable"] == false
+    assert body["checks"]["migrations_current"] == false
     assert body["checks"]["public_api_https_enabled"] == false
   end
 end
