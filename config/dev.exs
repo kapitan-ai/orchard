@@ -23,7 +23,13 @@ config :orchard_controller,
     )
 
 config :orchard_node_agent,
-  runtime: Orchard.Config.M1RuntimeDefaults.node_runtime(dev_root)
+  runtime:
+    Keyword.merge(
+      Orchard.Config.M1RuntimeDefaults.node_runtime(dev_root),
+      worker_executable:
+        System.get_env("ORCHARD_WORKER_EXECUTABLE") ||
+          Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"])
+    )
 
 # Console: enabled with no auth for frictionless local development.
 config :orchard_controller, :console,
