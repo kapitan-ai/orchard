@@ -153,7 +153,7 @@ All variables are set via `controller.env` or the process environment:
 |----------|---------|-------------|
 | `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port |
 | `ORCHARD_API_BIND_IP` | `0.0.0.0` | HTTPS bind IP address |
-| `ORCHARD_PUBLIC_HOST` | `localhost` | **Required for console access.** The hostname or IP that operators use in the browser URL (e.g. Tailscale IP, domain name). Must match the browser origin exactly. |
+| `ORCHARD_PUBLIC_HOST` | `localhost` | Browser-visible hostname or IP. **Required when accessing the console from a non-`localhost` host** (e.g. Tailscale IP, domain name). Must match the browser origin exactly. |
 | `PORT` | `4000` | HTTP port (only used when TLS is disabled) |
 | `ORCHARD_TLS_CERTFILE` | `config/tls/controller.crt` | Server certificate path |
 | `ORCHARD_TLS_KEYFILE` | `config/tls/controller.key` | Server private key path |
@@ -167,12 +167,13 @@ Falsy values: `0`, `false`, `FALSE`, `no`, `NO`, `off`, `OFF`
 Default TLS file paths are relative to `ORCHARD_SUPPORT_ROOT` (default
 `/Library/Application Support/Orchard`).
 
-> **⚠️ `ORCHARD_PUBLIC_HOST` is required for console access.** Set it to the
-> exact hostname or IP that operators type in the browser (e.g. `100.86.198.38`
-> for Tailscale, `orchard.local` for mDNS). If left as the default `localhost`
-> and accessed from a different host, the console HTML will load but LiveView
-> will stay disconnected — data shows "Loading" / "Unknown" with no visible
-> error. See [Console troubleshooting](#console-troubleshooting) below.
+> **⚠️ `ORCHARD_PUBLIC_HOST` must match the browser URL when accessing the
+> console from a non-`localhost` host.** Set it to the exact hostname or IP
+> that operators type in the browser (e.g. `100.86.198.38` for Tailscale,
+> `orchard.local` for mDNS). If left as the default `localhost` and accessed
+> from a different host, the console HTML will load but LiveView will stay
+> disconnected — data shows "Loading" / "Unknown" with no visible error.
+> See [Console troubleshooting](#console-troubleshooting) below.
 >
 > **Variable roles:**
 > - `ORCHARD_PUBLIC_HOST` — the browser-visible hostname (used for URL

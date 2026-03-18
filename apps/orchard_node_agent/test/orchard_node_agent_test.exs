@@ -247,7 +247,7 @@ defmodule OrchardNodeAgentTest do
     assert {:error, {:already_started, ^pid}} = NodeSupervisor.start_link([])
   end
 
-  test "node supervisor boots the model manager, worker supervisor, task supervisor, and gRPC server child" do
+  test "node supervisor boots all required children including gRPC client supervisor" do
     assert is_pid(Process.whereis(NodeSupervisor))
     assert is_pid(Process.whereis(ModelManager))
     assert is_pid(Process.whereis(WorkerSupervisor))
@@ -261,6 +261,11 @@ defmodule OrchardNodeAgentTest do
     assert ModelManager in child_ids
     assert WorkerSupervisor in child_ids
     assert Orchard.Node.ModelLoadTaskSupervisor in child_ids
+
+    # Regression: GRPC.Client.Supervisor must be owned by NodeSupervisor,
+    # not just globally registered (test_helper.exs pre-starts it as a
+    # workaround, which can mask a missing child spec).
+    assert GRPC.Client.Supervisor in child_ids
   end
 
   test "node agent application supervisor is running" do

@@ -94,7 +94,7 @@ documentation on transport modes, TLS management, and CORS configuration.
 | `ORCHARD_NODE_AGENT_LISTEN_PORT` | `50061` | gRPC listen port |
 | `ORCHARD_MODELS_ROOT` | `tmp/dev/models` | Model artifact storage |
 | `ORCHARD_WORKER_SOCKET_DIR` | `tmp/dev/data/worker-sockets` | Worker UDS directory |
-| `ORCHARD_WORKER_EXECUTABLE` | `orchard-worker-mlx` | Worker binary |
+| `ORCHARD_WORKER_EXECUTABLE` | `native/orchard_worker_mlx/bin/orchard-worker-mlx` (repo-root) | Worker binary path. Override via env var; default resolves from repo root in source-dev mode. |
 | `ORCHARD_WORKER_BACKEND` | `mlx` | Inference backend |
 | `ORCHARD_FAKE_RUNTIME` | `false` | Use fake runtime (for testing without GPU) |
 
