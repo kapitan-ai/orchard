@@ -49,7 +49,9 @@ config :orchard_controller, :console,
   enabled: true,
   auth: :none,
   username: nil,
-  password: nil
+  password: nil,
+  model_hub_impl: OrchardConsole.ModelHub,
+  model_hub_client_impl: Orchard.Models.HubClient
 
 config :orchard_controller, Orchard.API.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4002],

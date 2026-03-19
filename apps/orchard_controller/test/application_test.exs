@@ -71,6 +71,8 @@ defmodule OrchardApplicationTest do
     assert console[:auth] == :none
     assert console[:username] == nil
     assert console[:password] == nil
+    assert console[:model_hub_impl] == OrchardConsole.ModelHub
+    assert console[:model_hub_client_impl] == Orchard.Models.HubClient
   end
 
   test "test environment has deterministic hugging face config defaults" do

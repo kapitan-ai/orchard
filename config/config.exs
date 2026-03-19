@@ -21,6 +21,8 @@ config :orchard_controller, :console,
   password: nil,
   runtime_impl: OrchardConsole.Runtime,
   playground_impl: OrchardConsole.Playground,
+  model_hub_impl: OrchardConsole.ModelHub,
+  model_hub_client_impl: Orchard.Models.HubClient,
   refresh_interval_ms: 5_000
 
 config :orchard_controller, Orchard.API.Endpoint,
