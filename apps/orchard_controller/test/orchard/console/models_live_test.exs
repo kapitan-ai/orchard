@@ -58,6 +58,14 @@ defmodule OrchardConsole.ModelsLiveTest do
       assert html =~ "deprecated"
       assert html =~ "retired"
     end
+
+    test "renders Model Hub nav item as enabled while Models stays active", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/models")
+
+      assert has_element?(view, ~s(a[href="/console/model-hub"]))
+      assert has_element?(view, ~s(a[aria-current="page"][href="/console/models"]))
+      refute render(view) =~ "Model Hub \u2014 coming soon"
+    end
   end
 
   describe "summary strip" do

@@ -333,6 +333,55 @@ defmodule OrchardConsole.AuthTest do
       assert follow_up.status == 200
       assert follow_up.resp_body =~ "Model Catalog"
     end
+
+    test "returns 404 for /console/model-hub when console is disabled", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: false,
+        auth: :none,
+        username: nil,
+        password: nil
+      )
+
+      conn = get(conn, "/console/model-hub")
+      assert conn.status == 404
+    end
+
+    test "returns 401 for /console/model-hub in basic auth without credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn = get(conn, "/console/model-hub")
+      assert conn.status == 401
+    end
+
+    test "redirects on first auth for /console/model-hub", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn =
+        conn
+        |> put_req_header(
+          "authorization",
+          Plug.BasicAuth.encode_basic_auth("operator", "secret")
+        )
+        |> get("/console/model-hub")
+
+      assert conn.status == 302
+      assert redirected_to(conn) == "/console/model-hub"
+
+      # Follow-up loads the page
+      follow_up = conn |> recycle() |> get("/console/model-hub")
+      assert follow_up.status == 200
+      assert follow_up.resp_body =~ "Model Hub"
+    end
   end
 
   describe "non-console paths" do
