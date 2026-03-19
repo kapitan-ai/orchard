@@ -12,6 +12,18 @@ defmodule Orchard.Config.M1RuntimeDefaults do
   @default_worker_load_timeout_ms 120_000
   @default_worker_shutdown_timeout_ms 1_000
 
+  def hf do
+    [
+      base_url: "https://huggingface.co",
+      api_base_url: "https://huggingface.co/api",
+      token: nil,
+      retry_attempts: 3,
+      connect_timeout_ms: 10_000,
+      receive_timeout_ms: 30_000,
+      req_options: []
+    ]
+  end
+
   def controller_inference(root) do
     [
       tokenizer_mode: :port,
@@ -36,15 +48,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       worker_log_dir: Path.join([root, "logs", "workers"]),
       max_loaded_models: 0,
       fake_runtime?: false,
-      hf: [
-        base_url: "https://huggingface.co",
-        api_base_url: "https://huggingface.co/api",
-        token: nil,
-        retry_attempts: 3,
-        connect_timeout_ms: 10_000,
-        receive_timeout_ms: 30_000,
-        req_options: []
-      ],
+      hf: hf(),
       s3: [
         endpoint: nil,
         region: "us-east-1",

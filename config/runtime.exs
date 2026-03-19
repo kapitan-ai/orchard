@@ -41,6 +41,14 @@ env_csv = fn env_name, default ->
   end
 end
 
+env_optional_string = fn env_name ->
+  case System.get_env(env_name) do
+    nil -> nil
+    "" -> nil
+    value -> value
+  end
+end
+
 env_ip = fn env_name, default_string ->
   ip_string = System.get_env(env_name) || default_string
 
@@ -238,6 +246,18 @@ default_controller_inference = fn root ->
   ]
 end
 
+default_hf_config = fn ->
+  [
+    base_url: "https://huggingface.co",
+    api_base_url: "https://huggingface.co/api",
+    token: nil,
+    retry_attempts: 3,
+    connect_timeout_ms: 10_000,
+    receive_timeout_ms: 30_000,
+    req_options: []
+  ]
+end
+
 default_node_runtime = fn root ->
   [
     listen_address: [host: "127.0.0.1", port: 50_061],
@@ -251,15 +271,7 @@ default_node_runtime = fn root ->
     worker_log_dir: Path.join([root, "logs", "workers"]),
     max_loaded_models: 0,
     fake_runtime?: false,
-    hf: [
-      base_url: "https://huggingface.co",
-      api_base_url: "https://huggingface.co/api",
-      token: nil,
-      retry_attempts: 3,
-      connect_timeout_ms: 10_000,
-      receive_timeout_ms: 30_000,
-      req_options: []
-    ],
+    hf: default_hf_config.(),
     s3: [
       endpoint: nil,
       region: "us-east-1",
@@ -353,6 +365,29 @@ if config_env() == :prod do
             request_timeout_ms: env_int.("ORCHARD_REQUEST_TIMEOUT_MS", "120000"),
             model_load_timeout_ms: env_int.("ORCHARD_MODEL_LOAD_TIMEOUT_MS", "120000")
           )
+
+      controller_hf_token = env_optional_string.("ORCHARD_HF_TOKEN") || env_optional_string.("HF_TOKEN")
+      controller_hf_base_url = env_optional_string.("ORCHARD_HF_BASE_URL")
+
+      controller_hf_api_base_url =
+        env_optional_string.("ORCHARD_HF_API_BASE_URL") ||
+          if(controller_hf_base_url,
+            do: String.trim_trailing(controller_hf_base_url, "/") <> "/api"
+          )
+
+      config :orchard_controller,
+        :hf,
+        Keyword.merge(
+          default_hf_config.(),
+          Enum.reject(
+            [
+              base_url: controller_hf_base_url,
+              api_base_url: controller_hf_api_base_url,
+              token: controller_hf_token
+            ],
+            fn {_k, v} -> is_nil(v) end
+          )
+        )
 
       # --- Transport listener configuration ---
       {transport_config, url_config, transport_degraded?} =

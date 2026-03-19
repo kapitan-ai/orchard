@@ -73,6 +73,18 @@ defmodule OrchardApplicationTest do
     assert console[:password] == nil
   end
 
+  test "test environment has deterministic hugging face config defaults" do
+    hf = Application.fetch_env!(:orchard_controller, :hf)
+
+    assert hf[:base_url] == "https://huggingface.co"
+    assert hf[:api_base_url] == "https://huggingface.co/api"
+    assert hf[:token] == nil
+    assert hf[:retry_attempts] == 3
+    assert hf[:connect_timeout_ms] == 10_000
+    assert hf[:receive_timeout_ms] == 30_000
+    assert hf[:req_options] == []
+  end
+
   test "test environment config uses fake tokenizer and local runtime target" do
     inference = Application.fetch_env!(:orchard_controller, :inference)
 

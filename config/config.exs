@@ -37,6 +37,10 @@ config :orchard_controller,
        :inference,
        Orchard.Config.M1RuntimeDefaults.controller_inference(orchard_support_root)
 
+config :orchard_controller,
+       :hf,
+       Orchard.Config.M1RuntimeDefaults.hf()
+
 config :orchard_node_agent,
        :runtime,
        Orchard.Config.M1RuntimeDefaults.node_runtime(orchard_support_root)

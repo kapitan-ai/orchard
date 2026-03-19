@@ -26,7 +26,8 @@ config :orchard_controller,
       runtime_client_target: [host: "127.0.0.1", port: 50_071],
       request_timeout_ms: 5_000,
       model_load_timeout_ms: 5_000
-    )
+    ),
+  hf: Orchard.Config.M1RuntimeDefaults.hf()
 
 config :orchard_node_agent,
   runtime:
