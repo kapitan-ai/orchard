@@ -112,7 +112,9 @@ defmodule Orchard.API.RouterTest do
 
       assert conn.status == 200
       assert conn.resp_body =~ "Model Hub"
-      assert conn.resp_body =~ "model-hub-placeholder-card"
+      assert conn.resp_body =~ "model-hub-search-card"
+      assert conn.resp_body =~ "model-hub-search-form"
+      assert conn.resp_body =~ "Read-only in B1. Download and import are deferred to B2/B3."
     end
   end
 end
