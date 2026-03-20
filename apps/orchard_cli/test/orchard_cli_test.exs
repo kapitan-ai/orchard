@@ -3,6 +3,8 @@ defmodule OrchardCLITest do
 
   import ExUnit.CaptureIO
 
+  alias OrchardCLI.Commands.{ApiKeys, Models, Tenants}
+
   # A no-op halt function for tests that just need to suppress halt
   defp no_halt(_code), do: :ok
 
@@ -15,7 +17,7 @@ defmodule OrchardCLITest do
     output = capture_io(fn -> OrchardCLI.main([], &no_halt/1) end)
 
     assert output =~ "orchardctl (M0 scaffold)"
-    assert output =~ "cluster, nodes, models, requests, support, tls, upgrade"
+    assert output =~ "cluster, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
   end
 
   test "dispatches each placeholder command module" do
@@ -48,6 +50,30 @@ defmodule OrchardCLITest do
     assert_received {:halt_called, 1}
   end
 
+  test "tenants command without subcommand exits non-zero" do
+    parent = self()
+
+    stderr =
+      capture_io(:stderr, fn ->
+        OrchardCLI.main(["tenants"], halt_stub(parent))
+      end)
+
+    assert stderr =~ "orchardctl tenants"
+    assert_received {:halt_called, 1}
+  end
+
+  test "api-keys command without subcommand exits non-zero" do
+    parent = self()
+
+    stderr =
+      capture_io(:stderr, fn ->
+        OrchardCLI.main(["api-keys"], halt_stub(parent))
+      end)
+
+    assert stderr =~ "orchardctl api-keys"
+    assert_received {:halt_called, 1}
+  end
+
   test "models import without path exits non-zero" do
     parent = self()
 
@@ -60,13 +86,23 @@ defmodule OrchardCLITest do
     assert_received {:halt_called, 1}
   end
 
+  test "Tenants.run/1 returns error tuple for missing subcommand" do
+    assert {:error, message, 1} = Tenants.run([])
+    assert message =~ "orchardctl tenants"
+  end
+
+  test "ApiKeys.run/1 returns error tuple for missing subcommand" do
+    assert {:error, message, 1} = ApiKeys.run([])
+    assert message =~ "orchardctl api-keys"
+  end
+
   test "Models.run/1 returns error tuple for missing subcommand" do
-    assert {:error, message, 1} = OrchardCLI.Commands.Models.run([])
+    assert {:error, message, 1} = Models.run([])
     assert message =~ "orchardctl models"
   end
 
   test "Models.run/1 returns error tuple for missing import path" do
-    assert {:error, message, 1} = OrchardCLI.Commands.Models.run(["import"])
+    assert {:error, message, 1} = Models.run(["import"])
     assert message =~ "missing bundle path"
   end
 
@@ -77,7 +113,7 @@ defmodule OrchardCLITest do
   end
 
   test "Models.run/1 returns ok tuple for import with too many args" do
-    assert {:error, message, 1} = OrchardCLI.Commands.Models.run(["import", "a", "b"])
+    assert {:error, message, 1} = Models.run(["import", "a", "b"])
     assert message =~ "expected exactly one bundle path"
   end
 

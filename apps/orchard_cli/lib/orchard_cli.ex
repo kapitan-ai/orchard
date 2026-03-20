@@ -3,7 +3,17 @@ defmodule OrchardCLI do
   Placeholder `orchardctl` entrypoint for Milestone 0.
   """
 
-  alias OrchardCLI.Commands.{Cluster, Models, Nodes, Requests, Support, TLS, Upgrade}
+  alias OrchardCLI.Commands.{
+    ApiKeys,
+    Cluster,
+    Models,
+    Nodes,
+    Requests,
+    Support,
+    Tenants,
+    TLS,
+    Upgrade
+  }
 
   @type command_result :: :ok | {:ok, String.t()} | {:error, String.t(), pos_integer()}
 
@@ -13,20 +23,21 @@ defmodule OrchardCLI do
   @doc false
   @spec main([String.t()], (non_neg_integer() -> any())) :: :ok
   def main(args, halt_fn) do
-    result =
-      case args do
-        ["cluster" | rest] -> Cluster.run(rest)
-        ["nodes" | rest] -> Nodes.run(rest)
-        ["models" | rest] -> Models.run(rest)
-        ["requests" | rest] -> Requests.run(rest)
-        ["support" | rest] -> Support.run(rest)
-        ["tls" | rest] -> TLS.run(rest)
-        ["upgrade" | rest] -> Upgrade.run(rest)
-        _ -> print_usage()
-      end
-
-    handle_result(result, halt_fn)
+    args
+    |> dispatch_command()
+    |> handle_result(halt_fn)
   end
+
+  defp dispatch_command(["cluster" | rest]), do: Cluster.run(rest)
+  defp dispatch_command(["nodes" | rest]), do: Nodes.run(rest)
+  defp dispatch_command(["models" | rest]), do: Models.run(rest)
+  defp dispatch_command(["requests" | rest]), do: Requests.run(rest)
+  defp dispatch_command(["support" | rest]), do: Support.run(rest)
+  defp dispatch_command(["tenants" | rest]), do: Tenants.run(rest)
+  defp dispatch_command(["api-keys" | rest]), do: ApiKeys.run(rest)
+  defp dispatch_command(["tls" | rest]), do: TLS.run(rest)
+  defp dispatch_command(["upgrade" | rest]), do: Upgrade.run(rest)
+  defp dispatch_command(_args), do: print_usage()
 
   defp handle_result(:ok, _halt_fn), do: :ok
 
@@ -43,6 +54,9 @@ defmodule OrchardCLI do
 
   defp print_usage do
     IO.puts("orchardctl (M0 scaffold)")
-    IO.puts("Available command groups: cluster, nodes, models, requests, support, tls, upgrade")
+
+    IO.puts(
+      "Available command groups: cluster, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
+    )
   end
 end
