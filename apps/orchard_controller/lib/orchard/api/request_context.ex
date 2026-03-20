@@ -1,11 +1,13 @@
 defmodule Orchard.API.RequestContext do
+  alias Orchard.Governance
+
   @moduledoc """
   Plug that attaches caller-context fields to the connection.
 
   Provides a single integration point for M2 auth/RBAC to slot into.
-  In M1, runs in implicit single-tenant mode with hardcoded defaults:
+  In M1, runs in implicit single-tenant mode with deterministic legacy defaults:
 
-    * `tenant_id` — `"default"`
+    * `tenant_id` — the seeded legacy tenant UUID
     * `principal_id` — `nil`
     * `api_key_id` — `nil`
 
@@ -39,16 +41,12 @@ defmodule Orchard.API.RequestContext do
   @impl Plug
   def init(opts), do: opts
 
-  # M1 sentinel UUID for single-tenant mode. Not a real tenant row — M2
-  # will create a tenants table and resolve real UUIDs from Bearer tokens.
-  @m1_default_tenant "00000000-0000-0000-0000-000000000000"
-
   @impl Plug
   def call(conn, _opts) do
     # M1: implicit single-tenant mode — no auth required.
     # M2 will replace this with real Bearer token resolution.
     conn
-    |> Plug.Conn.assign(:tenant_id, @m1_default_tenant)
+    |> Plug.Conn.assign(:tenant_id, Governance.legacy_tenant_id())
     |> Plug.Conn.assign(:principal_id, nil)
     |> Plug.Conn.assign(:api_key_id, nil)
   end

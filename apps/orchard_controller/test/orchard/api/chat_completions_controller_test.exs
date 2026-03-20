@@ -2,6 +2,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   use Orchard.ConnCase, async: false
 
   alias Orchard.ArtifactBundle
+  alias Orchard.Governance
   alias Orchard.API.Router
   alias Orchard.Inference.ChatRequestNormalizer
   alias Orchard.Node
@@ -273,7 +274,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert length(requests) == 1
       [request] = requests
 
-      assert request.tenant_id == "00000000-0000-0000-0000-000000000000"
+      assert request.tenant_id == Governance.legacy_tenant_id()
       assert request.requested_model == "persist-model@v1"
       assert request.stream == true
       assert request.endpoint == :chat_completions

@@ -2,6 +2,7 @@ defmodule Orchard.API.RequestContextTest do
   use Orchard.ConnCase, async: false
 
   alias Orchard.API.RequestContext
+  alias Orchard.Governance
   alias Orchard.API.Router
   alias Orchard.Inference.ChatRequestNormalizer
 
@@ -11,7 +12,7 @@ defmodule Orchard.API.RequestContextTest do
         build_conn(:get, "/v1/models")
         |> RequestContext.call([])
 
-      assert conn.assigns[:tenant_id] == "00000000-0000-0000-0000-000000000000"
+      assert conn.assigns[:tenant_id] == Governance.legacy_tenant_id()
     end
 
     test "assigns nil principal_id and api_key_id in M1 mode" do
@@ -32,7 +33,7 @@ defmodule Orchard.API.RequestContextTest do
 
       # The request context plug runs in the :authenticated_api pipeline,
       # so assigns should be present after routing
-      assert conn.assigns[:tenant_id] == "00000000-0000-0000-0000-000000000000"
+      assert conn.assigns[:tenant_id] == Governance.legacy_tenant_id()
       assert conn.assigns[:principal_id] == nil
       assert conn.assigns[:api_key_id] == nil
     end
@@ -72,7 +73,7 @@ defmodule Orchard.API.RequestContextTest do
           "messages" => [%{"role" => "user", "content" => "hi"}]
         })
 
-      assert canonical.tenant_id == "00000000-0000-0000-0000-000000000000"
+      assert canonical.tenant_id == Governance.legacy_tenant_id()
       assert canonical.principal_id == nil
       assert canonical.api_key_id == nil
     end
