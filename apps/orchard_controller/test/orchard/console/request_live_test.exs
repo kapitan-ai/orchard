@@ -589,7 +589,9 @@ defmodule OrchardConsole.RequestLiveTest do
       assert html =~ "request-freshness"
     end
 
-    test "freshness transitions from polling to stopped when request becomes terminal", %{conn: conn} do
+    test "freshness transitions from polling to stopped when request becomes terminal", %{
+      conn: conn
+    } do
       request = create_request!(%{state: :running})
 
       {:ok, view, html} = live(conn, "/console/requests/#{request.public_id}")

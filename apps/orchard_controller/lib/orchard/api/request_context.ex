@@ -1,53 +1,85 @@
 defmodule Orchard.API.RequestContext do
+  alias Orchard.API.ErrorHelpers
   alias Orchard.Governance
 
   @moduledoc """
-  Plug that attaches caller-context fields to the connection.
+  Plug that resolves authenticated caller context for `/v1/*` requests.
 
-  Provides a single integration point for M2 auth/RBAC to slot into.
-  In M1, runs in implicit single-tenant mode with deterministic legacy defaults:
+  M2a requires a single `Authorization: Bearer <api_key>` header on the public
+  inference surface. Successful authentication assigns:
 
-    * `tenant_id` — the seeded legacy tenant UUID
-    * `principal_id` — `nil`
-    * `api_key_id` — `nil`
+    * `tenant_id`
+    * `principal_id`
+    * `api_key_id`
 
-  M2 will replace the body of `call/2` with real auth resolution:
-  extract `Authorization: Bearer <api_key>`, look up the key, resolve
-  tenant/principal, and return 401/403 on failure.
-
-  ## Usage
-
-  Add to a router pipeline:
-
-      pipeline :authenticated_api do
-        plug Orchard.API.RequestContext
-      end
-
-  Downstream controllers read context via `conn.assigns`:
-
-      conn.assigns.tenant_id
-      conn.assigns.principal_id
-      conn.assigns.api_key_id
-
-  Note: `principal_id` is transient — used for in-flight RBAC checks
-  but not persisted on the `requests` table. The durable identity
-  fields are `api_key_id` and `service_account_id` (resolved from
-  the API key in M2). `principal_id` maps to the owning entity
-  (tenant or service account) for authorization decisions.
+  Current M2a principal semantics are temporary: `principal_id = tenant_id`
+  until service-account-backed principals exist. API-key expiry is still a known
+  gap because the current governance schema only supports `revoked_at`.
   """
 
   @behaviour Plug
+
+  @invalid_api_key_message "Invalid API key provided."
+  @invalid_api_key_type "authentication_error"
+  @invalid_api_key_code "invalid_api_key"
 
   @impl Plug
   def init(opts), do: opts
 
   @impl Plug
   def call(conn, _opts) do
-    # M1: implicit single-tenant mode — no auth required.
-    # M2 will replace this with real Bearer token resolution.
+    case bearer_token(conn) do
+      {:ok, token} ->
+        authenticate_request(conn, token)
+
+      {:error, reason} ->
+        conn
+        |> audit_auth_failure(nil, reason)
+        |> send_auth_error()
+    end
+  end
+
+  defp authenticate_request(conn, token) do
+    case Governance.authenticate_api_key(token) do
+      {:ok, auth_context} ->
+        Governance.touch_api_key_last_used(auth_context.api_key_id)
+
+        conn
+        |> Plug.Conn.assign(:tenant_id, auth_context.tenant_id)
+        |> Plug.Conn.assign(:principal_id, auth_context.principal_id)
+        |> Plug.Conn.assign(:api_key_id, auth_context.api_key_id)
+
+      {:error, reason} ->
+        conn
+        |> audit_auth_failure(token, reason)
+        |> send_auth_error()
+    end
+  end
+
+  defp bearer_token(conn) do
+    case Plug.Conn.get_req_header(conn, "authorization") do
+      [header] -> parse_bearer_header(header)
+      [] -> {:error, :missing_header}
+      _headers -> {:error, :malformed_header}
+    end
+  end
+
+  defp parse_bearer_header("Bearer " <> token) when token != "", do: {:ok, token}
+  defp parse_bearer_header(_header), do: {:error, :malformed_header}
+
+  defp audit_auth_failure(conn, token, reason) do
+    Governance.audit_api_key_auth_failure(token, reason)
     conn
-    |> Plug.Conn.assign(:tenant_id, Governance.legacy_tenant_id())
-    |> Plug.Conn.assign(:principal_id, nil)
-    |> Plug.Conn.assign(:api_key_id, nil)
+  end
+
+  defp send_auth_error(conn) do
+    conn
+    |> ErrorHelpers.send_error(
+      :unauthorized,
+      @invalid_api_key_message,
+      @invalid_api_key_type,
+      code: @invalid_api_key_code
+    )
+    |> Plug.Conn.halt()
   end
 end

@@ -1,9 +1,11 @@
 defmodule Orchard.API.ChatCompletionsControllerTest do
   use Orchard.ConnCase, async: false
 
+  @moduletag :db
+
+  alias Orchard.API.Router
   alias Orchard.ArtifactBundle
   alias Orchard.Governance
-  alias Orchard.API.Router
   alias Orchard.Inference.ChatRequestNormalizer
   alias Orchard.Node
   alias Orchard.Node.ModelManager
@@ -11,10 +13,11 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
   # We simulate the merge explicitly.
-  defp post_chat(params) do
+  defp post_chat(params, token \\ default_api_token!()) do
     build_conn(:post, "/v1/chat/completions")
     |> put_req_header("accept", "application/json")
     |> put_req_header("content-type", "application/json")
+    |> put_req_header("authorization", "Bearer #{token}")
     |> Map.put(:body_params, params)
     |> Map.put(:params, params)
     |> Router.call(Router.init([]))
@@ -57,6 +60,46 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end)
 
     %{bundle: bundle}
+  end
+
+  describe "POST /v1/chat/completions auth boundary" do
+    test "missing bearer auth returns a JSON 401 before request validation" do
+      conn =
+        build_conn(:post, "/v1/chat/completions")
+        |> put_req_header("accept", "application/json")
+        |> put_req_header("content-type", "application/json")
+        |> Map.put(:body_params, %{"messages" => [%{"role" => "user", "content" => "hi"}]})
+        |> Map.put(:params, %{"messages" => [%{"role" => "user", "content" => "hi"}]})
+        |> Router.call(Router.init([]))
+
+      assert conn.status == 401
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "authentication_error"
+      assert body["error"]["code"] == "invalid_api_key"
+    end
+
+    test "stream=true without bearer auth still returns JSON 401, not SSE" do
+      conn =
+        build_conn(:post, "/v1/chat/completions")
+        |> put_req_header("accept", "application/json")
+        |> put_req_header("content-type", "application/json")
+        |> Map.put(:body_params, %{
+          "model" => "test@v1",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "stream" => true
+        })
+        |> Map.put(:params, %{
+          "model" => "test@v1",
+          "messages" => [%{"role" => "user", "content" => "hi"}],
+          "stream" => true
+        })
+        |> Router.call(Router.init([]))
+
+      assert conn.status == 401
+
+      refute get_resp_header(conn, "content-type")
+             |> Enum.any?(&String.contains?(&1, "text/event-stream"))
+    end
   end
 
   describe "POST /v1/chat/completions (non-streaming)" do
@@ -243,6 +286,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   describe "POST /v1/chat/completions (streaming persistence, T4)" do
     @tag :db
     test "streaming request persists request row and state events", %{bundle: bundle} do
+      %{tenant: tenant, api_key: api_key, token: token} =
+        create_api_key_with_token!("persist-request")
+
       {:ok, _model} =
         Orchard.Models.create_model(%{
           model_id: "persist-model",
@@ -262,11 +308,14 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
         })
 
       conn =
-        post_chat(%{
-          "model" => "persist-model@v1",
-          "messages" => [%{"role" => "user", "content" => "hello"}],
-          "stream" => true
-        })
+        post_chat(
+          %{
+            "model" => "persist-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}],
+            "stream" => true
+          },
+          token
+        )
 
       assert conn.status == 200
 
@@ -274,7 +323,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert length(requests) == 1
       [request] = requests
 
-      assert request.tenant_id == Governance.legacy_tenant_id()
+      assert request.tenant_id == tenant.id
+      assert request.api_key_id == api_key.id
       assert request.requested_model == "persist-model@v1"
       assert request.stream == true
       assert request.endpoint == :chat_completions
@@ -473,6 +523,22 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   end
 
   defp refute_struct_artifacts!(_value), do: :ok
+
+  defp default_api_token! do
+    %{token: token} =
+      create_api_key_with_token!("chat-auth-#{System.unique_integer([:positive])}")
+
+    token
+  end
+
+  defp create_api_key_with_token!(slug) do
+    {:ok, tenant} = Governance.create_tenant(%{slug: slug, name: String.capitalize(slug)})
+
+    {:ok, %{api_key: api_key, token: token}} =
+      Governance.create_api_key(tenant.id, %{name: "Primary"})
+
+    %{tenant: tenant, api_key: api_key, token: token}
+  end
 
   # Stage a test bundle at the cache path for model_ids used in streaming tests.
   # Returns %{hash, source_path, cache_paths} so tests can use the real hash.

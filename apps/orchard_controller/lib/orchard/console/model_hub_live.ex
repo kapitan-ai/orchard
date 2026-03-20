@@ -31,7 +31,8 @@ defmodule OrchardConsole.ModelHubLive do
       not result_present?(socket.assigns.search_results, repo_id) ->
         {:noreply, socket}
 
-      repo_id == socket.assigns.selected_repo_id and socket.assigns.detail_status in [:loading, :ok] ->
+      repo_id == socket.assigns.selected_repo_id and
+          socket.assigns.detail_status in [:loading, :ok] ->
         {:noreply, socket}
 
       true ->
@@ -40,7 +41,10 @@ defmodule OrchardConsole.ModelHubLive do
   end
 
   @impl true
-  def handle_info({:model_hub, ref, :search_finished, result}, %{assigns: %{active_search_ref: ref}} = socket) do
+  def handle_info(
+        {:model_hub, ref, :search_finished, result},
+        %{assigns: %{active_search_ref: ref}} = socket
+      ) do
     case result do
       {:ok, %{results: results}} ->
         results = normalize_search_results(results)
@@ -60,7 +64,8 @@ defmodule OrchardConsole.ModelHubLive do
              |> clear_detail()}
 
           _results ->
-            selected_repo_id = pick_selected_repo_id(results, socket.assigns.pending_selected_repo_id)
+            selected_repo_id =
+              pick_selected_repo_id(results, socket.assigns.pending_selected_repo_id)
 
             socket =
               assign(socket,
@@ -92,7 +97,10 @@ defmodule OrchardConsole.ModelHubLive do
 
   def handle_info({:model_hub, _ref, :search_finished, _result}, socket), do: {:noreply, socket}
 
-  def handle_info({:model_hub, ref, :detail_finished, result}, %{assigns: %{active_detail_ref: ref}} = socket) do
+  def handle_info(
+        {:model_hub, ref, :detail_finished, result},
+        %{assigns: %{active_detail_ref: ref}} = socket
+      ) do
     case result do
       {:ok, detail} ->
         detail = normalize_detail(detail)
@@ -508,7 +516,9 @@ defmodule OrchardConsole.ModelHubLive do
   defp detail_error_body(nil), do: "Select another repository to retry the lookup."
   defp detail_error_body(repo_id), do: "The detail lookup for #{repo_id} did not complete."
 
-  defp error_title(%{message: message}, _fallback) when is_binary(message) and message != "", do: message
+  defp error_title(%{message: message}, _fallback) when is_binary(message) and message != "",
+    do: message
+
   defp error_title(_error, fallback), do: fallback
 
   defp result_row_class(%{repo_id: repo_id}, repo_id) do
@@ -570,12 +580,15 @@ defmodule OrchardConsole.ModelHubLive do
       metadata_summary: %{
         license: detail_get(detail_get(detail, :metadata_summary), :license),
         languages: normalize_list(detail_get(detail_get(detail, :metadata_summary), :languages)),
-        base_models: normalize_list(detail_get(detail_get(detail, :metadata_summary), :base_models))
+        base_models:
+          normalize_list(detail_get(detail_get(detail, :metadata_summary), :base_models))
       },
       config_summary: %{
         model_type: detail_get(detail_get(detail, :config_summary), :model_type),
-        architectures: normalize_list(detail_get(detail_get(detail, :config_summary), :architectures)),
-        context_window_tokens: detail_get(detail_get(detail, :config_summary), :context_window_tokens),
+        architectures:
+          normalize_list(detail_get(detail_get(detail, :config_summary), :architectures)),
+        context_window_tokens:
+          detail_get(detail_get(detail, :config_summary), :context_window_tokens),
         quantization_bits: detail_get(detail_get(detail, :config_summary), :quantization_bits)
       },
       siblings: normalize_siblings(detail_get(detail, :siblings))
@@ -608,20 +621,80 @@ defmodule OrchardConsole.ModelHubLive do
   defp detail_fields(detail) do
     [
       %{id: "author", label: "Author", value: display_value(detail.author), mono: false},
-      %{id: "revision", label: "Revision SHA", value: display_value(detail.revision_sha), mono: true},
-      %{id: "downloads", label: "Downloads", value: format_integer(detail.downloads), mono: false},
+      %{
+        id: "revision",
+        label: "Revision SHA",
+        value: display_value(detail.revision_sha),
+        mono: true
+      },
+      %{
+        id: "downloads",
+        label: "Downloads",
+        value: format_integer(detail.downloads),
+        mono: false
+      },
       %{id: "likes", label: "Likes", value: format_integer(detail.likes), mono: false},
-      %{id: "pipeline", label: "Pipeline", value: display_value(detail.pipeline_tag), mono: false},
+      %{
+        id: "pipeline",
+        label: "Pipeline",
+        value: display_value(detail.pipeline_tag),
+        mono: false
+      },
       %{id: "library", label: "Library", value: display_value(detail.library_name), mono: false},
-      %{id: "storage", label: "Used storage bytes", value: format_integer(detail.used_storage_bytes), mono: false},
-      %{id: "updated", label: "Last updated", value: format_datetime(detail.last_modified), mono: false},
-      %{id: "license", label: "License", value: display_value(detail.metadata_summary.license), mono: false},
-      %{id: "languages", label: "Languages", value: format_list(detail.metadata_summary.languages), mono: false},
-      %{id: "base-models", label: "Base models", value: format_list(detail.metadata_summary.base_models), mono: false},
-      %{id: "model-type", label: "Model type", value: display_value(detail.config_summary.model_type), mono: false},
-      %{id: "architectures", label: "Architectures", value: format_list(detail.config_summary.architectures), mono: false},
-      %{id: "context-window", label: "Context window", value: format_integer(detail.config_summary.context_window_tokens), mono: false},
-      %{id: "quantization", label: "Quantization bits", value: format_integer(detail.config_summary.quantization_bits), mono: false},
+      %{
+        id: "storage",
+        label: "Used storage bytes",
+        value: format_integer(detail.used_storage_bytes),
+        mono: false
+      },
+      %{
+        id: "updated",
+        label: "Last updated",
+        value: format_datetime(detail.last_modified),
+        mono: false
+      },
+      %{
+        id: "license",
+        label: "License",
+        value: display_value(detail.metadata_summary.license),
+        mono: false
+      },
+      %{
+        id: "languages",
+        label: "Languages",
+        value: format_list(detail.metadata_summary.languages),
+        mono: false
+      },
+      %{
+        id: "base-models",
+        label: "Base models",
+        value: format_list(detail.metadata_summary.base_models),
+        mono: false
+      },
+      %{
+        id: "model-type",
+        label: "Model type",
+        value: display_value(detail.config_summary.model_type),
+        mono: false
+      },
+      %{
+        id: "architectures",
+        label: "Architectures",
+        value: format_list(detail.config_summary.architectures),
+        mono: false
+      },
+      %{
+        id: "context-window",
+        label: "Context window",
+        value: format_integer(detail.config_summary.context_window_tokens),
+        mono: false
+      },
+      %{
+        id: "quantization",
+        label: "Quantization bits",
+        value: format_integer(detail.config_summary.quantization_bits),
+        mono: false
+      },
       %{id: "tags", label: "Tags", value: format_list(detail.tags), mono: false}
     ]
   end

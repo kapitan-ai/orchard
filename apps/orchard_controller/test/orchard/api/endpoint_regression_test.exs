@@ -11,17 +11,15 @@ defmodule Orchard.API.EndpointRegressionTest do
   @moduletag :live
 
   describe "API security after LiveView endpoint changes" do
-    test "POST /v1/chat/completions rejects form-urlencoded body", %{conn: conn} do
+    test "POST /v1/chat/completions still returns 401 for unauthenticated form-urlencoded input",
+         %{conn: conn} do
       conn =
         conn
         |> put_req_header("content-type", "application/x-www-form-urlencoded")
         |> post("/v1/chat/completions", "model=test&messages=hello")
 
-      # Plug.Parsers with parsers: [:json] does not parse urlencoded bodies.
-      # The :authenticated_api pipeline requires JSON Accept, so this should
-      # fail at the pipeline level (406) or the controller should receive an
-      # unparsed body and return an error.
-      assert conn.status in [400, 406, 415]
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["type"] == "authentication_error"
     end
 
     test "health endpoint still responds through modified endpoint", %{conn: conn} do

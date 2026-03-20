@@ -60,20 +60,26 @@ defmodule Orchard.Models.HubClientTest do
   end
 
   test "search_models/2 returns invalid_options for non-keyword opts" do
-    assert {:error, %{status: :error, code: "invalid_options", message: "Hub client options are invalid."}} =
+    assert {:error,
+            %{status: :error, code: "invalid_options", message: "Hub client options are invalid."}} =
              HubClient.search_models(nil, %{})
   end
 
-  test "search_models/2 returns invalid_options for unsupported keyword opts", %{stub_name: stub_name} do
+  test "search_models/2 returns invalid_options for unsupported keyword opts", %{
+    stub_name: stub_name
+  } do
     Req.Test.stub(stub_name, fn _conn ->
       flunk("search_models/2 should reject unsupported opts before making a request")
     end)
 
-    assert {:error, %{status: :error, code: "invalid_options", message: "Hub client options are invalid."}} =
+    assert {:error,
+            %{status: :error, code: "invalid_options", message: "Hub client options are invalid."}} =
              HubClient.search_models(nil, unsupported: true)
   end
 
-  test "search_models/2 derives the API base URL from base_url when needed", %{stub_name: stub_name} do
+  test "search_models/2 derives the API base URL from base_url when needed", %{
+    stub_name: stub_name
+  } do
     with_hf_overrides([api_base_url: nil], fn ->
       Req.Test.stub(stub_name, fn conn ->
         assert conn.request_path == "/api/models"
@@ -174,6 +180,7 @@ defmodule Orchard.Models.HubClientTest do
     assert detail.downloads == 16_419
     assert detail.likes == 11
     assert detail.used_storage_bytes == 4_284_346_255
+
     assert detail.metadata_summary == %{
              license: "apache-2.0",
              languages: ["en"],
@@ -195,8 +202,13 @@ defmodule Orchard.Models.HubClientTest do
 
   test "get_model_detail/1 uses the context window fallback chain", %{stub_name: stub_name} do
     payloads = [
-      {"mlx-community/n-positions", %{"id" => "mlx-community/n-positions", "config" => %{"n_positions" => 8192}}},
-      {"mlx-community/max-sequence-length", %{"id" => "mlx-community/max-sequence-length", "config" => %{"max_sequence_length" => "4096"}}}
+      {"mlx-community/n-positions",
+       %{"id" => "mlx-community/n-positions", "config" => %{"n_positions" => 8192}}},
+      {"mlx-community/max-sequence-length",
+       %{
+         "id" => "mlx-community/max-sequence-length",
+         "config" => %{"max_sequence_length" => "4096"}
+       }}
     ]
 
     Enum.each(payloads, fn {repo_id, payload} ->
@@ -217,7 +229,9 @@ defmodule Orchard.Models.HubClientTest do
     end)
   end
 
-  test "get_model_detail/1 falls back to tags or repo name for quantization bits", %{stub_name: stub_name} do
+  test "get_model_detail/1 falls back to tags or repo name for quantization bits", %{
+    stub_name: stub_name
+  } do
     payload = %{
       "id" => "mlx-community/Phi-3-4bit",
       "tags" => ["mlx", "4bit"],
@@ -232,7 +246,9 @@ defmodule Orchard.Models.HubClientTest do
     assert detail.config_summary.quantization_bits == 4
   end
 
-  test "get_model_detail/1 returns nil quantization bits when no signal is present", %{stub_name: stub_name} do
+  test "get_model_detail/1 returns nil quantization bits when no signal is present", %{
+    stub_name: stub_name
+  } do
     payload = %{
       "id" => "mlx-community/Phi-3",
       "config" => %{"model_type" => "phi3"}
@@ -246,7 +262,9 @@ defmodule Orchard.Models.HubClientTest do
     assert detail.config_summary.quantization_bits == nil
   end
 
-  test "get_model_detail/1 normalizes missing optional detail fields safely", %{stub_name: stub_name} do
+  test "get_model_detail/1 normalizes missing optional detail fields safely", %{
+    stub_name: stub_name
+  } do
     payload = %{"id" => "mlx-community/minimal"}
 
     Req.Test.stub(stub_name, fn conn ->
@@ -275,7 +293,11 @@ defmodule Orchard.Models.HubClientTest do
       end)
 
       assert {:error,
-              %{status: :unauthorized, code: "hf_unauthorized", message: "Hugging Face access denied."}} =
+              %{
+                status: :unauthorized,
+                code: "hf_unauthorized",
+                message: "Hugging Face access denied."
+              }} =
                HubClient.search_models(nil, [])
     end)
   end
@@ -286,7 +308,11 @@ defmodule Orchard.Models.HubClientTest do
     end)
 
     assert {:error,
-            %{status: :not_found, code: "hf_not_found", message: "Hugging Face resource not found."}} =
+            %{
+              status: :not_found,
+              code: "hf_not_found",
+              message: "Hugging Face resource not found."
+            }} =
              HubClient.get_model_detail("mlx-community/missing")
   end
 
@@ -296,17 +322,27 @@ defmodule Orchard.Models.HubClientTest do
     end)
 
     assert {:error,
-            %{status: :rate_limited, code: "hf_rate_limited", message: "Hugging Face rate limit exceeded."}} =
+            %{
+              status: :rate_limited,
+              code: "hf_rate_limited",
+              message: "Hugging Face rate limit exceeded."
+            }} =
              HubClient.search_models(nil, [])
   end
 
-  test "search_models/2 maps 5xx responses to hf_unavailable without leaking response bodies", %{stub_name: stub_name} do
+  test "search_models/2 maps 5xx responses to hf_unavailable without leaking response bodies", %{
+    stub_name: stub_name
+  } do
     Req.Test.stub(stub_name, fn conn ->
       json_response(conn, 503, %{"error" => "backend exploded"})
     end)
 
     assert {:error,
-            %{status: :unavailable, code: "hf_unavailable", message: "Hugging Face is unavailable."}} =
+            %{
+              status: :unavailable,
+              code: "hf_unavailable",
+              message: "Hugging Face is unavailable."
+            }} =
              HubClient.search_models(nil, [])
   end
 
@@ -316,7 +352,11 @@ defmodule Orchard.Models.HubClientTest do
     end)
 
     assert {:error,
-            %{status: :unavailable, code: "hf_unavailable", message: "Hugging Face is unavailable."}} =
+            %{
+              status: :unavailable,
+              code: "hf_unavailable",
+              message: "Hugging Face is unavailable."
+            }} =
              HubClient.search_models(nil, [])
   end
 

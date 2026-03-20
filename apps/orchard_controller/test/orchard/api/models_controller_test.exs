@@ -2,15 +2,27 @@ defmodule Orchard.API.ModelsControllerTest do
   use Orchard.ConnCase, async: false
 
   alias Orchard.API.Router
+  alias Orchard.Governance
   alias Orchard.Models
 
   describe "GET /v1/models" do
     @describetag :db
 
+    test "SPEC.md §7.2.7 returns 401 when bearer auth is missing" do
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("accept", "application/json")
+        |> Router.call(Router.init([]))
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["type"] == "authentication_error"
+    end
+
     test "returns empty list when no models exist" do
       conn =
         build_conn(:get, "/v1/models")
         |> put_req_header("accept", "application/json")
+        |> put_req_header("authorization", "Bearer #{default_api_token!()}")
         |> Router.call(Router.init([]))
 
       body = Jason.decode!(conn.resp_body)
@@ -41,6 +53,7 @@ defmodule Orchard.API.ModelsControllerTest do
       conn =
         build_conn(:get, "/v1/models")
         |> put_req_header("accept", "application/json")
+        |> put_req_header("authorization", "Bearer #{default_api_token!()}")
         |> Router.call(Router.init([]))
 
       body = Jason.decode!(conn.resp_body)
@@ -53,7 +66,6 @@ defmodule Orchard.API.ModelsControllerTest do
       assert is_integer(model_obj["created"])
       assert model_obj["owned_by"] == "local"
 
-      # Internal artifact fields must not leak to the API
       refute Map.has_key?(model_obj, "artifact_source_uri")
       refute Map.has_key?(model_obj, "artifact_uri")
       refute Map.has_key?(model_obj, "artifact_sha256")
@@ -81,10 +93,18 @@ defmodule Orchard.API.ModelsControllerTest do
       conn =
         build_conn(:get, "/v1/models")
         |> put_req_header("accept", "application/json")
+        |> put_req_header("authorization", "Bearer #{default_api_token!()}")
         |> Router.call(Router.init([]))
 
       body = Jason.decode!(conn.resp_body)
       assert body["data"] == []
     end
+  end
+
+  defp default_api_token! do
+    slug = "models-auth-#{System.unique_integer([:positive])}"
+    {:ok, tenant} = Governance.create_tenant(%{slug: slug, name: String.capitalize(slug)})
+    {:ok, %{token: token}} = Governance.create_api_key(tenant.id, %{name: "Primary"})
+    token
   end
 end

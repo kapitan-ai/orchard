@@ -12,6 +12,8 @@ defmodule Orchard.Governance.Tenant do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
+  @type t :: %__MODULE__{}
+
   schema "tenants" do
     field(:slug, :string)
     field(:name, :string)

@@ -41,7 +41,8 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert has_element?(view, ~s(a[aria-current="page"][href="/console/model-hub"]))
     end
 
-    test "connected mount loads initial browse results, auto-selects the first result, and loads detail", %{conn: conn} do
+    test "connected mount loads initial browse results, auto-selects the first result, and loads detail",
+         %{conn: conn} do
       {:ok, view, html} = live(conn, "/console/model-hub")
       assert html =~ "model-hub-results-loading"
 
@@ -66,7 +67,9 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "tokenizer.json"
     end
 
-    test "search change starts a new debounced search and clears prior detail state", %{conn: conn} do
+    test "search change starts a new debounced search and clears prior detail state", %{
+      conn: conn
+    } do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       load_initial_results_and_detail(view)
 
@@ -117,7 +120,8 @@ defmodule OrchardConsole.ModelHubLiveTest do
       refute html =~ "LlamaForCausalLM"
     end
 
-    test "clicking the selected result while detail is loading does not start another detail fetch", %{conn: conn} do
+    test "clicking the selected result while detail is loading does not start another detail fetch",
+         %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = search_results_fixture()
       first = hd(results)
@@ -243,7 +247,11 @@ defmodule OrchardConsole.ModelHubLiveTest do
       ])
 
       detail_ref = assert_detail_started("mlx-community/Llama-3.2-1B-Instruct-4bit")
-      send_detail_success(view, detail_ref, %{"repo_id" => "mlx-community/Llama-3.2-1B-Instruct-4bit"})
+
+      send_detail_success(view, detail_ref, %{
+        "repo_id" => "mlx-community/Llama-3.2-1B-Instruct-4bit"
+      })
+
       html = render(view)
 
       assert html =~ "model-hub-results-table"
@@ -298,7 +306,13 @@ defmodule OrchardConsole.ModelHubLiveTest do
       send_search_success(view, current_ref, "qwen", current_results)
 
       detail_ref = assert_detail_started("mlx-community/Qwen2.5-7B-Instruct-4bit")
-      send_detail_success(view, detail_ref, detail_fixture("mlx-community/Qwen2.5-7B-Instruct-4bit"))
+
+      send_detail_success(
+        view,
+        detail_ref,
+        detail_fixture("mlx-community/Qwen2.5-7B-Instruct-4bit")
+      )
+
       html = render(view)
 
       assert html =~ "mlx-community/Qwen2.5-7B-Instruct-4bit"
@@ -470,7 +484,12 @@ defmodule OrchardConsole.ModelHubLiveTest do
   end
 
   defp send_search_error(view, ref, overrides) do
-    error = Map.merge(%{status: :error, code: "hf_error", message: "Hugging Face request failed."}, overrides)
+    error =
+      Map.merge(
+        %{status: :error, code: "hf_error", message: "Hugging Face request failed."},
+        overrides
+      )
+
     send(view.pid, {:model_hub, ref, :search_finished, {:error, error}})
   end
 
@@ -479,7 +498,12 @@ defmodule OrchardConsole.ModelHubLiveTest do
   end
 
   defp send_detail_error(view, ref, overrides) do
-    error = Map.merge(%{status: :error, code: "hf_error", message: "Hugging Face request failed."}, overrides)
+    error =
+      Map.merge(
+        %{status: :error, code: "hf_error", message: "Hugging Face request failed."},
+        overrides
+      )
+
     send(view.pid, {:model_hub, ref, :detail_finished, {:error, error}})
   end
 

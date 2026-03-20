@@ -14,7 +14,14 @@ defmodule Orchard.Governance do
   @legacy_tenant_slug "legacy"
   @legacy_tenant_name "Legacy Single Tenant"
 
-  @type api_key_creation_result :: %{api_key: %ApiKey{}, token: String.t()}
+  @type api_key_creation_result :: %{api_key: ApiKey.t(), token: String.t()}
+  @type api_key_auth_result :: %{
+          tenant_id: Ecto.UUID.t(),
+          principal_id: Ecto.UUID.t(),
+          api_key_id: Ecto.UUID.t()
+        }
+  @type api_key_auth_error :: :invalid_api_key | :api_key_revoked
+  @type auth_failure_reason :: :missing_header | :malformed_header | api_key_auth_error
 
   @spec legacy_tenant_id() :: Ecto.UUID.t()
   def legacy_tenant_id, do: @legacy_tenant_id
@@ -25,7 +32,7 @@ defmodule Orchard.Governance do
   @spec legacy_tenant_name() :: String.t()
   def legacy_tenant_name, do: @legacy_tenant_name
 
-  @spec create_tenant(map() | keyword()) :: {:ok, %Tenant{}} | {:error, Changeset.t()}
+  @spec create_tenant(map() | keyword()) :: {:ok, Tenant.t()} | {:error, Changeset.t()}
   def create_tenant(attrs) do
     attrs = normalize_attrs(attrs)
 
@@ -40,7 +47,7 @@ defmodule Orchard.Governance do
     |> unwrap_transaction_result()
   end
 
-  @spec create_api_key(%Tenant{} | Ecto.UUID.t(), map() | keyword()) ::
+  @spec create_api_key(Tenant.t() | Ecto.UUID.t(), map() | keyword()) ::
           {:ok, api_key_creation_result()}
           | {:error, Changeset.t() | :tenant_not_found | :invalid_api_key_secret}
   def create_api_key(%Tenant{id: tenant_id}, attrs), do: create_api_key(tenant_id, attrs)
@@ -63,8 +70,64 @@ defmodule Orchard.Governance do
     end
   end
 
-  @spec revoke_api_key(%ApiKey{} | Ecto.UUID.t()) ::
-          {:ok, %ApiKey{}} | {:error, Changeset.t() | :api_key_not_found}
+  @spec authenticate_api_key(String.t()) ::
+          {:ok, api_key_auth_result()} | {:error, api_key_auth_error()}
+  def authenticate_api_key(token) when is_binary(token) do
+    with {:ok, token_prefix} <- ApiKeySecret.token_prefix(token),
+         %ApiKey{} = api_key <- Repo.get_by(ApiKey, token_prefix: token_prefix),
+         true <- ApiKeySecret.verify(token, api_key.secret_hash) do
+      authenticate_active_api_key(api_key)
+    else
+      :error -> {:error, :invalid_api_key}
+      nil -> {:error, :invalid_api_key}
+      false -> {:error, :invalid_api_key}
+    end
+  end
+
+  def authenticate_api_key(_token), do: {:error, :invalid_api_key}
+
+  @spec touch_api_key_last_used(Ecto.UUID.t()) :: :ok | {:error, :api_key_not_found}
+  def touch_api_key_last_used(api_key_id) do
+    touched_at = utc_now()
+
+    case Repo.update_all(from(api_key in ApiKey, where: api_key.id == ^api_key_id),
+           set: [last_used_at: touched_at]
+         ) do
+      {1, _} -> :ok
+      _ -> {:error, :api_key_not_found}
+    end
+  end
+
+  @spec audit_api_key_auth_failure(String.t() | nil, auth_failure_reason()) ::
+          :ok | :skipped | {:error, Changeset.t()}
+  def audit_api_key_auth_failure(token, reason) do
+    case fetch_api_key_for_audit(token) do
+      {:ok, api_key, token_prefix} ->
+        %AuditLog{}
+        |> audit_log_impl().changeset(%{
+          tenant_id: api_key.tenant_id,
+          api_key_id: api_key.id,
+          actor_type: "system",
+          actor_id: nil,
+          action: "api_key.auth_failed",
+          target_type: "api_key",
+          target_id: api_key.id,
+          occurred_at: utc_now(),
+          payload: %{"reason" => Atom.to_string(reason), "token_prefix" => token_prefix}
+        })
+        |> Repo.insert()
+        |> case do
+          {:ok, _audit_log} -> :ok
+          {:error, changeset} -> {:error, sanitize_changeset(changeset)}
+        end
+
+      :skip ->
+        :skipped
+    end
+  end
+
+  @spec revoke_api_key(ApiKey.t() | Ecto.UUID.t()) ::
+          {:ok, ApiKey.t()} | {:error, Changeset.t() | :api_key_not_found}
   def revoke_api_key(%ApiKey{id: api_key_id}), do: revoke_api_key(api_key_id)
 
   def revoke_api_key(api_key_id) do
@@ -80,7 +143,7 @@ defmodule Orchard.Governance do
     |> unwrap_transaction_result()
   end
 
-  @spec list_tenants() :: [%Tenant{}]
+  @spec list_tenants() :: [Tenant.t()]
   def list_tenants do
     Tenant
     |> order_by([tenant], asc: tenant.slug)
@@ -111,14 +174,35 @@ defmodule Orchard.Governance do
     end
   end
 
+  defp authenticate_active_api_key(%ApiKey{revoked_at: %DateTime{}}),
+    do: {:error, :api_key_revoked}
+
+  defp authenticate_active_api_key(%ApiKey{} = api_key) do
+    {:ok,
+     %{tenant_id: api_key.tenant_id, principal_id: api_key.tenant_id, api_key_id: api_key.id}}
+  end
+
+  defp fetch_api_key_for_audit(token) when is_binary(token) do
+    with {:ok, token_prefix} <- ApiKeySecret.token_prefix(token),
+         %ApiKey{} = api_key <- Repo.get_by(ApiKey, token_prefix: token_prefix) do
+      {:ok, api_key, token_prefix}
+    else
+      _ -> :skip
+    end
+  end
+
+  defp fetch_api_key_for_audit(_token), do: :skip
+
   defp normalize_generated_secret(%{token: token}) when is_binary(token),
     do: normalize_generated_secret(token)
 
   defp normalize_generated_secret(token) when is_binary(token) do
-    with {:ok, token_prefix} <- ApiKeySecret.token_prefix(token) do
-      {:ok, %{token: token, token_prefix: token_prefix, secret_hash: ApiKeySecret.hash(token)}}
-    else
-      _ -> {:error, :invalid_api_key_secret}
+    case ApiKeySecret.token_prefix(token) do
+      {:ok, token_prefix} ->
+        {:ok, %{token: token, token_prefix: token_prefix, secret_hash: ApiKeySecret.hash(token)}}
+
+      :error ->
+        {:error, :invalid_api_key_secret}
     end
   end
 

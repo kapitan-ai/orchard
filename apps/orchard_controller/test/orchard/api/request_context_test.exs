@@ -1,49 +1,131 @@
 defmodule Orchard.API.RequestContextTest do
   use Orchard.ConnCase, async: false
 
+  import Ecto.Query
+
   alias Orchard.API.RequestContext
-  alias Orchard.Governance
   alias Orchard.API.Router
+  alias Orchard.Governance
+  alias Orchard.Governance.{ApiKey, AuditLog}
   alias Orchard.Inference.ChatRequestNormalizer
+  alias Orchard.Repo
 
   describe "RequestContext plug" do
-    test "assigns default tenant_id in M1 mode" do
+    @describetag :db
+
+    test "SPEC.md §7.2.2 authenticates a valid bearer key and assigns request provenance" do
+      %{api_key: api_key, token: token, tenant: tenant} =
+        create_api_key_with_token!("request-context")
+
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> RequestContext.call([])
+
+      assert conn.halted == false
+      assert conn.assigns[:tenant_id] == tenant.id
+      assert conn.assigns[:principal_id] == tenant.id
+      assert conn.assigns[:api_key_id] == api_key.id
+    end
+
+    test "SPEC.md §7.2.7 rejects a missing bearer header before controller work" do
       conn =
         build_conn(:get, "/v1/models")
         |> RequestContext.call([])
 
-      assert conn.assigns[:tenant_id] == Governance.legacy_tenant_id()
+      assert conn.halted
+      assert conn.status == 401
+
+      assert Jason.decode!(conn.resp_body) == %{
+               "error" => %{
+                 "message" => "Invalid API key provided.",
+                 "type" => "authentication_error",
+                 "param" => nil,
+                 "code" => "invalid_api_key"
+               }
+             }
     end
 
-    test "assigns nil principal_id and api_key_id in M1 mode" do
+    test "rejects malformed bearer headers" do
       conn =
         build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Token nope")
         |> RequestContext.call([])
 
-      assert conn.assigns[:principal_id] == nil
-      assert conn.assigns[:api_key_id] == nil
+      assert conn.halted
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["type"] == "authentication_error"
     end
 
-    @tag :db
-    test "/v1 routes have caller context assigned via pipeline" do
+    test "rejects revoked bearer keys" do
+      %{api_key: api_key, token: token} = create_api_key_with_token!("request-context-revoked")
+      assert {:ok, _revoked} = Governance.revoke_api_key(api_key.id)
+
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> RequestContext.call([])
+
+      assert conn.halted
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "invalid_api_key"
+    end
+
+    test "successful auth best-effort updates api_keys.last_used_at" do
+      %{api_key: api_key, token: token} = create_api_key_with_token!("request-context-last-used")
+      assert Repo.get!(ApiKey, api_key.id).last_used_at == nil
+
+      _conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> RequestContext.call([])
+
+      assert %DateTime{} = Repo.get!(ApiKey, api_key.id).last_used_at
+    end
+
+    test "tenant-resolved auth failures write an audit row" do
+      %{api_key: api_key, token: token} = create_api_key_with_token!("request-context-audit")
+      bad_token = swap_token_secret(token)
+
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Bearer #{bad_token}")
+        |> RequestContext.call([])
+
+      assert conn.halted
+      assert conn.status == 401
+
+      audit_log =
+        Repo.one!(
+          from(audit_log in AuditLog,
+            where:
+              audit_log.api_key_id == ^api_key.id and audit_log.action == "api_key.auth_failed"
+          )
+        )
+
+      assert audit_log.payload == %{
+               "reason" => "invalid_api_key",
+               "token_prefix" => api_key.token_prefix
+             }
+    end
+
+    test "/v1 routes are protected by the bearer-auth pipeline" do
       conn =
         build_conn(:get, "/v1/models")
         |> put_req_header("accept", "application/json")
         |> Router.call(Router.init([]))
 
-      # The request context plug runs in the :authenticated_api pipeline,
-      # so assigns should be present after routing
-      assert conn.assigns[:tenant_id] == Governance.legacy_tenant_id()
-      assert conn.assigns[:principal_id] == nil
-      assert conn.assigns[:api_key_id] == nil
+      assert conn.halted
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["type"] == "authentication_error"
     end
 
-    test "health routes do NOT have caller context assigned" do
+    test "/health routes bypass the request context auth boundary" do
       conn =
         build_conn(:get, "/health/live")
         |> Router.call(Router.init([]))
 
-      # Health routes use :api pipeline, not :authenticated_api
+      assert conn.status == 200
       refute Map.has_key?(conn.assigns, :tenant_id)
     end
   end
@@ -77,5 +159,19 @@ defmodule Orchard.API.RequestContextTest do
       assert canonical.principal_id == nil
       assert canonical.api_key_id == nil
     end
+  end
+
+  defp create_api_key_with_token!(slug) do
+    {:ok, tenant} = Governance.create_tenant(%{slug: slug, name: String.capitalize(slug)})
+
+    {:ok, %{api_key: api_key, token: token}} =
+      Governance.create_api_key(tenant.id, %{name: "Primary"})
+
+    %{tenant: tenant, api_key: api_key, token: token}
+  end
+
+  defp swap_token_secret(token) do
+    [prefix, _secret] = String.split(token, ".", parts: 2)
+    prefix <> ".tamperedsecret"
   end
 end

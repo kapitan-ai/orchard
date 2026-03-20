@@ -15,6 +15,8 @@ defmodule Orchard.Governance.AuditLog do
   @primary_key {:id, :id, autogenerate: true}
   @foreign_key_type :binary_id
 
+  @type t :: %__MODULE__{}
+
   schema "audit_logs" do
     field(:actor_type, :string)
     field(:actor_id, :string)

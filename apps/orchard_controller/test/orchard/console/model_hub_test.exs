@@ -36,7 +36,8 @@ defmodule OrchardConsole.ModelHubTest do
       {:links, links} = Process.info(self(), :links)
       refute pid in links
 
-      assert_receive {:model_hub, ^ref, :search_finished, {:ok, %{query: "Qwen", results: []}}}, 1000
+      assert_receive {:model_hub, ^ref, :search_finished, {:ok, %{query: "Qwen", results: []}}},
+                     1000
     end
 
     test "forwards query with the supported empty opts contract and sends success message" do
@@ -51,7 +52,10 @@ defmodule OrchardConsole.ModelHubTest do
       assert {:ok, _pid} = ModelHub.start_search(self(), ref, "Qwen")
 
       assert_receive {:captured_search, "Qwen", []}, 1000
-      assert_receive {:model_hub, ^ref, :search_finished, {:ok, %{query: "Qwen", results: ^results}}}, 1000
+
+      assert_receive {:model_hub, ^ref, :search_finished,
+                      {:ok, %{query: "Qwen", results: ^results}}},
+                     1000
     end
 
     test "forwards client errors unchanged" do

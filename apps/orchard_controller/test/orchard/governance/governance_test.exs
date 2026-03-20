@@ -259,6 +259,84 @@ defmodule Orchard.GovernanceTest do
     end
   end
 
+  describe "authenticate_api_key/1" do
+    test "SPEC.md §7.2.2 authenticates a stored bearer key and returns M2a provenance" do
+      tenant = create_tenant!("tenant-auth")
+
+      {:ok, %{api_key: api_key, token: token}} =
+        Governance.create_api_key(tenant.id, %{name: "Primary"})
+
+      assert {:ok, auth_context} = Governance.authenticate_api_key(token)
+      assert auth_context.tenant_id == tenant.id
+      assert auth_context.principal_id == tenant.id
+      assert auth_context.api_key_id == api_key.id
+    end
+
+    test "rejects unknown and malformed tokens" do
+      assert {:error, :invalid_api_key} = Governance.authenticate_api_key("orch_missing.secret")
+      assert {:error, :invalid_api_key} = Governance.authenticate_api_key("not-a-token")
+    end
+
+    test "SPEC.md §10.2 revocation is immediate for subsequent authentication attempts" do
+      tenant = create_tenant!("tenant-auth-revoked")
+
+      {:ok, %{api_key: api_key, token: token}} =
+        Governance.create_api_key(tenant.id, %{name: "Primary"})
+
+      assert {:ok, _auth_context} = Governance.authenticate_api_key(token)
+      assert {:ok, _revoked} = Governance.revoke_api_key(api_key.id)
+      assert {:error, :api_key_revoked} = Governance.authenticate_api_key(token)
+    end
+  end
+
+  describe "touch_api_key_last_used/1" do
+    test "updates last_used_at for a valid api key" do
+      tenant = create_tenant!("tenant-last-used")
+      {:ok, %{api_key: api_key}} = Governance.create_api_key(tenant.id, %{name: "Primary"})
+      assert Repo.get!(ApiKey, api_key.id).last_used_at == nil
+
+      assert :ok = Governance.touch_api_key_last_used(api_key.id)
+
+      touched = Repo.get!(ApiKey, api_key.id)
+      assert %DateTime{} = touched.last_used_at
+    end
+
+    test "returns :api_key_not_found for unknown ids" do
+      assert {:error, :api_key_not_found} =
+               Governance.touch_api_key_last_used(Ecto.UUID.generate())
+    end
+  end
+
+  describe "audit_api_key_auth_failure/2" do
+    test "writes an audit row when a tenant-resolved key fails authentication" do
+      tenant = create_tenant!("tenant-auth-audit")
+
+      {:ok, %{api_key: api_key, token: token}} =
+        Governance.create_api_key(tenant.id, %{name: "Primary"})
+
+      assert :ok = Governance.audit_api_key_auth_failure(token, :invalid_api_key)
+
+      audit_log = audit_log!(api_key.id, "api_key.auth_failed")
+      assert audit_log.tenant_id == tenant.id
+      assert audit_log.api_key_id == api_key.id
+      assert audit_log.target_type == "api_key"
+      assert audit_log.target_id == api_key.id
+
+      assert audit_log.payload == %{
+               "reason" => "invalid_api_key",
+               "token_prefix" => api_key.token_prefix
+             }
+    end
+
+    test "skips persistence when the tenant cannot be resolved from the token" do
+      assert :skipped =
+               Governance.audit_api_key_auth_failure("orch_missing.secret", :invalid_api_key)
+
+      assert :skipped = Governance.audit_api_key_auth_failure(nil, :missing_header)
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+  end
+
   describe "revoke_api_key/1" do
     test "revokes once, writes one audit row, and treats later revokes as a noop" do
       tenant = create_tenant!("tenant-revoke")

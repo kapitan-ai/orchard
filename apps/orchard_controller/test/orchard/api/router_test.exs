@@ -1,15 +1,29 @@
 defmodule Orchard.API.RouterTest do
   use Orchard.ConnCase, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.Router
+  alias Orchard.Governance
+  alias Orchard.Repo
 
   describe "route registration" do
     @describetag :db
 
-    test "GET /v1/models is routed" do
+    test "GET /v1/models requires bearer auth" do
       conn =
         build_conn(:get, "/v1/models")
         |> put_req_header("accept", "application/json")
+        |> Router.call(Router.init([]))
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["type"] == "authentication_error"
+    end
+
+    test "GET /v1/models is routed for authenticated callers" do
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("accept", "application/json")
+        |> put_req_header("authorization", "Bearer #{default_api_token!()}")
         |> Router.call(Router.init([]))
 
       assert conn.status == 200
@@ -18,7 +32,7 @@ defmodule Orchard.API.RouterTest do
       assert body["data"] == []
     end
 
-    test "POST /v1/chat/completions is routed" do
+    test "POST /v1/chat/completions is routed for authenticated callers" do
       params = %{
         "model" => "nonexistent@v1",
         "messages" => [%{"role" => "user", "content" => "hello"}]
@@ -28,11 +42,11 @@ defmodule Orchard.API.RouterTest do
         build_conn(:post, "/v1/chat/completions")
         |> put_req_header("accept", "application/json")
         |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer #{default_api_token!()}")
         |> Map.put(:params, params)
         |> Map.put(:body_params, params)
         |> Router.call(Router.init([]))
 
-      # Route is wired and reaches the orchestrator (model not found)
       assert conn.status == 404
       body = Jason.decode!(conn.resp_body)
       assert body["error"]["type"] == "invalid_request_error"
@@ -52,10 +66,6 @@ defmodule Orchard.API.RouterTest do
 
   describe "JSON body parsing" do
     test "Plug.Parsers is configured for JSON on the endpoint" do
-      # Verify the endpoint module includes Plug.Parsers with JSON support.
-      # The actual Endpoint.call/2 requires a running endpoint, so we test
-      # the parser configuration declaratively and exercise JSON round-trip
-      # through Plug.Parsers directly.
       body = Jason.encode!(%{model: "test", messages: []})
 
       conn =
@@ -69,7 +79,6 @@ defmodule Orchard.API.RouterTest do
           )
         )
 
-      # Plug.Parsers successfully decoded the JSON body
       assert conn.body_params["model"] == "test"
       assert conn.body_params["messages"] == []
     end
@@ -80,7 +89,7 @@ defmodule Orchard.API.RouterTest do
     @describetag :db
 
     setup do
-      Ecto.Adapters.SQL.Sandbox.mode(Orchard.Repo, {:shared, self()})
+      Sandbox.mode(Repo, {:shared, self()})
       :ok
     end
 
@@ -116,5 +125,12 @@ defmodule Orchard.API.RouterTest do
       assert conn.resp_body =~ "model-hub-search-form"
       assert conn.resp_body =~ "Read-only in B1. Download and import are deferred to B2/B3."
     end
+  end
+
+  defp default_api_token! do
+    slug = "router-auth-#{System.unique_integer([:positive])}"
+    {:ok, tenant} = Governance.create_tenant(%{slug: slug, name: String.capitalize(slug)})
+    {:ok, %{token: token}} = Governance.create_api_key(tenant.id, %{name: "Primary"})
+    token
   end
 end

@@ -366,7 +366,9 @@ if config_env() == :prod do
             model_load_timeout_ms: env_int.("ORCHARD_MODEL_LOAD_TIMEOUT_MS", "120000")
           )
 
-      controller_hf_token = env_optional_string.("ORCHARD_HF_TOKEN") || env_optional_string.("HF_TOKEN")
+      controller_hf_token =
+        env_optional_string.("ORCHARD_HF_TOKEN") || env_optional_string.("HF_TOKEN")
+
       controller_hf_base_url = env_optional_string.("ORCHARD_HF_BASE_URL")
 
       controller_hf_api_base_url =
@@ -376,18 +378,18 @@ if config_env() == :prod do
           )
 
       config :orchard_controller,
-        :hf,
-        Keyword.merge(
-          default_hf_config.(),
-          Enum.reject(
-            [
-              base_url: controller_hf_base_url,
-              api_base_url: controller_hf_api_base_url,
-              token: controller_hf_token
-            ],
-            fn {_k, v} -> is_nil(v) end
-          )
-        )
+             :hf,
+             Keyword.merge(
+               default_hf_config.(),
+               Enum.reject(
+                 [
+                   base_url: controller_hf_base_url,
+                   api_base_url: controller_hf_api_base_url,
+                   token: controller_hf_token
+                 ],
+                 fn {_k, v} -> is_nil(v) end
+               )
+             )
 
       # --- Transport listener configuration ---
       {transport_config, url_config, transport_degraded?} =

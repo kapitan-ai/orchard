@@ -160,7 +160,16 @@ defmodule Orchard.Models.HubClient do
     api_base_url = resolve_api_base_url(config)
     connect_timeout = Keyword.get(config, :connect_timeout_ms, @default_connect_timeout_ms)
     receive_timeout = Keyword.get(config, :receive_timeout_ms, @default_receive_timeout_ms)
-    max_attempts = max(normalize_non_negative_integer(Keyword.get(config, :retry_attempts), @default_retry_attempts), 1)
+
+    max_attempts =
+      max(
+        normalize_non_negative_integer(
+          Keyword.get(config, :retry_attempts),
+          @default_retry_attempts
+        ),
+        1
+      )
+
     req_options = config |> Keyword.get(:req_options, []) |> sanitize_req_options()
 
     base_opts = [
@@ -448,7 +457,8 @@ defmodule Orchard.Models.HubClient do
 
   defp normalize_non_negative_integer(value, default \\ nil)
 
-  defp normalize_non_negative_integer(value, _default) when is_integer(value) and value >= 0, do: value
+  defp normalize_non_negative_integer(value, _default) when is_integer(value) and value >= 0,
+    do: value
 
   defp normalize_non_negative_integer(value, default) when is_binary(value) do
     value
