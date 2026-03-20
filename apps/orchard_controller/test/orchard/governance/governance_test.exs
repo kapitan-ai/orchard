@@ -38,6 +38,106 @@ defmodule Orchard.GovernanceTest do
   alias Orchard.Governance
   alias Orchard.Governance.{ApiKey, ApiKeySecret, AuditLog, Tenant}
 
+  describe "create_tenant/1" do
+    test "creates a tenant, ignores caller-supplied ids, and writes one audit row" do
+      legacy_tenant = Repo.get!(Tenant, Governance.legacy_tenant_id())
+
+      assert {:ok, tenant} =
+               Governance.create_tenant(%{
+                 id: Governance.legacy_tenant_id(),
+                 slug: "tenant-created",
+                 name: "Tenant Created",
+                 inserted_at: DateTime.utc_now(),
+                 updated_at: DateTime.utc_now()
+               })
+
+      persisted = Repo.get!(Tenant, tenant.id)
+      audit_log = tenant_audit_log!(tenant.id, "tenant.created")
+
+      assert tenant.id != Governance.legacy_tenant_id()
+      assert tenant.slug == "tenant-created"
+      assert tenant.name == "Tenant Created"
+      assert persisted.id == tenant.id
+      assert persisted.slug == "tenant-created"
+      assert persisted.name == "Tenant Created"
+
+      assert legacy_tenant.slug == Governance.legacy_tenant_slug()
+      assert legacy_tenant.name == Governance.legacy_tenant_name()
+
+      assert audit_log.tenant_id == tenant.id
+      assert audit_log.api_key_id == nil
+      assert audit_log.actor_type == "system"
+      assert audit_log.actor_id == nil
+      assert audit_log.action == "tenant.created"
+      assert audit_log.target_type == "tenant"
+      assert audit_log.target_id == tenant.id
+      assert audit_log.payload == %{"slug" => "tenant-created", "name" => "Tenant Created"}
+      assert count_tenant_audit_logs(tenant.id, "tenant.created") == 1
+    end
+
+    test "returns a changeset for missing attrs and leaves no non-legacy rows behind" do
+      non_legacy_count =
+        Repo.aggregate(
+          from(tenant in Tenant, where: tenant.id != ^Governance.legacy_tenant_id()),
+          :count,
+          :id
+        )
+
+      assert {:error, changeset} = Governance.create_tenant(%{})
+      assert %{slug: ["can't be blank"], name: ["can't be blank"]} = errors_on(changeset)
+
+      assert Repo.aggregate(
+               from(tenant in Tenant, where: tenant.id != ^Governance.legacy_tenant_id()),
+               :count,
+               :id
+             ) == non_legacy_count
+
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+
+    test "surfaces duplicate slug changesets and preserves the canonical legacy tenant" do
+      assert {:error, changeset} =
+               Governance.create_tenant(%{
+                 id: Ecto.UUID.generate(),
+                 slug: Governance.legacy_tenant_slug(),
+                 name: "Duplicate Legacy"
+               })
+
+      assert %{slug: ["has already been taken"]} = errors_on(changeset)
+
+      legacy_tenant = Repo.get!(Tenant, Governance.legacy_tenant_id())
+      assert legacy_tenant.slug == Governance.legacy_tenant_slug()
+      assert legacy_tenant.name == Governance.legacy_tenant_name()
+      assert count_tenant_audit_logs(legacy_tenant.id, "tenant.created") == 0
+    end
+
+    test "rolls back the tenant insert when audit log creation fails" do
+      with_env(:governance_audit_log_impl, Orchard.GovernanceTest.InvalidAuditLog, fn ->
+        assert {:error, changeset} =
+                 Governance.create_tenant(%{slug: "tenant-audit-fail", name: "Tenant Audit Fail"})
+
+        assert %{target_type: ["can't be blank"]} = errors_on(changeset)
+      end)
+
+      assert Repo.get_by(Tenant, slug: "tenant-audit-fail") == nil
+      assert Repo.aggregate(AuditLog, :count, :id) == 0
+    end
+  end
+
+  describe "list_tenants/0" do
+    test "returns persisted tenants including the legacy tenant in slug order" do
+      create_tenant!("beta")
+      create_tenant!("alpha")
+
+      assert Governance.list_tenants()
+             |> Enum.map(&{&1.slug, &1.name}) == [
+               {"alpha", "Alpha"},
+               {"beta", "Beta"},
+               {Governance.legacy_tenant_slug(), Governance.legacy_tenant_name()}
+             ]
+    end
+  end
+
   describe "create_api_key/2" do
     test "returns the cleartext token once, persists only generated metadata, and writes an audit row" do
       tenant = create_tenant!("tenant-create")
@@ -272,6 +372,28 @@ defmodule Orchard.GovernanceTest do
     Repo.aggregate(
       from(audit_log in AuditLog,
         where: audit_log.api_key_id == ^api_key_id and audit_log.action == ^action
+      ),
+      :count,
+      :id
+    )
+  end
+
+  defp tenant_audit_log!(tenant_id, action) do
+    Repo.one!(
+      from(audit_log in AuditLog,
+        where:
+          audit_log.tenant_id == ^tenant_id and audit_log.target_type == "tenant" and
+            audit_log.target_id == ^tenant_id and audit_log.action == ^action
+      )
+    )
+  end
+
+  defp count_tenant_audit_logs(tenant_id, action) do
+    Repo.aggregate(
+      from(audit_log in AuditLog,
+        where:
+          audit_log.tenant_id == ^tenant_id and audit_log.target_type == "tenant" and
+            audit_log.target_id == ^tenant_id and audit_log.action == ^action
       ),
       :count,
       :id

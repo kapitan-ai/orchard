@@ -25,6 +25,21 @@ defmodule Orchard.Governance do
   @spec legacy_tenant_name() :: String.t()
   def legacy_tenant_name, do: @legacy_tenant_name
 
+  @spec create_tenant(map() | keyword()) :: {:ok, %Tenant{}} | {:error, Changeset.t()}
+  def create_tenant(attrs) do
+    attrs = normalize_attrs(attrs)
+
+    Repo.transaction(fn ->
+      with {:ok, tenant} <- insert_tenant(attrs),
+           {:ok, _audit_log} <- insert_tenant_audit_log(tenant, "tenant.created", utc_now()) do
+        {:ok, tenant}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
   @spec create_api_key(%Tenant{} | Ecto.UUID.t(), map() | keyword()) ::
           {:ok, api_key_creation_result()}
           | {:error, Changeset.t() | :tenant_not_found | :invalid_api_key_secret}
@@ -63,6 +78,19 @@ defmodule Orchard.Governance do
       end
     end)
     |> unwrap_transaction_result()
+  end
+
+  @spec list_tenants() :: [%Tenant{}]
+  def list_tenants do
+    Tenant
+    |> order_by([tenant], asc: tenant.slug)
+    |> Repo.all()
+  end
+
+  defp insert_tenant(attrs) do
+    %Tenant{}
+    |> Tenant.changeset(%{slug: Map.get(attrs, "slug"), name: Map.get(attrs, "name")})
+    |> Repo.insert()
   end
 
   defp insert_api_key(%Tenant{} = tenant, attrs, generated) do
@@ -146,6 +174,22 @@ defmodule Orchard.Governance do
       target_id: api_key.id,
       occurred_at: occurred_at,
       payload: %{"name" => api_key.name, "token_prefix" => api_key.token_prefix}
+    })
+    |> Repo.insert()
+  end
+
+  defp insert_tenant_audit_log(%Tenant{} = tenant, action, occurred_at) do
+    %AuditLog{}
+    |> audit_log_impl().changeset(%{
+      tenant_id: tenant.id,
+      api_key_id: nil,
+      actor_type: "system",
+      actor_id: nil,
+      action: action,
+      target_type: "tenant",
+      target_id: tenant.id,
+      occurred_at: occurred_at,
+      payload: %{"slug" => tenant.slug, "name" => tenant.name}
     })
     |> Repo.insert()
   end
