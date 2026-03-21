@@ -16,19 +16,46 @@ defmodule Orchard.API.ChatCompletionsController do
   import Orchard.API.ErrorHelpers, only: [send_error: 5]
 
   alias Orchard.API.SSE
-  alias Orchard.Inference.{ChatError, ChatOrchestrator}
+  alias Orchard.Inference.{ChatError, ChatOrchestrator, ChatResponseSerializer}
   alias Orchard.InferenceEvent
+  alias Orchard.Requests.Idempotency
 
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def create(conn, params) do
     caller_context = extract_caller_context(conn)
+    tenant_id = Keyword.fetch!(caller_context, :tenant_id)
 
+    case build_idempotency_context(conn, tenant_id, params) do
+      {:ok, idempotency} ->
+        case resolve_idempotency(conn, idempotency) do
+          {:proceed, conn} ->
+            execute_request(conn, params, caller_context, idempotency)
+
+          {:halt, conn} ->
+            conn
+        end
+
+      {:error, :invalid_idempotency_key} ->
+        send_idempotency_error(conn, :invalid_idempotency_key)
+
+      {:error, :invalid_request_shape} ->
+        send_error(
+          conn,
+          :internal_server_error,
+          "Internal error: invalid idempotency request shape",
+          "api_error",
+          code: "internal_error"
+        )
+    end
+  end
+
+  defp execute_request(conn, params, caller_context, idempotency) do
     case ChatOrchestrator.prepare(params, caller_context) do
       {:ok, canonical, model} ->
         if canonical.stream? do
-          handle_streaming(conn, canonical, model)
+          handle_streaming(conn, canonical, model, idempotency)
         else
-          handle_non_streaming(conn, canonical, model)
+          handle_non_streaming(conn, canonical, model, idempotency)
         end
 
       {:error, reason} ->
@@ -45,8 +72,13 @@ defmodule Orchard.API.ChatCompletionsController do
 
   # -- Non-streaming response ------------------------------------------------
 
-  defp handle_non_streaming(conn, canonical, model) do
-    case ChatOrchestrator.execute(canonical, model) do
+  defp handle_non_streaming(conn, canonical, model, idempotency) do
+    created = System.system_time(:second)
+
+    case ChatOrchestrator.execute(canonical, model,
+           response_created_at: created,
+           idempotency: idempotency
+         ) do
       {:ok, canonical, events} ->
         case Enum.find(events, &InferenceEvent.terminal?/1) do
           %{event: %InferenceEvent.Failed{}} = terminal ->
@@ -56,8 +88,14 @@ defmodule Orchard.API.ChatCompletionsController do
             |> send_chat_error(conn)
 
           _other ->
-            send_completion_response(conn, canonical, events)
+            send_completion_response(conn, canonical, events, created)
         end
+
+      {:replay, request} ->
+        json(conn, request.response_payload)
+
+      {:error, {:idempotency_conflict, reason}} ->
+        send_idempotency_error(conn, reason)
 
       {:error, reason} ->
         reason
@@ -67,42 +105,23 @@ defmodule Orchard.API.ChatCompletionsController do
     end
   end
 
-  defp send_completion_response(conn, canonical, events) do
-    deltas = collect_deltas(events)
-    content = Enum.join(deltas, "")
-    usage = extract_usage(events)
-
-    response = %{
-      id: canonical.public_id,
-      object: "chat.completion",
-      created: System.system_time(:second),
-      model: format_model_display(canonical),
-      choices: [
-        %{
-          index: 0,
-          message: %{role: "assistant", content: content},
-          finish_reason: extract_finish_reason(events)
-        }
-      ],
-      usage: usage
-    }
-
-    json(conn, response)
+  defp send_completion_response(conn, canonical, events, created) do
+    json(conn, ChatResponseSerializer.completion_payload(canonical, events, created))
   end
 
   # -- Streaming (SSE) response ----------------------------------------------
 
-  defp handle_streaming(conn, canonical, model) do
+  defp handle_streaming(conn, canonical, model, idempotency) do
     case SSE.start(conn) do
       {:ok, conn} ->
-        stream_completion(conn, canonical, model)
+        stream_completion(conn, canonical, model, idempotency)
 
       {:error, :closed} ->
         conn
     end
   end
 
-  defp stream_completion(conn, canonical, model) do
+  defp stream_completion(conn, canonical, model, idempotency) do
     model_display = format_model_display(canonical)
     created = System.system_time(:second)
 
@@ -122,7 +141,12 @@ defmodule Orchard.API.ChatCompletionsController do
       dispatch_stream_event(state_key, event, canonical.public_id, model_display, created)
     end
 
-    result = ChatOrchestrator.execute(canonical, model, event_handler: handler)
+    result =
+      ChatOrchestrator.execute(canonical, model,
+        event_handler: handler,
+        idempotency: idempotency
+      )
+
     state = Process.get(state_key)
     Process.delete(state_key)
 
@@ -190,7 +214,7 @@ defmodule Orchard.API.ChatCompletionsController do
   end
 
   defp emit_finish_chunk(state, event, public_id, model_display, created) do
-    finish_reason = map_finish_reason(event)
+    finish_reason = ChatResponseSerializer.finish_reason_from_event(event)
 
     chunk =
       build_chunk(public_id, model_display, created, [
@@ -255,10 +279,19 @@ defmodule Orchard.API.ChatCompletionsController do
   end
 
   defp finalize_stream(state, {:error, reason}, _canonical, _model_display, _created) do
-    mapping =
-      reason
-      |> ChatError.from_execute_error()
-      |> ChatError.sse_mapping()
+    mapping = sse_error_mapping(reason)
+
+    case SSE.send_error(state.conn, mapping.message, mapping.type,
+           code: mapping.code,
+           param: mapping.param
+         ) do
+      {:ok, conn} -> conn
+      {:error, :closed} -> state.conn
+    end
+  end
+
+  defp finalize_stream(state, {:replay, _request}, _canonical, _model_display, _created) do
+    mapping = sse_error_mapping({:idempotency_conflict, :idempotency_not_replayable})
 
     case SSE.send_error(state.conn, mapping.message, mapping.type,
            code: mapping.code,
@@ -284,7 +317,7 @@ defmodule Orchard.API.ChatCompletionsController do
   end
 
   defp emit_usage_chunk(state, public_id, model_display, created) do
-    usage = format_usage(state.usage)
+    usage = ChatResponseSerializer.usage_map(state.usage)
 
     chunk =
       build_chunk(public_id, model_display, created, [])
@@ -310,64 +343,58 @@ defmodule Orchard.API.ChatCompletionsController do
     "#{canonical.model_ref.model_id}@#{canonical.model_ref.version}"
   end
 
+  defp build_idempotency_context(conn, tenant_id, params) do
+    case Idempotency.extract_key(conn) do
+      {:ok, key} ->
+        maybe_build_idempotency_context(tenant_id, key, params)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp maybe_build_idempotency_context(_tenant_id, nil, _params), do: {:ok, nil}
+
+  defp maybe_build_idempotency_context(tenant_id, key, params) do
+    Idempotency.build_context(tenant_id, key, params)
+  end
+
+  defp resolve_idempotency(conn, nil), do: {:proceed, conn}
+
+  defp resolve_idempotency(conn, idempotency) do
+    case Idempotency.resolve(idempotency) do
+      :proceed ->
+        {:proceed, conn}
+
+      {:replay, request} ->
+        {:halt, json(conn, request.response_payload)}
+
+      {:conflict, reason, _request} ->
+        {:halt, send_idempotency_error(conn, reason)}
+    end
+  end
+
+  defp send_idempotency_error(conn, reason) do
+    mapping = Idempotency.conflict_mapping(reason)
+    send_chat_error(mapping, conn)
+  end
+
+  defp sse_error_mapping({:idempotency_conflict, reason}) do
+    reason
+    |> Idempotency.conflict_mapping()
+    |> Map.delete(:status)
+  end
+
+  defp sse_error_mapping(reason) do
+    reason
+    |> ChatError.from_execute_error()
+    |> ChatError.sse_mapping()
+  end
+
   defp send_chat_error(mapping, conn) do
     send_error(conn, mapping.status, mapping.message, mapping.type,
       param: mapping.param,
       code: mapping.code
     )
   end
-
-  defp collect_deltas(events) do
-    events
-    |> Enum.filter(&(InferenceEvent.kind(&1) == :output_text_delta))
-    |> Enum.map(fn event -> event.event.delta end)
-  end
-
-  defp extract_usage(events) do
-    format_usage(find_usage(events))
-  end
-
-  defp find_usage(events) do
-    usage_event = Enum.find(events, &(InferenceEvent.kind(&1) == :usage))
-    completed_event = Enum.find(events, &(InferenceEvent.kind(&1) == :completed))
-
-    cond do
-      usage_event != nil -> usage_event.event.usage
-      completed_event != nil && completed_event.event.usage != nil -> completed_event.event.usage
-      true -> nil
-    end
-  end
-
-  defp format_usage(nil) do
-    %{prompt_tokens: 0, completion_tokens: 0, total_tokens: 0}
-  end
-
-  defp format_usage(usage) do
-    %{
-      prompt_tokens: usage.input_tokens,
-      completion_tokens: usage.output_tokens,
-      total_tokens: usage.total_tokens
-    }
-  end
-
-  defp extract_finish_reason(events) do
-    terminal = Enum.find(events, &InferenceEvent.terminal?/1)
-
-    case terminal do
-      nil -> "stop"
-      event -> map_finish_reason(event)
-    end
-  end
-
-  defp map_finish_reason(event) do
-    case InferenceEvent.kind(event) do
-      :completed -> map_proto_finish_reason(event.event.finish_reason)
-      :failed -> "error"
-      _ -> "stop"
-    end
-  end
-
-  defp map_proto_finish_reason(:finish_reason_stop), do: "stop"
-  defp map_proto_finish_reason(:finish_reason_length), do: "length"
-  defp map_proto_finish_reason(_), do: "stop"
 end

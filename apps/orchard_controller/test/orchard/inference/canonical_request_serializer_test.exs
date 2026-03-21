@@ -1,0 +1,62 @@
+defmodule Orchard.Inference.CanonicalRequestSerializerTest do
+  use ExUnit.Case, async: true
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.CanonicalRequestSerializer
+
+  test "serialize/1 emits string-keyed endpoint-aware canonical data" do
+    canonical =
+      CanonicalRequest.new(%{
+        internal_id: Ecto.UUID.generate(),
+        public_id: "resp_123",
+        endpoint: :responses,
+        tenant_id: Ecto.UUID.generate(),
+        principal_id: "principal_1",
+        api_key_id: Ecto.UUID.generate(),
+        model_ref: %{model_id: "test-model", version: "v1"},
+        input_items: [%{"role" => "user", meta: %{turn: 1}}],
+        rendered_prompt: "hello",
+        input_token_count: 12,
+        stream?: false,
+        stream_include_usage: false,
+        sampling: %{temperature: 0.7, top_p: 0.9, stop: ["END"], seed: 7},
+        response_format: %{type: :text},
+        tooling: %{tools: [%{name: "calculator"}], tool_choice: %{type: "auto"}},
+        metadata: %{trace_id: "trace-1", tags: [:a, :b]},
+        admission: %{timeout_ms: 10_000, queue_wait_ms: 50, max_cold_start_ms: 500},
+        resolved_policy: %{
+          quota_id: "quota_1",
+          routing_policy_id: "route_1",
+          allowed_pool_ids: ["pool_1"],
+          residency_preference: :prefer_loaded
+        }
+      })
+
+    serialized = CanonicalRequestSerializer.serialize(canonical)
+
+    assert serialized["endpoint"] == "responses"
+    assert serialized["model_ref"] == %{"model_id" => "test-model", "version" => "v1"}
+    assert serialized["input_items"] == [%{"role" => "user", "meta" => %{"turn" => 1}}]
+    assert serialized["metadata"] == %{"trace_id" => "trace-1", "tags" => ["a", "b"]}
+    assert serialized["sampling"]["stop"] == ["END"]
+    assert serialized["resolved_policy"]["residency_preference"] == "prefer_loaded"
+    refute Map.has_key?(serialized, :endpoint)
+  end
+
+  test "serialize/1 rejects embedded structs in plain data fields" do
+    canonical =
+      CanonicalRequest.new(%{
+        internal_id: Ecto.UUID.generate(),
+        public_id: "resp_struct",
+        endpoint: :chat_completions,
+        tenant_id: Ecto.UUID.generate(),
+        model_ref: %{model_id: "test-model", version: "v1"},
+        input_items: [%{payload: %URI{scheme: "file", path: "/tmp/test"}}],
+        stream?: false
+      })
+
+    assert_raise ArgumentError, ~r/expected plain map data/, fn ->
+      CanonicalRequestSerializer.serialize(canonical)
+    end
+  end
+end

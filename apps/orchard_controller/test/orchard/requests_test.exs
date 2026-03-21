@@ -3,6 +3,7 @@ defmodule Orchard.RequestsTest do
 
   import Orchard.TestSupport.ModelRequestFixtures
 
+  alias Orchard.Governance
   alias Orchard.Models
   alias Orchard.Requests
   alias Orchard.Requests.Request
@@ -252,6 +253,39 @@ defmodule Orchard.RequestsTest do
 
       assert fetched != nil
       assert fetched.retry_of_request == nil
+    end
+
+    test "preloads tenant and api_key associations when present" do
+      {:ok, tenant} =
+        Governance.create_tenant(%{
+          slug: "request-preload-#{System.unique_integer([:positive])}",
+          name: "Request Preload"
+        })
+
+      {:ok, %{api_key: api_key}} = Governance.create_api_key(tenant.id, %{name: "Primary"})
+
+      request =
+        create_request!(%{
+          public_id: "req_preload_assoc",
+          tenant_id: tenant.id,
+          api_key_id: api_key.id
+        })
+
+      fetched = Requests.get_request_by_public_id(request.public_id)
+
+      assert fetched.tenant.id == tenant.id
+      assert fetched.api_key.id == api_key.id
+      refute match?(%Ecto.Association.NotLoaded{}, fetched.tenant)
+      refute match?(%Ecto.Association.NotLoaded{}, fetched.api_key)
+    end
+
+    test "returns nil tenant and api_key associations when absent" do
+      request = create_request!(%{public_id: "req_no_assoc", api_key_id: nil})
+
+      fetched = Requests.get_request_by_public_id(request.public_id)
+
+      assert fetched.tenant == nil
+      assert fetched.api_key == nil
     end
 
     test "returns nil for unknown public_id" do

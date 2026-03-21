@@ -22,7 +22,14 @@ defmodule Orchard.Requests do
   def get_request_by_public_id(public_id) do
     Request
     |> where([r], r.public_id == ^public_id)
-    |> preload([:retry_of_request])
+    |> preload([:retry_of_request, :tenant, :api_key])
+    |> Repo.one()
+  end
+
+  @spec get_request_by_tenant_and_idempotency_key(Ecto.UUID.t(), String.t()) :: struct() | nil
+  def get_request_by_tenant_and_idempotency_key(tenant_id, idempotency_key) do
+    Request
+    |> where([r], r.tenant_id == ^tenant_id and r.idempotency_key == ^idempotency_key)
     |> Repo.one()
   end
 

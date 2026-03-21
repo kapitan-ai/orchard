@@ -15,6 +15,7 @@ defmodule Orchard.Requests.Request do
 
   import Ecto.Changeset
 
+  alias Orchard.Governance.{ApiKey, Tenant}
   alias Orchard.Models.Model
   alias Orchard.Requests.RequestEvent
 
@@ -43,8 +44,6 @@ defmodule Orchard.Requests.Request do
   schema "requests" do
     field(:public_id, :string)
     field(:endpoint, Ecto.Enum, values: @endpoints)
-    field(:tenant_id, Ecto.UUID)
-    field(:api_key_id, Ecto.UUID)
     field(:service_account_id, Ecto.UUID)
     field(:requested_model, :string)
     field(:node_id, Ecto.UUID)
@@ -71,6 +70,8 @@ defmodule Orchard.Requests.Request do
     field(:error_code, :string)
     field(:error_message, :string)
 
+    belongs_to(:tenant, Tenant)
+    belongs_to(:api_key, ApiKey)
     belongs_to(:model, Model)
     belongs_to(:retry_of_request, __MODULE__, foreign_key: :retry_of_request_id)
     has_many(:request_events, RequestEvent)

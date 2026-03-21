@@ -3,21 +3,32 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
   @moduletag :db
 
+  import Orchard.TestSupport.ModelRequestFixtures
+
   alias Orchard.API.Router
   alias Orchard.ArtifactBundle
   alias Orchard.Governance
   alias Orchard.Inference.ChatRequestNormalizer
   alias Orchard.Node
   alias Orchard.Node.ModelManager
+  alias Orchard.Requests.Idempotency
 
   # When testing through Router.call/2 directly (not the Endpoint),
   # Plug.Parsers does not run, so body_params are not merged into params.
   # We simulate the merge explicitly.
-  defp post_chat(params, token \\ default_api_token!()) do
-    build_conn(:post, "/v1/chat/completions")
-    |> put_req_header("accept", "application/json")
-    |> put_req_header("content-type", "application/json")
-    |> put_req_header("authorization", "Bearer #{token}")
+  defp post_chat(params, token \\ default_api_token!(), headers \\ []) do
+    conn =
+      build_conn(:post, "/v1/chat/completions")
+      |> put_req_header("accept", "application/json")
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer #{token}")
+
+    conn =
+      Enum.reduce(headers, conn, fn {name, value}, acc ->
+        put_req_header(acc, name, value)
+      end)
+
+    conn
     |> Map.put(:body_params, params)
     |> Map.put(:params, params)
     |> Router.call(Router.init([]))
@@ -162,6 +173,253 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert Map.has_key?(error, "type")
       assert Map.has_key?(error, "param")
       assert Map.has_key?(error, "code")
+    end
+
+    @tag :db
+    test "successful non-stream request persists replay payload equal to returned JSON", %{
+      bundle: bundle
+    } do
+      %{token: token} = create_api_key_with_token!("non-stream-persist")
+
+      {:ok, _model} =
+        Orchard.Models.create_model(%{
+          model_id: "persist-non-stream-model",
+          version: "v1",
+          display_name: "Persist Non Stream Model",
+          artifact_uri: "file:///tmp/persist-non-stream-model",
+          artifact_sha256: bundle.hash,
+          state: :active,
+          format: "mlx",
+          backend: "mlx",
+          capabilities: ["chat"],
+          artifact_size_bytes: 1024,
+          resident_memory_bytes: 2048,
+          kv_cache_bytes_per_token: 128,
+          prefill_workspace_bytes_per_token: 64,
+          max_context_tokens: 131_072
+        })
+
+      conn =
+        post_chat(
+          %{
+            "model" => "persist-non-stream-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}]
+          },
+          token
+        )
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      assert body["object"] == "chat.completion"
+
+      [request] =
+        Orchard.Repo.all(Orchard.Requests.Request)
+        |> Enum.filter(&(&1.public_id == body["id"]))
+
+      assert request.state == :completed
+      assert request.response_payload == body
+      assert request.response_preview != nil
+      assert request.response_preview != ""
+    end
+
+    @tag :db
+    test "SPEC.md §3.9 replays a tenant-scoped non-stream response for the same Idempotency-Key",
+         %{
+           bundle: bundle
+         } do
+      %{token: token, tenant: tenant} = create_api_key_with_token!("idempotency-replay")
+
+      {:ok, _model} =
+        Orchard.Models.create_model(%{
+          model_id: "persist-non-stream-model",
+          version: "v1",
+          display_name: "Persist Non Stream Model",
+          artifact_uri: "file:///tmp/persist-non-stream-model",
+          artifact_sha256: bundle.hash,
+          state: :active,
+          format: "mlx",
+          backend: "mlx",
+          capabilities: ["chat"],
+          artifact_size_bytes: 1024,
+          resident_memory_bytes: 2048,
+          kv_cache_bytes_per_token: 128,
+          prefill_workspace_bytes_per_token: 64,
+          max_context_tokens: 131_072
+        })
+
+      params = %{
+        "model" => "persist-non-stream-model@v1",
+        "messages" => [%{"role" => "user", "content" => "hello"}]
+      }
+
+      conn_a = post_chat(params, token, [{"idempotency-key", "tenant-replay"}])
+      conn_b = post_chat(params, token, [{"idempotency-key", "tenant-replay"}])
+
+      assert conn_a.status == 200
+      assert conn_b.status == 200
+      assert Jason.decode!(conn_a.resp_body) == Jason.decode!(conn_b.resp_body)
+
+      [request] = Orchard.Repo.all(Orchard.Requests.Request)
+      assert request.tenant_id == tenant.id
+      assert request.idempotency_key == "tenant-replay"
+      assert is_binary(request.body_hash)
+      assert byte_size(request.body_hash) == 32
+    end
+
+    @tag :db
+    test "SPEC.md §3.9 returns 409 request_in_progress for a matching active tenant-scoped request" do
+      %{token: token, tenant: tenant} = create_api_key_with_token!("idempotency-active")
+
+      {:ok, idempotency} =
+        Idempotency.build_context(tenant.id, "tenant-active", %{
+          "model" => "persist-non-stream-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+
+      create_request!(%{
+        tenant_id: tenant.id,
+        requested_model: "persist-non-stream-model@v1",
+        idempotency_key: "tenant-active",
+        body_hash: idempotency.body_hash,
+        state: :running
+      })
+
+      conn =
+        post_chat(
+          %{
+            "model" => "persist-non-stream-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}]
+          },
+          token,
+          [{"idempotency-key", "tenant-active"}]
+        )
+
+      assert conn.status == 409
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "conflict_error"
+      assert body["error"]["code"] == "request_in_progress"
+    end
+
+    @tag :db
+    test "SPEC.md §3.9 returns 409 idempotency_mismatch for the same tenant and key with a different body" do
+      %{token: token, tenant: tenant} = create_api_key_with_token!("idempotency-mismatch")
+
+      {:ok, idempotency} =
+        Idempotency.build_context(tenant.id, "tenant-mismatch", %{
+          "model" => "persist-non-stream-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+
+      create_request!(%{
+        tenant_id: tenant.id,
+        requested_model: "persist-non-stream-model@v1",
+        idempotency_key: "tenant-mismatch",
+        body_hash: idempotency.body_hash,
+        stream: false,
+        state: :completed,
+        response_payload: %{"id" => "req_prior", "object" => "chat.completion"}
+      })
+
+      conn =
+        post_chat(
+          %{
+            "model" => "persist-non-stream-model@v1",
+            "messages" => [%{"role" => "user", "content" => "different"}]
+          },
+          token,
+          [{"idempotency-key", "tenant-mismatch"}]
+        )
+
+      assert conn.status == 409
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "conflict_error"
+      assert body["error"]["code"] == "idempotency_mismatch"
+    end
+
+    @tag :db
+    test "SPEC.md §3.9 scopes idempotency by tenant so different tenants may reuse the same key",
+         %{
+           bundle: bundle
+         } do
+      %{token: token_a} = create_api_key_with_token!("idempotency-tenant-a")
+      %{token: token_b} = create_api_key_with_token!("idempotency-tenant-b")
+
+      {:ok, _model} =
+        Orchard.Models.create_model(%{
+          model_id: "tenant-scope-model",
+          version: "v1",
+          display_name: "Tenant Scope Model",
+          artifact_uri: "file:///tmp/tenant-scope-model",
+          artifact_sha256: bundle.hash,
+          state: :active,
+          format: "mlx",
+          backend: "mlx",
+          capabilities: ["chat"],
+          artifact_size_bytes: 1024,
+          resident_memory_bytes: 2048,
+          kv_cache_bytes_per_token: 128,
+          prefill_workspace_bytes_per_token: 64,
+          max_context_tokens: 131_072
+        })
+
+      params = %{
+        "model" => "tenant-scope-model@v1",
+        "messages" => [%{"role" => "user", "content" => "hello"}]
+      }
+
+      conn_a = post_chat(params, token_a, [{"idempotency-key", "shared-key"}])
+      conn_b = post_chat(params, token_b, [{"idempotency-key", "shared-key"}])
+
+      assert conn_a.status == 200
+      assert conn_b.status == 200
+      assert length(Orchard.Repo.all(Orchard.Requests.Request)) == 2
+    end
+
+    @tag :db
+    test "SPEC.md §3.9 returns 400 for a blank Idempotency-Key header" do
+      conn =
+        post_chat(
+          %{
+            "model" => "persist-non-stream-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}]
+          },
+          default_api_token!(),
+          [{"idempotency-key", "   "}]
+        )
+
+      assert conn.status == 400
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "invalid_idempotency_key"
+      assert body["error"]["param"] == "Idempotency-Key"
+    end
+
+    @tag :db
+    test "SPEC.md §3.9 returns 400 for repeated Idempotency-Key headers" do
+      token = default_api_token!()
+
+      conn =
+        build_conn(:post, "/v1/chat/completions")
+        |> put_req_header("accept", "application/json")
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> Map.update!(:req_headers, fn headers ->
+          [{"idempotency-key", "first"}, {"idempotency-key", "second"} | headers]
+        end)
+        |> Map.put(:body_params, %{
+          "model" => "persist-non-stream-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+        |> Map.put(:params, %{
+          "model" => "persist-non-stream-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+        |> Router.call(Router.init([]))
+
+      assert conn.status == 400
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["code"] == "invalid_idempotency_key"
+      assert body["error"]["param"] == "Idempotency-Key"
     end
   end
 
@@ -340,6 +598,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert request.canonical_request["response_format"] == %{"type" => "text"}
       assert request.canonical_request["stream"] == true
       assert request.canonical_request["stream_include_usage"] == false
+      assert request.response_payload == nil
+      assert request.response_preview == nil
       refute_struct_artifacts!(request.canonical_request)
       # Terminal state after successful completion
       assert request.state in [:completed, :streaming]
@@ -355,6 +615,53 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert length(events) >= 2
       assert Enum.all?(events, &match?(%DateTime{}, &1.occurred_at))
       assert :validated in event_states
+    end
+
+    @tag :db
+    test "SPEC.md §3.9 returns 409 before SSE start when a streaming duplicate is not replayable",
+         %{
+           bundle: bundle
+         } do
+      %{tenant: tenant, token: token} = create_api_key_with_token!("stream-idempotency")
+
+      {:ok, _model} =
+        Orchard.Models.create_model(%{
+          model_id: "persist-model",
+          version: "v1",
+          display_name: "Persist Model",
+          artifact_uri: "file:///tmp/persist-model",
+          artifact_sha256: bundle.hash,
+          state: :active,
+          format: "mlx",
+          backend: "mlx",
+          capabilities: ["chat"],
+          artifact_size_bytes: 1024,
+          resident_memory_bytes: 2048,
+          kv_cache_bytes_per_token: 128,
+          prefill_workspace_bytes_per_token: 64,
+          max_context_tokens: 131_072
+        })
+
+      params = %{
+        "model" => "persist-model@v1",
+        "messages" => [%{"role" => "user", "content" => "hello"}],
+        "stream" => true
+      }
+
+      first = post_chat(params, token, [{"idempotency-key", "stream-dup"}])
+      second = post_chat(params, token, [{"idempotency-key", "stream-dup"}])
+
+      assert first.status == 200
+      assert second.status == 409
+
+      refute get_resp_header(second, "content-type")
+             |> Enum.any?(&String.contains?(&1, "text/event-stream"))
+
+      body = Jason.decode!(second.resp_body)
+      assert body["error"]["code"] == "idempotency_not_replayable"
+
+      assert Enum.count(Orchard.Repo.all(Orchard.Requests.Request), &(&1.tenant_id == tenant.id)) ==
+               1
     end
   end
 
@@ -557,7 +864,12 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     {:ok, hash} = ArtifactBundle.tree_sha256(source_path)
 
     # Pre-stage at cache locations for all model_ids these tests use
-    model_ids = [{"test-stream-model", "v1"}, {"persist-model", "v1"}]
+    model_ids = [
+      {"test-stream-model", "v1"},
+      {"persist-model", "v1"},
+      {"persist-non-stream-model", "v1"},
+      {"tenant-scope-model", "v1"}
+    ]
 
     cache_paths =
       Enum.map(model_ids, fn {model_id, version} ->
