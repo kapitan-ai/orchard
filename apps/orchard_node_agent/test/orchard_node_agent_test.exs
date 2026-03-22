@@ -1087,20 +1087,26 @@ defmodule OrchardNodeAgentTest do
         end)
 
         # Runtime unload lifecycle
-        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :unload, :start], fn _m,
-                                                                                               meta ->
-          assert meta.model_id == @test_model_id
-          assert meta.skip_rpc == false
-        end)
+        assert_telemetry_event(
+          events,
+          [:orchard, :node, :worker_runtime, :unload, :start],
+          fn _m, meta ->
+            assert meta.model_id == @test_model_id
+            assert meta.skip_rpc == false
+          end
+        )
 
-        assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :unload, :stop], fn m,
-                                                                                              meta ->
-          assert m.duration_ms >= 0
-          assert meta.outcome == :unloaded
-          assert meta.rpc_result == :ok
-          assert meta.stop_result == :ok
-          assert meta.skip_rpc == false
-        end)
+        assert_telemetry_event(
+          events,
+          [:orchard, :node, :worker_runtime, :unload, :stop],
+          fn m, meta ->
+            assert m.duration_ms >= 0
+            assert meta.outcome == :unloaded
+            assert meta.rpc_result == :ok
+            assert meta.stop_result == :ok
+            assert meta.skip_rpc == false
+          end
+        )
       end)
     end
 
@@ -1114,22 +1120,22 @@ defmodule OrchardNodeAgentTest do
         fn ->
           events =
             with_telemetry_collector(all_lifecycle_events(), fn ->
-              # Use correct hash so acquisition cache check passes,
-              # letting the invalid executable cause the runtime failure.
               result = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
               assert result.placement_state == :PLACEMENT_STATE_FAILED
               assert result.failure_category == :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE
               assert result.failure_code == "worker_executable_not_found"
             end)
 
-          # Manager should emit start + exception
-          assert_telemetry_event(events, [:orchard, :node, :model_manager, :load, :start], fn _m,
-                                                                                              meta ->
-            assert meta.model_id == @test_model_id
-            assert meta.version == @test_version
-            assert meta.source_scheme == "file"
-            assert meta.preload == true
-          end)
+          assert_telemetry_event(
+            events,
+            [:orchard, :node, :model_manager, :load, :start],
+            fn _m, meta ->
+              assert meta.model_id == @test_model_id
+              assert meta.version == @test_version
+              assert meta.source_scheme == "file"
+              assert meta.preload == true
+            end
+          )
 
           assert_telemetry_event(
             events,
@@ -1139,19 +1145,19 @@ defmodule OrchardNodeAgentTest do
               assert meta.model_id == @test_model_id
               assert meta.version == @test_version
               assert meta.reason == :worker_executable_not_found
-              # worker_started is true: WorkerProcess GenServer starts before
-              # the adapter's load_model/2 runs and fails
               assert meta.worker_started == true
             end
           )
 
-          # Runtime adapter should also emit start + exception
-          assert_telemetry_event(events, [:orchard, :node, :worker_runtime, :load, :start], fn _m,
-                                                                                               meta ->
-            assert meta.model_id == @test_model_id
-            assert meta.backend == "stub"
-            assert meta.adapter == Orchard.Node.WorkerRuntimeAdapter
-          end)
+          assert_telemetry_event(
+            events,
+            [:orchard, :node, :worker_runtime, :load, :start],
+            fn _m, meta ->
+              assert meta.model_id == @test_model_id
+              assert meta.backend == "stub"
+              assert meta.adapter == Orchard.Node.WorkerRuntimeAdapter
+            end
+          )
 
           assert_telemetry_event(
             events,
@@ -1610,9 +1616,8 @@ defmodule OrchardNodeAgentTest do
                 _ -> false
               end)
 
-            assert length(deltas) >= 1, "Expected at least one output_text_delta"
+            refute deltas == [], "Expected at least one output_text_delta"
 
-            # Terminal: completed with valid usage
             {:ok, %RPCInferenceEvent{event: {:completed, %Completed{} = completed}}} =
               List.last(events)
 
@@ -2180,7 +2185,7 @@ defmodule OrchardNodeAgentTest do
   defp assert_telemetry_event(events, event_name, assertion_fn) do
     matching = Enum.filter(events, fn {name, _m, _meta} -> name == event_name end)
 
-    assert length(matching) >= 1,
+    refute matching == [],
            "Expected at least one #{inspect(event_name)} event, got #{length(matching)}.\nAll events: #{inspect(Enum.map(events, &elem(&1, 0)))}"
 
     {^event_name, measurements, metadata} = hd(matching)
@@ -2190,7 +2195,7 @@ defmodule OrchardNodeAgentTest do
   defp refute_telemetry_event(events, event_name) do
     matching = Enum.filter(events, fn {name, _m, _meta} -> name == event_name end)
 
-    assert length(matching) == 0,
+    assert matching == [],
            "Expected no #{inspect(event_name)} events, got #{length(matching)}: #{inspect(matching)}"
   end
 end

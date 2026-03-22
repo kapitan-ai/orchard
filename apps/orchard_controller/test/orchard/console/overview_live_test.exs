@@ -383,19 +383,14 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "manual refresh updates overview data", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
-      # Capture pre-refresh state
       html_before = render(view)
 
-      # Create a request so counts change
       create_request!(%{state: :completed})
 
-      # Click refresh
       view |> element("#overview-refresh-now") |> render_click()
       html_after = render(view)
 
-      # Total requests count should have changed (pre vs post)
       assert html_after =~ "Last updated"
-      # The count changed from the initial render
       refute html_before == html_after
     end
   end

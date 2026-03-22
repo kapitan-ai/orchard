@@ -49,15 +49,13 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
            {:ok, effective_config} <- resolve_config(source_spec),
            {:ok, head_meta} <- head_object(source_spec, effective_config),
            {:ok, archive_path} <-
-             download_object(source_spec, head_meta, request, effective_config, tmp_root),
-           :ok <-
-             extract_and_cleanup(
-               archive_path,
-               request.staging_path,
-               source_spec.archive_format,
-               tmp_root
-             ) do
-        :ok
+             download_object(source_spec, head_meta, request, effective_config, tmp_root) do
+        extract_and_cleanup(
+          archive_path,
+          request.staging_path,
+          source_spec.archive_format,
+          tmp_root
+        )
       end
     after
       File.rm_rf(tmp_root)
@@ -106,13 +104,11 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
   defp parse_query_params(query) do
     params = URI.decode_query(query)
-    known = MapSet.new(["region", "endpoint"])
-    unknown = params |> Map.keys() |> MapSet.new() |> MapSet.difference(known)
 
-    if MapSet.size(unknown) > 0 do
-      {:error, :invalid_source_uri}
-    else
+    if Enum.all?(Map.keys(params), &(&1 in ["region", "endpoint"])) do
       {:ok, params}
+    else
+      {:error, :invalid_source_uri}
     end
   end
 
@@ -195,8 +191,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
     encoded_key =
       key
       |> Path.split()
-      |> Enum.map(fn seg -> URI.encode(seg, &URI.char_unreserved?/1) end)
-      |> Enum.join("/")
+      |> Enum.map_join("/", fn seg -> URI.encode(seg, &URI.char_unreserved?/1) end)
 
     cond do
       endpoint != nil and force_path_style? ->
@@ -225,14 +220,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
     case s3_request(:head, url, config) do
       {:ok, %{status: 200} = resp} ->
-        # Req 0.5 returns headers as %{"name" => ["value", ...]}
-        content_length = get_header_int(resp.headers, "content-length")
-
-        etag =
-          case Map.get(resp.headers, "etag") do
-            [val | _] -> normalize_etag(val)
-            _ -> nil
-          end
+        content_length = get_header_int(resp, "content-length")
+        etag = get_etag(resp)
 
         case content_length do
           nil ->
@@ -259,18 +248,41 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
     end
   end
 
-  defp get_header_int(headers, name) when is_map(headers) do
-    case Map.get(headers, name) do
-      [value | _] ->
+  defp get_header_int(resp, name) do
+    case header_values(resp, name) do
+      [value | _rest] ->
         case Integer.parse(value) do
           {n, ""} when n > 0 -> n
           _ -> nil
         end
 
-      _ ->
+      [] ->
         nil
     end
   end
+
+  defp get_etag(resp) do
+    case header_values(resp, "etag") do
+      [value | _rest] -> normalize_etag(value)
+      [] -> nil
+    end
+  end
+
+  defp header_values(%{headers: headers}, name), do: header_values(headers, name)
+
+  defp header_values(headers, name) when is_map(headers) do
+    case Map.get(headers, name, []) do
+      values when is_list(values) -> values
+      value when is_binary(value) -> [value]
+      _other -> []
+    end
+  end
+
+  defp header_values(headers, name) when is_list(headers) do
+    for {header_name, value} <- headers, header_name == name, is_binary(value), do: value
+  end
+
+  defp header_values(_headers, _name), do: []
 
   # -- GET Object (Streaming Download) ---------------------------------------
 
@@ -291,7 +303,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
         write_error = :atomics.new(1, [])
 
         into_fun = fn {:data, chunk}, {req, resp} ->
-          case IO.binwrite(file_pid, chunk) do
+          case :file.write(file_pid, chunk) do
             :ok ->
               chunk_size = byte_size(chunk)
               :counters.add(bytes_counter, 1, chunk_size)

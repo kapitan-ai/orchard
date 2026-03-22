@@ -1,10 +1,12 @@
 defmodule OrchardTest do
   use ExUnit.Case, async: true
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.ErrorJSON
   alias Orchard.API.Readiness
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
+  alias Orchard.Cluster.V1.ModelRef, as: ProtoModelRef
   alias Orchard.InferenceContract
   alias Orchard.InferenceEvent
   alias Orchard.ModelManifest
@@ -51,7 +53,7 @@ defmodule OrchardTest do
     Application.put_env(:orchard_controller, :enable_db_checks, true)
     Application.put_env(:orchard_controller, :start_repo, true)
 
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Orchard.Repo)
+    :ok = Sandbox.checkout(Orchard.Repo)
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :transport_degraded, previous_degraded)
@@ -97,6 +99,6 @@ defmodule OrchardTest do
 
     assert InferenceContract.request_model_ref(request).model_id == "mlx-community/phi-3"
     assert InferenceContract.event_kind(event) == :output_text_delta
-    assert %Orchard.Cluster.V1.ModelRef{} = InferenceContract.manifest_proto_model_ref(manifest)
+    assert %ProtoModelRef{} = InferenceContract.manifest_proto_model_ref(manifest)
   end
 end

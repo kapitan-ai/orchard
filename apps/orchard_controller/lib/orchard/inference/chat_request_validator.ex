@@ -1,4 +1,6 @@
 defmodule Orchard.Inference.ChatRequestValidator do
+  alias Orchard.Inference.MessageValidation
+
   @moduledoc """
   Validates incoming `/v1/chat/completions` request parameters.
 
@@ -29,8 +31,6 @@ defmodule Orchard.Inference.ChatRequestValidator do
                       "response_format",
                       "seed"
                     ])
-
-  @supported_roles MapSet.new(["system", "developer", "user", "assistant", "tool"])
 
   @type validation_error ::
           {:error, :missing_required_field, String.t()}
@@ -113,84 +113,11 @@ defmodule Orchard.Inference.ChatRequestValidator do
   # -- Message validation --
 
   defp check_messages(%{"messages" => messages}) when is_list(messages) do
-    messages
-    |> Enum.with_index()
-    |> Enum.reduce_while(:ok, fn {msg, idx}, :ok ->
-      case validate_message(msg, idx) do
-        :ok -> {:cont, :ok}
-        error -> {:halt, error}
-      end
-    end)
+    MessageValidation.validate_chat_messages(messages)
   end
 
   defp check_messages(%{"messages" => _}) do
     {:error, :invalid_value, "messages", "must be an array"}
-  end
-
-  defp validate_message(msg, idx) when is_map(msg) do
-    role = Map.get(msg, "role")
-
-    cond do
-      is_nil(role) ->
-        {:error, :invalid_value, "messages[#{idx}].role", "is required"}
-
-      not MapSet.member?(@supported_roles, role) ->
-        {:error, :invalid_value, "messages[#{idx}].role", "unsupported role: #{inspect(role)}"}
-
-      true ->
-        validate_message_content(msg, idx)
-    end
-  end
-
-  defp validate_message(_msg, idx) do
-    {:error, :invalid_value, "messages[#{idx}]", "must be an object"}
-  end
-
-  defp validate_message_content(msg, idx) do
-    case Map.get(msg, "content") do
-      nil ->
-        # content can be nil for tool-result or assistant messages
-        :ok
-
-      content when is_binary(content) ->
-        :ok
-
-      content when is_list(content) ->
-        validate_content_parts(content, idx)
-
-      _other ->
-        {:error, :invalid_value, "messages[#{idx}].content",
-         "must be a string or array of text parts"}
-    end
-  end
-
-  defp validate_content_parts(parts, msg_idx) do
-    parts
-    |> Enum.with_index()
-    |> Enum.reduce_while(:ok, fn {part, part_idx}, :ok ->
-      case validate_content_part(part, msg_idx, part_idx) do
-        :ok -> {:cont, :ok}
-        error -> {:halt, error}
-      end
-    end)
-  end
-
-  defp validate_content_part(%{"type" => "text", "text" => text}, _msg_idx, _part_idx)
-       when is_binary(text),
-       do: :ok
-
-  defp validate_content_part(%{"type" => "image_url"}, msg_idx, part_idx) do
-    {:error, :unsupported_parameter, "messages[#{msg_idx}].content[#{part_idx}].type=image_url"}
-  end
-
-  defp validate_content_part(%{"type" => type}, msg_idx, part_idx) do
-    {:error, :invalid_value, "messages[#{msg_idx}].content[#{part_idx}].type",
-     "unsupported content type: #{inspect(type)}"}
-  end
-
-  defp validate_content_part(_part, msg_idx, part_idx) do
-    {:error, :invalid_value, "messages[#{msg_idx}].content[#{part_idx}]",
-     "must be a text content part object"}
   end
 
   # -- Type checks for optional fields --

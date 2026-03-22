@@ -198,20 +198,21 @@ defmodule OrchardCLI.Commands.TLS do
   # than the originally-requested CA days — time may have elapsed since the CA
   # was generated, and the cert could have been created with non-default days.
   defp check_days_against_ca(true = _reuse_ca?, ca_crt_path, _ca_days, server_days, runtime) do
-    ca_not_after = parse_cert_not_after(ca_crt_path)
-    now = runtime.now_utc.()
-    intended_expiry = DateTime.add(now, server_days * 86400, :second)
-    ca_expiry = DateTime.from_naive!(ca_not_after, "Etc/UTC")
+    with {:ok, ca_not_after} <- parse_cert_not_after(ca_crt_path) do
+      now = runtime.now_utc.()
+      intended_expiry = DateTime.add(now, server_days * 86_400, :second)
+      ca_expiry = DateTime.from_naive!(ca_not_after, "Etc/UTC")
 
-    if DateTime.compare(intended_expiry, ca_expiry) == :gt do
-      ca_remaining = DateTime.diff(ca_expiry, now, :day)
+      if DateTime.compare(intended_expiry, ca_expiry) == :gt do
+        ca_remaining = DateTime.diff(ca_expiry, now, :day)
 
-      {:error,
-       "Error: server cert validity (#{server_days} days) would exceed CA expiry " <>
-         "(#{NaiveDateTime.to_iso8601(ca_not_after)}Z, #{ca_remaining} days remaining).\n" <>
-         "Use shorter --server-days or --force to regenerate the CA.", 1}
-    else
-      :ok
+        {:error,
+         "Error: server cert validity (#{server_days} days) would exceed CA expiry " <>
+           "(#{NaiveDateTime.to_iso8601(ca_not_after)}Z, #{ca_remaining} days remaining).\n" <>
+           "Use --force to regenerate a new CA with a longer validity.", 1}
+      else
+        :ok
+      end
     end
   end
 
@@ -264,15 +265,20 @@ defmodule OrchardCLI.Commands.TLS do
     with :ok <- check_ca_file(ca_crt_path),
          :ok <- check_metadata_source(meta_path),
          :ok <- check_can_trust(runtime) do
-      case trust_ca_in_keychain(ca_crt_path, runtime) do
-        :ok ->
-          fingerprint = compute_fingerprint(ca_crt_path)
-          {:ok, format_trust_summary(ca_crt_path, fingerprint)}
-
-        {:error, message} ->
-          {:error, "Error: failed to trust CA certificate.\n#{message}", 1}
-      end
+      trust_ca_in_keychain(ca_crt_path, runtime)
+      |> format_trust_ca_result(ca_crt_path)
     end
+  end
+
+  defp format_trust_ca_result(:ok, ca_crt_path) do
+    case compute_fingerprint(ca_crt_path) do
+      {:ok, fingerprint} -> {:ok, format_trust_summary(ca_crt_path, fingerprint)}
+      {:error, _, _} = err -> err
+    end
+  end
+
+  defp format_trust_ca_result({:error, message}, _ca_crt_path) do
+    {:error, "Error: failed to trust CA certificate.\n#{message}", 1}
   end
 
   defp check_ca_file(ca_crt_path) do
@@ -407,72 +413,72 @@ defmodule OrchardCLI.Commands.TLS do
         File.cp!(Path.join(output_dir, "ca.key"), ca_key)
         File.cp!(Path.join(output_dir, "ca.crt"), ca_crt)
       else
-        with :ok <- generate_ca(staging_dir, ca_days, runtime) do
-          :ok
-        else
+        case generate_ca(staging_dir, ca_days, runtime) do
+          :ok -> :ok
           {:error, _, _} = err -> throw(err)
         end
       end
 
-      case generate_server_cert(staging_dir, common_name, san_dns, san_ip, server_days, runtime) do
-        :ok -> :ok
-        {:error, _, _} = err -> throw(err)
-      end
+      :ok = generate_server_cert(staging_dir, common_name, san_dns, san_ip, server_days, runtime)
 
       case verify_chain(staging_dir, runtime) do
         :ok -> :ok
         {:error, _, _} = err -> throw(err)
       end
 
-      ca_fingerprint = compute_fingerprint(ca_crt)
-      server_fingerprint = compute_fingerprint(Path.join(staging_dir, "controller.crt"))
-      ca_not_after = parse_cert_not_after(ca_crt)
-      server_not_after = parse_cert_not_after(Path.join(staging_dir, "controller.crt"))
-      now = runtime.now_utc.()
+      with {:ok, ca_fingerprint} <- compute_fingerprint(ca_crt),
+           {:ok, server_fingerprint} <-
+             compute_fingerprint(Path.join(staging_dir, "controller.crt")),
+           {:ok, ca_not_after} <- parse_cert_not_after(ca_crt),
+           {:ok, server_not_after} <-
+             parse_cert_not_after(Path.join(staging_dir, "controller.crt")) do
+        now = runtime.now_utc.()
 
-      metadata = %{
-        "source" => "generated_local_ca",
-        "ca_fingerprint_sha256" => ca_fingerprint,
-        "server_fingerprint_sha256" => server_fingerprint,
-        "ca_not_after" => format_iso8601(ca_not_after),
-        "server_not_after" => format_iso8601(server_not_after),
-        "generated_at" => DateTime.to_iso8601(now),
-        "hostname" => hostname,
-        "san_dns" => san_dns,
-        "san_ip" => san_ip
-      }
+        metadata = %{
+          "source" => "generated_local_ca",
+          "ca_fingerprint_sha256" => ca_fingerprint,
+          "server_fingerprint_sha256" => server_fingerprint,
+          "ca_not_after" => format_iso8601(ca_not_after),
+          "server_not_after" => format_iso8601(server_not_after),
+          "generated_at" => DateTime.to_iso8601(now),
+          "hostname" => hostname,
+          "san_dns" => san_dns,
+          "san_ip" => san_ip
+        }
 
-      meta_path = Path.join(staging_dir, ".orchard-tls-meta.json")
-      File.write!(meta_path, Jason.encode!(metadata, pretty: true))
+        meta_path = Path.join(staging_dir, ".orchard-tls-meta.json")
+        File.write!(meta_path, Jason.encode!(metadata, pretty: true))
 
-      File.chmod!(Path.join(staging_dir, "ca.key"), 0o600)
-      File.chmod!(Path.join(staging_dir, "ca.crt"), 0o644)
-      File.chmod!(Path.join(staging_dir, "controller.key"), 0o600)
-      File.chmod!(Path.join(staging_dir, "controller.crt"), 0o644)
-      File.chmod!(meta_path, 0o644)
+        File.chmod!(Path.join(staging_dir, "ca.key"), 0o600)
+        File.chmod!(Path.join(staging_dir, "ca.crt"), 0o644)
+        File.chmod!(Path.join(staging_dir, "controller.key"), 0o600)
+        File.chmod!(Path.join(staging_dir, "controller.crt"), 0o644)
+        File.chmod!(meta_path, 0o644)
 
-      # Atomic rename from staging to final output
-      files = ["ca.key", "ca.crt", "controller.key", "controller.crt", ".orchard-tls-meta.json"]
+        files = ["ca.key", "ca.crt", "controller.key", "controller.crt", ".orchard-tls-meta.json"]
 
-      for file <- files do
-        src = Path.join(staging_dir, file)
-        dst = Path.join(output_dir, file)
-        File.rename!(src, dst)
+        for file <- files do
+          src = Path.join(staging_dir, file)
+          dst = Path.join(output_dir, file)
+          File.rename!(src, dst)
+        end
+
+        {:ok,
+         %{
+           output_dir: output_dir,
+           ca_crt_path: Path.join(output_dir, "ca.crt"),
+           ca_fingerprint: ca_fingerprint,
+           server_fingerprint: server_fingerprint,
+           ca_not_after: ca_not_after,
+           server_not_after: server_not_after,
+           common_name: common_name,
+           san_dns: san_dns,
+           san_ip: san_ip,
+           reused_ca?: reuse_ca?
+         }}
+      else
+        {:error, _, _} = err -> throw(err)
       end
-
-      {:ok,
-       %{
-         output_dir: output_dir,
-         ca_crt_path: Path.join(output_dir, "ca.crt"),
-         ca_fingerprint: ca_fingerprint,
-         server_fingerprint: server_fingerprint,
-         ca_not_after: ca_not_after,
-         server_not_after: server_not_after,
-         common_name: common_name,
-         san_dns: san_dns,
-         san_ip: san_ip,
-         reused_ca?: reuse_ca?
-       }}
     catch
       {:error, _, _} = err -> err
     after
@@ -651,39 +657,45 @@ defmodule OrchardCLI.Commands.TLS do
   # ── X.509 Utilities ─────────────────────────────────────────────────
 
   defp compute_fingerprint(pem_path) do
-    pem = File.read!(pem_path)
-
-    cert_entry =
-      :public_key.pem_decode(pem)
-      |> Enum.find(fn
-        {:Certificate, _, :not_encrypted} -> true
-        _ -> false
-      end)
-
-    {:Certificate, der, :not_encrypted} = cert_entry
-    format_fingerprint_hex(:crypto.hash(:sha256, der))
+    case read_certificate_der(pem_path) do
+      {:ok, der} -> {:ok, format_fingerprint_hex(:crypto.hash(:sha256, der))}
+      {:error, _, _} = err -> err
+    end
   end
 
   defp parse_cert_not_after(pem_path) do
-    pem = File.read!(pem_path)
+    case read_certificate_der(pem_path) do
+      {:ok, der} ->
+        otp_cert = :public_key.pkix_decode_cert(der, :otp)
 
-    {:Certificate, der, :not_encrypted} =
-      :public_key.pem_decode(pem)
-      |> Enum.find(fn
-        {:Certificate, _, :not_encrypted} -> true
-        _ -> false
-      end)
+        tbs = elem(otp_cert, 1)
+        validity = elem(tbs, 5)
+        not_after_raw = elem(validity, 2)
+        {:ok, parse_cert_time(not_after_raw)}
 
-    otp_cert = :public_key.pkix_decode_cert(der, :otp)
+      {:error, _, _} = err ->
+        err
+    end
+  end
 
-    # OTP record navigation (ASN.1-standardized positions):
-    #   OTPCertificate{tbsCertificate, ...}   -> elem 1
-    #   OTPTBSCertificate{..., validity, ...} -> elem 5
-    #   Validity{notBefore, notAfter}         -> elems 1, 2
-    tbs = elem(otp_cert, 1)
-    validity = elem(tbs, 5)
-    not_after_raw = elem(validity, 2)
-    parse_cert_time(not_after_raw)
+  defp read_certificate_der(pem_path) do
+    pem_path
+    |> File.read!()
+    |> :public_key.pem_decode()
+    |> Enum.find(fn
+      {:Certificate, _, :not_encrypted} -> true
+      _ -> false
+    end)
+    |> case do
+      {:Certificate, der, :not_encrypted} when is_binary(der) -> {:ok, der}
+      _other -> invalid_tls_contents_error(pem_path)
+    end
+  end
+
+  defp invalid_tls_contents_error(pem_path) do
+    {:error,
+     "Error: encountered invalid TLS file contents.\nNo certificate PEM block found in #{pem_path}",
+     1}
   end
 
   defp parse_cert_time({:utcTime, time_chars}) do

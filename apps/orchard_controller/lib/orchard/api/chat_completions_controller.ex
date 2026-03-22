@@ -15,17 +15,16 @@ defmodule Orchard.API.ChatCompletionsController do
 
   import Orchard.API.ErrorHelpers, only: [send_error: 5]
 
-  alias Orchard.API.SSE
+  alias Orchard.API.{InferenceControllerSupport, SSE}
   alias Orchard.Inference.{ChatError, ChatOrchestrator, ChatResponseSerializer}
   alias Orchard.InferenceEvent
-  alias Orchard.Requests.Idempotency
 
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def create(conn, params) do
-    caller_context = extract_caller_context(conn)
+    caller_context = InferenceControllerSupport.extract_caller_context(conn)
     tenant_id = Keyword.fetch!(caller_context, :tenant_id)
 
-    case build_idempotency_context(conn, tenant_id, params) do
+    case InferenceControllerSupport.build_idempotency_context(conn, tenant_id, params) do
       {:ok, idempotency} ->
         case resolve_idempotency(conn, idempotency) do
           {:proceed, conn} ->
@@ -36,7 +35,7 @@ defmodule Orchard.API.ChatCompletionsController do
         end
 
       {:error, :invalid_idempotency_key} ->
-        send_idempotency_error(conn, :invalid_idempotency_key)
+        InferenceControllerSupport.send_idempotency_error(conn, :invalid_idempotency_key)
 
       {:error, :invalid_request_shape} ->
         send_error(
@@ -59,15 +58,8 @@ defmodule Orchard.API.ChatCompletionsController do
         end
 
       {:error, reason} ->
-        send_prepare_error(conn, reason)
+        InferenceControllerSupport.send_prepare_error(conn, reason)
     end
-  end
-
-  defp send_prepare_error(conn, reason) do
-    reason
-    |> ChatError.from_prepare_reason()
-    |> ChatError.api_mapping()
-    |> send_chat_error(conn)
   end
 
   # -- Non-streaming response ------------------------------------------------
@@ -95,13 +87,10 @@ defmodule Orchard.API.ChatCompletionsController do
         json(conn, request.response_payload)
 
       {:error, {:idempotency_conflict, reason}} ->
-        send_idempotency_error(conn, reason)
+        InferenceControllerSupport.send_idempotency_error(conn, reason)
 
       {:error, reason} ->
-        reason
-        |> ChatError.from_execute_error()
-        |> ChatError.api_mapping()
-        |> send_chat_error(conn)
+        InferenceControllerSupport.send_execute_error(conn, reason)
     end
   end
 
@@ -331,64 +320,20 @@ defmodule Orchard.API.ChatCompletionsController do
 
   # -- Shared helpers --------------------------------------------------------
 
-  defp extract_caller_context(conn) do
-    [
-      tenant_id: conn.assigns[:tenant_id],
-      principal_id: conn.assigns[:principal_id],
-      api_key_id: conn.assigns[:api_key_id]
-    ]
-  end
-
   defp format_model_display(canonical) do
     "#{canonical.model_ref.model_id}@#{canonical.model_ref.version}"
   end
 
-  defp build_idempotency_context(conn, tenant_id, params) do
-    case Idempotency.extract_key(conn) do
-      {:ok, key} ->
-        maybe_build_idempotency_context(tenant_id, key, params)
-
-      {:error, reason} ->
-        {:error, reason}
-    end
-  end
-
-  defp maybe_build_idempotency_context(_tenant_id, nil, _params), do: {:ok, nil}
-
-  defp maybe_build_idempotency_context(tenant_id, key, params) do
-    Idempotency.build_context(tenant_id, key, params)
-  end
-
-  defp resolve_idempotency(conn, nil), do: {:proceed, conn}
-
   defp resolve_idempotency(conn, idempotency) do
-    case Idempotency.resolve(idempotency) do
-      :proceed ->
-        {:proceed, conn}
-
-      {:replay, request} ->
-        {:halt, json(conn, request.response_payload)}
-
-      {:conflict, reason, _request} ->
-        {:halt, send_idempotency_error(conn, reason)}
-    end
-  end
-
-  defp send_idempotency_error(conn, reason) do
-    mapping = Idempotency.conflict_mapping(reason)
-    send_chat_error(mapping, conn)
+    InferenceControllerSupport.resolve_idempotency(conn, idempotency)
   end
 
   defp sse_error_mapping({:idempotency_conflict, reason}) do
-    reason
-    |> Idempotency.conflict_mapping()
-    |> Map.delete(:status)
+    InferenceControllerSupport.sse_error_mapping({:idempotency_conflict, reason})
   end
 
   defp sse_error_mapping(reason) do
-    reason
-    |> ChatError.from_execute_error()
-    |> ChatError.sse_mapping()
+    InferenceControllerSupport.sse_error_mapping(reason)
   end
 
   defp send_chat_error(mapping, conn) do

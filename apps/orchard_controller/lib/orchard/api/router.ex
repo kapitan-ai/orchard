@@ -39,6 +39,7 @@ defmodule Orchard.API.Router do
 
     get("/models", ModelsController, :index)
     post("/chat/completions", ChatCompletionsController, :create)
+    post("/responses", ResponsesController, :create)
   end
 
   # Console — LiveView operator UI

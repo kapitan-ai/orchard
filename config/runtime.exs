@@ -188,7 +188,7 @@ validate_tls_material! = fn certfile, keyfile ->
   end
 
   seconds_remaining = NaiveDateTime.diff(not_after, now)
-  days_remaining = div(seconds_remaining, 86400)
+  days_remaining = div(seconds_remaining, 86_400)
 
   if days_remaining < 30 do
     IO.puts(:stderr, """

@@ -80,14 +80,12 @@ defmodule OrchardConsole.ModelHub do
   end
 
   defp protect_result(fun) do
-    try do
-      fun.()
-    rescue
-      _exception -> {:error, unexpected_error()}
-    catch
-      :throw, _value -> {:error, unexpected_error()}
-      :exit, _reason -> {:error, unexpected_error()}
-    end
+    fun.()
+  rescue
+    _exception -> {:error, unexpected_error()}
+  catch
+    :throw, _value -> {:error, unexpected_error()}
+    :exit, _reason -> {:error, unexpected_error()}
   end
 
   defp unexpected_error do

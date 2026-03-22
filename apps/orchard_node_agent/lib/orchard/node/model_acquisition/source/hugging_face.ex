@@ -45,9 +45,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
          {:ok, file_entries} <- list_repo_tree(repo_spec, config),
          {:ok, retained} <- filter_and_validate(file_entries),
          {:ok, sanitized} <- sanitize_entry_paths(retained),
-         {:ok, file_metas} <- preflight_head(sanitized, repo_spec, config),
-         :ok <- download_all(file_metas, repo_spec, request, config) do
-      :ok
+         {:ok, file_metas} <- preflight_head(sanitized, repo_spec, config) do
+      download_all(file_metas, repo_spec, request, config)
     end
   end
 
@@ -88,14 +87,12 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
   defp parse_revision(query) do
     params = URI.decode_query(query)
-    known = MapSet.new(["revision"])
-    unknown = params |> Map.keys() |> MapSet.new() |> MapSet.difference(known)
 
-    if MapSet.size(unknown) > 0 do
-      :error
-    else
+    if Enum.all?(Map.keys(params), &(&1 == "revision")) do
       revision = Map.get(params, "revision", "main")
       if revision == "", do: :error, else: {:ok, revision}
+    else
+      :error
     end
   end
 
@@ -240,8 +237,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
       {:ok, %{status: 200} = resp} ->
         {:ok,
          %{
-           content_length: get_content_length(resp.headers),
-           etag: get_etag(resp.headers)
+           content_length: get_content_length(resp),
+           etag: get_etag(resp)
          }}
 
       {:ok, %{status: status}} when status in [401, 403] ->
@@ -270,37 +267,45 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
     end
   end
 
-  # Req 0.5 returns headers as %{"name" => ["value", ...]} maps
-  defp get_content_length(headers) when is_map(headers) do
-    find_header_int(headers, "content-length") ||
-      find_header_int(headers, "x-linked-size")
+  defp get_content_length(resp) do
+    header_int(resp, "content-length") || header_int(resp, "x-linked-size")
   end
 
-  defp find_header_int(headers, name) when is_map(headers) do
-    case Map.get(headers, name) do
-      [value | _] ->
+  defp header_int(resp, name) do
+    case header_values(resp, name) do
+      [value | _rest] ->
         case Integer.parse(value) do
           {n, _} -> n
-          :error -> nil
+          _ -> nil
         end
 
-      _ ->
+      [] ->
         nil
     end
   end
 
-  defp get_etag(headers) when is_map(headers) do
-    case Map.get(headers, "x-linked-etag") do
-      [value | _] ->
-        normalize_etag(value)
-
-      _ ->
-        case Map.get(headers, "etag") do
-          [value | _] -> normalize_etag(value)
-          _ -> nil
-        end
+  defp get_etag(resp) do
+    case header_values(resp, "x-linked-etag") do
+      [value | _rest] -> normalize_etag(value)
+      [] -> header_values(resp, "etag") |> List.first() |> normalize_etag()
     end
   end
+
+  defp header_values(%{headers: headers}, name), do: header_values(headers, name)
+
+  defp header_values(headers, name) when is_map(headers) do
+    case Map.get(headers, name, []) do
+      values when is_list(values) -> values
+      value when is_binary(value) -> [value]
+      _other -> []
+    end
+  end
+
+  defp header_values(headers, name) when is_list(headers) do
+    for {header_name, value} <- headers, header_name == name, is_binary(value), do: value
+  end
+
+  defp header_values(_headers, _name), do: []
 
   defp normalize_etag(etag) when is_binary(etag) do
     etag |> String.trim_leading("\"") |> String.trim_trailing("\"")
@@ -433,7 +438,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
     write_error = :atomics.new(1, [])
 
     into_fun = fn {:data, chunk}, {req, resp} ->
-      case IO.binwrite(file_pid, chunk) do
+      case :file.write(file_pid, chunk) do
         :ok ->
           :counters.add(bytes_counter, 1, byte_size(chunk))
           {:cont, {req, resp}}
@@ -662,8 +667,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
     encoded_path =
       file_path
       |> Path.split()
-      |> Enum.map(fn seg -> URI.encode(seg, &URI.char_unreserved?/1) end)
-      |> Enum.join("/")
+      |> Enum.map_join("/", fn seg -> URI.encode(seg, &URI.char_unreserved?/1) end)
 
     "#{base_url}/#{repo_id}/resolve/#{encoded_revision}/#{encoded_path}"
   end

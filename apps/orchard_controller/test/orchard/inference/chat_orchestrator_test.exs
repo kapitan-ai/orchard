@@ -21,7 +21,7 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
       # In fake tokenizer mode, token count = whitespace-word count of the
       # prompt lines. One user message becomes "user <content>\nassistant".
       # 98 words of content + "user" + "assistant" = 100 input tokens.
-      content = 1..98 |> Enum.map(fn i -> "word#{i}" end) |> Enum.join(" ")
+      content = Enum.map_join(1..98, " ", fn i -> "word#{i}" end)
 
       params = %{
         "model" => "#{model.model_id}@#{model.version}",

@@ -181,6 +181,18 @@ defmodule OrchardConsole.ModelHubLiveTest do
       refute_receive {:stub_detail_ref, _, _}, 50
     end
 
+    test "search results that normalize to empty show the shared empty state", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      search_ref = assert_search_started(nil)
+
+      send_search_success(view, search_ref, nil, [%{"downloads" => 1}, %{"repo_id" => ""}])
+      html = render(view)
+
+      assert html =~ "model-hub-results-empty"
+      assert html =~ "model-hub-detail-idle"
+      refute_receive {:stub_detail_ref, _, _}, 50
+    end
+
     test "search error shows the shared error state and clears detail", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       search_ref = assert_search_started(nil)

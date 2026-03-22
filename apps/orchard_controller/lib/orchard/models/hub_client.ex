@@ -140,9 +140,9 @@ defmodule Orchard.Models.HubClient do
          true <- length(segments) >= 2,
          true <- Enum.all?(segments, &valid_repo_segment?/1) do
       encoded =
-        segments
-        |> Enum.map(fn segment -> URI.encode(segment, &URI.char_unreserved?/1) end)
-        |> Enum.join("/")
+        Enum.map_join(segments, "/", fn segment ->
+          URI.encode(segment, &URI.char_unreserved?/1)
+        end)
 
       {:ok, trimmed, encoded}
     else

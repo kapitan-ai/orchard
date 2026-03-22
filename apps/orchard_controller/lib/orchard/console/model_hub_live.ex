@@ -63,9 +63,12 @@ defmodule OrchardConsole.ModelHubLive do
              )
              |> clear_detail()}
 
-          _results ->
+          [_first | _rest] = nonempty_results ->
             selected_repo_id =
-              pick_selected_repo_id(results, socket.assigns.pending_selected_repo_id)
+              pick_selected_repo_id(
+                nonempty_results,
+                socket.assigns.pending_selected_repo_id
+              )
 
             socket =
               assign(socket,
@@ -474,9 +477,7 @@ defmodule OrchardConsole.ModelHubLive do
   defp normalize_query(query) when is_binary(query), do: String.trim(query)
   defp normalize_query(_query), do: ""
 
-  defp pick_selected_repo_id([], _current_repo_id), do: nil
-
-  defp pick_selected_repo_id(results, current_repo_id) do
+  defp pick_selected_repo_id([_first | _rest] = results, current_repo_id) do
     case Enum.find(results, &(&1.repo_id == current_repo_id)) do
       nil -> results |> List.first() |> Map.get(:repo_id)
       result -> result.repo_id

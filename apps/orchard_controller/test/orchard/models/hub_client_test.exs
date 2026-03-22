@@ -142,7 +142,7 @@ defmodule Orchard.Models.HubClientTest do
       "id" => "mlx-community/Qwen2.5-7B-Instruct-4bit",
       "sha" => "abc123",
       "author" => "mlx-community",
-      "downloads" => 16419,
+      "downloads" => 16_419,
       "likes" => "11",
       "tags" => ["mlx", "chat", "4bit"],
       "pipeline_tag" => "text-generation",
@@ -158,7 +158,7 @@ defmodule Orchard.Models.HubClientTest do
       "config" => %{
         "model_type" => "qwen2",
         "architectures" => ["Qwen2ForCausalLM"],
-        "max_position_embeddings" => 32768,
+        "max_position_embeddings" => 32_768,
         "quantization" => %{"bits" => 8}
       },
       "siblings" => [

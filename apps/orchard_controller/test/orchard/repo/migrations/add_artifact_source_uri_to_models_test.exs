@@ -12,6 +12,7 @@ defmodule Orchard.Repo.Migrations.AddArtifactSourceUriToModelsTest do
   """
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Repo
 
   # Stable test identifiers — must not collide with fixture model_ids
@@ -20,27 +21,20 @@ defmodule Orchard.Repo.Migrations.AddArtifactSourceUriToModelsTest do
   @test_model_ids [@with_uri_model_id, @null_uri_model_id]
 
   setup do
-    # Sandbox checkout gives us a transaction-wrapped connection.
-    # All DDL + DML happens inside this transaction and auto-rolls back.
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+    :ok = Sandbox.checkout(Repo)
     :ok
   end
 
   describe "20260311000000 backfill from artifact_uri" do
     test "copies artifact_uri into artifact_source_uri for non-NULL rows, leaves NULL rows as NULL" do
-      # Step 1: Simulate pre-migration schema by dropping the column
       Repo.query!("ALTER TABLE models DROP COLUMN IF EXISTS artifact_source_uri")
 
-      # Precondition: column should be gone
       refute column_exists?("models", "artifact_source_uri"),
              "artifact_source_uri column still exists after DROP — test setup broken"
 
-      # Step 2: Seed legacy rows (pre-migration schema, no artifact_source_uri)
       insert_legacy_row!(@with_uri_model_id, artifact_uri: "file:///tmp/backfill-source")
       insert_legacy_row!(@null_uri_model_id, artifact_uri: nil)
 
-      # Step 3: Apply the migration's exact SQL
-      # (mirrors 20260311000000_add_artifact_source_uri_to_models.exs up/0)
       Repo.query!("ALTER TABLE models ADD COLUMN artifact_source_uri text")
 
       Repo.query!("""
@@ -49,11 +43,9 @@ defmodule Orchard.Repo.Migrations.AddArtifactSourceUriToModelsTest do
       WHERE artifact_uri IS NOT NULL
       """)
 
-      # Postcondition: column exists
       assert column_exists?("models", "artifact_source_uri"),
              "artifact_source_uri column missing after migration SQL"
 
-      # Step 4: Verify backfill results
       rows = fetch_backfill_results()
 
       with_uri_row = Enum.find(rows, &(&1["model_id"] == @with_uri_model_id))
@@ -62,11 +54,9 @@ defmodule Orchard.Repo.Migrations.AddArtifactSourceUriToModelsTest do
       assert with_uri_row, "expected row with model_id #{@with_uri_model_id} not found"
       assert null_uri_row, "expected row with model_id #{@null_uri_model_id} not found"
 
-      # Non-NULL artifact_uri → copied into artifact_source_uri
       assert with_uri_row["artifact_source_uri"] == "file:///tmp/backfill-source",
              "expected backfill to copy artifact_uri, got: #{inspect(with_uri_row["artifact_source_uri"])}"
 
-      # NULL artifact_uri → artifact_source_uri stays NULL
       assert is_nil(null_uri_row["artifact_source_uri"]),
              "expected NULL artifact_source_uri for NULL artifact_uri, got: #{inspect(null_uri_row["artifact_source_uri"])}"
     end

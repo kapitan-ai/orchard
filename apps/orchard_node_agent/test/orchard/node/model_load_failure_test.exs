@@ -1,8 +1,8 @@
 defmodule Orchard.Node.ModelLoadFailureTest do
   use ExUnit.Case, async: true
 
-  alias Orchard.Node.ModelLoadFailure
   alias Orchard.Cluster.V1.EnsureModelLoadedResponse
+  alias Orchard.Node.ModelLoadFailure
 
   # -- MODEL_INVALID --
 

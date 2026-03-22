@@ -25,14 +25,9 @@ defmodule Orchard.ArtifactBundle do
   def tree_sha256(dir_path) do
     root_prefix = String.trim_trailing(dir_path, "/") <> "/"
 
-    case collect_file_paths(dir_path) do
-      {:ok, paths} ->
-        sorted = Enum.sort(paths)
-        hash = hash_files(sorted, root_prefix, :crypto.hash_init(:sha256))
-        {:ok, Base.encode16(hash, case: :lower)}
-
-      {:error, _} = err ->
-        err
+    with {:ok, paths} <- collect_file_paths(dir_path),
+         {:ok, hash} <- hash_files(Enum.sort(paths), root_prefix, :crypto.hash_init(:sha256)) do
+      {:ok, Base.encode16(hash, case: :lower)}
     end
   end
 
@@ -137,18 +132,44 @@ defmodule Orchard.ArtifactBundle do
     end
   end
 
-  defp hash_files([], _root_prefix, state), do: :crypto.hash_final(state)
+  defp hash_files([], _root_prefix, state), do: {:ok, :crypto.hash_final(state)}
 
   defp hash_files([path | rest], root_prefix, state) do
     relative = String.replace_leading(path, root_prefix, "")
     state = :crypto.hash_update(state, relative)
-    state = hash_file_content(path, state)
-    hash_files(rest, root_prefix, state)
+
+    with {:ok, state} <- hash_file_content(path, state) do
+      hash_files(rest, root_prefix, state)
+    end
   end
 
   defp hash_file_content(path, state) do
-    path
-    |> File.stream!([], @hash_chunk_bytes)
-    |> Enum.reduce(state, fn chunk, acc -> :crypto.hash_update(acc, chunk) end)
+    case File.open(path, [:read, :binary]) do
+      {:ok, device} ->
+        do_hash_file_content(device, path, state)
+
+      {:error, reason} ->
+        {:error, {:hash_failed, "failed to open #{path}: #{inspect(reason)}"}}
+    end
+  end
+
+  defp do_hash_file_content(device, path, state) do
+    try do
+      hash_file_chunks(device, state)
+    after
+      File.close(device)
+    end
+    |> case do
+      {:ok, _} = ok -> ok
+      {:error, reason} -> {:error, {:hash_failed, "failed to read #{path}: #{inspect(reason)}"}}
+    end
+  end
+
+  defp hash_file_chunks(device, state) do
+    case IO.binread(device, @hash_chunk_bytes) do
+      :eof -> {:ok, state}
+      {:error, reason} -> {:error, reason}
+      data when is_binary(data) -> hash_file_chunks(device, :crypto.hash_update(state, data))
+    end
   end
 end

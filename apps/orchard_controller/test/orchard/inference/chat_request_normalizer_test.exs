@@ -2,8 +2,8 @@ defmodule Orchard.Inference.ChatRequestNormalizerTest do
   use ExUnit.Case, async: true
 
   alias Orchard.CanonicalRequest
-  alias Orchard.Governance
   alias Orchard.CanonicalRequest.{ModelRef, ResponseFormat, Sampling, Tooling}
+  alias Orchard.Governance
   alias Orchard.Inference.ChatRequestNormalizer
 
   @valid_params %{
@@ -90,6 +90,12 @@ defmodule Orchard.Inference.ChatRequestNormalizerTest do
       params = Map.put(@valid_params, "metadata", %{"request_id" => "abc"})
       {:ok, req} = ChatRequestNormalizer.normalize(params)
       assert req.metadata == %{"request_id" => "abc"}
+    end
+
+    test "normalizes nil metadata to an empty map" do
+      params = Map.put(@valid_params, "metadata", nil)
+      {:ok, req} = ChatRequestNormalizer.normalize(params)
+      assert req.metadata == %{}
     end
 
     test "accepts overridden IDs" do

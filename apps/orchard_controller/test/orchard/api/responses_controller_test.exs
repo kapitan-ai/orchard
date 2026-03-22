@@ -1,0 +1,324 @@
+defmodule Orchard.API.ResponsesControllerTest do
+  use Orchard.ConnCase, async: false
+
+  @moduletag :db
+
+  import Orchard.TestSupport.ModelRequestFixtures
+
+  alias Orchard.API.Router
+  alias Orchard.ArtifactBundle
+  alias Orchard.Governance
+  alias Orchard.Node
+  alias Orchard.Node.ModelManager
+  alias Orchard.Repo
+  alias Orchard.Requests.Idempotency
+  alias Orchard.Requests.Request
+
+  defp post_responses(params, token \\ default_api_token!(), headers \\ []) do
+    conn =
+      build_conn(:post, "/v1/responses")
+      |> put_req_header("accept", "application/json")
+      |> put_req_header("content-type", "application/json")
+      |> put_req_header("authorization", "Bearer #{token}")
+
+    conn =
+      Enum.reduce(headers, conn, fn {name, value}, acc ->
+        put_req_header(acc, name, value)
+      end)
+
+    conn
+    |> Map.put(:body_params, params)
+    |> Map.put(:params, params)
+    |> Router.call(Router.init([]))
+  end
+
+  setup do
+    ModelManager.reset()
+    bundle = stage_test_bundle!()
+
+    on_exit(fn ->
+      Enum.each(bundle.cache_paths, &File.rm_rf/1)
+      File.rm_rf(bundle.source_path)
+      File.rm_rf(Path.join(Node.models_root(), ".staging"))
+    end)
+
+    %{bundle: bundle}
+  end
+
+  test "missing bearer auth returns a JSON 401 before request validation" do
+    conn =
+      build_conn(:post, "/v1/responses")
+      |> put_req_header("accept", "application/json")
+      |> put_req_header("content-type", "application/json")
+      |> Map.put(:body_params, %{"input" => "hi"})
+      |> Map.put(:params, %{"input" => "hi"})
+      |> Router.call(Router.init([]))
+
+    assert conn.status == 401
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "authentication_error"
+    assert body["error"]["code"] == "invalid_api_key"
+  end
+
+  test "rejects malformed model values with an OpenAI error envelope" do
+    conn = post_responses(%{"model" => 123, "input" => "hello"})
+
+    assert conn.status == 400
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "invalid_request_error"
+    assert body["error"]["code"] == "invalid_value"
+    assert body["error"]["param"] == "model"
+  end
+
+  test "rejects unsupported stream parameter with OpenAI error envelope" do
+    conn =
+      post_responses(%{
+        "model" => "test-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 400
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "invalid_request_error"
+    assert body["error"]["code"] == "unsupported_parameter"
+    assert body["error"]["param"] == "stream"
+  end
+
+  test "returns context_length_exceeded for an oversized request" do
+    %{token: token} = create_api_key_with_token!("responses-context-overflow")
+
+    model =
+      create_model!(%{
+        model_id: "responses-context-overflow-model",
+        version: "v1",
+        state: :active,
+        max_context_tokens: 100
+      })
+
+    content = Enum.map_join(1..98, " ", &"word#{&1}")
+
+    conn =
+      post_responses(
+        %{"model" => "#{model.model_id}@#{model.version}", "input" => content},
+        token
+      )
+
+    assert conn.status == 400
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "invalid_request_error"
+    assert body["error"]["code"] == "context_length_exceeded"
+  end
+
+  test "returns model_not_found for a valid request with an unknown model" do
+    conn = post_responses(%{"model" => "missing@v1", "input" => "hello"})
+
+    assert conn.status == 404
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "invalid_request_error"
+    assert body["error"]["code"] == "model_not_found"
+    assert body["error"]["param"] == "model"
+  end
+
+  test "successful non-stream request returns response payload and persists responses endpoint",
+       %{bundle: bundle} do
+    %{token: token} = create_api_key_with_token!("responses-success")
+
+    _model =
+      create_model!(%{
+        model_id: "responses-success-model",
+        version: "v1",
+        display_name: "Responses Success Model",
+        artifact_uri: "file:///tmp/responses-success-model",
+        artifact_sha256: bundle.hash,
+        artifact_source_uri: "file:///tmp/responses-success-model",
+        state: :active,
+        format: "mlx",
+        backend: "mlx",
+        capabilities: ["chat"],
+        artifact_size_bytes: 1024,
+        resident_memory_bytes: 2048,
+        kv_cache_bytes_per_token: 128,
+        prefill_workspace_bytes_per_token: 64,
+        max_context_tokens: 131_072
+      })
+
+    conn =
+      post_responses(
+        %{
+          "model" => "responses-success-model@v1",
+          "instructions" => "Be helpful",
+          "input" => [
+            %{
+              "role" => "user",
+              "content" => [%{"type" => "input_text", "text" => "hello"}]
+            }
+          ],
+          "max_output_tokens" => 32,
+          "metadata" => %{"trace" => "abc"},
+          "store" => false
+        },
+        token
+      )
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+    assert body["object"] == "response"
+    assert body["status"] == "completed"
+    assert body["model"] == "responses-success-model@v1"
+    assert body["output_text"] != nil
+    assert body["metadata"] == %{"trace" => "abc"}
+
+    [request] = Repo.all(Request)
+    assert request.endpoint == :responses
+    assert request.canonical_request["endpoint"] == "responses"
+    assert request.response_payload == body
+    assert request.response_preview == body["output_text"]
+  end
+
+  test "replays completed tenant-scoped responses for the same idempotency key", %{bundle: bundle} do
+    %{token: token, tenant: tenant} = create_api_key_with_token!("responses-replay")
+
+    _model =
+      create_model!(%{
+        model_id: "responses-replay-model",
+        version: "v1",
+        display_name: "Responses Replay Model",
+        artifact_uri: "file:///tmp/responses-replay-model",
+        artifact_sha256: bundle.hash,
+        artifact_source_uri: "file:///tmp/responses-replay-model",
+        state: :active,
+        format: "mlx",
+        backend: "mlx",
+        capabilities: ["chat"],
+        artifact_size_bytes: 1024,
+        resident_memory_bytes: 2048,
+        kv_cache_bytes_per_token: 128,
+        prefill_workspace_bytes_per_token: 64,
+        max_context_tokens: 131_072
+      })
+
+    params = %{"model" => "responses-replay-model@v1", "input" => "hello"}
+
+    conn_a = post_responses(params, token, [{"idempotency-key", "responses-replay"}])
+    conn_b = post_responses(params, token, [{"idempotency-key", "responses-replay"}])
+
+    assert conn_a.status == 200
+    assert conn_b.status == 200
+    assert Jason.decode!(conn_a.resp_body) == Jason.decode!(conn_b.resp_body)
+
+    [request] = Repo.all(Request)
+    assert request.tenant_id == tenant.id
+    assert request.idempotency_key == "responses-replay"
+  end
+
+  test "returns 409 request_in_progress for a matching active tenant-scoped request" do
+    %{token: token, tenant: tenant} = create_api_key_with_token!("responses-active")
+
+    {:ok, idempotency} =
+      Idempotency.build_context(tenant.id, "responses-active", %{
+        "model" => "responses-active-model@v1",
+        "input" => "hello"
+      })
+
+    create_request!(%{
+      tenant_id: tenant.id,
+      endpoint: :responses,
+      requested_model: "responses-active-model@v1",
+      idempotency_key: "responses-active",
+      body_hash: idempotency.body_hash,
+      stream: false,
+      state: :running
+    })
+
+    conn =
+      post_responses(
+        %{"model" => "responses-active-model@v1", "input" => "hello"},
+        token,
+        [{"idempotency-key", "responses-active"}]
+      )
+
+    assert conn.status == 409
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "conflict_error"
+    assert body["error"]["code"] == "request_in_progress"
+  end
+
+  test "returns 409 idempotency_mismatch for the same tenant and key with a different body" do
+    %{token: token, tenant: tenant} = create_api_key_with_token!("responses-mismatch")
+
+    {:ok, idempotency} =
+      Idempotency.build_context(tenant.id, "responses-mismatch", %{
+        "model" => "responses-mismatch-model@v1",
+        "input" => "hello"
+      })
+
+    create_request!(%{
+      tenant_id: tenant.id,
+      endpoint: :responses,
+      requested_model: "responses-mismatch-model@v1",
+      idempotency_key: "responses-mismatch",
+      body_hash: idempotency.body_hash,
+      stream: false,
+      state: :completed,
+      response_payload: %{"id" => "resp_prior", "object" => "response"}
+    })
+
+    conn =
+      post_responses(
+        %{"model" => "responses-mismatch-model@v1", "input" => "different"},
+        token,
+        [{"idempotency-key", "responses-mismatch"}]
+      )
+
+    assert conn.status == 409
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "conflict_error"
+    assert body["error"]["code"] == "idempotency_mismatch"
+  end
+
+  defp default_api_token! do
+    %{token: token} =
+      create_api_key_with_token!("responses-auth-#{System.unique_integer([:positive])}")
+
+    token
+  end
+
+  defp create_api_key_with_token!(slug) do
+    {:ok, tenant} = Governance.create_tenant(%{slug: slug, name: String.capitalize(slug)})
+
+    {:ok, %{api_key: api_key, token: token}} =
+      Governance.create_api_key(tenant.id, %{name: "Primary"})
+
+    %{tenant: tenant, api_key: api_key, token: token}
+  end
+
+  defp stage_test_bundle! do
+    models_root = Node.models_root()
+    source_path = Path.join([models_root, ".test-source", "responses-bundle"])
+
+    File.rm_rf(source_path)
+    File.mkdir_p!(source_path)
+    File.write!(Path.join(source_path, "config.json"), ~s({"model_type":"test"}))
+    File.write!(Path.join(source_path, "tokenizer.json"), ~s({"version":"1.0"}))
+    weights_dir = Path.join(source_path, "weights")
+    File.mkdir_p!(weights_dir)
+    File.write!(Path.join(weights_dir, "model.safetensors"), "fake-weights-data")
+
+    {:ok, hash} = ArtifactBundle.tree_sha256(source_path)
+
+    cache_paths =
+      Enum.map(
+        [{"responses-success-model", "v1"}, {"responses-replay-model", "v1"}],
+        fn {model_id, version} ->
+          cache_path = Path.join([models_root, model_id, version])
+          File.rm_rf(cache_path)
+          File.mkdir_p!(cache_path)
+          :ok = ArtifactBundle.copy_directory(source_path, cache_path)
+          cache_path
+        end
+      )
+
+    %{hash: hash, source_path: source_path, cache_paths: cache_paths}
+  end
+end

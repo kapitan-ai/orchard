@@ -326,9 +326,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
 
       :telemetry.detach(handler_id)
 
-      # Collect all progress events and verify the last one shows completion
       events = collect_progress_events()
-      assert length(events) >= 1
+      refute events == []
 
       {last_measurements, last_metadata} = List.last(events)
       assert last_measurements.files_completed == 1

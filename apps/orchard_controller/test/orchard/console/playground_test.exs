@@ -1,8 +1,8 @@
 defmodule OrchardConsole.PlaygroundTest do
   use ExUnit.Case, async: false
 
-  alias OrchardConsole.Playground
   alias Orchard.InferenceEvent
+  alias OrchardConsole.Playground
 
   setup do
     previous = Application.get_env(:orchard_controller, :console, [])
@@ -87,7 +87,6 @@ defmodule OrchardConsole.PlaygroundTest do
 
       {:ok, pid} = Playground.start_stream(self(), ref, valid_params())
 
-      # Verify the task is not in our links
       {:links, links} = Process.info(self(), :links)
       refute pid in links
 

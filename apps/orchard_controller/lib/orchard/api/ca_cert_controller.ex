@@ -46,9 +46,8 @@ defmodule Orchard.API.CACertController do
   end
 
   defp read_metadata(path) do
-    with {:ok, contents} <- File.read(path),
-         {:ok, decoded} <- Jason.decode(contents) do
-      {:ok, decoded}
+    with {:ok, contents} <- File.read(path) do
+      Jason.decode(contents)
     end
   end
 

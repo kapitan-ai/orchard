@@ -13,8 +13,8 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
   """
 
   alias Orchard.CanonicalRequest
-  alias Orchard.Governance
   alias Orchard.CanonicalRequest.{ModelRef, ResponseFormat, Sampling, Tooling}
+  alias Orchard.Governance
 
   @doc """
   Normalizes validated params into a `CanonicalRequest`.
@@ -53,7 +53,7 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
         sampling: build_sampling(params),
         response_format: build_response_format(params),
         tooling: build_tooling(params),
-        metadata: Map.get(params, "metadata", %{})
+        metadata: normalize_metadata(Map.get(params, "metadata"))
       )
 
     {:ok, canonical}
@@ -106,6 +106,9 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
 
   defp to_float(value) when is_integer(value), do: value * 1.0
   defp to_float(value) when is_float(value), do: value
+
+  defp normalize_metadata(nil), do: %{}
+  defp normalize_metadata(metadata), do: metadata
 
   # -- Response format --
 

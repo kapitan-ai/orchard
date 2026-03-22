@@ -22,6 +22,17 @@ defmodule Orchard.API.EndpointRegressionTest do
       assert Jason.decode!(conn.resp_body)["error"]["type"] == "authentication_error"
     end
 
+    test "POST /v1/responses still returns 401 for unauthenticated form-urlencoded input",
+         %{conn: conn} do
+      conn =
+        conn
+        |> put_req_header("content-type", "application/x-www-form-urlencoded")
+        |> post("/v1/responses", "model=test&input=hello")
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["type"] == "authentication_error"
+    end
+
     test "health endpoint still responds through modified endpoint", %{conn: conn} do
       conn = get(conn, "/health/live")
 

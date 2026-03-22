@@ -4,7 +4,9 @@ defmodule OrchardConsole.RequestLiveTest do
   import Phoenix.LiveViewTest
   alias Ecto.Adapters.SQL.Sandbox
   import Orchard.TestSupport.ModelRequestFixtures
+  alias Orchard.Repo
   alias Orchard.Requests
+  alias Orchard.Requests.RequestEvent
 
   @moduletag :live
   @moduletag :db
@@ -354,7 +356,6 @@ defmodule OrchardConsole.RequestLiveTest do
       assert html =~ parent.public_id
       assert html =~ "Request Summary"
 
-      # Verify the new view is showing the parent request
       summary_html = element(new_view, "#request-summary-card") |> render()
       assert summary_html =~ parent.public_id
     end
@@ -388,7 +389,6 @@ defmodule OrchardConsole.RequestLiveTest do
       assert html =~ "received"
       assert html =~ "running"
 
-      # Verify ordering: seq 1 appears before seq 2 in DOM
       received_pos = :binary.match(html, "request-event-1") |> elem(0)
       running_pos = :binary.match(html, "request-event-2") |> elem(0)
       assert received_pos < running_pos
@@ -397,20 +397,18 @@ defmodule OrchardConsole.RequestLiveTest do
     test "renders dash for nil occurred_at", %{conn: conn} do
       request = create_request!(%{state: :received})
 
-      # Force nil occurred_at by inserting directly through Ecto
-      %Orchard.Requests.RequestEvent{}
-      |> Orchard.Requests.RequestEvent.changeset(%{
+      %RequestEvent{}
+      |> RequestEvent.changeset(%{
         request_id: request.id,
         seq: 1,
         event_type: "legacy_event",
         occurred_at: nil
       })
-      |> Orchard.Repo.insert!()
+      |> Repo.insert!()
 
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
       assert html =~ "legacy_event"
-      # The occurred_at column should show a dash
       assert html =~ "—"
     end
 

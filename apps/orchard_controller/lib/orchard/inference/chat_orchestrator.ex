@@ -29,18 +29,11 @@ defmodule Orchard.Inference.ChatOrchestrator do
     ChatRequestNormalizer,
     ChatRequestValidator,
     ChatResponseSerializer,
-    RequestOrchestrator
+    RequestOrchestrator,
+    RequestPreparation
   }
 
   alias Orchard.InferenceEvent
-  alias Orchard.Models
-  alias Orchard.Models.ManifestParser
-  alias Orchard.Tokenizer.Client, as: TokenizerClient
-
-  # Default max output tokens when the client omits max_tokens / max_completion_tokens.
-  # Applied at orchestration time for both context-window enforcement and runtime dispatch.
-  # Canonical sampling keeps nil to preserve the distinction between "omitted" and "explicit".
-  @default_max_output_tokens 4096
 
   @type orchestrate_result ::
           {:ok, CanonicalRequest.t(), [InferenceEvent.t()]}
@@ -66,13 +59,10 @@ defmodule Orchard.Inference.ChatOrchestrator do
   """
   @spec prepare(map(), keyword()) :: {:ok, CanonicalRequest.t(), map()} | {:error, term()}
   def prepare(params, caller_context \\ []) do
-    with {:ok, params} <- validate(params),
-         {:ok, canonical} <- normalize(params, caller_context),
-         {:ok, model} <- resolve_model(canonical),
-         {:ok, canonical} <- tokenize(canonical, model),
-         :ok <- enforce_context_window(canonical, model) do
-      {:ok, canonical, model}
-    end
+    RequestPreparation.prepare(params, caller_context,
+      validator: ChatRequestValidator,
+      normalizer: ChatRequestNormalizer
+    )
   end
 
   @doc """
@@ -128,88 +118,4 @@ defmodule Orchard.Inference.ChatOrchestrator do
       execute(canonical, model, opts)
     end
   end
-
-  # -- Steps -----------------------------------------------------------------
-
-  defp validate(params) do
-    case ChatRequestValidator.validate(params) do
-      {:ok, validated} -> {:ok, validated}
-      {:error, type, field} -> {:error, {:validation, {type, field}}}
-      {:error, type, field, reason} -> {:error, {:validation, {type, field, reason}}}
-    end
-  end
-
-  defp normalize(params, caller_context) do
-    ChatRequestNormalizer.normalize(params, caller_context)
-  end
-
-  defp resolve_model(%CanonicalRequest{model_ref: model_ref}) do
-    case Models.get_model_by_identity(model_ref.model_id, model_ref.version) do
-      nil ->
-        {:error, {:model_not_found, "#{model_ref.model_id}@#{model_ref.version}"}}
-
-      %{state: :active} = model ->
-        {:ok, model}
-
-      %{state: state} ->
-        {:error,
-         {:model_not_found, "#{model_ref.model_id}@#{model_ref.version} is #{state}, not active"}}
-    end
-  end
-
-  defp tokenize(canonical, model) do
-    tokenizer_opts = build_tokenizer_opts(model)
-
-    case TokenizerClient.tokenize(canonical, tokenizer_opts) do
-      {:ok, %{rendered_prompt: prompt, input_token_count: count}} ->
-        {:ok, CanonicalRequest.with_tokenization(canonical, prompt, count)}
-
-      {:error, reason} ->
-        {:error, {:tokenization, reason}}
-    end
-  end
-
-  # In fake mode, the tokenizer doesn't need model assets.
-  # In port mode, resolve the bundle root from the model's artifact_uri
-  # and parse the manifest for tokenizer/chat-template asset paths.
-  defp build_tokenizer_opts(model) do
-    case TokenizerClient.mode() do
-      :fake ->
-        []
-
-      :port ->
-        bundle_root = uri_to_local_path(model.artifact_uri)
-
-        case ManifestParser.parse_from_bundle(bundle_root) do
-          {:ok, manifest} -> [manifest: manifest, bundle_root: bundle_root]
-          {:error, _reason} -> []
-        end
-
-      _other ->
-        []
-    end
-  end
-
-  defp uri_to_local_path("file://" <> path), do: path
-  defp uri_to_local_path(path), do: path
-
-  defp enforce_context_window(canonical, model) do
-    max_output = effective_max_output_tokens(canonical.sampling)
-    total = canonical.input_token_count + max_output
-
-    if total > model.max_context_tokens do
-      {:error,
-       {:context_overflow,
-        "request requires #{total} tokens (#{canonical.input_token_count} input + #{max_output} output) but model supports at most #{model.max_context_tokens}"}}
-    else
-      :ok
-    end
-  end
-
-  defp effective_max_output_tokens(%CanonicalRequest.Sampling{max_output_tokens: n})
-       when is_integer(n) and n > 0,
-       do: n
-
-  defp effective_max_output_tokens(%CanonicalRequest.Sampling{}),
-    do: @default_max_output_tokens
 end

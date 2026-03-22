@@ -53,6 +53,37 @@ defmodule Orchard.API.RouterTest do
       assert body["error"]["code"] == "model_not_found"
     end
 
+    test "POST /v1/responses requires bearer auth" do
+      conn =
+        build_conn(:post, "/v1/responses")
+        |> put_req_header("accept", "application/json")
+        |> put_req_header("content-type", "application/json")
+        |> Map.put(:params, %{"model" => "test@v1", "input" => "hello"})
+        |> Map.put(:body_params, %{"model" => "test@v1", "input" => "hello"})
+        |> Router.call(Router.init([]))
+
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["type"] == "authentication_error"
+    end
+
+    test "POST /v1/responses is routed for authenticated callers" do
+      params = %{"model" => "nonexistent@v1", "input" => "hello"}
+
+      conn =
+        build_conn(:post, "/v1/responses")
+        |> put_req_header("accept", "application/json")
+        |> put_req_header("content-type", "application/json")
+        |> put_req_header("authorization", "Bearer #{default_api_token!()}")
+        |> Map.put(:params, params)
+        |> Map.put(:body_params, params)
+        |> Router.call(Router.init([]))
+
+      assert conn.status == 404
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "model_not_found"
+    end
+
     test "health endpoints still work" do
       conn =
         build_conn(:get, "/health/live")

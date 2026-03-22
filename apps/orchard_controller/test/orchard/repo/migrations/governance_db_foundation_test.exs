@@ -10,11 +10,12 @@ defmodule Orchard.Repo.Migrations.GovernanceDbFoundationTest do
 
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
   alias Orchard.Repo
 
   setup do
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Repo)
+    :ok = Sandbox.checkout(Repo)
     :ok
   end
 

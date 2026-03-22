@@ -227,6 +227,13 @@ defmodule Orchard.Inference.ChatError do
   end
 
   @spec sse_mapping(t()) :: sse_mapping()
+  @sse_passthrough_kinds [
+    :request_timed_out,
+    :request_cancelled,
+    :request_interrupted,
+    :request_failed
+  ]
+
   def sse_mapping(%__MODULE__{kind: :model_load_failed, model_load_failure: failure}) do
     failure
     |> ModelLoadFailure.api_mapping()
@@ -234,8 +241,7 @@ defmodule Orchard.Inference.ChatError do
     |> Map.put(:param, nil)
   end
 
-  def sse_mapping(%__MODULE__{kind: kind} = error)
-      when kind in [:request_timed_out, :request_cancelled, :request_interrupted, :request_failed] do
+  def sse_mapping(%__MODULE__{kind: kind} = error) when kind in @sse_passthrough_kinds do
     %{
       type: "server_error",
       code: error.source_code,

@@ -35,6 +35,7 @@ defmodule Orchard.GovernanceTest do
 
   import Ecto.Query
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
   alias Orchard.Governance.{ApiKey, ApiKeySecret, AuditLog, Tenant}
 
@@ -372,7 +373,7 @@ defmodule Orchard.GovernanceTest do
 
       task = fn ->
         Task.async(fn ->
-          Ecto.Adapters.SQL.Sandbox.allow(Repo, parent, self())
+          Sandbox.allow(Repo, parent, self())
           send(parent, {:ready, self()})
 
           receive do

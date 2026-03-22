@@ -408,6 +408,30 @@ defmodule OrchardCLI.Commands.TLSTest do
   end
 
   @tag :integration
+  test "init returns an error tuple for a garbage reused CA cert" do
+    dir = make_tmp_dir()
+
+    assert {:ok, _} =
+             TLS.run(
+               ["init", "--no-trust", "--output-dir", dir],
+               real_runtime()
+             )
+
+    File.write!(Path.join(dir, "ca.crt"), "this is not a PEM file")
+    File.rm!(Path.join(dir, "controller.key"))
+    File.rm!(Path.join(dir, "controller.crt"))
+    File.rm!(Path.join(dir, ".orchard-tls-meta.json"))
+
+    assert {:error, message, 1} =
+             TLS.run(
+               ["init", "--no-trust", "--output-dir", dir],
+               real_runtime()
+             )
+
+    assert message =~ "invalid TLS file contents"
+  end
+
+  @tag :integration
   test "lock prevents concurrent tls init runs" do
     dir = make_tmp_dir()
     lock_path = Path.join(Path.dirname(dir), ".tls.lock")
