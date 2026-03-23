@@ -23,6 +23,7 @@ config :orchard_controller, :console,
   playground_impl: OrchardConsole.Playground,
   model_hub_impl: OrchardConsole.ModelHub,
   model_hub_client_impl: Orchard.Models.HubClient,
+  model_hub_download_impl: Orchard.Models.HubDownloader,
   refresh_interval_ms: 5_000
 
 config :orchard_controller, Orchard.API.Endpoint,
