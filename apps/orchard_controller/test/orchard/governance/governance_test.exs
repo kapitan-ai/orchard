@@ -457,6 +457,116 @@ defmodule Orchard.GovernanceTest do
     )
   end
 
+  describe "get_tenant/1" do
+    test "returns tenant by ID" do
+      {:ok, tenant} = Governance.create_tenant(%{slug: "get-test", name: "Get Test"})
+      assert {:ok, found} = Governance.get_tenant(tenant.id)
+      assert found.id == tenant.id
+      assert found.slug == "get-test"
+    end
+
+    test "returns tenant when passed a Tenant struct" do
+      {:ok, tenant} = Governance.create_tenant(%{slug: "struct-test", name: "Struct Test"})
+      assert {:ok, ^tenant} = Governance.get_tenant(tenant)
+    end
+
+    test "returns error for unknown ID" do
+      assert {:error, :tenant_not_found} = Governance.get_tenant(Ecto.UUID.generate())
+    end
+
+    test "returns error for malformed ID" do
+      assert {:error, :tenant_not_found} = Governance.get_tenant("not-a-uuid")
+    end
+  end
+
+  describe "list_api_keys_for_tenant/1" do
+    test "returns only keys for the given tenant, newest first, redacted" do
+      {:ok, t1} = Governance.create_tenant(%{slug: "list-keys-t1", name: "T1"})
+      {:ok, t2} = Governance.create_tenant(%{slug: "list-keys-t2", name: "T2"})
+
+      {:ok, %{api_key: k1}} = Governance.create_api_key(t1.id, %{name: "first"})
+      {:ok, %{api_key: k2}} = Governance.create_api_key(t1.id, %{name: "second"})
+      {:ok, _} = Governance.create_api_key(t2.id, %{name: "other-tenant"})
+
+      assert {:ok, keys} = Governance.list_api_keys_for_tenant(t1.id)
+      assert length(keys) == 2
+      assert Enum.map(keys, & &1.id) == [k2.id, k1.id]
+      assert Enum.all?(keys, fn k -> k.secret_hash == nil end)
+    end
+
+    test "accepts a Tenant struct" do
+      {:ok, tenant} = Governance.create_tenant(%{slug: "list-struct", name: "LS"})
+      {:ok, _} = Governance.create_api_key(tenant.id, %{name: "key1"})
+      assert {:ok, [_]} = Governance.list_api_keys_for_tenant(tenant)
+    end
+
+    test "returns empty list for tenant with no keys" do
+      {:ok, tenant} = Governance.create_tenant(%{slug: "no-keys", name: "No Keys"})
+      assert {:ok, []} = Governance.list_api_keys_for_tenant(tenant.id)
+    end
+
+    test "returns error for unknown tenant" do
+      assert {:error, :tenant_not_found} =
+               Governance.list_api_keys_for_tenant(Ecto.UUID.generate())
+    end
+
+    test "returns error for malformed tenant ID" do
+      assert {:error, :tenant_not_found} = Governance.list_api_keys_for_tenant("bad")
+    end
+  end
+
+  describe "revoke_api_key/2 (tenant-scoped)" do
+    test "revokes key belonging to tenant" do
+      {:ok, tenant} = Governance.create_tenant(%{slug: "rev-scoped", name: "RS"})
+      {:ok, %{api_key: key}} = Governance.create_api_key(tenant.id, %{name: "k1"})
+
+      assert {:ok, revoked} = Governance.revoke_api_key(tenant.id, key.id)
+      assert revoked.revoked_at != nil
+      assert revoked.secret_hash == nil
+    end
+
+    test "returns error when key belongs to different tenant" do
+      {:ok, t1} = Governance.create_tenant(%{slug: "rev-t1", name: "T1"})
+      {:ok, t2} = Governance.create_tenant(%{slug: "rev-t2", name: "T2"})
+      {:ok, %{api_key: key}} = Governance.create_api_key(t1.id, %{name: "k1"})
+
+      assert {:error, :api_key_not_found} = Governance.revoke_api_key(t2.id, key.id)
+
+      # Verify key is NOT revoked
+      {:ok, keys} = Governance.list_api_keys_for_tenant(t1.id)
+      assert [unrevoked] = keys
+      assert unrevoked.revoked_at == nil
+    end
+
+    test "accepts Tenant struct" do
+      {:ok, tenant} = Governance.create_tenant(%{slug: "rev-struct", name: "RS"})
+      {:ok, %{api_key: key}} = Governance.create_api_key(tenant.id, %{name: "k1"})
+
+      assert {:ok, revoked} = Governance.revoke_api_key(tenant, key.id)
+      assert revoked.revoked_at != nil
+    end
+
+    test "is idempotent for already-revoked key" do
+      {:ok, tenant} = Governance.create_tenant(%{slug: "rev-idem", name: "RI"})
+      {:ok, %{api_key: key}} = Governance.create_api_key(tenant.id, %{name: "k1"})
+
+      assert {:ok, _} = Governance.revoke_api_key(tenant.id, key.id)
+      assert {:ok, _} = Governance.revoke_api_key(tenant.id, key.id)
+    end
+
+    test "returns error for unknown key ID" do
+      {:ok, tenant} = Governance.create_tenant(%{slug: "rev-unknown", name: "RU"})
+
+      assert {:error, :api_key_not_found} =
+               Governance.revoke_api_key(tenant.id, Ecto.UUID.generate())
+    end
+
+    test "returns error for unknown tenant ID" do
+      assert {:error, :tenant_not_found} =
+               Governance.revoke_api_key(Ecto.UUID.generate(), Ecto.UUID.generate())
+    end
+  end
+
   defp tenant_audit_log!(tenant_id, action) do
     Repo.one!(
       from(audit_log in AuditLog,

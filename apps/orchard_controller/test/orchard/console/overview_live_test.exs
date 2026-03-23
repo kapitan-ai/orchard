@@ -130,6 +130,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "Playground"
       assert html =~ "Models"
       assert html =~ "Model Hub"
+      assert html =~ "Tenants"
       assert html =~ "Requests"
     end
 
@@ -149,9 +150,11 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "/console/playground"
       assert html =~ "/console/models"
       assert html =~ "/console/model-hub"
+      assert html =~ "/console/tenants"
       refute html =~ "Playground \u2014 coming soon"
       refute html =~ "Models \u2014 coming soon"
       refute html =~ "Model Hub \u2014 coming soon"
+      refute html =~ "Tenants \u2014 coming soon"
     end
 
     test "renders sidebar toggle button", %{conn: conn} do

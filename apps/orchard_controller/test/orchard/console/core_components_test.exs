@@ -64,7 +64,7 @@ defmodule OrchardConsole.CoreComponentsTest do
 
     test "renders all registered icons without error" do
       for name <-
-            ~w(hero-squares-2x2 hero-command-line hero-cube-transparent hero-document-text hero-magnifying-glass hero-chevron-double-left hero-bars-3 hero-arrow-left hero-arrow-path hero-inbox hero-exclamation-triangle) do
+            ~w(hero-squares-2x2 hero-command-line hero-cube-transparent hero-document-text hero-magnifying-glass hero-chevron-double-left hero-bars-3 hero-arrow-left hero-arrow-path hero-inbox hero-exclamation-triangle hero-key) do
         assigns = %{name: name}
         html = render_heex(~H|<.icon name={@name} />|)
         assert html =~ "<svg", "icon #{name} should render an SVG"
@@ -533,7 +533,7 @@ defmodule OrchardConsole.CoreComponentsTest do
   # ===========================================================================
 
   describe "sidebar_nav/1" do
-    test "renders all five nav items" do
+    test "renders all six nav items" do
       assigns = %{}
       html = render_heex(~H|<.sidebar_nav active={:overview} />|)
 
@@ -541,6 +541,7 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "Playground"
       assert html =~ "Models"
       assert html =~ "Model Hub"
+      assert html =~ "Tenants"
       assert html =~ "Requests"
     end
 
@@ -567,8 +568,10 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "Requests \u2014 coming soon"
       assert html =~ "/console/models"
       assert html =~ "/console/model-hub"
+      assert html =~ "/console/tenants"
       refute html =~ "Models \u2014 coming soon"
       refute html =~ "Model Hub \u2014 coming soon"
+      refute html =~ "Tenants \u2014 coming soon"
     end
 
     test "active item uses navy accent" do

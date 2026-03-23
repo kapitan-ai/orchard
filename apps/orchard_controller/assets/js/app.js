@@ -92,6 +92,35 @@ Hooks.SubmitOnModEnter = {
   }
 }
 
+/**
+ * CopyGeneratedSecret — copies a one-time API key secret to the clipboard.
+ * Attach to a button with `phx-hook="CopyGeneratedSecret"`.
+ * Required data attributes: `data-copy-text`, `data-api-key-id`.
+ */
+Hooks.CopyGeneratedSecret = {
+  mounted() {
+    this._onClick = () => {
+      let sourceId = this.el.dataset.secretSource
+      let sourceEl = sourceId && document.getElementById(sourceId)
+      let text = sourceEl ? sourceEl.textContent.trim() : ""
+      let apiKeyId = this.el.dataset.apiKeyId
+
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text)
+          .then(() => this.pushEvent("generated_secret_copied", {api_key_id: apiKeyId}))
+          .catch(() => this.pushEvent("generated_secret_copy_failed", {api_key_id: apiKeyId}))
+      } else {
+        this.pushEvent("generated_secret_copy_failed", {api_key_id: apiKeyId})
+      }
+    }
+    this.el.addEventListener("click", this._onClick)
+  },
+
+  destroyed() {
+    this.el.removeEventListener("click", this._onClick)
+  }
+}
+
 // ===========================================================================
 // LiveSocket Setup
 // ===========================================================================

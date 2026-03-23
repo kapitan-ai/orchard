@@ -384,6 +384,105 @@ defmodule OrchardConsole.AuthTest do
     end
   end
 
+  describe "/console/tenants auth" do
+    test "returns 404 for /console/tenants when console is disabled", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: false,
+        auth: :none,
+        username: nil,
+        password: nil
+      )
+
+      conn = get(conn, "/console/tenants")
+      assert conn.status == 404
+    end
+
+    test "returns 401 for /console/tenants in basic auth without credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn = get(conn, "/console/tenants")
+      assert conn.status == 401
+    end
+
+    test "redirects on first auth for /console/tenants", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn =
+        conn
+        |> put_req_header(
+          "authorization",
+          Plug.BasicAuth.encode_basic_auth("operator", "secret")
+        )
+        |> get("/console/tenants")
+
+      assert conn.status == 302
+      assert redirected_to(conn) == "/console/tenants"
+
+      follow_up = conn |> recycle() |> get("/console/tenants")
+      assert follow_up.status == 200
+      assert follow_up.resp_body =~ "Tenants"
+    end
+
+    test "returns 404 for /console/tenants/:id when console is disabled", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: false,
+        auth: :none,
+        username: nil,
+        password: nil
+      )
+
+      conn = get(conn, "/console/tenants/#{Orchard.Governance.legacy_tenant_id()}")
+      assert conn.status == 404
+    end
+
+    test "returns 401 for /console/tenants/:id in basic auth without credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn = get(conn, "/console/tenants/#{Orchard.Governance.legacy_tenant_id()}")
+      assert conn.status == 401
+    end
+
+    test "redirects on first auth for /console/tenants/:id", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      tenant_path = "/console/tenants/#{Orchard.Governance.legacy_tenant_id()}"
+
+      conn =
+        conn
+        |> put_req_header(
+          "authorization",
+          Plug.BasicAuth.encode_basic_auth("operator", "secret")
+        )
+        |> get(tenant_path)
+
+      assert conn.status == 302
+      assert redirected_to(conn) == tenant_path
+
+      follow_up = conn |> recycle() |> get(tenant_path)
+      assert follow_up.status == 200
+    end
+  end
+
   describe "non-console paths" do
     test "does not affect API routes", %{conn: conn} do
       Application.put_env(:orchard_controller, :console,

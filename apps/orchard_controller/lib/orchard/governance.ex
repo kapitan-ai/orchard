@@ -150,6 +150,59 @@ defmodule Orchard.Governance do
     |> Repo.all()
   end
 
+  @spec get_tenant(Tenant.t() | Ecto.UUID.t()) :: {:ok, Tenant.t()} | {:error, :tenant_not_found}
+  def get_tenant(%Tenant{} = tenant), do: {:ok, tenant}
+
+  def get_tenant(tenant_id) do
+    with {:ok, tenant_id} <- normalize_tenant_id(tenant_id) do
+      fetch_tenant(tenant_id)
+    end
+  end
+
+  @spec list_api_keys_for_tenant(Tenant.t() | Ecto.UUID.t()) ::
+          {:ok, [ApiKey.t()]} | {:error, :tenant_not_found}
+  def list_api_keys_for_tenant(%Tenant{id: tenant_id}),
+    do: list_api_keys_for_tenant(tenant_id)
+
+  def list_api_keys_for_tenant(tenant_id) do
+    with {:ok, tenant_id} <- normalize_tenant_id(tenant_id),
+         {:ok, _tenant} <- fetch_tenant(tenant_id) do
+      api_keys =
+        ApiKey
+        |> where([k], k.tenant_id == ^tenant_id)
+        |> order_by([k], desc: k.inserted_at, desc: k.id)
+        |> Repo.all()
+        |> Enum.map(&redact_api_key/1)
+
+      {:ok, api_keys}
+    end
+  end
+
+  @spec revoke_api_key(Tenant.t() | Ecto.UUID.t(), ApiKey.t() | Ecto.UUID.t()) ::
+          {:ok, ApiKey.t()} | {:error, Changeset.t() | :tenant_not_found | :api_key_not_found}
+  def revoke_api_key(%Tenant{id: tenant_id}, api_key_or_id),
+    do: revoke_api_key(tenant_id, api_key_or_id)
+
+  def revoke_api_key(tenant_id, %ApiKey{id: api_key_id}),
+    do: revoke_api_key(tenant_id, api_key_id)
+
+  def revoke_api_key(tenant_id, api_key_id) when is_binary(tenant_id) and is_binary(api_key_id) do
+    Repo.transaction(fn ->
+      with {:ok, tenant_id} <- normalize_tenant_id(tenant_id),
+           {:ok, _tenant} <- fetch_tenant(tenant_id),
+           {:ok, api_key_id} <- normalize_api_key_id(api_key_id),
+           {:ok, api_key} <- lock_api_key_for_tenant(api_key_id, tenant_id),
+           {:ok, api_key} <- revoke_locked_api_key(api_key) do
+        {:ok, redact_api_key(api_key)}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  def revoke_api_key(_tenant_id, _api_key_id), do: {:error, :tenant_not_found}
+
   defp insert_tenant(attrs) do
     %Tenant{}
     |> Tenant.changeset(%{slug: Map.get(attrs, "slug"), name: Map.get(attrs, "name")})
@@ -226,6 +279,19 @@ defmodule Orchard.Governance do
     api_key =
       ApiKey
       |> where([api_key], api_key.id == ^api_key_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+
+    case api_key do
+      %ApiKey{} = api_key -> {:ok, api_key}
+      nil -> {:error, :api_key_not_found}
+    end
+  end
+
+  defp lock_api_key_for_tenant(api_key_id, tenant_id) do
+    api_key =
+      ApiKey
+      |> where([k], k.id == ^api_key_id and k.tenant_id == ^tenant_id)
       |> lock("FOR UPDATE")
       |> Repo.one()
 

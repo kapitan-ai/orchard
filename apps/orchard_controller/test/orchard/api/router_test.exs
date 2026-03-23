@@ -156,6 +156,20 @@ defmodule Orchard.API.RouterTest do
       assert conn.resp_body =~ "model-hub-search-form"
       assert conn.resp_body =~ "Read-only in B1. Download and import are deferred to B2/B3."
     end
+
+    test "GET /console/tenants is routed", %{conn: conn} do
+      conn = get(conn, "/console/tenants")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "Tenants"
+    end
+
+    test "GET /console/tenants/:id is routed", %{conn: conn} do
+      conn = get(conn, "/console/tenants/#{Orchard.Governance.legacy_tenant_id()}")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "Tenant"
+    end
   end
 
   defp default_api_token! do

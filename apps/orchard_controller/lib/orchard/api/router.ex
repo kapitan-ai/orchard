@@ -52,6 +52,8 @@ defmodule Orchard.API.Router do
       live("/models", OrchardConsole.ModelsLive, :index)
       live("/model-hub", OrchardConsole.ModelHubLive, :index)
       live("/requests/:public_id", OrchardConsole.RequestLive, :show)
+      live("/tenants", OrchardConsole.TenantsLive, :index)
+      live("/tenants/:id", OrchardConsole.TenantDetailLive, :show)
     end
   end
 end
