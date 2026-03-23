@@ -6,6 +6,8 @@ defmodule OrchardConsole.RequestLive do
 
   use OrchardConsole, :live_view
 
+  alias Orchard.Governance
+  alias Orchard.Governance.{ApiKey, Tenant}
   alias Orchard.Requests
   alias Orchard.Requests.Request
 
@@ -354,7 +356,13 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>Request Provenance</:title>
 
-        <dl class="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-3">
+        <dl class="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+          <.detail_field id="request-tenant" label="Tenant">
+            <.tenant_display request={@request} />
+          </.detail_field>
+          <.detail_field id="request-api-key" label="API Key">
+            <.api_key_display request={@request} />
+          </.detail_field>
           <.detail_field id="request-retry-of" label="Retry Of">
             <%= cond do %>
               <% match?(%Orchard.Requests.Request{}, @request.retry_of_request) and
@@ -381,6 +389,59 @@ defmodule OrchardConsole.RequestLive do
         </dl>
       </.card>
     </div>
+    """
+  end
+
+  attr(:request, :map, required: true)
+
+  defp tenant_display(assigns) do
+    assigns = assign(assigns, :tenant_info, tenant_provenance(assigns.request))
+
+    ~H"""
+    <%= case @tenant_info.mode do %>
+      <% :resolved -> %>
+        <span>{@tenant_info.name}</span>
+        <span class="block text-xs font-mono text-slate-500 dark:text-slate-400">
+          {@tenant_info.slug}
+        </span>
+      <% :legacy -> %>
+        <span>{@tenant_info.name}</span>
+        <span class="block text-xs font-mono text-slate-500 dark:text-slate-400">
+          {@tenant_info.slug}
+        </span>
+      <% :orphan -> %>
+        <span class="text-slate-500 dark:text-slate-400">Unknown tenant</span>
+        <span class="block text-xs font-mono text-slate-500 dark:text-slate-400">
+          {@tenant_info.raw_id}
+        </span>
+      <% :absent -> %>
+        <span>—</span>
+    <% end %>
+    """
+  end
+
+  attr(:request, :map, required: true)
+
+  defp api_key_display(assigns) do
+    assigns = assign(assigns, :key_info, api_key_provenance(assigns.request))
+
+    ~H"""
+    <%= case @key_info.mode do %>
+      <% :resolved -> %>
+        <span>{@key_info.name}</span>
+        <span class="block text-xs font-mono text-slate-500 dark:text-slate-400">
+          {@key_info.token_prefix}
+        </span>
+        <.badge tone={@key_info.status_tone}>{@key_info.status_label}</.badge>
+      <% :orphan -> %>
+        <span class="text-slate-500 dark:text-slate-400">Unknown API key</span>
+        <span class="block text-xs font-mono text-slate-500 dark:text-slate-400">
+          {@key_info.raw_id}
+        </span>
+        <.badge tone={:neutral}>Missing</.badge>
+      <% :absent -> %>
+        <span>—</span>
+    <% end %>
     """
   end
 
@@ -610,6 +671,47 @@ defmodule OrchardConsole.RequestLive do
     ms = refresh_interval_ms()
     if rem(ms, 1000) == 0, do: "#{div(ms, 1000)}s", else: "#{ms}ms"
   end
+
+  # ===========================================================================
+  # Provenance helpers
+  # ===========================================================================
+
+  defp tenant_provenance(%{tenant: %Tenant{} = tenant}) do
+    %{mode: :resolved, name: tenant.name, slug: tenant.slug}
+  end
+
+  defp tenant_provenance(%{tenant_id: tenant_id}) when is_binary(tenant_id) do
+    if tenant_id == Governance.legacy_tenant_id() do
+      %{
+        mode: :legacy,
+        name: Governance.legacy_tenant_name(),
+        slug: Governance.legacy_tenant_slug()
+      }
+    else
+      %{mode: :orphan, raw_id: tenant_id}
+    end
+  end
+
+  defp tenant_provenance(_), do: %{mode: :absent}
+
+  defp api_key_provenance(%{api_key: %ApiKey{} = key}) do
+    {label, tone} =
+      if is_nil(key.revoked_at), do: {"Active", :success}, else: {"Revoked", :neutral}
+
+    %{
+      mode: :resolved,
+      name: key.name,
+      token_prefix: key.token_prefix,
+      status_label: label,
+      status_tone: tone
+    }
+  end
+
+  defp api_key_provenance(%{api_key_id: api_key_id}) when is_binary(api_key_id) do
+    %{mode: :orphan, raw_id: api_key_id}
+  end
+
+  defp api_key_provenance(_), do: %{mode: :absent}
 
   # ===========================================================================
   # Formatting

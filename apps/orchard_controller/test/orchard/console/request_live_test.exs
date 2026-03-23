@@ -359,6 +359,107 @@ defmodule OrchardConsole.RequestLiveTest do
       summary_html = element(new_view, "#request-summary-card") |> render()
       assert summary_html =~ parent.public_id
     end
+
+    test "renders resolved tenant and API key provenance", %{conn: conn} do
+      {:ok, tenant} =
+        Orchard.Governance.create_tenant(%{name: "Acme Corp", slug: "acme"})
+
+      {:ok, %{api_key: api_key}} =
+        Orchard.Governance.create_api_key(tenant, %{name: "prod-key"})
+
+      request =
+        create_request!(%{
+          state: :completed,
+          tenant_id: tenant.id,
+          api_key_id: api_key.id
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      tenant_html = element(view, "#request-tenant") |> render()
+      assert tenant_html =~ "Acme Corp"
+      assert tenant_html =~ "acme"
+
+      key_html = element(view, "#request-api-key") |> render()
+      assert key_html =~ "prod-key"
+      assert key_html =~ api_key.token_prefix
+      assert key_html =~ "Active"
+    end
+
+    test "renders revoked API key with Revoked badge", %{conn: conn} do
+      {:ok, tenant} =
+        Orchard.Governance.create_tenant(%{name: "Revoke Test", slug: "revoke-test"})
+
+      {:ok, %{api_key: api_key}} =
+        Orchard.Governance.create_api_key(tenant, %{name: "revoked-key"})
+
+      {:ok, _revoked} = Orchard.Governance.revoke_api_key(api_key.id)
+
+      request =
+        create_request!(%{
+          state: :completed,
+          tenant_id: tenant.id,
+          api_key_id: api_key.id
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      key_html = element(view, "#request-api-key") |> render()
+      assert key_html =~ "revoked-key"
+      assert key_html =~ "Revoked"
+    end
+
+    test "renders orphan provenance with raw IDs without crashing", %{conn: conn} do
+      orphan_tenant_id = Ecto.UUID.generate()
+      orphan_key_id = Ecto.UUID.generate()
+
+      request =
+        create_request!(%{
+          state: :completed,
+          tenant_id: orphan_tenant_id,
+          api_key_id: orphan_key_id
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      tenant_html = element(view, "#request-tenant") |> render()
+      assert tenant_html =~ "Unknown tenant"
+      assert tenant_html =~ orphan_tenant_id
+
+      key_html = element(view, "#request-api-key") |> render()
+      assert key_html =~ "Unknown API key"
+      assert key_html =~ orphan_key_id
+      assert key_html =~ "Missing"
+    end
+
+    test "renders legacy tenant and dash for absent API key", %{conn: conn} do
+      request =
+        create_request!(%{
+          state: :completed,
+          tenant_id: Orchard.Governance.legacy_tenant_id(),
+          api_key_id: nil
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      tenant_html = element(view, "#request-tenant") |> render()
+      assert tenant_html =~ "Legacy Single Tenant"
+      assert tenant_html =~ "legacy"
+
+      key_html = element(view, "#request-api-key") |> render()
+      assert key_html =~ "\u2014"
+      refute key_html =~ "Unknown"
+      refute key_html =~ "Missing"
+    end
+
+    test "endpoint :responses remains visible in summary", %{conn: conn} do
+      request = create_request!(%{state: :completed, endpoint: :responses})
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      endpoint_html = element(view, "#request-endpoint") |> render()
+      assert endpoint_html =~ "responses"
+    end
   end
 
   # ===========================================================================
