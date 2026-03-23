@@ -126,6 +126,21 @@ Rules:
 - If dependencies or tool configuration change, rerun formatting, linting, typing, tests, and coverage afterward.
 - In the final handoff, list the exact validation commands run and their outcomes.
 
+## Dev Environment
+
+**Start with:** `bin/dev`
+
+This single command creates the dev database if needed, runs migrations, sets
+the dev gRPC port to 50071 (avoiding conflict with the packaged BEAM on 50061),
+and starts `iex -S mix phx.server`.
+
+When to bypass `bin/dev`:
+- `iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
+- `iex -S mix phx.server` — manual server start with custom env vars
+- `mix test` — test suite (uses its own DB and port 50071 via `test.exs`)
+
+See `docs/m1-local-dev.md` for full environment setup and configuration.
+
 ## Key Files
 
 | File | Purpose |

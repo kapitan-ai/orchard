@@ -19,23 +19,24 @@ All-in-one local boot for the M1 single-node inference MVP.
 cd orchard
 mix deps.get
 
-# 2. Create and migrate the database
-mix ecto.create
-mix ecto.migrate
-
-# 3. Install native Python packages (dev mode)
+# 2. Install native Python packages (dev mode)
 cd native/orchard_tokenizer && uv sync && cd ../..
 cd native/orchard_worker_mlx && uv sync && cd ../..
 
-# 4. Import a model bundle
-mix run -e 'OrchardCLI.main(["models", "import", "/path/to/model-bundle", "--activate"])'
+# 3. Start the dev server (creates DB, migrates, starts Phoenix + node-agent)
+bin/dev
 
-# 5. Start the controller (includes node-agent in dev)
-iex -S mix phx.server
+# 4. Import a model bundle (in the running IEx session)
+OrchardCLI.main(["models", "import", "/path/to/model-bundle", "--activate"])
 ```
 
+`bin/dev` is the single entrypoint for source development. It creates the dev
+database if missing, runs migrations, and starts `iex -S mix phx.server` with
+the dev gRPC port set to **50071** (avoiding conflict with the packaged BEAM
+on 50061).
+
 The controller listens on `http://localhost:4000` and the node-agent
-gRPC server on `127.0.0.1:50061`.
+gRPC server on `127.0.0.1:50071`.
 
 ## Transport Modes
 
@@ -43,10 +44,10 @@ Orchard has two transport profiles:
 
 ### Source dev (this page)
 
-When running from a source checkout (`iex -S mix phx.server`):
+When running from a source checkout (`bin/dev` or `iex -S mix phx.server`):
 
 - Controller listens on **HTTP** at `http://127.0.0.1:4000`
-- Node-agent gRPC listens on `127.0.0.1:50061`
+- Node-agent gRPC listens on `127.0.0.1:50071` (avoids packaged BEAM on 50061)
 - CORS is disabled (empty allowlist in `config/dev.exs`)
 - No TLS setup is required
 
@@ -90,8 +91,9 @@ documentation on transport modes, TLS management, and CORS configuration.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ORCHARD_NODE_AGENT_LISTEN_HOST` | `127.0.0.1` | gRPC listen address |
-| `ORCHARD_NODE_AGENT_LISTEN_PORT` | `50061` | gRPC listen port |
+| `ORCHARD_NODE_AGENT_LISTEN_HOST` | `127.0.0.1` | gRPC listen address (fixed to loopback in source dev; only configurable in packaged installs via `runtime.exs`) |
+| `ORCHARD_NODE_AGENT_LISTEN_PORT` | `50071` (source dev) / `50061` (packaged) | gRPC listen port |
+| `ORCHARD_RUNTIME_CLIENT_PORT` | Same as listen port | Controller gRPC client port (must match listen port) |
 | `ORCHARD_MODELS_ROOT` | `tmp/dev/models` | Model artifact storage |
 | `ORCHARD_WORKER_SOCKET_DIR` | `tmp/dev/data/worker-sockets` | Worker UDS directory |
 | `ORCHARD_WORKER_EXECUTABLE` | `native/orchard_worker_mlx/bin/orchard-worker-mlx` (repo-root) | Worker binary path. Override via env var; default resolves from repo root in source-dev mode. |
@@ -500,17 +502,32 @@ Required production env vars:
 All-in-one local boot (dev):
 
 1. PostgreSQL must be running
-2. Database created and migrated (`mix ecto.create && mix ecto.migrate`)
-3. Start the application (`iex -S mix phx.server`)
+2. Run `bin/dev` — this handles DB bootstrap and server start:
+   - Creates `orchard_dev` database if missing
+   - Runs pending migrations
+   - Exports dev gRPC port (50071)
+   - Starts `iex -S mix phx.server`
    - Controller boots: Endpoint, Repo, Inference supervisor, gRPC client
    - Node-agent boots: ModelManager, WorkerSupervisor, gRPC server
-4. Import at least one model bundle (`orchardctl models import <path> --activate`)
-5. API is ready for requests
+3. Import at least one model bundle (`orchardctl models import <path> --activate`)
+4. API is ready for requests
+
+Alternatively, for advanced debugging or when you need a BEAM without the
+HTTP server, you can run the steps manually:
+
+```bash
+export MIX_ENV=dev
+export ORCHARD_NODE_AGENT_LISTEN_PORT=50071
+export ORCHARD_RUNTIME_CLIENT_PORT=50071
+mix ecto.create && mix ecto.migrate
+iex -S mix phx.server
+```
 
 ## M1 Limitations
 
 - Source dev controller uses loopback HTTP (`127.0.0.1:4000`); packaged
   installs default to HTTPS (see [Transport Modes](#transport-modes))
+- Source dev gRPC on port 50071; packaged installs on 50061
 - Node-agent gRPC remains loopback and non-TLS in M1
 - Single implicit tenant (no auth/RBAC — deferred to M2)
 - Single local node (no multi-node scheduling — deferred to M4)
