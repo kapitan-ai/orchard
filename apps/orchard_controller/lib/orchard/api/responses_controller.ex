@@ -101,6 +101,13 @@ defmodule Orchard.API.ResponsesController do
     # Emit response.created immediately after SSE start, before execution.
     # This guarantees required event ordering even if execution fails before
     # the runtime accepts the request.
+    #
+    # Design tradeoff: the durable request row is not yet persisted at this
+    # point, so the public_id in response.created may refer to a request that
+    # never gets durably stored (e.g. insert-race idempotency conflict). In
+    # that case the client receives response.created -> response.failed, which
+    # is a valid sequence. This matches OpenAI's behavior of emitting
+    # response.created before the response is fully committed.
     {conn, closed} =
       emit_typed_event(
         conn,

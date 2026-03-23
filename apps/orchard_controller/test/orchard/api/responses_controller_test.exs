@@ -340,15 +340,42 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert created.data["response"]["model"] == "responses-stream-model@v1"
     assert created.data["response"]["metadata"] == %{"trace" => "stream-test"}
 
-    # Must contain at least one response.output_text.done
+    # Must contain at least one response.output_text.delta
+    delta_events = Enum.filter(events, &(&1.type == "response.output_text.delta"))
+    assert length(delta_events) >= 1
+    first_delta = hd(delta_events)
+    assert is_binary(first_delta.data["delta"])
+    assert first_delta.data["output_index"] == 0
+    assert first_delta.data["content_index"] == 0
+
+    # Must contain exactly one response.output_text.done
     done_events = Enum.filter(events, &(&1.type == "response.output_text.done"))
     assert length(done_events) == 1
+    done = hd(done_events)
+    assert is_binary(done.data["text"])
+
+    # output_text.done must appear after all deltas and before terminal
+    delta_indices =
+      Enum.with_index(events)
+      |> Enum.filter(fn {e, _} -> e.type == "response.output_text.delta" end)
+      |> Enum.map(fn {_, i} -> i end)
+
+    [{_, done_index}] =
+      Enum.with_index(events)
+      |> Enum.filter(fn {e, _} -> e.type == "response.output_text.done" end)
+
+    terminal_index = length(events) - 1
+    assert Enum.all?(delta_indices, &(&1 < done_index))
+    assert done_index < terminal_index
 
     # Must end with response.completed (terminal)
     terminal = List.last(events)
     assert terminal.type == "response.completed"
     assert terminal.data["response"]["status"] == "completed"
     assert terminal.data["response"]["output_text"] != nil
+    # Completed terminal's output_text must match concatenated deltas
+    concatenated = Enum.map_join(delta_events, "", & &1.data["delta"])
+    assert terminal.data["response"]["output_text"] == concatenated
 
     # No [DONE] in stream
     body = collect_chunked_body(conn)
@@ -358,6 +385,64 @@ defmodule Orchard.API.ResponsesControllerTest do
     [request] = Repo.all(Request)
     assert request.endpoint == :responses
     assert request.stream == true
+  end
+
+  test "post-start failure emits response.created then response.failed with no [DONE]" do
+    %{token: token} = create_api_key_with_token!("responses-stream-fail")
+
+    # Model with a mismatched hash — will fail at dispatch/model-load
+    _model =
+      create_model!(%{
+        model_id: "responses-stream-fail-model",
+        version: "v1",
+        display_name: "Responses Stream Fail Model",
+        artifact_uri: "file:///tmp/nonexistent",
+        artifact_sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+        artifact_source_uri: "file:///tmp/nonexistent",
+        state: :active,
+        format: "mlx",
+        backend: "mlx",
+        capabilities: ["chat"],
+        artifact_size_bytes: 1024,
+        resident_memory_bytes: 2048,
+        kv_cache_bytes_per_token: 128,
+        prefill_workspace_bytes_per_token: 64,
+        max_context_tokens: 131_072
+      })
+
+    conn =
+      post_responses(
+        %{
+          "model" => "responses-stream-fail-model@v1",
+          "input" => "hello",
+          "stream" => true
+        },
+        token
+      )
+
+    assert conn.status == 200
+    assert resp_header(conn, "content-type") == ["text/event-stream"]
+
+    events = parse_typed_sse_events(conn)
+
+    # Must start with response.created
+    assert hd(events).type == "response.created"
+    assert hd(events).data["response"]["status"] == "in_progress"
+
+    # Must contain response.output_text.done before terminal
+    done_events = Enum.filter(events, &(&1.type == "response.output_text.done"))
+    assert length(done_events) == 1
+
+    # Must end with response.failed (terminal)
+    terminal = List.last(events)
+    assert terminal.type == "response.failed"
+    assert terminal.data["response"]["status"] == "failed"
+    assert terminal.data["response"]["error"] != nil
+    assert terminal.data["response"]["error"]["type"] != nil
+
+    # No [DONE] in stream
+    body = collect_chunked_body(conn)
+    refute String.contains?(body, "[DONE]")
   end
 
   test "streaming pre-stream validation failure returns JSON, not SSE" do
