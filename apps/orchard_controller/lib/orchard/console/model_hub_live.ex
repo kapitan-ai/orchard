@@ -40,6 +40,38 @@ defmodule OrchardConsole.ModelHubLive do
     end
   end
 
+  def handle_event("download_model", _params, socket) do
+    %{assigns: assigns} = socket
+
+    cond do
+      assigns.detail_status != :ok ->
+        {:noreply, socket}
+
+      assigns.model_detail == nil ->
+        {:noreply, socket}
+
+      assigns.model_detail.gated == true ->
+        {:noreply, socket}
+
+      download_busy?(assigns.download_status) ->
+        {:noreply, socket}
+
+      true ->
+        {:noreply, start_download(socket, assigns.model_detail.repo_id)}
+    end
+  end
+
+  def handle_event("retry_download", _params, socket) do
+    case socket.assigns do
+      %{download_status: :error, download_progress: %{repo_id: repo_id}}
+      when is_binary(repo_id) and repo_id != "" ->
+        {:noreply, start_download(socket, repo_id)}
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
   @impl true
   def handle_info(
         {:model_hub, ref, :search_finished, result},
@@ -132,6 +164,63 @@ defmodule OrchardConsole.ModelHubLive do
 
   def handle_info({:model_hub, _ref, :detail_finished, _result}, socket), do: {:noreply, socket}
 
+  # Download message handlers — ref-gated
+
+  def handle_info(
+        {:model_hub, ref, :download_started, payload},
+        %{assigns: %{active_download_ref: ref}} = socket
+      ) do
+    progress = normalize_download_started(payload, socket.assigns.download_progress)
+    {:noreply, assign(socket, download_status: :downloading, download_progress: progress)}
+  end
+
+  def handle_info(
+        {:model_hub, ref, :download_progress, payload},
+        %{assigns: %{active_download_ref: ref}} = socket
+      ) do
+    {status, progress} =
+      normalize_download_progress(
+        payload,
+        socket.assigns.download_progress,
+        socket.assigns.download_status
+      )
+
+    {:noreply, assign(socket, download_status: status, download_progress: progress)}
+  end
+
+  def handle_info(
+        {:model_hub, ref, :download_finished, {:ok, result}},
+        %{assigns: %{active_download_ref: ref}} = socket
+      ) do
+    {:noreply,
+     assign(socket,
+       download_status: :completed,
+       download_result: result,
+       download_error: nil,
+       active_download_ref: nil,
+       active_download_pid: nil
+     )}
+  end
+
+  def handle_info(
+        {:model_hub, ref, :download_finished, {:error, error}},
+        %{assigns: %{active_download_ref: ref}} = socket
+      ) do
+    {:noreply,
+     assign(socket,
+       download_status: :error,
+       download_result: nil,
+       download_error: error,
+       active_download_ref: nil,
+       active_download_pid: nil
+     )}
+  end
+
+  # Stale download ref ignore clauses
+  def handle_info({:model_hub, _ref, :download_started, _}, socket), do: {:noreply, socket}
+  def handle_info({:model_hub, _ref, :download_progress, _}, socket), do: {:noreply, socket}
+  def handle_info({:model_hub, _ref, :download_finished, _}, socket), do: {:noreply, socket}
+
   @impl true
   def terminate(_reason, socket) do
     maybe_cancel_task(socket.assigns.active_search_pid)
@@ -150,10 +239,6 @@ defmodule OrchardConsole.ModelHubLive do
             <:subtitle>Browse Hugging Face MLX text-generation models from the console.</:subtitle>
 
             <div class="space-y-4">
-              <p id="model-hub-read-only-note" class="text-sm text-slate-600 dark:text-slate-300">
-                Read-only in B1. Download and import are deferred to B2/B3.
-              </p>
-
               <.form for={@form} id="model-hub-search-form" phx-change="search" phx-submit="search" class="space-y-3">
                 <.input
                   field={@form[:query]}
@@ -288,6 +373,24 @@ defmodule OrchardConsole.ModelHubLive do
                     </.badge>
                   </div>
 
+                  <div id="model-hub-download-action" class="flex items-center gap-3">
+                    <.button
+                      id="model-hub-download-button"
+                      variant={:primary}
+                      phx-click="download_model"
+                      disabled={@model_detail.gated == true or download_busy?(@download_status)}
+                    >
+                      Download & Import
+                    </.button>
+                    <p
+                      :if={@model_detail.gated == true}
+                      id="model-hub-download-gated-note"
+                      class="text-sm text-amber-600 dark:text-amber-400"
+                    >
+                      This repository is gated on Hugging Face. Console download is unavailable.
+                    </p>
+                  </div>
+
                   <div id="model-hub-detail-metadata" class="grid gap-3 sm:grid-cols-2">
                     <div
                       :for={field <- detail_fields(@model_detail)}
@@ -344,6 +447,121 @@ defmodule OrchardConsole.ModelHubLive do
                 </div>
             <% end %>
           </.card>
+
+          <%!-- Download progress panel (visible during active download) --%>
+          <div
+            :if={@download_status in [:starting, :downloading, :preparing, :importing]}
+            id="model-hub-download-progress"
+            class="mt-4 rounded-lg border border-sky-200 bg-sky-50 px-5 py-4 dark:border-sky-800 dark:bg-sky-900/20"
+          >
+            <div class="space-y-2">
+              <div class="flex items-center gap-2">
+                <.badge tone={:info}>
+                  <span id="model-hub-download-status">{download_status_label(@download_status)}</span>
+                </.badge>
+                <span
+                  :if={@download_progress && @download_progress[:repo_id]}
+                  id="model-hub-download-repo-id"
+                  class="font-mono text-xs text-slate-700 dark:text-slate-300 break-all"
+                >
+                  {@download_progress[:repo_id]}
+                </span>
+              </div>
+
+              <div :if={@download_progress} class="space-y-1 text-sm text-slate-600 dark:text-slate-300">
+                <p id="model-hub-download-file-progress">
+                  <%= if @download_progress[:total_files] do %>
+                    {@download_progress[:files_completed] || 0} of {@download_progress[:total_files]} files
+                  <% else %>
+                    {@download_progress[:files_completed] || 0} files
+                  <% end %>
+                </p>
+                <p id="model-hub-download-byte-progress">
+                  <%= if @download_progress[:total_bytes] && @download_progress[:total_bytes] > 0 do %>
+                    {format_bytes(@download_progress[:bytes_downloaded])} of {format_bytes(@download_progress[:total_bytes])}
+                    <%= if pct = format_download_percentage(@download_progress[:bytes_downloaded], @download_progress[:total_bytes]) do %>
+                      ({pct}%)
+                    <% end %>
+                  <% else %>
+                    {format_bytes(@download_progress[:bytes_downloaded])} downloaded
+                  <% end %>
+                </p>
+                <p
+                  id="model-hub-download-current-file"
+                  class="font-mono text-xs text-slate-500 dark:text-slate-400 truncate"
+                >
+                  {if @download_progress[:current_file], do: @download_progress[:current_file], else: "\u2014"}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <%!-- Download success panel --%>
+          <div
+            :if={@download_status == :completed}
+            id="model-hub-download-complete"
+            class="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-5 py-4 dark:border-emerald-800 dark:bg-emerald-900/20"
+          >
+            <div class="space-y-2">
+              <p class="text-sm font-medium text-emerald-800 dark:text-emerald-200">
+                <%= if @download_result[:state] == :active do %>
+                  Model is now active.
+                <% else %>
+                  Model imported successfully.
+                <% end %>
+              </p>
+              <p :if={@download_result} class="text-sm text-slate-600 dark:text-slate-300">
+                <span id="model-hub-download-model-id" class="font-mono text-xs">
+                  {@download_result[:model_id]}
+                </span>
+                <span :if={@download_result[:version]} class="text-slate-400 dark:text-slate-500">
+                  @
+                </span>
+                <span
+                  :if={@download_result[:version]}
+                  id="model-hub-download-version"
+                  class="font-mono text-xs"
+                >
+                  {String.slice(@download_result[:version] || "", 0..11)}
+                </span>
+              </p>
+              <.link
+                id="model-hub-download-models-link"
+                navigate={~p"/console/models"}
+                class="inline-block text-sm font-medium text-forest-600 hover:text-forest-700 dark:text-emerald-400 dark:hover:text-emerald-300"
+              >
+                View in Models &rarr;
+              </.link>
+            </div>
+          </div>
+
+          <%!-- Download error panel --%>
+          <div
+            :if={@download_status == :error}
+            id="model-hub-download-error"
+            class="mt-4 rounded-lg border border-red-200 bg-red-50 px-5 py-4 dark:border-red-800 dark:bg-red-900/20"
+          >
+            <div class="space-y-2">
+              <p class="text-sm font-medium text-red-800 dark:text-red-200">
+                {error_title(@download_error, "Model download and import failed.")}
+              </p>
+              <p
+                :if={@download_progress && @download_progress[:repo_id]}
+                id="model-hub-download-error-repo"
+                class="font-mono text-xs text-red-600 dark:text-red-400 break-all"
+              >
+                {@download_progress[:repo_id]}
+              </p>
+              <.button
+                id="model-hub-download-retry"
+                variant={:secondary}
+                size={:sm}
+                phx-click="retry_download"
+              >
+                Try again
+              </.button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -365,7 +583,14 @@ defmodule OrchardConsole.ModelHubLive do
       model_detail: nil,
       detail_error: nil,
       active_detail_ref: nil,
-      active_detail_pid: nil
+      active_detail_pid: nil,
+      # Download state
+      download_status: :idle,
+      active_download_ref: nil,
+      active_download_pid: nil,
+      download_progress: nil,
+      download_result: nil,
+      download_error: nil
     )
   end
 
@@ -462,6 +687,134 @@ defmodule OrchardConsole.ModelHubLive do
       active_detail_pid: nil
     )
   end
+
+  defp start_download(socket, repo_id) when is_binary(repo_id) do
+    ref = make_ref()
+
+    socket =
+      assign(socket,
+        download_status: :starting,
+        active_download_ref: ref,
+        active_download_pid: nil,
+        download_result: nil,
+        download_error: nil,
+        download_progress: %{
+          repo_id: repo_id,
+          revision: nil,
+          phase: nil,
+          current_file: nil,
+          files_completed: 0,
+          total_files: nil,
+          bytes_downloaded: 0,
+          total_bytes: nil
+        }
+      )
+
+    case model_hub_impl().start_download_import(self(), ref, repo_id, activate: true) do
+      {:ok, pid} ->
+        assign(socket, active_download_pid: pid)
+
+      _other ->
+        assign(socket,
+          download_status: :error,
+          download_error: default_download_error(),
+          active_download_ref: nil,
+          active_download_pid: nil
+        )
+    end
+  end
+
+  defp download_busy?(status), do: status in [:starting, :downloading, :preparing, :importing]
+
+  defp normalize_download_started(payload, existing_progress) do
+    base = existing_progress || %{}
+
+    Map.merge(base, %{
+      repo_id: payload_get(payload, :repo_id),
+      revision: payload_get(payload, :revision),
+      phase: :downloading,
+      total_files: payload_get(payload, :total_files),
+      total_bytes: payload_get(payload, :total_bytes),
+      files_completed: base[:files_completed] || 0,
+      bytes_downloaded: base[:bytes_downloaded] || 0,
+      current_file: nil
+    })
+  end
+
+  defp normalize_download_progress(payload, existing_progress, current_status) do
+    base = existing_progress || %{}
+    phase = payload_get(payload, :phase)
+    status = map_download_phase_to_status(phase) || current_status
+
+    progress =
+      Map.merge(base, %{
+        phase: phase || base[:phase],
+        current_file: payload_get(payload, :current_file),
+        files_completed: progress_field(payload, base, :files_completed, 0),
+        total_files: progress_field(payload, base, :total_files, nil),
+        bytes_downloaded: progress_field(payload, base, :bytes_downloaded, 0),
+        total_bytes: progress_field(payload, base, :total_bytes, nil)
+      })
+
+    {status, progress}
+  end
+
+  defp progress_field(payload, base, key, default) do
+    payload_get(payload, key) || base[key] || default
+  end
+
+  defp payload_get(payload, key) when is_map(payload) do
+    Map.get(payload, key, Map.get(payload, Atom.to_string(key)))
+  end
+
+  defp payload_get(_payload, _key), do: nil
+
+  defp map_download_phase_to_status(:downloading), do: :downloading
+  defp map_download_phase_to_status(:preparing_bundle), do: :preparing
+  defp map_download_phase_to_status(:importing), do: :importing
+  defp map_download_phase_to_status(_phase), do: nil
+
+  defp default_download_error do
+    %{
+      status: :error,
+      code: "download_import_failed",
+      message: "Model download and import failed."
+    }
+  end
+
+  defp download_status_label(:starting), do: "Starting"
+  defp download_status_label(:downloading), do: "Downloading"
+  defp download_status_label(:preparing), do: "Preparing bundle"
+  defp download_status_label(:importing), do: "Importing"
+  defp download_status_label(_status), do: "Processing"
+
+  defp format_bytes(nil), do: "0 B"
+  defp format_bytes(bytes) when is_integer(bytes) and bytes < 1024, do: "#{bytes} B"
+
+  defp format_bytes(bytes) when is_integer(bytes) do
+    {value, unit} =
+      cond do
+        bytes < 1024 * 1024 -> {bytes / 1024, "KB"}
+        bytes < 1024 * 1024 * 1024 -> {bytes / (1024 * 1024), "MB"}
+        bytes < 1024 * 1024 * 1024 * 1024 -> {bytes / (1024 * 1024 * 1024), "GB"}
+        true -> {bytes / (1024 * 1024 * 1024 * 1024), "TB"}
+      end
+
+    "#{:erlang.float_to_binary(value, decimals: 1)} #{unit}"
+  end
+
+  defp format_bytes(_bytes), do: "0 B"
+
+  defp format_download_percentage(_downloaded, nil), do: nil
+  defp format_download_percentage(_downloaded, 0), do: nil
+
+  defp format_download_percentage(downloaded, total)
+       when is_integer(downloaded) and is_integer(total) and total > 0 do
+    pct = div(downloaded * 100, total)
+    min(pct, 100)
+  end
+
+  defp format_download_percentage(_downloaded, _total), do: nil
 
   defp maybe_cancel_task(pid) when is_pid(pid) do
     if Process.alive?(pid) do

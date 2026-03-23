@@ -17,12 +17,14 @@ defmodule OrchardConsole.ModelHubLiveTest do
     :persistent_term.put({__MODULE__, :test_pid}, self())
     :persistent_term.erase({__MODULE__, :start_search_result})
     :persistent_term.erase({__MODULE__, :start_detail_result})
+    :persistent_term.erase({__MODULE__, :start_download_result})
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :console, previous)
       :persistent_term.erase({__MODULE__, :test_pid})
       :persistent_term.erase({__MODULE__, :start_search_result})
       :persistent_term.erase({__MODULE__, :start_detail_result})
+      :persistent_term.erase({__MODULE__, :start_download_result})
     end)
 
     :ok
@@ -37,7 +39,6 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "model-hub-search-form"
       assert html =~ "model-hub-search-input"
       assert html =~ ~s(phx-debounce="300")
-      assert html =~ "Read-only in B1. Download and import are deferred to B2/B3."
       assert has_element?(view, ~s(a[aria-current="page"][href="/console/model-hub"]))
     end
 
@@ -417,6 +418,330 @@ defmodule OrchardConsole.ModelHubLiveTest do
     end
   end
 
+  describe "download flow" do
+    test "download button renders for open models and is absent for idle detail", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = load_initial_results_and_detail(view)
+      html = render(view)
+
+      # Detail loaded for first (open) model — button present
+      assert has_element?(view, "#model-hub-download-button")
+      refute html =~ "model-hub-download-gated-note"
+      refute html =~ "model-hub-download-progress"
+      refute html =~ "model-hub-download-complete"
+      refute html =~ "model-hub-download-error"
+
+      # Second model is gated
+      second = Enum.at(results, 1)
+
+      view
+      |> element("#model-hub-select-#{dom_id_fragment(second.repo_id)}")
+      |> render_click()
+
+      detail_ref = assert_detail_started(second.repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
+      html = render(view)
+
+      # Gated model — button disabled, warning visible
+      assert has_element?(view, "#model-hub-download-button[disabled]")
+      assert html =~ "model-hub-download-gated-note"
+      assert html =~ "gated on Hugging Face"
+    end
+
+    test "clicking download starts the seam and shows starting state", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = load_initial_results_and_detail(view)
+      first = hd(results)
+
+      view
+      |> element("#model-hub-download-button")
+      |> render_click()
+
+      # Verify stub received the right call
+      assert_receive {:stub_download_ref, _ref, repo_id, opts}, 200
+      assert repo_id == first.repo_id
+      assert opts[:activate] == true
+
+      html = render(view)
+      assert html =~ "model-hub-download-progress"
+      assert html =~ "Starting"
+      # Button should be disabled while busy
+      assert has_element?(view, "#model-hub-download-button[disabled]")
+    end
+
+    test ":download_started moves to downloading and renders totals", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(view, download_ref, %{
+        repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        revision: "abc123def",
+        total_files: 15,
+        total_bytes: 4_294_967_296
+      })
+
+      html = render(view)
+      assert html =~ "Downloading"
+      assert html =~ "0 of 15 files"
+      assert html =~ "4.0 GB"
+      assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
+    end
+
+    test ":download_progress maps seam phases correctly", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(view, download_ref, %{
+        repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        revision: "abc123",
+        total_files: 10,
+        total_bytes: 1_073_741_824
+      })
+
+      # Downloading phase with file progress
+      send_download_progress(view, download_ref, %{
+        phase: :downloading,
+        current_file: "model-00001-of-00002.safetensors",
+        files_completed: 3,
+        total_files: 10,
+        bytes_downloaded: 536_870_912,
+        total_bytes: 1_073_741_824
+      })
+
+      html = render(view)
+      assert html =~ "Downloading"
+      assert html =~ "3 of 10 files"
+      assert html =~ "512.0 MB"
+      assert html =~ "model-00001-of-00002.safetensors"
+
+      # Preparing bundle phase
+      send_download_progress(view, download_ref, %{
+        phase: :preparing_bundle,
+        files_completed: 10,
+        total_files: 10,
+        bytes_downloaded: 1_073_741_824,
+        total_bytes: 1_073_741_824
+      })
+
+      html = render(view)
+      assert html =~ "Preparing bundle"
+      assert html =~ "10 of 10 files"
+
+      # Importing phase
+      send_download_progress(view, download_ref, %{
+        phase: :importing,
+        files_completed: 10,
+        total_files: 10,
+        bytes_downloaded: 1_073_741_824,
+        total_bytes: 1_073_741_824
+      })
+
+      html = render(view)
+      assert html =~ "Importing"
+    end
+
+    test ":download_finished {:ok, ...} shows completion with CTA", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(view, download_ref, %{
+        repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        revision: "abc123",
+        total_files: 2,
+        total_bytes: 1024
+      })
+
+      send_download_success(view, download_ref, %{
+        model_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        version: "abc123def456",
+        state: :active
+      })
+
+      html = render(view)
+      assert html =~ "model-hub-download-complete"
+      assert html =~ "Model is now active."
+      assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
+      assert html =~ "abc123def456"
+      assert has_element?(view, "#model-hub-download-models-link")
+      # Button should be re-enabled
+      refute has_element?(view, "#model-hub-download-button[disabled]")
+      # Progress should be gone
+      refute html =~ "model-hub-download-progress"
+    end
+
+    test ":download_finished {:error, ...} shows error with retry", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(view, download_ref, %{
+        repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        revision: "abc123",
+        total_files: 2,
+        total_bytes: 1024
+      })
+
+      send_download_error(view, download_ref, %{message: "Download timed out."})
+
+      html = render(view)
+      assert html =~ "model-hub-download-error"
+      assert html =~ "Download timed out."
+      assert has_element?(view, "#model-hub-download-retry")
+      # Button should be re-enabled
+      refute has_element?(view, "#model-hub-download-button[disabled]")
+    end
+
+    test "duplicate model error shows friendly message", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(view, download_ref, %{
+        repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        revision: "abc123",
+        total_files: 2,
+        total_bytes: 1024
+      })
+
+      send_download_error(view, download_ref, %{
+        code: "model_already_imported",
+        message: "Model mlx-community/Llama-3.2-1B-Instruct-4bit@abc123 is already imported."
+      })
+
+      html = render(view)
+      assert html =~ "model-hub-download-error"
+      assert html =~ "already imported"
+    end
+
+    test "start failure renders fallback error", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+      :persistent_term.put({__MODULE__, :start_download_result}, :error)
+
+      view |> element("#model-hub-download-button") |> render_click()
+
+      html = render(view)
+      assert html =~ "model-hub-download-error"
+      assert html =~ "Model download and import failed."
+      refute html =~ "model-hub-download-progress"
+    end
+
+    test "retry restarts failed repo download", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = load_initial_results_and_detail(view)
+      first = hd(results)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(view, download_ref, %{
+        repo_id: first.repo_id,
+        revision: "abc123",
+        total_files: 2,
+        total_bytes: 1024
+      })
+
+      send_download_error(view, download_ref, %{message: "Connection reset."})
+
+      # Click retry
+      view |> element("#model-hub-download-retry") |> render_click()
+
+      # Verify new download started for the same repo
+      assert_receive {:stub_download_ref, _new_ref, repo_id, opts}, 200
+      assert repo_id == first.repo_id
+      assert opts[:activate] == true
+
+      html = render(view)
+      assert html =~ "model-hub-download-progress"
+      assert html =~ "Starting"
+    end
+
+    test "stale download refs are ignored", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      first_download_ref = assert_download_started()
+
+      send_download_started(view, first_download_ref, %{
+        repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        revision: "abc123",
+        total_files: 10,
+        total_bytes: 1024
+      })
+
+      # Simulate error → retry (creates new ref)
+      send_download_error(view, first_download_ref, %{message: "Failed."})
+      view |> element("#model-hub-download-retry") |> render_click()
+      _new_download_ref = assert_download_started()
+
+      # Send stale messages with the OLD ref — should be ignored
+      send_download_started(view, first_download_ref, %{
+        repo_id: "stale/model",
+        revision: "stale",
+        total_files: 999,
+        total_bytes: 999
+      })
+
+      html = render(view)
+      refute html =~ "stale/model"
+      refute html =~ "999"
+      assert html =~ "Starting"
+
+      send_download_progress(view, first_download_ref, %{
+        phase: :downloading,
+        files_completed: 888,
+        total_files: 999,
+        bytes_downloaded: 888,
+        total_bytes: 999
+      })
+
+      html = render(view)
+      refute html =~ "888"
+
+      send_download_success(view, first_download_ref, %{
+        model_id: "stale/model",
+        version: "stale",
+        state: :active
+      })
+
+      html = render(view)
+      refute html =~ "model-hub-download-complete"
+      assert html =~ "model-hub-download-progress"
+    end
+
+    test "download button disabled for gated model click attempt", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = load_initial_results_and_detail(view)
+      second = Enum.at(results, 1)
+
+      # Select gated model
+      view
+      |> element("#model-hub-select-#{dom_id_fragment(second.repo_id)}")
+      |> render_click()
+
+      detail_ref = assert_detail_started(second.repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
+
+      # Try to click download — should be disabled, no stub call
+      assert has_element?(view, "#model-hub-download-button[disabled]")
+      refute_receive {:stub_download_ref, _, _, _}, 50
+    end
+  end
+
   defmodule ModelHubStub do
     def start_search(_owner, ref, query) do
       case :persistent_term.get({OrchardConsole.ModelHubLiveTest, :start_search_result}, :ok) do
@@ -443,6 +768,27 @@ defmodule OrchardConsole.ModelHubLiveTest do
           if test_pid = :persistent_term.get({OrchardConsole.ModelHubLiveTest, :test_pid}, nil) do
             send(test_pid, {:stub_detail_ref, ref, repo_id})
             send(test_pid, {:stub_detail_pid, ref, pid})
+          end
+
+          {:ok, pid}
+
+        other ->
+          other
+      end
+    end
+
+    def start_download_import(_owner, ref, repo_id, opts) do
+      case :persistent_term.get(
+             {OrchardConsole.ModelHubLiveTest, :start_download_result},
+             :ok
+           ) do
+        :ok ->
+          pid = spawn(fn -> Process.sleep(:infinity) end)
+
+          if test_pid =
+               :persistent_term.get({OrchardConsole.ModelHubLiveTest, :test_pid}, nil) do
+            send(test_pid, {:stub_download_ref, ref, repo_id, opts})
+            send(test_pid, {:stub_download_pid, ref, pid})
           end
 
           {:ok, pid}
@@ -517,6 +863,54 @@ defmodule OrchardConsole.ModelHubLiveTest do
       )
 
     send(view.pid, {:model_hub, ref, :detail_finished, {:error, error}})
+  end
+
+  # Download test helpers
+
+  defp assert_download_started do
+    assert_receive {:stub_download_ref, ref, _repo_id, _opts}, 200
+    ref
+  end
+
+  defp send_download_started(view, ref, attrs) do
+    payload =
+      Map.merge(
+        %{repo_id: "test/model", revision: "abc123", total_files: 2, total_bytes: 1024},
+        attrs
+      )
+
+    send(view.pid, {:model_hub, ref, :download_started, payload})
+  end
+
+  defp send_download_progress(view, ref, attrs) do
+    payload =
+      Map.merge(
+        %{
+          phase: :downloading,
+          current_file: nil,
+          files_completed: 0,
+          total_files: 2,
+          bytes_downloaded: 0,
+          total_bytes: 1024
+        },
+        attrs
+      )
+
+    send(view.pid, {:model_hub, ref, :download_progress, payload})
+  end
+
+  defp send_download_success(view, ref, result) do
+    send(view.pid, {:model_hub, ref, :download_finished, {:ok, result}})
+  end
+
+  defp send_download_error(view, ref, overrides) do
+    error =
+      Map.merge(
+        %{status: :error, code: "download_import_failed", message: "Download failed."},
+        overrides
+      )
+
+    send(view.pid, {:model_hub, ref, :download_finished, {:error, error}})
   end
 
   defp search_results_fixture do
