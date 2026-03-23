@@ -37,6 +37,20 @@ Orchard is a sovereign on-prem LLM orchestration platform for Apple Silicon macO
 - Commits: conventional commits (`feat:`, `fix:`, `docs:`, `chore:`)
 - Config: `config/` for compile-time, `config/runtime.exs` for runtime
 
+## LiveView Console Conventions
+
+- **Forms**: Use `to_form(map, as: atom)` with plain maps, NOT `Ecto.Changeset`. Phoenix HTML 4.x `FormData` protocol does not implement for `Ecto.Changeset` in this project. For error rendering after a failed `Repo.insert`, convert the changeset manually:
+  ```elixir
+  defp changeset_to_form(%Ecto.Changeset{} = cs, as, defaults) do
+    params = Map.merge(defaults, cs.params || %{})
+    errors = Enum.map(cs.errors, fn {field, {msg, opts}} -> {field, {msg, opts}} end)
+    to_form(params, as: as, errors: errors)
+  end
+  ```
+- **Deferred mount**: Call DB/gRPC only inside `if connected?(socket)`. Disconnected render shows loading state via `state_message`.
+- **Sensitive values**: Never put secrets in `data-*` attributes, flash, session, or URL params. Keep them in socket assigns only. JS hooks should read secrets from visible DOM elements via ID reference, not data attributes.
+- **Multi-tenant scoping**: Always scope child-resource DB operations (revoke, update, delete) to the parent tenant from server-side assigns. Never trust `phx-value-*` IDs alone.
+
 ## Agent Contribution Workflow
 
 When contributing code, agents MUST run the applicable quality workflow from the umbrella root and report what passed, failed, or is not yet wired for the current milestone.
