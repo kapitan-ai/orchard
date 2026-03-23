@@ -1,6 +1,10 @@
 defmodule Orchard.Inference.ResponsesSerializer do
   @moduledoc """
-  Builds bounded non-stream `/v1/responses` payloads and replay persistence attrs.
+  Builds bounded `/v1/responses` payloads for sync and streaming modes.
+
+  Sync helpers (`response_payload/3`, `success_persistence_attrs/3`) remain
+  unchanged. Streaming helpers build typed SSE event payloads aligned with
+  the OpenAI Responses streaming contract.
   """
 
   alias Orchard.CanonicalRequest
@@ -63,6 +67,114 @@ defmodule Orchard.Inference.ResponsesSerializer do
       total_tokens: usage.total_tokens
     }
   end
+
+  # -- Streaming event builders -----------------------------------------------
+
+  @doc """
+  Builds the `response.created` event payload emitted immediately after SSE start.
+  """
+  @spec created_event(CanonicalRequest.t(), integer()) :: map()
+  def created_event(%CanonicalRequest{} = canonical, created_at) do
+    %{
+      type: "response.created",
+      response: base_response(canonical, "in_progress", "", nil, nil, created_at)
+    }
+  end
+
+  @doc """
+  Builds a `response.output_text.delta` event payload for a single text delta.
+  """
+  @spec output_text_delta_event(String.t(), String.t()) :: map()
+  def output_text_delta_event(public_id, delta) do
+    %{
+      type: "response.output_text.delta",
+      response_id: public_id,
+      output_index: 0,
+      content_index: 0,
+      delta: delta
+    }
+  end
+
+  @doc """
+  Builds the `response.output_text.done` event payload emitted exactly once
+  before the terminal event.
+  """
+  @spec output_text_done_event(String.t(), String.t()) :: map()
+  def output_text_done_event(public_id, text) do
+    %{
+      type: "response.output_text.done",
+      response_id: public_id,
+      output_index: 0,
+      content_index: 0,
+      text: text
+    }
+  end
+
+  @doc """
+  Builds the `response.completed` terminal event payload.
+  """
+  @spec completed_event(
+          CanonicalRequest.t(),
+          String.t(),
+          InferenceEvent.Usage.t() | nil,
+          integer()
+        ) ::
+          map()
+  def completed_event(%CanonicalRequest{} = canonical, output_text, usage, created_at) do
+    %{
+      type: "response.completed",
+      response: base_response(canonical, "completed", output_text, usage, nil, created_at)
+    }
+  end
+
+  @doc """
+  Builds the `response.failed` terminal event payload.
+  """
+  @spec failed_event(
+          CanonicalRequest.t(),
+          String.t(),
+          InferenceEvent.Usage.t() | nil,
+          map(),
+          integer()
+        ) :: map()
+  def failed_event(%CanonicalRequest{} = canonical, output_text, usage, error_map, created_at) do
+    %{
+      type: "response.failed",
+      response: base_response(canonical, "failed", output_text, usage, error_map, created_at)
+    }
+  end
+
+  defp base_response(canonical, status, output_text, usage, error, created_at) do
+    output =
+      if output_text != "" do
+        [
+          %{
+            type: "message",
+            role: "assistant",
+            content: [
+              %{type: "output_text", text: output_text, annotations: []}
+            ]
+          }
+        ]
+      else
+        []
+      end
+
+    %{
+      id: canonical.public_id,
+      object: "response",
+      created_at: created_at,
+      status: status,
+      model: format_model_display(canonical),
+      output: output,
+      output_text: output_text,
+      usage: usage_map(usage),
+      error: error,
+      metadata: canonical.metadata
+    }
+  end
+
+  # -- Private helpers --------------------------------------------------------
 
   defp collect_output_text(events) do
     events

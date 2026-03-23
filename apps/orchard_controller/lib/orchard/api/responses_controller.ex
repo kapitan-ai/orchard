@@ -1,13 +1,18 @@
 defmodule Orchard.API.ResponsesController do
   @moduledoc """
-  OpenAI-compatible sync `/v1/responses` facade for the bounded text-only subset.
+  OpenAI-compatible `/v1/responses` endpoint with sync and typed SSE streaming.
+
+  Non-streaming: returns a single JSON response object.
+  Streaming (SSE): emits typed semantic events per the Responses API contract:
+  `response.created`, `response.output_text.delta`, `response.output_text.done`,
+  and a terminal `response.completed` or `response.failed`.
   """
 
   use Phoenix.Controller, formats: [:json]
 
   import Orchard.API.ErrorHelpers, only: [send_error: 5]
 
-  alias Orchard.API.InferenceControllerSupport
+  alias Orchard.API.{InferenceControllerSupport, SSE}
   alias Orchard.Inference.{ChatError, ResponsesOrchestrator, ResponsesSerializer}
   alias Orchard.InferenceEvent
 
@@ -20,7 +25,11 @@ defmodule Orchard.API.ResponsesController do
            InferenceControllerSupport.build_idempotency_context(conn, tenant_id, params),
          {:proceed, conn} <- InferenceControllerSupport.resolve_idempotency(conn, idempotency),
          {:ok, canonical, model} <- ResponsesOrchestrator.prepare(params, caller_context) do
-      execute_request(conn, canonical, model, idempotency)
+      if canonical.stream? do
+        handle_streaming(conn, canonical, model, idempotency)
+      else
+        execute_sync_request(conn, canonical, model, idempotency)
+      end
     else
       {:halt, conn} ->
         conn
@@ -42,7 +51,9 @@ defmodule Orchard.API.ResponsesController do
     end
   end
 
-  defp execute_request(conn, canonical, model, idempotency) do
+  # -- Non-streaming (sync) response -----------------------------------------
+
+  defp execute_sync_request(conn, canonical, model, idempotency) do
     created = System.system_time(:second)
 
     case ResponsesOrchestrator.execute(canonical, model,
@@ -71,6 +82,254 @@ defmodule Orchard.API.ResponsesController do
         InferenceControllerSupport.send_execute_error(conn, reason)
     end
   end
+
+  # -- Streaming (SSE) response ----------------------------------------------
+
+  defp handle_streaming(conn, canonical, model, idempotency) do
+    case SSE.start(conn) do
+      {:ok, conn} ->
+        stream_responses(conn, canonical, model, idempotency)
+
+      {:error, :closed} ->
+        conn
+    end
+  end
+
+  defp stream_responses(conn, canonical, model, idempotency) do
+    created = System.system_time(:second)
+
+    # Emit response.created immediately after SSE start, before execution.
+    # This guarantees required event ordering even if execution fails before
+    # the runtime accepts the request.
+    {conn, closed} =
+      emit_typed_event(
+        conn,
+        "response.created",
+        ResponsesSerializer.created_event(canonical, created)
+      )
+
+    if closed do
+      conn
+    else
+      do_stream_responses(conn, canonical, model, idempotency, created)
+    end
+  end
+
+  defp do_stream_responses(conn, canonical, model, idempotency, created) do
+    # Track mutable state across synchronous event_handler callbacks.
+    # All calls happen in this process, so Process dictionary is safe.
+    state_key = make_ref()
+
+    Process.put(state_key, %{
+      conn: conn,
+      closed: false,
+      terminal_sent: false,
+      output_done_sent: false,
+      output_chunks: [],
+      usage: nil
+    })
+
+    handler = fn _request_id, event ->
+      dispatch_stream_event(state_key, event, canonical, created)
+    end
+
+    result =
+      ResponsesOrchestrator.execute(canonical, model,
+        event_handler: handler,
+        idempotency: idempotency
+      )
+
+    state = Process.get(state_key)
+    Process.delete(state_key)
+
+    finalize_stream(state, result, canonical, created)
+  end
+
+  defp dispatch_stream_event(state_key, event, canonical, created) do
+    state = Process.get(state_key)
+
+    if state.closed or state.terminal_sent do
+      :cancel
+    else
+      new_state = handle_stream_event(state, event, canonical, created)
+      Process.put(state_key, new_state)
+      if new_state.closed, do: :cancel, else: :ok
+    end
+  end
+
+  defp handle_stream_event(state, event, canonical, created) do
+    case InferenceEvent.kind(event) do
+      :output_text_delta ->
+        delta = event.event.delta
+
+        state
+        |> Map.update!(:output_chunks, &[delta | &1])
+        |> emit_event(
+          "response.output_text.delta",
+          ResponsesSerializer.output_text_delta_event(canonical.public_id, delta)
+        )
+
+      :usage ->
+        %{state | usage: event.event.usage}
+
+      :completed ->
+        output_text = collected_text(state)
+        usage = latest_usage(state, event)
+
+        state
+        |> Map.put(:usage, usage)
+        |> maybe_emit_output_done(canonical, output_text)
+        |> emit_event(
+          "response.completed",
+          ResponsesSerializer.completed_event(canonical, output_text, usage, created)
+        )
+        |> Map.put(:terminal_sent, true)
+
+      :failed ->
+        output_text = collected_text(state)
+        usage = state.usage
+        error_map = build_error_map(event)
+
+        state
+        |> maybe_emit_output_done(canonical, output_text)
+        |> emit_event(
+          "response.failed",
+          ResponsesSerializer.failed_event(canonical, output_text, usage, error_map, created)
+        )
+        |> Map.put(:terminal_sent, true)
+
+      _other ->
+        # Skip :accepted, :progress, :tool_call_delta
+        state
+    end
+  end
+
+  defp maybe_emit_output_done(%{output_done_sent: true} = state, _canonical, _text), do: state
+
+  defp maybe_emit_output_done(state, canonical, output_text) do
+    state
+    |> emit_event(
+      "response.output_text.done",
+      ResponsesSerializer.output_text_done_event(canonical.public_id, output_text)
+    )
+    |> Map.put(:output_done_sent, true)
+  end
+
+  defp collected_text(state) do
+    state.output_chunks |> Enum.reverse() |> Enum.join("")
+  end
+
+  defp latest_usage(state, event) do
+    case event.event do
+      %InferenceEvent.Completed{usage: nil} -> state.usage
+      %InferenceEvent.Completed{usage: usage} -> usage
+    end
+  end
+
+  defp build_error_map(event) do
+    mapping =
+      event
+      |> ChatError.from_failed_event()
+      |> ChatError.sse_mapping()
+
+    %{
+      message: mapping.message,
+      type: mapping.type,
+      code: mapping.code,
+      param: mapping.param
+    }
+  end
+
+  defp emit_event(state, event_type, payload) do
+    if state.closed do
+      state
+    else
+      case SSE.send_event(state.conn, event_type, payload) do
+        {:ok, conn} -> %{state | conn: conn}
+        {:error, :closed} -> %{state | closed: true}
+      end
+    end
+  end
+
+  defp emit_typed_event(conn, event_type, payload) do
+    case SSE.send_event(conn, event_type, payload) do
+      {:ok, conn} -> {conn, false}
+      {:error, :closed} -> {conn, true}
+    end
+  end
+
+  # -- Stream finalization ----------------------------------------------------
+
+  defp finalize_stream(state, _result, _canonical, _created) when state.closed do
+    state.conn
+  end
+
+  defp finalize_stream(state, _result, _canonical, _created) when state.terminal_sent do
+    # Terminal event already emitted — just return conn
+    state.conn
+  end
+
+  defp finalize_stream(state, {:error, reason}, canonical, created) do
+    # Post-start execution error without a streamed terminal event.
+    # Emit typed failure terminal instead of chat-style SSE error envelope.
+    output_text = collected_text(state)
+    mapping = InferenceControllerSupport.sse_error_mapping(reason)
+
+    error_map = %{
+      message: mapping.message,
+      type: mapping.type,
+      code: mapping.code,
+      param: mapping.param
+    }
+
+    state
+    |> maybe_emit_output_done(canonical, output_text)
+    |> emit_event(
+      "response.failed",
+      ResponsesSerializer.failed_event(canonical, output_text, state.usage, error_map, created)
+    )
+    |> then(& &1.conn)
+  end
+
+  defp finalize_stream(state, {:replay, _request}, canonical, created) do
+    # Streaming duplicates are not replayable — emit typed failure
+    output_text = collected_text(state)
+
+    mapping =
+      InferenceControllerSupport.sse_error_mapping(
+        {:idempotency_conflict, :idempotency_not_replayable}
+      )
+
+    error_map = %{
+      message: mapping.message,
+      type: mapping.type,
+      code: mapping.code,
+      param: mapping.param
+    }
+
+    state
+    |> maybe_emit_output_done(canonical, output_text)
+    |> emit_event(
+      "response.failed",
+      ResponsesSerializer.failed_event(canonical, output_text, state.usage, error_map, created)
+    )
+    |> then(& &1.conn)
+  end
+
+  defp finalize_stream(state, {:ok, _canonical, _events}, canonical, created) do
+    # Unexpected success without a terminal event — synthesize completed
+    output_text = collected_text(state)
+
+    state
+    |> maybe_emit_output_done(canonical, output_text)
+    |> emit_event(
+      "response.completed",
+      ResponsesSerializer.completed_event(canonical, output_text, state.usage, created)
+    )
+    |> then(& &1.conn)
+  end
+
+  # -- Shared helpers --------------------------------------------------------
 
   defp send_response_error(mapping, conn) do
     send_error(conn, mapping.status, mapping.message, mapping.type,

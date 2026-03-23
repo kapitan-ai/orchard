@@ -60,6 +60,29 @@ defmodule Orchard.API.SSE do
   end
 
   @doc """
+  Sends a typed SSE event with an `event:` line followed by `data:`.
+
+  Used by the Responses API which requires semantic event types
+  (e.g. `response.created`, `response.output_text.delta`) as SSE
+  event names, unlike chat completions which uses `data:`-only framing.
+
+  The wire format is: `event: <type>\ndata: <json>\n\n`.
+
+  Returns `{:ok, conn}` on success, `{:error, :closed}` if the
+  client has disconnected.
+  """
+  @spec send_event(Plug.Conn.t(), String.t(), chunk_data()) ::
+          {:ok, Plug.Conn.t()} | {:error, :closed}
+  def send_event(conn, event_type, data) when is_binary(event_type) and is_map(data) do
+    payload = "event: " <> event_type <> "\ndata: " <> Jason.encode!(data) <> "\n\n"
+
+    case chunk(conn, payload) do
+      {:ok, conn} -> {:ok, conn}
+      {:error, _reason} -> {:error, :closed}
+    end
+  end
+
+  @doc """
   Sends the `data: [DONE]` terminator and halts the connection.
 
   This is the normal end-of-stream signal per the OpenAI SSE contract.

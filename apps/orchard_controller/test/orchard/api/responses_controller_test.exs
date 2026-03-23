@@ -70,18 +70,18 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert body["error"]["param"] == "model"
   end
 
-  test "rejects unsupported stream parameter with OpenAI error envelope" do
+  test "rejects non-boolean stream parameter with OpenAI error envelope" do
     conn =
       post_responses(%{
         "model" => "test-model@v1",
         "input" => "hello",
-        "stream" => true
+        "stream" => "yes"
       })
 
     assert conn.status == 400
     body = Jason.decode!(conn.resp_body)
     assert body["error"]["type"] == "invalid_request_error"
-    assert body["error"]["code"] == "unsupported_parameter"
+    assert body["error"]["code"] == "invalid_value"
     assert body["error"]["param"] == "stream"
   end
 
@@ -293,6 +293,158 @@ defmodule Orchard.API.ResponsesControllerTest do
     %{tenant: tenant, api_key: api_key, token: token}
   end
 
+  # -- Streaming tests -------------------------------------------------------
+
+  test "successful stream emits typed events in correct order", %{bundle: bundle} do
+    %{token: token} = create_api_key_with_token!("responses-stream-success")
+
+    _model =
+      create_model!(%{
+        model_id: "responses-stream-model",
+        version: "v1",
+        display_name: "Responses Stream Model",
+        artifact_uri: "file:///tmp/responses-stream-model",
+        artifact_sha256: bundle.hash,
+        artifact_source_uri: "file:///tmp/responses-stream-model",
+        state: :active,
+        format: "mlx",
+        backend: "mlx",
+        capabilities: ["chat"],
+        artifact_size_bytes: 1024,
+        resident_memory_bytes: 2048,
+        kv_cache_bytes_per_token: 128,
+        prefill_workspace_bytes_per_token: 64,
+        max_context_tokens: 131_072
+      })
+
+    conn =
+      post_responses(
+        %{
+          "model" => "responses-stream-model@v1",
+          "input" => "hello",
+          "stream" => true,
+          "metadata" => %{"trace" => "stream-test"}
+        },
+        token
+      )
+
+    assert conn.status == 200
+    assert resp_header(conn, "content-type") == ["text/event-stream"]
+
+    events = parse_typed_sse_events(conn)
+
+    # Must start with response.created
+    assert hd(events).type == "response.created"
+    created = hd(events)
+    assert created.data["response"]["status"] == "in_progress"
+    assert created.data["response"]["model"] == "responses-stream-model@v1"
+    assert created.data["response"]["metadata"] == %{"trace" => "stream-test"}
+
+    # Must contain at least one response.output_text.done
+    done_events = Enum.filter(events, &(&1.type == "response.output_text.done"))
+    assert length(done_events) == 1
+
+    # Must end with response.completed (terminal)
+    terminal = List.last(events)
+    assert terminal.type == "response.completed"
+    assert terminal.data["response"]["status"] == "completed"
+    assert terminal.data["response"]["output_text"] != nil
+
+    # No [DONE] in stream
+    body = collect_chunked_body(conn)
+    refute String.contains?(body, "[DONE]")
+
+    # Request persisted with endpoint = :responses and stream = true
+    [request] = Repo.all(Request)
+    assert request.endpoint == :responses
+    assert request.stream == true
+  end
+
+  test "streaming pre-stream validation failure returns JSON, not SSE" do
+    conn =
+      post_responses(%{
+        "model" => "missing@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    # Pre-stream errors are JSON, not SSE
+    assert conn.status == 404
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["code"] == "model_not_found"
+    refute resp_header(conn, "content-type") == ["text/event-stream"]
+  end
+
+  test "streaming idempotency replay before stream start returns JSON 409" do
+    %{token: token, tenant: tenant} = create_api_key_with_token!("responses-stream-replay")
+
+    {:ok, idempotency} =
+      Idempotency.build_context(tenant.id, "responses-stream-replay", %{
+        "model" => "responses-stream-replay-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    create_request!(%{
+      tenant_id: tenant.id,
+      endpoint: :responses,
+      requested_model: "responses-stream-replay-model@v1",
+      idempotency_key: "responses-stream-replay",
+      body_hash: idempotency.body_hash,
+      stream: true,
+      state: :running
+    })
+
+    conn =
+      post_responses(
+        %{
+          "model" => "responses-stream-replay-model@v1",
+          "input" => "hello",
+          "stream" => true
+        },
+        token,
+        [{"idempotency-key", "responses-stream-replay"}]
+      )
+
+    assert conn.status == 409
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "conflict_error"
+  end
+
+  # -- Test helpers -----------------------------------------------------------
+
+  defp resp_header(conn, key) do
+    for {k, v} <- conn.resp_headers, k == key, do: v
+  end
+
+  defp collect_chunked_body(conn) do
+    case conn.resp_body do
+      body when is_binary(body) -> body
+      nil -> ""
+    end
+  end
+
+  defp parse_typed_sse_events(conn) do
+    body = collect_chunked_body(conn)
+
+    body
+    |> String.split("\n\n", trim: true)
+    |> Enum.map(fn block ->
+      lines = String.split(block, "\n", trim: true)
+
+      case lines do
+        ["event: " <> event_type, "data: " <> json] ->
+          %{type: event_type, data: Jason.decode!(json)}
+
+        ["data: " <> json] ->
+          %{type: nil, data: Jason.decode!(json)}
+
+        _ ->
+          %{type: nil, data: nil, raw: block}
+      end
+    end)
+  end
+
   defp stage_test_bundle! do
     models_root = Node.models_root()
     source_path = Path.join([models_root, ".test-source", "responses-bundle"])
@@ -309,7 +461,11 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     cache_paths =
       Enum.map(
-        [{"responses-success-model", "v1"}, {"responses-replay-model", "v1"}],
+        [
+          {"responses-success-model", "v1"},
+          {"responses-replay-model", "v1"},
+          {"responses-stream-model", "v1"}
+        ],
         fn {model_id, version} ->
           cache_path = Path.join([models_root, model_id, version])
           File.rm_rf(cache_path)

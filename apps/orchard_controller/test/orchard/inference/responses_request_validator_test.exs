@@ -61,9 +61,25 @@ defmodule Orchard.Inference.ResponsesRequestValidatorTest do
              ResponsesRequestValidator.validate(Map.put(@valid_params, "model", "foo@"))
   end
 
+  test "accepts stream: true" do
+    assert {:ok, _} = ResponsesRequestValidator.validate(Map.put(@valid_params, "stream", true))
+  end
+
+  test "accepts stream: false" do
+    assert {:ok, _} = ResponsesRequestValidator.validate(Map.put(@valid_params, "stream", false))
+  end
+
+  test "rejects non-boolean stream" do
+    assert {:error, :invalid_value, "stream", _} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "stream", "yes"))
+
+    assert {:error, :invalid_value, "stream", _} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "stream", 1))
+  end
+
   test "rejects unsupported top-level fields" do
-    assert {:error, :unsupported_parameter, "stream"} =
-             ResponsesRequestValidator.validate(Map.put(@valid_params, "stream", true))
+    assert {:error, :unsupported_parameter, "tools"} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "tools", []))
   end
 
   test "rejects object input shape" do

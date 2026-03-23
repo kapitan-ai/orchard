@@ -13,7 +13,8 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
                       "top_p",
                       "max_output_tokens",
                       "metadata",
-                      "store"
+                      "store",
+                      "stream"
                     ])
 
   @type validation_error ::
@@ -32,7 +33,8 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
          :ok <- check_top_p(params),
          :ok <- check_max_output_tokens(params),
          :ok <- check_metadata(params),
-         :ok <- check_store(params) do
+         :ok <- check_store(params),
+         :ok <- check_stream(params) do
       {:ok, params}
     end
   end
@@ -121,4 +123,11 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
     do: {:error, :invalid_value, "store", "must be a boolean or null"}
 
   defp check_store(_), do: :ok
+
+  defp check_stream(%{"stream" => stream}) when is_boolean(stream), do: :ok
+
+  defp check_stream(%{"stream" => _}),
+    do: {:error, :invalid_value, "stream", "must be a boolean"}
+
+  defp check_stream(_), do: :ok
 end

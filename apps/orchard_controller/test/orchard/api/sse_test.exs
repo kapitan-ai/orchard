@@ -39,6 +39,23 @@ defmodule Orchard.API.SSETest do
           {:ok, conn} = SSE.start(conn)
           {:ok, conn} = SSE.send_done(conn)
           conn
+
+        "typed_events" ->
+          {:ok, conn} = SSE.start(conn)
+
+          {:ok, conn} =
+            SSE.send_event(conn, "response.created", %{type: "response.created", id: "resp_1"})
+
+          {:ok, conn} =
+            SSE.send_event(conn, "response.output_text.delta", %{
+              type: "response.output_text.delta",
+              delta: "Hi"
+            })
+
+          {:ok, conn} =
+            SSE.send_event(conn, "response.completed", %{type: "response.completed", id: "resp_1"})
+
+          conn
       end
     end
   end
@@ -107,6 +124,42 @@ defmodule Orchard.API.SSETest do
       lines = String.split(body, "\n", trim: true)
 
       assert lines == ["data: [DONE]"]
+    end
+  end
+
+  describe "typed SSE events" do
+    test "emits event: lines with data: payloads for Responses streaming", %{conn: conn} do
+      conn = %{conn | query_string: "scenario=typed_events"}
+      conn = SSEPlug.call(conn, [])
+
+      assert conn.status == 200
+
+      body = collect_chunked_body(conn)
+      lines = String.split(body, "\n", trim: true)
+
+      # Three typed events: event + data pairs = 6 lines
+      assert length(lines) == 6
+
+      assert Enum.at(lines, 0) == "event: response.created"
+      created = Enum.at(lines, 1) |> parse_sse_data()
+      assert created["type"] == "response.created"
+      assert created["id"] == "resp_1"
+
+      assert Enum.at(lines, 2) == "event: response.output_text.delta"
+      delta = Enum.at(lines, 3) |> parse_sse_data()
+      assert delta["delta"] == "Hi"
+
+      assert Enum.at(lines, 4) == "event: response.completed"
+      completed = Enum.at(lines, 5) |> parse_sse_data()
+      assert completed["type"] == "response.completed"
+    end
+
+    test "does not emit [DONE] for typed events", %{conn: conn} do
+      conn = %{conn | query_string: "scenario=typed_events"}
+      conn = SSEPlug.call(conn, [])
+
+      body = collect_chunked_body(conn)
+      refute String.contains?(body, "[DONE]")
     end
   end
 

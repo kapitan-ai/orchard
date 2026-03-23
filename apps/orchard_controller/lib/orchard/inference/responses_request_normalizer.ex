@@ -27,6 +27,7 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
 
   defp build_chat_params(params) do
     %{"messages" => build_messages(params)}
+    |> put_optional("stream", Map.get(params, "stream"))
     |> put_optional("temperature", Map.get(params, "temperature"))
     |> put_optional("top_p", Map.get(params, "top_p"))
     |> put_optional("metadata", normalize_metadata(Map.get(params, "metadata")))

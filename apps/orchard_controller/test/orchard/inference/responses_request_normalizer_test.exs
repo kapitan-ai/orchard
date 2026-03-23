@@ -63,4 +63,45 @@ defmodule Orchard.Inference.ResponsesRequestNormalizerTest do
     assert request.sampling.top_p == 0.8
     assert request.metadata == %{"trace" => "abc"}
   end
+
+  test "stream: true propagates to canonical request" do
+    {:ok, request} =
+      ResponsesRequestNormalizer.normalize(%{
+        "model" => "test-model@v1",
+        "input" => "Hello",
+        "stream" => true
+      })
+
+    assert request.stream? == true
+    assert request.endpoint == :responses
+  end
+
+  test "stream: false or omitted leaves stream? as false" do
+    {:ok, request_false} =
+      ResponsesRequestNormalizer.normalize(%{
+        "model" => "test-model@v1",
+        "input" => "Hello",
+        "stream" => false
+      })
+
+    {:ok, request_omitted} =
+      ResponsesRequestNormalizer.normalize(%{
+        "model" => "test-model@v1",
+        "input" => "Hello"
+      })
+
+    assert request_false.stream? == false
+    assert request_omitted.stream? == false
+  end
+
+  test "stream_include_usage remains false for responses" do
+    {:ok, request} =
+      ResponsesRequestNormalizer.normalize(%{
+        "model" => "test-model@v1",
+        "input" => "Hello",
+        "stream" => true
+      })
+
+    assert request.stream_include_usage == false
+  end
 end
