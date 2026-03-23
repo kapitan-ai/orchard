@@ -5,8 +5,10 @@ defmodule OrchardCLI.Commands.Models do
   Supports:
     orchardctl models import <path> [--activate]
     orchardctl models list
+    orchardctl models delete <model_id@version>
   """
 
+  alias Orchard.Models
   alias Orchard.Models.Importer
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
@@ -18,18 +20,15 @@ defmodule OrchardCLI.Commands.Models do
         run_import(source_path, opts)
 
       [] ->
-        {:error,
-         "Error: missing bundle path\nUsage: orchardctl models import <path> [--activate]", 1}
+        {:error, "Error: missing bundle path\n#{import_usage()}", 1}
 
       _ ->
-        {:error,
-         "Error: expected exactly one bundle path\nUsage: orchardctl models import <path> [--activate]",
-         1}
+        {:error, "Error: expected exactly one bundle path\n#{import_usage()}", 1}
     end
   end
 
   def run(["list"]) do
-    models = Orchard.Models.list_active_models()
+    models = Models.list_active_models()
 
     if models == [] do
       {:ok, "No active models."}
@@ -43,8 +42,10 @@ defmodule OrchardCLI.Commands.Models do
     end
   end
 
+  def run(["delete" | rest]), do: run_delete(rest)
+
   def run(_args) do
-    {:error, "Usage: orchardctl models <import|list>", 1}
+    {:error, group_usage(), 1}
   end
 
   defp run_import(source_path, opts) do
@@ -81,6 +82,80 @@ defmodule OrchardCLI.Commands.Models do
         {:error, "Error: import failed: #{inspect(reason)}", 1}
     end
   end
+
+  defp run_delete([]) do
+    {:error, "Error: missing model identity\n#{delete_usage()}", 1}
+  end
+
+  defp run_delete([identity]) do
+    case parse_model_identity(identity) do
+      {:ok, %{model_id: model_id, version: version}} ->
+        case Models.get_model_by_identity(model_id, version) do
+          nil ->
+            {:error, "Error: model not found: #{identity}", 1}
+
+          model ->
+            handle_delete_result(Models.delete_model(model.id), identity)
+        end
+
+      :error ->
+        {:error,
+         "Error: expected model identity in the form <model_id@version>\n#{delete_usage()}", 1}
+    end
+  end
+
+  defp run_delete(_args) do
+    {:error, "Error: expected exactly one model identity\n#{delete_usage()}", 1}
+  end
+
+  defp handle_delete_result({:ok, model}, _identity) do
+    {:ok, "Deleted #{model.model_id}@#{model.version}"}
+  end
+
+  defp handle_delete_result({:artifacts_cleanup_failed, model}, _identity) do
+    {:error, "Error: deleted #{model.model_id}@#{model.version}, but artifact cleanup failed", 1}
+  end
+
+  defp handle_delete_result({:error, :not_found}, identity) do
+    {:error, "Error: model not found: #{identity}", 1}
+  end
+
+  defp handle_delete_result({:error, :not_retired}, identity) do
+    {:error, "Error: only retired models can be deleted: #{identity}", 1}
+  end
+
+  defp handle_delete_result({:error, {:model_in_use, count}}, identity) do
+    {:error,
+     "Error: cannot delete #{identity}: #{count} non-terminal request(s) still reference it", 1}
+  end
+
+  defp handle_delete_result({:error, reason}, identity) do
+    {:error, "Error: delete failed for #{identity}: #{inspect(reason)}", 1}
+  end
+
+  defp parse_model_identity(identity) when is_binary(identity) and identity != "" do
+    case :binary.matches(identity, "@") do
+      [] ->
+        :error
+
+      matches ->
+        {pos, _len} = List.last(matches)
+        model_id = binary_part(identity, 0, pos)
+        version = binary_part(identity, pos + 1, byte_size(identity) - pos - 1)
+
+        if model_id == "" or version == "" do
+          :error
+        else
+          {:ok, %{model_id: model_id, version: version}}
+        end
+    end
+  end
+
+  defp parse_model_identity(_), do: :error
+
+  defp group_usage, do: "Usage: orchardctl models <import|list|delete>"
+  defp import_usage, do: "Usage: orchardctl models import <path> [--activate]"
+  defp delete_usage, do: "Usage: orchardctl models delete <model_id@version>"
 
   defp parse_import_args(args) do
     {flags, positional} =

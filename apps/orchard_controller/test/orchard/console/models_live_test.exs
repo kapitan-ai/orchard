@@ -225,17 +225,17 @@ defmodule OrchardConsole.ModelsLiveTest do
       refute row =~ "Deprecate"
     end
 
-    test "shows no actions for retired model", %{conn: conn} do
+    test "shows Delete action for retired model", %{conn: conn} do
       model = create_model!(%{model_id: "retired-model", state: :retired})
 
       {:ok, view, _html} = live(conn, "/console/models")
       row = view |> element("#model-#{model.id}") |> render()
 
+      # Delete is shown, lifecycle transitions are not
+      assert row =~ "Delete"
       refute row =~ "Activate"
       refute row =~ "Deprecate"
       refute row =~ "Retire"
-      # Dash placeholder for no actions
-      assert row =~ "\u2014"
     end
   end
 
@@ -276,7 +276,7 @@ defmodule OrchardConsole.ModelsLiveTest do
       assert row =~ "Activate"
     end
 
-    test "retire transitions model and removes all actions", %{conn: conn} do
+    test "retire transitions model and shows Delete action", %{conn: conn} do
       model = create_model!(%{model_id: "retirable", state: :active})
 
       {:ok, view, _html} = live(conn, "/console/models")
@@ -290,9 +290,9 @@ defmodule OrchardConsole.ModelsLiveTest do
 
       row = view |> element("#model-#{model.id}") |> render()
       assert row =~ "retired"
+      assert row =~ "Delete"
       refute row =~ "Activate"
       refute row =~ "Deprecate"
-      refute row =~ "Retire"
     end
   end
 
@@ -316,6 +316,109 @@ defmodule OrchardConsole.ModelsLiveTest do
       # Row should show current (retired) state after reload
       row = view |> element("#model-#{model.id}") |> render()
       assert row =~ "retired"
+    end
+  end
+
+  describe "delete actions" do
+    test "clicking Delete on retired model with no requests removes row and shows flash", %{
+      conn: conn
+    } do
+      model = create_model!(%{model_id: "delete-me", state: :retired})
+      _keeper = create_model!(%{model_id: "keep-me", state: :active})
+
+      {:ok, view, _html} = live(conn, "/console/models")
+
+      # Retired row shows Delete button
+      assert has_element?(view, "#model-#{model.id} button", "Delete")
+
+      view
+      |> element("#model-#{model.id} button", "Delete")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "Deleted delete-me@main."
+      refute has_element?(view, "#model-#{model.id}")
+
+      # Summary updated
+      retired_tile = view |> element("#models-summary-retired") |> render()
+      assert retired_tile =~ "0"
+    end
+
+    test "clicking Delete on retired model with non-terminal requests shows error", %{conn: conn} do
+      model = create_model!(%{model_id: "in-use-model", state: :retired})
+
+      _running_req =
+        create_request!(%{
+          model_id: model.id,
+          requested_model: "in-use-model@main",
+          state: :running
+        })
+
+      {:ok, view, _html} = live(conn, "/console/models")
+
+      view
+      |> element("#model-#{model.id} button", "Delete")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "Cannot delete: 1 non-terminal request(s) still reference it."
+
+      # Row remains
+      assert has_element?(view, "#model-#{model.id}")
+      assert has_element?(view, "#model-#{model.id} button", "Delete")
+    end
+
+    test "stale Delete after model un-retired shows not-retired error", %{conn: conn} do
+      model = create_model!(%{model_id: "stale-delete", state: :retired})
+
+      {:ok, view, _html} = live(conn, "/console/models")
+
+      # Model is still showing Delete button
+      assert has_element?(view, "#model-#{model.id} button", "Delete")
+
+      # Direct DB update to simulate state change behind the LiveView
+      # (retired is terminal, so normal API can't un-retire)
+      import Ecto.Query
+
+      Orchard.Repo.update_all(
+        from(m in Orchard.Models.Model, where: m.id == ^model.id),
+        set: [state: :active]
+      )
+
+      # Click the now-stale Delete button
+      view
+      |> element("#model-#{model.id} button", "Delete")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "Only retired models can be deleted."
+
+      # Row reloaded with current state
+      row = view |> element("#model-#{model.id}") |> render()
+      assert row =~ "active"
+      refute row =~ "Delete"
+      assert row =~ "Deprecate"
+    end
+
+    test "summary counts update after delete", %{conn: conn} do
+      model = create_model!(%{model_id: "summary-delete", state: :retired})
+      _other = create_model!(%{model_id: "summary-keep", state: :registered})
+
+      {:ok, view, _html} = live(conn, "/console/models")
+
+      # Before: total 2, retired 1
+      total_tile = view |> element("#models-summary-total") |> render()
+      assert total_tile =~ "2"
+
+      view
+      |> element("#model-#{model.id} button", "Delete")
+      |> render_click()
+
+      # After: total 1, retired 0
+      total_tile = view |> element("#models-summary-total") |> render()
+      assert total_tile =~ "1"
+      retired_tile = view |> element("#models-summary-retired") |> render()
+      assert retired_tile =~ "0"
     end
   end
 

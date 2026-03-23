@@ -16,6 +16,7 @@ defmodule Orchard.TestSupport.ModelRequestFixtures do
   """
 
   alias Orchard.Models
+  alias Orchard.Models.Importer
   alias Orchard.Requests
 
   @doc """
@@ -103,6 +104,18 @@ defmodule Orchard.TestSupport.ModelRequestFixtures do
       {:ok, request} -> request
       {:error, changeset} -> raise "create_request! failed: #{inspect(changeset.errors)}"
     end
+  end
+
+  @doc """
+  Creates the canonical artifact directory for a model with a sentinel file.
+
+  Returns the artifact directory path.
+  """
+  def materialize_artifact_dir!(%Models.Model{} = model, artifacts_root) do
+    dir = Importer.artifact_destination_path(artifacts_root, model.model_id, model.version)
+    File.mkdir_p!(dir)
+    File.write!(Path.join(dir, "manifest.json"), "{\"sentinel\": true}")
+    dir
   end
 
   defp unique_suffix do

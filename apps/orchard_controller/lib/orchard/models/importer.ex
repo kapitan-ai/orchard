@@ -36,6 +36,17 @@ defmodule Orchard.Models.Importer do
     Orchard.Inference.artifacts_root()
   end
 
+  @doc """
+  Returns the canonical controller-side artifact directory path for a model.
+
+  This is a pure path computation — no filesystem access or validation.
+  The layout is `artifacts_root/model_id/version`.
+  """
+  @spec artifact_destination_path(String.t(), String.t(), String.t()) :: String.t()
+  def artifact_destination_path(artifacts_root, model_id, version) do
+    Path.join([artifacts_root, model_id, version])
+  end
+
   # Identity fields must be safe path segments: alphanumeric, hyphen, underscore,
   # dot, and forward-slash (for org/model namespacing). No leading dots, no ..
   @identity_pattern ~r/\A[a-zA-Z0-9][a-zA-Z0-9._\-\/]*\z/
@@ -149,7 +160,7 @@ defmodule Orchard.Models.Importer do
          %ModelManifest{model_id: model_id, version: version},
          artifacts_root
        ) do
-    dest_path = Path.join([artifacts_root, model_id, version])
+    dest_path = artifact_destination_path(artifacts_root, model_id, version)
 
     with :ok <- validate_dest_contained(dest_path, artifacts_root, staged_path),
          :ok <- validate_dest_fresh(dest_path, staged_path) do

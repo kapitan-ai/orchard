@@ -169,6 +169,190 @@ defmodule Orchard.ModelsTest do
     end
   end
 
+  # -- Model deletion --
+
+  describe "deletable?/1" do
+    test "returns true for :retired atom" do
+      assert Models.deletable?(:retired)
+    end
+
+    test "returns false for non-retired atoms" do
+      refute Models.deletable?(:registered)
+      refute Models.deletable?(:active)
+      refute Models.deletable?(:deprecated)
+      refute Models.deletable?(:unknown)
+    end
+
+    test "accepts a Model struct" do
+      model = create_model!(%{state: :retired})
+      assert Models.deletable?(model)
+
+      active_model = create_model!(%{state: :active})
+      refute Models.deletable?(active_model)
+    end
+  end
+
+  describe "delete_model/1" do
+    setup do
+      # Create a temp artifacts_root and override inference config for the test
+      tmp_root =
+        Path.join(System.tmp_dir!(), "orchard_delete_test_#{System.unique_integer([:positive])}")
+
+      File.mkdir_p!(tmp_root)
+
+      original_config = Application.get_env(:orchard_controller, :inference)
+      updated_config = Keyword.put(original_config, :artifacts_root, tmp_root)
+      Application.put_env(:orchard_controller, :inference, updated_config)
+
+      on_exit(fn ->
+        Application.put_env(:orchard_controller, :inference, original_config)
+        File.rm_rf(tmp_root)
+      end)
+
+      %{artifacts_root: tmp_root}
+    end
+
+    test "deletes retired model with no requests, removing DB row and artifact dir", %{
+      artifacts_root: root
+    } do
+      model = create_model!(%{state: :retired})
+      dir = materialize_artifact_dir!(model, root)
+      assert File.dir?(dir)
+
+      assert {:ok, deleted} = Models.delete_model(model.id)
+      assert deleted.id == model.id
+      assert deleted.state == :retired
+
+      # DB row gone
+      assert Orchard.Repo.get(Model, model.id) == nil
+      # Artifact dir removed
+      refute File.dir?(dir)
+    end
+
+    test "succeeds when artifact directory is already missing" do
+      model = create_model!(%{state: :retired})
+
+      assert {:ok, deleted} = Models.delete_model(model.id)
+      assert deleted.id == model.id
+      assert Orchard.Repo.get(Model, model.id) == nil
+    end
+
+    test "nullifies model_id on terminal requests before delete", %{artifacts_root: root} do
+      model = create_model!(%{state: :retired})
+      _dir = materialize_artifact_dir!(model, root)
+
+      terminal_req =
+        create_request!(%{
+          model_id: model.id,
+          requested_model: "#{model.model_id}@#{model.version}",
+          state: :completed
+        })
+
+      assert {:ok, _deleted} = Models.delete_model(model.id)
+
+      # Request preserved with model_id nullified
+      reloaded = Orchard.Repo.get!(Orchard.Requests.Request, terminal_req.id)
+      assert reloaded.model_id == nil
+      assert reloaded.requested_model == "#{model.model_id}@#{model.version}"
+    end
+
+    test "rejects with {:model_in_use, N} when non-terminal requests exist", %{
+      artifacts_root: root
+    } do
+      model = create_model!(%{state: :retired})
+      dir = materialize_artifact_dir!(model, root)
+
+      # One terminal, one non-terminal
+      _terminal =
+        create_request!(%{model_id: model.id, requested_model: "m@v", state: :completed})
+
+      _running =
+        create_request!(%{model_id: model.id, requested_model: "m@v", state: :running})
+
+      assert {:error, {:model_in_use, 1}} = Models.delete_model(model.id)
+
+      # Everything still intact
+      assert Orchard.Repo.get(Model, model.id) != nil
+      assert File.dir?(dir)
+    end
+
+    test "rejects with :not_retired for non-retired models" do
+      for state <- [:registered, :active, :deprecated] do
+        model = create_model!(%{state: state})
+        assert {:error, :not_retired} = Models.delete_model(model.id)
+        assert Orchard.Repo.get(Model, model.id) != nil
+      end
+    end
+
+    test "returns :not_found for unknown UUID" do
+      assert {:error, :not_found} = Models.delete_model(Ecto.UUID.generate())
+    end
+
+    test "returns :not_found for malformed UUID" do
+      assert {:error, :not_found} = Models.delete_model("not-a-uuid")
+    end
+
+    test "validates artifact path is contained under artifacts_root" do
+      # Create a model with a path-traversal model_id via direct DB insert
+      model = create_model!(%{model_id: "../escape-test", state: :retired})
+
+      assert {:error, {:path_escape, _path}} = Models.delete_model(model.id)
+      # Model row preserved
+      assert Orchard.Repo.get(Model, model.id) != nil
+    end
+
+    test "re-import succeeds after delete", %{artifacts_root: root} do
+      # Ensure ModelManifest atoms are loaded (ManifestParser uses to_existing_atom)
+      Code.ensure_loaded!(Orchard.ModelManifest)
+
+      # Create a source bundle for import
+      source = Path.join(root, "_source_bundle")
+      File.mkdir_p!(source)
+
+      manifest = %{
+        "model_id" => "test-org/reimport-model",
+        "version" => "v1",
+        "format" => "mlx",
+        "artifact_layout" => "directory",
+        "entrypoint" => "weights/",
+        "sha256" => String.duplicate("a", 64),
+        "size_bytes" => 1024,
+        "resident_memory_bytes" => 2048,
+        "kv_cache_bytes_per_token" => 16,
+        "prefill_workspace_bytes_per_token" => 8,
+        "max_context_tokens" => 4096,
+        "capabilities" => ["chat"],
+        "tokenizer" => %{"kind" => "huggingface_tokenizer_json", "path" => "tokenizer.json"},
+        "runtime_requirements" => %{"adapter" => "mlx_lm", "min_agent_capability" => "mlx"}
+      }
+
+      File.write!(Path.join(source, "manifest.json"), Jason.encode!(manifest))
+      File.write!(Path.join(source, "tokenizer.json"), "{}")
+
+      # First import
+      assert {:ok, model} =
+               Orchard.Models.Importer.import_bundle(source, artifacts_root: root)
+
+      # Retire and delete
+      assert {:ok, retired} = Models.retire_model(model.id)
+      assert {:ok, _deleted} = Models.delete_model(retired.id)
+
+      # Re-import same identity — should succeed (duplicate guard cleared)
+      assert {:ok, reimported} =
+               Orchard.Models.Importer.import_bundle(source, artifacts_root: root)
+
+      assert reimported.model_id == "test-org/reimport-model"
+      assert reimported.version == "v1"
+    end
+  end
+
+  describe "Importer.artifact_destination_path/3" do
+    test "returns canonical path matching importer layout" do
+      assert Orchard.Models.Importer.artifact_destination_path("/root", "org/model", "v1") ==
+               "/root/org/model/v1"
+    end
+  end
+
   describe "transition edge cases" do
     test "returns :not_found for unknown UUID" do
       assert {:error, :not_found} = Models.activate_model(Ecto.UUID.generate())

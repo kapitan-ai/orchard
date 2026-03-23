@@ -36,6 +36,10 @@ defmodule OrchardConsole.ModelsLive do
     {:noreply, apply_transition(socket, id, &Models.retire_model/1, :retire)}
   end
 
+  def handle_event("delete", %{"id" => id}, socket) do
+    {:noreply, apply_delete(socket, id)}
+  end
+
   @impl true
   def render(%{models_status: :loading} = assigns) do
     ~H"""
@@ -102,7 +106,7 @@ defmodule OrchardConsole.ModelsLive do
 
           <:action :let={model}>
             <span
-              :if={Models.available_transitions(model) == []}
+              :if={row_actions(model) == []}
               class="text-slate-400 dark:text-slate-500"
             >
               —
@@ -228,10 +232,63 @@ defmodule OrchardConsole.ModelsLive do
       |> load_catalog()
   end
 
+  defp apply_delete(socket, id) do
+    case Models.delete_model(id) do
+      {:ok, model} ->
+        socket
+        |> put_flash(:info, "Deleted #{display_id(model)}.")
+        |> load_catalog()
+
+      {:artifacts_cleanup_failed, model} ->
+        socket
+        |> put_flash(:error, "Deleted #{display_id(model)}, but artifact cleanup failed.")
+        |> load_catalog()
+
+      {:error, :not_found} ->
+        socket
+        |> put_flash(:error, "Model not found.")
+        |> load_catalog()
+
+      {:error, :not_retired} ->
+        socket
+        |> put_flash(:error, "Only retired models can be deleted.")
+        |> load_catalog()
+
+      {:error, {:model_in_use, count}} ->
+        socket
+        |> put_flash(
+          :error,
+          "Cannot delete: #{count} non-terminal request(s) still reference it."
+        )
+        |> load_catalog()
+
+      {:error, _reason} ->
+        socket
+        |> put_flash(:error, "Unable to delete model.")
+        |> load_catalog()
+    end
+  rescue
+    _ ->
+      socket
+      |> put_flash(:error, "Unable to delete model.")
+      |> load_catalog()
+  end
+
   defp row_actions(model) do
-    model
-    |> Models.available_transitions()
-    |> Enum.map(&action_for_transition/1)
+    transition_actions =
+      model
+      |> Models.available_transitions()
+      |> Enum.map(&action_for_transition/1)
+
+    transition_actions ++ delete_actions(model)
+  end
+
+  defp delete_actions(model) do
+    if Models.deletable?(model) do
+      [%{label: "Delete", busy_label: "Deleting\u2026", event: "delete", variant: :danger}]
+    else
+      []
+    end
   end
 
   defp action_for_transition(:active) do
