@@ -420,27 +420,61 @@ defmodule OrchardConsole.OverviewLive do
   defp readiness_metric(%{passing: nil}), do: "\u2014"
   defp readiness_metric(%{passing: p, total: t}), do: "#{p}/#{t}"
 
+  # Classifies runtime health into a closed set for badge/hero decisions.
+  # Returns :unsupported when old node-agent omits runtime_health.
+  defp runtime_health_level(%{status: :ok, runtime_health: %{ready: false}}), do: :unhealthy
+
+  defp runtime_health_level(%{status: :ok, runtime_health: %{health_code: c}})
+       when is_binary(c) and c != "",
+       do: :degraded
+
+  defp runtime_health_level(%{status: :ok, runtime_health: %{health_message: m}})
+       when is_binary(m) and m != "",
+       do: :degraded
+
+  defp runtime_health_level(%{status: :ok, runtime_health: %{}}), do: :healthy
+  defp runtime_health_level(%{status: :ok}), do: :unsupported
+  defp runtime_health_level(_), do: :unsupported
+
   defp runtime_badge_tone(%{status: :loading}), do: :neutral
   defp runtime_badge_tone(%{status: status}) when status != :ok, do: :error
-  defp runtime_badge_tone(%{worker_state: :idle}), do: :success
-  defp runtime_badge_tone(%{worker_state: :busy}), do: :processing
 
-  defp runtime_badge_tone(%{worker_state: state}) when state in [:starting, :stopping],
+  defp runtime_badge_tone(%{status: :ok} = rt) do
+    case runtime_health_level(rt) do
+      :unhealthy -> :error
+      :degraded -> :warning
+      _ -> worker_state_badge_tone(rt)
+    end
+  end
+
+  defp worker_state_badge_tone(%{worker_state: :idle}), do: :success
+  defp worker_state_badge_tone(%{worker_state: :busy}), do: :processing
+
+  defp worker_state_badge_tone(%{worker_state: state}) when state in [:starting, :stopping],
     do: :warning
 
-  defp runtime_badge_tone(%{worker_state: :failed}), do: :error
-  defp runtime_badge_tone(%{worker_state: :stopped}), do: :warning
-  defp runtime_badge_tone(_), do: :neutral
+  defp worker_state_badge_tone(%{worker_state: :failed}), do: :error
+  defp worker_state_badge_tone(%{worker_state: :stopped}), do: :warning
+  defp worker_state_badge_tone(_), do: :neutral
 
   defp runtime_badge_label(%{status: :loading}), do: "Loading"
   defp runtime_badge_label(%{status: status}) when status != :ok, do: "Unavailable"
-  defp runtime_badge_label(%{worker_state: :idle}), do: "Idle"
-  defp runtime_badge_label(%{worker_state: :busy}), do: "Busy"
-  defp runtime_badge_label(%{worker_state: :starting}), do: "Starting"
-  defp runtime_badge_label(%{worker_state: :stopping}), do: "Stopping"
-  defp runtime_badge_label(%{worker_state: :failed}), do: "Failed"
-  defp runtime_badge_label(%{worker_state: :stopped}), do: "Stopped"
-  defp runtime_badge_label(_), do: "Unknown"
+
+  defp runtime_badge_label(%{status: :ok} = rt) do
+    case runtime_health_level(rt) do
+      :unhealthy -> "Unhealthy"
+      :degraded -> "Degraded"
+      _ -> worker_state_badge_label(rt)
+    end
+  end
+
+  defp worker_state_badge_label(%{worker_state: :idle}), do: "Idle"
+  defp worker_state_badge_label(%{worker_state: :busy}), do: "Busy"
+  defp worker_state_badge_label(%{worker_state: :starting}), do: "Starting"
+  defp worker_state_badge_label(%{worker_state: :stopping}), do: "Stopping"
+  defp worker_state_badge_label(%{worker_state: :failed}), do: "Failed"
+  defp worker_state_badge_label(%{worker_state: :stopped}), do: "Stopped"
+  defp worker_state_badge_label(_), do: "Unknown"
 
   defp check_badge_tone(:ok), do: :success
   defp check_badge_tone(:error), do: :warning
@@ -488,53 +522,90 @@ defmodule OrchardConsole.OverviewLive do
 
   # Deterministic status copy derived from combined readiness + runtime state.
   # Evaluated on every render — not stored in assigns.
+  #
+  # Precedence: loading → health-aware (when runtime_health present) → worker-state.
   defp hero_status_copy(%{status: :loading}, _),
     do: "Connecting to live controller and runtime status."
 
   defp hero_status_copy(_, %{status: :loading}),
     do: "Connecting to live controller and runtime status."
 
-  defp hero_status_copy(
-         %{status: :ok},
-         %{status: :ok, worker_state: :idle, loaded_models: [_ | _]}
-       ),
-       do: "System ready. Runtime is idle and a model is loaded for operator testing."
+  # Both readiness and runtime ok — check health first, then worker-state
+  defp hero_status_copy(%{status: :ok} = readiness, %{status: :ok} = runtime) do
+    hero_health_copy(readiness, runtime) || hero_worker_state_copy(readiness, runtime)
+  end
 
-  defp hero_status_copy(
-         %{status: :ok},
-         %{status: :ok, worker_state: :busy, loaded_models: [_ | _]}
-       ),
-       do: "System ready. Runtime is serving active requests."
-
-  defp hero_status_copy(%{status: :ok}, %{status: :ok, loaded_models: []}),
-    do: "System ready, but no model is currently loaded in the runtime."
-
-  defp hero_status_copy(%{status: :ok}, %{status: :ok, worker_state: state})
-       when state in [:starting, :stopping],
-       do:
-         "Controller checks are passing. Runtime is transitioning and may not accept requests yet."
-
-  defp hero_status_copy(%{status: :ok}, _runtime),
-    do: "Controller checks are passing, but the node runtime is unavailable for inference."
-
-  defp hero_status_copy(_readiness, %{status: :ok, worker_state: state})
-       when state in [:idle, :busy],
-       do: "Runtime is reachable, but one or more controller readiness checks are failing."
-
-  defp hero_status_copy(_readiness, %{status: :ok, worker_state: state})
-       when state in [:starting, :stopping],
-       do: "Controller readiness checks are failing. Runtime is transitioning."
+  # Readiness failing, runtime ok — check health first, then readiness-degraded copy
+  defp hero_status_copy(readiness, %{status: :ok} = runtime) do
+    hero_readiness_health_copy(readiness, runtime) ||
+      hero_readiness_degraded_copy(readiness, runtime)
+  end
 
   defp hero_status_copy(_, _),
     do: "System is degraded: controller readiness is failing and the node runtime is unavailable."
 
-  defp hero_status_copy_class(%{status: :ok}, %{
-         status: :ok,
-         worker_state: state,
-         loaded_models: models
-       })
-       when state in [:idle, :busy] and models != [],
-       do: "text-slate-600 dark:text-slate-400"
+  # -- Health-aware hero copy (returns nil when health is healthy/unsupported) --
+
+  defp hero_health_copy(_readiness, runtime) do
+    case runtime_health_level(runtime) do
+      :unhealthy ->
+        "Controller checks are passing, but the node runtime reports unhealthy status and may reject requests."
+
+      :degraded ->
+        "Controller checks are passing. The node runtime reports degraded health."
+
+      _ ->
+        nil
+    end
+  end
+
+  defp hero_readiness_health_copy(_readiness, runtime) do
+    case runtime_health_level(runtime) do
+      :unhealthy ->
+        "System is degraded: controller readiness is failing and the node runtime reports unhealthy status."
+
+      :degraded ->
+        "Controller readiness checks are failing. The node runtime reports degraded health."
+
+      _ ->
+        nil
+    end
+  end
+
+  # -- Worker-state hero copy (existing logic, extracted) --
+
+  defp hero_worker_state_copy(_readiness, %{worker_state: :idle, loaded_models: [_ | _]}),
+    do: "System ready. Runtime is idle and a model is loaded for operator testing."
+
+  defp hero_worker_state_copy(_readiness, %{worker_state: :busy, loaded_models: [_ | _]}),
+    do: "System ready. Runtime is serving active requests."
+
+  defp hero_worker_state_copy(_readiness, %{loaded_models: []}),
+    do: "System ready, but no model is currently loaded in the runtime."
+
+  defp hero_worker_state_copy(_readiness, %{worker_state: state})
+       when state in [:starting, :stopping],
+       do:
+         "Controller checks are passing. Runtime is transitioning and may not accept requests yet."
+
+  defp hero_worker_state_copy(_, _),
+    do: "Controller checks are passing, but the node runtime is unavailable for inference."
+
+  # -- Readiness-degraded hero copy (existing logic, extracted) --
+
+  defp hero_readiness_degraded_copy(_readiness, %{worker_state: state})
+       when state in [:idle, :busy],
+       do: "Runtime is reachable, but one or more controller readiness checks are failing."
+
+  defp hero_readiness_degraded_copy(_readiness, %{worker_state: state})
+       when state in [:starting, :stopping],
+       do: "Controller readiness checks are failing. Runtime is transitioning."
+
+  defp hero_readiness_degraded_copy(_, _),
+    do: "System is degraded: controller readiness is failing and the node runtime is unavailable."
+
+  # -- Hero copy CSS class --
+  # Precedence mirrors hero_status_copy: loading → health → worker-state.
 
   defp hero_status_copy_class(%{status: :loading}, _),
     do: "text-slate-500 dark:text-slate-400"
@@ -542,20 +613,37 @@ defmodule OrchardConsole.OverviewLive do
   defp hero_status_copy_class(_, %{status: :loading}),
     do: "text-slate-500 dark:text-slate-400"
 
-  defp hero_status_copy_class(%{status: :ok}, %{status: :ok}),
-    do: "text-amber-700 dark:text-amber-300"
+  defp hero_status_copy_class(%{status: :ok}, %{status: :ok} = rt) do
+    case runtime_health_level(rt) do
+      :unhealthy -> "text-red-600 dark:text-red-400"
+      :degraded -> "text-amber-700 dark:text-amber-300"
+      _ -> hero_worker_state_class(rt)
+    end
+  end
 
-  defp hero_status_copy_class(%{status: :ok}, _),
+  defp hero_status_copy_class(_readiness, %{status: :ok} = rt) do
+    case runtime_health_level(rt) do
+      :unhealthy -> "text-red-600 dark:text-red-400"
+      :degraded -> "text-amber-700 dark:text-amber-300"
+      _ -> "text-amber-700 dark:text-amber-300"
+    end
+  end
+
+  defp hero_status_copy_class(_, _),
     do: "text-red-600 dark:text-red-400"
 
-  defp hero_status_copy_class(_, %{status: :ok, worker_state: state})
+  defp hero_worker_state_class(%{worker_state: state, loaded_models: models})
+       when state in [:idle, :busy] and models != [],
+       do: "text-slate-600 dark:text-slate-400"
+
+  defp hero_worker_state_class(%{worker_state: state})
        when state in [:starting, :stopping],
        do: "text-amber-700 dark:text-amber-300"
 
-  defp hero_status_copy_class(_, %{status: :ok}),
+  defp hero_worker_state_class(%{loaded_models: []}),
     do: "text-amber-700 dark:text-amber-300"
 
-  defp hero_status_copy_class(_, _),
+  defp hero_worker_state_class(_),
     do: "text-red-600 dark:text-red-400"
 
   # ===========================================================================

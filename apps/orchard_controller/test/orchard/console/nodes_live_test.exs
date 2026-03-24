@@ -84,6 +84,41 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeUnavailableStub do
   end
 end
 
+defmodule OrchardConsole.NodesLiveTest.DiscoveryRuntimeClient do
+  @moduledoc false
+  @discovery_uuid "770fa622-a41c-63f6-c938-668877662222"
+
+  def connect(_target), do: {:ok, :discovery_channel}
+
+  def status(_channel, _opts \\ []) do
+    {:ok,
+     %{
+       worker_state: :WORKER_STATE_IDLE,
+       loaded_models: [%{model_id: "mlx-community/phi-3", version: "main"}],
+       active_request_count: 0,
+       node_metadata: %{
+         node_id: @discovery_uuid,
+         display_name: "discovered-via-mount",
+         hostname: "discovery.local",
+         listen_host: "127.0.0.1",
+         listen_port: 50071,
+         agent_version: "0.1.0",
+         worker_backend: "mlx"
+       },
+       runtime_health: %{
+         ready: true,
+         health_code: nil,
+         health_message: nil,
+         affected_model: nil
+       }
+     }}
+  end
+
+  def disconnect(_channel), do: :ok
+
+  def uuid, do: @discovery_uuid
+end
+
 defmodule OrchardConsole.NodesLiveTest do
   use Orchard.ConnCase, async: false
 
@@ -342,6 +377,38 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "nodes-freshness"
       assert html =~ "Last refreshed"
       assert html =~ "UTC"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Same-cycle discovery integration
+  # ---------------------------------------------------------------------------
+
+  describe "same-cycle discovery" do
+    test "runtime-first load order surfaces newly discovered node on first render", %{conn: conn} do
+      # Use real OrchardConsole.Runtime + real Orchard.Nodes with a stub gRPC client.
+      # DB starts empty — the node should be discovered via Runtime.snapshot -> observe_status
+      # and visible in the inventory table on the same render cycle.
+      Application.put_env(
+        :orchard_controller,
+        :console,
+        Application.get_env(:orchard_controller, :console, [])
+        |> Keyword.put(:runtime_impl, OrchardConsole.Runtime)
+        |> Keyword.put(:runtime_client_impl, OrchardConsole.NodesLiveTest.DiscoveryRuntimeClient)
+        |> Keyword.delete(:nodes_impl)
+      )
+
+      # Confirm DB is empty
+      assert Orchard.Nodes.list_nodes() == []
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      # The discovered node should appear in the inventory table
+      assert html =~ "discovered-via-mount"
+      # Inventory summary should show 1 node
+      assert html =~ "1"
+      # Runtime section should show the live data
+      assert html =~ "mlx-community/phi-3"
     end
   end
 

@@ -405,6 +405,58 @@ defmodule OrchardConsole.RuntimeTest do
     end
   end
 
+  describe "repo-off fallback" do
+    test "snapshot succeeds when Repo is unavailable during observe_status" do
+      # Use real Orchard.Nodes instead of StubNodes so observe_status hits the DB path
+      Application.put_env(
+        :orchard_controller,
+        :console,
+        Application.get_env(:orchard_controller, :console, [])
+        |> Keyword.put(:nodes_impl, Orchard.Nodes)
+      )
+
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0,
+             node_metadata: %{
+               node_id: Ecto.UUID.generate(),
+               display_name: "repo-off-test",
+               hostname: "test.local",
+               listen_host: "127.0.0.1",
+               listen_port: 50071,
+               agent_version: "0.1.0",
+               worker_backend: "mlx"
+             },
+             runtime_health: %{
+               ready: true,
+               health_code: nil,
+               health_message: nil,
+               affected_model: nil
+             }
+           }},
+        disconnect: :ok
+      )
+
+      repo_pid = Process.whereis(Orchard.Repo)
+      assert is_pid(repo_pid)
+      Process.unregister(Orchard.Repo)
+
+      try do
+        assert {:ok, snapshot} = Runtime.snapshot()
+        assert snapshot.worker_state == :idle
+        assert snapshot.node_metadata != nil
+        assert snapshot.runtime_health != nil
+      after
+        Process.register(repo_pid, Orchard.Repo)
+      end
+    end
+  end
+
   defp stub_client(stubs) do
     start_supervised!({Registry, keys: :duplicate, name: __MODULE__.StubRegistry})
     Registry.register(__MODULE__.StubRegistry, :stubs, stubs)

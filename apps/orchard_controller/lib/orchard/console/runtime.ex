@@ -203,9 +203,11 @@ defmodule OrchardConsole.Runtime do
   # affected_model is a ModelRef (model_id + version), not a plain string.
   # Normalize to display string "model_id@version" for UI/API consumption.
   defp normalize_affected_model(nil), do: nil
+
   defp normalize_affected_model(%{model_id: id, version: vsn})
        when is_binary(id) and id != "" and is_binary(vsn) and vsn != "",
        do: "#{id}@#{vsn}"
+
   defp normalize_affected_model(%{model_id: id}) when is_binary(id) and id != "", do: id
   defp normalize_affected_model(value) when is_binary(value) and value != "", do: value
   defp normalize_affected_model(_), do: nil

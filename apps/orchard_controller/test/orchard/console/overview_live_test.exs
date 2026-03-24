@@ -74,6 +74,62 @@ defmodule OrchardConsole.OverviewLiveTest.RuntimeStartingStub do
   end
 end
 
+defmodule OrchardConsole.OverviewLiveTest.RuntimeUnhealthyStub do
+  @moduledoc false
+
+  def snapshot(_opts \\ []) do
+    {:ok,
+     %{
+       worker_state: :idle,
+       loaded_models: [%{model_id: "mlx-community/phi-3", version: "main"}],
+       active_request_count: 0,
+       node_metadata: %{
+         node_id: "550e8400-e29b-41d4-a716-446655440000",
+         display_name: "mawarduri",
+         hostname: "mawarduri.local",
+         listen_host: "127.0.0.1",
+         listen_port: 50071,
+         agent_version: "0.1.0",
+         worker_backend: "mlx"
+       },
+       runtime_health: %{
+         ready: false,
+         health_code: "worker_error",
+         health_message: "Worker process crashed",
+         affected_model: "mlx-community/phi-3@main"
+       }
+     }}
+  end
+end
+
+defmodule OrchardConsole.OverviewLiveTest.RuntimeDegradedStub do
+  @moduledoc false
+
+  def snapshot(_opts \\ []) do
+    {:ok,
+     %{
+       worker_state: :busy,
+       loaded_models: [%{model_id: "mlx-community/phi-3", version: "main"}],
+       active_request_count: 1,
+       node_metadata: %{
+         node_id: "550e8400-e29b-41d4-a716-446655440000",
+         display_name: "mawarduri",
+         hostname: "mawarduri.local",
+         listen_host: "127.0.0.1",
+         listen_port: 50071,
+         agent_version: "0.1.0",
+         worker_backend: "mlx"
+       },
+       runtime_health: %{
+         ready: true,
+         health_code: "high_memory",
+         health_message: "Worker memory usage above threshold",
+         affected_model: nil
+       }
+     }}
+  end
+end
+
 defmodule OrchardConsole.OverviewLiveTest do
   use Orchard.ConnCase, async: false
 
@@ -540,6 +596,75 @@ defmodule OrchardConsole.OverviewLiveTest do
       # Amber warning, not red
       assert copy =~ "text-amber-700"
       refute copy =~ "text-red-600"
+    end
+  end
+
+  describe "runtime health badges" do
+    test "shows Unhealthy badge when runtime_health.ready is false", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeUnhealthyStub)
+
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ "Unhealthy"
+    end
+
+    test "shows Degraded badge when health_code is present", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeDegradedStub)
+
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ "Degraded"
+    end
+
+    test "unsupported health (nil) falls back to worker-state badge", %{conn: conn} do
+      # RuntimeNoModelsStub has runtime_health: nil — should show worker-state label
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeNoModelsStub)
+
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ "Idle"
+      refute html =~ "Unhealthy"
+      # NOTE: "Degraded" appears in the readiness badge (test env has :error readiness),
+      # so we only check that "Unhealthy" is absent — the Idle assertion proves fallback.
+    end
+  end
+
+  describe "health-aware hero status copy" do
+    # NOTE: In test env, readiness.status is :error because public_api_https_enabled
+    # check fails. These tests verify health-aware copy with degraded readiness.
+
+    test "shows unhealthy copy when readiness degraded and runtime unhealthy", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeUnhealthyStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+      copy = view |> element("#overview-hero-status-copy") |> render()
+
+      assert copy =~ "readiness is failing"
+      assert copy =~ "unhealthy"
+      assert copy =~ "text-red-600"
+    end
+
+    test "shows degraded copy when readiness degraded and runtime health degraded", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeDegradedStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+      copy = view |> element("#overview-hero-status-copy") |> render()
+
+      assert copy =~ "readiness checks are failing"
+      assert copy =~ "degraded health"
+      assert copy =~ "text-amber-700"
+    end
+
+    test "healthy runtime_health does not change existing behavior", %{conn: conn} do
+      # Default RuntimeStub has ready: true, no health_code/health_message
+      {:ok, view, _html} = live(conn, "/console")
+      copy = view |> element("#overview-hero-status-copy") |> render()
+
+      # Should fall through to worker-state copy (readiness degraded + runtime ok + idle)
+      assert copy =~ "Runtime is reachable"
+      assert copy =~ "readiness checks are failing"
+      refute copy =~ "unhealthy"
+      refute copy =~ "degraded health"
     end
   end
 
