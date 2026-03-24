@@ -21,9 +21,16 @@ defmodule Orchard.Scheduler.SingleNode do
 
   Public so that `MultiNode` can call this as a recursion-safe fallback
   when cluster scheduling is unavailable.
+
+  The 1-arity version uses the configured singular `runtime_client_target`.
+  The 2-arity version accepts an explicit target, used by `MultiNode` to
+  preserve the actual plural target during fallback.
   """
   def default_schedule(%CanonicalRequest{} = request) do
-    target = target()
+    default_schedule(request, target())
+  end
+
+  def default_schedule(%CanonicalRequest{} = request, target) do
     node_id = resolve_node_id(target)
 
     {:ok,

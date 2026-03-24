@@ -113,6 +113,20 @@ defmodule Orchard.InferenceTest do
     end
   end
 
+  describe "SingleNode backward compatibility" do
+    test "SingleNode.schedule/1 always uses singular target even when plural differs" do
+      put_inference(
+        runtime_client_targets: [[host: "10.0.0.99", port: 50_099]],
+        runtime_client_target: [host: "127.0.0.1", port: 50_071]
+      )
+
+      request = canonical_request()
+      assert {:ok, schedule} = SingleNode.schedule(request)
+      assert schedule.strategy == :single_node
+      assert schedule.runtime_client_target == [host: "127.0.0.1", port: 50_071]
+    end
+  end
+
   describe "scheduler repo-off fallback" do
     test "SingleNode.schedule/1 returns node_id: nil when Repo is unavailable" do
       request = canonical_request()

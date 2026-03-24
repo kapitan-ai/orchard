@@ -405,4 +405,50 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.candidate_count == 2
     end
   end
+
+  # -- Fallback target mismatch regression (P1-1 review fix) --
+
+  describe "fallback target mismatch" do
+    test "single plural target uses that target, not the singular config" do
+      # Plural target differs from singular target
+      put_inference(
+        runtime_client_targets: [[host: "10.0.0.99", port: 50_099]],
+        runtime_client_target: [host: "127.0.0.1", port: 50_071]
+      )
+
+      # Insert a node matching the plural target so node_id resolves
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.99",
+          rpc_port: 50_099
+        })
+
+      request = canonical_request()
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.strategy == :single_node
+      assert schedule.runtime_client_target == [host: "10.0.0.99", port: 50_099]
+      assert schedule.node_id == node.id
+    end
+
+    test "no-candidate fallback preserves the plural target" do
+      put_inference(
+        runtime_client_targets: [
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.1", port: 50_061]
+        ],
+        runtime_client_target: [host: "127.0.0.1", port: 50_071]
+      )
+
+      # Both targets are duplicates → dedup to 1 → fallback should use that target
+      insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+
+      # Probes succeed but nodes are not schedulable (no stubs → probes fail)
+      request = canonical_request()
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.strategy == :single_node
+      assert schedule.runtime_client_target == [host: "10.0.0.1", port: 50_061]
+    end
+  end
 end

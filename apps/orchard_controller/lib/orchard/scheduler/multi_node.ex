@@ -52,7 +52,7 @@ defmodule Orchard.Scheduler.MultiNode do
     targets = Inference.runtime_client_targets()
 
     if length(targets) <= 1 do
-      SingleNode.default_schedule(request)
+      fallback_schedule(request, targets)
     else
       schedule_multi(request, dedup_targets(targets), opts)
     end
@@ -65,7 +65,13 @@ defmodule Orchard.Scheduler.MultiNode do
     timeout = Keyword.get(opts, :status_timeout_ms, @default_status_timeout_ms)
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
 
-    # Probe each target and collect ephemeral ranking data
+    # Probe each target sequentially and collect ephemeral ranking data.
+    # Sequential probing is intentional for M3b scope (1-4 nodes):
+    # - Avoids Task supervision and cancellation complexity
+    # - Deterministic ordering, simpler failure handling
+    # - Worst-case latency is cumulative (N × timeout_ms) but acceptable at this scale
+    # Future: parallel probing via Task.async_stream or cached observations
+    # within freshness window for larger clusters.
     probe_results =
       targets
       |> Enum.map(&probe_target(&1, client, timeout, observed_at, request))
@@ -82,7 +88,7 @@ defmodule Orchard.Scheduler.MultiNode do
       |> Enum.map(&Map.put(&1, :node, schedulable_map[&1.node_id]))
 
     if candidates == [] do
-      SingleNode.default_schedule(request)
+      fallback_schedule(request, targets)
     else
       ranked = rank_candidates(candidates)
       selected = hd(ranked)
@@ -178,6 +184,19 @@ defmodule Orchard.Scheduler.MultiNode do
   defp health_rank(_), do: 2
 
   # -- Helpers --
+
+  # When there is exactly one unique target, pass it explicitly to
+  # SingleNode.default_schedule/2 so the fallback uses the actual target
+  # from the plural config, not the separate singular runtime_client_target.
+  # When targets is empty or has multiple entries, use the implicit singular
+  # fallback (no single deterministic target to pass).
+  defp fallback_schedule(request, [single_target]) do
+    SingleNode.default_schedule(request, single_target)
+  end
+
+  defp fallback_schedule(request, _targets) do
+    SingleNode.default_schedule(request)
+  end
 
   defp dedup_targets(targets) do
     targets
