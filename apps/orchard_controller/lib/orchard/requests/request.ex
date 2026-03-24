@@ -167,6 +167,20 @@ defmodule Orchard.Requests.Request do
     |> put_completed_at()
   end
 
+  @spec schedule_changeset(struct(), map()) :: Ecto.Changeset.t()
+  def schedule_changeset(request, attrs) do
+    request
+    |> cast(attrs, [:scheduler_decision, :node_id])
+    |> validate_required([:scheduler_decision])
+  end
+
+  @spec node_assignment_changeset(struct(), map()) :: Ecto.Changeset.t()
+  def node_assignment_changeset(request, attrs) do
+    request
+    |> cast(attrs, [:node_id])
+    |> validate_required([:node_id])
+  end
+
   defp validate_terminal_state(%Ecto.Changeset{} = changeset) do
     state = get_field(changeset, :state)
 

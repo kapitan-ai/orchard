@@ -47,10 +47,17 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
     end
   end
 
-  @doc "Get the node-agent status."
-  @spec status(GRPC.Channel.t()) :: {:ok, StatusResponse.t()} | {:error, term()}
-  def status(channel) do
-    case NodeRuntimeService.Stub.get_status(channel, %StatusRequest{}, timeout: @rpc_timeout_ms) do
+  @doc """
+  Get the node-agent status.
+
+  Options:
+  - `:timeout` — RPC timeout in milliseconds (default: #{@rpc_timeout_ms})
+  """
+  @spec status(GRPC.Channel.t(), keyword()) :: {:ok, StatusResponse.t()} | {:error, term()}
+  def status(channel, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @rpc_timeout_ms)
+
+    case NodeRuntimeService.Stub.get_status(channel, %StatusRequest{}, timeout: timeout) do
       {:ok, %StatusResponse{} = response} -> {:ok, response}
       {:error, reason} -> {:error, normalize_error(reason)}
     end

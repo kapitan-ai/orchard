@@ -124,6 +124,84 @@ defmodule Orchard.Requests do
     end
   end
 
+  @doc """
+  Persists the scheduler decision onto the request row.
+
+  Sets `scheduler_decision` (normalized to JSON-safe map) and optionally
+  sets `node_id` when the schedule contains a non-nil UUID.
+  """
+  @spec record_schedule(struct() | Ecto.UUID.t(), map()) ::
+          {:ok, struct()} | {:error, Ecto.Changeset.t() | :request_not_found}
+  def record_schedule(%Request{id: request_id}, schedule),
+    do: record_schedule(request_id, schedule)
+
+  def record_schedule(request_id, schedule) do
+    Repo.transaction(fn ->
+      case lock_request(request_id) do
+        {:ok, request} ->
+          attrs = %{
+            scheduler_decision: normalize_schedule(schedule),
+            node_id: Map.get(schedule, :node_id)
+          }
+
+          request
+          |> Request.schedule_changeset(attrs)
+          |> Repo.update()
+
+        {:error, :request_not_found} ->
+          Repo.rollback(:request_not_found)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  @doc """
+  Assigns a runtime-discovered node UUID to the request row.
+
+  Overwrites any existing `node_id` (including scheduler-attributed values)
+  because the runtime-discovered identity is authoritative.
+  """
+  @spec assign_node(struct() | Ecto.UUID.t(), Ecto.UUID.t()) ::
+          {:ok, struct()} | {:error, Ecto.Changeset.t() | :request_not_found}
+  def assign_node(%Request{id: request_id}, node_id),
+    do: assign_node(request_id, node_id)
+
+  def assign_node(request_id, node_id) do
+    Repo.transaction(fn ->
+      case lock_request(request_id) do
+        {:ok, request} ->
+          request
+          |> Request.node_assignment_changeset(%{node_id: node_id})
+          |> Repo.update()
+
+        {:error, :request_not_found} ->
+          Repo.rollback(:request_not_found)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  defp normalize_schedule(schedule) when is_map(schedule) do
+    schedule
+    |> Map.new(fn
+      {:runtime_client_target, target} when is_list(target) ->
+        {"runtime_client_target",
+         %{
+           "host" => to_string(Keyword.get(target, :host, "")),
+           "port" => Keyword.get(target, :port)
+         }}
+
+      {:strategy, value} when is_atom(value) ->
+        {"strategy", Atom.to_string(value)}
+
+      {key, value} when is_atom(key) ->
+        {Atom.to_string(key), value}
+
+      {key, value} ->
+        {key, value}
+    end)
+  end
+
   defp lock_request(request_id) do
     request =
       Request

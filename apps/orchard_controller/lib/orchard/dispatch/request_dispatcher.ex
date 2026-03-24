@@ -17,9 +17,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     ExecuteInferenceRequest
   }
 
-  alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: Client
+  alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: DefaultClient
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
+
+  require Logger
+
+  @status_probe_timeout_ms 1_000
 
   @type dispatch_result ::
           {:ok, [InferenceEvent.t()]}
@@ -43,6 +47,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - `:event_handler` — function called with each `InferenceEvent`.
                         Return `:cancel` to abort dispatch (e.g. on SSE client disconnect).
                         (default: sends `{:inference_event, request_id, event}` to caller)
+  - `:on_node_resolved` — optional callback `(node_id :: String.t() -> any())`.
+                           Called when the pre-dispatch status probe discovers a
+                           valid node UUID. Synchronous, lightweight, observational only.
+                           Exceptions are rescued; return value is ignored.
+  - `:client_impl` — gRPC client module (default: `GrpcNodeRuntimeClient`)
 
   Returns `{:ok, events}` with the list of all events received (including terminal),
   or `{:error, reason}` if dispatch fails before streaming begins.
@@ -65,13 +74,27 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     model_load_timeout = Map.get(schedule, :model_load_timeout_ms, 120_000)
     caller = Keyword.get(opts, :caller, self())
     event_handler = Keyword.get(opts, :event_handler)
+    on_node_resolved = Keyword.get(opts, :on_node_resolved)
+    client = Keyword.get(opts, :client_impl, DefaultClient)
 
-    case Client.connect(target) do
+    case client.connect(target) do
       {:ok, channel} ->
         try do
-          case do_ensure_model_loaded(channel, model_load_request, model_load_timeout) do
+          # Pre-dispatch status probe: resolve node identity, persist observation,
+          # and patch the model load request with the discovered node_id.
+          model_load_request =
+            probe_and_resolve_node(
+              client,
+              channel,
+              target,
+              model_load_request,
+              on_node_resolved
+            )
+
+          case do_ensure_model_loaded(client, channel, model_load_request, model_load_timeout) do
             :ok ->
               do_execute_and_stream(
+                client,
                 channel,
                 execute_request,
                 request_id,
@@ -84,7 +107,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
               {:error, {:model_load_failed, reason}}
           end
         after
-          Client.disconnect(channel)
+          client.disconnect(channel)
         end
 
       {:error, {:connect_failed, _reason}} ->
@@ -94,8 +117,61 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   # -- Private ---------------------------------------------------------------
 
-  defp do_ensure_model_loaded(channel, request, timeout_ms) do
-    case Client.ensure_model_loaded(channel, request, timeout: timeout_ms) do
+  # Pre-dispatch status probe: best-effort node identity resolution.
+  # Never aborts dispatch on failure.
+  defp probe_and_resolve_node(client, channel, target, model_load_request, on_node_resolved) do
+    case client.status(channel, timeout: @status_probe_timeout_ms) do
+      {:ok, response} ->
+        # Best-effort persistence
+        observed_at = DateTime.utc_now()
+
+        try do
+          Orchard.Nodes.observe_status(target, response, observed_at)
+        rescue
+          error ->
+            Logger.warning("Node observation failed during dispatch probe: #{inspect(error)}")
+        end
+
+        # Extract and validate node_id from metadata
+        case extract_node_id(response) do
+          {:ok, node_id} ->
+            invoke_callback_safe(on_node_resolved, node_id)
+            %{model_load_request | node_id: node_id}
+
+          :error ->
+            model_load_request
+        end
+
+      {:error, _reason} ->
+        # Probe failure is non-fatal
+        model_load_request
+    end
+  rescue
+    error ->
+      Logger.warning("Status probe failed unexpectedly: #{inspect(error)}")
+      model_load_request
+  end
+
+  defp extract_node_id(%{node_metadata: %{node_id: node_id}}) when is_binary(node_id) do
+    case Ecto.UUID.cast(node_id) do
+      {:ok, uuid} -> {:ok, uuid}
+      :error -> :error
+    end
+  end
+
+  defp extract_node_id(_), do: :error
+
+  defp invoke_callback_safe(nil, _node_id), do: :ok
+
+  defp invoke_callback_safe(callback, node_id) when is_function(callback, 1) do
+    callback.(node_id)
+  rescue
+    error ->
+      Logger.warning("on_node_resolved callback failed: #{inspect(error)}")
+  end
+
+  defp do_ensure_model_loaded(client, channel, request, timeout_ms) do
+    case client.ensure_model_loaded(channel, request, timeout: timeout_ms) do
       {:ok, %EnsureModelLoadedResponse{} = response} ->
         case normalize_placement_state(response.placement_state) do
           :loaded ->
@@ -123,6 +199,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp normalize_placement_state(other), do: {:unexpected, other}
 
   defp do_execute_and_stream(
+         client,
          channel,
          request,
          request_id,
@@ -133,10 +210,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     caller_ref = Process.monitor(caller)
     timer_ref = start_timeout_timer(timeout_ms)
 
-    {:ok, task_ref} = Client.execute_inference(channel, request, owner: self())
+    {:ok, task_ref} = client.execute_inference(channel, request, owner: self())
 
     result =
       receive_loop(
+        client,
         channel,
         request_id,
         task_ref,
@@ -151,6 +229,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp receive_loop(
+         client,
          channel,
          request_id,
          task_ref,
@@ -169,7 +248,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             {:ok, Enum.reverse(events)}
 
           cancelled_by_handler?(handler_result) ->
-            _ = Client.cancel_inference(channel, request_id)
+            _ = client.cancel_inference(channel, request_id)
 
             drain_until_terminal_or_done(
               task_ref,
@@ -181,6 +260,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
           true ->
             receive_loop(
+              client,
               channel,
               request_id,
               task_ref,
@@ -198,10 +278,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         if events == [] do
           {:error, {:dispatch_failed, reason}}
         else
-          # Stream had prior events but ended with an error and no terminal
-          # event. Synthesize a :failed event so callers always see a
-          # terminal outcome rather than treating a truncated stream as
-          # completed.
           has_terminal? = Enum.any?(events, &InferenceEvent.terminal?/1)
 
           if has_terminal? do
@@ -220,11 +296,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         end
 
       {:dispatch_timeout, ^timer_ref} ->
-        _ = Client.cancel_inference(channel, request_id)
+        _ = client.cancel_inference(channel, request_id)
         drain_until_terminal_or_done(task_ref, request_id, event_handler, events, :timeout)
 
       {:DOWN, ^caller_ref, :process, _pid, _reason} ->
-        _ = Client.cancel_inference(channel, request_id)
+        _ = client.cancel_inference(channel, request_id)
 
         drain_until_terminal_or_done(
           task_ref,

@@ -292,4 +292,105 @@ defmodule Orchard.RequestsTest do
       assert Requests.get_request_by_public_id("nonexistent-id") == nil
     end
   end
+
+  describe "record_schedule/2" do
+    test "persists scheduler_decision as normalized JSON-safe map" do
+      request = create_request!(%{public_id: "req_schedule_1"})
+
+      schedule = %{
+        strategy: :single_node,
+        request_id: "req_schedule_1",
+        runtime_client_target: [host: "127.0.0.1", port: 50_071],
+        request_timeout_ms: 5_000,
+        model_load_timeout_ms: 120_000,
+        node_id: nil
+      }
+
+      assert {:ok, updated} = Requests.record_schedule(request, schedule)
+      decision = updated.scheduler_decision
+
+      assert decision["strategy"] == "single_node"
+      assert decision["runtime_client_target"] == %{"host" => "127.0.0.1", "port" => 50_071}
+      assert decision["request_timeout_ms"] == 5_000
+      assert decision["node_id"] == nil
+    end
+
+    test "sets node_id when schedule contains a UUID" do
+      request = create_request!(%{public_id: "req_schedule_2"})
+      node_id = Ecto.UUID.generate()
+
+      schedule = %{
+        strategy: :single_node,
+        request_id: "req_schedule_2",
+        runtime_client_target: [host: "10.0.0.1", port: 9444],
+        request_timeout_ms: 5_000,
+        model_load_timeout_ms: 120_000,
+        node_id: node_id
+      }
+
+      assert {:ok, updated} = Requests.record_schedule(request, schedule)
+      assert updated.node_id == node_id
+    end
+
+    test "preserves nil node_id when schedule has no node" do
+      request = create_request!(%{public_id: "req_schedule_3"})
+
+      schedule = %{
+        strategy: :single_node,
+        request_id: "req_schedule_3",
+        runtime_client_target: [host: "10.0.0.1", port: 9444],
+        request_timeout_ms: 5_000,
+        model_load_timeout_ms: 120_000,
+        node_id: nil
+      }
+
+      assert {:ok, updated} = Requests.record_schedule(request, schedule)
+      assert updated.node_id == nil
+    end
+
+    test "returns error for unknown request" do
+      assert {:error, :request_not_found} =
+               Requests.record_schedule(Ecto.UUID.generate(), %{
+                 strategy: :single_node,
+                 request_id: "none",
+                 runtime_client_target: [host: "10.0.0.1", port: 9444],
+                 request_timeout_ms: 5_000,
+                 model_load_timeout_ms: 120_000,
+                 node_id: nil
+               })
+    end
+  end
+
+  describe "assign_node/2" do
+    test "writes runtime-resolved node UUID" do
+      request = create_request!(%{public_id: "req_assign_1"})
+      node_id = Ecto.UUID.generate()
+
+      assert {:ok, updated} = Requests.assign_node(request, node_id)
+      assert updated.node_id == node_id
+    end
+
+    test "idempotently accepts same UUID" do
+      request = create_request!(%{public_id: "req_assign_2"})
+      node_id = Ecto.UUID.generate()
+
+      assert {:ok, _} = Requests.assign_node(request, node_id)
+      assert {:ok, updated} = Requests.assign_node(request.id, node_id)
+      assert updated.node_id == node_id
+    end
+
+    test "overwrites scheduler-attributed node_id" do
+      scheduler_id = Ecto.UUID.generate()
+      request = create_request!(%{public_id: "req_assign_3", node_id: scheduler_id})
+      runtime_id = Ecto.UUID.generate()
+
+      assert {:ok, updated} = Requests.assign_node(request, runtime_id)
+      assert updated.node_id == runtime_id
+    end
+
+    test "returns error for unknown request" do
+      assert {:error, :request_not_found} =
+               Requests.assign_node(Ecto.UUID.generate(), Ecto.UUID.generate())
+    end
+  end
 end

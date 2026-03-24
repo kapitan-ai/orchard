@@ -34,20 +34,36 @@ defmodule OrchardConsole.Runtime do
   @doc """
   Fetches a runtime status snapshot from the configured node.
 
+  On success, also performs a best-effort `Orchard.Nodes.observe_status/3`
+  to persist node inventory data. Observation failures never convert a
+  successful status read into an error snapshot.
+
   Returns `{:ok, snapshot}` on success or `{:error, error_snapshot}` with
   an operator-safe error description on failure. Never raises for expected
   transport/gRPC errors.
   """
   @spec snapshot() :: {:ok, snapshot()} | {:error, error_snapshot()}
-  def snapshot do
+  def snapshot, do: snapshot([])
+
+  @doc """
+  Fetches a runtime status snapshot with optional overrides.
+
+  Options:
+  - `:target` — override runtime target (default: from inference config)
+  - `:observed_at` — override observation timestamp (default: `DateTime.utc_now()`)
+  """
+  @spec snapshot(keyword()) :: {:ok, snapshot()} | {:error, error_snapshot()}
+  def snapshot(opts) do
     client = runtime_client_impl()
-    target = Inference.runtime_client_target()
+    target = Keyword.get(opts, :target, Inference.runtime_client_target())
+    observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
 
     case client.connect(target) do
       {:ok, channel} ->
         try do
           case client.status(channel) do
             {:ok, response} ->
+              observe_status_best_effort(target, response, observed_at)
               {:ok, normalize_response(response)}
 
             {:error, reason} ->
@@ -63,6 +79,17 @@ defmodule OrchardConsole.Runtime do
       {:error, _reason} ->
         {:error, error_snapshot(:error, "runtime_error", "node status request failed")}
     end
+  end
+
+  defp observe_status_best_effort(target, response, observed_at) do
+    nodes_impl().observe_status(target, response, observed_at)
+  rescue
+    error ->
+      require Logger
+
+      Logger.warning("Node observation failed during runtime snapshot: #{inspect(error)}")
+
+      :noop
   end
 
   # ---------------------------------------------------------------------------
@@ -146,5 +173,10 @@ defmodule OrchardConsole.Runtime do
   defp runtime_client_impl do
     Application.get_env(:orchard_controller, :console, [])
     |> Keyword.get(:runtime_client_impl, Orchard.Dispatch.GrpcNodeRuntimeClient)
+  end
+
+  defp nodes_impl do
+    Application.get_env(:orchard_controller, :console, [])
+    |> Keyword.get(:nodes_impl, Orchard.Nodes)
   end
 end

@@ -60,9 +60,11 @@ defmodule Orchard.Inference.RequestOrchestrator do
     result =
       with :ok <- advance_fsm(db_request.id, :validated),
            {:ok, schedule} <- schedule_request(canonical),
+           {:ok, _} <- Requests.record_schedule(db_request, schedule),
            :ok <- advance_fsm(db_request.id, :scheduled),
            :ok <- advance_fsm(db_request.id, :dispatching),
-           {:ok, events} <- dispatch(canonical, model, schedule, caller, event_handler) do
+           {:ok, events} <-
+             dispatch(db_request, canonical, model, schedule, caller, event_handler) do
         finalize(db_request, canonical, model, events, success_persistence)
       end
 
@@ -164,7 +166,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     Inference.scheduler().schedule(canonical)
   end
 
-  defp dispatch(canonical, model, schedule, caller, event_handler) do
+  defp dispatch(db_request, canonical, model, schedule, caller, event_handler) do
     execute_request = build_execute_request(canonical, schedule)
     model_load_request = build_model_load_request(model, schedule)
 
@@ -173,8 +175,18 @@ defmodule Orchard.Inference.RequestOrchestrator do
       execute_request,
       model_load_request,
       caller: caller,
-      event_handler: event_handler
+      event_handler: event_handler,
+      on_node_resolved: build_node_resolved_callback(db_request.id)
     )
+  end
+
+  defp build_node_resolved_callback(request_id) do
+    fn node_id ->
+      case Requests.assign_node(request_id, node_id) do
+        {:ok, _} -> :ok
+        {:error, reason} -> log_warn("assign_node failed: #{inspect(reason)}")
+      end
+    end
   end
 
   defp finalize(db_request, canonical, _model, events, success_persistence) do
@@ -323,8 +335,14 @@ defmodule Orchard.Inference.RequestOrchestrator do
       System.system_time(:millisecond) +
         Map.get(schedule, :model_load_timeout_ms, Inference.model_load_timeout_ms())
 
+    node_id =
+      case Map.get(schedule, :node_id) do
+        uuid when is_binary(uuid) -> uuid
+        _ -> ""
+      end
+
     %EnsureModelLoadedRequest{
-      node_id: "",
+      node_id: node_id,
       model_id: model.model_id,
       version: model.version,
       artifact_sha256: model.artifact_sha256,
