@@ -1,5 +1,6 @@
 defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
   @moduledoc false
+  @registry __MODULE__.Registry
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
@@ -9,14 +10,17 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
 
   alias Orchard.InferenceEvent
 
+  @doc false
+  def registry_name, do: @registry
+
   def connect(_target), do: {:ok, :stub_channel}
 
   def status(_channel, _opts \\ []) do
-    Process.get(:probe_stub_config).status
+    config().status
   end
 
   def ensure_model_loaded(_channel, %EnsureModelLoadedRequest{} = request, _opts \\ []) do
-    config = Process.get(:probe_stub_config)
+    config = config()
 
     if config.capture_pid do
       send(config.capture_pid, {:ensure_model_loaded_called, request})
@@ -26,17 +30,17 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
      %EnsureModelLoadedResponse{already_loaded: false, placement_state: :PLACEMENT_STATE_LOADED}}
   end
 
-  def execute_inference(_channel, %ExecuteInferenceRequest{} = request, _opts \\ []) do
-    caller = self()
+  def execute_inference(_channel, %ExecuteInferenceRequest{} = request, opts \\ []) do
+    owner = Keyword.get(opts, :owner, self())
     ref = make_ref()
 
     spawn(fn ->
       accepted = InferenceEvent.accepted(System.system_time(:millisecond))
       completed = InferenceEvent.completed(:finish_reason_stop, nil)
 
-      send(caller, {:dispatch_event, ref, request.request_id, accepted})
-      send(caller, {:dispatch_event, ref, request.request_id, completed})
-      send(caller, {:dispatch_done, ref, :ok})
+      send(owner, {:dispatch_event, ref, request.request_id, accepted})
+      send(owner, {:dispatch_event, ref, request.request_id, completed})
+      send(owner, {:dispatch_done, ref, :ok})
     end)
 
     {:ok, ref}
@@ -44,6 +48,11 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
 
   def cancel_inference(_channel, _request_id), do: :ok
   def disconnect(_channel), do: :ok
+
+  defp config do
+    [{_pid, config}] = Registry.lookup(@registry, :config)
+    config
+  end
 end
 
 defmodule Orchard.Dispatch.ProbeCompatibilityTest do
@@ -59,6 +68,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   """
 
   use Orchard.DataCase, async: false
+  import Orchard.TestSupport.RepoHelpers
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
@@ -73,6 +83,11 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   @stub_client Orchard.Dispatch.ProbeCompatibilityTest.StubClient
 
   setup do
+    start_supervised!(
+      {Registry,
+       keys: :duplicate, name: Orchard.Dispatch.ProbeCompatibilityTest.StubClient.registry_name()}
+    )
+
     %{
       schedule: %{
         strategy: :single_node,
@@ -98,10 +113,11 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   end
 
   defp configure_stub(status_response) do
-    Process.put(:probe_stub_config, %{
-      status: status_response,
-      capture_pid: self()
-    })
+    Registry.register(
+      Orchard.Dispatch.ProbeCompatibilityTest.StubClient.registry_name(),
+      :config,
+      %{status: status_response, capture_pid: self()}
+    )
   end
 
   defp old_agent_status do

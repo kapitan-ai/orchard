@@ -668,6 +668,73 @@ defmodule OrchardConsole.OverviewLiveTest do
     end
   end
 
+  describe "ready+health hero status copy" do
+    # Force readiness to :ok by disabling transport_degraded.
+    # This exercises the hero_health_copy/2 and hero_worker_state_copy/2 branches.
+    setup do
+      # Force all readiness checks to pass so readiness.status == :ok
+      prev_transport = Application.get_env(:orchard_controller, :transport_degraded)
+      prev_db = Application.get_env(:orchard_controller, :enable_db_checks)
+      prev_repo = Application.get_env(:orchard_controller, :start_repo)
+
+      Application.put_env(:orchard_controller, :transport_degraded, false)
+      Application.put_env(:orchard_controller, :enable_db_checks, true)
+      Application.put_env(:orchard_controller, :start_repo, true)
+
+      on_exit(fn ->
+        Application.put_env(:orchard_controller, :transport_degraded, prev_transport)
+        Application.put_env(:orchard_controller, :enable_db_checks, prev_db)
+        Application.put_env(:orchard_controller, :start_repo, prev_repo)
+      end)
+
+      :ok
+    end
+
+    test "ready + healthy runtime shows system-ready copy", %{conn: conn} do
+      # Default RuntimeStub: idle, loaded model, healthy runtime_health
+      {:ok, view, _html} = live(conn, "/console")
+      copy = view |> element("#overview-hero-status-copy") |> render()
+
+      assert copy =~ "System ready"
+      assert copy =~ "text-slate-600"
+      refute copy =~ "unhealthy"
+      refute copy =~ "degraded"
+    end
+
+    test "ready + unhealthy runtime shows health warning", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeUnhealthyStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+      copy = view |> element("#overview-hero-status-copy") |> render()
+
+      assert copy =~ "passing"
+      assert copy =~ "unhealthy"
+      assert copy =~ "text-red-600"
+    end
+
+    test "ready + degraded runtime shows degraded warning", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeDegradedStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+      copy = view |> element("#overview-hero-status-copy") |> render()
+
+      assert copy =~ "passing"
+      assert copy =~ "degraded health"
+      assert copy =~ "text-amber-700"
+    end
+
+    test "ready + unsupported health falls back to worker-state copy", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeNoModelsStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+      copy = view |> element("#overview-hero-status-copy") |> render()
+
+      # runtime_health is nil -> falls through to worker-state
+      assert copy =~ "no model is currently loaded"
+      assert copy =~ "text-amber-700"
+    end
+  end
+
   describe "hero CTA links" do
     test "renders Open Playground link to /console/playground", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")

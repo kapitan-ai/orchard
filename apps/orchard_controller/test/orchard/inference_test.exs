@@ -1,5 +1,6 @@
 defmodule Orchard.InferenceTest do
   use ExUnit.Case, async: false
+  import Orchard.TestSupport.RepoHelpers
 
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
@@ -83,20 +84,14 @@ defmodule Orchard.InferenceTest do
     test "SingleNode.schedule/1 returns node_id: nil when Repo is unavailable" do
       request = canonical_request()
 
-      repo_pid = Process.whereis(Orchard.Repo)
-      assert is_pid(repo_pid)
-      Process.unregister(Orchard.Repo)
-
-      try do
+      with_repo_unregistered(fn ->
         assert {:ok, schedule} = SingleNode.schedule(request)
         assert schedule.strategy == :single_node
         assert schedule.runtime_client_target == [host: "127.0.0.1", port: 50_071]
         assert schedule.request_timeout_ms == 5_000
         assert schedule.model_load_timeout_ms == 5_000
         assert schedule.node_id == nil
-      after
-        Process.register(repo_pid, Orchard.Repo)
-      end
+      end)
     end
   end
 

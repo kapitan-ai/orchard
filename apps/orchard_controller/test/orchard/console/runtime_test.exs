@@ -2,6 +2,7 @@ defmodule OrchardConsole.RuntimeTest do
   use ExUnit.Case, async: false
 
   alias OrchardConsole.Runtime
+  import Orchard.TestSupport.RepoHelpers
 
   setup do
     previous = Application.get_env(:orchard_controller, :console, [])
@@ -442,18 +443,12 @@ defmodule OrchardConsole.RuntimeTest do
         disconnect: :ok
       )
 
-      repo_pid = Process.whereis(Orchard.Repo)
-      assert is_pid(repo_pid)
-      Process.unregister(Orchard.Repo)
-
-      try do
+      with_repo_unregistered(fn ->
         assert {:ok, snapshot} = Runtime.snapshot()
         assert snapshot.worker_state == :idle
         assert snapshot.node_metadata != nil
         assert snapshot.runtime_health != nil
-      after
-        Process.register(repo_pid, Orchard.Repo)
-      end
+      end)
     end
   end
 

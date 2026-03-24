@@ -11,15 +11,10 @@ defmodule Orchard.NodesRepoOffTest do
   use ExUnit.Case, async: false
 
   alias Orchard.Nodes
+  import Orchard.TestSupport.RepoHelpers
 
   test "graceful degradation when repo name is unregistered" do
-    # Temporarily unregister the Repo process name
-    repo_pid = Process.whereis(Orchard.Repo)
-    assert is_pid(repo_pid)
-    Process.unregister(Orchard.Repo)
-
-    try do
-      # Verify repo_available?() returns false
+    with_repo_unregistered(fn ->
       refute is_pid(Process.whereis(Orchard.Repo))
 
       assert Nodes.list_nodes() == []
@@ -45,9 +40,6 @@ defmodule Orchard.NodesRepoOffTest do
                  [host: "10.0.0.1", port: 9444],
                  DateTime.utc_now()
                )
-    after
-      # Re-register the Repo process name
-      Process.register(repo_pid, Orchard.Repo)
-    end
+    end)
   end
 end
