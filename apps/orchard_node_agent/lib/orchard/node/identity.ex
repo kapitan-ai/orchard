@@ -66,6 +66,11 @@ defmodule Orchard.Node.Identity do
     end
   end
 
+  # NOTE: This path assumes single ownership of the identity file.
+  # Concurrent node-agent processes sharing the same node_identity_path
+  # are not supported — Orchard assumes one node-agent per support root.
+  # If concurrent startup is ever needed, use File.open(:exclusive) and
+  # adopt-on-race instead of overwrite.
   defp generate_and_persist!(path) do
     id = generate_uuid()
     dir = Path.dirname(path)

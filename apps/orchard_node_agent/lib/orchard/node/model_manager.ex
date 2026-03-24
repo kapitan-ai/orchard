@@ -1187,6 +1187,9 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
+  # NOTE: Sequential probing with 1s timeout per worker. Acceptable for
+  # single-node / low-worker-count (capped by max_loaded_models). For
+  # multi-node with many workers, consider parallel probing or cached health.
   defp probe_workers_health(state) do
     loaded_workers =
       state.workers

@@ -48,9 +48,15 @@ defmodule Orchard.Node do
   @doc "Returns the listen host as a string suitable for proto metadata."
   def listen_host_string do
     case listen_host() do
-      host when is_binary(host) -> host
-      {a, b, c, d} -> "#{a}.#{b}.#{c}.#{d}"
-      other -> to_string(other)
+      host when is_binary(host) ->
+        host
+
+      addr when is_tuple(addr) ->
+        # Handles both IPv4 {a,b,c,d} and IPv6 {a,b,c,d,e,f,g,h} tuples
+        addr |> :inet.ntoa() |> List.to_string()
+
+      other ->
+        to_string(other)
     end
   end
 
