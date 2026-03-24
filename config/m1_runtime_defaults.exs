@@ -33,7 +33,8 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       runtime_client_targets: [],
       request_timeout_ms: @default_request_timeout_ms,
       model_load_timeout_ms: @default_model_load_timeout_ms,
-      node_freshness_threshold_ms: 30_000
+      node_freshness_threshold_ms: 30_000,
+      node_unreachable_threshold_ms: 15_000
     ]
   end
 

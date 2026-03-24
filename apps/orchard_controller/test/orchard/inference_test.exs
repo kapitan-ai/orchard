@@ -5,7 +5,7 @@ defmodule Orchard.InferenceTest do
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
   alias Orchard.Inference
-  alias Orchard.Scheduler.SingleNode
+  alias Orchard.Scheduler.{MultiNode, SingleNode}
   alias Orchard.Tokenizer.Client
 
   defmodule FakeTokenizer do
@@ -101,6 +101,21 @@ defmodule Orchard.InferenceTest do
       assert Inference.runtime_client_targets() == [Inference.runtime_client_target()]
     end
 
+    test "deduplicates configured plural targets by host and port" do
+      put_inference(
+        runtime_client_targets: [
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.2", port: 50_062]
+        ]
+      )
+
+      assert Inference.runtime_client_targets() == [
+               [host: "10.0.0.1", port: 50_061],
+               [host: "10.0.0.2", port: 50_062]
+             ]
+    end
+
     test "node_freshness_threshold_ms returns configured value" do
       assert Inference.node_freshness_threshold_ms() == 30_000
     end
@@ -111,16 +126,76 @@ defmodule Orchard.InferenceTest do
       Application.put_env(:orchard_controller, :inference, clean)
       assert Inference.node_freshness_threshold_ms() == 30_000
     end
+
+    test "node_unreachable_threshold_ms returns configured value" do
+      put_inference(node_unreachable_threshold_ms: 20_000)
+      assert Inference.node_unreachable_threshold_ms() == 20_000
+    end
+
+    test "node_unreachable_threshold_ms returns default when not configured" do
+      config = Application.fetch_env!(:orchard_controller, :inference)
+      clean = Keyword.delete(config, :node_unreachable_threshold_ms)
+      Application.put_env(:orchard_controller, :inference, clean)
+      assert Inference.node_unreachable_threshold_ms() == 15_000
+    end
+  end
+
+  describe "scheduler auto-selection" do
+    test "defaults to SingleNode when plural targets are absent" do
+      put_inference(runtime_client_targets: [])
+      assert Inference.scheduler() == SingleNode
+    end
+
+    test "auto-selects MultiNode when plural targets are configured" do
+      put_inference(
+        runtime_client_targets: [
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.2", port: 50_062]
+        ],
+        scheduler_impl: nil
+      )
+
+      assert Inference.scheduler() == MultiNode
+    end
+
+    test "deduplicated plural targets that collapse to one still use SingleNode" do
+      put_inference(
+        runtime_client_targets: [
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.1", port: 50_061]
+        ],
+        scheduler_impl: nil
+      )
+
+      assert Inference.scheduler() == SingleNode
+    end
+
+    test "explicit scheduler override wins over auto-selection" do
+      put_inference(
+        runtime_client_targets: [
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.2", port: 50_062]
+        ],
+        scheduler_impl: FakeScheduler
+      )
+
+      assert Inference.scheduler() == FakeScheduler
+    end
   end
 
   describe "SingleNode backward compatibility" do
     test "SingleNode.schedule/1 always uses singular target even when plural differs" do
       put_inference(
-        runtime_client_targets: [[host: "10.0.0.99", port: 50_099]],
-        runtime_client_target: [host: "127.0.0.1", port: 50_071]
+        runtime_client_targets: [
+          [host: "10.0.0.99", port: 50_099],
+          [host: "10.0.0.100", port: 50_100]
+        ],
+        runtime_client_target: [host: "127.0.0.1", port: 50_071],
+        scheduler_impl: nil
       )
 
       request = canonical_request()
+      assert Inference.scheduler() == MultiNode
       assert {:ok, schedule} = SingleNode.schedule(request)
       assert schedule.strategy == :single_node
       assert schedule.runtime_client_target == [host: "127.0.0.1", port: 50_071]

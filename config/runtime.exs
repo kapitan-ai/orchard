@@ -275,7 +275,8 @@ default_controller_inference = fn root ->
     runtime_client_targets: [],
     request_timeout_ms: 120_000,
     model_load_timeout_ms: 120_000,
-    node_freshness_threshold_ms: 30_000
+    node_freshness_threshold_ms: 30_000,
+    node_unreachable_threshold_ms: 15_000
   ]
 end
 
@@ -401,7 +402,9 @@ if config_env() == :prod do
             runtime_client_targets: parse_runtime_targets.("ORCHARD_RUNTIME_CLIENT_TARGETS"),
             request_timeout_ms: env_int.("ORCHARD_REQUEST_TIMEOUT_MS", "120000"),
             model_load_timeout_ms: env_int.("ORCHARD_MODEL_LOAD_TIMEOUT_MS", "120000"),
-            node_freshness_threshold_ms: env_int.("ORCHARD_NODE_FRESHNESS_THRESHOLD_MS", "30000")
+            node_freshness_threshold_ms: env_int.("ORCHARD_NODE_FRESHNESS_THRESHOLD_MS", "30000"),
+            node_unreachable_threshold_ms:
+              env_int.("ORCHARD_NODE_UNREACHABLE_THRESHOLD_MS", "15000")
           )
 
       controller_hf_token =

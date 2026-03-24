@@ -13,7 +13,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
   @doc false
   def registry_name, do: @registry
 
-  def connect(_target), do: {:ok, :stub_channel}
+  def connect(_target), do: config().connect
 
   def status(_channel, _opts \\ []) do
     config().status
@@ -26,8 +26,10 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
       send(config.capture_pid, {:ensure_model_loaded_called, request})
     end
 
-    {:ok,
-     %EnsureModelLoadedResponse{already_loaded: false, placement_state: :PLACEMENT_STATE_LOADED}}
+    case config.ensure_model_loaded do
+      {:ok, %EnsureModelLoadedResponse{} = response} -> {:ok, response}
+      {:error, reason} -> {:error, reason}
+    end
   end
 
   def execute_inference(_channel, %ExecuteInferenceRequest{} = request, opts \\ []) do
@@ -38,9 +40,19 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
       accepted = InferenceEvent.accepted(System.system_time(:millisecond))
       completed = InferenceEvent.completed(:finish_reason_stop, nil)
 
-      send(owner, {:dispatch_event, ref, request.request_id, accepted})
-      send(owner, {:dispatch_event, ref, request.request_id, completed})
-      send(owner, {:dispatch_done, ref, :ok})
+      case config().execute do
+        :success ->
+          send(owner, {:dispatch_event, ref, request.request_id, accepted})
+          send(owner, {:dispatch_event, ref, request.request_id, completed})
+          send(owner, {:dispatch_done, ref, :ok})
+
+        {:error, reason} ->
+          send(owner, {:dispatch_done, ref, {:error, reason}})
+
+        {:accepted_then_error, reason} ->
+          send(owner, {:dispatch_event, ref, request.request_id, accepted})
+          send(owner, {:dispatch_done, ref, {:error, reason}})
+      end
     end)
 
     {:ok, ref}
@@ -68,7 +80,6 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   """
 
   use Orchard.DataCase, async: false
-  import Orchard.TestSupport.RepoHelpers
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
@@ -77,6 +88,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   }
 
   alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.Nodes.Node
 
   @valid_uuid "550e8400-e29b-41d4-a716-446655440000"
   @other_uuid "660f9511-f30c-52e5-b827-557766551111"
@@ -92,7 +104,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       schedule: %{
         strategy: :single_node,
         request_id: "req-probe-test",
-        runtime_client_target: [host: "127.0.0.1", port: 99999],
+        runtime_client_target: [host: "127.0.0.1", port: 59_999],
         request_timeout_ms: 5_000,
         model_load_timeout_ms: 5_000
       },
@@ -112,12 +124,27 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     }
   end
 
-  defp configure_stub(status_response) do
+  defp configure_stub(overrides) do
     Registry.register(
       Orchard.Dispatch.ProbeCompatibilityTest.StubClient.registry_name(),
       :config,
-      %{status: status_response, capture_pid: self()}
+      Map.merge(default_stub_config(), overrides)
     )
+  end
+
+  defp default_stub_config do
+    %{
+      connect: {:ok, :stub_channel},
+      status: {:ok, old_agent_status()},
+      ensure_model_loaded:
+        {:ok,
+         %EnsureModelLoadedResponse{
+           already_loaded: false,
+           placement_state: :PLACEMENT_STATE_LOADED
+         }},
+      execute: :success,
+      capture_pid: self()
+    }
   end
 
   defp old_agent_status do
@@ -147,9 +174,32 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     }
   end
 
+  defp insert_target_node!(target, opts \\ []) do
+    now = DateTime.utc_now()
+    host = Keyword.fetch!(target, :host)
+    port = Keyword.fetch!(target, :port)
+
+    attrs = %{
+      id: Keyword.get(opts, :id, Ecto.UUID.generate()),
+      hostname: Keyword.get(opts, :hostname, "target.local"),
+      display_name:
+        Keyword.get(opts, :display_name, "target-node-#{System.unique_integer([:positive])}"),
+      advertise_addr: host,
+      rpc_port: port,
+      state: Keyword.get(opts, :state, :active),
+      health: Keyword.get(opts, :health, :healthy),
+      capabilities: %{},
+      last_heartbeat_at: Keyword.get(opts, :last_heartbeat_at, now)
+    }
+
+    %Node{}
+    |> Node.changeset(attrs)
+    |> Repo.insert!()
+  end
+
   describe "missing metadata from old node-agent" do
     test "dispatch succeeds and keeps original node_id", ctx do
-      configure_stub({:ok, old_agent_status()})
+      configure_stub(%{status: {:ok, old_agent_status()}})
 
       assert {:ok, _events} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
@@ -161,7 +211,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     end
 
     test "on_node_resolved callback is not invoked", ctx do
-      configure_stub({:ok, old_agent_status()})
+      configure_stub(%{status: {:ok, old_agent_status()}})
       callback = fn node_id -> send(self(), {:node_resolved, node_id}) end
 
       assert {:ok, _} =
@@ -176,7 +226,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
   describe "invalid UUID in metadata" do
     test "dispatch succeeds and keeps original node_id", ctx do
-      configure_stub({:ok, full_status("not-a-uuid")})
+      configure_stub(%{status: {:ok, full_status("not-a-uuid")}})
 
       assert {:ok, _} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
@@ -190,7 +240,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
   describe "valid UUID overrides scheduled node_id" do
     test "model_load receives discovered UUID", ctx do
-      configure_stub({:ok, full_status(@valid_uuid)})
+      configure_stub(%{status: {:ok, full_status(@valid_uuid)}})
 
       assert {:ok, _} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
@@ -202,7 +252,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     end
 
     test "on_node_resolved callback receives discovered UUID", ctx do
-      configure_stub({:ok, full_status(@other_uuid)})
+      configure_stub(%{status: {:ok, full_status(@other_uuid)}})
       callback = fn node_id -> send(self(), {:node_resolved, node_id}) end
 
       assert {:ok, _} =
@@ -216,8 +266,9 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   end
 
   describe "probe transport failure" do
-    test "dispatch succeeds and keeps original node_id", ctx do
-      configure_stub({:error, :node_timeout})
+    test "dispatch succeeds, keeps original node_id, and marks fresh node degraded", ctx do
+      insert_target_node!(ctx.schedule.runtime_client_target)
+      configure_stub(%{status: {:error, :node_timeout}})
 
       assert {:ok, _} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
@@ -226,12 +277,99 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
       assert_received {:ensure_model_loaded_called, req}
       assert req.node_id == "original-node-id"
+
+      marked =
+        Repo.get_by!(Node,
+          advertise_addr: Keyword.fetch!(ctx.schedule.runtime_client_target, :host),
+          rpc_port: Keyword.fetch!(ctx.schedule.runtime_client_target, :port)
+        )
+
+      assert marked.health == :degraded
+    end
+
+    test "marks stale node unreachable when transport failure crosses threshold", ctx do
+      stale_hb = DateTime.add(DateTime.utc_now(), -20, :second)
+      insert_target_node!(ctx.schedule.runtime_client_target, last_heartbeat_at: stale_hb)
+      configure_stub(%{status: {:error, :node_timeout}})
+
+      assert {:ok, _} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      marked =
+        Repo.get_by!(Node,
+          advertise_addr: Keyword.fetch!(ctx.schedule.runtime_client_target, :host),
+          rpc_port: Keyword.fetch!(ctx.schedule.runtime_client_target, :port)
+        )
+
+      assert marked.health == :unreachable
+    end
+  end
+
+  describe "connect and dispatch transport failures" do
+    test "connect failure marks target degraded and returns sanitized failure", ctx do
+      insert_target_node!(ctx.schedule.runtime_client_target)
+      configure_stub(%{connect: {:error, {:connect_failed, :econnrefused}}})
+
+      assert {:error, {:model_load_failed, failure}} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      assert failure.code == "node_unavailable"
+
+      marked =
+        Repo.get_by!(Node,
+          advertise_addr: Keyword.fetch!(ctx.schedule.runtime_client_target, :host),
+          rpc_port: Keyword.fetch!(ctx.schedule.runtime_client_target, :port)
+        )
+
+      assert marked.health == :degraded
+    end
+
+    test "ensure_model_loaded transport failure marks target degraded", ctx do
+      insert_target_node!(ctx.schedule.runtime_client_target)
+      configure_stub(%{ensure_model_loaded: {:error, :node_unavailable}})
+
+      assert {:error, {:model_load_failed, failure}} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      assert failure.code == "node_unavailable"
+
+      marked =
+        Repo.get_by!(Node,
+          advertise_addr: Keyword.fetch!(ctx.schedule.runtime_client_target, :host),
+          rpc_port: Keyword.fetch!(ctx.schedule.runtime_client_target, :port)
+        )
+
+      assert marked.health == :degraded
+    end
+
+    test "stream execution transport failure marks target degraded", ctx do
+      insert_target_node!(ctx.schedule.runtime_client_target)
+      configure_stub(%{execute: {:error, :node_timeout}})
+
+      assert {:error, {:dispatch_failed, :node_timeout}} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      marked =
+        Repo.get_by!(Node,
+          advertise_addr: Keyword.fetch!(ctx.schedule.runtime_client_target, :host),
+          rpc_port: Keyword.fetch!(ctx.schedule.runtime_client_target, :port)
+        )
+
+      assert marked.health == :degraded
     end
   end
 
   describe "repo-off during probe observation" do
     test "dispatch succeeds with discovered UUID even when persistence fails", ctx do
-      configure_stub({:ok, full_status(@valid_uuid)})
+      configure_stub(%{status: {:ok, full_status(@valid_uuid)}})
 
       repo_pid = Process.whereis(Orchard.Repo)
       assert is_pid(repo_pid)

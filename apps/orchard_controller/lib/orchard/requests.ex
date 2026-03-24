@@ -182,25 +182,32 @@ defmodule Orchard.Requests do
   end
 
   defp normalize_schedule(schedule) when is_map(schedule) do
-    schedule
-    |> Map.new(fn
-      {:runtime_client_target, target} when is_list(target) ->
-        {"runtime_client_target",
-         %{
-           "host" => to_string(Keyword.get(target, :host, "")),
-           "port" => Keyword.get(target, :port)
-         }}
+    normalize_schedule_value(schedule)
+  end
 
-      {:strategy, value} when is_atom(value) ->
-        {"strategy", Atom.to_string(value)}
-
-      {key, value} when is_atom(key) ->
-        {Atom.to_string(key), value}
-
-      {key, value} ->
-        {key, value}
+  defp normalize_schedule_value(value) when is_map(value) do
+    Map.new(value, fn {key, nested_value} ->
+      {normalize_schedule_key(key), normalize_schedule_value(nested_value)}
     end)
   end
+
+  defp normalize_schedule_value(value) when is_list(value) do
+    if value != [] and Keyword.keyword?(value) do
+      Map.new(value, fn {key, nested_value} ->
+        {normalize_schedule_key(key), normalize_schedule_value(nested_value)}
+      end)
+    else
+      Enum.map(value, &normalize_schedule_value/1)
+    end
+  end
+
+  defp normalize_schedule_value(nil), do: nil
+  defp normalize_schedule_value(value) when is_boolean(value), do: value
+  defp normalize_schedule_value(value) when is_atom(value), do: Atom.to_string(value)
+  defp normalize_schedule_value(value), do: value
+
+  defp normalize_schedule_key(key) when is_atom(key), do: Atom.to_string(key)
+  defp normalize_schedule_key(key), do: key
 
   defp lock_request(request_id) do
     request =

@@ -1,3 +1,28 @@
+defmodule Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference
+
+  @scheduled_node_id "00000000-0000-4000-a000-000000000099"
+
+  def scheduled_node_id, do: @scheduled_node_id
+
+  def schedule(%CanonicalRequest{} = request) do
+    {:ok,
+     %{
+       strategy: :multi_node,
+       request_id: request.public_id,
+       runtime_client_target: Inference.runtime_client_target(),
+       request_timeout_ms: Inference.request_timeout_ms(),
+       model_load_timeout_ms: Inference.model_load_timeout_ms(),
+       node_id: @scheduled_node_id,
+       candidate_count: 2,
+       selected_tier: :loaded
+     }}
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest do
   use Orchard.DataCase, async: false
 
@@ -15,8 +40,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   setup do
     ModelManager.reset()
     bundle = stage_test_bundle!()
+    previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
     on_exit(fn ->
+      Application.put_env(:orchard_controller, :inference, previous_inference)
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
       File.rm_rf(bundle.source_path)
       File.rm_rf(Path.join(Node.models_root(), ".staging"))
@@ -37,6 +64,44 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.endpoint == :responses
     assert request.canonical_request["endpoint"] == "responses"
+  end
+
+  test "execute/3 persists multi-node schedule metadata and scheduler-selected node attribution",
+       %{bundle: bundle} do
+    put_multi_node_scheduler_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-multi-node")
+    canonical = canonical_request("request-orchestrator-multi-node", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+
+    assert request.scheduler_decision["strategy"] == "multi_node"
+    assert request.scheduler_decision["candidate_count"] == 2
+    assert request.scheduler_decision["selected_tier"] == "loaded"
+    assert request.scheduler_decision["node_id"] == scheduled_node_id()
+  end
+
+  test "execute/3 overwrites scheduler-selected node attribution with runtime-resolved node id",
+       %{bundle: bundle} do
+    put_multi_node_scheduler_config()
+
+    runtime_node_id = Orchard.Node.node_id()
+    refute runtime_node_id == scheduled_node_id()
+
+    model = create_active_model!(bundle, "request-orchestrator-multi-node")
+    canonical = canonical_request("request-orchestrator-multi-node", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+
+    assert request.scheduler_decision["node_id"] == scheduled_node_id()
+    assert request.node_id == runtime_node_id
+    refute request.node_id == request.scheduler_decision["node_id"]
   end
 
   test "execute/3 persists success payload attrs for completed non-stream requests", %{
@@ -167,6 +232,24 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert length(Orchard.Repo.all(Orchard.Requests.Request)) == 1
   end
 
+  defp put_multi_node_scheduler_config do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.merge(
+        runtime_client_targets: [
+          [host: "127.0.0.1", port: 50_071],
+          [host: "127.0.0.2", port: 50_072]
+        ],
+        scheduler_impl: Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp scheduled_node_id do
+    Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler.scheduled_node_id()
+  end
+
   defp canonical_request(model_id, overrides) do
     endpoint = Keyword.get(overrides, :endpoint, :chat_completions)
     stream? = Keyword.get(overrides, :stream?, false)
@@ -235,6 +318,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     model_ids = [
       {"request-orchestrator-endpoint", "v1"},
+      {"request-orchestrator-multi-node", "v1"},
       {"request-orchestrator-success", "v1"},
       {"request-orchestrator-stream", "v1"},
       {"request-orchestrator-serialization", "v1"},

@@ -54,7 +54,7 @@ defmodule Orchard.Scheduler.MultiNode do
     if length(targets) <= 1 do
       fallback_schedule(request, targets)
     else
-      schedule_multi(request, dedup_targets(targets), opts)
+      schedule_multi(request, targets, opts)
     end
   end
 
@@ -196,10 +196,5 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp fallback_schedule(request, _targets) do
     SingleNode.default_schedule(request)
-  end
-
-  defp dedup_targets(targets) do
-    targets
-    |> Enum.uniq_by(fn t -> {Keyword.get(t, :host), Keyword.get(t, :port)} end)
   end
 end

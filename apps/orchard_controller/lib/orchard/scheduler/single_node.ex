@@ -4,11 +4,13 @@ defmodule Orchard.Scheduler.SingleNode do
   """
 
   alias Orchard.CanonicalRequest
+  alias Orchard.Inference
 
   @callback schedule(CanonicalRequest.t()) :: {:ok, map()} | {:error, term()}
 
   def schedule(%CanonicalRequest{} = request) do
-    case Orchard.Inference.scheduler() do
+    case Inference.configured_scheduler_impl() do
+      nil -> default_schedule(request)
       __MODULE__ -> default_schedule(request)
       module -> module.schedule(request)
     end

@@ -106,6 +106,11 @@ defmodule Orchard.Nodes do
     _ -> []
   end
 
+  @spec unreachable_threshold_ms() :: pos_integer()
+  def unreachable_threshold_ms do
+    Orchard.Inference.node_unreachable_threshold_ms()
+  end
+
   @doc """
   Fetches a node by ID. Raises on not found.
   """
@@ -343,34 +348,60 @@ defmodule Orchard.Nodes do
   # -- Mark Unreachable --
 
   defp execute_mark_unreachable(host, port, observed_at) do
-    node =
-      Node
-      |> where([n], n.advertise_addr == ^host and n.rpc_port == ^port)
-      |> Repo.one()
+    Repo.transaction(fn ->
+      node =
+        Node
+        |> where([n], n.advertise_addr == ^host and n.rpc_port == ^port)
+        |> lock("FOR UPDATE")
+        |> Repo.one()
 
-    case node do
-      nil ->
-        :noop
+      case node do
+        nil ->
+          Repo.rollback(:noop)
 
-      %Node{last_heartbeat_at: last_hb} when last_hb != nil ->
-        if DateTime.compare(last_hb, observed_at) == :lt do
-          do_mark_unreachable(node)
-        else
-          :noop
-        end
+        %Node{} ->
+          case resolve_transport_failure_health(node, observed_at) do
+            :noop ->
+              Repo.rollback(:noop)
 
-      %Node{} ->
-        do_mark_unreachable(node)
+            health ->
+              node
+              |> Ecto.Changeset.change(health: health)
+              |> Repo.update!()
+          end
+      end
+    end)
+    |> case do
+      {:ok, node} -> {:ok, node}
+      {:error, :noop} -> :noop
     end
   end
 
-  defp do_mark_unreachable(node) do
-    updated =
-      node
-      |> Ecto.Changeset.change(health: :unreachable)
-      |> Repo.update!()
+  defp resolve_transport_failure_health(%Node{last_heartbeat_at: nil}, _observed_at),
+    do: :unreachable
 
-    {:ok, updated}
+  defp resolve_transport_failure_health(
+         %Node{health: health, last_heartbeat_at: last_hb},
+         observed_at
+       )
+       when is_struct(observed_at, DateTime) do
+    cond do
+      DateTime.compare(last_hb, observed_at) != :lt ->
+        :noop
+
+      health == :unhealthy ->
+        :unhealthy
+
+      DateTime.compare(
+        last_hb,
+        DateTime.add(observed_at, -unreachable_threshold_ms(), :millisecond)
+      ) ==
+          :lt ->
+        :unreachable
+
+      true ->
+        :degraded
+    end
   end
 
   # -- Helpers --

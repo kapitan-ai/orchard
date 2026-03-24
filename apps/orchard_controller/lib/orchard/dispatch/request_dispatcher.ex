@@ -91,11 +91,18 @@ defmodule Orchard.Dispatch.RequestDispatcher do
               on_node_resolved
             )
 
-          case do_ensure_model_loaded(client, channel, model_load_request, model_load_timeout) do
+          case do_ensure_model_loaded(
+                 client,
+                 channel,
+                 target,
+                 model_load_request,
+                 model_load_timeout
+               ) do
             :ok ->
               do_execute_and_stream(
                 client,
                 channel,
+                target,
                 execute_request,
                 request_id,
                 timeout_ms,
@@ -110,7 +117,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
           client.disconnect(channel)
         end
 
-      {:error, {:connect_failed, _reason}} ->
+      {:error, {:connect_failed, _reason} = reason} ->
+        mark_transport_failure(target, reason)
         {:error, {:model_load_failed, ModelLoadFailure.from_transport_reason(:node_unavailable)}}
     end
   end
@@ -142,8 +150,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             model_load_request
         end
 
-      {:error, _reason} ->
-        # Probe failure is non-fatal
+      {:error, reason} ->
+        # Probe failure is non-fatal, but we still record transport reachability
+        # best-effort for node health.
+        mark_transport_failure(target, reason)
         model_load_request
     end
   rescue
@@ -170,7 +180,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       Logger.warning("on_node_resolved callback failed: #{inspect(error)}")
   end
 
-  defp do_ensure_model_loaded(client, channel, request, timeout_ms) do
+  defp do_ensure_model_loaded(client, channel, target, request, timeout_ms) do
     case client.ensure_model_loaded(channel, request, timeout: timeout_ms) do
       {:ok, %EnsureModelLoadedResponse{} = response} ->
         case normalize_placement_state(response.placement_state) do
@@ -188,6 +198,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         end
 
       {:error, reason} ->
+        mark_transport_failure(target, reason)
         {:error, ModelLoadFailure.from_transport_reason(reason)}
     end
   end
@@ -201,6 +212,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp do_execute_and_stream(
          client,
          channel,
+         target,
          request,
          request_id,
          timeout_ms,
@@ -216,6 +228,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       receive_loop(
         client,
         channel,
+        target,
         request_id,
         task_ref,
         timer_ref,
@@ -231,6 +244,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp receive_loop(
          client,
          channel,
+         target,
          request_id,
          task_ref,
          timer_ref,
@@ -262,6 +276,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             receive_loop(
               client,
               channel,
+              target,
               request_id,
               task_ref,
               timer_ref,
@@ -275,6 +290,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         {:ok, Enum.reverse(events)}
 
       {:dispatch_done, ^task_ref, {:error, reason}} ->
+        mark_transport_failure(target, reason)
+
         if events == [] do
           {:error, {:dispatch_failed, reason}}
         else
@@ -353,6 +370,22 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         {:ok, Enum.reverse([timeout_event | events])}
     end
   end
+
+  defp mark_transport_failure(target, reason) do
+    if transport_failure_reason?(reason) do
+      Orchard.Nodes.mark_target_unreachable(target, DateTime.utc_now())
+    end
+  rescue
+    error ->
+      Logger.warning(
+        "Failed to mark target transport failure for #{inspect(target)}: #{inspect(error)}"
+      )
+  end
+
+  defp transport_failure_reason?({:connect_failed, _reason}), do: true
+  defp transport_failure_reason?(:node_unavailable), do: true
+  defp transport_failure_reason?(:node_timeout), do: true
+  defp transport_failure_reason?(_reason), do: false
 
   defp emit_event(_event, _request_id, nil), do: :ok
 

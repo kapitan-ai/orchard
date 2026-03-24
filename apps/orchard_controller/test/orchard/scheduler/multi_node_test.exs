@@ -46,7 +46,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     })
   end
 
-  defp insert_node!(overrides \\ %{}) do
+  defp insert_node!(overrides) do
     unique = System.unique_integer([:positive])
 
     attrs =
@@ -70,7 +70,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     |> Repo.insert!()
   end
 
-  defp make_status(node_id, opts \\ []) do
+  defp make_status(node_id, opts) do
     loaded_models = Keyword.get(opts, :loaded_models, [])
     active_request_count = Keyword.get(opts, :active_request_count, 0)
     health = Keyword.get(opts, :health, nil)

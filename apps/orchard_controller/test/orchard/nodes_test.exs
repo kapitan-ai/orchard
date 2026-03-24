@@ -26,7 +26,7 @@ defmodule Orchard.NodesTest do
     )
   end
 
-  defp insert_node!(overrides \\ %{}) do
+  defp insert_node!(overrides) do
     attrs = node_attrs(overrides)
 
     %Node{}
@@ -36,7 +36,9 @@ defmodule Orchard.NodesTest do
 
   defp make_target(host, port), do: [host: host, port: port]
 
-  defp make_status_response(meta_overrides \\ %{}, health_overrides \\ nil) do
+  defp make_status_response(meta_overrides), do: make_status_response(meta_overrides, nil)
+
+  defp make_status_response(meta_overrides, health_overrides) do
     unique = System.unique_integer([:positive])
 
     metadata =
@@ -460,37 +462,95 @@ defmodule Orchard.NodesTest do
   # -- mark_target_unreachable/2 --
 
   describe "mark_target_unreachable/2" do
-    test "marks known node as unreachable" do
+    test "marks fresh transport failures as degraded" do
+      hb_time = DateTime.utc_now()
+
       node =
         insert_node!(%{
           advertise_addr: "10.0.0.50",
           rpc_port: 9444,
           health: :healthy,
-          last_heartbeat_at: DateTime.utc_now()
+          last_heartbeat_at: hb_time
         })
 
-      later = DateTime.add(DateTime.utc_now(), 60, :second)
-      assert {:ok, marked} = Nodes.mark_target_unreachable(make_target("10.0.0.50", 9444), later)
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert {:ok, marked} =
+               Nodes.mark_target_unreachable(make_target("10.0.0.50", 9444), observed_at)
+
       assert marked.id == node.id
+      assert marked.health == :degraded
+    end
+
+    test "marks stale transport failures as unreachable after threshold" do
+      hb_time = DateTime.utc_now()
+
+      insert_node!(%{
+        advertise_addr: "10.0.0.51",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: hb_time
+      })
+
+      observed_at = DateTime.add(hb_time, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, marked} =
+               Nodes.mark_target_unreachable(make_target("10.0.0.51", 9444), observed_at)
+
       assert marked.health == :unreachable
+    end
+
+    test "marks nodes with nil heartbeat as unreachable" do
+      insert_node!(%{
+        advertise_addr: "10.0.0.52",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: nil
+      })
+
+      assert {:ok, marked} =
+               Nodes.mark_target_unreachable(make_target("10.0.0.52", 9444), DateTime.utc_now())
+
+      assert marked.health == :unreachable
+    end
+
+    test "preserves unhealthy nodes on fresh transport failure" do
+      hb_time = DateTime.utc_now()
+
+      insert_node!(%{
+        advertise_addr: "10.0.0.53",
+        rpc_port: 9444,
+        health: :unhealthy,
+        last_heartbeat_at: hb_time
+      })
+
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert {:ok, marked} =
+               Nodes.mark_target_unreachable(make_target("10.0.0.53", 9444), observed_at)
+
+      assert marked.health == :unhealthy
     end
 
     test "preserves state and last_heartbeat_at" do
       hb_time = DateTime.utc_now()
 
-      node =
-        insert_node!(%{
-          advertise_addr: "10.0.0.51",
-          rpc_port: 9444,
-          state: :cordoned,
-          health: :healthy,
-          last_heartbeat_at: hb_time
-        })
+      insert_node!(%{
+        advertise_addr: "10.0.0.54",
+        rpc_port: 9444,
+        state: :cordoned,
+        health: :healthy,
+        last_heartbeat_at: hb_time
+      })
 
-      later = DateTime.add(hb_time, 60, :second)
-      assert {:ok, marked} = Nodes.mark_target_unreachable(make_target("10.0.0.51", 9444), later)
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert {:ok, marked} =
+               Nodes.mark_target_unreachable(make_target("10.0.0.54", 9444), observed_at)
+
       assert marked.state == :cordoned
       assert DateTime.compare(marked.last_heartbeat_at, hb_time) == :eq
+      assert marked.health == :degraded
     end
 
     test "returns noop for unknown target" do
@@ -498,18 +558,19 @@ defmodule Orchard.NodesTest do
                Nodes.mark_target_unreachable(make_target("10.0.0.99", 9444), DateTime.utc_now())
     end
 
-    test "stale failure is ignored" do
+    test "stale or equal failure observations are ignored" do
       now = DateTime.utc_now()
       earlier = DateTime.add(now, -60, :second)
 
       insert_node!(%{
-        advertise_addr: "10.0.0.52",
+        advertise_addr: "10.0.0.55",
         rpc_port: 9444,
         health: :healthy,
         last_heartbeat_at: now
       })
 
-      assert :noop = Nodes.mark_target_unreachable(make_target("10.0.0.52", 9444), earlier)
+      assert :noop = Nodes.mark_target_unreachable(make_target("10.0.0.55", 9444), earlier)
+      assert :noop = Nodes.mark_target_unreachable(make_target("10.0.0.55", 9444), now)
     end
   end
 

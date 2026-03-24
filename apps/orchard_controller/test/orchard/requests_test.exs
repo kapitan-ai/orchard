@@ -332,6 +332,58 @@ defmodule Orchard.RequestsTest do
       assert updated.node_id == node_id
     end
 
+    test "recursively normalizes multi-node metadata into JSON-safe values" do
+      request = create_request!(%{public_id: "req_schedule_nested"})
+      node_id = Ecto.UUID.generate()
+
+      schedule = %{
+        strategy: :multi_node,
+        request_id: "req_schedule_nested",
+        runtime_client_target: [host: "10.0.0.1", port: 9444],
+        request_timeout_ms: 5_000,
+        model_load_timeout_ms: 120_000,
+        node_id: node_id,
+        candidate_count: 2,
+        selected_tier: :loaded,
+        fallback_used?: false,
+        selection_context: %{
+          tiers: [:loaded, :healthy],
+          eligible?: true,
+          targets: [
+            [host: "10.0.0.1", port: 9444],
+            [host: "10.0.0.2", port: 9445]
+          ],
+          flags: [degraded_allowed?: true, preferred?: false]
+        }
+      }
+
+      assert {:ok, updated} = Requests.record_schedule(request, schedule)
+
+      assert updated.scheduler_decision == %{
+               "strategy" => "multi_node",
+               "request_id" => "req_schedule_nested",
+               "runtime_client_target" => %{"host" => "10.0.0.1", "port" => 9444},
+               "request_timeout_ms" => 5_000,
+               "model_load_timeout_ms" => 120_000,
+               "node_id" => node_id,
+               "candidate_count" => 2,
+               "selected_tier" => "loaded",
+               "fallback_used?" => false,
+               "selection_context" => %{
+                 "tiers" => ["loaded", "healthy"],
+                 "eligible?" => true,
+                 "targets" => [
+                   %{"host" => "10.0.0.1", "port" => 9444},
+                   %{"host" => "10.0.0.2", "port" => 9445}
+                 ],
+                 "flags" => %{
+                   "degraded_allowed?" => true,
+                   "preferred?" => false
+                 }
+               }
+             }
+    end
+
     test "preserves nil node_id when schedule has no node" do
       request = create_request!(%{public_id: "req_schedule_3"})
 

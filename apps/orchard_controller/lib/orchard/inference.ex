@@ -30,7 +30,11 @@ defmodule Orchard.Inference do
   end
 
   def scheduler do
-    config()[:scheduler_impl] || Orchard.Scheduler.SingleNode
+    configured_scheduler_impl() || auto_scheduler()
+  end
+
+  def configured_scheduler_impl do
+    config()[:scheduler_impl]
   end
 
   def request_supervisor, do: RequestsSupervisor
@@ -42,7 +46,7 @@ defmodule Orchard.Inference do
 
   def runtime_client_targets do
     case config()[:runtime_client_targets] do
-      targets when is_list(targets) and targets != [] -> targets
+      targets when is_list(targets) and targets != [] -> dedup_targets(targets)
       _ -> [runtime_client_target()]
     end
   end
@@ -50,4 +54,18 @@ defmodule Orchard.Inference do
   def request_timeout_ms, do: config()[:request_timeout_ms]
   def model_load_timeout_ms, do: config()[:model_load_timeout_ms] || 120_000
   def node_freshness_threshold_ms, do: config()[:node_freshness_threshold_ms] || 30_000
+  def node_unreachable_threshold_ms, do: config()[:node_unreachable_threshold_ms] || 15_000
+
+  defp auto_scheduler do
+    case runtime_client_targets() do
+      targets when length(targets) > 1 -> Orchard.Scheduler.MultiNode
+      _ -> Orchard.Scheduler.SingleNode
+    end
+  end
+
+  defp dedup_targets(targets) do
+    Enum.uniq_by(targets, fn target ->
+      {Keyword.get(target, :host), Keyword.get(target, :port)}
+    end)
+  end
 end
