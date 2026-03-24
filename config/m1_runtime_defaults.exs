@@ -30,8 +30,10 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       tokenizer_executable: "orchard-tokenizer",
       artifacts_root: Path.join(root, "bundles"),
       runtime_client_target: [host: @default_runtime_host, port: @default_runtime_port],
+      runtime_client_targets: [],
       request_timeout_ms: @default_request_timeout_ms,
-      model_load_timeout_ms: @default_model_load_timeout_ms
+      model_load_timeout_ms: @default_model_load_timeout_ms,
+      node_freshness_threshold_ms: 30_000
     ]
   end
 

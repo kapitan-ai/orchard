@@ -77,6 +77,36 @@ defmodule Orchard.Nodes do
   end
 
   @doc """
+  Returns nodes eligible for multi-node scheduling.
+
+  Eligible nodes must be:
+  - state: `:active`
+  - health: `:healthy` or `:degraded`
+  - `last_heartbeat_at` within the freshness threshold
+
+  Returns `[]` when the repo is unavailable.
+  """
+  @spec schedulable_nodes() :: [Node.t()]
+  def schedulable_nodes do
+    if repo_available?() do
+      threshold_ms = Orchard.Inference.node_freshness_threshold_ms()
+      cutoff = DateTime.add(DateTime.utc_now(), -threshold_ms, :millisecond)
+
+      Node
+      |> where([n], n.state == :active)
+      |> where([n], n.health in [:healthy, :degraded])
+      |> where([n], not is_nil(n.last_heartbeat_at))
+      |> where([n], n.last_heartbeat_at >= ^cutoff)
+      |> order_by([n], asc: n.id)
+      |> Repo.all()
+    else
+      []
+    end
+  rescue
+    _ -> []
+  end
+
+  @doc """
   Fetches a node by ID. Raises on not found.
   """
   @spec get_node!(Ecto.UUID.t()) :: Node.t()

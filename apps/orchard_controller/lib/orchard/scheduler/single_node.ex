@@ -16,7 +16,13 @@ defmodule Orchard.Scheduler.SingleNode do
 
   def target, do: Orchard.Inference.runtime_client_target()
 
-  defp default_schedule(%CanonicalRequest{} = request) do
+  @doc """
+  Build a single-node schedule map directly, without delegation.
+
+  Public so that `MultiNode` can call this as a recursion-safe fallback
+  when cluster scheduling is unavailable.
+  """
+  def default_schedule(%CanonicalRequest{} = request) do
     target = target()
     node_id = resolve_node_id(target)
 

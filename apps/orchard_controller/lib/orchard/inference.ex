@@ -39,6 +39,15 @@ defmodule Orchard.Inference do
   def tokenizer_mode, do: config()[:tokenizer_mode]
   def tokenizer_executable, do: config()[:tokenizer_executable]
   def runtime_client_target, do: config()[:runtime_client_target]
+
+  def runtime_client_targets do
+    case config()[:runtime_client_targets] do
+      targets when is_list(targets) and targets != [] -> targets
+      _ -> [runtime_client_target()]
+    end
+  end
+
   def request_timeout_ms, do: config()[:request_timeout_ms]
   def model_load_timeout_ms, do: config()[:model_load_timeout_ms] || 120_000
+  def node_freshness_threshold_ms, do: config()[:node_freshness_threshold_ms] || 30_000
 end

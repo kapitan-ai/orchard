@@ -40,6 +40,8 @@ defmodule Orchard.NodesRepoOffTest do
                  [host: "10.0.0.1", port: 9444],
                  DateTime.utc_now()
                )
+
+      assert Nodes.schedulable_nodes() == []
     end)
   end
 end

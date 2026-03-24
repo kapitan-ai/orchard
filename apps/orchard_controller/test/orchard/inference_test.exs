@@ -80,6 +80,39 @@ defmodule Orchard.InferenceTest do
              SingleNode.schedule(request)
   end
 
+  describe "runtime_client_targets/0" do
+    test "returns configured plural targets when set" do
+      targets = [
+        [host: "10.0.0.1", port: 50_061],
+        [host: "10.0.0.2", port: 50_062]
+      ]
+
+      put_inference(runtime_client_targets: targets)
+      assert Inference.runtime_client_targets() == targets
+    end
+
+    test "falls back to singular target wrapped in list when plural is empty" do
+      put_inference(runtime_client_targets: [])
+      assert Inference.runtime_client_targets() == [Inference.runtime_client_target()]
+    end
+
+    test "falls back to singular target wrapped in list when plural is nil" do
+      put_inference(runtime_client_targets: nil)
+      assert Inference.runtime_client_targets() == [Inference.runtime_client_target()]
+    end
+
+    test "node_freshness_threshold_ms returns configured value" do
+      assert Inference.node_freshness_threshold_ms() == 30_000
+    end
+
+    test "node_freshness_threshold_ms returns default when not configured" do
+      config = Application.fetch_env!(:orchard_controller, :inference)
+      clean = Keyword.delete(config, :node_freshness_threshold_ms)
+      Application.put_env(:orchard_controller, :inference, clean)
+      assert Inference.node_freshness_threshold_ms() == 30_000
+    end
+  end
+
   describe "scheduler repo-off fallback" do
     test "SingleNode.schedule/1 returns node_id: nil when Repo is unavailable" do
       request = canonical_request()
@@ -93,6 +126,11 @@ defmodule Orchard.InferenceTest do
         assert schedule.node_id == nil
       end)
     end
+  end
+
+  defp put_inference(overrides) do
+    config = Application.fetch_env!(:orchard_controller, :inference)
+    Application.put_env(:orchard_controller, :inference, Keyword.merge(config, overrides))
   end
 
   defp canonical_request do

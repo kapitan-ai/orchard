@@ -513,5 +513,108 @@ defmodule Orchard.NodesTest do
     end
   end
 
-  # -- Repo-off semantics --
+  # -- Schedulable nodes --
+
+  describe "schedulable_nodes/0" do
+    test "returns active, healthy nodes within freshness threshold" do
+      now = DateTime.utc_now()
+
+      n1 =
+        insert_node!(%{
+          state: :active,
+          health: :healthy,
+          last_heartbeat_at: DateTime.add(now, -5, :second)
+        })
+
+      _n2 =
+        insert_node!(%{
+          state: :active,
+          health: :healthy,
+          last_heartbeat_at: DateTime.add(now, -60, :second)
+        })
+
+      result = Nodes.schedulable_nodes()
+      assert length(result) == 1
+      assert hd(result).id == n1.id
+    end
+
+    test "includes degraded nodes" do
+      now = DateTime.utc_now()
+
+      n1 =
+        insert_node!(%{
+          state: :active,
+          health: :degraded,
+          last_heartbeat_at: DateTime.add(now, -5, :second)
+        })
+
+      result = Nodes.schedulable_nodes()
+      assert length(result) == 1
+      assert hd(result).id == n1.id
+    end
+
+    test "excludes non-active states" do
+      now = DateTime.utc_now()
+
+      insert_node!(%{
+        state: :registered,
+        health: :healthy,
+        last_heartbeat_at: DateTime.add(now, -5, :second)
+      })
+
+      assert Nodes.schedulable_nodes() == []
+    end
+
+    test "excludes unhealthy and unreachable" do
+      now = DateTime.utc_now()
+
+      insert_node!(%{
+        state: :active,
+        health: :unhealthy,
+        last_heartbeat_at: DateTime.add(now, -5, :second)
+      })
+
+      insert_node!(%{
+        state: :active,
+        health: :unreachable,
+        last_heartbeat_at: DateTime.add(now, -5, :second)
+      })
+
+      assert Nodes.schedulable_nodes() == []
+    end
+
+    test "excludes nodes with nil last_heartbeat_at" do
+      insert_node!(%{
+        state: :active,
+        health: :healthy,
+        last_heartbeat_at: nil
+      })
+
+      assert Nodes.schedulable_nodes() == []
+    end
+
+    test "returns ordered by id" do
+      now = DateTime.utc_now()
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{
+        id: id_b,
+        state: :active,
+        health: :healthy,
+        last_heartbeat_at: DateTime.add(now, -1, :second)
+      })
+
+      insert_node!(%{
+        id: id_a,
+        state: :active,
+        health: :healthy,
+        last_heartbeat_at: DateTime.add(now, -1, :second)
+      })
+
+      result = Nodes.schedulable_nodes()
+      assert length(result) == 2
+      assert Enum.map(result, & &1.id) == [id_a, id_b]
+    end
+  end
 end
