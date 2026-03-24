@@ -80,11 +80,19 @@ defmodule OrchardConsole.OverviewLive do
           </p>
 
           <div class="flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3 dark:border-slate-700/50">
-            <div id="overview-primary-model" class="flex items-center gap-2">
-              <span class="text-xs text-slate-500 dark:text-slate-400">Loaded model:</span>
-              <span class="text-sm font-mono text-slate-900 dark:text-slate-100">
-                {primary_loaded_model(@runtime)}
-              </span>
+            <div class="flex flex-wrap items-center gap-4">
+              <div id="overview-primary-model" class="flex items-center gap-2">
+                <span class="text-xs text-slate-500 dark:text-slate-400">Loaded model:</span>
+                <span class="text-sm font-mono text-slate-900 dark:text-slate-100">
+                  {primary_loaded_model(@runtime)}
+                </span>
+              </div>
+              <div id="overview-runtime-node" class="flex items-center gap-2">
+                <span class="text-xs text-slate-500 dark:text-slate-400">Connected node:</span>
+                <span class="text-sm font-mono text-slate-900 dark:text-slate-100">
+                  {runtime_node_label(@runtime)}
+                </span>
+              </div>
             </div>
             <div class="ml-auto flex items-center gap-2">
               <.link
@@ -93,6 +101,13 @@ defmodule OrchardConsole.OverviewLive do
                 class="inline-flex items-center gap-1 rounded-md bg-gold/10 px-3 py-1.5 text-xs font-medium text-gold-700 ring-1 ring-gold/30 hover:bg-gold/20 dark:text-gold-300 dark:ring-gold/40 dark:hover:bg-gold/30"
               >
                 Open Playground
+              </.link>
+              <.link
+                id="overview-open-nodes"
+                navigate={~p"/console/nodes"}
+                class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                Open Nodes
               </.link>
               <.link
                 id="overview-open-models"
@@ -249,6 +264,8 @@ defmodule OrchardConsole.OverviewLive do
         worker_state: :unknown,
         loaded_models: [],
         active_request_count: 0,
+        node_metadata: nil,
+        runtime_health: nil,
         message: nil
       },
       model_catalog: %{
@@ -309,7 +326,10 @@ defmodule OrchardConsole.OverviewLive do
   defp fetch_runtime do
     case runtime_impl().snapshot() do
       {:ok, snapshot} ->
-        Map.merge(snapshot, %{status: :ok, message: nil})
+        snapshot
+        |> Map.put_new(:node_metadata, nil)
+        |> Map.put_new(:runtime_health, nil)
+        |> Map.merge(%{status: :ok, message: nil})
 
       {:error, error} ->
         %{
@@ -317,6 +337,8 @@ defmodule OrchardConsole.OverviewLive do
           worker_state: :unknown,
           loaded_models: [],
           active_request_count: 0,
+          node_metadata: nil,
+          runtime_health: nil,
           message: error.message
         }
     end
@@ -327,6 +349,8 @@ defmodule OrchardConsole.OverviewLive do
         worker_state: :unknown,
         loaded_models: [],
         active_request_count: 0,
+        node_metadata: nil,
+        runtime_health: nil,
         message: "Runtime snapshot unavailable."
       }
   end
@@ -432,6 +456,19 @@ defmodule OrchardConsole.OverviewLive do
   # ===========================================================================
   # Hero helpers
   # ===========================================================================
+
+  # -- Node display helpers --
+
+  defp runtime_node_label(%{status: :ok, node_metadata: %{display_name: name}})
+       when is_binary(name) and name != "",
+       do: name
+
+  defp runtime_node_label(%{status: :ok, node_metadata: %{node_id: id}})
+       when is_binary(id) and id != "",
+       do: id
+
+  defp runtime_node_label(%{status: :ok}), do: "Metadata unavailable"
+  defp runtime_node_label(_), do: "Runtime unavailable"
 
   defp primary_loaded_model(%{status: :ok, loaded_models: [first | _]}),
     do: format_loaded_model(first)

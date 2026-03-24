@@ -16,10 +16,29 @@ defmodule OrchardConsole.Runtime do
 
   @type loaded_model :: %{model_id: String.t(), version: String.t()}
 
+  @type node_metadata :: %{
+          node_id: String.t() | nil,
+          display_name: String.t() | nil,
+          hostname: String.t() | nil,
+          listen_host: String.t() | nil,
+          listen_port: pos_integer() | nil,
+          agent_version: String.t() | nil,
+          worker_backend: String.t() | nil
+        }
+
+  @type runtime_health :: %{
+          ready: boolean(),
+          health_code: String.t() | nil,
+          health_message: String.t() | nil,
+          affected_model: String.t() | nil
+        }
+
   @type snapshot :: %{
           worker_state: worker_state(),
           loaded_models: [loaded_model()],
-          active_request_count: non_neg_integer()
+          active_request_count: non_neg_integer(),
+          node_metadata: node_metadata() | nil,
+          runtime_health: runtime_health() | nil
         }
 
   @type error_snapshot :: %{
@@ -28,7 +47,9 @@ defmodule OrchardConsole.Runtime do
           message: String.t(),
           worker_state: :unknown,
           loaded_models: [],
-          active_request_count: 0
+          active_request_count: 0,
+          node_metadata: nil,
+          runtime_health: nil
         }
 
   @doc """
@@ -51,17 +72,19 @@ defmodule OrchardConsole.Runtime do
   Options:
   - `:target` — override runtime target (default: from inference config)
   - `:observed_at` — override observation timestamp (default: `DateTime.utc_now()`)
+  - `:timeout` — status RPC timeout in milliseconds (default: client default)
   """
   @spec snapshot(keyword()) :: {:ok, snapshot()} | {:error, error_snapshot()}
   def snapshot(opts) do
     client = runtime_client_impl()
     target = Keyword.get(opts, :target, Inference.runtime_client_target())
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
+    status_opts = if timeout = opts[:timeout], do: [timeout: timeout], else: []
 
     case client.connect(target) do
       {:ok, channel} ->
         try do
-          case client.status(channel) do
+          case client.status(channel, status_opts) do
             {:ok, response} ->
               observe_status_best_effort(target, response, observed_at)
               {:ok, normalize_response(response)}
@@ -100,7 +123,9 @@ defmodule OrchardConsole.Runtime do
     %{
       worker_state: normalize_worker_state(response.worker_state),
       loaded_models: normalize_loaded_models(response.loaded_models),
-      active_request_count: normalize_count(response.active_request_count)
+      active_request_count: normalize_count(response.active_request_count),
+      node_metadata: normalize_node_metadata(response),
+      runtime_health: normalize_runtime_health(response)
     }
   end
 
@@ -137,6 +162,61 @@ defmodule OrchardConsole.Runtime do
   defp normalize_count(_), do: 0
 
   # ---------------------------------------------------------------------------
+  # Node metadata / runtime health normalization
+  # ---------------------------------------------------------------------------
+
+  defp normalize_node_metadata(%{node_metadata: nil}), do: nil
+
+  defp normalize_node_metadata(%{node_metadata: meta}) when is_map(meta),
+    do: do_normalize_metadata(meta)
+
+  defp normalize_node_metadata(_), do: nil
+
+  defp do_normalize_metadata(meta) do
+    %{
+      node_id: non_empty_string(Map.get(meta, :node_id)),
+      display_name: non_empty_string(Map.get(meta, :display_name)),
+      hostname: non_empty_string(Map.get(meta, :hostname)),
+      listen_host: non_empty_string(Map.get(meta, :listen_host)),
+      listen_port: normalize_port(Map.get(meta, :listen_port)),
+      agent_version: non_empty_string(Map.get(meta, :agent_version)),
+      worker_backend: non_empty_string(Map.get(meta, :worker_backend))
+    }
+  end
+
+  defp normalize_runtime_health(%{runtime_health: nil}), do: nil
+
+  defp normalize_runtime_health(%{runtime_health: health}) when is_map(health),
+    do: do_normalize_health(health)
+
+  defp normalize_runtime_health(_), do: nil
+
+  defp do_normalize_health(health) do
+    %{
+      ready: Map.get(health, :ready, false) == true,
+      health_code: non_empty_string(Map.get(health, :health_code)),
+      health_message: non_empty_string(Map.get(health, :health_message)),
+      affected_model: normalize_affected_model(Map.get(health, :affected_model))
+    }
+  end
+
+  # affected_model is a ModelRef (model_id + version), not a plain string.
+  # Normalize to display string "model_id@version" for UI/API consumption.
+  defp normalize_affected_model(nil), do: nil
+  defp normalize_affected_model(%{model_id: id, version: vsn})
+       when is_binary(id) and id != "" and is_binary(vsn) and vsn != "",
+       do: "#{id}@#{vsn}"
+  defp normalize_affected_model(%{model_id: id}) when is_binary(id) and id != "", do: id
+  defp normalize_affected_model(value) when is_binary(value) and value != "", do: value
+  defp normalize_affected_model(_), do: nil
+
+  defp non_empty_string(value) when is_binary(value) and value != "", do: value
+  defp non_empty_string(_), do: nil
+
+  defp normalize_port(port) when is_integer(port) and port in 1..65_535, do: port
+  defp normalize_port(_), do: nil
+
+  # ---------------------------------------------------------------------------
   # Error snapshots
   # ---------------------------------------------------------------------------
 
@@ -162,7 +242,9 @@ defmodule OrchardConsole.Runtime do
       message: message,
       worker_state: :unknown,
       loaded_models: [],
-      active_request_count: 0
+      active_request_count: 0,
+      node_metadata: nil,
+      runtime_health: nil
     }
   end
 

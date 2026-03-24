@@ -97,6 +97,195 @@ defmodule OrchardConsole.RuntimeTest do
       refute_received {:disconnect_called, _}
     end
 
+    test "success with metadata and health normalizes both maps" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0,
+             node_metadata: %{
+               node_id: "550e8400-e29b-41d4-a716-446655440000",
+               display_name: "mawarduri",
+               hostname: "mawarduri.local",
+               listen_host: "127.0.0.1",
+               listen_port: 50071,
+               agent_version: "0.1.0",
+               worker_backend: "mlx"
+             },
+             runtime_health: %{
+               ready: true,
+               health_code: nil,
+               health_message: nil,
+               affected_model: nil
+             }
+           }},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+
+      assert snapshot.node_metadata == %{
+               node_id: "550e8400-e29b-41d4-a716-446655440000",
+               display_name: "mawarduri",
+               hostname: "mawarduri.local",
+               listen_host: "127.0.0.1",
+               listen_port: 50071,
+               agent_version: "0.1.0",
+               worker_backend: "mlx"
+             }
+
+      assert snapshot.runtime_health == %{
+               ready: true,
+               health_code: nil,
+               health_message: nil,
+               affected_model: nil
+             }
+    end
+
+    test "absent node_metadata and runtime_health return nil" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0,
+             node_metadata: nil,
+             runtime_health: nil
+           }},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.node_metadata == nil
+      assert snapshot.runtime_health == nil
+    end
+
+    test "absent submessage fields (no keys at all) return nil" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0
+           }},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.node_metadata == nil
+      assert snapshot.runtime_health == nil
+    end
+
+    test "error snapshots include nil node_metadata and runtime_health" do
+      stub_client(
+        connect: {:error, {:connect_failed, :econnrefused}},
+        status: nil,
+        disconnect: nil
+      )
+
+      assert {:error, error} = Runtime.snapshot()
+      assert error.node_metadata == nil
+      assert error.runtime_health == nil
+    end
+
+    test "normalizes affected_model from ModelRef to display string" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0,
+             node_metadata: nil,
+             runtime_health: %{
+               ready: false,
+               health_code: "memory_pressure",
+               health_message: "GPU memory exhausted",
+               affected_model: %{model_id: "test-model", version: "v1"}
+             }
+           }},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.runtime_health.affected_model == "test-model@v1"
+      assert snapshot.runtime_health.health_code == "memory_pressure"
+      assert snapshot.runtime_health.ready == false
+    end
+
+    test "normalizes affected_model with model_id only" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0,
+             node_metadata: nil,
+             runtime_health: %{
+               ready: false,
+               health_code: nil,
+               health_message: nil,
+               affected_model: %{model_id: "test-model", version: ""}
+             }
+           }},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.runtime_health.affected_model == "test-model"
+    end
+
+    test "normalizes blank metadata strings to nil" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0,
+             node_metadata: %{
+               node_id: "",
+               display_name: "",
+               hostname: "",
+               listen_host: "",
+               listen_port: 0,
+               agent_version: "",
+               worker_backend: ""
+             },
+             runtime_health: %{
+               ready: false,
+               health_code: "",
+               health_message: "",
+               affected_model: ""
+             }
+           }},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+
+      meta = snapshot.node_metadata
+      assert meta.node_id == nil
+      assert meta.display_name == nil
+      assert meta.listen_port == nil
+
+      health = snapshot.runtime_health
+      assert health.ready == false
+      assert health.health_code == nil
+      assert health.health_message == nil
+    end
+
     test "successful status triggers observe_status call" do
       stub_client(
         connect: {:ok, :ch},
@@ -138,6 +327,25 @@ defmodule OrchardConsole.RuntimeTest do
       refute_received {:observe_status_called, _, _, _}
     end
 
+    test "timeout option is forwarded to status call" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0,
+             node_metadata: nil,
+             runtime_health: nil
+           }},
+        disconnect: :ok
+      )
+
+      assert {:ok, _snapshot} = Runtime.snapshot(timeout: 1_000)
+      assert_received {:status_called_with_opts, [timeout: 1_000]}
+    end
+
     test "rpc error is sanitized and does not leak backend message" do
       stub_client(
         connect: {:ok, :ch},
@@ -161,7 +369,8 @@ defmodule OrchardConsole.RuntimeTest do
       get_stub(:connect)
     end
 
-    def status(_channel, _opts \\ []) do
+    def status(_channel, opts \\ []) do
+      if opts != [], do: send(get_stub_pid(), {:status_called_with_opts, opts})
       get_stub(:status)
     end
 

@@ -385,6 +385,54 @@ defmodule OrchardConsole.AuthTest do
   end
 
   describe "/console/tenants auth" do
+    test "returns 404 for /console/nodes when console is disabled", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: false,
+        auth: :none,
+        username: nil,
+        password: nil
+      )
+
+      conn = get(conn, "/console/nodes")
+      assert conn.status == 404
+    end
+
+    test "returns 401 for /console/nodes in basic auth without credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn = get(conn, "/console/nodes")
+      assert conn.status == 401
+    end
+
+    test "redirects on first auth for /console/nodes", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn =
+        conn
+        |> put_req_header(
+          "authorization",
+          Plug.BasicAuth.encode_basic_auth("operator", "secret")
+        )
+        |> get("/console/nodes")
+
+      assert conn.status == 302
+      assert redirected_to(conn) == "/console/nodes"
+
+      follow_up = conn |> recycle() |> get("/console/nodes")
+      assert follow_up.status == 200
+      assert follow_up.resp_body =~ "Nodes"
+    end
+
     test "returns 404 for /console/tenants when console is disabled", %{conn: conn} do
       Application.put_env(:orchard_controller, :console,
         enabled: false,

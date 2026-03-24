@@ -1,12 +1,27 @@
 defmodule OrchardConsole.OverviewLiveTest.RuntimeStub do
   @moduledoc false
 
-  def snapshot do
+  def snapshot(_opts \\ []) do
     {:ok,
      %{
        worker_state: :idle,
        loaded_models: [%{model_id: "mlx-community/phi-3", version: "main"}],
-       active_request_count: 1
+       active_request_count: 1,
+       node_metadata: %{
+         node_id: "550e8400-e29b-41d4-a716-446655440000",
+         display_name: "mawarduri",
+         hostname: "mawarduri.local",
+         listen_host: "127.0.0.1",
+         listen_port: 50071,
+         agent_version: "0.1.0",
+         worker_backend: "mlx"
+       },
+       runtime_health: %{
+         ready: true,
+         health_code: nil,
+         health_message: nil,
+         affected_model: nil
+       }
      }}
   end
 end
@@ -14,7 +29,7 @@ end
 defmodule OrchardConsole.OverviewLiveTest.RuntimeUnavailableStub do
   @moduledoc false
 
-  def snapshot do
+  def snapshot(_opts \\ []) do
     {:error,
      %{
        status: :unavailable,
@@ -22,7 +37,9 @@ defmodule OrchardConsole.OverviewLiveTest.RuntimeUnavailableStub do
        message: "node runtime is unavailable",
        worker_state: :unknown,
        loaded_models: [],
-       active_request_count: 0
+       active_request_count: 0,
+       node_metadata: nil,
+       runtime_health: nil
      }}
   end
 end
@@ -30,12 +47,14 @@ end
 defmodule OrchardConsole.OverviewLiveTest.RuntimeNoModelsStub do
   @moduledoc false
 
-  def snapshot do
+  def snapshot(_opts \\ []) do
     {:ok,
      %{
        worker_state: :idle,
        loaded_models: [],
-       active_request_count: 0
+       active_request_count: 0,
+       node_metadata: nil,
+       runtime_health: nil
      }}
   end
 end
@@ -43,12 +62,14 @@ end
 defmodule OrchardConsole.OverviewLiveTest.RuntimeStartingStub do
   @moduledoc false
 
-  def snapshot do
+  def snapshot(_opts \\ []) do
     {:ok,
      %{
        worker_state: :starting,
        loaded_models: [%{model_id: "mlx-community/phi-3", version: "main"}],
-       active_request_count: 0
+       active_request_count: 0,
+       node_metadata: nil,
+       runtime_health: nil
      }}
   end
 end
@@ -127,6 +148,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       {:ok, _view, html} = live(conn, "/console")
 
       assert html =~ "Overview"
+      assert html =~ "Nodes"
       assert html =~ "Playground"
       assert html =~ "Models"
       assert html =~ "Model Hub"
@@ -146,11 +168,13 @@ defmodule OrchardConsole.OverviewLiveTest do
       # Only Requests is still disabled
       assert html =~ ~s(aria-disabled="true")
       assert html =~ "Requests \u2014 coming soon"
-      # Playground, Models, and Model Hub are enabled
+      # All items except Requests are enabled
+      assert html =~ "/console/nodes"
       assert html =~ "/console/playground"
       assert html =~ "/console/models"
       assert html =~ "/console/model-hub"
       assert html =~ "/console/tenants"
+      refute html =~ "Nodes \u2014 coming soon"
       refute html =~ "Playground \u2014 coming soon"
       refute html =~ "Models \u2014 coming soon"
       refute html =~ "Model Hub \u2014 coming soon"
@@ -202,6 +226,40 @@ defmodule OrchardConsole.OverviewLiveTest do
       unavailable = view |> element("#overview-runtime-unavailable") |> render()
       assert unavailable =~ "Runtime unavailable."
       assert unavailable =~ "node runtime is unavailable"
+    end
+
+    test "shows node display name from metadata", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      node_html = view |> element("#overview-runtime-node") |> render()
+      assert node_html =~ "Connected node:"
+      assert node_html =~ "mawarduri"
+    end
+
+    test "shows fallback when node metadata is absent", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeNoModelsStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      node_html = view |> element("#overview-runtime-node") |> render()
+      assert node_html =~ "Metadata unavailable"
+    end
+
+    test "shows 'Runtime unavailable' for node when runtime is down", %{conn: conn} do
+      put_console_config(runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeUnavailableStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      node_html = view |> element("#overview-runtime-node") |> render()
+      assert node_html =~ "Runtime unavailable"
+    end
+
+    test "Open Nodes CTA links to /console/nodes", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ ~s(id="overview-open-nodes")
+      assert html =~ "/console/nodes"
+      assert html =~ "Open Nodes"
     end
   end
 

@@ -48,6 +48,7 @@ defmodule Orchard.API.Router do
 
     live_session :console, on_mount: [{OrchardConsole, :ensure_console_access}] do
       live("/", OrchardConsole.OverviewLive, :index)
+      live("/nodes", OrchardConsole.NodesLive, :index)
       live("/playground", OrchardConsole.PlaygroundLive, :index)
       live("/models", OrchardConsole.ModelsLive, :index)
       live("/model-hub", OrchardConsole.ModelHubLive, :index)
