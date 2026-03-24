@@ -3,7 +3,7 @@ defmodule OrchardCLITest do
 
   import ExUnit.CaptureIO
 
-  alias OrchardCLI.Commands.{ApiKeys, Models, Tenants}
+  alias OrchardCLI.Commands.{ApiKeys, Models, Nodes, Tenants}
 
   # A no-op halt function for tests that just need to suppress halt
   defp no_halt(_code), do: :ok
@@ -21,7 +21,7 @@ defmodule OrchardCLITest do
   end
 
   test "dispatches each placeholder command module" do
-    placeholder_commands = ["cluster", "nodes", "requests", "support", "upgrade"]
+    placeholder_commands = ["cluster", "requests", "support", "upgrade"]
 
     for command <- placeholder_commands do
       output = capture_io(fn -> OrchardCLI.main([command], &no_halt/1) end)
@@ -32,10 +32,27 @@ defmodule OrchardCLITest do
   test "placeholder commands do not trigger halt" do
     parent = self()
 
-    for command <- ["cluster", "nodes", "requests", "support", "upgrade"] do
+    for command <- ["cluster", "requests", "support", "upgrade"] do
       capture_io(fn -> OrchardCLI.main([command], halt_stub(parent)) end)
       refute_received {:halt_called, _}
     end
+  end
+
+  test "nodes command without subcommand exits non-zero" do
+    parent = self()
+
+    stderr =
+      capture_io(:stderr, fn ->
+        OrchardCLI.main(["nodes"], halt_stub(parent))
+      end)
+
+    assert stderr =~ "orchardctl nodes"
+    assert_received {:halt_called, 1}
+  end
+
+  test "Nodes.run/1 returns error tuple for missing subcommand" do
+    assert {:error, message, 1} = Nodes.run([])
+    assert message =~ "orchardctl nodes"
   end
 
   test "models command without subcommand exits non-zero" do

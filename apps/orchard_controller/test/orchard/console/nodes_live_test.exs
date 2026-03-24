@@ -2,85 +2,141 @@
 
 defmodule OrchardConsole.NodesLiveTest.RuntimeFullStub do
   @moduledoc false
+  @default_target [host: "127.0.0.1", port: 50071]
 
-  def snapshot do
-    {:ok,
-     %{
-       worker_state: :idle,
-       loaded_models: [%{model_id: "mlx-community/phi-3", version: "main"}],
-       active_request_count: 1,
-       node_metadata: %{
-         node_id: "550e8400-e29b-41d4-a716-446655440000",
-         display_name: "mawarduri",
-         hostname: "mawarduri.local",
-         listen_host: "127.0.0.1",
-         listen_port: 50071,
-         agent_version: "0.1.0",
-         worker_backend: "mlx"
-       },
-       runtime_health: %{
-         ready: true,
-         health_code: nil,
-         health_message: nil,
-         affected_model: nil
-       }
-     }}
+  def cluster_snapshot(_opts \\ []) do
+    [
+      %{
+        target: @default_target,
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [%{model_id: "mlx-community/phi-3", version: "main"}],
+        active_request_count: 1,
+        node_metadata: %{
+          node_id: "550e8400-e29b-41d4-a716-446655440000",
+          display_name: "mawarduri",
+          hostname: "mawarduri.local",
+          listen_host: "127.0.0.1",
+          listen_port: 50071,
+          agent_version: "0.1.0",
+          worker_backend: "mlx"
+        },
+        runtime_health: %{
+          ready: true,
+          health_code: nil,
+          health_message: nil,
+          affected_model: nil
+        }
+      }
+    ]
   end
 end
 
 defmodule OrchardConsole.NodesLiveTest.RuntimeLegacyStub do
   @moduledoc false
+  @default_target [host: "127.0.0.1", port: 50071]
 
-  def snapshot do
-    {:ok,
-     %{
-       worker_state: :idle,
-       loaded_models: [],
-       active_request_count: 0,
-       node_metadata: nil,
-       runtime_health: nil
-     }}
+  def cluster_snapshot(_opts \\ []) do
+    [
+      %{
+        target: @default_target,
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: nil,
+        runtime_health: nil
+      }
+    ]
   end
 end
 
 defmodule OrchardConsole.NodesLiveTest.RuntimePartialStub do
   @moduledoc false
+  @default_target [host: "127.0.0.1", port: 50071]
 
-  def snapshot do
-    {:ok,
-     %{
-       worker_state: :idle,
-       loaded_models: [],
-       active_request_count: 0,
-       node_metadata: %{
-         node_id: "550e8400-e29b-41d4-a716-446655440000",
-         display_name: "partial-node",
-         hostname: "partial.local",
-         listen_host: "127.0.0.1",
-         listen_port: 50071,
-         agent_version: "0.1.0",
-         worker_backend: "mlx"
-       },
-       runtime_health: nil
-     }}
+  def cluster_snapshot(_opts \\ []) do
+    [
+      %{
+        target: @default_target,
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: %{
+          node_id: "550e8400-e29b-41d4-a716-446655440000",
+          display_name: "partial-node",
+          hostname: "partial.local",
+          listen_host: "127.0.0.1",
+          listen_port: 50071,
+          agent_version: "0.1.0",
+          worker_backend: "mlx"
+        },
+        runtime_health: nil
+      }
+    ]
   end
 end
 
 defmodule OrchardConsole.NodesLiveTest.RuntimeUnavailableStub do
   @moduledoc false
+  @default_target [host: "127.0.0.1", port: 50071]
 
-  def snapshot do
-    {:error,
-     %{
-       status: :unavailable,
-       code: "node_unavailable",
-       message: "node runtime is unavailable",
-       worker_state: :unknown,
-       loaded_models: [],
-       active_request_count: 0,
-       node_metadata: nil,
-       runtime_health: nil
-     }}
+  def cluster_snapshot(_opts \\ []) do
+    [
+      %{
+        target: @default_target,
+        status: :unavailable,
+        code: "node_unavailable",
+        message: "node runtime is unavailable",
+        worker_state: :unknown,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: nil,
+        runtime_health: nil
+      }
+    ]
+  end
+end
+
+defmodule OrchardConsole.NodesLiveTest.RuntimeMultiTargetStub do
+  @moduledoc false
+
+  def cluster_snapshot(_opts \\ []) do
+    [
+      %{
+        target: [host: "127.0.0.1", port: 50071],
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [%{model_id: "model-a", version: "v1"}],
+        active_request_count: 0,
+        node_metadata: %{
+          node_id: "aaaa-0001",
+          display_name: "node-alpha",
+          hostname: "alpha.local",
+          listen_host: "127.0.0.1",
+          listen_port: 50071,
+          agent_version: "0.1.0",
+          worker_backend: "mlx"
+        },
+        runtime_health: %{ready: true, health_code: nil, health_message: nil, affected_model: nil}
+      },
+      %{
+        target: [host: "10.0.0.2", port: 50061],
+        status: :unavailable,
+        code: "node_unavailable",
+        message: "node runtime is unavailable",
+        worker_state: :unknown,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: nil,
+        runtime_health: nil
+      }
+    ]
   end
 end
 
@@ -157,7 +213,7 @@ defmodule OrchardConsole.NodesLiveTest do
 
       assert html =~ "Inventory Summary"
       assert html =~ "Registered Nodes"
-      assert html =~ "Live Runtime"
+      assert html =~ "Live Cluster"
     end
 
     test "has correct page title", %{conn: conn} do
@@ -277,7 +333,55 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "mawarduri"
       assert html =~ "127.0.0.1:50071"
       assert html =~ "mlx-community/phi-3"
-      assert html =~ "1 active request(s)"
+      assert html =~ "1 active"
+    end
+
+    test "cluster summary shows counts", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      summary = element(view, "#nodes-live-cluster-card") |> render()
+      assert summary =~ "1 target(s) configured"
+      assert summary =~ "1 reachable"
+    end
+
+    test "per-target card renders with stable DOM id", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      # DOM id based on target host:port
+      assert html =~ ~s(id="nodes-runtime-card-127-0-0-1-50071")
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Multi-target rendering
+  # ---------------------------------------------------------------------------
+
+  describe "multi-target cluster" do
+    test "renders one card per target, mixed success and failure", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeMultiTargetStub)
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      # Both target cards rendered
+      assert html =~ ~s(id="nodes-runtime-card-127-0-0-1-50071")
+      assert html =~ ~s(id="nodes-runtime-card-10-0-0-2-50061")
+
+      # Success target shows data
+      assert html =~ "node-alpha"
+      assert html =~ "model-a"
+
+      # Failed target shows error state
+      assert html =~ "Unavailable"
+    end
+
+    test "cluster summary reflects mixed results", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeMultiTargetStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      summary = element(view, "#nodes-live-cluster-card") |> render()
+      assert summary =~ "2 target(s) configured"
+      assert summary =~ "1 reachable"
     end
   end
 
@@ -286,28 +390,28 @@ defmodule OrchardConsole.NodesLiveTest do
   # ---------------------------------------------------------------------------
 
   describe "compatibility warning" do
-    test "shown for legacy snapshot", %{conn: conn} do
+    test "shown for legacy snapshot (per-target)", %{conn: conn} do
       put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeLegacyStub)
 
       {:ok, _view, html} = live(conn, "/console/nodes")
 
-      assert html =~ "nodes-compat-warning"
-      assert html =~ "does not report inventory metadata"
+      assert html =~ "nodes-runtime-compat-"
+      assert html =~ "does not report metadata or health"
     end
 
-    test "shown for partial snapshot", %{conn: conn} do
+    test "shown for partial snapshot (per-target)", %{conn: conn} do
       put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimePartialStub)
 
       {:ok, _view, html} = live(conn, "/console/nodes")
 
-      assert html =~ "nodes-compat-warning"
+      assert html =~ "nodes-runtime-compat-"
       assert html =~ "partial status metadata"
     end
 
     test "not shown for full snapshot", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/nodes")
 
-      refute html =~ "nodes-compat-warning"
+      refute html =~ "nodes-runtime-compat-"
     end
 
     test "not shown when runtime is unavailable", %{conn: conn} do
@@ -315,7 +419,7 @@ defmodule OrchardConsole.NodesLiveTest do
 
       {:ok, _view, html} = live(conn, "/console/nodes")
 
-      refute html =~ "nodes-compat-warning"
+      refute html =~ "nodes-runtime-compat-"
     end
   end
 
@@ -324,15 +428,15 @@ defmodule OrchardConsole.NodesLiveTest do
   # ---------------------------------------------------------------------------
 
   describe "runtime unavailable" do
-    test "shows error in runtime card while inventory still renders", %{conn: conn} do
+    test "shows per-target error while inventory still renders", %{conn: conn} do
       insert_node!(display_name: "persisted-node", health: :healthy)
       put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeUnavailableStub)
 
       {:ok, _view, html} = live(conn, "/console/nodes")
 
-      # Runtime card shows error
-      assert html =~ "nodes-runtime-unavailable"
-      assert html =~ "Runtime unavailable."
+      # Per-target runtime card shows error
+      assert html =~ "nodes-runtime-unavailable-"
+      assert html =~ "Unavailable"
 
       # Inventory still renders
       assert html =~ "persisted-node"

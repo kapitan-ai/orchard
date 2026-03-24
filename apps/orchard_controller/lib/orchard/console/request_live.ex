@@ -192,6 +192,9 @@ defmodule OrchardConsole.RequestLive do
   attr(:request, :map, required: true)
 
   defp request_execution_metadata(assigns) do
+    schedule = parse_scheduler_decision(assigns.request.scheduler_decision)
+    assigns = assign(assigns, :schedule, schedule)
+
     ~H"""
     <div id="request-execution-metadata-card">
       <.card>
@@ -212,6 +215,18 @@ defmodule OrchardConsole.RequestLive do
           </.detail_field>
           <.detail_field id="request-execution-http-status" label="HTTP Status" mono>
             {format_integer(@request.http_status)}
+          </.detail_field>
+          <.detail_field id="request-schedule-strategy" label="Strategy" mono>
+            {format_text(@schedule.strategy)}
+          </.detail_field>
+          <.detail_field id="request-schedule-node" label="Scheduled Node" mono>
+            {format_text(@schedule.selected_node_id)}
+          </.detail_field>
+          <.detail_field id="request-schedule-candidates" label="Candidates" mono>
+            {format_nullable_integer(@schedule.candidate_count)}
+          </.detail_field>
+          <.detail_field id="request-schedule-tier" label="Tier" mono>
+            {format_text(@schedule.selected_tier)}
           </.detail_field>
         </dl>
       </.card>
@@ -737,6 +752,10 @@ defmodule OrchardConsole.RequestLive do
   defp format_integer(nil), do: "—"
   defp format_integer(n) when is_integer(n), do: to_string(n)
 
+  defp format_nullable_integer(nil), do: "—"
+  defp format_nullable_integer(n) when is_integer(n), do: to_string(n)
+  defp format_nullable_integer(_), do: "—"
+
   defp format_token_total(input, output) when is_integer(input) and is_integer(output),
     do: to_string(input + output)
 
@@ -760,6 +779,44 @@ defmodule OrchardConsole.RequestLive do
   defp present_text?(""), do: false
   defp present_text?(s) when is_binary(s), do: String.trim(s) != ""
   defp present_text?(_), do: false
+
+  # ---------------------------------------------------------------------------
+  # Scheduler decision parsing
+  # ---------------------------------------------------------------------------
+
+  defp parse_scheduler_decision(nil), do: empty_schedule()
+  defp parse_scheduler_decision(decision) when not is_map(decision), do: empty_schedule()
+
+  defp parse_scheduler_decision(decision) do
+    %{
+      strategy: schedule_string(decision, ["strategy", :strategy]),
+      candidate_count: schedule_integer(decision, ["candidate_count", :candidate_count]),
+      selected_tier: schedule_string(decision, ["selected_tier", :selected_tier]),
+      selected_node_id: schedule_string(decision, ["node_id", :node_id])
+    }
+  end
+
+  defp empty_schedule do
+    %{strategy: nil, candidate_count: nil, selected_tier: nil, selected_node_id: nil}
+  end
+
+  defp schedule_string(map, keys) do
+    Enum.find_value(keys, fn key ->
+      case Map.get(map, key) do
+        s when is_binary(s) and s != "" -> s
+        _ -> nil
+      end
+    end)
+  end
+
+  defp schedule_integer(map, keys) do
+    Enum.find_value(keys, fn key ->
+      case Map.get(map, key) do
+        n when is_integer(n) and n >= 0 -> n
+        _ -> nil
+      end
+    end)
+  end
 
   defp present_map?(nil), do: false
   defp present_map?(m) when is_map(m) and map_size(m) == 0, do: false

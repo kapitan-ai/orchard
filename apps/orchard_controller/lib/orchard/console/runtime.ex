@@ -66,6 +66,74 @@ defmodule OrchardConsole.Runtime do
   @spec snapshot() :: {:ok, snapshot()} | {:error, error_snapshot()}
   def snapshot, do: snapshot([])
 
+  @type cluster_target_snapshot :: %{
+          target: keyword(),
+          status: :ok | :unavailable | :timeout | :error,
+          message: String.t() | nil,
+          worker_state: worker_state(),
+          loaded_models: [loaded_model()],
+          active_request_count: non_neg_integer(),
+          node_metadata: node_metadata() | nil,
+          runtime_health: runtime_health() | nil
+        }
+
+  @doc """
+  Probes all configured runtime targets and returns an ordered list of snapshots.
+
+  Each entry corresponds to one target from `Inference.runtime_client_targets/0`.
+  Successful probes trigger best-effort `observe_status/3` via the existing
+  `snapshot/1` path. Per-target failures are isolated — one failed target
+  never aborts the cluster result.
+
+  Options:
+  - `:targets` — explicit ordered target list (default: `Inference.runtime_client_targets/0`)
+  - `:observed_at` — shared timestamp for all probes (default: `DateTime.utc_now()`)
+  - `:timeout` — forwarded to each `snapshot/1` call
+  """
+  @spec cluster_snapshot() :: [cluster_target_snapshot()]
+  def cluster_snapshot, do: cluster_snapshot([])
+
+  @spec cluster_snapshot(keyword()) :: [cluster_target_snapshot()]
+  def cluster_snapshot(opts) do
+    targets = Keyword.get(opts, :targets, Inference.runtime_client_targets())
+    observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
+    timeout = opts[:timeout]
+
+    Enum.map(targets, fn target ->
+      probe_target(target, observed_at, timeout)
+    end)
+  end
+
+  defp probe_target(target, observed_at, timeout) do
+    snapshot_opts =
+      [target: target, observed_at: observed_at]
+      |> then(fn o -> if timeout, do: Keyword.put(o, :timeout, timeout), else: o end)
+
+    case snapshot(snapshot_opts) do
+      {:ok, snap} ->
+        Map.merge(snap, %{target: target, status: :ok, message: nil})
+
+      {:error, error_snap} ->
+        Map.merge(error_snap, %{target: target})
+    end
+  rescue
+    error ->
+      require Logger
+      Logger.warning("Cluster snapshot failed for target #{inspect(target)}: #{inspect(error)}")
+
+      %{
+        target: target,
+        status: :error,
+        code: "snapshot_exception",
+        message: "unexpected error probing target",
+        worker_state: :unknown,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: nil,
+        runtime_health: nil
+      }
+  end
+
   @doc """
   Fetches a runtime status snapshot with optional overrides.
 

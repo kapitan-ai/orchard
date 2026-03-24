@@ -366,13 +366,34 @@ defmodule OrchardConsole.RuntimeTest do
   # ---------------------------------------------------------------------------
 
   defmodule StubClient do
-    def connect(_target) do
-      get_stub(:connect)
+    def connect(target) do
+      send(get_stub_pid(), {:connect_called, target})
+
+      case get_stub(:connect, target) do
+        {:ok, channel} ->
+          # Wrap channel with target info so status/disconnect can route per-target
+          {:ok, {:stub_channel, target, channel}}
+
+        error ->
+          error
+      end
     end
 
-    def status(_channel, opts \\ []) do
+    def status({:stub_channel, target, _channel}, opts) do
       if opts != [], do: send(get_stub_pid(), {:status_called_with_opts, opts})
+      get_stub(:status, target)
+    end
+
+    def status(channel, opts) do
+      if opts != [], do: send(get_stub_pid(), {:status_called_with_opts, opts})
+      # Fallback for non-wrapped channels (legacy single-target tests)
+      _ = channel
       get_stub(:status)
+    end
+
+    def disconnect({:stub_channel, _target, channel}) do
+      send(get_stub_pid(), {:disconnect_called, channel})
+      :ok
     end
 
     def disconnect(channel) do
@@ -380,9 +401,22 @@ defmodule OrchardConsole.RuntimeTest do
       :ok
     end
 
-    defp get_stub(key) do
+    defp get_stub(key, target \\ nil) do
       [{_pid, stubs}] = Registry.lookup(OrchardConsole.RuntimeTest.StubRegistry, :stubs)
-      Keyword.fetch!(stubs, key)
+
+      # Support per-target scripted responses via :target_responses map
+      case Keyword.get(stubs, :target_responses) do
+        responses when is_map(responses) and target != nil ->
+          target_key = {Keyword.get(target, :host), Keyword.get(target, :port)}
+
+          case Map.get(responses, target_key) do
+            nil -> Keyword.fetch!(stubs, key)
+            target_stubs -> Keyword.fetch!(target_stubs, key)
+          end
+
+        _ ->
+          Keyword.fetch!(stubs, key)
+      end
     end
 
     defp get_stub_pid do
@@ -392,9 +426,9 @@ defmodule OrchardConsole.RuntimeTest do
   end
 
   defmodule StubNodes do
-    def observe_status(_target, _response, _observed_at) do
+    def observe_status(target, response, observed_at) do
       pid = stub_pid()
-      if pid, do: send(pid, {:observe_status_called, _target, _response, _observed_at})
+      if pid, do: send(pid, {:observe_status_called, target, response, observed_at})
       :noop
     end
 
@@ -403,6 +437,225 @@ defmodule OrchardConsole.RuntimeTest do
         [{pid, _}] -> pid
         _ -> nil
       end
+    end
+  end
+
+  describe "cluster_snapshot/0,1" do
+    test "probes all targets in config order" do
+      target_a = [host: "127.0.0.1", port: 50071]
+      target_b = [host: "10.0.0.2", port: 50061]
+
+      stub_client(
+        target_responses: %{
+          {"127.0.0.1", 50071} => [
+            connect: {:ok, :ch_a},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_IDLE,
+                 loaded_models: [%{model_id: "model-a", version: "v1"}],
+                 active_request_count: 1,
+                 node_metadata: %{
+                   node_id: "aaaa-0001",
+                   display_name: "node-a",
+                   hostname: "host-a.local"
+                 },
+                 runtime_health: %{ready: true}
+               }},
+            disconnect: :ok
+          ],
+          {"10.0.0.2", 50061} => [
+            connect: {:ok, :ch_b},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_BUSY,
+                 loaded_models: [],
+                 active_request_count: 3,
+                 node_metadata: %{
+                   node_id: "bbbb-0002",
+                   display_name: "node-b",
+                   hostname: "host-b.local"
+                 },
+                 runtime_health: %{ready: true}
+               }},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      results = Runtime.cluster_snapshot(targets: [target_a, target_b])
+
+      assert length(results) == 2
+
+      [first, second] = results
+      assert first.target == target_a
+      assert first.status == :ok
+      assert first.worker_state == :idle
+      assert first.node_metadata.display_name == "node-a"
+
+      assert second.target == target_b
+      assert second.status == :ok
+      assert second.worker_state == :busy
+      assert second.node_metadata.display_name == "node-b"
+    end
+
+    test "mixed success and error entries in one result" do
+      target_ok = [host: "127.0.0.1", port: 50071]
+      target_fail = [host: "10.0.0.99", port: 50061]
+
+      stub_client(
+        target_responses: %{
+          {"127.0.0.1", 50071} => [
+            connect: {:ok, :ch},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_IDLE,
+                 loaded_models: [],
+                 active_request_count: 0,
+                 node_metadata: %{node_id: "ok-node"},
+                 runtime_health: %{ready: true}
+               }},
+            disconnect: :ok
+          ],
+          {"10.0.0.99", 50061} => [
+            connect: {:error, {:connect_failed, :econnrefused}},
+            status: nil,
+            disconnect: nil
+          ]
+        }
+      )
+
+      results = Runtime.cluster_snapshot(targets: [target_ok, target_fail])
+
+      assert length(results) == 2
+
+      [ok_entry, fail_entry] = results
+      assert ok_entry.status == :ok
+      assert ok_entry.worker_state == :idle
+
+      assert fail_entry.status == :unavailable
+      assert fail_entry.message == "node runtime is unavailable"
+      assert fail_entry.worker_state == :unknown
+    end
+
+    test "successful entries trigger observe_status, failed entries do not" do
+      target_ok = [host: "127.0.0.1", port: 50071]
+      target_fail = [host: "10.0.0.99", port: 50061]
+
+      stub_client(
+        target_responses: %{
+          {"127.0.0.1", 50071} => [
+            connect: {:ok, :ch},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_IDLE,
+                 loaded_models: [],
+                 active_request_count: 0,
+                 node_metadata: %{node_id: "observe-me"},
+                 runtime_health: nil
+               }},
+            disconnect: :ok
+          ],
+          {"10.0.0.99", 50061} => [
+            connect: {:error, {:connect_failed, :econnrefused}},
+            status: nil,
+            disconnect: nil
+          ]
+        }
+      )
+
+      _results = Runtime.cluster_snapshot(targets: [target_ok, target_fail])
+
+      # Exactly one observe_status call for the successful target
+      assert_received {:observe_status_called, ^target_ok, _response, _observed_at}
+      refute_received {:observe_status_called, ^target_fail, _, _}
+    end
+
+    test "shared observed_at is passed through to all probes" do
+      observed_at = ~U[2026-03-24 12:00:00Z]
+      target = [host: "127.0.0.1", port: 50071]
+
+      stub_client(
+        target_responses: %{
+          {"127.0.0.1", 50071} => [
+            connect: {:ok, :ch},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_IDLE,
+                 loaded_models: [],
+                 active_request_count: 0,
+                 node_metadata: %{node_id: "ts-test"},
+                 runtime_health: nil
+               }},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      _results = Runtime.cluster_snapshot(targets: [target], observed_at: observed_at)
+
+      assert_received {:observe_status_called, ^target, _response, ^observed_at}
+    end
+
+    test "timeout option is forwarded to each snapshot call" do
+      target = [host: "127.0.0.1", port: 50071]
+
+      stub_client(
+        target_responses: %{
+          {"127.0.0.1", 50071} => [
+            connect: {:ok, :ch},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_IDLE,
+                 loaded_models: [],
+                 active_request_count: 0,
+                 node_metadata: nil,
+                 runtime_health: nil
+               }},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      _results = Runtime.cluster_snapshot(targets: [target], timeout: 2_000)
+
+      assert_received {:status_called_with_opts, [timeout: 2_000]}
+    end
+
+    test "empty target list returns empty list" do
+      stub_client(connect: nil, status: nil, disconnect: nil)
+
+      assert Runtime.cluster_snapshot(targets: []) == []
+    end
+
+    test "single target returns single-element list" do
+      target = [host: "127.0.0.1", port: 50071]
+
+      stub_client(
+        target_responses: %{
+          {"127.0.0.1", 50071} => [
+            connect: {:ok, :ch},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_IDLE,
+                 loaded_models: [],
+                 active_request_count: 0
+               }},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      results = Runtime.cluster_snapshot(targets: [target])
+      assert length(results) == 1
+      assert hd(results).target == target
+      assert hd(results).status == :ok
     end
   end
 

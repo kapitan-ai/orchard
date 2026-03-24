@@ -181,10 +181,64 @@ defmodule OrchardConsole.RequestLiveTest do
             "request-node-id",
             "request-worker-id",
             "request-first-token-at",
-            "request-execution-http-status"
+            "request-execution-http-status",
+            "request-schedule-strategy",
+            "request-schedule-node",
+            "request-schedule-candidates",
+            "request-schedule-tier"
           ] do
         field_html = element(view, "##{field_id}") |> render()
-        assert field_html =~ "\u2014", "expected #{field_id} to display dash"
+        assert field_html =~ "—", "expected #{field_id} to display dash"
+      end
+    end
+
+    test "renders multi-node scheduling metadata from scheduler_decision", %{conn: conn} do
+      request =
+        create_request!(%{
+          state: :completed,
+          scheduler_decision: %{
+            "strategy" => "multi_node",
+            "node_id" => "aaaa-0001",
+            "candidate_count" => 2,
+            "selected_tier" => "loaded"
+          }
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      strategy_html = element(view, "#request-schedule-strategy") |> render()
+      assert strategy_html =~ "multi_node"
+
+      node_html = element(view, "#request-schedule-node") |> render()
+      assert node_html =~ "aaaa-0001"
+
+      candidates_html = element(view, "#request-schedule-candidates") |> render()
+      assert candidates_html =~ "2"
+
+      tier_html = element(view, "#request-schedule-tier") |> render()
+      assert tier_html =~ "loaded"
+    end
+
+    test "renders dashes for absent scheduling fields with single_node strategy", %{conn: conn} do
+      request =
+        create_request!(%{
+          state: :completed,
+          scheduler_decision: %{"strategy" => "single_node"}
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      strategy_html = element(view, "#request-schedule-strategy") |> render()
+      assert strategy_html =~ "single_node"
+
+      # Absent multi-node fields show dash
+      for field_id <- [
+            "request-schedule-node",
+            "request-schedule-candidates",
+            "request-schedule-tier"
+          ] do
+        field_html = element(view, "##{field_id}") |> render()
+        assert field_html =~ "—", "expected #{field_id} to display dash"
       end
     end
   end
