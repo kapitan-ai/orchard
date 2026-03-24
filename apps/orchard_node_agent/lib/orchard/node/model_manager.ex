@@ -16,6 +16,8 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Cluster.V1.EnsureModelLoadedResponse
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.ModelRef
+  alias Orchard.Cluster.V1.RuntimeHealth
+  alias Orchard.Cluster.V1.RuntimeNodeMetadata
   alias Orchard.Cluster.V1.StatusResponse
   alias Orchard.Cluster.V1.UnloadModelRequest
   alias Orchard.Node
@@ -1103,8 +1105,122 @@ defmodule Orchard.Node.ModelManager do
     %StatusResponse{
       worker_state: worker_state(state),
       loaded_models: loaded_models(state),
-      active_request_count: map_size(state.active_requests)
+      active_request_count: map_size(state.active_requests),
+      node_metadata: build_node_metadata(),
+      runtime_health: aggregate_runtime_health(state)
     }
+  end
+
+  defp build_node_metadata do
+    %RuntimeNodeMetadata{
+      node_id: Node.node_id() || "",
+      display_name: Node.display_name() || "",
+      hostname: Node.hostname() || "",
+      agent_version: Node.agent_version() || "",
+      listen_host: Node.listen_host_string() || "",
+      listen_port: Node.listen_port() || 0,
+      worker_backend: Node.worker_backend() || ""
+    }
+  end
+
+  # Health aggregation algorithm:
+  # 1. Inflight loads → degraded/starting
+  # 2. Workers in LOADING state → degraded/starting
+  # 3. No workers → healthy
+  # 4. Probe each loaded worker; first unhealthy wins
+  # 5. All healthy → healthy
+  defp aggregate_runtime_health(state) do
+    cond do
+      map_size(state.inflight_loads) > 0 ->
+        first_inflight = first_sorted_model_ref(state.inflight_loads)
+
+        %RuntimeHealth{
+          ready: false,
+          health_code: "starting",
+          health_message: "model load in progress",
+          affected_model: first_inflight
+        }
+
+      has_loading_worker?(state) ->
+        loading_ref = first_loading_worker_ref(state)
+
+        %RuntimeHealth{
+          ready: false,
+          health_code: "starting",
+          health_message: "model load in progress",
+          affected_model: loading_ref
+        }
+
+      map_size(state.workers) == 0 ->
+        %RuntimeHealth{ready: true, health_code: "", health_message: ""}
+
+      true ->
+        probe_workers_health(state)
+    end
+  end
+
+  defp has_loading_worker?(state) do
+    Enum.any?(state.workers, fn {_key, entry} ->
+      entry.placement_state == :PLACEMENT_STATE_LOADING
+    end)
+  end
+
+  defp first_loading_worker_ref(state) do
+    state.workers
+    |> Enum.filter(fn {_key, entry} -> entry.placement_state == :PLACEMENT_STATE_LOADING end)
+    |> Enum.sort_by(fn {{model_id, version}, _} -> {model_id, version} end)
+    |> List.first()
+    |> case do
+      {_key, entry} -> entry.model_ref
+      nil -> nil
+    end
+  end
+
+  # For inflight_loads keyed by {model_id, version}, extract the first model ref
+  defp first_sorted_model_ref(inflight_loads) do
+    inflight_loads
+    |> Enum.sort_by(fn {{model_id, version}, _} -> {model_id, version} end)
+    |> List.first()
+    |> case do
+      {{model_id, version}, _entry} -> %ModelRef{model_id: model_id, version: version}
+      nil -> nil
+    end
+  end
+
+  defp probe_workers_health(state) do
+    loaded_workers =
+      state.workers
+      |> Enum.filter(fn {_key, entry} -> entry.placement_state == :PLACEMENT_STATE_LOADED end)
+      |> Enum.sort_by(fn {{model_id, version}, _} -> {model_id, version} end)
+
+    Enum.reduce_while(loaded_workers, nil, fn {_key, entry}, _acc ->
+      case WorkerProcess.status(entry.pid, timeout: 1_000) do
+        {:ok, %{ready: true}} ->
+          {:cont, nil}
+
+        {:ok, %{ready: false} = status} ->
+          {:halt,
+           %RuntimeHealth{
+             ready: false,
+             health_code: status[:health_code] || "worker_unhealthy",
+             health_message: status[:health_message] || "",
+             affected_model: entry.model_ref
+           }}
+
+        {:error, _reason} ->
+          {:halt,
+           %RuntimeHealth{
+             ready: false,
+             health_code: "worker_status_error",
+             health_message: "worker status request failed",
+             affected_model: entry.model_ref
+           }}
+      end
+    end)
+    |> case do
+      nil -> %RuntimeHealth{ready: true, health_code: "", health_message: ""}
+      health -> health
+    end
   end
 
   defp worker_state(state) do

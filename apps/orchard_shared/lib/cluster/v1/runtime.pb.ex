@@ -7,6 +7,37 @@ defmodule Orchard.Cluster.V1.StatusRequest do
     syntax: :proto3
 end
 
+defmodule Orchard.Cluster.V1.RuntimeNodeMetadata do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.RuntimeNodeMetadata",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:node_id, 1, type: :string, json_name: "nodeId")
+  field(:display_name, 2, type: :string, json_name: "displayName")
+  field(:hostname, 3, type: :string)
+  field(:agent_version, 4, type: :string, json_name: "agentVersion")
+  field(:listen_host, 5, type: :string, json_name: "listenHost")
+  field(:listen_port, 6, type: :uint32, json_name: "listenPort")
+  field(:worker_backend, 7, type: :string, json_name: "workerBackend")
+end
+
+defmodule Orchard.Cluster.V1.RuntimeHealth do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.RuntimeHealth",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:ready, 1, type: :bool)
+  field(:health_code, 2, type: :string, json_name: "healthCode")
+  field(:health_message, 3, type: :string, json_name: "healthMessage")
+  field(:affected_model, 4, type: Orchard.Cluster.V1.ModelRef, json_name: "affectedModel")
+end
+
 defmodule Orchard.Cluster.V1.StatusResponse do
   @moduledoc false
 
@@ -28,6 +59,13 @@ defmodule Orchard.Cluster.V1.StatusResponse do
   )
 
   field(:active_request_count, 3, type: :uint32, json_name: "activeRequestCount")
+
+  field(:node_metadata, 4,
+    type: Orchard.Cluster.V1.RuntimeNodeMetadata,
+    json_name: "nodeMetadata"
+  )
+
+  field(:runtime_health, 5, type: Orchard.Cluster.V1.RuntimeHealth, json_name: "runtimeHealth")
 end
 
 defmodule Orchard.Cluster.V1.EnsureModelLoadedRequest do

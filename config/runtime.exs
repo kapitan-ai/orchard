@@ -260,6 +260,9 @@ end
 
 default_node_runtime = fn root ->
   [
+    node_id: nil,
+    node_identity_path: Path.join([root, "data", "node-id"]),
+    display_name: nil,
     listen_address: [host: "127.0.0.1", port: 50_061],
     models_root: Path.join(root, "models"),
     worker_socket_dir: Path.join([root, "data", "worker-sockets"]),
@@ -447,6 +450,11 @@ if config_env() == :prod do
         runtime:
           Keyword.merge(
             default_node_runtime.(orchard_support_root),
+            node_id: System.get_env("ORCHARD_NODE_ID"),
+            node_identity_path:
+              System.get_env("ORCHARD_NODE_IDENTITY_PATH") ||
+                Path.join([orchard_support_root, "data", "node-id"]),
+            display_name: System.get_env("ORCHARD_NODE_DISPLAY_NAME"),
             listen_address: [
               host: System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1",
               port: env_int.("ORCHARD_NODE_AGENT_LISTEN_PORT", "50061")

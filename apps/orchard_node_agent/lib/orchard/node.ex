@@ -21,6 +21,41 @@ defmodule Orchard.Node do
     Application.fetch_env!(:orchard_node_agent, :runtime)
   end
 
+  # --- Node identity and metadata helpers ---
+
+  @doc "Returns the resolved node UUID. Available after Identity.ensure_identity!/0."
+  def node_id, do: runtime_config()[:node_id]
+
+  @doc "Returns the configured display name, or falls back to hostname."
+  def display_name do
+    case runtime_config()[:display_name] do
+      name when is_binary(name) and name != "" -> name
+      _ -> hostname()
+    end
+  end
+
+  @doc "Returns the OS hostname, falling back to listen_host_string on error."
+  def hostname do
+    case :net_adm.localhost() do
+      name when is_list(name) -> List.to_string(name)
+      _ -> listen_host_string()
+    end
+  end
+
+  @doc "Returns the node-agent version string."
+  def agent_version, do: Orchard.NodeAgent.version()
+
+  @doc "Returns the listen host as a string suitable for proto metadata."
+  def listen_host_string do
+    case listen_host() do
+      host when is_binary(host) -> host
+      {a, b, c, d} -> "#{a}.#{b}.#{c}.#{d}"
+      other -> to_string(other)
+    end
+  end
+
+  # --- Existing config helpers ---
+
   def listen_address, do: runtime_config()[:listen_address]
   def listen_host, do: listen_address()[:host]
   def listen_port, do: listen_address()[:port]

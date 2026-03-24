@@ -16,6 +16,8 @@ defmodule OrchardSharedTest do
     NodeRuntimeService,
     OutputTextDelta,
     PlacementState,
+    RuntimeHealth,
+    RuntimeNodeMetadata,
     StatusResponse,
     TokenUsage,
     WorkerState
@@ -64,6 +66,8 @@ defmodule OrchardSharedTest do
     assert Code.ensure_loaded?(ModelLoadFailureCategory)
     assert Code.ensure_loaded?(NodeRuntimeService.Service)
     assert Code.ensure_loaded?(NodeRuntimeService.Stub)
+    assert Code.ensure_loaded?(RuntimeNodeMetadata)
+    assert Code.ensure_loaded?(RuntimeHealth)
   end
 
   test "round-trips generated runtime request and event messages" do
@@ -130,6 +134,61 @@ defmodule OrchardSharedTest do
              response
              |> EnsureModelLoadedResponse.encode()
              |> EnsureModelLoadedResponse.decode()
+  end
+
+  test "round-trips StatusResponse with node metadata and runtime health" do
+    response = %StatusResponse{
+      worker_state: :WORKER_STATE_IDLE,
+      loaded_models: [%ModelRef{model_id: "test-model", version: "v1"}],
+      active_request_count: 2,
+      node_metadata: %RuntimeNodeMetadata{
+        node_id: "550e8400-e29b-41d4-a716-446655440000",
+        display_name: "node-1",
+        hostname: "host.local",
+        agent_version: "0.1.0",
+        listen_host: "0.0.0.0",
+        listen_port: 50061,
+        worker_backend: "mlx"
+      },
+      runtime_health: %RuntimeHealth{
+        ready: true,
+        health_code: "",
+        health_message: "",
+        affected_model: nil
+      }
+    }
+
+    assert response == response |> StatusResponse.encode() |> StatusResponse.decode()
+  end
+
+  test "StatusResponse with absent node_metadata and runtime_health decodes as nil" do
+    # Encode a StatusResponse with only legacy fields (1-3)
+    legacy = %StatusResponse{
+      worker_state: :WORKER_STATE_IDLE,
+      loaded_models: [],
+      active_request_count: 0
+    }
+
+    decoded = legacy |> StatusResponse.encode() |> StatusResponse.decode()
+    assert decoded.node_metadata == nil
+    assert decoded.runtime_health == nil
+  end
+
+  test "StatusResponse with runtime_health containing affected_model round-trips" do
+    response = %StatusResponse{
+      worker_state: :WORKER_STATE_BUSY,
+      loaded_models: [],
+      active_request_count: 1,
+      node_metadata: nil,
+      runtime_health: %RuntimeHealth{
+        ready: false,
+        health_code: "worker_unhealthy",
+        health_message: "backend error",
+        affected_model: %ModelRef{model_id: "bad-model", version: "v1"}
+      }
+    }
+
+    assert response == response |> StatusResponse.encode() |> StatusResponse.decode()
   end
 
   test "EnsureModelLoadedResponse proto3 defaults for unset failure fields" do

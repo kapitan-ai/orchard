@@ -42,6 +42,11 @@ defmodule OrchardNodeAgentTest do
     alias Orchard.InferenceEvent
 
     @impl true
+    def get_status(_adapter_state, _opts) do
+      {:ok, %{ready: true, health_code: "", health_message: ""}}
+    end
+
+    @impl true
     def load_model(%ModelRef{} = model_ref, _opts) do
       {:ok, %{model_ref: model_ref, generations: %{}}}
     end
@@ -123,6 +128,11 @@ defmodule OrchardNodeAgentTest do
     alias Orchard.InferenceEvent
 
     @impl true
+    def get_status(_adapter_state, _opts) do
+      {:ok, %{ready: true, health_code: "", health_message: ""}}
+    end
+
+    @impl true
     def load_model(%ModelRef{} = model_ref, opts) do
       if pid = Process.whereis(:load_timeout_test_pid) do
         send(pid, {:captured_load_timeout_ms, Keyword.get(opts, :load_timeout_ms)})
@@ -151,6 +161,11 @@ defmodule OrchardNodeAgentTest do
 
     alias Orchard.Cluster.V1.ExecuteInferenceRequest
     alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(_adapter_state, _opts) do
+      {:ok, %{ready: true, health_code: "", health_message: ""}}
+    end
 
     @impl true
     def load_model(%ModelRef{} = model_ref, _opts) do
@@ -186,6 +201,11 @@ defmodule OrchardNodeAgentTest do
 
     alias Orchard.Cluster.V1.ExecuteInferenceRequest
     alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(_adapter_state, _opts) do
+      {:ok, %{ready: true, health_code: "", health_message: ""}}
+    end
 
     @impl true
     def load_model(%ModelRef{} = model_ref, _opts) do
@@ -370,6 +390,53 @@ defmodule OrchardNodeAgentTest do
       assert response.worker_state == :WORKER_STATE_IDLE
       assert response.loaded_models == []
       assert response.active_request_count == 0
+    end)
+  end
+
+  test "get_status includes node metadata" do
+    with_channel(fn channel ->
+      assert {:ok, %StatusResponse{} = response} =
+               NodeRuntimeStub.get_status(channel, %StatusRequest{})
+
+      assert response.node_metadata != nil
+      meta = response.node_metadata
+      assert meta.node_id == "00000000-0000-4000-a000-000000000001"
+      assert meta.display_name == "test-node"
+      assert is_binary(meta.hostname) and meta.hostname != ""
+      assert meta.agent_version == "0.1.0"
+      assert is_binary(meta.listen_host) and meta.listen_host != ""
+      assert meta.listen_port > 0
+      assert meta.worker_backend == "stub"
+    end)
+  end
+
+  test "get_status reports healthy runtime when idle (no workers)" do
+    with_channel(fn channel ->
+      assert {:ok, %StatusResponse{} = response} =
+               NodeRuntimeStub.get_status(channel, %StatusRequest{})
+
+      assert response.runtime_health != nil
+      health = response.runtime_health
+      assert health.ready == true
+      assert health.health_code == ""
+      assert health.health_message == ""
+      assert health.affected_model == nil
+    end)
+  end
+
+  test "get_status reports healthy runtime with loaded model", %{bundle: bundle} do
+    request = ensure_model_loaded_request(bundle)
+
+    with_channel(fn channel ->
+      assert {:ok, %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED}} =
+               NodeRuntimeStub.ensure_model_loaded(channel, request)
+
+      assert {:ok, %StatusResponse{} = response} =
+               NodeRuntimeStub.get_status(channel, %StatusRequest{})
+
+      assert response.runtime_health != nil
+      assert response.runtime_health.ready == true
+      assert response.runtime_health.health_code == ""
     end)
   end
 

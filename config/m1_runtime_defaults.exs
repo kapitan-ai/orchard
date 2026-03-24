@@ -37,6 +37,9 @@ defmodule Orchard.Config.M1RuntimeDefaults do
 
   def node_runtime(root) do
     [
+      node_id: nil,
+      node_identity_path: Path.join([root, "data", "node-id"]),
+      display_name: nil,
       listen_address: [host: @default_runtime_host, port: @default_runtime_port],
       models_root: Path.join(root, "models"),
       worker_socket_dir: Path.join([root, "data", "worker-sockets"]),

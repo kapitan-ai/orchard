@@ -21,6 +21,9 @@ defmodule Orchard.Node.RuntimeAdapter do
   @callback load_model(ModelRef.t(), keyword()) :: {:ok, adapter_state()} | {:error, term()}
   @callback unload_model(adapter_state(), keyword()) :: :ok | {:error, term()}
 
+  @callback get_status(adapter_state(), keyword()) ::
+              {:ok, map()} | {:error, term()}
+
   @callback start_generation(adapter_state(), ExecuteInferenceRequest.t(), keyword()) ::
               {:ok, generation_ref(), adapter_state()} | {:error, term()}
 
@@ -36,6 +39,9 @@ defmodule Orchard.Node.RuntimeAdapter do
     @moduledoc false
 
     @behaviour Orchard.Node.RuntimeAdapter
+
+    @impl true
+    def get_status(_adapter_state, _opts), do: {:error, :runtime_adapter_not_implemented}
 
     @impl true
     def load_model(_model_ref, _opts), do: {:error, :runtime_adapter_not_implemented}

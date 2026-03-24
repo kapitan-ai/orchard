@@ -26,7 +26,7 @@ from cluster.v1 import common_pb2 as cluster_dot_v1_dot_common__pb2
 from cluster.v1 import events_pb2 as cluster_dot_v1_dot_events__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x18\x63luster/v1/runtime.proto\x12\ncluster.v1\x1a\x17\x63luster/v1/common.proto\x1a\x17\x63luster/v1/events.proto\"\x0f\n\rStatusRequest\"\x8a\x01\n\x0eStatusResponse\x12-\n\x0cworker_state\x18\x01 \x01(\x0e\x32\x17.cluster.v1.WorkerState\x12+\n\rloaded_models\x18\x02 \x03(\x0b\x32\x14.cluster.v1.ModelRef\x12\x1c\n\x14\x61\x63tive_request_count\x18\x03 \x01(\r\"\xaf\x01\n\x18\x45nsureModelLoadedRequest\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x10\n\x08model_id\x18\x02 \x01(\t\x12\x0f\n\x07version\x18\x03 \x01(\t\x12\x17\n\x0f\x61rtifact_sha256\x18\x04 \x01(\t\x12\x0f\n\x07preload\x18\x05 \x01(\x08\x12\x18\n\x10\x64\x65\x61\x64line_unix_ms\x18\x06 \x01(\x04\x12\x1b\n\x13\x61rtifact_source_uri\x18\x07 \x01(\t\"\xd7\x01\n\x19\x45nsureModelLoadedResponse\x12\x16\n\x0e\x61lready_loaded\x18\x01 \x01(\x08\x12\x33\n\x0fplacement_state\x18\x02 \x01(\x0e\x32\x1a.cluster.v1.PlacementState\x12>\n\x10\x66\x61ilure_category\x18\x03 \x01(\x0e\x32$.cluster.v1.ModelLoadFailureCategory\x12\x14\n\x0c\x66\x61ilure_code\x18\x04 \x01(\t\x12\x17\n\x0f\x66\x61ilure_message\x18\x05 \x01(\t\"U\n\x12UnloadModelRequest\x12\x10\n\x08model_id\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\r\n\x05\x66orce\x18\x03 \x01(\x08\x12\r\n\x05\x65vict\x18\x04 \x01(\x08\"\x82\x02\n\x17\x45xecuteInferenceRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x1d\n\x15\x63ontroller_session_id\x18\x02 \x01(\t\x12\x10\n\x08model_id\x18\x03 \x01(\t\x12\x0f\n\x07version\x18\x04 \x01(\t\x12\x1c\n\x14rendered_prompt_utf8\x18\x05 \x01(\x0c\x12\x14\n\x0cinput_tokens\x18\x06 \x01(\r\x12,\n\x06params\x18\x07 \x01(\x0b\x32\x1c.cluster.v1.GenerationParams\x12\x18\n\x10\x64\x65\x61\x64line_unix_ms\x18\x08 \x01(\x04\x12\x15\n\rmetadata_json\x18\t \x01(\x0c\"K\n\x16\x43\x61ncelInferenceRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x1d\n\x15\x63ontroller_session_id\x18\x02 \x01(\t2\x99\x03\n\x12NodeRuntimeService\x12\x42\n\tGetStatus\x12\x19.cluster.v1.StatusRequest\x1a\x1a.cluster.v1.StatusResponse\x12`\n\x11\x45nsureModelLoaded\x12$.cluster.v1.EnsureModelLoadedRequest\x1a%.cluster.v1.EnsureModelLoadedResponse\x12>\n\x0bUnloadModel\x12\x1e.cluster.v1.UnloadModelRequest\x1a\x0f.cluster.v1.Ack\x12U\n\x10\x45xecuteInference\x12#.cluster.v1.ExecuteInferenceRequest\x1a\x1a.cluster.v1.InferenceEvent0\x01\x12\x46\n\x0f\x43\x61ncelInference\x12\".cluster.v1.CancelInferenceRequest\x1a\x0f.cluster.v1.Ackb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x18\x63luster/v1/runtime.proto\x12\ncluster.v1\x1a\x17\x63luster/v1/common.proto\x1a\x17\x63luster/v1/events.proto\"\x0f\n\rStatusRequest\"\xa7\x01\n\x13RuntimeNodeMetadata\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x14\n\x0c\x64isplay_name\x18\x02 \x01(\t\x12\x10\n\x08hostname\x18\x03 \x01(\t\x12\x15\n\ragent_version\x18\x04 \x01(\t\x12\x13\n\x0blisten_host\x18\x05 \x01(\t\x12\x13\n\x0blisten_port\x18\x06 \x01(\r\x12\x16\n\x0eworker_backend\x18\x07 \x01(\t\"y\n\rRuntimeHealth\x12\r\n\x05ready\x18\x01 \x01(\x08\x12\x13\n\x0bhealth_code\x18\x02 \x01(\t\x12\x16\n\x0ehealth_message\x18\x03 \x01(\t\x12,\n\x0e\x61\x66\x66\x65\x63ted_model\x18\x04 \x01(\x0b\x32\x14.cluster.v1.ModelRef\"\xf5\x01\n\x0eStatusResponse\x12-\n\x0cworker_state\x18\x01 \x01(\x0e\x32\x17.cluster.v1.WorkerState\x12+\n\rloaded_models\x18\x02 \x03(\x0b\x32\x14.cluster.v1.ModelRef\x12\x1c\n\x14\x61\x63tive_request_count\x18\x03 \x01(\r\x12\x36\n\rnode_metadata\x18\x04 \x01(\x0b\x32\x1f.cluster.v1.RuntimeNodeMetadata\x12\x31\n\x0eruntime_health\x18\x05 \x01(\x0b\x32\x19.cluster.v1.RuntimeHealth\"\xaf\x01\n\x18\x45nsureModelLoadedRequest\x12\x0f\n\x07node_id\x18\x01 \x01(\t\x12\x10\n\x08model_id\x18\x02 \x01(\t\x12\x0f\n\x07version\x18\x03 \x01(\t\x12\x17\n\x0f\x61rtifact_sha256\x18\x04 \x01(\t\x12\x0f\n\x07preload\x18\x05 \x01(\x08\x12\x18\n\x10\x64\x65\x61\x64line_unix_ms\x18\x06 \x01(\x04\x12\x1b\n\x13\x61rtifact_source_uri\x18\x07 \x01(\t\"\xd7\x01\n\x19\x45nsureModelLoadedResponse\x12\x16\n\x0e\x61lready_loaded\x18\x01 \x01(\x08\x12\x33\n\x0fplacement_state\x18\x02 \x01(\x0e\x32\x1a.cluster.v1.PlacementState\x12>\n\x10\x66\x61ilure_category\x18\x03 \x01(\x0e\x32$.cluster.v1.ModelLoadFailureCategory\x12\x14\n\x0c\x66\x61ilure_code\x18\x04 \x01(\t\x12\x17\n\x0f\x66\x61ilure_message\x18\x05 \x01(\t\"U\n\x12UnloadModelRequest\x12\x10\n\x08model_id\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12\r\n\x05\x66orce\x18\x03 \x01(\x08\x12\r\n\x05\x65vict\x18\x04 \x01(\x08\"\x82\x02\n\x17\x45xecuteInferenceRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x1d\n\x15\x63ontroller_session_id\x18\x02 \x01(\t\x12\x10\n\x08model_id\x18\x03 \x01(\t\x12\x0f\n\x07version\x18\x04 \x01(\t\x12\x1c\n\x14rendered_prompt_utf8\x18\x05 \x01(\x0c\x12\x14\n\x0cinput_tokens\x18\x06 \x01(\r\x12,\n\x06params\x18\x07 \x01(\x0b\x32\x1c.cluster.v1.GenerationParams\x12\x18\n\x10\x64\x65\x61\x64line_unix_ms\x18\x08 \x01(\x04\x12\x15\n\rmetadata_json\x18\t \x01(\x0c\"K\n\x16\x43\x61ncelInferenceRequest\x12\x12\n\nrequest_id\x18\x01 \x01(\t\x12\x1d\n\x15\x63ontroller_session_id\x18\x02 \x01(\t2\x99\x03\n\x12NodeRuntimeService\x12\x42\n\tGetStatus\x12\x19.cluster.v1.StatusRequest\x1a\x1a.cluster.v1.StatusResponse\x12`\n\x11\x45nsureModelLoaded\x12$.cluster.v1.EnsureModelLoadedRequest\x1a%.cluster.v1.EnsureModelLoadedResponse\x12>\n\x0bUnloadModel\x12\x1e.cluster.v1.UnloadModelRequest\x1a\x0f.cluster.v1.Ack\x12U\n\x10\x45xecuteInference\x12#.cluster.v1.ExecuteInferenceRequest\x1a\x1a.cluster.v1.InferenceEvent0\x01\x12\x46\n\x0f\x43\x61ncelInference\x12\".cluster.v1.CancelInferenceRequest\x1a\x0f.cluster.v1.Ackb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -35,18 +35,22 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_STATUSREQUEST']._serialized_start=90
   _globals['_STATUSREQUEST']._serialized_end=105
-  _globals['_STATUSRESPONSE']._serialized_start=108
-  _globals['_STATUSRESPONSE']._serialized_end=246
-  _globals['_ENSUREMODELLOADEDREQUEST']._serialized_start=249
-  _globals['_ENSUREMODELLOADEDREQUEST']._serialized_end=424
-  _globals['_ENSUREMODELLOADEDRESPONSE']._serialized_start=427
-  _globals['_ENSUREMODELLOADEDRESPONSE']._serialized_end=642
-  _globals['_UNLOADMODELREQUEST']._serialized_start=644
-  _globals['_UNLOADMODELREQUEST']._serialized_end=729
-  _globals['_EXECUTEINFERENCEREQUEST']._serialized_start=732
-  _globals['_EXECUTEINFERENCEREQUEST']._serialized_end=990
-  _globals['_CANCELINFERENCEREQUEST']._serialized_start=992
-  _globals['_CANCELINFERENCEREQUEST']._serialized_end=1067
-  _globals['_NODERUNTIMESERVICE']._serialized_start=1070
-  _globals['_NODERUNTIMESERVICE']._serialized_end=1479
+  _globals['_RUNTIMENODEMETADATA']._serialized_start=108
+  _globals['_RUNTIMENODEMETADATA']._serialized_end=275
+  _globals['_RUNTIMEHEALTH']._serialized_start=277
+  _globals['_RUNTIMEHEALTH']._serialized_end=398
+  _globals['_STATUSRESPONSE']._serialized_start=401
+  _globals['_STATUSRESPONSE']._serialized_end=646
+  _globals['_ENSUREMODELLOADEDREQUEST']._serialized_start=649
+  _globals['_ENSUREMODELLOADEDREQUEST']._serialized_end=824
+  _globals['_ENSUREMODELLOADEDRESPONSE']._serialized_start=827
+  _globals['_ENSUREMODELLOADEDRESPONSE']._serialized_end=1042
+  _globals['_UNLOADMODELREQUEST']._serialized_start=1044
+  _globals['_UNLOADMODELREQUEST']._serialized_end=1129
+  _globals['_EXECUTEINFERENCEREQUEST']._serialized_start=1132
+  _globals['_EXECUTEINFERENCEREQUEST']._serialized_end=1390
+  _globals['_CANCELINFERENCEREQUEST']._serialized_start=1392
+  _globals['_CANCELINFERENCEREQUEST']._serialized_end=1467
+  _globals['_NODERUNTIMESERVICE']._serialized_start=1470
+  _globals['_NODERUNTIMESERVICE']._serialized_end=1879
 # @@protoc_insertion_point(module_scope)

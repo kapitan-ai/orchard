@@ -15,11 +15,33 @@ service NodeRuntimeService {
 
 message StatusRequest {}
 
+// Node metadata reported by the node-agent alongside runtime status.
+message RuntimeNodeMetadata {
+  string node_id = 1;
+  string display_name = 2;
+  string hostname = 3;
+  string agent_version = 4;
+  string listen_host = 5;
+  uint32 listen_port = 6;
+  string worker_backend = 7;
+}
+
+// Aggregated runtime health derived from worker state and health probes.
+message RuntimeHealth {
+  bool ready = 1;
+  string health_code = 2;
+  string health_message = 3;
+  ModelRef affected_model = 4;
+}
+
 // M1 assumes one effective worker/runtime path per node for the single-node MVP.
+// Fields 4-5 added for persistent node inventory (M3a Session 1).
 message StatusResponse {
   WorkerState worker_state = 1;
   repeated ModelRef loaded_models = 2;
   uint32 active_request_count = 3;
+  RuntimeNodeMetadata node_metadata = 4;
+  RuntimeHealth runtime_health = 5;
 }
 
 message EnsureModelLoadedRequest {

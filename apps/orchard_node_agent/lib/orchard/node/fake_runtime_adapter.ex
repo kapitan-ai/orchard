@@ -11,6 +11,11 @@ defmodule Orchard.Node.FakeRuntimeAdapter do
   alias Orchard.InferenceEvent.Usage
 
   @impl true
+  def get_status(_adapter_state, _opts) do
+    {:ok, %{ready: true, health_code: "", health_message: ""}}
+  end
+
+  @impl true
   def load_model(%ModelRef{model_id: "fail-load/" <> _} = _model_ref, _opts) do
     {:error, :simulated_load_failure}
   end

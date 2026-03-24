@@ -41,6 +41,30 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         }
 
   @impl true
+  def get_status(%{channel: channel}, opts) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, @rpc_timeout_ms)
+
+    case WorkerRuntimeService.Stub.get_status(
+           channel,
+           %WorkerStatusRequest{},
+           timeout: timeout_ms
+         ) do
+      {:ok, status} ->
+        {:ok,
+         %{
+           ready: Map.get(status, :ready, false),
+           health_code: Map.get(status, :health_code, ""),
+           health_message: Map.get(status, :health_message, "")
+         }}
+
+      {:error, reason} ->
+        {:error, normalize_rpc_error(reason)}
+    end
+  end
+
+  def get_status(_adapter_state, _opts), do: {:error, :worker_unavailable}
+
+  @impl true
   def load_model(%ModelRef{} = model_ref, opts) do
     executable = Keyword.get(opts, :executable, Node.worker_executable())
     backend = Keyword.get(opts, :backend, Node.worker_backend())

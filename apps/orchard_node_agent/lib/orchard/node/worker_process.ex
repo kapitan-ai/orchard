@@ -55,6 +55,20 @@ defmodule Orchard.Node.WorkerProcess do
     GenServer.call(pid, {:cancel_request, request_id})
   end
 
+  @doc """
+  Returns combined worker status: local process state + adapter health.
+
+  Returns `{:ok, status_map}` or `{:error, reason}`.
+  Safe to call from ModelManager — never raises or crashes.
+  """
+  @spec status(pid(), keyword()) :: {:ok, map()} | {:error, term()}
+  def status(pid, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+    GenServer.call(pid, :status, timeout)
+  catch
+    :exit, reason -> {:error, {:worker_exit, reason}}
+  end
+
   @impl true
   def init(opts) do
     model_ref = Keyword.fetch!(opts, :model_ref)
@@ -137,6 +151,36 @@ defmodule Orchard.Node.WorkerProcess do
       true ->
         start_generation(request_id, request, subscriber, state)
     end
+  end
+
+  def handle_call(:status, _from, state) do
+    adapter_health =
+      if state.loaded? and state.adapter_state != nil do
+        case state.adapter.get_status(state.adapter_state, timeout_ms: 1_000) do
+          {:ok, health} ->
+            health
+
+          {:error, _reason} ->
+            %{
+              ready: false,
+              health_code: "worker_status_error",
+              health_message: "worker status request failed"
+            }
+        end
+      else
+        %{ready: false, health_code: "not_loaded", health_message: "model not yet loaded"}
+      end
+
+    status = %{
+      model_ref: state.model_ref,
+      loaded?: state.loaded?,
+      active_request_count: map_size(state.requests),
+      ready: adapter_health[:ready] || false,
+      health_code: adapter_health[:health_code] || "",
+      health_message: adapter_health[:health_message] || ""
+    }
+
+    {:reply, {:ok, status}, state}
   end
 
   def handle_call({:cancel_request, request_id}, _from, state) do
