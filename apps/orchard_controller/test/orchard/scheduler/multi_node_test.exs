@@ -406,6 +406,202 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     end
   end
 
+  # -- Edge cases (M3b Session 4) --
+
+  describe "edge case: all nodes degraded" do
+    setup do
+      put_inference(
+        runtime_client_targets: [
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.2", port: 50_062]
+        ]
+      )
+
+      :ok
+    end
+
+    test "still schedules when all nodes are degraded, uses existing ranking" do
+      node_a =
+        insert_node!(%{
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :degraded
+        })
+
+      node_b =
+        insert_node!(%{
+          advertise_addr: "10.0.0.2",
+          rpc_port: 50_062,
+          health: :degraded
+        })
+
+      # Node B has lower request count — should win among degraded peers
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          active_request_count: 3,
+          health: %{ready: true, health_code: "warn", health_message: "degraded"}
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id,
+          host: "10.0.0.2",
+          port: 50_062,
+          active_request_count: 1,
+          health: %{ready: true, health_code: "warn", health_message: "degraded"}
+        )
+      )
+
+      request = canonical_request()
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_b.id
+      assert schedule.candidate_count == 2
+    end
+
+    test "prefers loaded model even when all degraded" do
+      node_a =
+        insert_node!(%{
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :degraded
+        })
+
+      node_b =
+        insert_node!(%{
+          advertise_addr: "10.0.0.2",
+          rpc_port: 50_062,
+          health: :degraded
+        })
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          health: %{ready: true, health_code: "warn", health_message: "degraded"}
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id,
+          host: "10.0.0.2",
+          port: 50_062,
+          health: %{ready: true, health_code: "warn", health_message: "degraded"}
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_a.id
+      assert schedule.selected_tier == "loaded"
+    end
+  end
+
+  describe "edge case: all nodes unreachable" do
+    test "falls back to SingleNode when all persisted nodes are unreachable" do
+      put_inference(
+        runtime_client_targets: [
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.2", port: 50_062]
+        ]
+      )
+
+      # Nodes exist but are unreachable (not schedulable)
+      insert_node!(%{
+        advertise_addr: "10.0.0.1",
+        rpc_port: 50_061,
+        health: :unreachable
+      })
+
+      insert_node!(%{
+        advertise_addr: "10.0.0.2",
+        rpc_port: 50_062,
+        health: :unreachable
+      })
+
+      # Probes also fail — no stubs configured
+      request = canonical_request()
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.strategy == :single_node
+    end
+  end
+
+  describe "edge case: mixed legacy and modern agents" do
+    setup do
+      put_inference(
+        runtime_client_targets: [
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.2", port: 50_062]
+        ]
+      )
+
+      :ok
+    end
+
+    test "schedules to modern node when legacy returns no metadata" do
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      # Legacy agent: successful probe but no metadata
+      stub_probe("10.0.0.1", 50_061, %{
+        node_metadata: nil,
+        runtime_health: nil,
+        loaded_models: [],
+        active_request_count: 0
+      })
+
+      # Modern agent: full metadata
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request()
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_b.id
+      assert schedule.candidate_count == 1
+    end
+
+    test "falls back to SingleNode when all probes return legacy (no metadata)" do
+      # Both targets return successful probes but with no metadata
+      stub_probe("10.0.0.1", 50_061, %{
+        node_metadata: nil,
+        runtime_health: nil,
+        loaded_models: [],
+        active_request_count: 0
+      })
+
+      stub_probe("10.0.0.2", 50_062, %{
+        node_metadata: nil,
+        runtime_health: nil,
+        loaded_models: [],
+        active_request_count: 0
+      })
+
+      request = canonical_request()
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.strategy == :single_node
+    end
+  end
+
   # -- Fallback target mismatch regression (P1-1 review fix) --
 
   describe "fallback target mismatch" do

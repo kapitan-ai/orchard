@@ -175,6 +175,48 @@ defmodule OrchardConsole.NodesLiveTest.DiscoveryRuntimeClient do
   def uuid, do: @discovery_uuid
 end
 
+defmodule OrchardConsole.NodesLiveTest.RuntimeMixedCompatibilityStub do
+  @moduledoc "Mixed cluster: one modern target with full metadata, one legacy target without."
+
+  def cluster_snapshot(_opts \\ []) do
+    [
+      %{
+        target: [host: "127.0.0.1", port: 50071],
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [%{model_id: "model-a", version: "v1"}],
+        active_request_count: 1,
+        node_metadata: %{
+          node_id: "550e8400-e29b-41d4-a716-446655440000",
+          display_name: "modern-node",
+          hostname: "modern.local",
+          listen_host: "127.0.0.1",
+          listen_port: 50071,
+          agent_version: "0.2.0",
+          worker_backend: "mlx"
+        },
+        runtime_health: %{
+          ready: true,
+          health_code: nil,
+          health_message: nil,
+          affected_model: nil
+        }
+      },
+      %{
+        target: [host: "10.0.0.5", port: 50061],
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: nil,
+        runtime_health: nil
+      }
+    ]
+  end
+end
+
 defmodule OrchardConsole.NodesLiveTest do
   use Orchard.ConnCase, async: false
 
@@ -420,6 +462,44 @@ defmodule OrchardConsole.NodesLiveTest do
       {:ok, _view, html} = live(conn, "/console/nodes")
 
       refute html =~ "nodes-runtime-compat-"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Mixed legacy + modern cluster (M3b Session 4)
+  # ---------------------------------------------------------------------------
+
+  describe "mixed legacy and modern cluster" do
+    test "both target cards render, only legacy shows compatibility warning", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeMixedCompatibilityStub)
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      # Both target cards rendered
+      assert html =~ ~s(id="nodes-runtime-card-127-0-0-1-50071")
+      assert html =~ ~s(id="nodes-runtime-card-10-0-0-5-50061")
+
+      # Modern target shows metadata and models
+      assert html =~ "modern-node"
+      assert html =~ "model-a"
+
+      # Legacy target shows compatibility warning
+      assert html =~ "nodes-runtime-compat-10-0-0-5-50061"
+      assert html =~ "does not report metadata or health"
+
+      # Modern target does NOT show compatibility warning
+      refute html =~ "nodes-runtime-compat-127-0-0-1-50071"
+    end
+
+    test "cluster summary counts based on reachability not metadata", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeMixedCompatibilityStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      summary = element(view, "#nodes-live-cluster-card") |> render()
+      # Both targets are reachable (status: :ok), even the legacy one
+      assert summary =~ "2 target(s) configured"
+      assert summary =~ "2 reachable"
     end
   end
 

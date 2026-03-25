@@ -107,6 +107,16 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert output =~ "node-b"
       assert output =~ "node-c"
     end
+
+    test "unreachable node appears in summary and table" do
+      insert_node!(display_name: "ghost-node", health: :unreachable)
+
+      assert {:ok, output} = NodesCmd.run(["list"])
+
+      assert output =~ "Summary: total=1 healthy=0 degraded=0 unhealthy=0 unreachable=1"
+      assert output =~ "ghost-node"
+      assert output =~ "unreachable"
+    end
   end
 
   # ---------------------------------------------------------------------------

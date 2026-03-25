@@ -236,34 +236,9 @@ end
 
 # Keep these release-safe defaults aligned with config/m1_runtime_defaults.exs.
 parse_runtime_targets = fn env_name ->
-  case System.get_env(env_name) do
-    nil ->
-      []
-
-    "" ->
-      []
-
-    value ->
-      value
-      |> String.split(",")
-      |> Enum.map(&String.trim/1)
-      |> Enum.reject(&(&1 == ""))
-      |> Enum.map(fn segment ->
-        case String.split(segment, ":") do
-          [host, port_str] when host != "" ->
-            case Integer.parse(port_str) do
-              {port, ""} when port in 1..65_535 ->
-                [host: host, port: port]
-
-              _ ->
-                raise "environment variable #{env_name} has invalid port in segment #{inspect(segment)}"
-            end
-
-          _ ->
-            raise "environment variable #{env_name} has invalid host:port segment #{inspect(segment)}"
-        end
-      end)
-  end
+  env_name
+  |> System.get_env()
+  |> Orchard.Config.RuntimeTargetParser.parse_csv!(env_name)
 end
 
 default_controller_inference = fn root ->
