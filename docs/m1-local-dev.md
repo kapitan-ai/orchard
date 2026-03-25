@@ -1,6 +1,8 @@
 # M1 Local Development
 
-All-in-one local boot for the M1 single-node inference MVP.
+Local development setup for the Orchard inference stack. Default mode is
+single-node; multi-node source-dev testing is supported via env vars
+(see [Two-Node Source-Dev Cluster Testing](#two-node-source-dev-cluster-testing)).
 
 ## Prerequisites
 
@@ -251,7 +253,8 @@ ORCHARD_RUNTIME_CLIENT_TARGETS="127.0.0.1:50071,<remote-tailscale-ip>:50071" \
 
 The local node-agent still binds to `127.0.0.1:50071`. The controller targets
 both local and remote nodes. The scheduler auto-selects `MultiNode` when it
-sees >1 target.
+sees >1 target. Use the Tailscale IPv4 address (`100.x.y.z`) — IPv6 addresses
+are not supported in the target list.
 
 ### Remote node-agent host (Tamingsari)
 
@@ -594,6 +597,6 @@ iex -S mix phx.server
 - Source dev gRPC on port 50071; packaged installs on 50061
 - Node-agent gRPC remains loopback and non-TLS in M1
 - Single implicit tenant (no auth/RBAC — deferred to M2)
-- Single local node (no multi-node scheduling — deferred to M4)
+- Multi-node is supported for source-dev testing only (production/packaged multi-node — M4)
 - No distributed Erlang across machines
 - Model import from local filesystem only (no remote download)

@@ -44,7 +44,9 @@ dev_node_agent_listen_host =
 
 # Inline parser for ORCHARD_RUNTIME_CLIENT_TARGETS (comma-separated host:port).
 # Intentionally inline — RuntimeTargetParser may not be compiled when dev.exs
-# evaluates on clean builds. Mirrors runtime.exs/RuntimeTargetParser semantics.
+# evaluates on clean builds. Mirrors RuntimeTargetParser.parse_csv!/2 semantics.
+# SYNC NOTE: if RuntimeTargetParser parse rules change, update this parser too.
+# See apps/orchard_controller/lib/orchard/config/runtime_target_parser.ex
 parse_runtime_targets = fn env_name ->
   case System.get_env(env_name) do
     nil ->
