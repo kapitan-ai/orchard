@@ -109,13 +109,20 @@ The product is **Orchard Console**. The parent brand "Kapitan" is not surfaced i
 
 ### App Icon (Neural Tree)
 
-A neural tree on navy gradient background:
-- Tree trunk (Forest) branching upward
-- Sage/light-green processing nodes at branch junctions
-- Gold "fruit" circles at the top (inference outputs)
-- Navy-to-dark-navy gradient background with rounded corners
+**Style:** Apple Liquid Glass (updated 2026-03-25, previously flat vector)
+
+A neural tree rendered in translucent glass materials on a navy glass background:
+- Forest green (#1B5E20) glass trunk branching upward from a glowing root node
+- Sage green (#81C784) frosted glass spherical nodes at branch junctions with soft inner glow
+- Three gold (#FDD835) glass spheres at the crown as "fruit" (inference outputs) with specular highlights and warm halos
+- Deep navy-to-dark-navy frosted glass background with subtle gradient depth
+- Rounded superellipse (squircle) corners
+- Bold simplified silhouette designed for legibility at small sizes (32px favicon)
 
 Represents: neural network (AI/inference) + tree (orchard/growth/cultivation)
+
+**Generation details:** FLUX Pro 1.1 via fal.ai, forest green variant, seed 42.
+Source prompt and iteration history preserved in `orchard-workbench/notes/`.
 
 ### Combined Lockup
 
@@ -150,11 +157,16 @@ Icon above, wordmark below (exception to sidebar rule — login is a centered co
 
 ### Favicon
 
-Use the full neural tree icon at generated sizes. The current SVG design has enough
-contrast and geometric simplicity to remain legible at 32x32 and 16x16.
+Use the Liquid Glass neural tree icon at generated sizes. The bold silhouette and
+high-contrast gold-on-navy design remains legible at 32x32 and 16x16.
 
-If legibility degrades at 16x16 in practice, create a simplified glyph: three Gold
-circles in a triangular arrangement on Navy background (the "fruit" motif).
+All favicon/PWA assets are regenerated from the 1024×1024 master using `sips`:
+
+```bash
+sips -z 32 32 assets/brand/orchard-app-icon-1024.png --out apps/orchard_controller/priv/static/images/favicon-32x32.png
+sips -z 180 180 assets/brand/orchard-app-icon-1024.png --out apps/orchard_controller/priv/static/images/apple-touch-icon.png
+sips -z 192 192 assets/brand/orchard-app-icon-1024.png --out apps/orchard_controller/priv/static/images/icon-192.png
+```
 
 ### Phoenix LiveView Component
 
@@ -297,8 +309,8 @@ module.exports = {
 
 ```
 assets/brand/
-├── orchard-icon-neural-v5e.svg         # Editable icon source
-├── orchard-app-icon-1024.png           # Master PNG (1024×1024)
+├── orchard-icon-neural-v5e.svg         # Legacy flat vector icon (v2)
+├── orchard-app-icon-1024.png           # Master PNG (1024×1024) — Liquid Glass
 ├── orchard-logo-medium-transparent.png # Wordmark 200×66
 ├── orchard-logo-large-transparent.png  # Wordmark 240×76
 └── orchard-logo-xlarge-transparent.png # Wordmark 360×112
@@ -361,3 +373,17 @@ Refined from 5 to 4 colors by removing mid-green (#43A047) overlap.
 - Changed lockup to icon-left + text-right for sidebar efficiency
 - Moved brand bar to standalone decorative element
 - Added typography rules: monospace for data, sans-serif for UI
+
+### v3 Icon Refresh — Liquid Glass (2026-03-25)
+
+- Replaced flat vector neural tree icon (v5e SVG) with Apple Liquid Glass style
+- Generated via FLUX Pro 1.1 on fal.ai (forest green variant, seed 42)
+- Preserves neural tree motif: trunk → branches → 3 gold fruit spheres
+- Tree rendered in translucent forest green glass (brand-faithful #1B5E20)
+- Gold spheres with specular highlights and warm halos
+- Bold simplified silhouette optimized for favicon legibility at 32px
+- Navy frosted glass background with subtle gradient depth
+- Works on both light and dark dashboard backgrounds as self-contained squircle
+- Evaluated against: Recraft V3 (digital/realistic/vector), FLUX Pro cyan variant,
+  warm emerald variants, multiple seed explorations
+- Legacy SVG retained as `orchard-icon-neural-v5e.svg` for reference
