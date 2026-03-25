@@ -34,7 +34,46 @@ dev_runtime_port =
       raise "Port mismatch: ORCHARD_NODE_AGENT_LISTEN_PORT=#{a} vs ORCHARD_RUNTIME_CLIENT_PORT=#{b}"
   end
 
-dev_runtime_host = "127.0.0.1"
+# Dev runtime hosts — separate bind (node-agent) and connect (controller) for
+# 2-node source-dev cluster testing. Defaults preserve single-node loopback.
+dev_runtime_client_host =
+  System.get_env("ORCHARD_RUNTIME_CLIENT_HOST") || "127.0.0.1"
+
+dev_node_agent_listen_host =
+  System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1"
+
+# Inline parser for ORCHARD_RUNTIME_CLIENT_TARGETS (comma-separated host:port).
+# Intentionally inline — RuntimeTargetParser may not be compiled when dev.exs
+# evaluates on clean builds. Mirrors runtime.exs/RuntimeTargetParser semantics.
+parse_runtime_targets = fn env_name ->
+  case System.get_env(env_name) do
+    nil ->
+      []
+
+    value ->
+      value
+      |> String.split(",")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+      |> Enum.map(fn segment ->
+        case String.split(segment, ":") do
+          [host, port_str] when host != "" ->
+            case Integer.parse(port_str) do
+              {port, ""} when port > 0 and port < 65536 ->
+                [host: host, port: port]
+
+              _ ->
+                raise "environment variable #{env_name} has invalid port in segment #{inspect(segment)}"
+            end
+
+          _ ->
+            raise "environment variable #{env_name} has invalid host:port segment #{inspect(segment)}"
+        end
+      end)
+  end
+end
+
+dev_runtime_targets = parse_runtime_targets.("ORCHARD_RUNTIME_CLIENT_TARGETS")
 
 config :orchard_controller, Orchard.Repo,
   username: System.get_env("PGUSER") || "postgres",
@@ -48,7 +87,8 @@ config :orchard_controller,
   inference:
     Keyword.merge(
       Orchard.Config.M1RuntimeDefaults.controller_inference(dev_root),
-      runtime_client_target: [host: dev_runtime_host, port: dev_runtime_port],
+      runtime_client_target: [host: dev_runtime_client_host, port: dev_runtime_port],
+      runtime_client_targets: dev_runtime_targets,
       tokenizer_executable:
         System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"])
@@ -58,7 +98,7 @@ config :orchard_node_agent,
   runtime:
     Keyword.merge(
       Orchard.Config.M1RuntimeDefaults.node_runtime(dev_root),
-      listen_address: [host: dev_runtime_host, port: dev_runtime_port],
+      listen_address: [host: dev_node_agent_listen_host, port: dev_runtime_port],
       worker_executable:
         System.get_env("ORCHARD_WORKER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"])
