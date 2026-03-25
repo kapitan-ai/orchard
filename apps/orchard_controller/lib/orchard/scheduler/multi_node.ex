@@ -130,14 +130,18 @@ defmodule Orchard.Scheduler.MultiNode do
                   }
               end
 
-            {:error, _} ->
+            {:error, reason} ->
+              # Persist transport-like probe failures best-effort
+              Nodes.record_transport_failure(target, reason, observed_at)
               nil
           end
         after
           client.disconnect(channel)
         end
 
-      {:error, _} ->
+      {:error, reason} ->
+        # Persist transport-like connect failures best-effort
+        Nodes.record_transport_failure(target, reason, observed_at)
         nil
     end
   end

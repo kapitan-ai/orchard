@@ -372,20 +372,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp mark_transport_failure(target, reason) do
-    if transport_failure_reason?(reason) do
-      Orchard.Nodes.mark_target_unreachable(target, DateTime.utc_now())
-    end
+    Orchard.Nodes.record_transport_failure(target, reason, DateTime.utc_now())
   rescue
     error ->
       Logger.warning(
         "Failed to mark target transport failure for #{inspect(target)}: #{inspect(error)}"
       )
   end
-
-  defp transport_failure_reason?({:connect_failed, _reason}), do: true
-  defp transport_failure_reason?(:node_unavailable), do: true
-  defp transport_failure_reason?(:node_timeout), do: true
-  defp transport_failure_reason?(_reason), do: false
 
   defp emit_event(_event, _request_id, nil), do: :ok
 

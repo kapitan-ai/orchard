@@ -18,7 +18,12 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     Target key is `{host, port}`.
     """
     def connect(target) do
-      {:ok, target}
+      key = {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
+
+      case Process.get({:stub_connect, key}) do
+        nil -> {:ok, target}
+        error -> error
+      end
     end
 
     def status(target, _opts) do
@@ -27,6 +32,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       case Process.get({:stub_status, key}) do
         nil -> {:error, :unavailable}
         :error -> {:error, :probe_failed}
+        {:error, _} = error -> error
         response -> {:ok, response}
       end
     end
@@ -96,6 +102,10 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   defp stub_probe(host, port, response) do
     Process.put({:stub_status, {host, port}}, response)
+  end
+
+  defp stub_connect_failure(host, port, reason) do
+    Process.put({:stub_connect, {host, port}}, {:error, reason})
   end
 
   defp put_inference(overrides) do
@@ -599,6 +609,215 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.strategy == :single_node
+    end
+  end
+
+  # -- Probe-failure health persistence (M3c Session 1) --
+
+  describe "probe-failure health persistence" do
+    setup do
+      put_inference(
+        runtime_client_targets: [
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.2", port: 50_062]
+        ]
+      )
+
+      :ok
+    end
+
+    test "status transport failure marks fresh node as degraded" do
+      now = DateTime.utc_now()
+      observed_at = DateTime.add(now, 5, :second)
+
+      node_a =
+        insert_node!(%{
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :healthy,
+          last_heartbeat_at: now
+        })
+
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      # Target A: status returns transport failure
+      stub_probe("10.0.0.1", 50_061, {:error, :node_timeout})
+
+      # Target B: healthy
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request()
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(request,
+                 status_client: StubClient,
+                 observed_at: observed_at
+               )
+
+      # Node B wins scheduling
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_b.id
+
+      # Node A health was updated to degraded
+      reloaded = Repo.get!(Node, node_a.id)
+      assert reloaded.health == :degraded
+    end
+
+    test "connect transport failure marks stale node as unreachable" do
+      stale_hb = DateTime.add(DateTime.utc_now(), -120_000, :millisecond)
+      observed_at = DateTime.utc_now()
+
+      node_a =
+        insert_node!(%{
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :healthy,
+          last_heartbeat_at: stale_hb
+        })
+
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      # Target A: connect fails
+      stub_connect_failure("10.0.0.1", 50_061, {:connect_failed, :econnrefused})
+
+      # Target B: healthy
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request()
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(request,
+                 status_client: StubClient,
+                 observed_at: observed_at
+               )
+
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_b.id
+
+      # Node A marked unreachable (stale heartbeat beyond threshold)
+      reloaded = Repo.get!(Node, node_a.id)
+      assert reloaded.health == :unreachable
+    end
+
+    test "successful probe with missing metadata does NOT mutate failure health" do
+      now = DateTime.utc_now()
+
+      node_a =
+        insert_node!(%{
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :healthy,
+          last_heartbeat_at: now
+        })
+
+      # Successful status but no metadata — not a transport failure
+      stub_probe("10.0.0.1", 50_061, %{
+        node_metadata: nil,
+        runtime_health: nil,
+        loaded_models: [],
+        active_request_count: 0
+      })
+
+      # Second target also fails probe (no stub)
+      request = canonical_request()
+
+      _schedule =
+        MultiNode.schedule(request,
+          status_client: StubClient,
+          observed_at: DateTime.add(now, 5, :second)
+        )
+
+      # Node A health unchanged — no transport failure occurred
+      reloaded = Repo.get!(Node, node_a.id)
+      assert reloaded.health == :healthy
+    end
+
+    test "non-transport status error does not mutate health" do
+      now = DateTime.utc_now()
+
+      node_a =
+        insert_node!(%{
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :healthy,
+          last_heartbeat_at: now
+        })
+
+      # :error stub returns {:error, :probe_failed} — not a transport reason
+      stub_probe("10.0.0.1", 50_061, :error)
+
+      # Second target also fails
+      request = canonical_request()
+
+      _schedule =
+        MultiNode.schedule(request,
+          status_client: StubClient,
+          observed_at: DateTime.add(now, 5, :second)
+        )
+
+      # Node A health unchanged
+      reloaded = Repo.get!(Node, node_a.id)
+      assert reloaded.health == :healthy
+    end
+
+    test "mixed cluster: failed target downgraded, healthy target wins scheduling" do
+      now = DateTime.utc_now()
+      observed_at = DateTime.add(now, 5, :second)
+
+      node_a =
+        insert_node!(%{
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :healthy,
+          last_heartbeat_at: now
+        })
+
+      node_b =
+        insert_node!(%{
+          advertise_addr: "10.0.0.2",
+          rpc_port: 50_062,
+          health: :healthy,
+          last_heartbeat_at: now
+        })
+
+      # Target A: connect fails with transport error
+      stub_connect_failure("10.0.0.1", 50_061, :node_timeout)
+
+      # Target B: healthy and schedulable
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request()
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(request,
+                 status_client: StubClient,
+                 observed_at: observed_at
+               )
+
+      # Node B wins
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_b.id
+      assert schedule.candidate_count == 1
+
+      # Node A degraded
+      reloaded_a = Repo.get!(Node, node_a.id)
+      assert reloaded_a.health == :degraded
+
+      # Node B still healthy
+      reloaded_b = Repo.get!(Node, node_b.id)
+      assert reloaded_b.health == :healthy
     end
   end
 

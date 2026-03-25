@@ -41,6 +41,13 @@ defmodule Orchard.NodesRepoOffTest do
                  DateTime.utc_now()
                )
 
+      assert :noop =
+               Nodes.record_transport_failure(
+                 [host: "10.0.0.1", port: 9444],
+                 :node_timeout,
+                 DateTime.utc_now()
+               )
+
       assert Nodes.schedulable_nodes() == []
     end)
   end

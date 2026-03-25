@@ -170,6 +170,30 @@ defmodule Orchard.Nodes do
   end
 
   @doc """
+  Records a transport-like failure for a target and persists health degradation.
+
+  Classifies the given `reason` and, if it matches a transport failure pattern,
+  delegates to `mark_target_unreachable/2`. Non-transport reasons are ignored.
+
+  Transport failure reasons:
+  - `{:connect_failed, _}` — gRPC channel could not be established
+  - `:node_unavailable` — node not reachable
+  - `:node_timeout` — probe or RPC timed out
+
+  Returns:
+  - `{:ok, %Node{}}` when health was updated
+  - `:noop` for non-transport reasons, unknown targets, or repo unavailable
+  """
+  @spec record_transport_failure(keyword(), term(), DateTime.t()) :: {:ok, Node.t()} | :noop
+  def record_transport_failure(target, reason, observed_at) do
+    if transport_failure_reason?(reason) do
+      mark_target_unreachable(target, observed_at)
+    else
+      :noop
+    end
+  end
+
+  @doc """
   Marks a node as unreachable by target address.
 
   Only updates health on an existing node. Does not insert new rows
@@ -439,4 +463,11 @@ defmodule Orchard.Nodes do
       by_health: zero_fill(%{}, Node.health_values())
     }
   end
+
+  # -- Transport Failure Classification --
+
+  defp transport_failure_reason?({:connect_failed, _reason}), do: true
+  defp transport_failure_reason?(:node_unavailable), do: true
+  defp transport_failure_reason?(:node_timeout), do: true
+  defp transport_failure_reason?(_reason), do: false
 end

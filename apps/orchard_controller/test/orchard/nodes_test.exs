@@ -574,6 +574,111 @@ defmodule Orchard.NodesTest do
     end
   end
 
+  # -- record_transport_failure/3 --
+
+  describe "record_transport_failure/3" do
+    test "fresh node + :node_timeout → degraded" do
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.70",
+          rpc_port: 9444,
+          health: :healthy,
+          last_heartbeat_at: hb_time
+        })
+
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 make_target("10.0.0.70", 9444),
+                 :node_timeout,
+                 observed_at
+               )
+
+      assert marked.id == node.id
+      assert marked.health == :degraded
+    end
+
+    test "stale node + {:connect_failed, _} → unreachable" do
+      hb_time = DateTime.utc_now()
+
+      insert_node!(%{
+        advertise_addr: "10.0.0.71",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: hb_time
+      })
+
+      observed_at = DateTime.add(hb_time, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 make_target("10.0.0.71", 9444),
+                 {:connect_failed, :econnrefused},
+                 observed_at
+               )
+
+      assert marked.health == :unreachable
+    end
+
+    test ":node_unavailable is classified as transport failure" do
+      hb_time = DateTime.utc_now()
+
+      insert_node!(%{
+        advertise_addr: "10.0.0.72",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: hb_time
+      })
+
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 make_target("10.0.0.72", 9444),
+                 :node_unavailable,
+                 observed_at
+               )
+
+      assert marked.health == :degraded
+    end
+
+    test "non-transport reason returns :noop without mutating health" do
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.73",
+          rpc_port: 9444,
+          health: :healthy,
+          last_heartbeat_at: hb_time
+        })
+
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert :noop =
+               Nodes.record_transport_failure(
+                 make_target("10.0.0.73", 9444),
+                 :probe_failed,
+                 observed_at
+               )
+
+      reloaded = Repo.get!(Orchard.Nodes.Node, node.id)
+      assert reloaded.health == :healthy
+    end
+
+    test "unknown target returns :noop" do
+      assert :noop =
+               Nodes.record_transport_failure(
+                 make_target("10.0.0.99", 9999),
+                 :node_timeout,
+                 DateTime.utc_now()
+               )
+    end
+  end
+
   # -- Schedulable nodes --
 
   describe "schedulable_nodes/0" do
