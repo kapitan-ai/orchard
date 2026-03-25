@@ -560,18 +560,16 @@ defmodule OrchardConsole.CoreComponentsTest do
       refute html =~ "Playground \u2014 coming soon"
     end
 
-    test "marks only Requests as disabled" do
+    test "all nav items are enabled" do
       assigns = %{}
       html = render_heex(~H|<.sidebar_nav active={:overview} />|)
 
-      assert html =~ ~s(aria-disabled="true")
-      assert html =~ "Requests \u2014 coming soon"
+      refute html =~ ~s(aria-disabled="true")
+      refute html =~ "coming soon"
+      assert html =~ "/console/requests"
       assert html =~ "/console/models"
       assert html =~ "/console/model-hub"
       assert html =~ "/console/tenants"
-      refute html =~ "Models \u2014 coming soon"
-      refute html =~ "Model Hub \u2014 coming soon"
-      refute html =~ "Tenants \u2014 coming soon"
     end
 
     test "active item uses navy accent" do
@@ -599,15 +597,12 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "bg-navy/10"
     end
 
-    test "disabled Requests shows active styling when active" do
+    test "Requests shows active styling when active" do
       assigns = %{}
       html = render_heex(~H|<.sidebar_nav active={:requests} />|)
 
-      # Requests is still non-clickable (no link/navigate)
-      refute html =~ "/console/requests"
-      # Active item drops disabled semantics and "coming soon" tooltip
-      refute html =~ "Requests \u2014 coming soon"
-      # Shows active styling
+      assert html =~ "/console/requests"
+      refute html =~ "coming soon"
       assert html =~ ~s(aria-current="page")
       assert html =~ "text-navy"
     end

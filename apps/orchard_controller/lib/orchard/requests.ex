@@ -253,6 +253,25 @@ defmodule Orchard.Requests do
   end
 
   @doc """
+  Returns recent requests ordered by insertion time (newest first).
+
+  Ordering is deterministic: `inserted_at DESC`, then `id DESC` for
+  tie-breaking. No preloads are applied — this is intended for cheap
+  polling by the console requests index page.
+
+  Returns `[]` when no requests exist.
+  """
+  @spec list_recent_requests(pos_integer()) :: [Request.t()]
+  def list_recent_requests(limit \\ 50) do
+    limit = if is_integer(limit) and limit > 0, do: limit, else: 50
+
+    Request
+    |> order_by([r], desc: r.inserted_at, desc: r.id)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  @doc """
   Returns a summary of request counts grouped by lifecycle state.
 
   All states from `Request.states/0` are present in `by_state`, zero-filled

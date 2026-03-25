@@ -884,7 +884,7 @@ defmodule OrchardConsole.CoreComponents do
       path: "/console/tenants",
       enabled: true
     },
-    %{key: :requests, label: "Requests", icon: "hero-document-text", path: nil, enabled: false}
+    %{key: :requests, label: "Requests", icon: "hero-document-text", path: "/console/requests", enabled: true}
   ]
 
   @doc """

@@ -199,6 +199,18 @@ defmodule OrchardConsole.AuthTest do
       assert conn.status == 404
     end
 
+    test "returns 404 for /console/requests when console is disabled", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: false,
+        auth: :none,
+        username: nil,
+        password: nil
+      )
+
+      conn = get(conn, "/console/requests")
+      assert conn.status == 404
+    end
+
     test "returns 404 for /console/requests/:id when console is disabled", %{conn: conn} do
       Application.put_env(:orchard_controller, :console,
         enabled: false,
@@ -220,6 +232,18 @@ defmodule OrchardConsole.AuthTest do
       )
 
       conn = get(conn, "/console/playground")
+      assert conn.status == 401
+    end
+
+    test "returns 401 for /console/requests in basic auth without credentials", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn = get(conn, "/console/requests")
       assert conn.status == 401
     end
 
@@ -258,6 +282,31 @@ defmodule OrchardConsole.AuthTest do
       follow_up = conn |> recycle() |> get("/console/playground")
       assert follow_up.status == 200
       assert follow_up.resp_body =~ "Playground"
+    end
+
+    test "redirects on first auth for /console/requests", %{conn: conn} do
+      Application.put_env(:orchard_controller, :console,
+        enabled: true,
+        auth: :basic,
+        username: "operator",
+        password: "secret"
+      )
+
+      conn =
+        conn
+        |> put_req_header(
+          "authorization",
+          Plug.BasicAuth.encode_basic_auth("operator", "secret")
+        )
+        |> get("/console/requests")
+
+      assert conn.status == 302
+      assert redirected_to(conn) == "/console/requests"
+
+      # Follow-up loads the page
+      follow_up = conn |> recycle() |> get("/console/requests")
+      assert follow_up.status == 200
+      assert follow_up.resp_body =~ "Requests"
     end
 
     test "redirects on first auth for /console/requests/:id", %{conn: conn} do

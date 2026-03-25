@@ -679,8 +679,8 @@ defmodule OrchardConsole.RequestLiveTest do
 
       assert html =~ ~s(aria-current="page")
       assert html =~ "text-navy"
-      # No clickable requests index link
-      refute html =~ "/console/requests\""
+      # Requests nav is now an enabled link
+      assert html =~ "/console/requests"
     end
 
     test "includes brand bar and shell", %{conn: conn} do
@@ -704,16 +704,16 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
-      assert html =~ "request-back-to-playground"
-      assert html =~ "/console/playground"
-      assert html =~ "Back to Playground"
+      assert html =~ "request-back-to-requests"
+      assert html =~ "/console/requests"
+      assert html =~ "Back to Requests"
     end
 
     test "back-link renders on not-found page", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/requests/nonexistent-id")
 
-      assert html =~ "request-back-to-playground"
-      assert html =~ "/console/playground"
+      assert html =~ "request-back-to-requests"
+      assert html =~ "/console/requests"
     end
 
     test "freshness shows auto-refreshing for active request", %{conn: conn} do

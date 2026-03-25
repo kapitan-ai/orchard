@@ -413,6 +413,71 @@ defmodule Orchard.RequestsTest do
     end
   end
 
+  describe "list_recent_requests/1" do
+    test "returns empty list when no requests" do
+      assert Requests.list_recent_requests() == []
+    end
+
+    test "returns requests in reverse chronological order" do
+      r1 = create_request!(%{public_id: "req_list_1"})
+      r2 = create_request!(%{public_id: "req_list_2"})
+      r3 = create_request!(%{public_id: "req_list_3"})
+
+      result = Requests.list_recent_requests()
+      ids = Enum.map(result, & &1.id)
+
+      # Most recent first
+      assert ids == [r3.id, r2.id, r1.id]
+    end
+
+    test "respects limit parameter" do
+      create_request!(%{public_id: "req_limit_1"})
+      create_request!(%{public_id: "req_limit_2"})
+      create_request!(%{public_id: "req_limit_3"})
+
+      result = Requests.list_recent_requests(2)
+      assert length(result) == 2
+    end
+
+    test "tie-breaks on id DESC for equal inserted_at" do
+      r1 = create_request!(%{public_id: "req_tie_1"})
+      r2 = create_request!(%{public_id: "req_tie_2"})
+
+      # Force identical inserted_at
+      fixed_time = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+      import Ecto.Query
+
+      Repo.update_all(
+        from(r in Request, where: r.id in [^r1.id, ^r2.id]),
+        set: [inserted_at: fixed_time]
+      )
+
+      result = Requests.list_recent_requests()
+      ids = Enum.map(result, & &1.id)
+
+      # Higher UUID (later binary sort) comes first with DESC
+      expected = Enum.sort([r1.id, r2.id], :desc)
+      assert ids == expected
+    end
+
+    test "does not preload associations" do
+      create_request!(%{public_id: "req_preload_1"})
+
+      [request] = Requests.list_recent_requests()
+      assert %Ecto.Association.NotLoaded{} = request.tenant
+      assert %Ecto.Association.NotLoaded{} = request.api_key
+    end
+
+    test "normalizes invalid limit to 50" do
+      create_request!(%{public_id: "req_norm_1"})
+
+      assert [_] = Requests.list_recent_requests(-1)
+      assert [_] = Requests.list_recent_requests(0)
+      assert [_] = Requests.list_recent_requests("bad")
+    end
+  end
+
   describe "assign_node/2" do
     test "writes runtime-resolved node UUID" do
       request = create_request!(%{public_id: "req_assign_1"})

@@ -279,12 +279,12 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ ~s(aria-current="page")
     end
 
-    test "Requests remains the only disabled item", %{conn: conn} do
+    test "all sidebar nav items are enabled", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/nodes")
 
-      assert html =~ ~s(aria-disabled="true")
-      assert html =~ "Requests \u2014 coming soon"
-      refute html =~ "Nodes \u2014 coming soon"
+      refute html =~ ~s(aria-disabled="true")
+      refute html =~ "coming soon"
+      assert html =~ "/console/requests"
     end
   end
 

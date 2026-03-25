@@ -124,12 +124,12 @@ defmodule OrchardConsole.RequestLive do
     ~H"""
     <div id="request-tools-row" class="flex flex-wrap items-center justify-between gap-3">
       <.link
-        id="request-back-to-playground"
-        navigate={~p"/console/playground"}
+        id="request-back-to-requests"
+        navigate={~p"/console/requests"}
         class="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
       >
         <.icon name="hero-arrow-left" class="h-4 w-4" />
-        Back to Playground
+        Back to Requests
       </.link>
 
       <span id="request-freshness" class="text-xs text-slate-500 dark:text-slate-400 font-mono">

@@ -132,6 +132,15 @@ defmodule Orchard.API.RouterTest do
       assert conn.resp_body =~ "playground-form"
     end
 
+    test "GET /console/requests is routed", %{conn: conn} do
+      conn = get(conn, "/console/requests")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "Requests"
+      assert conn.resp_body =~ "requests-list-card" or
+               conn.resp_body =~ "requests-empty-state"
+    end
+
     test "GET /console/requests/:public_id is routed", %{conn: conn} do
       conn = get(conn, "/console/requests/req_router_test")
 
