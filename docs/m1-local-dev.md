@@ -91,7 +91,7 @@ documentation on transport modes, TLS management, and CORS configuration.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ORCHARD_NODE_AGENT_LISTEN_HOST` | `127.0.0.1` | gRPC listen address (fixed to loopback in source dev; only configurable in packaged installs via `runtime.exs`) |
+| `ORCHARD_NODE_AGENT_LISTEN_HOST` | `127.0.0.1` | gRPC listen address. Set to `0.0.0.0` on a remote node-agent for 2-node testing. |
 | `ORCHARD_NODE_AGENT_LISTEN_PORT` | `50071` (source dev) / `50061` (packaged) | gRPC listen port |
 | `ORCHARD_RUNTIME_CLIENT_PORT` | Same as listen port | Controller gRPC client port (must match listen port) |
 | `ORCHARD_MODELS_ROOT` | `tmp/dev/models` | Model artifact storage |
@@ -99,6 +99,14 @@ documentation on transport modes, TLS management, and CORS configuration.
 | `ORCHARD_WORKER_EXECUTABLE` | `native/orchard_worker_mlx/bin/orchard-worker-mlx` (repo-root) | Worker binary path. Override via env var; default resolves from repo root in source-dev mode. |
 | `ORCHARD_WORKER_BACKEND` | `mlx` | Inference backend |
 | `ORCHARD_FAKE_RUNTIME` | `false` | Use fake runtime (for testing without GPU) |
+| `ORCHARD_NODE_DISPLAY_NAME` | hostname | Human-readable node name shown in console |
+
+#### Controller Multi-Node (Source Dev)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORCHARD_RUNTIME_CLIENT_HOST` | `127.0.0.1` | Controller’s local gRPC target host |
+| `ORCHARD_RUNTIME_CLIENT_TARGETS` | _(empty)_ | Comma-separated `host:port` list for multi-node scheduling. When set with >1 target, the scheduler auto-selects `MultiNode`. |
 
 #### Packaged Controller Transport (release only)
 
@@ -226,6 +234,62 @@ localhost.
 
 See [packaging/pkg/README.md](../packaging/pkg/README.md) for the full
 operator workflow, permission expectations, and external certificate setup.
+
+## Two-Node Source-Dev Cluster Testing
+
+Single-node remains the default. To opt into 2-node source-dev testing
+with a remote machine (e.g., Tamingsari as node-agent, mawarduri as
+controller):
+
+### Controller host (mawarduri)
+
+```bash
+ORCHARD_RUNTIME_CLIENT_TARGETS="127.0.0.1:50071,<remote-tailscale-ip>:50071" \
+  ORCHARD_NODE_DISPLAY_NAME=mawarduri \
+  bin/dev
+```
+
+The local node-agent still binds to `127.0.0.1:50071`. The controller targets
+both local and remote nodes. The scheduler auto-selects `MultiNode` when it
+sees >1 target.
+
+### Remote node-agent host (Tamingsari)
+
+```bash
+cd apps/orchard_node_agent
+
+MIX_ENV=dev \
+  ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0 \
+  ORCHARD_NODE_AGENT_LISTEN_PORT=50071 \
+  ORCHARD_WORKER_BACKEND=stub \
+  ORCHARD_NODE_DISPLAY_NAME=tamingsari \
+  mix run --no-halt
+```
+
+The node-agent boots standalone from the sub-app directory — no Postgres,
+controller, or asset watchers needed. Use `stub` backend for cluster mechanics
+testing; switch to `mlx` when real inference is required.
+
+### Verification
+
+1. Both nodes should appear in `/console/nodes` with distinct display names
+2. Cluster summary should show 2 configured targets
+3. Playground inference should attribute requests to specific nodes
+4. Killing the remote node-agent should transition its health to
+   degraded/unreachable
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Controller shows 1 target | `ORCHARD_RUNTIME_CLIENT_TARGETS` unset or malformed | Check env var, use `host:port,host:port` format |
+| Remote node-agent unreachable | Listen host still `127.0.0.1` | Set `ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0` |
+| Remote node fails on MLX | Python <3.11 or no `uv sync` | Use `ORCHARD_WORKER_BACKEND=stub` or run `cd native/orchard_worker_mlx && uv sync --extra mlx` |
+| Port conflict on remote | Another BEAM on same port | Change `ORCHARD_NODE_AGENT_LISTEN_PORT` |
+
+> **Security note:** Binding to `0.0.0.0` exposes the gRPC server on all
+> interfaces. Use only on trusted networks (Tailscale, private LAN). Source-dev
+> gRPC has no TLS — Tailscale provides wire encryption.
 
 ## Testing
 
