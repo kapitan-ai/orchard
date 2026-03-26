@@ -228,9 +228,12 @@ defmodule OrchardConsole.Runtime do
   rescue
     error ->
       require Logger
-
       Logger.warning("Node observation failed during runtime snapshot: #{inspect(error)}")
-
+      :noop
+  catch
+    kind, reason ->
+      require Logger
+      Logger.warning("Node observation #{kind} during runtime snapshot: #{inspect(reason)}")
       :noop
   end
 

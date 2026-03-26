@@ -441,7 +441,20 @@ defmodule OrchardConsole.RuntimeTest do
     def observe_status(target, response, observed_at) do
       pid = stub_pid()
       if pid, do: send(pid, {:observe_status_called, target, response, observed_at})
-      :noop
+
+      # Support configurable observe_status behavior for crash testing
+      case get_observe_behavior() do
+        {:exit, reason} -> exit(reason)
+        {:raise, exception} -> raise exception
+        _ -> :noop
+      end
+    end
+
+    defp get_observe_behavior do
+      case Registry.lookup(OrchardConsole.RuntimeTest.StubRegistry, :stubs) do
+        [{_pid, stubs}] -> Keyword.get(stubs, :observe_behavior)
+        _ -> nil
+      end
     end
 
     defp stub_pid do
@@ -837,6 +850,47 @@ defmodule OrchardConsole.RuntimeTest do
       assert ok_entry.target == target_ok
       assert ok_entry.status == :ok
       assert ok_entry.worker_state == :busy
+    end
+
+    test "observe_status exit does not turn successful snapshot into error" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0,
+             node_metadata: %{node_id: "observe-exit-test"},
+             runtime_health: %{ready: true}
+           }},
+        disconnect: :ok,
+        observe_behavior: {:exit, :noproc}
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.worker_state == :idle
+      assert snapshot.node_metadata.node_id == "observe-exit-test"
+    end
+
+    test "observe_status raise does not turn successful snapshot into error" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0,
+             node_metadata: %{node_id: "observe-raise-test"},
+             runtime_health: nil
+           }},
+        disconnect: :ok,
+        observe_behavior: {:raise, RuntimeError.exception("repo crashed")}
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.worker_state == :idle
     end
   end
 

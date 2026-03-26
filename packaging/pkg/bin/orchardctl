@@ -8,11 +8,11 @@ set -eu
 ORCHARD_CLI="/Library/Application Support/Orchard/releases/orchard_cli/bin/orchard_cli"
 
 # Build an Elixir string-list literal from shell argv.
-# Escapes backslashes, double quotes, newlines, carriage returns, and tabs.
+# Escapes backslashes, double quotes, hash (prevents #{} interpolation), and tabs.
 args=""
 for arg in "$@"; do
-  # Escape \ first (before introducing new backslashes), then " then control chars
-  escaped=$(printf '%s' "$arg" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/	/\\t/g')
+  # Escape \ first (before introducing new backslashes), then ", #, control chars
+  escaped=$(printf '%s' "$arg" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/#/\\#/g' -e 's/	/\\t/g')
   if [ -n "$args" ]; then
     args="$args, \"$escaped\""
   else
