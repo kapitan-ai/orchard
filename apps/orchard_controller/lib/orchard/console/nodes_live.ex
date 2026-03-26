@@ -281,24 +281,40 @@ defmodule OrchardConsole.NodesLive do
   # NOTE: Requires runtime_impl() to implement cluster_snapshot/1.
   # OverviewLive and HealthController use snapshot/0|1 (single-target).
   # NodesLive is the only consumer of cluster_snapshot/1.
+  #
+  # Full try/rescue/catch ensures the LiveView process never crash-loops
+  # even if the runtime implementation exits or throws unexpectedly.
   defp fetch_runtime_cluster(observed_at) do
-    raw_entries = runtime_impl().cluster_snapshot(observed_at: observed_at)
-    targets = Enum.map(raw_entries, &normalize_runtime_target/1)
+    try do
+      raw_entries = runtime_impl().cluster_snapshot(observed_at: observed_at)
+      targets = Enum.map(raw_entries, &normalize_runtime_target/1)
 
-    %{
-      status: :ok,
-      targets: targets,
-      summary: build_cluster_summary(targets),
-      message: nil
-    }
-  rescue
-    _ ->
       %{
-        status: :error,
-        targets: [],
-        summary: empty_cluster_summary(),
-        message: "Runtime cluster snapshots unavailable."
+        status: :ok,
+        targets: targets,
+        summary: build_cluster_summary(targets),
+        message: nil
       }
+    rescue
+      error ->
+        require Logger
+        Logger.warning("Nodes cluster fetch failed: #{inspect(error)}")
+        cluster_error_state()
+    catch
+      kind, reason ->
+        require Logger
+        Logger.warning("Nodes cluster fetch #{kind}: #{inspect(reason)}")
+        cluster_error_state()
+    end
+  end
+
+  defp cluster_error_state do
+    %{
+      status: :error,
+      targets: [],
+      summary: empty_cluster_summary(),
+      message: "Runtime cluster snapshots unavailable."
+    }
   end
 
   defp normalize_runtime_target(entry) do

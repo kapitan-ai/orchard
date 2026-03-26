@@ -120,18 +120,28 @@ defmodule OrchardConsole.Runtime do
     error ->
       require Logger
       Logger.warning("Cluster snapshot failed for target #{inspect(target)}: #{inspect(error)}")
+      probe_target_error_snapshot(target)
+  catch
+    kind, reason ->
+      require Logger
 
-      %{
-        target: target,
-        status: :error,
-        code: "snapshot_exception",
-        message: "unexpected error probing target",
-        worker_state: :unknown,
-        loaded_models: [],
-        active_request_count: 0,
-        node_metadata: nil,
-        runtime_health: nil
-      }
+      Logger.warning("Cluster snapshot #{kind} for target #{inspect(target)}: #{inspect(reason)}")
+
+      probe_target_error_snapshot(target)
+  end
+
+  defp probe_target_error_snapshot(target) do
+    %{
+      target: target,
+      status: :error,
+      code: "snapshot_exception",
+      message: "unexpected error probing target",
+      worker_state: :unknown,
+      loaded_models: [],
+      active_request_count: 0,
+      node_metadata: nil,
+      runtime_health: nil
+    }
   end
 
   @doc """
@@ -149,10 +159,10 @@ defmodule OrchardConsole.Runtime do
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
     status_opts = if timeout = opts[:timeout], do: [timeout: timeout], else: []
 
-    case client.connect(target) do
+    case safe_connect(client, target) do
       {:ok, channel} ->
         try do
-          case client.status(channel, status_opts) do
+          case safe_status(client, channel, status_opts, target) do
             {:ok, response} ->
               observe_status_best_effort(target, response, observed_at)
               {:ok, normalize_response(response)}
@@ -161,7 +171,7 @@ defmodule OrchardConsole.Runtime do
               {:error, error_snapshot_for(reason)}
           end
         after
-          client.disconnect(channel)
+          safe_disconnect(client, channel, target)
         end
 
       {:error, {:connect_failed, _reason}} ->
@@ -170,6 +180,47 @@ defmodule OrchardConsole.Runtime do
       {:error, _reason} ->
         {:error, error_snapshot(:error, "runtime_error", "node status request failed")}
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Safe transport wrappers
+  #
+  # gRPC client calls can exit (e.g., GenServer call to a dead process) or
+  # raise unexpectedly. These wrappers ensure transport-layer instability
+  # is always converted to tagged error tuples so callers never crash.
+  # ---------------------------------------------------------------------------
+
+  defp safe_connect(client, target) do
+    client.connect(target)
+  catch
+    kind, reason ->
+      require Logger
+
+      Logger.warning("Runtime connect #{kind} for #{inspect(target)}: #{inspect(reason)}")
+
+      {:error, {:connect_failed, {:unexpected, kind, reason}}}
+  end
+
+  defp safe_status(client, channel, opts, target) do
+    client.status(channel, opts)
+  catch
+    kind, reason ->
+      require Logger
+
+      Logger.warning("Runtime status #{kind} for #{inspect(target)}: #{inspect(reason)}")
+
+      {:error, :node_unavailable}
+  end
+
+  defp safe_disconnect(client, channel, target) do
+    client.disconnect(channel)
+  catch
+    kind, reason ->
+      require Logger
+
+      Logger.warning("Runtime disconnect #{kind} for #{inspect(target)}: #{inspect(reason)}")
+
+      :ok
   end
 
   defp observe_status_best_effort(target, response, observed_at) do

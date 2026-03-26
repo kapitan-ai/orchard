@@ -369,7 +369,7 @@ defmodule OrchardConsole.RuntimeTest do
     def connect(target) do
       send(get_stub_pid(), {:connect_called, target})
 
-      case get_stub(:connect, target) do
+      case dispatch_stub(:connect, target) do
         {:ok, channel} ->
           # Wrap channel with target info so status/disconnect can route per-target
           {:ok, {:stub_channel, target, channel}}
@@ -381,24 +381,36 @@ defmodule OrchardConsole.RuntimeTest do
 
     def status({:stub_channel, target, _channel}, opts) do
       if opts != [], do: send(get_stub_pid(), {:status_called_with_opts, opts})
-      get_stub(:status, target)
+      dispatch_stub(:status, target)
     end
 
     def status(channel, opts) do
       if opts != [], do: send(get_stub_pid(), {:status_called_with_opts, opts})
       # Fallback for non-wrapped channels (legacy single-target tests)
       _ = channel
-      get_stub(:status)
+      dispatch_stub(:status)
     end
 
     def disconnect({:stub_channel, _target, channel}) do
       send(get_stub_pid(), {:disconnect_called, channel})
-      :ok
+      dispatch_stub(:disconnect)
     end
 
     def disconnect(channel) do
       send(get_stub_pid(), {:disconnect_called, channel})
-      :ok
+      dispatch_stub(:disconnect)
+    end
+
+    # Sentinel dispatch: interprets {:raise, exception} and {:exit, reason}
+    # to simulate transport crashes in addition to normal return values.
+    defp dispatch_stub(key, target \\ nil) do
+      value = get_stub(key, target)
+
+      case value do
+        {:raise, exception} -> raise exception
+        {:exit, reason} -> exit(reason)
+        other -> other
+      end
     end
 
     defp get_stub(key, target \\ nil) do
@@ -656,6 +668,175 @@ defmodule OrchardConsole.RuntimeTest do
       assert length(results) == 1
       assert hd(results).target == target
       assert hd(results).status == :ok
+    end
+  end
+
+  describe "transport crash resilience" do
+    test "connect exit returns unavailable snapshot" do
+      stub_client(
+        connect: {:exit, :econnrefused},
+        status: nil,
+        disconnect: nil
+      )
+
+      assert {:error, error} = Runtime.snapshot()
+      assert error.status == :unavailable
+      assert error.code == "node_unavailable"
+      refute_received {:disconnect_called, _}
+    end
+
+    test "connect raise returns unavailable snapshot" do
+      stub_client(
+        connect: {:raise, RuntimeError.exception("boom")},
+        status: nil,
+        disconnect: nil
+      )
+
+      assert {:error, error} = Runtime.snapshot()
+      assert error.status == :unavailable
+      assert error.code == "node_unavailable"
+    end
+
+    test "status exit after successful connect returns unavailable snapshot" do
+      stub_client(
+        connect: {:ok, :ch},
+        status: {:exit, {:shutdown, :timeout}},
+        disconnect: :ok
+      )
+
+      assert {:error, error} = Runtime.snapshot()
+      assert error.status == :unavailable
+      assert error.code == "node_unavailable"
+      # disconnect still called via after block
+      assert_received {:disconnect_called, :ch}
+    end
+
+    test "status raise after successful connect returns error snapshot" do
+      stub_client(
+        connect: {:ok, :ch},
+        status: {:raise, RuntimeError.exception("status boom")},
+        disconnect: :ok
+      )
+
+      assert {:error, error} = Runtime.snapshot()
+      assert error.status == :unavailable
+      assert error.code == "node_unavailable"
+      assert_received {:disconnect_called, :ch}
+    end
+
+    test "disconnect exit does not override successful snapshot" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0
+           }},
+        disconnect: {:exit, :noproc}
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.worker_state == :idle
+    end
+
+    test "disconnect raise does not override successful snapshot" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0
+           }},
+        disconnect: {:raise, RuntimeError.exception("disconnect boom")}
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.worker_state == :idle
+    end
+
+    test "cluster_snapshot continues after one target exits" do
+      target_exit = [host: "10.0.0.1", port: 50071]
+      target_ok = [host: "10.0.0.2", port: 50071]
+
+      stub_client(
+        target_responses: %{
+          {"10.0.0.1", 50071} => [
+            connect: {:exit, :econnrefused},
+            status: nil,
+            disconnect: nil
+          ],
+          {"10.0.0.2", 50071} => [
+            connect: {:ok, :ch_b},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_IDLE,
+                 loaded_models: [],
+                 active_request_count: 0,
+                 node_metadata: %{node_id: "ok-node"},
+                 runtime_health: %{ready: true}
+               }},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      results = Runtime.cluster_snapshot(targets: [target_exit, target_ok])
+
+      assert length(results) == 2
+      [fail_entry, ok_entry] = results
+
+      # First target failed — shows as error/unavailable
+      assert fail_entry.target == target_exit
+      assert fail_entry.status in [:error, :unavailable]
+      assert fail_entry.worker_state == :unknown
+
+      # Second target unaffected
+      assert ok_entry.target == target_ok
+      assert ok_entry.status == :ok
+      assert ok_entry.worker_state == :idle
+    end
+
+    test "cluster_snapshot continues after one target raises" do
+      target_raise = [host: "10.0.0.1", port: 50071]
+      target_ok = [host: "10.0.0.2", port: 50071]
+
+      stub_client(
+        target_responses: %{
+          {"10.0.0.1", 50071} => [
+            connect: {:raise, RuntimeError.exception("connect boom")},
+            status: nil,
+            disconnect: nil
+          ],
+          {"10.0.0.2", 50071} => [
+            connect: {:ok, :ch_b},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_BUSY,
+                 loaded_models: [],
+                 active_request_count: 2
+               }},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      results = Runtime.cluster_snapshot(targets: [target_raise, target_ok])
+
+      assert length(results) == 2
+      [fail_entry, ok_entry] = results
+
+      assert fail_entry.target == target_raise
+      assert fail_entry.status in [:error, :unavailable]
+
+      assert ok_entry.target == target_ok
+      assert ok_entry.status == :ok
+      assert ok_entry.worker_state == :busy
     end
   end
 

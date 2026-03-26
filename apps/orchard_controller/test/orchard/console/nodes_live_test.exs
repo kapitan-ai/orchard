@@ -217,6 +217,22 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeMixedCompatibilityStub do
   end
 end
 
+defmodule OrchardConsole.NodesLiveTest.RuntimeClusterExitStub do
+  @moduledoc "Stub whose cluster_snapshot/1 exits — simulates gRPC GenServer death."
+
+  def cluster_snapshot(_opts \\ []) do
+    exit(:econnrefused)
+  end
+end
+
+defmodule OrchardConsole.NodesLiveTest.RuntimeClusterRaiseStub do
+  @moduledoc "Stub whose cluster_snapshot/1 raises — simulates unexpected exception."
+
+  def cluster_snapshot(_opts \\ []) do
+    raise RuntimeError, "gRPC client crashed"
+  end
+end
+
 defmodule OrchardConsole.NodesLiveTest do
   use Orchard.ConnCase, async: false
 
@@ -593,6 +609,62 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "1"
       # Runtime section should show the live data
       assert html =~ "mlx-community/phi-3"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Crash-loop resilience (B4 regression)
+  # ---------------------------------------------------------------------------
+
+  describe "cluster_snapshot exit does not crash LiveView" do
+    test "mount succeeds and renders cluster error state", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeClusterExitStub)
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      # Cluster section shows error state
+      assert html =~ "nodes-cluster-error"
+      assert html =~ "Cluster status unavailable"
+
+      # Inventory section still renders (not crashed)
+      assert html =~ "nodes-inventory-card"
+    end
+
+    test "refresh after exit does not crash LiveView", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeClusterExitStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      # Simulate periodic refresh
+      send(view.pid, :refresh_nodes)
+      html = render(view)
+
+      # View is still alive and rendering
+      assert html =~ "nodes-cluster-error"
+      assert html =~ "nodes-inventory-card"
+    end
+
+    test "inventory renders correctly despite cluster exit", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeClusterExitStub)
+      insert_node!(%{display_name: "survivor-node", state: :active, health: :healthy})
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      # Cluster is degraded, but inventory shows the node
+      assert html =~ "nodes-cluster-error"
+      assert html =~ "survivor-node"
+    end
+  end
+
+  describe "cluster_snapshot raise does not crash LiveView" do
+    test "mount succeeds and renders cluster error state", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeClusterRaiseStub)
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      assert html =~ "nodes-cluster-error"
+      assert html =~ "Cluster status unavailable"
+      assert html =~ "nodes-inventory-card"
     end
   end
 

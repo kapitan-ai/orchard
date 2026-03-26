@@ -1,5 +1,23 @@
 #!/bin/sh
 set -eu
-# Placeholder Orchard CLI wrapper.
-# Packaging will eventually dispatch to the internal orchard_cli release.
-exec /Library/Application\ Support/Orchard/releases/orchard_cli/bin/orchard_cli "$@"
+# Orchard CLI wrapper.
+# Dispatches shell arguments through release `eval` into OrchardCLI.main/1.
+# This is necessary because the release binary only understands OTP commands
+# (start, stop, eval, etc.), not application-level CLI commands (tls, models, etc.).
+
+ORCHARD_CLI="/Library/Application Support/Orchard/releases/orchard_cli/bin/orchard_cli"
+
+# Build an Elixir string-list literal from shell argv.
+# Escapes backslashes, double quotes, newlines, carriage returns, and tabs.
+args=""
+for arg in "$@"; do
+  # Escape \ first (before introducing new backslashes), then " then control chars
+  escaped=$(printf '%s' "$arg" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/	/\\t/g')
+  if [ -n "$args" ]; then
+    args="$args, \"$escaped\""
+  else
+    args="\"$escaped\""
+  fi
+done
+
+exec "$ORCHARD_CLI" eval "OrchardCLI.main([$args])"
