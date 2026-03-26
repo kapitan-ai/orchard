@@ -17,7 +17,12 @@ defmodule OrchardConsole.RequestsLiveTest do
 
     # Slow polling to avoid timer churn during tests
     previous = Application.get_env(:orchard_controller, :console, [])
-    Application.put_env(:orchard_controller, :console, Keyword.put(previous, :refresh_interval_ms, 60_000))
+
+    Application.put_env(
+      :orchard_controller,
+      :console,
+      Keyword.put(previous, :refresh_interval_ms, 60_000)
+    )
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :console, previous)
@@ -62,6 +67,7 @@ defmodule OrchardConsole.RequestsLiveTest do
       # Should show real content, not just loading card
       assert conn.resp_body =~ "requests-list-card" or
                conn.resp_body =~ "requests-empty-state"
+
       refute conn.resp_body =~ "requests-loading-card"
     end
   end
@@ -83,7 +89,12 @@ defmodule OrchardConsole.RequestsLiveTest do
     end
 
     test "renders nil node_id and http_status as em-dash", %{conn: conn} do
-      create_request!(%{public_id: "req_live_nil", state: :received, node_id: nil, http_status: nil})
+      create_request!(%{
+        public_id: "req_live_nil",
+        state: :received,
+        node_id: nil,
+        http_status: nil
+      })
 
       {:ok, _view, html} = live(conn, "/console/requests")
 

@@ -1,6 +1,34 @@
 #!/usr/bin/env sh
 set -eu
 
+# Packaged + dev-source wrapper for the Orchard tokenizer.
+# Prefers the venv entrypoint directly (no uv dependency, no PATH requirement).
+# Falls back to uv for dev environments where the venv may not exist yet.
+
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-cd "$SCRIPT_DIR/.."
-exec uv run orchard-tokenizer "$@"
+PACKAGE_DIR="$SCRIPT_DIR/.."
+VENV_ENTRY="$PACKAGE_DIR/.venv/bin/orchard-tokenizer"
+
+# Prefer direct venv entrypoint (works under launchd minimal PATH)
+if [ -x "$VENV_ENTRY" ]; then
+    exec "$VENV_ENTRY" "$@"
+fi
+
+# Fallback: try to find uv in common locations
+for uv_candidate in \
+    "$(command -v uv 2>/dev/null || true)" \
+    "/opt/homebrew/bin/uv" \
+    "/usr/local/bin/uv" \
+    "$HOME/.local/bin/uv"; do
+    if [ -n "$uv_candidate" ] && [ -x "$uv_candidate" ]; then
+        cd "$PACKAGE_DIR"
+        exec "$uv_candidate" run orchard-tokenizer "$@"
+    fi
+done
+
+echo "error: cannot start tokenizer" >&2
+echo "  - venv entrypoint not found at: $VENV_ENTRY" >&2
+echo "  - uv not found in PATH or common locations" >&2
+echo "  - packaged installs should include the venv entrypoint" >&2
+echo "  - for dev: run 'cd $PACKAGE_DIR && uv sync' to create the venv" >&2
+exit 1

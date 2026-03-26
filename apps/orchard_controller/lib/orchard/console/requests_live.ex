@@ -267,8 +267,10 @@ defmodule OrchardConsole.RequestsLive do
   defp format_http_status(status), do: to_string(status)
 
   defp format_tokens(nil, nil), do: "\u2014"
+
   defp format_tokens(input, output) when is_integer(input) and is_integer(output) do
     Integer.to_string(input + output)
   end
+
   defp format_tokens(_, _), do: "\u2014"
 end

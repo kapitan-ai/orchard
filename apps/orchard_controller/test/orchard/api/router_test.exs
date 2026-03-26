@@ -137,6 +137,7 @@ defmodule Orchard.API.RouterTest do
 
       assert conn.status == 200
       assert conn.resp_body =~ "Requests"
+
       assert conn.resp_body =~ "requests-list-card" or
                conn.resp_body =~ "requests-empty-state"
     end

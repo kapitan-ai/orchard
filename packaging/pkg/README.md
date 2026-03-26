@@ -65,24 +65,62 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/node-agent.env'
 The `config/` directory is set to mode `0700` by the installer, so only root
 can create or modify files within it.
 
-### Controller env file lifecycle
+### Shell quoting requirement
 
-**Fresh install:** The installer does not create `controller.env`. The operator
-must create it before the controller can start successfully in prod mode:
+Env files are **sourced as POSIX shell** (not parsed as generic `.env` files).
+Values containing spaces, dollar signs, backticks, or hash characters **must**
+be quoted. The Orchard support root (`/Library/Application Support/Orchard`)
+contains a space, so all paths under it require quoting:
 
 ```bash
-sudo tee '/Library/Application Support/Orchard/config/controller.env' >/dev/null <<'EOF'
-DATABASE_URL=postgres://USER:PASSWORD@HOST:5432/DB_NAME
-SECRET_KEY_BASE=<generate-with-mix-phx-gen-secret>
-EOF
-sudo chown root:wheel '/Library/Application Support/Orchard/config/controller.env'
-sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
+# CORRECT — quoted path with space
+ORCHARD_TOKENIZER_EXECUTABLE="/Library/Application Support/Orchard/native/orchard_tokenizer/.venv/bin/orchard-tokenizer"
+
+# BROKEN — unquoted path with space
+ORCHARD_TOKENIZER_EXECUTABLE=/Library/Application Support/Orchard/native/orchard_tokenizer/.venv/bin/orchard-tokenizer
+```
+
+Use `orchardctl env init` (below) to generate correctly-quoted templates.
+
+### Controller env file lifecycle
+
+**Fresh install (recommended):** Use `orchardctl env init` to generate
+correctly-quoted templates with auto-detected packaged paths:
+
+```bash
+sudo orchardctl env init
+```
+
+This creates `controller.env` and `node-agent.env` under
+`/Library/Application Support/Orchard/config/` with:
+- Shell-safe quoted values (handles the space in `Application Support`)
+- Auto-detected absolute paths to packaged tokenizer and worker executables
+  (uses `.venv/bin/` entrypoints directly — no `uv` or PATH dependency)
+- Placeholder comments for required secrets (`DATABASE_URL`, `SECRET_KEY_BASE`)
+
+Then fill in the required secrets:
+
+```bash
+sudo vi '/Library/Application Support/Orchard/config/controller.env'
+# Uncomment and set DATABASE_URL and SECRET_KEY_BASE
 ```
 
 Then run migrations:
 
 ```bash
-sudo /Library/Application\ Support/Orchard/bin/orchard-controller eval 'Orchard.Release.migrate()'
+sudo orchardctl eval 'Orchard.Release.migrate()'
+```
+
+**Manual alternative:** If you prefer to create the file manually:
+
+```bash
+sudo tee '/Library/Application Support/Orchard/config/controller.env' >/dev/null <<'EOF'
+DATABASE_URL="postgres://USER:PASSWORD@HOST:5432/DB_NAME"
+SECRET_KEY_BASE="<generate-with-mix-phx-gen-secret>"
+ORCHARD_TOKENIZER_EXECUTABLE="/Library/Application Support/Orchard/native/orchard_tokenizer/.venv/bin/orchard-tokenizer"
+EOF
+sudo chown root:wheel '/Library/Application Support/Orchard/config/controller.env'
+sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
 ```
 
 **Required variables:**

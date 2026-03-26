@@ -6,6 +6,7 @@ defmodule OrchardCLI do
   alias OrchardCLI.Commands.{
     ApiKeys,
     Cluster,
+    Env,
     Models,
     Nodes,
     Requests,
@@ -29,6 +30,7 @@ defmodule OrchardCLI do
   end
 
   defp dispatch_command(["cluster" | rest]), do: Cluster.run(rest)
+  defp dispatch_command(["env" | rest]), do: Env.run(rest)
   defp dispatch_command(["nodes" | rest]), do: Nodes.run(rest)
   defp dispatch_command(["models" | rest]), do: Models.run(rest)
   defp dispatch_command(["requests" | rest]), do: Requests.run(rest)
@@ -56,7 +58,7 @@ defmodule OrchardCLI do
     IO.puts("orchardctl (M0 scaffold)")
 
     IO.puts(
-      "Available command groups: cluster, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
+      "Available command groups: cluster, env, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
     )
   end
 end

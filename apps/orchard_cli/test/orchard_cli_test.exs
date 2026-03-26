@@ -17,7 +17,9 @@ defmodule OrchardCLITest do
     output = capture_io(fn -> OrchardCLI.main([], &no_halt/1) end)
 
     assert output =~ "orchardctl (M0 scaffold)"
-    assert output =~ "cluster, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
+
+    assert output =~
+             "cluster, env, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
   end
 
   test "dispatches each placeholder command module" do
@@ -36,6 +38,18 @@ defmodule OrchardCLITest do
       capture_io(fn -> OrchardCLI.main([command], halt_stub(parent)) end)
       refute_received {:halt_called, _}
     end
+  end
+
+  test "env command without subcommand exits non-zero" do
+    parent = self()
+
+    stderr =
+      capture_io(:stderr, fn ->
+        OrchardCLI.main(["env"], halt_stub(parent))
+      end)
+
+    assert stderr =~ "orchardctl env"
+    assert_received {:halt_called, 1}
   end
 
   test "nodes command without subcommand exits non-zero" do
