@@ -296,6 +296,63 @@ defmodule OrchardCLI.Commands.EnvTest do
     end
   end
 
+  test "init returns clean error when config dir is not writable" do
+    tmp_dir =
+      System.tmp_dir!() |> Path.join("orchard_env_perm_#{System.unique_integer([:positive])}")
+
+    try do
+      support_root = setup_support_root(tmp_dir)
+      config_dir = Path.join(support_root, "config")
+      File.mkdir_p!(config_dir)
+      # Make config dir read-only so writes fail
+      File.chmod!(config_dir, 0o500)
+
+      assert {:error, message, 1} =
+               Env.run(
+                 ["init", "--support-root", support_root, "--force"],
+                 test_runtime()
+               )
+
+      assert message =~ "Error:"
+      assert message =~ "sudo"
+    after
+      # Restore permissions for cleanup
+      config_dir = Path.join([tmp_dir, "Application Support/Orchard", "config"])
+      File.chmod(config_dir, 0o700)
+      File.rm_rf!(tmp_dir)
+    end
+  end
+
+  test "init rejects non-executable files as candidates" do
+    tmp_dir =
+      System.tmp_dir!() |> Path.join("orchard_env_noexec_#{System.unique_integer([:positive])}")
+
+    try do
+      support_root = Path.join(tmp_dir, "Application Support/Orchard")
+
+      # Create tokenizer file but NOT executable
+      tokenizer_venv = Path.join([support_root, "native", "orchard_tokenizer", ".venv", "bin"])
+      File.mkdir_p!(tokenizer_venv)
+      tokenizer_entry = Path.join(tokenizer_venv, "orchard-tokenizer")
+      File.write!(tokenizer_entry, "#!/bin/sh\necho tokenizer")
+      File.chmod!(tokenizer_entry, 0o644)
+
+      # Create worker file but NOT executable
+      worker_venv = Path.join([support_root, "native", "orchard_worker_mlx", ".venv", "bin"])
+      File.mkdir_p!(worker_venv)
+      worker_entry = Path.join(worker_venv, "orchard-worker-mlx")
+      File.write!(worker_entry, "#!/bin/sh\necho worker")
+      File.chmod!(worker_entry, 0o644)
+
+      assert {:error, message, 1} =
+               Env.run(["init", "--support-root", support_root], test_runtime())
+
+      assert message =~ "not found"
+    after
+      File.rm_rf!(tmp_dir)
+    end
+  end
+
   # ── Shell Quoting ──────────────────────────────────────────────────
 
   test "shell_quote wraps in double quotes" do

@@ -19,7 +19,7 @@ for uv_candidate in \
     "$(command -v uv 2>/dev/null || true)" \
     "/opt/homebrew/bin/uv" \
     "/usr/local/bin/uv" \
-    "$HOME/.local/bin/uv"; do
+    "${HOME:-}/.local/bin/uv"; do
     if [ -n "$uv_candidate" ] && [ -x "$uv_candidate" ]; then
         cd "$PACKAGE_DIR"
         exec "$uv_candidate" run orchard-tokenizer "$@"

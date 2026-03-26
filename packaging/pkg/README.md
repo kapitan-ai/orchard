@@ -108,7 +108,7 @@ sudo vi '/Library/Application Support/Orchard/config/controller.env'
 Then run migrations:
 
 ```bash
-sudo orchardctl eval 'Orchard.Release.migrate()'
+sudo "/Library/Application Support/Orchard/bin/orchard-controller" eval 'Orchard.Release.migrate()'
 ```
 
 **Manual alternative:** If you prefer to create the file manually:

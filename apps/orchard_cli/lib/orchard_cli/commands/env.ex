@@ -91,14 +91,20 @@ defmodule OrchardCLI.Commands.Env do
     # Pre-validate: check all required executables exist before writing anything
     with :ok <- validate_executables(targets, support_root) do
       config_dir = Path.join(support_root, "config")
-      ensure_config_dir(config_dir)
 
-      results =
-        Enum.map(targets, fn target ->
-          {target, generate_env_file(target, config_dir, support_root, hostname, force)}
-        end)
+      try do
+        ensure_config_dir(config_dir)
 
-      format_results(results)
+        results =
+          Enum.map(targets, fn target ->
+            {target, generate_env_file(target, config_dir, support_root, hostname, force)}
+          end)
+
+        format_results(results)
+      rescue
+        e in File.Error ->
+          {:error, "Error: #{Exception.message(e)}\nHint: try running with sudo.", 1}
+      end
     end
   end
 
@@ -142,7 +148,16 @@ defmodule OrchardCLI.Commands.Env do
   end
 
   defp find_executable(candidates) do
-    Enum.find(candidates, fn path -> File.regular?(path) end)
+    Enum.find(candidates, fn path ->
+      File.regular?(path) and executable?(path)
+    end)
+  end
+
+  defp executable?(path) do
+    case File.stat(path) do
+      {:ok, %{mode: mode}} -> Bitwise.band(mode, 0o111) != 0
+      _ -> false
+    end
   end
 
   defp validate_executables(targets, support_root) do
