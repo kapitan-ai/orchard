@@ -295,7 +295,7 @@ defmodule OrchardConsole.RequestLive do
 
     ~H"""
     <.disclosure_section
-      wrapper_id="request-response-debug-card"
+      id="request-response-debug-card"
       title="Response & Debug"
       default_open={@default_open}
     >
@@ -349,7 +349,7 @@ defmodule OrchardConsole.RequestLive do
   defp request_canonical(assigns) do
     ~H"""
     <.disclosure_section
-      wrapper_id="request-canonical-card"
+      id="request-canonical-card"
       title="Canonical Request"
       default_open={false}
     >
@@ -492,29 +492,6 @@ defmodule OrchardConsole.RequestLive do
   # ===========================================================================
   # Local function components
   # ===========================================================================
-
-  attr(:wrapper_id, :string, required: true)
-  attr(:title, :string, required: true)
-  attr(:default_open, :boolean, default: false)
-  slot(:inner_block, required: true)
-
-  defp disclosure_section(assigns) do
-    ~H"""
-    <div id={@wrapper_id}>
-      <details
-        class="rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800"
-        {if @default_open, do: [{:open, true}], else: []}
-      >
-        <summary class="cursor-pointer select-none px-4 py-3 text-base font-semibold text-slate-900 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg">
-          {@title}
-        </summary>
-        <div class="border-t border-slate-200 px-4 py-4 dark:border-slate-700">
-          {render_slot(@inner_block)}
-        </div>
-      </details>
-    </div>
-    """
-  end
 
   attr(:data, :map, default: nil)
   attr(:content_id, :string, required: true)

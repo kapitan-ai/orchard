@@ -273,6 +273,43 @@ defmodule OrchardConsole.CoreComponents do
   defp card_padding(:lg), do: "px-8 py-6"
 
   # ===========================================================================
+  # Disclosure
+  # ===========================================================================
+
+  @doc """
+  Renders a disclosure section with a summary row and expandable body.
+
+  Preserves the current RequestLive disclosure styling so it can be reused
+  by future console surfaces such as Overview quickstart.
+  """
+  attr(:id, :string, required: true)
+  attr(:title, :string, required: true)
+  attr(:default_open, :boolean, default: false)
+  attr(:summary_id, :string, default: nil)
+  slot(:inner_block, required: true)
+
+  def disclosure_section(assigns) do
+    ~H"""
+    <div id={@id}>
+      <details
+        class="rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800"
+        {if @default_open, do: [{:open, true}], else: []}
+      >
+        <summary
+          id={@summary_id}
+          class="cursor-pointer select-none px-4 py-3 text-base font-semibold text-slate-900 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg"
+        >
+          {@title}
+        </summary>
+        <div class="border-t border-slate-200 px-4 py-4 dark:border-slate-700">
+          {render_slot(@inner_block)}
+        </div>
+      </details>
+    </div>
+    """
+  end
+
+  # ===========================================================================
   # Badge
   # ===========================================================================
 

@@ -169,6 +169,86 @@ defmodule OrchardConsole.CoreComponentsTest do
   end
 
   # ===========================================================================
+  # Disclosure
+  # ===========================================================================
+
+  describe "disclosure_section/1" do
+    test "renders wrapper, summary, and body content" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.disclosure_section id="test-disclosure" title="Debug Details">
+          <p>Section body</p>
+        </.disclosure_section>
+        """)
+
+      assert html =~ ~s(id="test-disclosure")
+      assert html =~ "<details"
+      assert html =~ "<summary"
+      assert html =~ "Debug Details"
+      assert html =~ "Section body"
+    end
+
+    test "applies open attribute when default_open is true" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.disclosure_section id="open-disclosure" title="Open" default_open={true}>
+          <p>Body</p>
+        </.disclosure_section>
+        """)
+
+      assert html =~ ~r/<details[^>]*\bopen\b/
+    end
+
+    test "omits open attribute when default_open is false" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.disclosure_section id="closed-disclosure" title="Closed" default_open={false}>
+          <p>Body</p>
+        </.disclosure_section>
+        """)
+
+      refute html =~ "<details open"
+    end
+
+    test "applies summary_id when provided" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.disclosure_section
+          id="summary-id-disclosure"
+          title="With Summary ID"
+          summary_id="summary-anchor"
+        >
+          <p>Body</p>
+        </.disclosure_section>
+        """)
+
+      assert html =~ ~s(<summary id="summary-anchor")
+    end
+
+    test "omits summary id when summary_id is nil" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.disclosure_section id="no-summary-id" title="Without Summary ID">
+          <p>Body</p>
+        </.disclosure_section>
+        """)
+
+      refute html =~ ~s(<summary id="")
+      refute html =~ ~s(<summary id=)
+    end
+  end
+
+  # ===========================================================================
   # Badge
   # ===========================================================================
 
