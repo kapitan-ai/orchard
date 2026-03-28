@@ -135,6 +135,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
   import Phoenix.LiveViewTest
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.Governance
   import Orchard.TestSupport.ModelRequestFixtures
 
   @moduletag :live
@@ -357,6 +358,82 @@ defmodule OrchardConsole.OverviewLiveTest do
       # All states present with zero
       assert html =~ "registered"
       assert html =~ "received"
+    end
+  end
+
+  describe "quickstart state" do
+    test "renders server-derived baseline in default test env", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      assert has_element?(view, "#overview-quickstart")
+      assert_quickstart_status(view, "system-healthy", "current")
+      assert_quickstart_status(view, "import-first-model", "pending")
+      assert_quickstart_status(view, "run-test-request", "pending")
+      assert_quickstart_status(view, "create-api-key", "pending")
+    end
+  end
+
+  describe "quickstart state with passing readiness" do
+    setup do
+      prev_transport = Application.get_env(:orchard_controller, :transport_degraded)
+      prev_db = Application.get_env(:orchard_controller, :enable_db_checks)
+      prev_repo = Application.get_env(:orchard_controller, :start_repo)
+
+      Application.put_env(:orchard_controller, :transport_degraded, false)
+      Application.put_env(:orchard_controller, :enable_db_checks, true)
+      Application.put_env(:orchard_controller, :start_repo, true)
+
+      on_exit(fn ->
+        Application.put_env(:orchard_controller, :transport_degraded, prev_transport)
+        Application.put_env(:orchard_controller, :enable_db_checks, prev_db)
+        Application.put_env(:orchard_controller, :start_repo, prev_repo)
+      end)
+
+      :ok
+    end
+
+    test "orders incomplete steps deterministically when readiness passes", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      assert_quickstart_status(view, "system-healthy", "completed")
+      assert_quickstart_status(view, "import-first-model", "current")
+      assert_quickstart_status(view, "run-test-request", "pending")
+      assert_quickstart_status(view, "create-api-key", "pending")
+    end
+
+    test "recomputes quickstart progression after refresh-driven model, request, and api key updates",
+         %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      create_model!(%{state: :active})
+      send(view.pid, :refresh_overview)
+      render(view)
+
+      assert_quickstart_status(view, "system-healthy", "completed")
+      assert_quickstart_status(view, "import-first-model", "completed")
+      assert_quickstart_status(view, "run-test-request", "current")
+      assert_quickstart_status(view, "create-api-key", "pending")
+
+      create_request!(%{state: :completed})
+      send(view.pid, :refresh_overview)
+      render(view)
+
+      assert_quickstart_status(view, "run-test-request", "completed")
+      assert_quickstart_status(view, "create-api-key", "current")
+
+      suffix = System.unique_integer([:positive, :monotonic])
+
+      {:ok, tenant} =
+        Governance.create_tenant(%{
+          slug: "quickstart-tenant-#{suffix}",
+          name: "Quickstart Tenant #{suffix}"
+        })
+
+      {:ok, _api_key} = Governance.create_api_key(tenant.id, %{name: "Quickstart Key"})
+      send(view.pid, :refresh_overview)
+      render(view)
+
+      assert_quickstart_status(view, "create-api-key", "completed")
     end
   end
 
@@ -763,5 +840,12 @@ defmodule OrchardConsole.OverviewLiveTest do
   defp put_console_config(overrides) do
     current = Application.get_env(:orchard_controller, :console, [])
     Application.put_env(:orchard_controller, :console, Keyword.merge(current, overrides))
+  end
+
+  defp assert_quickstart_status(view, step_dom_id, status) do
+    assert has_element?(
+             view,
+             "#overview-quickstart-step-#{step_dom_id}[data-status=\"#{status}\"]"
+           )
   end
 end

@@ -7,6 +7,7 @@ defmodule OrchardConsole.OverviewLive do
   use OrchardConsole, :live_view
 
   alias Orchard.API.Readiness
+  alias Orchard.Governance
   alias Orchard.Models
   alias Orchard.Models.Model
   alias Orchard.Requests
@@ -20,6 +21,18 @@ defmodule OrchardConsole.OverviewLive do
   ]
 
   @default_refresh_interval_ms 5_000
+
+  @quickstart_step_definitions [
+    %{id: :system_healthy, dom_id: "system-healthy", ordinal: 1, title: "System is healthy"},
+    %{
+      id: :import_first_model,
+      dom_id: "import-first-model",
+      ordinal: 2,
+      title: "Import your first model"
+    },
+    %{id: :run_test_request, dom_id: "run-test-request", ordinal: 3, title: "Run a test request"},
+    %{id: :create_api_key, dom_id: "create-api-key", ordinal: 4, title: "Create an API key"}
+  ]
 
   @impl true
   def mount(_params, _session, socket) do
@@ -50,6 +63,33 @@ defmodule OrchardConsole.OverviewLive do
   def render(assigns) do
     ~H"""
     <div class="space-y-6">
+      <div id="overview-quickstart">
+        <.card>
+          <:title>Quickstart</:title>
+          <:subtitle>Track the first server-derived onboarding steps directly from live system state.</:subtitle>
+
+          <ol class="space-y-3">
+            <li
+              :for={step <- @quickstart.steps}
+              id={"overview-quickstart-step-#{step.dom_id}"}
+              data-status={Atom.to_string(step.status)}
+              class="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700"
+            >
+              <div class="flex items-center gap-3">
+                <span class="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                  {step.ordinal}
+                </span>
+                <span class="text-sm font-medium text-slate-900 dark:text-slate-100">{step.title}</span>
+              </div>
+
+              <.badge tone={quickstart_status_badge_tone(step.status)}>
+                {quickstart_status_badge_label(step.status)}
+              </.badge>
+            </li>
+          </ol>
+        </.card>
+      </div>
+
       <%!-- System Status (hero card) --%>
       <.card>
         <:title>System Status</:title>
@@ -239,11 +279,19 @@ defmodule OrchardConsole.OverviewLive do
   # ===========================================================================
 
   defp load_overview(socket) do
+    readiness = fetch_readiness()
+    runtime = fetch_runtime()
+    model_catalog = fetch_model_catalog()
+    request_summary = fetch_request_summary()
+    has_active_api_keys = fetch_active_api_keys()
+
     assign(socket,
-      readiness: fetch_readiness(),
-      runtime: fetch_runtime(),
-      model_catalog: fetch_model_catalog(),
-      request_summary: fetch_request_summary(),
+      readiness: readiness,
+      runtime: runtime,
+      model_catalog: model_catalog,
+      request_summary: request_summary,
+      quickstart:
+        build_quickstart(readiness, model_catalog, request_summary, has_active_api_keys),
       last_updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
     )
   end
@@ -251,37 +299,48 @@ defmodule OrchardConsole.OverviewLive do
   defp assign_loading_state(socket) do
     loading_rows = Enum.map(@readiness_check_order, &%{key: &1, status: :unknown})
 
+    readiness = %{
+      status: :loading,
+      passing: nil,
+      total: length(@readiness_check_order),
+      rows: loading_rows,
+      message: nil
+    }
+
+    runtime = %{
+      status: :loading,
+      worker_state: :unknown,
+      loaded_models: [],
+      active_request_count: 0,
+      node_metadata: nil,
+      runtime_health: nil,
+      message: nil
+    }
+
+    model_catalog = %{
+      status: :loading,
+      total: nil,
+      by_state: zero_model_state_counts(),
+      rows: [],
+      message: nil
+    }
+
+    request_summary = %{
+      status: :loading,
+      total: nil,
+      active: nil,
+      terminal: nil,
+      by_state: zero_request_state_counts(),
+      rows: [],
+      message: nil
+    }
+
     assign(socket,
-      readiness: %{
-        status: :loading,
-        passing: nil,
-        total: length(@readiness_check_order),
-        rows: loading_rows,
-        message: nil
-      },
-      runtime: %{
-        status: :loading,
-        worker_state: :unknown,
-        loaded_models: [],
-        active_request_count: 0,
-        node_metadata: nil,
-        runtime_health: nil,
-        message: nil
-      },
-      model_catalog: %{
-        status: :loading,
-        total: nil,
-        rows: [],
-        message: nil
-      },
-      request_summary: %{
-        status: :loading,
-        total: nil,
-        active: nil,
-        terminal: nil,
-        rows: [],
-        message: nil
-      },
+      readiness: readiness,
+      runtime: runtime,
+      model_catalog: model_catalog,
+      request_summary: request_summary,
+      quickstart: build_quickstart(readiness, model_catalog, request_summary, false),
       last_updated_at: nil
     )
   end
@@ -361,10 +420,16 @@ defmodule OrchardConsole.OverviewLive do
     rows =
       Enum.map(Model.states(), fn state -> %{state: state, count: summary.by_state[state]} end)
 
-    %{status: :ok, total: summary.total, rows: rows, message: nil}
+    %{status: :ok, total: summary.total, by_state: summary.by_state, rows: rows, message: nil}
   rescue
     _ ->
-      %{status: :error, total: nil, rows: [], message: "Model catalog data unavailable."}
+      %{
+        status: :error,
+        total: nil,
+        by_state: zero_model_state_counts(),
+        rows: [],
+        message: "Model catalog data unavailable."
+      }
   end
 
   defp fetch_request_summary do
@@ -378,6 +443,7 @@ defmodule OrchardConsole.OverviewLive do
       total: summary.total,
       active: summary.active,
       terminal: summary.terminal,
+      by_state: summary.by_state,
       rows: rows,
       message: nil
     }
@@ -388,9 +454,95 @@ defmodule OrchardConsole.OverviewLive do
         total: nil,
         active: nil,
         terminal: nil,
+        by_state: zero_request_state_counts(),
         rows: [],
         message: "Request summary unavailable."
       }
+  end
+
+  defp fetch_active_api_keys do
+    Governance.has_active_api_keys?()
+  rescue
+    _ -> false
+  end
+
+  defp build_quickstart(readiness, model_catalog, request_summary, has_active_api_keys) do
+    steps =
+      @quickstart_step_definitions
+      |> Enum.map(fn step ->
+        Map.put(
+          step,
+          :complete?,
+          quickstart_step_complete?(
+            step.id,
+            readiness,
+            model_catalog,
+            request_summary,
+            has_active_api_keys
+          )
+        )
+      end)
+      |> assign_quickstart_step_statuses()
+
+    %{steps: steps}
+  end
+
+  defp quickstart_step_complete?(:system_healthy, readiness, _model_catalog, _request_summary, _),
+    do: readiness.status == :ok
+
+  defp quickstart_step_complete?(
+         :import_first_model,
+         _readiness,
+         model_catalog,
+         _request_summary,
+         _
+       ) do
+    model_catalog.status == :ok and Map.get(model_catalog.by_state, :active, 0) > 0
+  end
+
+  defp quickstart_step_complete?(
+         :run_test_request,
+         _readiness,
+         _model_catalog,
+         request_summary,
+         _
+       ) do
+    request_summary.status == :ok and Map.get(request_summary.by_state, :completed, 0) > 0
+  end
+
+  defp quickstart_step_complete?(
+         :create_api_key,
+         _readiness,
+         _model_catalog,
+         _request_summary,
+         has_active_api_keys
+       ),
+       do: has_active_api_keys
+
+  defp assign_quickstart_step_statuses(steps) do
+    {steps, _current_assigned?} =
+      Enum.map_reduce(steps, false, fn step, current_assigned? ->
+        cond do
+          step.complete? ->
+            {Map.put(step, :status, :completed), current_assigned?}
+
+          current_assigned? ->
+            {Map.put(step, :status, :pending), current_assigned?}
+
+          true ->
+            {Map.put(step, :status, :current), true}
+        end
+      end)
+
+    steps
+  end
+
+  defp zero_model_state_counts do
+    Map.new(Model.states(), &{&1, 0})
+  end
+
+  defp zero_request_state_counts do
+    Map.new(Request.states(), &{&1, 0})
   end
 
   # ===========================================================================
@@ -483,6 +635,14 @@ defmodule OrchardConsole.OverviewLive do
   defp check_badge_label(:ok), do: "OK"
   defp check_badge_label(:error), do: "Blocked"
   defp check_badge_label(_), do: "Unknown"
+
+  defp quickstart_status_badge_tone(:completed), do: :success
+  defp quickstart_status_badge_tone(:current), do: :info
+  defp quickstart_status_badge_tone(:pending), do: :neutral
+
+  defp quickstart_status_badge_label(:completed), do: "Complete"
+  defp quickstart_status_badge_label(:current), do: "Current"
+  defp quickstart_status_badge_label(:pending), do: "Pending"
 
   defp runtime_loaded_count(%{status: :ok, loaded_models: models}), do: length(models)
   defp runtime_loaded_count(_), do: nil
