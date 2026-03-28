@@ -150,6 +150,13 @@ defmodule Orchard.Governance do
     |> Repo.all()
   end
 
+  @spec has_active_api_keys?() :: boolean()
+  def has_active_api_keys? do
+    ApiKey
+    |> where([api_key], is_nil(api_key.revoked_at))
+    |> Repo.exists?()
+  end
+
   @spec get_tenant(Tenant.t() | Ecto.UUID.t()) :: {:ok, Tenant.t()} | {:error, :tenant_not_found}
   def get_tenant(%Tenant{} = tenant), do: {:ok, tenant}
 

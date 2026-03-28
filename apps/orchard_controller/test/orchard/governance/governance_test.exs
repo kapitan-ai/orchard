@@ -139,6 +139,32 @@ defmodule Orchard.GovernanceTest do
     end
   end
 
+  describe "has_active_api_keys?/0" do
+    test "returns false when no api keys exist" do
+      refute Governance.has_active_api_keys?()
+    end
+
+    test "returns true when at least one unrevoked api key exists" do
+      tenant = create_tenant!("tenant-active-api-key")
+      revoked_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+      create_api_key_record!(tenant, %{revoked_at: revoked_at})
+      create_api_key_record!(tenant)
+
+      assert Governance.has_active_api_keys?()
+    end
+
+    test "returns false when only revoked api keys remain" do
+      tenant = create_tenant!("tenant-only-revoked-api-keys")
+      revoked_at = DateTime.utc_now() |> DateTime.truncate(:microsecond)
+
+      create_api_key_record!(tenant, %{revoked_at: revoked_at})
+      create_api_key_record!(tenant, %{revoked_at: revoked_at})
+
+      refute Governance.has_active_api_keys?()
+    end
+  end
+
   describe "create_api_key/2" do
     test "returns the cleartext token once, persists only generated metadata, and writes an audit row" do
       tenant = create_tenant!("tenant-create")
