@@ -93,6 +93,70 @@ Hooks.SubmitOnModEnter = {
 }
 
 /**
+ * OverviewQuickstart — loads and persists the dismissed quickstart preference.
+ * Attach to the stable quickstart root with `phx-hook="OverviewQuickstart"`.
+ */
+Hooks.OverviewQuickstart = {
+  mounted() {
+    this.cookieKey = "orchard_console_quickstart_dismissed"
+    this.cookiePath = "/console"
+    this.cookieMaxAge = 31536000
+    this.cookieSameSite = "Lax"
+
+    this._handleDismissedRef = this.handleEvent("overview_quickstart:set_dismissed", ({dismissed}) => {
+      this._setDismissedCookie(dismissed === true)
+    })
+
+    this._onClick = (event) => {
+      let actionEl = event.target.closest("[data-quickstart-action]")
+      if (!actionEl || !this.el.contains(actionEl)) return
+
+      let action = actionEl.dataset.quickstartAction
+      if (action === "dismiss") {
+        event.preventDefault()
+        this.pushEvent("quickstart_dismiss", {})
+      } else if (action === "recover") {
+        event.preventDefault()
+        this.pushEvent("quickstart_recover", {})
+      }
+    }
+
+    this.el.addEventListener("click", this._onClick)
+    this.pushEvent("quickstart_client_state_loaded", {dismissed: this._readDismissedCookie()})
+  },
+
+  destroyed() {
+    this.el.removeEventListener("click", this._onClick)
+    if (this._handleDismissedRef) this.removeHandleEvent(this._handleDismissedRef)
+  },
+
+  _readDismissedCookie() {
+    let cookie = document.cookie
+      .split(";")
+      .map((entry) => entry.trim())
+      .find((entry) => entry.startsWith(`${this.cookieKey}=`))
+
+    if (!cookie) return false
+
+    let value = cookie.slice(this.cookieKey.length + 1)
+    return value === "1"
+  },
+
+  _setDismissedCookie(dismissed) {
+    let parts = [
+      `${this.cookieKey}=${dismissed ? "1" : ""}`,
+      `Path=${this.cookiePath}`,
+      `SameSite=${this.cookieSameSite}`,
+      `Max-Age=${dismissed ? this.cookieMaxAge : 0}`
+    ]
+
+    if (window.location.protocol === "https:") parts.push("Secure")
+
+    document.cookie = parts.join("; ")
+  }
+}
+
+/**
  * CopyGeneratedSecret — copies a one-time API key secret to the clipboard.
  * Attach to a button with `phx-hook="CopyGeneratedSecret"`.
  * Required data attributes: `data-copy-text`, `data-api-key-id`.

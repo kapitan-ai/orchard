@@ -365,11 +365,43 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "renders server-derived baseline in default test env", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
-      assert has_element?(view, "#overview-quickstart")
+      assert_quickstart_visible(view)
       assert_quickstart_status(view, "system-healthy", "current")
       assert_quickstart_status(view, "import-first-model", "pending")
       assert_quickstart_status(view, "run-test-request", "pending")
       assert_quickstart_status(view, "create-api-key", "pending")
+    end
+
+    test "wires the OverviewQuickstart hook and dismiss control", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ ~s(id="overview-quickstart")
+      assert html =~ ~s(phx-hook="OverviewQuickstart")
+      assert html =~ ~s(id="overview-quickstart-dismiss")
+      assert html =~ ~s(data-quickstart-action="dismiss")
+    end
+
+    test "keeps quickstart visible when client state payload is missing or falsey", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      render_click(view, "quickstart_client_state_loaded", %{})
+      assert_quickstart_visible(view)
+
+      render_click(view, "quickstart_client_state_loaded", %{"dismissed" => "0"})
+      assert_quickstart_visible(view)
+    end
+
+    test "switches between dismissed and visible quickstart states", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      render_click(view, "quickstart_client_state_loaded", %{"dismissed" => "1"})
+      assert_quickstart_dismissed(view)
+
+      render_click(view, "quickstart_recover", %{})
+      assert_quickstart_visible(view)
+
+      render_click(view, "quickstart_dismiss", %{})
+      assert_quickstart_dismissed(view)
     end
   end
 
@@ -434,6 +466,38 @@ defmodule OrchardConsole.OverviewLiveTest do
       render(view)
 
       assert_quickstart_status(view, "create-api-key", "completed")
+    end
+
+    test "preserves dismissed state across timer refresh and recover shows updated steps", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console")
+
+      render_click(view, "quickstart_client_state_loaded", %{"dismissed" => "1"})
+      assert_quickstart_dismissed(view)
+
+      create_model!(%{state: :active})
+      send(view.pid, :refresh_overview)
+      render(view)
+
+      assert_quickstart_dismissed(view)
+
+      render_click(view, "quickstart_recover", %{})
+      assert_quickstart_visible(view)
+      assert_quickstart_status(view, "system-healthy", "completed")
+      assert_quickstart_status(view, "import-first-model", "completed")
+      assert_quickstart_status(view, "run-test-request", "current")
+    end
+
+    test "preserves dismissed state across manual refresh", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      render_click(view, "quickstart_client_state_loaded", %{"dismissed" => "1"})
+      assert_quickstart_dismissed(view)
+
+      view |> element("#overview-refresh-now") |> render_click()
+
+      assert_quickstart_dismissed(view)
     end
   end
 
@@ -840,6 +904,20 @@ defmodule OrchardConsole.OverviewLiveTest do
   defp put_console_config(overrides) do
     current = Application.get_env(:orchard_controller, :console, [])
     Application.put_env(:orchard_controller, :console, Keyword.merge(current, overrides))
+  end
+
+  defp assert_quickstart_visible(view) do
+    assert has_element?(view, "#overview-quickstart")
+    assert has_element?(view, "#overview-quickstart-full")
+    assert has_element?(view, "#overview-quickstart-dismiss")
+    refute has_element?(view, "#overview-quickstart-dismissed")
+  end
+
+  defp assert_quickstart_dismissed(view) do
+    assert has_element?(view, "#overview-quickstart")
+    assert has_element?(view, "#overview-quickstart-dismissed")
+    assert has_element?(view, "#overview-quickstart-recover")
+    refute has_element?(view, "#overview-quickstart-full")
   end
 
   defp assert_quickstart_status(view, step_dom_id, status) do

@@ -60,34 +60,97 @@ defmodule OrchardConsole.OverviewLive do
   end
 
   @impl true
+  def handle_event("quickstart_client_state_loaded", params, socket) do
+    {:noreply,
+     update_quickstart_client_state(socket, %{
+       dismissed?: dismissed_param?(Map.get(params, "dismissed"))
+     })}
+  end
+
+  @impl true
+  def handle_event("quickstart_dismiss", _params, socket) do
+    socket =
+      socket
+      |> update_quickstart_client_state(%{dismissed?: true})
+      |> push_event("overview_quickstart:set_dismissed", %{dismissed: true})
+
+    {:noreply, socket}
+  end
+
+  @impl true
+  def handle_event("quickstart_recover", _params, socket) do
+    socket =
+      socket
+      |> update_quickstart_client_state(%{dismissed?: false})
+      |> push_event("overview_quickstart:set_dismissed", %{dismissed: false})
+
+    {:noreply, socket}
+  end
+
+  @impl true
   def render(assigns) do
     ~H"""
     <div class="space-y-6">
-      <div id="overview-quickstart">
-        <.card>
-          <:title>Quickstart</:title>
-          <:subtitle>Track the first server-derived onboarding steps directly from live system state.</:subtitle>
+      <div id="overview-quickstart" phx-hook="OverviewQuickstart">
+        <%= if @quickstart.dismissed? do %>
+          <.card>
+            <:title>Quickstart hidden</:title>
+            <:subtitle>You can restore the onboarding checklist at any time.</:subtitle>
 
-          <ol class="space-y-3">
-            <li
-              :for={step <- @quickstart.steps}
-              id={"overview-quickstart-step-#{step.dom_id}"}
-              data-status={Atom.to_string(step.status)}
-              class="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700"
-            >
-              <div class="flex items-center gap-3">
-                <span class="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                  {step.ordinal}
-                </span>
-                <span class="text-sm font-medium text-slate-900 dark:text-slate-100">{step.title}</span>
+            <div id="overview-quickstart-dismissed" class="flex items-center justify-between gap-3">
+              <p class="text-sm text-slate-600 dark:text-slate-300">
+                Quickstart is dismissed for this browser until you restore it.
+              </p>
+
+              <button
+                id="overview-quickstart-recover"
+                type="button"
+                data-quickstart-action="recover"
+                class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                Show quickstart
+              </button>
+            </div>
+          </.card>
+        <% else %>
+          <.card>
+            <:title>Quickstart</:title>
+            <:subtitle>Track the first server-derived onboarding steps directly from live system state.</:subtitle>
+
+            <div id="overview-quickstart-full" class="space-y-4">
+              <div class="flex justify-end">
+                <button
+                  id="overview-quickstart-dismiss"
+                  type="button"
+                  data-quickstart-action="dismiss"
+                  class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                >
+                  Dismiss
+                </button>
               </div>
 
-              <.badge tone={quickstart_status_badge_tone(step.status)}>
-                {quickstart_status_badge_label(step.status)}
-              </.badge>
-            </li>
-          </ol>
-        </.card>
+              <ol class="space-y-3" id="overview-quickstart-steps">
+                <li
+                  :for={step <- @quickstart.steps}
+                  id={"overview-quickstart-step-#{step.dom_id}"}
+                  data-status={Atom.to_string(step.status)}
+                  class="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700"
+                >
+                  <div class="flex items-center gap-3">
+                    <span class="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                      {step.ordinal}
+                    </span>
+                    <span class="text-sm font-medium text-slate-900 dark:text-slate-100">{step.title}</span>
+                  </div>
+
+                  <.badge tone={quickstart_status_badge_tone(step.status)}>
+                    {quickstart_status_badge_label(step.status)}
+                  </.badge>
+                </li>
+              </ol>
+            </div>
+          </.card>
+        <% end %>
       </div>
 
       <%!-- System Status (hero card) --%>
@@ -284,6 +347,7 @@ defmodule OrchardConsole.OverviewLive do
     model_catalog = fetch_model_catalog()
     request_summary = fetch_request_summary()
     has_active_api_keys = fetch_active_api_keys()
+    client_state = quickstart_client_state(socket)
 
     assign(socket,
       readiness: readiness,
@@ -291,7 +355,13 @@ defmodule OrchardConsole.OverviewLive do
       model_catalog: model_catalog,
       request_summary: request_summary,
       quickstart:
-        build_quickstart(readiness, model_catalog, request_summary, has_active_api_keys),
+        build_quickstart(
+          readiness,
+          model_catalog,
+          request_summary,
+          has_active_api_keys,
+          client_state
+        ),
       last_updated_at: DateTime.utc_now() |> DateTime.truncate(:second)
     )
   end
@@ -340,7 +410,14 @@ defmodule OrchardConsole.OverviewLive do
       runtime: runtime,
       model_catalog: model_catalog,
       request_summary: request_summary,
-      quickstart: build_quickstart(readiness, model_catalog, request_summary, false),
+      quickstart:
+        build_quickstart(
+          readiness,
+          model_catalog,
+          request_summary,
+          false,
+          default_quickstart_client_state()
+        ),
       last_updated_at: nil
     )
   end
@@ -466,7 +543,13 @@ defmodule OrchardConsole.OverviewLive do
     _ -> false
   end
 
-  defp build_quickstart(readiness, model_catalog, request_summary, has_active_api_keys) do
+  defp build_quickstart(
+         readiness,
+         model_catalog,
+         request_summary,
+         has_active_api_keys,
+         client_state
+       ) do
     steps =
       @quickstart_step_definitions
       |> Enum.map(fn step ->
@@ -484,8 +567,33 @@ defmodule OrchardConsole.OverviewLive do
       end)
       |> assign_quickstart_step_statuses()
 
-    %{steps: steps}
+    Map.merge(client_state, %{steps: steps})
   end
+
+  defp default_quickstart_client_state do
+    %{dismissed?: false}
+  end
+
+  defp quickstart_client_state(socket) do
+    socket.assigns
+    |> Map.get(:quickstart, default_quickstart_client_state())
+    |> Map.take([:dismissed?])
+    |> then(&Map.merge(default_quickstart_client_state(), &1))
+  end
+
+  defp update_quickstart_client_state(socket, attrs) do
+    client_state =
+      socket
+      |> quickstart_client_state()
+      |> Map.merge(attrs)
+
+    assign(socket, :quickstart, Map.merge(socket.assigns.quickstart, client_state))
+  end
+
+  defp dismissed_param?(true), do: true
+  defp dismissed_param?("1"), do: true
+  defp dismissed_param?(value) when is_binary(value), do: String.downcase(value) == "true"
+  defp dismissed_param?(_), do: false
 
   defp quickstart_step_complete?(:system_healthy, readiness, _model_catalog, _request_summary, _),
     do: readiness.status == :ok
