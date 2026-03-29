@@ -384,23 +384,14 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_status(view, "connect-your-tools", "pending")
     end
 
-    test "renders quickstart guide content after hydration", %{conn: conn} do
+    test "renders rich quickstart guide content after hydration", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
       html = hydrate_quickstart(view)
 
       assert html =~ ~s(id="overview-quickstart-dismiss")
       assert html =~ ~s(data-quickstart-action="dismiss")
-      assert html =~ ~s(id="overview-quickstart-guide")
-      assert html =~ ~s(phx-hook="QuickstartGuide")
-      assert html =~ ~s(id="overview-quickstart-guide-summary")
-      assert html =~ Orchard.API.Endpoint.url() <> "/v1"
-      assert html =~ "Authorization: Bearer &lt;your-api-key&gt;"
-      assert html =~ "&lt;your-model&gt;"
-
-      curl = view |> element("#overview-quickstart-guide-curl") |> render()
-      assert curl =~ "curl #{Orchard.API.Endpoint.url()}/v1/chat/completions \\\n"
-      assert curl =~ "\n  -H &quot;Authorization: Bearer &lt;your-api-key&gt;&quot; \\\n"
+      assert_rich_quickstart_guide_content(view)
     end
 
     test "keeps quickstart visible when client state payload is missing or falsey", %{conn: conn} do
@@ -440,6 +431,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       assert_quickstart_dismissed(view)
       assert_quickstart_guide_accessible(view)
+      assert_rich_quickstart_guide_content(view)
       assert render(view) =~ "You can restore the onboarding checklist at any time."
       assert render(view) =~ "Show checklist"
       assert render(view) =~ "without restoring the checklist"
@@ -512,6 +504,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       assert_quickstart_compact_completed(view)
       assert_quickstart_guide_accessible(view)
+      assert_rich_quickstart_guide_content(view)
     end
 
     test "shows compact completed mode after guide open and preserves it across timer refresh", %{
@@ -1026,6 +1019,33 @@ defmodule OrchardConsole.OverviewLiveTest do
     assert has_element?(view, "#overview-quickstart-guide")
     assert has_element?(view, "#overview-quickstart-guide-summary")
     assert has_element?(view, "#overview-quickstart-guide-disclosure")
+  end
+
+  defp assert_rich_quickstart_guide_content(view) do
+    assert_quickstart_guide_accessible(view)
+
+    assert view |> element("#overview-quickstart-guide") |> render() =~
+             ~s(phx-hook="QuickstartGuide")
+
+    assert view |> element("#overview-quickstart-guide-base-url") |> render() =~
+             Orchard.API.Endpoint.url() <> "/v1"
+
+    curl = view |> element("#overview-quickstart-guide-curl") |> render()
+    assert curl =~ "curl #{Orchard.API.Endpoint.url()}/v1/chat/completions \\\n"
+    assert curl =~ "Authorization: Bearer &lt;your-api-key&gt;"
+    assert curl =~ "&lt;your-model&gt;"
+
+    python = view |> element("#overview-quickstart-guide-python") |> render()
+    assert python =~ "from openai import OpenAI"
+    assert python =~ "base_url=&quot;#{Orchard.API.Endpoint.url()}/v1&quot;"
+    assert python =~ "api_key=&quot;&lt;your-api-key&gt;&quot;"
+    assert python =~ "model=&quot;&lt;your-model&gt;&quot;"
+
+    tool_config = view |> element("#overview-quickstart-guide-tool-config") |> render()
+    assert tool_config =~ "Provider: OpenAI-compatible / Custom OpenAI"
+    assert tool_config =~ "Base URL: #{Orchard.API.Endpoint.url()}/v1"
+    assert tool_config =~ "API key: &lt;your-api-key&gt;"
+    assert tool_config =~ "Model: &lt;your-model&gt;"
   end
 
   defp assert_quickstart_status(view, step_dom_id, status) do

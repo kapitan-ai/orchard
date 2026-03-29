@@ -420,6 +420,20 @@ defmodule OrchardConsole.OverviewLive do
             </p>
             <pre id="overview-quickstart-guide-curl" class="overflow-x-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100"><code>{quickstart_curl_example()}</code></pre>
           </div>
+
+          <div class="space-y-2">
+            <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              Python OpenAI client
+            </p>
+            <pre id="overview-quickstart-guide-python" class="overflow-x-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100"><code>{quickstart_python_example()}</code></pre>
+          </div>
+
+          <div class="space-y-2">
+            <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              Generic tool configuration
+            </p>
+            <pre id="overview-quickstart-guide-tool-config" class="overflow-x-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100"><code>{quickstart_tool_configuration_example()}</code></pre>
+          </div>
         </div>
       </.disclosure_section>
     </div>
@@ -928,6 +942,35 @@ defmodule OrchardConsole.OverviewLive do
       -H \"Authorization: Bearer <your-api-key>\" \\
       -H \"Content-Type: application/json\" \\
       -d '{"model":"<your-model>","messages":[{"role":"user","content":"Hello from Orchard"}]}'
+    """
+    |> String.trim()
+  end
+
+  defp quickstart_python_example do
+    """
+    from openai import OpenAI
+
+    client = OpenAI(
+        base_url=\"#{quickstart_api_base_url()}\",
+        api_key=\"<your-api-key>\",
+    )
+
+    response = client.chat.completions.create(
+        model=\"<your-model>\",
+        messages=[{"role": "user", "content": "Hello from Orchard"}],
+    )
+
+    print(response.choices[0].message.content)
+    """
+    |> String.trim()
+  end
+
+  defp quickstart_tool_configuration_example do
+    """
+    Provider: OpenAI-compatible / Custom OpenAI
+    Base URL: #{quickstart_api_base_url()}
+    API key: <your-api-key>
+    Model: <your-model>
     """
     |> String.trim()
   end
