@@ -261,9 +261,10 @@ defmodule Orchard.Nodes do
   defp resolve_port(meta, target) do
     port = meta.listen_port
 
-    cond do
-      is_integer(port) and port in 1..65_535 -> port
-      true -> target_port(target)
+    if is_integer(port) and port in 1..65_535 do
+      port
+    else
+      target_port(target)
     end
   end
 
@@ -290,64 +291,14 @@ defmodule Orchard.Nodes do
 
   defp execute_observe(observation) do
     Repo.transaction(fn ->
-      # Lock all potentially conflicting rows in one query
-      conflicting =
-        Node
-        |> where(
-          [n],
-          n.id == ^observation.id or
-            n.display_name == ^observation.display_name or
-            (n.advertise_addr == ^observation.advertise_addr and
-               n.rpc_port == ^observation.rpc_port)
-        )
-        |> lock("FOR UPDATE")
-        |> Repo.all()
+      conflicting = load_conflicting_nodes(observation)
+      existing = classify_conflicting_nodes(conflicting, observation)
 
-      existing_by_id = Enum.find(conflicting, &(&1.id == observation.id))
-      existing_by_target = Enum.find(conflicting, &target_match?(&1, observation))
-      existing_by_name = Enum.find(conflicting, &(&1.display_name == observation.display_name))
-
-      cond do
-        # Identity conflict: same target, different UUID
-        existing_by_target != nil and existing_by_target.id != observation.id ->
-          Logger.warning(
-            "Node identity conflict: target #{observation.advertise_addr}:#{observation.rpc_port} " <>
-              "claimed by #{observation.id} but registered to #{existing_by_target.id}"
-          )
-
-          Repo.rollback(:identity_conflict)
-
-        # Identity conflict: same display_name, different UUID
-        existing_by_name != nil and existing_by_name.id != observation.id ->
-          Logger.warning(
-            "Node identity conflict: display_name #{inspect(observation.display_name)} " <>
-              "claimed by #{observation.id} but registered to #{existing_by_name.id}"
-          )
-
-          Repo.rollback(:identity_conflict)
-
-        # Stale observation: existing row has fresher or equal heartbeat
-        existing_by_id != nil and
-          existing_by_id.last_heartbeat_at != nil and
-            DateTime.compare(existing_by_id.last_heartbeat_at, observation.last_heartbeat_at) !=
-              :lt ->
-          Repo.rollback(:stale)
-
-        # Update existing node: preserve admin-managed state
-        existing_by_id != nil ->
-          existing_by_id
-          |> Node.changeset(
-            observation
-            |> Map.delete(:id)
-            |> Map.put(:state, existing_by_id.state)
-          )
-          |> Repo.update!()
-
-        # Insert new node as :active
-        true ->
-          %Node{}
-          |> Node.changeset(Map.put(observation, :state, :active))
-          |> Repo.insert!()
+      with :ok <- ensure_no_identity_conflict(existing, observation),
+           :ok <- ensure_fresh_observation(existing, observation) do
+        upsert_observation(existing, observation)
+      else
+        {:error, reason} -> Repo.rollback(reason)
       end
     end)
     |> case do
@@ -364,6 +315,76 @@ defmodule Orchard.Nodes do
       :noop
   end
 
+  defp load_conflicting_nodes(observation) do
+    Node
+    |> where(
+      [n],
+      n.id == ^observation.id or
+        n.display_name == ^observation.display_name or
+        (n.advertise_addr == ^observation.advertise_addr and
+           n.rpc_port == ^observation.rpc_port)
+    )
+    |> lock("FOR UPDATE")
+    |> Repo.all()
+  end
+
+  defp classify_conflicting_nodes(conflicting, observation) do
+    %{
+      existing_by_id: Enum.find(conflicting, &(&1.id == observation.id)),
+      existing_by_name: Enum.find(conflicting, &(&1.display_name == observation.display_name)),
+      existing_by_target: Enum.find(conflicting, &target_match?(&1, observation))
+    }
+  end
+
+  defp ensure_no_identity_conflict(%{existing_by_target: %Node{id: id}}, observation)
+       when id != observation.id do
+    Logger.warning(
+      "Node identity conflict: target #{observation.advertise_addr}:#{observation.rpc_port} " <>
+        "claimed by #{observation.id} but registered to #{id}"
+    )
+
+    {:error, :identity_conflict}
+  end
+
+  defp ensure_no_identity_conflict(%{existing_by_name: %Node{id: id}}, observation)
+       when id != observation.id do
+    Logger.warning(
+      "Node identity conflict: display_name #{inspect(observation.display_name)} " <>
+        "claimed by #{observation.id} but registered to #{id}"
+    )
+
+    {:error, :identity_conflict}
+  end
+
+  defp ensure_no_identity_conflict(_existing, _observation), do: :ok
+
+  defp ensure_fresh_observation(%{existing_by_id: %Node{} = existing}, observation) do
+    if existing.last_heartbeat_at != nil and
+         DateTime.compare(existing.last_heartbeat_at, observation.last_heartbeat_at) != :lt do
+      {:error, :stale}
+    else
+      :ok
+    end
+  end
+
+  defp ensure_fresh_observation(_existing, _observation), do: :ok
+
+  defp upsert_observation(%{existing_by_id: %Node{} = existing}, observation) do
+    existing
+    |> Node.changeset(
+      observation
+      |> Map.delete(:id)
+      |> Map.put(:state, existing.state)
+    )
+    |> Repo.update!()
+  end
+
+  defp upsert_observation(_existing, observation) do
+    %Node{}
+    |> Node.changeset(Map.put(observation, :state, :active))
+    |> Repo.insert!()
+  end
+
   defp target_match?(node, observation) do
     node.advertise_addr == observation.advertise_addr and
       node.rpc_port == observation.rpc_port
@@ -373,31 +394,36 @@ defmodule Orchard.Nodes do
 
   defp execute_mark_unreachable(host, port, observed_at) do
     Repo.transaction(fn ->
-      node =
-        Node
-        |> where([n], n.advertise_addr == ^host and n.rpc_port == ^port)
-        |> lock("FOR UPDATE")
-        |> Repo.one()
-
-      case node do
+      case fetch_node_for_transport_update(host, port) do
         nil ->
           Repo.rollback(:noop)
 
-        %Node{} ->
-          case resolve_transport_failure_health(node, observed_at) do
-            :noop ->
-              Repo.rollback(:noop)
-
-            health ->
-              node
-              |> Ecto.Changeset.change(health: health)
-              |> Repo.update!()
-          end
+        %Node{} = node ->
+          update_transport_failure_health(node, observed_at)
       end
     end)
     |> case do
       {:ok, node} -> {:ok, node}
       {:error, :noop} -> :noop
+    end
+  end
+
+  defp fetch_node_for_transport_update(host, port) do
+    Node
+    |> where([n], n.advertise_addr == ^host and n.rpc_port == ^port)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp update_transport_failure_health(%Node{} = node, observed_at) do
+    case resolve_transport_failure_health(node, observed_at) do
+      :noop ->
+        Repo.rollback(:noop)
+
+      health ->
+        node
+        |> Ecto.Changeset.change(health: health)
+        |> Repo.update!()
     end
   end
 

@@ -75,7 +75,7 @@ defmodule Orchard.Nodes.Node do
     |> validate_length(:hostname, min: 1)
     |> validate_length(:display_name, min: 1)
     |> validate_length(:advertise_addr, min: 1)
-    |> validate_number(:rpc_port, greater_than: 0, less_than_or_equal_to: 65535)
+    |> validate_number(:rpc_port, greater_than: 0, less_than_or_equal_to: 65_535)
     |> unique_constraint(:display_name)
     |> unique_constraint([:advertise_addr, :rpc_port])
     |> check_constraint(:rpc_port, name: :nodes_rpc_port_range)

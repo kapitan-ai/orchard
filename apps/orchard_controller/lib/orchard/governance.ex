@@ -56,18 +56,23 @@ defmodule Orchard.Governance do
     attrs = normalize_attrs(attrs)
 
     with {:ok, generated} <- normalize_generated_secret(api_key_secret_impl().generate()) do
-      Repo.transaction(fn ->
-        with {:ok, tenant_id} <- normalize_tenant_id(tenant_id),
-             {:ok, tenant} <- fetch_tenant(tenant_id),
-             {:ok, api_key} <- insert_api_key(tenant, attrs, generated),
-             {:ok, _audit_log} <- insert_api_key_audit_log(api_key, "api_key.created", utc_now()) do
-          {:ok, %{api_key: redact_api_key(api_key), token: generated.token}}
-        else
-          {:error, reason} -> Repo.rollback(reason)
-        end
-      end)
+      tenant_id
+      |> create_api_key_transaction(attrs, generated)
       |> unwrap_transaction_result()
     end
+  end
+
+  defp create_api_key_transaction(tenant_id, attrs, generated) do
+    Repo.transaction(fn ->
+      with {:ok, tenant_id} <- normalize_tenant_id(tenant_id),
+           {:ok, tenant} <- fetch_tenant(tenant_id),
+           {:ok, api_key} <- insert_api_key(tenant, attrs, generated),
+           {:ok, _audit_log} <- insert_api_key_audit_log(api_key, "api_key.created", utc_now()) do
+        {:ok, %{api_key: redact_api_key(api_key), token: generated.token}}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
   end
 
   @spec authenticate_api_key(String.t()) ::

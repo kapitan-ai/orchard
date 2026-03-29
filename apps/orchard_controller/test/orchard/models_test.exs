@@ -4,6 +4,7 @@ defmodule Orchard.ModelsTest do
   import Orchard.TestSupport.ModelRequestFixtures
 
   alias Orchard.Models
+  alias Orchard.Models.Importer
   alias Orchard.Models.Model
 
   test "create_model/1 persists a model and enforces uniqueness on identity" do
@@ -297,7 +298,6 @@ defmodule Orchard.ModelsTest do
       model = create_model!(%{model_id: "../escape-test", state: :retired})
 
       assert {:error, {:path_escape, _path}} = Models.delete_model(model.id)
-      # Model row preserved
       assert Orchard.Repo.get(Model, model.id) != nil
     end
 
@@ -305,7 +305,6 @@ defmodule Orchard.ModelsTest do
       # Ensure ModelManifest atoms are loaded (ManifestParser uses to_existing_atom)
       Code.ensure_loaded!(Orchard.ModelManifest)
 
-      # Create a source bundle for import
       source = Path.join(root, "_source_bundle")
       File.mkdir_p!(source)
 
@@ -330,16 +329,14 @@ defmodule Orchard.ModelsTest do
       File.write!(Path.join(source, "tokenizer.json"), "{}")
 
       # First import
-      assert {:ok, model} =
-               Orchard.Models.Importer.import_bundle(source, artifacts_root: root)
+      assert {:ok, model} = Importer.import_bundle(source, artifacts_root: root)
 
       # Retire and delete
       assert {:ok, retired} = Models.retire_model(model.id)
       assert {:ok, _deleted} = Models.delete_model(retired.id)
 
       # Re-import same identity — should succeed (duplicate guard cleared)
-      assert {:ok, reimported} =
-               Orchard.Models.Importer.import_bundle(source, artifacts_root: root)
+      assert {:ok, reimported} = Importer.import_bundle(source, artifacts_root: root)
 
       assert reimported.model_id == "test-org/reimport-model"
       assert reimported.version == "v1"
@@ -348,7 +345,7 @@ defmodule Orchard.ModelsTest do
 
   describe "Importer.artifact_destination_path/3" do
     test "returns canonical path matching importer layout" do
-      assert Orchard.Models.Importer.artifact_destination_path("/root", "org/model", "v1") ==
+      assert Importer.artifact_destination_path("/root", "org/model", "v1") ==
                "/root/org/model/v1"
     end
   end

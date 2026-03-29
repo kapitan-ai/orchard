@@ -163,10 +163,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp extract_node_id(%{node_metadata: %{node_id: node_id}}) when is_binary(node_id) do
-    case Ecto.UUID.cast(node_id) do
-      {:ok, uuid} -> {:ok, uuid}
-      :error -> :error
-    end
+    Ecto.UUID.cast(node_id)
   end
 
   defp extract_node_id(_), do: :error
@@ -224,34 +221,35 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
     {:ok, task_ref} = client.execute_inference(channel, request, owner: self())
 
-    result =
-      receive_loop(
-        client,
-        channel,
-        target,
-        request_id,
-        task_ref,
-        timer_ref,
-        caller_ref,
-        event_handler,
-        []
-      )
+    loop_ctx = %{
+      caller_ref: caller_ref,
+      channel: channel,
+      client: client,
+      event_handler: event_handler,
+      request_id: request_id,
+      target: target,
+      task_ref: task_ref,
+      timer_ref: timer_ref
+    }
+
+    result = receive_loop(loop_ctx, [])
 
     cleanup(timer_ref, caller_ref)
     result
   end
 
-  defp receive_loop(
-         client,
-         channel,
-         target,
-         request_id,
-         task_ref,
-         timer_ref,
-         caller_ref,
-         event_handler,
-         events
-       ) do
+  defp receive_loop(%{} = loop_ctx, events) do
+    %{
+      client: client,
+      channel: channel,
+      target: target,
+      request_id: request_id,
+      task_ref: task_ref,
+      timer_ref: timer_ref,
+      caller_ref: caller_ref,
+      event_handler: event_handler
+    } = loop_ctx
+
     receive do
       {:dispatch_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
         handler_result = emit_event(event, request_id, event_handler)
@@ -264,26 +262,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
           cancelled_by_handler?(handler_result) ->
             _ = client.cancel_inference(channel, request_id)
 
-            drain_until_terminal_or_done(
-              task_ref,
-              request_id,
-              event_handler,
-              events,
-              :client_disconnect
-            )
+            drain_until_terminal_or_done(loop_ctx, events, :client_disconnect)
 
           true ->
-            receive_loop(
-              client,
-              channel,
-              target,
-              request_id,
-              task_ref,
-              timer_ref,
-              caller_ref,
-              event_handler,
-              events
-            )
+            receive_loop(loop_ctx, events)
         end
 
       {:dispatch_done, ^task_ref, :ok} ->
@@ -314,24 +296,19 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
       {:dispatch_timeout, ^timer_ref} ->
         _ = client.cancel_inference(channel, request_id)
-        drain_until_terminal_or_done(task_ref, request_id, event_handler, events, :timeout)
+        drain_until_terminal_or_done(loop_ctx, events, :timeout)
 
       {:DOWN, ^caller_ref, :process, _pid, _reason} ->
         _ = client.cancel_inference(channel, request_id)
-
-        drain_until_terminal_or_done(
-          task_ref,
-          request_id,
-          event_handler,
-          events,
-          :caller_disconnect
-        )
+        drain_until_terminal_or_done(loop_ctx, events, :caller_disconnect)
     end
   end
 
   # After sending cancel (due to timeout or disconnect), drain remaining events
   # until we get a terminal event or the stream completes.
-  defp drain_until_terminal_or_done(task_ref, request_id, event_handler, events, cancel_reason) do
+  defp drain_until_terminal_or_done(%{} = loop_ctx, events, cancel_reason) do
+    %{task_ref: task_ref, request_id: request_id, event_handler: event_handler} = loop_ctx
+
     receive do
       {:dispatch_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
         emit_event(event, request_id, event_handler)
@@ -340,7 +317,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         if InferenceEvent.terminal?(event) do
           {:ok, Enum.reverse(events)}
         else
-          drain_until_terminal_or_done(task_ref, request_id, event_handler, events, cancel_reason)
+          drain_until_terminal_or_done(loop_ctx, events, cancel_reason)
         end
 
       {:dispatch_done, ^task_ref, _result} ->

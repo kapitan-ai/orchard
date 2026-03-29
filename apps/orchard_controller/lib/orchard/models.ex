@@ -141,21 +141,22 @@ defmodule Orchard.Models do
           | {:error, :not_found | :not_retired | {:model_in_use, pos_integer()} | term()}
   def delete_model(model_or_id) do
     with {:ok, id} <- normalize_model_id(model_or_id) do
-      case execute_delete_transaction(id) do
-        {:ok, %{model: model, quarantine_path: nil}} ->
-          {:ok, model}
-
-        {:ok, %{model: model, quarantine_path: qpath}} ->
-          case File.rm_rf(qpath) do
-            {:ok, _} -> {:ok, model}
-            {:error, _, _} -> {:artifacts_cleanup_failed, model}
-          end
-
-        {:error, reason} ->
-          {:error, reason}
-      end
+      id
+      |> execute_delete_transaction()
+      |> finalize_delete_result()
     end
   end
+
+  defp finalize_delete_result({:ok, %{model: model, quarantine_path: nil}}), do: {:ok, model}
+
+  defp finalize_delete_result({:ok, %{model: model, quarantine_path: qpath}}) do
+    case File.rm_rf(qpath) do
+      {:ok, _} -> {:ok, model}
+      {:error, _, _} -> {:artifacts_cleanup_failed, model}
+    end
+  end
+
+  defp finalize_delete_result({:error, reason}), do: {:error, reason}
 
   defp execute_delete_transaction(id) do
     Repo.transaction(fn ->
@@ -163,22 +164,23 @@ defmodule Orchard.Models do
            :ok <- guard_retired(model),
            :ok <- guard_and_nullify_request_refs(model),
            {:ok, quarantine_path} <- quarantine_artifact_dir(model) do
-        case Repo.delete(model) do
-          {:ok, deleted} ->
-            %{model: deleted, quarantine_path: quarantine_path}
-
-          {:error, changeset} ->
-            # Attempt to restore quarantined artifacts before rollback.
-            # If restore fails, the model row will still be preserved (tx rollback)
-            # but artifacts may remain in quarantine — logged for operator action.
-            maybe_restore_quarantine(quarantine_path, model)
-            Repo.rollback({:delete_failed, changeset})
-        end
+        delete_locked_model(model, quarantine_path)
       else
         {:error, reason} ->
           Repo.rollback(reason)
       end
     end)
+  end
+
+  defp delete_locked_model(model, quarantine_path) do
+    case Repo.delete(model) do
+      {:ok, deleted} ->
+        %{model: deleted, quarantine_path: quarantine_path}
+
+      {:error, changeset} ->
+        maybe_restore_quarantine(quarantine_path, model)
+        Repo.rollback({:delete_failed, changeset})
+    end
   end
 
   defp lock_model_for_delete(id) do
@@ -195,32 +197,40 @@ defmodule Orchard.Models do
   # reject if any non-terminal exist, then nullify terminal model_id values.
   defp guard_and_nullify_request_refs(%Model{id: model_id}) do
     terminal_states = Request.terminal_states()
+    refs = fetch_request_refs_for_model(model_id)
+    {terminal_refs, non_terminal_refs} = partition_request_refs(refs, terminal_states)
 
-    # Lock all requests that reference this model
-    refs =
-      Request
-      |> where([r], r.model_id == ^model_id)
-      |> lock("FOR UPDATE")
-      |> select([r], {r.id, r.state})
-      |> Repo.all()
+    case non_terminal_refs do
+      [] ->
+        nullify_terminal_request_refs(terminal_refs)
 
-    {terminal_ids, non_terminal_ids} =
-      Enum.split_with(refs, fn {_id, state} -> state in terminal_states end)
-
-    if non_terminal_ids != [] do
-      {:error, {:model_in_use, length(non_terminal_ids)}}
-    else
-      # Nullify model_id on terminal requests (already locked above)
-      if terminal_ids != [] do
-        ids = Enum.map(terminal_ids, fn {id, _} -> id end)
-
-        Request
-        |> where([r], r.id in ^ids)
-        |> Repo.update_all(set: [model_id: nil])
-      end
-
-      :ok
+      refs ->
+        {:error, {:model_in_use, length(refs)}}
     end
+  end
+
+  defp fetch_request_refs_for_model(model_id) do
+    Request
+    |> where([r], r.model_id == ^model_id)
+    |> lock("FOR UPDATE")
+    |> select([r], {r.id, r.state})
+    |> Repo.all()
+  end
+
+  defp partition_request_refs(refs, terminal_states) do
+    Enum.split_with(refs, fn {_id, state} -> state in terminal_states end)
+  end
+
+  defp nullify_terminal_request_refs([]), do: :ok
+
+  defp nullify_terminal_request_refs(terminal_refs) do
+    ids = Enum.map(terminal_refs, fn {id, _} -> id end)
+
+    Request
+    |> where([r], r.id in ^ids)
+    |> Repo.update_all(set: [model_id: nil])
+
+    :ok
   end
 
   defp quarantine_artifact_dir(%Model{} = model) do
@@ -231,21 +241,35 @@ defmodule Orchard.Models do
 
     with :ok <- validate_artifact_path_contained(artifact_path, artifacts_root),
          :ok <- reject_symlink(artifact_path) do
-      if File.dir?(artifact_path) do
-        deleting_dir = Path.join(artifacts_root, ".deleting")
-        quarantine_path = Path.join(deleting_dir, Ecto.UUID.generate())
+      maybe_quarantine_artifact_dir(artifact_path, artifacts_root)
+    end
+  end
 
-        with :ok <- File.mkdir_p(deleting_dir) do
-          case File.rename(artifact_path, quarantine_path) do
-            :ok -> {:ok, quarantine_path}
-            {:error, reason} -> {:error, {:artifact_quarantine_failed, reason}}
-          end
-        else
-          {:error, reason} -> {:error, {:artifact_quarantine_failed, reason}}
-        end
-      else
-        {:ok, nil}
-      end
+  defp maybe_quarantine_artifact_dir(artifact_path, artifacts_root) do
+    if File.dir?(artifact_path) do
+      quarantine_artifact_dir!(artifact_path, artifacts_root)
+    else
+      {:ok, nil}
+    end
+  end
+
+  defp quarantine_artifact_dir!(artifact_path, artifacts_root) do
+    deleting_dir = Path.join(artifacts_root, ".deleting")
+    quarantine_path = Path.join(deleting_dir, Ecto.UUID.generate())
+
+    case File.mkdir_p(deleting_dir) do
+      :ok ->
+        rename_to_quarantine(artifact_path, quarantine_path)
+
+      {:error, reason} ->
+        {:error, {:artifact_quarantine_failed, reason}}
+    end
+  end
+
+  defp rename_to_quarantine(artifact_path, quarantine_path) do
+    case File.rename(artifact_path, quarantine_path) do
+      :ok -> {:ok, quarantine_path}
+      {:error, reason} -> {:error, {:artifact_quarantine_failed, reason}}
     end
   end
 
@@ -307,16 +331,16 @@ defmodule Orchard.Models do
         |> select([m], m)
         |> Repo.update_all(set: [state: target_state, updated_at: now])
 
-      case count do
-        1 ->
-          {:ok, hd(rows)}
+      transition_model_state_result(count, rows, id, target_state)
+    end
+  end
 
-        0 ->
-          case Repo.get(Model, id) do
-            nil -> {:error, :not_found}
-            model -> {:error, invalid_transition_changeset(model, target_state)}
-          end
-      end
+  defp transition_model_state_result(1, rows, _id, _target_state), do: {:ok, hd(rows)}
+
+  defp transition_model_state_result(0, _rows, id, target_state) do
+    case Repo.get(Model, id) do
+      nil -> {:error, :not_found}
+      model -> {:error, invalid_transition_changeset(model, target_state)}
     end
   end
 

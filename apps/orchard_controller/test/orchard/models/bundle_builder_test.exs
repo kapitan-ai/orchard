@@ -160,7 +160,7 @@ defmodule Orchard.Models.BundleBuilderTest do
       write_minimal_bundle(ctx.tmp_dir,
         config: %{
           "model_type" => "llama",
-          "max_position_embeddings" => 32768,
+          "max_position_embeddings" => 32_768,
           "n_positions" => 2048,
           "max_sequence_length" => 1024
         }
@@ -169,7 +169,7 @@ defmodule Orchard.Models.BundleBuilderTest do
       assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
 
       assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
-      assert manifest.max_context_tokens == 32768
+      assert manifest.max_context_tokens == 32_768
     end
 
     test "falls back to n_positions", ctx do

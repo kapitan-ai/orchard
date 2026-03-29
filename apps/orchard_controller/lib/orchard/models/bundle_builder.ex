@@ -171,19 +171,23 @@ defmodule Orchard.Models.BundleBuilder do
       path = Path.join(download_dir, filename)
 
       if File.regular?(path) do
-        case File.read(path) do
-          {:ok, content} when byte_size(content) > 0 ->
-            sha256 = compute_sha256(content)
-            {:ok, %{path: filename, sha256: sha256}}
-
-          {:ok, _empty} ->
-            nil
-
-          {:error, reason} ->
-            {:error, {:chat_template_read, "Failed to read #{path}: #{inspect(reason)}"}}
-        end
+        existing_template_result(path, filename)
       end
     end)
+  end
+
+  defp existing_template_result(path, filename) do
+    case File.read(path) do
+      {:ok, content} when byte_size(content) > 0 ->
+        sha256 = compute_sha256(content)
+        {:ok, %{path: filename, sha256: sha256}}
+
+      {:ok, _empty} ->
+        nil
+
+      {:error, reason} ->
+        {:error, {:chat_template_read, "Failed to read #{path}: #{inspect(reason)}"}}
+    end
   end
 
   defp extract_template_from_tokenizer_config(download_dir) do
@@ -193,31 +197,35 @@ defmodule Orchard.Models.BundleBuilder do
       with {:ok, json} <-
              read_json_file(config_path, :invalid_tokenizer_config, :invalid_tokenizer_config),
            {:ok, config} <- decode_json_object(json, :invalid_tokenizer_config) do
-        case Map.get(config, "chat_template") do
-          nil ->
-            warn_no_template()
-            {:ok, nil}
-
-          template when is_binary(template) and template != "" ->
-            write_generated_template(download_dir, template)
-
-          template when is_binary(template) ->
-            {:error,
-             {:invalid_tokenizer_config, "chat_template in tokenizer_config.json is blank."}}
-
-          templates when is_list(templates) ->
-            extract_template_from_list(download_dir, templates)
-
-          _other ->
-            {:error,
-             {:invalid_tokenizer_config,
-              "chat_template in tokenizer_config.json has unsupported type."}}
-        end
+        template_from_tokenizer_config(download_dir, Map.get(config, "chat_template"))
       end
     else
       warn_no_template()
       {:ok, nil}
     end
+  end
+
+  defp template_from_tokenizer_config(_download_dir, nil) do
+    warn_no_template()
+    {:ok, nil}
+  end
+
+  defp template_from_tokenizer_config(download_dir, template)
+       when is_binary(template) and template != "" do
+    write_generated_template(download_dir, template)
+  end
+
+  defp template_from_tokenizer_config(_download_dir, template) when is_binary(template) do
+    {:error, {:invalid_tokenizer_config, "chat_template in tokenizer_config.json is blank."}}
+  end
+
+  defp template_from_tokenizer_config(download_dir, templates) when is_list(templates) do
+    extract_template_from_list(download_dir, templates)
+  end
+
+  defp template_from_tokenizer_config(_download_dir, _other) do
+    {:error,
+     {:invalid_tokenizer_config, "chat_template in tokenizer_config.json has unsupported type."}}
   end
 
   defp extract_template_from_list(download_dir, templates) do
@@ -280,38 +288,43 @@ defmodule Orchard.Models.BundleBuilder do
     case File.ls(dir) do
       {:ok, entries} ->
         Enum.reduce_while(entries, {:ok, 0}, fn entry, {:ok, acc} ->
-          path = Path.join(dir, entry)
-          relative = Path.relative_to(path, root)
-
-          case File.lstat(path) do
-            {:ok, %{type: :regular, size: size}} ->
-              # Exclude manifest.json from size calculation
-              if relative == "manifest.json" do
-                {:cont, {:ok, acc}}
-              else
-                {:cont, {:ok, acc + size}}
-              end
-
-            {:ok, %{type: :directory}} ->
-              case walk_size(path, root) do
-                {:ok, sub_size} -> {:cont, {:ok, acc + sub_size}}
-                {:error, _} = err -> {:halt, err}
-              end
-
-            {:ok, %{type: type}} ->
-              {:halt,
-               {:error,
-                {:invalid_bundle_layout, "Unexpected file type #{inspect(type)} at #{relative}"}}}
-
-            {:error, reason} ->
-              {:halt,
-               {:error,
-                {:invalid_bundle_layout, "Failed to stat #{relative}: #{inspect(reason)}"}}}
-          end
+          accumulate_entry_size(dir, root, entry, acc)
         end)
 
       {:error, reason} ->
         {:error, {:invalid_bundle_layout, "Failed to list directory #{dir}: #{inspect(reason)}"}}
+    end
+  end
+
+  defp accumulate_entry_size(dir, root, entry, acc) do
+    path = Path.join(dir, entry)
+    relative = Path.relative_to(path, root)
+
+    case File.lstat(path) do
+      {:ok, %{type: :regular, size: size}} ->
+        {:cont, {:ok, maybe_add_file_size(relative, size, acc)}}
+
+      {:ok, %{type: :directory}} ->
+        accumulate_directory_size(path, root, acc)
+
+      {:ok, %{type: type}} ->
+        {:halt,
+         {:error,
+          {:invalid_bundle_layout, "Unexpected file type #{inspect(type)} at #{relative}"}}}
+
+      {:error, reason} ->
+        {:halt,
+         {:error, {:invalid_bundle_layout, "Failed to stat #{relative}: #{inspect(reason)}"}}}
+    end
+  end
+
+  defp maybe_add_file_size("manifest.json", _size, acc), do: acc
+  defp maybe_add_file_size(_relative, size, acc), do: acc + size
+
+  defp accumulate_directory_size(path, root, acc) do
+    case walk_size(path, root) do
+      {:ok, sub_size} -> {:cont, {:ok, acc + sub_size}}
+      {:error, _} = err -> {:halt, err}
     end
   end
 

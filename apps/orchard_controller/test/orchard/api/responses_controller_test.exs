@@ -342,8 +342,7 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     # Must contain at least one response.output_text.delta
     delta_events = Enum.filter(events, &(&1.type == "response.output_text.delta"))
-    assert length(delta_events) >= 1
-    first_delta = hd(delta_events)
+    [first_delta | _rest] = delta_events
     assert is_binary(first_delta.data["delta"])
     assert first_delta.data["output_index"] == 0
     assert first_delta.data["content_index"] == 0

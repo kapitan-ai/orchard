@@ -95,10 +95,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   @stub_client Orchard.Dispatch.ProbeCompatibilityTest.StubClient
 
   setup do
-    start_supervised!(
-      {Registry,
-       keys: :duplicate, name: Orchard.Dispatch.ProbeCompatibilityTest.StubClient.registry_name()}
-    )
+    start_supervised!({Registry, keys: :duplicate, name: @stub_client.registry_name()})
 
     %{
       schedule: %{
@@ -126,7 +123,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
   defp configure_stub(overrides) do
     Registry.register(
-      Orchard.Dispatch.ProbeCompatibilityTest.StubClient.registry_name(),
+      @stub_client.registry_name(),
       :config,
       Map.merge(default_stub_config(), overrides)
     )
@@ -161,7 +158,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
         display_name: "test-node",
         hostname: "test.local",
         listen_host: "127.0.0.1",
-        listen_port: 50071,
+        listen_port: 50_071,
         agent_version: "0.1.0",
         worker_backend: "mlx"
       },

@@ -14,7 +14,7 @@ defmodule Orchard.API.HealthControllerTest.RuntimeOkStub do
          display_name: "test-node",
          hostname: "test.local",
          listen_host: "127.0.0.1",
-         listen_port: 50071,
+         listen_port: 50_071,
          agent_version: "0.1.0",
          worker_backend: "mlx"
        },

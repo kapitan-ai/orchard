@@ -28,6 +28,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   import Orchard.TestSupport.ModelRequestFixtures
 
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
   alias Orchard.ArtifactBundle
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.RequestOrchestrator
@@ -247,7 +249,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   end
 
   defp scheduled_node_id do
-    Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler.scheduled_node_id()
+    StubMultiNodeScheduler.scheduled_node_id()
   end
 
   defp canonical_request(model_id, overrides) do

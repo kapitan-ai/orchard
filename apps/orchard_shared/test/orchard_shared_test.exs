@@ -147,7 +147,7 @@ defmodule OrchardSharedTest do
         hostname: "host.local",
         agent_version: "0.1.0",
         listen_host: "0.0.0.0",
-        listen_port: 50061,
+        listen_port: 50_061,
         worker_backend: "mlx"
       },
       runtime_health: %RuntimeHealth{
