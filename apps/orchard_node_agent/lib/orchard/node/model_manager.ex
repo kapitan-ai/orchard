@@ -199,46 +199,7 @@ defmodule Orchard.Node.ModelManager do
         _from,
         state
       ) do
-    key = model_key(request.model_id, request.version)
-
-    if Map.has_key?(state.active_requests, request.request_id) do
-      {:reply, {:error, :request_already_active}, state}
-    else
-      case Map.get(state.workers, key) do
-        %{placement_state: :PLACEMENT_STATE_LOADED, pid: pid} ->
-          if model_has_active_request?(state.active_requests, key) do
-            {:reply, {:error, :model_busy}, state}
-          else
-            subscriber_monitor_ref = Process.monitor(subscriber)
-
-            active_requests =
-              Map.put(state.active_requests, request.request_id, %{
-                controller_session_id: request.controller_session_id,
-                model_key: key,
-                phase: :prepared,
-                pid: pid,
-                subscriber: subscriber,
-                subscriber_monitor_ref: subscriber_monitor_ref
-              })
-
-            subscriber_refs =
-              Map.put(state.subscriber_refs, subscriber_monitor_ref, request.request_id)
-
-            next_state =
-              %{
-                state
-                | active_requests: active_requests,
-                  subscriber_refs: subscriber_refs
-              }
-              |> touch_worker_last_used(key)
-
-            {:reply, :ok, next_state}
-          end
-
-        _other ->
-          {:reply, {:error, :model_not_loaded}, state}
-      end
-    end
+    handle_prepare_request(request, subscriber, state)
   end
 
   def handle_call({:start_request, %ExecuteInferenceRequest{} = request}, _from, state) do
@@ -286,6 +247,57 @@ defmodule Orchard.Node.ModelManager do
           {:error, reason} ->
             {:reply, %Ack{ok: false, message: "cancel failed: #{inspect(reason)}"}, state}
         end
+    end
+  end
+
+  defp handle_prepare_request(%ExecuteInferenceRequest{} = request, subscriber, state) do
+    key = model_key(request.model_id, request.version)
+
+    if Map.has_key?(state.active_requests, request.request_id) do
+      {:reply, {:error, :request_already_active}, state}
+    else
+      prepare_request_for_worker(request, subscriber, key, state)
+    end
+  end
+
+  defp prepare_request_for_worker(request, subscriber, key, state) do
+    case Map.get(state.workers, key) do
+      %{placement_state: :PLACEMENT_STATE_LOADED, pid: pid} ->
+        prepare_loaded_request(request, subscriber, key, pid, state)
+
+      _other ->
+        {:reply, {:error, :model_not_loaded}, state}
+    end
+  end
+
+  defp prepare_loaded_request(request, subscriber, key, pid, state) do
+    if model_has_active_request?(state.active_requests, key) do
+      {:reply, {:error, :model_busy}, state}
+    else
+      subscriber_monitor_ref = Process.monitor(subscriber)
+
+      active_requests =
+        Map.put(state.active_requests, request.request_id, %{
+          controller_session_id: request.controller_session_id,
+          model_key: key,
+          phase: :prepared,
+          pid: pid,
+          subscriber: subscriber,
+          subscriber_monitor_ref: subscriber_monitor_ref
+        })
+
+      subscriber_refs =
+        Map.put(state.subscriber_refs, subscriber_monitor_ref, request.request_id)
+
+      next_state =
+        %{
+          state
+          | active_requests: active_requests,
+            subscriber_refs: subscriber_refs
+        }
+        |> touch_worker_last_used(key)
+
+      {:reply, :ok, next_state}
     end
   end
 
@@ -489,27 +501,20 @@ defmodule Orchard.Node.ModelManager do
     end
 
     result =
-      case AcquisitionRequest.from_proto(request, models_root) do
-        {:ok, acq_request} ->
-          case ModelAcquisition.ensure_cached(acq_request) do
-            {:ok, _path, _outcome} ->
-              remaining_ms = remaining_budget_ms(request)
-
-              if remaining_ms <= 0 do
-                {:error, :deadline_exceeded}
-              else
-                start_and_load_worker(key, request, remaining_ms, manager)
-              end
-
-            {:error, _} = err ->
-              err
-          end
-
-        {:error, _} = err ->
-          err
+      with {:ok, acq_request} <- AcquisitionRequest.from_proto(request, models_root),
+           {:ok, _path, _outcome} <- ModelAcquisition.ensure_cached(acq_request),
+           {:ok, remaining_ms} <- remaining_load_budget(request) do
+        start_and_load_worker(key, request, remaining_ms, manager)
       end
 
     send(manager, {:model_load_finished, key, self(), result})
+  end
+
+  defp remaining_load_budget(request) do
+    case remaining_budget_ms(request) do
+      remaining_ms when remaining_ms <= 0 -> {:error, :deadline_exceeded}
+      remaining_ms -> {:ok, remaining_ms}
+    end
   end
 
   defp start_and_load_worker(key, request, remaining_ms, manager) do

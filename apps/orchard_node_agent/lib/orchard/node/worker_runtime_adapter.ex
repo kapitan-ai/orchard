@@ -98,17 +98,17 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
            :ok <- ensure_socket_parent(socket_path),
            :ok <- ensure_log_parent(log_path),
            :ok <- cleanup_socket(socket_path) do
-        start_runtime(
-          model_ref,
-          resolved_model_path,
-          resolved_executable,
-          backend,
-          socket_path,
-          log_path,
-          ready_timeout_ms,
-          load_timeout_ms,
-          shutdown_timeout_ms
-        )
+        start_runtime(%{
+          model_ref: model_ref,
+          model_path: resolved_model_path,
+          executable: resolved_executable,
+          backend: backend,
+          socket_path: socket_path,
+          log_path: log_path,
+          ready_timeout_ms: ready_timeout_ms,
+          load_timeout_ms: load_timeout_ms,
+          shutdown_timeout_ms: shutdown_timeout_ms
+        })
       end
 
     duration_ms = System.monotonic_time(:millisecond) - start_time
@@ -238,17 +238,17 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-  defp start_runtime(
-         model_ref,
-         model_path,
-         executable,
-         backend,
-         socket_path,
-         log_path,
-         ready_timeout_ms,
-         load_timeout_ms,
-         shutdown_timeout_ms
-       ) do
+  defp start_runtime(%{
+         model_ref: model_ref,
+         model_path: model_path,
+         executable: executable,
+         backend: backend,
+         socket_path: socket_path,
+         log_path: log_path,
+         ready_timeout_ms: ready_timeout_ms,
+         load_timeout_ms: load_timeout_ms,
+         shutdown_timeout_ms: shutdown_timeout_ms
+       }) do
     {:ok, port, os_pid} = start_worker_port(executable, socket_path, backend, log_path)
 
     case wait_for_worker_ready(socket_path, port, ready_timeout_ms) do
@@ -385,33 +385,44 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
     case GRPC.Stub.connect(socket_path) do
       {:ok, channel} ->
-        timeout_ms = min(remaining_ms, @rpc_timeout_ms)
-
-        case WorkerRuntimeService.Stub.get_status(
-               channel,
-               %WorkerStatusRequest{},
-               timeout: timeout_ms
-             ) do
-          {:ok, status} ->
-            case classify_worker_status(status) do
-              :ready ->
-                {:ok, channel}
-
-              {:error, _reason} = err ->
-                _ = disconnect_channel(channel)
-                err
-            end
-
-          {:error, _reason} ->
-            _ = disconnect_channel(channel)
-            Process.sleep(@poll_interval_ms)
-            do_wait_for_worker_ready(socket_path, port, deadline)
-        end
+        check_connected_worker(channel, socket_path, port, deadline, remaining_ms)
 
       {:error, _reason} ->
-        Process.sleep(@poll_interval_ms)
-        do_wait_for_worker_ready(socket_path, port, deadline)
+        retry_wait_for_worker_ready(socket_path, port, deadline)
     end
+  end
+
+  defp check_connected_worker(channel, socket_path, port, deadline, remaining_ms) do
+    timeout_ms = min(remaining_ms, @rpc_timeout_ms)
+
+    case WorkerRuntimeService.Stub.get_status(
+           channel,
+           %WorkerStatusRequest{},
+           timeout: timeout_ms
+         ) do
+      {:ok, status} ->
+        classify_connected_worker_status(channel, status)
+
+      {:error, _reason} ->
+        _ = disconnect_channel(channel)
+        retry_wait_for_worker_ready(socket_path, port, deadline)
+    end
+  end
+
+  defp classify_connected_worker_status(channel, status) do
+    case classify_worker_status(status) do
+      :ready ->
+        {:ok, channel}
+
+      {:error, _reason} = err ->
+        _ = disconnect_channel(channel)
+        err
+    end
+  end
+
+  defp retry_wait_for_worker_ready(socket_path, port, deadline) do
+    Process.sleep(@poll_interval_ms)
+    do_wait_for_worker_ready(socket_path, port, deadline)
   end
 
   # Classify worker health from GetStatus response.
