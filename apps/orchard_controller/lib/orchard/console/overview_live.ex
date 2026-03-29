@@ -69,6 +69,7 @@ defmodule OrchardConsole.OverviewLive do
   def handle_event("quickstart_client_state_loaded", params, socket) do
     {:noreply,
      update_quickstart_client_state(socket, %{
+       hydrated?: true,
        dismissed?: quickstart_pref_enabled?(Map.get(params, "dismissed")),
        guide_seen?: quickstart_pref_enabled?(Map.get(params, "guide_seen"))
      })}
@@ -105,15 +106,28 @@ defmodule OrchardConsole.OverviewLive do
     <div class="space-y-6">
       <div id="overview-quickstart" phx-hook="OverviewQuickstart">
         <%= case @quickstart.mode do %>
+          <% :hydrating -> %>
+            <.card>
+              <:title>Quickstart</:title>
+              <:subtitle>Restoring quickstart preferences for this browser.</:subtitle>
+
+              <div id="overview-quickstart-hydrating" class="space-y-2">
+                <p class="text-sm text-slate-600 dark:text-slate-300">
+                  Loading your quickstart state before choosing the checklist or compact summary.
+                </p>
+              </div>
+            </.card>
+
           <% :compact_dismissed -> %>
+            <% dismissed_content = dismissed_quickstart_content(@quickstart) %>
             <.card>
               <:title>Quickstart hidden</:title>
-              <:subtitle>You can restore the onboarding checklist at any time.</:subtitle>
+              <:subtitle>{dismissed_content.subtitle}</:subtitle>
 
               <div id="overview-quickstart-dismissed" class="space-y-4">
                 <div class="flex items-center justify-between gap-3">
                   <p class="text-sm text-slate-600 dark:text-slate-300">
-                    Quickstart is dismissed for this browser until you restore it.
+                    {dismissed_content.body}
                   </p>
 
                   <button
@@ -122,12 +136,12 @@ defmodule OrchardConsole.OverviewLive do
                     data-quickstart-action="recover"
                     class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
                   >
-                    Show quickstart
+                    {dismissed_content.recover_label}
                   </button>
                 </div>
 
                 <p class="text-sm text-slate-600 dark:text-slate-300">
-                  Need the setup details without restoring the full checklist? Open the integration guide below.
+                  {dismissed_content.guide_hint}
                 </p>
 
                 <.quickstart_guide guide_seen?={@quickstart.guide_seen?} />
@@ -655,13 +669,13 @@ defmodule OrchardConsole.OverviewLive do
   end
 
   defp default_quickstart_client_state do
-    %{dismissed?: false, guide_seen?: false}
+    %{dismissed?: false, guide_seen?: false, hydrated?: false}
   end
 
   defp quickstart_client_state(socket) do
     socket.assigns
     |> Map.get(:quickstart, default_quickstart_client_state())
-    |> Map.take([:dismissed?, :guide_seen?])
+    |> Map.take([:dismissed?, :guide_seen?, :hydrated?])
     |> then(&Map.merge(default_quickstart_client_state(), &1))
   end
 
@@ -684,15 +698,37 @@ defmodule OrchardConsole.OverviewLive do
   defp merge_quickstart_client_state(current, attrs) do
     %{
       dismissed?: Map.get(attrs, :dismissed?, current.dismissed?),
-      guide_seen?: current.guide_seen? or Map.get(attrs, :guide_seen?, false)
+      guide_seen?: current.guide_seen? or Map.get(attrs, :guide_seen?, false),
+      hydrated?: current.hydrated? or Map.get(attrs, :hydrated?, false)
     }
   end
 
   defp quickstart_completed?(steps), do: Enum.all?(steps, & &1.complete?)
 
+  defp quickstart_mode(%{hydrated?: false}, _completed?), do: :hydrating
   defp quickstart_mode(%{dismissed?: true}, _completed?), do: :compact_dismissed
   defp quickstart_mode(_client_state, true), do: :compact_completed
   defp quickstart_mode(_client_state, false), do: :full
+
+  defp dismissed_quickstart_content(%{completed?: true}) do
+    %{
+      subtitle: "You can restore the compact quickstart summary at any time.",
+      body: "Quickstart is dismissed for this browser until you restore the compact summary.",
+      recover_label: "Show quickstart summary",
+      guide_hint:
+        "Need the setup details without restoring the quickstart summary? Open the integration guide below."
+    }
+  end
+
+  defp dismissed_quickstart_content(_quickstart) do
+    %{
+      subtitle: "You can restore the onboarding checklist at any time.",
+      body: "Quickstart is dismissed for this browser until you restore the checklist.",
+      recover_label: "Show checklist",
+      guide_hint:
+        "Need the setup details without restoring the checklist? Open the integration guide below."
+    }
+  end
 
   defp quickstart_pref_enabled?(true), do: true
   defp quickstart_pref_enabled?("1"), do: true

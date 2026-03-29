@@ -362,8 +362,19 @@ defmodule OrchardConsole.OverviewLiveTest do
   end
 
   describe "quickstart state" do
-    test "renders server-derived baseline in default test env", %{conn: conn} do
+    test "starts in a hydrating state until client quickstart prefs load", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/console")
+
+      assert html =~ ~s(id="overview-quickstart")
+      assert html =~ ~s(phx-hook="OverviewQuickstart")
+      assert_quickstart_hydrating(view)
+    end
+
+    test "renders server-derived baseline in default test env after hydration", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
+
+      assert_quickstart_hydrating(view)
+      hydrate_quickstart(view)
 
       assert_quickstart_visible(view)
       assert_quickstart_status(view, "system-healthy", "current")
@@ -373,11 +384,11 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_status(view, "connect-your-tools", "pending")
     end
 
-    test "renders quickstart hooks and minimal integration guide content", %{conn: conn} do
-      {:ok, view, html} = live(conn, "/console")
+    test "renders quickstart guide content after hydration", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
 
-      assert html =~ ~s(id="overview-quickstart")
-      assert html =~ ~s(phx-hook="OverviewQuickstart")
+      html = hydrate_quickstart(view)
+
       assert html =~ ~s(id="overview-quickstart-dismiss")
       assert html =~ ~s(data-quickstart-action="dismiss")
       assert html =~ ~s(id="overview-quickstart-guide")
@@ -395,11 +406,13 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "keeps quickstart visible when client state payload is missing or falsey", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
-      render_click(view, "quickstart_client_state_loaded", %{})
+      assert_quickstart_hydrating(view)
+
+      hydrate_quickstart(view)
       assert_quickstart_visible(view)
       assert_quickstart_status(view, "connect-your-tools", "pending")
 
-      render_click(view, "quickstart_client_state_loaded", %{
+      hydrate_quickstart(view, %{
         "dismissed" => "0",
         "guide_seen" => "0"
       })
@@ -407,25 +420,29 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_visible(view)
       assert_quickstart_status(view, "connect-your-tools", "pending")
 
-      render_click(view, "quickstart_client_state_loaded", %{"guide_seen" => "banana"})
+      hydrate_quickstart(view, %{"guide_seen" => "banana"})
       assert_quickstart_status(view, "connect-your-tools", "pending")
     end
 
     test "marks step 5 complete when guide state loads from client preferences", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
-      render_click(view, "quickstart_client_state_loaded", %{"guide_seen" => "1"})
+      hydrate_quickstart(view, %{"guide_seen" => "1"})
 
       assert_quickstart_visible(view)
       assert_quickstart_status(view, "connect-your-tools", "completed")
     end
 
-    test "switches between dismissed and visible quickstart states", %{conn: conn} do
+    test "uses checklist copy for dismissed incomplete quickstart state", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
-      render_click(view, "quickstart_client_state_loaded", %{"dismissed" => "1"})
+      hydrate_quickstart(view, %{"dismissed" => "1"})
+
       assert_quickstart_dismissed(view)
       assert_quickstart_guide_accessible(view)
+      assert render(view) =~ "You can restore the onboarding checklist at any time."
+      assert render(view) =~ "Show checklist"
+      assert render(view) =~ "without restoring the checklist"
 
       render_click(view, "quickstart_recover", %{})
       assert_quickstart_visible(view)
@@ -458,6 +475,9 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "orders incomplete steps deterministically when readiness passes", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
+      assert_quickstart_hydrating(view)
+      hydrate_quickstart(view)
+
       assert_quickstart_status(view, "system-healthy", "completed")
       assert_quickstart_status(view, "import-first-model", "current")
       assert_quickstart_status(view, "run-test-request", "pending")
@@ -469,6 +489,8 @@ defmodule OrchardConsole.OverviewLiveTest do
       {:ok, view, _html} = live(conn, "/console")
 
       complete_quickstart_server_steps(view)
+      assert_quickstart_hydrating(view)
+      hydrate_quickstart(view)
 
       assert_quickstart_status(view, "system-healthy", "completed")
       assert_quickstart_status(view, "import-first-model", "completed")
@@ -477,12 +499,28 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_status(view, "connect-your-tools", "current")
     end
 
+    test "goes straight from hydrating to compact completed for returning completed users", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console")
+
+      complete_quickstart_server_steps(view)
+      assert_quickstart_hydrating(view)
+      refute has_element?(view, "#overview-quickstart-full")
+
+      hydrate_quickstart(view, %{"guide_seen" => "1"})
+
+      assert_quickstart_compact_completed(view)
+      assert_quickstart_guide_accessible(view)
+    end
+
     test "shows compact completed mode after guide open and preserves it across timer refresh", %{
       conn: conn
     } do
       {:ok, view, _html} = live(conn, "/console")
 
       complete_quickstart_server_steps(view)
+      hydrate_quickstart(view)
       render_click(view, "quickstart_guide_seen", %{})
 
       assert_quickstart_compact_completed(view)
@@ -499,6 +537,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       {:ok, view, _html} = live(conn, "/console")
 
       complete_quickstart_server_steps(view)
+      hydrate_quickstart(view)
       render_click(view, "quickstart_guide_seen", %{})
 
       view |> element("#overview-refresh-now") |> render_click()
@@ -507,18 +546,22 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_guide_accessible(view)
     end
 
-    test "preserves dismissed and guide-seen state across refresh and recover", %{conn: conn} do
+    test "uses summary copy for dismissed completed quickstart state and recovers to compact summary",
+         %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
       complete_quickstart_server_steps(view)
 
-      render_click(view, "quickstart_client_state_loaded", %{
+      hydrate_quickstart(view, %{
         "dismissed" => "1",
         "guide_seen" => "1"
       })
 
       assert_quickstart_dismissed(view)
       assert_quickstart_guide_accessible(view)
+      assert render(view) =~ "You can restore the compact quickstart summary at any time."
+      assert render(view) =~ "Show quickstart summary"
+      assert render(view) =~ "without restoring the quickstart summary"
 
       send(view.pid, :refresh_overview)
       render(view)
@@ -940,10 +983,23 @@ defmodule OrchardConsole.OverviewLiveTest do
     Application.put_env(:orchard_controller, :console, Keyword.merge(current, overrides))
   end
 
+  defp hydrate_quickstart(view, attrs \\ %{}) do
+    render_click(view, "quickstart_client_state_loaded", attrs)
+  end
+
+  defp assert_quickstart_hydrating(view) do
+    assert has_element?(view, "#overview-quickstart")
+    assert has_element?(view, "#overview-quickstart-hydrating")
+    refute has_element?(view, "#overview-quickstart-full")
+    refute has_element?(view, "#overview-quickstart-dismissed")
+    refute has_element?(view, "#overview-quickstart-completed")
+  end
+
   defp assert_quickstart_visible(view) do
     assert has_element?(view, "#overview-quickstart")
     assert has_element?(view, "#overview-quickstart-full")
     assert has_element?(view, "#overview-quickstart-dismiss")
+    refute has_element?(view, "#overview-quickstart-hydrating")
     refute has_element?(view, "#overview-quickstart-dismissed")
     refute has_element?(view, "#overview-quickstart-completed")
   end
@@ -952,6 +1008,7 @@ defmodule OrchardConsole.OverviewLiveTest do
     assert has_element?(view, "#overview-quickstart")
     assert has_element?(view, "#overview-quickstart-dismissed")
     assert has_element?(view, "#overview-quickstart-recover")
+    refute has_element?(view, "#overview-quickstart-hydrating")
     refute has_element?(view, "#overview-quickstart-full")
     refute has_element?(view, "#overview-quickstart-completed")
   end
@@ -959,6 +1016,7 @@ defmodule OrchardConsole.OverviewLiveTest do
   defp assert_quickstart_compact_completed(view) do
     assert has_element?(view, "#overview-quickstart")
     assert has_element?(view, "#overview-quickstart-completed")
+    refute has_element?(view, "#overview-quickstart-hydrating")
     refute has_element?(view, "#overview-quickstart-full")
     refute has_element?(view, "#overview-quickstart-dismissed")
     refute has_element?(view, "#overview-quickstart-recover")
