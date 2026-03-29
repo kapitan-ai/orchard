@@ -370,15 +370,26 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_status(view, "import-first-model", "pending")
       assert_quickstart_status(view, "run-test-request", "pending")
       assert_quickstart_status(view, "create-api-key", "pending")
+      assert_quickstart_status(view, "connect-your-tools", "pending")
     end
 
-    test "wires the OverviewQuickstart hook and dismiss control", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console")
+    test "renders quickstart hooks and minimal integration guide content", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/console")
 
       assert html =~ ~s(id="overview-quickstart")
       assert html =~ ~s(phx-hook="OverviewQuickstart")
       assert html =~ ~s(id="overview-quickstart-dismiss")
       assert html =~ ~s(data-quickstart-action="dismiss")
+      assert html =~ ~s(id="overview-quickstart-guide")
+      assert html =~ ~s(phx-hook="QuickstartGuide")
+      assert html =~ ~s(id="overview-quickstart-guide-summary")
+      assert html =~ Orchard.API.Endpoint.url() <> "/v1"
+      assert html =~ "Authorization: Bearer &lt;your-api-key&gt;"
+      assert html =~ "&lt;your-model&gt;"
+
+      curl = view |> element("#overview-quickstart-guide-curl") |> render()
+      assert curl =~ "curl #{Orchard.API.Endpoint.url()}/v1/chat/completions \\\n"
+      assert curl =~ "\n  -H &quot;Authorization: Bearer &lt;your-api-key&gt;&quot; \\\n"
     end
 
     test "keeps quickstart visible when client state payload is missing or falsey", %{conn: conn} do
@@ -386,9 +397,27 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       render_click(view, "quickstart_client_state_loaded", %{})
       assert_quickstart_visible(view)
+      assert_quickstart_status(view, "connect-your-tools", "pending")
 
-      render_click(view, "quickstart_client_state_loaded", %{"dismissed" => "0"})
+      render_click(view, "quickstart_client_state_loaded", %{
+        "dismissed" => "0",
+        "guide_seen" => "0"
+      })
+
       assert_quickstart_visible(view)
+      assert_quickstart_status(view, "connect-your-tools", "pending")
+
+      render_click(view, "quickstart_client_state_loaded", %{"guide_seen" => "banana"})
+      assert_quickstart_status(view, "connect-your-tools", "pending")
+    end
+
+    test "marks step 5 complete when guide state loads from client preferences", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      render_click(view, "quickstart_client_state_loaded", %{"guide_seen" => "1"})
+
+      assert_quickstart_visible(view)
+      assert_quickstart_status(view, "connect-your-tools", "completed")
     end
 
     test "switches between dismissed and visible quickstart states", %{conn: conn} do
@@ -431,73 +460,70 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_status(view, "import-first-model", "current")
       assert_quickstart_status(view, "run-test-request", "pending")
       assert_quickstart_status(view, "create-api-key", "pending")
+      assert_quickstart_status(view, "connect-your-tools", "pending")
     end
 
-    test "recomputes quickstart progression after refresh-driven model, request, and api key updates",
-         %{conn: conn} do
+    test "makes step 5 current once server-derived steps 1-4 complete", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
-      create_model!(%{state: :active})
-      send(view.pid, :refresh_overview)
-      render(view)
+      complete_quickstart_server_steps(view)
 
       assert_quickstart_status(view, "system-healthy", "completed")
       assert_quickstart_status(view, "import-first-model", "completed")
-      assert_quickstart_status(view, "run-test-request", "current")
-      assert_quickstart_status(view, "create-api-key", "pending")
-
-      create_request!(%{state: :completed})
-      send(view.pid, :refresh_overview)
-      render(view)
-
       assert_quickstart_status(view, "run-test-request", "completed")
-      assert_quickstart_status(view, "create-api-key", "current")
-
-      suffix = System.unique_integer([:positive, :monotonic])
-
-      {:ok, tenant} =
-        Governance.create_tenant(%{
-          slug: "quickstart-tenant-#{suffix}",
-          name: "Quickstart Tenant #{suffix}"
-        })
-
-      {:ok, _api_key} = Governance.create_api_key(tenant.id, %{name: "Quickstart Key"})
-      send(view.pid, :refresh_overview)
-      render(view)
-
       assert_quickstart_status(view, "create-api-key", "completed")
+      assert_quickstart_status(view, "connect-your-tools", "current")
     end
 
-    test "preserves dismissed state across timer refresh and recover shows updated steps", %{
+    test "marks step 5 complete after guide open and preserves it across timer refresh", %{
       conn: conn
     } do
       {:ok, view, _html} = live(conn, "/console")
 
-      render_click(view, "quickstart_client_state_loaded", %{"dismissed" => "1"})
-      assert_quickstart_dismissed(view)
+      complete_quickstart_server_steps(view)
+      render_click(view, "quickstart_guide_seen", %{})
 
-      create_model!(%{state: :active})
+      assert_quickstart_status(view, "connect-your-tools", "completed")
+
       send(view.pid, :refresh_overview)
       render(view)
 
+      assert_quickstart_status(view, "connect-your-tools", "completed")
+    end
+
+    test "preserves guide-seen state across manual refresh", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      complete_quickstart_server_steps(view)
+      render_click(view, "quickstart_guide_seen", %{})
+
+      view |> element("#overview-refresh-now") |> render_click()
+
+      assert_quickstart_status(view, "connect-your-tools", "completed")
+    end
+
+    test "preserves dismissed and guide-seen state across refresh and recover", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      complete_quickstart_server_steps(view)
+
+      render_click(view, "quickstart_client_state_loaded", %{
+        "dismissed" => "1",
+        "guide_seen" => "1"
+      })
+
+      assert_quickstart_dismissed(view)
+
+      send(view.pid, :refresh_overview)
+      render(view)
+      assert_quickstart_dismissed(view)
+
+      view |> element("#overview-refresh-now") |> render_click()
       assert_quickstart_dismissed(view)
 
       render_click(view, "quickstart_recover", %{})
       assert_quickstart_visible(view)
-      assert_quickstart_status(view, "system-healthy", "completed")
-      assert_quickstart_status(view, "import-first-model", "completed")
-      assert_quickstart_status(view, "run-test-request", "current")
-    end
-
-    test "preserves dismissed state across manual refresh", %{conn: conn} do
-      {:ok, view, _html} = live(conn, "/console")
-
-      render_click(view, "quickstart_client_state_loaded", %{"dismissed" => "1"})
-      assert_quickstart_dismissed(view)
-
-      view |> element("#overview-refresh-now") |> render_click()
-
-      assert_quickstart_dismissed(view)
+      assert_quickstart_status(view, "connect-your-tools", "completed")
     end
   end
 
@@ -925,5 +951,23 @@ defmodule OrchardConsole.OverviewLiveTest do
              view,
              "#overview-quickstart-step-#{step_dom_id}[data-status=\"#{status}\"]"
            )
+  end
+
+  defp complete_quickstart_server_steps(view) do
+    create_model!(%{state: :active})
+    create_request!(%{state: :completed})
+
+    suffix = System.unique_integer([:positive, :monotonic])
+
+    {:ok, tenant} =
+      Governance.create_tenant(%{
+        slug: "quickstart-tenant-#{suffix}",
+        name: "Quickstart Tenant #{suffix}"
+      })
+
+    {:ok, _api_key} = Governance.create_api_key(tenant.id, %{name: "Quickstart Key"})
+
+    send(view.pid, :refresh_overview)
+    render(view)
   end
 end

@@ -11,6 +11,37 @@ import topbar from "../vendor/topbar"
 
 let Hooks = {}
 
+const QUICKSTART_COOKIE_OPTIONS = {
+  path: "/console",
+  sameSite: "Lax",
+  maxAge: 31536000
+}
+
+function readBooleanCookie(key) {
+  let cookie = document.cookie
+    .split(";")
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith(`${key}=`))
+
+  if (!cookie) return false
+
+  let value = cookie.slice(key.length + 1)
+  return value === "1"
+}
+
+function writeBooleanCookie(key, enabled, options = QUICKSTART_COOKIE_OPTIONS) {
+  let parts = [
+    `${key}=${enabled ? "1" : ""}`,
+    `Path=${options.path}`,
+    `SameSite=${options.sameSite}`,
+    `Max-Age=${enabled ? options.maxAge : 0}`
+  ]
+
+  if (window.location.protocol === "https:") parts.push("Secure")
+
+  document.cookie = parts.join("; ")
+}
+
 /**
  * AutoScrollBottom — keeps a scrollable container pinned to the bottom
  * during LiveView updates, but only when:
@@ -93,18 +124,16 @@ Hooks.SubmitOnModEnter = {
 }
 
 /**
- * OverviewQuickstart — loads and persists the dismissed quickstart preference.
+ * OverviewQuickstart — loads quickstart client preferences and persists dismiss/recover.
  * Attach to the stable quickstart root with `phx-hook="OverviewQuickstart"`.
  */
 Hooks.OverviewQuickstart = {
   mounted() {
-    this.cookieKey = "orchard_console_quickstart_dismissed"
-    this.cookiePath = "/console"
-    this.cookieMaxAge = 31536000
-    this.cookieSameSite = "Lax"
+    this.dismissedCookieKey = "orchard_console_quickstart_dismissed"
+    this.guideSeenCookieKey = "orchard_console_quickstart_guide_seen"
 
     this._handleDismissedRef = this.handleEvent("overview_quickstart:set_dismissed", ({dismissed}) => {
-      this._setDismissedCookie(dismissed === true)
+      writeBooleanCookie(this.dismissedCookieKey, dismissed === true)
     })
 
     this._onClick = (event) => {
@@ -122,37 +151,66 @@ Hooks.OverviewQuickstart = {
     }
 
     this.el.addEventListener("click", this._onClick)
-    this.pushEvent("quickstart_client_state_loaded", {dismissed: this._readDismissedCookie()})
+    this.pushEvent("quickstart_client_state_loaded", {
+      dismissed: readBooleanCookie(this.dismissedCookieKey),
+      guide_seen: readBooleanCookie(this.guideSeenCookieKey)
+    })
   },
 
   destroyed() {
     this.el.removeEventListener("click", this._onClick)
     if (this._handleDismissedRef) this.removeHandleEvent(this._handleDismissedRef)
+  }
+}
+
+/**
+ * QuickstartGuide — marks the guide as seen on first open and persists that cookie.
+ * Attach to a stable wrapper that contains the guide disclosure.
+ */
+Hooks.QuickstartGuide = {
+  mounted() {
+    this.cookieKey = "orchard_console_quickstart_guide_seen"
+    this.guideSeen = readBooleanCookie(this.cookieKey) || this.el.dataset.guideSeen === "true"
+    this._detailsEl = null
+
+    this._onToggle = () => {
+      if (!this._detailsEl || !this._detailsEl.open || this.guideSeen) return
+
+      this.guideSeen = true
+      this.el.dataset.guideSeen = "true"
+      writeBooleanCookie(this.cookieKey, true)
+      this.pushEvent("quickstart_guide_seen", {})
+    }
+
+    this._bindDetails()
   },
 
-  _readDismissedCookie() {
-    let cookie = document.cookie
-      .split(";")
-      .map((entry) => entry.trim())
-      .find((entry) => entry.startsWith(`${this.cookieKey}=`))
-
-    if (!cookie) return false
-
-    let value = cookie.slice(this.cookieKey.length + 1)
-    return value === "1"
+  updated() {
+    if (this.el.dataset.guideSeen === "true") this.guideSeen = true
+    this._bindDetails()
   },
 
-  _setDismissedCookie(dismissed) {
-    let parts = [
-      `${this.cookieKey}=${dismissed ? "1" : ""}`,
-      `Path=${this.cookiePath}`,
-      `SameSite=${this.cookieSameSite}`,
-      `Max-Age=${dismissed ? this.cookieMaxAge : 0}`
-    ]
+  destroyed() {
+    this._unbindDetails()
+  },
 
-    if (window.location.protocol === "https:") parts.push("Secure")
+  _bindDetails() {
+    let nextDetailsEl = this.el.querySelector("details")
+    if (this._detailsEl === nextDetailsEl) return
 
-    document.cookie = parts.join("; ")
+    this._unbindDetails()
+    this._detailsEl = nextDetailsEl
+
+    if (this._detailsEl) {
+      this._detailsEl.addEventListener("toggle", this._onToggle)
+    }
+  },
+
+  _unbindDetails() {
+    if (!this._detailsEl) return
+
+    this._detailsEl.removeEventListener("toggle", this._onToggle)
+    this._detailsEl = null
   }
 }
 

@@ -31,7 +31,13 @@ defmodule OrchardConsole.OverviewLive do
       title: "Import your first model"
     },
     %{id: :run_test_request, dom_id: "run-test-request", ordinal: 3, title: "Run a test request"},
-    %{id: :create_api_key, dom_id: "create-api-key", ordinal: 4, title: "Create an API key"}
+    %{id: :create_api_key, dom_id: "create-api-key", ordinal: 4, title: "Create an API key"},
+    %{
+      id: :connect_your_tools,
+      dom_id: "connect-your-tools",
+      ordinal: 5,
+      title: "Connect your tools"
+    }
   ]
 
   @impl true
@@ -63,8 +69,14 @@ defmodule OrchardConsole.OverviewLive do
   def handle_event("quickstart_client_state_loaded", params, socket) do
     {:noreply,
      update_quickstart_client_state(socket, %{
-       dismissed?: dismissed_param?(Map.get(params, "dismissed"))
+       dismissed?: quickstart_pref_enabled?(Map.get(params, "dismissed")),
+       guide_seen?: quickstart_pref_enabled?(Map.get(params, "guide_seen"))
      })}
+  end
+
+  @impl true
+  def handle_event("quickstart_guide_seen", _params, socket) do
+    {:noreply, update_quickstart_client_state(socket, %{guide_seen?: true})}
   end
 
   @impl true
@@ -148,6 +160,37 @@ defmodule OrchardConsole.OverviewLive do
                   </.badge>
                 </li>
               </ol>
+
+              <div
+                id="overview-quickstart-guide"
+                phx-hook="QuickstartGuide"
+                phx-update="ignore"
+                data-guide-seen={to_string(@quickstart.guide_seen?)}
+                class="border-t border-slate-200 pt-4 dark:border-slate-700"
+              >
+                <.disclosure_section
+                  id="overview-quickstart-guide-disclosure"
+                  title="Integration guide"
+                  summary_id="overview-quickstart-guide-summary"
+                >
+                  <div class="space-y-4 text-sm text-slate-700 dark:text-slate-200">
+                    <p>
+                      Use the OpenAI-compatible API at
+                      <code id="overview-quickstart-guide-base-url" class="rounded bg-slate-100 px-1 py-0.5 text-xs dark:bg-slate-900">
+                        {quickstart_api_base_url()}
+                      </code>
+                      with your generated API key and selected model.
+                    </p>
+
+                    <div class="space-y-2">
+                      <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                        curl example
+                      </p>
+                      <pre id="overview-quickstart-guide-curl" class="overflow-x-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100"><code>{quickstart_curl_example()}</code></pre>
+                    </div>
+                  </div>
+                </.disclosure_section>
+              </div>
             </div>
           </.card>
         <% end %>
@@ -354,6 +397,7 @@ defmodule OrchardConsole.OverviewLive do
       runtime: runtime,
       model_catalog: model_catalog,
       request_summary: request_summary,
+      has_active_api_keys: has_active_api_keys,
       quickstart:
         build_quickstart(
           readiness,
@@ -410,6 +454,7 @@ defmodule OrchardConsole.OverviewLive do
       runtime: runtime,
       model_catalog: model_catalog,
       request_summary: request_summary,
+      has_active_api_keys: false,
       quickstart:
         build_quickstart(
           readiness,
@@ -561,7 +606,8 @@ defmodule OrchardConsole.OverviewLive do
             readiness,
             model_catalog,
             request_summary,
-            has_active_api_keys
+            has_active_api_keys,
+            client_state
           )
         )
       end)
@@ -571,39 +617,61 @@ defmodule OrchardConsole.OverviewLive do
   end
 
   defp default_quickstart_client_state do
-    %{dismissed?: false}
+    %{dismissed?: false, guide_seen?: false}
   end
 
   defp quickstart_client_state(socket) do
     socket.assigns
     |> Map.get(:quickstart, default_quickstart_client_state())
-    |> Map.take([:dismissed?])
+    |> Map.take([:dismissed?, :guide_seen?])
     |> then(&Map.merge(default_quickstart_client_state(), &1))
   end
 
   defp update_quickstart_client_state(socket, attrs) do
-    client_state =
-      socket
-      |> quickstart_client_state()
-      |> Map.merge(attrs)
+    client_state = merge_quickstart_client_state(quickstart_client_state(socket), attrs)
 
-    assign(socket, :quickstart, Map.merge(socket.assigns.quickstart, client_state))
+    assign(
+      socket,
+      :quickstart,
+      build_quickstart(
+        socket.assigns.readiness,
+        socket.assigns.model_catalog,
+        socket.assigns.request_summary,
+        socket.assigns.has_active_api_keys,
+        client_state
+      )
+    )
   end
 
-  defp dismissed_param?(true), do: true
-  defp dismissed_param?("1"), do: true
-  defp dismissed_param?(value) when is_binary(value), do: String.downcase(value) == "true"
-  defp dismissed_param?(_), do: false
+  defp merge_quickstart_client_state(current, attrs) do
+    %{
+      dismissed?: Map.get(attrs, :dismissed?, current.dismissed?),
+      guide_seen?: current.guide_seen? or Map.get(attrs, :guide_seen?, false)
+    }
+  end
 
-  defp quickstart_step_complete?(:system_healthy, readiness, _model_catalog, _request_summary, _),
-    do: readiness.status == :ok
+  defp quickstart_pref_enabled?(true), do: true
+  defp quickstart_pref_enabled?("1"), do: true
+  defp quickstart_pref_enabled?(value) when is_binary(value), do: String.downcase(value) == "true"
+  defp quickstart_pref_enabled?(_), do: false
+
+  defp quickstart_step_complete?(
+         :system_healthy,
+         readiness,
+         _model_catalog,
+         _request_summary,
+         _,
+         _client_state
+       ),
+       do: readiness.status == :ok
 
   defp quickstart_step_complete?(
          :import_first_model,
          _readiness,
          model_catalog,
          _request_summary,
-         _
+         _,
+         _client_state
        ) do
     model_catalog.status == :ok and Map.get(model_catalog.by_state, :active, 0) > 0
   end
@@ -613,7 +681,8 @@ defmodule OrchardConsole.OverviewLive do
          _readiness,
          _model_catalog,
          request_summary,
-         _
+         _,
+         _client_state
        ) do
     request_summary.status == :ok and Map.get(request_summary.by_state, :completed, 0) > 0
   end
@@ -623,9 +692,20 @@ defmodule OrchardConsole.OverviewLive do
          _readiness,
          _model_catalog,
          _request_summary,
-         has_active_api_keys
+         has_active_api_keys,
+         _client_state
        ),
        do: has_active_api_keys
+
+  defp quickstart_step_complete?(
+         :connect_your_tools,
+         _readiness,
+         _model_catalog,
+         _request_summary,
+         _has_active_api_keys,
+         client_state
+       ),
+       do: client_state.guide_seen?
 
   defp assign_quickstart_step_statuses(steps) do
     {steps, _current_assigned?} =
@@ -751,6 +831,26 @@ defmodule OrchardConsole.OverviewLive do
   defp quickstart_status_badge_label(:completed), do: "Complete"
   defp quickstart_status_badge_label(:current), do: "Current"
   defp quickstart_status_badge_label(:pending), do: "Pending"
+
+  defp quickstart_api_base_url do
+    Orchard.API.Endpoint.url()
+    |> String.trim_trailing("/")
+    |> Kernel.<>("/v1")
+  end
+
+  defp quickstart_chat_completions_url do
+    quickstart_api_base_url() <> "/chat/completions"
+  end
+
+  defp quickstart_curl_example do
+    """
+    curl #{quickstart_chat_completions_url()} \\
+      -H \"Authorization: Bearer <your-api-key>\" \\
+      -H \"Content-Type: application/json\" \\
+      -d '{"model":"<your-model>","messages":[{"role":"user","content":"Hello from Orchard"}]}'
+    """
+    |> String.trim()
+  end
 
   defp runtime_loaded_count(%{status: :ok, loaded_models: models}), do: length(models)
   defp runtime_loaded_count(_), do: nil
