@@ -10,7 +10,7 @@ dev_root = Path.join([repo_root, "tmp", "dev"])
 # with config/runtime.exs; raises on mismatch to prevent split-brain config.
 parse_port = fn val, var_name ->
   case Integer.parse(val) do
-    {port, ""} when port > 0 and port < 65536 -> port
+    {port, ""} when port > 0 and port < 65_536 -> port
     _ -> raise "Invalid #{var_name}=#{inspect(val)} — expected an integer 1..65535"
   end
 end
@@ -61,7 +61,7 @@ parse_runtime_targets = fn env_name ->
         case String.split(segment, ":") do
           [host, port_str] when host != "" ->
             case Integer.parse(port_str) do
-              {port, ""} when port > 0 and port < 65536 ->
+              {port, ""} when port > 0 and port < 65_536 ->
                 [host: host, port: port]
 
               _ ->

@@ -13,6 +13,7 @@ defmodule OrchardCLI.Commands.Env do
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(args), do: run(args, default_runtime())
 
+  # credo:disable-for-lines:3 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
   @spec run([String.t()], map()) :: OrchardCLI.command_result()
   def run(args, runtime) do
@@ -114,6 +115,7 @@ defmodule OrchardCLI.Commands.Env do
 
   # ── Executable Resolution ───────────────────────────────────────────
 
+  # credo:disable-for-lines:2 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
   def resolve_executable(:tokenizer, support_root) do
     candidates = [
@@ -258,6 +260,7 @@ defmodule OrchardCLI.Commands.Env do
 
   # ── Shell Quoting ────────────────────────────────────────────────────
 
+  # credo:disable-for-lines:2 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
   def shell_quote(value) when is_binary(value) do
     if String.contains?(value, ["\n", "\0"]) do

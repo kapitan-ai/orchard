@@ -34,18 +34,13 @@ defmodule OrchardCLI.Commands.TLS do
   # ── Init Subcommand ─────────────────────────────────────────────────
 
   defp run_init(args, runtime) do
-    case parse_init_opts(args) do
-      {:help} ->
-        {:ok, init_usage()}
-
-      {:error, _, _} = err ->
-        err
-
-      {:ok, opts} ->
-        with {:ok, config} <- build_init_config(opts, runtime),
-             {:ok, _} <- check_openssl(runtime) do
-          locked_execute(config.output_dir, fn -> do_init(config, runtime) end)
-        end
+    with {:ok, opts} <- parse_init_opts(args),
+         {:ok, config} <- build_init_config(opts, runtime),
+         {:ok, _} <- check_openssl(runtime) do
+      locked_execute(config.output_dir, fn -> do_init(config, runtime) end)
+    else
+      {:help} -> {:ok, init_usage()}
+      {:error, _, _} = err -> err
     end
   end
 
@@ -114,13 +109,27 @@ defmodule OrchardCLI.Commands.TLS do
   end
 
   defp do_init(config, runtime) do
-    %{
-      output_dir: output_dir,
-      force?: force?,
-      ca_days_opt: ca_days_opt,
-      server_days: server_days
-    } = config
+    state = current_tls_state(config.output_dir)
 
+    with :ok <- check_state_consistency(state, config.force?),
+         :ok <- check_ca_days_reuse(state.ca_exists?, config.force?, config.ca_days_opt),
+         {:ok, reuse_ca?, ca_days} <- ca_generation_plan(state.ca_exists?, config.force?, config.ca_days_opt),
+         :ok <-
+           check_days_against_ca(
+             reuse_ca?,
+             state.ca_crt_path,
+             ca_days,
+             config.server_days,
+             runtime
+           ),
+         :ok <- maybe_remove_existing_trust(config, state, runtime),
+         {:ok, summary_data} <- generate_and_publish(config, reuse_ca?, ca_days, runtime) do
+      trust_result = maybe_trust_ca(config, summary_data.ca_crt_path, runtime)
+      {:ok, format_init_summary(summary_data, trust_result)}
+    end
+  end
+
+  defp current_tls_state(output_dir) do
     ca_key_path = Path.join(output_dir, "ca.key")
     ca_crt_path = Path.join(output_dir, "ca.crt")
     server_key_path = Path.join(output_dir, "controller.key")
@@ -128,58 +137,45 @@ defmodule OrchardCLI.Commands.TLS do
 
     ca_key_exists? = File.regular?(ca_key_path)
     ca_crt_exists? = File.regular?(ca_crt_path)
-    ca_exists? = ca_key_exists? and ca_crt_exists?
-    ca_partial? = ca_key_exists? != ca_crt_exists?
-    server_exists? = File.regular?(server_key_path) or File.regular?(server_crt_path)
 
-    with :ok <- check_state_consistency(ca_partial?, ca_exists?, server_exists?, force?),
-         :ok <- check_ca_days_reuse(ca_exists?, force?, ca_days_opt) do
-      reuse_ca? = ca_exists? and not force?
-      ca_days = if reuse_ca?, do: nil, else: ca_days_opt || @default_ca_days
-
-      with :ok <- check_days_against_ca(reuse_ca?, ca_crt_path, ca_days, server_days, runtime) do
-        # Remove old CA from keychain before regeneration if --force.
-        # This runs before generate_and_publish; if generation fails the old CA
-        # files remain on disk but are no longer trusted in the keychain.  This
-        # is acceptable for --force (a destructive operation) — the operator can
-        # re-run `tls trust-ca` after resolving the failure.
-        if force? and ca_exists? and not config.no_trust? do
-          maybe_remove_old_ca(ca_crt_path, runtime)
-        end
-
-        case generate_and_publish(config, reuse_ca?, ca_days, runtime) do
-          {:ok, summary_data} ->
-            trust_result = maybe_trust_ca(config, summary_data.ca_crt_path, runtime)
-            {:ok, format_init_summary(summary_data, trust_result)}
-
-          {:error, _, _} = err ->
-            err
-        end
-      end
-    end
+    %{
+      ca_crt_path: ca_crt_path,
+      ca_exists?: ca_key_exists? and ca_crt_exists?,
+      ca_partial?: ca_key_exists? != ca_crt_exists?,
+      server_exists?: File.regular?(server_key_path) or File.regular?(server_crt_path)
+    }
   end
 
-  defp check_state_consistency(ca_partial?, ca_exists?, server_exists?, force?) do
-    cond do
-      ca_partial? and not force? ->
-        {:error,
-         "Error: inconsistent CA state (only one of ca.key/ca.crt exists).\nUse --force to regenerate.",
-         1}
+  defp check_state_consistency(%{ca_partial?: true}, false) do
+    {:error,
+     "Error: inconsistent CA state (only one of ca.key/ca.crt exists).\nUse --force to regenerate.",
+     1}
+  end
 
-      # Server cert/key files exist without a matching Orchard CA — these may be
-      # externally managed (operator-supplied) certificates.  Refuse to overwrite
-      # without --force to avoid destroying material we didn't create.
-      server_exists? and not ca_exists? and not force? ->
-        {:error,
-         "Error: existing server certificate files found without an Orchard CA.\n" <>
-           "These may be externally managed. Use --force to overwrite.", 1}
+  defp check_state_consistency(%{server_exists?: true, ca_exists?: false}, false) do
+    {:error,
+     "Error: existing server certificate files found without an Orchard CA.\n" <>
+       "These may be externally managed. Use --force to overwrite.", 1}
+  end
 
-      ca_exists? and server_exists? and not force? ->
-        {:error, "Error: certificates already exist. Use --force to regenerate.", 1}
+  defp check_state_consistency(%{ca_exists?: true, server_exists?: true}, false) do
+    {:error, "Error: certificates already exist. Use --force to regenerate.", 1}
+  end
 
-      true ->
-        :ok
-    end
+  defp check_state_consistency(_state, _force?), do: :ok
+
+  defp ca_generation_plan(ca_exists?, force?, ca_days_opt) do
+    reuse_ca? = ca_exists? and not force?
+    ca_days = if reuse_ca?, do: nil, else: ca_days_opt || @default_ca_days
+    {:ok, reuse_ca?, ca_days}
+  end
+
+  defp maybe_remove_existing_trust(%{no_trust?: true}, _state, _runtime), do: :ok
+  defp maybe_remove_existing_trust(%{force?: false}, _state, _runtime), do: :ok
+  defp maybe_remove_existing_trust(_config, %{ca_exists?: false}, _runtime), do: :ok
+
+  defp maybe_remove_existing_trust(_config, %{ca_crt_path: ca_crt_path}, runtime) do
+    maybe_remove_old_ca(ca_crt_path, runtime)
   end
 
   defp check_ca_days_reuse(ca_exists?, force?, ca_days_opt) do
@@ -345,33 +341,30 @@ defmodule OrchardCLI.Commands.TLS do
 
   defp discover_lan_ips(runtime) do
     case runtime.ifaddrs.() do
-      {:ok, ifaddrs} ->
-        ifaddrs
-        |> Enum.flat_map(fn {_name, opts} ->
-          flags = Keyword.get(opts, :flags, [])
-
-          if :up in flags and :loopback not in flags do
-            opts
-            |> Keyword.get_values(:addr)
-            |> Enum.filter(fn
-              {_, _, _, _} -> true
-              _ -> false
-            end)
-            |> Enum.reject(fn
-              {0, 0, 0, 0} -> true
-              {127, _, _, _} -> true
-              _ -> false
-            end)
-            |> Enum.map(fn ip -> :inet.ntoa(ip) |> to_string() end)
-          else
-            []
-          end
-        end)
-
-      _ ->
-        []
+      {:ok, ifaddrs} -> Enum.flat_map(ifaddrs, &interface_lan_ips/1)
+      _ -> []
     end
   end
+
+  defp interface_lan_ips({_name, opts}) do
+    if active_non_loopback_interface?(Keyword.get(opts, :flags, [])) do
+      opts
+      |> Keyword.get_values(:addr)
+      |> Enum.filter(&ipv4_addr?/1)
+      |> Enum.reject(&excluded_lan_ip?/1)
+      |> Enum.map(&ip_to_string/1)
+    else
+      []
+    end
+  end
+
+  defp active_non_loopback_interface?(flags), do: :up in flags and :loopback not in flags
+  defp ipv4_addr?({_, _, _, _}), do: true
+  defp ipv4_addr?(_), do: false
+  defp excluded_lan_ip?({0, 0, 0, 0}), do: true
+  defp excluded_lan_ip?({127, _, _, _}), do: true
+  defp excluded_lan_ip?(_), do: false
+  defp ip_to_string(ip), do: ip |> :inet.ntoa() |> to_string()
 
   defp build_san_lists(hostname, common_name, extra_hosts, lan_ips, extra_ips) do
     dns_list =
@@ -811,24 +804,27 @@ defmodule OrchardCLI.Commands.TLS do
   # ── Keychain Trust ──────────────────────────────────────────────────
 
   defp maybe_trust_ca(config, ca_crt_path, runtime) do
-    if config.no_trust? do
-      {:skipped, :no_trust_flag}
-    else
-      {os_family, _} = runtime.os_type.()
+    case trust_ca_strategy(config, runtime) do
+      {:skip, reason} ->
+        {:skipped, reason}
 
-      cond do
-        os_family != :unix or not macos?(runtime) ->
-          {:skipped, :not_macos}
+      :trust ->
+        case trust_ca_in_keychain(ca_crt_path, runtime) do
+          :ok -> :trusted
+          {:error, _} = err -> err
+        end
+    end
+  end
 
-        runtime.uid.() != 0 ->
-          {:skipped, :not_root}
+  defp trust_ca_strategy(%{no_trust?: true}, _runtime), do: {:skip, :no_trust_flag}
 
-        true ->
-          case trust_ca_in_keychain(ca_crt_path, runtime) do
-            :ok -> :trusted
-            {:error, _} = err -> err
-          end
-      end
+  defp trust_ca_strategy(_config, runtime) do
+    {os_family, _} = runtime.os_type.()
+
+    cond do
+      os_family != :unix or not macos?(runtime) -> {:skip, :not_macos}
+      runtime.uid.() != 0 -> {:skip, :not_root}
+      true -> :trust
     end
   end
 
