@@ -425,12 +425,14 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       render_click(view, "quickstart_client_state_loaded", %{"dismissed" => "1"})
       assert_quickstart_dismissed(view)
+      assert_quickstart_guide_accessible(view)
 
       render_click(view, "quickstart_recover", %{})
       assert_quickstart_visible(view)
 
       render_click(view, "quickstart_dismiss", %{})
       assert_quickstart_dismissed(view)
+      assert_quickstart_guide_accessible(view)
     end
   end
 
@@ -475,7 +477,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_status(view, "connect-your-tools", "current")
     end
 
-    test "marks step 5 complete after guide open and preserves it across timer refresh", %{
+    test "shows compact completed mode after guide open and preserves it across timer refresh", %{
       conn: conn
     } do
       {:ok, view, _html} = live(conn, "/console")
@@ -483,15 +485,17 @@ defmodule OrchardConsole.OverviewLiveTest do
       complete_quickstart_server_steps(view)
       render_click(view, "quickstart_guide_seen", %{})
 
-      assert_quickstart_status(view, "connect-your-tools", "completed")
+      assert_quickstart_compact_completed(view)
+      assert_quickstart_guide_accessible(view)
 
       send(view.pid, :refresh_overview)
       render(view)
 
-      assert_quickstart_status(view, "connect-your-tools", "completed")
+      assert_quickstart_compact_completed(view)
+      assert_quickstart_guide_accessible(view)
     end
 
-    test "preserves guide-seen state across manual refresh", %{conn: conn} do
+    test "preserves compact completed guide access across manual refresh", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
       complete_quickstart_server_steps(view)
@@ -499,7 +503,8 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       view |> element("#overview-refresh-now") |> render_click()
 
-      assert_quickstart_status(view, "connect-your-tools", "completed")
+      assert_quickstart_compact_completed(view)
+      assert_quickstart_guide_accessible(view)
     end
 
     test "preserves dismissed and guide-seen state across refresh and recover", %{conn: conn} do
@@ -513,17 +518,20 @@ defmodule OrchardConsole.OverviewLiveTest do
       })
 
       assert_quickstart_dismissed(view)
+      assert_quickstart_guide_accessible(view)
 
       send(view.pid, :refresh_overview)
       render(view)
       assert_quickstart_dismissed(view)
+      assert_quickstart_guide_accessible(view)
 
       view |> element("#overview-refresh-now") |> render_click()
       assert_quickstart_dismissed(view)
+      assert_quickstart_guide_accessible(view)
 
       render_click(view, "quickstart_recover", %{})
-      assert_quickstart_visible(view)
-      assert_quickstart_status(view, "connect-your-tools", "completed")
+      assert_quickstart_compact_completed(view)
+      assert_quickstart_guide_accessible(view)
     end
   end
 
@@ -937,6 +945,7 @@ defmodule OrchardConsole.OverviewLiveTest do
     assert has_element?(view, "#overview-quickstart-full")
     assert has_element?(view, "#overview-quickstart-dismiss")
     refute has_element?(view, "#overview-quickstart-dismissed")
+    refute has_element?(view, "#overview-quickstart-completed")
   end
 
   defp assert_quickstart_dismissed(view) do
@@ -944,6 +953,21 @@ defmodule OrchardConsole.OverviewLiveTest do
     assert has_element?(view, "#overview-quickstart-dismissed")
     assert has_element?(view, "#overview-quickstart-recover")
     refute has_element?(view, "#overview-quickstart-full")
+    refute has_element?(view, "#overview-quickstart-completed")
+  end
+
+  defp assert_quickstart_compact_completed(view) do
+    assert has_element?(view, "#overview-quickstart")
+    assert has_element?(view, "#overview-quickstart-completed")
+    refute has_element?(view, "#overview-quickstart-full")
+    refute has_element?(view, "#overview-quickstart-dismissed")
+    refute has_element?(view, "#overview-quickstart-recover")
+  end
+
+  defp assert_quickstart_guide_accessible(view) do
+    assert has_element?(view, "#overview-quickstart-guide")
+    assert has_element?(view, "#overview-quickstart-guide-summary")
+    assert has_element?(view, "#overview-quickstart-guide-disclosure")
   end
 
   defp assert_quickstart_status(view, step_dom_id, status) do

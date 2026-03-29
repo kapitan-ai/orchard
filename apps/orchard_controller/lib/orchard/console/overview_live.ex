@@ -104,95 +104,90 @@ defmodule OrchardConsole.OverviewLive do
     ~H"""
     <div class="space-y-6">
       <div id="overview-quickstart" phx-hook="OverviewQuickstart">
-        <%= if @quickstart.dismissed? do %>
-          <.card>
-            <:title>Quickstart hidden</:title>
-            <:subtitle>You can restore the onboarding checklist at any time.</:subtitle>
+        <%= case @quickstart.mode do %>
+          <% :compact_dismissed -> %>
+            <.card>
+              <:title>Quickstart hidden</:title>
+              <:subtitle>You can restore the onboarding checklist at any time.</:subtitle>
 
-            <div id="overview-quickstart-dismissed" class="flex items-center justify-between gap-3">
-              <p class="text-sm text-slate-600 dark:text-slate-300">
-                Quickstart is dismissed for this browser until you restore it.
-              </p>
+              <div id="overview-quickstart-dismissed" class="space-y-4">
+                <div class="flex items-center justify-between gap-3">
+                  <p class="text-sm text-slate-600 dark:text-slate-300">
+                    Quickstart is dismissed for this browser until you restore it.
+                  </p>
 
-              <button
-                id="overview-quickstart-recover"
-                type="button"
-                data-quickstart-action="recover"
-                class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
-              >
-                Show quickstart
-              </button>
-            </div>
-          </.card>
-        <% else %>
-          <.card>
-            <:title>Quickstart</:title>
-            <:subtitle>Track the first server-derived onboarding steps directly from live system state.</:subtitle>
+                  <button
+                    id="overview-quickstart-recover"
+                    type="button"
+                    data-quickstart-action="recover"
+                    class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                  >
+                    Show quickstart
+                  </button>
+                </div>
 
-            <div id="overview-quickstart-full" class="space-y-4">
-              <div class="flex justify-end">
-                <button
-                  id="overview-quickstart-dismiss"
-                  type="button"
-                  data-quickstart-action="dismiss"
-                  class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
-                >
-                  Dismiss
-                </button>
+                <p class="text-sm text-slate-600 dark:text-slate-300">
+                  Need the setup details without restoring the full checklist? Open the integration guide below.
+                </p>
+
+                <.quickstart_guide guide_seen?={@quickstart.guide_seen?} />
               </div>
+            </.card>
 
-              <ol class="space-y-3" id="overview-quickstart-steps">
-                <li
-                  :for={step <- @quickstart.steps}
-                  id={"overview-quickstart-step-#{step.dom_id}"}
-                  data-status={Atom.to_string(step.status)}
-                  class="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700"
-                >
-                  <div class="flex items-center gap-3">
-                    <span class="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                      {step.ordinal}
-                    </span>
-                    <span class="text-sm font-medium text-slate-900 dark:text-slate-100">{step.title}</span>
-                  </div>
+          <% :compact_completed -> %>
+            <.card>
+              <:title>Quickstart complete</:title>
+              <:subtitle>All onboarding steps are complete for this browser and live system state.</:subtitle>
 
-                  <.badge tone={quickstart_status_badge_tone(step.status)}>
-                    {quickstart_status_badge_label(step.status)}
-                  </.badge>
-                </li>
-              </ol>
+              <div id="overview-quickstart-completed" class="space-y-4">
+                <p class="text-sm text-slate-600 dark:text-slate-300">
+                  Reopen the integration guide at any time without bringing back the full checklist.
+                </p>
 
-              <div
-                id="overview-quickstart-guide"
-                phx-hook="QuickstartGuide"
-                phx-update="ignore"
-                data-guide-seen={to_string(@quickstart.guide_seen?)}
-                class="border-t border-slate-200 pt-4 dark:border-slate-700"
-              >
-                <.disclosure_section
-                  id="overview-quickstart-guide-disclosure"
-                  title="Integration guide"
-                  summary_id="overview-quickstart-guide-summary"
-                >
-                  <div class="space-y-4 text-sm text-slate-700 dark:text-slate-200">
-                    <p>
-                      Use the OpenAI-compatible API at
-                      <code id="overview-quickstart-guide-base-url" class="rounded bg-slate-100 px-1 py-0.5 text-xs dark:bg-slate-900">
-                        {quickstart_api_base_url()}
-                      </code>
-                      with your generated API key and selected model.
-                    </p>
+                <.quickstart_guide guide_seen?={@quickstart.guide_seen?} />
+              </div>
+            </.card>
 
-                    <div class="space-y-2">
-                      <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        curl example
-                      </p>
-                      <pre id="overview-quickstart-guide-curl" class="overflow-x-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100"><code>{quickstart_curl_example()}</code></pre>
+          <% :full -> %>
+            <.card>
+              <:title>Quickstart</:title>
+              <:subtitle>Track the first server-derived onboarding steps directly from live system state.</:subtitle>
+
+              <div id="overview-quickstart-full" class="space-y-4">
+                <div class="flex justify-end">
+                  <button
+                    id="overview-quickstart-dismiss"
+                    type="button"
+                    data-quickstart-action="dismiss"
+                    class="inline-flex items-center gap-1 rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+
+                <ol class="space-y-3" id="overview-quickstart-steps">
+                  <li
+                    :for={step <- @quickstart.steps}
+                    id={"overview-quickstart-step-#{step.dom_id}"}
+                    data-status={Atom.to_string(step.status)}
+                    class="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700"
+                  >
+                    <div class="flex items-center gap-3">
+                      <span class="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+                        {step.ordinal}
+                      </span>
+                      <span class="text-sm font-medium text-slate-900 dark:text-slate-100">{step.title}</span>
                     </div>
-                  </div>
-                </.disclosure_section>
+
+                    <.badge tone={quickstart_status_badge_tone(step.status)}>
+                      {quickstart_status_badge_label(step.status)}
+                    </.badge>
+                  </li>
+                </ol>
+
+                <.quickstart_guide guide_seen?={@quickstart.guide_seen?} />
               </div>
-            </div>
-          </.card>
+            </.card>
         <% end %>
       </div>
 
@@ -376,6 +371,43 @@ defmodule OrchardConsole.OverviewLive do
           <% end %>
         </.card>
       </div>
+    </div>
+    """
+  end
+
+  attr(:guide_seen?, :boolean, required: true)
+
+  defp quickstart_guide(assigns) do
+    ~H"""
+    <div
+      id="overview-quickstart-guide"
+      phx-hook="QuickstartGuide"
+      phx-update="ignore"
+      data-guide-seen={to_string(@guide_seen?)}
+      class="border-t border-slate-200 pt-4 dark:border-slate-700"
+    >
+      <.disclosure_section
+        id="overview-quickstart-guide-disclosure"
+        title="Integration guide"
+        summary_id="overview-quickstart-guide-summary"
+      >
+        <div class="space-y-4 text-sm text-slate-700 dark:text-slate-200">
+          <p>
+            Use the OpenAI-compatible API at
+            <code id="overview-quickstart-guide-base-url" class="rounded bg-slate-100 px-1 py-0.5 text-xs dark:bg-slate-900">
+              {quickstart_api_base_url()}
+            </code>
+            with your generated API key and selected model.
+          </p>
+
+          <div class="space-y-2">
+            <p class="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+              curl example
+            </p>
+            <pre id="overview-quickstart-guide-curl" class="overflow-x-auto rounded-lg bg-slate-950 p-3 text-xs text-slate-100"><code>{quickstart_curl_example()}</code></pre>
+          </div>
+        </div>
+      </.disclosure_section>
     </div>
     """
   end
@@ -613,7 +645,13 @@ defmodule OrchardConsole.OverviewLive do
       end)
       |> assign_quickstart_step_statuses()
 
-    Map.merge(client_state, %{steps: steps})
+    completed? = quickstart_completed?(steps)
+
+    Map.merge(client_state, %{
+      steps: steps,
+      completed?: completed?,
+      mode: quickstart_mode(client_state, completed?)
+    })
   end
 
   defp default_quickstart_client_state do
@@ -649,6 +687,12 @@ defmodule OrchardConsole.OverviewLive do
       guide_seen?: current.guide_seen? or Map.get(attrs, :guide_seen?, false)
     }
   end
+
+  defp quickstart_completed?(steps), do: Enum.all?(steps, & &1.complete?)
+
+  defp quickstart_mode(%{dismissed?: true}, _completed?), do: :compact_dismissed
+  defp quickstart_mode(_client_state, true), do: :compact_completed
+  defp quickstart_mode(_client_state, false), do: :full
 
   defp quickstart_pref_enabled?(true), do: true
   defp quickstart_pref_enabled?("1"), do: true
