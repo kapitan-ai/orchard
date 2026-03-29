@@ -112,7 +112,7 @@ defmodule OrchardConsole.RuntimeTest do
                display_name: "mawarduri",
                hostname: "mawarduri.local",
                listen_host: "127.0.0.1",
-               listen_port: 50071,
+               listen_port: 50_071,
                agent_version: "0.1.0",
                worker_backend: "mlx"
              },
@@ -133,7 +133,7 @@ defmodule OrchardConsole.RuntimeTest do
                display_name: "mawarduri",
                hostname: "mawarduri.local",
                listen_host: "127.0.0.1",
-               listen_port: 50071,
+               listen_port: 50_071,
                agent_version: "0.1.0",
                worker_backend: "mlx"
              }
@@ -413,7 +413,7 @@ defmodule OrchardConsole.RuntimeTest do
       end
     end
 
-    defp get_stub(key, target \\ nil) do
+    defp get_stub(key, target) do
       [{_pid, stubs}] = Registry.lookup(OrchardConsole.RuntimeTest.StubRegistry, :stubs)
 
       # Support per-target scripted responses via :target_responses map
@@ -467,12 +467,12 @@ defmodule OrchardConsole.RuntimeTest do
 
   describe "cluster_snapshot/0,1" do
     test "probes all targets in config order" do
-      target_a = [host: "127.0.0.1", port: 50071]
-      target_b = [host: "10.0.0.2", port: 50061]
+      target_a = [host: "127.0.0.1", port: 50_071]
+      target_b = [host: "10.0.0.2", port: 50_061]
 
       stub_client(
         target_responses: %{
-          {"127.0.0.1", 50071} => [
+          {"127.0.0.1", 50_071} => [
             connect: {:ok, :ch_a},
             status:
               {:ok,
@@ -489,7 +489,7 @@ defmodule OrchardConsole.RuntimeTest do
                }},
             disconnect: :ok
           ],
-          {"10.0.0.2", 50061} => [
+          {"10.0.0.2", 50_061} => [
             connect: {:ok, :ch_b},
             status:
               {:ok,
@@ -526,12 +526,12 @@ defmodule OrchardConsole.RuntimeTest do
     end
 
     test "mixed success and error entries in one result" do
-      target_ok = [host: "127.0.0.1", port: 50071]
-      target_fail = [host: "10.0.0.99", port: 50061]
+      target_ok = [host: "127.0.0.1", port: 50_071]
+      target_fail = [host: "10.0.0.99", port: 50_061]
 
       stub_client(
         target_responses: %{
-          {"127.0.0.1", 50071} => [
+          {"127.0.0.1", 50_071} => [
             connect: {:ok, :ch},
             status:
               {:ok,
@@ -544,7 +544,7 @@ defmodule OrchardConsole.RuntimeTest do
                }},
             disconnect: :ok
           ],
-          {"10.0.0.99", 50061} => [
+          {"10.0.0.99", 50_061} => [
             connect: {:error, {:connect_failed, :econnrefused}},
             status: nil,
             disconnect: nil
@@ -566,12 +566,12 @@ defmodule OrchardConsole.RuntimeTest do
     end
 
     test "successful entries trigger observe_status, failed entries do not" do
-      target_ok = [host: "127.0.0.1", port: 50071]
-      target_fail = [host: "10.0.0.99", port: 50061]
+      target_ok = [host: "127.0.0.1", port: 50_071]
+      target_fail = [host: "10.0.0.99", port: 50_061]
 
       stub_client(
         target_responses: %{
-          {"127.0.0.1", 50071} => [
+          {"127.0.0.1", 50_071} => [
             connect: {:ok, :ch},
             status:
               {:ok,
@@ -584,7 +584,7 @@ defmodule OrchardConsole.RuntimeTest do
                }},
             disconnect: :ok
           ],
-          {"10.0.0.99", 50061} => [
+          {"10.0.0.99", 50_061} => [
             connect: {:error, {:connect_failed, :econnrefused}},
             status: nil,
             disconnect: nil
@@ -601,11 +601,11 @@ defmodule OrchardConsole.RuntimeTest do
 
     test "shared observed_at is passed through to all probes" do
       observed_at = ~U[2026-03-24 12:00:00Z]
-      target = [host: "127.0.0.1", port: 50071]
+      target = [host: "127.0.0.1", port: 50_071]
 
       stub_client(
         target_responses: %{
-          {"127.0.0.1", 50071} => [
+          {"127.0.0.1", 50_071} => [
             connect: {:ok, :ch},
             status:
               {:ok,
@@ -627,11 +627,11 @@ defmodule OrchardConsole.RuntimeTest do
     end
 
     test "timeout option is forwarded to each snapshot call" do
-      target = [host: "127.0.0.1", port: 50071]
+      target = [host: "127.0.0.1", port: 50_071]
 
       stub_client(
         target_responses: %{
-          {"127.0.0.1", 50071} => [
+          {"127.0.0.1", 50_071} => [
             connect: {:ok, :ch},
             status:
               {:ok,
@@ -659,11 +659,11 @@ defmodule OrchardConsole.RuntimeTest do
     end
 
     test "single target returns single-element list" do
-      target = [host: "127.0.0.1", port: 50071]
+      target = [host: "127.0.0.1", port: 50_071]
 
       stub_client(
         target_responses: %{
-          {"127.0.0.1", 50071} => [
+          {"127.0.0.1", 50_071} => [
             connect: {:ok, :ch},
             status:
               {:ok,
@@ -772,17 +772,17 @@ defmodule OrchardConsole.RuntimeTest do
     end
 
     test "cluster_snapshot continues after one target exits" do
-      target_exit = [host: "10.0.0.1", port: 50071]
-      target_ok = [host: "10.0.0.2", port: 50071]
+      target_exit = [host: "10.0.0.1", port: 50_071]
+      target_ok = [host: "10.0.0.2", port: 50_071]
 
       stub_client(
         target_responses: %{
-          {"10.0.0.1", 50071} => [
+          {"10.0.0.1", 50_071} => [
             connect: {:exit, :econnrefused},
             status: nil,
             disconnect: nil
           ],
-          {"10.0.0.2", 50071} => [
+          {"10.0.0.2", 50_071} => [
             connect: {:ok, :ch_b},
             status:
               {:ok,
@@ -815,17 +815,17 @@ defmodule OrchardConsole.RuntimeTest do
     end
 
     test "cluster_snapshot continues after one target raises" do
-      target_raise = [host: "10.0.0.1", port: 50071]
-      target_ok = [host: "10.0.0.2", port: 50071]
+      target_raise = [host: "10.0.0.1", port: 50_071]
+      target_ok = [host: "10.0.0.2", port: 50_071]
 
       stub_client(
         target_responses: %{
-          {"10.0.0.1", 50071} => [
+          {"10.0.0.1", 50_071} => [
             connect: {:raise, RuntimeError.exception("connect boom")},
             status: nil,
             disconnect: nil
           ],
-          {"10.0.0.2", 50071} => [
+          {"10.0.0.2", 50_071} => [
             connect: {:ok, :ch_b},
             status:
               {:ok,
@@ -917,7 +917,7 @@ defmodule OrchardConsole.RuntimeTest do
                display_name: "repo-off-test",
                hostname: "test.local",
                listen_host: "127.0.0.1",
-               listen_port: 50071,
+               listen_port: 50_071,
                agent_version: "0.1.0",
                worker_backend: "mlx"
              },

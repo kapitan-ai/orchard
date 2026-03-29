@@ -2,7 +2,7 @@
 
 defmodule OrchardConsole.NodesLiveTest.RuntimeFullStub do
   @moduledoc false
-  @default_target [host: "127.0.0.1", port: 50071]
+  @default_target [host: "127.0.0.1", port: 50_071]
 
   def cluster_snapshot(_opts \\ []) do
     [
@@ -18,7 +18,7 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeFullStub do
           display_name: "mawarduri",
           hostname: "mawarduri.local",
           listen_host: "127.0.0.1",
-          listen_port: 50071,
+          listen_port: 50_071,
           agent_version: "0.1.0",
           worker_backend: "mlx"
         },
@@ -35,7 +35,7 @@ end
 
 defmodule OrchardConsole.NodesLiveTest.RuntimeLegacyStub do
   @moduledoc false
-  @default_target [host: "127.0.0.1", port: 50071]
+  @default_target [host: "127.0.0.1", port: 50_071]
 
   def cluster_snapshot(_opts \\ []) do
     [
@@ -55,7 +55,7 @@ end
 
 defmodule OrchardConsole.NodesLiveTest.RuntimePartialStub do
   @moduledoc false
-  @default_target [host: "127.0.0.1", port: 50071]
+  @default_target [host: "127.0.0.1", port: 50_071]
 
   def cluster_snapshot(_opts \\ []) do
     [
@@ -71,7 +71,7 @@ defmodule OrchardConsole.NodesLiveTest.RuntimePartialStub do
           display_name: "partial-node",
           hostname: "partial.local",
           listen_host: "127.0.0.1",
-          listen_port: 50071,
+          listen_port: 50_071,
           agent_version: "0.1.0",
           worker_backend: "mlx"
         },
@@ -83,7 +83,7 @@ end
 
 defmodule OrchardConsole.NodesLiveTest.RuntimeUnavailableStub do
   @moduledoc false
-  @default_target [host: "127.0.0.1", port: 50071]
+  @default_target [host: "127.0.0.1", port: 50_071]
 
   def cluster_snapshot(_opts \\ []) do
     [
@@ -108,7 +108,7 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeMultiTargetStub do
   def cluster_snapshot(_opts \\ []) do
     [
       %{
-        target: [host: "127.0.0.1", port: 50071],
+        target: [host: "127.0.0.1", port: 50_071],
         status: :ok,
         message: nil,
         worker_state: :idle,
@@ -119,14 +119,14 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeMultiTargetStub do
           display_name: "node-alpha",
           hostname: "alpha.local",
           listen_host: "127.0.0.1",
-          listen_port: 50071,
+          listen_port: 50_071,
           agent_version: "0.1.0",
           worker_backend: "mlx"
         },
         runtime_health: %{ready: true, health_code: nil, health_message: nil, affected_model: nil}
       },
       %{
-        target: [host: "10.0.0.2", port: 50061],
+        target: [host: "10.0.0.2", port: 50_061],
         status: :unavailable,
         code: "node_unavailable",
         message: "node runtime is unavailable",
@@ -157,7 +157,7 @@ defmodule OrchardConsole.NodesLiveTest.DiscoveryRuntimeClient do
          display_name: "discovered-via-mount",
          hostname: "discovery.local",
          listen_host: "127.0.0.1",
-         listen_port: 50071,
+         listen_port: 50_071,
          agent_version: "0.1.0",
          worker_backend: "mlx"
        },
@@ -181,7 +181,7 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeMixedCompatibilityStub do
   def cluster_snapshot(_opts \\ []) do
     [
       %{
-        target: [host: "127.0.0.1", port: 50071],
+        target: [host: "127.0.0.1", port: 50_071],
         status: :ok,
         message: nil,
         worker_state: :idle,
@@ -192,7 +192,7 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeMixedCompatibilityStub do
           display_name: "modern-node",
           hostname: "modern.local",
           listen_host: "127.0.0.1",
-          listen_port: 50071,
+          listen_port: 50_071,
           agent_version: "0.2.0",
           worker_backend: "mlx"
         },
@@ -204,7 +204,7 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeMixedCompatibilityStub do
         }
       },
       %{
-        target: [host: "10.0.0.5", port: 50061],
+        target: [host: "10.0.0.5", port: 50_061],
         status: :ok,
         message: nil,
         worker_state: :idle,
@@ -347,7 +347,7 @@ defmodule OrchardConsole.NodesLiveTest do
         display_name: "test-node",
         hostname: "test.local",
         advertise_addr: "192.168.1.10",
-        rpc_port: 50071,
+        rpc_port: 50_071,
         state: :active,
         health: :healthy,
         agent_version: "0.1.0"

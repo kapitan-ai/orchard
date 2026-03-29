@@ -1,12 +1,14 @@
 defmodule OrchardConsole.ModelHubTest do
   use ExUnit.Case, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias OrchardConsole.ModelHub
+  alias OrchardConsole.ModelHubTest.{StubClient, StubDownloader}
 
   setup do
     # DB sandbox: shared mode so spawned tasks can access the repo
-    :ok = Ecto.Adapters.SQL.Sandbox.checkout(Orchard.Repo)
-    Ecto.Adapters.SQL.Sandbox.mode(Orchard.Repo, {:shared, self()})
+    :ok = Sandbox.checkout(Orchard.Repo)
+    Sandbox.mode(Orchard.Repo, {:shared, self()})
 
     previous = Application.get_env(:orchard_controller, :console, [])
 
@@ -15,8 +17,8 @@ defmodule OrchardConsole.ModelHubTest do
       :console,
       Keyword.merge(previous,
         model_hub_impl: ModelHub,
-        model_hub_client_impl: __MODULE__.StubClient,
-        model_hub_download_impl: __MODULE__.StubDownloader
+        model_hub_client_impl: StubClient,
+        model_hub_download_impl: StubDownloader
       )
     )
 
@@ -381,40 +383,28 @@ defmodule OrchardConsole.ModelHubTest do
         send(pid, {:captured_dest_dir, dest_dir})
       end
 
-      case config[:download] do
-        :raise ->
-          raise "download exploded"
+      handle_download_result(config[:download], repo_id, dest_dir, opts)
+    end
 
-        :throw ->
-          throw(:download_exploded)
+    defp handle_download_result(:raise, _repo_id, _dest_dir, _opts),
+      do: raise("download exploded")
 
-        :exit ->
-          exit(:download_exploded)
+    defp handle_download_result(:throw, _repo_id, _dest_dir, _opts), do: throw(:download_exploded)
+    defp handle_download_result(:exit, _repo_id, _dest_dir, _opts), do: exit(:download_exploded)
+    defp handle_download_result({:error, _} = err, _repo_id, _dest_dir, _opts), do: err
 
-        {:error, _} = err ->
-          err
+    defp handle_download_result(result, _repo_id, dest_dir, opts)
+         when result in [:success, nil] do
+      write_stub_files(dest_dir)
+      invoke_callback(opts)
+      {:ok, dest_dir, download_summary(opts)}
+    end
 
-        :success_with_duplicate ->
-          write_stub_files(dest_dir)
-          invoke_callback(opts)
-          revision = Keyword.get(opts, :revision, "main")
-          {:ok, dest_dir, %{files_downloaded: 2, total_bytes: 100, revision: revision}}
+    defp handle_download_result(result, _repo_id, _dest_dir, _opts), do: result
 
-        :success ->
-          write_stub_files(dest_dir)
-          invoke_callback(opts)
-          revision = Keyword.get(opts, :revision, "main")
-          {:ok, dest_dir, %{files_downloaded: 2, total_bytes: 100, revision: revision}}
-
-        nil ->
-          write_stub_files(dest_dir)
-          invoke_callback(opts)
-          revision = Keyword.get(opts, :revision, "main")
-          {:ok, dest_dir, %{files_downloaded: 2, total_bytes: 100, revision: revision}}
-
-        result ->
-          result
-      end
+    defp download_summary(opts) do
+      revision = Keyword.get(opts, :revision, "main")
+      %{files_downloaded: 2, total_bytes: 100, revision: revision}
     end
 
     defp write_stub_files(dest_dir) do

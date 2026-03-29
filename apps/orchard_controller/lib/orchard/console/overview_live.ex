@@ -6,7 +6,7 @@ defmodule OrchardConsole.OverviewLive do
 
   use OrchardConsole, :live_view
 
-  alias Orchard.API.Readiness
+  alias Orchard.API.{Endpoint, Readiness}
   alias Orchard.Governance
   alias Orchard.Models
   alias Orchard.Models.Model
@@ -927,7 +927,7 @@ defmodule OrchardConsole.OverviewLive do
   defp quickstart_status_badge_label(:pending), do: "Pending"
 
   defp quickstart_api_base_url do
-    Orchard.API.Endpoint.url()
+    Endpoint.url()
     |> String.trim_trailing("/")
     |> Kernel.<>("/v1")
   end

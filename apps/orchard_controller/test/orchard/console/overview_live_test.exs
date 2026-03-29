@@ -12,7 +12,7 @@ defmodule OrchardConsole.OverviewLiveTest.RuntimeStub do
          display_name: "mawarduri",
          hostname: "mawarduri.local",
          listen_host: "127.0.0.1",
-         listen_port: 50071,
+         listen_port: 50_071,
          agent_version: "0.1.0",
          worker_backend: "mlx"
        },
@@ -88,7 +88,7 @@ defmodule OrchardConsole.OverviewLiveTest.RuntimeUnhealthyStub do
          display_name: "mawarduri",
          hostname: "mawarduri.local",
          listen_host: "127.0.0.1",
-         listen_port: 50071,
+         listen_port: 50_071,
          agent_version: "0.1.0",
          worker_backend: "mlx"
        },
@@ -116,7 +116,7 @@ defmodule OrchardConsole.OverviewLiveTest.RuntimeDegradedStub do
          display_name: "mawarduri",
          hostname: "mawarduri.local",
          listen_host: "127.0.0.1",
-         listen_port: 50071,
+         listen_port: 50_071,
          agent_version: "0.1.0",
          worker_backend: "mlx"
        },
@@ -135,6 +135,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
   import Phoenix.LiveViewTest
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.API.Endpoint
   alias Orchard.Governance
   import Orchard.TestSupport.ModelRequestFixtures
 
@@ -1028,22 +1029,22 @@ defmodule OrchardConsole.OverviewLiveTest do
              ~s(phx-hook="QuickstartGuide")
 
     assert view |> element("#overview-quickstart-guide-base-url") |> render() =~
-             Orchard.API.Endpoint.url() <> "/v1"
+             Endpoint.url() <> "/v1"
 
     curl = view |> element("#overview-quickstart-guide-curl") |> render()
-    assert curl =~ "curl #{Orchard.API.Endpoint.url()}/v1/chat/completions \\\n"
+    assert curl =~ "curl #{Endpoint.url()}/v1/chat/completions \\\n"
     assert curl =~ "Authorization: Bearer &lt;your-api-key&gt;"
     assert curl =~ "&lt;your-model&gt;"
 
     python = view |> element("#overview-quickstart-guide-python") |> render()
     assert python =~ "from openai import OpenAI"
-    assert python =~ "base_url=&quot;#{Orchard.API.Endpoint.url()}/v1&quot;"
+    assert python =~ "base_url=&quot;#{Endpoint.url()}/v1&quot;"
     assert python =~ "api_key=&quot;&lt;your-api-key&gt;&quot;"
     assert python =~ "model=&quot;&lt;your-model&gt;&quot;"
 
     tool_config = view |> element("#overview-quickstart-guide-tool-config") |> render()
     assert tool_config =~ "Provider: OpenAI-compatible / Custom OpenAI"
-    assert tool_config =~ "Base URL: #{Orchard.API.Endpoint.url()}/v1"
+    assert tool_config =~ "Base URL: #{Endpoint.url()}/v1"
     assert tool_config =~ "API key: &lt;your-api-key&gt;"
     assert tool_config =~ "Model: &lt;your-model&gt;"
   end

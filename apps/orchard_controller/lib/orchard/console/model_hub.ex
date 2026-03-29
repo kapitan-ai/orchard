@@ -135,118 +135,18 @@ defmodule OrchardConsole.ModelHub do
 
   defp do_download_import(client, downloader, owner, ref, repo_id, opts) do
     activate? = Keyword.get(opts, :activate, true)
-
-    # Step 1: Fetch model detail
-    detail =
-      case client.get_model_detail(repo_id) do
-        {:ok, detail} -> detail
-        {:error, %{} = error} -> throw({:pipeline_error, {:error, error}})
-        _other -> throw({:pipeline_error, {:error, hf_error()}})
-      end
-
-    # Step 2: Resolve effective revision
-    effective_revision = resolve_revision(opts, detail)
-    detail_for_bundle = Map.put(detail, :revision_sha, effective_revision)
-
-    # Step 3: Create temp directory and run pipeline
+    detail = fetch_model_detail!(client, repo_id)
+    {detail_for_bundle, effective_revision} = build_detail_for_bundle(detail, opts)
     temp_dir = create_temp_dir()
 
     try do
-      # Step 4: Download with progress callback
-      started_sent? = :atomics.new(1, [])
-
-      progress_callback = fn update ->
-        if :atomics.get(started_sent?, 1) == 0 do
-          # First callback (preflight): send :download_started
-          :atomics.put(started_sent?, 1, 1)
-
-          send(
-            owner,
-            {:model_hub, ref, :download_started,
-             %{
-               repo_id: repo_id,
-               revision: effective_revision,
-               total_files: update.total_files,
-               total_bytes: update.total_bytes
-             }}
-          )
-        else
-          # Subsequent callbacks: send :download_progress
-          send(
-            owner,
-            {:model_hub, ref, :download_progress,
-             %{
-               phase: :downloading,
-               current_file: update.current_file,
-               files_completed: update.files_completed,
-               total_files: update.total_files,
-               bytes_downloaded: update.bytes_downloaded,
-               total_bytes: update.total_bytes
-             }}
-          )
-        end
-      end
-
       {total_files, total_bytes} =
-        case downloader.download(repo_id, temp_dir,
-               revision: effective_revision,
-               progress_callback: progress_callback
-             ) do
-          {:ok, _dest, summary} ->
-            {summary.files_downloaded, summary.total_bytes}
+        download_model!(downloader, owner, ref, repo_id, effective_revision, temp_dir)
 
-          {:error, reason} ->
-            throw({:pipeline_error, {:error, normalize_download_error(reason)}})
-        end
-
-      # Step 5: Bundle preparation phase
-      send(
-        owner,
-        {:model_hub, ref, :download_progress,
-         %{
-           phase: :preparing_bundle,
-           current_file: nil,
-           files_completed: total_files,
-           total_files: total_files,
-           bytes_downloaded: total_bytes,
-           total_bytes: total_bytes
-         }}
-      )
-
-      case BundleBuilder.prepare_bundle(temp_dir, repo_id, detail_for_bundle) do
-        {:ok, _bundle_dir} -> :ok
-        {:error, reason} -> throw({:pipeline_error, {:error, normalize_bundle_error(reason)}})
-      end
-
-      # Step 6: Import phase
-      send(
-        owner,
-        {:model_hub, ref, :download_progress,
-         %{
-           phase: :importing,
-           current_file: nil,
-           files_completed: total_files,
-           total_files: total_files,
-           bytes_downloaded: total_bytes,
-           total_bytes: total_bytes
-         }}
-      )
-
-      case Importer.import_bundle(temp_dir,
-             artifacts_root: Importer.default_artifacts_root(),
-             activate: activate?
-           ) do
-        {:ok, model} ->
-          {:ok,
-           %{
-             model_id: model.model_id,
-             version: model.version,
-             state: model.state
-           }}
-
-        {:error, reason} ->
-          throw({:pipeline_error, {:error, normalize_import_error(reason)}})
-      end
+      send_pipeline_progress(owner, ref, :preparing_bundle, total_files, total_bytes)
+      prepare_bundle!(temp_dir, repo_id, detail_for_bundle)
+      send_pipeline_progress(owner, ref, :importing, total_files, total_bytes)
+      import_bundle!(temp_dir, activate?)
     catch
       :throw, {:pipeline_error, result} -> result
     after
@@ -257,6 +157,128 @@ defmodule OrchardConsole.ModelHub do
   # ===========================================================================
   # Pipeline helpers
   # ===========================================================================
+
+  defp fetch_model_detail!(client, repo_id) do
+    case client.get_model_detail(repo_id) do
+      {:ok, detail} -> detail
+      {:error, %{} = error} -> throw({:pipeline_error, {:error, error}})
+      _other -> throw({:pipeline_error, {:error, hf_error()}})
+    end
+  end
+
+  defp build_detail_for_bundle(detail, opts) do
+    effective_revision = resolve_revision(opts, detail)
+    {Map.put(detail, :revision_sha, effective_revision), effective_revision}
+  end
+
+  defp download_model!(downloader, owner, ref, repo_id, revision, temp_dir) do
+    progress_callback = build_progress_callback(owner, ref, repo_id, revision)
+
+    case downloader.download(repo_id, temp_dir,
+           revision: revision,
+           progress_callback: progress_callback
+         ) do
+      {:ok, _dest, summary} -> {summary.files_downloaded, summary.total_bytes}
+      {:error, reason} -> throw({:pipeline_error, {:error, normalize_download_error(reason)}})
+    end
+  end
+
+  defp build_progress_callback(owner, ref, repo_id, revision) do
+    started_sent? = :atomics.new(1, [])
+
+    fn update ->
+      if :atomics.get(started_sent?, 1) == 0 do
+        :atomics.put(started_sent?, 1, 1)
+        send_download_started(owner, ref, repo_id, revision, update)
+      else
+        send_download_progress(
+          owner,
+          ref,
+          :downloading,
+          update.current_file,
+          update.files_completed,
+          update.total_files,
+          update.bytes_downloaded,
+          update.total_bytes
+        )
+      end
+    end
+  end
+
+  defp send_download_started(owner, ref, repo_id, revision, update) do
+    send(
+      owner,
+      {:model_hub, ref, :download_started,
+       %{
+         repo_id: repo_id,
+         revision: revision,
+         total_files: update.total_files,
+         total_bytes: update.total_bytes
+       }}
+    )
+  end
+
+  defp send_pipeline_progress(owner, ref, phase, total_files, total_bytes) do
+    send_download_progress(
+      owner,
+      ref,
+      phase,
+      nil,
+      total_files,
+      total_files,
+      total_bytes,
+      total_bytes
+    )
+  end
+
+  defp send_download_progress(
+         owner,
+         ref,
+         phase,
+         current_file,
+         files_completed,
+         total_files,
+         bytes_downloaded,
+         total_bytes
+       ) do
+    send(
+      owner,
+      {:model_hub, ref, :download_progress,
+       %{
+         phase: phase,
+         current_file: current_file,
+         files_completed: files_completed,
+         total_files: total_files,
+         bytes_downloaded: bytes_downloaded,
+         total_bytes: total_bytes
+       }}
+    )
+  end
+
+  defp prepare_bundle!(temp_dir, repo_id, detail_for_bundle) do
+    case BundleBuilder.prepare_bundle(temp_dir, repo_id, detail_for_bundle) do
+      {:ok, _bundle_dir} -> :ok
+      {:error, reason} -> throw({:pipeline_error, {:error, normalize_bundle_error(reason)}})
+    end
+  end
+
+  defp import_bundle!(temp_dir, activate?) do
+    case Importer.import_bundle(temp_dir,
+           artifacts_root: Importer.default_artifacts_root(),
+           activate: activate?
+         ) do
+      {:ok, model} ->
+        {:ok,
+         %{
+           model_id: model.model_id,
+           version: model.version,
+           state: model.state
+         }}
+
+      {:error, reason} ->
+        throw({:pipeline_error, {:error, normalize_import_error(reason)}})
+    end
+  end
 
   defp resolve_revision(opts, detail) do
     case Keyword.get(opts, :revision) do
@@ -321,42 +343,35 @@ defmodule OrchardConsole.ModelHub do
     }
   end
 
-  defp normalize_download_error(reason) when is_tuple(reason) do
-    case reason do
-      {:unauthorized, msg} ->
-        %{status: :unauthorized, code: "hf_unauthorized", message: msg}
+  defp normalize_download_error({:unauthorized, msg}),
+    do: %{status: :unauthorized, code: "hf_unauthorized", message: msg}
 
-      {:not_found, msg} ->
-        %{status: :not_found, code: "hf_not_found", message: msg}
+  defp normalize_download_error({:not_found, msg}),
+    do: %{status: :not_found, code: "hf_not_found", message: msg}
 
-      {:rate_limited, msg} ->
-        %{status: :rate_limited, code: "hf_rate_limited", message: msg}
+  defp normalize_download_error({:rate_limited, msg}),
+    do: %{status: :rate_limited, code: "hf_rate_limited", message: msg}
 
-      {:unavailable, msg} ->
-        %{status: :unavailable, code: "hf_unavailable", message: msg}
+  defp normalize_download_error({:unavailable, msg}),
+    do: %{status: :unavailable, code: "hf_unavailable", message: msg}
 
-      {:invalid_source_layout, msg} ->
-        %{status: :error, code: "hf_invalid_source_layout", message: msg}
+  defp normalize_download_error({:invalid_source_layout, msg}),
+    do: %{status: :error, code: "hf_invalid_source_layout", message: msg}
 
-      {:download_failed, msg} ->
-        %{status: :error, code: "hf_download_failed", message: msg}
+  defp normalize_download_error({:download_failed, msg}),
+    do: %{status: :error, code: "hf_download_failed", message: msg}
 
-      {:download_incomplete, msg} ->
-        %{status: :error, code: "hf_download_incomplete", message: msg}
+  defp normalize_download_error({:download_incomplete, msg}),
+    do: %{status: :error, code: "hf_download_incomplete", message: msg}
 
-      {:filesystem_error, msg} ->
-        %{status: :error, code: "download_filesystem_error", message: msg}
+  defp normalize_download_error({:filesystem_error, msg}),
+    do: %{status: :error, code: "download_filesystem_error", message: msg}
 
-      {:callback_failed, msg} ->
-        %{status: :error, code: "download_callback_failed", message: msg}
+  defp normalize_download_error({:callback_failed, msg}),
+    do: %{status: :error, code: "download_callback_failed", message: msg}
 
-      {_tag, msg} when is_binary(msg) ->
-        %{status: :error, code: "hf_download_failed", message: msg}
-
-      _ ->
-        download_import_error()
-    end
-  end
+  defp normalize_download_error({_tag, msg}) when is_binary(msg),
+    do: %{status: :error, code: "hf_download_failed", message: msg}
 
   defp normalize_download_error(_), do: download_import_error()
 
