@@ -25,16 +25,13 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
   require Logger
 
+  alias Orchard.HuggingFace.DownloadSupport
   alias Orchard.Node
   alias Orchard.Node.ModelAcquisition.Request
 
   # File patterns to download for an MLX model bundle.
   @allowlist_extensions ~w(.json .safetensors .py .tiktoken .jinja .jinja2)
   @allowlist_basenames ~w(tokenizer.model merges.txt vocab.txt vocab.json special_tokens_map.json)
-
-  # Backoff parameters for retries
-  @initial_backoff_ms 250
-  @max_backoff_ms 2_000
 
   # -- Public API ------------------------------------------------------------
 
@@ -54,22 +51,14 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
   @doc "Parses an `hf://org/repo` URI into its components."
   def parse_hf_uri(uri) when is_binary(uri) do
-    case URI.parse(uri) do
-      %URI{scheme: "hf", host: host, path: path, query: query}
-      when is_binary(host) and host != "" ->
-        repo_id = build_repo_id(host, path)
-
-        if repo_id == "" or not String.contains?(repo_id, "/") do
-          {:error, :invalid_source_uri}
-        else
-          case parse_revision(query) do
-            {:ok, revision} -> {:ok, %{repo_id: repo_id, revision: revision}}
-            :error -> {:error, :invalid_source_uri}
-          end
-        end
-
-      _ ->
-        {:error, :invalid_source_uri}
+    with %URI{scheme: "hf", host: host, path: path, query: query}
+           when is_binary(host) and host != "" <- URI.parse(uri),
+         repo_id when repo_id != "" <- build_repo_id(host, path),
+         true <- String.contains?(repo_id, "/"),
+         {:ok, revision} <- parse_revision(query) do
+      {:ok, %{repo_id: repo_id, revision: revision}}
+    else
+      _ -> {:error, :invalid_source_uri}
     end
   end
 
@@ -180,27 +169,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
   # -- Path Sanitization -----------------------------------------------------
 
   @doc "Strips leading directory prefixes from entry paths for flat bundle layout."
-  def sanitize_entry_paths(entries) do
-    Enum.reduce_while(entries, {:ok, []}, fn %{path: path} = entry, {:ok, acc} ->
-      segments = Path.split(path)
-
-      cond do
-        Path.type(path) == :absolute ->
-          {:halt, {:error, {:invalid_source_layout, "absolute path in repo tree entry: #{path}"}}}
-
-        Enum.any?(segments, &(&1 in ["..", ".", ""])) ->
-          {:halt,
-           {:error, {:invalid_source_layout, "path traversal in repo tree entry: #{path}"}}}
-
-        true ->
-          {:cont, {:ok, [entry | acc]}}
-      end
-    end)
-    |> case do
-      {:ok, sanitized} -> {:ok, Enum.reverse(sanitized)}
-      error -> error
-    end
-  end
+  def sanitize_entry_paths(entries), do: DownloadSupport.sanitize_entry_paths(entries)
 
   # -- Preflight HEAD --------------------------------------------------------
 
@@ -241,30 +210,44 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
            etag: get_etag(resp)
          }}
 
-      {:ok, %{status: status}} when status in [401, 403] ->
-        {:error, {:source_unauthorized, "HF returned #{status} for HEAD #{url}"}}
-
-      {:ok, %{status: 404}} ->
-        {:error, {:source_not_found, "HF file not found: #{url}"}}
-
-      {:ok, %{status: status}} when status in [429] and attempt < max_attempts ->
-        backoff(attempt)
-        do_head_retry(url, config, attempt + 1, max_attempts)
-
-      {:ok, %{status: status}} when status >= 500 and attempt < max_attempts ->
-        backoff(attempt)
-        do_head_retry(url, config, attempt + 1, max_attempts)
-
       {:ok, %{status: status}} ->
-        {:error, {:source_unavailable, "HF HEAD returned #{status}"}}
-
-      {:error, _} when attempt < max_attempts ->
-        backoff(attempt)
-        do_head_retry(url, config, attempt + 1, max_attempts)
+        maybe_retry_head_status(url, config, attempt, max_attempts, status)
 
       {:error, reason} ->
-        {:error, {:source_unavailable, "HF HEAD failed: #{inspect(reason)}"}}
+        maybe_retry_head_error(url, config, attempt, max_attempts, reason)
     end
+  end
+
+  defp maybe_retry_head_status(url, config, attempt, max_attempts, status)
+       when status == 429 or status >= 500 do
+    if attempt < max_attempts do
+      backoff(attempt)
+      do_head_retry(url, config, attempt + 1, max_attempts)
+    else
+      {:error, {:source_unavailable, "HF HEAD returned #{status}"}}
+    end
+  end
+
+  defp maybe_retry_head_status(url, _config, _attempt, _max_attempts, status)
+       when status in [401, 403] do
+    {:error, {:source_unauthorized, "HF returned #{status} for HEAD #{url}"}}
+  end
+
+  defp maybe_retry_head_status(url, _config, _attempt, _max_attempts, 404) do
+    {:error, {:source_not_found, "HF file not found: #{url}"}}
+  end
+
+  defp maybe_retry_head_status(_url, _config, _attempt, _max_attempts, status) do
+    {:error, {:source_unavailable, "HF HEAD returned #{status}"}}
+  end
+
+  defp maybe_retry_head_error(url, config, attempt, max_attempts, _reason) when attempt < max_attempts do
+    backoff(attempt)
+    do_head_retry(url, config, attempt + 1, max_attempts)
+  end
+
+  defp maybe_retry_head_error(_url, _config, _attempt, _max_attempts, reason) do
+    {:error, {:source_unavailable, "HF HEAD failed: #{inspect(reason)}"}}
   end
 
   defp get_content_length(resp) do
@@ -314,299 +297,54 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
   # -- File Download ---------------------------------------------------------
 
   defp download_all(file_metas, repo_spec, request, config) do
-    base_url = Keyword.get(config, :base_url, "https://huggingface.co")
-    retry_attempts = Keyword.get(config, :retry_attempts, 3)
-    total_files = length(file_metas)
+    opts = [
+      base_url: Keyword.get(config, :base_url, "https://huggingface.co"),
+      repo_spec: repo_spec,
+      dest_root: request.staging_path,
+      root_label: "staging",
+      request_fun: fn method, url, extra_opts -> hf_request(method, url, config, extra_opts) end,
+      max_attempts: max(Keyword.get(config, :retry_attempts, 3), 1),
+      progress_fun: fn progress, current_file -> emit_progress(progress, request, current_file) end
+    ]
 
-    total_bytes =
-      Enum.reduce(file_metas, 0, fn m, acc ->
-        acc + (m[:content_length] || m.size || 0)
-      end)
-
-    progress = %{
-      bytes_downloaded: 0,
-      total_bytes: total_bytes,
-      files_completed: 0,
-      total_files: total_files
-    }
-
-    staging_root = Path.expand(request.staging_path)
-
-    result =
-      Enum.reduce_while(file_metas, {:ok, progress}, fn file_meta, {:ok, prog} ->
-        url = resolve_url(base_url, repo_spec, file_meta.path)
-        dest = Path.join(request.staging_path, file_meta.path)
-        expanded_dest = Path.expand(dest)
-
-        # Belt-and-suspenders containment check (sanitize_entry_paths is the primary guard)
-        if String.starts_with?(expanded_dest, staging_root <> "/") do
-          case download_file(url, dest, file_meta, request, config, retry_attempts, prog) do
-            {:ok, updated_prog} ->
-              {:cont, {:ok, updated_prog}}
-
-            {:error, _} = err ->
-              {:halt, err}
-          end
-        else
-          {:halt,
-           {:error, {:invalid_source_layout, "path escapes staging directory: #{file_meta.path}"}}}
-        end
-      end)
-
-    case result do
-      {:ok, _} -> :ok
-      error -> error
+    case DownloadSupport.download_all(file_metas, opts) do
+      {:ok, _progress} -> :ok
+      {:error, reason} -> map_download_error(reason)
     end
   end
 
-  defp download_file(url, dest, file_meta, request, config, max_attempts, progress) do
-    case File.mkdir_p(Path.dirname(dest)) do
-      :ok ->
-        do_download_retry(url, dest, file_meta, request, config, 1, max_attempts, progress)
-
-      {:error, reason} ->
-        {:error, {:filesystem_error, "mkdir_p #{Path.dirname(dest)}: #{inspect(reason)}"}}
-    end
+  defp map_download_error({:path_escape, path, root_label}) do
+    {:error, {:invalid_source_layout, "path escapes #{root_label} directory: #{path}"}}
   end
 
-  defp do_download_retry(url, dest, file_meta, request, config, attempt, max_attempts, progress) do
-    partial_path = dest <> ".partial"
-    etag_path = dest <> ".partial.etag"
-    expected_size = file_meta[:content_length]
-    remote_etag = file_meta[:etag]
-
-    # Determine resume offset
-    {offset, resume?} = compute_resume_offset(partial_path, etag_path, remote_etag)
-
-    # Build request headers for Range resume
-    extra_headers = if resume? and offset > 0, do: [{"range", "bytes=#{offset}-"}], else: []
-
-    # Store ETag sidecar for resume on retry
-    if remote_etag, do: File.write(etag_path, remote_etag)
-
-    # Stream download to file using Req's `into: fun` callback
-    bytes_counter = :counters.new(1, [:atomics])
-    if resume? and offset > 0, do: :counters.put(bytes_counter, 1, offset)
-
-    # Determine file open mode: append for resume, write for fresh start
-    write_mode = if resume? and offset > 0, do: [:binary, :append], else: [:binary, :write]
-
-    case File.open(partial_path, write_mode) do
-      {:ok, file_pid} ->
-        do_download_stream(
-          url,
-          dest,
-          file_meta,
-          request,
-          config,
-          attempt,
-          max_attempts,
-          progress,
-          partial_path,
-          etag_path,
-          expected_size,
-          offset,
-          resume?,
-          extra_headers,
-          bytes_counter,
-          file_pid
-        )
-
-      {:error, reason} ->
-        {:error, {:filesystem_error, "open #{partial_path}: #{inspect(reason)}"}}
-    end
+  defp map_download_error({:filesystem_error, action, path, reason}) do
+    {:error, {:filesystem_error, "#{action} #{path}: #{inspect(reason)}"}}
   end
 
-  defp do_download_stream(
-         url,
-         dest,
-         file_meta,
-         request,
-         config,
-         attempt,
-         max_attempts,
-         progress,
-         partial_path,
-         etag_path,
-         expected_size,
-         offset,
-         resume?,
-         extra_headers,
-         bytes_counter,
-         file_pid
-       ) do
-    write_error = :atomics.new(1, [])
-
-    into_fun = fn {:data, chunk}, {req, resp} ->
-      case :file.write(file_pid, chunk) do
-        :ok ->
-          :counters.add(bytes_counter, 1, byte_size(chunk))
-          {:cont, {req, resp}}
-
-        {:error, _reason} ->
-          :atomics.put(write_error, 1, 1)
-          {:halt, {req, resp}}
-      end
-    end
-
-    result = hf_request(:get, url, config, headers: extra_headers, into: into_fun)
-    File.close(file_pid)
-    bytes_written = :counters.get(bytes_counter, 1)
-
-    # Filesystem write failures are non-retryable; surface immediately
-    if :atomics.get(write_error, 1) == 1 do
-      {:error, {:filesystem_error, "write #{partial_path}: disk write failed"}}
-    else
-      case result do
-        {:ok, %{status: 200}} when resume? and offset > 0 ->
-          # credo:disable-for-lines:3 ExSlop.Check.Readability.ObviousComment
-          # Server ignored Range header and sent the full file, but we appended
-          # it to the existing partial — the file is now corrupt.
-          # Delete the partial and restart this attempt from scratch.
-          File.rm(partial_path)
-          File.rm(etag_path)
-
-          if attempt < max_attempts do
-            backoff(attempt)
-
-            do_download_retry(
-              url,
-              dest,
-              file_meta,
-              request,
-              config,
-              attempt + 1,
-              max_attempts,
-              progress
-            )
-          else
-            {:error,
-             {:download_failed,
-              "server ignored Range header for #{file_meta.path}, resume not supported"}}
-          end
-
-        {:ok, %{status: status}} when status in [200, 206] ->
-          effective_size = bytes_written
-
-          # Verify size if known
-          if expected_size && effective_size != expected_size do
-            if attempt < max_attempts do
-              backoff(attempt)
-
-              do_download_retry(
-                url,
-                dest,
-                file_meta,
-                request,
-                config,
-                attempt + 1,
-                max_attempts,
-                progress
-              )
-            else
-              {:error,
-               {:download_incomplete,
-                "expected #{expected_size} bytes, got #{effective_size} for #{file_meta.path}"}}
-            end
-          else
-            # Promote partial to final
-            case File.rename(partial_path, dest) do
-              :ok ->
-                File.rm(etag_path)
-
-                file_bytes = file_meta[:content_length] || file_meta.size || 0
-
-                final_progress = %{
-                  progress
-                  | bytes_downloaded: progress.bytes_downloaded + file_bytes,
-                    files_completed: progress.files_completed + 1
-                }
-
-                emit_progress(final_progress, request, file_meta.path)
-                {:ok, final_progress}
-
-              {:error, reason} ->
-                {:error, {:filesystem_error, "rename #{partial_path}: #{inspect(reason)}"}}
-            end
-          end
-
-        {:ok, %{status: status}} when status in [401, 403] ->
-          {:error, {:source_unauthorized, "HF returned #{status} downloading #{file_meta.path}"}}
-
-        {:ok, %{status: 404}} ->
-          {:error, {:source_not_found, "HF file not found: #{file_meta.path}"}}
-
-        {:ok, %{status: status}} when status in [429] and attempt < max_attempts ->
-          backoff(attempt)
-
-          do_download_retry(
-            url,
-            dest,
-            file_meta,
-            request,
-            config,
-            attempt + 1,
-            max_attempts,
-            progress
-          )
-
-        {:ok, %{status: status}} when status >= 500 and attempt < max_attempts ->
-          backoff(attempt)
-
-          do_download_retry(
-            url,
-            dest,
-            file_meta,
-            request,
-            config,
-            attempt + 1,
-            max_attempts,
-            progress
-          )
-
-        {:ok, %{status: status}} ->
-          {:error, {:download_failed, "HF download returned #{status} for #{file_meta.path}"}}
-
-        {:error, _} when attempt < max_attempts ->
-          backoff(attempt)
-
-          do_download_retry(
-            url,
-            dest,
-            file_meta,
-            request,
-            config,
-            attempt + 1,
-            max_attempts,
-            progress
-          )
-
-        {:error, reason} ->
-          {:error,
-           {:download_failed, "HF download failed for #{file_meta.path}: #{inspect(reason)}"}}
-      end
-    end
+  defp map_download_error({:range_resume_not_supported, path}) do
+    {:error, {:download_failed, "server ignored Range header for #{path}, resume not supported"}}
   end
 
-  defp compute_resume_offset(partial_path, etag_path, remote_etag) do
-    if File.exists?(partial_path) do
-      case {File.read(etag_path), remote_etag} do
-        {{:ok, stored_etag}, etag} when stored_etag == etag and etag != nil ->
-          # ETag matches — safe to resume
-          case File.stat(partial_path) do
-            {:ok, %{size: size}} -> {size, true}
-            {:error, _} -> {0, false}
-          end
+  defp map_download_error({:download_incomplete, path, expected_size, actual_size}) do
+    {:error,
+     {:download_incomplete,
+      "expected #{expected_size} bytes, got #{actual_size} for #{path}"}}
+  end
 
-        _ ->
-          # ETag mismatch or unknown — restart
-          File.rm(partial_path)
-          File.rm(etag_path)
-          {0, false}
-      end
-    else
-      {0, false}
-    end
+  defp map_download_error({:http_status, status, path}) when status in [401, 403] do
+    {:error, {:source_unauthorized, "HF returned #{status} downloading #{path}"}}
+  end
+
+  defp map_download_error({:http_status, 404, path}) do
+    {:error, {:source_not_found, "HF file not found: #{path}"}}
+  end
+
+  defp map_download_error({:http_status, status, path}) do
+    {:error, {:download_failed, "HF download returned #{status} for #{path}"}}
+  end
+
+  defp map_download_error({:request_failed, path, reason}) do
+    {:error, {:download_failed, "HF download failed for #{path}: #{inspect(reason)}"}}
   end
 
   # -- HTTP Helpers ----------------------------------------------------------
@@ -657,6 +395,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
         path: current_path
       }
     )
+
+    :ok
   end
 
   # -- Utility ---------------------------------------------------------------
@@ -673,8 +413,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
   end
 
   defp backoff(attempt) do
-    delay = min(@initial_backoff_ms * Integer.pow(2, attempt - 1), @max_backoff_ms)
-    Process.sleep(delay)
+    Process.sleep(min(250 * Integer.pow(2, attempt - 1), 2_000))
   end
 
   defp hf_config do

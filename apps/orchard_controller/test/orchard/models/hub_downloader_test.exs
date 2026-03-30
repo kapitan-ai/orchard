@@ -1,7 +1,10 @@
 defmodule Orchard.Models.HubDownloaderTest do
   use ExUnit.Case, async: false
 
+  Module.register_attribute(__MODULE__, :no_clone, persist: true)
+
   alias Orchard.Models.HubDownloader
+  alias Orchard.TestSupport.HuggingFaceReqStub
 
   @repo_id "mlx-community/test-model"
   @revision "main"
@@ -17,33 +20,14 @@ defmodule Orchard.Models.HubDownloaderTest do
     dest_dir = Path.join(tmp_dir, "download")
     File.mkdir_p!(dest_dir)
 
-    # Source file contents for stubs
-    config_content = ~s({"model_type":"llama","hidden_size":256})
-    tokenizer_content = ~s({"version":"1.0"})
-    weights_content = "fake-safetensors-weights-data-for-testing"
+    file_contents = HuggingFaceReqStub.sample_file_contents()
 
-    file_contents = %{
-      "config.json" => config_content,
-      "tokenizer.json" => tokenizer_content,
-      "model.safetensors" => weights_content
-    }
-
-    # HF tree listing response
     tree_response =
-      Enum.map(file_contents, fn {path, content} ->
-        %{
-          "type" => "file",
-          "oid" => Base.encode16(:crypto.hash(:sha256, content), case: :lower),
-          "size" => byte_size(content),
-          "path" => path
-        }
-      end) ++
-        [
-          # Non-model files that should be filtered out
-          %{"type" => "file", "oid" => "abc", "size" => 100, "path" => "README.md"},
-          %{"type" => "file", "oid" => "def", "size" => 200, "path" => ".gitattributes"},
-          %{"type" => "file", "oid" => "ghi", "size" => 5000, "path" => "model.gguf"}
-        ]
+      HuggingFaceReqStub.tree_response(file_contents, [
+        %{"type" => "file", "oid" => "abc", "size" => 100, "path" => "README.md"},
+        %{"type" => "file", "oid" => "def", "size" => 200, "path" => ".gitattributes"},
+        %{"type" => "file", "oid" => "ghi", "size" => 5000, "path" => "model.gguf"}
+      ])
 
     Application.put_env(:orchard_controller, :hf, base_hf_config(stub_name))
 
@@ -97,6 +81,21 @@ defmodule Orchard.Models.HubDownloaderTest do
                HubDownloader.download(@repo_id, ctx.dest_dir, revision: "abc123")
 
       assert summary.revision == "abc123"
+    end
+
+    test "supports revisions with slashes", ctx do
+      revision = "refs/pr/1"
+      stub_successful_hf(ctx, revision: revision)
+
+      assert {:ok, dest, summary} =
+               HubDownloader.download(@repo_id, ctx.dest_dir, revision: revision)
+
+      assert dest == ctx.dest_dir
+      assert summary.revision == revision
+
+      for {path, expected} <- ctx.file_contents do
+        assert File.read!(Path.join(ctx.dest_dir, path)) == expected
+      end
     end
 
     test "preserves nested relative paths", ctx do
@@ -418,6 +417,95 @@ defmodule Orchard.Models.HubDownloaderTest do
 
       assert {:error, {:not_found, msg}} = HubDownloader.download(@repo_id, ctx.dest_dir)
       assert msg =~ "not found"
+    end
+
+    test "404 on file download includes missing path", ctx do
+      Req.Test.stub(ctx.stub_name, fn conn ->
+        cond do
+          String.contains?(conn.request_path, "/tree/") ->
+            Req.Test.json(conn, ctx.tree_response)
+
+          conn.method == "HEAD" ->
+            file_path = extract_file_path(conn.request_path)
+            content = Map.get(ctx.file_contents, file_path, "")
+
+            conn
+            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+            |> Plug.Conn.put_resp_header("etag", "\"etag-#{file_path}\"")
+            |> Plug.Conn.send_resp(200, "")
+
+          conn.method == "GET" ->
+            file_path = extract_file_path(conn.request_path)
+
+            if file_path == "model.safetensors" do
+              Plug.Conn.send_resp(conn, 404, "Not Found")
+            else
+              content = Map.get(ctx.file_contents, file_path, "")
+
+              conn
+              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+              |> Plug.Conn.send_resp(200, content)
+            end
+
+          true ->
+            Plug.Conn.send_resp(conn, 404, "")
+        end
+      end)
+
+      assert {:error, {:not_found, msg}} = HubDownloader.download(@repo_id, ctx.dest_dir)
+      assert msg =~ "model.safetensors"
+    end
+  end
+
+  describe "destination safety" do
+    test "rejects nested destination symlinks", ctx do
+      nested_contents = %{
+        "config.json" => ~s({"model_type":"llama"}),
+        "escaped/model.safetensors" => "weights"
+      }
+
+      tree_response =
+        Enum.map(nested_contents, fn {path, content} ->
+          %{"type" => "file", "oid" => "abc", "size" => byte_size(content), "path" => path}
+        end)
+
+      outside_dir = Path.join(ctx.tmp_dir, "outside")
+      escaped_dir = Path.join(ctx.dest_dir, "escaped")
+      File.mkdir_p!(outside_dir)
+      File.ln_s!(outside_dir, escaped_dir)
+
+      Req.Test.stub(ctx.stub_name, fn conn ->
+        cond do
+          String.contains?(conn.request_path, "/tree/") ->
+            Req.Test.json(conn, tree_response)
+
+          conn.method == "HEAD" ->
+            file_path = extract_file_path(conn.request_path)
+            content = Map.get(nested_contents, file_path, "")
+
+            conn
+            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+            |> Plug.Conn.put_resp_header("etag", "\"etag-#{file_path}\"")
+            |> Plug.Conn.send_resp(200, "")
+
+          conn.method == "GET" ->
+            file_path = extract_file_path(conn.request_path)
+            content = Map.get(nested_contents, file_path, "")
+
+            conn
+            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+            |> Plug.Conn.send_resp(200, content)
+
+          true ->
+            Plug.Conn.send_resp(conn, 404, "")
+        end
+      end)
+
+      assert {:error, {:invalid_source_layout, msg}} =
+               HubDownloader.download(@repo_id, ctx.dest_dir)
+
+      assert msg =~ "escaped/model.safetensors"
+      assert [] == File.ls!(outside_dir)
     end
   end
 
@@ -786,17 +874,7 @@ defmodule Orchard.Models.HubDownloaderTest do
 
   # -- Helpers ---------------------------------------------------------------
 
-  defp base_hf_config(stub_name) do
-    [
-      base_url: "https://huggingface.co",
-      api_base_url: "https://huggingface.co/api",
-      token: nil,
-      retry_attempts: 1,
-      connect_timeout_ms: 5_000,
-      receive_timeout_ms: 5_000,
-      req_options: [plug: {Req.Test, stub_name}]
-    ]
-  end
+  defp base_hf_config(stub_name), do: HuggingFaceReqStub.hf_config(stub_name)
 
   defp with_hf_overrides(stub_name, overrides, fun) do
     previous = Application.get_env(:orchard_controller, :hf, [])
@@ -810,82 +888,22 @@ defmodule Orchard.Models.HubDownloaderTest do
     end
   end
 
+  # Intentional mirror of the node-agent HF stub: these tests need aligned
+  # HTTP fixtures so controller and node-agent download behavior stays in lockstep.
+  @no_clone true
   defp stub_successful_hf(ctx, opts \\ []) do
-    file_contents = ctx.file_contents
-    tree_response = ctx.tree_response
     revision = Keyword.get(opts, :revision, @revision)
 
     Req.Test.stub(ctx.stub_name, fn conn ->
-      cond do
-        String.contains?(conn.request_path, "/tree/") ->
-          Req.Test.json(conn, tree_response)
-
-        conn.method == "HEAD" && String.contains?(conn.request_path, "/resolve/") ->
-          file_path = extract_file_path(conn.request_path, revision)
-
-          case Map.get(file_contents, file_path) do
-            nil ->
-              Plug.Conn.send_resp(conn, 404, "")
-
-            content ->
-              conn
-              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-              |> Plug.Conn.put_resp_header("etag", "\"#{hash_content(content)}\"")
-              |> Plug.Conn.send_resp(200, "")
-          end
-
-        conn.method == "GET" && String.contains?(conn.request_path, "/resolve/") ->
-          file_path = extract_file_path(conn.request_path, revision)
-
-          case Map.get(file_contents, file_path) do
-            nil ->
-              Plug.Conn.send_resp(conn, 404, "")
-
-            content ->
-              range_header = get_range_header(conn)
-
-              {status, body} =
-                case range_header do
-                  "bytes=" <> range_spec ->
-                    [start_str | _] = String.split(range_spec, "-")
-                    start = String.to_integer(start_str)
-                    {206, binary_part(content, start, byte_size(content) - start)}
-
-                  _ ->
-                    {200, content}
-                end
-
-              conn
-              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(body)))
-              |> Plug.Conn.send_resp(status, body)
-          end
-
-        true ->
-          Plug.Conn.send_resp(conn, 404, "")
-      end
+      HuggingFaceReqStub.dispatch(conn, ctx.file_contents, ctx.tree_response, revision: revision)
     end)
   end
 
   defp extract_file_path(request_path, revision \\ @revision) do
-    # Path format: /mlx-community/test-model/resolve/{revision}/{file_path}
-    parts = String.split(request_path, "/resolve/#{revision}/")
-
-    case parts do
-      [_, file_path] -> URI.decode(file_path)
-      _ -> ""
-    end
+    HuggingFaceReqStub.extract_file_path(request_path, revision)
   end
 
-  defp get_range_header(conn) do
-    Enum.find_value(conn.req_headers, fn
-      {"range", val} -> val
-      _ -> nil
-    end)
-  end
-
-  defp hash_content(content) do
-    :crypto.hash(:sha256, content) |> Base.encode16(case: :lower) |> binary_part(0, 16)
-  end
+  defp get_range_header(conn), do: HuggingFaceReqStub.range_header(conn)
 
   defp collect_progress_messages(acc \\ []) do
     receive do

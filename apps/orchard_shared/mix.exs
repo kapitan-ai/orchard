@@ -9,6 +9,7 @@ defmodule OrchardShared.MixProject do
       config_path: "../../config/config.exs",
       deps_path: "../../deps",
       lockfile: "../../mix.lock",
+      elixirc_paths: elixirc_paths(Mix.env()),
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
       # M0 exception: this shell is intentionally shallow and the threshold will
@@ -17,6 +18,9 @@ defmodule OrchardShared.MixProject do
       deps: deps()
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_env), do: ["lib"]
 
   def application do
     [
@@ -28,7 +32,8 @@ defmodule OrchardShared.MixProject do
   defp deps do
     [
       {:grpc, "~> 0.11.5"},
-      {:protobuf, "~> 0.16.0"}
+      {:protobuf, "~> 0.16.0"},
+      {:req, "~> 0.5", only: :test}
     ]
   end
 end

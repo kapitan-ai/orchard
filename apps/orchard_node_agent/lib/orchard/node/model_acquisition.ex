@@ -68,52 +68,48 @@ defmodule Orchard.Node.ModelAcquisition do
   end
 
   defp check_existing_cache(%Request{} = request) do
-    if File.dir?(request.final_path) do
-      case ArtifactBundle.tree_sha256(request.final_path) do
-        {:ok, hash} when hash == request.artifact_sha256 ->
-          Logger.info(
-            "Cache hit for #{request.model_id}@#{request.version} at #{request.final_path}"
-          )
+    cond do
+      File.dir?(request.final_path) ->
+        verify_existing_cache(request)
 
-          {:ok, request.final_path, :cache_hit}
-
-        {:ok, _mismatched_hash} ->
-          if request.artifact_source_uri == nil do
-            {:error, :artifact_hash_mismatch}
-          else
-            # Existing cache is stale — remove and reacquire
-            Logger.warning(
-              "Cache hash mismatch for #{request.model_id}@#{request.version}, reacquiring"
-            )
-
-            File.rm_rf(request.final_path)
-            :reacquire
-          end
-
-        {:error, reason} ->
-          if request.artifact_source_uri == nil do
-            Logger.warning(
-              "Failed to verify cache for #{request.model_id}@#{request.version}: #{inspect(reason)}"
-            )
-
-            {:error, {:cache_verification_failed, reason}}
-          else
-            # Cache is unreadable but we have a source — remove and reacquire
-            Logger.warning(
-              "Cache unreadable for #{request.model_id}@#{request.version}: #{inspect(reason)}, reacquiring"
-            )
-
-            File.rm_rf(request.final_path)
-            :reacquire
-          end
-      end
-    else
-      if request.artifact_source_uri == nil do
+      request.artifact_source_uri == nil ->
         {:error, :missing_artifact_source_uri}
-      else
+
+      true ->
         :reacquire
-      end
     end
+  end
+
+  defp verify_existing_cache(%Request{} = request) do
+    case ArtifactBundle.tree_sha256(request.final_path) do
+      {:ok, hash} when hash == request.artifact_sha256 ->
+        Logger.info(
+          "Cache hit for #{request.model_id}@#{request.version} at #{request.final_path}"
+        )
+
+        {:ok, request.final_path, :cache_hit}
+
+      {:ok, _mismatched_hash} ->
+        handle_stale_cache(request, :artifact_hash_mismatch)
+
+      {:error, reason} ->
+        Logger.warning(
+          "Failed to verify cache for #{request.model_id}@#{request.version}: #{inspect(reason)}"
+        )
+
+        handle_stale_cache(request, {:cache_verification_failed, reason})
+    end
+  end
+
+  defp handle_stale_cache(%Request{artifact_source_uri: nil}, error), do: {:error, error}
+
+  defp handle_stale_cache(%Request{} = request, _error) do
+    Logger.warning(
+      "Cache stale or unreadable for #{request.model_id}@#{request.version}, reacquiring"
+    )
+
+    File.rm_rf(request.final_path)
+    :reacquire
   end
 
   defp acquire_and_verify(%Request{} = request) do

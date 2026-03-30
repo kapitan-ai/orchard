@@ -1,11 +1,14 @@
 defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
   use ExUnit.Case, async: false
 
+  Module.register_attribute(__MODULE__, :no_clone, persist: true)
+
   alias Orchard.ArtifactBundle
   alias Orchard.Cluster.V1.EnsureModelLoadedRequest
   alias Orchard.Node.ModelAcquisition
   alias Orchard.Node.ModelAcquisition.Request
   alias Orchard.Node.ModelAcquisition.Source.HuggingFace
+  alias Orchard.TestSupport.HuggingFaceReqStub
 
   @repo_id "mlx-community/test-model"
   @revision "main"
@@ -21,38 +24,16 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
     File.mkdir_p!(models_root)
     File.mkdir_p!(source_dir)
 
-    # Create source bundle files that we'll serve via Req.Test
-    config_content = ~s({"model_type":"llama","hidden_size":256})
-    tokenizer_content = ~s({"version":"1.0"})
-    weights_content = "fake-safetensors-weights-data-for-testing"
-
-    File.write!(Path.join(source_dir, "config.json"), config_content)
-    File.write!(Path.join(source_dir, "tokenizer.json"), tokenizer_content)
-    File.write!(Path.join(source_dir, "model.safetensors"), weights_content)
+    file_contents = HuggingFaceReqStub.sample_file_contents()
+    HuggingFaceReqStub.write_files(source_dir, file_contents)
 
     {:ok, hash} = ArtifactBundle.tree_sha256(source_dir)
 
-    file_contents = %{
-      "config.json" => config_content,
-      "tokenizer.json" => tokenizer_content,
-      "model.safetensors" => weights_content
-    }
-
-    # HF tree listing response
     tree_response =
-      Enum.map(file_contents, fn {path, content} ->
-        %{
-          "type" => "file",
-          "oid" => Base.encode16(:crypto.hash(:sha256, content), case: :lower),
-          "size" => byte_size(content),
-          "path" => path
-        }
-      end) ++
-        [
-          # Non-model files that should be filtered out
-          %{"type" => "file", "oid" => "abc", "size" => 100, "path" => "README.md"},
-          %{"type" => "file", "oid" => "def", "size" => 200, "path" => ".gitattributes"}
-        ]
+      HuggingFaceReqStub.tree_response(file_contents, [
+        %{"type" => "file", "oid" => "abc", "size" => 100, "path" => "README.md"},
+        %{"type" => "file", "oid" => "def", "size" => 200, "path" => ".gitattributes"}
+      ])
 
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
 
@@ -563,99 +544,22 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
     request
   end
 
+  # Intentional mirror of the controller HF stub: these tests need aligned
+  # HTTP fixtures so controller and node-agent download behavior stays in lockstep.
+  @no_clone true
   defp stub_successful_hf(ctx) do
-    file_contents = ctx.file_contents
-    tree_response = ctx.tree_response
-
     Req.Test.stub(ctx.stub_name, fn conn ->
-      cond do
-        # Tree listing
-        String.contains?(conn.request_path, "/tree/") ->
-          Req.Test.json(conn, tree_response)
-
-        # HEAD for resolve
-        conn.method == "HEAD" && String.contains?(conn.request_path, "/resolve/") ->
-          file_path = extract_file_path(conn.request_path)
-
-          case Map.get(file_contents, file_path) do
-            nil ->
-              Plug.Conn.send_resp(conn, 404, "")
-
-            content ->
-              conn
-              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-              |> Plug.Conn.put_resp_header("etag", "\"#{hash_content(content)}\"")
-              |> Plug.Conn.send_resp(200, "")
-          end
-
-        # GET for resolve (download)
-        conn.method == "GET" && String.contains?(conn.request_path, "/resolve/") ->
-          file_path = extract_file_path(conn.request_path)
-
-          case Map.get(file_contents, file_path) do
-            nil ->
-              Plug.Conn.send_resp(conn, 404, "")
-
-            content ->
-              # Check for Range header (resume)
-              range_header =
-                conn.req_headers
-                |> Enum.find(fn {k, _} -> k == "range" end)
-
-              {status, body} =
-                case range_header do
-                  {"range", "bytes=" <> range_spec} ->
-                    [start_str | _] = String.split(range_spec, "-")
-                    start = String.to_integer(start_str)
-                    {206, binary_part(content, start, byte_size(content) - start)}
-
-                  _ ->
-                    {200, content}
-                end
-
-              conn
-              |> Plug.Conn.put_resp_header(
-                "content-length",
-                to_string(byte_size(body))
-              )
-              |> Plug.Conn.send_resp(status, body)
-          end
-
-        true ->
-          Plug.Conn.send_resp(conn, 404, "unknown path")
-      end
+      HuggingFaceReqStub.dispatch(conn, ctx.file_contents, ctx.tree_response)
     end)
   end
 
-  defp extract_file_path(request_path) do
-    # Path format: /{repo_id}/resolve/{revision}/{file_path}
-    # e.g., /mlx-community/test-model/resolve/main/config.json
-    parts = String.split(request_path, "/resolve/#{@revision}/")
-
-    case parts do
-      [_, file_path] -> file_path
-      _ -> ""
-    end
-  end
-
-  defp hash_content(content) do
-    :crypto.hash(:sha256, content) |> Base.encode16(case: :lower) |> binary_part(0, 16)
+  defp extract_file_path(request_path, revision \\ @revision) do
+    HuggingFaceReqStub.extract_file_path(request_path, revision)
   end
 
   defp override_hf_config(stub_name) do
     current_runtime = Application.get_env(:orchard_node_agent, :runtime, [])
-
-    hf_config = [
-      base_url: "https://huggingface.co",
-      api_base_url: "https://huggingface.co/api",
-      token: nil,
-      retry_attempts: 1,
-      connect_timeout_ms: 5_000,
-      receive_timeout_ms: 5_000,
-      req_options: [plug: {Req.Test, stub_name}]
-    ]
-
-    updated_runtime = Keyword.put(current_runtime, :hf, hf_config)
+    updated_runtime = Keyword.put(current_runtime, :hf, HuggingFaceReqStub.hf_config(stub_name))
     Application.put_env(:orchard_node_agent, :runtime, updated_runtime)
   end
 end
