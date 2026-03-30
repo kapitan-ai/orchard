@@ -325,6 +325,10 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
     {:error, {:download_failed, "server ignored Range header for #{path}, resume not supported"}}
   end
 
+  defp map_download_error({:redirect_resolution_failed, reason}) do
+    {:error, {:download_failed, "redirect resolution failed: #{reason}"}}
+  end
+
   defp map_download_error({:download_incomplete, path, expected_size, actual_size}) do
     {:error,
      {:download_incomplete,
@@ -353,10 +357,18 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
     token = Keyword.get(config, :token)
     connect_timeout = Keyword.get(config, :connect_timeout_ms, 10_000)
     receive_timeout = Keyword.get(config, :receive_timeout_ms, 30_000)
-    req_options = Keyword.get(config, :req_options, [])
+    req_options =
+      config
+      |> Keyword.get(:req_options, [])
+      |> sanitize_req_options()
+
+    auth? = Keyword.get(extra_opts, :auth?, true)
+    follow_redirects? = Keyword.get(extra_opts, :follow_redirects?, true)
 
     auth_headers =
-      if token, do: [{"authorization", "Bearer #{token}"}], else: []
+      if auth? and token,
+        do: [{"authorization", "Bearer #{token}"}],
+        else: []
 
     user_headers = Keyword.get(extra_opts, :headers, [])
     into = Keyword.get(extra_opts, :into)
@@ -368,7 +380,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
         headers: auth_headers ++ user_headers,
         connect_options: [timeout: connect_timeout],
         receive_timeout: receive_timeout,
-        retry: false
+        retry: false,
+        redirect: follow_redirects?
       ]
       |> then(fn opts -> if into, do: Keyword.put(opts, :into, into), else: opts end)
 
@@ -376,6 +389,20 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
     Req.request(merged_opts)
   end
+
+  @reserved_req_option_keys [
+    :method, :url, :headers, :params, :retry, :receive_timeout,
+    :connect_options, :body, :json, :into, :redirect
+  ]
+
+  defp sanitize_req_options(req_options) when is_list(req_options) do
+    Enum.reject(req_options, fn
+      {key, _value} -> key in @reserved_req_option_keys
+      _other -> false
+    end)
+  end
+
+  defp sanitize_req_options(_), do: []
 
   # -- Progress Telemetry ----------------------------------------------------
 

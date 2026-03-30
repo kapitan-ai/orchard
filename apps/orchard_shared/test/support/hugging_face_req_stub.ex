@@ -54,6 +54,8 @@ defmodule Orchard.TestSupport.HuggingFaceReqStub do
 
     maybe_on_request(on_request, conn)
 
+    redirect_files = Keyword.get(opts, :redirect_files, MapSet.new())
+
     case route do
       :tree ->
         handle_tree(conn, tree_response, Keyword.get(opts, :tree_handler))
@@ -63,7 +65,8 @@ defmodule Orchard.TestSupport.HuggingFaceReqStub do
           conn,
           file_contents,
           revision,
-          Keyword.get(opts, :head_handler)
+          Keyword.get(opts, :head_handler),
+          redirect_files
         )
 
       :download ->
@@ -71,8 +74,12 @@ defmodule Orchard.TestSupport.HuggingFaceReqStub do
           conn,
           file_contents,
           revision,
-          Keyword.get(opts, :download_handler)
+          Keyword.get(opts, :download_handler),
+          redirect_files
         )
+
+      :cdn_download ->
+        handle_cdn_download(conn, file_contents, revision)
 
       :unknown ->
         Plug.Conn.send_resp(conn, 404, unknown_body)
@@ -82,6 +89,7 @@ defmodule Orchard.TestSupport.HuggingFaceReqStub do
   defp route(conn) do
     cond do
       String.contains?(conn.request_path, "/tree/") -> :tree
+      String.contains?(conn.request_path, "/cdn-resolve/") -> :cdn_download
       conn.method == "HEAD" and String.contains?(conn.request_path, "/resolve/") -> :head
       conn.method == "GET" and String.contains?(conn.request_path, "/resolve/") -> :download
       true -> :unknown
@@ -100,23 +108,75 @@ defmodule Orchard.TestSupport.HuggingFaceReqStub do
     end
   end
 
-  defp handle_head(conn, file_contents, revision, head_handler) do
+  defp handle_head(conn, file_contents, revision, head_handler, redirect_files) do
     file_path = extract_file_path(conn.request_path, revision)
     content = Map.get(file_contents, file_path)
 
     case maybe_handle_route(head_handler, conn, file_path, content) do
-      :default -> respond_head(conn, wrap_content(content))
-      response -> response
+      :default ->
+        if MapSet.member?(redirect_files, file_path) do
+          redirect_to_cdn(conn, file_path, revision)
+        else
+          respond_head(conn, wrap_content(content))
+        end
+
+      response ->
+        response
     end
   end
 
-  defp handle_download(conn, file_contents, revision, download_handler) do
+  defp handle_download(conn, file_contents, revision, download_handler, redirect_files) do
     file_path = extract_file_path(conn.request_path, revision)
     content = Map.get(file_contents, file_path)
 
     case maybe_handle_route(download_handler, conn, file_path, content) do
-      :default -> respond_download(conn, wrap_content(content))
-      response -> response
+      :default ->
+        if MapSet.member?(redirect_files, file_path) do
+          redirect_to_cdn(conn, file_path, revision)
+        else
+          respond_download(conn, wrap_content(content))
+        end
+
+      response ->
+        response
+    end
+  end
+
+  defp handle_cdn_download(conn, file_contents, revision) do
+    file_path = extract_cdn_file_path(conn.request_path, revision)
+    content = Map.get(file_contents, file_path)
+
+    case wrap_content(content) do
+      {:ok, _} ->
+        if conn.method == "HEAD" do
+          respond_head(conn, {:ok, content})
+        else
+          respond_download(conn, {:ok, content})
+        end
+
+      :error ->
+        Plug.Conn.send_resp(conn, 404, "")
+    end
+  end
+
+  defp redirect_to_cdn(conn, file_path, revision) do
+    encoded_revision = URI.encode(revision, &URI.char_unreserved?/1)
+    encoded_path = URI.encode(file_path, &URI.char_unreserved?/1)
+    cdn_path = "/cdn-resolve/#{encoded_revision}/#{encoded_path}"
+    cdn_url = "https://cdn.test#{cdn_path}"
+
+    conn
+    |> Plug.Conn.put_resp_header("location", cdn_url)
+    |> Plug.Conn.send_resp(307, "Temporary Redirect")
+  end
+
+  def extract_cdn_file_path(request_path, revision \\ "main") do
+    with [_, remainder] <- String.split(request_path, "/cdn-resolve/", parts: 2),
+         [encoded_revision, encoded_file_path] <- String.split(remainder, "/", parts: 2),
+         ^revision <- URI.decode(encoded_revision) do
+      URI.decode(encoded_file_path)
+    else
+      _ -> ""
     end
   end
 
@@ -174,7 +234,12 @@ defmodule Orchard.TestSupport.HuggingFaceReqStub do
   defp ranged_body(content, "bytes=" <> range_spec) do
     [start_str | _] = String.split(range_spec, "-")
     start = String.to_integer(start_str)
-    {206, binary_part(content, start, byte_size(content) - start)}
+
+    if start >= byte_size(content) do
+      {416, ""}
+    else
+      {206, binary_part(content, start, byte_size(content) - start)}
+    end
   end
 
   defp ranged_body(content, _range_header), do: {200, content}

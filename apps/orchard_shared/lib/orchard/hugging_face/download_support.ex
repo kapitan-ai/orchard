@@ -5,6 +5,8 @@ defmodule Orchard.HuggingFace.DownloadSupport do
 
   @initial_backoff_ms 250
   @max_backoff_ms 2_000
+  @max_redirect_hops 5
+  @redirect_statuses [301, 302, 303, 307, 308]
 
   @type progress :: %{
           bytes_downloaded: non_neg_integer(),
@@ -135,6 +137,7 @@ defmodule Orchard.HuggingFace.DownloadSupport do
          {:ok, {offset, resume?}} <-
            compute_resume_offset(paths.partial_path, paths.etag_path, remote_etag, file_meta.path, context.root_label) do
       bytes_counter = init_bytes_counter(offset, resume?)
+      request_url = resolve_url(context.base_url, context.repo_spec, file_meta.path)
 
       {:ok,
        %{
@@ -150,7 +153,9 @@ defmodule Orchard.HuggingFace.DownloadSupport do
          resume?: resume?,
          remote_etag: remote_etag,
          extra_headers: range_headers(resume?, offset),
-         bytes_counter: bytes_counter
+         bytes_counter: bytes_counter,
+         request_url: request_url,
+         stream_target: nil
        }}
     end
   end
@@ -241,9 +246,10 @@ defmodule Orchard.HuggingFace.DownloadSupport do
 
   defp open_partial_file(state) do
     with :ok <- ensure_download_slots_safe(state, state.file_meta.path, state.context.root_label),
-         :ok <- maybe_write_remote_etag(state) do
+         :ok <- maybe_write_remote_etag(state),
+         {:ok, stream_target} <- resolve_stream_target(state) do
       case File.open(state.partial_path, [:binary | write_mode(state)]) do
-        {:ok, file_pid} -> stream_download(state, file_pid)
+        {:ok, file_pid} -> stream_download(%{state | stream_target: stream_target}, file_pid)
         {:error, reason} -> {:error, {:filesystem_error, :open, state.partial_path, reason}}
       end
     end
@@ -307,8 +313,14 @@ defmodule Orchard.HuggingFace.DownloadSupport do
   end
 
   defp request_get(state, into_fun) do
-    url = resolve_url(state.context.base_url, state.context.repo_spec, state.file_meta.path)
-    state.context.request_fun.(:get, url, headers: state.extra_headers, into: into_fun)
+    %{url: stream_url, auth?: auth?} = state.stream_target
+
+    state.context.request_fun.(:get, stream_url,
+      headers: state.extra_headers,
+      into: into_fun,
+      follow_redirects?: false,
+      auth?: auth?
+    )
   end
 
   defp restart_without_resume(state) do
@@ -387,6 +399,13 @@ defmodule Orchard.HuggingFace.DownloadSupport do
     end
   end
 
+  defp handle_http_error(%{resume?: true} = state, 416) do
+    # Stale/corrupted .partial is larger than the real file.
+    # Clear scratch state and retry as a fresh download (same attempt number).
+    clear_resume_state(state.partial_path, state.etag_path)
+    download_with_retry(state.context, state.file_meta, state.progress, state.attempt)
+  end
+
   defp handle_http_error(state, status) do
     if retryable_status?(status) and state.attempt < state.context.max_attempts do
       backoff(state.attempt)
@@ -460,6 +479,78 @@ defmodule Orchard.HuggingFace.DownloadSupport do
 
     "#{base_url}/#{repo_id}/resolve/#{encoded_revision}/#{encoded_path}"
   end
+
+  # -- Redirect Resolution ---------------------------------------------------
+
+  defp resolve_stream_target(state) do
+    resolve_redirect_chain(state.request_url, state.request_url, state.context.request_fun, 0)
+  end
+
+  defp resolve_redirect_chain(_origin_url, _current_url, _request_fun, hops)
+       when hops >= @max_redirect_hops do
+    {:error, {:redirect_resolution_failed, "too many redirect hops"}}
+  end
+
+  defp resolve_redirect_chain(origin_url, current_url, request_fun, hops) do
+    auth? = same_origin?(origin_url, current_url)
+
+    case request_fun.(:head, current_url, follow_redirects?: false, auth?: auth?) do
+      {:ok, %{status: status} = resp} when status in @redirect_statuses ->
+        case get_location(resp) do
+          nil ->
+            {:error, {:redirect_resolution_failed, "missing Location header at #{current_url}"}}
+
+          location ->
+            next_url = resolve_location(current_url, location)
+            resolve_redirect_chain(origin_url, next_url, request_fun, hops + 1)
+        end
+
+      {:ok, %{status: status}} when status >= 200 and status < 300 ->
+        {:ok, %{url: current_url, auth?: auth?}}
+
+      {:ok, %{status: status}} ->
+        {:error, {:http_status, status, "redirect resolution"}}
+
+      {:error, reason} ->
+        {:error, {:request_failed, "redirect resolution", reason}}
+    end
+  end
+
+  defp same_origin?(url_a, url_b) do
+    uri_a = URI.parse(url_a)
+    uri_b = URI.parse(url_b)
+
+    uri_a.scheme == uri_b.scheme and
+      uri_a.host == uri_b.host and
+      effective_port(uri_a) == effective_port(uri_b)
+  end
+
+  defp effective_port(%URI{port: nil, scheme: "https"}), do: 443
+  defp effective_port(%URI{port: nil, scheme: "http"}), do: 80
+  defp effective_port(%URI{port: port}), do: port
+
+  defp get_location(%{headers: headers}) when is_map(headers) do
+    case Map.get(headers, "location", []) do
+      [value | _] -> value
+      value when is_binary(value) -> value
+      _ -> nil
+    end
+  end
+
+  defp get_location(%{headers: headers}) when is_list(headers) do
+    Enum.find_value(headers, fn
+      {"location", value} -> value
+      _ -> nil
+    end)
+  end
+
+  defp get_location(_), do: nil
+
+  defp resolve_location(base_url, location) do
+    URI.merge(base_url, location) |> URI.to_string()
+  end
+
+  # -- Backoff ---------------------------------------------------------------
 
   defp backoff(attempt) do
     delay = min(@initial_backoff_ms * Integer.pow(2, max(attempt - 1, 0)), @max_backoff_ms)

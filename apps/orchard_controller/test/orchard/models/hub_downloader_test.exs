@@ -586,6 +586,82 @@ defmodule Orchard.Models.HubDownloaderTest do
     end
   end
 
+  describe "redirect-safe download" do
+    test "small redirected file downloads successfully", ctx do
+      redirect_files = MapSet.new(["config.json"])
+      install_hf_stub(ctx, redirect_files: redirect_files)
+
+      assert {:ok, _, summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
+
+      config_path = Path.join(ctx.dest_dir, "config.json")
+      assert File.exists?(config_path)
+      assert File.read!(config_path) == ctx.file_contents["config.json"]
+      assert summary.files_downloaded == 3
+    end
+
+    test "auth token suppressed on cross-origin redirect target", ctx do
+      redirect_files = MapSet.new(["config.json"])
+      test_pid = self()
+
+      on_request = fn conn ->
+        auth = Enum.find_value(conn.req_headers, fn
+          {"authorization", val} -> val
+          _ -> nil
+        end)
+
+        send(test_pid, {:request, conn.host, conn.method, auth})
+      end
+
+      install_hf_stub(ctx, redirect_files: redirect_files, on_request: on_request)
+
+      with_hf_overrides(ctx.stub_name, [token: "hf_secret"], fn ->
+        assert {:ok, _, _} = HubDownloader.download(@repo_id, ctx.dest_dir)
+      end)
+
+      # Collect all requests
+      messages = collect_request_messages()
+
+      # Origin requests should have auth
+      origin_requests = Enum.filter(messages, fn {host, _, _} -> host != "cdn.test" end)
+      assert Enum.all?(origin_requests, fn {_, _, auth} -> auth == "Bearer hf_secret" end)
+
+      # CDN requests should NOT have auth
+      cdn_requests = Enum.filter(messages, fn {host, _, _} -> host == "cdn.test" end)
+      assert length(cdn_requests) > 0
+      assert Enum.all?(cdn_requests, fn {_, _, auth} -> auth == nil end)
+    end
+
+    test "stale partial file triggers 416 recovery", ctx do
+      install_hf_stub(ctx, redirect_files: MapSet.new())
+
+      # Pre-create an oversized .partial for config.json
+      config_partial = Path.join(ctx.dest_dir, "config.json.partial")
+      config_etag = Path.join(ctx.dest_dir, "config.json.partial.etag")
+      content = ctx.file_contents["config.json"]
+      real_etag = Orchard.TestSupport.HuggingFaceReqStub.hash_content(content)
+      File.write!(config_partial, String.duplicate("x", byte_size(content) + 500))
+      File.write!(config_etag, real_etag)
+
+      assert {:ok, _, summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
+
+      config_path = Path.join(ctx.dest_dir, "config.json")
+      assert File.read!(config_path) == content
+      assert summary.files_downloaded == 3
+    end
+
+    test "no redirect still works (direct 200)", ctx do
+      # Empty redirect set = all files served directly
+      install_hf_stub(ctx, redirect_files: MapSet.new())
+
+      assert {:ok, _, summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
+      assert summary.files_downloaded == 3
+
+      Enum.each(ctx.file_contents, fn {path, expected} ->
+        assert File.read!(Path.join(ctx.dest_dir, path)) == expected
+      end)
+    end
+  end
+
   # -- Helpers ---------------------------------------------------------------
 
   defp base_hf_config(stub_name), do: HuggingFaceReqStub.hf_config(stub_name)
@@ -618,6 +694,14 @@ defmodule Orchard.Models.HubDownloaderTest do
   defp collect_progress_messages(acc \\ []) do
     receive do
       {:progress, update} -> collect_progress_messages([update | acc])
+    after
+      100 -> Enum.reverse(acc)
+    end
+  end
+
+  defp collect_request_messages(acc \\ []) do
+    receive do
+      {:request, host, method, auth} -> collect_request_messages([{host, method, auth} | acc])
     after
       100 -> Enum.reverse(acc)
     end

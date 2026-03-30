@@ -446,7 +446,81 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
     end
   end
 
+  describe "redirect-safe download" do
+    test "small redirected file downloads successfully", ctx do
+      redirect_files = MapSet.new(["config.json"])
+      install_hf_stub(ctx, redirect_files: redirect_files)
+
+      request = build_hf_request(ctx)
+      assert {:ok, final_path, :materialized} = ModelAcquisition.ensure_cached(request)
+
+      config_path = Path.join(final_path, "config.json")
+      assert File.exists?(config_path)
+      assert File.read!(config_path) == ctx.file_contents["config.json"]
+    end
+
+    test "stale partial file triggers 416 recovery", ctx do
+      install_hf_stub(ctx, redirect_files: MapSet.new())
+
+      request = build_hf_request(ctx)
+
+      # Pre-create an oversized .partial in the staging path
+      staging_path = request.staging_path
+      File.mkdir_p!(staging_path)
+      content = ctx.file_contents["config.json"]
+      real_etag = Orchard.TestSupport.HuggingFaceReqStub.hash_content(content)
+      File.write!(Path.join(staging_path, "config.json.partial"), String.duplicate("x", byte_size(content) + 500))
+      File.write!(Path.join(staging_path, "config.json.partial.etag"), real_etag)
+
+      assert {:ok, final_path, :materialized} = ModelAcquisition.ensure_cached(request)
+
+      config_path = Path.join(final_path, "config.json")
+      assert File.read!(config_path) == content
+    end
+
+    test "auth suppressed on cross-origin CDN redirect", ctx do
+      redirect_files = MapSet.new(["config.json"])
+      test_pid = self()
+
+      on_request = fn conn ->
+        auth = Enum.find_value(conn.req_headers, fn
+          {"authorization", val} -> val
+          _ -> nil
+        end)
+
+        send(test_pid, {:request, conn.host, conn.method, auth})
+      end
+
+      install_hf_stub(ctx, redirect_files: redirect_files, on_request: on_request)
+
+      # Set a token for this test
+      current_runtime = Application.get_env(:orchard_node_agent, :runtime, [])
+      current_hf = Keyword.get(current_runtime, :hf, [])
+      updated_hf = Keyword.put(current_hf, :token, "hf_node_secret")
+      Application.put_env(:orchard_node_agent, :runtime, Keyword.put(current_runtime, :hf, updated_hf))
+
+      request = build_hf_request(ctx)
+      assert {:ok, _, :materialized} = ModelAcquisition.ensure_cached(request)
+
+      # Restore
+      Application.put_env(:orchard_node_agent, :runtime, Keyword.put(current_runtime, :hf, current_hf))
+
+      messages = collect_request_messages()
+      cdn_requests = Enum.filter(messages, fn {host, _, _} -> host == "cdn.test" end)
+      assert length(cdn_requests) > 0
+      assert Enum.all?(cdn_requests, fn {_, _, auth} -> auth == nil end)
+    end
+  end
+
   # -- Helpers ---------------------------------------------------------------
+
+  defp collect_request_messages(acc \\ []) do
+    receive do
+      {:request, host, method, auth} -> collect_request_messages([{host, method, auth} | acc])
+    after
+      100 -> Enum.reverse(acc)
+    end
+  end
 
   defp build_hf_request(ctx, overrides \\ []) do
     proto = %EnsureModelLoadedRequest{

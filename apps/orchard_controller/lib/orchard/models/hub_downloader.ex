@@ -50,7 +50,8 @@ defmodule Orchard.Models.HubDownloader do
     :connect_options,
     :body,
     :json,
-    :into
+    :into,
+    :redirect
   ]
 
   @type download_summary :: %{
@@ -454,6 +455,10 @@ defmodule Orchard.Models.HubDownloader do
     {:error, {:download_failed, "server ignored Range header for #{path}, resume not supported"}}
   end
 
+  defp map_download_error({:redirect_resolution_failed, reason}) do
+    {:error, {:download_failed, "redirect resolution failed: #{reason}"}}
+  end
+
   defp map_download_error({:download_incomplete, path, expected_size, actual_size}) do
     {:error,
      {:download_incomplete,
@@ -518,7 +523,14 @@ defmodule Orchard.Models.HubDownloader do
     receive_timeout = Keyword.get(config, :receive_timeout_ms, @default_receive_timeout_ms)
     req_options = Keyword.get(config, :req_options, [])
 
-    auth_headers = if token && token != "", do: [{"authorization", "Bearer #{token}"}], else: []
+    auth? = Keyword.get(extra_opts, :auth?, true)
+    follow_redirects? = Keyword.get(extra_opts, :follow_redirects?, true)
+
+    auth_headers =
+      if auth? and token && token != "",
+        do: [{"authorization", "Bearer #{token}"}],
+        else: []
+
     user_headers = Keyword.get(extra_opts, :headers, [])
     into = Keyword.get(extra_opts, :into)
 
@@ -529,7 +541,8 @@ defmodule Orchard.Models.HubDownloader do
         headers: auth_headers ++ user_headers,
         connect_options: [timeout: connect_timeout],
         receive_timeout: receive_timeout,
-        retry: false
+        retry: false,
+        redirect: follow_redirects?
       ]
       |> then(fn opts -> if into, do: Keyword.put(opts, :into, into), else: opts end)
 
