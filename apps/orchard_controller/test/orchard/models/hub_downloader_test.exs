@@ -1,8 +1,6 @@
 defmodule Orchard.Models.HubDownloaderTest do
   use ExUnit.Case, async: false
 
-  Module.register_attribute(__MODULE__, :no_clone, persist: true)
-
   alias Orchard.Models.HubDownloader
   alias Orchard.TestSupport.HuggingFaceReqStub
 
@@ -115,32 +113,7 @@ defmodule Orchard.Models.HubDownloaderTest do
           }
         end)
 
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        cond do
-          String.contains?(conn.request_path, "/tree/") ->
-            Req.Test.json(conn, tree_response)
-
-          conn.method == "HEAD" ->
-            file_path = extract_file_path(conn.request_path)
-            content = Map.get(nested_contents, file_path, "")
-
-            conn
-            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-            |> Plug.Conn.put_resp_header("etag", "\"etag-#{file_path}\"")
-            |> Plug.Conn.send_resp(200, "")
-
-          conn.method == "GET" ->
-            file_path = extract_file_path(conn.request_path)
-            content = Map.get(nested_contents, file_path, "")
-
-            conn
-            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-            |> Plug.Conn.send_resp(200, content)
-
-          true ->
-            Plug.Conn.send_resp(conn, 404, "")
-        end
-      end)
+      install_hf_stub(ctx.stub_name, nested_contents, tree_response)
 
       assert {:ok, _dest, _summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
 
@@ -156,43 +129,17 @@ defmodule Orchard.Models.HubDownloaderTest do
       test_pid = self()
 
       with_hf_overrides(ctx.stub_name, [token: "secret-token"], fn ->
-        Req.Test.stub(ctx.stub_name, fn conn ->
-          auth = Plug.Conn.get_req_header(conn, "authorization")
-          send(test_pid, {:auth_header, conn.method, auth})
-
-          cond do
-            String.contains?(conn.request_path, "/tree/") ->
-              Req.Test.json(conn, ctx.tree_response)
-
-            conn.method == "HEAD" ->
-              file_path = extract_file_path(conn.request_path)
-              content = Map.get(ctx.file_contents, file_path, "")
-
-              conn
-              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-              |> Plug.Conn.put_resp_header("etag", "\"etag-#{file_path}\"")
-              |> Plug.Conn.send_resp(200, "")
-
-            conn.method == "GET" ->
-              file_path = extract_file_path(conn.request_path)
-              content = Map.get(ctx.file_contents, file_path, "")
-
-              conn
-              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-              |> Plug.Conn.send_resp(200, content)
-
-            true ->
-              Plug.Conn.send_resp(conn, 404, "")
+        install_hf_stub(ctx,
+          on_request: fn conn ->
+            auth = Plug.Conn.get_req_header(conn, "authorization")
+            send(test_pid, {:auth_header, conn.method, auth})
           end
-        end)
+        )
 
         assert {:ok, _dest, _summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
 
-        # Verify auth on tree GET
         assert_received {:auth_header, "GET", ["Bearer secret-token"]}
-        # Verify auth on at least one HEAD
         assert_received {:auth_header, "HEAD", ["Bearer secret-token"]}
-        # Verify auth on at least one file GET
         assert_received {:auth_header, "GET", ["Bearer secret-token"]}
       end)
     end
@@ -200,39 +147,15 @@ defmodule Orchard.Models.HubDownloaderTest do
     test "omits auth header when no token configured", ctx do
       test_pid = self()
 
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        auth = Plug.Conn.get_req_header(conn, "authorization")
-        send(test_pid, {:auth_header, auth})
-
-        cond do
-          String.contains?(conn.request_path, "/tree/") ->
-            Req.Test.json(conn, ctx.tree_response)
-
-          conn.method == "HEAD" ->
-            file_path = extract_file_path(conn.request_path)
-            content = Map.get(ctx.file_contents, file_path, "")
-
-            conn
-            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-            |> Plug.Conn.put_resp_header("etag", "\"etag-#{file_path}\"")
-            |> Plug.Conn.send_resp(200, "")
-
-          conn.method == "GET" ->
-            file_path = extract_file_path(conn.request_path)
-            content = Map.get(ctx.file_contents, file_path, "")
-
-            conn
-            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-            |> Plug.Conn.send_resp(200, content)
-
-          true ->
-            Plug.Conn.send_resp(conn, 404, "")
+      install_hf_stub(ctx,
+        on_request: fn conn ->
+          auth = Plug.Conn.get_req_header(conn, "authorization")
+          send(test_pid, {:auth_header, auth})
         end
-      end)
+      )
 
       assert {:ok, _dest, _summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
 
-      # All auth headers should be empty (no token)
       assert_received {:auth_header, []}
     end
   end
@@ -247,13 +170,11 @@ defmodule Orchard.Models.HubDownloaderTest do
         %{"type" => "file", "oid" => "c", "size" => 50, "path" => "../evil.json"}
       ]
 
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        if String.contains?(conn.request_path, "/tree/") do
+      install_hf_stub(ctx,
+        tree_handler: fn conn, _tree_response ->
           Req.Test.json(conn, tree_with_traversal)
-        else
-          Plug.Conn.send_resp(conn, 404, "")
         end
-      end)
+      )
 
       assert {:error, {:invalid_source_layout, msg}} =
                HubDownloader.download(@repo_id, ctx.dest_dir)
@@ -271,13 +192,11 @@ defmodule Orchard.Models.HubDownloaderTest do
         %{"type" => "file", "oid" => "b", "size" => 50, "path" => "/etc/evil.safetensors"}
       ]
 
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        if String.contains?(conn.request_path, "/tree/") do
+      install_hf_stub(ctx,
+        tree_handler: fn conn, _tree_response ->
           Req.Test.json(conn, tree)
-        else
-          Plug.Conn.send_resp(conn, 404, "")
         end
-      end)
+      )
 
       assert {:error, {:invalid_source_layout, msg}} =
                HubDownloader.download(@repo_id, ctx.dest_dir)
@@ -295,13 +214,11 @@ defmodule Orchard.Models.HubDownloaderTest do
         %{"type" => "file", "oid" => "b", "size" => 200, "path" => "tokenizer.json"}
       ]
 
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        if String.contains?(conn.request_path, "/tree/") do
+      install_hf_stub(ctx,
+        tree_handler: fn conn, _tree_response ->
           Req.Test.json(conn, tree)
-        else
-          Plug.Conn.send_resp(conn, 404, "")
         end
-      end)
+      )
 
       assert {:error, {:invalid_source_layout, msg}} =
                HubDownloader.download(@repo_id, ctx.dest_dir)
@@ -314,13 +231,11 @@ defmodule Orchard.Models.HubDownloaderTest do
         %{"type" => "file", "oid" => "a", "size" => 100, "path" => "README.md"}
       ]
 
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        if String.contains?(conn.request_path, "/tree/") do
+      install_hf_stub(ctx,
+        tree_handler: fn conn, _tree_response ->
           Req.Test.json(conn, tree)
-        else
-          Plug.Conn.send_resp(conn, 404, "")
         end
-      end)
+      )
 
       assert {:error, {:invalid_source_layout, msg}} =
                HubDownloader.download(@repo_id, ctx.dest_dir)
@@ -333,33 +248,14 @@ defmodule Orchard.Models.HubDownloaderTest do
 
   describe "HEAD preflight x-linked-* fallback" do
     test "uses x-linked-size and x-linked-etag when standard headers missing", ctx do
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        cond do
-          String.contains?(conn.request_path, "/tree/") ->
-            Req.Test.json(conn, ctx.tree_response)
-
-          conn.method == "HEAD" ->
-            file_path = extract_file_path(conn.request_path)
-            content = Map.get(ctx.file_contents, file_path, "")
-
-            # Use x-linked-* headers instead of standard ones
-            conn
-            |> Plug.Conn.put_resp_header("x-linked-size", to_string(byte_size(content)))
-            |> Plug.Conn.put_resp_header("x-linked-etag", "\"linked-etag-#{file_path}\"")
-            |> Plug.Conn.send_resp(200, "")
-
-          conn.method == "GET" ->
-            file_path = extract_file_path(conn.request_path)
-            content = Map.get(ctx.file_contents, file_path, "")
-
-            conn
-            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-            |> Plug.Conn.send_resp(200, content)
-
-          true ->
-            Plug.Conn.send_resp(conn, 404, "")
+      install_hf_stub(ctx,
+        head_handler: fn conn, file_path, content ->
+          conn
+          |> Plug.Conn.put_resp_header("x-linked-size", to_string(byte_size(content || "")))
+          |> Plug.Conn.put_resp_header("x-linked-etag", "\"linked-etag-#{file_path}\"")
+          |> Plug.Conn.send_resp(200, "")
         end
-      end)
+      )
 
       assert {:ok, _dest, summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
 
@@ -402,55 +298,26 @@ defmodule Orchard.Models.HubDownloaderTest do
     end
 
     test "404 on file HEAD returns not_found", ctx do
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        cond do
-          String.contains?(conn.request_path, "/tree/") ->
-            Req.Test.json(conn, ctx.tree_response)
-
-          conn.method == "HEAD" ->
-            Plug.Conn.send_resp(conn, 404, "Not Found")
-
-          true ->
-            Plug.Conn.send_resp(conn, 404, "")
+      install_hf_stub(ctx,
+        head_handler: fn conn, _file_path, _content ->
+          Plug.Conn.send_resp(conn, 404, "Not Found")
         end
-      end)
+      )
 
       assert {:error, {:not_found, msg}} = HubDownloader.download(@repo_id, ctx.dest_dir)
       assert msg =~ "not found"
     end
 
     test "404 on file download includes missing path", ctx do
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        cond do
-          String.contains?(conn.request_path, "/tree/") ->
-            Req.Test.json(conn, ctx.tree_response)
-
-          conn.method == "HEAD" ->
-            file_path = extract_file_path(conn.request_path)
-            content = Map.get(ctx.file_contents, file_path, "")
-
-            conn
-            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-            |> Plug.Conn.put_resp_header("etag", "\"etag-#{file_path}\"")
-            |> Plug.Conn.send_resp(200, "")
-
-          conn.method == "GET" ->
-            file_path = extract_file_path(conn.request_path)
-
-            if file_path == "model.safetensors" do
-              Plug.Conn.send_resp(conn, 404, "Not Found")
-            else
-              content = Map.get(ctx.file_contents, file_path, "")
-
-              conn
-              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-              |> Plug.Conn.send_resp(200, content)
-            end
-
-          true ->
-            Plug.Conn.send_resp(conn, 404, "")
+      install_hf_stub(ctx,
+        download_handler: fn conn, file_path, _content ->
+          if file_path == "model.safetensors" do
+            Plug.Conn.send_resp(conn, 404, "Not Found")
+          else
+            :default
+          end
         end
-      end)
+      )
 
       assert {:error, {:not_found, msg}} = HubDownloader.download(@repo_id, ctx.dest_dir)
       assert msg =~ "model.safetensors"
@@ -474,32 +341,7 @@ defmodule Orchard.Models.HubDownloaderTest do
       File.mkdir_p!(outside_dir)
       File.ln_s!(outside_dir, escaped_dir)
 
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        cond do
-          String.contains?(conn.request_path, "/tree/") ->
-            Req.Test.json(conn, tree_response)
-
-          conn.method == "HEAD" ->
-            file_path = extract_file_path(conn.request_path)
-            content = Map.get(nested_contents, file_path, "")
-
-            conn
-            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-            |> Plug.Conn.put_resp_header("etag", "\"etag-#{file_path}\"")
-            |> Plug.Conn.send_resp(200, "")
-
-          conn.method == "GET" ->
-            file_path = extract_file_path(conn.request_path)
-            content = Map.get(nested_contents, file_path, "")
-
-            conn
-            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-            |> Plug.Conn.send_resp(200, content)
-
-          true ->
-            Plug.Conn.send_resp(conn, 404, "")
-        end
-      end)
+      install_hf_stub(ctx.stub_name, nested_contents, tree_response)
 
       assert {:error, {:invalid_source_layout, msg}} =
                HubDownloader.download(@repo_id, ctx.dest_dir)
@@ -516,39 +358,17 @@ defmodule Orchard.Models.HubDownloaderTest do
       call_count = :counters.new(1, [:atomics])
 
       with_hf_overrides(ctx.stub_name, [retry_attempts: 3], fn ->
-        Req.Test.stub(ctx.stub_name, fn conn ->
-          cond do
-            String.contains?(conn.request_path, "/tree/") ->
-              :counters.add(call_count, 1, 1)
-              attempt = :counters.get(call_count, 1)
+        install_hf_stub(ctx,
+          tree_handler: fn conn, tree_response ->
+            :counters.add(call_count, 1, 1)
 
-              if attempt == 1 do
-                Plug.Conn.send_resp(conn, 503, "Service Unavailable")
-              else
-                Req.Test.json(conn, ctx.tree_response)
-              end
-
-            conn.method == "HEAD" ->
-              file_path = extract_file_path(conn.request_path)
-              content = Map.get(ctx.file_contents, file_path, "")
-
-              conn
-              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-              |> Plug.Conn.put_resp_header("etag", "\"etag-#{file_path}\"")
-              |> Plug.Conn.send_resp(200, "")
-
-            conn.method == "GET" ->
-              file_path = extract_file_path(conn.request_path)
-              content = Map.get(ctx.file_contents, file_path, "")
-
-              conn
-              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-              |> Plug.Conn.send_resp(200, content)
-
-            true ->
-              Plug.Conn.send_resp(conn, 404, "")
+            if :counters.get(call_count, 1) == 1 do
+              Plug.Conn.send_resp(conn, 503, "Service Unavailable")
+            else
+              Req.Test.json(conn, tree_response)
+            end
           end
-        end)
+        )
 
         assert {:ok, _dest, _summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
         assert :counters.get(call_count, 1) >= 2
@@ -559,51 +379,23 @@ defmodule Orchard.Models.HubDownloaderTest do
       get_call_count = :counters.new(1, [:atomics])
 
       with_hf_overrides(ctx.stub_name, [retry_attempts: 3], fn ->
-        Req.Test.stub(ctx.stub_name, fn conn ->
-          cond do
-            String.contains?(conn.request_path, "/tree/") ->
-              Req.Test.json(conn, ctx.tree_response)
+        install_hf_stub(ctx,
+          download_handler: fn conn, file_path, content ->
+            if file_path == "model.safetensors" do
+              :counters.add(get_call_count, 1, 1)
 
-            conn.method == "HEAD" ->
-              file_path = extract_file_path(conn.request_path)
-              content = Map.get(ctx.file_contents, file_path, "")
-
-              conn
-              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-              |> Plug.Conn.put_resp_header("etag", "\"etag-#{file_path}\"")
-              |> Plug.Conn.send_resp(200, "")
-
-            conn.method == "GET" ->
-              file_path = extract_file_path(conn.request_path)
-              content = Map.get(ctx.file_contents, file_path, "")
-
-              if file_path == "model.safetensors" do
-                :counters.add(get_call_count, 1, 1)
-                attempt = :counters.get(get_call_count, 1)
-
-                if attempt == 1 do
-                  Plug.Conn.send_resp(conn, 429, "Rate limited")
-                else
-                  conn
-                  |> Plug.Conn.put_resp_header(
-                    "content-length",
-                    to_string(byte_size(content))
-                  )
-                  |> Plug.Conn.send_resp(200, content)
-                end
+              if :counters.get(get_call_count, 1) == 1 do
+                Plug.Conn.send_resp(conn, 429, "Rate limited")
               else
                 conn
-                |> Plug.Conn.put_resp_header(
-                  "content-length",
-                  to_string(byte_size(content))
-                )
-                |> Plug.Conn.send_resp(200, content)
+                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content || "")))
+                |> Plug.Conn.send_resp(200, content || "")
               end
-
-            true ->
-              Plug.Conn.send_resp(conn, 404, "")
+            else
+              :default
+            end
           end
-        end)
+        )
 
         assert {:ok, _dest, _summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
         assert :counters.get(get_call_count, 1) >= 2
@@ -619,83 +411,36 @@ defmodule Orchard.Models.HubDownloaderTest do
       safetensors_get_count = :counters.new(1, [:atomics])
 
       with_hf_overrides(ctx.stub_name, [retry_attempts: 3], fn ->
-        Req.Test.stub(ctx.stub_name, fn conn ->
-          cond do
-            String.contains?(conn.request_path, "/tree/") ->
-              Req.Test.json(conn, ctx.tree_response)
+        install_hf_stub(ctx,
+          head_handler: fn conn, file_path, content ->
+            conn
+            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content || "")))
+            |> Plug.Conn.put_resp_header("etag", "\"test-etag-#{file_path}\"")
+            |> Plug.Conn.send_resp(200, "")
+          end,
+          download_handler: fn conn, file_path, content ->
+            if file_path == "model.safetensors" do
+              :counters.add(safetensors_get_count, 1, 1)
+              attempt = :counters.get(safetensors_get_count, 1)
+              content = content || ""
 
-            conn.method == "HEAD" ->
-              file_path = extract_file_path(conn.request_path)
-              content = Map.get(file_contents, file_path, "")
+              if attempt == 1 do
+                partial = binary_part(content, 0, div(byte_size(content), 2))
 
-              conn
-              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-              |> Plug.Conn.put_resp_header("etag", "\"test-etag-#{file_path}\"")
-              |> Plug.Conn.send_resp(200, "")
-
-            conn.method == "GET" ->
-              file_path = extract_file_path(conn.request_path)
-              content = Map.get(file_contents, file_path, "")
-
-              if file_path == "model.safetensors" do
-                :counters.add(safetensors_get_count, 1, 1)
-                attempt = :counters.get(safetensors_get_count, 1)
-
-                if attempt == 1 do
-                  # First attempt: return partial data
-                  partial = binary_part(content, 0, div(byte_size(content), 2))
-
-                  conn
-                  |> Plug.Conn.put_resp_header(
-                    "content-length",
-                    to_string(byte_size(content))
-                  )
-                  |> Plug.Conn.send_resp(200, partial)
-                else
-                  # Retry: check for Range header
-                  range_header = get_range_header(conn)
-
-                  if range_header do
-                    "bytes=" <> range_spec = range_header
-                    [start_str | _] = String.split(range_spec, "-")
-                    start = String.to_integer(start_str)
-                    remaining = binary_part(content, start, byte_size(content) - start)
-
-                    conn
-                    |> Plug.Conn.put_resp_header(
-                      "content-length",
-                      to_string(byte_size(remaining))
-                    )
-                    |> Plug.Conn.send_resp(206, remaining)
-                  else
-                    conn
-                    |> Plug.Conn.put_resp_header(
-                      "content-length",
-                      to_string(byte_size(content))
-                    )
-                    |> Plug.Conn.send_resp(200, content)
-                  end
-                end
-              else
                 conn
-                |> Plug.Conn.put_resp_header(
-                  "content-length",
-                  to_string(byte_size(content))
-                )
-                |> Plug.Conn.send_resp(200, content)
+                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+                |> Plug.Conn.send_resp(200, partial)
+              else
+                HuggingFaceReqStub.resume_download(conn, content)
               end
-
-            true ->
-              Plug.Conn.send_resp(conn, 404, "")
+            else
+              :default
+            end
           end
-        end)
+        )
 
         assert {:ok, _dest, _summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
-
-        # model.safetensors GET was called at least twice (retry)
         assert :counters.get(safetensors_get_count, 1) >= 2
-
-        # Verify final content is correct
         assert File.read!(Path.join(ctx.dest_dir, "model.safetensors")) ==
                  file_contents["model.safetensors"]
       end)
@@ -710,68 +455,37 @@ defmodule Orchard.Models.HubDownloaderTest do
       safetensors_get_count = :counters.new(1, [:atomics])
 
       with_hf_overrides(ctx.stub_name, [retry_attempts: 5], fn ->
-        Req.Test.stub(ctx.stub_name, fn conn ->
-          cond do
-            String.contains?(conn.request_path, "/tree/") ->
-              Req.Test.json(conn, ctx.tree_response)
+        install_hf_stub(ctx,
+          head_handler: fn conn, file_path, content ->
+            conn
+            |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content || "")))
+            |> Plug.Conn.put_resp_header("etag", "\"test-etag-#{file_path}\"")
+            |> Plug.Conn.send_resp(200, "")
+          end,
+          download_handler: fn conn, file_path, content ->
+            if file_path == "model.safetensors" do
+              :counters.add(safetensors_get_count, 1, 1)
+              content = content || ""
 
-            conn.method == "HEAD" ->
-              file_path = extract_file_path(conn.request_path)
-              content = Map.get(file_contents, file_path, "")
+              if :counters.get(safetensors_get_count, 1) == 1 do
+                partial = binary_part(content, 0, div(byte_size(content), 2))
 
-              conn
-              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-              |> Plug.Conn.put_resp_header("etag", "\"test-etag-#{file_path}\"")
-              |> Plug.Conn.send_resp(200, "")
-
-            conn.method == "GET" ->
-              file_path = extract_file_path(conn.request_path)
-              content = Map.get(file_contents, file_path, "")
-
-              if file_path == "model.safetensors" do
-                :counters.add(safetensors_get_count, 1, 1)
-                attempt = :counters.get(safetensors_get_count, 1)
-
-                if attempt == 1 do
-                  # First attempt: return partial data
-                  partial = binary_part(content, 0, div(byte_size(content), 2))
-
-                  conn
-                  |> Plug.Conn.put_resp_header(
-                    "content-length",
-                    to_string(byte_size(content))
-                  )
-                  |> Plug.Conn.send_resp(200, partial)
-                else
-                  # Retry: server ignores Range, returns full content with 200
-                  conn
-                  |> Plug.Conn.put_resp_header(
-                    "content-length",
-                    to_string(byte_size(content))
-                  )
-                  |> Plug.Conn.send_resp(200, content)
-                end
+                conn
+                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+                |> Plug.Conn.send_resp(200, partial)
               else
                 conn
-                |> Plug.Conn.put_resp_header(
-                  "content-length",
-                  to_string(byte_size(content))
-                )
+                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
                 |> Plug.Conn.send_resp(200, content)
               end
-
-            true ->
-              Plug.Conn.send_resp(conn, 404, "")
+            else
+              :default
+            end
           end
-        end)
+        )
 
         assert {:ok, _dest, _summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
-
-        # model.safetensors GET was called at least 3 times
-        # (1: partial, 2: 200-on-resume detected, 3+: fresh start success)
         assert :counters.get(safetensors_get_count, 1) >= 3
-
-        # Verify content is correct (not corrupted)
         assert File.read!(Path.join(ctx.dest_dir, "model.safetensors")) ==
                  file_contents["model.safetensors"]
       end)
@@ -888,22 +602,18 @@ defmodule Orchard.Models.HubDownloaderTest do
     end
   end
 
-  # Intentional mirror of the node-agent HF stub: these tests need aligned
-  # HTTP fixtures so controller and node-agent download behavior stays in lockstep.
-  @no_clone true
+  defp install_hf_stub(ctx, opts) do
+    install_hf_stub(ctx.stub_name, ctx.file_contents, ctx.tree_response, opts)
+  end
+
+  defp install_hf_stub(stub_name, file_contents, tree_response, opts \\ []) do
+    HuggingFaceReqStub.install(stub_name, file_contents, tree_response, opts)
+  end
+
   defp stub_successful_hf(ctx, opts \\ []) do
     revision = Keyword.get(opts, :revision, @revision)
-
-    Req.Test.stub(ctx.stub_name, fn conn ->
-      HuggingFaceReqStub.dispatch(conn, ctx.file_contents, ctx.tree_response, revision: revision)
-    end)
+    install_hf_stub(ctx, revision: revision)
   end
-
-  defp extract_file_path(request_path, revision \\ @revision) do
-    HuggingFaceReqStub.extract_file_path(request_path, revision)
-  end
-
-  defp get_range_header(conn), do: HuggingFaceReqStub.range_header(conn)
 
   defp collect_progress_messages(acc \\ []) do
     receive do

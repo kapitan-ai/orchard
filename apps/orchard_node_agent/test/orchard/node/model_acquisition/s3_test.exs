@@ -399,6 +399,43 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
       assert {:error, {:source_unauthorized, _msg}} = ModelAcquisition.ensure_cached(request)
     end
 
+    test "HEAD without content-length returns source_unavailable", ctx do
+      Req.Test.stub(ctx.stub_name, fn conn ->
+        Plug.Conn.send_resp(conn, 200, "")
+      end)
+
+      request = build_s3_request(ctx, artifact_source_uri: "s3://#{@bucket}/#{@object_key}")
+
+      assert {:error, {:source_unavailable, msg}} = ModelAcquisition.ensure_cached(request)
+      assert msg =~ "no content-length"
+    end
+
+    test "HEAD with zero content-length returns source_unavailable", ctx do
+      Req.Test.stub(ctx.stub_name, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header("content-length", "0")
+        |> Plug.Conn.send_resp(200, "")
+      end)
+
+      request = build_s3_request(ctx, artifact_source_uri: "s3://#{@bucket}/#{@object_key}")
+
+      assert {:error, {:source_unavailable, msg}} = ModelAcquisition.ensure_cached(request)
+      assert msg =~ "no content-length"
+    end
+
+    test "HEAD with malformed content-length returns source_unavailable", ctx do
+      Req.Test.stub(ctx.stub_name, fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header("content-length", "not-a-number")
+        |> Plug.Conn.send_resp(200, "")
+      end)
+
+      request = build_s3_request(ctx, artifact_source_uri: "s3://#{@bucket}/#{@object_key}")
+
+      assert {:error, {:source_unavailable, msg}} = ModelAcquisition.ensure_cached(request)
+      assert msg =~ "no content-length"
+    end
+
     test "short download returns download_incomplete", ctx do
       tar_gz = ctx.tar_gz_bytes
       # Report full size but return partial data

@@ -1,8 +1,6 @@
 defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
   use ExUnit.Case, async: false
 
-  Module.register_attribute(__MODULE__, :no_clone, persist: true)
-
   alias Orchard.ArtifactBundle
   alias Orchard.Cluster.V1.EnsureModelLoadedRequest
   alias Orchard.Node.ModelAcquisition
@@ -204,16 +202,13 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
     end
 
     test "doc-only repo returns invalid_source_layout", ctx do
-      # Tree listing with only README, no model files
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        if String.contains?(conn.request_path, "/tree/") do
+      install_hf_stub(ctx,
+        tree_handler: fn conn, _tree_response ->
           Req.Test.json(conn, [
             %{"type" => "file", "oid" => "abc", "size" => 100, "path" => "README.md"}
           ])
-        else
-          Plug.Conn.send_resp(conn, 404, "")
         end
-      end)
+      )
 
       request = build_hf_request(ctx)
 
@@ -221,89 +216,41 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
     end
 
     test "resume sends Range header on retry after partial download", ctx do
-      file_contents = ctx.file_contents
-      tree_response = ctx.tree_response
       call_count = :counters.new(1, [:atomics])
 
-      # Stub that fails the first GET for model.safetensors mid-stream,
-      # then succeeds on retry with Range header
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        cond do
-          String.contains?(conn.request_path, "/tree/") ->
-            Req.Test.json(conn, tree_response)
+      install_hf_stub(ctx,
+        head_handler: fn conn, file_path, content ->
+          case content do
+            nil ->
+              Plug.Conn.send_resp(conn, 404, "")
 
-          conn.method == "HEAD" && String.contains?(conn.request_path, "/resolve/") ->
-            file_path = extract_file_path(conn.request_path)
-
-            case Map.get(file_contents, file_path) do
-              nil ->
-                Plug.Conn.send_resp(conn, 404, "")
-
-              content ->
-                conn
-                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-                |> Plug.Conn.put_resp_header("etag", "\"test-etag-#{file_path}\"")
-                |> Plug.Conn.send_resp(200, "")
-            end
-
-          conn.method == "GET" && String.contains?(conn.request_path, "/resolve/") ->
-            file_path = extract_file_path(conn.request_path)
-            content = Map.get(file_contents, file_path, "")
-
-            if file_path == "model.safetensors" do
-              :counters.add(call_count, 1, 1)
-              attempt = :counters.get(call_count, 1)
-
-              if attempt == 1 do
-                # First attempt: return partial data (less than content-length)
-                partial = binary_part(content, 0, div(byte_size(content), 2))
-
-                conn
-                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-                |> Plug.Conn.send_resp(200, partial)
-              else
-                # Second attempt: check for Range header
-                range_header =
-                  Enum.find_value(conn.req_headers, fn
-                    {"range", val} -> val
-                    _ -> nil
-                  end)
-
-                if range_header do
-                  # Resume from offset
-                  "bytes=" <> range_spec = range_header
-                  [start_str | _] = String.split(range_spec, "-")
-                  start = String.to_integer(start_str)
-                  remaining = binary_part(content, start, byte_size(content) - start)
-
-                  conn
-                  |> Plug.Conn.put_resp_header(
-                    "content-length",
-                    to_string(byte_size(remaining))
-                  )
-                  |> Plug.Conn.send_resp(206, remaining)
-                else
-                  # No resume, send full content
-                  conn
-                  |> Plug.Conn.put_resp_header(
-                    "content-length",
-                    to_string(byte_size(content))
-                  )
-                  |> Plug.Conn.send_resp(200, content)
-                end
-              end
-            else
+            content ->
               conn
               |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-              |> Plug.Conn.send_resp(200, content)
+              |> Plug.Conn.put_resp_header("etag", "\"test-etag-#{file_path}\"")
+              |> Plug.Conn.send_resp(200, "")
+          end
+        end,
+        download_handler: fn conn, file_path, content ->
+          if file_path == "model.safetensors" do
+            :counters.add(call_count, 1, 1)
+            content = content || ""
+
+            if :counters.get(call_count, 1) == 1 do
+              partial = binary_part(content, 0, div(byte_size(content), 2))
+
+              conn
+              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+              |> Plug.Conn.send_resp(200, partial)
+            else
+              HuggingFaceReqStub.resume_download(conn, content)
             end
-
-          true ->
-            Plug.Conn.send_resp(conn, 404, "")
+          else
+            :default
+          end
         end
-      end)
+      )
 
-      # Override config with retry_attempts: 3 to allow retry
       current_runtime = Application.get_env(:orchard_node_agent, :runtime, [])
       hf_config = Keyword.merge(current_runtime[:hf] || [], retry_attempts: 3)
 
@@ -319,8 +266,6 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
 
       expected_hash = ctx.hash
       assert {:ok, ^expected_hash} = ArtifactBundle.tree_sha256(final_path)
-
-      # model.safetensors GET was called at least twice (retry)
       assert :counters.get(call_count, 1) >= 2
     end
 
@@ -421,13 +366,11 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
         %{"type" => "file", "oid" => "ccc", "size" => 50, "path" => "../evil.json"}
       ]
 
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        if String.contains?(conn.request_path, "/tree/") do
+      install_hf_stub(ctx,
+        tree_handler: fn conn, _tree_response ->
           Req.Test.json(conn, tree_with_traversal)
-        else
-          Plug.Conn.send_resp(conn, 404, "")
         end
-      end)
+      )
 
       request = build_hf_request(ctx)
 
@@ -440,63 +383,43 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
 
   describe "resume on 200 (server ignores Range)" do
     test "retries from scratch when server returns 200 instead of 206", ctx do
-      file_contents = ctx.file_contents
-      tree_response = ctx.tree_response
       safetensors_get_count = :counters.new(1, [:atomics])
 
-      Req.Test.stub(ctx.stub_name, fn conn ->
-        cond do
-          String.contains?(conn.request_path, "/tree/") ->
-            Req.Test.json(conn, tree_response)
+      install_hf_stub(ctx,
+        head_handler: fn conn, file_path, content ->
+          case content do
+            nil ->
+              Plug.Conn.send_resp(conn, 404, "")
 
-          conn.method == "HEAD" && String.contains?(conn.request_path, "/resolve/") ->
-            file_path = extract_file_path(conn.request_path)
+            content ->
+              conn
+              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+              |> Plug.Conn.put_resp_header("etag", "\"test-etag-#{file_path}\"")
+              |> Plug.Conn.send_resp(200, "")
+          end
+        end,
+        download_handler: fn conn, file_path, content ->
+          if file_path == "model.safetensors" do
+            :counters.add(safetensors_get_count, 1, 1)
+            content = content || ""
 
-            case Map.get(file_contents, file_path) do
-              nil ->
-                Plug.Conn.send_resp(conn, 404, "")
+            if :counters.get(safetensors_get_count, 1) == 1 do
+              partial = binary_part(content, 0, div(byte_size(content), 2))
 
-              content ->
-                conn
-                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-                |> Plug.Conn.put_resp_header("etag", "\"test-etag-#{file_path}\"")
-                |> Plug.Conn.send_resp(200, "")
-            end
-
-          conn.method == "GET" && String.contains?(conn.request_path, "/resolve/") ->
-            file_path = extract_file_path(conn.request_path)
-            content = Map.get(file_contents, file_path, "")
-
-            if file_path == "model.safetensors" do
-              :counters.add(safetensors_get_count, 1, 1)
-              attempt = :counters.get(safetensors_get_count, 1)
-
-              if attempt == 1 do
-                # First attempt: return partial data (less than content-length)
-                partial = binary_part(content, 0, div(byte_size(content), 2))
-
-                conn
-                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-                |> Plug.Conn.send_resp(200, partial)
-              else
-                # Retry: server ignores Range header and returns 200 with full content
-                # (simulates server that doesn't support Range)
-                conn
-                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
-                |> Plug.Conn.send_resp(200, content)
-              end
+              conn
+              |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
+              |> Plug.Conn.send_resp(200, partial)
             else
               conn
               |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content)))
               |> Plug.Conn.send_resp(200, content)
             end
-
-          true ->
-            Plug.Conn.send_resp(conn, 404, "")
+          else
+            :default
+          end
         end
-      end)
+      )
 
-      # Need enough retry attempts for: partial fail + 200-on-resume restart + success
       current_runtime = Application.get_env(:orchard_node_agent, :runtime, [])
       hf_config = Keyword.merge(current_runtime[:hf] || [], retry_attempts: 5)
 
@@ -510,12 +433,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
 
       assert {:ok, final_path, :materialized} = ModelAcquisition.ensure_cached(request)
 
-      # Verify content is correct (not corrupted by append-then-200)
       expected_hash = ctx.hash
       assert {:ok, ^expected_hash} = ArtifactBundle.tree_sha256(final_path)
-
-      # model.safetensors GET was called at least 3 times
-      # (1: partial, 2: 200-on-resume detected+restart, 3: success)
       assert :counters.get(safetensors_get_count, 1) >= 3
     end
   end
@@ -544,17 +463,16 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
     request
   end
 
-  # Intentional mirror of the controller HF stub: these tests need aligned
-  # HTTP fixtures so controller and node-agent download behavior stays in lockstep.
-  @no_clone true
-  defp stub_successful_hf(ctx) do
-    Req.Test.stub(ctx.stub_name, fn conn ->
-      HuggingFaceReqStub.dispatch(conn, ctx.file_contents, ctx.tree_response)
-    end)
+  defp install_hf_stub(ctx, opts \\ []) do
+    install_hf_stub(ctx.stub_name, ctx.file_contents, ctx.tree_response, opts)
   end
 
-  defp extract_file_path(request_path, revision \\ @revision) do
-    HuggingFaceReqStub.extract_file_path(request_path, revision)
+  defp install_hf_stub(stub_name, file_contents, tree_response, opts) do
+    HuggingFaceReqStub.install(stub_name, file_contents, tree_response, opts)
+  end
+
+  defp stub_successful_hf(ctx) do
+    install_hf_stub(ctx)
   end
 
   defp override_hf_config(stub_name) do

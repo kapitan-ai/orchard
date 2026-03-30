@@ -40,19 +40,39 @@ defmodule Orchard.TestSupport.HuggingFaceReqStub do
     ]
   end
 
+  def install(stub_name, file_contents, tree_response, opts \\ []) do
+    Req.Test.stub(stub_name, fn conn ->
+      dispatch(conn, file_contents, tree_response, opts)
+    end)
+  end
+
   def dispatch(conn, file_contents, tree_response, opts \\ []) do
     revision = Keyword.get(opts, :revision, "main")
     unknown_body = Keyword.get(opts, :unknown_body, "")
+    on_request = Keyword.get(opts, :on_request)
+    route = route(conn)
 
-    case route(conn) do
+    maybe_on_request(on_request, conn)
+
+    case route do
       :tree ->
-        Req.Test.json(conn, tree_response)
+        handle_tree(conn, tree_response, Keyword.get(opts, :tree_handler))
 
       :head ->
-        respond_head(conn, content_for_request(file_contents, conn.request_path, revision))
+        handle_head(
+          conn,
+          file_contents,
+          revision,
+          Keyword.get(opts, :head_handler)
+        )
 
       :download ->
-        respond_download(conn, content_for_request(file_contents, conn.request_path, revision))
+        handle_download(
+          conn,
+          file_contents,
+          revision,
+          Keyword.get(opts, :download_handler)
+        )
 
       :unknown ->
         Plug.Conn.send_resp(conn, 404, unknown_body)
@@ -67,6 +87,44 @@ defmodule Orchard.TestSupport.HuggingFaceReqStub do
       true -> :unknown
     end
   end
+
+  defp maybe_on_request(nil, _conn), do: :ok
+  defp maybe_on_request(on_request, conn), do: on_request.(conn)
+
+  defp handle_tree(conn, tree_response, nil), do: Req.Test.json(conn, tree_response)
+
+  defp handle_tree(conn, tree_response, tree_handler) do
+    case tree_handler.(conn, tree_response) do
+      :default -> Req.Test.json(conn, tree_response)
+      response -> response
+    end
+  end
+
+  defp handle_head(conn, file_contents, revision, head_handler) do
+    file_path = extract_file_path(conn.request_path, revision)
+    content = Map.get(file_contents, file_path)
+
+    case maybe_handle_route(head_handler, conn, file_path, content) do
+      :default -> respond_head(conn, wrap_content(content))
+      response -> response
+    end
+  end
+
+  defp handle_download(conn, file_contents, revision, download_handler) do
+    file_path = extract_file_path(conn.request_path, revision)
+    content = Map.get(file_contents, file_path)
+
+    case maybe_handle_route(download_handler, conn, file_path, content) do
+      :default -> respond_download(conn, wrap_content(content))
+      response -> response
+    end
+  end
+
+  defp maybe_handle_route(nil, _conn, _file_path, _content), do: :default
+  defp maybe_handle_route(handler, conn, file_path, content), do: handler.(conn, file_path, content)
+
+  defp wrap_content(nil), do: :error
+  defp wrap_content(content), do: {:ok, content}
 
   defp respond_head(conn, {:ok, content}) do
     conn
@@ -87,13 +145,6 @@ defmodule Orchard.TestSupport.HuggingFaceReqStub do
 
   defp respond_download(conn, :error), do: Plug.Conn.send_resp(conn, 404, "")
 
-  defp content_for_request(file_contents, request_path, revision) do
-    case Map.get(file_contents, extract_file_path(request_path, revision)) do
-      nil -> :error
-      content -> {:ok, content}
-    end
-  end
-
   def extract_file_path(request_path, revision \\ "main") do
     with [_, remainder] <- String.split(request_path, "/resolve/", parts: 2),
          [encoded_revision, encoded_file_path] <- String.split(remainder, "/", parts: 2),
@@ -109,6 +160,15 @@ defmodule Orchard.TestSupport.HuggingFaceReqStub do
       {"range", value} -> value
       _ -> nil
     end)
+  end
+
+  def resume_download(conn, content) do
+    case ranged_body(content, range_header(conn)) do
+      {status, body} ->
+        conn
+        |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(body)))
+        |> Plug.Conn.send_resp(status, body)
+    end
   end
 
   defp ranged_body(content, "bytes=" <> range_spec) do

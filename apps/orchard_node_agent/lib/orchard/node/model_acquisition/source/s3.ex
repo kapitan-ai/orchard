@@ -65,34 +65,36 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
   # -- URI Parsing -----------------------------------------------------------
 
   @doc false
+  def parse_s3_uri(uri) when not is_binary(uri), do: {:error, :invalid_source_uri}
+
   def parse_s3_uri(uri) when is_binary(uri) do
+    with {:ok, host, object_key, query} <- parse_s3_location(uri),
+         {:ok, params} <- parse_query_params(query),
+         {:ok, format} <- detect_archive_format(object_key) do
+      {:ok,
+       %{
+         bucket: host,
+         object_key: object_key,
+         region: Map.get(params, "region"),
+         endpoint: Map.get(params, "endpoint"),
+         archive_format: format
+       }}
+    end
+  end
+
+  defp parse_s3_location(uri) do
     case URI.parse(uri) do
       %URI{scheme: "s3", host: host, path: path, query: query}
       when is_binary(host) and host != "" ->
-        object_key = parse_object_key(path)
-
-        if object_key == "" do
-          {:error, :invalid_source_uri}
-        else
-          with {:ok, params} <- parse_query_params(query),
-               {:ok, format} <- detect_archive_format(object_key) do
-            {:ok,
-             %{
-               bucket: host,
-               object_key: object_key,
-               region: Map.get(params, "region"),
-               endpoint: Map.get(params, "endpoint"),
-               archive_format: format
-             }}
-          end
+        case parse_object_key(path) do
+          "" -> {:error, :invalid_source_uri}
+          object_key -> {:ok, host, object_key, query}
         end
 
       _ ->
         {:error, :invalid_source_uri}
     end
   end
-
-  def parse_s3_uri(_), do: {:error, :invalid_source_uri}
 
   defp parse_object_key(nil), do: ""
   defp parse_object_key("/"), do: ""
@@ -220,19 +222,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
     case s3_request(:head, url, config) do
       {:ok, %{status: 200} = resp} ->
-        content_length = get_header_int(resp, "content-length")
-        etag = get_etag(resp)
-
-        case content_length do
-          nil ->
-            {:error, {:source_unavailable, "S3 HEAD returned no content-length"}}
-
-          length when is_integer(length) and length > 0 ->
-            {:ok, %{content_length: length, etag: etag, url: url}}
-
-          _ ->
-            {:error, {:source_unavailable, "S3 HEAD returned invalid content-length"}}
-        end
+        build_head_meta(resp, url)
 
       {:ok, %{status: status}} when status in [401, 403] ->
         {:error, {:source_unauthorized, "S3 returned #{status} for HEAD"}}
@@ -247,6 +237,20 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
         {:error, {:source_unavailable, "S3 HEAD failed: #{inspect(reason)}"}}
     end
   end
+
+  defp build_head_meta(resp, url) do
+    case validate_content_length(get_header_int(resp, "content-length")) do
+      {:ok, content_length} ->
+        {:ok, %{content_length: content_length, etag: get_etag(resp), url: url}}
+
+      {:error, message} ->
+        {:error, {:source_unavailable, message}}
+    end
+  end
+
+  defp validate_content_length(nil), do: {:error, "S3 HEAD returned no content-length"}
+  defp validate_content_length(length) when is_integer(length) and length > 0, do: {:ok, length}
+  defp validate_content_length(_length), do: {:error, "S3 HEAD returned invalid content-length"}
 
   defp get_header_int(resp, name) do
     case header_values(resp, name) do
@@ -287,87 +291,128 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
   # -- GET Object (Streaming Download) ---------------------------------------
 
   defp download_object(source_spec, head_meta, request, config, tmp_root) do
-    %{content_length: expected_size, etag: _head_etag, url: url} = head_meta
-    %{archive_format: format} = source_spec
+    state = build_download_state(source_spec, head_meta, request, config, tmp_root)
 
-    archive_ext = if format == :tar_gz, do: ".tar.gz", else: ".tar"
-    partial_path = Path.join(tmp_root, ".source_archive.partial")
-    archive_path = Path.join(tmp_root, ".source_archive#{archive_ext}")
+    Logger.info("S3: GET #{state.url} (#{state.expected_size} bytes)")
 
-    Logger.info("S3: GET #{url} (#{expected_size} bytes)")
-
-    case File.open(partial_path, [:binary, :write]) do
+    case File.open(state.partial_path, [:binary, :write]) do
       {:ok, file_pid} ->
-        bytes_counter = :counters.new(1, [:atomics])
-        last_progress = :counters.new(1, [:atomics])
-        write_error = :atomics.new(1, [])
-
-        into_fun = fn {:data, chunk}, {req, resp} ->
-          case :file.write(file_pid, chunk) do
-            :ok ->
-              chunk_size = byte_size(chunk)
-              :counters.add(bytes_counter, 1, chunk_size)
-
-              # Emit progress if threshold crossed
-              current = :counters.get(bytes_counter, 1)
-              last = :counters.get(last_progress, 1)
-
-              if current - last >= @progress_threshold_bytes do
-                :counters.put(last_progress, 1, current)
-                emit_progress(current, expected_size, 0, request, source_spec.object_key)
-              end
-
-              {:cont, {req, resp}}
-
-            {:error, _reason} ->
-              # Record write failure; halt will propagate via Req response
-              :atomics.put(write_error, 1, 1)
-              {:halt, {req, resp}}
-          end
-        end
-
-        result = s3_request(:get, url, config, into: into_fun)
-        File.close(file_pid)
-        bytes_written = :counters.get(bytes_counter, 1)
-
-        # Check for write errors first
-        if :atomics.get(write_error, 1) == 1 do
-          {:error, {:filesystem_error, "write #{partial_path}: disk write failed"}}
-        else
-          case result do
-            {:ok, %{status: 200}} ->
-              if bytes_written != expected_size do
-                {:error,
-                 {:download_incomplete, "expected #{expected_size} bytes, got #{bytes_written}"}}
-              else
-                # Emit final progress with files_completed: 1
-                emit_progress(bytes_written, expected_size, 1, request, source_spec.object_key)
-
-                case File.rename(partial_path, archive_path) do
-                  :ok ->
-                    {:ok, archive_path}
-
-                  {:error, reason} ->
-                    {:error, {:filesystem_error, "rename partial: #{inspect(reason)}"}}
-                end
-              end
-
-            {:ok, %{status: status}} when status in [401, 403] ->
-              {:error, {:source_unauthorized, "S3 returned #{status} during download"}}
-
-            {:ok, %{status: 404}} ->
-              {:error, {:source_not_found, "S3 object not found during download"}}
-
-            {:ok, %{status: status}} ->
-              {:error, {:source_unavailable, "S3 GET returned #{status}"}}
-
-            {:error, reason} ->
-              {:error, {:download_failed, "S3 download failed: #{inspect(reason)}"}}
-          end
-        end
+        stream_download_to_file(state, file_pid)
 
       {:error, reason} ->
-        {:error, {:filesystem_error, "open #{partial_path}: #{inspect(reason)}"}}
+        {:error, {:filesystem_error, "open #{state.partial_path}: #{inspect(reason)}"}}
+    end
+  end
+
+  defp build_download_state(source_spec, head_meta, request, config, tmp_root) do
+    archive_ext = if source_spec.archive_format == :tar_gz, do: ".tar.gz", else: ".tar"
+
+    %{
+      config: config,
+      url: head_meta.url,
+      expected_size: head_meta.content_length,
+      request: request,
+      object_key: source_spec.object_key,
+      partial_path: Path.join(tmp_root, ".source_archive.partial"),
+      archive_path: Path.join(tmp_root, ".source_archive#{archive_ext}")
+    }
+  end
+
+  defp stream_download_to_file(state, file_pid) do
+    counters = build_download_counters()
+    result = execute_download_request(state, file_pid, counters)
+    File.close(file_pid)
+    finalize_download(state, result, counters)
+  end
+
+  defp build_download_counters do
+    %{
+      bytes_counter: :counters.new(1, [:atomics]),
+      last_progress: :counters.new(1, [:atomics]),
+      write_error: :atomics.new(1, [])
+    }
+  end
+
+  defp execute_download_request(state, file_pid, counters) do
+    s3_request(:get, state.url, state.config,
+      into: download_into(file_pid, counters, state)
+    )
+  end
+
+  defp download_into(file_pid, counters, state) do
+    fn {:data, chunk}, {req, resp} ->
+      case write_download_chunk(file_pid, chunk, counters, state) do
+        :ok -> {:cont, {req, resp}}
+        :error -> {:halt, {req, resp}}
+      end
+    end
+  end
+
+  defp write_download_chunk(file_pid, chunk, counters, state) do
+    case :file.write(file_pid, chunk) do
+      :ok ->
+        chunk_size = byte_size(chunk)
+        :counters.add(counters.bytes_counter, 1, chunk_size)
+        maybe_emit_threshold_progress(counters, state)
+        :ok
+
+      {:error, _reason} ->
+        :atomics.put(counters.write_error, 1, 1)
+        :error
+    end
+  end
+
+  defp maybe_emit_threshold_progress(counters, state) do
+    current = :counters.get(counters.bytes_counter, 1)
+    last = :counters.get(counters.last_progress, 1)
+
+    if current - last >= @progress_threshold_bytes do
+      :counters.put(counters.last_progress, 1, current)
+      emit_progress(current, state.expected_size, 0, state.request, state.object_key)
+    end
+  end
+
+  defp finalize_download(state, result, counters) do
+    bytes_written = :counters.get(counters.bytes_counter, 1)
+
+    if :atomics.get(counters.write_error, 1) == 1 do
+      {:error, {:filesystem_error, "write #{state.partial_path}: disk write failed"}}
+    else
+      handle_download_result(state, result, bytes_written)
+    end
+  end
+
+  defp handle_download_result(state, {:ok, %{status: 200}}, bytes_written) do
+    if bytes_written != state.expected_size do
+      {:error, {:download_incomplete, "expected #{state.expected_size} bytes, got #{bytes_written}"}}
+    else
+      finalize_successful_download(state, bytes_written)
+    end
+  end
+
+  defp handle_download_result(_state, {:ok, %{status: status}}, _bytes_written)
+       when status in [401, 403] do
+    {:error, {:source_unauthorized, "S3 returned #{status} during download"}}
+  end
+
+  defp handle_download_result(_state, {:ok, %{status: 404}}, _bytes_written) do
+    {:error, {:source_not_found, "S3 object not found during download"}}
+  end
+
+  defp handle_download_result(_state, {:ok, %{status: status}}, _bytes_written) do
+    {:error, {:source_unavailable, "S3 GET returned #{status}"}}
+  end
+
+  defp handle_download_result(_state, {:error, reason}, _bytes_written) do
+    {:error, {:download_failed, "S3 download failed: #{inspect(reason)}"}}
+  end
+
+  defp finalize_successful_download(state, bytes_written) do
+    emit_progress(bytes_written, state.expected_size, 1, state.request, state.object_key)
+
+    case File.rename(state.partial_path, state.archive_path) do
+      :ok -> {:ok, state.archive_path}
+      {:error, reason} -> {:error, {:filesystem_error, "rename partial: #{inspect(reason)}"}}
     end
   end
 
@@ -390,52 +435,49 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
   # -- HTTP Helpers ----------------------------------------------------------
 
   defp s3_request(method, url, config, extra_opts \\ []) do
-    %{
-      connect_timeout_ms: connect_timeout,
-      receive_timeout_ms: receive_timeout,
-      req_options: req_options,
-      signing_mode: signing_mode
-    } = config
-
-    into = Keyword.get(extra_opts, :into)
-
-    base_opts =
-      [
-        method: method,
-        url: url,
-        connect_options: [timeout: connect_timeout],
-        receive_timeout: receive_timeout,
-        retry: false
-      ]
-      |> then(fn opts -> if into, do: Keyword.put(opts, :into, into), else: opts end)
-
-    # Add S3 signing if credentials are configured
-    base_opts =
-      if signing_mode == :signed do
-        sigv4_opts =
-          [
-            service: :s3,
-            access_key_id: config.access_key_id,
-            secret_access_key: config.secret_access_key,
-            region: config.region
-          ]
-          |> then(fn opts ->
-            if config.session_token,
-              do: Keyword.put(opts, :session_token, config.session_token),
-              else: opts
-          end)
-
-        Keyword.put(base_opts, :aws_sigv4, sigv4_opts)
-      else
-        base_opts
-      end
-
-    merged_opts = Keyword.merge(base_opts, req_options)
+    merged_opts =
+      method
+      |> base_request_options(url, config)
+      |> maybe_put_into(Keyword.get(extra_opts, :into))
+      |> maybe_put_sigv4(config)
+      |> Keyword.merge(config.req_options)
 
     Req.new()
     |> ReqS3.attach()
     |> Req.request(merged_opts)
   end
+
+  defp base_request_options(method, url, config) do
+    [
+      method: method,
+      url: url,
+      connect_options: [timeout: config.connect_timeout_ms],
+      receive_timeout: config.receive_timeout_ms,
+      retry: false
+    ]
+  end
+
+  defp maybe_put_into(opts, nil), do: opts
+  defp maybe_put_into(opts, into), do: Keyword.put(opts, :into, into)
+
+  defp maybe_put_sigv4(opts, %{signing_mode: :signed} = config) do
+    Keyword.put(opts, :aws_sigv4, sigv4_options(config))
+  end
+
+  defp maybe_put_sigv4(opts, _config), do: opts
+
+  defp sigv4_options(config) do
+    [
+      service: :s3,
+      access_key_id: config.access_key_id,
+      secret_access_key: config.secret_access_key,
+      region: config.region
+    ]
+    |> maybe_put_session_token(config.session_token)
+  end
+
+  defp maybe_put_session_token(opts, nil), do: opts
+  defp maybe_put_session_token(opts, session_token), do: Keyword.put(opts, :session_token, session_token)
 
   # -- Progress Telemetry ----------------------------------------------------
 

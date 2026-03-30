@@ -77,13 +77,18 @@ defmodule Orchard.Node.ModelAcquisition.Tar do
 
   defp validate_entries(entries) do
     Enum.reduce_while(entries, :ok, fn entry, :ok ->
-      with :ok <- validate_entry_type(entry),
-           :ok <- validate_entry_path(entry) do
-        {:cont, :ok}
-      else
+      case validate_entry(entry) do
+        :ok -> {:cont, :ok}
         {:error, _} = err -> {:halt, err}
       end
     end)
+  end
+
+  defp validate_entry(entry) do
+    case validate_entry_type(entry) do
+      :ok -> validate_entry_path(entry)
+      {:error, _} = err -> err
+    end
   end
 
   defp validate_entry_type({name, type, _size, _mtime, _mode, _uid, _gid}) do
@@ -139,91 +144,96 @@ defmodule Orchard.Node.ModelAcquisition.Tar do
 
   # -- Post-Extraction Scan --------------------------------------------------
 
-  defp post_extraction_scan(extract_root) do
-    case scan_directory(extract_root) do
-      :ok -> :ok
-      {:error, _} = err -> err
+  defp post_extraction_scan(extract_root), do: scan_directory(extract_root)
+
+  defp scan_directory(dir) do
+    with {:ok, entries} <- list_dir(dir) do
+      scan_entries(dir, entries)
     end
   end
 
-  defp scan_directory(dir) do
-    case File.ls(dir) do
-      {:ok, entries} ->
-        Enum.reduce_while(entries, :ok, fn entry, :ok ->
-          full_path = Path.join(dir, entry)
+  defp scan_entries(dir, entries) do
+    Enum.reduce_while(entries, :ok, fn entry, :ok ->
+      case scan_path(Path.join(dir, entry)) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
 
-          case File.lstat(full_path) do
-            {:ok, %File.Stat{type: :regular}} ->
-              {:cont, :ok}
+  defp scan_path(full_path) do
+    case File.lstat(full_path) do
+      {:ok, %File.Stat{type: :regular}} ->
+        :ok
 
-            {:ok, %File.Stat{type: :directory}} ->
-              case scan_directory(full_path) do
-                :ok -> {:cont, :ok}
-                {:error, _} = err -> {:halt, err}
-              end
+      {:ok, %File.Stat{type: :directory}} ->
+        scan_directory(full_path)
 
-            {:ok, %File.Stat{type: type}} ->
-              {:halt,
-               {:error,
-                {:invalid_source_layout,
-                 "extracted file has unsafe type #{inspect(type)}: #{full_path}"}}}
-
-            {:error, reason} ->
-              {:halt, {:error, {:filesystem_error, "lstat #{full_path}: #{inspect(reason)}"}}}
-          end
-        end)
+      {:ok, %File.Stat{type: type}} ->
+        {:error,
+         {:invalid_source_layout, "extracted file has unsafe type #{inspect(type)}: #{full_path}"}}
 
       {:error, reason} ->
-        {:error, {:filesystem_error, "ls #{dir}: #{inspect(reason)}"}}
+        {:error, {:filesystem_error, "lstat #{full_path}: #{inspect(reason)}"}}
     end
   end
 
   # -- Layout Normalization --------------------------------------------------
 
   defp normalize_layout(extract_root, staging_path) do
-    case File.ls(extract_root) do
+    with {:ok, source_dir} <- layout_source_dir(extract_root) do
+      move_children(source_dir, staging_path)
+    end
+  end
+
+  defp layout_source_dir(extract_root) do
+    case list_dir(extract_root) do
       {:ok, []} ->
         {:error, {:invalid_source_layout, "archive extracted no files"}}
 
       {:ok, [single_entry]} ->
-        single_path = Path.join(extract_root, single_entry)
-
-        if File.dir?(single_path) do
-          # Single wrapper directory — move its children into staging_path
-          move_children(single_path, staging_path)
-        else
-          # Single file — move it into staging_path
-          move_children(extract_root, staging_path)
-        end
+        source_dir = wrapper_source_dir(extract_root, single_entry)
+        {:ok, source_dir}
 
       {:ok, _entries} ->
-        # Multiple entries — move all into staging_path
-        move_children(extract_root, staging_path)
+        {:ok, extract_root}
 
-      {:error, reason} ->
-        {:error, {:filesystem_error, "ls #{extract_root}: #{inspect(reason)}"}}
+      {:error, _} = err ->
+        err
     end
   end
 
+  defp wrapper_source_dir(extract_root, single_entry) do
+    single_path = Path.join(extract_root, single_entry)
+    if File.dir?(single_path), do: single_path, else: extract_root
+  end
+
   defp move_children(source_dir, dest_dir) do
-    case File.ls(source_dir) do
-      {:ok, entries} ->
-        Enum.reduce_while(entries, :ok, fn entry, :ok ->
-          src = Path.join(source_dir, entry)
-          dst = Path.join(dest_dir, entry)
+    case list_dir(source_dir) do
+      {:ok, entries} -> move_children_entries(entries, source_dir, dest_dir)
+      {:error, _} = err -> err
+    end
+  end
 
-          case File.rename(src, dst) do
-            :ok ->
-              {:cont, :ok}
+  defp move_children_entries(entries, source_dir, dest_dir) do
+    Enum.reduce_while(entries, :ok, fn entry, :ok ->
+      case move_child(source_dir, dest_dir, entry) do
+        :ok -> {:cont, :ok}
+        {:error, _} = err -> {:halt, err}
+      end
+    end)
+  end
 
-            {:error, reason} ->
-              {:halt,
-               {:error, {:filesystem_error, "rename #{src} -> #{dst}: #{inspect(reason)}"}}}
-          end
-        end)
+  defp move_child(source_dir, dest_dir, entry) do
+    src = Path.join(source_dir, entry)
+    dst = Path.join(dest_dir, entry)
+
+    case File.rename(src, dst) do
+      :ok ->
+        :ok
 
       {:error, reason} ->
-        {:error, {:filesystem_error, "ls #{source_dir}: #{inspect(reason)}"}}
+        {:error, {:filesystem_error, "rename #{src} -> #{dst}: #{inspect(reason)}"}}
     end
   end
 
@@ -234,6 +244,13 @@ defmodule Orchard.Node.ModelAcquisition.Tar do
 
   defp extract_options(:tar_gz), do: [:compressed]
   defp extract_options(:tar), do: []
+
+  defp list_dir(path) do
+    case File.ls(path) do
+      {:ok, entries} -> {:ok, entries}
+      {:error, reason} -> {:error, {:filesystem_error, "ls #{path}: #{inspect(reason)}"}}
+    end
+  end
 
   defp mkdir_p(path) do
     case File.mkdir_p(path) do
