@@ -724,7 +724,8 @@ defmodule OrchardConsole.RequestLiveTest do
       assert html =~ "request-freshness"
       assert html =~ "Auto-refreshing every"
       assert html =~ "Last checked"
-      assert html =~ "UTC"
+      assert html =~ ~s(phx-hook="LocalTime")
+      assert html =~ ~s(data-local-time-format="time_second")
     end
 
     test "freshness shows auto-refresh stopped for terminal request", %{conn: conn} do
@@ -740,6 +741,17 @@ defmodule OrchardConsole.RequestLiveTest do
       {:ok, _view, html} = live(conn, "/console/requests/nonexistent-id")
 
       assert html =~ "request-freshness"
+    end
+
+    test "disconnected render shows waiting text without LocalTime hook", %{conn: conn} do
+      request = create_request!(%{state: :running})
+      conn = get(conn, "/console/requests/#{request.public_id}")
+
+      assert conn.status == 200
+      body = conn.resp_body
+      assert body =~ "request-freshness"
+      assert body =~ "Waiting for first live check"
+      refute body =~ ~s(data-local-time-format="time_second")
     end
 
     test "freshness transitions from polling to stopped when request becomes terminal", %{

@@ -785,7 +785,18 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "overview-freshness"
       assert html =~ "Auto-refreshing every 60s"
       assert html =~ "Last updated"
-      assert html =~ "UTC"
+      assert html =~ ~s(phx-hook="LocalTime")
+      assert html =~ ~s(data-local-time-format="time_second")
+    end
+
+    test "disconnected render shows waiting text without LocalTime hook", %{conn: conn} do
+      conn = get(conn, "/console")
+
+      assert conn.status == 200
+      body = conn.resp_body
+      assert body =~ "overview-freshness"
+      assert body =~ "Waiting for first live update"
+      refute body =~ ~s(data-local-time-format="time_second")
     end
 
     test "overview renders manual refresh button", %{conn: conn} do

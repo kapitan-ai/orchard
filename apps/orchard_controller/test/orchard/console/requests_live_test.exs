@@ -70,6 +70,20 @@ defmodule OrchardConsole.RequestsLiveTest do
 
       refute conn.resp_body =~ "requests-loading-card"
     end
+
+    test "disconnected render shows populated freshness with LocalTime hook", %{conn: conn} do
+      # Note: the nil freshness branch ("Loading…") is not route-reachable because
+      # mount/3 always calls load_requests_page/1 before returning, which sets
+      # last_checked_at. We verify the populated branch renders correctly in
+      # the disconnected/static response.
+      conn = get(conn, "/console/requests")
+      body = conn.resp_body
+
+      assert body =~ "requests-freshness"
+      assert body =~ "Last checked"
+      assert body =~ ~s(phx-hook="LocalTime")
+      assert body =~ ~s(data-local-time-format="time_second")
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -175,6 +189,9 @@ defmodule OrchardConsole.RequestsLiveTest do
 
       assert html =~ "requests-freshness"
       assert html =~ "requests-refresh-now"
+      assert html =~ "Last checked"
+      assert html =~ ~s(phx-hook="LocalTime")
+      assert html =~ ~s(data-local-time-format="time_second")
     end
   end
 

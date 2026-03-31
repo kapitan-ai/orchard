@@ -86,7 +86,7 @@ defmodule OrchardConsole.RequestsLive do
           <:subtitle>Last 50 requests, newest first.</:subtitle>
 
           <.table id="requests-table" rows={@requests} row_id={&"request-#{&1.public_id}"}>
-            <:col :let={req} label="Created" mono>{format_datetime(req.inserted_at)}</:col>
+            <:col :let={req} label="Created" mono><.local_time value={req.inserted_at} format={:datetime_minute} /></:col>
             <:col :let={req} label="Public ID" mono>
               <.link
                 navigate={~p"/console/requests/#{req.public_id}"}
@@ -133,7 +133,10 @@ defmodule OrchardConsole.RequestsLive do
     ~H"""
     <div id="requests-tools-row" class="flex flex-wrap items-center justify-between gap-3">
       <span id="requests-freshness" class="text-xs text-slate-500 dark:text-slate-400 font-mono">
-        {freshness_text(@last_checked_at)}
+        <span :if={@last_checked_at == nil}>Loading…</span>
+        <span :if={@last_checked_at != nil}>
+          Last checked <.local_time value={@last_checked_at} format={:time_second} /> · Auto-refreshing
+        </span>
       </span>
 
       <.button id="requests-refresh-now" variant={:secondary} size={:sm} phx-click="refresh_now">
@@ -245,16 +248,6 @@ defmodule OrchardConsole.RequestsLive do
   defp tile_tone_classes(:success), do: "border-forest-200 dark:border-emerald-800"
   defp tile_tone_classes(:warning), do: "border-amber-200 dark:border-amber-800"
   defp tile_tone_classes(:error), do: "border-red-200 dark:border-red-800"
-
-  defp freshness_text(nil), do: "Loading\u2026"
-
-  defp freshness_text(%DateTime{} = dt) do
-    "Last checked #{Calendar.strftime(dt, "%H:%M:%S UTC")} \u00b7 Auto-refreshing"
-  end
-
-  defp format_datetime(%DateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
-  defp format_datetime(%NaiveDateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
-  defp format_datetime(_), do: "\u2014"
 
   defp format_integer(nil), do: "\u2014"
   defp format_integer(n) when is_integer(n), do: Integer.to_string(n)

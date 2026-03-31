@@ -302,7 +302,7 @@ defmodule OrchardConsole.ModelHubLive do
                       {format_integer(result.likes)}
                     </:col>
                     <:col :let={result} label="Updated">
-                      {format_datetime(result.last_modified)}
+                      <.local_time value={result.last_modified} format={:datetime_minute} />
                     </:col>
                     <:col :let={result} label="Access">
                       <.badge tone={access_badge_tone(result.gated)}>
@@ -403,7 +403,11 @@ defmodule OrchardConsole.ModelHubLive do
                         "mt-1 text-sm text-slate-900 dark:text-slate-100",
                         field.mono && "font-mono text-xs break-all"
                       ]}>
-                        {field.value}
+                        <%= if Map.get(field, :kind) == :local_time do %>
+                          <.local_time value={field.value} format={field.format} />
+                        <% else %>
+                          {field.value}
+                        <% end %>
                       </p>
                     </div>
                   </div>
@@ -1171,7 +1175,9 @@ defmodule OrchardConsole.ModelHubLive do
       %{
         id: "updated",
         label: "Last updated",
-        value: format_datetime(detail.last_modified),
+        kind: :local_time,
+        value: detail.last_modified,
+        format: :datetime_minute,
         mono: false
       },
       %{
@@ -1238,17 +1244,6 @@ defmodule OrchardConsole.ModelHubLive do
   end
 
   defp format_list(_values), do: "—"
-
-  defp format_datetime(nil), do: "—"
-
-  defp format_datetime(value) when is_binary(value) do
-    case DateTime.from_iso8601(value) do
-      {:ok, datetime, 0} -> Calendar.strftime(datetime, "%Y-%m-%d %H:%M UTC")
-      _other -> value
-    end
-  end
-
-  defp format_datetime(_value), do: "—"
 
   defp display_value(value) when value in [nil, ""], do: "—"
   defp display_value(value), do: to_string(value)

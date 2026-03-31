@@ -311,10 +311,11 @@ defmodule OrchardConsole.OverviewLive do
           </div>
 
           <div id="overview-freshness" class="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-            <span class="font-mono">
-              {freshness_text(@last_updated_at)}
+            <span :if={@last_updated_at == nil} class="font-mono">Waiting for first live update</span>
+            <span :if={@last_updated_at != nil} class="font-mono">
+              Last updated <.local_time value={@last_updated_at} format={:time_second} />
             </span>
-            <span>· Auto-refreshing every {refresh_interval_label()}</span>
+            <span :if={@last_updated_at != nil}>· Auto-refreshing every {refresh_interval_label()}</span>
             <.button
               id="overview-refresh-now"
               variant={:ghost}
@@ -1222,13 +1223,7 @@ defmodule OrchardConsole.OverviewLive do
   defp format_count(count) when is_integer(count), do: Integer.to_string(count)
   defp format_count(other) when is_binary(other), do: other
 
-  defp freshness_text(nil), do: "Waiting for first live update"
-
-  defp freshness_text(%DateTime{} = dt) do
-    "Last updated #{Calendar.strftime(dt, "%H:%M:%S")} UTC"
-  end
-
-  defp refresh_interval_label do
+    defp refresh_interval_label do
     ms = refresh_interval_ms()
 
     if rem(ms, 1000) == 0,

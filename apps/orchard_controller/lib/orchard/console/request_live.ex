@@ -133,7 +133,16 @@ defmodule OrchardConsole.RequestLive do
       </.link>
 
       <span id="request-freshness" class="text-xs text-slate-500 dark:text-slate-400 font-mono">
-        {request_freshness_text(@last_checked_at, @refresh_mode)}
+        <%= cond do %>
+          <% @last_checked_at == nil and @refresh_mode == :polling -> %>
+            Waiting for first live check · Auto-refreshing every {request_refresh_interval_label()}
+          <% @last_checked_at == nil -> %>
+            Waiting for first live check
+          <% @refresh_mode == :polling -> %>
+            Last checked <.local_time value={@last_checked_at} format={:time_second} /> · Auto-refreshing every {request_refresh_interval_label()}
+          <% true -> %>
+            Last checked <.local_time value={@last_checked_at} format={:time_second} /> · Auto-refresh stopped
+        <% end %>
       </span>
     </div>
     """
@@ -645,21 +654,7 @@ defmodule OrchardConsole.RequestLive do
   # Freshness helpers
   # ===========================================================================
 
-  defp request_freshness_text(nil, :polling),
-    do:
-      "Waiting for first live check \u00b7 Auto-refreshing every #{request_refresh_interval_label()}"
-
-  defp request_freshness_text(nil, :static),
-    do: "Waiting for first live check"
-
-  defp request_freshness_text(%DateTime{} = dt, :polling),
-    do:
-      "Last checked #{Calendar.strftime(dt, "%H:%M:%S")} UTC \u00b7 Auto-refreshing every #{request_refresh_interval_label()}"
-
-  defp request_freshness_text(%DateTime{} = dt, :static),
-    do: "Last checked #{Calendar.strftime(dt, "%H:%M:%S")} UTC \u00b7 Auto-refresh stopped"
-
-  defp request_refresh_interval_label do
+    defp request_refresh_interval_label do
     ms = refresh_interval_ms()
     if rem(ms, 1000) == 0, do: "#{div(ms, 1000)}s", else: "#{ms}ms"
   end

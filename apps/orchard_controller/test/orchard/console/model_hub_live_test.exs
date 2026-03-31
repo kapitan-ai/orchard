@@ -521,6 +521,29 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       assert_process_terminated(first_detail_pid)
     end
+
+    test "search results Updated column renders LocalTime hook", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = search_results_fixture()
+      search_ref = assert_search_started(nil)
+      send_search_success(view, search_ref, nil, results)
+      html = render(view)
+
+      # The Updated column should use <.local_time> with hook attrs
+      assert html =~ ~s(data-local-time-format="datetime_minute")
+      assert html =~ ~s(datetime="2026-03-19T12:34:56Z")
+    end
+
+    test "detail Last updated field renders LocalTime hook", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+      html = render(view)
+
+      # The detail metadata "Last updated" field should use <.local_time>
+      assert html =~ "model-hub-detail-updated"
+      assert html =~ ~s(phx-hook="LocalTime")
+      assert html =~ ~s(data-local-time-format="datetime_minute")
+    end
   end
 
   describe "download flow" do

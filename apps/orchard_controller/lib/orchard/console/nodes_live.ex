@@ -65,10 +65,11 @@ defmodule OrchardConsole.NodesLive do
         </div>
 
         <div id="nodes-freshness" class="mt-4 flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-          <span class="font-mono">
-            {freshness_text(@last_refreshed_at)}
+          <span :if={@last_refreshed_at == nil} class="font-mono">Waiting for first live update</span>
+          <span :if={@last_refreshed_at != nil} class="font-mono">
+            Last refreshed <.local_time value={@last_refreshed_at} format={:time_second} />
           </span>
-          <span>· Auto-refreshing every {refresh_interval_label()}</span>
+          <span :if={@last_refreshed_at != nil}>· Auto-refreshing every {refresh_interval_label()}</span>
           <.button
             id="nodes-refresh-now"
             variant={:ghost}
@@ -114,7 +115,7 @@ defmodule OrchardConsole.NodesLive do
                     <.badge tone={health_badge_tone(node.health)}>{node.health}</.badge>
                   </:col>
                   <:col :let={node} label="Agent Version" mono>{node.agent_version || "—"}</:col>
-                  <:col :let={node} label="Last Seen" mono>{format_datetime(node.last_heartbeat_at)}</:col>
+                  <:col :let={node} label="Last Seen" mono><.local_time value={node.last_heartbeat_at} format={:datetime_second} /></:col>
                 </.table>
               <% true -> %>
                 <.state_message id="nodes-inventory-error" kind={:error} layout={:compact} title="Node inventory unavailable." body={@inventory.message} />
@@ -494,12 +495,9 @@ defmodule OrchardConsole.NodesLive do
 
   defp format_address(_), do: "—"
 
-  defp format_datetime(nil), do: "—"
-  defp format_datetime(%DateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S UTC")
-
-  defp format_metadata_endpoint(%{listen_host: host, listen_port: port})
-       when host != nil and port != nil,
-       do: format_host_port(host, port)
+    defp format_metadata_endpoint(%{listen_host: host, listen_port: port})
+         when host != nil and port != nil,
+         do: format_host_port(host, port)
 
   defp format_metadata_endpoint(_), do: "—"
 
@@ -510,12 +508,7 @@ defmodule OrchardConsole.NodesLive do
       else: "#{host}:#{port}"
   end
 
-  defp freshness_text(nil), do: "Waiting for first live update"
-
-  defp freshness_text(%DateTime{} = dt),
-    do: "Last refreshed #{Calendar.strftime(dt, "%H:%M:%S")} UTC"
-
-  defp refresh_interval_label do
+    defp refresh_interval_label do
     ms = refresh_interval_ms()
     if rem(ms, 1000) == 0, do: "#{div(ms, 1000)}s", else: "#{ms}ms"
   end

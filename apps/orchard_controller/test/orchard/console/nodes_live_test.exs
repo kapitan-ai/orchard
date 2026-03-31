@@ -576,7 +576,18 @@ defmodule OrchardConsole.NodesLiveTest do
 
       assert html =~ "nodes-freshness"
       assert html =~ "Last refreshed"
-      assert html =~ "UTC"
+      assert html =~ ~s(phx-hook="LocalTime")
+      assert html =~ ~s(data-local-time-format="time_second")
+    end
+
+    test "disconnected render shows waiting text without LocalTime hook", %{conn: conn} do
+      conn = get(conn, "/console/nodes")
+
+      assert conn.status == 200
+      body = conn.resp_body
+      assert body =~ "nodes-freshness"
+      assert body =~ "Waiting for first live update"
+      refute body =~ ~s(data-local-time-format="time_second")
     end
   end
 
