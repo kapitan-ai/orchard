@@ -222,11 +222,16 @@ defmodule OrchardConsole.CoreComponents do
   """
   attr(:class, :string, default: "")
   attr(:padding, :atom, default: :md, values: [:none, :sm, :md, :lg])
-  attr(:header_class, :string, default: "", doc: "Additional classes applied to the header wrapper.")
+
+  attr(:header_class, :string,
+    default: "",
+    doc: "Additional classes applied to the header wrapper."
+  )
 
   attr(:max_height, :string,
     default: nil,
-    doc: "Tailwind height constraint classes (e.g. `xl:max-h-[calc(100vh-12rem)]`). When set, card body scrolls internally while header stays visible."
+    doc:
+      "Tailwind height constraint classes (e.g. `xl:max-h-[calc(100vh-12rem)]`). When set, card body scrolls internally while header stays visible."
   )
 
   slot(:title)
@@ -414,6 +419,13 @@ defmodule OrchardConsole.CoreComponents do
   Accepts an optional `row_class` callback for per-row styling (e.g. highlighting
   active rows). The callback receives a row and returns a class string or nil.
 
+  When `row_click` is provided, rows are keyboard-accessible: they receive
+  `tabindex="0"` for focusability and `phx-keydown` + `phx-key="Enter"` to
+  trigger the same JS command as a pointer click.
+
+  `row_click` and the `:action` slot are mutually exclusive. Passing both
+  raises `ArgumentError` — use one interaction model per table.
+
   ## Examples
 
       <.table id="models" rows={@models} row_class={&row_highlight/1}>
@@ -448,6 +460,12 @@ defmodule OrchardConsole.CoreComponents do
   slot(:empty, doc: "empty state content")
 
   def table(assigns) do
+    if assigns.row_click && assigns.action != [] do
+      raise ArgumentError,
+            "table/1 does not support row_click and :action slot together. " <>
+              "Use row_click for whole-row activation OR :action for per-row controls, not both."
+    end
+
     ~H"""
     <div class={["overflow-x-auto", @class]}>
       <table class="w-full text-left text-sm">
@@ -473,15 +491,20 @@ defmodule OrchardConsole.CoreComponents do
               {render_slot(@empty)}
             </td>
           </tr>
+          <%!-- Compute row JS once per row, reuse for both click and keydown --%>
+          <% row_js = fn row -> @row_click && @row_click.(row) end %>
           <tr
             :for={row <- @rows}
             id={@row_id && @row_id.(row)}
             class={[
               "group hover:bg-slate-50 dark:hover:bg-slate-800/50",
-              @row_click && "cursor-pointer",
+              @row_click && "cursor-pointer focus-visible:outline-none focus-visible:bg-sky-50 focus-visible:dark:bg-sky-900/30",
               @row_class && @row_class.(row)
             ]}
-            phx-click={@row_click && @row_click.(row)}
+            tabindex={@row_click && "0"}
+            phx-click={row_js.(row)}
+            phx-keydown={row_js.(row)}
+            phx-key={@row_click && "Enter"}
           >
             <td
               :for={col <- @col}
@@ -1049,16 +1072,17 @@ defmodule OrchardConsole.CoreComponents do
       <.local_time value={@last_updated_at} format={:time_second} />
       <.local_time value={nil} placeholder="N/A" />
   """
-  attr :value, :any, required: true, doc: "DateTime, NaiveDateTime, ISO 8601 string, or nil"
+  attr(:value, :any, required: true, doc: "DateTime, NaiveDateTime, ISO 8601 string, or nil")
 
-  attr :format, :atom,
+  attr(:format, :atom,
     default: :datetime_minute,
     values: [:datetime_minute, :datetime_second, :time_second, :date],
     doc: "display format tier"
+  )
 
-  attr :placeholder, :string, default: "—", doc: "text shown when value is nil"
-  attr :id, :string, default: nil
-  attr :class, :string, default: ""
+  attr(:placeholder, :string, default: "—", doc: "text shown when value is nil")
+  attr(:id, :string, default: nil)
+  attr(:class, :string, default: "")
 
   def local_time(assigns) do
     assigns =

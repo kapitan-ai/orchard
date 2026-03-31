@@ -147,6 +147,27 @@ defmodule OrchardConsole.ModelHubLiveTest do
       refute html =~ "model-hub-detail-sticky-header"
     end
 
+    test "result rows are keyboard-accessible with tabindex and Enter activation", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+
+      search_ref = assert_search_started(nil)
+      results = search_results_fixture()
+      send_search_success(view, search_ref, nil, results)
+
+      # Wait for auto-select detail to complete
+      detail_ref = assert_detail_started(hd(results).repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(hd(results).repo_id))
+
+      html = render(view)
+
+      # Result rows should be keyboard-focusable
+      assert html =~ ~s(tabindex="0")
+      assert html =~ ~s(phx-key="Enter")
+      # Row click should still work
+      assert html =~ "phx-click"
+      assert html =~ "phx-keydown"
+    end
+
     test "connected mount loads initial browse results, auto-selects the first result, and loads detail",
          %{conn: conn} do
       {:ok, view, html} = live(conn, "/console/model-hub")

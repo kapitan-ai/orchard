@@ -2,6 +2,7 @@ defmodule OrchardConsole.CoreComponentsTest do
   use Orchard.ConnCase, async: true
 
   alias Phoenix.HTML.Safe
+  alias Phoenix.LiveView.JS
   import Phoenix.Component
   import OrchardConsole.CoreComponents
 
@@ -503,6 +504,101 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "hover:bg-slate-50"
       refute html =~ "bg-green"
     end
+
+    test "clickable rows get keyboard accessibility attributes" do
+      assigns = %{rows: [%{id: "m1", name: "GPT-4"}]}
+
+      html =
+        render_heex(~H"""
+        <.table
+          id="clickable-test"
+          rows={@rows}
+          row_click={fn row -> JS.push("select", value: %{id: row.id}) end}
+        >
+          <:col :let={row} label="Name">{row.name}</:col>
+        </.table>
+        """)
+
+      assert html =~ ~s(tabindex="0")
+      assert html =~ ~s(phx-click=")
+      assert html =~ ~s(phx-keydown=")
+      assert html =~ ~s(phx-key="Enter")
+      assert html =~ "cursor-pointer"
+      assert html =~ "focus-visible:bg-sky-50"
+    end
+
+    test "non-clickable rows do not get keyboard attributes" do
+      assigns = %{rows: [%{name: "Plain"}]}
+
+      html =
+        render_heex(~H"""
+        <.table id="no-click" rows={@rows}>
+          <:col :let={row} label="Name">{row.name}</:col>
+        </.table>
+        """)
+
+      refute html =~ ~s(tabindex="0")
+      refute html =~ "phx-keydown"
+      refute html =~ ~s(phx-key="Enter")
+      refute html =~ "cursor-pointer"
+    end
+
+    test "raises ArgumentError when row_click and :action slot are both present" do
+      assigns = %{rows: [%{id: "m1", name: "GPT-4"}]}
+
+      assert_raise ArgumentError, ~r/row_click.*action/s, fn ->
+        render_heex(~H"""
+        <.table
+          id="conflict-test"
+          rows={@rows}
+          row_click={fn row -> JS.push("select", value: %{id: row.id}) end}
+        >
+          <:col :let={row} label="Name">{row.name}</:col>
+          <:action :let={_row}>
+            <button>Delete</button>
+          </:action>
+        </.table>
+        """)
+      end
+    end
+
+    test "raises ArgumentError for row_click + :action even with empty rows" do
+      assigns = %{}
+
+      assert_raise ArgumentError, ~r/row_click.*action/s, fn ->
+        render_heex(~H"""
+        <.table
+          id="conflict-empty"
+          rows={[]}
+          row_click={fn row -> JS.push("select", value: %{id: row}) end}
+        >
+          <:col label="Name" />
+          <:action :let={_row}>
+            <button>Delete</button>
+          </:action>
+        </.table>
+        """)
+      end
+    end
+
+    test "table with :action slot but no row_click renders normally" do
+      assigns = %{rows: [%{name: "Item"}]}
+
+      html =
+        render_heex(~H"""
+        <.table id="action-only" rows={@rows}>
+          <:col :let={row} label="Name">{row.name}</:col>
+          <:action :let={_row}>
+            <button>Edit</button>
+          </:action>
+        </.table>
+        """)
+
+      assert html =~ "Edit"
+      assert html =~ "Actions"
+      refute html =~ ~s(tabindex="0")
+      refute html =~ "phx-keydown"
+    end
   end
 
   # ===========================================================================
@@ -888,10 +984,17 @@ defmodule OrchardConsole.CoreComponentsTest do
     test "non-UTC DateTime is shifted to UTC before rendering" do
       # Construct a +02:00 DateTime (14:00 local = 12:00 UTC)
       dt = %DateTime{
-        year: 2026, month: 3, day: 31,
-        hour: 14, minute: 0, second: 0, microsecond: {0, 6},
-        time_zone: "Etc/GMT-2", zone_abbr: "+02",
-        utc_offset: 7200, std_offset: 0,
+        year: 2026,
+        month: 3,
+        day: 31,
+        hour: 14,
+        minute: 0,
+        second: 0,
+        microsecond: {0, 6},
+        time_zone: "Etc/GMT-2",
+        zone_abbr: "+02",
+        utc_offset: 7200,
+        std_offset: 0,
         calendar: Calendar.ISO
       }
 
