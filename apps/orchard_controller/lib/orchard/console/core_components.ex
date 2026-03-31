@@ -222,6 +222,12 @@ defmodule OrchardConsole.CoreComponents do
   """
   attr(:class, :string, default: "")
   attr(:padding, :atom, default: :md, values: [:none, :sm, :md, :lg])
+  attr(:header_class, :string, default: "", doc: "Additional classes applied to the header wrapper.")
+
+  attr(:max_height, :string,
+    default: nil,
+    doc: "Tailwind height constraint classes (e.g. `xl:max-h-[calc(100vh-12rem)]`). When set, card body scrolls internally while header stays visible."
+  )
 
   slot(:title)
   slot(:subtitle)
@@ -229,16 +235,23 @@ defmodule OrchardConsole.CoreComponents do
   slot(:inner_block, required: true)
 
   def card(assigns) do
+    constrained? = is_binary(assigns.max_height) and String.trim(assigns.max_height) != ""
+    assigns = assign(assigns, :constrained?, constrained?)
+
     ~H"""
     <div class={[
       "rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800",
+      @constrained? && "flex flex-col overflow-hidden",
+      @constrained? && @max_height,
       @class
     ]}>
       <div
         :if={@title != [] || @subtitle != [] || @actions != []}
         class={[
           "border-b border-slate-200 dark:border-slate-700",
-          card_padding(@padding)
+          @constrained? && "shrink-0",
+          card_padding(@padding),
+          @header_class
         ]}
       >
         <div class="flex items-center justify-between gap-4">
@@ -261,7 +274,10 @@ defmodule OrchardConsole.CoreComponents do
           </div>
         </div>
       </div>
-      <div class={card_padding(@padding)}>
+      <div class={[
+        card_padding(@padding),
+        @constrained? && "flex-1 min-h-0 overflow-y-auto"
+      ]}>
         {render_slot(@inner_block)}
       </div>
     </div>
@@ -287,6 +303,7 @@ defmodule OrchardConsole.CoreComponents do
   attr(:title, :string, required: true)
   attr(:default_open, :boolean, default: false)
   attr(:summary_id, :string, default: nil)
+  slot(:summary, doc: "Optional summary content rendered below the title inside <summary>.")
   slot(:inner_block, required: true)
 
   def disclosure_section(assigns) do
@@ -301,6 +318,9 @@ defmodule OrchardConsole.CoreComponents do
           class="cursor-pointer select-none px-4 py-3 text-base font-semibold text-slate-900 dark:text-slate-100 hover:bg-slate-50 dark:hover:bg-slate-700/50 rounded-lg"
         >
           {@title}
+          <span :if={@summary != []} class="mt-1 block text-sm font-normal text-slate-500 dark:text-slate-400">
+            {render_slot(@summary)}
+          </span>
         </summary>
         <div class="border-t border-slate-200 px-4 py-4 dark:border-slate-700">
           {render_slot(@inner_block)}
@@ -768,7 +788,7 @@ defmodule OrchardConsole.CoreComponents do
         name={@name}
         value="true"
         checked={@checked}
-        class="h-4 w-4 rounded border-slate-300 text-navy focus:ring-navy dark:border-slate-600 dark:bg-slate-800 dark:checked:bg-sky-500 dark:focus:ring-sky-400"
+        class="h-4 w-4 rounded border-slate-300 text-navy focus-visible:ring-navy dark:border-slate-600 dark:bg-slate-800 dark:checked:bg-sky-500 dark:focus-visible:ring-sky-400"
         {@rest}
       />
       {render_slot(@inner_block) || @label}

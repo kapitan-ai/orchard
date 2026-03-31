@@ -42,6 +42,111 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert has_element?(view, ~s(a[aria-current="page"][href="/console/model-hub"]))
     end
 
+    test "cards use max_height for desktop scroll containment", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console/model-hub")
+
+      assert html =~ ~s(id="model-hub-search-card")
+      assert html =~ ~s(id="model-hub-detail-card")
+      # Card-level max-height and flex/scroll classes
+      assert html =~ "xl:max-h-[calc(100vh-12rem)]"
+      assert html =~ "flex flex-col overflow-hidden"
+      assert html =~ "overflow-y-auto"
+    end
+
+    test "file listing renders inside a collapsed disclosure with summary", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = search_results_fixture()
+      search_ref = assert_search_started(nil)
+      send_search_success(view, search_ref, nil, results)
+      detail_ref = assert_detail_started(hd(results).repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(hd(results).repo_id))
+      html = render(view)
+
+      # Disclosure wrapper exists
+      assert html =~ ~s(id="model-hub-files-disclosure")
+      assert html =~ ~s(id="model-hub-files-summary")
+      # Summary shows file count and total
+      assert html =~ "2 files"
+      # Table is still rendered inside
+      assert html =~ "model-hub-detail-siblings"
+      assert html =~ "tokenizer.json"
+    end
+
+    test "empty siblings render without disclosure wrapper", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = search_results_fixture()
+      repo_id = hd(results).repo_id
+      search_ref = assert_search_started(nil)
+      send_search_success(view, search_ref, nil, results)
+      detail_ref = assert_detail_started(repo_id)
+      send_detail_success(view, detail_ref, %{"repo_id" => repo_id, "siblings" => nil})
+      html = render(view)
+
+      assert html =~ "model-hub-detail-siblings-empty"
+      refute html =~ "model-hub-files-disclosure"
+    end
+
+    test "large repo disclosure summary includes safetensors shard groups", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = search_results_fixture()
+      search_ref = assert_search_started(nil)
+      send_search_success(view, search_ref, nil, results)
+      detail_ref = assert_detail_started(hd(results).repo_id)
+
+      # Build a detail with 50+ siblings including safetensors shards
+      shard_siblings =
+        for i <- 1..48 do
+          padded = String.pad_leading("#{i}", 5, "0")
+          %{path: "model-#{padded}-of-00048.safetensors", size_bytes: 4_294_967_296}
+        end
+
+      other_siblings = [
+        %{path: "config.json", size_bytes: 2_048},
+        %{path: "tokenizer.json", size_bytes: 65_536},
+        %{path: "model.safetensors.index.json", size_bytes: 4_096}
+      ]
+
+      detail =
+        detail_fixture(hd(results).repo_id)
+        |> Map.put(:siblings, other_siblings ++ shard_siblings)
+
+      send_detail_success(view, detail_ref, detail)
+      html = render(view)
+
+      # Summary shows total file count
+      assert html =~ "51 files"
+      # Shard group line appears
+      assert html =~ "model-*.safetensors"
+      assert html =~ "48 shards"
+    end
+
+    test "detail :ok renders sticky inner header with repo and download action", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = search_results_fixture()
+      search_ref = assert_search_started(nil)
+      send_search_success(view, search_ref, nil, results)
+      detail_ref = assert_detail_started(hd(results).repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(hd(results).repo_id))
+      html = render(view)
+
+      # Sticky header wrapper exists with sticky classes
+      assert html =~ ~s(id="model-hub-detail-sticky-header")
+      assert html =~ "xl:sticky"
+      assert html =~ "xl:top-"
+      assert html =~ "xl:z-"
+      # Contains repo id and download action
+      assert html =~ "model-hub-detail-repo-id"
+      assert html =~ "model-hub-download-action"
+      # Scrolling body wrapper exists
+      assert html =~ ~s(id="model-hub-detail-body")
+    end
+
+    test "detail :idle does not render sticky inner header", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console/model-hub")
+
+      refute html =~ "model-hub-detail-sticky-header"
+    end
+
     test "connected mount loads initial browse results, auto-selects the first result, and loads detail",
          %{conn: conn} do
       {:ok, view, html} = live(conn, "/console/model-hub")

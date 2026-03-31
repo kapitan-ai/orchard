@@ -236,7 +236,7 @@ defmodule OrchardConsole.ModelHubLive do
     <div class="space-y-6">
       <div class="grid gap-6 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <div id="model-hub-search-card">
-          <.card>
+          <.card max_height="xl:max-h-[calc(100vh-12rem)]">
             <:title>Model Hub</:title>
             <:subtitle>Browse Hugging Face MLX text-generation models from the console.</:subtitle>
 
@@ -247,7 +247,7 @@ defmodule OrchardConsole.ModelHubLive do
                   id="model-hub-search-input"
                   type="search"
                   label="Search"
-                  placeholder="Filter by repo name or author"
+                  placeholder="Filter by repo name or author…"
                   phx-debounce="300"
                 />
               </.form>
@@ -317,7 +317,7 @@ defmodule OrchardConsole.ModelHubLive do
         </div>
 
         <div id="model-hub-detail-card">
-          <.card>
+          <.card max_height="xl:max-h-[calc(100vh-12rem)]">
             <:title>Model Details</:title>
             <:subtitle>Normalized repository metadata and file listing.</:subtitle>
 
@@ -347,43 +347,49 @@ defmodule OrchardConsole.ModelHubLive do
                   body={detail_error_body(@selected_repo_id)}
                 />
               <% :ok -> %>
-                <div id="model-hub-detail-content" class="space-y-5">
-                  <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        Repository
-                      </p>
-                      <p
-                        id="model-hub-detail-repo-id"
-                        class="mt-1 font-mono text-sm text-slate-900 break-all dark:text-slate-100"
-                      >
-                        {@model_detail.repo_id}
-                      </p>
+                <div id="model-hub-detail-content">
+                  <div
+                    id="model-hub-detail-sticky-header"
+                    class="xl:sticky xl:top-0 xl:z-[5] xl:bg-white xl:dark:bg-slate-800 xl:-mx-6 xl:px-6 xl:pb-4 xl:border-b xl:border-slate-100 xl:dark:border-slate-700/50 space-y-5"
+                  >
+                    <div class="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                          Repository
+                        </p>
+                        <p
+                          id="model-hub-detail-repo-id"
+                          class="mt-1 font-mono text-sm text-slate-900 break-all dark:text-slate-100"
+                        >
+                          {@model_detail.repo_id}
+                        </p>
+                      </div>
+
+                      <.badge tone={access_badge_tone(@model_detail.gated)}>
+                        {access_badge_label(@model_detail.gated)}
+                      </.badge>
                     </div>
 
-                    <.badge tone={access_badge_tone(@model_detail.gated)}>
-                      {access_badge_label(@model_detail.gated)}
-                    </.badge>
+                    <div id="model-hub-download-action" class="flex items-center gap-3">
+                      <.button
+                        id="model-hub-download-button"
+                        variant={:primary}
+                        phx-click="download_model"
+                        disabled={@model_detail.gated == true or download_busy?(@download_status)}
+                      >
+                        Download & Import
+                      </.button>
+                      <p
+                        :if={@model_detail.gated == true}
+                        id="model-hub-download-gated-note"
+                        class="text-sm text-amber-600 dark:text-amber-400"
+                      >
+                        This repository is gated on Hugging Face. Console download is unavailable.
+                      </p>
+                    </div>
                   </div>
 
-                  <div id="model-hub-download-action" class="flex items-center gap-3">
-                    <.button
-                      id="model-hub-download-button"
-                      variant={:primary}
-                      phx-click="download_model"
-                      disabled={@model_detail.gated == true or download_busy?(@download_status)}
-                    >
-                      Download & Import
-                    </.button>
-                    <p
-                      :if={@model_detail.gated == true}
-                      id="model-hub-download-gated-note"
-                      class="text-sm text-amber-600 dark:text-amber-400"
-                    >
-                      This repository is gated on Hugging Face. Console download is unavailable.
-                    </p>
-                  </div>
-
+                  <div id="model-hub-detail-body" class="space-y-5 pt-5">
                   <div id="model-hub-detail-metadata" class="grid gap-3 sm:grid-cols-2">
                     <div
                       :for={field <- detail_fields(@model_detail)}
@@ -402,40 +408,7 @@ defmodule OrchardConsole.ModelHubLive do
                     </div>
                   </div>
 
-                  <div class="space-y-3">
-                    <div>
-                      <h3 class="text-sm font-medium text-slate-900 dark:text-slate-100">
-                        Repository files
-                      </h3>
-                      <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                        File inventory reported by Hugging Face for this repository.
-                      </p>
-                    </div>
-
-                    <.table
-                      id="model-hub-detail-siblings"
-                      rows={@model_detail.siblings}
-                      row_id={fn sibling ->
-                        "model-hub-detail-file-#{dom_id_fragment(sibling.path)}"
-                      end}
-                    >
-                      <:col :let={sibling} label="Path" class="min-w-[18rem]">
-                        <span class="font-mono text-xs text-slate-900 break-all dark:text-slate-100">
-                          {sibling.path}
-                        </span>
-                      </:col>
-                      <:col :let={sibling} label="Size bytes" mono>
-                        {format_integer(sibling.size_bytes)}
-                      </:col>
-                      <:empty>
-                        <.state_message
-                          id="model-hub-detail-siblings-empty"
-                          kind={:empty}
-                          layout={:compact}
-                          body="No files reported by Hugging Face."
-                        />
-                      </:empty>
-                    </.table>
+                  <.repository_files_section siblings={@model_detail.siblings} />
                   </div>
                 </div>
             <% end %>
@@ -808,6 +781,160 @@ defmodule OrchardConsole.ModelHubLive do
   defp download_status_label(:preparing), do: "Preparing bundle"
   defp download_status_label(:importing), do: "Importing"
   defp download_status_label(_status), do: "Processing"
+
+  # ---------------------------------------------------------------------------
+  # Repository files disclosure
+  # ---------------------------------------------------------------------------
+
+  attr :siblings, :list, required: true
+
+  defp repository_files_section(%{siblings: []} = assigns) do
+    ~H"""
+    <div class="space-y-3">
+      <div>
+        <h3 class="text-sm font-medium text-slate-900 dark:text-slate-100">
+          Repository files
+        </h3>
+        <p class="mt-1 text-sm text-slate-500 dark:text-slate-400">
+          File inventory reported by Hugging Face for this repository.
+        </p>
+      </div>
+      <.state_message
+        id="model-hub-detail-siblings-empty"
+        kind={:empty}
+        layout={:compact}
+        body="No files reported by Hugging Face."
+      />
+    </div>
+    """
+  end
+
+  defp repository_files_section(assigns) do
+    summary = build_file_inventory_summary(assigns.siblings)
+    assigns = assign(assigns, :summary, summary)
+
+    ~H"""
+    <.disclosure_section
+      id="model-hub-files-disclosure"
+      title="Repository files"
+      summary_id="model-hub-files-summary"
+    >
+      <:summary>
+        <span id="model-hub-files-summary-total">{@summary.total_label}</span>
+        <span
+          :for={group <- @summary.shard_groups}
+          class="block text-xs text-slate-400 dark:text-slate-500"
+        >
+          {group}
+        </span>
+      </:summary>
+
+      <p class="mb-3 text-sm text-slate-500 dark:text-slate-400">
+        File inventory reported by Hugging Face for this repository.
+      </p>
+
+      <.table
+        id="model-hub-detail-siblings"
+        rows={@siblings}
+        row_id={fn sibling ->
+          "model-hub-detail-file-#{dom_id_fragment(sibling.path)}"
+        end}
+      >
+        <:col :let={sibling} label="Path" class="min-w-[18rem]">
+          <span class="font-mono text-xs text-slate-900 break-all dark:text-slate-100">
+            {sibling.path}
+          </span>
+        </:col>
+        <:col :let={sibling} label="Size bytes" mono>
+          {format_integer(sibling.size_bytes)}
+        </:col>
+      </.table>
+    </.disclosure_section>
+    """
+  end
+
+  defp build_file_inventory_summary(siblings) do
+    file_count = length(siblings)
+    {known_bytes, unknown_count} = sum_sibling_bytes(siblings)
+
+    total_label = format_file_summary(file_count, known_bytes, unknown_count)
+    shard_groups = if file_count >= 50, do: build_safetensors_shard_groups(siblings), else: []
+
+    %{total_label: total_label, shard_groups: shard_groups}
+  end
+
+  defp sum_sibling_bytes(siblings) do
+    Enum.reduce(siblings, {0, 0}, fn sibling, {bytes, unknown} ->
+      case sibling.size_bytes do
+        n when is_integer(n) and n > 0 -> {bytes + n, unknown}
+        _ -> {bytes, unknown + 1}
+      end
+    end)
+  end
+
+  defp format_file_summary(count, known_bytes, unknown_count) do
+    file_word = if count == 1, do: "file", else: "files"
+
+    cond do
+      unknown_count == 0 ->
+        "#{count} #{file_word} \u2014 #{format_bytes(known_bytes)} total"
+
+      unknown_count == count ->
+        "#{count} #{file_word} \u2014 size unavailable"
+
+      true ->
+        "#{count} #{file_word} \u2014 at least #{format_bytes(known_bytes)}"
+    end
+  end
+
+  defp build_safetensors_shard_groups(siblings) do
+    siblings
+    |> Enum.with_index()
+    |> Enum.filter(fn {sibling, _idx} -> safetensors_shard?(sibling.path) end)
+    |> Enum.group_by(fn {sibling, _idx} -> safetensors_shard_pattern(sibling.path) end)
+    |> Enum.reject(fn {_pattern, members} -> length(members) < 2 end)
+    |> Enum.map(fn {pattern, members} ->
+      first_index = members |> Enum.map(fn {_s, idx} -> idx end) |> Enum.min()
+      shard_count = length(members)
+
+      {known_bytes, unknown_count} =
+        Enum.reduce(members, {0, 0}, fn {sibling, _idx}, {bytes, unknown} ->
+          case sibling.size_bytes do
+            n when is_integer(n) and n > 0 -> {bytes + n, unknown}
+            _ -> {bytes, unknown + 1}
+          end
+        end)
+
+      {first_index, format_shard_group_line(pattern, shard_count, known_bytes, unknown_count)}
+    end)
+    |> Enum.sort_by(fn {idx, _} -> idx end)
+    |> Enum.map(fn {_idx, label} -> label end)
+  end
+
+  @safetensors_shard_regex ~r/-\d+-of-\d+\.safetensors$/
+
+  defp safetensors_shard?(path) when is_binary(path) do
+    Regex.match?(@safetensors_shard_regex, path)
+  end
+
+  defp safetensors_shard?(_), do: false
+
+  defp safetensors_shard_pattern(path) do
+    Regex.replace(@safetensors_shard_regex, path, "-*.safetensors")
+  end
+
+  defp format_shard_group_line(pattern, shard_count, known_bytes, unknown_count) do
+    shard_word = if shard_count == 1, do: "shard", else: "shards"
+
+    size_part =
+      cond do
+        unknown_count == 0 -> format_bytes(known_bytes)
+        unknown_count == shard_count -> "size unavailable"
+        true -> "at least #{format_bytes(known_bytes)}"
+      end
+
+    "#{pattern} (#{shard_count} #{shard_word}, #{size_part})"
+  end
 
   defp format_bytes(nil), do: "0 B"
   defp format_bytes(bytes) when is_integer(bytes) and bytes < 1024, do: "#{bytes} B"

@@ -283,7 +283,7 @@ defmodule OrchardConsole.TenantDetailLive do
             id="tenant-api-key-create-form"
             phx-submit="create_api_key"
           >
-            <.input field={@api_key_form[:name]} label="Key Name" placeholder="production-key" />
+            <.input field={@api_key_form[:name]} label="Key Name" placeholder="production-key…" />
             <:actions>
               <.button type="submit" phx-disable-with="Creating…">Create API Key</.button>
             </:actions>

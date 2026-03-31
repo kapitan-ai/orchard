@@ -166,6 +166,63 @@ defmodule OrchardConsole.CoreComponentsTest do
       # No border-b divider when there's no header
       refute html =~ "border-b"
     end
+
+    test "default card does not include scroll/flex classes" do
+      assigns = %{}
+      html = render_heex(~H|<.card>Normal card</.card>|)
+
+      refute html =~ "flex flex-col overflow-hidden"
+      refute html =~ "overflow-y-auto"
+      refute html =~ "min-h-0"
+    end
+
+    test "max_height card renders constrained flex layout with scrollable body" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.card max_height="xl:max-h-[calc(100vh-12rem)]">
+          <:title>Constrained</:title>
+          <:subtitle>With scroll</:subtitle>
+          Scrollable body
+        </.card>
+        """)
+
+      # Root has flex column + overflow hidden + max-height
+      assert html =~ "flex flex-col overflow-hidden"
+      assert html =~ "xl:max-h-[calc(100vh-12rem)]"
+      # Header has shrink-0
+      assert html =~ "shrink-0"
+      # Body has scroll classes
+      assert html =~ "flex-1"
+      assert html =~ "min-h-0"
+      assert html =~ "overflow-y-auto"
+      assert html =~ "Scrollable body"
+    end
+
+    test "max_height card without header still scrolls body" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.card max_height="max-h-96">
+          Headerless scrollable
+        </.card>
+        """)
+
+      assert html =~ "flex flex-col overflow-hidden"
+      assert html =~ "max-h-96"
+      assert html =~ "overflow-y-auto"
+      refute html =~ "shrink-0"
+    end
+
+    test "blank max_height is treated as unset" do
+      assigns = %{}
+      html = render_heex(~H|<.card max_height="  ">Normal</.card>|)
+
+      refute html =~ "flex flex-col overflow-hidden"
+      refute html =~ "overflow-y-auto"
+    end
   end
 
   # ===========================================================================
@@ -245,6 +302,37 @@ defmodule OrchardConsole.CoreComponentsTest do
 
       refute html =~ ~s(<summary id="")
       refute html =~ ~s(<summary id=)
+    end
+
+    test "renders summary slot content below the title" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.disclosure_section id="summary-slot-test" title="Repository files">
+          <:summary>14 files — 17.2 GB total</:summary>
+          <p>File table here</p>
+        </.disclosure_section>
+        """)
+
+      assert html =~ "Repository files"
+      assert html =~ "14 files"
+      assert html =~ "17.2 GB total"
+      assert html =~ "File table here"
+    end
+
+    test "omits summary span when summary slot is not provided" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.disclosure_section id="no-summary-slot" title="Debug Details">
+          <p>Body</p>
+        </.disclosure_section>
+        """)
+
+      assert html =~ "Debug Details"
+      refute html =~ "mt-1 block text-sm font-normal"
     end
   end
 
@@ -644,6 +732,20 @@ defmodule OrchardConsole.CoreComponentsTest do
 
       assert html =~ "I agree"
       assert html =~ ~s(type="checkbox")
+    end
+
+    test "checkbox uses focus-visible ring, not focus ring" do
+      assigns = %{}
+
+      html =
+        render_heex(
+          ~H|<.input type="checkbox" name="agree" label="Agree" value="false" id="agree-fv" />|
+        )
+
+      assert html =~ "focus-visible:ring-navy"
+      assert html =~ "dark:focus-visible:ring-sky-400"
+      refute html =~ "focus:ring-navy"
+      refute html =~ "dark:focus:ring-sky-400"
     end
 
     test "renders hidden input" do
