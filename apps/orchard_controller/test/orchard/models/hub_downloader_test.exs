@@ -388,7 +388,10 @@ defmodule Orchard.Models.HubDownloaderTest do
                 Plug.Conn.send_resp(conn, 429, "Rate limited")
               else
                 conn
-                |> Plug.Conn.put_resp_header("content-length", to_string(byte_size(content || "")))
+                |> Plug.Conn.put_resp_header(
+                  "content-length",
+                  to_string(byte_size(content || ""))
+                )
                 |> Plug.Conn.send_resp(200, content || "")
               end
             else
@@ -441,6 +444,7 @@ defmodule Orchard.Models.HubDownloaderTest do
 
         assert {:ok, _dest, _summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
         assert :counters.get(safetensors_get_count, 1) >= 2
+
         assert File.read!(Path.join(ctx.dest_dir, "model.safetensors")) ==
                  file_contents["model.safetensors"]
       end)
@@ -486,6 +490,7 @@ defmodule Orchard.Models.HubDownloaderTest do
 
         assert {:ok, _dest, _summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
         assert :counters.get(safetensors_get_count, 1) >= 3
+
         assert File.read!(Path.join(ctx.dest_dir, "model.safetensors")) ==
                  file_contents["model.safetensors"]
       end)
@@ -604,10 +609,11 @@ defmodule Orchard.Models.HubDownloaderTest do
       test_pid = self()
 
       on_request = fn conn ->
-        auth = Enum.find_value(conn.req_headers, fn
-          {"authorization", val} -> val
-          _ -> nil
-        end)
+        auth =
+          Enum.find_value(conn.req_headers, fn
+            {"authorization", val} -> val
+            _ -> nil
+          end)
 
         send(test_pid, {:request, conn.host, conn.method, auth})
       end

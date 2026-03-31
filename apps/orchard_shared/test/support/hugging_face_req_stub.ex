@@ -181,7 +181,9 @@ defmodule Orchard.TestSupport.HuggingFaceReqStub do
   end
 
   defp maybe_handle_route(nil, _conn, _file_path, _content), do: :default
-  defp maybe_handle_route(handler, conn, file_path, content), do: handler.(conn, file_path, content)
+
+  defp maybe_handle_route(handler, conn, file_path, content),
+    do: handler.(conn, file_path, content)
 
   defp wrap_content(nil), do: :error
   defp wrap_content(content), do: {:ok, content}

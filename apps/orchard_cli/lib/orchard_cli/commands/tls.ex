@@ -113,7 +113,8 @@ defmodule OrchardCLI.Commands.TLS do
 
     with :ok <- check_state_consistency(state, config.force?),
          :ok <- check_ca_days_reuse(state.ca_exists?, config.force?, config.ca_days_opt),
-         {:ok, reuse_ca?, ca_days} <- ca_generation_plan(state.ca_exists?, config.force?, config.ca_days_opt),
+         {:ok, reuse_ca?, ca_days} <-
+           ca_generation_plan(state.ca_exists?, config.force?, config.ca_days_opt),
          :ok <-
            check_days_against_ca(
              reuse_ca?,

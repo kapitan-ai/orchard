@@ -52,7 +52,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
   @doc "Parses an `hf://org/repo` URI into its components."
   def parse_hf_uri(uri) when is_binary(uri) do
     with %URI{scheme: "hf", host: host, path: path, query: query}
-           when is_binary(host) and host != "" <- URI.parse(uri),
+         when is_binary(host) and host != "" <- URI.parse(uri),
          repo_id when repo_id != "" <- build_repo_id(host, path),
          true <- String.contains?(repo_id, "/"),
          {:ok, revision} <- parse_revision(query) do
@@ -241,7 +241,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
     {:error, {:source_unavailable, "HF HEAD returned #{status}"}}
   end
 
-  defp maybe_retry_head_error(url, config, attempt, max_attempts, _reason) when attempt < max_attempts do
+  defp maybe_retry_head_error(url, config, attempt, max_attempts, _reason)
+       when attempt < max_attempts do
     backoff(attempt)
     do_head_retry(url, config, attempt + 1, max_attempts)
   end
@@ -304,7 +305,9 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
       root_label: "staging",
       request_fun: fn method, url, extra_opts -> hf_request(method, url, config, extra_opts) end,
       max_attempts: max(Keyword.get(config, :retry_attempts, 3), 1),
-      progress_fun: fn progress, current_file -> emit_progress(progress, request, current_file) end
+      progress_fun: fn progress, current_file ->
+        emit_progress(progress, request, current_file)
+      end
     ]
 
     case DownloadSupport.download_all(file_metas, opts) do
@@ -331,8 +334,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
 
   defp map_download_error({:download_incomplete, path, expected_size, actual_size}) do
     {:error,
-     {:download_incomplete,
-      "expected #{expected_size} bytes, got #{actual_size} for #{path}"}}
+     {:download_incomplete, "expected #{expected_size} bytes, got #{actual_size} for #{path}"}}
   end
 
   defp map_download_error({:http_status, status, path}) when status in [401, 403] do
@@ -357,6 +359,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
     token = Keyword.get(config, :token)
     connect_timeout = Keyword.get(config, :connect_timeout_ms, 10_000)
     receive_timeout = Keyword.get(config, :receive_timeout_ms, 30_000)
+
     req_options =
       config
       |> Keyword.get(:req_options, [])
@@ -391,8 +394,17 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFace do
   end
 
   @reserved_req_option_keys [
-    :method, :url, :headers, :params, :retry, :receive_timeout,
-    :connect_options, :body, :json, :into, :redirect
+    :method,
+    :url,
+    :headers,
+    :params,
+    :retry,
+    :receive_timeout,
+    :connect_options,
+    :body,
+    :json,
+    :into,
+    :redirect
   ]
 
   defp sanitize_req_options(req_options) when is_list(req_options) do

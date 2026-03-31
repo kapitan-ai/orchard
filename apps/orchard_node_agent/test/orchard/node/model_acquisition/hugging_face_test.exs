@@ -469,7 +469,12 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
       File.mkdir_p!(staging_path)
       content = ctx.file_contents["config.json"]
       real_etag = Orchard.TestSupport.HuggingFaceReqStub.hash_content(content)
-      File.write!(Path.join(staging_path, "config.json.partial"), String.duplicate("x", byte_size(content) + 500))
+
+      File.write!(
+        Path.join(staging_path, "config.json.partial"),
+        String.duplicate("x", byte_size(content) + 500)
+      )
+
       File.write!(Path.join(staging_path, "config.json.partial.etag"), real_etag)
 
       assert {:ok, final_path, :materialized} = ModelAcquisition.ensure_cached(request)
@@ -483,10 +488,11 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
       test_pid = self()
 
       on_request = fn conn ->
-        auth = Enum.find_value(conn.req_headers, fn
-          {"authorization", val} -> val
-          _ -> nil
-        end)
+        auth =
+          Enum.find_value(conn.req_headers, fn
+            {"authorization", val} -> val
+            _ -> nil
+          end)
 
         send(test_pid, {:request, conn.host, conn.method, auth})
       end
@@ -497,13 +503,22 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
       current_runtime = Application.get_env(:orchard_node_agent, :runtime, [])
       current_hf = Keyword.get(current_runtime, :hf, [])
       updated_hf = Keyword.put(current_hf, :token, "hf_node_secret")
-      Application.put_env(:orchard_node_agent, :runtime, Keyword.put(current_runtime, :hf, updated_hf))
+
+      Application.put_env(
+        :orchard_node_agent,
+        :runtime,
+        Keyword.put(current_runtime, :hf, updated_hf)
+      )
 
       request = build_hf_request(ctx)
       assert {:ok, _, :materialized} = ModelAcquisition.ensure_cached(request)
 
       # Restore
-      Application.put_env(:orchard_node_agent, :runtime, Keyword.put(current_runtime, :hf, current_hf))
+      Application.put_env(
+        :orchard_node_agent,
+        :runtime,
+        Keyword.put(current_runtime, :hf, current_hf)
+      )
 
       messages = collect_request_messages()
       cdn_requests = Enum.filter(messages, fn {host, _, _} -> host == "cdn.test" end)

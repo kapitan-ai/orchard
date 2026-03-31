@@ -236,7 +236,8 @@ defmodule Orchard.Models.HubDownloader do
     {:error, {:unavailable, "Hugging Face is unavailable."}}
   end
 
-  defp maybe_retry_tree_error(url, config, attempt, max_attempts, _reason) when attempt < max_attempts do
+  defp maybe_retry_tree_error(url, config, attempt, max_attempts, _reason)
+       when attempt < max_attempts do
     backoff(attempt)
     do_list_repo_tree(url, config, attempt + 1, max_attempts)
   end
@@ -245,8 +246,11 @@ defmodule Orchard.Models.HubDownloader do
     {:error, {:unavailable, "Hugging Face is unavailable."}}
   end
 
-  defp terminal_tree_status(429), do: {:error, {:rate_limited, "Hugging Face rate limit exceeded."}}
-  defp terminal_tree_status(status) when status >= 500, do: {:error, {:unavailable, "Hugging Face is unavailable."}}
+  defp terminal_tree_status(429),
+    do: {:error, {:rate_limited, "Hugging Face rate limit exceeded."}}
+
+  defp terminal_tree_status(status) when status >= 500,
+    do: {:error, {:unavailable, "Hugging Face is unavailable."}}
 
   defp get_file_size(%{"lfs" => %{"size" => size}}) when is_integer(size), do: size
   defp get_file_size(%{"size" => size}) when is_integer(size), do: size
@@ -351,7 +355,8 @@ defmodule Orchard.Models.HubDownloader do
     {:error, {:unavailable, "Hugging Face is unavailable."}}
   end
 
-  defp maybe_retry_head_error(url, config, attempt, max_attempts, _reason) when attempt < max_attempts do
+  defp maybe_retry_head_error(url, config, attempt, max_attempts, _reason)
+       when attempt < max_attempts do
     backoff(attempt)
     head_with_retry(url, config, attempt + 1, max_attempts)
   end
@@ -360,8 +365,11 @@ defmodule Orchard.Models.HubDownloader do
     {:error, {:unavailable, "Hugging Face is unavailable."}}
   end
 
-  defp terminal_head_status(429), do: {:error, {:rate_limited, "Hugging Face rate limit exceeded."}}
-  defp terminal_head_status(status) when status >= 500, do: {:error, {:unavailable, "Hugging Face is unavailable."}}
+  defp terminal_head_status(429),
+    do: {:error, {:rate_limited, "Hugging Face rate limit exceeded."}}
+
+  defp terminal_head_status(status) when status >= 500,
+    do: {:error, {:unavailable, "Hugging Face is unavailable."}}
 
   defp get_content_length(resp) do
     header_int(resp, "content-length") || header_int(resp, "x-linked-size")
@@ -417,15 +425,13 @@ defmodule Orchard.Models.HubDownloader do
       repo_spec: repo_spec,
       dest_root: dest_dir,
       root_label: "destination",
-      request_fun:
-        fn method, url, extra_opts ->
-          hf_request(method, url, config, extra_opts)
-        end,
+      request_fun: fn method, url, extra_opts ->
+        hf_request(method, url, config, extra_opts)
+      end,
       max_attempts: max(Keyword.get(config, :retry_attempts, @default_retry_attempts), 1),
-      progress_fun:
-        fn progress, current_file ->
-          emit_progress(callback, progress, current_file)
-        end,
+      progress_fun: fn progress, current_file ->
+        emit_progress(callback, progress, current_file)
+      end,
       emit_initial_progress?: true
     ]
 
@@ -461,8 +467,7 @@ defmodule Orchard.Models.HubDownloader do
 
   defp map_download_error({:download_incomplete, path, expected_size, actual_size}) do
     {:error,
-     {:download_incomplete,
-      "expected #{expected_size} bytes, got #{actual_size} for #{path}"}}
+     {:download_incomplete, "expected #{expected_size} bytes, got #{actual_size} for #{path}"}}
   end
 
   defp map_download_error({:http_status, status, _path}) when status in [401, 403] do
@@ -527,7 +532,7 @@ defmodule Orchard.Models.HubDownloader do
     follow_redirects? = Keyword.get(extra_opts, :follow_redirects?, true)
 
     auth_headers =
-      if auth? and token && token != "",
+      if (auth? and token) && token != "",
         do: [{"authorization", "Bearer #{token}"}],
         else: []
 

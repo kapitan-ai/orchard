@@ -52,16 +52,21 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
 
       cond do
         # HEAD on origin /resolve/ URL before redirect → 307
-        method == :head and :atomics.get(redirected, 1) == 0 and String.contains?(url, "/resolve/") ->
+        method == :head and :atomics.get(redirected, 1) == 0 and
+            String.contains?(url, "/resolve/") ->
           :atomics.put(redirected, 1, 1)
           {:ok, %{status: 307, headers: %{"location" => [redirect_location]}}}
 
         # HEAD on terminal URL (after redirect, or non-resolve URL) → 200
         method == :head ->
-          {:ok, %{status: 200, headers: %{
-            "content-length" => [to_string(byte_size(terminal_content))],
-            "etag" => ["\"#{@file_etag}\""]
-          }}}
+          {:ok,
+           %{
+             status: 200,
+             headers: %{
+               "content-length" => [to_string(byte_size(terminal_content))],
+               "etag" => ["\"#{@file_etag}\""]
+             }
+           }}
 
         # GET → stream content through into callback
         method == :get ->
@@ -110,7 +115,10 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
       end
 
       opts = base_opts(ctx.tmp_dir, request_fun)
-      assert {:error, {:redirect_resolution_failed, msg}} = DownloadSupport.download_all(ctx.file_metas, opts)
+
+      assert {:error, {:redirect_resolution_failed, msg}} =
+               DownloadSupport.download_all(ctx.file_metas, opts)
+
       assert msg =~ "missing Location"
     end
 
@@ -124,14 +132,19 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
         if method == :head do
           n = :counters.get(hop_count, 1)
           :counters.add(hop_count, 1, 1)
-          {:ok, %{status: 307, headers: %{"location" => ["https://hop#{n + 1}.example.com/file"]}}}
+
+          {:ok,
+           %{status: 307, headers: %{"location" => ["https://hop#{n + 1}.example.com/file"]}}}
         else
           {:ok, %{status: 200, body: @file_content}}
         end
       end
 
       opts = base_opts(ctx.tmp_dir, request_fun)
-      assert {:error, {:redirect_resolution_failed, msg}} = DownloadSupport.download_all(ctx.file_metas, opts)
+
+      assert {:error, {:redirect_resolution_failed, msg}} =
+               DownloadSupport.download_all(ctx.file_metas, opts)
+
       assert msg =~ "too many redirect hops"
     end
   end
@@ -161,16 +174,20 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
       requests = collect_requests()
 
       # Origin HEAD should have auth? true
-      origin_heads = Enum.filter(requests, fn {method, url, _} ->
-        method == :head and String.contains?(url, "huggingface.co/test/model/resolve/")
-      end)
+      origin_heads =
+        Enum.filter(requests, fn {method, url, _} ->
+          method == :head and String.contains?(url, "huggingface.co/test/model/resolve/")
+        end)
+
       assert length(origin_heads) > 0
       Enum.each(origin_heads, fn {_, _, opts} -> assert Keyword.get(opts, :auth?) == true end)
 
       # CDN requests should have auth? false
-      cdn_requests = Enum.filter(requests, fn {_method, url, _} ->
-        String.contains?(url, "cdn.example.com")
-      end)
+      cdn_requests =
+        Enum.filter(requests, fn {_method, url, _} ->
+          String.contains?(url, "cdn.example.com")
+        end)
+
       assert length(cdn_requests) > 0
       Enum.each(cdn_requests, fn {_, _, opts} -> assert Keyword.get(opts, :auth?) == false end)
     end
@@ -183,9 +200,12 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
       assert {:ok, _} = DownloadSupport.download_all(ctx.file_metas, opts)
 
       requests = collect_requests()
-      cdn_requests = Enum.filter(requests, fn {_method, url, _} ->
-        String.contains?(url, ":8443")
-      end)
+
+      cdn_requests =
+        Enum.filter(requests, fn {_method, url, _} ->
+          String.contains?(url, ":8443")
+        end)
+
       assert length(cdn_requests) > 0
       Enum.each(cdn_requests, fn {_, _, opts} -> assert Keyword.get(opts, :auth?) == false end)
     end
@@ -207,15 +227,20 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
         cond do
           # HEAD → no redirect (direct 200)
           method == :head ->
-            {:ok, %{status: 200, headers: %{
-              "content-length" => [to_string(@file_size)],
-              "etag" => ["\"#{@file_etag}\""]
-            }}}
+            {:ok,
+             %{
+               status: 200,
+               headers: %{
+                 "content-length" => [to_string(@file_size)],
+                 "etag" => ["\"#{@file_etag}\""]
+               }
+             }}
 
           # GET with Range that exceeds file size → 416
           method == :get and has_range_header?(extra_opts) ->
             n = :counters.get(attempt_count, 1)
             :counters.add(attempt_count, 1, 1)
+
             if n == 0 do
               {:ok, %{status: 416}}
             else
@@ -247,10 +272,14 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
 
         case method do
           :head ->
-            {:ok, %{status: 200, headers: %{
-              "content-length" => [to_string(@file_size)],
-              "etag" => ["\"#{@file_etag}\""]
-            }}}
+            {:ok,
+             %{
+               status: 200,
+               headers: %{
+                 "content-length" => [to_string(@file_size)],
+                 "etag" => ["\"#{@file_etag}\""]
+               }
+             }}
 
           :get ->
             stream_content(extra_opts, @file_content)
@@ -288,6 +317,7 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
 
   defp stream_content(extra_opts, content) do
     into = Keyword.get(extra_opts, :into)
+
     if into do
       {_, acc} = into.({:data, content}, {nil, %{status: 200}})
       {:ok, %{status: 200, body: acc}}

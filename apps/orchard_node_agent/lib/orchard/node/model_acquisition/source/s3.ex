@@ -334,9 +334,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
   end
 
   defp execute_download_request(state, file_pid, counters) do
-    s3_request(:get, state.url, state.config,
-      into: download_into(file_pid, counters, state)
-    )
+    s3_request(:get, state.url, state.config, into: download_into(file_pid, counters, state))
   end
 
   defp download_into(file_pid, counters, state) do
@@ -384,7 +382,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
   defp handle_download_result(state, {:ok, %{status: 200}}, bytes_written) do
     if bytes_written != state.expected_size do
-      {:error, {:download_incomplete, "expected #{state.expected_size} bytes, got #{bytes_written}"}}
+      {:error,
+       {:download_incomplete, "expected #{state.expected_size} bytes, got #{bytes_written}"}}
     else
       finalize_successful_download(state, bytes_written)
     end
@@ -477,7 +476,9 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
   end
 
   defp maybe_put_session_token(opts, nil), do: opts
-  defp maybe_put_session_token(opts, session_token), do: Keyword.put(opts, :session_token, session_token)
+
+  defp maybe_put_session_token(opts, session_token),
+    do: Keyword.put(opts, :session_token, session_token)
 
   # -- Progress Telemetry ----------------------------------------------------
 

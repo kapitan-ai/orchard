@@ -111,7 +111,8 @@ defmodule Orchard.HuggingFace.DownloadSupport do
   defp maybe_emit_initial_progress(_context), do: :ok
 
   defp download_each(context) do
-    Enum.reduce_while(context.file_metas, {:ok, context.progress}, fn file_meta, {:ok, progress} ->
+    Enum.reduce_while(context.file_metas, {:ok, context.progress}, fn file_meta,
+                                                                      {:ok, progress} ->
       case download_entry(context, file_meta, progress) do
         {:ok, updated_progress} -> {:cont, {:ok, updated_progress}}
         {:error, _} = error -> {:halt, error}
@@ -135,7 +136,13 @@ defmodule Orchard.HuggingFace.DownloadSupport do
 
     with :ok <- ensure_download_slots_safe(paths, file_meta.path, context.root_label),
          {:ok, {offset, resume?}} <-
-           compute_resume_offset(paths.partial_path, paths.etag_path, remote_etag, file_meta.path, context.root_label) do
+           compute_resume_offset(
+             paths.partial_path,
+             paths.etag_path,
+             remote_etag,
+             file_meta.path,
+             context.root_label
+           ) do
       bytes_counter = init_bytes_counter(offset, resume?)
       request_url = resolve_url(context.base_url, context.repo_spec, file_meta.path)
 
@@ -171,7 +178,11 @@ defmodule Orchard.HuggingFace.DownloadSupport do
     with {:ok, parent_dir} <-
            ensure_destination_parent(context.real_dest_root, file_meta.path, context.root_label),
          dest = Path.join(parent_dir, Path.basename(file_meta.path)),
-         paths = %{dest: dest, partial_path: dest <> ".partial", etag_path: dest <> ".partial.etag"},
+         paths = %{
+           dest: dest,
+           partial_path: dest <> ".partial",
+           etag_path: dest <> ".partial.etag"
+         },
          :ok <- ensure_download_slots_safe(paths, file_meta.path, context.root_label) do
       {:ok, paths}
     end
@@ -344,7 +355,9 @@ defmodule Orchard.HuggingFace.DownloadSupport do
   end
 
   defp size_mismatch?(%{expected_size: nil}, _bytes_written), do: false
-  defp size_mismatch?(%{expected_size: expected_size}, bytes_written), do: bytes_written != expected_size
+
+  defp size_mismatch?(%{expected_size: expected_size}, bytes_written),
+    do: bytes_written != expected_size
 
   defp retry_or_incomplete(state, bytes_written) do
     if state.attempt < state.context.max_attempts do
@@ -425,7 +438,9 @@ defmodule Orchard.HuggingFace.DownloadSupport do
   end
 
   defp emit_progress(nil, _progress, _current_file), do: :ok
-  defp emit_progress(progress_fun, progress, current_file), do: progress_fun.(progress, current_file)
+
+  defp emit_progress(progress_fun, progress, current_file),
+    do: progress_fun.(progress, current_file)
 
   defp retryable_status?(status), do: status == 429 or status >= 500
 
