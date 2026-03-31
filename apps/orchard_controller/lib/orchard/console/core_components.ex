@@ -1061,7 +1061,12 @@ defmodule OrchardConsole.CoreComponents do
   attr :class, :string, default: ""
 
   def local_time(assigns) do
-    assigns = assign(assigns, :normalized, normalize_local_time(assigns.value, assigns.placeholder))
+    assigns =
+      assigns
+      |> assign(:normalized, normalize_local_time(assigns.value, assigns.placeholder))
+      |> then(fn a ->
+        if a.id, do: a, else: assign(a, :id, "lt-#{System.unique_integer([:positive])}")
+      end)
 
     case assigns.normalized do
       {:interactive, dt} ->
