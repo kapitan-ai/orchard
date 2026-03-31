@@ -595,7 +595,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       html = render(view)
       assert html =~ "Downloading"
       assert html =~ "0 of 15 files"
-      assert html =~ "4.0 GB"
+      assert html =~ "4.0\u00a0GB"
       assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
       # Bar switches to determinate at 0%
       assert has_element?(view, "#model-hub-download-progress-bar[data-mode=determinate]")
@@ -630,7 +630,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       html = render(view)
       assert html =~ "Downloading"
       assert html =~ "3 of 10 files"
-      assert html =~ "512.0 MB"
+      assert html =~ "512.0\u00a0MB"
       assert html =~ "model-00001-of-00002.safetensors"
       # Bar at 50%
       assert has_element?(view, "#model-hub-download-progress-bar[aria-valuenow='50']")

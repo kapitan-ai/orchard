@@ -845,8 +845,8 @@ defmodule OrchardConsole.ModelHubLive do
             {sibling.path}
           </span>
         </:col>
-        <:col :let={sibling} label="Size bytes" mono>
-          {format_integer(sibling.size_bytes)}
+        <:col :let={sibling} label="Size" mono>
+          {format_bytes(sibling.size_bytes)}
         </:col>
       </.table>
     </.disclosure_section>
@@ -936,8 +936,8 @@ defmodule OrchardConsole.ModelHubLive do
     "#{pattern} (#{shard_count} #{shard_word}, #{size_part})"
   end
 
-  defp format_bytes(nil), do: "0 B"
-  defp format_bytes(bytes) when is_integer(bytes) and bytes < 1024, do: "#{bytes} B"
+  defp format_bytes(nil), do: "0\u00a0B"
+  defp format_bytes(bytes) when is_integer(bytes) and bytes < 1024, do: "#{bytes}\u00a0B"
 
   defp format_bytes(bytes) when is_integer(bytes) do
     {value, unit} =
@@ -948,10 +948,10 @@ defmodule OrchardConsole.ModelHubLive do
         true -> {bytes / (1024 * 1024 * 1024 * 1024), "TB"}
       end
 
-    "#{:erlang.float_to_binary(value, decimals: 1)} #{unit}"
+    "#{:erlang.float_to_binary(value, decimals: 1)}\u00a0#{unit}"
   end
 
-  defp format_bytes(_bytes), do: "0 B"
+  defp format_bytes(_bytes), do: "0\u00a0B"
 
   defp format_download_percentage(_downloaded, nil), do: nil
   defp format_download_percentage(_downloaded, 0), do: nil
@@ -1164,8 +1164,8 @@ defmodule OrchardConsole.ModelHubLive do
       %{id: "library", label: "Library", value: display_value(detail.library_name), mono: false},
       %{
         id: "storage",
-        label: "Used storage bytes",
-        value: format_integer(detail.used_storage_bytes),
+        label: "Used storage",
+        value: format_bytes(detail.used_storage_bytes),
         mono: false
       },
       %{
@@ -1220,7 +1220,14 @@ defmodule OrchardConsole.ModelHubLive do
     ]
   end
 
-  defp format_integer(value) when is_integer(value), do: Integer.to_string(value)
+  defp format_integer(value) when is_integer(value) do
+    value
+    |> Integer.to_string()
+    |> String.reverse()
+    |> String.replace(~r/.{3}(?=.)/, "\\0,")
+    |> String.reverse()
+  end
+
   defp format_integer(_value), do: "—"
 
   defp format_list(values) when is_list(values) do
