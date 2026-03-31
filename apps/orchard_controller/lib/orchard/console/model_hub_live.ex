@@ -863,7 +863,7 @@ defmodule OrchardConsole.ModelHubLive do
     {known_bytes, unknown_count} = sum_sibling_bytes(siblings)
 
     total_label = format_file_summary(file_count, known_bytes, unknown_count)
-    shard_groups = if file_count >= 50, do: build_safetensors_shard_groups(siblings), else: []
+    shard_groups = build_safetensors_shard_groups(siblings)
 
     %{total_label: total_label, shard_groups: shard_groups}
   end

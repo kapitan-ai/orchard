@@ -231,7 +231,12 @@ defmodule OrchardConsole.CoreComponents do
   attr(:max_height, :string,
     default: nil,
     doc:
-      "Tailwind height constraint classes (e.g. `xl:max-h-[calc(100vh-12rem)]`). When set, card body scrolls internally while header stays visible."
+      "Tailwind height constraint classes (e.g. `xl:max-h-[calc(100vh-12rem)]`). " <>
+        "When set, the card root becomes a flex column with `overflow-hidden`, " <>
+        "the header stays in a non-scrolling `shrink-0` region, and the body becomes " <>
+        "the sole scroll container (`overflow-y-auto`). This means dropdowns, popovers, " <>
+        "or tooltips inside the body will be clipped by the card boundary. " <>
+        "A blank string is treated as unset (no constraint applied)."
   )
 
   slot(:title)
@@ -308,7 +313,14 @@ defmodule OrchardConsole.CoreComponents do
   attr(:title, :string, required: true)
   attr(:default_open, :boolean, default: false)
   attr(:summary_id, :string, default: nil)
-  slot(:summary, doc: "Optional summary content rendered below the title inside <summary>.")
+
+  slot(:summary,
+    doc:
+      "Optional inline-only content rendered below the title inside `<summary>`. " <>
+        "Content is placed in a `<span>`, so callers must use phrasing elements only " <>
+        "(text, `<span>`, `<strong>`, etc.) — not block containers like `<div>`, `<ul>`, or `<table>`."
+  )
+
   slot(:inner_block, required: true)
 
   def disclosure_section(assigns) do

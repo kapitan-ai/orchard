@@ -86,6 +86,35 @@ defmodule OrchardConsole.ModelHubLiveTest do
       refute html =~ "model-hub-files-disclosure"
     end
 
+    test "small repo with 2+ shards still shows shard groups", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = search_results_fixture()
+      search_ref = assert_search_started(nil)
+      send_search_success(view, search_ref, nil, results)
+      detail_ref = assert_detail_started(hd(results).repo_id)
+
+      # Only 4 files total, but 2 qualifying safetensors shards
+      siblings = [
+        %{path: "model-00001-of-00002.safetensors", size_bytes: 4_294_967_296},
+        %{path: "model-00002-of-00002.safetensors", size_bytes: 4_294_967_296},
+        %{path: "config.json", size_bytes: 2_048},
+        %{path: "tokenizer.json", size_bytes: 65_536}
+      ]
+
+      detail =
+        detail_fixture(hd(results).repo_id)
+        |> Map.put(:siblings, siblings)
+
+      send_detail_success(view, detail_ref, detail)
+      html = render(view)
+
+      # Summary shows total file count
+      assert html =~ "4 files"
+      # Shard group line appears even with <50 files
+      assert html =~ "model-*.safetensors"
+      assert html =~ "2 shards"
+    end
+
     test "large repo disclosure summary includes safetensors shard groups", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = search_results_fixture()
