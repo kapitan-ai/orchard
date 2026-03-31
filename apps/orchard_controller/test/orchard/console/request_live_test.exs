@@ -161,7 +161,10 @@ defmodule OrchardConsole.RequestLiveTest do
       assert worker_html =~ "font-mono"
 
       first_token_html = element(view, "#request-first-token-at") |> render()
-      assert first_token_html =~ "2026-03-15T12:30:45"
+        assert first_token_html =~ ~s(phx-hook="LocalTime")
+        assert first_token_html =~ ~s(data-local-time-format="datetime_second")
+        assert first_token_html =~ ~s(datetime="2026-03-15T12:30:45Z")
+        assert first_token_html =~ "2026-03-15 12:30:45 UTC"
 
       http_html = element(view, "#request-execution-http-status") |> render()
       assert http_html =~ "200"
@@ -547,6 +550,23 @@ defmodule OrchardConsole.RequestLiveTest do
       received_pos = :binary.match(html, "request-event-1") |> elem(0)
       running_pos = :binary.match(html, "request-event-2") |> elem(0)
       assert received_pos < running_pos
+
+      # Timeline timestamps use LocalTime hook
+      assert html =~ ~s(data-local-time-format="datetime_second")
+    end
+
+    test "summary timestamps use LocalTime hook", %{conn: conn} do
+      request = create_request!(%{state: :completed, http_status: 200})
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      # Created is always populated — interactive <time> with hook
+      created_html = view |> element("#request-created-at") |> render()
+      assert created_html =~ ~s(phx-hook="LocalTime")
+      assert created_html =~ ~s(data-local-time-format="datetime_second")
+
+      # Completed may be nil in fixtures — renders placeholder without hook
+      completed_html = view |> element("#request-completed-at") |> render()
+      assert completed_html =~ "—"
     end
 
     test "renders dash for nil occurred_at", %{conn: conn} do

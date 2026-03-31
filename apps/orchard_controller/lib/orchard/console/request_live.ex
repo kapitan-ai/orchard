@@ -184,10 +184,10 @@ defmodule OrchardConsole.RequestLive do
             {format_integer(@request.http_status)}
           </.detail_field>
           <.detail_field id="request-created-at" label="Created" mono>
-            {format_datetime(@request.inserted_at)}
+            <.local_time value={@request.inserted_at} format={:datetime_second} />
           </.detail_field>
           <.detail_field id="request-completed-at" label="Completed" mono>
-            {format_datetime(@request.completed_at)}
+            <.local_time value={@request.completed_at} format={:datetime_second} />
           </.detail_field>
           <.detail_field id="request-state" label="State">
             {format_state(@request.state)}
@@ -220,7 +220,7 @@ defmodule OrchardConsole.RequestLive do
             {format_text(@request.worker_id)}
           </.detail_field>
           <.detail_field id="request-first-token-at" label="First Token At" mono>
-            {format_datetime(@request.first_token_at)}
+            <.local_time value={@request.first_token_at} format={:datetime_second} />
           </.detail_field>
           <.detail_field id="request-execution-http-status" label="HTTP Status" mono>
             {format_integer(@request.http_status)}
@@ -479,7 +479,7 @@ defmodule OrchardConsole.RequestLive do
 
         <.table id="request-timeline" rows={@events} row_id={&"request-event-#{&1.seq}"}>
           <:col :let={event} label="Seq" mono>{event.seq}</:col>
-          <:col :let={event} label="Occurred At" mono>{format_datetime(event.occurred_at)}</:col>
+            <:col :let={event} label="Occurred At" mono><.local_time value={event.occurred_at} format={:datetime_second} /></:col>
           <:col :let={event} label="Event">{event.event_type}</:col>
           <:col :let={event} label="State">
             <%= if event.state do %>
@@ -654,7 +654,7 @@ defmodule OrchardConsole.RequestLive do
   # Freshness helpers
   # ===========================================================================
 
-    defp request_refresh_interval_label do
+  defp request_refresh_interval_label do
     ms = refresh_interval_ms()
     if rem(ms, 1000) == 0, do: "#{div(ms, 1000)}s", else: "#{ms}ms"
   end
@@ -717,9 +717,6 @@ defmodule OrchardConsole.RequestLive do
   defp format_state(nil), do: "—"
   defp format_state(state) when is_atom(state), do: Atom.to_string(state)
   defp format_state(state), do: to_string(state)
-
-  defp format_datetime(nil), do: "—"
-  defp format_datetime(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
 
   defp format_integer(nil), do: "—"
   defp format_integer(n) when is_integer(n), do: to_string(n)
