@@ -56,6 +56,9 @@ defmodule OrchardConsole.TenantsLiveTest do
       assert html =~ "Created tenant new-tenant."
       assert html =~ "new-tenant"
       assert html =~ "New Tenant"
+      # Created column uses LocalTime hook
+      assert html =~ ~s(phx-hook="LocalTime")
+      assert html =~ ~s(data-local-time-format="datetime_minute")
     end
 
     test "shows validation error for blank slug", %{conn: conn} do

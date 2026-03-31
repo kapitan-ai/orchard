@@ -99,7 +99,7 @@ defmodule OrchardConsole.TenantsLive do
             <:col :let={tenant} label="Tenant ID" mono>
               <span class="text-xs">{tenant.id}</span>
             </:col>
-            <:col :let={tenant} label="Created" mono>{format_datetime(tenant.inserted_at)}</:col>
+            <:col :let={tenant} label="Created" mono><.local_time value={tenant.inserted_at} format={:datetime_minute} /></:col>
 
             <:action :let={tenant}>
               <.link
@@ -173,8 +173,4 @@ defmodule OrchardConsole.TenantsLive do
         load_error: "Tenant data unavailable."
       )
   end
-
-  defp format_datetime(%DateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
-  defp format_datetime(%NaiveDateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
-  defp format_datetime(_), do: "—"
 end

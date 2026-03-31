@@ -102,7 +102,7 @@ defmodule OrchardConsole.ModelsLive do
           <:col :let={model} label="Format" mono>{model.format}</:col>
           <:col :let={model} label="Capabilities">{format_capabilities(model.capabilities)}</:col>
           <:col :let={model} label="Max Context" mono>{format_integer(model.max_context_tokens)}</:col>
-          <:col :let={model} label="Imported" mono>{format_datetime(model.inserted_at)}</:col>
+            <:col :let={model} label="Imported" mono><.local_time value={model.inserted_at} format={:datetime_minute} /></:col>
 
           <:action :let={model}>
             <span
@@ -319,10 +319,6 @@ defmodule OrchardConsole.ModelsLive do
 
   defp format_integer(nil), do: "\u2014"
   defp format_integer(n) when is_integer(n), do: Integer.to_string(n)
-
-  defp format_datetime(%DateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
-  defp format_datetime(%NaiveDateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
-  defp format_datetime(_), do: "\u2014"
 
   defp success_message(:activate, model), do: "Activated #{display_id(model)}."
   defp success_message(:deprecate, model), do: "Deprecated #{display_id(model)}."

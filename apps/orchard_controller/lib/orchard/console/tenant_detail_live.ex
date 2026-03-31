@@ -206,7 +206,7 @@ defmodule OrchardConsole.TenantDetailLive do
             </div>
             <div>
               <dt class="text-slate-500 dark:text-slate-400">Created</dt>
-              <dd id="tenant-detail-created-at" class="font-mono">{format_datetime(@tenant.inserted_at)}</dd>
+                <dd id="tenant-detail-created-at" class="font-mono"><.local_time value={@tenant.inserted_at} format={:datetime_minute} /></dd>
             </div>
           </dl>
         </.card>
@@ -299,8 +299,8 @@ defmodule OrchardConsole.TenantDetailLive do
           <.table id="tenant-api-keys-table" rows={@api_keys} row_id={&"api-key-#{&1.id}"}>
             <:col :let={key} label="Name">{key.name}</:col>
             <:col :let={key} label="Prefix" mono>{key.token_prefix}</:col>
-            <:col :let={key} label="Created" mono>{format_datetime(key.inserted_at)}</:col>
-            <:col :let={key} label="Last Used" mono>{format_datetime(key.last_used_at)}</:col>
+            <:col :let={key} label="Created" mono><.local_time value={key.inserted_at} format={:datetime_minute} /></:col>
+              <:col :let={key} label="Last Used" mono><.local_time value={key.last_used_at} format={:datetime_minute} /></:col>
             <:col :let={key} label="Status">
               <.badge :if={key.revoked_at == nil} tone={:success}>Active</.badge>
               <.badge :if={key.revoked_at != nil} tone={:neutral}>Revoked</.badge>
@@ -395,8 +395,4 @@ defmodule OrchardConsole.TenantDetailLive do
         load_error: "Tenant details unavailable."
       )
   end
-
-  defp format_datetime(%DateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
-  defp format_datetime(%NaiveDateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M")
-  defp format_datetime(_), do: "—"
 end

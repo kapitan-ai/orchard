@@ -41,6 +41,9 @@ defmodule OrchardConsole.ModelsLiveTest do
       assert html =~ "mlx-community/phi-3"
       assert html =~ "mlx-community/llama-2"
       assert html =~ "Manage model visibility"
+      # Imported column uses LocalTime hook
+      assert html =~ ~s(phx-hook="LocalTime")
+      assert html =~ ~s(data-local-time-format="datetime_minute")
     end
 
     test "renders state badges with correct tones", %{conn: conn} do

@@ -27,6 +27,10 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert html =~ "Detail Tenant"
       assert html =~ "detail-t"
       assert html =~ tenant.id
+      # Tenant Created timestamp uses LocalTime hook
+      assert html =~ "tenant-detail-created-at"
+      assert html =~ ~s(phx-hook="LocalTime")
+      assert html =~ ~s(data-local-time-format="datetime_minute")
     end
 
     test "shows not-found state for unknown tenant ID", %{conn: conn} do
@@ -72,6 +76,21 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert html =~ "orch_"
       assert html =~ "only once"
       assert html =~ "Not yet copied"
+    end
+
+    test "API key row timestamps use LocalTime hook and nil last_used_at shows placeholder", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, %{api_key: key}} = Governance.create_api_key(tenant.id, %{name: "ts-test"})
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      key_row = view |> element("#api-key-#{key.id}") |> render()
+      # Created column uses LocalTime
+      assert key_row =~ ~s(phx-hook="LocalTime")
+      assert key_row =~ ~s(data-local-time-format="datetime_minute")
+      # Last Used is nil — should show placeholder without hook
+      assert key_row =~ "—"
     end
 
     test "secret card is NOT shown on fresh page visit", %{conn: conn, tenant: tenant} do
