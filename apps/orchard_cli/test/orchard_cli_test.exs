@@ -19,7 +19,7 @@ defmodule OrchardCLITest do
     assert output =~ "orchardctl (M0 scaffold)"
 
     assert output =~
-             "cluster, env, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
+             "status, cluster, env, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
   end
 
   test "dispatches each placeholder command module" do
@@ -147,6 +147,24 @@ defmodule OrchardCLITest do
   test "Models.run/1 returns ok tuple for import with too many args" do
     assert {:error, message, 1} = Models.run(["import", "a", "b"])
     assert message =~ "expected exactly one bundle path"
+  end
+
+  test "status --help dispatches through main without network activity" do
+    output = capture_io(fn -> OrchardCLI.main(["status", "--help"], &no_halt/1) end)
+    assert output =~ "orchardctl status"
+    assert output =~ "health endpoint"
+  end
+
+  test "status with extra args exits non-zero" do
+    parent = self()
+
+    stderr =
+      capture_io(:stderr, fn ->
+        OrchardCLI.main(["status", "extra"], halt_stub(parent))
+      end)
+
+    assert stderr =~ "orchardctl status"
+    assert_received {:halt_called, 1}
   end
 
   test "cli application supervisor is running" do
