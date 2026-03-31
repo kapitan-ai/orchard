@@ -240,6 +240,15 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "Toggle sidebar"
     end
 
+    test "renders sidebar version label", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      assert has_element?(view, "#console-sidebar-version")
+      version_html = view |> element("#console-sidebar-version") |> render()
+      assert version_html =~ OrchardConsole.display_version()
+      assert version_html =~ "sidebar-label"
+    end
+
     test "renders page header with title", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 

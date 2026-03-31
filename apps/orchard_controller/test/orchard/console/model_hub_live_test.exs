@@ -109,7 +109,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       second = Enum.at(results, 1)
 
       view
-      |> element("#model-hub-select-#{dom_id_fragment(second.repo_id)}")
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
       |> render_click()
 
       detail_ref = assert_detail_started(second.repo_id)
@@ -134,7 +134,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       _detail_ref = assert_detail_started(first_repo_id)
 
       view
-      |> element("#model-hub-select-#{dom_id_fragment(first_repo_id)}")
+      |> element("#model-hub-result-#{dom_id_fragment(first_repo_id)}")
       |> render_click()
 
       refute_receive {:stub_detail_ref, _, ^first_repo_id}, 50
@@ -147,7 +147,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       second = Enum.at(results, 1)
 
       view
-      |> element("#model-hub-select-#{dom_id_fragment(second.repo_id)}")
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
       |> render_click()
 
       second_detail_ref = assert_detail_started(second.repo_id)
@@ -289,7 +289,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       :persistent_term.put({__MODULE__, :start_detail_result}, :error)
 
       view
-      |> element("#model-hub-select-#{dom_id_fragment(second.repo_id)}")
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
       |> render_click()
 
       html = render(view)
@@ -377,7 +377,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       first_detail_ref = assert_detail_started(first.repo_id)
 
       view
-      |> element("#model-hub-select-#{dom_id_fragment(second.repo_id)}")
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
       |> render_click()
 
       second_detail_ref = assert_detail_started(second.repo_id)
@@ -408,7 +408,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       first_detail_pid = assert_detail_task_pid(first_detail_ref)
 
       view
-      |> element("#model-hub-select-#{dom_id_fragment(second.repo_id)}")
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
       |> render_click()
 
       second_detail_ref = assert_detail_started(second.repo_id)
@@ -435,7 +435,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       second = Enum.at(results, 1)
 
       view
-      |> element("#model-hub-select-#{dom_id_fragment(second.repo_id)}")
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
       |> render_click()
 
       detail_ref = assert_detail_started(second.repo_id)
@@ -467,6 +467,10 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "Starting"
       # Button should be disabled while busy
       assert has_element?(view, "#model-hub-download-button[disabled]")
+      # Progress bar starts in indeterminate mode
+      assert has_element?(view, "#model-hub-download-progress-bar[data-mode=indeterminate]")
+      assert has_element?(view, "#model-hub-download-progress-percent")
+      assert view |> element("#model-hub-download-progress-percent") |> render() =~ "Estimating"
     end
 
     test ":download_started moves to downloading and renders totals", %{conn: conn} do
@@ -488,6 +492,10 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "0 of 15 files"
       assert html =~ "4.0 GB"
       assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
+      # Bar switches to determinate at 0%
+      assert has_element?(view, "#model-hub-download-progress-bar[data-mode=determinate]")
+      assert has_element?(view, "#model-hub-download-progress-bar[aria-valuenow='0']")
+      assert view |> element("#model-hub-download-progress-percent") |> render() =~ "0%"
     end
 
     test ":download_progress maps seam phases correctly", %{conn: conn} do
@@ -519,6 +527,9 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "3 of 10 files"
       assert html =~ "512.0 MB"
       assert html =~ "model-00001-of-00002.safetensors"
+      # Bar at 50%
+      assert has_element?(view, "#model-hub-download-progress-bar[aria-valuenow='50']")
+      assert view |> element("#model-hub-download-progress-percent") |> render() =~ "50%"
 
       # Preparing bundle phase
       send_download_progress(view, download_ref, %{
@@ -730,7 +741,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       # Select gated model
       view
-      |> element("#model-hub-select-#{dom_id_fragment(second.repo_id)}")
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
       |> render_click()
 
       detail_ref = assert_detail_started(second.repo_id)

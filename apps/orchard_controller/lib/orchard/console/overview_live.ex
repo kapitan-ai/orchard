@@ -45,7 +45,7 @@ defmodule OrchardConsole.OverviewLive do
     socket =
       socket
       |> assign(page_title: "Overview", active_nav: :overview)
-      |> assign(build_version: build_version())
+      |> assign(build_version: OrchardConsole.display_version())
 
     if connected?(socket) do
       {:ok, socket |> load_overview() |> schedule_refresh()}
@@ -1234,13 +1234,6 @@ defmodule OrchardConsole.OverviewLive do
     if rem(ms, 1000) == 0,
       do: "#{div(ms, 1000)}s",
       else: "#{ms}ms"
-  end
-
-  defp build_version do
-    case Application.spec(:orchard_controller, :vsn) do
-      nil -> "dev"
-      vsn -> "v#{vsn}"
-    end
   end
 
   # ===========================================================================

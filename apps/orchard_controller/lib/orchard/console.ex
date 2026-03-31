@@ -15,6 +15,22 @@ defmodule OrchardConsole do
   def static_paths, do: ~w(assets fonts images favicon.ico favicon.png robots.txt)
 
   @doc """
+  Returns the UI-formatted console version string.
+
+  Reads `Application.spec(:orchard_controller, :vsn)` and normalizes it
+  to a display-ready string. Returns `"dev"` when version metadata is absent.
+  """
+  @spec display_version() :: String.t()
+  def display_version do
+    case Application.spec(:orchard_controller, :vsn) do
+      nil -> "dev"
+      vsn when is_list(vsn) -> "v" <> List.to_string(vsn)
+      vsn when is_binary(vsn) -> "v" <> vsn
+      vsn -> "v" <> to_string(vsn)
+    end
+  end
+
+  @doc """
   LiveView `on_mount` hook that gates console access on mount/reconnect.
 
   Checks both the feature flag (`console_enabled`) and the session auth

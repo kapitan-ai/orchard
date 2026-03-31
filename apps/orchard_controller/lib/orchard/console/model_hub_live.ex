@@ -5,6 +5,8 @@ defmodule OrchardConsole.ModelHubLive do
 
   use OrchardConsole, :live_view
 
+  alias Phoenix.LiveView.JS
+
   @empty_form %{"query" => ""}
 
   @impl true
@@ -281,6 +283,7 @@ defmodule OrchardConsole.ModelHubLive do
                     rows={@search_results}
                     row_id={fn result -> "model-hub-result-#{dom_id_fragment(result.repo_id)}" end}
                     row_class={fn result -> result_row_class(result, @selected_repo_id) end}
+                    row_click={fn result -> JS.push("select_model", value: %{repo_id: result.repo_id}) end}
                   >
                     <:col :let={result} label="Model" class="min-w-[18rem]">
                       <div>
@@ -306,17 +309,7 @@ defmodule OrchardConsole.ModelHubLive do
                         {access_badge_label(result.gated)}
                       </.badge>
                     </:col>
-                    <:action :let={result}>
-                      <.button
-                        id={"model-hub-select-#{dom_id_fragment(result.repo_id)}"}
-                        variant={if result.repo_id == @selected_repo_id, do: :primary, else: :secondary}
-                        size={:sm}
-                        phx-click="select_model"
-                        phx-value-repo_id={result.repo_id}
-                      >
-                        Inspect
-                      </.button>
-                    </:action>
+
                   </.table>
               <% end %>
             </div>
@@ -334,8 +327,8 @@ defmodule OrchardConsole.ModelHubLive do
                   id="model-hub-detail-idle"
                   kind={:empty}
                   layout={:compact}
-                  title="Select a model to inspect"
-                  body="Choose a search result to load repository metadata and file listings."
+                    title="Select a model"
+                    body="Click a search result to load repository metadata and file listings."
                 />
               <% :loading -> %>
                 <.state_message
@@ -468,6 +461,37 @@ defmodule OrchardConsole.ModelHubLive do
                 </span>
               </div>
 
+              <% bar = download_progress_bar(@download_progress) %>
+              <div class="flex items-center gap-3">
+                <div
+                  id="model-hub-download-progress-bar"
+                  role="progressbar"
+                  data-mode={bar.mode}
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                  aria-valuenow={bar.aria_now}
+                  class="flex-1 h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden"
+                >
+                  <div
+                    id="model-hub-download-progress-fill"
+                    class={[
+                      "h-2 rounded-full transition-all duration-300",
+                      if(bar.mode == :determinate,
+                        do: "bg-sky-500",
+                        else: "bg-sky-500/60 w-1/3 animate-pulse"
+                      )
+                    ]}
+                    style={bar.bar_style}
+                  />
+                </div>
+                <span
+                  id="model-hub-download-progress-percent"
+                  class="text-xs font-medium text-slate-600 dark:text-slate-300 tabular-nums w-16 text-right"
+                >
+                  {bar.percent_label}
+                </span>
+              </div>
+
               <div :if={@download_progress} class="space-y-1 text-sm text-slate-600 dark:text-slate-300">
                 <p id="model-hub-download-file-progress">
                   <%= if @download_progress[:total_files] do %>
@@ -479,9 +503,6 @@ defmodule OrchardConsole.ModelHubLive do
                 <p id="model-hub-download-byte-progress">
                   <%= if @download_progress[:total_bytes] && @download_progress[:total_bytes] > 0 do %>
                     {format_bytes(@download_progress[:bytes_downloaded])} of {format_bytes(@download_progress[:total_bytes])}
-                    <%= if pct = format_download_percentage(@download_progress[:bytes_downloaded], @download_progress[:total_bytes]) do %>
-                      ({pct}%)
-                    <% end %>
                   <% else %>
                     {format_bytes(@download_progress[:bytes_downloaded])} downloaded
                   <% end %>
@@ -815,6 +836,25 @@ defmodule OrchardConsole.ModelHubLive do
   end
 
   defp format_download_percentage(_downloaded, _total), do: nil
+
+  defp download_progress_bar(nil) do
+    %{mode: :indeterminate, percent_label: "Estimating\u2026", bar_style: nil, aria_now: nil}
+  end
+
+  defp download_progress_bar(progress) do
+    case format_download_percentage(progress[:bytes_downloaded], progress[:total_bytes]) do
+      nil ->
+        %{mode: :indeterminate, percent_label: "Estimating\u2026", bar_style: nil, aria_now: nil}
+
+      pct ->
+        %{
+          mode: :determinate,
+          percent_label: "#{pct}%",
+          bar_style: "width: #{pct}%",
+          aria_now: pct
+        }
+    end
+  end
 
   defp maybe_cancel_task(pid) when is_pid(pid) do
     if Process.alive?(pid) do

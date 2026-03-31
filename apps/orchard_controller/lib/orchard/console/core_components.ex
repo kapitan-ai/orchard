@@ -410,6 +410,11 @@ defmodule OrchardConsole.CoreComponents do
     doc: "function (row -> class string | nil) for per-row styling"
   )
 
+  attr(:row_click, :any,
+    default: nil,
+    doc: "function (row -> Phoenix.LiveView.JS command) for row click activation"
+  )
+
   attr(:class, :string, default: "")
 
   slot :col, required: true do
@@ -453,8 +458,10 @@ defmodule OrchardConsole.CoreComponents do
             id={@row_id && @row_id.(row)}
             class={[
               "group hover:bg-slate-50 dark:hover:bg-slate-800/50",
+              @row_click && "cursor-pointer",
               @row_class && @row_class.(row)
             ]}
+            phx-click={@row_click && @row_click.(row)}
           >
             <td
               :for={col <- @col}
@@ -779,10 +786,10 @@ defmodule OrchardConsole.CoreComponents do
         name={@name}
         multiple={@multiple}
         class={[
-          "mt-1 block w-full rounded-md border-slate-300 bg-white text-slate-900 text-sm",
-          "focus:border-navy focus:ring-navy",
-          "dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100",
-          "dark:focus:border-sky-400 dark:focus:ring-sky-400",
+          "mt-1 block w-full rounded-md border-slate-400 bg-white text-slate-900 text-sm shadow-sm",
+          "focus-visible:border-navy focus-visible:ring-navy",
+          "dark:border-slate-500 dark:bg-slate-800 dark:text-slate-100",
+          "dark:focus-visible:border-sky-400 dark:focus-visible:ring-sky-400",
           @errors != [] && "border-red-300 dark:border-red-500",
           @class
         ]}
@@ -804,10 +811,10 @@ defmodule OrchardConsole.CoreComponents do
         id={@id}
         name={@name}
         class={[
-          "mt-1 block w-full rounded-md border-slate-300 bg-white text-slate-900 text-sm",
-          "focus:border-navy focus:ring-navy",
-          "dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100",
-          "dark:focus:border-sky-400 dark:focus:ring-sky-400",
+          "mt-1 block w-full rounded-md border-slate-400 bg-white text-slate-900 text-sm shadow-sm",
+          "focus-visible:border-navy focus-visible:ring-navy",
+          "dark:border-slate-500 dark:bg-slate-800 dark:text-slate-100",
+          "dark:focus-visible:border-sky-400 dark:focus-visible:ring-sky-400",
           @errors != [] && "border-red-300 dark:border-red-500",
           @class
         ]}
@@ -835,10 +842,10 @@ defmodule OrchardConsole.CoreComponents do
         name={@name}
         value={HtmlForm.normalize_value(@type, @value)}
         class={[
-          "mt-1 block w-full rounded-md border-slate-300 bg-white text-slate-900 text-sm",
-          "focus:border-navy focus:ring-navy",
-          "dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100",
-          "dark:focus:border-sky-400 dark:focus:ring-sky-400",
+          "mt-1 block w-full rounded-md border-slate-400 bg-white text-slate-900 text-sm shadow-sm",
+          "focus-visible:border-navy focus-visible:ring-navy",
+          "dark:border-slate-500 dark:bg-slate-800 dark:text-slate-100",
+          "dark:focus-visible:border-sky-400 dark:focus-visible:ring-sky-400",
           @errors != [] && "border-red-300 dark:border-red-500",
           @class
         ]}

@@ -92,6 +92,19 @@
   overflow: hidden;
 }
 
+.console-sidebar-version {
+  transition: max-height 150ms ease-out, opacity 150ms ease-out, margin 150ms ease-out;
+  max-height: 2rem;
+  overflow: hidden;
+}
+
+.sidebar-collapsed .console-sidebar-version {
+  max-height: 0;
+  opacity: 0;
+  margin-bottom: 0;
+  overflow: hidden;
+}
+
 /* Center logo icon when sidebar is collapsed */
 .sidebar-collapsed .logo-lockup {
   gap: 0;
@@ -108,10 +121,11 @@
 
 /* Respect reduced-motion preferences */
 @media (prefers-reduced-motion: reduce) {
-  #console-sidebar,
-  .sidebar-label,
-  .sidebar-toggle-icon,
-  .console-connection-banner {
+    #console-sidebar,
+    .sidebar-label,
+    .sidebar-toggle-icon,
+    .console-sidebar-version,
+    .console-connection-banner {
     transition: none;
   }
 }

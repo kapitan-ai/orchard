@@ -26,8 +26,13 @@
     <%!-- Navigation --%>
     <.sidebar_nav active={assigns[:active_nav] || :overview} />
 
-    <%!-- Collapse toggle --%>
+    <%!-- Sidebar footer: version + collapse toggle --%>
     <div class="p-3 border-t border-slate-200 dark:border-slate-700 flex-shrink-0">
+      <div id="console-sidebar-version" class="console-sidebar-version mb-2 text-center">
+        <span class="sidebar-label text-xs text-slate-400 font-mono">
+          {OrchardConsole.display_version()}
+        </span>
+      </div>
       <button
         id="sidebar-toggle"
         phx-click={toggle_sidebar()}

@@ -563,6 +563,21 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ ~s(name="user[name]")
     end
 
+    test "text input has visible borders, shadow, and focus-visible ring" do
+      assigns = %{}
+
+      html =
+        render_heex(~H|<.input type="text" name="user[name]" label="Name" value="" id="name" />|)
+
+      assert html =~ "border-slate-400"
+      assert html =~ "shadow-sm"
+      assert html =~ "dark:border-slate-500"
+      assert html =~ "focus-visible:border-navy"
+      assert html =~ "focus-visible:ring-navy"
+      refute html =~ "border-slate-300"
+      refute html =~ "focus:border-navy"
+    end
+
     test "renders select input with options" do
       assigns = %{}
 
@@ -577,6 +592,23 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "User"
     end
 
+    test "select input has visible borders, shadow, and focus-visible ring" do
+      assigns = %{}
+
+      html =
+        render_heex(
+          ~H|<.input type="select" name="role" label="Role" options={["Admin", "User"]} value="" id="role" />|
+        )
+
+      assert html =~ "border-slate-400"
+      assert html =~ "shadow-sm"
+      assert html =~ "dark:border-slate-500"
+      assert html =~ "focus-visible:border-navy"
+      assert html =~ "focus-visible:ring-navy"
+      refute html =~ "border-slate-300"
+      refute html =~ "focus:border-navy"
+    end
+
     test "renders textarea" do
       assigns = %{}
 
@@ -585,6 +617,21 @@ defmodule OrchardConsole.CoreComponentsTest do
 
       assert html =~ "Bio"
       assert html =~ "<textarea"
+    end
+
+    test "textarea has visible borders, shadow, and focus-visible ring" do
+      assigns = %{}
+
+      html =
+        render_heex(~H|<.input type="textarea" name="bio" label="Bio" value="" id="bio" />|)
+
+      assert html =~ "border-slate-400"
+      assert html =~ "shadow-sm"
+      assert html =~ "dark:border-slate-500"
+      assert html =~ "focus-visible:border-navy"
+      assert html =~ "focus-visible:ring-navy"
+      refute html =~ "border-slate-300"
+      refute html =~ "focus:border-navy"
     end
 
     test "renders checkbox" do
