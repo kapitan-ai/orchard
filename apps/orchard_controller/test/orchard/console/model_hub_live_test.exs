@@ -616,8 +616,14 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "Starting"
       # Button should be disabled while busy
       assert has_element?(view, "#model-hub-download-button[disabled]")
-      # Progress bar starts in indeterminate mode
+      # Progress bar starts in indeterminate mode with accessible label
       assert has_element?(view, "#model-hub-download-progress-bar[data-mode=indeterminate]")
+
+      assert has_element?(
+               view,
+               ~s(#model-hub-download-progress-bar[aria-label="Model download progress"])
+             )
+
       assert has_element?(view, "#model-hub-download-progress-percent")
       assert view |> element("#model-hub-download-progress-percent") |> render() =~ "Estimating"
     end
@@ -641,9 +647,15 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "0 of 15 files"
       assert html =~ "4.0\u00a0GB"
       assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
-      # Bar switches to determinate at 0%
+      # Bar switches to determinate at 0% with accessible label
       assert has_element?(view, "#model-hub-download-progress-bar[data-mode=determinate]")
       assert has_element?(view, "#model-hub-download-progress-bar[aria-valuenow='0']")
+
+      assert has_element?(
+               view,
+               ~s(#model-hub-download-progress-bar[aria-label="Model download progress"])
+             )
+
       assert view |> element("#model-hub-download-progress-percent") |> render() =~ "0%"
     end
 

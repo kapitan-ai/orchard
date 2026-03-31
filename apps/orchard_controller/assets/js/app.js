@@ -193,7 +193,8 @@ Hooks.QuickstartGuide = {
       if (!this._detailsEl.open) {
         this._detailsEl.open = true
       }
-      this._detailsEl.scrollIntoView({behavior: "smooth", block: "nearest"})
+      let prefersReducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches
+      this._detailsEl.scrollIntoView({behavior: prefersReducedMotion ? "auto" : "smooth", block: "nearest"})
       let summary = this._detailsEl.querySelector("summary")
       if (summary) summary.focus()
     }

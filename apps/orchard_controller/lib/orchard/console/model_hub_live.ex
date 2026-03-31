@@ -443,6 +443,7 @@ defmodule OrchardConsole.ModelHubLive do
                 <div
                   id="model-hub-download-progress-bar"
                   role="progressbar"
+                  aria-label="Model download progress"
                   data-mode={bar.mode}
                   aria-valuemin="0"
                   aria-valuemax="100"
@@ -790,7 +791,7 @@ defmodule OrchardConsole.ModelHubLive do
   # Repository files disclosure
   # ---------------------------------------------------------------------------
 
-  attr :siblings, :list, required: true
+  attr(:siblings, :list, required: true)
 
   defp repository_files_section(%{siblings: []} = assigns) do
     ~H"""
