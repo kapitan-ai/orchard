@@ -147,6 +147,12 @@ Hooks.OverviewQuickstart = {
       } else if (action === "recover") {
         event.preventDefault()
         this.pushEvent("quickstart_recover", {})
+      } else if (action === "open-guide") {
+        event.preventDefault()
+        let guideEl = document.getElementById("overview-quickstart-guide")
+        if (guideEl) {
+          guideEl.dispatchEvent(new CustomEvent("orchard:quickstart-guide:open", {bubbles: false}))
+        }
       }
     }
 
@@ -182,6 +188,17 @@ Hooks.QuickstartGuide = {
       this.pushEvent("quickstart_guide_seen", {})
     }
 
+    this._onOpenGuide = () => {
+      if (!this._detailsEl) return
+      if (!this._detailsEl.open) {
+        this._detailsEl.open = true
+      }
+      this._detailsEl.scrollIntoView({behavior: "smooth", block: "nearest"})
+      let summary = this._detailsEl.querySelector("summary")
+      if (summary) summary.focus()
+    }
+
+    this.el.addEventListener("orchard:quickstart-guide:open", this._onOpenGuide)
     this._bindDetails()
   },
 
@@ -191,6 +208,7 @@ Hooks.QuickstartGuide = {
   },
 
   destroyed() {
+    this.el.removeEventListener("orchard:quickstart-guide:open", this._onOpenGuide)
     this._unbindDetails()
   },
 

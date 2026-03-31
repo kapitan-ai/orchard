@@ -385,6 +385,41 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_status(view, "connect-your-tools", "pending")
     end
 
+    test "renders action links for incomplete steps after hydration", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+      hydrate_quickstart(view)
+
+      # Step 1 (current, no action) shows automatic note
+      assert has_element?(view, "#overview-quickstart-note-system-healthy")
+      refute has_element?(view, "#overview-quickstart-action-system-healthy")
+
+      # Steps 2-4 (pending) show navigation links
+      assert has_element?(view, "#overview-quickstart-action-import-first-model")
+
+      assert view |> element("#overview-quickstart-action-import-first-model") |> render() =~
+               ~s(href="/console/model-hub")
+
+      assert has_element?(view, "#overview-quickstart-action-run-test-request")
+
+      assert view |> element("#overview-quickstart-action-run-test-request") |> render() =~
+               ~s(href="/console/playground")
+
+      assert has_element?(view, "#overview-quickstart-action-create-api-key")
+
+      assert view |> element("#overview-quickstart-action-create-api-key") |> render() =~
+               ~s(href="/console/tenants")
+
+      # Step 5 (pending) shows open-guide button, not a navigation link
+      assert has_element?(view, "#overview-quickstart-action-connect-your-tools")
+
+      assert view |> element("#overview-quickstart-action-connect-your-tools") |> render() =~
+               ~s(data-quickstart-action="open-guide")
+
+      # Pending steps have pending emphasis
+      assert view |> element("#overview-quickstart-action-import-first-model") |> render() =~
+               ~s(data-quickstart-action-emphasis="pending")
+    end
+
     test "renders rich quickstart guide content after hydration", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
@@ -478,6 +513,39 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_status(view, "connect-your-tools", "pending")
     end
 
+    test "current step has prominent CTA and completed steps show checkmark indicator", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console")
+
+      assert_quickstart_hydrating(view)
+      hydrate_quickstart(view)
+
+      # Step 1 completed: shows checkmark indicator, no action
+      assert has_element?(view, "#overview-quickstart-indicator-system-healthy")
+      # Checkmark indicator contains the check SVG path
+      assert view |> element("#overview-quickstart-indicator-system-healthy") |> render() =~
+               "m4.5 12.75 6 6 9-13.5"
+
+      refute has_element?(view, "#overview-quickstart-action-system-healthy")
+
+      # Step 2 current: has current emphasis
+      assert has_element?(view, "#overview-quickstart-action-import-first-model")
+
+      assert view |> element("#overview-quickstart-action-import-first-model") |> render() =~
+               ~s(data-quickstart-action-emphasis="current")
+
+      # Steps 3-5 pending: have pending emphasis
+      assert view |> element("#overview-quickstart-action-run-test-request") |> render() =~
+               ~s(data-quickstart-action-emphasis="pending")
+
+      assert view |> element("#overview-quickstart-action-create-api-key") |> render() =~
+               ~s(data-quickstart-action-emphasis="pending")
+
+      assert view |> element("#overview-quickstart-action-connect-your-tools") |> render() =~
+               ~s(data-quickstart-action-emphasis="pending")
+    end
+
     test "makes step 5 current once server-derived steps 1-4 complete", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
 
@@ -490,6 +558,21 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_status(view, "run-test-request", "completed")
       assert_quickstart_status(view, "create-api-key", "completed")
       assert_quickstart_status(view, "connect-your-tools", "current")
+
+      # Completed steps show checkmark, no action control
+      refute has_element?(view, "#overview-quickstart-action-system-healthy")
+      refute has_element?(view, "#overview-quickstart-action-import-first-model")
+      refute has_element?(view, "#overview-quickstart-action-run-test-request")
+      refute has_element?(view, "#overview-quickstart-action-create-api-key")
+
+      # Step 5 is current with open-guide button and current emphasis
+      assert has_element?(view, "#overview-quickstart-action-connect-your-tools")
+
+      assert view |> element("#overview-quickstart-action-connect-your-tools") |> render() =~
+               ~s(data-quickstart-action="open-guide")
+
+      assert view |> element("#overview-quickstart-action-connect-your-tools") |> render() =~
+               ~s(data-quickstart-action-emphasis="current")
     end
 
     test "goes straight from hydrating to compact completed for returning completed users", %{

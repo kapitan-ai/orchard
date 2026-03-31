@@ -184,18 +184,54 @@ defmodule OrchardConsole.OverviewLive do
                     :for={step <- @quickstart.steps}
                     id={"overview-quickstart-step-#{step.dom_id}"}
                     data-status={Atom.to_string(step.status)}
-                    class="flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700"
+                    class={quickstart_step_row_class(step.status)}
                   >
                     <div class="flex items-center gap-3">
-                      <span class="inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
-                        {step.ordinal}
+                      <span
+                        id={"overview-quickstart-indicator-#{step.dom_id}"}
+                        class={quickstart_indicator_class(step.status)}
+                      >
+                        <%= if step.status == :completed do %>
+                          <.icon name="hero-check" class="h-4 w-4" />
+                        <% else %>
+                          {step.ordinal}
+                        <% end %>
                       </span>
                       <span class="text-sm font-medium text-slate-900 dark:text-slate-100">{step.title}</span>
                     </div>
 
-                    <.badge tone={quickstart_status_badge_tone(step.status)}>
-                      {quickstart_status_badge_label(step.status)}
-                    </.badge>
+                    <div class="flex items-center gap-2">
+                      <%= cond do %>
+                        <% step.status == :completed -> %>
+                          <span class="text-xs text-emerald-600 dark:text-emerald-400 font-medium">Complete</span>
+                        <% step.action == nil -> %>
+                          <span
+                            id={"overview-quickstart-note-#{step.dom_id}"}
+                            class="text-xs text-slate-500 dark:text-slate-400 italic"
+                          >
+                            Checks update automatically
+                          </span>
+                        <% step.action.kind == :navigate -> %>
+                          <.link
+                            id={"overview-quickstart-action-#{step.dom_id}"}
+                            navigate={step.action.path}
+                            data-quickstart-action-emphasis={Atom.to_string(step.status)}
+                            class={quickstart_cta_class(step.status)}
+                          >
+                            {step.action.label}
+                          </.link>
+                        <% step.action.kind == :open_guide -> %>
+                          <button
+                            id={"overview-quickstart-action-#{step.dom_id}"}
+                            type="button"
+                            data-quickstart-action="open-guide"
+                            data-quickstart-action-emphasis={Atom.to_string(step.status)}
+                            class={quickstart_cta_class(step.status)}
+                          >
+                            {step.action.label}
+                          </button>
+                      <% end %>
+                    </div>
                   </li>
                 </ol>
 
@@ -816,8 +852,22 @@ defmodule OrchardConsole.OverviewLive do
         end
       end)
 
-    steps
+    Enum.map(steps, fn step -> Map.put(step, :action, quickstart_step_action(step.id)) end)
   end
+
+  defp quickstart_step_action(:system_healthy), do: nil
+
+  defp quickstart_step_action(:import_first_model),
+    do: %{kind: :navigate, label: "Go to Model Hub →", path: ~p"/console/model-hub"}
+
+  defp quickstart_step_action(:run_test_request),
+    do: %{kind: :navigate, label: "Open Playground →", path: ~p"/console/playground"}
+
+  defp quickstart_step_action(:create_api_key),
+    do: %{kind: :navigate, label: "Manage API Keys →", path: ~p"/console/tenants"}
+
+  defp quickstart_step_action(:connect_your_tools),
+    do: %{kind: :open_guide, label: "View Integration Guide"}
 
   defp zero_model_state_counts do
     Map.new(Model.states(), &{&1, 0})
@@ -918,13 +968,40 @@ defmodule OrchardConsole.OverviewLive do
   defp check_badge_label(:error), do: "Blocked"
   defp check_badge_label(_), do: "Unknown"
 
-  defp quickstart_status_badge_tone(:completed), do: :success
-  defp quickstart_status_badge_tone(:current), do: :info
-  defp quickstart_status_badge_tone(:pending), do: :neutral
+  # Quickstart step row styling by status
+  defp quickstart_step_row_class(:current) do
+    "flex items-center justify-between gap-3 rounded-lg border-2 border-gold/40 bg-gold/5 px-4 py-3 shadow-sm dark:border-gold/30 dark:bg-gold/5"
+  end
 
-  defp quickstart_status_badge_label(:completed), do: "Complete"
-  defp quickstart_status_badge_label(:current), do: "Current"
-  defp quickstart_status_badge_label(:pending), do: "Pending"
+  defp quickstart_step_row_class(:completed) do
+    "flex items-center justify-between gap-3 rounded-lg border border-emerald-200 bg-emerald-50/50 px-4 py-3 dark:border-emerald-800/40 dark:bg-emerald-950/20"
+  end
+
+  defp quickstart_step_row_class(:pending) do
+    "flex items-center justify-between gap-3 rounded-lg border border-slate-200 px-4 py-3 dark:border-slate-700"
+  end
+
+  # Quickstart step indicator (ordinal circle) styling by status
+  defp quickstart_indicator_class(:completed) do
+    "inline-flex h-7 w-7 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 dark:bg-emerald-900/40 dark:text-emerald-400"
+  end
+
+  defp quickstart_indicator_class(:current) do
+    "inline-flex h-7 w-7 items-center justify-center rounded-full bg-gold/20 text-xs font-semibold text-gold-700 dark:bg-gold/20 dark:text-gold-300"
+  end
+
+  defp quickstart_indicator_class(:pending) do
+    "inline-flex h-7 w-7 items-center justify-center rounded-full bg-slate-100 text-xs font-semibold text-slate-700 dark:bg-slate-800 dark:text-slate-200"
+  end
+
+  # Quickstart CTA styling: current = prominent, pending = secondary
+  defp quickstart_cta_class(:current) do
+    "inline-flex items-center gap-1 rounded-md bg-gold/10 px-3 py-1.5 text-sm font-medium text-gold-700 ring-1 ring-gold/30 hover:bg-gold/20 dark:text-gold-300 dark:ring-gold/40 dark:hover:bg-gold/30"
+  end
+
+  defp quickstart_cta_class(_status) do
+    "inline-flex items-center gap-1 rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 dark:border-slate-600 dark:text-slate-300 dark:hover:bg-slate-800"
+  end
 
   defp quickstart_api_base_url do
     Endpoint.url()
