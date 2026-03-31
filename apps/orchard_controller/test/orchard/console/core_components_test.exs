@@ -855,4 +855,176 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert %Phoenix.LiveView.JS{} = js
     end
   end
+
+  # ===========================================================================
+  # Local Time
+  # ===========================================================================
+
+  describe "local_time/1" do
+    test "DateTime renders interactive <time> with hook attrs" do
+      assigns = %{dt: ~U[2026-03-31 12:34:56.789Z]}
+
+      html = render_heex(~H|<.local_time value={@dt} />|)
+
+      assert html =~ "<time"
+      assert html =~ ~s(datetime="2026-03-31T12:34:56Z")
+      assert html =~ ~s(phx-hook="LocalTime")
+      assert html =~ ~s(data-local-time-format="datetime_minute")
+      assert html =~ "2026-03-31 12:34 UTC"
+      # title attr preserves full UTC ISO for tooltip
+      assert html =~ ~s(title="2026-03-31T12:34:56Z")
+    end
+
+    test "DateTime truncates microseconds" do
+      assigns = %{dt: ~U[2026-03-31 12:34:56.123456Z]}
+
+      html = render_heex(~H|<.local_time value={@dt} format={:datetime_second} />|)
+
+      assert html =~ ~s(datetime="2026-03-31T12:34:56Z")
+      assert html =~ "2026-03-31 12:34:56 UTC"
+      refute html =~ "123456"
+    end
+
+    test "non-UTC DateTime is shifted to UTC before rendering" do
+      # Construct a +02:00 DateTime (14:00 local = 12:00 UTC)
+      dt = %DateTime{
+        year: 2026, month: 3, day: 31,
+        hour: 14, minute: 0, second: 0, microsecond: {0, 6},
+        time_zone: "Etc/GMT-2", zone_abbr: "+02",
+        utc_offset: 7200, std_offset: 0,
+        calendar: Calendar.ISO
+      }
+
+      assigns = %{dt: dt}
+
+      html = render_heex(~H|<.local_time value={@dt} />|)
+
+      # datetime and title should be the UTC instant
+      assert html =~ ~s(datetime="2026-03-31T12:00:00Z")
+      assert html =~ ~s(title="2026-03-31T12:00:00Z")
+      # Fallback text is UTC wall-clock, not original +02:00 wall-clock
+      assert html =~ "2026-03-31 12:00 UTC"
+      refute html =~ "14:00"
+    end
+
+    test "NaiveDateTime renders as UTC with Z suffix" do
+      assigns = %{ndt: ~N[2026-03-31 08:15:00]}
+
+      html = render_heex(~H|<.local_time value={@ndt} />|)
+
+      assert html =~ "<time"
+      assert html =~ ~s(datetime="2026-03-31T08:15:00Z")
+      assert html =~ ~s(phx-hook="LocalTime")
+      assert html =~ "2026-03-31 08:15 UTC"
+    end
+
+    test "valid ISO string with offset renders interactive" do
+      assigns = %{iso: "2026-03-31T14:00:00+02:00"}
+
+      html = render_heex(~H|<.local_time value={@iso} />|)
+
+      assert html =~ "<time"
+      assert html =~ ~s(phx-hook="LocalTime")
+      # Normalized to UTC: 14:00 +02:00 = 12:00 UTC
+      assert html =~ ~s(datetime="2026-03-31T12:00:00Z")
+      assert html =~ "2026-03-31 12:00 UTC"
+    end
+
+    test "valid ISO string without timezone treated as UTC" do
+      assigns = %{iso: "2026-03-31T09:30:00"}
+
+      html = render_heex(~H|<.local_time value={@iso} />|)
+
+      assert html =~ ~s(datetime="2026-03-31T09:30:00Z")
+      assert html =~ ~s(phx-hook="LocalTime")
+    end
+
+    test "nil renders placeholder without hook" do
+      assigns = %{}
+
+      html = render_heex(~H|<.local_time value={nil} />|)
+
+      assert html =~ "<time"
+      assert html =~ "\u2014"
+      refute html =~ "phx-hook"
+      refute html =~ "datetime="
+    end
+
+    test "nil with custom placeholder" do
+      assigns = %{}
+
+      html = render_heex(~H|<.local_time value={nil} placeholder="N/A" />|)
+
+      assert html =~ "N/A"
+      refute html =~ "phx-hook"
+    end
+
+    test "invalid string renders raw text without hook" do
+      assigns = %{val: "not-a-date"}
+
+      html = render_heex(~H|<.local_time value={@val} />|)
+
+      assert html =~ "<time"
+      assert html =~ "not-a-date"
+      refute html =~ "phx-hook"
+      refute html =~ "datetime="
+    end
+
+    test "empty string renders placeholder without hook" do
+      assigns = %{val: ""}
+
+      html = render_heex(~H|<.local_time value={@val} />|)
+
+      assert html =~ "\u2014"
+      refute html =~ "phx-hook"
+    end
+
+    test "format :datetime_minute renders minute precision" do
+      assigns = %{dt: ~U[2026-03-31 12:34:56Z]}
+
+      html = render_heex(~H|<.local_time value={@dt} format={:datetime_minute} />|)
+
+      assert html =~ ~s(data-local-time-format="datetime_minute")
+      assert html =~ "2026-03-31 12:34 UTC"
+      refute html =~ "2026-03-31 12:34:56"
+    end
+
+    test "format :datetime_second renders second precision" do
+      assigns = %{dt: ~U[2026-03-31 12:34:56Z]}
+
+      html = render_heex(~H|<.local_time value={@dt} format={:datetime_second} />|)
+
+      assert html =~ ~s(data-local-time-format="datetime_second")
+      assert html =~ "2026-03-31 12:34:56 UTC"
+    end
+
+    test "format :time_second renders time only" do
+      assigns = %{dt: ~U[2026-03-31 12:34:56Z]}
+
+      html = render_heex(~H|<.local_time value={@dt} format={:time_second} />|)
+
+      assert html =~ ~s(data-local-time-format="time_second")
+      # Fallback text is time-only; date appears in datetime/title attrs but not display text
+      assert html =~ ">12:34:56 UTC</time>"
+    end
+
+    test "format :date renders date only" do
+      assigns = %{dt: ~U[2026-03-31 12:34:56Z]}
+
+      html = render_heex(~H|<.local_time value={@dt} format={:date} />|)
+
+      assert html =~ ~s(data-local-time-format="date")
+      # Fallback text is date-only; time appears in datetime/title attrs but not display text
+      assert html =~ ">2026-03-31</time>"
+    end
+
+    test "id and class attrs are passed through" do
+      assigns = %{dt: ~U[2026-03-31 12:00:00Z]}
+
+      html = render_heex(~H|<.local_time value={@dt} id="my-time" class="text-sm" />|)
+
+      assert html =~ ~s(id="my-time")
+      assert html =~ ~s(class="text-sm")
+    end
+  end
 end

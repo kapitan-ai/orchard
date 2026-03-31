@@ -1020,6 +1020,133 @@ defmodule OrchardConsole.CoreComponents do
   end
 
   # ===========================================================================
+  # Local Time
+  # ===========================================================================
+
+  @doc """
+  Renders a timestamp as a `<time>` element with client-side local time formatting.
+
+  The server renders a UTC fallback text inside the element. The `LocalTime` JS hook
+  reformats it to the browser's local timezone on mount and LiveView patch.
+
+  Supported input types for `value`:
+  - `DateTime` — used directly
+  - `NaiveDateTime` — interpreted as UTC
+  - ISO 8601 binary string — parsed; invalid strings rendered as-is without the hook
+  - `nil` — renders the placeholder text (default `"—"`)
+
+  ## Format options
+
+  - `:datetime_minute` — `2026-03-31 12:34 UTC` (default)
+  - `:datetime_second` — `2026-03-31 12:34:56 UTC`
+  - `:time_second` — `12:34:56 UTC`
+  - `:date` — `2026-03-31`
+
+  ## Examples
+
+      <.local_time value={@request.inserted_at} />
+      <.local_time value={@node.last_heartbeat_at} format={:datetime_second} />
+      <.local_time value={@last_updated_at} format={:time_second} />
+      <.local_time value={nil} placeholder="N/A" />
+  """
+  attr :value, :any, required: true, doc: "DateTime, NaiveDateTime, ISO 8601 string, or nil"
+
+  attr :format, :atom,
+    default: :datetime_minute,
+    values: [:datetime_minute, :datetime_second, :time_second, :date],
+    doc: "display format tier"
+
+  attr :placeholder, :string, default: "—", doc: "text shown when value is nil"
+  attr :id, :string, default: nil
+  attr :class, :string, default: ""
+
+  def local_time(assigns) do
+    assigns = assign(assigns, :normalized, normalize_local_time(assigns.value, assigns.placeholder))
+
+    case assigns.normalized do
+      {:interactive, dt} ->
+        iso = DateTime.to_iso8601(dt)
+        text = format_utc_fallback(dt, assigns.format)
+
+        assigns =
+          assigns
+          |> assign(:iso, iso)
+          |> assign(:text, text)
+
+        ~H"""
+        <time
+          id={@id}
+          class={@class}
+          datetime={@iso}
+          title={@iso}
+          phx-hook="LocalTime"
+          data-local-time-format={@format}
+        ><%= @text %></time>
+        """
+
+      {:static, text} ->
+        assigns = assign(assigns, :text, text)
+
+        ~H"""
+        <time id={@id} class={@class}><%= @text %></time>
+        """
+    end
+  end
+
+  defp normalize_local_time(nil, placeholder), do: {:static, placeholder}
+  defp normalize_local_time("", placeholder), do: {:static, placeholder}
+
+  defp normalize_local_time(%DateTime{} = dt, _placeholder) do
+    dt
+    |> DateTime.shift_zone!("Etc/UTC")
+    |> DateTime.truncate(:second)
+    |> then(&{:interactive, &1})
+  end
+
+  defp normalize_local_time(%NaiveDateTime{} = ndt, _placeholder) do
+    ndt
+    |> NaiveDateTime.truncate(:second)
+    |> DateTime.from_naive!("Etc/UTC")
+    |> then(&{:interactive, &1})
+  end
+
+  defp normalize_local_time(value, _placeholder) when is_binary(value) do
+    with {:error, _} <- parse_iso_datetime(value),
+         {:error, _} <- parse_iso_naive(value) do
+      {:static, value}
+    else
+      {:ok, dt} -> {:interactive, DateTime.truncate(dt, :second)}
+    end
+  end
+
+  defp normalize_local_time(_, placeholder), do: {:static, placeholder}
+
+  defp parse_iso_datetime(str) do
+    case DateTime.from_iso8601(str) do
+      {:ok, dt, _offset} -> {:ok, dt}
+      {:error, _} = err -> err
+    end
+  end
+
+  defp parse_iso_naive(str) do
+    case NaiveDateTime.from_iso8601(str) do
+      {:ok, ndt} -> {:ok, DateTime.from_naive!(ndt, "Etc/UTC")}
+      {:error, _} = err -> err
+    end
+  end
+
+  @local_time_formats %{
+    datetime_minute: "%Y-%m-%d %H:%M UTC",
+    datetime_second: "%Y-%m-%d %H:%M:%S UTC",
+    time_second: "%H:%M:%S UTC",
+    date: "%Y-%m-%d"
+  }
+
+  defp format_utc_fallback(dt, format) do
+    Calendar.strftime(dt, Map.fetch!(@local_time_formats, format))
+  end
+
+  # ===========================================================================
   # Shell Helpers
   # ===========================================================================
 

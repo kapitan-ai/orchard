@@ -261,6 +261,91 @@ Hooks.CopyGeneratedSecret = {
   }
 }
 
+/**
+ * LocalTime — formats <time> elements to the browser's local timezone.
+ * Reads `datetime` (ISO 8601) and `data-local-time-format` attrs set by the
+ * CoreComponents.local_time/1 server component. On mount and LiveView patch,
+ * replaces the UTC fallback text with a locally-formatted string.
+ *
+ * Uses Intl.DateTimeFormat().formatToParts() to extract calendar parts, then
+ * reassembles them into Orchard's fixed YYYY-MM-DD HH:MM:SS layout so the
+ * output is consistent regardless of browser locale.
+ *
+ * If parsing fails or Intl is unavailable, the server-rendered UTC fallback
+ * text is left untouched.
+ */
+Hooks.LocalTime = {
+  mounted()  { this._formatTime() },
+  updated()  { this._formatTime() },
+
+  _formatTime() {
+    let iso = this.el.getAttribute("datetime")
+    let fmt = this.el.dataset.localTimeFormat
+    if (!iso || !fmt) return
+
+    let date = new Date(iso)
+    if (isNaN(date.getTime())) return
+
+    try {
+      let text = this._format(date, fmt)
+      if (text) this.el.textContent = text
+    } catch (_e) {
+      // leave fallback text untouched
+    }
+  },
+
+  _format(date, fmt) {
+    let opts = FORMAT_OPTIONS[fmt]
+    if (!opts) return null
+
+    let parts = new Intl.DateTimeFormat(undefined, opts).formatToParts(date)
+    let p = {}
+    for (let part of parts) p[part.type] = part.value
+
+    // Verify all required parts are present before assembling
+    switch (fmt) {
+      case "datetime_minute":
+        if (!p.year || !p.month || !p.day || !p.hour || !p.minute) return null
+        return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}`
+      case "datetime_second":
+        if (!p.year || !p.month || !p.day || !p.hour || !p.minute || !p.second) return null
+        return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`
+      case "time_second":
+        if (!p.hour || !p.minute || !p.second) return null
+        return `${p.hour}:${p.minute}:${p.second}`
+      case "date":
+        if (!p.year || !p.month || !p.day) return null
+        return `${p.year}-${p.month}-${p.day}`
+      default:
+        return null
+    }
+  }
+}
+
+const FORMAT_OPTIONS = {
+  datetime_minute: {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+    hour12: false, hourCycle: "h23",
+    calendar: "gregory", numberingSystem: "latn"
+  },
+  datetime_second: {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false, hourCycle: "h23",
+    calendar: "gregory", numberingSystem: "latn"
+  },
+  time_second: {
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false, hourCycle: "h23",
+    calendar: "gregory", numberingSystem: "latn"
+  },
+  date: {
+    year: "numeric", month: "2-digit", day: "2-digit",
+    calendar: "gregory", numberingSystem: "latn"
+  }
+}
+
 // ===========================================================================
 // LiveSocket Setup
 // ===========================================================================
