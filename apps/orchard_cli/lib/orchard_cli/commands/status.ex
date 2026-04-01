@@ -30,20 +30,51 @@ defmodule OrchardCLI.Commands.Status do
   # ── Status Probe ────────────────────────────────────────────────────
 
   defp run_status(runtime) do
+    case snapshot(runtime) do
+      %{state: :invalid_response, display_url: url, error: message} ->
+        {:error, "Error: invalid health response from #{url}: #{message}", 1}
+
+      snap ->
+        {:ok, render_snapshot(snap)}
+    end
+  end
+
+  @doc false
+  @spec snapshot(map()) :: map()
+  def snapshot(runtime \\ default_runtime()) do
     version = Map.get(runtime, :version, fn -> Orchard.version() end).()
     candidates = Map.get(runtime, :endpoint_candidates, &default_endpoint_candidates/0).()
     request_fn = Map.get(runtime, :request, &default_request/2)
 
     case probe_candidates(candidates, request_fn) do
       {:ok, base_url, body} ->
-        {:ok, render_banner(version, base_url, body)}
+        state = if body["status"] == "ok", do: :ready, else: :degraded
+        %{version: version, state: state, base_url: base_url, display_url: base_url, body: body}
 
       {:error, :unreachable, display_url} ->
-        {:ok, render_offline_banner(version, display_url)}
+        %{version: version, state: :offline, base_url: nil, display_url: display_url, body: nil}
 
-      {:error, :invalid_response, message} ->
-        {:error, "Error: #{message}", 1}
+      {:error, :invalid_response, display_url, message, probe_failure} ->
+        %{
+          version: version,
+          state: :invalid_response,
+          base_url: nil,
+          display_url: display_url,
+          body: nil,
+          error: message,
+          probe_failure: probe_failure
+        }
     end
+  end
+
+  @doc false
+  @spec render_snapshot(map()) :: String.t()
+  def render_snapshot(%{state: :offline} = snap) do
+    render_offline_banner(snap.version, snap.display_url)
+  end
+
+  def render_snapshot(snap) do
+    render_banner(snap.version, snap.base_url, snap.body)
   end
 
   # ── Candidate Probing ───────────────────────────────────────────────
@@ -53,21 +84,41 @@ defmodule OrchardCLI.Commands.Status do
   defp probe_candidates(candidates, request_fn) do
     display_url = hd(candidates) |> Map.fetch!(:base_url)
 
-    Enum.reduce_while(candidates, {:error, :unreachable, display_url}, fn candidate, acc ->
+    candidates
+    |> Enum.reduce_while(%{display_url: display_url, invalid_response: nil, saw_unreachable?: false}, fn candidate, acc ->
       url = candidate.base_url <> "/health/ready"
       opts = build_request_opts(candidate)
 
       case request_fn.(url, opts) do
         {:ok, %{status: status, body: body}} when status in 200..599 ->
           case decode_health_response(body) do
-            {:ok, parsed} -> {:halt, {:ok, candidate.base_url, parsed}}
-            {:error, _reason} -> {:cont, acc}
+            {:ok, parsed} ->
+              {:halt, {:ok, candidate.base_url, parsed}}
+
+            {:error, reason} ->
+              invalid_response = acc.invalid_response || {candidate.base_url, reason}
+              {:cont, %{acc | invalid_response: invalid_response}}
           end
 
         _ ->
-          {:cont, acc}
+          {:cont, %{acc | saw_unreachable?: true}}
       end
     end)
+    |> finalize_probe_result()
+  end
+
+  defp finalize_probe_result({:ok, _base_url, _body} = success), do: success
+
+  defp finalize_probe_result(%{invalid_response: nil, display_url: display_url}) do
+    {:error, :unreachable, display_url}
+  end
+
+  defp finalize_probe_result(%{invalid_response: {display_url, message}, saw_unreachable?: true}) do
+    {:error, :invalid_response, display_url, message, :mixed}
+  end
+
+  defp finalize_probe_result(%{invalid_response: {display_url, message}}) do
+    {:error, :invalid_response, display_url, message, :all_invalid}
   end
 
   defp build_request_opts(candidate) do

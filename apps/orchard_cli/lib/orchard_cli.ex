@@ -10,7 +10,9 @@ defmodule OrchardCLI do
     Models,
     Nodes,
     Requests,
+    Start,
     Status,
+    Stop,
     Support,
     Tenants,
     TLS,
@@ -31,6 +33,8 @@ defmodule OrchardCLI do
   end
 
   defp dispatch_command(["status" | rest]), do: Status.run(rest)
+  defp dispatch_command(["start" | rest]), do: Start.run(rest)
+  defp dispatch_command(["stop" | rest]), do: Stop.run(rest)
   defp dispatch_command(["cluster" | rest]), do: Cluster.run(rest)
   defp dispatch_command(["env" | rest]), do: Env.run(rest)
   defp dispatch_command(["nodes" | rest]), do: Nodes.run(rest)
@@ -60,7 +64,7 @@ defmodule OrchardCLI do
     IO.puts("orchardctl (M0 scaffold)")
 
     IO.puts(
-      "Available commands: status, cluster, env, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
+      "Available commands: status, start, stop, cluster, env, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
     )
   end
 end

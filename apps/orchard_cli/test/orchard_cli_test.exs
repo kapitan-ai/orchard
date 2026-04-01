@@ -19,7 +19,7 @@ defmodule OrchardCLITest do
     assert output =~ "orchardctl (M0 scaffold)"
 
     assert output =~
-             "status, cluster, env, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
+             "status, start, stop, cluster, env, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
   end
 
   test "dispatches each placeholder command module" do
@@ -165,6 +165,18 @@ defmodule OrchardCLITest do
 
     assert stderr =~ "orchardctl status"
     assert_received {:halt_called, 1}
+  end
+
+  test "start --help dispatches through main without side effects" do
+    output = capture_io(fn -> OrchardCLI.main(["start", "--help"], &no_halt/1) end)
+    assert output =~ "orchardctl start"
+    assert output =~ "launchd"
+  end
+
+  test "stop --help dispatches through main without side effects" do
+    output = capture_io(fn -> OrchardCLI.main(["stop", "--help"], &no_halt/1) end)
+    assert output =~ "orchardctl stop"
+    assert output =~ "launchd"
   end
 
   test "cli application supervisor is running" do

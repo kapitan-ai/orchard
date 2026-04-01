@@ -353,20 +353,22 @@ defmodule OrchardCLI.Commands.StatusTest do
 
   # ── Invalid / Malformed Response ──────────────────────────────────────
 
-  # Invalid responses are treated as failed candidates (continue to next).
-  # With a single candidate, all fail → offline.
+  # Invalid responses are treated as failed candidates while probing.
+  # If a later candidate succeeds, status succeeds. If every candidate is invalid,
+  # status reports the invalid health response instead of flattening it to offline.
 
-  test "malformed JSON with single candidate shows offline" do
+  test "malformed JSON with single candidate returns invalid-response error" do
     runtime =
       test_runtime(%{
         request: fn _url, _opts -> {:ok, %{status: 200, body: "not json"}} end
       })
 
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "offline"
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid health response from http://localhost:4000"
+    assert message =~ "malformed JSON in health response"
   end
 
-  test "unexpected status field with single candidate shows offline" do
+  test "unexpected status field with single candidate returns invalid-response error" do
     runtime =
       test_runtime(%{
         request: fn _url, _opts ->
@@ -374,11 +376,11 @@ defmodule OrchardCLI.Commands.StatusTest do
         end
       })
 
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "offline"
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "unexpected health status"
   end
 
-  test "missing status field with single candidate shows offline" do
+  test "missing status field with single candidate returns invalid-response error" do
     runtime =
       test_runtime(%{
         request: fn _url, _opts ->
@@ -386,11 +388,11 @@ defmodule OrchardCLI.Commands.StatusTest do
         end
       })
 
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "offline"
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "missing \"status\" field"
   end
 
-  test "non-map body with single candidate shows offline" do
+  test "non-map body with single candidate returns invalid-response error" do
     runtime =
       test_runtime(%{
         request: fn _url, _opts ->
@@ -398,8 +400,8 @@ defmodule OrchardCLI.Commands.StatusTest do
         end
       })
 
-    assert {:ok, banner} = Status.run([], runtime)
-    assert banner =~ "offline"
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "unexpected response format"
   end
 
   test "first candidate returns non-Orchard HTML, second returns valid JSON" do
