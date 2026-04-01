@@ -11,16 +11,38 @@ defmodule Orchard.Models.ManifestParser do
 
   @manifest_filename "manifest.json"
 
-  @known_top_level_keys ~w(
-    model_id version format artifact_layout entrypoint sha256
-    size_bytes resident_memory_bytes kv_cache_bytes_per_token
-    prefill_workspace_bytes_per_token max_context_tokens
-    capabilities tokenizer chat_template runtime_requirements
-  )
+  @top_level_key_map %{
+    "model_id" => :model_id,
+    "version" => :version,
+    "format" => :format,
+    "artifact_layout" => :artifact_layout,
+    "entrypoint" => :entrypoint,
+    "sha256" => :sha256,
+    "size_bytes" => :size_bytes,
+    "resident_memory_bytes" => :resident_memory_bytes,
+    "kv_cache_bytes_per_token" => :kv_cache_bytes_per_token,
+    "prefill_workspace_bytes_per_token" => :prefill_workspace_bytes_per_token,
+    "max_context_tokens" => :max_context_tokens,
+    "capabilities" => :capabilities,
+    "tokenizer" => :tokenizer,
+    "chat_template" => :chat_template,
+    "runtime_requirements" => :runtime_requirements
+  }
 
-  @known_tokenizer_keys ~w(kind path)
-  @known_chat_template_keys ~w(path sha256)
-  @known_runtime_requirements_keys ~w(adapter min_agent_capability)
+  @tokenizer_key_map %{
+    "kind" => :kind,
+    "path" => :path
+  }
+
+  @chat_template_key_map %{
+    "path" => :path,
+    "sha256" => :sha256
+  }
+
+  @runtime_requirements_key_map %{
+    "adapter" => :adapter,
+    "min_agent_capability" => :min_agent_capability
+  }
 
   @doc """
   Reads and parses `manifest.json` from a bundle directory.
@@ -66,36 +88,36 @@ defmodule Orchard.Models.ManifestParser do
 
   defp atomize_and_build(string_map) do
     with {:ok, atom_map} <- atomize_top_level(string_map),
-         {:ok, atom_map} <- atomize_nested(atom_map, :tokenizer, @known_tokenizer_keys),
-         {:ok, atom_map} <- atomize_nested(atom_map, :chat_template, @known_chat_template_keys),
+         {:ok, atom_map} <- atomize_nested(atom_map, :tokenizer, @tokenizer_key_map),
+         {:ok, atom_map} <- atomize_nested(atom_map, :chat_template, @chat_template_key_map),
          {:ok, atom_map} <-
-           atomize_nested(atom_map, :runtime_requirements, @known_runtime_requirements_keys) do
+           atomize_nested(atom_map, :runtime_requirements, @runtime_requirements_key_map) do
       build_manifest(atom_map)
     end
   end
 
   defp atomize_top_level(string_map) do
-    unknown = Map.keys(string_map) -- @known_top_level_keys
+    unknown = Map.keys(string_map) -- Map.keys(@top_level_key_map)
 
     if unknown != [] do
       {:error, {:validation, "unknown manifest keys: #{inspect(unknown)}"}}
     else
       atom_map =
         for {k, v} <- string_map, into: %{} do
-          {String.to_existing_atom(k), v}
+          {Map.fetch!(@top_level_key_map, k), v}
         end
 
       {:ok, atom_map}
     end
   end
 
-  defp atomize_nested(atom_map, key, known_keys) do
+  defp atomize_nested(atom_map, key, key_map) do
     case Map.get(atom_map, key) do
       nil ->
         {:ok, atom_map}
 
       nested when is_map(nested) ->
-        atomize_nested_map(atom_map, key, nested, known_keys)
+        atomize_nested_map(atom_map, key, nested, key_map)
 
       _other ->
         # Let ModelManifest.new/1 handle type validation
@@ -103,13 +125,13 @@ defmodule Orchard.Models.ManifestParser do
     end
   end
 
-  defp atomize_nested_map(atom_map, key, nested, known_keys) do
-    unknown = Map.keys(nested) -- known_keys
+  defp atomize_nested_map(atom_map, key, nested, key_map) do
+    unknown = Map.keys(nested) -- Map.keys(key_map)
 
     if unknown != [] do
       {:error, {:validation, "unknown keys in #{inspect(key)}: #{inspect(unknown)}"}}
     else
-      atomized = for {k, v} <- nested, into: %{}, do: {String.to_existing_atom(k), v}
+      atomized = for {k, v} <- nested, into: %{}, do: {Map.fetch!(key_map, k), v}
       {:ok, Map.put(atom_map, key, atomized)}
     end
   end

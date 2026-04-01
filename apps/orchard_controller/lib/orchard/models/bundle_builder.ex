@@ -366,11 +366,6 @@ defmodule Orchard.Models.BundleBuilder do
   # -- Manifest Write & Validation -------------------------------------------
 
   defp write_and_validate_manifest(download_dir, manifest) do
-    # Ensure ModelManifest atoms exist in the atom table before the parser
-    # tries String.to_existing_atom on manifest keys. Without this, lazy
-    # module loading may not have loaded the struct atoms yet.
-    Code.ensure_loaded!(Orchard.ModelManifest)
-
     manifest_path = Path.join(download_dir, "manifest.json")
     json = Jason.encode!(manifest, pretty: true)
 

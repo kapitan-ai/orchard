@@ -7,6 +7,7 @@ defmodule Orchard.Inference.RequestPreparation do
   alias Orchard.Tokenizer.Client, as: TokenizerClient
 
   @default_max_output_tokens 4096
+  @manifest_tokenization_error_message "model manifest could not be loaded for tokenization"
 
   @spec prepare(map(), keyword(), keyword()) ::
           {:ok, CanonicalRequest.t(), map()} | {:error, term()}
@@ -46,11 +47,13 @@ defmodule Orchard.Inference.RequestPreparation do
   end
 
   defp tokenize(canonical, model) do
-    tokenizer_opts = build_tokenizer_opts(model)
-
-    case TokenizerClient.tokenize(canonical, tokenizer_opts) do
-      {:ok, %{rendered_prompt: prompt, input_token_count: count}} ->
-        {:ok, CanonicalRequest.with_tokenization(canonical, prompt, count)}
+    with {:ok, tokenizer_opts} <- build_tokenizer_opts(model),
+         {:ok, %{rendered_prompt: prompt, input_token_count: count}} <-
+           TokenizerClient.tokenize(canonical, tokenizer_opts) do
+      {:ok, CanonicalRequest.with_tokenization(canonical, prompt, count)}
+    else
+      {:error, {:tokenization, _reason}} = error ->
+        error
 
       {:error, reason} ->
         {:error, {:tokenization, reason}}
@@ -59,9 +62,9 @@ defmodule Orchard.Inference.RequestPreparation do
 
   defp build_tokenizer_opts(model) do
     case TokenizerClient.mode() do
-      :fake -> []
+      :fake -> {:ok, []}
       :port -> build_port_tokenizer_opts(model)
-      _other -> []
+      _other -> {:ok, []}
     end
   end
 
@@ -69,13 +72,17 @@ defmodule Orchard.Inference.RequestPreparation do
     bundle_root = uri_to_local_path(model.artifact_uri)
 
     case ManifestParser.parse_from_bundle(bundle_root) do
-      {:ok, manifest} -> [manifest: manifest, bundle_root: bundle_root]
-      {:error, _reason} -> []
+      {:ok, manifest} -> {:ok, [manifest: manifest, bundle_root: bundle_root]}
+      {:error, _reason} -> {:error, manifest_tokenization_error()}
     end
   end
 
   defp uri_to_local_path("file://" <> path), do: path
   defp uri_to_local_path(path), do: path
+
+  defp manifest_tokenization_error do
+    {:tokenization, {:internal_error, @manifest_tokenization_error_message}}
+  end
 
   defp enforce_context_window(canonical, model) do
     max_output = effective_max_output_tokens(canonical.sampling)

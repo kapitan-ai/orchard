@@ -302,9 +302,6 @@ defmodule Orchard.ModelsTest do
     end
 
     test "re-import succeeds after delete", %{artifacts_root: root} do
-      # Ensure ModelManifest atoms are loaded (ManifestParser uses to_existing_atom)
-      Code.ensure_loaded!(Orchard.ModelManifest)
-
       source = Path.join(root, "_source_bundle")
       File.mkdir_p!(source)
 

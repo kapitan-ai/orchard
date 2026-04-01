@@ -55,6 +55,18 @@ defmodule Orchard.Inference.ChatErrorTest do
     assert mapping.message == "Tokenization failed: tokenizer crashed"
   end
 
+  test "manifest parse surfacing stays compatible with tokenization_internal mapping" do
+    mapping =
+      {:tokenization, {:internal_error, "model manifest could not be loaded for tokenization"}}
+      |> ChatError.from_prepare_reason()
+      |> ChatError.api_mapping()
+
+    assert mapping.status == :internal_server_error
+    assert mapping.type == "server_error"
+    assert mapping.code == "internal_error"
+    assert mapping.message == "Tokenization failed: model manifest could not be loaded for tokenization"
+  end
+
   test "failed timeout event maps differently for API, SSE, and terminal attrs" do
     event = InferenceEvent.failed("request_timeout", "dispatcher timed out", false)
     error = ChatError.from_failed_event(event)
