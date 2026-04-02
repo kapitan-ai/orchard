@@ -89,25 +89,33 @@ if [ ! -f "$ORCHARD_MLX_BENCH_MODEL_PATH/manifest.json" ]; then
   die "Bundle is missing manifest.json: $ORCHARD_MLX_BENCH_MODEL_PATH"
 fi
 
+# ---------------------------------------------------------------------------
+# Preflight: benchmark config
+# ---------------------------------------------------------------------------
+if [ ! -f "$REPO_ROOT/config/benchmark.exs" ]; then
+  die "Missing benchmark config: $REPO_ROOT/config/benchmark.exs"
+fi
+
 # Canonicalize to absolute path
 ORCHARD_MLX_BENCH_MODEL_PATH="$(cd "$ORCHARD_MLX_BENCH_MODEL_PATH" && pwd)"
 export ORCHARD_MLX_BENCH_MODEL_PATH
 BUNDLE_DISPLAY="$ORCHARD_MLX_BENCH_MODEL_PATH"
 
-echo "==> Cold-start benchmark (MLX worker)"
+echo "==> Cold-start benchmark (REAL MLX worker)"
 echo "    Bundle: $ORCHARD_MLX_BENCH_MODEL_PATH"
+echo "    Backend: mlx (NOT fake/stub - using MIX_ENV=benchmark)"
 echo ""
 
 # ---------------------------------------------------------------------------
 # Run benchmark
 # ---------------------------------------------------------------------------
-echo "==> Running mix test --only mlx_benchmark"
+echo "==> Running mix test with MIX_ENV=benchmark --only mlx_benchmark"
 echo ""
 
 set +e
 (
   cd "$REPO_ROOT" && \
-  mix test apps/orchard_controller/test/orchard/dispatch/cold_start_benchmark_test.exs --only mlx_benchmark
+  MIX_ENV=benchmark mix test apps/orchard_controller/test/orchard/dispatch/cold_start_benchmark_test.exs --only mlx_benchmark
 )
 BENCH_EXIT=$?
 set -e
