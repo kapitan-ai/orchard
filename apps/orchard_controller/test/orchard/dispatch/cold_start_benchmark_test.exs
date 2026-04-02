@@ -24,10 +24,8 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
   alias Orchard.Inference
   alias Orchard.Node.ModelManager
 
-  @mlx_bench_model_path System.get_env("ORCHARD_MLX_BENCH_MODEL_PATH")
-
-  # Only the measurement test runs with --only mlx_benchmark
-  # Validation tests run separately to avoid pre-warming runtime state
+  # Runtime gating: always compile, skip at runtime if env var missing
+  # This avoids compile-time fragility with MIX_ENV=benchmark
 
   # Prompt classes: approximate token counts (actual depends on tokenizer)
   @prompt_classes [
@@ -36,43 +34,41 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
     {:p2000, String.duplicate("word ", 400) <> "The capital is", 402}
   ]
 
-  setup do
-    # Skip entire module if env var not set (conditional compilation pattern)
-    unless @mlx_bench_model_path do
-      {:ok, skipped: true}
-    else
-      # Reset node-agent state to ensure cold start
-      ModelManager.reset()
+  setup_all do
+    case System.get_env("ORCHARD_MLX_BENCH_MODEL_PATH") do
+      nil ->
+        {:skip, "Set ORCHARD_MLX_BENCH_MODEL_PATH to run MLX cold-start benchmark"}
 
-      bundle = stage_test_bundle()
+      path ->
+        # Reset node-agent state to ensure cold start
+        ModelManager.reset()
 
-      on_exit(fn ->
-        # Only delete Orchard-owned transient paths
-        # NEVER delete the user's bundle (source_bundle_path)
-        # Guard against path aliasing: skip any cleanup path that equals or contains source
-        source_real = Path.expand(bundle.source_bundle_path)
+        bundle = stage_test_bundle(path)
 
-        for path <- bundle.cleanup_paths do
-          cleanup_real = Path.expand(path)
+        on_exit(fn ->
+          # Only delete Orchard-owned transient paths
+          # NEVER delete the user's bundle (source_bundle_path)
+          # Guard against path aliasing: skip any cleanup path that equals or contains source
+          source_real = Path.expand(bundle.source_bundle_path)
 
-          # Skip if cleanup path equals source, or if source is inside cleanup path
-          unless cleanup_real == source_real or
-                 String.starts_with?(source_real, cleanup_real <> "/") do
-            File.rm_rf(path)
+          for path <- bundle.cleanup_paths do
+            cleanup_real = Path.expand(path)
+
+            # Skip if cleanup path equals source, or if source is inside cleanup path
+            unless cleanup_real == source_real or
+                   String.starts_with?(source_real, cleanup_real <> "/") do
+              File.rm_rf(path)
+            end
           end
-        end
-      end)
+        end)
 
-      %{bundle: bundle, skipped: false}
+        {:ok, bundle: bundle}
     end
   end
 
-  # Conditional test pattern: only run when env var is set
-  @mlx_bench_model_path_test @mlx_bench_model_path
-
-  if @mlx_bench_model_path_test do
-    describe "cold-start benchmark" do
+  describe "cold-start benchmark" do
       @tag :mlx_benchmark
+      @tag timeout: :infinity
       test "runs cold/warm dispatches for all prompt classes", %{bundle: bundle} do
         model_id = bundle.manifest_data["model_id"]
         version = bundle.manifest_data["version"]
@@ -189,7 +185,6 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
         assert timing.model_already_loaded == "true", "second dispatch should be warm"
       end
     end
-  end
 
   # -- Helpers ---------------------------------------------------------------
 
@@ -200,8 +195,10 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
     execute = execute_request(request_id, model_id, version, prompt, input_tokens)
     model_load = model_load_request(bundle, model_id, version)
 
-    {log, result} =
-      capture_log(fn ->
+    # Use with_log/2 to capture both result and log output at info level
+    # Returns {result, log} so we swap to match our {log, result} contract
+    {result, log} =
+      with_log([level: :info], fn ->
         RequestDispatcher.dispatch(schedule, execute, model_load)
       end)
 
@@ -281,9 +278,9 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
     }
   end
 
-  defp stage_test_bundle do
+  defp stage_test_bundle(path) do
     # User-provided bundle path - NEVER delete this
-    source_bundle_path = Path.expand(@mlx_bench_model_path)
+    source_bundle_path = Path.expand(path)
 
     manifest_json = File.read!(Path.join(source_bundle_path, "manifest.json"))
     manifest_data = Jason.decode!(manifest_json)
