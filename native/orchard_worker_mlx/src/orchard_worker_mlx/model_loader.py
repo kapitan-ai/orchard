@@ -286,6 +286,7 @@ class MLXDeps:
     monotonic: Callable[[], float]
     make_prompt_cache: Callable[[Any], Any] | None = None
     can_trim_prompt_cache: Callable[[Any], bool] | None = None
+    make_sampler: Callable[..., Any] | None = None
 
 
 def _import_required_mlx_runtime_modules() -> tuple:
@@ -335,6 +336,14 @@ def _default_mlx_deps() -> MLXDeps:
     except (ImportError, AttributeError):
         pass
 
+    # Optional sampler factory — fail-open if unavailable.
+    _make_sampler: Callable[..., Any] | None = None
+    try:
+        from mlx_lm.sample_utils import make_sampler as _make_sampler_impl
+        _make_sampler = _make_sampler_impl
+    except (ImportError, AttributeError):
+        pass
+
     def _load_model(model_path: str | Path, **kwargs: Any) -> tuple[Any, Any]:
         """Wrap mlx_lm.utils.load_model; returns (model, config)."""
         return mlx_lm_load(Path(model_path), **kwargs)
@@ -356,6 +365,7 @@ def _default_mlx_deps() -> MLXDeps:
         monotonic=time.monotonic,
         make_prompt_cache=_make_prompt_cache,
         can_trim_prompt_cache=_can_trim_prompt_cache,
+        make_sampler=_make_sampler,
     )
 
 
@@ -580,13 +590,29 @@ def _run_warmup(
         if not prompt_ids:
             return 1
 
+        # Build kwargs for stream_generate
+        stream_kwargs: dict[str, Any] = {
+            "max_tokens": _WARMUP_MAX_TOKENS,
+            "prefill_step_size": _WARMUP_PREFILL_STEP_SIZE,
+        }
+
+        # Create sampler if available (Phase 2 enhancement)
+        if deps.make_sampler is not None:
+            try:
+                sampler = deps.make_sampler()
+                if sampler is not None:
+                    stream_kwargs["sampler"] = sampler
+            except Exception:
+                # Sampler creation failure counts as warmup failure
+                _safe_clear_cache(deps.clear_cache)
+                return 1
+
         t0 = deps.monotonic()
         stream = deps.stream_generate(
             model,
             tokenizer,
             prompt_ids,
-            max_tokens=_WARMUP_MAX_TOKENS,
-            prefill_step_size=_WARMUP_PREFILL_STEP_SIZE,
+            **stream_kwargs,
         )
 
         output_tokens = 0

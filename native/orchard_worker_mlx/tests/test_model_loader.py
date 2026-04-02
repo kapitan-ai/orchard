@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
+import types
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -20,6 +22,7 @@ from orchard_worker_mlx.model_loader import (
     ModelLoaderError,
     RuntimeRequirementsSpec,
     TokenizerSpec,
+    _default_mlx_deps,
     _derive_decode_cancel_stride,
     _run_warmup,
     load_manifest,
@@ -80,6 +83,7 @@ def _make_fake_deps(
     make_prompt_cache_side_effect: Exception | None = None,
     can_trim_prompt_cache_return: bool = True,
     can_trim_prompt_cache_side_effect: Exception | None = None,
+    make_sampler: Any = None,
 ) -> MLXDeps:
     fake_model = MagicMock(name="FakeModel")
     fake_tokenizer = MagicMock(name="FakeTokenizer")
@@ -148,6 +152,7 @@ def _make_fake_deps(
         monotonic=_monotonic,
         make_prompt_cache=_make_prompt_cache,
         can_trim_prompt_cache=_can_trim_prompt_cache,
+        make_sampler=make_sampler,
     )
 
 
@@ -947,6 +952,131 @@ def test_warmup_clear_cache_called(writable_bundle: Path) -> None:
     assert deps.clear_cache.call_count >= 3
 
 
+# --- Phase 2.2: Warmup sampler enhancement tests ---
+
+
+def test_warmup_builds_sampler_when_available() -> None:
+    """_run_warmup calls deps.make_sampler() when provided."""
+    fake_sampler = MagicMock(name="sampler")
+    mock_make_sampler = MagicMock(return_value=fake_sampler, name="make_sampler")
+    deps = _make_fake_deps(
+        warmup_responses=3,
+        warmup_elapsed_s=0.1,
+        make_sampler=mock_make_sampler,
+    )
+
+    model, _ = deps.load_model("/fake/path")
+    tokenizer = deps.load_tokenizer("/fake/path")
+    _run_warmup(model, tokenizer, deps=deps)
+
+    mock_make_sampler.assert_called_once_with()
+
+
+def test_warmup_passes_sampler_to_stream_generate() -> None:
+    """Created sampler is forwarded to deps.stream_generate()."""
+    fake_sampler = MagicMock(name="sampler")
+    mock_make_sampler = MagicMock(return_value=fake_sampler)
+    captured_kwargs = {}
+
+    def _capturing_stream_generate(*args: Any, **kwargs: Any) -> Any:
+        captured_kwargs.update(kwargs)
+        # Yield a simple response
+        resp = MagicMock()
+        resp.text = "x"
+        resp.finish_reason = "length"
+        yield resp
+
+    deps = _make_fake_deps(
+        warmup_responses=1,
+        warmup_elapsed_s=0.1,
+        make_sampler=mock_make_sampler,
+    )
+    # Replace stream_generate with capturing version
+    deps = MLXDeps(
+        load_model=deps.load_model,
+        load_tokenizer=deps.load_tokenizer,
+        stream_generate=_capturing_stream_generate,
+        eval_fn=deps.eval_fn,
+        clear_cache=deps.clear_cache,
+        monotonic=deps.monotonic,
+        make_prompt_cache=deps.make_prompt_cache,
+        can_trim_prompt_cache=deps.can_trim_prompt_cache,
+        make_sampler=mock_make_sampler,
+    )
+
+    model, _ = deps.load_model("/fake/path")
+    tokenizer = deps.load_tokenizer("/fake/path")
+    _run_warmup(model, tokenizer, deps=deps)
+
+    assert "sampler" in captured_kwargs
+    assert captured_kwargs["sampler"] is fake_sampler
+    assert captured_kwargs.get("prefill_step_size") == 2048
+    assert captured_kwargs.get("max_tokens") == 50
+
+
+def test_warmup_missing_make_sampler_preserves_existing_behavior() -> None:
+    """Missing make_sampler omits sampler kwarg and continues normally."""
+    captured_kwargs = {}
+
+    def _capturing_stream_generate(*args: Any, **kwargs: Any) -> Any:
+        captured_kwargs.update(kwargs)
+        resp = MagicMock()
+        resp.text = "x"
+        resp.finish_reason = "length"
+        yield resp
+
+    deps = _make_fake_deps(
+        warmup_responses=1,
+        warmup_elapsed_s=0.1,
+        make_sampler=None,  # Explicitly None
+    )
+    deps = MLXDeps(
+        load_model=deps.load_model,
+        load_tokenizer=deps.load_tokenizer,
+        stream_generate=_capturing_stream_generate,
+        eval_fn=deps.eval_fn,
+        clear_cache=deps.clear_cache,
+        monotonic=deps.monotonic,
+        make_prompt_cache=deps.make_prompt_cache,
+        can_trim_prompt_cache=deps.can_trim_prompt_cache,
+        make_sampler=None,
+    )
+
+    model, _ = deps.load_model("/fake/path")
+    tokenizer = deps.load_tokenizer("/fake/path")
+    stride = _run_warmup(model, tokenizer, deps=deps)
+
+    # Sampler should not be in kwargs
+    assert "sampler" not in captured_kwargs
+    # Warmup should still complete and return a valid stride
+    assert stride >= 1
+
+
+def test_warmup_sampler_failure_falls_back_to_stride_1(writable_bundle: Path) -> None:
+    """Sampler construction failure returns stride=1 but load succeeds."""
+    mock_make_sampler = MagicMock(side_effect=RuntimeError("sampler boom"))
+    deps = _make_fake_deps(
+        warmup_responses=10,
+        warmup_elapsed_s=0.5,
+        make_sampler=mock_make_sampler,
+    )
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+
+    # Warmup should have fallen back to stride=1 due to sampler failure
+    assert session.decode_cancel_stride == 1
+    # But load should still succeed
+    assert session.model is not None
+    assert session.tokenizer is not None
+    # Prefix cache probe should still have run
+    assert session.prefix_cache is not None
+
+
 def test_session_prefill_step_size_default(writable_bundle: Path) -> None:
     """LoadedModelSession.prefill_step_size defaults to 2048."""
     deps = _make_fake_deps()
@@ -1211,3 +1341,118 @@ class TestProbeMlxEnvironment:
             assert len(called) == 1, "_default_mlx_probe_deps must use shared import helper"
         finally:
             ml._import_required_mlx_runtime_modules = original
+
+
+class TestDefaultMlxDepsSamplerWiring:
+    """Tests for _default_mlx_deps() optional sampler factory wiring.
+
+    Phase 2.1: Verify make_sampler is wired when available and fail-open
+    when unavailable, without affecting other dependency wiring.
+    """
+
+    def test_default_mlx_deps_wires_make_sampler_when_available(self, monkeypatch):
+        """Sampler factory is wired when mlx_lm.sample_utils.make_sampler exists."""
+        import orchard_worker_mlx.model_loader as ml
+
+        # Stub required runtime modules to avoid real MLX imports
+        fake_mx = types.SimpleNamespace(
+            eval=lambda t: None,
+            clear_cache=lambda: None,
+        )
+        fake_stream_generate = MagicMock(name="stream_generate")
+        fake_load_model = MagicMock(name="load_model")
+        fake_autotokenizer = MagicMock(name="AutoTokenizer")
+
+        def _fake_import_required():
+            return (fake_mx, fake_stream_generate, fake_load_model, fake_autotokenizer)
+
+        monkeypatch.setattr(ml, "_import_required_mlx_runtime_modules", _fake_import_required)
+
+        # Inject fake mlx_lm.sample_utils with make_sampler
+        fake_make_sampler = MagicMock(name="make_sampler")
+        fake_sample_utils = types.SimpleNamespace(make_sampler=fake_make_sampler)
+        sys.modules["mlx_lm"] = types.SimpleNamespace()
+        sys.modules["mlx_lm.sample_utils"] = fake_sample_utils
+
+        try:
+            deps = _default_mlx_deps()
+            assert deps.make_sampler is fake_make_sampler
+            # Verify other required deps are still wired
+            assert deps.stream_generate is fake_stream_generate
+            assert deps.eval_fn is fake_mx.eval
+            assert deps.clear_cache is fake_mx.clear_cache
+        finally:
+            # Cleanup sys.modules
+            sys.modules.pop("mlx_lm.sample_utils", None)
+            sys.modules.pop("mlx_lm", None)
+
+    def test_default_mlx_deps_sampler_import_failure_is_fail_open(self, monkeypatch):
+        """Sampler import failure is non-fatal; make_sampler is None."""
+        import orchard_worker_mlx.model_loader as ml
+
+        # Stub required runtime modules
+        fake_mx = types.SimpleNamespace(
+            eval=lambda t: None,
+            clear_cache=lambda: None,
+        )
+        fake_stream_generate = MagicMock(name="stream_generate")
+        fake_load_model = MagicMock(name="load_model")
+        fake_autotokenizer = MagicMock(name="AutoTokenizer")
+
+        def _fake_import_required():
+            return (fake_mx, fake_stream_generate, fake_load_model, fake_autotokenizer)
+
+        monkeypatch.setattr(ml, "_import_required_mlx_runtime_modules", _fake_import_required)
+
+        # Inject mlx_lm.sample_utils WITHOUT make_sampler attribute
+        fake_sample_utils = types.SimpleNamespace()  # no make_sampler
+        sys.modules["mlx_lm"] = types.SimpleNamespace()
+        sys.modules["mlx_lm.sample_utils"] = fake_sample_utils
+
+        try:
+            deps = _default_mlx_deps()
+            assert deps.make_sampler is None
+            # No exception raised, other deps still work
+            assert deps.stream_generate is fake_stream_generate
+            assert deps.eval_fn is fake_mx.eval
+        finally:
+            sys.modules.pop("mlx_lm.sample_utils", None)
+            sys.modules.pop("mlx_lm", None)
+
+    def test_default_mlx_deps_sampler_module_missing_is_fail_open(self, monkeypatch):
+        """Missing mlx_lm.sample_utils module is non-fatal; make_sampler is None."""
+        import orchard_worker_mlx.model_loader as ml
+
+        # Stub required runtime modules
+        fake_mx = types.SimpleNamespace(
+            eval=lambda t: None,
+            clear_cache=lambda: None,
+        )
+        fake_stream_generate = MagicMock(name="stream_generate")
+        fake_load_model = MagicMock(name="load_model")
+        fake_autotokenizer = MagicMock(name="AutoTokenizer")
+
+        def _fake_import_required():
+            return (fake_mx, fake_stream_generate, fake_load_model, fake_autotokenizer)
+
+        monkeypatch.setattr(ml, "_import_required_mlx_runtime_modules", _fake_import_required)
+
+        # Inject mlx_lm parent module but make sample_utils raise ImportError on access
+        # This simulates the case where mlx_lm exists but sample_utils submodule is missing
+        class FakeMlxLm(types.SimpleNamespace):
+            def __getattr__(self, name):
+                if name == "sample_utils":
+                    raise ImportError(f"No module named 'mlx_lm.{name}'")
+                return super().__getattr__(name)
+
+        sys.modules["mlx_lm"] = FakeMlxLm()
+        # Ensure submodule is not cached
+        sys.modules.pop("mlx_lm.sample_utils", None)
+
+        try:
+            deps = _default_mlx_deps()
+            assert deps.make_sampler is None
+            # Other deps still functional
+            assert deps.stream_generate is fake_stream_generate
+        finally:
+            sys.modules.pop("mlx_lm", None)
