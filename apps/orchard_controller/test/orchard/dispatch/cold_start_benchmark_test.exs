@@ -49,10 +49,17 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
       on_exit(fn ->
         # Only delete Orchard-owned transient paths
         # NEVER delete the user's bundle (source_bundle_path)
-        # Guard against path aliasing: skip any cleanup path that equals source
-        for path <- bundle.cleanup_paths,
-            Path.expand(path) != bundle.source_bundle_path do
-          File.rm_rf(path)
+        # Guard against path aliasing: skip any cleanup path that equals or contains source
+        source_real = Path.expand(bundle.source_bundle_path)
+
+        for path <- bundle.cleanup_paths do
+          cleanup_real = Path.expand(path)
+
+          # Skip if cleanup path equals source, or if source is inside cleanup path
+          unless cleanup_real == source_real or
+                 String.starts_with?(source_real, cleanup_real <> "/") do
+            File.rm_rf(path)
+          end
         end
       end)
 
@@ -289,9 +296,9 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
 
     source_uri = "file://#{source_bundle_path}"
 
-    # Orchard-owned cleanup paths only - these can be safely deleted
+    # Orchard-owned cleanup paths only - model-specific cache only
+    # Note: .staging is too broad (deletes entire tree), skip it
     cache_path = Path.join([Orchard.Node.models_root(), model_id, version])
-    staging_path = Path.join(Orchard.Node.models_root(), ".staging")
 
     %{
       # External input (read-only, never deleted)
@@ -300,10 +307,9 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
       hash: hash,
       manifest_data: manifest_data,
 
-      # Orchard-owned paths (safe to delete)
+      # Orchard-owned paths (safe to delete - model-specific only)
       cache_path: cache_path,
-      staging_path: staging_path,
-      cleanup_paths: [cache_path, staging_path]
+      cleanup_paths: [cache_path]
     }
   end
 end
