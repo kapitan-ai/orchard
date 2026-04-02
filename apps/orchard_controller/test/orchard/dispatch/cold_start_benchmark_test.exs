@@ -49,7 +49,9 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
       on_exit(fn ->
         # Only delete Orchard-owned transient paths
         # NEVER delete the user's bundle (source_bundle_path)
-        for path <- bundle.cleanup_paths do
+        # Guard against path aliasing: skip any cleanup path that equals source
+        for path <- bundle.cleanup_paths,
+            Path.expand(path) != bundle.source_bundle_path do
           File.rm_rf(path)
         end
       end)
