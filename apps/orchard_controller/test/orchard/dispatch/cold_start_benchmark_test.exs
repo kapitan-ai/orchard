@@ -26,7 +26,8 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
 
   @mlx_bench_model_path System.get_env("ORCHARD_MLX_BENCH_MODEL_PATH")
 
-  @moduletag :mlx_benchmark
+  # Only the measurement test runs with --only mlx_benchmark
+  # Validation tests run separately to avoid pre-warming runtime state
 
   # Prompt classes: approximate token counts (actual depends on tokenizer)
   @prompt_classes [
@@ -46,9 +47,11 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
       bundle = stage_test_bundle()
 
       on_exit(fn ->
-        File.rm_rf(bundle.cache_path)
-        File.rm_rf(bundle.source_path)
-        File.rm_rf(Path.join(Orchard.Node.models_root(), ".staging"))
+        # Only delete Orchard-owned transient paths
+        # NEVER delete the user's bundle (source_bundle_path)
+        for path <- bundle.cleanup_paths do
+          File.rm_rf(path)
+        end
       end)
 
       %{bundle: bundle, skipped: false}
@@ -60,6 +63,7 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
 
   if @mlx_bench_model_path_test do
     describe "cold-start benchmark" do
+      @tag :mlx_benchmark
       test "runs cold/warm dispatches for all prompt classes", %{bundle: bundle} do
         model_id = bundle.manifest_data["model_id"]
         version = bundle.manifest_data["version"]
@@ -68,7 +72,7 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
         IO.puts("")
         IO.puts(String.duplicate("=", 70))
         IO.puts("Cold-start benchmark")
-        IO.puts("Bundle: #{bundle.cache_path}")
+        IO.puts("Bundle: #{bundle.source_bundle_path}")
         IO.puts("Model: #{model_id}@#{version}")
         IO.puts(String.duplicate("=", 70))
         IO.puts("")
@@ -130,13 +134,19 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
         version = bundle.manifest_data["version"]
         prompt = "hello"
 
-        {_log, result} = run_dispatch(bundle, model_id, version, prompt, 1)
+        {log, result} = run_dispatch(bundle, model_id, version, prompt, 1)
 
         assert {:ok, events} = result
         assert length(events) >= 1
 
-        # Timing log is captured in the log variable - parse it
-        # parse_dispatch_timing will be tested implicitly by the main test
+        # Actually parse the log and verify required fields are present
+        timing = parse_dispatch_timing(log)
+        assert timing.request_id != "missing", "request_id should be present"
+        assert timing.model_id != "missing", "model_id should be present"
+        assert timing.input_tokens != "missing", "input_tokens should be present"
+        assert timing.model_already_loaded in ["true", "false", "unknown"]
+        assert timing.outcome == "ok", "dispatch should succeed"
+        refute timing.anomaly == "delta_before_accepted", "timing anomaly detected"
       end
 
       test "cold start has model_already_loaded=false on first dispatch", %{bundle: bundle} do
@@ -175,8 +185,10 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
   # -- Helpers ---------------------------------------------------------------
 
   defp run_dispatch(bundle, model_id, version, prompt, input_tokens) do
-    schedule = build_schedule("req-bench-#{System.unique_integer([:positive])}")
-    execute = execute_request("req-bench-#{System.unique_integer([:positive])}", model_id, version, prompt, input_tokens)
+    # Generate ONE request_id for both schedule and execute - must match for event routing
+    request_id = "req-bench-#{System.unique_integer([:positive])}"
+    schedule = build_schedule(request_id)
+    execute = execute_request(request_id, model_id, version, prompt, input_tokens)
     model_load = model_load_request(bundle, model_id, version)
 
     {log, result} =
@@ -200,6 +212,7 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
     end
 
     # Extract key=value pairs
+    # Note: terminal_detail may contain spaces (from inspect/1), so we skip parsing it
     %{
       request_id: extract_field(dispatch_line, "request_id"),
       model_id: extract_field(dispatch_line, "model_id"),
@@ -211,14 +224,16 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
       accepted_to_terminal_ms: extract_field(dispatch_line, "accepted_to_terminal_ms"),
       terminal_kind: extract_field(dispatch_line, "terminal_kind"),
       terminal_source: extract_field(dispatch_line, "terminal_source"),
-      terminal_detail: extract_field(dispatch_line, "terminal_detail"),
       outcome: extract_field(dispatch_line, "outcome"),
       event_count: extract_field(dispatch_line, "event_count"),
-      anomaly: extract_field(dispatch_line, "anomaly")
+      anomaly: extract_field(dispatch_line, "anomaly"),
+      # terminal_detail may contain spaces from inspect/1, skip it for benchmark parsing
+      terminal_detail: "na"
     }
   end
 
   defp extract_field(line, field_name) do
+    # Parse fields without spaces (all dispatch_timing fields except terminal_detail)
     case Regex.run(~r/#{field_name}=([^\s]+)/, line) do
       [_, value] -> value
       nil -> "missing"
@@ -258,22 +273,35 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
   end
 
   defp stage_test_bundle do
-    # Use the provided ORCHARD_MLX_BENCH_MODEL_PATH bundle
-    bundle_path = @mlx_bench_model_path
+    # User-provided bundle path - NEVER delete this
+    source_bundle_path = Path.expand(@mlx_bench_model_path)
 
-    manifest_json = File.read!(Path.join(bundle_path, "manifest.json"))
+    manifest_json = File.read!(Path.join(source_bundle_path, "manifest.json"))
     manifest_data = Jason.decode!(manifest_json)
 
-    {:ok, hash} = ArtifactBundle.tree_sha256(bundle_path)
+    # Extract required fields for deriving Orchard-owned paths
+    model_id = manifest_data["model_id"] || raise "manifest.json missing model_id"
+    version = manifest_data["version"] || raise "manifest.json missing version"
 
-    source_uri = "file://#{bundle_path}"
+    {:ok, hash} = ArtifactBundle.tree_sha256(source_bundle_path)
+
+    source_uri = "file://#{source_bundle_path}"
+
+    # Orchard-owned cleanup paths only - these can be safely deleted
+    cache_path = Path.join([Orchard.Node.models_root(), model_id, version])
+    staging_path = Path.join(Orchard.Node.models_root(), ".staging")
 
     %{
-      cache_path: bundle_path,
-      source_path: bundle_path,
+      # External input (read-only, never deleted)
+      source_bundle_path: source_bundle_path,
       source_uri: source_uri,
       hash: hash,
-      manifest_data: manifest_data
+      manifest_data: manifest_data,
+
+      # Orchard-owned paths (safe to delete)
+      cache_path: cache_path,
+      staging_path: staging_path,
+      cleanup_paths: [cache_path, staging_path]
     }
   end
 end
