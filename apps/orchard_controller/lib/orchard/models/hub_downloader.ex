@@ -14,12 +14,12 @@ defmodule Orchard.Models.HubDownloader do
   3. Sanitize paths (reject absolute, `..`, empty segments)
   4. HEAD preflight each file for content-length + ETag
   5. Download files sequentially with `.partial` + `.partial.etag` resume
-  6. Emit progress callback after each file completion
+  6. Emit progress callback after each file completion, plus throttled in-stream updates during large-file downloads (~10 MiB cadence)
 
   ## Options
 
   - `:revision` — HF revision (default: `"main"`)
-  - `:progress_callback` — `(progress_update() -> any())`, called per file completion
+  - `:progress_callback` — `(progress_update() -> any())`, called per file completion and throttled during large-file streaming
   - `:hf_config` — keyword override merged over app env (primarily for tests)
   - `:req_options` — keyword list merged on top of config `:req_options`
   """

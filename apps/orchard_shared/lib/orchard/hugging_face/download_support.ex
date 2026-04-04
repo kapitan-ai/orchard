@@ -7,6 +7,7 @@ defmodule Orchard.HuggingFace.DownloadSupport do
   @max_backoff_ms 2_000
   @max_redirect_hops 5
   @redirect_statuses [301, 302, 303, 307, 308]
+  @stream_progress_threshold_bytes 10 * 1_048_576
 
   @type progress :: %{
           bytes_downloaded: non_neg_integer(),
@@ -27,6 +28,7 @@ defmodule Orchard.HuggingFace.DownloadSupport do
           | {:download_incomplete, String.t(), non_neg_integer(), non_neg_integer()}
           | {:http_status, non_neg_integer(), String.t()}
           | {:request_failed, String.t(), term()}
+          | {:callback_failed, term()}
 
   @type download_opts :: [
           base_url: String.t(),
@@ -94,6 +96,7 @@ defmodule Orchard.HuggingFace.DownloadSupport do
          max_attempts: max(Keyword.fetch!(opts, :max_attempts), 1),
          progress_fun: Keyword.get(opts, :progress_fun),
          emit_initial_progress?: Keyword.get(opts, :emit_initial_progress?, false),
+         stream_high_water: :counters.new(1, [:atomics]),
          progress: %{
            bytes_downloaded: 0,
            total_bytes: total_bytes,
@@ -280,19 +283,53 @@ defmodule Orchard.HuggingFace.DownloadSupport do
 
   defp stream_download(state, file_pid) do
     write_error = :atomics.new(1, [])
-    result = request_get(state, download_into(file_pid, state.bytes_counter, write_error))
+    callback_error = :atomics.new(1, [])
+    callback_error_key = make_ref()
+    last_emitted = :counters.new(1, [:atomics])
+    :counters.put(last_emitted, 1, state.progress.bytes_downloaded)
+
+    stream_ctx = %{
+      progress_fun: state.context.progress_fun,
+      base_progress: state.progress,
+      file_meta: state.file_meta,
+      resume?: state.resume?,
+      callback_error: callback_error,
+      callback_error_key: callback_error_key,
+      last_emitted: last_emitted,
+      high_water: state.context.stream_high_water
+    }
+
+    result = request_get(state, download_into(file_pid, state.bytes_counter, write_error, stream_ctx))
     File.close(file_pid)
     bytes_written = :counters.get(state.bytes_counter, 1)
 
-    finalize_stream(state, result, bytes_written, :atomics.get(write_error, 1) == 1)
+    callback_failed = :atomics.get(callback_error, 1) == 1
+    callback_reason = if callback_failed, do: Process.delete(callback_error_key)
+
+    finalize_stream(
+      state,
+      result,
+      bytes_written,
+      :atomics.get(write_error, 1) == 1,
+      {callback_failed, callback_reason}
+    )
   end
 
-  defp download_into(file_pid, bytes_counter, write_error) do
+  defp download_into(file_pid, bytes_counter, write_error, stream_ctx) do
     fn {:data, chunk}, {req, resp} ->
       case :file.write(file_pid, chunk) do
         :ok ->
           :counters.add(bytes_counter, 1, byte_size(chunk))
-          {:cont, {req, resp}}
+
+          case maybe_emit_streaming_progress(stream_ctx, bytes_counter, resp) do
+            :ok ->
+              {:cont, {req, resp}}
+
+            {:error, reason} ->
+              :atomics.put(stream_ctx.callback_error, 1, 1)
+              Process.put(stream_ctx.callback_error_key, reason)
+              {:halt, {req, resp}}
+          end
 
         {:error, _reason} ->
           :atomics.put(write_error, 1, 1)
@@ -301,25 +338,56 @@ defmodule Orchard.HuggingFace.DownloadSupport do
     end
   end
 
-  defp finalize_stream(state, _result, _bytes_written, true) do
+  defp maybe_emit_streaming_progress(%{progress_fun: nil}, _bytes_counter, _resp), do: :ok
+
+  defp maybe_emit_streaming_progress(%{resume?: true}, _bytes_counter, %{status: 200}), do: :ok
+
+  defp maybe_emit_streaming_progress(stream_ctx, bytes_counter, _resp) do
+    current_file_bytes = :counters.get(bytes_counter, 1)
+    absolute_bytes = stream_ctx.base_progress.bytes_downloaded + current_file_bytes
+    last = :counters.get(stream_ctx.last_emitted, 1)
+    high_water = :counters.get(stream_ctx.high_water, 1)
+
+    if absolute_bytes - last >= @stream_progress_threshold_bytes and absolute_bytes > high_water do
+      :counters.put(stream_ctx.last_emitted, 1, absolute_bytes)
+      :counters.put(stream_ctx.high_water, 1, absolute_bytes)
+
+      progress = %{
+        bytes_downloaded: absolute_bytes,
+        total_bytes: stream_ctx.base_progress.total_bytes,
+        files_completed: stream_ctx.base_progress.files_completed,
+        total_files: stream_ctx.base_progress.total_files
+      }
+
+      emit_progress(stream_ctx.progress_fun, progress, stream_ctx.file_meta.path)
+    else
+      :ok
+    end
+  end
+
+  defp finalize_stream(state, _result, _bytes_written, true, _callback_result) do
     {:error, {:filesystem_error, :write, state.partial_path, :disk_write_failed}}
   end
 
-  defp finalize_stream(%{resume?: true} = state, {:ok, %{status: 200}}, bytes_written, false)
+  defp finalize_stream(_state, _result, _bytes_written, false, {true, reason}) do
+    {:error, {:callback_failed, reason}}
+  end
+
+  defp finalize_stream(%{resume?: true} = state, {:ok, %{status: 200}}, bytes_written, false, {false, _})
        when bytes_written > 0 do
     restart_without_resume(state)
   end
 
-  defp finalize_stream(state, {:ok, %{status: status}}, bytes_written, false)
+  defp finalize_stream(state, {:ok, %{status: status}}, bytes_written, false, {false, _})
        when status in [200, 206] do
     finish_success(state, bytes_written)
   end
 
-  defp finalize_stream(state, {:ok, %{status: status}}, _bytes_written, false) do
+  defp finalize_stream(state, {:ok, %{status: status}}, _bytes_written, false, {false, _}) do
     handle_http_error(state, status)
   end
 
-  defp finalize_stream(state, {:error, reason}, _bytes_written, false) do
+  defp finalize_stream(state, {:error, reason}, _bytes_written, false, {false, _}) do
     handle_request_error(state, reason)
   end
 

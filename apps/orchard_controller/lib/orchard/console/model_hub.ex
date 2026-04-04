@@ -89,10 +89,20 @@ defmodule OrchardConsole.ModelHub do
     result =
       protect_result(
         fn ->
+          lookup = start_optional_repo_lookup(client, query)
+
           case client.search_models(query, []) do
-            {:ok, results} -> {:ok, %{query: query, results: results}}
-            {:error, %{} = error} -> {:error, error}
-            _other -> {:error, hf_error()}
+            {:ok, results} ->
+              direct = collect_optional_lookup(lookup)
+              {:ok, %{query: query, results: merge_search_results(direct, results)}}
+
+            {:error, %{} = error} ->
+              cancel_optional_lookup(lookup)
+              {:error, error}
+
+            _other ->
+              cancel_optional_lookup(lookup)
+              {:error, hf_error()}
           end
         end,
         hf_error()
@@ -100,6 +110,120 @@ defmodule OrchardConsole.ModelHub do
 
     send(owner, {:model_hub, ref, :search_finished, result})
   end
+
+  # ---------------------------------------------------------------------------
+  # Direct repo-ID lookup (parallel to normal search)
+  # ---------------------------------------------------------------------------
+
+  # Returns {:waiting, pid, ref} when query looks like a HuggingFace repo ID
+  # (exactly two non-empty slash-delimited segments), or :skip otherwise.
+  # Spawns a child process linked to the calling (search) task so that
+  # killing the search task also terminates the lookup child.
+  defp start_optional_repo_lookup(client, query) do
+    case repo_lookup_candidate(query) do
+      {:ok, repo_id} ->
+        # Trap exits so child crashes become messages rather than killing us.
+        Process.flag(:trap_exit, true)
+        lookup_ref = make_ref()
+        parent = self()
+
+        {:ok, pid} =
+          Task.start_link(fn ->
+            result =
+              try do
+                client.get_model_detail(repo_id)
+              rescue
+                _ -> {:error, :lookup_failed}
+              catch
+                _, _ -> {:error, :lookup_failed}
+              end
+
+            send(parent, {:model_hub_repo_lookup, lookup_ref, result})
+          end)
+
+        {:waiting, pid, lookup_ref}
+
+      :skip ->
+        :skip
+    end
+  end
+
+  # Waits for the optional lookup result and returns the detail map on success,
+  # or nil on failure/timeout/crash.
+  defp collect_optional_lookup(:skip), do: nil
+
+  defp collect_optional_lookup({:waiting, _pid, lookup_ref}) do
+    receive do
+      {:model_hub_repo_lookup, ^lookup_ref, {:ok, detail}} ->
+        detail
+
+      {:model_hub_repo_lookup, ^lookup_ref, _} ->
+        nil
+
+      {:EXIT, _pid, _reason} ->
+        nil
+    after
+      5000 ->
+        nil
+    end
+  end
+
+  # Kills the optional lookup child (no-op if already :skip).
+  defp cancel_optional_lookup(:skip), do: :ok
+
+  defp cancel_optional_lookup({:waiting, pid, _ref}) do
+    Process.exit(pid, :kill)
+  end
+
+  # Detects whether a query string looks like a HuggingFace repo ID.
+  # Requires exactly two non-empty slash-delimited segments (e.g. "owner/model").
+  defp repo_lookup_candidate(nil), do: :skip
+
+  defp repo_lookup_candidate(query) when is_binary(query) do
+    case String.split(String.trim(query), "/") do
+      [org, model] when org != "" and model != "" -> {:ok, String.trim(query)}
+      _ -> :skip
+    end
+  end
+
+  defp repo_lookup_candidate(_), do: :skip
+
+  # Converts a detail map (atom-keyed) into a search-result-compatible map.
+  # Only the fields needed for the search results table are included.
+  defp detail_to_search_result(detail) do
+    %{
+      repo_id: Map.get(detail, :repo_id),
+      author: Map.get(detail, :author),
+      downloads: Map.get(detail, :downloads),
+      likes: Map.get(detail, :likes),
+      tags: Map.get(detail, :tags),
+      pipeline_tag: Map.get(detail, :pipeline_tag),
+      library_name: Map.get(detail, :library_name),
+      used_storage_bytes: Map.get(detail, :used_storage_bytes),
+      last_modified: Map.get(detail, :last_modified),
+      gated: Map.get(detail, :gated)
+    }
+  end
+
+  # Prepends the direct detail result to search results, deduplicating by repo_id.
+  # The direct result takes precedence (first occurrence wins).
+  defp merge_search_results(nil, search_results), do: search_results
+
+  defp merge_search_results(direct_detail, search_results) do
+    direct = detail_to_search_result(direct_detail)
+    direct_repo_id = direct.repo_id
+
+    filtered =
+      Enum.reject(search_results, fn result ->
+        search_result_repo_id(result) == direct_repo_id
+      end)
+
+    [direct | filtered]
+  end
+
+  defp search_result_repo_id(%{repo_id: id}), do: id
+  defp search_result_repo_id(%{"repo_id" => id}), do: id
+  defp search_result_repo_id(_), do: nil
 
   defp run_detail(client, owner, ref, repo_id) do
     result =

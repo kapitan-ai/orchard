@@ -547,6 +547,43 @@ defmodule Orchard.Models.HubDownloaderTest do
       assert {:ok, _dest, _summary} = HubDownloader.download(@repo_id, ctx.dest_dir)
     end
 
+    test "emits in-file streaming updates for files exceeding 10 MiB threshold", ctx do
+      threshold = 10 * 1_048_576
+      large_content = :binary.copy("x", threshold + 1024)
+      large_size = byte_size(large_content)
+
+      large_file_contents = %{"model.safetensors" => large_content}
+      large_tree_response = HuggingFaceReqStub.tree_response(large_file_contents)
+      install_hf_stub(ctx.stub_name, large_file_contents, large_tree_response)
+
+      test_pid = self()
+      callback = fn update -> send(test_pid, {:progress, update}) end
+
+      assert {:ok, _dest, _summary} =
+               HubDownloader.download(@repo_id, ctx.dest_dir, progress_callback: callback)
+
+      updates = collect_progress_messages()
+
+      # At least one mid-file update: current_file set, files_completed < total, bytes > 0
+      mid_file_updates =
+        Enum.filter(updates, fn u ->
+          u.current_file == "model.safetensors" and
+            u.bytes_downloaded > 0 and
+            u.files_completed < u.total_files
+        end)
+
+      assert length(mid_file_updates) >= 1
+
+      streaming = hd(mid_file_updates)
+      assert streaming.bytes_downloaded >= threshold
+      assert streaming.total_bytes >= large_size
+
+      # Final update has all files complete and bytes match total
+      final = List.last(updates)
+      assert final.files_completed == 1
+      assert final.bytes_downloaded == final.total_bytes
+    end
+
     test "callback failure stops download", ctx do
       stub_successful_hf(ctx)
 

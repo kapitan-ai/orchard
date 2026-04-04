@@ -6,6 +6,7 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
   @file_content ~s({"model_type":"test"})
   @file_size byte_size(@file_content)
   @file_etag "abc123"
+  @threshold 10 * 1_048_576
 
   setup do
     tmp_dir =
@@ -299,11 +300,295 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
     end
   end
 
+  describe "streaming progress emission" do
+    test "emits mid-stream progress updates when file exceeds 10 MiB threshold", ctx do
+      large_content = :binary.copy("y", @threshold + 1)
+      large_size = byte_size(large_content)
+      chunk1 = binary_part(large_content, 0, @threshold)
+      chunk2 = binary_part(large_content, @threshold, large_size - @threshold)
+
+      test_pid = self()
+
+      progress_fun = fn progress, current_file ->
+        send(test_pid, {:progress, progress, current_file})
+        :ok
+      end
+
+      file_metas = [
+        %{
+          path: "model.safetensors",
+          size: large_size,
+          content_length: large_size,
+          etag: "large123"
+        }
+      ]
+
+      request_fun = fn method, _url, extra_opts ->
+        case method do
+          :head ->
+            {:ok,
+             %{
+               status: 200,
+               headers: %{
+                 "content-length" => [to_string(large_size)],
+                 "etag" => ["\"large123\""]
+               }
+             }}
+
+          :get ->
+            into = Keyword.get(extra_opts, :into)
+            {_, acc1} = into.({:data, chunk1}, {nil, %{status: 200}})
+            {_, acc2} = into.({:data, chunk2}, acc1)
+            {:ok, %{status: 200, body: acc2}}
+        end
+      end
+
+      opts =
+        base_opts(ctx.tmp_dir, request_fun)
+        |> Keyword.put(:progress_fun, progress_fun)
+        |> Keyword.put(:emit_initial_progress?, true)
+
+      assert {:ok, _progress} = DownloadSupport.download_all(file_metas, opts)
+
+      all_updates = collect_progress_updates()
+
+      # At least: initial preflight, 1 in-stream, 1 completion
+      assert length(all_updates) >= 3
+
+      # First is the initial preflight (zero bytes, nil file)
+      [{preflight, nil_file} | rest] = all_updates
+      assert preflight.bytes_downloaded == 0
+      assert preflight.files_completed == 0
+      assert is_nil(nil_file)
+
+      # At least one mid-stream update: files_completed still 0, bytes > 0
+      streaming_updates =
+        Enum.filter(rest, fn {p, _f} ->
+          p.files_completed == 0 and p.bytes_downloaded > 0
+        end)
+
+      assert length(streaming_updates) >= 1
+      {stream_p, stream_file} = hd(streaming_updates)
+      assert stream_p.bytes_downloaded >= @threshold
+      assert stream_file == "model.safetensors"
+
+      # Final update: files_completed == 1, bytes match total
+      {last_p, _} = List.last(rest)
+      assert last_p.files_completed == 1
+      assert last_p.bytes_downloaded == large_size
+    end
+
+    test "aborts download when progress callback returns error mid-stream", ctx do
+      large_content = :binary.copy("z", @threshold + 1)
+      large_size = byte_size(large_content)
+      chunk1 = binary_part(large_content, 0, @threshold)
+      chunk2 = binary_part(large_content, @threshold, large_size - @threshold)
+
+      # Callback immediately returns error on every invocation
+      progress_fun = fn _progress, _current_file ->
+        {:error, {:callback_failed, "test callback abort"}}
+      end
+
+      file_metas = [
+        %{
+          path: "model.safetensors",
+          size: large_size,
+          content_length: large_size,
+          etag: "cbfail"
+        }
+      ]
+
+      request_fun = fn method, _url, extra_opts ->
+        case method do
+          :head ->
+            {:ok,
+             %{
+               status: 200,
+               headers: %{
+                 "content-length" => [to_string(large_size)],
+                 "etag" => ["\"cbfail\""]
+               }
+             }}
+
+          :get ->
+            into = Keyword.get(extra_opts, :into)
+            {result1, acc1} = into.({:data, chunk1}, {nil, %{status: 200}})
+
+            if result1 == :halt do
+              {:ok, %{status: 200, body: acc1}}
+            else
+              {_, acc2} = into.({:data, chunk2}, acc1)
+              {:ok, %{status: 200, body: acc2}}
+            end
+        end
+      end
+
+      opts =
+        base_opts(ctx.tmp_dir, request_fun)
+        |> Keyword.put(:progress_fun, progress_fun)
+
+      assert {:error, {:callback_failed, {:callback_failed, "test callback abort"}}} =
+               DownloadSupport.download_all(file_metas, opts)
+    end
+
+    test "does not emit mid-stream progress for file below threshold", ctx do
+      # File just under @threshold bytes — delta never reaches threshold
+      exact_content = :binary.copy("e", @threshold - 1)
+      exact_size = byte_size(exact_content)
+      test_pid = self()
+
+      progress_fun = fn progress, current_file ->
+        send(test_pid, {:progress, progress, current_file})
+        :ok
+      end
+
+      file_metas = [
+        %{path: "exact.safetensors", size: exact_size, content_length: exact_size, etag: "exact1"}
+      ]
+
+      request_fun = fn method, _url, extra_opts ->
+        case method do
+          :head ->
+            {:ok,
+             %{
+               status: 200,
+               headers: %{
+                 "content-length" => [to_string(exact_size)],
+                 "etag" => ["\"exact1\""]
+               }
+             }}
+
+          :get ->
+            into = Keyword.get(extra_opts, :into)
+            {_, acc} = into.({:data, exact_content}, {nil, %{status: 200}})
+            {:ok, %{status: 200, body: acc}}
+        end
+      end
+
+      opts =
+        base_opts(ctx.tmp_dir, request_fun)
+        |> Keyword.put(:progress_fun, progress_fun)
+        |> Keyword.put(:emit_initial_progress?, true)
+
+      assert {:ok, _progress} = DownloadSupport.download_all(file_metas, opts)
+
+      updates = collect_progress_updates()
+      # Only initial (preflight) + final completion — no mid-stream emission
+      streaming_updates =
+        Enum.filter(updates, fn {p, f} ->
+          p.files_completed == 0 and p.bytes_downloaded > 0 and not is_nil(f)
+        end)
+
+      assert streaming_updates == []
+    end
+
+    test "emits mid-stream progress for single chunk exceeding threshold", ctx do
+      # One chunk larger than threshold — should emit once
+      big_chunk = :binary.copy("b", @threshold * 2)
+      big_size = byte_size(big_chunk)
+      test_pid = self()
+
+      progress_fun = fn progress, current_file ->
+        send(test_pid, {:progress, progress, current_file})
+        :ok
+      end
+
+      file_metas = [
+        %{path: "big.safetensors", size: big_size, content_length: big_size, etag: "big1"}
+      ]
+
+      request_fun = fn method, _url, extra_opts ->
+        case method do
+          :head ->
+            {:ok,
+             %{
+               status: 200,
+               headers: %{
+                 "content-length" => [to_string(big_size)],
+                 "etag" => ["\"big1\""]
+               }
+             }}
+
+          :get ->
+            into = Keyword.get(extra_opts, :into)
+            {_, acc} = into.({:data, big_chunk}, {nil, %{status: 200}})
+            {:ok, %{status: 200, body: acc}}
+        end
+      end
+
+      opts =
+        base_opts(ctx.tmp_dir, request_fun)
+        |> Keyword.put(:progress_fun, progress_fun)
+        |> Keyword.put(:emit_initial_progress?, true)
+
+      assert {:ok, _progress} = DownloadSupport.download_all(file_metas, opts)
+
+      updates = collect_progress_updates()
+      streaming_updates =
+        Enum.filter(updates, fn {p, f} ->
+          p.files_completed == 0 and p.bytes_downloaded > 0 and not is_nil(f)
+        end)
+
+      # Single chunk >= 2x threshold triggers exactly 1 mid-stream emission
+      assert length(streaming_updates) == 1
+      {stream_p, _} = hd(streaming_updates)
+      assert stream_p.bytes_downloaded == big_size
+    end
+
+    test "handles zero-byte file without errors", ctx do
+      test_pid = self()
+
+      progress_fun = fn progress, current_file ->
+        send(test_pid, {:progress, progress, current_file})
+        :ok
+      end
+
+      file_metas = [
+        %{path: "empty.json", size: 0, content_length: 0, etag: "empty1"}
+      ]
+
+      request_fun = fn method, _url, _extra_opts ->
+        case method do
+          :head ->
+            {:ok,
+             %{
+               status: 200,
+               headers: %{
+                 "content-length" => ["0"],
+                 "etag" => ["\"empty1\""]
+               }
+             }}
+
+          :get ->
+            {:ok, %{status: 200, body: ""}}
+        end
+      end
+
+      opts =
+        base_opts(ctx.tmp_dir, request_fun)
+        |> Keyword.put(:progress_fun, progress_fun)
+        |> Keyword.put(:emit_initial_progress?, true)
+
+      assert {:ok, progress} = DownloadSupport.download_all(file_metas, opts)
+      assert progress.files_completed == 1
+      assert progress.bytes_downloaded == 0
+    end
+  end
+
   # -- Helpers ---------------------------------------------------------------
 
   defp collect_requests(acc \\ []) do
     receive do
       {:request, method, url, opts} -> collect_requests([{method, url, opts} | acc])
+    after
+      100 -> Enum.reverse(acc)
+    end
+  end
+
+  defp collect_progress_updates(acc \\ []) do
+    receive do
+      {:progress, progress, current_file} ->
+        collect_progress_updates([{progress, current_file} | acc])
     after
       100 -> Enum.reverse(acc)
     end

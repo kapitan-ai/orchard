@@ -594,6 +594,83 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ ~s(phx-hook="LocalTime")
       assert html =~ ~s(data-local-time-format="datetime_minute")
     end
+
+    test "repo-ID query: seam-injected direct result renders and auto-loads detail", %{
+         conn: conn
+       } do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _initial_ref = assert_search_started(nil)
+
+      view
+      |> form("#model-hub-search-form", model_hub_search: %{query: "meta-llama/Llama-3.1-8B"})
+      |> render_change()
+
+      search_ref = assert_search_started("meta-llama/Llama-3.1-8B")
+
+      # Simulate the seam returning a merged result (just the direct-lookup row).
+      injected_result =
+        search_result_fixture("meta-llama/Llama-3.1-8B", %{
+          library_name: "transformers",
+          downloads: 77_777
+        })
+
+      send_search_success(view, search_ref, "meta-llama/Llama-3.1-8B", [injected_result])
+
+      detail_ref = assert_detail_started("meta-llama/Llama-3.1-8B")
+      send_detail_success(view, detail_ref, detail_fixture("meta-llama/Llama-3.1-8B"))
+
+      html = render(view)
+      assert html =~ "meta-llama/Llama-3.1-8B"
+      assert html =~ "model-hub-detail-content"
+      assert html =~ "model-hub-results-table"
+    end
+
+    test "seam-deduped result list renders exactly one row for the repo", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _initial_ref = assert_search_started(nil)
+
+      view
+      |> form("#model-hub-search-form",
+        model_hub_search: %{query: "mlx-community/Llama-3.2-1B-Instruct-4bit"}
+      )
+      |> render_change()
+
+      search_ref = assert_search_started("mlx-community/Llama-3.2-1B-Instruct-4bit")
+
+      # Seam returns a single already-deduped result (as the production seam would).
+      deduped = search_result_fixture("mlx-community/Llama-3.2-1B-Instruct-4bit")
+      send_search_success(view, search_ref, "mlx-community/Llama-3.2-1B-Instruct-4bit", [deduped])
+
+      _detail_ref = assert_detail_started("mlx-community/Llama-3.2-1B-Instruct-4bit")
+
+      html = render(view)
+      frag = dom_id_fragment("mlx-community/Llama-3.2-1B-Instruct-4bit")
+      # The row element ID should appear exactly once in the rendered output.
+      assert html =~ "model-hub-result-#{frag}"
+      assert Enum.count(String.split(html, "model-hub-result-#{frag}")) == 2
+    end
+
+    test "starting a new search cancels superseded search task for repo-ID-shaped queries", %{
+         conn: conn
+       } do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _initial_ref = assert_search_started(nil)
+
+      view
+      |> form("#model-hub-search-form", model_hub_search: %{query: "owner/model-name"})
+      |> render_change()
+
+      repo_search_ref = assert_search_started("owner/model-name")
+      repo_search_pid = assert_search_task_pid(repo_search_ref)
+
+      view
+      |> form("#model-hub-search-form", model_hub_search: %{query: "something else"})
+      |> render_change()
+
+      _new_ref = assert_search_started("something else")
+
+      assert_process_terminated(repo_search_pid)
+    end
   end
 
   describe "download flow" do
@@ -745,6 +822,46 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       html = render(view)
       assert html =~ "Importing"
+    end
+
+    test "download progress shows mid-file byte progress before any file completes", %{
+         conn: conn
+       } do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(view, download_ref, %{
+        repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        revision: "abc123",
+        total_files: 4,
+        total_bytes: 8_589_934_592
+      })
+
+      # Streaming mid-file update: 2 GB in, zero files completed yet
+      send_download_progress(view, download_ref, %{
+        phase: :downloading,
+        current_file: "model-00001-of-00004.safetensors",
+        files_completed: 0,
+        total_files: 4,
+        bytes_downloaded: 2_147_483_648,
+        total_bytes: 8_589_934_592
+      })
+
+      html = render(view)
+      # Phase label
+      assert html =~ "Downloading"
+      # File count not yet incremented
+      assert html =~ "0 of 4 files"
+      # Bytes downloaded shown (2 GB)
+      assert html =~ "2.0\u00a0GB"
+      # Currently-downloading file shown
+      assert html =~ "model-00001-of-00004.safetensors"
+      # Progress bar at 25% (2 of 8 GB)
+      assert has_element?(view, "#model-hub-download-progress-bar[aria-valuenow='25']")
+      assert view |> element("#model-hub-download-progress-percent") |> render() =~ "25%"
     end
 
     test ":download_finished {:ok, ...} shows completion with CTA", %{conn: conn} do

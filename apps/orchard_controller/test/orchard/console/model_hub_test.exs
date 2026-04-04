@@ -178,6 +178,271 @@ defmodule OrchardConsole.ModelHubTest do
   end
 
   # ===========================================================================
+  # start_search/3 — repo-ID direct lookup
+  # ===========================================================================
+
+  describe "start_search/3 with repo-ID queries" do
+    test "repo-ID query triggers direct lookup and injects result into search payload" do
+      ref = make_ref()
+
+      direct_detail = %{
+        repo_id: "owner/model-name",
+        author: "owner",
+        downloads: 42,
+        likes: 7,
+        tags: ["mlx"],
+        pipeline_tag: "text-generation",
+        library_name: "mlx",
+        used_storage_bytes: 1_000,
+        last_modified: "2024-01-01",
+        gated: false
+      }
+
+      stub_client(
+        search: {:ok, []},
+        detail: {:ok, direct_detail},
+        capture_detail: true
+      )
+
+      assert {:ok, _pid} = ModelHub.start_search(self(), ref, "owner/model-name")
+
+      assert_receive {:captured_detail, "owner/model-name"}, 1000
+
+      assert_receive {:model_hub, ^ref, :search_finished,
+                      {:ok, %{query: "owner/model-name", results: results}}},
+                     1000
+
+      assert length(results) == 1
+      assert hd(results).repo_id == "owner/model-name"
+    end
+
+    test "non-repo-ID query does not trigger direct lookup" do
+      ref = make_ref()
+
+      stub_client(
+        search: {:ok, []},
+        capture_detail: true
+      )
+
+      assert {:ok, _pid} = ModelHub.start_search(self(), ref, "qwen")
+
+      assert_receive {:model_hub, ^ref, :search_finished, {:ok, %{results: []}}}, 1000
+      refute_receive {:captured_detail, _}, 100
+    end
+
+    test "nil query does not trigger direct lookup" do
+      ref = make_ref()
+
+      stub_client(
+        search: {:ok, []},
+        capture_detail: true
+      )
+
+      assert {:ok, _pid} = ModelHub.start_search(self(), ref, nil)
+
+      assert_receive {:model_hub, ^ref, :search_finished, {:ok, %{results: []}}}, 1000
+      refute_receive {:captured_detail, _}, 100
+    end
+
+    test "direct lookup runs in parallel with MLX search" do
+      ref = make_ref()
+
+      direct_detail = %{
+        repo_id: "owner/parallel-model",
+        author: "owner",
+        downloads: 0,
+        likes: 0,
+        tags: [],
+        pipeline_tag: nil,
+        library_name: nil,
+        used_storage_bytes: 0,
+        last_modified: nil,
+        gated: false
+      }
+
+      stub_client(
+        search: {:ok, []},
+        detail: {:ok, direct_detail},
+        capture_detail: true,
+        block_search: true
+      )
+
+      assert {:ok, _search_pid} = ModelHub.start_search(self(), ref, "owner/parallel-model")
+
+      # Both messages arrive while search is blocked; assert either order.
+      assert_receive {:blocked_search, search_task_pid}, 1000
+      assert_receive {:captured_detail, "owner/parallel-model"}, 1000
+
+      # Unblock search and await final result.
+      send(search_task_pid, :proceed_search)
+      assert_receive {:model_hub, ^ref, :search_finished, {:ok, _}}, 1000
+    end
+
+    test "deduplicates when direct lookup repo_id already in search results" do
+      ref = make_ref()
+      shared_repo_id = "owner/shared-model"
+
+      direct_detail = %{
+        repo_id: shared_repo_id,
+        author: "owner",
+        downloads: 999,
+        likes: 50,
+        tags: ["mlx"],
+        pipeline_tag: "text-generation",
+        library_name: "mlx",
+        used_storage_bytes: 5_000,
+        last_modified: "2024-06-01",
+        gated: false
+      }
+
+      search_results = [
+        %{
+          repo_id: shared_repo_id,
+          author: "owner",
+          downloads: 100,
+          likes: 5,
+          tags: ["mlx"],
+          pipeline_tag: nil,
+          library_name: nil,
+          used_storage_bytes: 0,
+          last_modified: nil,
+          gated: false
+        },
+        %{
+          repo_id: "owner/other-model",
+          author: "owner",
+          downloads: 50,
+          likes: 2,
+          tags: [],
+          pipeline_tag: nil,
+          library_name: nil,
+          used_storage_bytes: 0,
+          last_modified: nil,
+          gated: false
+        }
+      ]
+
+      stub_client(
+        search: {:ok, search_results},
+        detail: {:ok, direct_detail}
+      )
+
+      assert {:ok, _pid} = ModelHub.start_search(self(), ref, shared_repo_id)
+
+      assert_receive {:model_hub, ^ref, :search_finished, {:ok, %{results: results}}}, 1000
+
+      # Should have 2 results (deduped), not 3.
+      assert length(results) == 2
+
+      # First result is the direct lookup (downloads: 999, not the search result's 100).
+      [first | rest] = results
+      assert first.repo_id == shared_repo_id
+      assert first.downloads == 999
+
+      # The duplicate from search results is removed; the other result remains.
+      refute Enum.any?(rest, fn r -> r.repo_id == shared_repo_id end)
+      assert Enum.any?(rest, fn r -> r.repo_id == "owner/other-model" end)
+    end
+
+    test "direct lookup :not_found is silently ignored" do
+      ref = make_ref()
+      not_found = %{status: :not_found, code: "hf_not_found", message: "not found"}
+
+      search_results = [
+        %{
+          repo_id: "owner/model-exists",
+          author: "owner",
+          downloads: 100,
+          likes: 5,
+          tags: [],
+          pipeline_tag: nil,
+          library_name: nil,
+          used_storage_bytes: 0,
+          last_modified: nil,
+          gated: false
+        }
+      ]
+
+      stub_client(
+        search: {:ok, search_results},
+        detail: {:error, not_found}
+      )
+
+      assert {:ok, _pid} = ModelHub.start_search(self(), ref, "owner/model-exists")
+
+      assert_receive {:model_hub, ^ref, :search_finished,
+                      {:ok, %{results: ^search_results}}},
+                     1000
+    end
+
+    test "direct lookup crash is silently ignored" do
+      ref = make_ref()
+
+      search_results = [
+        %{
+          repo_id: "owner/crash-model",
+          author: "owner",
+          downloads: 1,
+          likes: 0,
+          tags: [],
+          pipeline_tag: nil,
+          library_name: nil,
+          used_storage_bytes: 0,
+          last_modified: nil,
+          gated: false
+        }
+      ]
+
+      stub_client(
+        search: {:ok, search_results},
+        detail: :raise
+      )
+
+      assert {:ok, _pid} = ModelHub.start_search(self(), ref, "owner/crash-model")
+
+      assert_receive {:model_hub, ^ref, :search_finished,
+                      {:ok, %{results: ^search_results}}},
+                     1000
+    end
+
+    test "killing the search pid also terminates the linked direct-lookup child" do
+      ref = make_ref()
+
+      stub_client(
+        search: {:ok, []},
+        detail:
+          {:ok,
+           %{
+             repo_id: "owner/kill-test",
+             author: "owner",
+             downloads: 0,
+             likes: 0,
+             tags: [],
+             pipeline_tag: nil,
+             library_name: nil,
+             used_storage_bytes: 0,
+             last_modified: nil,
+             gated: false
+           }},
+        capture_detail_pid: true,
+        block_detail: true
+      )
+
+      assert {:ok, search_pid} = ModelHub.start_search(self(), ref, "owner/kill-test")
+
+      # Wait for the detail child to start and block.
+      assert_receive {:captured_detail_pid, detail_pid}, 1000
+
+      detail_monitor = Process.monitor(detail_pid)
+
+      # Kill the outer search task; the linked child must die too.
+      Process.exit(search_pid, :kill)
+
+      assert_receive {:DOWN, ^detail_monitor, :process, ^detail_pid, _reason}, 1000
+    end
+  end
+
+  # ===========================================================================
   # start_download_import/4
   # ===========================================================================
 
@@ -210,7 +475,8 @@ defmodule OrchardConsole.ModelHubTest do
       assert started.total_files == 2
       assert started.total_bytes > 0
 
-      # Should get at least one downloading progress
+      # Should get multiple downloading progress messages (streaming update + file completions)
+      assert_receive {:model_hub, ^ref, :download_progress, %{phase: :downloading}}, 2000
       assert_receive {:model_hub, ^ref, :download_progress, %{phase: :downloading}}, 2000
 
       # Should get preparing_bundle phase
@@ -346,6 +612,14 @@ defmodule OrchardConsole.ModelHubTest do
         send(pid, {:captured_search, query, opts})
       end
 
+      if config[:block_search] do
+        send(pid, {:blocked_search, self()})
+
+        receive do
+          :proceed_search -> :ok
+        end
+      end
+
       case config[:search] do
         :raise -> raise "search exploded"
         :throw -> throw(:search_exploded)
@@ -360,6 +634,18 @@ defmodule OrchardConsole.ModelHubTest do
 
       if config[:capture_detail] do
         send(pid, {:captured_detail, repo_id})
+      end
+
+      if config[:capture_detail_pid] do
+        send(pid, {:captured_detail_pid, self()})
+      end
+
+      if config[:block_detail] do
+        send(pid, {:blocked_detail, self()})
+
+        receive do
+          :proceed_detail -> :ok
+        end
       end
 
       case config[:detail] do
@@ -423,7 +709,7 @@ defmodule OrchardConsole.ModelHubTest do
       callback = Keyword.get(opts, :progress_callback)
 
       if callback do
-        # Initial preflight callback
+        # Initial preflight callback → triggers :download_started
         callback.(%{
           files_completed: 0,
           total_files: 2,
@@ -432,7 +718,16 @@ defmodule OrchardConsole.ModelHubTest do
           current_file: nil
         })
 
-        # File completion callbacks
+        # Mid-file streaming update (simulates in-file byte progress before first completion)
+        callback.(%{
+          files_completed: 0,
+          total_files: 2,
+          bytes_downloaded: 30,
+          total_bytes: 100,
+          current_file: "config.json"
+        })
+
+        # File 1 completion callback
         callback.(%{
           files_completed: 1,
           total_files: 2,
@@ -441,6 +736,7 @@ defmodule OrchardConsole.ModelHubTest do
           current_file: "config.json"
         })
 
+        # File 2 completion callback
         callback.(%{
           files_completed: 2,
           total_files: 2,
