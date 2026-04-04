@@ -134,9 +134,11 @@ defmodule OrchardConsole.OverviewLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Ecto.Query
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.Endpoint
   alias Orchard.Governance
+  alias Orchard.Repo
   import Orchard.TestSupport.ModelRequestFixtures
 
   @moduletag :live
@@ -1044,6 +1046,69 @@ defmodule OrchardConsole.OverviewLiveTest do
     end
   end
 
+  # ===========================================================================
+  # Hero performance tiles
+  # ===========================================================================
+
+  describe "hero performance tiles" do
+    test "empty DB shows em dash for avg TTFT and avg tok/s", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      ttft_html = element(view, "#overview-metric-avg-ttft") |> render()
+      assert ttft_html =~ "—"
+
+      tps_html = element(view, "#overview-metric-avg-tokens-per-second") |> render()
+      assert tps_html =~ "—"
+    end
+
+    test "shows formatted average values from completed requests", %{conn: conn} do
+      # Row A: TTFT 1s, generation 5s, tok/s 4.0
+      a =
+        create_request!(%{
+          public_id: "ov_perf_a",
+          state: :completed,
+          input_tokens: 10,
+          output_tokens: 20,
+          first_token_at: ~U[2026-03-15 12:00:01.000000Z],
+          completed_at: ~U[2026-03-15 12:00:06.000000Z]
+        })
+
+      patch_inserted_at(a, ~U[2026-03-15 12:00:00.000000Z])
+
+      # Row B: TTFT 2s, generation 8s, tok/s 5.0
+      b =
+        create_request!(%{
+          public_id: "ov_perf_b",
+          state: :completed,
+          input_tokens: 15,
+          output_tokens: 40,
+          first_token_at: ~U[2026-03-15 12:00:02.000000Z],
+          completed_at: ~U[2026-03-15 12:00:10.000000Z]
+        })
+
+      patch_inserted_at(b, ~U[2026-03-15 12:00:00.000000Z])
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      # Avg TTFT: (1000 + 2000) / 2 = 1500 ms = 1.5 s
+      ttft_html = element(view, "#overview-metric-avg-ttft") |> render()
+      assert ttft_html =~ "1.5 s"
+
+      # Avg tok/s: (4.0 + 5.0) / 2 = 4.5
+      tps_html = element(view, "#overview-metric-avg-tokens-per-second") |> render()
+      assert tps_html =~ "4.5"
+    end
+
+    test "existing 4 hero tiles remain present", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ "Checks passing"
+      assert html =~ "Loaded models"
+      assert html =~ "Catalog models"
+      assert html =~ "Total requests"
+    end
+  end
+
   describe "hero CTA links" do
     test "renders Open Playground link to /console/playground", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console")
@@ -1157,6 +1222,14 @@ defmodule OrchardConsole.OverviewLiveTest do
              view,
              "#overview-quickstart-step-#{step_dom_id}[data-status=\"#{status}\"]"
            )
+  end
+
+  defp patch_inserted_at(request, %DateTime{} = dt) do
+    {1, _} =
+      Repo.update_all(
+        from(r in Orchard.Requests.Request, where: r.id == ^request.id),
+        set: [inserted_at: dt]
+      )
   end
 
   defp complete_quickstart_server_steps(view) do

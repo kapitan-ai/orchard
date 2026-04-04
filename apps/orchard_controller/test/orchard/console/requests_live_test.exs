@@ -2,6 +2,7 @@ defmodule OrchardConsole.RequestsLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Ecto.Query
 
   @moduletag :live
   @moduletag :db
@@ -128,6 +129,57 @@ defmodule OrchardConsole.RequestsLiveTest do
 
       # Should render "0", not em-dash
       refute html =~ "requests-empty-state"
+    end
+
+    test "table headers include performance metric columns", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console/requests")
+
+      assert html =~ "TTFT"
+      assert html =~ "Total latency"
+      assert html =~ "Tok/s"
+    end
+
+    test "completed row shows formatted metric values", %{conn: conn} do
+      request =
+        create_request!(%{
+          public_id: "req_perf_1",
+          state: :completed,
+          input_tokens: 50,
+          output_tokens: 75,
+          first_token_at: ~U[2026-03-15 12:00:00.250000Z],
+          completed_at: ~U[2026-03-15 12:00:01.750000Z]
+        })
+
+      # Patch inserted_at to a controlled value
+      {1, _} =
+        Repo.update_all(
+          from(r in Orchard.Requests.Request, where: r.id == ^request.id),
+          set: [inserted_at: ~U[2026-03-15 12:00:00.000000Z]]
+        )
+
+      {:ok, view, _html} = live(conn, "/console/requests")
+
+      row_html = element(view, "#request-req_perf_1") |> render()
+      assert row_html =~ "250 ms"
+      assert row_html =~ "1.8 s"
+      assert row_html =~ "50.0"
+    end
+
+    test "non-completed row shows em dash for metric columns", %{conn: conn} do
+      create_request!(%{
+        public_id: "req_active_1",
+        state: :running,
+        http_status: 200,
+        input_tokens: 10,
+        output_tokens: 0
+      })
+
+      {:ok, view, _html} = live(conn, "/console/requests")
+
+      row_html = element(view, "#request-req_active_1") |> render()
+      # Row should contain em dashes for the 3 metric columns
+      # (node_id and http_status are populated, so dashes come from metrics)
+      assert row_html =~ "—"
     end
   end
 

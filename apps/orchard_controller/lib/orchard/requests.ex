@@ -308,6 +308,83 @@ defmodule Orchard.Requests do
     Enum.reduce(states, 0, fn state, acc -> acc + Map.get(by_state, state, 0) end)
   end
 
+  @doc """
+  Returns aggregate performance metrics over completed requests with valid
+  timing data.
+
+  Eligibility: `state == :completed`, both `first_token_at` and `completed_at`
+  present, `completed_at > first_token_at`, and `output_tokens > 0`.
+
+  Returns a map with `sample_size` (integer) and average metrics (float or nil
+  when no eligible rows exist).
+  """
+  @spec performance_summary() :: %{
+          avg_ttft_ms: float() | nil,
+          avg_generation_ms: float() | nil,
+          avg_total_latency_ms: float() | nil,
+          avg_tokens_per_second: float() | nil,
+          sample_size: non_neg_integer()
+        }
+  def performance_summary do
+    Request
+    |> where([r], r.state == :completed)
+    |> where([r], not is_nil(r.first_token_at) and not is_nil(r.completed_at))
+    |> where([r], r.completed_at > r.first_token_at and r.output_tokens > 0)
+    |> select([r], %{
+      sample_size: count(r.id),
+      avg_ttft_ms:
+        avg(
+          fragment(
+            "EXTRACT(EPOCH FROM (? - ?)) * 1000.0",
+            r.first_token_at,
+            r.inserted_at
+          )
+        ),
+      avg_generation_ms:
+        avg(
+          fragment(
+            "EXTRACT(EPOCH FROM (? - ?)) * 1000.0",
+            r.completed_at,
+            r.first_token_at
+          )
+        ),
+      avg_total_latency_ms:
+        avg(
+          fragment(
+            "EXTRACT(EPOCH FROM (? - ?)) * 1000.0",
+            r.completed_at,
+            r.inserted_at
+          )
+        ),
+      avg_tokens_per_second:
+        avg(
+          fragment(
+            "?::float / NULLIF(EXTRACT(EPOCH FROM (? - ?)), 0)",
+            r.output_tokens,
+            r.completed_at,
+            r.first_token_at
+          )
+        )
+    })
+    |> Repo.one()
+    |> normalize_performance_summary()
+  end
+
+  defp normalize_performance_summary(row) do
+    %{
+      sample_size: row.sample_size || 0,
+      avg_ttft_ms: to_float(row.avg_ttft_ms),
+      avg_generation_ms: to_float(row.avg_generation_ms),
+      avg_total_latency_ms: to_float(row.avg_total_latency_ms),
+      avg_tokens_per_second: to_float(row.avg_tokens_per_second)
+    }
+  end
+
+  defp to_float(nil), do: nil
+  defp to_float(%Decimal{} = d), do: Decimal.to_float(d)
+  defp to_float(f) when is_float(f), do: f
+  defp to_float(i) when is_integer(i), do: i * 1.0
+
   defp unwrap_transaction_result({:ok, {:ok, value}}), do: {:ok, value}
   defp unwrap_transaction_result({:ok, {:error, changeset}}), do: {:error, changeset}
   defp unwrap_transaction_result({:error, :request_not_found}), do: {:error, :request_not_found}

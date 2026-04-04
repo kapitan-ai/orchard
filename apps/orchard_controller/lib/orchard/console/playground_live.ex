@@ -562,6 +562,33 @@ defmodule OrchardConsole.PlaygroundLive do
     :erlang.float_to_binary(seconds, decimals: 1) <> " s"
   end
 
+  defp generation_duration_ms(nil), do: nil
+
+  defp generation_duration_ms(%{first_token_at_ms: nil}), do: nil
+  defp generation_duration_ms(%{finished_at_ms: nil}), do: nil
+
+  defp generation_duration_ms(%{first_token_at_ms: first, finished_at_ms: finished})
+       when finished >= first,
+       do: finished - first
+
+  defp generation_duration_ms(_), do: nil
+
+  defp tokens_per_second(nil, _generation_ms), do: nil
+  defp tokens_per_second(_usage, nil), do: nil
+  defp tokens_per_second(_usage, generation_ms) when generation_ms <= 0, do: nil
+
+  defp tokens_per_second(%{completion_tokens: tokens}, _) when tokens in [nil, 0], do: nil
+
+  defp tokens_per_second(%{completion_tokens: tokens}, generation_ms) do
+    tokens / (generation_ms / 1000.0)
+  end
+
+  defp format_rate(nil), do: "\u2014"
+
+  defp format_rate(rate) do
+    :erlang.float_to_binary(rate / 1.0, decimals: 1)
+  end
+
   defp result_rail_visible?(assigns) do
     assigns.run_metrics != nil or assigns.request_id != nil or
       assigns.usage != nil or assigns.run_error != nil
@@ -740,13 +767,19 @@ defmodule OrchardConsole.PlaygroundLive do
                 </p>
               </div>
               <div>
-                <p class="text-xs text-slate-500 dark:text-slate-400">First token</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">TTFT</p>
                 <p id="playground-result-first-token" class="font-mono text-sm text-slate-900 dark:text-slate-100">
                   {format_duration(duration_ms(@run_metrics, :first_token_at_ms))}
                 </p>
               </div>
               <div>
-                <p class="text-xs text-slate-500 dark:text-slate-400">Total time</p>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Generation</p>
+                <p id="playground-result-generation" class="font-mono text-sm text-slate-900 dark:text-slate-100">
+                  {format_duration(generation_duration_ms(@run_metrics))}
+                </p>
+              </div>
+              <div>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Total latency</p>
                 <p id="playground-result-total" class="font-mono text-sm text-slate-900 dark:text-slate-100">
                   {format_duration(duration_ms(@run_metrics, :finished_at_ms))}
                 </p>
@@ -767,6 +800,12 @@ defmodule OrchardConsole.PlaygroundLive do
                 <p class="text-xs text-slate-500 dark:text-slate-400">Total tokens</p>
                 <p id="playground-result-total-tokens" class="font-mono text-sm text-slate-900 dark:text-slate-100">
                   {if @usage, do: @usage.total_tokens, else: "\u2014"}
+                </p>
+              </div>
+              <div>
+                <p class="text-xs text-slate-500 dark:text-slate-400">Tok/s</p>
+                <p id="playground-result-tokens-per-second" class="font-mono text-sm text-slate-900 dark:text-slate-100">
+                  {format_rate(tokens_per_second(@usage, generation_duration_ms(@run_metrics)))}
                 </p>
               </div>
             </div>

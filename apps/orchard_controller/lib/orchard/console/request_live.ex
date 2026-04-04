@@ -246,12 +246,25 @@ defmodule OrchardConsole.RequestLive do
   attr(:request, :map, required: true)
 
   defp request_usage(assigns) do
+    assigns =
+      assigns
+      |> assign(:ttft_ms, elapsed_ms(assigns.request.inserted_at, assigns.request.first_token_at))
+      |> assign(
+        :generation_ms,
+        elapsed_ms(assigns.request.first_token_at, assigns.request.completed_at)
+      )
+      |> assign(
+        :total_latency_ms,
+        elapsed_ms(assigns.request.inserted_at, assigns.request.completed_at)
+      )
+      |> assign(:tokens_per_second, request_tokens_per_second(assigns.request))
+
     ~H"""
     <div id="request-usage-card">
       <.card>
-        <:title>Token Usage</:title>
+        <:title>Token Usage & Performance</:title>
 
-        <div class="grid grid-cols-3 gap-4">
+        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
           <.metric_tile
             id="request-input-tokens"
             label="Input Tokens"
@@ -266,6 +279,26 @@ defmodule OrchardConsole.RequestLive do
             id="request-total-tokens"
             label="Total"
             value={format_token_total(@request.input_tokens, @request.output_tokens)}
+          />
+          <.metric_tile
+            id="request-ttft"
+            label="TTFT"
+            value={format_duration(@ttft_ms)}
+          />
+          <.metric_tile
+            id="request-generation-time"
+            label="Generation"
+            value={format_duration(@generation_ms)}
+          />
+          <.metric_tile
+            id="request-total-latency"
+            label="Total Latency"
+            value={format_duration(@total_latency_ms)}
+          />
+          <.metric_tile
+            id="request-tokens-per-second"
+            label="Tok/s"
+            value={format_rate(@tokens_per_second)}
           />
         </div>
       </.card>
@@ -729,6 +762,44 @@ defmodule OrchardConsole.RequestLive do
     do: to_string(input + output)
 
   defp format_token_total(_, _), do: "—"
+
+  # ---------------------------------------------------------------------------
+  # Performance metric helpers
+  # ---------------------------------------------------------------------------
+
+  defp elapsed_ms(nil, _), do: nil
+  defp elapsed_ms(_, nil), do: nil
+
+  defp elapsed_ms(%DateTime{} = start_at, %DateTime{} = end_at) do
+    ms = DateTime.diff(end_at, start_at, :millisecond)
+    if ms >= 0, do: ms, else: nil
+  end
+
+  defp format_duration(nil), do: "—"
+  defp format_duration(ms) when ms < 1000, do: "#{ms} ms"
+
+  defp format_duration(ms) do
+    seconds = ms / 1000
+    :erlang.float_to_binary(seconds, decimals: 1) <> " s"
+  end
+
+  defp format_rate(nil), do: "—"
+
+  defp format_rate(rate) do
+    :erlang.float_to_binary(rate / 1.0, decimals: 1)
+  end
+
+  defp request_tokens_per_second(request) do
+    generation_ms = elapsed_ms(request.first_token_at, request.completed_at)
+
+    cond do
+      is_nil(generation_ms) -> nil
+      generation_ms <= 0 -> nil
+      not is_integer(request.output_tokens) -> nil
+      request.output_tokens <= 0 -> nil
+      true -> request.output_tokens / (generation_ms / 1000.0)
+    end
+  end
 
   defp format_bool(true), do: "Yes"
   defp format_bool(false), do: "No"

@@ -103,6 +103,9 @@ defmodule OrchardConsole.RequestsLive do
             <:col :let={req} label="Node" mono>{req.node_id || "\u2014"}</:col>
             <:col :let={req} label="HTTP" mono>{format_http_status(req.http_status)}</:col>
             <:col :let={req} label="Tokens" mono>{format_tokens(req.input_tokens, req.output_tokens)}</:col>
+            <:col :let={req} label="TTFT" mono>{completed_metric(req, &format_duration(elapsed_ms(&1.inserted_at, &1.first_token_at)))}</:col>
+            <:col :let={req} label="Total latency" mono>{completed_metric(req, &format_duration(elapsed_ms(&1.inserted_at, &1.completed_at)))}</:col>
+            <:col :let={req} label="Tok/s" mono>{completed_metric(req, &format_rate(request_tokens_per_second(&1)))}</:col>
 
             <:empty>
               <.state_message
@@ -265,5 +268,44 @@ defmodule OrchardConsole.RequestsLive do
     Integer.to_string(input + output)
   end
 
-  defp format_tokens(_, _), do: "\u2014"
+  defp format_tokens(_, _), do: "—"
+
+  # -- Performance metric helpers --
+
+  defp completed_metric(%{state: :completed} = req, fun), do: fun.(req)
+  defp completed_metric(_req, _fun), do: "—"
+
+  defp elapsed_ms(nil, _), do: nil
+  defp elapsed_ms(_, nil), do: nil
+
+  defp elapsed_ms(%DateTime{} = start_at, %DateTime{} = end_at) do
+    ms = DateTime.diff(end_at, start_at, :millisecond)
+    if ms >= 0, do: ms, else: nil
+  end
+
+  defp format_duration(nil), do: "—"
+  defp format_duration(ms) when ms < 1000, do: "#{ms} ms"
+
+  defp format_duration(ms) do
+    seconds = ms / 1000
+    :erlang.float_to_binary(seconds, decimals: 1) <> " s"
+  end
+
+  defp format_rate(nil), do: "—"
+
+  defp format_rate(rate) do
+    :erlang.float_to_binary(rate / 1.0, decimals: 1)
+  end
+
+  defp request_tokens_per_second(request) do
+    generation_ms = elapsed_ms(request.first_token_at, request.completed_at)
+
+    cond do
+      is_nil(generation_ms) -> nil
+      generation_ms <= 0 -> nil
+      not is_integer(request.output_tokens) -> nil
+      request.output_tokens <= 0 -> nil
+      true -> request.output_tokens / (generation_ms / 1000.0)
+    end
+  end
 end

@@ -367,7 +367,13 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       assert html =~ "playground-result-request-id"
       assert html =~ "playground-result-accepted"
       assert html =~ "playground-result-first-token"
+      assert html =~ "playground-result-generation"
       assert html =~ "playground-result-total"
+      assert html =~ "playground-result-tokens-per-second"
+      # Verify renamed labels
+      assert html =~ "TTFT"
+      assert html =~ "Total latency"
+      assert html =~ "Tok/s"
     end
 
     test "first token timing cell populates after output delta", %{conn: conn} do
@@ -403,6 +409,63 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       assert html =~ ~s(phx-hook="SubmitOnModEnter")
       assert html =~ "playground-submit-hint"
       assert html =~ "Cmd/Ctrl + Enter"
+    end
+
+    test "completed run populates generation time and tok/s", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+      ref = submit_prompt(view)
+
+      # Drive events with a small gap so generation_ms > 0
+      send(view.pid, {:playground, ref, :started, %{request_id: "r1"}})
+      send(view.pid, {:playground, ref, :event, InferenceEvent.output_text_delta("Hi")})
+      Process.sleep(2)
+
+      completed =
+        InferenceEvent.completed(:finish_reason_stop, %InferenceEvent.Usage{
+          input_tokens: 5,
+          output_tokens: 3,
+          total_tokens: 8
+        })
+
+      send(view.pid, {:playground, ref, :event, completed})
+      send(view.pid, {:playground, ref, :finished, {:ok, %{events: []}}})
+      render(view)
+
+      # Generation time should show a duration value (ms or s), not a dash
+      generation_el = element(view, "#playground-result-generation") |> render()
+      assert generation_el =~ ~r/(ms| s)/
+
+      # Tok/s should show a numeric value, not a dash
+      tps_el = element(view, "#playground-result-tokens-per-second") |> render()
+      assert tps_el =~ ~r/\d+\.\d/
+      refute tps_el =~ "\u2014"
+    end
+
+    test "generation time and tok/s show dash when no first token", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+      ref = submit_prompt(view)
+
+      # Complete without any output delta — no first_token_at_ms recorded
+      send(view.pid, {:playground, ref, :started, %{request_id: "r1"}})
+
+      completed =
+        InferenceEvent.completed(:finish_reason_stop, %InferenceEvent.Usage{
+          input_tokens: 5,
+          output_tokens: 0,
+          total_tokens: 5
+        })
+
+      send(view.pid, {:playground, ref, :event, completed})
+      send(view.pid, {:playground, ref, :finished, {:ok, %{events: []}}})
+
+      render(view)
+
+      # Generation and Tok/s should show em dash
+      generation_el = element(view, "#playground-result-generation") |> render()
+      assert generation_el =~ "\u2014"
+
+      tps_el = element(view, "#playground-result-tokens-per-second") |> render()
+      assert tps_el =~ "\u2014"
     end
 
     test "reset clears result rail", %{conn: conn} do

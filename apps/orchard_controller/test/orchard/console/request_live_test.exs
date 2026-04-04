@@ -2,6 +2,7 @@ defmodule OrchardConsole.RequestLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Ecto.Query
   alias Ecto.Adapters.SQL.Sandbox
   import Orchard.TestSupport.ModelRequestFixtures
   alias Orchard.Repo
@@ -63,7 +64,7 @@ defmodule OrchardConsole.RequestLiveTest do
   # Usage rendering
   # ===========================================================================
 
-  describe "token usage" do
+  describe "token usage and performance" do
     test "renders token counts including zero", %{conn: conn} do
       request =
         create_request!(%{
@@ -74,7 +75,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
-      assert html =~ "Token Usage"
+      assert html =~ "Token Usage &amp; Performance"
       assert html =~ "150"
       assert html =~ "75"
       assert html =~ "225"
@@ -91,6 +92,109 @@ defmodule OrchardConsole.RequestLiveTest do
         assert tile_html =~ "0", "expected #{tile_id} to display 0"
         refute tile_html =~ "—", "#{tile_id} should not display dash"
       end
+    end
+
+    test "renders all 7 metric tile IDs", %{conn: conn} do
+      request = create_request!(%{state: :completed, input_tokens: 10, output_tokens: 5})
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      for tile_id <- [
+            "request-input-tokens",
+            "request-output-tokens",
+            "request-total-tokens",
+            "request-ttft",
+            "request-generation-time",
+            "request-total-latency",
+            "request-tokens-per-second"
+          ] do
+        assert has_element?(view, "##{tile_id}"), "expected tile #{tile_id} to be present"
+      end
+    end
+
+    test "timing tiles show dash when timestamps are nil", %{conn: conn} do
+      request = create_request!(%{state: :received, input_tokens: 0, output_tokens: 0})
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      for tile_id <- [
+            "request-ttft",
+            "request-generation-time",
+            "request-total-latency",
+            "request-tokens-per-second"
+          ] do
+        tile_html = element(view, "##{tile_id}") |> render()
+        assert tile_html =~ "—", "expected #{tile_id} to show em dash"
+      end
+    end
+
+    test "completed request shows formatted durations and tok/s", %{conn: conn} do
+      # Create a completed request with known timestamps
+      request =
+        create_request!(%{
+          state: :completed,
+          input_tokens: 50,
+          output_tokens: 75,
+          first_token_at: ~U[2026-03-15 12:00:00.250000Z],
+          completed_at: ~U[2026-03-15 12:00:01.750000Z]
+        })
+
+      # Patch inserted_at to a controlled value (Ecto-managed, not castable)
+      {1, _} =
+        Orchard.Repo.update_all(
+          from(r in Orchard.Requests.Request, where: r.id == ^request.id),
+          set: [inserted_at: ~U[2026-03-15 12:00:00.000000Z]]
+        )
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      # TTFT: 250 ms
+      ttft_html = element(view, "#request-ttft") |> render()
+      assert ttft_html =~ "250 ms"
+
+      # Generation: 1.5 s
+      gen_html = element(view, "#request-generation-time") |> render()
+      assert gen_html =~ "1.5 s"
+
+      # Total latency: 1.8 s (rounded from 1750 ms)
+      latency_html = element(view, "#request-total-latency") |> render()
+      assert latency_html =~ "1.8 s"
+
+      # Tok/s: 75 / 1.5 = 50.0
+      tps_html = element(view, "#request-tokens-per-second") |> render()
+      assert tps_html =~ "50.0"
+    end
+
+    test "zero generation time shows 0 ms and dash for tok/s", %{conn: conn} do
+      request =
+        create_request!(%{
+          state: :completed,
+          input_tokens: 10,
+          output_tokens: 5,
+          first_token_at: ~U[2026-03-15 12:00:01.000000Z],
+          completed_at: ~U[2026-03-15 12:00:01.000000Z]
+        })
+
+      # Patch inserted_at earlier so TTFT is visible
+      {1, _} =
+        Orchard.Repo.update_all(
+          from(r in Orchard.Requests.Request, where: r.id == ^request.id),
+          set: [inserted_at: ~U[2026-03-15 12:00:00.000000Z]]
+        )
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      # Generation time: 0 ms
+      gen_html = element(view, "#request-generation-time") |> render()
+      assert gen_html =~ "0 ms"
+
+      # Tok/s: em dash (division by zero guarded)
+      tps_html = element(view, "#request-tokens-per-second") |> render()
+      assert tps_html =~ "—"
+
+      # TTFT should still show 1.0 s
+      ttft_html = element(view, "#request-ttft") |> render()
+      assert ttft_html =~ "1.0 s"
     end
   end
 
@@ -161,10 +265,10 @@ defmodule OrchardConsole.RequestLiveTest do
       assert worker_html =~ "font-mono"
 
       first_token_html = element(view, "#request-first-token-at") |> render()
-        assert first_token_html =~ ~s(phx-hook="LocalTime")
-        assert first_token_html =~ ~s(data-local-time-format="datetime_second")
-        assert first_token_html =~ ~s(datetime="2026-03-15T12:30:45Z")
-        assert first_token_html =~ "2026-03-15 12:30:45 UTC"
+      assert first_token_html =~ ~s(phx-hook="LocalTime")
+      assert first_token_html =~ ~s(data-local-time-format="datetime_second")
+      assert first_token_html =~ ~s(datetime="2026-03-15T12:30:45Z")
+      assert first_token_html =~ "2026-03-15 12:30:45 UTC"
 
       http_html = element(view, "#request-execution-http-status") |> render()
       assert http_html =~ "200"

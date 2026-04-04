@@ -228,6 +228,133 @@ defmodule Orchard.RequestsTest do
     assert summary.active + summary.terminal == summary.total
   end
 
+  describe "performance_summary/0" do
+    test "returns zero sample_size and nil metrics on empty DB" do
+      summary = Requests.performance_summary()
+
+      assert summary.sample_size == 0
+      assert is_nil(summary.avg_ttft_ms)
+      assert is_nil(summary.avg_generation_ms)
+      assert is_nil(summary.avg_total_latency_ms)
+      assert is_nil(summary.avg_tokens_per_second)
+    end
+
+    test "filters to completed rows with valid timestamps and positive output" do
+      # Eligible row A: TTFT 1s, generation 5s, total 6s, tok/s 4.0
+      a =
+        create_request!(%{
+          public_id: "perf_a",
+          state: :completed,
+          input_tokens: 10,
+          output_tokens: 20,
+          first_token_at: ~U[2026-03-15 12:00:01.000000Z],
+          completed_at: ~U[2026-03-15 12:00:06.000000Z]
+        })
+
+      patch_inserted_at(a, ~U[2026-03-15 12:00:00.000000Z])
+
+      # Eligible row B: TTFT 2s, generation 8s, total 10s, tok/s 5.0
+      b =
+        create_request!(%{
+          public_id: "perf_b",
+          state: :completed,
+          input_tokens: 15,
+          output_tokens: 40,
+          first_token_at: ~U[2026-03-15 12:00:02.000000Z],
+          completed_at: ~U[2026-03-15 12:00:10.000000Z]
+        })
+
+      patch_inserted_at(b, ~U[2026-03-15 12:00:00.000000Z])
+
+      # Ineligible: non-completed state
+      create_request!(%{public_id: "perf_running", state: :running, output_tokens: 10})
+
+      # Ineligible: no first_token_at
+      create_request!(%{
+        public_id: "perf_no_ft",
+        state: :completed,
+        output_tokens: 5,
+        completed_at: ~U[2026-03-15 12:00:05.000000Z]
+      })
+
+      # Ineligible: zero output_tokens
+      create_request!(%{
+        public_id: "perf_zero_out",
+        state: :completed,
+        output_tokens: 0,
+        first_token_at: ~U[2026-03-15 12:00:01.000000Z],
+        completed_at: ~U[2026-03-15 12:00:05.000000Z]
+      })
+
+      summary = Requests.performance_summary()
+
+      assert summary.sample_size == 2
+      assert_in_delta summary.avg_ttft_ms, 1500.0, 1.0
+      assert_in_delta summary.avg_generation_ms, 6500.0, 1.0
+      assert_in_delta summary.avg_total_latency_ms, 8000.0, 1.0
+      assert_in_delta summary.avg_tokens_per_second, 4.5, 0.01
+    end
+
+    test "excludes zero and negative generation durations" do
+      # Valid row: 500ms generation
+      valid =
+        create_request!(%{
+          public_id: "perf_valid",
+          state: :completed,
+          output_tokens: 10,
+          first_token_at: ~U[2026-03-15 12:00:00.500000Z],
+          completed_at: ~U[2026-03-15 12:00:01.000000Z]
+        })
+
+      patch_inserted_at(valid, ~U[2026-03-15 12:00:00.000000Z])
+
+      # Zero generation: completed_at == first_token_at
+      create_request!(%{
+        public_id: "perf_zero_gen",
+        state: :completed,
+        output_tokens: 5,
+        first_token_at: ~U[2026-03-15 12:00:01.000000Z],
+        completed_at: ~U[2026-03-15 12:00:01.000000Z]
+      })
+
+      # Negative generation: completed_at < first_token_at
+      create_request!(%{
+        public_id: "perf_neg_gen",
+        state: :completed,
+        output_tokens: 5,
+        first_token_at: ~U[2026-03-15 12:00:02.000000Z],
+        completed_at: ~U[2026-03-15 12:00:01.000000Z]
+      })
+
+      summary = Requests.performance_summary()
+
+      assert summary.sample_size == 1
+      assert_in_delta summary.avg_generation_ms, 500.0, 1.0
+    end
+
+    test "returns float types for all average fields" do
+      req =
+        create_request!(%{
+          public_id: "perf_types",
+          state: :completed,
+          output_tokens: 10,
+          first_token_at: ~U[2026-03-15 12:00:00.250000Z],
+          completed_at: ~U[2026-03-15 12:00:01.250000Z]
+        })
+
+      patch_inserted_at(req, ~U[2026-03-15 12:00:00.000000Z])
+
+      summary = Requests.performance_summary()
+
+      assert summary.sample_size == 1
+      assert is_integer(summary.sample_size)
+      assert is_float(summary.avg_ttft_ms)
+      assert is_float(summary.avg_generation_ms)
+      assert is_float(summary.avg_total_latency_ms)
+      assert is_float(summary.avg_tokens_per_second)
+    end
+  end
+
   describe "get_request_by_public_id/1" do
     test "preloads retry_of_request association" do
       parent = create_request!(%{public_id: "req_parent_preload"})
@@ -509,5 +636,17 @@ defmodule Orchard.RequestsTest do
       assert {:error, :request_not_found} =
                Requests.assign_node(Ecto.UUID.generate(), Ecto.UUID.generate())
     end
+  end
+
+  # ---------------------------------------------------------------------------
+  # Test helpers
+  # ---------------------------------------------------------------------------
+
+  defp patch_inserted_at(request, %DateTime{} = dt) do
+    {1, _} =
+      Repo.update_all(
+        from(r in Request, where: r.id == ^request.id),
+        set: [inserted_at: dt]
+      )
   end
 end

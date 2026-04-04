@@ -259,11 +259,13 @@ defmodule OrchardConsole.OverviewLive do
             </span>
           </div>
 
-          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             <.metric_tile label="Checks passing" value={readiness_metric(@readiness)} />
             <.metric_tile label="Loaded models" value={format_count(runtime_loaded_count(@runtime))} />
             <.metric_tile label="Catalog models" value={format_count(@model_catalog.total)} />
             <.metric_tile label="Total requests" value={format_count(@request_summary.total)} />
+            <.metric_tile id="overview-metric-avg-ttft" label="Avg TTFT" value={format_duration(@request_performance.avg_ttft_ms)} />
+            <.metric_tile id="overview-metric-avg-tokens-per-second" label="Avg tok/s" value={format_rate(@request_performance.avg_tokens_per_second)} />
           </div>
 
           <p id="overview-hero-status-copy" class={["text-sm", hero_status_copy_class(@readiness, @runtime)]}>
@@ -486,6 +488,7 @@ defmodule OrchardConsole.OverviewLive do
     runtime = fetch_runtime()
     model_catalog = fetch_model_catalog()
     request_summary = fetch_request_summary()
+    request_performance = fetch_request_performance()
     has_active_api_keys = fetch_active_api_keys()
     client_state = quickstart_client_state(socket)
 
@@ -494,6 +497,7 @@ defmodule OrchardConsole.OverviewLive do
       runtime: runtime,
       model_catalog: model_catalog,
       request_summary: request_summary,
+      request_performance: request_performance,
       has_active_api_keys: has_active_api_keys,
       quickstart:
         build_quickstart(
@@ -546,11 +550,17 @@ defmodule OrchardConsole.OverviewLive do
       message: nil
     }
 
+    request_performance = %{
+      avg_ttft_ms: nil,
+      avg_tokens_per_second: nil
+    }
+
     assign(socket,
       readiness: readiness,
       runtime: runtime,
       model_catalog: model_catalog,
       request_summary: request_summary,
+      request_performance: request_performance,
       has_active_api_keys: false,
       quickstart:
         build_quickstart(
@@ -676,6 +686,21 @@ defmodule OrchardConsole.OverviewLive do
         by_state: zero_request_state_counts(),
         rows: [],
         message: "Request summary unavailable."
+      }
+  end
+
+  defp fetch_request_performance do
+    perf = Requests.performance_summary()
+
+    %{
+      avg_ttft_ms: perf.avg_ttft_ms,
+      avg_tokens_per_second: perf.avg_tokens_per_second
+    }
+  rescue
+    _ ->
+      %{
+        avg_ttft_ms: nil,
+        avg_tokens_per_second: nil
       }
   end
 
@@ -1219,11 +1244,25 @@ defmodule OrchardConsole.OverviewLive do
   # Format helpers
   # ===========================================================================
 
-  defp format_count(nil), do: "\u2014"
+  defp format_duration(nil), do: "—"
+  defp format_duration(ms) when ms < 1000, do: "#{round(ms)} ms"
+
+  defp format_duration(ms) do
+    seconds = ms / 1000
+    :erlang.float_to_binary(seconds, decimals: 1) <> " s"
+  end
+
+  defp format_rate(nil), do: "—"
+
+  defp format_rate(rate) do
+    :erlang.float_to_binary(rate / 1.0, decimals: 1)
+  end
+
+  defp format_count(nil), do: "—"
   defp format_count(count) when is_integer(count), do: Integer.to_string(count)
   defp format_count(other) when is_binary(other), do: other
 
-    defp refresh_interval_label do
+  defp refresh_interval_label do
     ms = refresh_interval_ms()
 
     if rem(ms, 1000) == 0,
@@ -1268,12 +1307,13 @@ defmodule OrchardConsole.OverviewLive do
   # Local function component
   # ===========================================================================
 
+  attr(:id, :string, default: nil)
   attr(:label, :string, required: true)
   attr(:value, :string, required: true)
 
   defp metric_tile(assigns) do
     ~H"""
-    <div class="rounded-lg bg-slate-50 px-4 py-3 dark:bg-slate-900/60">
+    <div id={@id} class="rounded-lg bg-slate-50 px-4 py-3 dark:bg-slate-900/60">
       <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
         {@label}
       </p>
