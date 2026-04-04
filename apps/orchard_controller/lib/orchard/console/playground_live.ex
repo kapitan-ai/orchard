@@ -450,6 +450,30 @@ defmodule OrchardConsole.PlaygroundLive do
   end
 
   # ===========================================================================
+  # Content display
+  # ===========================================================================
+
+  @think_block_re ~r/<think>.*?<\/think>\s*/s
+  @think_open_re ~r/\A<think>[\s\S]*\z/
+
+  defp display_content(entry) do
+    content = strip_think_blocks(entry.content)
+
+    if content == "" and entry.status == :streaming do
+      "Waiting for response\u2026"
+    else
+      content
+    end
+  end
+
+  defp strip_think_blocks(text) do
+    text
+    |> then(&Regex.replace(@think_block_re, &1, ""))
+    |> then(&Regex.replace(@think_open_re, &1, ""))
+    |> String.trim_leading()
+  end
+
+  # ===========================================================================
   # Helpers
   # ===========================================================================
 
@@ -692,7 +716,7 @@ defmodule OrchardConsole.PlaygroundLive do
                 </span>
               </p>
               <div class="whitespace-pre-wrap break-words text-slate-900 dark:text-slate-100">
-                {if(entry.content == "" && entry.status == :streaming, do: "Waiting for response…", else: entry.content)}
+                {display_content(entry)}
               </div>
               <p :if={entry.status == :error} class="mt-2 text-xs text-red-600 dark:text-red-400">
                 Response interrupted.
