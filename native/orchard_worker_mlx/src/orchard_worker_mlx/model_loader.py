@@ -62,7 +62,7 @@ class BundleManifest:
     artifact_layout: str
     entrypoint: str
     sha256: str
-    max_context_tokens: int
+    max_context_tokens: int | None
     capabilities: tuple[str, ...]
     tokenizer: TokenizerSpec
     runtime_requirements: RuntimeRequirementsSpec
@@ -140,12 +140,12 @@ def parse_manifest_json(payload: str) -> BundleManifest:
     for field in _REQUIRED_STRING_FIELDS:
         _require_non_empty_string(data, field)
 
-    # --- max_context_tokens ---
+    # --- max_context_tokens (optional — nil for models without declared context window) ---
     max_ctx = data.get("max_context_tokens")
-    if type(max_ctx) is not int or max_ctx <= 0:
+    if max_ctx is not None and (type(max_ctx) is not int or max_ctx <= 0):
         raise ModelLoaderError(
             "manifest_validation_error",
-            f"max_context_tokens must be a positive integer, got {max_ctx!r}",
+            f"max_context_tokens must be a positive integer or null, got {max_ctx!r}",
         )
 
     # --- optional non-negative int fields ---

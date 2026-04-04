@@ -271,6 +271,14 @@ def test_manifest_bad_max_context_tokens() -> None:
     assert "max_context_tokens" in exc_info.value.message
 
 
+def test_manifest_null_max_context_tokens_accepted() -> None:
+    """null max_context_tokens is valid for models without declared context window."""
+    data = _read_fixture_manifest_dict()
+    data["max_context_tokens"] = None
+    manifest = parse_manifest_json(json.dumps(data))
+    assert manifest.max_context_tokens is None
+
+
 def test_manifest_boolean_max_context_tokens_rejected() -> None:
     """bool is a subclass of int in Python; ensure booleans are rejected."""
     data = _read_fixture_manifest_dict()
