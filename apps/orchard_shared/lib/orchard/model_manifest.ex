@@ -41,7 +41,6 @@ defmodule Orchard.ModelManifest do
     :artifact_layout,
     :entrypoint,
     :sha256,
-    :max_context_tokens,
     :capabilities,
     :tokenizer,
     :runtime_requirements
@@ -73,7 +72,7 @@ defmodule Orchard.ModelManifest do
           resident_memory_bytes: non_neg_integer() | nil,
           kv_cache_bytes_per_token: non_neg_integer() | nil,
           prefill_workspace_bytes_per_token: non_neg_integer() | nil,
-          max_context_tokens: pos_integer(),
+          max_context_tokens: pos_integer() | nil,
           capabilities: [String.t()],
           tokenizer: Tokenizer.t(),
           chat_template: ChatTemplate.t() | nil,
@@ -101,7 +100,6 @@ defmodule Orchard.ModelManifest do
       :artifact_layout,
       :entrypoint,
       :sha256,
-      :max_context_tokens,
       :capabilities,
       :tokenizer,
       :runtime_requirements
@@ -154,13 +152,15 @@ defmodule Orchard.ModelManifest do
     struct
   end
 
+  defp validate_max_context_tokens!(%__MODULE__{max_context_tokens: nil} = struct), do: struct
+
   defp validate_max_context_tokens!(%__MODULE__{max_context_tokens: max_context_tokens} = struct)
        when is_integer(max_context_tokens) and max_context_tokens > 0,
        do: struct
 
   defp validate_max_context_tokens!(%__MODULE__{max_context_tokens: max_context_tokens}) do
     raise ArgumentError,
-          "#{inspect(__MODULE__)} max_context_tokens must be a positive integer, got: #{inspect(max_context_tokens)}"
+          "#{inspect(__MODULE__)} max_context_tokens must be nil or a positive integer, got: #{inspect(max_context_tokens)}"
   end
 
   defp validate_optional_non_negative_integers!(struct, fields) do

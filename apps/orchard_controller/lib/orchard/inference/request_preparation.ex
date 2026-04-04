@@ -84,6 +84,11 @@ defmodule Orchard.Inference.RequestPreparation do
     {:tokenization, {:internal_error, @manifest_tokenization_error_message}}
   end
 
+  # Models with unknown context windows (nil) skip overflow enforcement.
+  # This is intentional for architectures like Gemma 3 VLM where the config
+  # does not declare a context limit.
+  defp enforce_context_window(_canonical, %{max_context_tokens: nil}), do: :ok
+
   defp enforce_context_window(canonical, model) do
     max_output = effective_max_output_tokens(canonical.sampling)
     total = canonical.input_token_count + max_output

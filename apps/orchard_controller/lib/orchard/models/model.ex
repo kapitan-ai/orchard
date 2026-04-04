@@ -71,7 +71,6 @@ defmodule Orchard.Models.Model do
       :resident_memory_bytes,
       :kv_cache_bytes_per_token,
       :prefill_workspace_bytes_per_token,
-      :max_context_tokens,
       :tokenizer,
       :runtime_requirements
     ])
@@ -80,9 +79,16 @@ defmodule Orchard.Models.Model do
     |> validate_number(:resident_memory_bytes, greater_than_or_equal_to: 0)
     |> validate_number(:kv_cache_bytes_per_token, greater_than_or_equal_to: 0)
     |> validate_number(:prefill_workspace_bytes_per_token, greater_than_or_equal_to: 0)
-    |> validate_number(:max_context_tokens, greater_than: 0)
+    |> validate_optional_positive(:max_context_tokens)
     |> validate_capabilities()
     |> unique_constraint([:model_id, :version])
+  end
+
+  defp validate_optional_positive(changeset, field) do
+    case get_field(changeset, field) do
+      nil -> changeset
+      _ -> validate_number(changeset, field, greater_than: 0)
+    end
   end
 
   defp validate_capabilities(%Ecto.Changeset{} = changeset) do

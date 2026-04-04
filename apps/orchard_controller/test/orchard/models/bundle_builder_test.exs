@@ -193,6 +193,39 @@ defmodule Orchard.Models.BundleBuilderTest do
       assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.max_context_tokens == 4096
     end
+
+    test "extracts context window from nested text_config (Gemma 3 VLM)", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        config: %{
+          "model_type" => "gemma3",
+          "architectures" => ["Gemma3ForConditionalGeneration"],
+          "text_config" => %{
+            "model_type" => "gemma3_text",
+            "max_position_embeddings" => 131_072
+          }
+        }
+      )
+
+      assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.max_context_tokens == 131_072
+    end
+
+    test "top-level context window takes precedence over text_config", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        config: %{
+          "model_type" => "gemma3",
+          "max_position_embeddings" => 8192,
+          "text_config" => %{"max_position_embeddings" => 131_072}
+        }
+      )
+
+      assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.max_context_tokens == 8192
+    end
   end
 
   # -- Size accounting -------------------------------------------------------
@@ -287,15 +320,38 @@ defmodule Orchard.Models.BundleBuilderTest do
       assert msg =~ "JSON object"
     end
 
-    test "no valid context window in config", ctx do
+    test "context window key present but invalid value rejects with error", ctx do
       write_minimal_bundle(ctx.tmp_dir,
-        config: %{"model_type" => "llama"}
+        config: %{"model_type" => "llama", "max_position_embeddings" => 0}
       )
 
       assert {:error, {:invalid_config, msg}} =
                BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
 
-      assert msg =~ "max_position_embeddings"
+      assert msg =~ "not a positive integer"
+    end
+
+    test "context window key present but garbage string rejects with error", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        config: %{"model_type" => "llama", "max_position_embeddings" => "not_a_number"}
+      )
+
+      assert {:error, {:invalid_config, msg}} =
+               BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert msg =~ "not a positive integer"
+    end
+
+    test "missing context window in config produces bundle with nil max_context_tokens", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        config: %{"model_type" => "llama"}
+      )
+
+      assert {:ok, _bundle_dir} =
+               BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      {:ok, manifest} = Orchard.Models.ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.max_context_tokens == nil
     end
 
     test "missing tokenizer.json", ctx do

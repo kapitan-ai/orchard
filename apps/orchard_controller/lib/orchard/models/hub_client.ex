@@ -370,14 +370,19 @@ defmodule Orchard.Models.HubClient do
     }
   end
 
+  @context_window_keys ["max_position_embeddings", "n_positions", "max_sequence_length"]
+
   defp normalize_context_window(config) do
-    [
-      Map.get(config, "max_position_embeddings"),
-      Map.get(config, "n_positions"),
-      Map.get(config, "max_sequence_length")
-    ]
+    find_context_window(config) || find_context_window(Map.get(config, "text_config", %{}))
+  end
+
+  defp find_context_window(map) when is_map(map) do
+    @context_window_keys
+    |> Enum.map(&Map.get(map, &1))
     |> Enum.find_value(&normalize_positive_integer/1)
   end
+
+  defp find_context_window(_), do: nil
 
   defp normalize_quantization_bits(config, tags, repo_id) do
     case get_in(config, ["quantization", "bits"]) |> normalize_positive_integer() do

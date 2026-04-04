@@ -106,33 +106,55 @@ defmodule Orchard.Models.BundleBuilder do
     end
   end
 
+  @context_window_keys ["max_position_embeddings", "n_positions", "max_sequence_length"]
+
   defp extract_context_tokens(config) do
-    value =
-      find_positive_integer(config, [
-        "max_position_embeddings",
-        "n_positions",
-        "max_sequence_length"
-      ])
+    text_config = Map.get(config, "text_config", %{})
 
-    case value do
-      nil ->
-        {:error,
-         {:invalid_config,
-          "config.json must contain a positive integer for max_position_embeddings, n_positions, or max_sequence_length."}}
-
-      n ->
-        {:ok, n}
+    case find_context_window(config, @context_window_keys) do
+      {:ok, n} -> {:ok, n}
+      {:error, _} = error -> error
+      :not_found -> find_context_window_or_nil(text_config, @context_window_keys)
     end
   end
 
-  defp find_positive_integer(config, keys) do
-    Enum.find_value(keys, fn key ->
-      case Map.get(config, key) do
-        n when is_integer(n) and n > 0 -> n
-        s when is_binary(s) -> parse_positive_integer(s)
-        _ -> nil
+  # Returns {:ok, n}, {:error, ...} if key present but invalid, or :not_found if no key exists.
+  defp find_context_window(config, keys) do
+    Enum.reduce_while(keys, :not_found, fn key, acc ->
+      case Map.fetch(config, key) do
+        :error ->
+          {:cont, acc}
+
+        {:ok, n} when is_integer(n) and n > 0 ->
+          {:halt, {:ok, n}}
+
+        {:ok, s} when is_binary(s) ->
+          case parse_positive_integer(s) do
+            nil ->
+              {:halt,
+               {:error,
+                {:invalid_config,
+                 "config.json contains #{key} but value is not a positive integer: #{inspect(s)}"}}}
+
+            n ->
+              {:halt, {:ok, n}}
+          end
+
+        {:ok, bad} ->
+          {:halt,
+           {:error,
+            {:invalid_config,
+             "config.json contains #{key} but value is not a positive integer: #{inspect(bad)}"}}}
       end
     end)
+  end
+
+  defp find_context_window_or_nil(config, keys) do
+    case find_context_window(config, keys) do
+      {:ok, n} -> {:ok, n}
+      {:error, _} = error -> error
+      :not_found -> {:ok, nil}
+    end
   end
 
   defp parse_positive_integer(s) do

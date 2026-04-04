@@ -35,6 +35,16 @@ defmodule Orchard.ModelsTest do
     assert model.artifact_source_uri == nil
   end
 
+  test "create_model/1 accepts nil max_context_tokens" do
+    assert {:ok, model} = Models.create_model(model_attrs(%{max_context_tokens: nil}))
+    assert model.max_context_tokens == nil
+  end
+
+  test "create_model/1 rejects zero max_context_tokens" do
+    assert {:error, changeset} = Models.create_model(model_attrs(%{max_context_tokens: 0}))
+    assert %{max_context_tokens: [_]} = errors_on(changeset)
+  end
+
   test "create_model/1 rejects malformed capabilities instead of raising" do
     assert {:error, changeset} = Models.create_model(model_attrs(%{capabilities: nil}))
     assert %{capabilities: ["must contain non-empty strings"]} = errors_on(changeset)

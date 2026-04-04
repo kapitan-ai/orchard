@@ -72,5 +72,26 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
       assert {:ok, canonical, _model} = ChatOrchestrator.prepare(params, [])
       assert canonical.sampling.max_output_tokens == 50
     end
+
+    test "nil max_context_tokens skips overflow enforcement" do
+      model =
+        ModelRequestFixtures.create_model!(%{
+          model_id: "test/nil-context-model",
+          version: "v1",
+          state: :active,
+          max_context_tokens: nil
+        })
+
+      # Large prompt that would overflow any finite context window
+      content = Enum.map_join(1..10_000, " ", fn i -> "word#{i}" end)
+
+      params = %{
+        "model" => "#{model.model_id}@#{model.version}",
+        "messages" => [%{"role" => "user", "content" => content}]
+      }
+
+      assert {:ok, _canonical, returned_model} = ChatOrchestrator.prepare(params, [])
+      assert returned_model.max_context_tokens == nil
+    end
   end
 end
