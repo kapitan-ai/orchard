@@ -49,14 +49,19 @@ defmodule OrchardCLI.Commands.Status do
     case probe_candidates(candidates, request_fn) do
       {:ok, base_url, body} ->
         state = if body["status"] == "ok", do: :ready, else: :degraded
-        %{version: version, state: state, base_url: base_url, display_url: base_url, body: body}
+        remote_version = non_empty_string(body["version"]) || version
+        build_ref = non_empty_string(body["build_ref"])
+        display_version = format_display_version(remote_version, build_ref)
+        %{version: remote_version, display_version: display_version, state: state, base_url: base_url, display_url: base_url, body: body}
 
       {:error, :unreachable, display_url} ->
-        %{version: version, state: :offline, base_url: nil, display_url: display_url, body: nil}
+        display_version = format_display_version(version, nil)
+        %{version: version, display_version: display_version, state: :offline, base_url: nil, display_url: display_url, body: nil}
 
       {:error, :invalid_response, display_url, message, probe_failure} ->
         %{
           version: version,
+          display_version: format_display_version(version, nil),
           state: :invalid_response,
           base_url: nil,
           display_url: display_url,
@@ -70,11 +75,11 @@ defmodule OrchardCLI.Commands.Status do
   @doc false
   @spec render_snapshot(map()) :: String.t()
   def render_snapshot(%{state: :offline} = snap) do
-    render_offline_banner(snap.version, snap.display_url)
+    render_offline_banner(snap.display_version, snap.display_url)
   end
 
   def render_snapshot(snap) do
-    render_banner(snap.version, snap.base_url, snap.body)
+    render_banner(snap.display_version, snap.base_url, snap.body)
   end
 
   # ── Candidate Probing ───────────────────────────────────────────────
@@ -161,12 +166,12 @@ defmodule OrchardCLI.Commands.Status do
 
   # ── Banner Rendering ────────────────────────────────────────────────
 
-  defp render_banner(version, base_url, body) do
+  defp render_banner(display_version, base_url, body) do
     status_label = if body["status"] == "ok", do: "ready", else: "degraded"
     details = build_details(body, status_label)
 
     """
-    \u{1F333} Orchard v#{version}
+    \u{1F333} Orchard #{display_version}
        Console: #{base_url}/console
        API:     #{base_url}/v1
        Status:  #{status_label}#{details}
@@ -174,9 +179,9 @@ defmodule OrchardCLI.Commands.Status do
     |> String.trim()
   end
 
-  defp render_offline_banner(version, display_url) do
+  defp render_offline_banner(display_version, display_url) do
     """
-    \u{1F333} Orchard v#{version}
+    \u{1F333} Orchard #{display_version}
        Console: #{display_url}/console
        API:     #{display_url}/v1
        Status:  offline (controller unreachable)
@@ -317,6 +322,24 @@ defmodule OrchardCLI.Commands.Status do
       Keyword.put(connect_opts, :cacertfile, ca_path)
     end)
   end
+
+  # ── Version Formatting ────────────────────────────────────────────────
+
+  defp format_display_version(version, build_ref) do
+    base = "v" <> version
+
+    case non_empty_string(build_ref) do
+      nil -> base
+      ref -> base <> " (" <> ref <> ")"
+    end
+  end
+
+  defp non_empty_string(nil), do: nil
+  defp non_empty_string(val) when is_binary(val) do
+    trimmed = String.trim(val)
+    if trimmed != "" and trimmed != "unknown", do: trimmed
+  end
+  defp non_empty_string(_), do: nil
 
   # ── Default Runtime ──────────────────────────────────────────────────
 

@@ -18,23 +18,33 @@ defmodule Orchard.API.HealthController do
 
     case Readiness.status() do
       {:ok, checks} ->
-        json(conn, %{status: "ok", checks: checks, runtime: runtime})
+        json(conn, Map.merge(build_metadata(), %{status: "ok", checks: checks, runtime: runtime}))
 
       {:error, reason, checks} ->
         conn
         |> put_status(:service_unavailable)
-        |> json(%{
-          status: "error",
-          reason: Atom.to_string(reason),
-          checks: checks,
-          runtime: runtime
-        })
+        |> json(
+          Map.merge(build_metadata(), %{
+            status: "error",
+            reason: Atom.to_string(reason),
+            checks: checks,
+            runtime: runtime
+          })
+        )
     end
   end
 
   # ---------------------------------------------------------------------------
   # Runtime probe (observational, never affects readiness outcome)
   # ---------------------------------------------------------------------------
+
+  defp build_metadata do
+    %{
+      version: Orchard.version(),
+      build_ref: Orchard.BuildInfo.git_sha(),
+      build_date: Orchard.BuildInfo.build_date()
+    }
+  end
 
   defp probe_runtime do
     case runtime_impl().snapshot(timeout: @runtime_probe_timeout_ms) do

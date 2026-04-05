@@ -13,8 +13,10 @@ defmodule OrchardTest do
   alias Orchard.ModelManifest.{RuntimeRequirements, Tokenizer}
   alias Orchard.Release
 
-  test "controller version is exposed" do
-    assert Orchard.version() == "0.1.0"
+  test "controller version is derived from app metadata" do
+    vsn = Application.spec(:orchard_controller, :vsn)
+    expected = if is_list(vsn), do: List.to_string(vsn), else: to_string(vsn)
+    assert Orchard.version() == expected
   end
 
   test "readiness and release helpers fail closed when repo-backed db checks are disabled" do

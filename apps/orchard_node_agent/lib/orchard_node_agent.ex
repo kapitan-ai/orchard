@@ -8,5 +8,12 @@ defmodule Orchard.NodeAgent do
   @type model_manifest :: Orchard.ModelManifest.t()
 
   @spec version() :: String.t()
-  def version, do: "0.1.0"
+  def version do
+    case Application.spec(:orchard_node_agent, :vsn) do
+      nil -> "dev"
+      vsn when is_list(vsn) -> List.to_string(vsn)
+      vsn when is_binary(vsn) -> vsn
+      vsn -> to_string(vsn)
+    end
+  end
 end

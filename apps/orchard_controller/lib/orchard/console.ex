@@ -22,11 +22,18 @@ defmodule OrchardConsole do
   """
   @spec display_version() :: String.t()
   def display_version do
-    case Application.spec(:orchard_controller, :vsn) do
-      nil -> "dev"
-      vsn when is_list(vsn) -> "v" <> List.to_string(vsn)
-      vsn when is_binary(vsn) -> "v" <> vsn
-      vsn -> "v" <> to_string(vsn)
+    base =
+      case Orchard.version() do
+        "dev" -> "dev"
+        vsn -> "v" <> vsn
+      end
+
+    sha = Orchard.BuildInfo.git_sha()
+
+    if sha not in ["unknown", ""] do
+      base <> " (" <> sha <> ")"
+    else
+      base
     end
   end
 

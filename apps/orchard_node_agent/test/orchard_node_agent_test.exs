@@ -256,8 +256,10 @@ defmodule OrchardNodeAgentTest do
     %{bundle: bundle}
   end
 
-  test "node agent version is exposed" do
-    assert Orchard.NodeAgent.version() == "0.1.0"
+  test "node agent version is derived from app metadata" do
+    vsn = Application.spec(:orchard_node_agent, :vsn)
+    expected = if is_list(vsn), do: List.to_string(vsn), else: to_string(vsn)
+    assert Orchard.NodeAgent.version() == expected
   end
 
   test "node supervisor is already part of the started application tree" do
@@ -403,7 +405,7 @@ defmodule OrchardNodeAgentTest do
       assert meta.node_id == "00000000-0000-4000-a000-000000000001"
       assert meta.display_name == "test-node"
       assert is_binary(meta.hostname) and meta.hostname != ""
-      assert meta.agent_version == "0.1.0"
+      assert meta.agent_version == Orchard.NodeAgent.version()
       assert is_binary(meta.listen_host) and meta.listen_host != ""
       assert meta.listen_port > 0
       assert meta.worker_backend == "stub"
