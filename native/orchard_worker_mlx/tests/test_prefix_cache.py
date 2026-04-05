@@ -13,6 +13,8 @@ import pytest
 from orchard_worker_mlx.prefix_cache import (
     CacheHit,
     KVPrefixCache,
+    PrefixCache,
+    PrefixCacheStats,
     prompt_cache_length,
 )
 
@@ -447,3 +449,228 @@ class TestLRUEviction:
         assert len(cache) == 1
         assert cache.lookup([1, 1, 9], trim_fn=fake_trim) is None
         assert cache.lookup([2, 2, 9], trim_fn=fake_trim) is not None
+
+
+# ---------------------------------------------------------------------------
+# Stats, byte accounting, and thread safety
+# ---------------------------------------------------------------------------
+
+
+class TestKVPrefixCacheStats:
+    """Tests for PrefixCacheStats, byte accounting, and counter semantics."""
+
+    def test_initial_stats_snapshot(self) -> None:
+        """Fresh cache returns zeroed stats with implementation='kv'."""
+        cache = KVPrefixCache()
+        s = cache.stats()
+        assert isinstance(s, PrefixCacheStats)
+        assert s.implementation == "kv"
+        assert s.entry_count == 0
+        assert s.total_bytes == 0
+        assert s.hits == 0
+        assert s.misses == 0
+        assert s.failures == 0
+        assert s.stores == 0
+        assert s.evictions == 0
+
+    def test_store_increments_stores_counter(self) -> None:
+        """Each successful store() increments the stores counter."""
+        cache = KVPrefixCache()
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        cache.store([4, 5, 6], _make_fake_cache(3))
+        s = cache.stats()
+        assert s.stores == 2
+        assert s.entry_count == 2
+
+    def test_hit_increments_hits_counter(self) -> None:
+        """Successful lookup() increments hits counter."""
+        cache = KVPrefixCache()
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        hit = cache.lookup([1, 2, 3, 4], trim_fn=fake_trim)
+        assert hit is not None
+        s = cache.stats()
+        assert s.hits == 1
+        assert s.misses == 0
+
+    def test_miss_increments_misses_counter(self) -> None:
+        """Lookup on empty cache or no-match increments misses."""
+        cache = KVPrefixCache()
+        # Miss on empty cache.
+        assert cache.lookup([1, 2], trim_fn=fake_trim) is None
+        # Miss on empty query.
+        cache.store([1, 2], _make_fake_cache(2))
+        assert cache.lookup([], trim_fn=fake_trim) is None
+        # Miss on no-match.
+        assert cache.lookup([9, 9], trim_fn=fake_trim) is None
+        s = cache.stats()
+        assert s.misses == 3
+        assert s.hits == 0
+
+    def test_failure_on_trim_exception(self) -> None:
+        """Trim exception during lookup increments failures, not misses."""
+        cache = KVPrefixCache()
+        # Store a long key so full-query coverage lookup triggers trim.
+        cache.store([1, 2, 3, 4, 5], _make_fake_cache(5))
+
+        def bad_trim(cache: Any, n: int) -> int:
+            raise RuntimeError("trim boom")
+
+        # Lookup shorter query -> full-query coverage -> needs trim.
+        result = cache.lookup([1, 2, 3], trim_fn=bad_trim)
+        assert result is None
+        s = cache.stats()
+        assert s.failures == 1
+        assert s.misses == 0
+        assert s.hits == 0
+
+    def test_failure_on_trim_wrong_count(self) -> None:
+        """Trim returning wrong count increments failures."""
+        cache = KVPrefixCache()
+        # Store a long key so full-query coverage lookup triggers trim.
+        cache.store([1, 2, 3, 4, 5], _make_fake_cache(5))
+
+        def wrong_trim(cache: Any, n: int) -> int:
+            return n + 1  # wrong count
+
+        # Lookup shorter query -> full-query coverage -> trim called.
+        result = cache.lookup([1, 2, 3], trim_fn=wrong_trim)
+        assert result is None
+        s = cache.stats()
+        assert s.failures == 1
+
+    def test_failure_on_deepcopy_exception_in_lookup(self) -> None:
+        """Deepcopy failure during lookup increments failures."""
+        cache = KVPrefixCache()
+
+        class UncopiableCache:
+            offset = 5
+            def __deepcopy__(self, memo: Any) -> None:
+                raise RuntimeError("copy boom")
+
+        # Store with a normal cache, then replace internal entry with uncopiable.
+        cache.store([1, 2, 3, 4, 5], _make_fake_cache(5))
+        key = (1, 2, 3, 4, 5)
+        cache._entries[key] = [UncopiableCache()]
+
+        result = cache.lookup([1, 2, 3, 4, 5, 6], trim_fn=fake_trim)
+        assert result is None
+        s = cache.stats()
+        assert s.failures == 1
+
+    def test_store_failure_increments_failures_and_reraises(self) -> None:
+        """Deepcopy failure during store increments failures and re-raises."""
+        cache = KVPrefixCache()
+
+        class UncopiableObj:
+            offset = 3
+            def __deepcopy__(self, memo: Any) -> None:
+                raise RuntimeError("store copy boom")
+
+        with pytest.raises(RuntimeError, match="store copy boom"):
+            cache.store([1, 2, 3], [UncopiableObj()])
+
+        s = cache.stats()
+        assert s.failures == 1
+        assert s.stores == 0
+        assert s.entry_count == 0
+
+    def test_eviction_counter(self) -> None:
+        """Capacity-driven eviction increments evictions counter."""
+        cache = KVPrefixCache(max_entries=1)
+        cache.store([1, 1], _make_fake_cache(2))
+        cache.store([2, 2], _make_fake_cache(2))
+        s = cache.stats()
+        assert s.stores == 2
+        assert s.evictions == 1
+        assert s.entry_count == 1
+
+    def test_replacement_does_not_count_as_eviction(self) -> None:
+        """Replacing an existing key does not increment evictions."""
+        cache = KVPrefixCache(max_entries=2)
+        cache.store([1, 2], _make_fake_cache(2))
+        cache.store([1, 2], _make_fake_cache(5))  # replace same key
+        s = cache.stats()
+        assert s.stores == 2
+        assert s.evictions == 0
+        assert s.entry_count == 1
+
+    # -- Byte accounting ---------------------------------------------------
+
+    def test_bytes_per_token_none_yields_zero(self) -> None:
+        """When bytes_per_token is None, total_bytes is always 0."""
+        cache = KVPrefixCache(bytes_per_token=None)
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        s = cache.stats()
+        assert s.total_bytes == 0
+
+    def test_bytes_per_token_tracks_total(self) -> None:
+        """With bytes_per_token set, total_bytes reflects entry sizes."""
+        cache = KVPrefixCache(bytes_per_token=100)
+        cache.store([1, 2, 3], _make_fake_cache(3))  # 3 tokens * 100 = 300
+        cache.store([4, 5], _make_fake_cache(5))      # 5 tokens * 100 = 500
+        s = cache.stats()
+        assert s.total_bytes == 800
+        assert s.entry_count == 2
+
+    def test_bytes_updated_on_replacement(self) -> None:
+        """Replacing a key updates total_bytes to new entry size."""
+        cache = KVPrefixCache(bytes_per_token=100)
+        cache.store([1, 2], _make_fake_cache(2))  # 200
+        assert cache.stats().total_bytes == 200
+        cache.store([1, 2], _make_fake_cache(5))  # replace: 500
+        s = cache.stats()
+        assert s.total_bytes == 500
+        assert s.entry_count == 1
+
+    def test_bytes_updated_on_eviction(self) -> None:
+        """Eviction subtracts the evicted entry's byte estimate."""
+        cache = KVPrefixCache(max_entries=1, bytes_per_token=100)
+        cache.store([1, 1], _make_fake_cache(3))  # 300
+        cache.store([2, 2], _make_fake_cache(5))  # 500, evicts first
+        s = cache.stats()
+        assert s.total_bytes == 500
+        assert s.evictions == 1
+
+    # -- clear() semantics -------------------------------------------------
+
+    def test_clear_resets_current_state_not_counters(self) -> None:
+        """clear() zeroes entry_count and total_bytes, keeps counters."""
+        cache = KVPrefixCache(bytes_per_token=100)
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        cache.lookup([1, 2, 3, 4], trim_fn=fake_trim)
+        cache.lookup([9, 9], trim_fn=fake_trim)  # miss
+
+        cache.clear()
+        s = cache.stats()
+        assert s.entry_count == 0
+        assert s.total_bytes == 0
+        # Cumulative counters survive clear.
+        assert s.stores == 1
+        assert s.hits == 1
+        assert s.misses == 1
+        assert s.evictions == 0
+
+    # -- Constructor validation --------------------------------------------
+
+    def test_bytes_per_token_rejects_bool(self) -> None:
+        """Boolean values are rejected for bytes_per_token."""
+        with pytest.raises(ValueError):
+            KVPrefixCache(bytes_per_token=True)  # type: ignore[arg-type]
+
+    def test_bytes_per_token_rejects_negative(self) -> None:
+        """Negative bytes_per_token is rejected."""
+        with pytest.raises(ValueError):
+            KVPrefixCache(bytes_per_token=-1)
+
+    def test_bytes_per_token_zero_allowed(self) -> None:
+        """Zero bytes_per_token is valid (yields zero-byte estimates)."""
+        cache = KVPrefixCache(bytes_per_token=0)
+        cache.store([1, 2], _make_fake_cache(3))
+        assert cache.stats().total_bytes == 0
+
+    # -- Protocol conformance ----------------------------------------------
+
+    def test_kv_prefix_cache_satisfies_protocol(self) -> None:
+        """KVPrefixCache is a structural match for PrefixCache protocol."""
+        cache = KVPrefixCache()
+        assert isinstance(cache, PrefixCache)
