@@ -48,6 +48,19 @@ mix ecto.create --quiet
 mix ecto.migrate --quiet
 
 # ---------------------------------------------------------------------------
+# Kill orphaned MLX workers from prior sessions
+# ---------------------------------------------------------------------------
+# Workers spawned by a previous bin/dev may survive BEAM shutdown (especially
+# ctrl+c or crash). Each holds the full model in GPU memory (~15-18 GB),
+# silently degrading performance via unified memory contention.
+orphans=$(pgrep -f orchard-worker-mlx 2>/dev/null || true)
+if [[ -n "$orphans" ]]; then
+  echo "==> Killing orphaned MLX workers: $orphans"
+  echo "$orphans" | xargs kill 2>/dev/null || true
+  sleep 1
+fi
+
+# ---------------------------------------------------------------------------
 # Start the dev server
 # ---------------------------------------------------------------------------
 echo "==> Starting dev server (HTTP :${PORT:-4000}, gRPC :${resolved_port})..."
