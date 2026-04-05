@@ -756,7 +756,9 @@ def _build_prefix_cache(
         return None
 
     # --- Implementation selection ------------------------------------------
-    bytes_per_token = manifest.kv_cache_bytes_per_token
+    raw_bytes_per_token = manifest.kv_cache_bytes_per_token
+    # Treat 0 or negative as unavailable (same as None).
+    bytes_per_token = raw_bytes_per_token if raw_bytes_per_token and raw_bytes_per_token > 0 else None
     max_entries = prefix_cache_config.max_entries
 
     if prefix_cache_config.mode == "kv":

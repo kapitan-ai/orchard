@@ -490,11 +490,35 @@ if config_env() == :prod do
               System.get_env("ORCHARD_WORKER_LOG_DIR") ||
                 Path.join([orchard_support_root, "logs", "workers"]),
             worker_prefix_cache_mode:
-              System.get_env("ORCHARD_WORKER_PREFIX_CACHE_MODE") || "kv",
+              (fn ->
+                mode = System.get_env("ORCHARD_WORKER_PREFIX_CACHE_MODE") || "kv"
+
+                unless mode in ["disabled", "kv", "trie"] do
+                  raise "ORCHARD_WORKER_PREFIX_CACHE_MODE must be disabled|kv|trie, got: #{inspect(mode)}"
+                end
+
+                mode
+              end).(),
             worker_prefix_cache_max_entries:
-              env_int.("ORCHARD_WORKER_PREFIX_CACHE_MAX_ENTRIES", "8"),
+              (fn ->
+                v = env_int.("ORCHARD_WORKER_PREFIX_CACHE_MAX_ENTRIES", "8")
+
+                if v < 1 do
+                  raise "ORCHARD_WORKER_PREFIX_CACHE_MAX_ENTRIES must be >= 1, got: #{v}"
+                end
+
+                v
+              end).(),
             worker_prefix_cache_max_bytes:
-              env_int.("ORCHARD_WORKER_PREFIX_CACHE_MAX_BYTES", "0"),
+              (fn ->
+                v = env_int.("ORCHARD_WORKER_PREFIX_CACHE_MAX_BYTES", "0")
+
+                if v < 0 do
+                  raise "ORCHARD_WORKER_PREFIX_CACHE_MAX_BYTES must be >= 0, got: #{v}"
+                end
+
+                v
+              end).(),
             max_loaded_models: env_int.("ORCHARD_MAX_LOADED_MODELS", "0"),
             fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false),
             hf:
