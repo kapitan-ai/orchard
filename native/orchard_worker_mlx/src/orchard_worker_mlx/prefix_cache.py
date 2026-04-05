@@ -215,7 +215,8 @@ class KVPrefixCache:
         try:
             snapshot = copy.deepcopy(prompt_cache)
         except Exception:
-            self._failures += 1
+            with self._lock:
+                self._failures += 1
             raise
         entry_bytes = self._estimate_entry_bytes(snapshot)
         with self._lock:

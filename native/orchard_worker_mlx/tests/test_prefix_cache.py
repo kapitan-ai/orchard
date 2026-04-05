@@ -506,6 +506,23 @@ class TestKVPrefixCacheStats:
         assert s.misses == 3
         assert s.hits == 0
 
+    def test_single_token_exact_hit_counted_as_miss(self) -> None:
+        """Single-token exact hit has restore_pos=0, counted as miss.
+
+        When the stored key exactly matches a 1-token query, the restore
+        position is len(query)-1 = 0, which is unusable for
+        stream_generate().  This is classified as a *miss* (matched but
+        unusable), not a failure (no internal error occurred).
+        """
+        cache = KVPrefixCache()
+        cache.store([42], _make_fake_cache(1))
+        result = cache.lookup([42], trim_fn=fake_trim)
+        assert result is None
+        s = cache.stats()
+        assert s.misses == 1
+        assert s.failures == 0
+        assert s.hits == 0
+
     def test_failure_on_trim_exception(self) -> None:
         """Trim exception during lookup increments failures, not misses."""
         cache = KVPrefixCache()
