@@ -48,13 +48,60 @@ Prefill progress bridging (Task 5):
 
 from __future__ import annotations
 
+import logging
 import threading
+import time
 from collections import deque
 from collections.abc import Callable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from orchard_worker_mlx.backends import BackendError, cancelled_event
+from orchard_worker_mlx.prefix_cache import PrefixCacheStats
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Cache telemetry types (internal)
+# ---------------------------------------------------------------------------
+
+# Lookup status constants
+_LOOKUP_DISABLED = "disabled"
+_LOOKUP_HELPERS_UNAVAILABLE = "helpers_unavailable"
+_LOOKUP_MISS = "miss"
+_LOOKUP_PARTIAL_HIT = "partial_hit"
+_LOOKUP_FULL_HIT = "full_hit"
+_LOOKUP_FAILED = "lookup_failed"
+
+# Store status constants
+_STORE_NOT_ATTEMPTED = "not_attempted"
+_STORE_SKIPPED_UNAVAILABLE = "skipped_unavailable"
+_STORE_SKIPPED_MISSING_TOKEN_ID = "skipped_missing_token_id"
+_STORE_STORED = "stored"
+_STORE_FAILED = "store_failed"
+
+
+@dataclass(slots=True)
+class _CacheLookupResult:
+    """Structured outcome of prefix-cache lookup."""
+
+    status: str = _LOOKUP_DISABLED
+    prompt_cache: Any = None
+    stream_prompt_ids: list[int] = field(default_factory=list)
+    matched_tokens: int = 0
+    remaining_tokens: int = 0
+    lookup_ms: float = 0.0
+    stats: PrefixCacheStats | None = None
+
+
+@dataclass(slots=True)
+class _CacheStoreResult:
+    """Structured outcome of prefix-cache store."""
+
+    status: str = _STORE_NOT_ATTEMPTED
+    store_ms: float = 0.0
+    stats: PrefixCacheStats | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +369,65 @@ def _safe_clear_session_cache(session: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cache telemetry helpers (internal)
+# ---------------------------------------------------------------------------
+
+
+def _safe_stats(prefix_cache: Any) -> PrefixCacheStats | None:
+    """Best-effort stats snapshot.  Returns None on any failure."""
+    try:
+        stats_fn = getattr(prefix_cache, "stats", None)
+        if callable(stats_fn):
+            return stats_fn()
+    except Exception:
+        pass
+    return None
+
+
+def _emit_prefix_cache_log(
+    *,
+    prompt_tokens: int,
+    lookup: _CacheLookupResult,
+    store: _CacheStoreResult,
+    final_stats: PrefixCacheStats | None,
+) -> None:
+    """Emit exactly one structured cache log line.  Never raises."""
+    try:
+        stats = final_stats or store.stats or lookup.stats
+        impl = getattr(stats, "implementation", "unknown") if stats else (
+            "disabled" if lookup.status == _LOOKUP_DISABLED else "unknown"
+        )
+        entry_count = getattr(stats, "entry_count", 0) if stats else 0
+        total_bytes = getattr(stats, "total_bytes", 0) if stats else 0
+
+        logger.info(
+            "prefix_cache_request "
+            "cache_impl=%s "
+            "lookup_status=%s "
+            "prompt_tokens=%d "
+            "matched_tokens=%d "
+            "remaining_tokens=%d "
+            "lookup_ms=%.3f "
+            "store_status=%s "
+            "store_ms=%.3f "
+            "entry_count=%d "
+            "total_bytes=%d",
+            impl,
+            lookup.status,
+            prompt_tokens,
+            lookup.matched_tokens,
+            lookup.remaining_tokens,
+            lookup.lookup_ms,
+            store.status,
+            store.store_ms,
+            entry_count,
+            total_bytes,
+        )
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # KV prefix-cache helpers (Task 6)
 # ---------------------------------------------------------------------------
 
@@ -331,29 +437,68 @@ def _prepare_prompt_cache(
     prompt_ids: list[int],
     *,
     deps: GenerationDeps,
-) -> tuple[Any | None, list[int]]:
+) -> _CacheLookupResult:
     """Prepare a request-local prompt cache and adjusted prompt IDs.
 
-    Returns ``(request_prompt_cache, ids_for_stream)``.  On any failure
-    or when caching is disabled, returns ``(None, prompt_ids)`` so the
-    caller falls through to uncached generation.
+    Returns a structured ``_CacheLookupResult`` with status, timing, and
+    stats.  On any failure or when caching is disabled, ``prompt_cache``
+    is ``None`` and ``stream_prompt_ids`` equals the original prompt IDs.
     """
+    n = len(prompt_ids)
     prefix_cache = getattr(session, "prefix_cache", None)
     if prefix_cache is None:
-        return (None, prompt_ids)
+        return _CacheLookupResult(
+            status=_LOOKUP_DISABLED, stream_prompt_ids=prompt_ids,
+            remaining_tokens=n,
+        )
     if deps.make_prompt_cache is None or deps.trim_prompt_cache is None:
-        return (None, prompt_ids)
+        return _CacheLookupResult(
+            status=_LOOKUP_HELPERS_UNAVAILABLE, stream_prompt_ids=prompt_ids,
+            remaining_tokens=n,
+        )
 
+    t0 = time.monotonic()
+    pre_stats = _safe_stats(prefix_cache)
     try:
         hit = prefix_cache.lookup(prompt_ids, trim_fn=deps.trim_prompt_cache)
+        post_stats = _safe_stats(prefix_cache)
+        elapsed = (time.monotonic() - t0) * 1000.0
+
         if hit is not None:
-            return (hit.prompt_cache, hit.remaining_ids)
-        # Miss: create a fresh request-local prompt cache so a successful
-        # generation can seed a future store.
+            is_full = hit.matched_length >= n
+            return _CacheLookupResult(
+                status=_LOOKUP_FULL_HIT if is_full else _LOOKUP_PARTIAL_HIT,
+                prompt_cache=hit.prompt_cache,
+                stream_prompt_ids=hit.remaining_ids,
+                matched_tokens=hit.matched_length,
+                remaining_tokens=len(hit.remaining_ids),
+                lookup_ms=elapsed,
+                stats=post_stats,
+            )
+
+        # Distinguish miss from fail-open failure via stats delta.
+        pre_failures = getattr(pre_stats, "failures", 0) if pre_stats else 0
+        post_failures = getattr(post_stats, "failures", 0) if post_stats else 0
+        if post_failures > pre_failures:
+            return _CacheLookupResult(
+                status=_LOOKUP_FAILED, stream_prompt_ids=prompt_ids,
+                remaining_tokens=n, lookup_ms=elapsed, stats=post_stats,
+            )
+
+        # True miss: create a fresh request-local prompt cache.
         fresh = deps.make_prompt_cache(session.model)
-        return (fresh, prompt_ids)
+        elapsed = (time.monotonic() - t0) * 1000.0
+        return _CacheLookupResult(
+            status=_LOOKUP_MISS, prompt_cache=fresh,
+            stream_prompt_ids=prompt_ids, remaining_tokens=n,
+            lookup_ms=elapsed, stats=post_stats,
+        )
     except Exception:
-        return (None, prompt_ids)
+        elapsed = (time.monotonic() - t0) * 1000.0
+        return _CacheLookupResult(
+            status=_LOOKUP_FAILED, stream_prompt_ids=prompt_ids,
+            remaining_tokens=n, lookup_ms=elapsed,
+        )
 
 
 def _maybe_store_prompt_cache(
@@ -362,20 +507,33 @@ def _maybe_store_prompt_cache(
     generated_token_ids: list[int],
     *,
     prompt_cache: Any | None,
-) -> None:
+    can_store: bool,
+) -> _CacheStoreResult:
     """Best-effort store of mutated prompt cache after successful generation.
 
-    Stores the full sequence (``prompt_ids + generated_token_ids``) as the
-    cache key.  All exceptions are swallowed (fail-open).
+    Returns a structured ``_CacheStoreResult`` with status, timing, and
+    stats.  All exceptions are swallowed (fail-open).
     """
     prefix_cache = getattr(session, "prefix_cache", None)
     if prefix_cache is None or prompt_cache is None:
-        return
+        return _CacheStoreResult(status=_STORE_SKIPPED_UNAVAILABLE)
+    if not can_store:
+        return _CacheStoreResult(status=_STORE_SKIPPED_MISSING_TOKEN_ID)
     try:
+        t0 = time.monotonic()
         full_key = prompt_ids + generated_token_ids
         prefix_cache.store(full_key, prompt_cache)
+        elapsed = (time.monotonic() - t0) * 1000.0
+        return _CacheStoreResult(
+            status=_STORE_STORED, store_ms=elapsed,
+            stats=_safe_stats(prefix_cache),
+        )
     except Exception:
-        pass
+        elapsed = (time.monotonic() - t0) * 1000.0
+        return _CacheStoreResult(
+            status=_STORE_FAILED, store_ms=elapsed,
+            stats=_safe_stats(prefix_cache),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -427,84 +585,77 @@ def generate_events(
     input_tokens = _safe_int(getattr(request, "input_tokens", 0))
     stop_sequences = _normalize_stop_sequences(params)
 
-    # max_output_tokens <= 0: immediate completed with FINISH_REASON_LENGTH
-    if max_output_tokens <= 0:
-        yield _completed_event("FINISH_REASON_LENGTH", input_tokens, 0)
-        return
+    # --- Telemetry locals (initialized before any early return) ---
+    prompt_tokens = 0
+    lookup_result = _CacheLookupResult(status=_LOOKUP_DISABLED)
+    store_result = _CacheStoreResult()
 
-    # --- Step 3: encode prompt ---
-    prompt_ids = _encode_prompt(session.tokenizer, prompt_text)
-
-    # --- Step 4: build sampler ---
-    sampler = _build_sampler(temperature, top_p, deps)
-
-    # --- Step 5: prepare request-local state ---
-    stride = _decode_cancel_stride(session)
-    eos_ids: frozenset[int] = frozenset(getattr(session, "eos_token_ids", ()))
-    max_stop_len = max((len(s) for s in stop_sequences), default=0)
-    buf = StopSequenceBuffer(
-        stop_sequences=stop_sequences,
-        max_stop_len=max_stop_len,
-    )
-
-    # Prefill progress queue: callback appends, loop drains before deltas.
-    progress_queue: deque[tuple[int, int]] = deque()
-    progress_callback = _make_prefill_progress_callback(progress_queue)
-
-    # Pre-cancel check
-    if cancel_event.is_set():
-        yield cancelled_event()
-        return
-
-    # --- Step 5b: prefix-cache lookup (Task 6) ---
-    request_prompt_cache, stream_prompt_ids = _prepare_prompt_cache(
-        session, prompt_ids, deps=deps,
-    )
-
-    # --- Step 6: call stream_generate ---
-    # NOTE(task-5): prefill_step_size and prompt_progress_callback are
-    # forwarded by stream_generate() to generate_step().  Upstream handles
-    # chunked prefill; Orchard bridges the callback into yielded events.
-    stream_kwargs: dict[str, Any] = {
-        "max_tokens": max_output_tokens,
-        "sampler": sampler,
-        "prefill_step_size": _prefill_step_size(session),
-        "prompt_progress_callback": progress_callback,
-    }
-    if request_prompt_cache is not None:
-        stream_kwargs["prompt_cache"] = request_prompt_cache
-
-    stream = deps.stream_generate(
-        session.model,
-        session.tokenizer,
-        stream_prompt_ids,
-        **stream_kwargs,
-    )
-
-    # --- Step 7: per-item decode loop ---
-    # Wrap stream consumption in try/finally to guarantee post-generation
-    # cache cleanup on ALL exit paths — including mid-iteration exceptions
-    # from the MLX stream (e.g., Metal errors, OOM) which would otherwise
-    # propagate to service.py without cleanup.
     try:
+        # max_output_tokens <= 0: immediate completed with FINISH_REASON_LENGTH
+        if max_output_tokens <= 0:
+            yield _completed_event("FINISH_REASON_LENGTH", input_tokens, 0)
+            return
+
+        # --- Step 3: encode prompt ---
+        prompt_ids = _encode_prompt(session.tokenizer, prompt_text)
+        prompt_tokens = len(prompt_ids)
+
+        # --- Step 4: build sampler ---
+        sampler = _build_sampler(temperature, top_p, deps)
+
+        # --- Step 5: prepare request-local state ---
+        stride = _decode_cancel_stride(session)
+        eos_ids: frozenset[int] = frozenset(getattr(session, "eos_token_ids", ()))
+        max_stop_len = max((len(s) for s in stop_sequences), default=0)
+        buf = StopSequenceBuffer(
+            stop_sequences=stop_sequences,
+            max_stop_len=max_stop_len,
+        )
+
+        # Prefill progress queue: callback appends, loop drains before deltas.
+        progress_queue: deque[tuple[int, int]] = deque()
+        progress_callback = _make_prefill_progress_callback(progress_queue)
+
+        # Pre-cancel check
+        if cancel_event.is_set():
+            yield cancelled_event()
+            return
+
+        # --- Step 5b: prefix-cache lookup (Task 6) ---
+        lookup_result = _prepare_prompt_cache(
+            session, prompt_ids, deps=deps,
+        )
+        request_prompt_cache = lookup_result.prompt_cache
+        stream_prompt_ids = lookup_result.stream_prompt_ids
+
+        # --- Step 6: call stream_generate ---
+        stream_kwargs: dict[str, Any] = {
+            "max_tokens": max_output_tokens,
+            "sampler": sampler,
+            "prefill_step_size": _prefill_step_size(session),
+            "prompt_progress_callback": progress_callback,
+        }
+        if request_prompt_cache is not None:
+            stream_kwargs["prompt_cache"] = request_prompt_cache
+
+        stream = deps.stream_generate(
+            session.model,
+            session.tokenizer,
+            stream_prompt_ids,
+            **stream_kwargs,
+        )
+
+        # --- Step 7: per-item decode loop ---
         output_tokens = 0
         generated_token_ids: list[int] = []
         can_store = True
         for response in stream:
-            # Drain any queued prefill progress before handling token deltas.
-            # The callback is synchronous — all prefill updates are already
-            # queued by the time the first response arrives.
             yield from _drain_prefill_progress(progress_queue)
 
-            # Every yielded GenerationResponse represents one generated token,
-            # even when detokenization buffers produce empty text.  Count it
-            # unconditionally for usage; only emit a delta when text is present.
             output_tokens += 1
 
             # --- Strided cancel check ---
             if output_tokens % stride == 0 and cancel_event.is_set():
-                # Flush buffered text: cancellation removes future ambiguity,
-                # so withheld text should not be silently dropped.
                 flush_text = buf.flush()
                 if flush_text:
                     yield {"kind": "output_text_delta", "delta": flush_text}
@@ -516,14 +667,12 @@ def generate_events(
             finish_reason = response.finish_reason
 
             # --- Orchard-level EOS detection ---
-            # mlx_lm only honors tokenizer.eos_token_id (singular); check the
-            # full session.eos_token_ids set for config-only stop tokens.
             token_id = _response_token_id(response)
             orchard_eos = (
                 token_id is not None
                 and bool(eos_ids)
                 and token_id in eos_ids
-                and finish_reason is None  # upstream didn't already terminate
+                and finish_reason is None
             )
 
             # --- Cache store key tracking (Task 6) ---
@@ -539,47 +688,41 @@ def generate_events(
                 safe_text, stop_matched = "", False
 
             if stop_matched:
-                # Stop sequence found: emit pre-match text, suppress marker.
                 if safe_text:
                     yield {"kind": "output_text_delta", "delta": safe_text}
                 _close_stream(stream)
-                if can_store:
-                    _maybe_store_prompt_cache(
-                        session, prompt_ids, generated_token_ids,
-                        prompt_cache=request_prompt_cache,
-                    )
+                store_result = _maybe_store_prompt_cache(
+                    session, prompt_ids, generated_token_ids,
+                    prompt_cache=request_prompt_cache, can_store=can_store,
+                )
                 yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
                 return
 
             if orchard_eos:
-                # Orchard-level EOS: flush buffer and terminate.
                 if safe_text:
                     yield {"kind": "output_text_delta", "delta": safe_text}
                 flush_text = buf.flush()
                 if flush_text:
                     yield {"kind": "output_text_delta", "delta": flush_text}
                 _close_stream(stream)
-                if can_store:
-                    _maybe_store_prompt_cache(
-                        session, prompt_ids, generated_token_ids,
-                        prompt_cache=request_prompt_cache,
-                    )
+                store_result = _maybe_store_prompt_cache(
+                    session, prompt_ids, generated_token_ids,
+                    prompt_cache=request_prompt_cache, can_store=can_store,
+                )
                 yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
                 return
 
             if finish_reason is not None:
-                # Upstream terminal from mlx_lm.  Flush all buffered text.
                 if safe_text:
                     yield {"kind": "output_text_delta", "delta": safe_text}
                 flush_text = buf.flush()
                 if flush_text:
                     yield {"kind": "output_text_delta", "delta": flush_text}
 
-                if can_store:
-                    _maybe_store_prompt_cache(
-                        session, prompt_ids, generated_token_ids,
-                        prompt_cache=request_prompt_cache,
-                    )
+                store_result = _maybe_store_prompt_cache(
+                    session, prompt_ids, generated_token_ids,
+                    prompt_cache=request_prompt_cache, can_store=can_store,
+                )
                 if finish_reason == "stop":
                     yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
                 else:  # "length"
@@ -591,9 +734,6 @@ def generate_events(
                 yield {"kind": "output_text_delta", "delta": safe_text}
 
         # --- Step 8: iterator exhaustion without finish_reason ---
-        # Defensive: mlx_lm should always yield a final response with
-        # finish_reason set, but handle gracefully.
-        # Drain any remaining prefill progress (edge case: zero decode tokens).
         yield from _drain_prefill_progress(progress_queue)
         flush_text = buf.flush()
         if flush_text:
@@ -601,13 +741,18 @@ def generate_events(
         if cancel_event.is_set():
             yield cancelled_event()
         else:
-            if can_store:
-                _maybe_store_prompt_cache(
-                    session, prompt_ids, generated_token_ids,
-                    prompt_cache=request_prompt_cache,
-                )
+            store_result = _maybe_store_prompt_cache(
+                session, prompt_ids, generated_token_ids,
+                prompt_cache=request_prompt_cache, can_store=can_store,
+            )
             yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
     finally:
+        _emit_prefix_cache_log(
+            prompt_tokens=prompt_tokens,
+            lookup=lookup_result,
+            store=store_result,
+            final_stats=_safe_stats(getattr(session, "prefix_cache", None)),
+        )
         _safe_clear_session_cache(session)
 
 

@@ -1953,3 +1953,155 @@ def test_store_failure_is_fail_open() -> None:
     # completed still emitted despite store failure
     assert events[-1]["kind"] == "completed"
     assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+# ===========================================================================
+# Prefix-cache logging tests (Task 4)
+# ===========================================================================
+
+import logging
+
+
+def _parse_cache_log(record: logging.LogRecord) -> dict[str, str]:
+    """Parse key=value pairs from a prefix_cache_request log message."""
+    msg = record.getMessage()
+    if not msg.startswith("prefix_cache_request "):
+        return {}
+    pairs = msg.split(" ")[1:]  # skip prefix
+    result = {}
+    for pair in pairs:
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            result[k] = v
+    return result
+
+
+def _find_cache_log(caplog: pytest.LogCaptureFixture) -> dict[str, str]:
+    """Find the single cache log record and parse it."""
+    records = [
+        r for r in caplog.records
+        if r.name == "orchard_worker_mlx.generation"
+        and r.getMessage().startswith("prefix_cache_request ")
+    ]
+    assert len(records) == 1, f"Expected 1 cache log, got {len(records)}"
+    return _parse_cache_log(records[0])
+
+
+def test_cache_log_on_completion(caplog: pytest.LogCaptureFixture) -> None:
+    """Exactly one cache log on normal completion."""
+    responses = [
+        FakeGenerationResponse(text="Hi", token=10, finish_reason="stop"),
+    ]
+    session = _make_fake_session()
+    request = _make_fake_request()
+    deps = _make_deps(responses)
+
+    with caplog.at_level(logging.INFO, logger="orchard_worker_mlx.generation"):
+        _collect_events(session, request, deps)
+
+    log = _find_cache_log(caplog)
+    assert log["lookup_status"] == "disabled"
+    assert log["store_status"] == "skipped_unavailable"  # no prefix_cache on session
+    assert "prompt_tokens" in log
+    assert "lookup_ms" in log
+    assert "store_ms" in log
+    assert "entry_count" in log
+    assert "total_bytes" in log
+
+
+def test_cache_log_on_cancel(caplog: pytest.LogCaptureFixture) -> None:
+    """Exactly one cache log on cancellation."""
+    cancel = threading.Event()
+
+    def streaming_cancel(model, tokenizer, ids, **kwargs):
+        cancel.set()
+        yield FakeGenerationResponse(text="a", token=1)
+
+    deps = GenerationDeps(
+        stream_generate=streaming_cancel,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session(decode_cancel_stride=1)
+    request = _make_fake_request()
+
+    with caplog.at_level(logging.INFO, logger="orchard_worker_mlx.generation"):
+        _collect_events(session, request, deps, cancel_event=cancel)
+
+    log = _find_cache_log(caplog)
+    assert log["lookup_status"] == "disabled"
+    assert log["store_status"] == "not_attempted"
+
+
+def test_cache_log_on_stream_exception(caplog: pytest.LogCaptureFixture) -> None:
+    """Exactly one cache log when stream raises."""
+
+    def exploding_stream(model, tokenizer, ids, **kwargs):
+        raise RuntimeError("metal error")
+
+    deps = GenerationDeps(
+        stream_generate=exploding_stream,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session()
+    request = _make_fake_request()
+
+    with caplog.at_level(logging.INFO, logger="orchard_worker_mlx.generation"):
+        with pytest.raises(RuntimeError, match="metal error"):
+            _collect_events(session, request, deps)
+
+    log = _find_cache_log(caplog)
+    assert log["lookup_status"] == "disabled"
+    assert log["store_status"] == "not_attempted"
+
+
+def test_cache_log_with_prefix_cache_hit(caplog: pytest.LogCaptureFixture) -> None:
+    """Cache log reports partial_hit when prefix cache matches a prefix."""
+    # matched_length=2 < prompt_tokens=3 → partial_hit
+    fake_cache = FakePrefixCache(lookup_result=FakeCacheHit(
+        prompt_cache=MagicMock(), matched_length=2, remaining_ids=[3, 4],
+    ))
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+    deps, _, _ = _cache_deps(responses)
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+
+    with caplog.at_level(logging.INFO, logger="orchard_worker_mlx.generation"):
+        _collect_events(session, request, deps)
+
+    log = _find_cache_log(caplog)
+    assert log["lookup_status"] == "partial_hit"
+    assert log["matched_tokens"] == "2"
+    assert log["remaining_tokens"] == "2"
+
+
+def test_cache_log_with_prefix_cache_miss(caplog: pytest.LogCaptureFixture) -> None:
+    """Cache log reports miss when prefix cache has no match."""
+    fake_cache = FakePrefixCache(lookup_result=None)
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+    deps, _, _ = _cache_deps(responses)
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+
+    with caplog.at_level(logging.INFO, logger="orchard_worker_mlx.generation"):
+        _collect_events(session, request, deps)
+
+    log = _find_cache_log(caplog)
+    assert log["lookup_status"] == "miss"
+
+
+def test_cache_log_on_early_return_max_tokens_zero(caplog: pytest.LogCaptureFixture) -> None:
+    """Cache log emitted even on max_output_tokens=0 early return."""
+    session = _make_fake_session()
+    request = _make_fake_request(max_output_tokens=0)
+    deps = _make_deps([])
+
+    with caplog.at_level(logging.INFO, logger="orchard_worker_mlx.generation"):
+        _collect_events(session, request, deps)
+
+    log = _find_cache_log(caplog)
+    assert log["lookup_status"] == "disabled"
+    assert log["prompt_tokens"] == "0"
