@@ -474,6 +474,12 @@ class TestKVPrefixCacheStats:
         assert s.stores == 0
         assert s.evictions == 0
 
+    def test_kv_store_returns_true(self) -> None:
+        """KVPrefixCache.store() always returns True (no rejection)."""
+        cache = KVPrefixCache()
+        assert cache.store([1, 2, 3], _make_fake_cache(3)) is True
+        assert cache.store([1, 2, 3], _make_fake_cache(5)) is True  # replacement
+
     def test_store_increments_stores_counter(self) -> None:
         """Each successful store() increments the stores counter."""
         cache = KVPrefixCache()
@@ -890,15 +896,29 @@ class TestTrieByteBudgetEviction:
         assert cache.stats().evictions == 0
 
 
+class TestTrieStoreReturnValues:
+    """store() returns True on accept, False on rejection."""
+
+    def test_accepted_insert_returns_true(self) -> None:
+        cache = TriePrefixCache()
+        assert cache.store([1, 2, 3], _make_fake_cache(3)) is True
+
+    def test_accepted_replacement_returns_true(self) -> None:
+        cache = TriePrefixCache()
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        assert cache.store([1, 2, 3], _make_fake_cache(5)) is True
+
+
 class TestTrieOversizeRejection:
     """Oversize entries are silently skipped."""
 
     def test_oversize_entry_skipped(self) -> None:
-        """Entry exceeding max_bytes is silently rejected."""
+        """Entry exceeding max_bytes is silently rejected and returns False."""
         cache = TriePrefixCache(
             max_bytes=100, bytes_per_token=100,
         )
-        cache.store([1, 2], _make_fake_cache(2))  # 200 > 100
+        result = cache.store([1, 2], _make_fake_cache(2))  # 200 > 100
+        assert result is False
         assert len(cache) == 0
         s = cache.stats()
         assert s.stores == 0  # not counted as a store

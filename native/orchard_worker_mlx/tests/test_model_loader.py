@@ -31,7 +31,8 @@ from orchard_worker_mlx.model_loader import (
     probe_mlx_environment,
     unload_session,
 )
-from orchard_worker_mlx.prefix_cache import KVPrefixCache
+from orchard_worker_mlx.model_loader import PrefixCacheLoadConfig
+from orchard_worker_mlx.prefix_cache import KVPrefixCache, TriePrefixCache
 
 # ---------------------------------------------------------------------------
 # Fixture paths
@@ -778,6 +779,74 @@ def test_load_session_missing_prompt_cache_probes_disables_prefix_cache(
     )
     assert session.prefix_cache is None
     assert session.model is not None
+
+
+# ---------------------------------------------------------------------------
+# PrefixCacheLoadConfig + loader selection (Task 3)
+# ---------------------------------------------------------------------------
+
+
+def test_prefix_cache_config_disabled_skips_cache(writable_bundle: Path) -> None:
+    """mode=disabled -> prefix_cache is None regardless of model capability."""
+    deps = _make_fake_deps(can_trim_prompt_cache_return=True)
+    config = PrefixCacheLoadConfig(mode="disabled")
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+        prefix_cache_config=config,
+    )
+    assert session.prefix_cache is None
+
+
+def test_prefix_cache_config_trie_mode(writable_bundle: Path) -> None:
+    """mode=trie with trimmable model -> TriePrefixCache."""
+    deps = _make_fake_deps(can_trim_prompt_cache_return=True)
+    config = PrefixCacheLoadConfig(mode="trie", max_entries=4)
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+        prefix_cache_config=config,
+    )
+    assert isinstance(session.prefix_cache, TriePrefixCache)
+
+
+def test_prefix_cache_config_trie_fallback_missing_bytes(
+    writable_bundle: Path, tmp_path: Path,
+) -> None:
+    """mode=trie + max_bytes>0 + missing kv_cache_bytes_per_token -> fallback to KV."""
+    # Create a manifest without kv_cache_bytes_per_token.
+    manifest_path = writable_bundle / "manifest.json"
+    with open(manifest_path) as f:
+        data = json.load(f)
+    data.pop("kv_cache_bytes_per_token", None)
+    with open(manifest_path, "w") as f:
+        json.dump(data, f)
+
+    deps = _make_fake_deps(can_trim_prompt_cache_return=True)
+    config = PrefixCacheLoadConfig(mode="trie", max_bytes=1000)
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+        prefix_cache_config=config,
+    )
+    # Should fall back to KVPrefixCache with a warning.
+    assert isinstance(session.prefix_cache, KVPrefixCache)
+
+
+def test_prefix_cache_config_validation() -> None:
+    """Invalid PrefixCacheLoadConfig raises ValueError."""
+    with pytest.raises(ValueError):
+        PrefixCacheLoadConfig(mode="invalid")
+    with pytest.raises(ValueError):
+        PrefixCacheLoadConfig(max_entries=0)
+    with pytest.raises(ValueError):
+        PrefixCacheLoadConfig(max_bytes=-1)
 
 
 def test_unload_session_clears_populated_prefix_cache() -> None:

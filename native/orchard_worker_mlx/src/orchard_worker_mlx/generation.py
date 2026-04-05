@@ -78,6 +78,7 @@ _LOOKUP_FAILED = "lookup_failed"
 _STORE_NOT_ATTEMPTED = "not_attempted"
 _STORE_SKIPPED_UNAVAILABLE = "skipped_unavailable"
 _STORE_SKIPPED_MISSING_TOKEN_ID = "skipped_missing_token_id"
+_STORE_SKIPPED_OVERSIZE = "skipped_oversize"
 _STORE_STORED = "stored"
 _STORE_FAILED = "store_failed"
 
@@ -522,10 +523,11 @@ def _maybe_store_prompt_cache(
     try:
         t0 = time.monotonic()
         full_key = prompt_ids + generated_token_ids
-        prefix_cache.store(full_key, prompt_cache)
+        accepted = prefix_cache.store(full_key, prompt_cache)
         elapsed = (time.monotonic() - t0) * 1000.0
+        status = _STORE_STORED if accepted is not False else _STORE_SKIPPED_OVERSIZE
         return _CacheStoreResult(
-            status=_STORE_STORED, store_ms=elapsed,
+            status=status, store_ms=elapsed,
             stats=_safe_stats(prefix_cache),
         )
     except Exception:

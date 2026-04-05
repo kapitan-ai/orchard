@@ -80,7 +80,9 @@ class PrefixCache(Protocol):
     type-checking and documentation.
     """
 
-    def store(self, token_ids: Sequence[int], prompt_cache: Any) -> None: ...
+    def store(self, token_ids: Sequence[int], prompt_cache: Any) -> bool:
+        """Store a snapshot.  Returns True if stored, False if rejected."""
+        ...
 
     def lookup(
         self,
@@ -205,11 +207,14 @@ class KVPrefixCache:
 
     # -- public API ---------------------------------------------------------
 
-    def store(self, token_ids: Sequence[int], prompt_cache: Any) -> None:
+    def store(self, token_ids: Sequence[int], prompt_cache: Any) -> bool:
         """Deep-copy and store a prompt-cache snapshot.
 
         If *token_ids* already exists, the entry is replaced and refreshed
         to MRU position.  Oldest entries are evicted when capacity is exceeded.
+
+        Returns ``True`` (always accepted; KVPrefixCache has no rejection).
+        Raises on deep-copy failure.
         """
         key = _normalize_key(token_ids)
         try:
@@ -229,6 +234,7 @@ class KVPrefixCache:
             self._entries.move_to_end(key, last=True)  # MRU
             self._stores += 1
             self._evict_if_needed()
+        return True
 
     def lookup(
         self,
@@ -496,13 +502,16 @@ class TriePrefixCache:
 
     # -- public API ---------------------------------------------------------
 
-    def store(self, token_ids: Sequence[int], prompt_cache: Any) -> None:
+    def store(self, token_ids: Sequence[int], prompt_cache: Any) -> bool:
         """Deep-copy and store a prompt-cache snapshot.
 
         If *token_ids* already exists, the entry is replaced.  Entries
         whose keys are proper prefixes of the new key are deduplicated.
         Oldest entries are evicted when capacity or byte budget is exceeded.
-        Entries larger than ``max_bytes`` are silently rejected.
+
+        Returns ``True`` if the entry was accepted, ``False`` if it was
+        rejected (e.g., exceeds ``max_bytes``).  Raises on deep-copy
+        failure.
         """
         key = _normalize_key(token_ids)
         try:
@@ -515,7 +524,7 @@ class TriePrefixCache:
 
         # Reject oversize entries before taking the lock.
         if self._max_bytes is not None and entry_bytes > self._max_bytes:
-            return
+            return False
 
         with self._lock:
             # --- Same-key replacement --------------------------------------
@@ -528,7 +537,7 @@ class TriePrefixCache:
                 self._entries.move_to_end(key, last=True)
                 self._stores += 1
                 self._evict_if_needed()
-                return
+                return True
 
             # --- Insert new entry ------------------------------------------
             node = self._ensure_path(key)
@@ -548,6 +557,7 @@ class TriePrefixCache:
 
             self._stores += 1
             self._evict_if_needed()
+        return True
 
     def lookup(
         self,

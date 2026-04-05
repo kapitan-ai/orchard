@@ -1519,10 +1519,12 @@ class FakePrefixCache:
         lookup_result: Any = None,
         lookup_side_effect: Exception | None = None,
         store_side_effect: Exception | None = None,
+        store_result: bool = True,
     ) -> None:
         self.lookup_result = lookup_result
         self.lookup_side_effect = lookup_side_effect
         self.store_side_effect = store_side_effect
+        self.store_result = store_result
         self.lookup_calls: list[tuple[list[int], Any]] = []
         self.store_calls: list[tuple[list[int], Any]] = []
 
@@ -1536,6 +1538,7 @@ class FakePrefixCache:
         self.store_calls.append((list(token_ids), prompt_cache))
         if self.store_side_effect is not None:
             raise self.store_side_effect
+        return self.store_result
 
 
 @dataclass
@@ -2105,3 +2108,90 @@ def test_cache_log_on_early_return_max_tokens_zero(caplog: pytest.LogCaptureFixt
     log = _find_cache_log(caplog)
     assert log["lookup_status"] == "disabled"
     assert log["prompt_tokens"] == "0"
+
+
+def test_cache_log_store_oversize_rejection(caplog: pytest.LogCaptureFixture) -> None:
+    """When store() returns False (oversize), log reports skipped_oversize."""
+    fake_cache = FakePrefixCache(
+        lookup_result=None,
+        store_result=False,  # simulate oversize rejection
+    )
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+    deps, _, _ = _cache_deps(responses)
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+
+    with caplog.at_level(logging.INFO, logger="orchard_worker_mlx.generation"):
+        events = _collect_events(session, request, deps)
+
+    # Completed event still emitted.
+    assert events[-1]["kind"] == "completed"
+
+    log = _find_cache_log(caplog)
+    assert log["store_status"] == "skipped_oversize"
+
+
+def test_cache_log_full_hit(caplog: pytest.LogCaptureFixture) -> None:
+    """Cache log reports full_hit when matched_length >= prompt_tokens."""
+    # matched_length=3 == prompt_tokens=3 -> full_hit
+    fake_cache = FakePrefixCache(lookup_result=FakeCacheHit(
+        prompt_cache=MagicMock(), matched_length=3, remaining_ids=[3],
+    ))
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+    deps, _, _ = _cache_deps(responses)
+    session = _make_fake_session(prefix_cache=fake_cache)
+    request = _make_fake_request()
+
+    with caplog.at_level(logging.INFO, logger="orchard_worker_mlx.generation"):
+        _collect_events(session, request, deps)
+
+    log = _find_cache_log(caplog)
+    assert log["lookup_status"] == "full_hit"
+    assert log["matched_tokens"] == "3"
+    assert log["remaining_tokens"] == "1"
+
+
+def test_cache_log_lookup_failed_via_stats_delta(caplog: pytest.LogCaptureFixture) -> None:
+    """Cache log reports lookup_failed when stats.failures increases."""
+    from orchard_worker_mlx.prefix_cache import PrefixCacheStats
+
+    call_count = 0
+
+    class FailOpenCache:
+        """Cache that returns None but increments failures (simulates fail-open)."""
+
+        def lookup(self, token_ids, *, trim_fn):
+            return None  # fail-open return
+
+        def store(self, token_ids, prompt_cache):
+            return True
+
+        def stats(self):
+            nonlocal call_count
+            call_count += 1
+            # First call (pre-lookup): failures=0
+            # Second call (post-lookup): failures=1 -> delta detected
+            return PrefixCacheStats(
+                implementation="test",
+                entry_count=0, total_bytes=0,
+                hits=0, misses=0,
+                failures=0 if call_count <= 1 else 1,
+                stores=0, evictions=0,
+            )
+
+    responses = [
+        FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
+    ]
+    deps, _, _ = _cache_deps(responses)
+    session = _make_fake_session(prefix_cache=FailOpenCache())
+    request = _make_fake_request()
+
+    with caplog.at_level(logging.INFO, logger="orchard_worker_mlx.generation"):
+        _collect_events(session, request, deps)
+
+    log = _find_cache_log(caplog)
+    assert log["lookup_status"] == "lookup_failed"
