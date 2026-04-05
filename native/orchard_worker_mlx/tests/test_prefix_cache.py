@@ -15,6 +15,7 @@ from orchard_worker_mlx.prefix_cache import (
     KVPrefixCache,
     PrefixCache,
     PrefixCacheStats,
+    TriePrefixCache,
     prompt_cache_length,
 )
 
@@ -691,3 +692,387 @@ class TestKVPrefixCacheStats:
         """KVPrefixCache is a structural match for PrefixCache protocol."""
         cache = KVPrefixCache()
         assert isinstance(cache, PrefixCache)
+
+
+# ===========================================================================
+# TriePrefixCache tests
+# ===========================================================================
+
+
+class TestTriePrefixCacheBasic:
+    """Basic construction, protocol conformance, and empty-state behavior."""
+
+    def test_empty_stats(self) -> None:
+        """Fresh trie cache returns zeroed stats with implementation='trie'."""
+        cache = TriePrefixCache()
+        s = cache.stats()
+        assert isinstance(s, PrefixCacheStats)
+        assert s.implementation == "trie"
+        assert s.entry_count == 0
+        assert s.total_bytes == 0
+        assert s.hits == 0
+        assert s.misses == 0
+
+    def test_satisfies_protocol(self) -> None:
+        """TriePrefixCache is a structural match for PrefixCache protocol."""
+        cache = TriePrefixCache()
+        assert isinstance(cache, PrefixCache)
+
+    def test_constructor_validates_max_entries(self) -> None:
+        with pytest.raises(ValueError):
+            TriePrefixCache(max_entries=0)
+
+    def test_constructor_validates_bytes_per_token(self) -> None:
+        with pytest.raises(ValueError):
+            TriePrefixCache(bytes_per_token=-1)
+        with pytest.raises(ValueError):
+            TriePrefixCache(bytes_per_token=True)  # type: ignore[arg-type]
+
+    def test_constructor_validates_max_bytes(self) -> None:
+        with pytest.raises(ValueError):
+            TriePrefixCache(max_bytes=-1)
+        with pytest.raises(ValueError):
+            TriePrefixCache(max_bytes=True)  # type: ignore[arg-type]
+
+    def test_max_bytes_zero_treated_as_disabled(self) -> None:
+        """max_bytes=0 is treated as None (disabled)."""
+        cache = TriePrefixCache(max_bytes=0, bytes_per_token=100)
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        assert len(cache) == 1  # not rejected
+
+
+class TestTrieLongestPrefixLookup:
+    """Trie lookup correctly finds the longest matching prefix."""
+
+    def test_partial_prefix_hit(self) -> None:
+        """Stored [1,2,3] matches query [1,2,3,4,5]."""
+        cache = TriePrefixCache()
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        hit = cache.lookup([1, 2, 3, 4, 5], trim_fn=fake_trim)
+        assert hit is not None
+        assert hit.matched_length == 3
+        assert hit.remaining_ids == [4, 5]
+
+    def test_longer_prefix_wins(self) -> None:
+        """Among [1,2] and [1,2,3], the longer prefix matches [1,2,3,4]."""
+        cache = TriePrefixCache()
+        cache.store([1, 2], _make_fake_cache(2))
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        hit = cache.lookup([1, 2, 3, 4], trim_fn=fake_trim)
+        assert hit is not None
+        assert hit.matched_length == 3
+        assert hit.remaining_ids == [4]
+
+    def test_no_match_returns_none(self) -> None:
+        """Query sharing no prefix returns None."""
+        cache = TriePrefixCache()
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        result = cache.lookup([9, 8, 7], trim_fn=fake_trim)
+        assert result is None
+        assert cache.stats().misses == 1
+
+    def test_empty_cache_miss(self) -> None:
+        cache = TriePrefixCache()
+        assert cache.lookup([1, 2], trim_fn=fake_trim) is None
+        assert cache.stats().misses == 1
+
+    def test_empty_query_miss(self) -> None:
+        cache = TriePrefixCache()
+        cache.store([1, 2], _make_fake_cache(2))
+        assert cache.lookup([], trim_fn=fake_trim) is None
+        assert cache.stats().misses == 1
+
+
+class TestTrieFullQueryCoverage:
+    """Full-query coverage via exact key or stored descendant."""
+
+    def test_exact_key_hit(self) -> None:
+        """Stored [1,2,3] exactly matches query [1,2,3]."""
+        cache = TriePrefixCache()
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        hit = cache.lookup([1, 2, 3], trim_fn=fake_trim)
+        assert hit is not None
+        # Full-query coverage: restore_pos = len(query) - 1 = 2.
+        assert hit.matched_length == 3
+        assert hit.remaining_ids == [3]  # trailing token
+
+    def test_stored_descendant_covers_query(self) -> None:
+        """Stored [1,2,3,4,5] covers shorter query [1,2,3]."""
+        cache = TriePrefixCache()
+        cache.store([1, 2, 3, 4, 5], _make_fake_cache(5))
+        hit = cache.lookup([1, 2, 3], trim_fn=fake_trim)
+        assert hit is not None
+        assert hit.matched_length == 3
+        assert hit.remaining_ids == [3]  # trailing token
+
+    def test_single_token_full_coverage_is_miss(self) -> None:
+        """Single-token exact hit has restore_pos=0, counted as miss."""
+        cache = TriePrefixCache()
+        cache.store([42], _make_fake_cache(1))
+        result = cache.lookup([42], trim_fn=fake_trim)
+        assert result is None
+        s = cache.stats()
+        assert s.misses == 1
+        assert s.failures == 0
+
+
+class TestTrieLRUBehavior:
+    """Access-LRU promotion and eviction ordering."""
+
+    def test_lookup_promotes_to_mru(self) -> None:
+        """Successful lookup promotes entry; eviction removes oldest."""
+        cache = TriePrefixCache(max_entries=2)
+        cache.store([1, 1], _make_fake_cache(2))
+        cache.store([2, 2], _make_fake_cache(2))
+        # Lookup [1,1,...] promotes it to MRU.
+        cache.lookup([1, 1, 9], trim_fn=fake_trim)
+        # Storing a third entry should evict [2,2] (oldest after promotion).
+        cache.store([3, 3], _make_fake_cache(2))
+        assert len(cache) == 2
+        assert cache.lookup([2, 2, 9], trim_fn=fake_trim) is None
+        assert cache.lookup([1, 1, 9], trim_fn=fake_trim) is not None
+
+    def test_store_replacement_refreshes_mru(self) -> None:
+        """Replacing an existing key moves it to MRU."""
+        cache = TriePrefixCache(max_entries=2)
+        cache.store([1, 1], _make_fake_cache(2))
+        cache.store([2, 2], _make_fake_cache(2))
+        # Replace [1,1] -> MRU.
+        cache.store([1, 1], _make_fake_cache(5))
+        # New entry should evict [2,2].
+        cache.store([3, 3], _make_fake_cache(2))
+        assert cache.lookup([2, 2, 9], trim_fn=fake_trim) is None
+        assert cache.lookup([1, 1, 9], trim_fn=fake_trim) is not None
+
+    def test_entry_count_eviction(self) -> None:
+        """Exceeding max_entries evicts the oldest entry."""
+        cache = TriePrefixCache(max_entries=1)
+        cache.store([1, 1], _make_fake_cache(2))
+        cache.store([2, 2], _make_fake_cache(2))
+        assert len(cache) == 1
+        assert cache.lookup([1, 1, 9], trim_fn=fake_trim) is None
+        assert cache.lookup([2, 2, 9], trim_fn=fake_trim) is not None
+        assert cache.stats().evictions == 1
+
+
+class TestTrieByteBudgetEviction:
+    """Byte-budget eviction via max_bytes."""
+
+    def test_byte_cap_evicts_oldest(self) -> None:
+        """Exceeding byte budget evicts oldest entries."""
+        # Each fake cache with length=3 at 100 bytes/token = 300 bytes.
+        cache = TriePrefixCache(
+            max_entries=10, max_bytes=500, bytes_per_token=100,
+        )
+        cache.store([1, 1], _make_fake_cache(3))  # 300
+        cache.store([2, 2], _make_fake_cache(3))  # 300 -> total 600 > 500
+        assert len(cache) == 1
+        s = cache.stats()
+        assert s.evictions == 1
+        assert s.total_bytes == 300
+
+    def test_byte_stats_track_correctly(self) -> None:
+        cache = TriePrefixCache(max_bytes=10000, bytes_per_token=100)
+        cache.store([1, 2, 3], _make_fake_cache(3))  # 300
+        cache.store([4, 5], _make_fake_cache(5))      # 500
+        s = cache.stats()
+        assert s.total_bytes == 800
+        assert s.entry_count == 2
+
+    def test_no_byte_cap_when_disabled(self) -> None:
+        """Without max_bytes, only entry count matters."""
+        cache = TriePrefixCache(
+            max_entries=10, bytes_per_token=100,
+        )  # max_bytes=None
+        for i in range(10):
+            cache.store([i, i], _make_fake_cache(100))  # 10000 bytes each
+        assert len(cache) == 10
+        assert cache.stats().evictions == 0
+
+
+class TestTrieOversizeRejection:
+    """Oversize entries are silently skipped."""
+
+    def test_oversize_entry_skipped(self) -> None:
+        """Entry exceeding max_bytes is silently rejected."""
+        cache = TriePrefixCache(
+            max_bytes=100, bytes_per_token=100,
+        )
+        cache.store([1, 2], _make_fake_cache(2))  # 200 > 100
+        assert len(cache) == 0
+        s = cache.stats()
+        assert s.stores == 0  # not counted as a store
+        assert s.failures == 0  # not a failure
+
+    def test_existing_entries_preserved_on_rejection(self) -> None:
+        """Rejecting oversize entry doesn't affect existing entries."""
+        cache = TriePrefixCache(
+            max_bytes=300, bytes_per_token=100,
+        )
+        cache.store([1, 1], _make_fake_cache(2))  # 200 <= 300, accepted
+        cache.store([2, 2], _make_fake_cache(5))  # 500 > 300, rejected
+        assert len(cache) == 1
+        assert cache.lookup([1, 1, 9], trim_fn=fake_trim) is not None
+
+
+class TestTriePrefixDeduplication:
+    """Storing a longer key removes proper-prefix entries."""
+
+    def test_proper_prefix_removed(self) -> None:
+        """Storing [1,2,3] removes existing [1,2]."""
+        cache = TriePrefixCache()
+        cache.store([1, 2], _make_fake_cache(2))
+        assert len(cache) == 1
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        assert len(cache) == 1  # [1,2] deduped
+
+    def test_dedup_does_not_count_as_eviction(self) -> None:
+        """Dedup removals do not increment the evictions counter."""
+        cache = TriePrefixCache()
+        cache.store([1, 2], _make_fake_cache(2))
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        assert cache.stats().evictions == 0
+
+    def test_partial_lookup_after_dedup_via_descendant(self) -> None:
+        """After dedup removes [1,2], query [1,2,9] still hits via [1,2,3]."""
+        cache = TriePrefixCache()
+        cache.store([1, 2], _make_fake_cache(2))
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        # [1,2] was deduped, but [1,2,3] covers the [1,2] prefix.
+        hit = cache.lookup([1, 2, 9], trim_fn=fake_trim)
+        assert hit is not None
+        assert hit.matched_length == 2
+        assert hit.remaining_ids == [9]
+
+    def test_dedup_multiple_prefixes(self) -> None:
+        """Storing [1,2,3,4] removes both [1,2] and [1,2,3]."""
+        cache = TriePrefixCache()
+        cache.store([1, 2], _make_fake_cache(2))
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        cache.store([1, 2, 3, 4], _make_fake_cache(4))
+        assert len(cache) == 1  # only [1,2,3,4] remains
+
+    def test_dedup_does_not_remove_siblings(self) -> None:
+        """Storing [1,2,3] does not remove [1,3] (not a proper prefix)."""
+        cache = TriePrefixCache()
+        cache.store([1, 3], _make_fake_cache(2))
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        assert len(cache) == 2
+
+    def test_bytes_updated_after_dedup(self) -> None:
+        """Byte total reflects removal of deduped entries."""
+        cache = TriePrefixCache(bytes_per_token=100)
+        cache.store([1, 2], _make_fake_cache(2))      # 200
+        cache.store([1, 2, 3], _make_fake_cache(3))    # 300, dedup removes 200
+        assert cache.stats().total_bytes == 300
+
+
+class TestTrieFailureSemantics:
+    """Fail-open behavior and failure counter semantics."""
+
+    def test_trim_exception_is_failure(self) -> None:
+        cache = TriePrefixCache()
+        cache.store([1, 2, 3, 4, 5], _make_fake_cache(5))
+
+        def bad_trim(c: Any, n: int) -> int:
+            raise RuntimeError("boom")
+
+        result = cache.lookup([1, 2, 3], trim_fn=bad_trim)
+        assert result is None
+        assert cache.stats().failures == 1
+
+    def test_trim_wrong_count_is_failure(self) -> None:
+        cache = TriePrefixCache()
+        cache.store([1, 2, 3, 4, 5], _make_fake_cache(5))
+
+        def wrong_trim(c: Any, n: int) -> int:
+            return n + 1
+
+        result = cache.lookup([1, 2, 3], trim_fn=wrong_trim)
+        assert result is None
+        assert cache.stats().failures == 1
+
+    def test_deepcopy_failure_in_lookup(self) -> None:
+        cache = TriePrefixCache()
+
+        class Uncopiable:
+            offset = 5
+            def __deepcopy__(self, memo: Any) -> None:
+                raise RuntimeError("copy boom")
+
+        cache.store([1, 2, 3, 4, 5], _make_fake_cache(5))
+        # Replace internal snapshot with uncopiable object.
+        entry = cache._entries[(1, 2, 3, 4, 5)]
+        entry.prompt_cache = [Uncopiable()]
+        result = cache.lookup([1, 2, 3, 4, 5, 6], trim_fn=fake_trim)
+        assert result is None
+        assert cache.stats().failures == 1
+
+    def test_store_deepcopy_failure_reraises(self) -> None:
+        cache = TriePrefixCache()
+
+        class Uncopiable:
+            offset = 3
+            def __deepcopy__(self, memo: Any) -> None:
+                raise RuntimeError("store boom")
+
+        with pytest.raises(RuntimeError, match="store boom"):
+            cache.store([1, 2, 3], [Uncopiable()])
+        s = cache.stats()
+        assert s.failures == 1
+        assert s.stores == 0
+        assert s.entry_count == 0
+
+
+class TestTrieDeepCopyBoundaries:
+    """Mutation isolation at store and lookup boundaries."""
+
+    def test_store_isolation(self) -> None:
+        """Mutating original after store does not affect stored snapshot."""
+        cache = TriePrefixCache()
+        original = _make_fake_cache(5)
+        cache.store([1, 2, 3, 4, 5], original)
+        # Mutate original.
+        original[0].offset = 999
+        hit = cache.lookup([1, 2, 3, 4, 5, 6], trim_fn=fake_trim)
+        assert hit is not None
+        assert hit.prompt_cache[0].offset != 999
+
+    def test_lookup_isolation(self) -> None:
+        """Mutating returned cache does not affect stored snapshot."""
+        cache = TriePrefixCache()
+        cache.store([1, 2, 3, 4, 5], _make_fake_cache(5))
+        hit1 = cache.lookup([1, 2, 3, 4, 5, 6], trim_fn=fake_trim)
+        assert hit1 is not None
+        hit1.prompt_cache[0].offset = 999
+        hit2 = cache.lookup([1, 2, 3, 4, 5, 6], trim_fn=fake_trim)
+        assert hit2 is not None
+        assert hit2.prompt_cache[0].offset != 999
+
+
+class TestTrieClearAndStats:
+    """Clear resets current state but preserves cumulative counters."""
+
+    def test_clear_semantics(self) -> None:
+        cache = TriePrefixCache(bytes_per_token=100)
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        cache.lookup([1, 2, 3, 4], trim_fn=fake_trim)
+        cache.lookup([9, 9], trim_fn=fake_trim)  # miss
+
+        cache.clear()
+        s = cache.stats()
+        assert s.entry_count == 0
+        assert s.total_bytes == 0
+        # Cumulative counters survive clear.
+        assert s.stores == 1
+        assert s.hits == 1
+        assert s.misses == 1
+
+    def test_clear_allows_fresh_inserts(self) -> None:
+        """Cache is usable after clear."""
+        cache = TriePrefixCache()
+        cache.store([1, 2, 3], _make_fake_cache(3))
+        cache.clear()
+        cache.store([4, 5, 6], _make_fake_cache(3))
+        assert len(cache) == 1
+        assert cache.lookup([4, 5, 6, 7], trim_fn=fake_trim) is not None
