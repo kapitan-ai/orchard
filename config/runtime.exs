@@ -279,11 +279,14 @@ default_node_runtime = fn root ->
     worker_backend: "mlx",
     worker_ready_timeout_ms: 5_000,
     worker_load_timeout_ms: 120_000,
-    worker_shutdown_timeout_ms: 1_000,
-    worker_log_dir: Path.join([root, "logs", "workers"]),
-    max_loaded_models: 0,
-    fake_runtime?: false,
-    hf: default_hf_config.(),
+      worker_shutdown_timeout_ms: 1_000,
+      worker_log_dir: Path.join([root, "logs", "workers"]),
+      worker_prefix_cache_mode: "kv",
+      worker_prefix_cache_max_entries: 8,
+      worker_prefix_cache_max_bytes: 0,
+      max_loaded_models: 0,
+      fake_runtime?: false,
+      hf: default_hf_config.(),
     s3: [
       endpoint: nil,
       region: "us-east-1",
@@ -486,6 +489,12 @@ if config_env() == :prod do
             worker_log_dir:
               System.get_env("ORCHARD_WORKER_LOG_DIR") ||
                 Path.join([orchard_support_root, "logs", "workers"]),
+            worker_prefix_cache_mode:
+              System.get_env("ORCHARD_WORKER_PREFIX_CACHE_MODE") || "kv",
+            worker_prefix_cache_max_entries:
+              env_int.("ORCHARD_WORKER_PREFIX_CACHE_MAX_ENTRIES", "8"),
+            worker_prefix_cache_max_bytes:
+              env_int.("ORCHARD_WORKER_PREFIX_CACHE_MAX_BYTES", "0"),
             max_loaded_models: env_int.("ORCHARD_MAX_LOADED_MODELS", "0"),
             fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false),
             hf:

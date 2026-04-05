@@ -44,6 +44,9 @@ def main():
     parser.add_argument("--socket-path", required=True)
     parser.add_argument("--backend", default="stub")
     parser.add_argument("--log-file", default=None)
+    parser.add_argument("--prefix-cache-mode", default="kv")
+    parser.add_argument("--prefix-cache-max-entries", type=int, default=8)
+    parser.add_argument("--prefix-cache-max-bytes", type=int, default=0)
     args = parser.parse_args()
 
     socket_path = Path(args.socket_path)

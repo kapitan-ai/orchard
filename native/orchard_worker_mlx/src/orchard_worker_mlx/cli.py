@@ -54,6 +54,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="optional path for a persistent log file (truncated per spawn)",
     )
     parser.add_argument("--version", action="store_true", help="print the package version and exit")
+    parser.add_argument(
+        "--prefix-cache-mode",
+        choices=["disabled", "kv", "trie"],
+        default="kv",
+        help="prefix cache implementation (default: kv)",
+    )
+    parser.add_argument(
+        "--prefix-cache-max-entries",
+        type=int,
+        default=8,
+        help="maximum prefix cache entries (default: 8)",
+    )
+    parser.add_argument(
+        "--prefix-cache-max-bytes",
+        type=int,
+        default=0,
+        help="maximum prefix cache byte budget; 0 disables (default: 0)",
+    )
     args = parser.parse_args(argv)
 
     if args.version:
@@ -61,7 +79,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     _configure_logging(args.log_file)
-    serve(args.socket_path, args.backend)
+
+    from orchard_worker_mlx.model_loader import PrefixCacheLoadConfig
+
+    try:
+        prefix_cache_config = PrefixCacheLoadConfig(
+            mode=args.prefix_cache_mode,
+            max_entries=args.prefix_cache_max_entries,
+            max_bytes=args.prefix_cache_max_bytes,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    serve(args.socket_path, args.backend, prefix_cache_config=prefix_cache_config)
     return 0
 
 

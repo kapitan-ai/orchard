@@ -11,6 +11,9 @@ defmodule Orchard.Node do
   @default_worker_ready_timeout_ms 5_000
   @default_worker_load_timeout_ms 120_000
   @default_worker_shutdown_timeout_ms 1_000
+  @default_worker_prefix_cache_mode "kv"
+  @default_worker_prefix_cache_max_entries 8
+  @default_worker_prefix_cache_max_bytes 0
   @worker_socket_prefix "orchard-worker-"
   @worker_socket_suffix ".sock"
   @worker_log_prefix "orchard-worker-"
@@ -98,6 +101,18 @@ defmodule Orchard.Node do
 
   def runtime_adapter_impl do
     runtime_config()[:runtime_adapter_impl] || default_runtime_adapter_impl()
+  end
+
+  def worker_prefix_cache_mode do
+    runtime_config()[:worker_prefix_cache_mode] || @default_worker_prefix_cache_mode
+  end
+
+  def worker_prefix_cache_max_entries do
+    runtime_config()[:worker_prefix_cache_max_entries] || @default_worker_prefix_cache_max_entries
+  end
+
+  def worker_prefix_cache_max_bytes do
+    runtime_config()[:worker_prefix_cache_max_bytes] || @default_worker_prefix_cache_max_bytes
   end
 
   def worker_log_dir, do: runtime_config()[:worker_log_dir]

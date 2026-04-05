@@ -78,6 +78,15 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     log_path = Keyword.get(opts, :log_path, Node.worker_log_path(model_ref))
     models_root = Keyword.get(opts, :models_root, Node.models_root())
 
+    prefix_cache_mode =
+      Keyword.get(opts, :prefix_cache_mode, Node.worker_prefix_cache_mode())
+
+    prefix_cache_max_entries =
+      Keyword.get(opts, :prefix_cache_max_entries, Node.worker_prefix_cache_max_entries())
+
+    prefix_cache_max_bytes =
+      Keyword.get(opts, :prefix_cache_max_bytes, Node.worker_prefix_cache_max_bytes())
+
     load_meta = %{
       model_id: model_ref.model_id,
       version: model_ref.version,
@@ -107,7 +116,10 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           log_path: log_path,
           ready_timeout_ms: ready_timeout_ms,
           load_timeout_ms: load_timeout_ms,
-          shutdown_timeout_ms: shutdown_timeout_ms
+          shutdown_timeout_ms: shutdown_timeout_ms,
+          prefix_cache_mode: prefix_cache_mode,
+          prefix_cache_max_entries: prefix_cache_max_entries,
+          prefix_cache_max_bytes: prefix_cache_max_bytes
         })
       end
 
@@ -247,9 +259,17 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          log_path: log_path,
          ready_timeout_ms: ready_timeout_ms,
          load_timeout_ms: load_timeout_ms,
-         shutdown_timeout_ms: shutdown_timeout_ms
+         shutdown_timeout_ms: shutdown_timeout_ms,
+         prefix_cache_mode: prefix_cache_mode,
+         prefix_cache_max_entries: prefix_cache_max_entries,
+         prefix_cache_max_bytes: prefix_cache_max_bytes
        }) do
-    {:ok, port, os_pid} = start_worker_port(executable, socket_path, backend, log_path)
+    {:ok, port, os_pid} =
+      start_worker_port(executable, socket_path, backend, log_path,
+        prefix_cache_mode: prefix_cache_mode,
+        prefix_cache_max_entries: prefix_cache_max_entries,
+        prefix_cache_max_bytes: prefix_cache_max_bytes
+      )
 
     case wait_for_worker_ready(socket_path, port, ready_timeout_ms) do
       {:ok, channel} ->
@@ -335,8 +355,19 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-  defp start_worker_port(executable, socket_path, backend, log_path) do
-    cli_args = ["--socket-path", socket_path, "--backend", backend, "--log-file", log_path]
+  defp start_worker_port(executable, socket_path, backend, log_path, opts) do
+    prefix_cache_mode = Keyword.get(opts, :prefix_cache_mode, "kv")
+    prefix_cache_max_entries = Keyword.get(opts, :prefix_cache_max_entries, 8)
+    prefix_cache_max_bytes = Keyword.get(opts, :prefix_cache_max_bytes, 0)
+
+    cli_args = [
+      "--socket-path", socket_path,
+      "--backend", backend,
+      "--log-file", log_path,
+      "--prefix-cache-mode", to_string(prefix_cache_mode),
+      "--prefix-cache-max-entries", Integer.to_string(prefix_cache_max_entries),
+      "--prefix-cache-max-bytes", Integer.to_string(prefix_cache_max_bytes)
+    ]
     args = Enum.map(cli_args, &String.to_charlist/1)
 
     port =

@@ -153,8 +153,10 @@ class MLXBackend:
         session_unloader: Callable[..., None] | None = None,
         generation_runner: Callable[..., Iterator[dict[str, Any]]] | None = None,
         health_probe: Callable[[], "MLXEnvironmentHealth"] | None = None,
+        prefix_cache_config: Any | None = None,
     ) -> None:
         from orchard_worker_mlx.model_loader import (
+            DEFAULT_PREFIX_CACHE_LOAD_CONFIG,
             MLXEnvironmentHealth,
             load_session as _load_session,
             probe_mlx_environment,
@@ -164,6 +166,7 @@ class MLXBackend:
         self._session_loader = session_loader or _load_session
         self._session_unloader = session_unloader or _unload_session
         self._generation_runner = generation_runner or _default_generation_runner()
+        self._prefix_cache_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
         self._session: Any | None = None
         self._active_request_count = 0
         self._lock = threading.Lock()
@@ -232,6 +235,7 @@ class MLXBackend:
                     model_id=model_id,
                     version=version,
                     model_path=model_path,
+                    prefix_cache_config=self._prefix_cache_config,
                 )
             except ModelLoaderError as exc:
                 raise BackendError(exc.code, exc.message, exc.retryable) from exc
@@ -287,12 +291,16 @@ def _default_generation_runner() -> Callable[..., Iterator[dict[str, Any]]]:
     return generate_events
 
 
-def build_backend(name: str) -> Backend:
+def build_backend(
+    name: str,
+    *,
+    prefix_cache_config: Any | None = None,
+) -> Backend:
     if name == "stub":
         return StubBackend()
 
     if name == "mlx":
-        return MLXBackend()
+        return MLXBackend(prefix_cache_config=prefix_cache_config)
 
     raise BackendError("unsupported_backend", f"unsupported backend: {name}")
 

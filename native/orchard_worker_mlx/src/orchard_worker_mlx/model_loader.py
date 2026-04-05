@@ -11,9 +11,51 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from orchard_worker_mlx.prefix_cache import KVPrefixCache
+from orchard_worker_mlx.prefix_cache import (
+    KVPrefixCache,
+    PrefixCache,
+    TriePrefixCache,
+)
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Prefix-cache load configuration
+# ---------------------------------------------------------------------------
+
+_VALID_PREFIX_CACHE_MODES = frozenset({"disabled", "kv", "trie"})
+
+
+@dataclass(slots=True, frozen=True)
+class PrefixCacheLoadConfig:
+    """Process-scoped configuration for prefix-cache selection.
+
+    Carried from CLI -> service -> backend -> loader.  The loader uses
+    this together with manifest metadata to decide which cache
+    implementation to provision.
+    """
+
+    mode: str = "kv"
+    max_entries: int = 8
+    max_bytes: int = 0
+
+    def __post_init__(self) -> None:
+        if self.mode not in _VALID_PREFIX_CACHE_MODES:
+            raise ValueError(
+                f"mode must be one of {sorted(_VALID_PREFIX_CACHE_MODES)}, got {self.mode!r}"
+            )
+        if not isinstance(self.max_entries, int) or isinstance(self.max_entries, bool):
+            raise ValueError(f"max_entries must be int, got {type(self.max_entries).__name__}")
+        if self.max_entries < 1:
+            raise ValueError(f"max_entries must be >= 1, got {self.max_entries}")
+        if not isinstance(self.max_bytes, int) or isinstance(self.max_bytes, bool):
+            raise ValueError(f"max_bytes must be int, got {type(self.max_bytes).__name__}")
+        if self.max_bytes < 0:
+            raise ValueError(f"max_bytes must be >= 0, got {self.max_bytes}")
+
+
+DEFAULT_PREFIX_CACHE_LOAD_CONFIG = PrefixCacheLoadConfig()
 
 
 # ---------------------------------------------------------------------------
@@ -476,7 +518,7 @@ class LoadedModelSession:
     clear_cache: Callable[[], None] | None = None
     decode_cancel_stride: int = 1
     prefill_step_size: int = 2048
-    prefix_cache: KVPrefixCache | None = None
+    prefix_cache: PrefixCache | None = None
 
 
 def _normalize_eos_token_ids(tokenizer: Any, model_config: Any) -> tuple[int, ...]:
@@ -673,13 +715,28 @@ def _safe_clear_cache(clear_cache: Callable[[], None] | None) -> None:
             pass
 
 
-def _build_prefix_cache(model: Any, *, deps: MLXDeps) -> KVPrefixCache | None:
-    """Probe whether *model* supports trimmable prompt caches.
+def _build_prefix_cache(
+    model: Any,
+    manifest: BundleManifest,
+    *,
+    deps: MLXDeps,
+    prefix_cache_config: PrefixCacheLoadConfig,
+) -> PrefixCache | None:
+    """Select and build a prefix-cache implementation.
 
-    Returns a ``KVPrefixCache`` when the model's cache is trimmable, ``None``
-    otherwise.  All failures are swallowed (fail-open): inability to probe
-    must never prevent a model from loading.
+    Selection is driven by *prefix_cache_config* and model capability:
+
+    - ``mode="disabled"`` → ``None`` immediately.
+    - Non-trimmable models → ``None`` (fail-open probe).
+    - ``mode="kv"`` → ``KVPrefixCache``.
+    - ``mode="trie"`` → ``TriePrefixCache``, with fallback to
+      ``KVPrefixCache`` when a byte budget is configured but
+      ``manifest.kv_cache_bytes_per_token`` is missing.
     """
+    if prefix_cache_config.mode == "disabled":
+        return None
+
+    # --- Trimmability probe (unchanged, fail-open) -------------------------
     if deps.make_prompt_cache is None or deps.can_trim_prompt_cache is None:
         return None
 
@@ -698,7 +755,35 @@ def _build_prefix_cache(model: Any, *, deps: MLXDeps) -> KVPrefixCache | None:
     if not trimmable:
         return None
 
-    return KVPrefixCache()
+    # --- Implementation selection ------------------------------------------
+    bytes_per_token = manifest.kv_cache_bytes_per_token
+    max_entries = prefix_cache_config.max_entries
+
+    if prefix_cache_config.mode == "kv":
+        return KVPrefixCache(
+            max_entries=max_entries,
+            bytes_per_token=bytes_per_token,
+        )
+
+    # mode == "trie"
+    max_bytes = prefix_cache_config.max_bytes
+    if max_bytes > 0 and bytes_per_token is None:
+        logger.warning(
+            "prefix_cache trie fallback to kv: max_bytes=%d configured but "
+            "manifest.kv_cache_bytes_per_token is missing; "
+            "byte budget cannot be enforced",
+            max_bytes,
+        )
+        return KVPrefixCache(
+            max_entries=max_entries,
+            bytes_per_token=None,
+        )
+
+    return TriePrefixCache(
+        max_entries=max_entries,
+        max_bytes=max_bytes,
+        bytes_per_token=bytes_per_token,
+    )
 
 
 def load_session(
@@ -707,6 +792,7 @@ def load_session(
     version: str,
     model_path: str,
     deps: MLXDeps | None = None,
+    prefix_cache_config: PrefixCacheLoadConfig | None = None,
 ) -> LoadedModelSession:
     """Load a model bundle into a ready-to-generate session.
 
@@ -829,7 +915,10 @@ def load_session(
     _safe_clear_cache(deps.clear_cache)
 
     # --- prefix cache eligibility probe (fail-open) ---
-    prefix_cache = _build_prefix_cache(model, deps=deps)
+    effective_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
+    prefix_cache = _build_prefix_cache(
+        model, manifest, deps=deps, prefix_cache_config=effective_config,
+    )
 
     logger.info("load_session ok model_id=%s version=%s", model_id, version)
     return LoadedModelSession(

@@ -246,11 +246,14 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
 def build_server(
     backend_name: str,
     *,
-    backend_factory: Callable[[str], Backend] = build_backend,
+    backend_factory: Callable[..., Backend] = build_backend,
+    prefix_cache_config: Any | None = None,
     clock: Callable[[], float] = time.monotonic,
     cancel_tombstone_ttl_s: float = _DEFAULT_CANCEL_TOMBSTONE_TTL_S,
 ) -> grpc.Server:
-    backend = backend_factory(backend_name)
+    backend = backend_factory(
+        backend_name, prefix_cache_config=prefix_cache_config,
+    )
     server = grpc.server(ThreadPoolExecutor(max_workers=4))
     worker_runtime_pb2_grpc.add_WorkerRuntimeServiceServicer_to_server(
         WorkerRuntimeServicer(
@@ -263,7 +266,12 @@ def build_server(
     return server
 
 
-def serve(socket_path: str, backend_name: str) -> None:
+def serve(
+    socket_path: str,
+    backend_name: str,
+    *,
+    prefix_cache_config: Any | None = None,
+) -> None:
     logger.info("worker starting backend=%s socket_path=%s", backend_name, socket_path)
     socket = Path(socket_path)
     socket.parent.mkdir(parents=True, exist_ok=True)
@@ -271,7 +279,7 @@ def serve(socket_path: str, backend_name: str) -> None:
     if socket.exists():
         socket.unlink()
 
-    server = build_server(backend_name)
+    server = build_server(backend_name, prefix_cache_config=prefix_cache_config)
     bind_target = f"unix://{socket_path}"
     bound_port = server.add_insecure_port(bind_target)
 
