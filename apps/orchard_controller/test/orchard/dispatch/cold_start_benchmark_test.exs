@@ -56,7 +56,7 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
 
             # Skip if cleanup path equals source, or if source is inside cleanup path
             unless cleanup_real == source_real or
-                   String.starts_with?(source_real, cleanup_real <> "/") do
+                     String.starts_with?(source_real, cleanup_real <> "/") do
               File.rm_rf(path)
             end
           end
@@ -67,124 +67,124 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
   end
 
   describe "cold-start benchmark" do
-      @tag :mlx_benchmark
-      @tag timeout: :infinity
-      test "runs cold/warm dispatches for all prompt classes", %{bundle: bundle} do
-        model_id = bundle.manifest_data["model_id"]
-        version = bundle.manifest_data["version"]
-        model_load = model_load_request(bundle, model_id, version)
+    @tag :mlx_benchmark
+    @tag timeout: :infinity
+    test "runs cold/warm dispatches for all prompt classes", %{bundle: bundle} do
+      model_id = bundle.manifest_data["model_id"]
+      version = bundle.manifest_data["version"]
+      model_load = model_load_request(bundle, model_id, version)
 
-        IO.puts("")
-        IO.puts(String.duplicate("=", 70))
-        IO.puts("Cold-start benchmark")
-        IO.puts("Bundle: #{bundle.source_bundle_path}")
-        IO.puts("Model: #{model_id}@#{version}")
-        IO.puts(String.duplicate("=", 70))
-        IO.puts("")
+      IO.puts("")
+      IO.puts(String.duplicate("=", 70))
+      IO.puts("Cold-start benchmark")
+      IO.puts("Bundle: #{bundle.source_bundle_path}")
+      IO.puts("Model: #{model_id}@#{version}")
+      IO.puts(String.duplicate("=", 70))
+      IO.puts("")
 
+      IO.puts(
+        String.pad_trailing("Class", 8) <>
+          String.pad_trailing("Cold(ms)", 12) <>
+          String.pad_trailing("Warm(ms)", 12) <>
+          String.pad_trailing("Loaded", 10) <>
+          "Outcome"
+      )
+
+      IO.puts(String.duplicate("-", 60))
+
+      for {class_name, prompt, input_tokens} <- @prompt_classes do
+        # COLD RUN: reset model manager to force fresh load
+        ModelManager.reset()
+
+        {cold_log, cold_result} = run_dispatch(bundle, model_id, version, prompt, input_tokens)
+
+        # Parse timing log for cold run
+        cold_timing = parse_dispatch_timing(cold_log)
+        assert cold_timing.outcome == "ok", "cold run should succeed"
+        assert cold_timing.model_already_loaded == "false", "cold run should load model"
+
+        # WARM RUN: model already loaded from cold run
+        {warm_log, warm_result} = run_dispatch(bundle, model_id, version, prompt, input_tokens)
+
+        # Parse timing log for warm run
+        warm_timing = parse_dispatch_timing(warm_log)
+        assert warm_timing.outcome == "ok", "warm run should succeed"
+        assert warm_timing.model_already_loaded == "true", "warm run should reuse model"
+
+        # Print summary row
         IO.puts(
-          String.pad_trailing("Class", 8) <>
-            String.pad_trailing("Cold(ms)", 12) <>
-            String.pad_trailing("Warm(ms)", 12) <>
-            String.pad_trailing("Loaded", 10) <>
-            "Outcome"
+          String.pad_trailing("#{class_name}", 8) <>
+            String.pad_trailing("#{cold_timing.accepted_to_first_delta_ms}", 12) <>
+            String.pad_trailing("#{warm_timing.accepted_to_first_delta_ms}", 12) <>
+            String.pad_trailing("#{cold_timing.ensure_model_loaded_ms}", 10) <>
+            "#{cold_timing.outcome}"
         )
 
-        IO.puts(String.duplicate("-", 60))
-
-        for {class_name, prompt, input_tokens} <- @prompt_classes do
-          # COLD RUN: reset model manager to force fresh load
-          ModelManager.reset()
-
-          {cold_log, cold_result} = run_dispatch(bundle, model_id, version, prompt, input_tokens)
-
-          # Parse timing log for cold run
-          cold_timing = parse_dispatch_timing(cold_log)
-          assert cold_timing.outcome == "ok", "cold run should succeed"
-          assert cold_timing.model_already_loaded == "false", "cold run should load model"
-
-          # WARM RUN: model already loaded from cold run
-          {warm_log, warm_result} = run_dispatch(bundle, model_id, version, prompt, input_tokens)
-
-          # Parse timing log for warm run
-          warm_timing = parse_dispatch_timing(warm_log)
-          assert warm_timing.outcome == "ok", "warm run should succeed"
-          assert warm_timing.model_already_loaded == "true", "warm run should reuse model"
-
-          # Print summary row
-          IO.puts(
-            String.pad_trailing("#{class_name}", 8) <>
-              String.pad_trailing("#{cold_timing.accepted_to_first_delta_ms}", 12) <>
-              String.pad_trailing("#{warm_timing.accepted_to_first_delta_ms}", 12) <>
-              String.pad_trailing("#{cold_timing.ensure_model_loaded_ms}", 10) <>
-              "#{cold_timing.outcome}"
-          )
-
-          # Verify both dispatches returned success
-          assert {:ok, _events} = cold_result
-          assert {:ok, _events} = warm_result
-        end
-
-        IO.puts(String.duplicate("=", 70))
-        IO.puts("")
-
-        # Verify timing logs were emitted for all runs
-        assert true, "benchmark completed successfully"
+        # Verify both dispatches returned success
+        assert {:ok, _events} = cold_result
+        assert {:ok, _events} = warm_result
       end
 
-      test "dispatch_timing log format is parseable", %{bundle: bundle} do
-        ModelManager.reset()
+      IO.puts(String.duplicate("=", 70))
+      IO.puts("")
 
-        model_id = bundle.manifest_data["model_id"]
-        version = bundle.manifest_data["version"]
-        prompt = "hello"
-
-        {log, result} = run_dispatch(bundle, model_id, version, prompt, 1)
-
-        assert {:ok, events} = result
-        assert length(events) >= 1
-
-        # Actually parse the log and verify required fields are present
-        timing = parse_dispatch_timing(log)
-        assert timing.request_id != "missing", "request_id should be present"
-        assert timing.model_id != "missing", "model_id should be present"
-        assert timing.input_tokens != "missing", "input_tokens should be present"
-        assert timing.model_already_loaded in ["true", "false", "unknown"]
-        assert timing.outcome == "ok", "dispatch should succeed"
-        refute timing.anomaly == "delta_before_accepted", "timing anomaly detected"
-      end
-
-      test "cold start has model_already_loaded=false on first dispatch", %{bundle: bundle} do
-        ModelManager.reset()
-
-        model_id = bundle.manifest_data["model_id"]
-        version = bundle.manifest_data["version"]
-        prompt = "test"
-
-        {log, _result} = run_dispatch(bundle, model_id, version, prompt, 1)
-
-        timing = parse_dispatch_timing(log)
-        assert timing.model_already_loaded == "false", "first dispatch should be cold"
-        assert timing.ensure_model_loaded_ms != "na", "ensure_load should have duration"
-      end
-
-      test "warm start has model_already_loaded=true on second dispatch", %{bundle: bundle} do
-        ModelManager.reset()
-
-        model_id = bundle.manifest_data["model_id"]
-        version = bundle.manifest_data["version"]
-        prompt = "test"
-
-        # First dispatch (cold)
-        {_log1, _result1} = run_dispatch(bundle, model_id, version, prompt, 1)
-
-        # Second dispatch (warm)
-        {log2, _result2} = run_dispatch(bundle, model_id, version, prompt, 1)
-
-        timing = parse_dispatch_timing(log2)
-        assert timing.model_already_loaded == "true", "second dispatch should be warm"
-      end
+      # Verify timing logs were emitted for all runs
+      assert true, "benchmark completed successfully"
     end
+
+    test "dispatch_timing log format is parseable", %{bundle: bundle} do
+      ModelManager.reset()
+
+      model_id = bundle.manifest_data["model_id"]
+      version = bundle.manifest_data["version"]
+      prompt = "hello"
+
+      {log, result} = run_dispatch(bundle, model_id, version, prompt, 1)
+
+      assert {:ok, events} = result
+      assert length(events) >= 1
+
+      # Actually parse the log and verify required fields are present
+      timing = parse_dispatch_timing(log)
+      assert timing.request_id != "missing", "request_id should be present"
+      assert timing.model_id != "missing", "model_id should be present"
+      assert timing.input_tokens != "missing", "input_tokens should be present"
+      assert timing.model_already_loaded in ["true", "false", "unknown"]
+      assert timing.outcome == "ok", "dispatch should succeed"
+      refute timing.anomaly == "delta_before_accepted", "timing anomaly detected"
+    end
+
+    test "cold start has model_already_loaded=false on first dispatch", %{bundle: bundle} do
+      ModelManager.reset()
+
+      model_id = bundle.manifest_data["model_id"]
+      version = bundle.manifest_data["version"]
+      prompt = "test"
+
+      {log, _result} = run_dispatch(bundle, model_id, version, prompt, 1)
+
+      timing = parse_dispatch_timing(log)
+      assert timing.model_already_loaded == "false", "first dispatch should be cold"
+      assert timing.ensure_model_loaded_ms != "na", "ensure_load should have duration"
+    end
+
+    test "warm start has model_already_loaded=true on second dispatch", %{bundle: bundle} do
+      ModelManager.reset()
+
+      model_id = bundle.manifest_data["model_id"]
+      version = bundle.manifest_data["version"]
+      prompt = "test"
+
+      # First dispatch (cold)
+      {_log1, _result1} = run_dispatch(bundle, model_id, version, prompt, 1)
+
+      # Second dispatch (warm)
+      {log2, _result2} = run_dispatch(bundle, model_id, version, prompt, 1)
+
+      timing = parse_dispatch_timing(log2)
+      assert timing.model_already_loaded == "true", "second dispatch should be warm"
+    end
+  end
 
   # -- Helpers ---------------------------------------------------------------
 

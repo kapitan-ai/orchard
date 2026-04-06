@@ -370,8 +370,7 @@ defmodule OrchardConsole.ModelHubTest do
 
       assert {:ok, _pid} = ModelHub.start_search(self(), ref, "owner/model-exists")
 
-      assert_receive {:model_hub, ^ref, :search_finished,
-                      {:ok, %{results: ^search_results}}},
+      assert_receive {:model_hub, ^ref, :search_finished, {:ok, %{results: ^search_results}}},
                      1000
     end
 
@@ -400,8 +399,7 @@ defmodule OrchardConsole.ModelHubTest do
 
       assert {:ok, _pid} = ModelHub.start_search(self(), ref, "owner/crash-model")
 
-      assert_receive {:model_hub, ^ref, :search_finished,
-                      {:ok, %{results: ^search_results}}},
+      assert_receive {:model_hub, ^ref, :search_finished, {:ok, %{results: ^search_results}}},
                      1000
     end
 

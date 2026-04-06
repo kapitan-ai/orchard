@@ -11,7 +11,8 @@ defmodule Orchard.Application do
       []
       |> maybe_add_repo()
       |> maybe_add_inference_stack()
-      |> maybe_add_endpoint_stack()
+      |> add_pubsub_and_coordinator()
+      |> maybe_add_endpoint()
 
     Supervisor.start_link(children,
       strategy: :one_for_one,
@@ -37,9 +38,17 @@ defmodule Orchard.Application do
     children ++ [{GRPC.Client.Supervisor, []}, Orchard.Inference]
   end
 
-  defp maybe_add_endpoint_stack(children) do
+  defp add_pubsub_and_coordinator(children) do
+    children ++
+      [
+        {Phoenix.PubSub, name: Orchard.PubSub},
+        OrchardConsole.ModelHubDownloadCoordinator
+      ]
+  end
+
+  defp maybe_add_endpoint(children) do
     if Application.get_env(:orchard_controller, :start_endpoint, true) do
-      children ++ [{Phoenix.PubSub, name: Orchard.PubSub}, Endpoint]
+      children ++ [Endpoint]
     else
       children
     end

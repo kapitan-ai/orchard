@@ -495,9 +495,9 @@ defmodule OrchardConsole.NodesLive do
 
   defp format_address(_), do: "—"
 
-    defp format_metadata_endpoint(%{listen_host: host, listen_port: port})
-         when host != nil and port != nil,
-         do: format_host_port(host, port)
+  defp format_metadata_endpoint(%{listen_host: host, listen_port: port})
+       when host != nil and port != nil,
+       do: format_host_port(host, port)
 
   defp format_metadata_endpoint(_), do: "—"
 
@@ -508,7 +508,7 @@ defmodule OrchardConsole.NodesLive do
       else: "#{host}:#{port}"
   end
 
-    defp refresh_interval_label do
+  defp refresh_interval_label do
     ms = refresh_interval_ms()
     if rem(ms, 1000) == 0, do: "#{div(ms, 1000)}s", else: "#{ms}ms"
   end

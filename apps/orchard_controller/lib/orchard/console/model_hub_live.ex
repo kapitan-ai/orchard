@@ -17,6 +17,8 @@ defmodule OrchardConsole.ModelHubLive do
       |> assign_defaults()
 
     if connected?(socket) do
+      download_coordinator_impl().subscribe()
+      socket = rehydrate_download(socket)
       {:ok, start_search(socket, "")}
     else
       {:ok, socket}
@@ -59,7 +61,7 @@ defmodule OrchardConsole.ModelHubLive do
         {:noreply, socket}
 
       true ->
-        {:noreply, start_download(socket, assigns.model_detail.repo_id)}
+        {:noreply, start_download_via_coordinator(socket, assigns.model_detail.repo_id)}
     end
   end
 
@@ -67,7 +69,7 @@ defmodule OrchardConsole.ModelHubLive do
     case socket.assigns do
       %{download_status: :error, download_progress: %{repo_id: repo_id}}
       when is_binary(repo_id) and repo_id != "" ->
-        {:noreply, start_download(socket, repo_id)}
+        {:noreply, start_download_via_coordinator(socket, repo_id)}
 
       _ ->
         {:noreply, socket}
@@ -142,15 +144,21 @@ defmodule OrchardConsole.ModelHubLive do
       {:ok, detail} ->
         detail = normalize_detail(detail)
 
-        {:noreply,
-         assign(socket,
-           detail_status: :ok,
-           model_detail: detail,
-           detail_error: nil,
-           active_detail_ref: nil,
-           active_detail_pid: nil,
-           selected_repo_id: detail.repo_id
-         )}
+        socket =
+          assign(socket,
+            detail_status: :ok,
+            model_detail: detail,
+            detail_error: nil,
+            active_detail_ref: nil,
+            active_detail_pid: nil,
+            selected_repo_id: detail.repo_id
+          )
+
+        # Now that selected_repo_id is known, rehydrate download state
+        # for this specific repo if we don't already have a visible download.
+        socket = maybe_rehydrate_for_repo(socket, detail.repo_id)
+
+        {:noreply, socket}
 
       {:error, error} ->
         {:noreply,
@@ -166,62 +174,11 @@ defmodule OrchardConsole.ModelHubLive do
 
   def handle_info({:model_hub, _ref, :detail_finished, _result}, socket), do: {:noreply, socket}
 
-  # Download message handlers — ref-gated
+  # Download snapshot from coordinator (PubSub broadcast)
 
-  def handle_info(
-        {:model_hub, ref, :download_started, payload},
-        %{assigns: %{active_download_ref: ref}} = socket
-      ) do
-    progress = normalize_download_started(payload, socket.assigns.download_progress)
-    {:noreply, assign(socket, download_status: :downloading, download_progress: progress)}
+  def handle_info({:model_hub_download, snapshot}, socket) do
+    {:noreply, apply_download_snapshot(socket, snapshot)}
   end
-
-  def handle_info(
-        {:model_hub, ref, :download_progress, payload},
-        %{assigns: %{active_download_ref: ref}} = socket
-      ) do
-    {status, progress} =
-      normalize_download_progress(
-        payload,
-        socket.assigns.download_progress,
-        socket.assigns.download_status
-      )
-
-    {:noreply, assign(socket, download_status: status, download_progress: progress)}
-  end
-
-  def handle_info(
-        {:model_hub, ref, :download_finished, {:ok, result}},
-        %{assigns: %{active_download_ref: ref}} = socket
-      ) do
-    {:noreply,
-     assign(socket,
-       download_status: :completed,
-       download_result: result,
-       download_error: nil,
-       active_download_ref: nil,
-       active_download_pid: nil
-     )}
-  end
-
-  def handle_info(
-        {:model_hub, ref, :download_finished, {:error, error}},
-        %{assigns: %{active_download_ref: ref}} = socket
-      ) do
-    {:noreply,
-     assign(socket,
-       download_status: :error,
-       download_result: nil,
-       download_error: error,
-       active_download_ref: nil,
-       active_download_pid: nil
-     )}
-  end
-
-  # Stale download ref ignore clauses
-  def handle_info({:model_hub, _ref, :download_started, _}, socket), do: {:noreply, socket}
-  def handle_info({:model_hub, _ref, :download_progress, _}, socket), do: {:noreply, socket}
-  def handle_info({:model_hub, _ref, :download_finished, _}, socket), do: {:noreply, socket}
 
   @impl true
   def terminate(_reason, socket) do
@@ -583,10 +540,9 @@ defmodule OrchardConsole.ModelHubLive do
       detail_error: nil,
       active_detail_ref: nil,
       active_detail_pid: nil,
-      # Download state
+      # Download state (driven by coordinator snapshots)
       download_status: :idle,
-      active_download_ref: nil,
-      active_download_pid: nil,
+      visible_download_key: nil,
       download_progress: nil,
       download_result: nil,
       download_error: nil
@@ -687,98 +643,74 @@ defmodule OrchardConsole.ModelHubLive do
     )
   end
 
-  defp start_download(socket, repo_id) when is_binary(repo_id) do
-    ref = make_ref()
+  defp start_download_via_coordinator(socket, repo_id) when is_binary(repo_id) do
+    case download_coordinator_impl().start_download(repo_id, activate: true) do
+      {:ok, snapshot} ->
+        apply_download_snapshot(socket, snapshot)
 
-    socket =
-      assign(socket,
-        download_status: :starting,
-        active_download_ref: ref,
-        active_download_pid: nil,
-        download_result: nil,
-        download_error: nil,
-        download_progress: %{
-          repo_id: repo_id,
-          revision: nil,
-          phase: nil,
-          current_file: nil,
-          files_completed: 0,
-          total_files: nil,
-          bytes_downloaded: 0,
-          total_bytes: nil
-        }
-      )
+      {:error, {:already_downloading, snapshot}} ->
+        apply_download_snapshot(socket, snapshot)
 
-    case model_hub_impl().start_download_import(self(), ref, repo_id, activate: true) do
-      {:ok, pid} ->
-        assign(socket, active_download_pid: pid)
-
-      _other ->
-        assign(socket,
-          download_status: :error,
-          download_error: default_download_error(),
-          active_download_ref: nil,
-          active_download_pid: nil
-        )
+      {:error, snapshot} when is_map(snapshot) ->
+        apply_download_snapshot(socket, snapshot)
     end
   end
 
+  # TODO: download_busy? is globally scoped — it blocks the download button for
+  # ANY repo while any download is active. The coordinator supports concurrent
+  # downloads for different repo_ids, but the UI does not expose this yet.
+  # To fix: make busy check repo-scoped (compare visible_download_key repo_id
+  # against selected_repo_id). Acceptable for demo (single download at a time).
   defp download_busy?(status), do: status in [:starting, :downloading, :preparing, :importing]
 
-  defp normalize_download_started(payload, existing_progress) do
-    base = existing_progress || %{}
+  defp apply_download_snapshot(socket, %{status: status} = snapshot) do
+    key = snapshot[:key]
+    visible_key = socket.assigns[:visible_download_key]
+    selected_repo_id = socket.assigns[:selected_repo_id]
 
-    Map.merge(base, %{
-      repo_id: payload_get(payload, :repo_id),
-      revision: payload_get(payload, :revision),
-      phase: :downloading,
-      total_files: payload_get(payload, :total_files),
-      total_bytes: payload_get(payload, :total_bytes),
-      files_completed: base[:files_completed] || 0,
-      bytes_downloaded: base[:bytes_downloaded] || 0,
-      current_file: nil
-    })
+    # Show this snapshot if:
+    # - no download is currently visible
+    # - it matches the visible download key
+    # - it matches the currently selected repo
+    should_apply? =
+      visible_key == nil ||
+        (key != nil && key == visible_key) ||
+        snapshot[:repo_id] == selected_repo_id
+
+    if should_apply? do
+      assign(socket,
+        download_status: status,
+        visible_download_key: key,
+        download_progress: snapshot[:progress],
+        download_result: snapshot[:result],
+        download_error: snapshot[:error]
+      )
+    else
+      socket
+    end
   end
 
-  defp normalize_download_progress(payload, existing_progress, current_status) do
-    base = existing_progress || %{}
-    phase = payload_get(payload, :phase)
-    status = map_download_phase_to_status(phase) || current_status
-
-    progress =
-      Map.merge(base, %{
-        phase: phase || base[:phase],
-        current_file: payload_get(payload, :current_file),
-        files_completed: progress_field(payload, base, :files_completed, 0),
-        total_files: progress_field(payload, base, :total_files, nil),
-        bytes_downloaded: progress_field(payload, base, :bytes_downloaded, 0),
-        total_bytes: progress_field(payload, base, :total_bytes, nil)
-      })
-
-    {status, progress}
+  defp rehydrate_download(socket) do
+    case download_coordinator_impl().latest_snapshot() do
+      nil -> socket
+      snapshot -> apply_download_snapshot(socket, snapshot)
+    end
   end
 
-  defp progress_field(payload, base, key, default) do
-    payload_get(payload, key) || base[key] || default
+  defp maybe_rehydrate_for_repo(socket, repo_id) do
+    if socket.assigns[:visible_download_key] != nil do
+      # Already showing a download — don't override
+      socket
+    else
+      case download_coordinator_impl().latest_snapshot_for_repo(repo_id) do
+        nil -> socket
+        snapshot -> apply_download_snapshot(socket, snapshot)
+      end
+    end
   end
 
-  defp payload_get(payload, key) when is_map(payload) do
-    Map.get(payload, key, Map.get(payload, Atom.to_string(key)))
-  end
-
-  defp payload_get(_payload, _key), do: nil
-
-  defp map_download_phase_to_status(:downloading), do: :downloading
-  defp map_download_phase_to_status(:preparing_bundle), do: :preparing
-  defp map_download_phase_to_status(:importing), do: :importing
-  defp map_download_phase_to_status(_phase), do: nil
-
-  defp default_download_error do
-    %{
-      status: :error,
-      code: "download_import_failed",
-      message: "Model download and import failed."
-    }
+  defp download_coordinator_impl do
+    console_config()[:download_coordinator_impl] || OrchardConsole.ModelHubDownloadCoordinator
   end
 
   defp download_status_label(:starting), do: "Starting"

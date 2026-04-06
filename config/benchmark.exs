@@ -52,8 +52,7 @@ config :orchard_node_agent,
     )
 
 # Console: disabled for benchmark runs
-config :orchard_controller, :console,
-  enabled: false
+config :orchard_controller, :console, enabled: false
 
 config :orchard_controller, Orchard.API.Endpoint,
   http: [ip: {127, 0, 0, 1}, port: 4001],

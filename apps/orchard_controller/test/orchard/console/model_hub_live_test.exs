@@ -18,9 +18,11 @@ defmodule OrchardConsole.ModelHubLiveTest do
     :persistent_term.erase({__MODULE__, :start_search_result})
     :persistent_term.erase({__MODULE__, :start_detail_result})
     :persistent_term.erase({__MODULE__, :start_download_result})
+    OrchardConsole.ModelHubDownloadCoordinator.reset()
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :console, previous)
+      OrchardConsole.ModelHubDownloadCoordinator.reset()
       :persistent_term.erase({__MODULE__, :test_pid})
       :persistent_term.erase({__MODULE__, :start_search_result})
       :persistent_term.erase({__MODULE__, :start_detail_result})
@@ -596,8 +598,8 @@ defmodule OrchardConsole.ModelHubLiveTest do
     end
 
     test "repo-ID query: seam-injected direct result renders and auto-loads detail", %{
-         conn: conn
-       } do
+      conn: conn
+    } do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _initial_ref = assert_search_started(nil)
 
@@ -651,8 +653,8 @@ defmodule OrchardConsole.ModelHubLiveTest do
     end
 
     test "starting a new search cancels superseded search task for repo-ID-shaped queries", %{
-         conn: conn
-       } do
+      conn: conn
+    } do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _initial_ref = assert_search_started(nil)
 
@@ -741,7 +743,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
 
-      send_download_started(view, download_ref, %{
+      send_download_started(download_ref, %{
         repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
         revision: "abc123def",
         total_files: 15,
@@ -772,7 +774,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
 
-      send_download_started(view, download_ref, %{
+      send_download_started(download_ref, %{
         repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
         revision: "abc123",
         total_files: 10,
@@ -780,7 +782,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       })
 
       # Downloading phase with file progress
-      send_download_progress(view, download_ref, %{
+      send_download_progress(download_ref, %{
         phase: :downloading,
         current_file: "model-00001-of-00002.safetensors",
         files_completed: 3,
@@ -799,7 +801,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert view |> element("#model-hub-download-progress-percent") |> render() =~ "50%"
 
       # Preparing bundle phase
-      send_download_progress(view, download_ref, %{
+      send_download_progress(download_ref, %{
         phase: :preparing_bundle,
         files_completed: 10,
         total_files: 10,
@@ -812,7 +814,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "10 of 10 files"
 
       # Importing phase
-      send_download_progress(view, download_ref, %{
+      send_download_progress(download_ref, %{
         phase: :importing,
         files_completed: 10,
         total_files: 10,
@@ -825,15 +827,15 @@ defmodule OrchardConsole.ModelHubLiveTest do
     end
 
     test "download progress shows mid-file byte progress before any file completes", %{
-         conn: conn
-       } do
+      conn: conn
+    } do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
 
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
 
-      send_download_started(view, download_ref, %{
+      send_download_started(download_ref, %{
         repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
         revision: "abc123",
         total_files: 4,
@@ -841,7 +843,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       })
 
       # Streaming mid-file update: 2 GB in, zero files completed yet
-      send_download_progress(view, download_ref, %{
+      send_download_progress(download_ref, %{
         phase: :downloading,
         current_file: "model-00001-of-00004.safetensors",
         files_completed: 0,
@@ -871,14 +873,14 @@ defmodule OrchardConsole.ModelHubLiveTest do
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
 
-      send_download_started(view, download_ref, %{
+      send_download_started(download_ref, %{
         repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
         revision: "abc123",
         total_files: 2,
         total_bytes: 1024
       })
 
-      send_download_success(view, download_ref, %{
+      send_download_success(download_ref, %{
         model_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
         version: "abc123def456",
         state: :active
@@ -903,14 +905,14 @@ defmodule OrchardConsole.ModelHubLiveTest do
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
 
-      send_download_started(view, download_ref, %{
+      send_download_started(download_ref, %{
         repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
         revision: "abc123",
         total_files: 2,
         total_bytes: 1024
       })
 
-      send_download_error(view, download_ref, %{message: "Download timed out."})
+      send_download_error(download_ref, %{message: "Download timed out."})
 
       html = render(view)
       assert html =~ "model-hub-download-error"
@@ -927,14 +929,14 @@ defmodule OrchardConsole.ModelHubLiveTest do
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
 
-      send_download_started(view, download_ref, %{
+      send_download_started(download_ref, %{
         repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
         revision: "abc123",
         total_files: 2,
         total_bytes: 1024
       })
 
-      send_download_error(view, download_ref, %{
+      send_download_error(download_ref, %{
         code: "model_already_imported",
         message: "Model mlx-community/Llama-3.2-1B-Instruct-4bit@abc123 is already imported."
       })
@@ -965,14 +967,14 @@ defmodule OrchardConsole.ModelHubLiveTest do
       view |> element("#model-hub-download-button") |> render_click()
       download_ref = assert_download_started()
 
-      send_download_started(view, download_ref, %{
+      send_download_started(download_ref, %{
         repo_id: first.repo_id,
         revision: "abc123",
         total_files: 2,
         total_bytes: 1024
       })
 
-      send_download_error(view, download_ref, %{message: "Connection reset."})
+      send_download_error(download_ref, %{message: "Connection reset."})
 
       # Click retry
       view |> element("#model-hub-download-retry") |> render_click()
@@ -994,7 +996,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       view |> element("#model-hub-download-button") |> render_click()
       first_download_ref = assert_download_started()
 
-      send_download_started(view, first_download_ref, %{
+      send_download_started(first_download_ref, %{
         repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
         revision: "abc123",
         total_files: 10,
@@ -1002,12 +1004,12 @@ defmodule OrchardConsole.ModelHubLiveTest do
       })
 
       # Simulate error → retry (creates new ref)
-      send_download_error(view, first_download_ref, %{message: "Failed."})
+      send_download_error(first_download_ref, %{message: "Failed."})
       view |> element("#model-hub-download-retry") |> render_click()
       _new_download_ref = assert_download_started()
 
       # Send stale messages with the OLD ref — should be ignored
-      send_download_started(view, first_download_ref, %{
+      send_download_started(first_download_ref, %{
         repo_id: "stale/model",
         revision: "stale",
         total_files: 999,
@@ -1019,7 +1021,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       refute html =~ "999"
       assert html =~ "Starting"
 
-      send_download_progress(view, first_download_ref, %{
+      send_download_progress(first_download_ref, %{
         phase: :downloading,
         files_completed: 888,
         total_files: 999,
@@ -1030,7 +1032,7 @@ defmodule OrchardConsole.ModelHubLiveTest do
       html = render(view)
       refute html =~ "888"
 
-      send_download_success(view, first_download_ref, %{
+      send_download_success(first_download_ref, %{
         model_id: "stale/model",
         version: "stale",
         state: :active
@@ -1057,6 +1059,153 @@ defmodule OrchardConsole.ModelHubLiveTest do
       # Try to click download — should be disabled, no stub call
       assert has_element?(view, "#model-hub-download-button[disabled]")
       refute_receive {:stub_download_ref, _, _, _}, 50
+    end
+
+    # ------------------------------------------------------------------
+    # Navigation / remount tests
+    # ------------------------------------------------------------------
+
+    test "active download progress survives remount", %{conn: conn} do
+      # Start download and advance to downloading state
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(download_ref, %{
+        repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        revision: "abc123",
+        total_files: 10,
+        total_bytes: 4_294_967_296
+      })
+
+      send_download_progress(download_ref, %{
+        phase: :downloading,
+        current_file: "model-00001-of-00002.safetensors",
+        files_completed: 3,
+        total_files: 10,
+        bytes_downloaded: 1_073_741_824,
+        total_bytes: 4_294_967_296
+      })
+
+      # Unmount the view (simulates navigation away)
+      stop_view(view)
+
+      # Remount — fresh LiveView should rehydrate from coordinator
+      {:ok, _remounted_view, html} = live(conn, "/console/model-hub")
+
+      # Progress panel visible immediately from rehydration
+      assert html =~ "model-hub-download-progress"
+      assert html =~ "Downloading"
+      assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
+      assert html =~ "3 of 10 files"
+    end
+
+    test "duplicate download prevented after remount", %{conn: conn} do
+      # Start download and keep it active
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(download_ref, %{
+        repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        revision: "abc123",
+        total_files: 10,
+        total_bytes: 1024
+      })
+
+      # Unmount and remount
+      stop_view(view)
+      {:ok, remounted_view, _html} = live(conn, "/console/model-hub")
+
+      # Reload results/detail so download button is in the DOM
+      _results = load_initial_results_and_detail(remounted_view)
+      html = render(remounted_view)
+
+      # Download button is disabled because coordinator has an active job
+      assert has_element?(remounted_view, "#model-hub-download-button[disabled]")
+
+      # No second seam call occurred during remount or detail load
+      refute_receive {:stub_download_ref, _, _, _}, 100
+
+      # View still shows the active download state from coordinator rehydration
+      assert html =~ "model-hub-download-progress"
+    end
+
+    test "terminal success survives remount", %{conn: conn} do
+      # Complete a download successfully
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(download_ref, %{
+        repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        revision: "abc123",
+        total_files: 2,
+        total_bytes: 1024
+      })
+
+      send_download_success(download_ref, %{
+        model_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        version: "abc123def456",
+        state: :active
+      })
+
+      # Unmount and remount
+      stop_view(view)
+      {:ok, _remounted_view, html} = live(conn, "/console/model-hub")
+
+      # Success panel visible immediately from rehydration
+      assert html =~ "model-hub-download-complete"
+      assert html =~ "Model is now active."
+      assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
+      assert html =~ "abc123def456"
+      refute html =~ "model-hub-download-progress"
+    end
+
+    test "terminal error survives remount and retry starts fresh download", %{conn: conn} do
+      # Complete a download with error
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = load_initial_results_and_detail(view)
+      first = hd(results)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(download_ref, %{
+        repo_id: first.repo_id,
+        revision: "abc123",
+        total_files: 2,
+        total_bytes: 1024
+      })
+
+      send_download_error(download_ref, %{message: "Connection reset."})
+
+      # Unmount and remount
+      stop_view(view)
+      {:ok, remounted_view, html} = live(conn, "/console/model-hub")
+
+      # Error panel visible immediately from rehydration
+      assert html =~ "model-hub-download-error"
+      assert html =~ "Connection reset."
+      assert html =~ "model-hub-download-retry"
+
+      # Click retry on remounted view — should start a new download
+      remounted_view |> element("#model-hub-download-retry") |> render_click()
+
+      assert_receive {:stub_download_ref, _new_ref, repo_id, opts}, 200
+      assert repo_id == first.repo_id
+      assert opts[:activate] == true
+
+      html = render(remounted_view)
+      assert html =~ "model-hub-download-progress"
+      assert html =~ "Starting"
+      refute html =~ "model-hub-download-error"
     end
   end
 
@@ -1190,17 +1339,22 @@ defmodule OrchardConsole.ModelHubLiveTest do
     ref
   end
 
-  defp send_download_started(view, ref, attrs) do
+  # Download helpers send to coordinator (the download owner), not view.pid.
+  # flush_coordinator/0 ensures the coordinator has processed the message
+  # and broadcast the snapshot before the test calls render(view).
+
+  defp send_download_started(ref, attrs) do
     payload =
       Map.merge(
         %{repo_id: "test/model", revision: "abc123", total_files: 2, total_bytes: 1024},
         attrs
       )
 
-    send(view.pid, {:model_hub, ref, :download_started, payload})
+    send(coordinator_pid!(), {:model_hub, ref, :download_started, payload})
+    flush_coordinator()
   end
 
-  defp send_download_progress(view, ref, attrs) do
+  defp send_download_progress(ref, attrs) do
     payload =
       Map.merge(
         %{
@@ -1214,21 +1368,42 @@ defmodule OrchardConsole.ModelHubLiveTest do
         attrs
       )
 
-    send(view.pid, {:model_hub, ref, :download_progress, payload})
+    send(coordinator_pid!(), {:model_hub, ref, :download_progress, payload})
+    flush_coordinator()
   end
 
-  defp send_download_success(view, ref, result) do
-    send(view.pid, {:model_hub, ref, :download_finished, {:ok, result}})
+  defp send_download_success(ref, result) do
+    send(coordinator_pid!(), {:model_hub, ref, :download_finished, {:ok, result}})
+    flush_coordinator()
   end
 
-  defp send_download_error(view, ref, overrides) do
+  defp send_download_error(ref, overrides) do
     error =
       Map.merge(
         %{status: :error, code: "download_import_failed", message: "Download failed."},
         overrides
       )
 
-    send(view.pid, {:model_hub, ref, :download_finished, {:error, error}})
+    send(coordinator_pid!(), {:model_hub, ref, :download_finished, {:error, error}})
+    flush_coordinator()
+  end
+
+  defp stop_view(view) do
+    Process.unlink(view.pid)
+    GenServer.stop(view.pid)
+  end
+
+  defp coordinator_pid! do
+    Process.whereis(OrchardConsole.ModelHubDownloadCoordinator) ||
+      raise "ModelHubDownloadCoordinator not running"
+  end
+
+  defp flush_coordinator do
+    # Synchronous GenServer.call ensures the coordinator has processed all
+    # prior messages (including our send) and broadcast any PubSub updates
+    # before the test proceeds to render(view).
+    OrchardConsole.ModelHubDownloadCoordinator.latest_snapshot()
+    :ok
   end
 
   defp search_results_fixture do

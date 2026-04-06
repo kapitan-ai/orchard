@@ -42,12 +42,14 @@ defmodule OrchardApplicationTest do
       |> Enum.map(fn {id, _pid, _type, _modules} -> id end)
 
     assert Orchard.Inference in child_ids
+    assert Phoenix.PubSub.Supervisor in child_ids
+    assert OrchardConsole.ModelHubDownloadCoordinator in child_ids
     refute Orchard.Repo in child_ids
-    refute Orchard.PubSub in child_ids
     refute Orchard.API.Endpoint in child_ids
 
     assert is_pid(Process.whereis(Orchard.Inference))
     assert is_pid(Process.whereis(Orchard.Requests.Supervisor))
+    assert is_pid(Process.whereis(OrchardConsole.ModelHubDownloadCoordinator))
   end
 
   test "test environment uses deterministic endpoint config defaults" do
@@ -73,6 +75,7 @@ defmodule OrchardApplicationTest do
     assert console[:password] == nil
     assert console[:model_hub_impl] == OrchardConsole.ModelHub
     assert console[:model_hub_client_impl] == Orchard.Models.HubClient
+    assert console[:download_coordinator_impl] == OrchardConsole.ModelHubDownloadCoordinator
   end
 
   test "test environment has deterministic hugging face config defaults" do

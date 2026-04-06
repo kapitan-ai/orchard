@@ -156,9 +156,14 @@ defmodule OrchardCLI.Commands.Start do
 
     note =
       case {started, already_running} do
-        {[], []} -> ""
-        {started, []} -> "Note: #{format_service_bucket(started, :started)}"
-        {[], running} -> "Note: #{format_service_bucket(running, :already_running)}"
+        {[], []} ->
+          ""
+
+        {started, []} ->
+          "Note: #{format_service_bucket(started, :started)}"
+
+        {[], running} ->
+          "Note: #{format_service_bucket(running, :already_running)}"
 
         {started, running} ->
           "Note: #{format_service_bucket(started, :started)} " <>

@@ -361,13 +361,20 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     prefix_cache_max_bytes = Keyword.get(opts, :prefix_cache_max_bytes, 0)
 
     cli_args = [
-      "--socket-path", socket_path,
-      "--backend", backend,
-      "--log-file", log_path,
-      "--prefix-cache-mode", to_string(prefix_cache_mode),
-      "--prefix-cache-max-entries", Integer.to_string(prefix_cache_max_entries),
-      "--prefix-cache-max-bytes", Integer.to_string(prefix_cache_max_bytes)
+      "--socket-path",
+      socket_path,
+      "--backend",
+      backend,
+      "--log-file",
+      log_path,
+      "--prefix-cache-mode",
+      to_string(prefix_cache_mode),
+      "--prefix-cache-max-entries",
+      Integer.to_string(prefix_cache_max_entries),
+      "--prefix-cache-max-bytes",
+      Integer.to_string(prefix_cache_max_bytes)
     ]
+
     args = Enum.map(cli_args, &String.to_charlist/1)
 
     port =

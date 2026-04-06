@@ -299,7 +299,9 @@ defmodule Orchard.HuggingFace.DownloadSupport do
       high_water: state.context.stream_high_water
     }
 
-    result = request_get(state, download_into(file_pid, state.bytes_counter, write_error, stream_ctx))
+    result =
+      request_get(state, download_into(file_pid, state.bytes_counter, write_error, stream_ctx))
+
     File.close(file_pid)
     bytes_written = :counters.get(state.bytes_counter, 1)
 
@@ -373,7 +375,13 @@ defmodule Orchard.HuggingFace.DownloadSupport do
     {:error, {:callback_failed, reason}}
   end
 
-  defp finalize_stream(%{resume?: true} = state, {:ok, %{status: 200}}, bytes_written, false, {false, _})
+  defp finalize_stream(
+         %{resume?: true} = state,
+         {:ok, %{status: 200}},
+         bytes_written,
+         false,
+         {false, _}
+       )
        when bytes_written > 0 do
     restart_without_resume(state)
   end

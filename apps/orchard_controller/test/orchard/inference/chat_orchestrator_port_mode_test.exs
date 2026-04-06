@@ -125,7 +125,11 @@ assistant"
         "orchard-tokenizer-port-test-#{System.unique_integer([:positive])}.sh"
       )
 
-    File.write!(script_path, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"contract_version\":1,\"ok\":true,\"result\":{\"rendered_prompt\":\"user hello orchard\\nassistant\",\"input_token_count\":3}}'\n")
+    File.write!(
+      script_path,
+      "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"contract_version\":1,\"ok\":true,\"result\":{\"rendered_prompt\":\"user hello orchard\\nassistant\",\"input_token_count\":3}}'\n"
+    )
+
     File.chmod!(script_path, 0o755)
     script_path
   end

@@ -7,18 +7,16 @@ defmodule Orchard.BuildInfo do
   for CI/release builds where `.git` is absent.
   """
 
-  @git_sha (
-    case System.get_env("ORCHARD_BUILD_SHA") do
-      sha when is_binary(sha) and sha != "" ->
-        String.trim(sha)
+  @git_sha (case System.get_env("ORCHARD_BUILD_SHA") do
+              sha when is_binary(sha) and sha != "" ->
+                String.trim(sha)
 
-      _ ->
-        case System.cmd("git", ["rev-parse", "--short=7", "HEAD"], stderr_to_stdout: true) do
-          {sha, 0} -> String.trim(sha)
-          _ -> "unknown"
-        end
-    end
-  )
+              _ ->
+                case System.cmd("git", ["rev-parse", "--short=7", "HEAD"], stderr_to_stdout: true) do
+                  {sha, 0} -> String.trim(sha)
+                  _ -> "unknown"
+                end
+            end)
 
   @build_date Date.utc_today() |> Date.to_iso8601()
 

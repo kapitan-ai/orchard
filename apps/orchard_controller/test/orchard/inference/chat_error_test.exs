@@ -64,7 +64,9 @@ defmodule Orchard.Inference.ChatErrorTest do
     assert mapping.status == :internal_server_error
     assert mapping.type == "server_error"
     assert mapping.code == "internal_error"
-    assert mapping.message == "Tokenization failed: model manifest could not be loaded for tokenization"
+
+    assert mapping.message ==
+             "Tokenization failed: model manifest could not be loaded for tokenization"
   end
 
   test "failed timeout event maps differently for API, SSE, and terminal attrs" do

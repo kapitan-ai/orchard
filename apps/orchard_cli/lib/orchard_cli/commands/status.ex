@@ -52,11 +52,27 @@ defmodule OrchardCLI.Commands.Status do
         remote_version = non_empty_string(body["version"]) || version
         build_ref = non_empty_string(body["build_ref"])
         display_version = format_display_version(remote_version, build_ref)
-        %{version: remote_version, display_version: display_version, state: state, base_url: base_url, display_url: base_url, body: body}
+
+        %{
+          version: remote_version,
+          display_version: display_version,
+          state: state,
+          base_url: base_url,
+          display_url: base_url,
+          body: body
+        }
 
       {:error, :unreachable, display_url} ->
         display_version = format_display_version(version, nil)
-        %{version: version, display_version: display_version, state: :offline, base_url: nil, display_url: display_url, body: nil}
+
+        %{
+          version: version,
+          display_version: display_version,
+          state: :offline,
+          base_url: nil,
+          display_url: display_url,
+          body: nil
+        }
 
       {:error, :invalid_response, display_url, message, probe_failure} ->
         %{
@@ -90,25 +106,28 @@ defmodule OrchardCLI.Commands.Status do
     display_url = hd(candidates) |> Map.fetch!(:base_url)
 
     candidates
-    |> Enum.reduce_while(%{display_url: display_url, invalid_response: nil, saw_unreachable?: false}, fn candidate, acc ->
-      url = candidate.base_url <> "/health/ready"
-      opts = build_request_opts(candidate)
+    |> Enum.reduce_while(
+      %{display_url: display_url, invalid_response: nil, saw_unreachable?: false},
+      fn candidate, acc ->
+        url = candidate.base_url <> "/health/ready"
+        opts = build_request_opts(candidate)
 
-      case request_fn.(url, opts) do
-        {:ok, %{status: status, body: body}} when status in 200..599 ->
-          case decode_health_response(body) do
-            {:ok, parsed} ->
-              {:halt, {:ok, candidate.base_url, parsed}}
+        case request_fn.(url, opts) do
+          {:ok, %{status: status, body: body}} when status in 200..599 ->
+            case decode_health_response(body) do
+              {:ok, parsed} ->
+                {:halt, {:ok, candidate.base_url, parsed}}
 
-            {:error, reason} ->
-              invalid_response = acc.invalid_response || {candidate.base_url, reason}
-              {:cont, %{acc | invalid_response: invalid_response}}
-          end
+              {:error, reason} ->
+                invalid_response = acc.invalid_response || {candidate.base_url, reason}
+                {:cont, %{acc | invalid_response: invalid_response}}
+            end
 
-        _ ->
-          {:cont, %{acc | saw_unreachable?: true}}
+          _ ->
+            {:cont, %{acc | saw_unreachable?: true}}
+        end
       end
-    end)
+    )
     |> finalize_probe_result()
   end
 
@@ -335,10 +354,12 @@ defmodule OrchardCLI.Commands.Status do
   end
 
   defp non_empty_string(nil), do: nil
+
   defp non_empty_string(val) when is_binary(val) do
     trimmed = String.trim(val)
     if trimmed != "" and trimmed != "unknown", do: trimmed
   end
+
   defp non_empty_string(_), do: nil
 
   # ── Default Runtime ──────────────────────────────────────────────────

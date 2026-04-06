@@ -524,6 +524,7 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
       assert {:ok, _progress} = DownloadSupport.download_all(file_metas, opts)
 
       updates = collect_progress_updates()
+
       streaming_updates =
         Enum.filter(updates, fn {p, f} ->
           p.files_completed == 0 and p.bytes_downloaded > 0 and not is_nil(f)
