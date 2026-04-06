@@ -455,9 +455,10 @@ defmodule OrchardConsole.PlaygroundLive do
 
   @think_block_re ~r/<think>.*?<\/think>\s*/s
   @think_open_re ~r/\A<think>[\s\S]*\z/
+  @model_turn_tag_re ~r/<end_of_turn>\s*$/
 
   defp display_content(entry) do
-    content = strip_think_blocks(entry.content)
+    content = strip_model_artifacts(entry.content)
 
     if content == "" and entry.status == :streaming do
       "Waiting for response\u2026"
@@ -466,10 +467,11 @@ defmodule OrchardConsole.PlaygroundLive do
     end
   end
 
-  defp strip_think_blocks(text) do
+  defp strip_model_artifacts(text) do
     text
     |> then(&Regex.replace(@think_block_re, &1, ""))
     |> then(&Regex.replace(@think_open_re, &1, ""))
+    |> then(&Regex.replace(@model_turn_tag_re, &1, ""))
     |> String.trim_leading()
   end
 
