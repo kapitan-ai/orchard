@@ -63,9 +63,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
            {:ok, _} <- Requests.record_schedule(db_request, schedule),
            :ok <- advance_fsm(db_request.id, :scheduled),
            :ok <- advance_fsm(db_request.id, :dispatching),
-           {:ok, events} <-
+           {:ok, events, first_token_at} <-
              dispatch(db_request, canonical, model, schedule, caller, event_handler) do
-        finalize(db_request, canonical, model, events, success_persistence)
+        finalize(db_request, canonical, model, events, first_token_at, success_persistence)
       end
 
     case result do
@@ -169,16 +169,59 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp dispatch(db_request, canonical, model, schedule, caller, event_handler) do
     execute_request = build_execute_request(canonical, schedule)
     model_load_request = build_model_load_request(model, schedule)
+    capture_key = make_ref()
 
-    RequestDispatcher.dispatch(
-      schedule,
-      execute_request,
-      model_load_request,
-      caller: caller,
-      event_handler: event_handler,
-      on_node_resolved: build_node_resolved_callback(db_request.id)
-    )
+    try do
+      Process.put(capture_key, nil)
+
+      wrapped_handler = wrap_event_handler_for_first_token(event_handler, capture_key)
+
+      result =
+        RequestDispatcher.dispatch(
+          schedule,
+          execute_request,
+          model_load_request,
+          caller: caller,
+          event_handler: wrapped_handler,
+          on_node_resolved: build_node_resolved_callback(db_request.id)
+        )
+
+      first_token_at = Process.get(capture_key)
+
+      case result do
+        {:ok, events} -> {:ok, events, first_token_at}
+        {:error, _} = error -> error
+      end
+    after
+      Process.delete(capture_key)
+    end
   end
+
+  defp wrap_event_handler_for_first_token(downstream_handler, capture_key) do
+    fn request_id, event ->
+      maybe_capture_first_token(event, capture_key)
+
+      if downstream_handler do
+        downstream_handler.(request_id, event)
+      else
+        :ok
+      end
+    end
+  end
+
+  defp maybe_capture_first_token(
+         %InferenceEvent{event: %InferenceEvent.OutputTextDelta{delta: delta}},
+         capture_key
+       )
+       when delta != "" do
+    if Process.get(capture_key) == nil do
+      Process.put(capture_key, DateTime.utc_now() |> DateTime.truncate(:microsecond))
+    end
+
+    :ok
+  end
+
+  defp maybe_capture_first_token(_event, _capture_key), do: :ok
 
   defp build_node_resolved_callback(request_id) do
     fn node_id ->
@@ -189,8 +232,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp finalize(db_request, canonical, _model, events, success_persistence) do
-    case build_terminal_attrs(canonical, events, success_persistence) do
+  defp finalize(db_request, canonical, _model, events, first_token_at, success_persistence) do
+    case build_terminal_attrs(canonical, events, first_token_at, success_persistence) do
       {:ok, terminal_attrs} ->
         persist_terminal(db_request, canonical, events, terminal_attrs)
 
@@ -199,16 +242,22 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp build_terminal_attrs(canonical, events, success_persistence) do
+  defp build_terminal_attrs(canonical, events, first_token_at, success_persistence) do
     terminal_attrs = terminal_attrs_from_events(events)
 
-    if terminal_attrs.state == :completed and not canonical.stream? and
-         is_function(success_persistence, 2) do
-      success_persistence
-      |> apply_success_persistence(canonical, events)
-      |> merge_success_attrs(terminal_attrs)
-    else
-      {:ok, terminal_attrs}
+    result =
+      if terminal_attrs.state == :completed and not canonical.stream? and
+           is_function(success_persistence, 2) do
+        success_persistence
+        |> apply_success_persistence(canonical, events)
+        |> merge_success_attrs(terminal_attrs)
+      else
+        {:ok, terminal_attrs}
+      end
+
+    case result do
+      {:ok, attrs} -> {:ok, maybe_put_first_token_at(attrs, first_token_at)}
+      error -> error
     end
   end
 
@@ -293,6 +342,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
     Map.merge(base_attrs, usage)
   end
+
+  defp maybe_put_first_token_at(attrs, nil), do: attrs
+  defp maybe_put_first_token_at(attrs, %DateTime{} = ts), do: Map.put(attrs, :first_token_at, ts)
 
   defp extract_usage(events) do
     usage_event = Enum.find(events, &(InferenceEvent.kind(&1) == :usage))

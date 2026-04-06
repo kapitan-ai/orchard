@@ -23,6 +23,24 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler do
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference
+
+  def schedule(%CanonicalRequest{} = request) do
+    {:ok,
+     %{
+       strategy: :single_node,
+       request_id: request.public_id,
+       runtime_client_target: [host: "127.0.0.1", port: 1],
+       request_timeout_ms: Inference.request_timeout_ms(),
+       model_load_timeout_ms: 2_000
+     }}
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest do
   use Orchard.DataCase, async: false
 
@@ -234,6 +252,36 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert length(Orchard.Repo.all(Orchard.Requests.Request)) == 1
   end
 
+  test "execute/3 persists first_token_at for successful requests with output", %{bundle: bundle} do
+    model = create_active_model!(bundle, "request-orchestrator-success")
+    canonical = canonical_request("request-orchestrator-success", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :completed
+    assert request.first_token_at != nil
+    assert request.completed_at != nil
+    assert DateTime.compare(request.completed_at, request.first_token_at) in [:gt, :eq]
+  end
+
+  test "execute/3 leaves first_token_at nil when dispatch fails before any output delta", %{
+    bundle: bundle
+  } do
+    put_unreachable_scheduler_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-start-failure")
+    canonical = canonical_request("request-orchestrator-start-failure", stream?: false)
+
+    assert {:error, {:model_load_failed, _}} = RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request != nil
+    assert request.state == :failed
+    assert request.first_token_at == nil
+  end
+
   defp put_multi_node_scheduler_config do
     inference =
       Application.fetch_env!(:orchard_controller, :inference)
@@ -243,6 +291,16 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
           [host: "127.0.0.2", port: 50_072]
         ],
         scheduler_impl: Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_unreachable_scheduler_config do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.merge(
+        scheduler_impl: Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler
       )
 
     Application.put_env(:orchard_controller, :inference, inference)

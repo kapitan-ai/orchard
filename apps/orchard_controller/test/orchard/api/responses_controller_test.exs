@@ -11,6 +11,7 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.Node
   alias Orchard.Node.ModelManager
   alias Orchard.Repo
+  alias Orchard.Requests
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.Request
 
@@ -174,6 +175,10 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert request.canonical_request["endpoint"] == "responses"
     assert request.response_payload == body
     assert request.response_preview == body["output_text"]
+
+    # first_token_at must be persisted for successful requests with output
+    request = Requests.get_request_by_public_id(body["id"])
+    assert request.first_token_at != nil
   end
 
   test "replays completed tenant-scoped responses for the same idempotency key", %{bundle: bundle} do
@@ -384,6 +389,11 @@ defmodule Orchard.API.ResponsesControllerTest do
     [request] = Repo.all(Request)
     assert request.endpoint == :responses
     assert request.stream == true
+
+    # first_token_at must be persisted for successful streaming requests
+    response_id = terminal.data["response"]["id"]
+    request = Requests.get_request_by_public_id(response_id)
+    assert request.first_token_at != nil
   end
 
   test "post-start failure emits response.created then response.failed with no [DONE]" do
@@ -442,6 +452,13 @@ defmodule Orchard.API.ResponsesControllerTest do
     # No [DONE] in stream
     body = collect_chunked_body(conn)
     refute String.contains?(body, "[DONE]")
+
+    # first_token_at must be nil when failure occurs before any output delta
+    response_id = terminal.data["response"]["id"]
+    request = Requests.get_request_by_public_id(response_id)
+    assert request != nil
+    assert request.state == :failed
+    assert request.first_token_at == nil
   end
 
   test "streaming pre-stream validation failure returns JSON, not SSE" do
