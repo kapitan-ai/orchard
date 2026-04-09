@@ -20,6 +20,7 @@ from orchard_worker_mlx.model_loader import (
     MLXEnvironmentHealth,
     MLXProbeDeps,
     ModelLoaderError,
+    PrefixCacheLoadConfig,
     RuntimeRequirementsSpec,
     TokenizerSpec,
     _default_mlx_deps,
@@ -31,7 +32,6 @@ from orchard_worker_mlx.model_loader import (
     probe_mlx_environment,
     unload_session,
 )
-from orchard_worker_mlx.model_loader import PrefixCacheLoadConfig
 from orchard_worker_mlx.prefix_cache import KVPrefixCache, TriePrefixCache
 
 # ---------------------------------------------------------------------------
@@ -40,7 +40,15 @@ from orchard_worker_mlx.prefix_cache import KVPrefixCache, TriePrefixCache
 
 # Canonical test bundle from Orchard controller fixtures.
 _REPO_ROOT = Path(__file__).resolve().parents[3]  # native/orchard_worker_mlx -> orchard
-_FIXTURE_BUNDLE = _REPO_ROOT / "apps" / "orchard_controller" / "test" / "fixtures" / "bundles" / "test-model-bundle"
+_FIXTURE_BUNDLE = (
+    _REPO_ROOT
+    / "apps"
+    / "orchard_controller"
+    / "test"
+    / "fixtures"
+    / "bundles"
+    / "test-model-bundle"
+)
 
 
 @pytest.fixture()
@@ -77,6 +85,7 @@ def _make_fake_deps(
     load_tokenizer_side_effect: Any = None,
     model_config: Any = None,
     tokenizer_eos_token_id: Any = None,
+    tokenizer_init_kwargs: dict[str, Any] | None = None,
     warmup_responses: int = 10,
     warmup_elapsed_s: float = 0.5,
     warmup_stream_error: Exception | None = None,
@@ -94,6 +103,8 @@ def _make_fake_deps(
     else:
         # Remove the attribute so getattr returns None.
         del fake_tokenizer.eos_token_id
+
+    fake_tokenizer.init_kwargs = tokenizer_init_kwargs or {}
 
     # Configure tokenizer.encode for warmup.
     if warmup_encode_result is not None:
@@ -344,8 +355,10 @@ def test_load_session_rejects_non_mlx_format(writable_bundle: Path) -> None:
     _patch_manifest(writable_bundle, format="gguf")
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="test-org/tiny-llm", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=_make_fake_deps(),
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=_make_fake_deps(),
         )
     assert exc_info.value.code == "unsupported_model_format"
 
@@ -354,8 +367,10 @@ def test_load_session_rejects_non_directory_layout(writable_bundle: Path) -> Non
     _patch_manifest(writable_bundle, artifact_layout="single-file")
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="test-org/tiny-llm", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=_make_fake_deps(),
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=_make_fake_deps(),
         )
     assert exc_info.value.code == "unsupported_artifact_layout"
 
@@ -364,8 +379,10 @@ def test_load_session_rejects_non_mlx_lm_adapter(writable_bundle: Path) -> None:
     _patch_manifest(writable_bundle, runtime_adapter="vllm")
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="test-org/tiny-llm", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=_make_fake_deps(),
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=_make_fake_deps(),
         )
     assert exc_info.value.code == "unsupported_runtime_adapter"
 
@@ -374,8 +391,10 @@ def test_load_session_rejects_non_hf_tokenizer_kind(writable_bundle: Path) -> No
     _patch_manifest(writable_bundle, tokenizer_kind="sentencepiece")
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="test-org/tiny-llm", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=_make_fake_deps(),
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=_make_fake_deps(),
         )
     assert exc_info.value.code == "unsupported_tokenizer_kind"
 
@@ -383,8 +402,10 @@ def test_load_session_rejects_non_hf_tokenizer_kind(writable_bundle: Path) -> No
 def test_load_session_identity_mismatch(writable_bundle: Path) -> None:
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="wrong-org/wrong-model", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=_make_fake_deps(),
+            model_id="wrong-org/wrong-model",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=_make_fake_deps(),
         )
     assert exc_info.value.code == "model_identity_mismatch"
 
@@ -398,8 +419,10 @@ def test_load_session_rejects_absolute_entrypoint(writable_bundle: Path) -> None
     _patch_manifest(writable_bundle, entrypoint="/etc/passwd")
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="test-org/tiny-llm", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=_make_fake_deps(),
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=_make_fake_deps(),
         )
     assert exc_info.value.code == "bundle_path_escape"
 
@@ -408,8 +431,10 @@ def test_load_session_rejects_parent_traversal_entrypoint(writable_bundle: Path)
     _patch_manifest(writable_bundle, entrypoint="../../etc/passwd")
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="test-org/tiny-llm", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=_make_fake_deps(),
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=_make_fake_deps(),
         )
     assert exc_info.value.code == "bundle_path_escape"
 
@@ -418,8 +443,10 @@ def test_load_session_rejects_parent_traversal_tokenizer(writable_bundle: Path) 
     _patch_manifest(writable_bundle, tokenizer_path="../../../etc/passwd")
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="test-org/tiny-llm", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=_make_fake_deps(),
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=_make_fake_deps(),
         )
     assert exc_info.value.code == "bundle_path_escape"
 
@@ -481,6 +508,58 @@ def test_load_session_eos_from_tokenizer(writable_bundle: Path) -> None:
         deps=deps,
     )
     assert 42 in session.eos_token_ids
+
+
+def test_load_session_marks_tool_calling_supported_when_parser_present(
+    writable_bundle: Path,
+) -> None:
+    deps = _make_fake_deps(tokenizer_init_kwargs={"tool_parser_type": "json_tools"})
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+
+    assert session.tool_calling == {"supported": True, "parser_type": "json_tools"}
+
+
+def test_load_session_marks_tool_calling_unsupported_without_parser(
+    writable_bundle: Path,
+) -> None:
+    deps = _make_fake_deps(tokenizer_init_kwargs={})
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+
+    assert session.tool_calling == {"supported": False, "parser_type": None}
+
+
+def test_load_session_tool_calling_metadata_stable_across_reload_cycles(
+    writable_bundle: Path,
+) -> None:
+    deps_one = _make_fake_deps(tokenizer_init_kwargs={"tool_parser_type": "json_tools"})
+    first = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps_one,
+    )
+    first_metadata = dict(first.tool_calling)
+    unload_session(first, clear_cache=MagicMock(), collect=MagicMock(return_value=0))
+
+    deps_two = _make_fake_deps(tokenizer_init_kwargs={"tool_parser_type": "json_tools"})
+    second = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps_two,
+    )
+
+    assert first_metadata == second.tool_calling
 
 
 def test_load_session_eos_from_config(writable_bundle: Path) -> None:
@@ -556,8 +635,10 @@ def test_load_session_model_load_failure(writable_bundle: Path) -> None:
     deps = _make_fake_deps(load_model_side_effect=RuntimeError("Metal OOM"))
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="test-org/tiny-llm", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=deps,
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=deps,
         )
     assert exc_info.value.code == "model_load_failed"
     assert "Metal OOM" in exc_info.value.message
@@ -567,8 +648,10 @@ def test_load_session_tokenizer_load_failure(writable_bundle: Path) -> None:
     deps = _make_fake_deps(load_tokenizer_side_effect=RuntimeError("bad tokenizer"))
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="test-org/tiny-llm", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=deps,
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=deps,
         )
     assert exc_info.value.code == "model_load_failed"
     assert "bad tokenizer" in exc_info.value.message
@@ -577,7 +660,8 @@ def test_load_session_tokenizer_load_failure(writable_bundle: Path) -> None:
 def test_load_session_missing_model_path() -> None:
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="x", version="v",
+            model_id="x",
+            version="v",
             model_path="/nonexistent/path",
             deps=_make_fake_deps(),
         )
@@ -589,8 +673,10 @@ def test_load_session_missing_entrypoint(writable_bundle: Path) -> None:
     shutil.rmtree(writable_bundle / "weights")
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="test-org/tiny-llm", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=_make_fake_deps(),
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=_make_fake_deps(),
         )
     assert exc_info.value.code == "entrypoint_missing"
 
@@ -599,8 +685,10 @@ def test_load_session_missing_tokenizer_file(writable_bundle: Path) -> None:
     (writable_bundle / "tokenizer.json").unlink()
     with pytest.raises(ModelLoaderError) as exc_info:
         load_session(
-            model_id="test-org/tiny-llm", version="mlx-q4-v1",
-            model_path=str(writable_bundle), deps=_make_fake_deps(),
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=_make_fake_deps(),
         )
     assert exc_info.value.code == "tokenizer_missing"
 
@@ -727,7 +815,9 @@ def test_load_session_non_trimmable_model_disables_prefix_cache(writable_bundle:
     assert session.model is not None  # load still succeeded
 
 
-def test_load_session_make_prompt_cache_failure_disables_prefix_cache(writable_bundle: Path) -> None:
+def test_load_session_make_prompt_cache_failure_disables_prefix_cache(
+    writable_bundle: Path,
+) -> None:
     """make_prompt_cache raises → prefix_cache is None, load succeeds."""
     deps = _make_fake_deps(
         make_prompt_cache_side_effect=RuntimeError("probe boom"),
@@ -742,7 +832,9 @@ def test_load_session_make_prompt_cache_failure_disables_prefix_cache(writable_b
     assert session.model is not None
 
 
-def test_load_session_can_trim_prompt_cache_failure_disables_prefix_cache(writable_bundle: Path) -> None:
+def test_load_session_can_trim_prompt_cache_failure_disables_prefix_cache(
+    writable_bundle: Path,
+) -> None:
     """can_trim_prompt_cache raises → prefix_cache is None, load succeeds."""
     deps = _make_fake_deps(
         can_trim_prompt_cache_side_effect=RuntimeError("trim check boom"),
@@ -815,7 +907,8 @@ def test_prefix_cache_config_trie_mode(writable_bundle: Path) -> None:
 
 
 def test_prefix_cache_config_trie_fallback_missing_bytes(
-    writable_bundle: Path, tmp_path: Path,
+    writable_bundle: Path,
+    tmp_path: Path,
 ) -> None:
     """mode=trie + max_bytes>0 + missing kv_cache_bytes_per_token -> fallback to KV."""
     # Create a manifest without kv_cache_bytes_per_token.
@@ -942,6 +1035,7 @@ def test_warmup_zero_decode_tokens_falls_back_to_stride_1(writable_bundle: Path)
     stream_generate yields an empty iterator (no tokens generated).
     _derive_decode_cancel_stride(0, positive_elapsed) returns 1.
     """
+
     def empty_stream(*args, **kwargs):
         return iter([])  # yields nothing
 
@@ -1265,9 +1359,7 @@ class TestProbeMlxEnvironment:
 
         original = ml._default_mlx_probe_deps
         try:
-            ml._default_mlx_probe_deps = lambda: (_ for _ in ()).throw(
-                ImportError("no mlx")
-            )
+            ml._default_mlx_probe_deps = lambda: (_ for _ in ()).throw(ImportError("no mlx"))
             result = probe_mlx_environment(deps=None)
             assert result.ready is False
             assert result.code == "mlx_backend_unavailable"
@@ -1277,6 +1369,7 @@ class TestProbeMlxEnvironment:
 
     def test_allocation_failure_returns_metal_unavailable(self):
         """Tensor allocation failure returns metal_unavailable."""
+
         def bad_zeros(shape):
             raise RuntimeError("Metal device not found")
 
@@ -1288,6 +1381,7 @@ class TestProbeMlxEnvironment:
 
     def test_eval_failure_returns_metal_unavailable(self):
         """Eval failure returns metal_unavailable."""
+
         def bad_eval(tensor):
             raise RuntimeError("eval failed")
 
@@ -1366,6 +1460,7 @@ class TestProbeMlxEnvironment:
 
         original = ml._import_required_mlx_runtime_modules
         try:
+
             def _raise_missing_mlx_lm():
                 raise ImportError("No module named 'mlx_lm'")
 
@@ -1383,6 +1478,7 @@ class TestProbeMlxEnvironment:
 
         original = ml._import_required_mlx_runtime_modules
         try:
+
             def _raise_missing_transformers():
                 raise ImportError("No module named 'transformers'")
 
@@ -1405,6 +1501,7 @@ class TestProbeMlxEnvironment:
         original = ml._import_required_mlx_runtime_modules
         called = []
         try:
+
             def _tracking_helper():
                 called.append(True)
                 raise ImportError("tracking call")

@@ -2,23 +2,25 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import re
 import threading
 from collections.abc import Iterator
-from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-from orchard_worker_mlx.backends import Backend, BackendError, BackendHealth, BackendStatus, StubBackend
-from orchard_worker_mlx.generated.orchard.worker.v1 import worker_runtime_pb2
-from orchard_worker_mlx.service import (
-    CancelEntry,
-    WorkerRuntimeServicer,
-    build_failed_event,
-    build_inference_event,
+from orchard_worker_mlx.backends import (
+    Backend,
+    BackendError,
+    BackendHealth,
+    BackendStatus,
+    StubBackend,
 )
-
+from orchard_worker_mlx.generated.orchard.worker.v1 import worker_runtime_pb2
+from orchard_worker_mlx.service import WorkerRuntimeServicer, build_inference_event
 
 # ---------------------------------------------------------------------------
 # Test helpers / fake backends
@@ -64,9 +66,7 @@ class HappyBackend:
     def finish_generation(self) -> None:
         self._active = False
 
-    def generate(
-        self, request: Any, cancel_event: threading.Event
-    ) -> Iterator[dict[str, Any]]:
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         yield from self._events
 
 
@@ -74,18 +74,18 @@ class InvalidEventBackend(HappyBackend):
     """Emits an accepted event (invalid for workers)."""
 
     def __init__(self) -> None:
-        super().__init__(events=[
-            {"kind": "output_text_delta", "delta": "hi"},
-            {"kind": "accepted"},  # INVALID
-        ])
+        super().__init__(
+            events=[
+                {"kind": "output_text_delta", "delta": "hi"},
+                {"kind": "accepted"},  # INVALID
+            ]
+        )
 
 
 class CrashingBackend(HappyBackend):
     """Raises RuntimeError during generate."""
 
-    def generate(
-        self, request: Any, cancel_event: threading.Event
-    ) -> Iterator[dict[str, Any]]:
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         yield {"kind": "output_text_delta", "delta": "before crash"}
         raise RuntimeError("unexpected kaboom")
 
@@ -93,9 +93,7 @@ class CrashingBackend(HappyBackend):
 class MidIterationBackendErrorBackend(HappyBackend):
     """Raises BackendError mid-iteration after yielding one valid delta."""
 
-    def generate(
-        self, request: Any, cancel_event: threading.Event
-    ) -> Iterator[dict[str, Any]]:
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         yield {"kind": "output_text_delta", "delta": "partial output"}
         raise BackendError(
             "generation_failed",
@@ -108,10 +106,12 @@ class MissingTerminalBackend(HappyBackend):
     """Yields only non-terminal events then stops."""
 
     def __init__(self) -> None:
-        super().__init__(events=[
-            {"kind": "output_text_delta", "delta": "chunk1"},
-            {"kind": "output_text_delta", "delta": "chunk2"},
-        ])
+        super().__init__(
+            events=[
+                {"kind": "output_text_delta", "delta": "chunk1"},
+                {"kind": "output_text_delta", "delta": "chunk2"},
+            ]
+        )
 
 
 class StartGenerationCrashBackend(HappyBackend):
@@ -261,15 +261,17 @@ def test_missing_terminal_produces_backend_missing_terminal() -> None:
 
 def test_no_events_after_terminal() -> None:
     """Backend yields events after completed; service should stop at terminal."""
-    extra_after_terminal = HappyBackend(events=[
-        {"kind": "output_text_delta", "delta": "ok"},
-        {
-            "kind": "completed",
-            "finish_reason": "FINISH_REASON_STOP",
-            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
-        },
-        {"kind": "output_text_delta", "delta": "should not appear"},
-    ])
+    extra_after_terminal = HappyBackend(
+        events=[
+            {"kind": "output_text_delta", "delta": "ok"},
+            {
+                "kind": "completed",
+                "finish_reason": "FINISH_REASON_STOP",
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            },
+            {"kind": "output_text_delta", "delta": "should not appear"},
+        ]
+    )
     servicer = _make_servicer(extra_after_terminal)
     events = _collect_events(servicer)
 
@@ -432,10 +434,12 @@ def test_build_inference_event_validates_progress_stage() -> None:
 
 def test_build_inference_event_validates_usage_totals() -> None:
     with pytest.raises(BackendError) as exc_info:
-        build_inference_event({
-            "kind": "usage",
-            "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 99},
-        })
+        build_inference_event(
+            {
+                "kind": "usage",
+                "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 99},
+            }
+        )
     assert "total_tokens" in exc_info.value.message
 
 
@@ -457,11 +461,65 @@ def test_build_inference_event_progress_happy_path() -> None:
 
 
 def test_build_inference_event_usage_happy_path() -> None:
-    event = build_inference_event({
-        "kind": "usage",
-        "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
-    })
+    event = build_inference_event(
+        {
+            "kind": "usage",
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        }
+    )
     assert event.usage.usage.total_tokens == 15
+
+
+def test_build_inference_event_tool_call_delta_happy_path() -> None:
+    event = build_inference_event(
+        {
+            "kind": "tool_call_delta",
+            "tool_call_id": "call_0",
+            "delta": {
+                "index": 0,
+                "type": "function",
+                "function": {
+                    "name": "lookup_weather",
+                    "arguments_delta": '{"city":"Singapore"}',
+                },
+            },
+        }
+    )
+
+    assert event.WhichOneof("event") == "tool_call_delta"
+    assert event.tool_call_delta.tool_call_id == "call_0"
+    assert json.loads(event.tool_call_delta.delta_json) == {
+        "index": 0,
+        "type": "function",
+        "function": {
+            "name": "lookup_weather",
+            "arguments_delta": '{"city":"Singapore"}',
+        },
+    }
+
+
+def test_build_inference_event_rejects_invalid_tool_call_delta_shape() -> None:
+    with pytest.raises(BackendError) as exc_info:
+        build_inference_event(
+            {
+                "kind": "tool_call_delta",
+                "tool_call_id": "call_0",
+                "delta": {"index": 0},
+            }
+        )
+    assert exc_info.value.code == "backend_invalid_event"
+    assert "tool_call_delta.delta" in exc_info.value.message
+
+
+def test_build_inference_event_accepts_tool_calls_finish_reason() -> None:
+    event = build_inference_event(
+        {
+            "kind": "completed",
+            "finish_reason": "FINISH_REASON_TOOL_CALLS",
+            "usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
+        }
+    )
+    assert event.completed.finish_reason == 3
 
 
 # ---------------------------------------------------------------------------
@@ -476,9 +534,7 @@ class SlowBackend(HappyBackend):
         super().__init__(events=[])
         self._cancel_event_ref = cancel_event_ref
 
-    def generate(
-        self, request: Any, cancel_event: threading.Event
-    ) -> Iterator[dict[str, Any]]:
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         self._cancel_event_ref.append(cancel_event)
         yield {"kind": "output_text_delta", "delta": "first"}
         # Wait for cancel to be set externally
@@ -520,6 +576,7 @@ def test_cancel_mid_stream_produces_single_terminal() -> None:
 
     # Wait for the cancel event reference to be set (backend is running)
     import time
+
     for _ in range(100):
         if cancel_event_ref:
             break
@@ -551,21 +608,23 @@ class PostFailedBackend(HappyBackend):
     """Emits a failed event followed by more events."""
 
     def __init__(self) -> None:
-        super().__init__(events=[
-            {"kind": "output_text_delta", "delta": "before"},
-            {
-                "kind": "failed",
-                "code": "generation_failed",
-                "message": "something went wrong",
-                "retryable": False,
-            },
-            {"kind": "output_text_delta", "delta": "after failed"},
-            {
-                "kind": "completed",
-                "finish_reason": "FINISH_REASON_STOP",
-                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
-            },
-        ])
+        super().__init__(
+            events=[
+                {"kind": "output_text_delta", "delta": "before"},
+                {
+                    "kind": "failed",
+                    "code": "generation_failed",
+                    "message": "something went wrong",
+                    "retryable": False,
+                },
+                {"kind": "output_text_delta", "delta": "after failed"},
+                {
+                    "kind": "completed",
+                    "finish_reason": "FINISH_REASON_STOP",
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                },
+            ]
+        )
 
 
 def test_post_failed_events_suppressed() -> None:
@@ -582,8 +641,6 @@ def test_post_failed_events_suppressed() -> None:
 # Lifecycle logging tests
 # ---------------------------------------------------------------------------
 
-import logging
-
 
 def test_load_model_logs_lifecycle(caplog: pytest.LogCaptureFixture) -> None:
     """LoadModel emits start and ok log lines."""
@@ -592,6 +649,7 @@ def test_load_model_logs_lifecycle(caplog: pytest.LogCaptureFixture) -> None:
     servicer = _make_servicer(StubBackend())
     # Create a model path that exists
     import tempfile
+
     with tempfile.TemporaryDirectory() as td:
         with caplog.at_level(logging.INFO):
             ack = servicer.LoadModel(
@@ -613,11 +671,10 @@ def test_unload_model_logs_lifecycle(caplog: pytest.LogCaptureFixture) -> None:
 
     servicer = _make_servicer(StubBackend())
     import tempfile
+
     with tempfile.TemporaryDirectory() as td:
         servicer.LoadModel(
-            worker_runtime_pb2.LoadModelRequest(
-                model_id="test/model", version="v1", model_path=td
-            ),
+            worker_runtime_pb2.LoadModelRequest(model_id="test/model", version="v1", model_path=td),
             None,
         )
     with caplog.at_level(logging.INFO):
@@ -668,9 +725,7 @@ class UnhealthyBackend(HappyBackend):
 def test_get_status_includes_health_fields_healthy() -> None:
     """GetStatus includes ready=True and empty code/message for healthy backend."""
     servicer = _make_servicer(HappyBackend())
-    status = servicer.GetStatus(
-        worker_runtime_pb2.WorkerStatusRequest(), None
-    )
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
     assert status.ready is True
     assert status.health_code == ""
     assert status.health_message == ""
@@ -679,9 +734,7 @@ def test_get_status_includes_health_fields_healthy() -> None:
 def test_get_status_includes_health_fields_unhealthy() -> None:
     """GetStatus includes ready=False with code/message for unhealthy backend."""
     servicer = _make_servicer(UnhealthyBackend())
-    status = servicer.GetStatus(
-        worker_runtime_pb2.WorkerStatusRequest(), None
-    )
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
     assert status.ready is False
     assert status.health_code == "mlx_backend_unavailable"
     assert status.health_message == "MLX not installed"
@@ -691,9 +744,7 @@ def test_load_model_rejected_when_unhealthy() -> None:
     """LoadModel returns ok=False when backend is unhealthy."""
     servicer = _make_servicer(UnhealthyBackend())
     ack = servicer.LoadModel(
-        worker_runtime_pb2.LoadModelRequest(
-            model_id="m", version="v", model_path="/fake"
-        ),
+        worker_runtime_pb2.LoadModelRequest(model_id="m", version="v", model_path="/fake"),
         None,
     )
     assert ack.ok is False
@@ -710,9 +761,7 @@ def test_load_model_unhealthy_does_not_call_backend_load() -> None:
 
     servicer = _make_servicer(TrackingUnhealthyBackend())
     ack = servicer.LoadModel(
-        worker_runtime_pb2.LoadModelRequest(
-            model_id="m", version="v", model_path="/fake"
-        ),
+        worker_runtime_pb2.LoadModelRequest(model_id="m", version="v", model_path="/fake"),
         None,
     )
     assert ack.ok is False
@@ -723,9 +772,7 @@ def test_load_model_succeeds_when_healthy() -> None:
     """LoadModel proceeds normally when backend is healthy."""
     servicer = _make_servicer(HappyBackend())
     ack = servicer.LoadModel(
-        worker_runtime_pb2.LoadModelRequest(
-            model_id="m", version="v", model_path="/fake"
-        ),
+        worker_runtime_pb2.LoadModelRequest(model_id="m", version="v", model_path="/fake"),
         None,
     )
     assert ack.ok is True
@@ -735,8 +782,6 @@ def test_load_model_succeeds_when_healthy() -> None:
 # Task 4.5: Ack.message contract lock
 # ---------------------------------------------------------------------------
 
-import re
-
 _ACK_MESSAGE_PATTERN = re.compile(r"^[a-z_]+: .+")
 
 
@@ -744,9 +789,7 @@ def test_load_model_health_gate_ack_message_format() -> None:
     """Health-gated LoadModel failure follows 'code: message' format."""
     servicer = _make_servicer(UnhealthyBackend())
     ack = servicer.LoadModel(
-        worker_runtime_pb2.LoadModelRequest(
-            model_id="m", version="v", model_path="/fake"
-        ),
+        worker_runtime_pb2.LoadModelRequest(model_id="m", version="v", model_path="/fake"),
         None,
     )
     assert ack.ok is False
@@ -769,9 +812,7 @@ def test_load_model_backend_error_ack_message_format() -> None:
     """BackendError-triggered LoadModel failure follows 'code: message' format."""
     servicer = _make_servicer(LoadFailingBackend())
     ack = servicer.LoadModel(
-        worker_runtime_pb2.LoadModelRequest(
-            model_id="m", version="v", model_path="/fake"
-        ),
+        worker_runtime_pb2.LoadModelRequest(model_id="m", version="v", model_path="/fake"),
         None,
     )
     assert ack.ok is False

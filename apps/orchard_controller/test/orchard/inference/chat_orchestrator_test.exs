@@ -93,5 +93,25 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
       assert {:ok, _canonical, returned_model} = ChatOrchestrator.prepare(params, [])
       assert returned_model.max_context_tokens == nil
     end
+
+    test "rejects tool-calling requests for models without tool_calling capability" do
+      model =
+        ModelRequestFixtures.create_model!(%{
+          model_id: "test/no-tool-capability-model",
+          version: "v1",
+          state: :active,
+          capabilities: ["chat"]
+        })
+
+      params = %{
+        "model" => "#{model.model_id}@#{model.version}",
+        "messages" => [%{"role" => "user", "content" => "Hello"}],
+        "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
+        "tool_choice" => "auto"
+      }
+
+      assert {:error, {:tooling_not_supported, detail}} = ChatOrchestrator.prepare(params, [])
+      assert detail == "#{model.model_id}@#{model.version}"
+    end
   end
 end

@@ -148,9 +148,7 @@ def _entry_length(entry: Any) -> int:
     return 0
 
 
-def _common_prefix_length(
-    query: tuple[int, ...], candidate: tuple[int, ...]
-) -> int:
+def _common_prefix_length(query: tuple[int, ...], candidate: tuple[int, ...]) -> int:
     """Return the number of leading tokens shared by *query* and *candidate*."""
     limit = min(len(query), len(candidate))
     for i in range(limit):
@@ -185,7 +183,9 @@ class KVPrefixCache:
             raise ValueError(f"max_entries must be >= 1, got {max_entries}")
         if bytes_per_token is not None:
             if isinstance(bytes_per_token, bool) or not isinstance(bytes_per_token, int):
-                raise ValueError(f"bytes_per_token must be int or None, got {type(bytes_per_token).__name__}")
+                raise ValueError(
+                    f"bytes_per_token must be int or None, got {type(bytes_per_token).__name__}"
+                )
             if bytes_per_token < 0:
                 raise ValueError(f"bytes_per_token must be >= 0, got {bytes_per_token}")
         self._max_entries = max_entries
@@ -322,9 +322,7 @@ class KVPrefixCache:
                     return None
 
             # --- Build result ----------------------------------------------
-            matched_length = (
-                best_match_len if not full_query_coverage else len(query)
-            )
+            matched_length = best_match_len if not full_query_coverage else len(query)
             remaining_ids = list(query[restore_pos:])
 
             # Refresh recency only on successful lookup.
@@ -401,8 +399,7 @@ def _normalize_key(token_ids: Sequence[int]) -> tuple[int, ...]:
 class _TrieNode:
     """Internal trie node for ``TriePrefixCache``."""
 
-    __slots__ = ("token", "parent", "children", "terminal_entry",
-                 "subtree_representative")
+    __slots__ = ("token", "parent", "children", "terminal_entry", "subtree_representative")
 
     def __init__(
         self,
@@ -479,9 +476,7 @@ class TriePrefixCache:
                 raise ValueError(f"bytes_per_token must be >= 0, got {bytes_per_token}")
         if max_bytes is not None:
             if isinstance(max_bytes, bool) or not isinstance(max_bytes, int):
-                raise ValueError(
-                    f"max_bytes must be int or None, got {type(max_bytes).__name__}"
-                )
+                raise ValueError(f"max_bytes must be int or None, got {type(max_bytes).__name__}")
             if max_bytes < 0:
                 raise ValueError(f"max_bytes must be >= 0, got {max_bytes}")
         self._max_entries = max_entries
@@ -636,9 +631,7 @@ class TriePrefixCache:
                     return None
 
             # --- Build result ----------------------------------------------
-            matched_length = (
-                len(query) if full_query_coverage else best_match_len
-            )
+            matched_length = len(query) if full_query_coverage else best_match_len
             remaining_ids = list(query[restore_pos:])
 
             # Promote matched entry to MRU.
@@ -719,9 +712,7 @@ class TriePrefixCache:
         """Remove empty non-root leaf nodes upward."""
         current = node
         while (
-            current.parent is not None
-            and current.terminal_entry is None
-            and not current.children
+            current.parent is not None and current.terminal_entry is None and not current.children
         ):
             parent = current.parent
             if current.token is not None:
@@ -732,9 +723,7 @@ class TriePrefixCache:
         """Recompute ``subtree_representative`` from *node* up to root."""
         current: _TrieNode | None = node
         while current is not None:
-            current.subtree_representative = self._recompute_representative(
-                current
-            )
+            current.subtree_representative = self._recompute_representative(current)
             current = current.parent
 
     def _recompute_representative(self, node: _TrieNode) -> _CacheEntry | None:
@@ -760,7 +749,7 @@ class TriePrefixCache:
             if current.terminal_entry is not None:
                 prefix_entry = current.terminal_entry
                 # Verify it's actually a proper prefix of our key.
-                if prefix_entry.key == key[:i + 1]:
+                if prefix_entry.key == key[: i + 1]:
                     self._remove_entry(prefix_entry)
 
     def _evict_if_needed(self) -> None:

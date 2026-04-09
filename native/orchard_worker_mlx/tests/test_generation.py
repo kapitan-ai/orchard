@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import deque
 from dataclasses import dataclass
@@ -17,7 +18,6 @@ from orchard_worker_mlx.generation import (
     _make_prefill_progress_callback,
     generate_events,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fake GenerationResponse (mirrors mlx_lm.generate.GenerationResponse)
@@ -45,6 +45,10 @@ def _make_fake_session(
     prefill_step_size: int = 2048,
     clear_cache: Any = None,
     prefix_cache: Any = None,
+    tool_calling: dict[str, Any] | None = None,
+    tool_parser: Any = None,
+    tool_call_start: str | None = None,
+    tool_call_end: str | None = None,
 ) -> Any:
     """Create a minimal fake LoadedModelSession for generation tests."""
     session = MagicMock()
@@ -56,6 +60,10 @@ def _make_fake_session(
     session.prefill_step_size = prefill_step_size
     session.clear_cache = clear_cache if clear_cache is not None else MagicMock(name="clear_cache")
     session.prefix_cache = prefix_cache
+    session.tool_calling = tool_calling or {"supported": False, "parser_type": None}
+    session.tokenizer.tool_parser = tool_parser
+    session.tokenizer.tool_call_start = tool_call_start
+    session.tokenizer.tool_call_end = tool_call_end
     return session
 
 
@@ -67,6 +75,8 @@ def _make_fake_request(
     temperature: float = 0.0,
     top_p: float = 0.0,
     stop_sequences: list[str] | None = None,
+    tools_json: bytes | str = b"",
+    tool_choice_json: bytes | str = b"",
 ) -> Any:
     """Create a minimal fake ExecuteInferenceRequest."""
     request = MagicMock()
@@ -77,6 +87,8 @@ def _make_fake_request(
     params.temperature = temperature
     params.top_p = top_p
     params.stop_sequences = stop_sequences or []
+    params.tools_json = tools_json
+    params.tool_choice_json = tool_choice_json
     request.params = params
     return request
 
@@ -142,7 +154,9 @@ def test_basic_generation_emits_deltas_and_completed() -> None:
     assert completed["kind"] == "completed"
     assert completed["finish_reason"] == "FINISH_REASON_STOP"
     assert completed["usage"]["input_tokens"] == 5
-    assert completed["usage"]["output_tokens"] == 3  # all 3 responses counted (incl. empty-text terminal)
+    assert (
+        completed["usage"]["output_tokens"] == 3
+    )  # all 3 responses counted (incl. empty-text terminal)
     assert completed["usage"]["total_tokens"] == 8
 
 
@@ -194,9 +208,7 @@ def test_finish_reason_stop() -> None:
     responses = [
         FakeGenerationResponse(text="done", token=10, finish_reason="stop"),
     ]
-    events = _collect_events(
-        _make_fake_session(), _make_fake_request(), _make_deps(responses)
-    )
+    events = _collect_events(_make_fake_session(), _make_fake_request(), _make_deps(responses))
     assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
 
 
@@ -205,9 +217,7 @@ def test_finish_reason_length() -> None:
     responses = [
         FakeGenerationResponse(text="cut", token=10, finish_reason="length"),
     ]
-    events = _collect_events(
-        _make_fake_session(), _make_fake_request(), _make_deps(responses)
-    )
+    events = _collect_events(_make_fake_session(), _make_fake_request(), _make_deps(responses))
     assert events[-1]["finish_reason"] == "FINISH_REASON_LENGTH"
 
 
@@ -331,9 +341,7 @@ def test_encode_uses_add_special_tokens_false() -> None:
     deps = _make_deps(responses)
     _collect_events(session, request, deps)
 
-    session.tokenizer.encode.assert_called_once_with(
-        "test prompt", add_special_tokens=False
-    )
+    session.tokenizer.encode.assert_called_once_with("test prompt", add_special_tokens=False)
 
 
 def test_tokenizer_encode_failure_raises_backend_error() -> None:
@@ -525,9 +533,9 @@ def test_buffered_detokenization_counts_all_tokens() -> None:
     though only the non-empty flush emits a delta event.
     """
     responses = [
-        FakeGenerationResponse(text="", token=1),      # buffered
-        FakeGenerationResponse(text="", token=2),      # buffered
-        FakeGenerationResponse(text="flush", token=3), # flush
+        FakeGenerationResponse(text="", token=1),  # buffered
+        FakeGenerationResponse(text="", token=2),  # buffered
+        FakeGenerationResponse(text="flush", token=3),  # flush
         FakeGenerationResponse(text="", token=4, finish_reason="stop"),  # terminal, empty
     ]
     session = _make_fake_session()
@@ -801,7 +809,7 @@ def test_orchard_eos_terminates_without_upstream_finish() -> None:
     responses = [
         FakeGenerationResponse(text="Hello", token=10),
         FakeGenerationResponse(text=" world", token=99),  # EOS token
-        FakeGenerationResponse(text="after", token=12),   # should not be reached
+        FakeGenerationResponse(text="after", token=12),  # should not be reached
         FakeGenerationResponse(text="", token=13, finish_reason="stop"),
     ]
     session = _make_fake_session(eos_token_ids=(99,))
@@ -1083,6 +1091,7 @@ def test_no_completed_after_cancel() -> None:
 
 def test_stop_sequence_with_buffered_text_and_iterator_exhaustion() -> None:
     """Buffered text flushed on iterator exhaustion (no finish_reason)."""
+
     def bare_stream(model, tokenizer, prompt_ids, **kwargs):
         yield FakeGenerationResponse(text="he", token=10)
         yield FakeGenerationResponse(text="llo", token=11)
@@ -1121,12 +1130,236 @@ def test_stop_sequence_never_leaked_end_to_end() -> None:
 
     events = _collect_events(session, request, deps)
 
-    all_text = "".join(
-        e["delta"] for e in events if e["kind"] == "output_text_delta"
-    )
+    all_text = "".join(e["delta"] for e in events if e["kind"] == "output_text_delta")
     assert stop not in all_text
     assert "done" not in all_text  # text after stop also suppressed
     assert all_text == "Hello world! The answer is 42. And"
+
+
+# ===========================================================================
+# Tool calling integration (Phase 4 Tasks 9-11)
+# ===========================================================================
+
+
+def _tool_call_tools_json() -> bytes:
+    return b'[{"type":"function","function":{"name":"lookup_weather","parameters":{}}}]'
+
+
+def test_tool_choice_auto_emits_tool_call_delta_and_tool_calls_finish_reason() -> None:
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        assert tools == [
+            {"type": "function", "function": {"name": "lookup_weather", "parameters": {}}}
+        ]
+        assert text == '{"city":"Singapore"}'
+        return {"id": "call_weather", "name": "lookup_weather", "arguments": {"city": "Singapore"}}
+
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"city":"Singapore"}', token=11),
+        FakeGenerationResponse(text="</tool_call>", token=12, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert [event["kind"] for event in events] == ["tool_call_delta", "completed"]
+    assert events[0]["tool_call_id"] == "call_weather"
+    assert events[0]["delta"] == {
+        "index": 0,
+        "type": "function",
+        "function": {
+            "name": "lookup_weather",
+            "arguments_delta": '{"city": "Singapore"}',
+        },
+    }
+    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+
+
+def test_tool_call_markers_can_share_chunks_with_text() -> None:
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        assert text == '{"city":"Singapore"}'
+        return {"name": "lookup_weather", "arguments": text}
+
+    responses = [
+        FakeGenerationResponse(
+            text='Before <tool_call>{"city":"Singapore"}</tool_call> after',
+            token=10,
+            finish_reason="stop",
+        ),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert [event["kind"] for event in events] == [
+        "output_text_delta",
+        "tool_call_delta",
+        "output_text_delta",
+        "completed",
+    ]
+    assert events[0]["delta"] == "Before "
+    assert events[1]["delta"]["function"]["arguments_delta"] == '{"city":"Singapore"}'
+    assert events[2]["delta"] == " after"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+
+
+def test_tool_choice_required_fails_when_no_tool_call_is_emitted() -> None:
+    responses = [
+        FakeGenerationResponse(text="plain text", token=10, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=lambda text, tools: {},
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(
+        tools_json=_tool_call_tools_json(),
+        tool_choice_json=b'"required"',
+    )
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "tool_choice_not_satisfied"
+    assert len([event for event in events if event["kind"] in {"completed", "failed"}]) == 1
+
+
+def test_required_tool_choice_without_tools_raises_backend_error() -> None:
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=lambda text, tools: {"name": "lookup_weather", "arguments": text},
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tool_choice_json=b'"required"')
+
+    with pytest.raises(BackendError) as exc_info:
+        _collect_events(session, request, _make_deps([]))
+
+    assert exc_info.value.code == "invalid_generation_params"
+
+
+def test_named_tool_choice_fails_when_model_uses_wrong_function() -> None:
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        return {"name": "lookup_time", "arguments": {"city": "Singapore"}}
+
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"city":"Singapore"}', token=11),
+        FakeGenerationResponse(text="</tool_call>", token=12, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(
+        tools_json=_tool_call_tools_json(),
+        tool_choice_json=b'{"type":"function","function":{"name":"lookup_weather"}}',
+    )
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "tool_choice_not_satisfied"
+    assert len([event for event in events if event["kind"] in {"completed", "failed"}]) == 1
+
+
+def test_cancel_mid_tool_call_emits_cancelled_terminal() -> None:
+    cancel = threading.Event()
+
+    def stream_with_cancel(model, tokenizer, prompt_ids, **kwargs):
+        yield FakeGenerationResponse(text="<tool_call>", token=10)
+        yield FakeGenerationResponse(text='{"city":"Sing', token=11)
+        cancel.set()
+        yield FakeGenerationResponse(text='apore"}', token=12)
+
+    deps = GenerationDeps(
+        stream_generate=stream_with_cancel,
+        make_sampler=lambda **kw: MagicMock(),
+    )
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=lambda text, tools: {"name": "lookup_weather", "arguments": text},
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+
+    events = _collect_events(session, request, deps, cancel_event=cancel)
+
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "cancelled"
+    assert len([event for event in events if event["kind"] == "tool_call_delta"]) == 0
+    assert len([event for event in events if event["kind"] in {"completed", "failed"}]) == 1
+
+
+def test_stop_sequences_do_not_truncate_tool_call_arguments() -> None:
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        return {"name": "lookup_weather", "arguments": text}
+
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"city":"Singapore"}', token=11),
+        FakeGenerationResponse(text="</tool_call>", token=12, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(
+        tools_json=_tool_call_tools_json(),
+        stop_sequences=["Singapore", "}"],
+    )
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert events[0]["delta"]["function"]["arguments_delta"] == '{"city":"Singapore"}'
+    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+
+
+def test_tool_choice_none_disables_tool_call_parsing() -> None:
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"city":"Singapore"}', token=11),
+        FakeGenerationResponse(text="</tool_call>", token=12, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=lambda text, tools: {"name": "lookup_weather", "arguments": text},
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(
+        tools_json=_tool_call_tools_json(),
+        tool_choice_json=b'"none"',
+    )
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert [event["kind"] for event in events] == [
+        "output_text_delta",
+        "output_text_delta",
+        "output_text_delta",
+        "completed",
+    ]
+    assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
 
 
 # ===========================================================================
@@ -1142,8 +1375,8 @@ def test_prefill_progress_emitted_before_first_delta() -> None:
         # The callback is invoked synchronously during prefill.
         cb = kwargs.get("prompt_progress_callback")
         if cb:
-            cb(0, 100)    # initial zero — should be filtered
-            cb(50, 100)   # real progress
+            cb(0, 100)  # initial zero — should be filtered
+            cb(50, 100)  # real progress
             cb(100, 100)  # done
             progress_calls.extend([(50, 100), (100, 100)])
         # Then yield decode tokens.
@@ -1242,7 +1475,7 @@ def test_prefill_progress_no_events_after_terminal() -> None:
             break
     assert terminal_idx is not None
     # No progress after terminal.
-    for e in events[terminal_idx + 1:]:
+    for e in events[terminal_idx + 1 :]:
         assert e["kind"] != "progress"
 
 
@@ -1544,6 +1777,7 @@ class FakePrefixCache:
 @dataclass
 class FakeCacheHit:
     """Minimal stand-in for prefix_cache.CacheHit."""
+
     prompt_cache: Any
     matched_length: int
     remaining_ids: list[int]
@@ -1962,8 +2196,6 @@ def test_store_failure_is_fail_open() -> None:
 # Prefix-cache logging tests (Task 4)
 # ===========================================================================
 
-import logging
-
 
 def _parse_cache_log(record: logging.LogRecord) -> dict[str, str]:
     """Parse key=value pairs from a prefix_cache_request log message."""
@@ -1982,7 +2214,8 @@ def _parse_cache_log(record: logging.LogRecord) -> dict[str, str]:
 def _find_cache_log(caplog: pytest.LogCaptureFixture) -> dict[str, str]:
     """Find the single cache log record and parse it."""
     records = [
-        r for r in caplog.records
+        r
+        for r in caplog.records
         if r.name == "orchard_worker_mlx.generation"
         and r.getMessage().startswith("prefix_cache_request ")
     ]
@@ -2060,9 +2293,13 @@ def test_cache_log_on_stream_exception(caplog: pytest.LogCaptureFixture) -> None
 def test_cache_log_with_prefix_cache_hit(caplog: pytest.LogCaptureFixture) -> None:
     """Cache log reports partial_hit when prefix cache matches a prefix."""
     # matched_length=2 < prompt_tokens=3 → partial_hit
-    fake_cache = FakePrefixCache(lookup_result=FakeCacheHit(
-        prompt_cache=MagicMock(), matched_length=2, remaining_ids=[3, 4],
-    ))
+    fake_cache = FakePrefixCache(
+        lookup_result=FakeCacheHit(
+            prompt_cache=MagicMock(),
+            matched_length=2,
+            remaining_ids=[3, 4],
+        )
+    )
     responses = [
         FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
     ]
@@ -2136,9 +2373,13 @@ def test_cache_log_store_oversize_rejection(caplog: pytest.LogCaptureFixture) ->
 def test_cache_log_full_hit(caplog: pytest.LogCaptureFixture) -> None:
     """Cache log reports full_hit when matched_length >= prompt_tokens."""
     # matched_length=3 == prompt_tokens=3 -> full_hit
-    fake_cache = FakePrefixCache(lookup_result=FakeCacheHit(
-        prompt_cache=MagicMock(), matched_length=3, remaining_ids=[3],
-    ))
+    fake_cache = FakePrefixCache(
+        lookup_result=FakeCacheHit(
+            prompt_cache=MagicMock(),
+            matched_length=3,
+            remaining_ids=[3],
+        )
+    )
     responses = [
         FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
     ]
@@ -2177,10 +2418,13 @@ def test_cache_log_lookup_failed_via_stats_delta(caplog: pytest.LogCaptureFixtur
             # Second call (post-lookup): failures=1 -> delta detected
             return PrefixCacheStats(
                 implementation="test",
-                entry_count=0, total_bytes=0,
-                hits=0, misses=0,
+                entry_count=0,
+                total_bytes=0,
+                hits=0,
+                misses=0,
                 failures=0 if call_count <= 1 else 1,
-                stores=0, evictions=0,
+                stores=0,
+                evictions=0,
             )
 
     responses = [

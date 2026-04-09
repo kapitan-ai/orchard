@@ -8,6 +8,7 @@ defmodule Orchard.API.ResponsesControllerTest do
   alias Orchard.API.Router
   alias Orchard.ArtifactBundle
   alias Orchard.Governance
+  alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.ModelManager
   alias Orchard.Repo
@@ -34,10 +35,15 @@ defmodule Orchard.API.ResponsesControllerTest do
   end
 
   setup do
+    previous_orchestrator =
+      Application.get_env(:orchard_controller, :api_responses_orchestrator_impl)
+
     ModelManager.reset()
     bundle = stage_test_bundle!()
 
     on_exit(fn ->
+      restore_env(:api_responses_orchestrator_impl, previous_orchestrator)
+      clear_responses_stub_config()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
       File.rm_rf(bundle.source_path)
       File.rm_rf(Path.join(Node.models_root(), ".staging"))
@@ -179,6 +185,115 @@ defmodule Orchard.API.ResponsesControllerTest do
     # first_token_at must be persisted for successful requests with output
     request = Requests.get_request_by_public_id(body["id"])
     assert request.first_token_at != nil
+  end
+
+  test "successful non-stream request can return function_call output items" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(false), %{}},
+      execute:
+        {:ok, stub_responses_canonical(false),
+         [
+           InferenceEvent.accepted(1_710_000_123_000),
+           tool_call_event("call_0", %{
+             index: 0,
+             type: "function",
+             function: %{name: "lookup_weather"}
+           }),
+           tool_call_event("call_0", %{
+             index: 0,
+             function: %{arguments_delta: "{\"city\":\"Singapore\"}"}
+           }),
+           InferenceEvent.completed(:finish_reason_tool_calls, nil)
+         ]}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello"
+      })
+
+    assert conn.status == 200
+    body = Jason.decode!(conn.resp_body)
+    assert body["status"] == "completed"
+    assert body["output_text"] == ""
+
+    assert body["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => "{\"city\":\"Singapore\"}",
+               "status" => "completed"
+             }
+           ]
+  end
+
+  test "tool-calling request against a model without tool_calling capability returns tooling_not_supported",
+       %{bundle: bundle} do
+    _model =
+      create_model!(%{
+        model_id: "responses-tool-gate-model",
+        version: "v1",
+        display_name: "Responses Tool Gate Model",
+        artifact_uri: "file:///tmp/responses-tool-gate-model",
+        artifact_sha256: bundle.hash,
+        artifact_source_uri: "file:///tmp/responses-tool-gate-model",
+        state: :active,
+        format: "mlx",
+        backend: "mlx",
+        capabilities: ["chat"],
+        artifact_size_bytes: 1024,
+        resident_memory_bytes: 2048,
+        kv_cache_bytes_per_token: 128,
+        prefill_workspace_bytes_per_token: 64,
+        max_context_tokens: 131_072
+      })
+
+    conn =
+      post_responses(%{
+        "model" => "responses-tool-gate-model@v1",
+        "input" => "hello",
+        "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
+        "tool_choice" => "auto"
+      })
+
+    assert conn.status == 400
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "invalid_request_error"
+    assert body["error"]["code"] == "tooling_not_supported"
+    assert body["error"]["param"] == "model"
+  end
+
+  test "named tool_choice failures surface as terminal response errors" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(false), %{}},
+      execute:
+        {:ok, stub_responses_canonical(false),
+         [
+           InferenceEvent.accepted(1_710_000_123_000),
+           InferenceEvent.failed(
+             "tool_choice_not_satisfied",
+             "model emitted tool call outside required function lookup_weather",
+             false
+           )
+         ]}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
+        "tool_choice" => %{"type" => "function", "function" => %{"name" => "lookup_weather"}}
+      })
+
+    assert conn.status == 500
+    body = Jason.decode!(conn.resp_body)
+
+    assert body["error"]["message"] ==
+             "Inference failed: model emitted tool call outside required function lookup_weather"
   end
 
   test "replays completed tenant-scoped responses for the same idempotency key", %{bundle: bundle} do
@@ -396,6 +511,96 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert request.first_token_at != nil
   end
 
+  test "streaming terminal includes assembled function_call items without new SSE event types" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        InferenceEvent.accepted(1_710_000_123_000),
+        tool_call_event("call_0", %{
+          index: 0,
+          type: "function",
+          function: %{name: "lookup_weather"}
+        }),
+        tool_call_event("call_0", %{
+          index: 0,
+          function: %{arguments_delta: "{\"city\":\"Singapore\"}"}
+        }),
+        InferenceEvent.completed(:finish_reason_tool_calls, nil)
+      ],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    events = parse_typed_sse_events(conn)
+
+    assert Enum.map(events, & &1.type) == [
+             "response.created",
+             "response.output_text.done",
+             "response.completed"
+           ]
+
+    terminal = List.last(events)
+    assert terminal.data["response"]["status"] == "completed"
+    assert terminal.data["response"]["output_text"] == ""
+
+    assert terminal.data["response"]["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => "{\"city\":\"Singapore\"}",
+               "status" => "completed"
+             }
+           ]
+  end
+
+  test "streaming cancelled partial tool calls are marked incomplete in the terminal payload" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        InferenceEvent.accepted(1_710_000_123_000),
+        tool_call_event("call_0", %{
+          index: 0,
+          type: "function",
+          function: %{name: "lookup_weather", arguments_delta: "{\"city\":\"Sing"}
+        }),
+        InferenceEvent.failed("request_cancelled", "request was cancelled upstream", false)
+      ],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    terminal = List.last(parse_typed_sse_events(conn))
+    assert terminal.type == "response.failed"
+    assert terminal.data["response"]["status"] == "incomplete"
+
+    assert terminal.data["response"]["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => "{\"city\":\"Sing",
+               "status" => "incomplete"
+             }
+           ]
+  end
+
   test "post-start failure emits response.created then response.failed with no [DONE]" do
     %{token: token} = create_api_key_with_token!("responses-stream-fail")
 
@@ -476,6 +681,44 @@ defmodule Orchard.API.ResponsesControllerTest do
     refute resp_header(conn, "content-type") == ["text/event-stream"]
   end
 
+  test "streaming tool-calling request against a model without tool_calling capability returns JSON tooling_not_supported",
+       %{bundle: bundle} do
+    _model =
+      create_model!(%{
+        model_id: "responses-stream-tool-gate-model",
+        version: "v1",
+        display_name: "Responses Stream Tool Gate Model",
+        artifact_uri: "file:///tmp/responses-stream-tool-gate-model",
+        artifact_sha256: bundle.hash,
+        artifact_source_uri: "file:///tmp/responses-stream-tool-gate-model",
+        state: :active,
+        format: "mlx",
+        backend: "mlx",
+        capabilities: ["chat"],
+        artifact_size_bytes: 1024,
+        resident_memory_bytes: 2048,
+        kv_cache_bytes_per_token: 128,
+        prefill_workspace_bytes_per_token: 64,
+        max_context_tokens: 131_072
+      })
+
+    conn =
+      post_responses(%{
+        "model" => "responses-stream-tool-gate-model@v1",
+        "input" => "hello",
+        "stream" => true,
+        "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
+        "tool_choice" => "auto"
+      })
+
+    assert conn.status == 400
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "invalid_request_error"
+    assert body["error"]["code"] == "tooling_not_supported"
+    assert body["error"]["param"] == "model"
+    refute resp_header(conn, "content-type") == ["text/event-stream"]
+  end
+
   test "streaming idempotency replay before stream start returns JSON 409" do
     %{token: token, tenant: tenant} = create_api_key_with_token!("responses-stream-replay")
 
@@ -546,6 +789,42 @@ defmodule Orchard.API.ResponsesControllerTest do
     end)
   end
 
+  defp stub_responses_orchestrator(config) do
+    Application.put_env(
+      :orchard_controller,
+      :api_responses_orchestrator_impl,
+      __MODULE__.StubResponsesOrchestrator
+    )
+
+    Process.put({__MODULE__, :stub_responses_orchestrator}, config)
+  end
+
+  defp clear_responses_stub_config do
+    Process.delete({__MODULE__, :stub_responses_orchestrator})
+  end
+
+  defp restore_env(key, nil), do: Application.delete_env(:orchard_controller, key)
+  defp restore_env(key, value), do: Application.put_env(:orchard_controller, key, value)
+
+  defp stub_responses_canonical(stream?) do
+    Orchard.CanonicalRequest.new(%{
+      internal_id: Ecto.UUID.generate(),
+      public_id: "resp_tool_stub",
+      endpoint: :responses,
+      tenant_id: Ecto.UUID.generate(),
+      model_ref: %{model_id: "stub-tool-model", version: "v1"},
+      input_items: [%{"role" => "user", "content" => "hello"}],
+      rendered_prompt: "hello",
+      input_token_count: 3,
+      stream?: stream?,
+      metadata: %{}
+    })
+  end
+
+  defp tool_call_event(tool_call_id, delta) do
+    InferenceEvent.tool_call_delta(tool_call_id, Jason.encode!(delta))
+  end
+
   defp stage_test_bundle! do
     models_root = Node.models_root()
     source_path = Path.join([models_root, ".test-source", "responses-bundle"])
@@ -577,5 +856,30 @@ defmodule Orchard.API.ResponsesControllerTest do
       )
 
     %{hash: hash, source_path: source_path, cache_paths: cache_paths}
+  end
+
+  defmodule StubResponsesOrchestrator do
+    def prepare(_params, _caller_context) do
+      config =
+        Process.get({Orchard.API.ResponsesControllerTest, :stub_responses_orchestrator}, %{})
+
+      Keyword.fetch!(config, :prepare)
+    end
+
+    def execute(canonical, _model, opts) do
+      config =
+        Process.get({Orchard.API.ResponsesControllerTest, :stub_responses_orchestrator}, %{})
+
+      if event_handler = Keyword.get(opts, :event_handler) do
+        Enum.each(Keyword.get(config, :events, []), fn event ->
+          event_handler.(canonical.public_id, event)
+        end)
+      end
+
+      case Keyword.get(config, :execute) do
+        nil -> {:ok, canonical, Keyword.get(config, :events, [])}
+        result -> result
+      end
+    end
   end
 end

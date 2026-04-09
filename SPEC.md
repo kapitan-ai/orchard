@@ -313,11 +313,25 @@ Implementation requirement:
   * chat template rendering
   * token count for final rendered prompt
 
+Tokenizer contract v2 requirements:
+
+* the controller SHALL pass tool context into prompt rendering when a request includes tool configuration
+* the render payload SHALL include:
+
+  * `tools` as an ordered array
+  * `tool_choice` as `null`, a string mode, or a named-function object
+
+* absent `tools` SHALL be represented as an empty array
+* absent `tool_choice` SHALL be represented as `null`
+* token counting SHALL apply to the final rendered prompt after any tool-aware template expansion
+* tokenizer modes that cannot represent tool context SHALL reject tool-calling requests rather than silently dropping tool metadata
+
 The controller SHALL reject requests when:
 
 * `input_tokens + max_output_tokens > model.max_context_tokens`
 * request contains unsupported message/item types
 * tokenizer assets for the selected model are missing or invalid
+* tokenizer prompt rendering cannot honor the request's tool configuration
 
 ### 3.6 Request FSM
 
@@ -1189,6 +1203,17 @@ Supported request fields:
 * `response_format` only `{"type":"json_object"}`
 * `seed` only if runtime supports deterministic seed
 
+Tool-calling request rules:
+
+* only function tools are supported in v1
+* requests that enable tool calling against a model without tool-calling capability SHALL return `400 invalid_request_error`
+* `tool_choice` modes supported in v1:
+
+  * `"none"` disables tool calling even if `tools` is supplied
+  * `"auto"` allows the model to choose text or tool calls
+  * `"required"` requires one or more tool calls or the request SHALL fail
+  * `{"type":"function","function":{"name":"..."}}` requires emitted tool calls to use that function name
+
 Supported roles:
 
 * `system`
@@ -1212,18 +1237,73 @@ Unsupported request fields SHALL return `400 unsupported_parameter`. Explicitly 
 * `json_schema`
 * `parallel_tool_calls=true`
 
+Non-streaming response rules:
+
+* assistant messages MAY include `tool_calls`
+* if tool calls are present and no assistant text was emitted, `message.content` SHALL be `null`
+* if both assistant text and tool calls are present, both MAY be included in the message
+* when a completion terminates by producing one or more tool calls, `finish_reason` SHALL be `"tool_calls"`
+
 Streaming behavior:
 
 * SSE
 * emit chunks as `chat.completion.chunk`
+* text deltas SHALL continue to use `choices[0].delta.content`
+* tool-call deltas SHALL be emitted in `choices[0].delta.tool_calls`
+* streamed tool-call deltas SHALL preserve zero-based call index and append-only argument fragments
+* once tool-call emission has begun, stop-sequence handling SHALL NOT truncate function-call JSON arguments
 * final line `[DONE]`
 * if `stream_options.include_usage=true`, emit final usage chunk before `[DONE]`
+* when a completion terminates by producing tool calls, the terminal chunk SHALL use `finish_reason: "tool_calls"`
 
 If an error occurs **after** streaming has started:
 
 * emit `data: {"error":{...}}`
 * close stream
 * do not emit `[DONE]`
+
+Example non-streaming tool-call response:
+
+```json
+{
+  "id": "chatcmpl_123",
+  "object": "chat.completion",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_0",
+            "type": "function",
+            "function": {
+              "name": "lookup_weather",
+              "arguments": "{\"city\":\"Singapore\"}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "tool_calls"
+    }
+  ]
+}
+```
+
+Example streaming tool-call sequence:
+
+```text
+data: {"id":"chatcmpl_123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}
+
+data: {"id":"chatcmpl_123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_0","type":"function","function":{"name":"lookup_weather","arguments":"{\"city\":\"Sing"}}]}}]}
+
+data: {"id":"chatcmpl_123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"apore\"}"}}]}}]}
+
+data: {"id":"chatcmpl_123","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+```
 
 #### 7.2.5 `POST /v1/responses`
 
@@ -1238,9 +1318,20 @@ Supported request fields:
 * `stop`
 * `stream`
 * `metadata`
-* `tools` (function only)
+* `tools` (function only; conditional on model capability)
 * `tool_choice`
 * `store`
+
+Tool-calling request rules:
+
+* only function tools are supported in v1
+* requests that enable tool calling against a model without tool-calling capability SHALL return `400 invalid_request_error`
+* `tool_choice` modes supported in v1:
+
+  * `"none"` disables tool calling even if `tools` is supplied
+  * `"auto"` allows the model to choose text or tool calls
+  * `"required"` requires one or more tool calls or the request SHALL fail
+  * `{"type":"function","function":{"name":"..."}}` requires emitted tool calls to use that function name
 
 Supported output object subset:
 
@@ -1255,14 +1346,22 @@ Supported output object subset:
 * `error`
 * `metadata`
 
+Tool-calling response rules:
+
+* sync responses MAY include `function_call` output items in `output`
+* `output_text` SHALL include only text output content and MAY be empty when the response consists only of tool calls
+* the platform SHALL NOT introduce incremental Responses function-call SSE events in v1
+* streaming function-call data SHALL appear only in terminal `response.completed` or `response.failed` payloads
+* terminal payloads that include partial tool calls due to interruption or cancellation SHALL mark the response as incomplete or failed rather than presenting the tool call as complete
+
 Streaming behavior:
 
 * SSE with typed events
 * required emitted events:
 
   * `response.created`
-  * `response.output_text.delta`
-  * `response.output_text.done`
+  * zero or more `response.output_text.delta`
+  * `response.output_text.done` if any text deltas were emitted
   * `response.completed` or `response.failed`
 
 The Responses API in OpenAI’s current documentation uses typed semantic streaming events; this platform SHALL mirror that model for the supported subset. ([OpenAI Developers][6])
@@ -1272,6 +1371,37 @@ The Responses API in OpenAI’s current documentation uses typed semantic stream
 * accepted for compatibility
 * does **not** disable internal accounting/audit metadata
 * when `store=false`, full prompt/response payload retention SHALL follow tenant retention policy and default to redacted metadata only
+
+Example sync response with a function call item:
+
+```json
+{
+  "id": "resp_123",
+  "object": "response",
+  "status": "completed",
+  "model": "mlx-community/Qwen2.5-7B-Instruct-4bit@abc123",
+  "output": [
+    {
+      "type": "function_call",
+      "id": "call_0",
+      "call_id": "call_0",
+      "name": "lookup_weather",
+      "arguments": "{\"city\":\"Singapore\"}"
+    }
+  ],
+  "output_text": ""
+}
+```
+
+Example streaming terminal tool-call response:
+
+```text
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_123","status":"in_progress"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_123","status":"completed","output":[{"type":"function_call","id":"call_0","call_id":"call_0","name":"lookup_weather","arguments":"{\"city\":\"Singapore\"}"}],"output_text":""}}
+```
 
 #### 7.2.6 Public error shape
 
@@ -1606,6 +1736,22 @@ message EnsureModelLoadedResponse {
   string failure_message = 5;
 }
 
+enum FinishReason {
+  FINISH_REASON_UNSPECIFIED = 0;
+  FINISH_REASON_STOP = 1;
+  FINISH_REASON_LENGTH = 2;
+  FINISH_REASON_TOOL_CALLS = 3;
+}
+
+message GenerationParams {
+  uint32 max_output_tokens = 1;
+  double temperature = 2;
+  double top_p = 3;
+  repeated string stop_sequences = 4;
+  bytes tools_json = 5;
+  bytes tool_choice_json = 6;
+}
+
 message ExecuteInferenceRequest {
   string request_id = 1;
   string controller_session_id = 2;
@@ -1629,7 +1775,38 @@ message InferenceEvent {
     Progress progress = 7;
   }
 }
+
+message ToolCallDelta {
+  string tool_call_id = 1;
+  string delta_json = 2;
+}
+
+message Completed {
+  FinishReason finish_reason = 1;
+  TokenUsage usage = 2;
+}
 ```
+
+Internal tool-calling wire semantics:
+
+* `GenerationParams.tools_json` SHALL contain a UTF-8 JSON array of the request tools; empty bytes mean tools omitted or disabled for the request
+* `GenerationParams.tool_choice_json` SHALL contain a UTF-8 JSON scalar or object matching the public `tool_choice` value; empty bytes mean `null`
+* `ToolCallDelta.delta_json` SHALL encode an object with the following logical shape:
+
+```json
+{
+  "index": 0,
+  "type": "function",
+  "function": {
+    "name": "lookup_weather",
+    "arguments_delta": "{\"city\":\"Sing"
+  }
+}
+```
+
+* `ToolCallDelta.tool_call_id` SHALL remain stable for the life of that tool call within the request
+* tool-call deltas SHALL preserve zero-based call index and append-only argument fragments in arrival order
+* if a request completes successfully after emitting one or more tool-call deltas, the terminal `Completed.finish_reason` SHALL be `FINISH_REASON_TOOL_CALLS`
 
 #### 7.5.4 Node registration flow
 
@@ -1651,7 +1828,10 @@ Admin creates bootstrap token or provisions node
 * require placement already `loaded` or be preceded by `EnsureModelLoaded`
 * return `Accepted` before long prefill starts
 * stream deltas in order
-* include terminal `Completed` or `Failed`
+* allow ordered mixtures of `output_text_delta`, `tool_call_delta`, `usage`, and `progress`
+* include exactly one terminal `Completed` or `Failed`
+* stop emitting additional events after the terminal event
+* preserve tool-call argument bytes exactly once tool-call emission has begun; stop-sequence handling SHALL NOT truncate tool-call JSON fragments
 * be cancelled by request id
 
 #### 7.5.6 Orphan request handling

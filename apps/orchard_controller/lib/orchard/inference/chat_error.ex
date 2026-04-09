@@ -15,6 +15,7 @@ defmodule Orchard.Inference.ChatError do
           | :invalid_value
           | :model_not_found
           | :context_overflow
+          | :tooling_not_supported
           | :tokenization_invalid_request
           | :tokenization_internal
           | :model_load_failed
@@ -77,6 +78,9 @@ defmodule Orchard.Inference.ChatError do
 
   def from_prepare_reason({:context_overflow, detail}),
     do: build(:context_overflow, detail: detail)
+
+  def from_prepare_reason({:tooling_not_supported, detail}),
+    do: build(:tooling_not_supported, detail: detail)
 
   def from_prepare_reason({:tokenization, {category, message}})
       when is_binary(message) and category in [:invalid_input, :unsupported_tokenizer],
@@ -156,6 +160,27 @@ defmodule Orchard.Inference.ChatError do
       code: "context_length_exceeded",
       message: detail,
       param: nil
+    }
+  end
+
+  def api_mapping(%__MODULE__{kind: :tooling_not_supported, source_message: message})
+      when is_binary(message) and message != "" do
+    %{
+      status: :bad_request,
+      type: "invalid_request_error",
+      code: "tooling_not_supported",
+      message: message,
+      param: "model"
+    }
+  end
+
+  def api_mapping(%__MODULE__{kind: :tooling_not_supported, detail: detail}) do
+    %{
+      status: :bad_request,
+      type: "invalid_request_error",
+      code: "tooling_not_supported",
+      message: tooling_not_supported_message(detail),
+      param: "model"
     }
   end
 
@@ -321,6 +346,8 @@ defmodule Orchard.Inference.ChatError do
   defp failed_event_kind(code) when code in ["timed_out", "request_timeout", "deadline_exceeded"],
     do: :request_timed_out
 
+  defp failed_event_kind("tooling_not_supported"), do: :tooling_not_supported
+
   defp failed_event_kind(code) when code in ["cancelled", "request_cancelled"],
     do: :request_cancelled
 
@@ -334,4 +361,10 @@ defmodule Orchard.Inference.ChatError do
     do: "Tokenization failed: #{detail}"
 
   defp tokenization_internal_message(detail), do: "Tokenization failed: #{inspect(detail)}"
+
+  defp tooling_not_supported_message(detail) when is_binary(detail),
+    do: "Model does not support tool calling: #{detail}"
+
+  defp tooling_not_supported_message(detail),
+    do: "Model does not support tool calling: #{inspect(detail)}"
 end

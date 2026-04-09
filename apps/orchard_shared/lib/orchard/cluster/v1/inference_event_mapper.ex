@@ -165,10 +165,12 @@ defmodule Orchard.Cluster.V1.InferenceEventMapper do
   defp finish_reason_to_proto(:finish_reason_unspecified), do: :FINISH_REASON_UNSPECIFIED
   defp finish_reason_to_proto(:finish_reason_stop), do: :FINISH_REASON_STOP
   defp finish_reason_to_proto(:finish_reason_length), do: :FINISH_REASON_LENGTH
+  defp finish_reason_to_proto(:finish_reason_tool_calls), do: :FINISH_REASON_TOOL_CALLS
 
   defp finish_reason_from_proto(:FINISH_REASON_UNSPECIFIED), do: {:ok, :finish_reason_unspecified}
   defp finish_reason_from_proto(:FINISH_REASON_STOP), do: {:ok, :finish_reason_stop}
   defp finish_reason_from_proto(:FINISH_REASON_LENGTH), do: {:ok, :finish_reason_length}
+  defp finish_reason_from_proto(:FINISH_REASON_TOOL_CALLS), do: {:ok, :finish_reason_tool_calls}
   defp finish_reason_from_proto(other), do: {:error, {:unknown_finish_reason, other}}
 
   defp safe_build(kind, fun) do

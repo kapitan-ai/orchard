@@ -49,7 +49,7 @@ defmodule Orchard.API.ChatCompletionsController do
   end
 
   defp execute_request(conn, params, caller_context, idempotency) do
-    case ChatOrchestrator.prepare(params, caller_context) do
+    case orchestrator_impl().prepare(params, caller_context) do
       {:ok, canonical, model} ->
         if canonical.stream? do
           handle_streaming(conn, canonical, model, idempotency)
@@ -67,7 +67,7 @@ defmodule Orchard.API.ChatCompletionsController do
   defp handle_non_streaming(conn, canonical, model, idempotency) do
     created = System.system_time(:second)
 
-    case ChatOrchestrator.execute(canonical, model,
+    case orchestrator_impl().execute(canonical, model,
            response_created_at: created,
            idempotency: idempotency
          ) do
@@ -114,8 +114,6 @@ defmodule Orchard.API.ChatCompletionsController do
     model_display = format_model_display(canonical)
     created = System.system_time(:second)
 
-    # Track mutable state across synchronous event_handler callbacks.
-    # All calls happen in this process, so Process dictionary is safe.
     state_key = make_ref()
 
     Process.put(state_key, %{
@@ -131,7 +129,7 @@ defmodule Orchard.API.ChatCompletionsController do
     end
 
     result =
-      ChatOrchestrator.execute(canonical, model,
+      orchestrator_impl().execute(canonical, model,
         event_handler: handler,
         idempotency: idempotency
       )
@@ -142,8 +140,6 @@ defmodule Orchard.API.ChatCompletionsController do
     finalize_stream(state, result, canonical, model_display, created)
   end
 
-  # Checks whether the SSE connection is still alive, delegates to
-  # handle_stream_event, and returns :cancel when the client has gone.
   defp dispatch_stream_event(state_key, event, public_id, model_display, created) do
     state = Process.get(state_key)
 
@@ -163,6 +159,11 @@ defmodule Orchard.API.ChatCompletionsController do
         |> maybe_emit_role_chunk(public_id, model_display, created)
         |> emit_content_chunk(event.event.delta, public_id, model_display, created)
 
+      :tool_call_delta ->
+        state
+        |> maybe_emit_role_chunk(public_id, model_display, created)
+        |> emit_tool_call_chunk(event, public_id, model_display, created)
+
       :completed ->
         state
         |> maybe_emit_role_chunk(public_id, model_display, created)
@@ -176,7 +177,6 @@ defmodule Orchard.API.ChatCompletionsController do
         store_usage_from_update(state, event)
 
       _other ->
-        # Skip :accepted, :progress, :tool_call_delta for M1
         state
     end
   end
@@ -202,6 +202,17 @@ defmodule Orchard.API.ChatCompletionsController do
     send_sse_chunk(state, chunk)
   end
 
+  defp emit_tool_call_chunk(state, event, public_id, model_display, created) do
+    case tool_call_choice(event) do
+      {:ok, choice} ->
+        chunk = build_chunk(public_id, model_display, created, [choice])
+        send_sse_chunk(state, chunk)
+
+      {:error, _reason} ->
+        emit_internal_stream_error(state, "Malformed tool call delta")
+    end
+  end
+
   defp emit_finish_chunk(state, event, public_id, model_display, created) do
     finish_reason = ChatResponseSerializer.finish_reason_from_event(event)
 
@@ -223,6 +234,13 @@ defmodule Orchard.API.ChatCompletionsController do
            code: mapping.code,
            param: mapping.param
          ) do
+      {:ok, conn} -> %{state | conn: conn, errored: true}
+      {:error, :closed} -> %{state | closed: true, errored: true}
+    end
+  end
+
+  defp emit_internal_stream_error(state, message) do
+    case SSE.send_error(state.conn, message, "server_error", code: "internal_error") do
       {:ok, conn} -> %{state | conn: conn, errored: true}
       {:error, :closed} -> %{state | closed: true, errored: true}
     end
@@ -263,7 +281,6 @@ defmodule Orchard.API.ChatCompletionsController do
 
   defp finalize_stream(state, _result, _canonical, _model_display, _created)
        when state.errored do
-    # Error already emitted via SSE — do NOT send [DONE] per §7.2.4
     state.conn
   end
 
@@ -328,6 +345,10 @@ defmodule Orchard.API.ChatCompletionsController do
     InferenceControllerSupport.resolve_idempotency(conn, idempotency)
   end
 
+  defp orchestrator_impl do
+    Application.get_env(:orchard_controller, :api_chat_orchestrator_impl, ChatOrchestrator)
+  end
+
   defp sse_error_mapping({:idempotency_conflict, reason}) do
     InferenceControllerSupport.sse_error_mapping({:idempotency_conflict, reason})
   end
@@ -342,4 +363,83 @@ defmodule Orchard.API.ChatCompletionsController do
       code: mapping.code
     )
   end
+
+  defp tool_call_choice(%InferenceEvent{event: %InferenceEvent.ToolCallDelta{} = delta_event}) do
+    with {:ok, delta} <- Jason.decode(delta_event.delta_json),
+         {:ok, tool_call} <- stream_tool_call_delta(delta_event.tool_call_id, delta) do
+      {:ok, %{index: 0, delta: %{tool_calls: [tool_call]}, finish_reason: nil}}
+    else
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp stream_tool_call_delta(tool_call_id, %{"index" => index} = delta)
+       when is_integer(index) and index >= 0 do
+    function_delta = Map.get(delta, "function")
+
+    with {:ok, type} <- normalize_delta_type(Map.get(delta, "type"), function_delta),
+         {:ok, function_fragment} <- normalize_function_fragment(function_delta),
+         true <- type != nil or function_fragment != nil do
+      tool_call =
+        %{index: index, id: tool_call_id}
+        |> maybe_put(:type, type)
+        |> maybe_put(:function, function_fragment)
+
+      {:ok, tool_call}
+    else
+      {:error, _reason} = error -> error
+      false -> {:error, :empty_tool_call_delta}
+    end
+  end
+
+  defp stream_tool_call_delta(_tool_call_id, delta),
+    do: {:error, {:invalid_tool_call_delta, delta}}
+
+  defp normalize_delta_type(nil, %{"name" => name}) when is_binary(name), do: {:ok, "function"}
+  defp normalize_delta_type(nil, _function_delta), do: {:ok, nil}
+  defp normalize_delta_type("function", _function_delta), do: {:ok, "function"}
+  defp normalize_delta_type(type, _function_delta), do: {:error, {:invalid_type, type}}
+
+  defp normalize_function_fragment(nil), do: {:ok, nil}
+
+  defp normalize_function_fragment(function_delta) when is_map(function_delta) do
+    with {:ok, name} <- normalize_function_name(Map.get(function_delta, "name")),
+         {:ok, arguments} <- normalize_function_arguments(function_delta) do
+      {:ok, build_function_fragment(name, arguments)}
+    end
+  end
+
+  defp normalize_function_fragment(other), do: {:error, {:invalid_function, other}}
+
+  defp normalize_function_name(nil), do: {:ok, nil}
+  defp normalize_function_name(name) when is_binary(name), do: {:ok, name}
+  defp normalize_function_name(name), do: {:error, {:invalid_name, name}}
+
+  defp normalize_function_arguments(function_delta) do
+    arguments =
+      cond do
+        is_binary(Map.get(function_delta, "arguments_delta")) ->
+          Map.get(function_delta, "arguments_delta")
+
+        is_binary(Map.get(function_delta, "arguments")) ->
+          Map.get(function_delta, "arguments")
+
+        true ->
+          nil
+      end
+
+    if arguments == nil or is_binary(arguments) do
+      {:ok, arguments}
+    else
+      {:error, {:invalid_arguments, arguments}}
+    end
+  end
+
+  defp build_function_fragment(nil, nil), do: nil
+  defp build_function_fragment(name, nil), do: %{name: name}
+  defp build_function_fragment(nil, arguments), do: %{arguments: arguments}
+  defp build_function_fragment(name, arguments), do: %{name: name, arguments: arguments}
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 end

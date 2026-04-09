@@ -77,9 +77,53 @@ defmodule Orchard.Inference.ResponsesRequestValidatorTest do
              ResponsesRequestValidator.validate(Map.put(@valid_params, "stream", 1))
   end
 
-  test "rejects unsupported top-level fields" do
-    assert {:error, :unsupported_parameter, "tools"} =
-             ResponsesRequestValidator.validate(Map.put(@valid_params, "tools", []))
+  test "accepts tools and tool_choice" do
+    params =
+      Map.merge(@valid_params, %{
+        "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
+        "tool_choice" => "auto"
+      })
+
+    assert {:ok, _} = ResponsesRequestValidator.validate(params)
+  end
+
+  test "accepts nil tool_choice" do
+    assert {:ok, _} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "tool_choice", nil))
+  end
+
+  test "rejects duplicate tool names" do
+    params =
+      Map.put(@valid_params, "tools", [
+        %{"type" => "function", "function" => %{"name" => "lookup_weather"}},
+        %{"type" => "function", "function" => %{"name" => "lookup_weather"}}
+      ])
+
+    assert {:error, :invalid_value, "tools", _} = ResponsesRequestValidator.validate(params)
+  end
+
+  test "rejects required tool_choice with empty tools" do
+    params = Map.merge(@valid_params, %{"tools" => [], "tool_choice" => "required"})
+    assert {:error, :invalid_value, "tool_choice", _} = ResponsesRequestValidator.validate(params)
+  end
+
+  test "rejects named tool_choice when tool is missing" do
+    params =
+      Map.merge(@valid_params, %{
+        "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
+        "tool_choice" => %{"type" => "function", "function" => %{"name" => "lookup_news"}}
+      })
+
+    assert {:error, :invalid_value, "tool_choice", _} = ResponsesRequestValidator.validate(params)
+  end
+
+  test "rejects non-function tools" do
+    params =
+      Map.put(@valid_params, "tools", [
+        %{"type" => "web_search", "function" => %{"name" => "lookup_weather"}}
+      ])
+
+    assert {:error, :unsupported_parameter, "tools"} = ResponsesRequestValidator.validate(params)
   end
 
   test "rejects object input shape" do

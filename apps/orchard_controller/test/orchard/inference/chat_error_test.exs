@@ -43,6 +43,19 @@ defmodule Orchard.Inference.ChatErrorTest do
     assert mapping.message == "prompt template rejected input"
   end
 
+  test "tooling_not_supported prepare errors stay a bad_request invalid_request_error" do
+    mapping =
+      {:tooling_not_supported, "stub-tool-model@v1"}
+      |> ChatError.from_prepare_reason()
+      |> ChatError.api_mapping()
+
+    assert mapping.status == :bad_request
+    assert mapping.type == "invalid_request_error"
+    assert mapping.code == "tooling_not_supported"
+    assert mapping.param == "model"
+    assert mapping.message == "Model does not support tool calling: stub-tool-model@v1"
+  end
+
   test "tokenization internal mapping preserves controller-owned internal_error response" do
     mapping =
       {:tokenization, {:boom, "tokenizer crashed"}}
@@ -140,6 +153,32 @@ defmodule Orchard.Inference.ChatErrorTest do
              http_status: 500,
              error_code: "request_cancelled",
              error_message: "request was cancelled upstream"
+           }
+  end
+
+  test "tooling_not_supported failed events preserve a 400 invalid_request_error mapping" do
+    event =
+      InferenceEvent.failed(
+        "tooling_not_supported",
+        "model tokenizer does not advertise tool-calling support",
+        false
+      )
+
+    error = ChatError.from_failed_event(event)
+
+    assert ChatError.api_mapping(error) == %{
+             status: :bad_request,
+             type: "invalid_request_error",
+             code: "tooling_not_supported",
+             message: "model tokenizer does not advertise tool-calling support",
+             param: "model"
+           }
+
+    assert ChatError.sse_mapping(error) == %{
+             type: "invalid_request_error",
+             code: "tooling_not_supported",
+             message: "model tokenizer does not advertise tool-calling support",
+             param: "model"
            }
   end
 

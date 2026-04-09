@@ -18,7 +18,7 @@ def test_build_success_response_returns_structured_result() -> None:
     payload = build_success_response("system orchard\nassistant", 2)
 
     assert payload == {
-        "contract_version": 1,
+        "contract_version": 2,
         "ok": True,
         "result": {
             "rendered_prompt": "system orchard\nassistant",
@@ -31,7 +31,7 @@ def test_build_error_response_returns_stable_category_shape() -> None:
     payload = build_error_response("missing_assets", "tokenizer asset is missing")
 
     assert payload == {
-        "contract_version": 1,
+        "contract_version": 2,
         "ok": False,
         "error": {
             "category": "missing_assets",
@@ -51,7 +51,7 @@ def test_main_renders_and_counts_huggingface_fixture(capsys) -> None:
 
     response = json.loads(capsys.readouterr().out)
     assert response == {
-        "contract_version": 1,
+        "contract_version": 2,
         "ok": True,
         "result": {
             "rendered_prompt": "system orchard\nuser hello orchard\nassistant",
@@ -148,10 +148,14 @@ def fixture_root() -> Path:
 
 
 def tokenization_payload(
-    *, tokenizer_kind: str, tokenizer_path: Path, chat_template_path: Path
+    *,
+    tokenizer_kind: str,
+    tokenizer_path: Path,
+    chat_template_path: Path,
+    contract_version: int = 2,
 ) -> dict[str, Any]:
     return {
-        "contract_version": 1,
+        "contract_version": contract_version,
         "command": "render_and_count",
         "assets": {
             "tokenizer_kind": tokenizer_kind,
@@ -265,6 +269,9 @@ def test_optional_undefined_variables_tolerated(tmp_path: Path, capsys) -> None:
     bundle = _make_bundle(
         tmp_path,
         template=(
+            "tools_defined={{ tools is defined }} "
+            "tools_len={{ tools | length }} "
+            "tool_choice_is_none={{ tool_choice is none }}\n"
             "{%- if tools %}TOOLS{% endif %}"
             "{{ messages[0]['content'] }}"
         ),
@@ -279,5 +286,45 @@ def test_optional_undefined_variables_tolerated(tmp_path: Path, capsys) -> None:
     assert main(["--request-json", json.dumps(payload)]) == 0
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
+    assert (
+        "tools_defined=True tools_len=0 tool_choice_is_none=True"
+        in response["result"]["rendered_prompt"]
+    )
     assert "TOOLS" not in response["result"]["rendered_prompt"]
     assert "orchard" in response["result"]["rendered_prompt"]
+
+
+def test_main_renders_template_with_tools_and_tool_choice_fixture(capsys) -> None:
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        chat_template_path=fixture_root() / "chat_template_tools.jinja",
+    )
+    payload["request"]["tools"] = [{"type": "function", "function": {"name": "lookup_weather"}}]
+    payload["request"]["tool_choice"] = {
+        "type": "function",
+        "function": {"name": "lookup_weather"},
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    assert (
+        "tools_defined=True tools_len=1 tool_choice_is_none=False"
+        in response["result"]["rendered_prompt"]
+    )
+    assert "tool lookup_weather" in response["result"]["rendered_prompt"]
+
+
+def test_main_accepts_contract_v1_payloads_for_backward_compatibility(capsys) -> None:
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        chat_template_path=fixture_root() / "chat_template.jinja",
+        contract_version=1,
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    assert response["contract_version"] == 1

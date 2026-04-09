@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 import signal
 import threading
 import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 from typing import Any, Literal
@@ -14,13 +15,13 @@ from typing import Any, Literal
 import grpc
 
 from orchard_worker_mlx.backends import Backend, BackendError, build_backend
-
-logger = logging.getLogger(__name__)
 from orchard_worker_mlx.generated.cluster.v1 import common_pb2, events_pb2, runtime_pb2
 from orchard_worker_mlx.generated.orchard.worker.v1 import (
     worker_runtime_pb2,
     worker_runtime_pb2_grpc,
 )
+
+logger = logging.getLogger(__name__)
 
 # Default TTL for cancel tombstones (seconds).
 _DEFAULT_CANCEL_TOMBSTONE_TTL_S = 60.0
@@ -252,7 +253,8 @@ def build_server(
     cancel_tombstone_ttl_s: float = _DEFAULT_CANCEL_TOMBSTONE_TTL_S,
 ) -> grpc.Server:
     backend = backend_factory(
-        backend_name, prefix_cache_config=prefix_cache_config,
+        backend_name,
+        prefix_cache_config=prefix_cache_config,
     )
     server = grpc.server(ThreadPoolExecutor(max_workers=4))
     worker_runtime_pb2_grpc.add_WorkerRuntimeServiceServicer_to_server(
@@ -306,6 +308,9 @@ def serve(
 
 # Terminal proto event kinds.
 _TERMINAL_ONEOFS = frozenset({"completed", "failed"})
+_VALID_FINISH_REASONS = frozenset(
+    {"FINISH_REASON_STOP", "FINISH_REASON_LENGTH", "FINISH_REASON_TOOL_CALLS"}
+)
 
 
 def _is_terminal_proto_event(event: events_pb2.InferenceEvent) -> bool:
@@ -335,9 +340,7 @@ def build_inference_event(event: dict[str, Any]) -> events_pb2.InferenceEvent:
                 f"output_text_delta.delta must be str, got {type(delta).__name__}",
                 False,
             )
-        return events_pb2.InferenceEvent(
-            output_text_delta=events_pb2.OutputTextDelta(delta=delta)
-        )
+        return events_pb2.InferenceEvent(output_text_delta=events_pb2.OutputTextDelta(delta=delta))
 
     if kind == "progress":
         stage = event.get("stage", "")
@@ -354,12 +357,13 @@ def build_inference_event(event: dict[str, Any]) -> events_pb2.InferenceEvent:
                 "progress.message must be a non-empty string",
                 False,
             )
-        return events_pb2.InferenceEvent(
-            progress=events_pb2.Progress(stage=stage, message=message)
-        )
+        return events_pb2.InferenceEvent(progress=events_pb2.Progress(stage=stage, message=message))
 
     if kind == "usage":
         return _build_usage_event(event)
+
+    if kind == "tool_call_delta":
+        return _build_tool_call_delta_event(event)
 
     if kind == "completed":
         return _build_completed_event(event)
@@ -395,7 +399,9 @@ def _validate_token_usage(usage: dict[str, Any]) -> common_pb2.TokenUsage:
     if total_tokens != input_tokens + output_tokens:
         raise BackendError(
             "backend_invalid_event",
-            f"usage.total_tokens ({total_tokens}) != input_tokens ({input_tokens}) + output_tokens ({output_tokens})",
+            "usage.total_tokens "
+            f"({total_tokens}) != input_tokens ({input_tokens}) + "
+            f"output_tokens ({output_tokens})",
             False,
         )
 
@@ -419,6 +425,128 @@ def _build_usage_event(event: dict[str, Any]) -> events_pb2.InferenceEvent:
     )
 
 
+def _build_tool_call_delta_event(event: dict[str, Any]) -> events_pb2.InferenceEvent:
+    tool_call_id = event.get("tool_call_id")
+    if not isinstance(tool_call_id, str) or not tool_call_id:
+        raise BackendError(
+            "backend_invalid_event",
+            "tool_call_delta.tool_call_id must be a non-empty string",
+            False,
+        )
+
+    delta = _normalize_tool_call_delta(event.get("delta"))
+    return events_pb2.InferenceEvent(
+        tool_call_delta=events_pb2.ToolCallDelta(
+            tool_call_id=tool_call_id,
+            delta_json=json.dumps(delta, ensure_ascii=False),
+        )
+    )
+
+
+def _normalize_tool_call_delta(delta: Any) -> dict[str, Any]:
+    if not isinstance(delta, dict):
+        raise BackendError(
+            "backend_invalid_event",
+            "tool_call_delta.delta must be a dict",
+            False,
+        )
+
+    unknown_delta_keys = sorted(set(delta) - {"index", "type", "function"})
+    if unknown_delta_keys:
+        raise BackendError(
+            "backend_invalid_event",
+            f"tool_call_delta.delta has unknown keys: {unknown_delta_keys}",
+            False,
+        )
+
+    index = delta.get("index")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        raise BackendError(
+            "backend_invalid_event",
+            f"tool_call_delta.delta.index must be a non-negative integer, got {index!r}",
+            False,
+        )
+
+    normalized: dict[str, Any] = {"index": index}
+
+    delta_type = delta.get("type")
+    if delta_type is not None:
+        if delta_type != "function":
+            raise BackendError(
+                "backend_invalid_event",
+                f"tool_call_delta.delta.type must be 'function', got {delta_type!r}",
+                False,
+            )
+        normalized["type"] = delta_type
+
+    function_delta = delta.get("function")
+    if function_delta is not None:
+        if not isinstance(function_delta, dict):
+            raise BackendError(
+                "backend_invalid_event",
+                "tool_call_delta.delta.function must be a dict when present",
+                False,
+            )
+
+        unknown_function_keys = sorted(
+            set(function_delta) - {"name", "arguments_delta", "arguments"}
+        )
+        if unknown_function_keys:
+            raise BackendError(
+                "backend_invalid_event",
+                f"tool_call_delta.delta.function has unknown keys: {unknown_function_keys}",
+                False,
+            )
+        if "arguments_delta" in function_delta and "arguments" in function_delta:
+            raise BackendError(
+                "backend_invalid_event",
+                "tool_call_delta.delta.function cannot include both arguments_delta and arguments",
+                False,
+            )
+
+        normalized_function: dict[str, Any] = {}
+        name = function_delta.get("name")
+        if name is not None:
+            if not isinstance(name, str) or not name:
+                raise BackendError(
+                    "backend_invalid_event",
+                    f"tool_call_delta.delta.function.name must be a non-empty string, got {name!r}",
+                    False,
+                )
+            normalized_function["name"] = name
+
+        arguments_delta = function_delta.get("arguments_delta")
+        arguments = function_delta.get("arguments")
+        if arguments_delta is not None:
+            if not isinstance(arguments_delta, str):
+                raise BackendError(
+                    "backend_invalid_event",
+                    "tool_call_delta.delta.function.arguments_delta must be a string",
+                    False,
+                )
+            normalized_function["arguments_delta"] = arguments_delta
+        elif arguments is not None:
+            if not isinstance(arguments, str):
+                raise BackendError(
+                    "backend_invalid_event",
+                    "tool_call_delta.delta.function.arguments must be a string",
+                    False,
+                )
+            normalized_function["arguments"] = arguments
+
+        if normalized_function:
+            normalized["function"] = normalized_function
+
+    if len(normalized) == 1:
+        raise BackendError(
+            "backend_invalid_event",
+            "tool_call_delta.delta must include type or function content",
+            False,
+        )
+
+    return normalized
+
+
 def _build_completed_event(event: dict[str, Any]) -> events_pb2.InferenceEvent:
     usage_dict = event.get("usage")
     if not isinstance(usage_dict, dict):
@@ -427,9 +555,19 @@ def _build_completed_event(event: dict[str, Any]) -> events_pb2.InferenceEvent:
             "completed event must contain a 'usage' dict",
             False,
         )
+
+    finish_reason = event.get("finish_reason", "FINISH_REASON_STOP")
+    if not isinstance(finish_reason, str) or finish_reason not in _VALID_FINISH_REASONS:
+        raise BackendError(
+            "backend_invalid_event",
+            "completed.finish_reason must be one of "
+            f"{sorted(_VALID_FINISH_REASONS)}, got {finish_reason!r}",
+            False,
+        )
+
     return events_pb2.InferenceEvent(
         completed=events_pb2.Completed(
-            finish_reason=event.get("finish_reason", "FINISH_REASON_STOP"),
+            finish_reason=finish_reason,
             usage=_validate_token_usage(usage_dict),
         )
     )

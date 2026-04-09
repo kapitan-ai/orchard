@@ -6,19 +6,7 @@ defmodule Orchard.Inference.ChatResponseSerializerTest do
   alias Orchard.InferenceEvent
 
   test "completion_payload/2 matches chat completion shape and uses accepted timestamp" do
-    canonical =
-      CanonicalRequest.new(%{
-        internal_id: Ecto.UUID.generate(),
-        public_id: "chatcmpl_test",
-        endpoint: :chat_completions,
-        tenant_id: Ecto.UUID.generate(),
-        model_ref: %{model_id: "test-model", version: "v1"},
-        input_items: [%{"role" => "user", "content" => "hello"}],
-        rendered_prompt: "hello",
-        input_token_count: 3,
-        stream?: false
-      })
-
+    canonical = build_canonical("chatcmpl_test")
     usage = %InferenceEvent.Usage{input_tokens: 3, output_tokens: 2, total_tokens: 5}
 
     events = [
@@ -46,37 +34,94 @@ defmodule Orchard.Inference.ChatResponseSerializerTest do
     assert payload.usage == %{prompt_tokens: 3, completion_tokens: 2, total_tokens: 5}
   end
 
-  test "success_persistence_attrs/2 returns response payload and preview" do
-    canonical =
-      CanonicalRequest.new(%{
-        internal_id: Ecto.UUID.generate(),
-        public_id: "chatcmpl_persist",
-        endpoint: :chat_completions,
-        tenant_id: Ecto.UUID.generate(),
-        model_ref: %{model_id: "test-model", version: "v1"},
-        input_items: [%{"role" => "user", "content" => "hello"}],
-        rendered_prompt: "hello",
-        input_token_count: 1,
-        stream?: false
-      })
+  test "tool-call-only response includes tool_calls, null content, and tool_calls finish_reason" do
+    canonical = build_canonical("chatcmpl_tools")
 
     events = [
-      InferenceEvent.accepted(42_000),
-      InferenceEvent.output_text_delta("Hello"),
-      InferenceEvent.completed(:finish_reason_stop, nil)
+      InferenceEvent.accepted(1_710_000_123_000),
+      tool_call_event("call_0", %{index: 0, type: "function", function: %{name: "lookup_weather"}}),
+      tool_call_event("call_0", %{
+        index: 0,
+        function: %{arguments_delta: "{\"city\":\"Singapore\"}"}
+      }),
+      InferenceEvent.completed(:finish_reason_tool_calls, nil)
     ]
 
-    attrs = ChatResponseSerializer.success_persistence_attrs(canonical, events)
+    payload = ChatResponseSerializer.completion_payload(canonical, events)
 
-    assert attrs.response_preview == "Hello"
-
-    assert attrs.response_payload.choices == [
+    assert payload.choices == [
              %{
                index: 0,
-               message: %{role: "assistant", content: "Hello"},
-               finish_reason: "stop"
+               message: %{
+                 role: "assistant",
+                 content: nil,
+                 tool_calls: [
+                   %{
+                     id: "call_0",
+                     type: "function",
+                     function: %{
+                       name: "lookup_weather",
+                       arguments: "{\"city\":\"Singapore\"}"
+                     }
+                   }
+                 ]
+               },
+               finish_reason: "tool_calls"
              }
            ]
+  end
+
+  test "mixed text and tool-call response preserves both and preview falls back to tool summary" do
+    canonical = build_canonical("chatcmpl_mixed")
+
+    mixed_events = [
+      InferenceEvent.accepted(42_000),
+      InferenceEvent.output_text_delta("Let me check."),
+      tool_call_event("call_0", %{index: 0, type: "function", function: %{name: "lookup_weather"}}),
+      tool_call_event("call_0", %{
+        index: 0,
+        function: %{arguments_delta: "{\"city\":\"Singapore\"}"}
+      }),
+      InferenceEvent.completed(:finish_reason_tool_calls, nil)
+    ]
+
+    payload = ChatResponseSerializer.completion_payload(canonical, mixed_events)
+
+    assert payload.choices == [
+             %{
+               index: 0,
+               message: %{
+                 role: "assistant",
+                 content: "Let me check.",
+                 tool_calls: [
+                   %{
+                     id: "call_0",
+                     type: "function",
+                     function: %{
+                       name: "lookup_weather",
+                       arguments: "{\"city\":\"Singapore\"}"
+                     }
+                   }
+                 ]
+               },
+               finish_reason: "tool_calls"
+             }
+           ]
+
+    tool_only_events = [
+      InferenceEvent.accepted(42_000),
+      tool_call_event("call_0", %{index: 0, type: "function", function: %{name: "lookup_weather"}}),
+      tool_call_event("call_0", %{
+        index: 0,
+        function: %{arguments_delta: "{\"city\":\"Singapore\"}"}
+      }),
+      InferenceEvent.completed(:finish_reason_tool_calls, nil)
+    ]
+
+    attrs = ChatResponseSerializer.success_persistence_attrs(canonical, tool_only_events)
+
+    assert attrs.response_preview ==
+             "Tool call: lookup_weather({\"city\":\"Singapore\"})"
   end
 
   test "usage_map/1 zero-fills nil usage" do
@@ -85,5 +130,23 @@ defmodule Orchard.Inference.ChatResponseSerializerTest do
              completion_tokens: 0,
              total_tokens: 0
            }
+  end
+
+  defp build_canonical(public_id) do
+    CanonicalRequest.new(%{
+      internal_id: Ecto.UUID.generate(),
+      public_id: public_id,
+      endpoint: :chat_completions,
+      tenant_id: Ecto.UUID.generate(),
+      model_ref: %{model_id: "test-model", version: "v1"},
+      input_items: [%{"role" => "user", "content" => "hello"}],
+      rendered_prompt: "hello",
+      input_token_count: 3,
+      stream?: false
+    })
+  end
+
+  defp tool_call_event(tool_call_id, delta) do
+    InferenceEvent.tool_call_delta(tool_call_id, Jason.encode!(delta))
   end
 end

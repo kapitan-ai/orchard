@@ -8,6 +8,7 @@ import logging
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import Any
 
@@ -119,21 +120,43 @@ class BundleManifest:
 # Manifest parsing & validation
 # ---------------------------------------------------------------------------
 
-_KNOWN_TOP_LEVEL_KEYS = frozenset({
-    "model_id", "version", "format", "artifact_layout", "entrypoint", "sha256",
-    "size_bytes", "resident_memory_bytes", "kv_cache_bytes_per_token",
-    "prefill_workspace_bytes_per_token", "max_context_tokens", "capabilities",
-    "tokenizer", "chat_template", "runtime_requirements",
-})
+_KNOWN_TOP_LEVEL_KEYS = frozenset(
+    {
+        "model_id",
+        "version",
+        "format",
+        "artifact_layout",
+        "entrypoint",
+        "sha256",
+        "size_bytes",
+        "resident_memory_bytes",
+        "kv_cache_bytes_per_token",
+        "prefill_workspace_bytes_per_token",
+        "max_context_tokens",
+        "capabilities",
+        "tokenizer",
+        "chat_template",
+        "runtime_requirements",
+    }
+)
 
 _KNOWN_TOKENIZER_KEYS = frozenset({"kind", "path"})
 _KNOWN_CHAT_TEMPLATE_KEYS = frozenset({"path", "sha256"})
 _KNOWN_RUNTIME_REQUIREMENTS_KEYS = frozenset({"adapter", "min_agent_capability"})
 
-_REQUIRED_STRING_FIELDS = ("model_id", "version", "format", "artifact_layout", "entrypoint", "sha256")
+_REQUIRED_STRING_FIELDS = (
+    "model_id",
+    "version",
+    "format",
+    "artifact_layout",
+    "entrypoint",
+    "sha256",
+)
 
 _OPTIONAL_NON_NEGATIVE_INT_FIELDS = (
-    "size_bytes", "resident_memory_bytes", "kv_cache_bytes_per_token",
+    "size_bytes",
+    "resident_memory_bytes",
+    "kv_cache_bytes_per_token",
     "prefill_workspace_bytes_per_token",
 )
 
@@ -216,7 +239,9 @@ def parse_manifest_json(payload: str) -> BundleManifest:
 
     # --- runtime_requirements ---
     rt_req = _parse_nested(
-        data, "runtime_requirements", _KNOWN_RUNTIME_REQUIREMENTS_KEYS,
+        data,
+        "runtime_requirements",
+        _KNOWN_RUNTIME_REQUIREMENTS_KEYS,
         required_fields=("adapter", "min_agent_capability"),
     )
     rt_spec = RuntimeRequirementsSpec(
@@ -228,7 +253,9 @@ def parse_manifest_json(payload: str) -> BundleManifest:
     chat_template_spec: ChatTemplateSpec | None = None
     if "chat_template" in data:
         ct = _parse_nested(
-            data, "chat_template", _KNOWN_CHAT_TEMPLATE_KEYS,
+            data,
+            "chat_template",
+            _KNOWN_CHAT_TEMPLATE_KEYS,
             required_fields=("path", "sha256"),
         )
         chat_template_spec = ChatTemplateSpec(path=ct["path"], sha256=ct["sha256"])
@@ -257,9 +284,7 @@ def parse_manifest_json(payload: str) -> BundleManifest:
 # ---------------------------------------------------------------------------
 
 
-def _reject_unknown_keys(
-    data: dict[str, Any], known: frozenset[str], context: str
-) -> None:
+def _reject_unknown_keys(data: dict[str, Any], known: frozenset[str], context: str) -> None:
     unknown = set(data.keys()) - known
     if unknown:
         raise ModelLoaderError(
@@ -334,7 +359,7 @@ class MLXDeps:
 def _import_required_mlx_runtime_modules() -> tuple:
     """Import the mandatory Python modules for MLX worker readiness.
 
-    Returns ``(mx, stream_generate, mlx_lm_load, AutoTokenizer)``.
+    Returns ``(mx, stream_generate, mlx_lm_load, mlx_lm_load_tokenizer)``.
     Raises ``ImportError`` if any mandatory dependency is missing.
 
     This helper is the single source of truth for mandatory runtime
@@ -347,16 +372,16 @@ def _import_required_mlx_runtime_modules() -> tuple:
     """
     import mlx.core as mx
     from mlx_lm.generate import stream_generate
+    from mlx_lm.tokenizer_utils import load as mlx_lm_load_tokenizer
     from mlx_lm.utils import load_model as mlx_lm_load
-    from transformers import AutoTokenizer
 
-    return mx, stream_generate, mlx_lm_load, AutoTokenizer
+    return mx, stream_generate, mlx_lm_load, mlx_lm_load_tokenizer
 
 
 def _default_mlx_deps() -> MLXDeps:
     """Import real MLX dependencies lazily."""
     try:
-        mx, stream_generate, mlx_lm_load, AutoTokenizer = (
+        mx, stream_generate, mlx_lm_load, mlx_lm_load_tokenizer = (
             _import_required_mlx_runtime_modules()
         )
     except ImportError as exc:
@@ -371,8 +396,11 @@ def _default_mlx_deps() -> MLXDeps:
     try:
         from mlx_lm.models.cache import (
             can_trim_prompt_cache as _can_trim,
+        )
+        from mlx_lm.models.cache import (
             make_prompt_cache as _make,
         )
+
         _make_prompt_cache = _make
         _can_trim_prompt_cache = _can_trim
     except (ImportError, AttributeError):
@@ -382,6 +410,7 @@ def _default_mlx_deps() -> MLXDeps:
     _make_sampler: Callable[..., Any] | None = None
     try:
         from mlx_lm.sample_utils import make_sampler as _make_sampler_impl
+
         _make_sampler = _make_sampler_impl
     except (ImportError, AttributeError):
         pass
@@ -391,11 +420,11 @@ def _default_mlx_deps() -> MLXDeps:
         return mlx_lm_load(Path(model_path), **kwargs)
 
     def _load_tokenizer(tokenizer_path: str | Path) -> Any:
-        # from_pretrained expects a directory containing tokenizer files,
-        # not a direct file path.  The bundle stores tokenizer.json as a
-        # file, so pass the parent directory.
-        return AutoTokenizer.from_pretrained(
-            str(Path(tokenizer_path).parent), trust_remote_code=False,
+        # mlx_lm.tokenizer_utils.load expects the bundle directory containing
+        # tokenizer assets, not the tokenizer.json file path itself.
+        return mlx_lm_load_tokenizer(
+            Path(tokenizer_path).parent,
+            tokenizer_config_extra={"trust_remote_code": False},
         )
 
     return MLXDeps(
@@ -446,9 +475,7 @@ def _default_mlx_probe_deps() -> MLXProbeDeps:
 
     Raises ``ImportError`` if any mandatory dependency is missing.
     """
-    mx, _stream_generate, _mlx_lm_load, _AutoTokenizer = (
-        _import_required_mlx_runtime_modules()
-    )
+    mx, _stream_generate, _mlx_lm_load, _AutoTokenizer = _import_required_mlx_runtime_modules()
 
     return MLXProbeDeps(
         zeros_fn=mx.zeros,
@@ -519,6 +546,23 @@ class LoadedModelSession:
     decode_cancel_stride: int = 1
     prefill_step_size: int = 2048
     prefix_cache: PrefixCache | None = None
+    tool_calling: dict[str, Any] = dataclass_field(
+        default_factory=lambda: {"supported": False, "parser_type": None}
+    )
+
+
+def _tool_calling_metadata(tokenizer: Any) -> dict[str, Any]:
+    init_kwargs = getattr(tokenizer, "init_kwargs", {})
+    parser_type = init_kwargs.get("tool_parser_type") if isinstance(init_kwargs, dict) else None
+    runtime_supported = callable(getattr(tokenizer, "tool_parser", None)) and isinstance(
+        getattr(tokenizer, "tool_call_start", None),
+        str,
+    )
+    supported = runtime_supported or (isinstance(parser_type, str) and parser_type != "")
+    return {
+        "supported": supported,
+        "parser_type": parser_type if isinstance(parser_type, str) and parser_type else None,
+    }
 
 
 def _normalize_eos_token_ids(tokenizer: Any, model_config: Any) -> tuple[int, ...]:
@@ -758,7 +802,9 @@ def _build_prefix_cache(
     # --- Implementation selection ------------------------------------------
     raw_bytes_per_token = manifest.kv_cache_bytes_per_token
     # Treat 0 or negative as unavailable (same as None).
-    bytes_per_token = raw_bytes_per_token if raw_bytes_per_token and raw_bytes_per_token > 0 else None
+    bytes_per_token = (
+        raw_bytes_per_token if raw_bytes_per_token and raw_bytes_per_token > 0 else None
+    )
     max_entries = prefix_cache_config.max_entries
 
     if prefix_cache_config.mode == "kv":
@@ -902,6 +948,7 @@ def load_session(
             ) from exc
 
     eos_token_ids = _normalize_eos_token_ids(tokenizer, model_config)
+    tool_calling = _tool_calling_metadata(tokenizer)
 
     # --- warmup inference to derive decode_cancel_stride ---
     # Non-fatal: failure falls back to stride=1.  Warmup consumes part of
@@ -919,7 +966,10 @@ def load_session(
     # --- prefix cache eligibility probe (fail-open) ---
     effective_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
     prefix_cache = _build_prefix_cache(
-        model, manifest, deps=deps, prefix_cache_config=effective_config,
+        model,
+        manifest,
+        deps=deps,
+        prefix_cache_config=effective_config,
     )
 
     logger.info("load_session ok model_id=%s version=%s", model_id, version)
@@ -935,6 +985,7 @@ def load_session(
         clear_cache=deps.clear_cache,
         decode_cancel_stride=decode_cancel_stride,
         prefix_cache=prefix_cache,
+        tool_calling=tool_calling,
     )
 
 

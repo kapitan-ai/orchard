@@ -41,6 +41,57 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler do
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.CapturingRuntimeAdapter do
+  @behaviour Orchard.Node.RuntimeAdapter
+
+  alias Orchard.Cluster.V1.ExecuteInferenceRequest
+  alias Orchard.Cluster.V1.ModelRef
+  alias Orchard.InferenceEvent
+
+  @impl true
+  def get_status(_adapter_state, _opts),
+    do: {:ok, %{ready: true, health_code: "", health_message: ""}}
+
+  @impl true
+  def load_model(%ModelRef{} = model_ref, _opts), do: {:ok, %{model_ref: model_ref}}
+
+  @impl true
+  def unload_model(_adapter_state, _opts), do: :ok
+
+  @impl true
+  def start_generation(adapter_state, %ExecuteInferenceRequest{} = request, opts) do
+    if pid = Process.whereis(:request_orchestrator_test_pid) do
+      send(pid, {:captured_execute_request, request})
+    end
+
+    owner = Keyword.fetch!(opts, :owner)
+    generation_ref = make_ref()
+
+    send(
+      owner,
+      {:runtime_adapter_event, generation_ref,
+       InferenceEvent.completed(
+         :finish_reason_stop,
+         %InferenceEvent.Usage{
+           input_tokens: request.input_tokens,
+           output_tokens: 0,
+           total_tokens: request.input_tokens
+         }
+       )}
+    )
+
+    send(owner, {:runtime_adapter_done, generation_ref})
+
+    {:ok, generation_ref, adapter_state}
+  end
+
+  @impl true
+  def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+  @impl true
+  def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest do
   use Orchard.DataCase, async: false
 
@@ -61,9 +112,22 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     ModelManager.reset()
     bundle = stage_test_bundle!()
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+    previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    if Process.whereis(:request_orchestrator_test_pid) do
+      Process.unregister(:request_orchestrator_test_pid)
+    end
+
+    Process.register(self(), :request_orchestrator_test_pid)
 
     on_exit(fn ->
+      if Process.whereis(:request_orchestrator_test_pid) == self() do
+        Process.unregister(:request_orchestrator_test_pid)
+      end
+
       Application.put_env(:orchard_controller, :inference, previous_inference)
+      Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+      ModelManager.reset()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
       File.rm_rf(bundle.source_path)
       File.rm_rf(Path.join(Node.models_root(), ".staging"))
@@ -282,6 +346,55 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.first_token_at == nil
   end
 
+  test "execute/3 forwards tool-calling params and stop sequences to the runtime", %{
+    bundle: bundle
+  } do
+    put_capturing_runtime_adapter_config()
+
+    model =
+      create_active_model!(bundle, "request-orchestrator-tooling",
+        capabilities: ["chat", "tool_calling"]
+      )
+
+    tools = [
+      %{
+        "type" => "function",
+        "function" => %{"name" => "lookup_weather", "description" => "Lookup weather"}
+      }
+    ]
+
+    canonical =
+      canonical_request("request-orchestrator-tooling",
+        stream?: false,
+        stop: ["</tool_call>"],
+        max_output_tokens: 24,
+        tooling: %{tools: tools, tool_choice: "auto"}
+      )
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    assert_receive {:captured_execute_request, execute_request}
+    assert execute_request.params.max_output_tokens == 24
+    assert execute_request.params.stop_sequences == ["</tool_call>"]
+    assert Jason.decode!(execute_request.params.tools_json) == tools
+    assert Jason.decode!(execute_request.params.tool_choice_json) == "auto"
+  end
+
+  test "execute/3 keeps tooling fields empty for non-tool requests", %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-no-tooling")
+    canonical = canonical_request("request-orchestrator-no-tooling", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    assert_receive {:captured_execute_request, execute_request}
+    assert execute_request.params.tools_json == ""
+    assert execute_request.params.tool_choice_json == ""
+  end
+
   defp put_multi_node_scheduler_config do
     inference =
       Application.fetch_env!(:orchard_controller, :inference)
@@ -316,6 +429,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     metadata = Keyword.get(overrides, :metadata, %{})
     tenant_id = Keyword.get(overrides, :tenant_id, Ecto.UUID.generate())
     public_id = Keyword.get(overrides, :public_id, "req_#{System.unique_integer([:positive])}")
+    stop = Keyword.get(overrides, :stop, [])
+    max_output_tokens = Keyword.get(overrides, :max_output_tokens)
+    tooling = Keyword.get(overrides, :tooling, %{})
 
     CanonicalRequest.new(%{
       internal_id: Ecto.UUID.generate(),
@@ -328,8 +444,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       rendered_prompt: "hello",
       input_token_count: 1,
       stream?: stream?,
-      sampling: %{temperature: 1.0, top_p: 1.0, stop: []},
+      sampling: %{temperature: 1.0, top_p: 1.0, stop: stop, max_output_tokens: max_output_tokens},
       response_format: %{type: :text},
+      tooling: tooling,
       metadata: metadata
     })
   end
@@ -340,14 +457,15 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     |> Enum.map_join("", & &1.event.delta)
   end
 
-  defp create_active_model!(bundle, model_id) do
-    {:ok, model} =
-      Orchard.Models.create_model(%{
+  defp create_active_model!(bundle, model_id, overrides \\ []) do
+    attrs =
+      %{
         model_id: model_id,
         version: "v1",
         display_name: model_id,
         artifact_uri: "file:///tmp/#{model_id}",
         artifact_sha256: bundle.hash,
+        artifact_source_uri: "file://#{bundle.source_path}",
         state: :active,
         format: "mlx",
         backend: "mlx",
@@ -357,9 +475,22 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
         kv_cache_bytes_per_token: 128,
         prefill_workspace_bytes_per_token: 64,
         max_context_tokens: 131_072
-      })
+      }
+      |> Map.merge(Enum.into(overrides, %{}))
 
+    {:ok, model} = Orchard.Models.create_model(attrs)
     model
+  end
+
+  defp put_capturing_runtime_adapter_config do
+    runtime =
+      Application.fetch_env!(:orchard_node_agent, :runtime)
+      |> Keyword.merge(
+        runtime_adapter_impl: Orchard.Inference.RequestOrchestratorTest.CapturingRuntimeAdapter
+      )
+
+    Application.put_env(:orchard_node_agent, :runtime, runtime)
+    ModelManager.reset()
   end
 
   defp stage_test_bundle! do

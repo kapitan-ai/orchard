@@ -568,6 +568,7 @@ class TestKVPrefixCacheStats:
 
         class UncopiableCache:
             offset = 5
+
             def __deepcopy__(self, memo: Any) -> None:
                 raise RuntimeError("copy boom")
 
@@ -587,6 +588,7 @@ class TestKVPrefixCacheStats:
 
         class UncopiableObj:
             offset = 3
+
             def __deepcopy__(self, memo: Any) -> None:
                 raise RuntimeError("store copy boom")
 
@@ -631,7 +633,7 @@ class TestKVPrefixCacheStats:
         """With bytes_per_token set, total_bytes reflects entry sizes."""
         cache = KVPrefixCache(bytes_per_token=100)
         cache.store([1, 2, 3], _make_fake_cache(3))  # 3 tokens * 100 = 300
-        cache.store([4, 5], _make_fake_cache(5))      # 5 tokens * 100 = 500
+        cache.store([4, 5], _make_fake_cache(5))  # 5 tokens * 100 = 500
         s = cache.stats()
         assert s.total_bytes == 800
         assert s.entry_count == 2
@@ -868,7 +870,9 @@ class TestTrieByteBudgetEviction:
         """Exceeding byte budget evicts oldest entries."""
         # Each fake cache with length=3 at 100 bytes/token = 300 bytes.
         cache = TriePrefixCache(
-            max_entries=10, max_bytes=500, bytes_per_token=100,
+            max_entries=10,
+            max_bytes=500,
+            bytes_per_token=100,
         )
         cache.store([1, 1], _make_fake_cache(3))  # 300
         cache.store([2, 2], _make_fake_cache(3))  # 300 -> total 600 > 500
@@ -880,7 +884,7 @@ class TestTrieByteBudgetEviction:
     def test_byte_stats_track_correctly(self) -> None:
         cache = TriePrefixCache(max_bytes=10000, bytes_per_token=100)
         cache.store([1, 2, 3], _make_fake_cache(3))  # 300
-        cache.store([4, 5], _make_fake_cache(5))      # 500
+        cache.store([4, 5], _make_fake_cache(5))  # 500
         s = cache.stats()
         assert s.total_bytes == 800
         assert s.entry_count == 2
@@ -888,7 +892,8 @@ class TestTrieByteBudgetEviction:
     def test_no_byte_cap_when_disabled(self) -> None:
         """Without max_bytes, only entry count matters."""
         cache = TriePrefixCache(
-            max_entries=10, bytes_per_token=100,
+            max_entries=10,
+            bytes_per_token=100,
         )  # max_bytes=None
         for i in range(10):
             cache.store([i, i], _make_fake_cache(100))  # 10000 bytes each
@@ -915,7 +920,8 @@ class TestTrieOversizeRejection:
     def test_oversize_entry_skipped(self) -> None:
         """Entry exceeding max_bytes is silently rejected and returns False."""
         cache = TriePrefixCache(
-            max_bytes=100, bytes_per_token=100,
+            max_bytes=100,
+            bytes_per_token=100,
         )
         result = cache.store([1, 2], _make_fake_cache(2))  # 200 > 100
         assert result is False
@@ -927,7 +933,8 @@ class TestTrieOversizeRejection:
     def test_existing_entries_preserved_on_rejection(self) -> None:
         """Rejecting oversize entry doesn't affect existing entries."""
         cache = TriePrefixCache(
-            max_bytes=300, bytes_per_token=100,
+            max_bytes=300,
+            bytes_per_token=100,
         )
         cache.store([1, 1], _make_fake_cache(2))  # 200 <= 300, accepted
         cache.store([2, 2], _make_fake_cache(5))  # 500 > 300, rejected
@@ -982,8 +989,8 @@ class TestTriePrefixDeduplication:
     def test_bytes_updated_after_dedup(self) -> None:
         """Byte total reflects removal of deduped entries."""
         cache = TriePrefixCache(bytes_per_token=100)
-        cache.store([1, 2], _make_fake_cache(2))      # 200
-        cache.store([1, 2, 3], _make_fake_cache(3))    # 300, dedup removes 200
+        cache.store([1, 2], _make_fake_cache(2))  # 200
+        cache.store([1, 2, 3], _make_fake_cache(3))  # 300, dedup removes 200
         assert cache.stats().total_bytes == 300
 
 
@@ -1017,6 +1024,7 @@ class TestTrieFailureSemantics:
 
         class Uncopiable:
             offset = 5
+
             def __deepcopy__(self, memo: Any) -> None:
                 raise RuntimeError("copy boom")
 
@@ -1033,6 +1041,7 @@ class TestTrieFailureSemantics:
 
         class Uncopiable:
             offset = 3
+
             def __deepcopy__(self, memo: Any) -> None:
                 raise RuntimeError("store boom")
 

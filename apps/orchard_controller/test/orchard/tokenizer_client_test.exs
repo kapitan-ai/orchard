@@ -44,6 +44,15 @@ defmodule Orchard.Tokenizer.ClientTest do
     assert message =~ "text parts"
   end
 
+  test "fake mode rejects effective tool-calling requests" do
+    assert {:error, {:invalid_input, message}} =
+             Client.tokenize(
+               canonical_request(tooling: %{tools: [tool("lookup_weather")], tool_choice: "auto"})
+             )
+
+    assert message =~ "does not support tool-calling"
+  end
+
   test "port mode returns rendered prompt and exact token count from structured JSON" do
     with_inference_overrides(
       [
@@ -62,6 +71,35 @@ defmodule Orchard.Tokenizer.ClientTest do
                    manifest: huggingface_manifest(),
                    bundle_root: huggingface_fixture_root()
                  )
+      end
+    )
+  end
+
+  test "port mode forwards tools and tool_choice into template context" do
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: tokenizer_executable()
+      ],
+      fn ->
+        request =
+          canonical_request(
+            tooling: %{
+              tools: [tool("lookup_weather")],
+              tool_choice: %{"type" => "function", "function" => %{"name" => "lookup_weather"}}
+            }
+          )
+
+        assert {:ok, %{rendered_prompt: rendered_prompt, input_token_count: input_token_count}} =
+                 Client.tokenize(request,
+                   manifest: tools_template_manifest(),
+                   bundle_root: huggingface_fixture_root()
+                 )
+
+        assert rendered_prompt =~ "tools_defined=True tools_len=1 tool_choice_is_none=False"
+        assert rendered_prompt =~ "tool lookup_weather"
+        assert is_integer(input_token_count)
+        assert input_token_count > 0
       end
     )
   end
@@ -254,8 +292,8 @@ defmodule Orchard.Tokenizer.ClientTest do
     end
   end
 
-  defp canonical_request do
-    CanonicalRequest.new(%{
+  defp canonical_request(overrides \\ %{}) do
+    base = %{
       internal_id: "req_internal_tokenizer_test",
       public_id: "req_tokenizer_test",
       endpoint: :chat_completions,
@@ -265,10 +303,20 @@ defmodule Orchard.Tokenizer.ClientTest do
         %{role: "system", content: "orchard"},
         %{role: "user", content: [%{type: "text", text: "hello orchard"}]}
       ]
-    })
+    }
+
+    CanonicalRequest.new(Map.merge(base, Map.new(overrides)))
   end
 
   defp huggingface_manifest do
+    manifest_with_chat_template("chat_template.jinja")
+  end
+
+  defp tools_template_manifest do
+    manifest_with_chat_template("chat_template_tools.jinja")
+  end
+
+  defp manifest_with_chat_template(chat_template_path) do
     ModelManifest.new(%{
       model_id: "mlx-community/phi-3",
       version: "main",
@@ -280,7 +328,7 @@ defmodule Orchard.Tokenizer.ClientTest do
       capabilities: ["chat"],
       tokenizer: %Tokenizer{kind: "huggingface_tokenizer_json", path: "tokenizer.json"},
       chat_template: %ChatTemplate{
-        path: "chat_template.jinja",
+        path: chat_template_path,
         sha256: String.duplicate("b", 64)
       },
       runtime_requirements: %RuntimeRequirements{
@@ -330,6 +378,10 @@ defmodule Orchard.Tokenizer.ClientTest do
     File.write!(script_path, "#!/bin/sh\nsleep 1\n")
     File.chmod!(script_path, 0o755)
     script_path
+  end
+
+  defp tool(name) do
+    %{"type" => "function", "function" => %{"name" => name}}
   end
 
   defp write_malformed_executable! do

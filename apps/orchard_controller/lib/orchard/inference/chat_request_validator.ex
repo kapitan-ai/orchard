@@ -1,5 +1,5 @@
 defmodule Orchard.Inference.ChatRequestValidator do
-  alias Orchard.Inference.MessageValidation
+  alias Orchard.Inference.{MessageValidation, ToolingValidation}
 
   @moduledoc """
   Validates incoming `/v1/chat/completions` request parameters.
@@ -55,8 +55,7 @@ defmodule Orchard.Inference.ChatRequestValidator do
          :ok <- check_max_tokens(params),
          :ok <- check_stop(params),
          :ok <- check_response_format(params),
-         :ok <- check_tools(params),
-         :ok <- check_tool_choice(params),
+         :ok <- ToolingValidation.validate(params),
          :ok <- check_stream_options(params),
          :ok <- check_metadata(params),
          :ok <- check_seed(params) do
@@ -194,51 +193,6 @@ defmodule Orchard.Inference.ChatRequestValidator do
     do: {:error, :invalid_value, "response_format", "must include a type field"}
 
   defp check_response_format(_), do: :ok
-
-  defp check_tools(%{"tools" => tools}) when is_list(tools) do
-    cond do
-      tools == [] ->
-        :ok
-
-      Enum.all?(tools, &valid_function_tool?/1) ->
-        :ok
-
-      Enum.any?(tools, fn t -> is_map(t) and Map.get(t, "type") != "function" end) ->
-        {:error, :unsupported_parameter, "tools", "only function tools are supported"}
-
-      true ->
-        {:error, :invalid_value, "tools",
-         "each tool must be an object with type \"function\" and a function definition"}
-    end
-  end
-
-  defp check_tools(%{"tools" => _}),
-    do: {:error, :invalid_value, "tools", "must be an array"}
-
-  defp check_tools(_), do: :ok
-
-  defp valid_function_tool?(%{"type" => "function", "function" => %{"name" => name}})
-       when is_binary(name) and name != "",
-       do: true
-
-  defp valid_function_tool?(_), do: false
-
-  defp check_tool_choice(%{"tool_choice" => choice})
-       when choice in ["none", "auto", "required"],
-       do: :ok
-
-  defp check_tool_choice(%{
-         "tool_choice" => %{"type" => "function", "function" => %{"name" => name}}
-       })
-       when is_binary(name),
-       do: :ok
-
-  defp check_tool_choice(%{"tool_choice" => _}),
-    do:
-      {:error, :invalid_value, "tool_choice",
-       "must be \"none\", \"auto\", \"required\", or {type: \"function\", function: {name: ...}}"}
-
-  defp check_tool_choice(_), do: :ok
 
   defp check_stream_options(%{"stream_options" => opts}) when is_map(opts), do: :ok
   defp check_stream_options(%{"stream_options" => nil}), do: :ok

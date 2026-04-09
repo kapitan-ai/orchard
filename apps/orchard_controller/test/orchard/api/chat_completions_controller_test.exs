@@ -9,6 +9,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.ArtifactBundle
   alias Orchard.Governance
   alias Orchard.Inference.ChatRequestNormalizer
+  alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.ModelManager
   alias Orchard.Requests.Idempotency
@@ -59,12 +60,16 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   defp parse_sse_line(_), do: nil
 
   setup do
+    previous_orchestrator = Application.get_env(:orchard_controller, :api_chat_orchestrator_impl)
+
     # Reset node-agent state and stage a test bundle so model acquisition
     # succeeds for any model_id when the bundle is pre-cached.
     ModelManager.reset()
     bundle = stage_test_bundle!()
 
     on_exit(fn ->
+      restore_env(:api_chat_orchestrator_impl, previous_orchestrator)
+      clear_chat_stub_config()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
       File.rm_rf(bundle.source_path)
       File.rm_rf(Path.join(Node.models_root(), ".staging"))
@@ -421,6 +426,151 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert body["error"]["code"] == "invalid_idempotency_key"
       assert body["error"]["param"] == "Idempotency-Key"
     end
+
+    test "returns tool-call-only non-stream payload with finish_reason tool_calls" do
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(false), %{}},
+        execute:
+          {:ok, stub_chat_canonical(false),
+           [
+             InferenceEvent.accepted(1_710_000_123_000),
+             tool_call_event("call_0", %{
+               index: 0,
+               type: "function",
+               function: %{name: "lookup_weather"}
+             }),
+             tool_call_event("call_0", %{
+               index: 0,
+               function: %{arguments_delta: "{\"city\":\"Singapore\"}"}
+             }),
+             InferenceEvent.completed(:finish_reason_tool_calls, nil)
+           ]}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      [choice] = body["choices"]
+      assert choice["finish_reason"] == "tool_calls"
+      assert choice["message"]["content"] == nil
+
+      assert choice["message"]["tool_calls"] == [
+               %{
+                 "id" => "call_0",
+                 "type" => "function",
+                 "function" => %{
+                   "name" => "lookup_weather",
+                   "arguments" => "{\"city\":\"Singapore\"}"
+                 }
+               }
+             ]
+    end
+
+    test "returns mixed text and tool-call non-stream payload when both are emitted" do
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(false), %{}},
+        execute:
+          {:ok, stub_chat_canonical(false),
+           [
+             InferenceEvent.accepted(1_710_000_123_000),
+             InferenceEvent.output_text_delta("Let me check."),
+             tool_call_event("call_0", %{
+               index: 0,
+               type: "function",
+               function: %{name: "lookup_weather"}
+             }),
+             tool_call_event("call_0", %{
+               index: 0,
+               function: %{arguments_delta: "{\"city\":\"Singapore\"}"}
+             }),
+             InferenceEvent.completed(:finish_reason_tool_calls, nil)
+           ]}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}]
+        })
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      [choice] = body["choices"]
+      assert choice["finish_reason"] == "tool_calls"
+      assert choice["message"]["content"] == "Let me check."
+      assert length(choice["message"]["tool_calls"]) == 1
+    end
+
+    @tag :db
+    test "tool-calling request against a model without tool_calling capability returns tooling_not_supported",
+         %{bundle: bundle} do
+      {:ok, _model} =
+        Orchard.Models.create_model(%{
+          model_id: "tool-gate-model",
+          version: "v1",
+          display_name: "Tool Gate Model",
+          artifact_uri: "file:///tmp/tool-gate-model",
+          artifact_sha256: bundle.hash,
+          state: :active,
+          format: "mlx",
+          backend: "mlx",
+          capabilities: ["chat"],
+          artifact_size_bytes: 1024,
+          resident_memory_bytes: 2048,
+          kv_cache_bytes_per_token: 128,
+          prefill_workspace_bytes_per_token: 64,
+          max_context_tokens: 131_072
+        })
+
+      conn =
+        post_chat(%{
+          "model" => "tool-gate-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
+          "tool_choice" => "auto"
+        })
+
+      assert conn.status == 400
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "tooling_not_supported"
+      assert body["error"]["param"] == "model"
+    end
+
+    test "required tool_choice failures surface as terminal chat errors" do
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(false), %{}},
+        execute:
+          {:ok, stub_chat_canonical(false),
+           [
+             InferenceEvent.accepted(1_710_000_123_000),
+             InferenceEvent.failed(
+               "tool_choice_not_satisfied",
+               "model did not emit any required tool calls",
+               false
+             )
+           ]}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
+          "tool_choice" => "required"
+        })
+
+      assert conn.status == 500
+      body = Jason.decode!(conn.resp_body)
+
+      assert body["error"]["message"] ==
+               "Inference failed: model did not emit any required tool calls"
+    end
   end
 
   describe "POST /v1/chat/completions (streaming pre-stream errors)" do
@@ -538,6 +688,90 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       # No error events
       error_events = Enum.filter(events, fn {type, _} -> type == :error end)
       assert error_events == []
+    end
+  end
+
+  describe "POST /v1/chat/completions (streaming tool calls)" do
+    test "stream=true emits tool-call delta chunks, terminal tool_calls finish reason, and [DONE]" do
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(), %{}},
+        events: [
+          InferenceEvent.accepted(1_710_000_123_000),
+          tool_call_event("call_0", %{
+            index: 0,
+            type: "function",
+            function: %{name: "lookup_weather", arguments_delta: "{\"city\":\"Sing"}
+          }),
+          tool_call_event("call_0", %{index: 0, function: %{arguments_delta: "apore\"}"}}),
+          InferenceEvent.completed(:finish_reason_tool_calls, nil)
+        ],
+        execute: {:ok, stub_chat_canonical(), []}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      events = parse_sse_body(conn.resp_body)
+      data_events = Enum.filter(events, fn {type, _} -> type == :data end)
+      done_events = Enum.filter(events, fn {type, _} -> type == :done end)
+
+      assert length(data_events) == 4
+      {:data, role_chunk} = Enum.at(data_events, 0)
+      assert hd(role_chunk["choices"])["delta"]["role"] == "assistant"
+
+      {:data, first_tool_chunk} = Enum.at(data_events, 1)
+      [first_choice] = first_tool_chunk["choices"]
+      [first_tool_call] = first_choice["delta"]["tool_calls"]
+      assert first_tool_call["index"] == 0
+      assert first_tool_call["id"] == "call_0"
+      assert first_tool_call["type"] == "function"
+
+      assert first_tool_call["function"] == %{
+               "name" => "lookup_weather",
+               "arguments" => "{\"city\":\"Sing"
+             }
+
+      {:data, second_tool_chunk} = Enum.at(data_events, 2)
+      [second_choice] = second_tool_chunk["choices"]
+      [second_tool_call] = second_choice["delta"]["tool_calls"]
+      assert second_tool_call["function"] == %{"arguments" => "apore\"}"}
+
+      {:data, finish_chunk} = Enum.at(data_events, 3)
+      assert hd(finish_chunk["choices"])["finish_reason"] == "tool_calls"
+      assert done_events == [{:done, nil}]
+    end
+
+    test "malformed tool-call delta after stream start emits SSE error envelope and no [DONE]" do
+      stub_chat_orchestrator(
+        prepare: {:ok, stub_chat_canonical(), %{}},
+        events: [
+          InferenceEvent.accepted(1_710_000_123_000),
+          InferenceEvent.tool_call_delta("call_0", "not-json")
+        ],
+        execute: {:ok, stub_chat_canonical(), []}
+      )
+
+      conn =
+        post_chat(%{
+          "model" => "stub-tool-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      events = parse_sse_body(conn.resp_body)
+
+      assert Enum.any?(events, fn
+               {:error, payload} -> payload["error"]["message"] == "Malformed tool call delta"
+               _other -> false
+             end)
+
+      refute Enum.any?(events, fn {type, _payload} -> type == :done end)
     end
   end
 
@@ -831,6 +1065,44 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
   defp refute_struct_artifacts!(_value), do: :ok
 
+  defp stub_chat_orchestrator(config) do
+    Application.put_env(
+      :orchard_controller,
+      :api_chat_orchestrator_impl,
+      __MODULE__.StubChatOrchestrator
+    )
+
+    Process.put({__MODULE__, :stub_chat_orchestrator}, config)
+  end
+
+  defp clear_chat_stub_config do
+    Process.delete({__MODULE__, :stub_chat_orchestrator})
+  end
+
+  defp restore_env(key, nil), do: Application.delete_env(:orchard_controller, key)
+  defp restore_env(key, value), do: Application.put_env(:orchard_controller, key, value)
+
+  defp stub_chat_canonical(stream? \\ true, overrides \\ %{}) do
+    defaults = %{
+      internal_id: Ecto.UUID.generate(),
+      public_id: "chatcmpl_tool_stub",
+      endpoint: :chat_completions,
+      tenant_id: Ecto.UUID.generate(),
+      model_ref: %{model_id: "stub-tool-model", version: "v1"},
+      input_items: [%{"role" => "user", "content" => "hello"}],
+      rendered_prompt: "hello",
+      input_token_count: 3,
+      stream?: stream?,
+      stream_include_usage: false
+    }
+
+    Orchard.CanonicalRequest.new(Map.merge(defaults, overrides))
+  end
+
+  defp tool_call_event(tool_call_id, delta) do
+    InferenceEvent.tool_call_delta(tool_call_id, Jason.encode!(delta))
+  end
+
   defp default_api_token! do
     %{token: token} =
       create_api_key_with_token!("chat-auth-#{System.unique_integer([:positive])}")
@@ -881,5 +1153,30 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       end)
 
     %{hash: hash, source_path: source_path, cache_paths: cache_paths}
+  end
+
+  defmodule StubChatOrchestrator do
+    def prepare(_params, _caller_context) do
+      config =
+        Process.get({Orchard.API.ChatCompletionsControllerTest, :stub_chat_orchestrator}, %{})
+
+      Keyword.fetch!(config, :prepare)
+    end
+
+    def execute(canonical, _model, opts) do
+      config =
+        Process.get({Orchard.API.ChatCompletionsControllerTest, :stub_chat_orchestrator}, %{})
+
+      if event_handler = Keyword.get(opts, :event_handler) do
+        Enum.each(Keyword.get(config, :events, []), fn event ->
+          event_handler.(canonical.public_id, event)
+        end)
+      end
+
+      case Keyword.get(config, :execute) do
+        nil -> {:ok, canonical, Keyword.get(config, :events, [])}
+        result -> result
+      end
+    end
   end
 end

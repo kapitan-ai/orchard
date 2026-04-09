@@ -68,6 +68,7 @@ defmodule Orchard.Cluster.V1.FinishReason do
   field(:FINISH_REASON_UNSPECIFIED, 0)
   field(:FINISH_REASON_STOP, 1)
   field(:FINISH_REASON_LENGTH, 2)
+  field(:FINISH_REASON_TOOL_CALLS, 3)
 end
 
 defmodule Orchard.Cluster.V1.Ack do
@@ -116,4 +117,6 @@ defmodule Orchard.Cluster.V1.GenerationParams do
   field(:temperature, 2, type: :double)
   field(:top_p, 3, type: :double, json_name: "topP")
   field(:stop_sequences, 4, repeated: true, type: :string, json_name: "stopSequences")
+  field(:tools_json, 5, type: :bytes, json_name: "toolsJson")
+  field(:tool_choice_json, 6, type: :bytes, json_name: "toolChoiceJson")
 end

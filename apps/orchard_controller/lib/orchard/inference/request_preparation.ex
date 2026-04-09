@@ -2,6 +2,7 @@ defmodule Orchard.Inference.RequestPreparation do
   @moduledoc false
 
   alias Orchard.CanonicalRequest
+  alias Orchard.Inference.ToolingValidation
   alias Orchard.Models
   alias Orchard.Models.ManifestParser
   alias Orchard.Tokenizer.Client, as: TokenizerClient
@@ -18,6 +19,7 @@ defmodule Orchard.Inference.RequestPreparation do
     with {:ok, params} <- validate(params, validator),
          {:ok, canonical} <- normalizer.normalize(params, caller_context),
          {:ok, model} <- resolve_model(canonical),
+         :ok <- enforce_tooling_support(canonical, model),
          {:ok, canonical} <- tokenize(canonical, model),
          :ok <- enforce_context_window(canonical, model) do
       {:ok, canonical, model}
@@ -83,6 +85,24 @@ defmodule Orchard.Inference.RequestPreparation do
   defp manifest_tokenization_error do
     {:tokenization, {:internal_error, @manifest_tokenization_error_message}}
   end
+
+  defp enforce_tooling_support(
+         %CanonicalRequest{tooling: %CanonicalRequest.Tooling{} = tooling, model_ref: model_ref},
+         model
+       ) do
+    if ToolingValidation.effective_tool_calling?(tooling.tools, tooling.tool_choice) and
+         not tool_calling_capable?(model) do
+      {:error, {:tooling_not_supported, "#{model_ref.model_id}@#{model_ref.version}"}}
+    else
+      :ok
+    end
+  end
+
+  defp tool_calling_capable?(%{capabilities: capabilities}) when is_list(capabilities) do
+    "tool_calling" in capabilities
+  end
+
+  defp tool_calling_capable?(_model), do: false
 
   # Models with unknown context windows (nil) skip overflow enforcement.
   # This is intentional for architectures like Gemma 3 VLM where the config

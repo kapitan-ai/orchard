@@ -158,6 +158,48 @@ defmodule Orchard.Inference.ChatRequestValidatorTest do
     end
   end
 
+  describe "tooling validation" do
+    test "accepts nil tool_choice" do
+      params = Map.put(@valid_params, "tool_choice", nil)
+      assert {:ok, _} = ChatRequestValidator.validate(params)
+    end
+
+    test "rejects duplicate tool names" do
+      params =
+        Map.put(@valid_params, "tools", [
+          %{"type" => "function", "function" => %{"name" => "lookup_weather"}},
+          %{"type" => "function", "function" => %{"name" => "lookup_weather"}}
+        ])
+
+      assert {:error, :invalid_value, "tools", _} = ChatRequestValidator.validate(params)
+    end
+
+    test "rejects required tool_choice with empty tools" do
+      params = Map.merge(@valid_params, %{"tools" => [], "tool_choice" => "required"})
+      assert {:error, :invalid_value, "tool_choice", _} = ChatRequestValidator.validate(params)
+    end
+
+    test "rejects named tool_choice when tool is missing" do
+      params =
+        Map.merge(@valid_params, %{
+          "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
+          "tool_choice" => %{"type" => "function", "function" => %{"name" => "lookup_news"}}
+        })
+
+      assert {:error, :invalid_value, "tool_choice", _} = ChatRequestValidator.validate(params)
+    end
+
+    test "rejects non-function tools" do
+      params =
+        Map.put(@valid_params, "tools", [
+          %{"type" => "web_search", "function" => %{"name" => "lookup_weather"}}
+        ])
+
+      assert {:error, :unsupported_parameter, "tools"} =
+               ChatRequestValidator.validate(params)
+    end
+  end
+
   describe "optional field validation" do
     test "rejects non-boolean stream" do
       params = Map.put(@valid_params, "stream", "yes")

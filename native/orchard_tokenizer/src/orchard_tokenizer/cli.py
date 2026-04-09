@@ -9,7 +9,8 @@ from pathlib import Path
 from typing import Any, Final
 
 import sentencepiece as sentencepiece
-from jinja2 import Environment, TemplateError, Undefined, meta as jinja_meta
+from jinja2 import Environment, TemplateError, Undefined
+from jinja2 import meta as jinja_meta
 from tokenizers import Tokenizer
 
 from orchard_tokenizer import __version__
@@ -20,11 +21,17 @@ from orchard_tokenizer import __version__
 _REQUIRED_SPECIAL_TOKENS: Final[frozenset[str]] = frozenset({"bos_token", "eos_token"})
 
 # All special-token keys we attempt to extract from tokenizer_config.json.
-_EXTRACTABLE_SPECIAL_TOKENS: Final[frozenset[str]] = frozenset({
-    "bos_token", "eos_token", "pad_token", "unk_token",
-})
+_EXTRACTABLE_SPECIAL_TOKENS: Final[frozenset[str]] = frozenset(
+    {
+        "bos_token",
+        "eos_token",
+        "pad_token",
+        "unk_token",
+    }
+)
 
-CONTRACT_VERSION: Final[int] = 1
+CONTRACT_VERSION: Final[int] = 2
+SUPPORTED_CONTRACT_VERSIONS: Final[frozenset[int]] = frozenset({1, CONTRACT_VERSION})
 HF_TOKENIZER_KINDS: Final[set[str]] = {"huggingface_tokenizer_json", "tokenizer_json"}
 SENTENCEPIECE_KINDS: Final[set[str]] = {
     "sentencepiece_model",
@@ -42,9 +49,14 @@ class TokenizerCliError(Exception):
         return self.message
 
 
-def build_success_response(rendered_prompt: str, input_token_count: int) -> dict[str, Any]:
+def build_success_response(
+    rendered_prompt: str,
+    input_token_count: int,
+    *,
+    contract_version: int = CONTRACT_VERSION,
+) -> dict[str, Any]:
     return {
-        "contract_version": CONTRACT_VERSION,
+        "contract_version": contract_version,
         "ok": True,
         "result": {
             "rendered_prompt": rendered_prompt,
@@ -53,9 +65,14 @@ def build_success_response(rendered_prompt: str, input_token_count: int) -> dict
     }
 
 
-def build_error_response(category: str, message: str) -> dict[str, Any]:
+def build_error_response(
+    category: str,
+    message: str,
+    *,
+    contract_version: int = CONTRACT_VERSION,
+) -> dict[str, Any]:
     return {
-        "contract_version": CONTRACT_VERSION,
+        "contract_version": contract_version,
         "ok": False,
         "error": {
             "category": category,
@@ -80,7 +97,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         payload = load_payload(args.request_json)
         result = execute_contract(payload)
-        print(json.dumps(build_success_response(**result), ensure_ascii=False))
+        response_contract_version = int(result.pop("contract_version"))
+        print(
+            json.dumps(
+                build_success_response(
+                    **result,
+                    contract_version=response_contract_version,
+                ),
+                ensure_ascii=False,
+            )
+        )
         return 0
     except TokenizerCliError as exc:
         print(json.dumps(build_error_response(exc.category, exc.message), ensure_ascii=False))
@@ -116,7 +142,7 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
     contract_version = payload.get("contract_version")
     command = payload.get("command")
 
-    if contract_version != CONTRACT_VERSION:
+    if contract_version not in SUPPORTED_CONTRACT_VERSIONS:
         raise TokenizerCliError(
             "invalid_input",
             f"unsupported contract_version: {contract_version!r}",
@@ -138,15 +164,23 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     messages = normalize_messages(request)
+    tools = normalize_tools(request.get("tools", []))
+    tool_choice = request.get("tool_choice", None)
     prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
     # Derive tokenizer_config.json path from the tokenizer directory
     tokenizer_config_path = tokenizer_path.parent / "tokenizer_config.json"
     rendered_prompt = render_prompt(
-        messages, prompt_lines, chat_template_path, tokenizer_config_path
+        messages,
+        prompt_lines,
+        chat_template_path,
+        tokenizer_config_path,
+        tools=tools,
+        tool_choice=tool_choice,
     )
     input_token_count = count_tokens(rendered_prompt, tokenizer_kind, tokenizer_path)
 
     return {
+        "contract_version": int(contract_version),
         "rendered_prompt": rendered_prompt,
         "input_token_count": input_token_count,
     }
@@ -211,6 +245,25 @@ def normalize_messages(request: dict[str, Any]) -> list[dict[str, str]]:
     return messages
 
 
+def normalize_tools(tools: Any) -> list[dict[str, Any]]:
+    if not isinstance(tools, list):
+        raise TokenizerCliError(
+            "invalid_input",
+            f"request.tools must be an array, got: {tools!r}",
+            2,
+        )
+
+    for index, tool in enumerate(tools):
+        if not isinstance(tool, dict):
+            raise TokenizerCliError(
+                "invalid_input",
+                f"request.tools[{index}] must be an object, got: {tool!r}",
+                2,
+            )
+
+    return tools
+
+
 def normalize_content(content: Any, item_index: int) -> str:
     if isinstance(content, str):
         return content
@@ -252,6 +305,9 @@ def render_prompt(
     prompt_lines: list[str],
     chat_template_path: Path,
     tokenizer_config_path: Path | None = None,
+    *,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: Any = None,
 ) -> str:
     if not chat_template_path.is_file():
         raise TokenizerCliError(
@@ -292,6 +348,8 @@ def render_prompt(
             messages=messages,
             prompt_lines=prompt_lines,
             add_generation_prompt=True,
+            tools=[] if tools is None else tools,
+            tool_choice=tool_choice,
             **special_tokens,
         )
     except TemplateError as exc:

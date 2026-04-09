@@ -13,7 +13,14 @@ defmodule Orchard.API.ResponsesController do
   import Orchard.API.ErrorHelpers, only: [send_error: 5]
 
   alias Orchard.API.{InferenceControllerSupport, SSE}
-  alias Orchard.Inference.{ChatError, ResponsesOrchestrator, ResponsesSerializer}
+
+  alias Orchard.Inference.{
+    ChatError,
+    ResponsesOrchestrator,
+    ResponsesSerializer,
+    ToolCallAccumulator
+  }
+
   alias Orchard.InferenceEvent
 
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
@@ -24,7 +31,7 @@ defmodule Orchard.API.ResponsesController do
     with {:ok, idempotency} <-
            InferenceControllerSupport.build_idempotency_context(conn, tenant_id, params),
          {:proceed, conn} <- InferenceControllerSupport.resolve_idempotency(conn, idempotency),
-         {:ok, canonical, model} <- ResponsesOrchestrator.prepare(params, caller_context) do
+         {:ok, canonical, model} <- orchestrator_impl().prepare(params, caller_context) do
       if canonical.stream? do
         handle_streaming(conn, canonical, model, idempotency)
       else
@@ -56,7 +63,7 @@ defmodule Orchard.API.ResponsesController do
   defp execute_sync_request(conn, canonical, model, idempotency) do
     created = System.system_time(:second)
 
-    case ResponsesOrchestrator.execute(canonical, model,
+    case orchestrator_impl().execute(canonical, model,
            response_created_at: created,
            idempotency: idempotency
          ) do
@@ -98,16 +105,6 @@ defmodule Orchard.API.ResponsesController do
   defp stream_responses(conn, canonical, model, idempotency) do
     created = System.system_time(:second)
 
-    # Emit response.created immediately after SSE start, before execution.
-    # This guarantees required event ordering even if execution fails before
-    # the runtime accepts the request.
-    #
-    # Design tradeoff: the durable request row is not yet persisted at this
-    # point, so the public_id in response.created may refer to a request that
-    # never gets durably stored (e.g. insert-race idempotency conflict). In
-    # that case the client receives response.created -> response.failed, which
-    # is a valid sequence. This matches OpenAI's behavior of emitting
-    # response.created before the response is fully committed.
     {conn, closed} =
       emit_typed_event(
         conn,
@@ -123,8 +120,6 @@ defmodule Orchard.API.ResponsesController do
   end
 
   defp do_stream_responses(conn, canonical, model, idempotency, created) do
-    # Track mutable state across synchronous event_handler callbacks.
-    # All calls happen in this process, so Process dictionary is safe.
     state_key = make_ref()
 
     Process.put(state_key, %{
@@ -133,7 +128,8 @@ defmodule Orchard.API.ResponsesController do
       terminal_sent: false,
       output_done_sent: false,
       output_chunks: [],
-      usage: nil
+      usage: nil,
+      tool_call_accumulator: ToolCallAccumulator.new()
     })
 
     handler = fn _request_id, event ->
@@ -141,7 +137,7 @@ defmodule Orchard.API.ResponsesController do
     end
 
     result =
-      ResponsesOrchestrator.execute(canonical, model,
+      orchestrator_impl().execute(canonical, model,
         event_handler: handler,
         idempotency: idempotency
       )
@@ -179,16 +175,26 @@ defmodule Orchard.API.ResponsesController do
       :usage ->
         %{state | usage: event.event.usage}
 
+      :tool_call_delta ->
+        apply_tool_call_delta(state, event, canonical, created)
+
       :completed ->
         output_text = collected_text(state)
         usage = latest_usage(state, event)
+        function_call_items = tool_call_items(state, :completed)
 
         state
         |> Map.put(:usage, usage)
         |> maybe_emit_output_done(canonical, output_text)
         |> emit_event(
           "response.completed",
-          ResponsesSerializer.completed_event(canonical, output_text, usage, created)
+          ResponsesSerializer.completed_event(
+            canonical,
+            output_text,
+            usage,
+            created,
+            function_call_items
+          )
         )
         |> Map.put(:terminal_sent, true)
 
@@ -196,17 +202,26 @@ defmodule Orchard.API.ResponsesController do
         output_text = collected_text(state)
         usage = state.usage
         error_map = build_error_map(event)
+        function_call_items = tool_call_items(state, :incomplete)
+        status = failed_response_status(event, function_call_items)
 
         state
         |> maybe_emit_output_done(canonical, output_text)
         |> emit_event(
           "response.failed",
-          ResponsesSerializer.failed_event(canonical, output_text, usage, error_map, created)
+          ResponsesSerializer.failed_event(
+            canonical,
+            output_text,
+            usage,
+            error_map,
+            created,
+            function_call_items,
+            status
+          )
         )
         |> Map.put(:terminal_sent, true)
 
       _other ->
-        # Skip :accepted, :progress, :tool_call_delta
         state
     end
   end
@@ -265,6 +280,41 @@ defmodule Orchard.API.ResponsesController do
     end
   end
 
+  defp apply_tool_call_delta(state, event, canonical, created) do
+    case ToolCallAccumulator.apply_event(state.tool_call_accumulator, event) do
+      {:ok, accumulator} ->
+        %{state | tool_call_accumulator: accumulator}
+
+      {:error, reason} ->
+        output_text = collected_text(state)
+
+        error_map = %{
+          message: "Malformed tool call delta: #{inspect(reason)}",
+          type: "server_error",
+          code: "internal_error",
+          param: nil
+        }
+
+        function_call_items = tool_call_items(state, :incomplete)
+
+        state
+        |> maybe_emit_output_done(canonical, output_text)
+        |> emit_event(
+          "response.failed",
+          ResponsesSerializer.failed_event(
+            canonical,
+            output_text,
+            state.usage,
+            error_map,
+            created,
+            function_call_items,
+            "failed"
+          )
+        )
+        |> Map.put(:terminal_sent, true)
+    end
+  end
+
   # -- Stream finalization ----------------------------------------------------
 
   defp finalize_stream(state, _result, _canonical, _created) when state.closed do
@@ -272,13 +322,10 @@ defmodule Orchard.API.ResponsesController do
   end
 
   defp finalize_stream(state, _result, _canonical, _created) when state.terminal_sent do
-    # Terminal event already emitted — just return conn
     state.conn
   end
 
   defp finalize_stream(state, {:error, reason}, canonical, created) do
-    # Post-start execution error without a streamed terminal event.
-    # Emit typed failure terminal instead of chat-style SSE error envelope.
     output_text = collected_text(state)
     mapping = InferenceControllerSupport.sse_error_mapping(reason)
 
@@ -289,17 +336,26 @@ defmodule Orchard.API.ResponsesController do
       param: mapping.param
     }
 
+    function_call_items = tool_call_items(state, :incomplete)
+
     state
     |> maybe_emit_output_done(canonical, output_text)
     |> emit_event(
       "response.failed",
-      ResponsesSerializer.failed_event(canonical, output_text, state.usage, error_map, created)
+      ResponsesSerializer.failed_event(
+        canonical,
+        output_text,
+        state.usage,
+        error_map,
+        created,
+        function_call_items,
+        "failed"
+      )
     )
     |> then(& &1.conn)
   end
 
   defp finalize_stream(state, {:replay, _request}, canonical, created) do
-    # Streaming duplicates are not replayable — emit typed failure
     output_text = collected_text(state)
 
     mapping =
@@ -314,24 +370,40 @@ defmodule Orchard.API.ResponsesController do
       param: mapping.param
     }
 
+    function_call_items = tool_call_items(state, :incomplete)
+
     state
     |> maybe_emit_output_done(canonical, output_text)
     |> emit_event(
       "response.failed",
-      ResponsesSerializer.failed_event(canonical, output_text, state.usage, error_map, created)
+      ResponsesSerializer.failed_event(
+        canonical,
+        output_text,
+        state.usage,
+        error_map,
+        created,
+        function_call_items,
+        "failed"
+      )
     )
     |> then(& &1.conn)
   end
 
   defp finalize_stream(state, {:ok, _canonical, _events}, canonical, created) do
-    # Unexpected success without a terminal event — synthesize completed
     output_text = collected_text(state)
+    function_call_items = tool_call_items(state, :completed)
 
     state
     |> maybe_emit_output_done(canonical, output_text)
     |> emit_event(
       "response.completed",
-      ResponsesSerializer.completed_event(canonical, output_text, state.usage, created)
+      ResponsesSerializer.completed_event(
+        canonical,
+        output_text,
+        state.usage,
+        created,
+        function_call_items
+      )
     )
     |> then(& &1.conn)
   end
@@ -343,5 +415,32 @@ defmodule Orchard.API.ResponsesController do
       param: mapping.param,
       code: mapping.code
     )
+  end
+
+  defp orchestrator_impl do
+    Application.get_env(
+      :orchard_controller,
+      :api_responses_orchestrator_impl,
+      ResponsesOrchestrator
+    )
+  end
+
+  defp tool_call_items(state, status) do
+    ToolCallAccumulator.responses_output_items(state.tool_call_accumulator, status)
+  end
+
+  defp failed_response_status(event, function_call_items) do
+    if function_call_items != [] and incomplete_terminal?(event) do
+      "incomplete"
+    else
+      "failed"
+    end
+  end
+
+  defp incomplete_terminal?(event) do
+    case ChatError.from_failed_event(event).kind do
+      kind when kind in [:request_cancelled, :request_interrupted] -> true
+      _other -> false
+    end
   end
 end

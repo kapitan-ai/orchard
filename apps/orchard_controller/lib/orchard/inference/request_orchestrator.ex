@@ -7,7 +7,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest, GenerationParams}
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.Inference
-  alias Orchard.Inference.{CanonicalRequestSerializer, ChatError}
+  alias Orchard.Inference.{CanonicalRequestSerializer, ChatError, ToolingValidation}
   alias Orchard.InferenceEvent
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
@@ -376,7 +376,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
       version: canonical.model_ref.version,
       rendered_prompt_utf8: canonical.rendered_prompt,
       input_tokens: canonical.input_token_count,
-      params: build_generation_params(canonical.sampling),
+      params: build_generation_params(canonical),
       deadline_unix_ms: deadline_ms,
       metadata_json: Jason.encode!(canonical.metadata)
     }
@@ -404,14 +404,29 @@ defmodule Orchard.Inference.RequestOrchestrator do
     }
   end
 
-  defp build_generation_params(sampling) do
+  defp build_generation_params(%CanonicalRequest{sampling: sampling, tooling: tooling}) do
+    {tools_json, tool_choice_json} = serialize_tooling(tooling)
+
     %GenerationParams{
       max_output_tokens: effective_max_output_tokens(sampling),
       temperature: sampling.temperature,
       top_p: sampling.top_p,
-      stop_sequences: sampling.stop
+      stop_sequences: sampling.stop,
+      tools_json: tools_json,
+      tool_choice_json: tool_choice_json
     }
   end
+
+  defp serialize_tooling(%CanonicalRequest.Tooling{tools: tools, tool_choice: tool_choice}) do
+    if ToolingValidation.effective_tool_calling?(tools, tool_choice) do
+      {Jason.encode!(tools), serialize_tool_choice(tool_choice)}
+    else
+      {"", ""}
+    end
+  end
+
+  defp serialize_tool_choice(nil), do: ""
+  defp serialize_tool_choice(tool_choice), do: Jason.encode!(tool_choice)
 
   defp effective_max_output_tokens(%CanonicalRequest.Sampling{max_output_tokens: value})
        when is_integer(value) and value > 0,

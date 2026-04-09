@@ -42,9 +42,7 @@ class Backend(Protocol):
     def unload_model(self) -> None: ...
     def start_generation(self) -> None: ...
     def finish_generation(self) -> None: ...
-    def generate(
-        self, request: Any, cancel_event: threading.Event
-    ) -> Iterator[dict[str, Any]]: ...
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]: ...
 
 
 class StubBackend:
@@ -96,9 +94,7 @@ class StubBackend:
         return _stub_generate(request, cancel_event)
 
 
-def _stub_generate(
-    request: Any, cancel_event: threading.Event
-) -> Iterator[dict[str, Any]]:
+def _stub_generate(request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
     """Deterministic generation shared by StubBackend and MLXBackend (until Task 3)."""
     metadata = decode_metadata(getattr(request, "metadata_json", b""))
     chunks = metadata.get("worker_chunks") or ["mlx ", "ready"]
@@ -194,7 +190,9 @@ class MLXBackend:
             env = probe_mlx_environment()
 
         self._health: BackendHealth = BackendHealth(
-            ready=env.ready, code=env.code, message=env.message,
+            ready=env.ready,
+            code=env.code,
+            message=env.message,
         )
 
     def status(self) -> BackendStatus:
@@ -275,9 +273,7 @@ class MLXBackend:
         with self._lock:
             self._active_request_count = max(0, self._active_request_count - 1)
 
-    def generate(
-        self, request: Any, cancel_event: threading.Event
-    ) -> Iterator[dict[str, Any]]:
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         with self._lock:
             session = self._session
         if session is None:
@@ -288,6 +284,7 @@ class MLXBackend:
 def _default_generation_runner() -> Callable[..., Iterator[dict[str, Any]]]:
     """Lazily import the real generation runner."""
     from orchard_worker_mlx.generation import generate_events
+
     return generate_events
 
 

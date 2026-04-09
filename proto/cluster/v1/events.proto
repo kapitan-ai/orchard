@@ -29,8 +29,8 @@ message OutputTextDelta {
   string delta = 1;
 }
 
-// Reserved in the M1 schema for spec-name alignment.
-// M1 text inference does not emit tool deltas yet.
+// Tool-call deltas stream partial tool-call metadata and function arguments.
+// delta_json carries the incremental JSON payload defined in SPEC.md §7.2.5.
 message ToolCallDelta {
   string tool_call_id = 1;
   string delta_json = 2;

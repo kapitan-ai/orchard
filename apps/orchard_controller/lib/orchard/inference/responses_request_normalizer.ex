@@ -31,6 +31,8 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
     |> put_optional("temperature", Map.get(params, "temperature"))
     |> put_optional("top_p", Map.get(params, "top_p"))
     |> put_optional("metadata", normalize_metadata(Map.get(params, "metadata")))
+    |> put_optional("tools", Map.get(params, "tools"))
+    |> put_optional("tool_choice", Map.get(params, "tool_choice"))
     |> put_optional("max_completion_tokens", Map.get(params, "max_output_tokens"))
     |> Map.put("model", Map.fetch!(params, "model"))
   end

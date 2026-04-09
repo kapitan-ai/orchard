@@ -1,0 +1,7 @@
+tools_defined={{ tools is defined }} tools_len={{ tools | length }} tool_choice_is_none={{ tool_choice is none }}
+{% if tools %}
+{% for tool in tools %}
+tool {{ tool['function']['name'] }}
+{% endfor %}
+{% endif %}
+{{ (prompt_lines + ['assistant']) | join('\n') }}

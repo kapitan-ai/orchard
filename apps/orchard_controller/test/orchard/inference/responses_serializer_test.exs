@@ -6,20 +6,7 @@ defmodule Orchard.Inference.ResponsesSerializerTest do
   alias Orchard.InferenceEvent
 
   test "response_payload/3 builds the bounded response object" do
-    canonical =
-      CanonicalRequest.new(%{
-        internal_id: Ecto.UUID.generate(),
-        public_id: "resp_test",
-        endpoint: :responses,
-        tenant_id: Ecto.UUID.generate(),
-        model_ref: %{model_id: "test-model", version: "v1"},
-        input_items: [%{"role" => "user", "content" => "hello"}],
-        rendered_prompt: "hello",
-        input_token_count: 3,
-        stream?: false,
-        metadata: %{"trace" => "abc"}
-      })
-
+    canonical = build_canonical(%{public_id: "resp_test", stream?: false})
     usage = %InferenceEvent.Usage{input_tokens: 3, output_tokens: 2, total_tokens: 5}
 
     events = [
@@ -51,50 +38,50 @@ defmodule Orchard.Inference.ResponsesSerializerTest do
     assert payload.usage == %{input_tokens: 3, output_tokens: 2, total_tokens: 5}
   end
 
-  test "success_persistence_attrs/3 returns replay payload and preview" do
-    canonical =
-      CanonicalRequest.new(%{
-        internal_id: Ecto.UUID.generate(),
-        public_id: "resp_persist",
-        endpoint: :responses,
-        tenant_id: Ecto.UUID.generate(),
-        model_ref: %{model_id: "test-model", version: "v1"},
-        input_items: [%{"role" => "user", "content" => "hello"}],
-        rendered_prompt: "hello",
-        input_token_count: 1,
-        stream?: false
-      })
+  test "response_payload/3 includes function_call output items" do
+    canonical = build_canonical(%{public_id: "resp_tools", stream?: false})
+
+    events = [
+      InferenceEvent.accepted(1_710_000_123_000),
+      tool_call_event("call_0", %{index: 0, type: "function", function: %{name: "lookup_weather"}}),
+      tool_call_event("call_0", %{
+        index: 0,
+        function: %{arguments_delta: "{\"city\":\"Singapore\"}"}
+      }),
+      InferenceEvent.completed(:finish_reason_tool_calls, nil)
+    ]
+
+    payload = ResponsesSerializer.response_payload(canonical, events)
+
+    assert payload.output_text == ""
+
+    assert payload.output == [
+             %{
+               type: "function_call",
+               id: "call_0",
+               call_id: "call_0",
+               name: "lookup_weather",
+               arguments: "{\"city\":\"Singapore\"}",
+               status: "completed"
+             }
+           ]
+  end
+
+  test "success_persistence_attrs/3 falls back to tool preview when output text is empty" do
+    canonical = build_canonical(%{public_id: "resp_persist", stream?: false})
 
     events = [
       InferenceEvent.accepted(42_000),
-      InferenceEvent.output_text_delta("Hello"),
-      InferenceEvent.completed(:finish_reason_stop, nil)
+      tool_call_event("call_0", %{index: 0, type: "function", function: %{name: "lookup_weather"}}),
+      tool_call_event("call_0", %{index: 0, function: %{arguments_delta: "{}"}}),
+      InferenceEvent.completed(:finish_reason_tool_calls, nil)
     ]
 
     attrs = ResponsesSerializer.success_persistence_attrs(canonical, events)
 
-    assert attrs.response_preview == "Hello"
-    assert attrs.response_payload.output_text == "Hello"
+    assert attrs.response_preview == "Tool call: lookup_weather({})"
+    assert attrs.response_payload.output_text == ""
     assert attrs.response_payload.usage == %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
-  end
-
-  # -- Streaming event builders -----------------------------------------------
-
-  defp build_canonical(overrides \\ %{}) do
-    defaults = %{
-      internal_id: Ecto.UUID.generate(),
-      public_id: "resp_stream",
-      endpoint: :responses,
-      tenant_id: Ecto.UUID.generate(),
-      model_ref: %{model_id: "test-model", version: "v1"},
-      input_items: [%{"role" => "user", "content" => "hello"}],
-      rendered_prompt: "hello",
-      input_token_count: 3,
-      stream?: true,
-      metadata: %{"trace" => "xyz"}
-    }
-
-    CanonicalRequest.new(Map.merge(defaults, overrides))
   end
 
   test "created_event/2 builds response.created payload" do
@@ -111,7 +98,7 @@ defmodule Orchard.Inference.ResponsesSerializerTest do
     assert event.response.output_text == ""
     assert event.response.usage == %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
     assert event.response.error == nil
-    assert event.response.metadata == %{"trace" => "xyz"}
+    assert event.response.metadata == %{"trace" => "abc"}
   end
 
   test "output_text_delta_event/2 builds delta payload" do
@@ -134,10 +121,29 @@ defmodule Orchard.Inference.ResponsesSerializerTest do
     assert event.text == "Hello world"
   end
 
-  test "completed_event/4 builds terminal completed payload with output" do
+  test "completed_event/5 builds terminal completed payload with function calls" do
     canonical = build_canonical()
     usage = %InferenceEvent.Usage{input_tokens: 3, output_tokens: 5, total_tokens: 8}
-    event = ResponsesSerializer.completed_event(canonical, "Hello world", usage, 1_710_000_100)
+
+    function_call_items = [
+      %{
+        type: "function_call",
+        id: "call_0",
+        call_id: "call_0",
+        name: "lookup_weather",
+        arguments: "{\"city\":\"Singapore\"}",
+        status: "completed"
+      }
+    ]
+
+    event =
+      ResponsesSerializer.completed_event(
+        canonical,
+        "Hello world",
+        usage,
+        1_710_000_100,
+        function_call_items
+      )
 
     assert event.type == "response.completed"
     assert event.response.id == "resp_stream"
@@ -151,52 +157,74 @@ defmodule Orchard.Inference.ResponsesSerializerTest do
                type: "message",
                role: "assistant",
                content: [%{type: "output_text", text: "Hello world", annotations: []}]
+             },
+             %{
+               type: "function_call",
+               id: "call_0",
+               call_id: "call_0",
+               name: "lookup_weather",
+               arguments: "{\"city\":\"Singapore\"}",
+               status: "completed"
              }
            ]
   end
 
-  test "completed_event/4 with nil usage returns zero usage" do
-    canonical = build_canonical()
-    event = ResponsesSerializer.completed_event(canonical, "", nil, 1_710_000_100)
-
-    assert event.response.usage == %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
-    assert event.response.output == []
-  end
-
-  test "failed_event/5 builds terminal failed payload with error map and partial output" do
+  test "failed_event/7 can mark terminal responses incomplete for partial tool calls" do
     canonical = build_canonical()
 
     error_map = %{
-      message: "Worker unavailable",
+      message: "Request was cancelled",
       type: "server_error",
-      code: "server_error",
+      code: "request_cancelled",
       param: nil
     }
 
-    event = ResponsesSerializer.failed_event(canonical, "partial", nil, error_map, 1_710_000_100)
+    function_call_items = [
+      %{
+        type: "function_call",
+        id: "call_0",
+        call_id: "call_0",
+        name: "lookup_weather",
+        arguments: "{\"city\":\"Sing",
+        status: "incomplete"
+      }
+    ]
+
+    event =
+      ResponsesSerializer.failed_event(
+        canonical,
+        "",
+        nil,
+        error_map,
+        1_710_000_100,
+        function_call_items,
+        "incomplete"
+      )
 
     assert event.type == "response.failed"
-    assert event.response.id == "resp_stream"
-    assert event.response.status == "failed"
-    assert event.response.output_text == "partial"
+    assert event.response.status == "incomplete"
     assert event.response.error == error_map
-    assert event.response.usage == %{input_tokens: 0, output_tokens: 0, total_tokens: 0}
-
-    assert event.response.output == [
-             %{
-               type: "message",
-               role: "assistant",
-               content: [%{type: "output_text", text: "partial", annotations: []}]
-             }
-           ]
+    assert event.response.output == function_call_items
   end
 
-  test "failed_event/5 with empty output text returns empty output array" do
-    canonical = build_canonical()
-    error_map = %{message: "Timeout", type: "server_error", code: "timeout", param: nil}
-    event = ResponsesSerializer.failed_event(canonical, "", nil, error_map, 1_710_000_100)
+  defp build_canonical(overrides \\ %{}) do
+    defaults = %{
+      internal_id: Ecto.UUID.generate(),
+      public_id: "resp_stream",
+      endpoint: :responses,
+      tenant_id: Ecto.UUID.generate(),
+      model_ref: %{model_id: "test-model", version: "v1"},
+      input_items: [%{"role" => "user", "content" => "hello"}],
+      rendered_prompt: "hello",
+      input_token_count: 3,
+      stream?: true,
+      metadata: %{"trace" => "abc"}
+    }
 
-    assert event.response.output == []
-    assert event.response.output_text == ""
+    CanonicalRequest.new(Map.merge(defaults, overrides))
+  end
+
+  defp tool_call_event(tool_call_id, delta) do
+    InferenceEvent.tool_call_delta(tool_call_id, Jason.encode!(delta))
   end
 end

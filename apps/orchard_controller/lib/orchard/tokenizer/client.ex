@@ -4,10 +4,11 @@ defmodule Orchard.Tokenizer.Client do
   """
 
   alias Orchard.CanonicalRequest
+  alias Orchard.Inference.ToolingValidation
   alias Orchard.ModelManifest
   alias Orchard.PathUtils
 
-  @contract_version 1
+  @contract_version 2
   @default_timeout_ms 5_000
 
   @type tokenization_result :: %{
@@ -45,11 +46,17 @@ defmodule Orchard.Tokenizer.Client do
   end
 
   defp fake_tokenize(%CanonicalRequest{} = request) do
-    with {:ok, prompt_lines} <- build_prompt_lines(request.input_items) do
-      rendered_prompt = Enum.join(prompt_lines ++ ["assistant"], "\n")
+    if tool_calling_enabled?(request) do
+      {:error,
+       {:invalid_input,
+        "fake tokenizer mode does not support tool-calling requests; switch to tokenizer_mode=:port"}}
+    else
+      with {:ok, prompt_lines} <- build_prompt_lines(request.input_items) do
+        rendered_prompt = Enum.join(prompt_lines ++ ["assistant"], "\n")
 
-      {:ok,
-       %{rendered_prompt: rendered_prompt, input_token_count: fake_token_count(rendered_prompt)}}
+        {:ok,
+         %{rendered_prompt: rendered_prompt, input_token_count: fake_token_count(rendered_prompt)}}
+      end
     end
   end
 
@@ -72,7 +79,11 @@ defmodule Orchard.Tokenizer.Client do
          contract_version: @contract_version,
          command: "render_and_count",
          assets: assets,
-         request: %{input_items: request.input_items}
+         request: %{
+           input_items: request.input_items,
+           tools: request.tooling.tools,
+           tool_choice: request.tooling.tool_choice
+         }
        }}
     end
   end
@@ -423,5 +434,9 @@ defmodule Orchard.Tokenizer.Client do
     rendered_prompt
     |> String.split(~r/\s+/, trim: true)
     |> length()
+  end
+
+  defp tool_calling_enabled?(%CanonicalRequest{tooling: tooling}) do
+    ToolingValidation.effective_tool_calling?(tooling.tools, tooling.tool_choice)
   end
 end

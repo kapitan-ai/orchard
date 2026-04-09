@@ -113,7 +113,7 @@ def test_decode_metadata_invalid_json() -> None:
 
 
 def test_decode_metadata_non_dict_json() -> None:
-    assert decode_metadata(b'[1, 2, 3]') == {}
+    assert decode_metadata(b"[1, 2, 3]") == {}
     assert decode_metadata(b'"just a string"') == {}
 
 
@@ -420,6 +420,7 @@ def test_mlx_backend_health_unhealthy_with_explicit_probe() -> None:
 
 def test_mlx_backend_health_probe_exception_becomes_unhealthy() -> None:
     """If health_probe raises, backend reports metal_unavailable."""
+
     def bad_probe():
         raise RuntimeError("probe crashed")
 

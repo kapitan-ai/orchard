@@ -36,6 +36,9 @@ defmodule OrchardSharedTest do
     assert %GenerationParams{max_output_tokens: 256, temperature: 0.7} =
              struct(GenerationParams, max_output_tokens: 256, temperature: 0.7)
 
+    assert %GenerationParams{tools_json: "[]", tool_choice_json: "\"auto\""} =
+             struct(GenerationParams, tools_json: "[]", tool_choice_json: "\"auto\"")
+
     assert %EnsureModelLoadedRequest{artifact_sha256: "sha256", preload: true} =
              struct(EnsureModelLoadedRequest, artifact_sha256: "sha256", preload: true)
 
@@ -79,7 +82,14 @@ defmodule OrchardSharedTest do
         version: "main",
         rendered_prompt_utf8: "hello",
         input_tokens: 12,
-        params: %GenerationParams{max_output_tokens: 64, temperature: 0.7, top_p: 0.95},
+        params: %GenerationParams{
+          max_output_tokens: 64,
+          temperature: 0.7,
+          top_p: 0.95,
+          tools_json:
+            Jason.encode!([%{"type" => "function", "function" => %{"name" => "lookup_weather"}}]),
+          tool_choice_json: Jason.encode!("auto")
+        },
         deadline_unix_ms: 1_700_000_000,
         metadata_json: "{}"
       }
@@ -97,7 +107,7 @@ defmodule OrchardSharedTest do
         event:
           {:completed,
            %Completed{
-             finish_reason: :FINISH_REASON_STOP,
+             finish_reason: :FINISH_REASON_TOOL_CALLS,
              usage: %TokenUsage{input_tokens: 12, output_tokens: 8, total_tokens: 20}
            }}
       }

@@ -8,12 +8,14 @@ defmodule Orchard.Inference.ResponsesSerializer do
   """
 
   alias Orchard.CanonicalRequest
+  alias Orchard.Inference.ToolCallAccumulator
   alias Orchard.InferenceEvent
 
   @spec response_payload(CanonicalRequest.t(), [InferenceEvent.t()], integer() | nil) :: map()
   def response_payload(%CanonicalRequest{} = canonical, events, created_at_override \\ nil)
       when is_list(events) do
     output_text = collect_output_text(events)
+    function_call_items = response_function_call_items(events, :completed)
 
     %{
       id: canonical.public_id,
@@ -21,19 +23,7 @@ defmodule Orchard.Inference.ResponsesSerializer do
       created_at: created_at(events, created_at_override),
       status: "completed",
       model: format_model_display(canonical),
-      output: [
-        %{
-          type: "message",
-          role: "assistant",
-          content: [
-            %{
-              type: "output_text",
-              text: output_text,
-              annotations: []
-            }
-          ]
-        }
-      ],
+      output: output_items(output_text, function_call_items),
       output_text: output_text,
       usage: usage_map(find_usage(events)),
       error: nil,
@@ -53,7 +43,7 @@ defmodule Orchard.Inference.ResponsesSerializer do
 
     %{
       response_payload: response_payload(canonical, events, created_at_override),
-      response_preview: output_text
+      response_preview: preview_content(output_text, tool_call_preview(events))
     }
   end
 
@@ -77,7 +67,7 @@ defmodule Orchard.Inference.ResponsesSerializer do
   def created_event(%CanonicalRequest{} = canonical, created_at) do
     %{
       type: "response.created",
-      response: base_response(canonical, "in_progress", "", nil, nil, created_at)
+      response: base_response(canonical, "in_progress", "", nil, nil, created_at, [])
     }
   end
 
@@ -117,13 +107,29 @@ defmodule Orchard.Inference.ResponsesSerializer do
           CanonicalRequest.t(),
           String.t(),
           InferenceEvent.Usage.t() | nil,
-          integer()
+          integer(),
+          [map()]
         ) ::
           map()
-  def completed_event(%CanonicalRequest{} = canonical, output_text, usage, created_at) do
+  def completed_event(
+        %CanonicalRequest{} = canonical,
+        output_text,
+        usage,
+        created_at,
+        function_call_items \\ []
+      ) do
     %{
       type: "response.completed",
-      response: base_response(canonical, "completed", output_text, usage, nil, created_at)
+      response:
+        base_response(
+          canonical,
+          "completed",
+          output_text,
+          usage,
+          nil,
+          created_at,
+          function_call_items
+        )
     }
   end
 
@@ -135,38 +141,50 @@ defmodule Orchard.Inference.ResponsesSerializer do
           String.t(),
           InferenceEvent.Usage.t() | nil,
           map(),
-          integer()
+          integer(),
+          [map()],
+          String.t()
         ) :: map()
-  def failed_event(%CanonicalRequest{} = canonical, output_text, usage, error_map, created_at) do
+  def failed_event(
+        %CanonicalRequest{} = canonical,
+        output_text,
+        usage,
+        error_map,
+        created_at,
+        function_call_items \\ [],
+        status \\ "failed"
+      ) do
     %{
       type: "response.failed",
-      response: base_response(canonical, "failed", output_text, usage, error_map, created_at)
+      response:
+        base_response(
+          canonical,
+          status,
+          output_text,
+          usage,
+          error_map,
+          created_at,
+          function_call_items
+        )
     }
   end
 
-  defp base_response(canonical, status, output_text, usage, error, created_at) do
-    output =
-      if output_text != "" do
-        [
-          %{
-            type: "message",
-            role: "assistant",
-            content: [
-              %{type: "output_text", text: output_text, annotations: []}
-            ]
-          }
-        ]
-      else
-        []
-      end
-
+  defp base_response(
+         canonical,
+         status,
+         output_text,
+         usage,
+         error,
+         created_at,
+         function_call_items
+       ) do
     %{
       id: canonical.public_id,
       object: "response",
       created_at: created_at,
       status: status,
       model: format_model_display(canonical),
-      output: output,
+      output: output_items(output_text, function_call_items),
       output_text: output_text,
       usage: usage_map(usage),
       error: error,
@@ -208,5 +226,46 @@ defmodule Orchard.Inference.ResponsesSerializer do
 
   defp format_model_display(canonical) do
     "#{canonical.model_ref.model_id}@#{canonical.model_ref.version}"
+  end
+
+  defp output_items(output_text, function_call_items) do
+    text_items =
+      if output_text != "" do
+        [
+          %{
+            type: "message",
+            role: "assistant",
+            content: [
+              %{type: "output_text", text: output_text, annotations: []}
+            ]
+          }
+        ]
+      else
+        []
+      end
+
+    text_items ++ function_call_items
+  end
+
+  defp response_function_call_items(events, status) do
+    events
+    |> tool_call_accumulator!()
+    |> ToolCallAccumulator.responses_output_items(status)
+  end
+
+  defp tool_call_preview(events) do
+    events
+    |> tool_call_accumulator!()
+    |> ToolCallAccumulator.preview()
+  end
+
+  defp preview_content("", tool_preview) when tool_preview != "", do: tool_preview
+  defp preview_content(content, _tool_preview), do: content
+
+  defp tool_call_accumulator!(events) do
+    case ToolCallAccumulator.from_events(events) do
+      {:ok, accumulator} -> accumulator
+      {:error, reason} -> raise ArgumentError, "invalid tool call events: #{inspect(reason)}"
+    end
   end
 end

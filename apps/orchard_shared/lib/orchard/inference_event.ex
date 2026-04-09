@@ -57,7 +57,10 @@ defmodule Orchard.InferenceEvent do
     defstruct finish_reason: :finish_reason_unspecified, usage: nil
 
     @type finish_reason ::
-            :finish_reason_unspecified | :finish_reason_stop | :finish_reason_length
+            :finish_reason_unspecified
+            | :finish_reason_stop
+            | :finish_reason_length
+            | :finish_reason_tool_calls
     @type t :: %__MODULE__{finish_reason: finish_reason(), usage: Usage.t() | nil}
   end
 
@@ -205,13 +208,14 @@ defmodule Orchard.InferenceEvent do
        when finish_reason in [
               :finish_reason_unspecified,
               :finish_reason_stop,
-              :finish_reason_length
+              :finish_reason_length,
+              :finish_reason_tool_calls
             ],
        do: finish_reason
 
   defp validate_finish_reason!(finish_reason) do
     raise ArgumentError,
-          "#{inspect(__MODULE__)} finish_reason must be :finish_reason_unspecified, :finish_reason_stop, or :finish_reason_length, got: #{inspect(finish_reason)}"
+          "#{inspect(__MODULE__)} finish_reason must be :finish_reason_unspecified, :finish_reason_stop, :finish_reason_length, or :finish_reason_tool_calls, got: #{inspect(finish_reason)}"
   end
 
   defp validate_usage!(

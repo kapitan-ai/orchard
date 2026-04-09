@@ -4,12 +4,16 @@ defmodule Orchard.Inference.ChatResponseSerializer do
   """
 
   alias Orchard.CanonicalRequest
+  alias Orchard.Inference.ToolCallAccumulator
   alias Orchard.InferenceEvent
 
   @spec completion_payload(CanonicalRequest.t(), [InferenceEvent.t()]) :: map()
   @spec completion_payload(CanonicalRequest.t(), [InferenceEvent.t()], integer() | nil) :: map()
   def completion_payload(%CanonicalRequest{} = canonical, events, created_at_override \\ nil)
       when is_list(events) do
+    content = collect_content(events)
+    tool_calls = collected_tool_calls(events)
+
     %{
       id: canonical.public_id,
       object: "chat.completion",
@@ -18,7 +22,7 @@ defmodule Orchard.Inference.ChatResponseSerializer do
       choices: [
         %{
           index: 0,
-          message: %{role: "assistant", content: collect_content(events)},
+          message: message_payload(content, tool_calls),
           finish_reason: finish_reason(events)
         }
       ],
@@ -35,9 +39,11 @@ defmodule Orchard.Inference.ChatResponseSerializer do
         created_at_override \\ nil
       )
       when is_list(events) do
+    content = collect_content(events)
+
     %{
       response_payload: completion_payload(canonical, events, created_at_override),
-      response_preview: collect_content(events)
+      response_preview: preview_content(content, tool_call_preview(events))
     }
   end
 
@@ -104,5 +110,39 @@ defmodule Orchard.Inference.ChatResponseSerializer do
 
   defp map_proto_finish_reason(:finish_reason_stop), do: "stop"
   defp map_proto_finish_reason(:finish_reason_length), do: "length"
+  defp map_proto_finish_reason(:finish_reason_tool_calls), do: "tool_calls"
   defp map_proto_finish_reason(_other), do: "stop"
+
+  defp message_payload(content, tool_calls) do
+    %{role: "assistant", content: content_payload(content, tool_calls)}
+    |> maybe_put_tool_calls(tool_calls)
+  end
+
+  defp content_payload("", tool_calls) when tool_calls != [], do: nil
+  defp content_payload(content, _tool_calls), do: content
+
+  defp maybe_put_tool_calls(message, []), do: message
+  defp maybe_put_tool_calls(message, tool_calls), do: Map.put(message, :tool_calls, tool_calls)
+
+  defp preview_content("", tool_preview) when tool_preview != "", do: tool_preview
+  defp preview_content(content, _tool_preview), do: content
+
+  defp collected_tool_calls(events) do
+    events
+    |> tool_call_accumulator!()
+    |> ToolCallAccumulator.chat_tool_calls()
+  end
+
+  defp tool_call_preview(events) do
+    events
+    |> tool_call_accumulator!()
+    |> ToolCallAccumulator.preview()
+  end
+
+  defp tool_call_accumulator!(events) do
+    case ToolCallAccumulator.from_events(events) do
+      {:ok, accumulator} -> accumulator
+      {:error, reason} -> raise ArgumentError, "invalid tool call events: #{inspect(reason)}"
+    end
+  end
 end

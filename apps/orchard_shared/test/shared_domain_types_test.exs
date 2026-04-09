@@ -140,6 +140,35 @@ defmodule OrchardSharedDomainTypesTest do
     assert InferenceEvent.kind(usage_event) == :usage
   end
 
+  test "inference event mapper handles tool-call finish reason bidirectionally" do
+    event =
+      InferenceEvent.completed(:finish_reason_tool_calls, %Usage{
+        input_tokens: 12,
+        output_tokens: 8,
+        total_tokens: 20
+      })
+
+    assert %Orchard.Cluster.V1.InferenceEvent{
+             event:
+               {:completed,
+                %Orchard.Cluster.V1.Completed{finish_reason: :FINISH_REASON_TOOL_CALLS}}
+           } = InferenceEventMapper.to_proto(event)
+
+    assert {:ok, ^event} =
+             InferenceEventMapper.from_proto(%Orchard.Cluster.V1.InferenceEvent{
+               event:
+                 {:completed,
+                  %Orchard.Cluster.V1.Completed{
+                    finish_reason: :FINISH_REASON_TOOL_CALLS,
+                    usage: %Orchard.Cluster.V1.TokenUsage{
+                      input_tokens: 12,
+                      output_tokens: 8,
+                      total_tokens: 20
+                    }
+                  }}
+             })
+  end
+
   test "model manifest converts to the shared model ref proto" do
     manifest =
       ModelManifest.new(%{
