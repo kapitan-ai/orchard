@@ -6,7 +6,7 @@ defmodule Orchard.MixProject do
   def project do
     [
       apps_path: "apps",
-      version: "0.4.0",
+      version: "0.5.0-dev",
       start_permanent: Mix.env() == :prod,
       aliases: aliases(),
       deps: deps(),
