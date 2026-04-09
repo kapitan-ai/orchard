@@ -4,8 +4,9 @@ defmodule Orchard.API.ResponsesController do
 
   Non-streaming: returns a single JSON response object.
   Streaming (SSE): emits typed semantic events per the Responses API contract:
-  `response.created`, `response.output_text.delta`, `response.output_text.done`,
-  and a terminal `response.completed` or `response.failed`.
+  `response.created`, zero or more `response.output_text.delta`, an optional
+  `response.output_text.done` when text deltas were emitted, and a terminal
+  `response.completed` or `response.failed`.
   """
 
   use Phoenix.Controller, formats: [:json]
@@ -127,6 +128,7 @@ defmodule Orchard.API.ResponsesController do
       closed: false,
       terminal_sent: false,
       output_done_sent: false,
+      output_delta_sent: false,
       output_chunks: [],
       usage: nil,
       tool_call_accumulator: ToolCallAccumulator.new()
@@ -167,6 +169,7 @@ defmodule Orchard.API.ResponsesController do
 
         state
         |> Map.update!(:output_chunks, &[delta | &1])
+        |> Map.put(:output_delta_sent, true)
         |> emit_event(
           "response.output_text.delta",
           ResponsesSerializer.output_text_delta_event(canonical.public_id, delta)
@@ -227,6 +230,7 @@ defmodule Orchard.API.ResponsesController do
   end
 
   defp maybe_emit_output_done(%{output_done_sent: true} = state, _canonical, _text), do: state
+  defp maybe_emit_output_done(%{output_delta_sent: false} = state, _canonical, _text), do: state
 
   defp maybe_emit_output_done(state, canonical, output_text) do
     state

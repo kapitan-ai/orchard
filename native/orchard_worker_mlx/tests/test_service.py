@@ -498,6 +498,52 @@ def test_build_inference_event_tool_call_delta_happy_path() -> None:
     }
 
 
+def test_build_inference_event_accepts_incremental_tool_call_delta_without_name() -> None:
+    event = build_inference_event(
+        {
+            "kind": "tool_call_delta",
+            "tool_call_id": "call_0",
+            "delta": {
+                "index": 0,
+                "type": "function",
+                "function": {
+                    "arguments_delta": '{"city":"Sing',
+                },
+            },
+        }
+    )
+
+    assert json.loads(event.tool_call_delta.delta_json) == {
+        "index": 0,
+        "type": "function",
+        "function": {
+            "arguments_delta": '{"city":"Sing',
+        },
+    }
+
+
+def test_build_inference_event_accepts_name_only_tool_call_delta() -> None:
+    event = build_inference_event(
+        {
+            "kind": "tool_call_delta",
+            "tool_call_id": "call_0",
+            "delta": {
+                "index": 0,
+                "function": {
+                    "name": "lookup_weather",
+                },
+            },
+        }
+    )
+
+    assert json.loads(event.tool_call_delta.delta_json) == {
+        "index": 0,
+        "function": {
+            "name": "lookup_weather",
+        },
+    }
+
+
 def test_build_inference_event_rejects_invalid_tool_call_delta_shape() -> None:
     with pytest.raises(BackendError) as exc_info:
         build_inference_event(

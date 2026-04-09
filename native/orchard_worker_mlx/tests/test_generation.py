@@ -1145,7 +1145,7 @@ def _tool_call_tools_json() -> bytes:
     return b'[{"type":"function","function":{"name":"lookup_weather","parameters":{}}}]'
 
 
-def test_tool_choice_auto_emits_tool_call_delta_and_tool_calls_finish_reason() -> None:
+def test_tool_choice_auto_emits_incremental_tool_call_deltas_and_tool_calls_finish_reason() -> None:
     def parser(text: str, tools: Any) -> dict[str, Any]:
         assert tools == [
             {"type": "function", "function": {"name": "lookup_weather", "parameters": {}}}
@@ -1155,8 +1155,9 @@ def test_tool_choice_auto_emits_tool_call_delta_and_tool_calls_finish_reason() -
 
     responses = [
         FakeGenerationResponse(text="<tool_call>", token=10),
-        FakeGenerationResponse(text='{"city":"Singapore"}', token=11),
-        FakeGenerationResponse(text="</tool_call>", token=12, finish_reason="stop"),
+        FakeGenerationResponse(text='{"city":"Sing', token=11),
+        FakeGenerationResponse(text='apore"}', token=12),
+        FakeGenerationResponse(text="</tool_call>", token=13, finish_reason="stop"),
     ]
     session = _make_fake_session(
         tool_calling={"supported": True, "parser_type": "json_tools"},
@@ -1168,14 +1169,24 @@ def test_tool_choice_auto_emits_tool_call_delta_and_tool_calls_finish_reason() -
 
     events = _collect_events(session, request, _make_deps(responses))
 
-    assert [event["kind"] for event in events] == ["tool_call_delta", "completed"]
-    assert events[0]["tool_call_id"] == "call_weather"
+    assert [event["kind"] for event in events] == [
+        "tool_call_delta",
+        "tool_call_delta",
+        "completed",
+    ]
+    assert [event["tool_call_id"] for event in events[:-1]] == ["call_0", "call_0"]
     assert events[0]["delta"] == {
         "index": 0,
         "type": "function",
         "function": {
             "name": "lookup_weather",
-            "arguments_delta": '{"city": "Singapore"}',
+            "arguments_delta": '{"city":"Sing',
+        },
+    }
+    assert events[1]["delta"] == {
+        "index": 0,
+        "function": {
+            "arguments_delta": 'apore"}',
         },
     }
     assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
@@ -1210,8 +1221,60 @@ def test_tool_call_markers_can_share_chunks_with_text() -> None:
         "completed",
     ]
     assert events[0]["delta"] == "Before "
-    assert events[1]["delta"]["function"]["arguments_delta"] == '{"city":"Singapore"}'
+    assert events[1]["delta"]["function"] == {
+        "name": "lookup_weather",
+        "arguments_delta": '{"city":"Singapore"}',
+    }
     assert events[2]["delta"] == " after"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+
+
+def test_multi_tool_auto_emits_late_name_delta_after_argument_fragments() -> None:
+    tools_json = b'[' \
+        b'{"type":"function","function":{"name":"lookup_weather","parameters":{}}},' \
+        b'{"type":"function","function":{"name":"lookup_time","parameters":{}}}' \
+        b']'
+
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        assert text == '{"city":"Singapore"}'
+        assert len(tools) == 2
+        return {"name": "lookup_time", "arguments": text}
+
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"city":"Sing', token=11),
+        FakeGenerationResponse(text='apore"}', token=12),
+        FakeGenerationResponse(text="</tool_call>", token=13, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=tools_json)
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert [event["kind"] for event in events] == [
+        "tool_call_delta",
+        "tool_call_delta",
+        "tool_call_delta",
+        "completed",
+    ]
+    assert events[0]["delta"] == {
+        "index": 0,
+        "type": "function",
+        "function": {"arguments_delta": '{"city":"Sing'},
+    }
+    assert events[1]["delta"] == {
+        "index": 0,
+        "function": {"arguments_delta": 'apore"}'},
+    }
+    assert events[2]["delta"] == {
+        "index": 0,
+        "function": {"name": "lookup_time"},
+    }
     assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
 
 
@@ -1274,12 +1337,17 @@ def test_named_tool_choice_fails_when_model_uses_wrong_function() -> None:
 
     events = _collect_events(session, request, _make_deps(responses))
 
+    assert events[0]["kind"] == "tool_call_delta"
+    assert events[0]["delta"]["function"] == {
+        "name": "lookup_weather",
+        "arguments_delta": '{"city":"Singapore"}',
+    }
     assert events[-1]["kind"] == "failed"
     assert events[-1]["code"] == "tool_choice_not_satisfied"
     assert len([event for event in events if event["kind"] in {"completed", "failed"}]) == 1
 
 
-def test_cancel_mid_tool_call_emits_cancelled_terminal() -> None:
+def test_cancel_mid_tool_call_emits_partial_tool_call_before_cancelled_terminal() -> None:
     cancel = threading.Event()
 
     def stream_with_cancel(model, tokenizer, prompt_ids, **kwargs):
@@ -1302,9 +1370,22 @@ def test_cancel_mid_tool_call_emits_cancelled_terminal() -> None:
 
     events = _collect_events(session, request, deps, cancel_event=cancel)
 
+    assert events[:-1] == [
+        {
+            "kind": "tool_call_delta",
+            "tool_call_id": "call_0",
+            "delta": {
+                "index": 0,
+                "type": "function",
+                "function": {
+                    "name": "lookup_weather",
+                    "arguments_delta": '{"city":"Sing',
+                },
+            },
+        }
+    ]
     assert events[-1]["kind"] == "failed"
     assert events[-1]["code"] == "cancelled"
-    assert len([event for event in events if event["kind"] == "tool_call_delta"]) == 0
     assert len([event for event in events if event["kind"] in {"completed", "failed"}]) == 1
 
 

@@ -673,6 +673,12 @@ def generate_events(
                     if flush_text:
                         yield {"kind": "output_text_delta", "delta": flush_text}
                 _close_stream(stream)
+                if tool_context is not None:
+                    finalize_tool_calling(tool_context, terminal_kind="cancelled")
+                    for event in tool_context.take_pending_events():
+                        if event["kind"] == "tool_call_delta":
+                            tool_calls_emitted = True
+                        yield event
                 yield cancelled_event()
                 return
 
@@ -703,16 +709,6 @@ def generate_events(
                 flush_text = buf.flush()
                 if flush_text:
                     yield {"kind": "output_text_delta", "delta": flush_text}
-
-            if tool_context is not None and tool_context.pending_error is not None:
-                _close_stream(stream)
-                yield {
-                    "kind": "failed",
-                    "code": tool_context.pending_error.code,
-                    "message": tool_context.pending_error.message,
-                    "retryable": tool_context.pending_error.retryable,
-                }
-                return
 
             for event in emitted_events:
                 if event["kind"] == "tool_call_delta":
@@ -745,6 +741,16 @@ def generate_events(
                 if safe_text:
                     yield {"kind": "output_text_delta", "delta": safe_text}
 
+            if tool_context is not None and tool_context.pending_error is not None:
+                _close_stream(stream)
+                yield {
+                    "kind": "failed",
+                    "code": tool_context.pending_error.code,
+                    "message": tool_context.pending_error.message,
+                    "retryable": tool_context.pending_error.retryable,
+                }
+                return
+
             if orchard_eos or finish_reason is not None:
                 if tool_context is None or not tool_context.stop_buffer_disabled:
                     flush_text = buf.flush()
@@ -752,9 +758,10 @@ def generate_events(
                         yield {"kind": "output_text_delta", "delta": flush_text}
 
                 if tool_context is not None:
-                    final_error = finalize_tool_calling(tool_context)
+                    final_error = finalize_tool_calling(tool_context, terminal_kind="completed")
                     for event in tool_context.take_pending_events():
-                        tool_calls_emitted = True
+                        if event["kind"] == "tool_call_delta":
+                            tool_calls_emitted = True
                         yield event
                     if final_error is not None:
                         _close_stream(stream)
@@ -791,12 +798,19 @@ def generate_events(
             if flush_text:
                 yield {"kind": "output_text_delta", "delta": flush_text}
         if cancel_event.is_set():
+            if tool_context is not None:
+                finalize_tool_calling(tool_context, terminal_kind="cancelled")
+                for event in tool_context.take_pending_events():
+                    if event["kind"] == "tool_call_delta":
+                        tool_calls_emitted = True
+                    yield event
             yield cancelled_event()
         else:
             if tool_context is not None:
-                final_error = finalize_tool_calling(tool_context)
+                final_error = finalize_tool_calling(tool_context, terminal_kind="completed")
                 for event in tool_context.take_pending_events():
-                    tool_calls_emitted = True
+                    if event["kind"] == "tool_call_delta":
+                        tool_calls_emitted = True
                     yield event
                 if final_error is not None:
                     yield {

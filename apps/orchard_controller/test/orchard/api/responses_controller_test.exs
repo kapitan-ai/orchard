@@ -511,6 +511,38 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert request.first_token_at != nil
   end
 
+  test "streaming empty-string text delta still emits output_text.done before terminal" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        InferenceEvent.accepted(1_710_000_123_000),
+        InferenceEvent.output_text_delta(""),
+        InferenceEvent.completed(:finish_reason_stop, nil)
+      ],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    events = parse_typed_sse_events(conn)
+
+    assert Enum.map(events, & &1.type) == [
+             "response.created",
+             "response.output_text.delta",
+             "response.output_text.done",
+             "response.completed"
+           ]
+
+    assert Enum.at(events, 1).data["delta"] == ""
+    assert Enum.at(events, 2).data["text"] == ""
+  end
+
   test "streaming terminal includes assembled function_call items without new SSE event types" do
     stub_responses_orchestrator(
       prepare: {:ok, stub_responses_canonical(true), %{}},
@@ -542,7 +574,6 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     assert Enum.map(events, & &1.type) == [
              "response.created",
-             "response.output_text.done",
              "response.completed"
            ]
 
@@ -585,7 +616,10 @@ defmodule Orchard.API.ResponsesControllerTest do
       })
 
     assert conn.status == 200
-    terminal = List.last(parse_typed_sse_events(conn))
+    events = parse_typed_sse_events(conn)
+    assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+    terminal = List.last(events)
     assert terminal.type == "response.failed"
     assert terminal.data["response"]["status"] == "incomplete"
 
@@ -599,6 +633,51 @@ defmodule Orchard.API.ResponsesControllerTest do
                "status" => "incomplete"
              }
            ]
+  end
+
+  test "malformed post-start tool-call delta emits typed response.failed and no output_text.done" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        InferenceEvent.accepted(1_710_000_123_000),
+        InferenceEvent.tool_call_delta("call_0", "not-json")
+      ],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    assert resp_header(conn, "content-type") == ["text/event-stream"]
+
+    events = parse_typed_sse_events(conn)
+    assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+    created = hd(events)
+    assert created.data["response"]["status"] == "in_progress"
+
+    terminal = List.last(events)
+    assert terminal.type == "response.failed"
+    assert terminal.data["response"]["status"] == "failed"
+    assert terminal.data["response"]["output_text"] == ""
+    assert terminal.data["response"]["output"] == []
+    assert terminal.data["response"]["error"]["type"] == "server_error"
+    assert terminal.data["response"]["error"]["code"] == "internal_error"
+
+    assert String.starts_with?(
+             terminal.data["response"]["error"]["message"],
+             "Malformed tool call delta:"
+           )
+
+    assert Enum.filter(events, &(&1.type == "response.output_text.done")) == []
+
+    body = collect_chunked_body(conn)
+    refute String.contains?(body, "[DONE]")
   end
 
   test "post-start failure emits response.created then response.failed with no [DONE]" do
@@ -643,9 +722,9 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert hd(events).type == "response.created"
     assert hd(events).data["response"]["status"] == "in_progress"
 
-    # Must contain response.output_text.done before terminal
+    # No response.output_text.done should be emitted before terminal when no text deltas were sent
     done_events = Enum.filter(events, &(&1.type == "response.output_text.done"))
-    assert length(done_events) == 1
+    assert done_events == []
 
     # Must end with response.failed (terminal)
     terminal = List.last(events)
