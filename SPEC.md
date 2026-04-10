@@ -104,10 +104,14 @@ The required v1 worker runtime is **MLX-based**. The default adapter SHALL targe
 * Kubernetes integration
 * cross-node tensor parallelism
 * embeddings/audio/vision APIs
-* hosted tool execution by the platform
+* generic hosted compute, arbitrary code execution, or controller-hosted execution of client-supplied tools
 * internet-dependent control plane behavior
 * dynamic autoscaling
 * active/active multi-controller consensus
+
+Base v1 tool calling SHALL remain **request-scoped function-tool passthrough**. When tool calls are produced, Orchard SHALL return them to the client rather than executing inline request tools on the platform.
+
+Server-side tool execution MAY be added in a later phased extension. In that mode, the controller SHALL resolve approved tools, apply policy and loop limits, and schedule execution on nodes that explicitly advertise the required tool capability. Nodes SHALL execute bounded tool adapters locally and return results to the controller. Orchard SHALL remain an orchestration and governance layer, not a general-purpose remote compute runtime.
 
 ---
 
@@ -1206,6 +1210,8 @@ Supported request fields:
 Tool-calling request rules:
 
 * only function tools are supported in v1
+* base v1 chat tool calling is client-executed passthrough: emitted tool calls are returned to the caller, not executed by Orchard
+* inline request tools SHALL NOT be executed server-side by the platform
 * requests that enable tool calling against a model without tool-calling capability SHALL return `400 invalid_request_error`
 * `tool_choice` modes supported in v1:
 
@@ -1233,7 +1239,7 @@ Unsupported request fields SHALL return `400 unsupported_parameter`. Explicitly 
 * audio/modalities
 * image input
 * `logprobs`, `top_logprobs`
-* hosted tools
+* platform-hosted or server-executed tools in chat completions
 * `json_schema`
 * `parallel_tool_calls=true`
 
@@ -1309,12 +1315,12 @@ data: [DONE]
 
 Supported request fields:
 
-* `model`
-* `input` string or text message items
+* `model` required
+* `input` required
 * `instructions`
+* `max_output_tokens`
 * `temperature`
 * `top_p`
-* `max_output_tokens`
 * `stop`
 * `stream`
 * `metadata`
@@ -1325,6 +1331,8 @@ Supported request fields:
 Tool-calling request rules:
 
 * only function tools are supported in v1
+* base v1 Responses tool calling is client-executed passthrough unless a later phased extension explicitly enables server-side execution
+* inline request tools SHALL remain client-executed; they SHALL NOT be executed server-side unless first resolved from an approved registry entry explicitly marked as server-hostable
 * requests that enable tool calling against a model without tool-calling capability SHALL return `400 invalid_request_error`
 * `tool_choice` modes supported in v1:
 
@@ -1353,6 +1361,7 @@ Tool-calling response rules:
 * the platform SHALL NOT introduce incremental Responses function-call SSE events in v1
 * streaming function-call data SHALL appear only in terminal `response.completed` or `response.failed` payloads
 * terminal payloads that include partial tool calls due to interruption or cancellation SHALL mark the response as incomplete or failed rather than presenting the tool call as complete
+* if a later phased extension enables controller-managed server-side tool execution, `/v1/responses` SHALL be the first target endpoint and Orchard SHALL keep the controller-governs / node-executes split defined in §1.6
 
 Streaming behavior:
 
