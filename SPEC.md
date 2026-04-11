@@ -290,6 +290,9 @@ All public inference requests SHALL normalize into one internal struct:
     tool_choice: map() | String.t() | nil,
     registry_snapshot: %{
       entries: [map()]
+    },
+    execution_snapshot: %{
+      entries: [map()]
     }
   },
   metadata: map(),
@@ -312,8 +315,11 @@ Tooling contract rules:
 * request `tools` entries MAY be inline function definitions or registry refs of the form `tool://<name>@<version>`
 * `tooling.requested_tools` SHALL preserve the normalized request `tools` array in original order
 * `tooling.tools` SHALL contain only controller-resolved runtime-ready tool definitions; registry ref placeholders SHALL NOT be forwarded past request preparation
-* `tooling.registry_snapshot.entries` SHALL capture controller-side registry provenance for ref-backed tools and SHALL be empty when no registry refs were requested
-* absent `tools` and `requested_tools` SHALL normalize to empty arrays; absent `tool_choice` SHALL normalize to `null`; absent `registry_snapshot` SHALL normalize to `%{entries: []}`
+* `tooling.registry_snapshot.entries` SHALL capture controller-side registry provenance for ref-backed tools only and SHALL be empty when no registry refs were requested
+* `tooling.execution_snapshot.entries` SHALL capture controller-owned admission-time execution semantics for every effective tool and SHALL be empty when no effective tools were admitted
+* provenance SHALL be read from `tooling.registry_snapshot`; execution eligibility metadata and current admission ownership SHALL be read from `tooling.execution_snapshot`; neither SHALL be inferred from the other
+* base v1 tool calling SHALL remain client-executed passthrough; `tooling.execution_snapshot` documents the admission decision and future eligibility metadata only and SHALL NOT by itself enable server-side execution
+* absent `tools` and `requested_tools` SHALL normalize to empty arrays; absent `tool_choice` SHALL normalize to `null`; absent `registry_snapshot` SHALL normalize to `%{entries: []}`; absent `execution_snapshot` SHALL normalize to `%{entries: []}`
 
 ### 3.5 Prompt rendering and tokenization
 

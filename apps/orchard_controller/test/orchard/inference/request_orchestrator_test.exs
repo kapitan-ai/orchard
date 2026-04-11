@@ -381,6 +381,17 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       ]
     }
 
+    execution_snapshot = %{
+      entries: [
+        %{
+          name: "lookup_weather",
+          provenance: :registry,
+          disposition: :client_passthrough,
+          execution_mode: :client_only
+        }
+      ]
+    }
+
     canonical =
       canonical_request("request-orchestrator-tooling",
         stream?: false,
@@ -390,7 +401,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
           tools: tools,
           requested_tools: requested_tools,
           tool_choice: "auto",
-          registry_snapshot: registry_snapshot
+          registry_snapshot: registry_snapshot,
+          execution_snapshot: execution_snapshot
         }
       )
 
@@ -421,8 +433,65 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
                    "source_ref" => nil
                  }
                ]
+             },
+             "execution_snapshot" => %{
+               "entries" => [
+                 %{
+                   "name" => "lookup_weather",
+                   "provenance" => "registry",
+                   "disposition" => "client_passthrough",
+                   "execution_mode" => "client_only"
+                 }
+               ]
              }
            }
+  end
+
+  test "execute/3 rejects drifted execution snapshots before insert", %{bundle: bundle} do
+    model = create_active_model!(bundle, "request-orchestrator-drifted-execution-snapshot")
+
+    canonical =
+      canonical_request("request-orchestrator-drifted-execution-snapshot",
+        stream?: false,
+        tooling: %{
+          tools: [
+            %{
+              "type" => "function",
+              "function" => %{"name" => "lookup_weather", "description" => "Lookup weather"}
+            }
+          ],
+          requested_tools: [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+          tool_choice: "auto",
+          registry_snapshot: %{
+            entries: [
+              %{
+                ref: "tool://lookup_weather@2026-04-10",
+                name: "lookup_weather",
+                version: "2026-04-10",
+                execution_mode: "client_only",
+                tool_id: Ecto.UUID.generate()
+              }
+            ]
+          },
+          execution_snapshot: %{
+            entries: [
+              %{
+                name: "lookup_weather",
+                provenance: "inline",
+                disposition: "client_passthrough",
+                execution_mode: "client_only"
+              }
+            ]
+          }
+        }
+      )
+
+    assert {:error,
+            {:invalid_canonical_tooling,
+             "execution_snapshot must stay aligned with requested_tools, registry_snapshot, and tooling.tools"}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    assert Requests.get_request_by_public_id(canonical.public_id) == nil
   end
 
   test "execute/3 rejects unresolved requested tool refs before insert", %{bundle: bundle} do

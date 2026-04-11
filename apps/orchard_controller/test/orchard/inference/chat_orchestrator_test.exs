@@ -2,7 +2,10 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
   @moduledoc """
   Focused tests for ChatOrchestrator.prepare/2 boundary behavior.
   """
-  use Orchard.DataCase, async: true
+  use Orchard.DataCase, async: false
+
+  import Orchard.TestSupport.ToolRegistryTestSupport,
+    only: [fixture_bundle_path: 0, with_inference_overrides: 2, write_tokenizer_executable!: 0]
 
   alias Orchard.Inference.ChatOrchestrator
   alias Orchard.TestSupport.ModelRequestFixtures
@@ -127,6 +130,85 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
 
       assert {:error, {:tooling_not_supported, detail}} = ChatOrchestrator.prepare(params, [])
       assert detail == "#{model.model_id}@#{model.version}"
+    end
+
+    test "attaches ordered execution semantics after resolving mixed tools" do
+      docs =
+        create_tool!("lookup_docs", "2026-04-11", %{
+          execution_mode: :server_hostable,
+          source_kind: :mcp_server,
+          source_ref: "mcp://docs-server/tools/lookup_docs"
+        })
+
+      executable = write_tokenizer_executable!()
+      on_exit(fn -> File.rm(executable) end)
+
+      model =
+        ModelRequestFixtures.create_model!(%{
+          model_id: "test/tool-semantics-model",
+          version: "v1",
+          state: :active,
+          capabilities: ["chat", "tool_calling"],
+          artifact_uri: "file://#{fixture_bundle_path()}",
+          artifact_source_uri: "file://#{fixture_bundle_path()}"
+        })
+
+      inline = %{
+        "type" => "function",
+        "function" => %{
+          "name" => "lookup_weather",
+          "description" => "Lookup weather.",
+          "parameters" => %{
+            "type" => "object",
+            "properties" => %{"query" => %{"type" => "string"}}
+          }
+        }
+      }
+
+      params = %{
+        "model" => "#{model.model_id}@#{model.version}",
+        "messages" => [%{"role" => "user", "content" => "Hello"}],
+        "tools" => [inline, %{"type" => "function", "ref" => "tool://lookup_docs@2026-04-11"}],
+        "tool_choice" => "auto"
+      }
+
+      with_inference_overrides([tokenizer_mode: :port, tokenizer_executable: executable], fn ->
+        assert {:ok, canonical, _prepared_model} = ChatOrchestrator.prepare(params, [])
+
+        assert canonical.tooling.requested_tools == params["tools"]
+        assert canonical.tooling.tools == [inline, docs.definition]
+
+        assert canonical.tooling.registry_snapshot == %{
+                 entries: [
+                   %{
+                     "tool_id" => docs.id,
+                     "ref" => "tool://lookup_docs@2026-04-11",
+                     "name" => "lookup_docs",
+                     "version" => "2026-04-11",
+                     "execution_mode" => "server_hostable",
+                     "source_kind" => "mcp_server",
+                     "source_ref" => "mcp://docs-server/tools/lookup_docs"
+                   }
+                 ]
+               }
+
+        assert canonical.tooling.execution_snapshot == %{
+                 entries: [
+                   %{
+                     "name" => "lookup_weather",
+                     "provenance" => "inline",
+                     "disposition" => "client_passthrough",
+                     "execution_mode" => "client_only"
+                   },
+                   %{
+                     "name" => "lookup_docs",
+                     "provenance" => "registry",
+                     "disposition" => "client_passthrough",
+                     "execution_mode" => "server_hostable"
+                   }
+                 ]
+               }
+      end)
     end
 
     test "validates refs before model resolution" do

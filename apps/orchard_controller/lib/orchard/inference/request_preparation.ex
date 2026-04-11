@@ -2,7 +2,7 @@ defmodule Orchard.Inference.RequestPreparation do
   @moduledoc false
 
   alias Orchard.CanonicalRequest
-  alias Orchard.Inference.{ToolingValidation, ToolRegistryResolver}
+  alias Orchard.Inference.{ToolExecutionSemantics, ToolingValidation, ToolRegistryResolver}
   alias Orchard.Models
   alias Orchard.Models.ManifestParser
   alias Orchard.Tokenizer.Client, as: TokenizerClient
@@ -19,6 +19,7 @@ defmodule Orchard.Inference.RequestPreparation do
     with {:ok, params} <- validate(params, validator),
          {:ok, canonical} <- normalizer.normalize(params, caller_context),
          {:ok, canonical} <- resolve_requested_tools(canonical),
+         {:ok, canonical} <- attach_execution_snapshot(canonical),
          {:ok, model} <- resolve_model(canonical),
          :ok <- enforce_tooling_support(canonical, model),
          {:ok, canonical} <- tokenize(canonical, model),
@@ -33,6 +34,22 @@ defmodule Orchard.Inference.RequestPreparation do
     case wrap_validation_result(ToolRegistryResolver.resolve(tooling)) do
       {:ok, resolved_tooling} -> {:ok, %{canonical | tooling: resolved_tooling}}
       {:error, _reason} = error -> error
+    end
+  end
+
+  defp attach_execution_snapshot(
+         %CanonicalRequest{tooling: %CanonicalRequest.Tooling{} = tooling} = canonical
+       ) do
+    case ToolExecutionSemantics.build(tooling) do
+      {:ok, execution_snapshot} ->
+        {:ok,
+         %{
+           canonical
+           | tooling: %CanonicalRequest.Tooling{tooling | execution_snapshot: execution_snapshot}
+         }}
+
+      {:error, {:misaligned_tooling, _reason}} ->
+        {:error, {:internal_error, "resolved tooling could not produce execution snapshot"}}
     end
   end
 

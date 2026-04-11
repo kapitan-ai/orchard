@@ -7,7 +7,14 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest, GenerationParams}
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.Inference
-  alias Orchard.Inference.{CanonicalRequestSerializer, ChatError, ToolingValidation}
+
+  alias Orchard.Inference.{
+    CanonicalRequestSerializer,
+    ChatError,
+    ToolExecutionSemantics,
+    ToolingValidation
+  }
+
   alias Orchard.InferenceEvent
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
@@ -438,6 +445,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
           not requested_tooling_aligned?(tooling) ->
         "requested_tools, registry_snapshot, and tooling.tools must stay aligned"
 
+      not execution_snapshot_aligned?(tooling) ->
+        "execution_snapshot must stay aligned with requested_tools, registry_snapshot, and tooling.tools"
+
       true ->
         nil
     end
@@ -619,6 +629,38 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp registry_snapshot_refs(_registry_snapshot), do: :error
+
+  defp execution_snapshot_aligned?(%CanonicalRequest.Tooling{} = tooling) do
+    case ToolExecutionSemantics.build(tooling) do
+      {:ok, expected_snapshot} -> snapshots_match?(tooling.execution_snapshot, expected_snapshot)
+      {:error, _reason} -> false
+    end
+  end
+
+  defp snapshots_match?(%{entries: actual_entries}, %{entries: expected_entries})
+       when is_list(actual_entries) and is_list(expected_entries) do
+    length(actual_entries) == length(expected_entries) and
+      Enum.zip(actual_entries, expected_entries)
+      |> Enum.all?(fn {actual_entry, expected_entry} ->
+        snapshot_entry_matches?(actual_entry, expected_entry)
+      end)
+  end
+
+  defp snapshot_entry_matches?(actual_entry, expected_entry) when is_map(actual_entry) do
+    Enum.all?([:name, :provenance, :disposition, :execution_mode], fn key ->
+      normalized_snapshot_value(actual_entry, key) ==
+        normalized_snapshot_value(expected_entry, key)
+    end)
+  end
+
+  defp snapshot_entry_matches?(_actual_entry, _expected_entry), do: false
+
+  defp normalized_snapshot_value(entry, key) do
+    case map_value(entry, key) do
+      value when is_atom(value) -> Atom.to_string(value)
+      value -> value
+    end
+  end
 
   defp ref_tool?(tool) when is_map(tool) do
     match?(value when is_binary(value), map_value(tool, :ref))

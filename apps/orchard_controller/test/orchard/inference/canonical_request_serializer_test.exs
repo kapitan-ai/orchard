@@ -36,6 +36,16 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
                 execution_mode: :client_only
               }
             ]
+          },
+          execution_snapshot: %{
+            entries: [
+              %{
+                name: "calculator",
+                provenance: :registry,
+                disposition: :client_passthrough,
+                execution_mode: :client_only
+              }
+            ]
           }
         },
         metadata: %{trace_id: "trace-1", tags: [:a, :b]},
@@ -69,6 +79,16 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
                    "tool_id" => tool_id,
                    "name" => "calculator",
                    "version" => "2026-04-10",
+                   "execution_mode" => "client_only"
+                 }
+               ]
+             },
+             "execution_snapshot" => %{
+               "entries" => [
+                 %{
+                   "name" => "calculator",
+                   "provenance" => "registry",
+                   "disposition" => "client_passthrough",
                    "execution_mode" => "client_only"
                  }
                ]

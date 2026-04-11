@@ -56,7 +56,8 @@ defmodule Orchard.Inference.CanonicalRequestSerializer do
       "tools" => normalize_plain_data(tooling.tools),
       "requested_tools" => normalize_plain_data(tooling.requested_tools),
       "tool_choice" => normalize_plain_data(tooling.tool_choice),
-      "registry_snapshot" => normalize_plain_data(tooling.registry_snapshot)
+      "registry_snapshot" => normalize_plain_data(tooling.registry_snapshot),
+      "execution_snapshot" => normalize_plain_data(tooling.execution_snapshot)
     }
   end
 

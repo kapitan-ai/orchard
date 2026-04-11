@@ -47,15 +47,17 @@ defmodule Orchard.CanonicalRequest do
     defstruct tools: [],
               requested_tools: [],
               tool_choice: nil,
-              registry_snapshot: %{entries: []}
+              registry_snapshot: %{entries: []},
+              execution_snapshot: %{entries: []}
 
-    @type registry_snapshot :: %{required(:entries) => [map()]}
+    @type entries_snapshot :: %{required(:entries) => [map()]}
 
     @type t :: %__MODULE__{
             tools: [map()],
             requested_tools: [map()],
             tool_choice: map() | String.t() | nil,
-            registry_snapshot: registry_snapshot()
+            registry_snapshot: entries_snapshot(),
+            execution_snapshot: entries_snapshot()
           }
   end
 
@@ -323,22 +325,25 @@ defmodule Orchard.CanonicalRequest do
              tools: tools,
              requested_tools: requested_tools,
              tool_choice: tool_choice,
-             registry_snapshot: registry_snapshot
+             registry_snapshot: registry_snapshot,
+             execution_snapshot: execution_snapshot
            }
          } = struct
        )
        when is_list(tools) and is_list(requested_tools) and is_map(registry_snapshot) and
+              is_map(execution_snapshot) and
               (is_nil(tool_choice) or is_map(tool_choice) or
                  (is_binary(tool_choice) and tool_choice != "")) do
     validate_tool_maps!(tools, :tools)
     validate_tool_maps!(requested_tools, :requested_tools)
-    validate_registry_snapshot!(registry_snapshot)
+    validate_snapshot!(registry_snapshot, :registry_snapshot)
+    validate_snapshot!(execution_snapshot, :execution_snapshot)
     struct
   end
 
   defp validate_tooling!(%__MODULE__{tooling: tooling}) do
     raise ArgumentError,
-          "#{inspect(__MODULE__)} tooling must include tools/requested_tools lists of maps, a registry_snapshot entries list of maps, and nil/map/binary tool_choice, got: #{inspect(tooling)}"
+          "#{inspect(__MODULE__)} tooling must include tools/requested_tools lists of maps, registry_snapshot/execution_snapshot entries lists of maps, and nil/map/binary tool_choice, got: #{inspect(tooling)}"
   end
 
   defp validate_metadata!(%__MODULE__{metadata: metadata} = struct) when is_map(metadata),
@@ -467,22 +472,22 @@ defmodule Orchard.CanonicalRequest do
     end
   end
 
-  defp validate_registry_snapshot!(registry_snapshot) do
-    if valid_registry_snapshot?(registry_snapshot) do
+  defp validate_snapshot!(snapshot, field_name) do
+    if valid_entries_snapshot?(snapshot) do
       :ok
     else
       raise ArgumentError,
-            "#{inspect(__MODULE__)} tooling.registry_snapshot must include an entries list of maps, got: #{inspect(registry_snapshot)}"
+            "#{inspect(__MODULE__)} tooling.#{field_name} must include an entries list of maps, got: #{inspect(snapshot)}"
     end
   end
 
-  defp valid_registry_snapshot?(%{entries: entries}) when is_list(entries),
+  defp valid_entries_snapshot?(%{entries: entries}) when is_list(entries),
     do: Enum.all?(entries, &is_map/1)
 
-  defp valid_registry_snapshot?(%{"entries" => entries}) when is_list(entries),
+  defp valid_entries_snapshot?(%{"entries" => entries}) when is_list(entries),
     do: Enum.all?(entries, &is_map/1)
 
-  defp valid_registry_snapshot?(_registry_snapshot), do: false
+  defp valid_entries_snapshot?(_snapshot), do: false
 
   defp normalize_numeric(value) when is_integer(value), do: value * 1.0
   defp normalize_numeric(value), do: value

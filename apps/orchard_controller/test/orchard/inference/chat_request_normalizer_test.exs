@@ -29,7 +29,8 @@ defmodule Orchard.Inference.ChatRequestNormalizerTest do
                tools: [],
                requested_tools: [],
                tool_choice: nil,
-               registry_snapshot: %{entries: []}
+               registry_snapshot: %{entries: []},
+               execution_snapshot: %{entries: []}
              }
 
       assert req.metadata == %{}
@@ -92,6 +93,7 @@ defmodule Orchard.Inference.ChatRequestNormalizerTest do
       assert req.tooling.requested_tools == tools
       assert req.tooling.tool_choice == "auto"
       assert req.tooling.registry_snapshot == %{entries: []}
+      assert req.tooling.execution_snapshot == %{entries: []}
     end
 
     test "carries seed" do

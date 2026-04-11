@@ -117,6 +117,7 @@ defmodule Orchard.Inference.ResponsesRequestNormalizerTest do
            }
 
     assert request.tooling.registry_snapshot == %{entries: []}
+    assert request.tooling.execution_snapshot == %{entries: []}
   end
 
   test "stream_include_usage remains false for responses" do

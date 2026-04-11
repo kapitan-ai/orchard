@@ -38,6 +38,15 @@ defmodule OrchardSharedDomainTypesTest do
           tool_choice: "auto",
           registry_snapshot: %{
             entries: [%{"name" => "lookup_weather", "version" => "2026-04-09"}]
+          },
+          execution_snapshot: %{
+            entries: [
+              %{
+                "name" => "lookup_weather",
+                "provenance" => "registry",
+                "disposition" => "client_passthrough"
+              }
+            ]
           }
         },
         metadata: %{"trace_id" => "trace_123"},
@@ -63,6 +72,16 @@ defmodule OrchardSharedDomainTypesTest do
              entries: [%{"name" => "lookup_weather", "version" => "2026-04-09"}]
            }
 
+    assert updated.tooling.execution_snapshot == %{
+             entries: [
+               %{
+                 "name" => "lookup_weather",
+                 "provenance" => "registry",
+                 "disposition" => "client_passthrough"
+               }
+             ]
+           }
+
     assert updated.resolved_policy.residency_preference == :prefer_loaded
   end
 
@@ -81,6 +100,7 @@ defmodule OrchardSharedDomainTypesTest do
     assert request.tooling.requested_tools == []
     assert request.tooling.tool_choice == "auto"
     assert request.tooling.registry_snapshot == %{entries: []}
+    assert request.tooling.execution_snapshot == %{entries: []}
   end
 
   test "canonical request normalizes nil defaults to shared nested structs" do
@@ -101,6 +121,7 @@ defmodule OrchardSharedDomainTypesTest do
     assert %Sampling{} = request.sampling
     assert %ResponseFormat{} = request.response_format
     assert %Tooling{} = request.tooling
+    assert request.tooling.execution_snapshot == %{entries: []}
     assert %Admission{} = request.admission
     assert %ResolvedPolicy{} = request.resolved_policy
   end
@@ -387,6 +408,17 @@ defmodule OrchardSharedDomainTypesTest do
         tenant_id: "tenant_123",
         model_ref: %ModelRef{model_id: "mlx-community/phi-3", version: "main"},
         tooling: %Tooling{registry_snapshot: %{entries: [42]}}
+      })
+    end
+
+    assert_raise ArgumentError, fn ->
+      CanonicalRequest.new(%{
+        internal_id: "req_internal",
+        public_id: "req_public",
+        endpoint: :chat_completions,
+        tenant_id: "tenant_123",
+        model_ref: %ModelRef{model_id: "mlx-community/phi-3", version: "main"},
+        tooling: %Tooling{execution_snapshot: %{entries: [42]}}
       })
     end
 

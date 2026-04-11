@@ -127,7 +127,8 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
       tools: [],
       requested_tools: Map.get(params, "tools", []),
       tool_choice: Map.get(params, "tool_choice"),
-      registry_snapshot: %{entries: []}
+      registry_snapshot: %{entries: []},
+      execution_snapshot: %{entries: []}
     }
   end
 end
