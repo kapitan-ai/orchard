@@ -6,7 +6,7 @@ defmodule Orchard.RequestsTest do
   alias Orchard.Governance
   alias Orchard.Models
   alias Orchard.Requests
-  alias Orchard.Requests.Request
+  alias Orchard.Requests.{Request, RequestStepEvent}
 
   test "create_request/1 supports early lifecycle rows before model resolution and canonicalization" do
     attrs = request_attrs()
@@ -111,6 +111,277 @@ defmodule Orchard.RequestsTest do
                event_type: "request.received",
                state: :received
              })
+  end
+
+  test "append_request_step_events/2 batch-appends typed step events with contiguous seq values without mutating request state" do
+    request = create_request!(%{public_id: "req_step_batch_test", state: :received})
+
+    assert {:ok, _validated} =
+             Requests.append_request_event(request, %{
+               event_type: "request.validated",
+               state: :validated
+             })
+
+    assert {:ok, [started, proposed]} =
+             Requests.append_request_step_events(request, [
+               inference_turn_started_step_attrs(),
+               tool_call_proposed_step_attrs()
+             ])
+
+    assert started.seq == 2
+    assert proposed.seq == 3
+    assert started.event_type == "request_step.started"
+    assert proposed.event_type == "request_step.proposed"
+
+    assert Enum.map(Requests.list_request_step_events(request), &{&1.seq, &1.step_id}) == [
+             {2, "inference_turn:t1:a1"},
+             {3, "tool_call:t1:ccall_1"}
+           ]
+
+    assert Enum.map(Requests.list_request_events(request), &{&1.seq, &1.event_type, &1.state}) ==
+             [
+               {1, "request.validated", :validated},
+               {2, "request_step.started", nil},
+               {3, "request_step.proposed", nil}
+             ]
+
+    assert Requests.get_request!(request.id).state == :validated
+
+    assert {:ok, running} =
+             Requests.append_request_event(request, %{
+               event_type: "request.running",
+               state: :running
+             })
+
+    assert running.seq == 4
+    assert Requests.get_request!(request.id).state == :running
+  end
+
+  test "append_request_step_events/2 accepts RequestStepEvent structs" do
+    request = create_request!(%{public_id: "req_step_batch_struct_test", state: :received})
+
+    started_step = inference_turn_started_step_attrs() |> RequestStepEvent.new!()
+    proposed_step = tool_call_proposed_step_attrs() |> RequestStepEvent.new!()
+
+    assert {:ok, [started, proposed]} =
+             Requests.append_request_step_events(request, [started_step, proposed_step])
+
+    assert started.event_type == "request_step.started"
+    assert proposed.event_type == "request_step.proposed"
+
+    assert Enum.map(Requests.list_request_step_events(request), & &1.event_type) == [
+             "request_step.started",
+             "request_step.proposed"
+           ]
+
+    assert Requests.get_request!(request.id).state == :received
+  end
+
+  test "append_request_step_events/2 rejects invalid batches atomically" do
+    request = create_request!(%{public_id: "req_step_batch_invalid_test", state: :received})
+
+    assert {:error, {:invalid_step_event, 2, reason}} =
+             Requests.append_request_step_events(request, [
+               inference_turn_started_step_attrs(),
+               inference_turn_started_step_attrs(%{state: :running})
+             ])
+
+    assert reason =~ "state: nil"
+    assert Requests.list_request_events(request) == []
+    assert Requests.list_request_step_events(request) == []
+    assert Requests.get_request!(request.id).state == :received
+  end
+
+  test "list_request_step_events/1 returns only exact contract request_step event types" do
+    request = create_request!(%{public_id: "req_step_exact_filter_test", state: :running})
+
+    assert {:ok, _fake_step} =
+             Requests.append_request_event(request, %{
+               event_type: "request_step.completed.extra",
+               payload: %{"ignored" => true}
+             })
+
+    assert {:ok, _valid_step_events} =
+             Requests.append_request_step_events(request, [
+               inference_turn_started_step_attrs()
+             ])
+
+    assert {:ok, _normal_event} =
+             Requests.append_request_event(request, %{
+               event_type: "request.running",
+               state: :running
+             })
+
+    assert Enum.map(Requests.list_request_step_events(request), & &1.event_type) == [
+             "request_step.started"
+           ]
+
+    assert Enum.map(Requests.list_request_events(request), & &1.event_type) == [
+             "request_step.completed.extra",
+             "request_step.started",
+             "request.running"
+           ]
+  end
+
+  describe "mark_terminal_with_step_events/3" do
+    test "atomically commits success-shaped terminal step rows with the terminal request update" do
+      request = create_request!(%{public_id: "req_terminal_steps_success", state: :running})
+
+      assert {:ok, updated_request} =
+               Requests.mark_terminal_with_step_events(
+                 request,
+                 %{state: :completed, output_tokens: 42},
+                 [tool_call_proposed_step_attrs(), inference_turn_completed_step_attrs()]
+               )
+
+      assert updated_request.state == :completed
+      assert updated_request.output_tokens == 42
+
+      assert Enum.map(Requests.list_request_step_events(request), &{&1.event_type, &1.step_id}) ==
+               [
+                 {"request_step.proposed", "tool_call:t1:ccall_1"},
+                 {"request_step.completed", "inference_turn:t1:a1"}
+               ]
+
+      assert Enum.map(Requests.list_request_events(request), &{&1.seq, &1.event_type, &1.state}) ==
+               [
+                 {1, "request_step.proposed", nil},
+                 {2, "request_step.completed", nil}
+               ]
+
+      assert Requests.get_request!(request.id).state == :completed
+    end
+
+    test "atomically commits success-shaped terminal step rows when given RequestStepEvent structs" do
+      request = create_request!(%{public_id: "req_terminal_steps_struct", state: :running})
+
+      proposed_step = tool_call_proposed_step_attrs() |> RequestStepEvent.new!()
+      completed_step = inference_turn_completed_step_attrs() |> RequestStepEvent.new!()
+
+      assert {:ok, updated_request} =
+               Requests.mark_terminal_with_step_events(
+                 request,
+                 %{state: :completed, output_tokens: 11},
+                 [proposed_step, completed_step]
+               )
+
+      assert updated_request.state == :completed
+      assert updated_request.output_tokens == 11
+
+      assert Enum.map(Requests.list_request_step_events(request), & &1.event_type) == [
+               "request_step.proposed",
+               "request_step.completed"
+             ]
+    end
+
+    test "atomically commits failure-shaped terminal step rows with the terminal request update" do
+      request = create_request!(%{public_id: "req_terminal_steps_failure", state: :running})
+
+      assert {:ok, updated_request} =
+               Requests.mark_terminal_with_step_events(
+                 request.id,
+                 %{state: :failed, error_code: "tool_choice_not_satisfied"},
+                 [inference_turn_failed_step_attrs()]
+               )
+
+      assert updated_request.state == :failed
+      assert updated_request.error_code == "tool_choice_not_satisfied"
+
+      assert Enum.map(Requests.list_request_step_events(request), &{&1.event_type, &1.step_id}) ==
+               [
+                 {"request_step.failed", "inference_turn:t1:a1"}
+               ]
+
+      assert Requests.get_request!(request.id).state == :failed
+    end
+
+    test "rolls back inserted step rows when the terminal request update fails" do
+      request = create_request!(%{public_id: "req_terminal_steps_rollback", state: :running})
+
+      assert {:error, changeset} =
+               Requests.mark_terminal_with_step_events(
+                 request,
+                 %{state: :running},
+                 [inference_turn_completed_step_attrs()]
+               )
+
+      assert %{state: ["must be terminal"]} = errors_on(changeset)
+      assert Requests.list_request_events(request) == []
+      assert Requests.list_request_step_events(request) == []
+      assert Requests.get_request!(request.id).state == :running
+    end
+
+    test "does not update the request row when the terminal step batch is invalid" do
+      request = create_request!(%{public_id: "req_terminal_steps_invalid_batch", state: :running})
+
+      assert {:error, {:invalid_step_event, 2, reason}} =
+               Requests.mark_terminal_with_step_events(
+                 request,
+                 %{state: :completed},
+                 [
+                   inference_turn_completed_step_attrs(),
+                   inference_turn_completed_step_attrs(%{state: :completed})
+                 ]
+               )
+
+      assert reason =~ "state: nil"
+      assert Requests.list_request_events(request) == []
+      assert Requests.list_request_step_events(request) == []
+      assert Requests.get_request!(request.id).state == :running
+    end
+
+    test "same-terminal idempotent re-entry does not duplicate proposal or terminal step rows" do
+      request = create_request!(%{public_id: "req_terminal_steps_idempotent", state: :running})
+
+      attrs = %{state: :completed, output_tokens: 7}
+      step_events = [tool_call_proposed_step_attrs(), inference_turn_completed_step_attrs()]
+
+      assert {:ok, first_terminal} =
+               Requests.mark_terminal_with_step_events(request, attrs, step_events)
+
+      assert first_terminal.state == :completed
+
+      assert {:ok, second_terminal} =
+               Requests.mark_terminal_with_step_events(
+                 request.id,
+                 %{state: :completed, output_tokens: 9},
+                 step_events
+               )
+
+      assert second_terminal.state == :completed
+      assert second_terminal.output_tokens == 9
+
+      assert Enum.map(Requests.list_request_step_events(request), &{&1.event_type, &1.step_id}) ==
+               [
+                 {"request_step.proposed", "tool_call:t1:ccall_1"},
+                 {"request_step.completed", "inference_turn:t1:a1"}
+               ]
+    end
+
+    test "rejects stale terminal overwrites without appending terminal step rows" do
+      request = create_request!(%{public_id: "req_terminal_steps_stale", state: :running})
+
+      assert {:ok, _terminal} =
+               Requests.mark_terminal_with_step_events(
+                 request,
+                 %{state: :completed},
+                 [inference_turn_completed_step_attrs()]
+               )
+
+      assert {:error, :already_terminal} =
+               Requests.mark_terminal_with_step_events(
+                 request.id,
+                 %{state: :failed, error_code: "late_failure"},
+                 [inference_turn_failed_step_attrs()]
+               )
+
+      assert Enum.map(Requests.list_request_step_events(request), &{&1.event_type, &1.step_id}) ==
+               [
+                 {"request_step.completed", "inference_turn:t1:a1"}
+               ]
+
+      assert Requests.get_request!(request.id).state == :completed
+    end
   end
 
   test "mark_terminal/2 only accepts terminal states and stamps completion time" do
@@ -648,5 +919,72 @@ defmodule Orchard.RequestsTest do
         from(r in Request, where: r.id == ^request.id),
         set: [inserted_at: dt]
       )
+  end
+
+  defp inference_turn_started_step_attrs(overrides \\ %{}) do
+    Map.merge(
+      %{
+        event_type: "request_step.started",
+        step_id: RequestStepEvent.inference_turn_step_id(1, 1),
+        step_type: "inference_turn",
+        turn_index: 1,
+        attempt: 1,
+        parent_step_id: nil,
+        boundary: "pre_side_effect",
+        result: %{}
+      },
+      overrides
+    )
+  end
+
+  defp tool_call_proposed_step_attrs(overrides \\ %{}) do
+    Map.merge(
+      %{
+        event_type: "request_step.proposed",
+        step_id: RequestStepEvent.tool_call_step_id(1, "call_1"),
+        step_type: "tool_call",
+        turn_index: 1,
+        attempt: 1,
+        parent_step_id: RequestStepEvent.inference_turn_step_id(1, 1),
+        boundary: "post_observation",
+        result: %{"finish_reason" => "tool_calls"},
+        call_id: "call_1",
+        tool_name: "lookup_weather",
+        arguments_json: "{\"city\":\"Singapore\"}"
+      },
+      overrides
+    )
+  end
+
+  defp inference_turn_completed_step_attrs(overrides \\ %{}) do
+    Map.merge(
+      %{
+        event_type: "request_step.completed",
+        step_id: RequestStepEvent.inference_turn_step_id(1, 1),
+        step_type: "inference_turn",
+        turn_index: 1,
+        attempt: 1,
+        parent_step_id: nil,
+        boundary: "post_observation",
+        result: %{"finish_reason" => "stop"}
+      },
+      overrides
+    )
+  end
+
+  defp inference_turn_failed_step_attrs(overrides \\ %{}) do
+    Map.merge(
+      %{
+        event_type: "request_step.failed",
+        step_id: RequestStepEvent.inference_turn_step_id(1, 1),
+        step_type: "inference_turn",
+        turn_index: 1,
+        attempt: 1,
+        parent_step_id: nil,
+        boundary: "post_observation",
+        result: %{"code" => "tool_choice_not_satisfied", "message" => "tool choice not satisfied"}
+      },
+      overrides
+    )
   end
 end

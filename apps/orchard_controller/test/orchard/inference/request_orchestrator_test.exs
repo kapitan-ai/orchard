@@ -67,18 +67,16 @@ defmodule Orchard.Inference.RequestOrchestratorTest.CapturingRuntimeAdapter do
     owner = Keyword.fetch!(opts, :owner)
     generation_ref = make_ref()
 
-    send(
-      owner,
-      {:runtime_adapter_event, generation_ref,
-       InferenceEvent.completed(
-         :finish_reason_stop,
-         %InferenceEvent.Usage{
-           input_tokens: request.input_tokens,
-           output_tokens: 0,
-           total_tokens: request.input_tokens
-         }
-       )}
-    )
+    runtime_events =
+      Application.get_env(
+        :orchard_node_agent,
+        :request_orchestrator_test_runtime_events,
+        default_runtime_events(request)
+      )
+
+    Enum.each(runtime_events, fn event ->
+      send(owner, {:runtime_adapter_event, generation_ref, event})
+    end)
 
     send(owner, {:runtime_adapter_done, generation_ref})
 
@@ -90,6 +88,19 @@ defmodule Orchard.Inference.RequestOrchestratorTest.CapturingRuntimeAdapter do
 
   @impl true
   def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+
+  defp default_runtime_events(request) do
+    [
+      InferenceEvent.completed(
+        :finish_reason_stop,
+        %InferenceEvent.Usage{
+          input_tokens: request.input_tokens,
+          output_tokens: 0,
+          total_tokens: request.input_tokens
+        }
+      )
+    ]
+  end
 end
 
 defmodule Orchard.Inference.RequestOrchestratorTest do
@@ -114,6 +125,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 
+    previous_runtime_events =
+      Application.get_env(:orchard_node_agent, :request_orchestrator_test_runtime_events)
+
     if Process.whereis(:request_orchestrator_test_pid) do
       Process.unregister(:request_orchestrator_test_pid)
     end
@@ -127,6 +141,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
       Application.put_env(:orchard_controller, :inference, previous_inference)
       Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+      restore_runtime_events(previous_runtime_events)
       ModelManager.reset()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
       File.rm_rf(bundle.source_path)
@@ -344,6 +359,346 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request != nil
     assert request.state == :failed
     assert request.first_token_at == nil
+  end
+
+  test "execute/3 persists inference-turn started and completed request_step events around dispatch",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-step-success")
+    canonical = canonical_request("request-orchestrator-step-success", stream?: false)
+    step_event_appender = started_only_step_event_appender(self())
+
+    assert {:ok, ^canonical, events} =
+             RequestOrchestrator.execute(canonical, model,
+               step_event_appender: step_event_appender
+             )
+
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+    refute_receive {:unexpected_terminal_step_appender_call, _step_events}
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    step_events = Requests.list_request_step_events(request)
+
+    assert Enum.map(step_events, &{&1.event_type, &1.step_type, &1.boundary, &1.step_id}) == [
+             {"request_step.started", "inference_turn", "pre_side_effect",
+              "inference_turn:t1:a1"},
+             {"request_step.completed", "inference_turn", "post_observation",
+              "inference_turn:t1:a1"}
+           ]
+
+    assert Enum.map(step_events, & &1.result) == [
+             %{},
+             %{
+               "finish_reason" => "stop",
+               "http_status" => 200,
+               "input_tokens" => 1,
+               "output_tokens" => 0
+             }
+           ]
+  end
+
+  test "execute/3 aborts before dispatch side effects when request_step.started persistence fails",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-step-start-failure")
+    canonical = canonical_request("request-orchestrator-step-start-failure", stream?: false)
+
+    step_event_appender = fn _request, _step_events -> {:error, :request_not_found} end
+
+    assert {:error, {:request_step_start_failed, :request_not_found}} =
+             RequestOrchestrator.execute(canonical, model,
+               step_event_appender: step_event_appender
+             )
+
+    refute_receive {:captured_execute_request, _request}
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request != nil
+    assert request.state == :failed
+    assert Requests.list_request_step_events(request) == []
+  end
+
+  test "execute/3 persists terminal inference-turn step mappings distinctly for failed, cancelled, timed_out, and interrupted terminals",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    cases = [
+      {"tool_choice_not_satisfied", "tool choice not satisfied", :failed, "request_step.failed"},
+      {"request_cancelled", "request was cancelled", :cancelled, "request_step.cancelled"},
+      {"deadline_exceeded", "request timed out", :timed_out, "request_step.timed_out"},
+      {"request_client_disconnect", "caller disconnected", :interrupted,
+       "request_step.interrupted"}
+    ]
+
+    Enum.each(cases, fn {code, message, expected_state, expected_event_type} ->
+      put_runtime_events([InferenceEvent.failed(code, message, false)])
+
+      model = create_active_model!(bundle, "request-orchestrator-terminal-#{expected_state}")
+
+      canonical =
+        canonical_request("request-orchestrator-terminal-#{expected_state}", stream?: false)
+
+      step_event_appender = started_only_step_event_appender(self())
+
+      assert {:ok, ^canonical, events} =
+               RequestOrchestrator.execute(canonical, model,
+                 step_event_appender: step_event_appender
+               )
+
+      assert match?(%{event: %InferenceEvent.Failed{code: ^code}}, List.last(events))
+      refute_receive {:unexpected_terminal_step_appender_call, _step_events}
+
+      request = Requests.get_request_by_public_id(canonical.public_id)
+      assert request.state == expected_state
+
+      step_events = Requests.list_request_step_events(request)
+
+      assert Enum.map(step_events, & &1.event_type) == [
+               "request_step.started",
+               expected_event_type
+             ]
+
+      terminal_step = List.last(step_events)
+      assert terminal_step.result["error_code"] == request.error_code
+      assert terminal_step.result["error_message"] == request.error_message
+      assert terminal_step.result["http_status"] == request.http_status
+    end)
+  end
+
+  test "execute/3 persists passive tool-call proposal steps in first-seen assembled order only",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    put_runtime_events([
+      InferenceEvent.tool_call_delta(
+        "call_b",
+        Jason.encode!(%{
+          index: 1,
+          type: "function",
+          function: %{name: "lookup_weather", arguments_delta: "{\"city\":\"Singapore\"}"}
+        })
+      ),
+      InferenceEvent.tool_call_delta(
+        "call_a",
+        Jason.encode!(%{
+          index: 0,
+          type: "function",
+          function: %{name: "lookup_time", arguments_delta: "{\"timezone\":\"Asia/Singapore\"}"}
+        })
+      ),
+      InferenceEvent.completed(
+        :finish_reason_tool_calls,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 0, total_tokens: 1}
+      )
+    ])
+
+    model =
+      create_active_model!(bundle, "request-orchestrator-tool-proposals",
+        capabilities: ["chat", "tool_calling"]
+      )
+
+    canonical = canonical_request("request-orchestrator-tool-proposals", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    step_events = Requests.list_request_step_events(request)
+
+    assert Enum.map(step_events, &{&1.event_type, &1.step_type, &1.step_id}) == [
+             {"request_step.started", "inference_turn", "inference_turn:t1:a1"},
+             {"request_step.proposed", "tool_call", "tool_call:t1:ccall_b"},
+             {"request_step.proposed", "tool_call", "tool_call:t1:ccall_a"},
+             {"request_step.completed", "inference_turn", "inference_turn:t1:a1"}
+           ]
+
+    assert Enum.map(step_events, & &1.call_id) == [nil, "call_b", "call_a", nil]
+    assert Enum.map(step_events, & &1.tool_name) == [nil, "lookup_weather", "lookup_time", nil]
+
+    assert Enum.map(step_events, & &1.arguments_json) == [
+             nil,
+             "{\"city\":\"Singapore\"}",
+             "{\"timezone\":\"Asia/Singapore\"}",
+             nil
+           ]
+
+    refute Enum.any?(step_events, &(&1.step_type == "tool_execution"))
+  end
+
+  test "execute/3 skips request_step.proposed persistence when tool-call reconstruction is malformed without changing execution result",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    put_runtime_events([
+      InferenceEvent.tool_call_delta("call_0", "not-json"),
+      InferenceEvent.completed(
+        :finish_reason_tool_calls,
+        %InferenceEvent.Usage{input_tokens: 1, output_tokens: 0, total_tokens: 1}
+      )
+    ])
+
+    model =
+      create_active_model!(bundle, "request-orchestrator-malformed-tool-proposals",
+        capabilities: ["chat", "tool_calling"]
+      )
+
+    canonical = canonical_request("request-orchestrator-malformed-tool-proposals", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+
+    assert Enum.map(Requests.list_request_step_events(request), & &1.event_type) == [
+             "request_step.started",
+             "request_step.completed"
+           ]
+  end
+
+  test "execute/3 surfaces terminal persistence failures after successful dispatch and leaves FSM non-terminal",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-terminal-persist-success-failure")
+
+    canonical =
+      canonical_request("request-orchestrator-terminal-persist-success-failure", stream?: false)
+
+    terminal_persister = fn _request, _terminal_attrs, _step_events ->
+      {:error, :terminal_write_failed}
+    end
+
+    assert {:error, {:terminal_persist_failed, :terminal_write_failed}} =
+             RequestOrchestrator.execute(canonical, model, terminal_persister: terminal_persister)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :running
+
+    assert Enum.map(Requests.list_request_step_events(request), & &1.event_type) == [
+             "request_step.started"
+           ]
+
+    assert {:ok, :running} = Orchard.Requests.RequestServer.get_state(request.id)
+  end
+
+  test "execute/3 does not route observed terminal persistence failures back through fail_request/4",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-terminal-persist-no-refallback")
+
+    canonical =
+      canonical_request("request-orchestrator-terminal-persist-no-refallback", stream?: false)
+
+    test_pid = self()
+
+    terminal_persister = fn request, terminal_attrs, step_events ->
+      case terminal_attrs.state do
+        :completed ->
+          {:error, :observed_terminal_write_failed}
+
+        :failed ->
+          send(test_pid, {:unexpected_fail_request_terminalization, request.id, step_events})
+          Requests.mark_terminal_with_step_events(request, terminal_attrs, step_events)
+      end
+    end
+
+    assert {:error, {:terminal_persist_failed, :observed_terminal_write_failed}} =
+             RequestOrchestrator.execute(canonical, model, terminal_persister: terminal_persister)
+
+    refute_receive {:unexpected_fail_request_terminalization, _, _}
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :running
+
+    assert Enum.map(Requests.list_request_step_events(request), & &1.event_type) == [
+             "request_step.started"
+           ]
+
+    assert {:ok, :running} = Orchard.Requests.RequestServer.get_state(request.id)
+  end
+
+  test "execute/3 terminalizes via fail_request when success_persistence fails before terminal writes",
+       %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-success-persistence-failure")
+
+    canonical =
+      canonical_request("request-orchestrator-success-persistence-failure", stream?: false)
+
+    step_event_appender = started_only_step_event_appender(self())
+
+    assert {:error, {:invalid_success_persistence, :not_a_map}} =
+             RequestOrchestrator.execute(canonical, model,
+               success_persistence: fn _canonical_request, _events -> :not_a_map end,
+               step_event_appender: step_event_appender
+             )
+
+    refute_receive {:unexpected_terminal_step_appender_call, _step_events}
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :failed
+
+    assert Enum.map(Requests.list_request_step_events(request), & &1.event_type) == [
+             "request_step.started",
+             "request_step.failed"
+           ]
+  end
+
+  test "execute/3 surfaces terminal persistence failures on dispatch-error failure paths and leaves FSM non-terminal",
+       %{bundle: bundle} do
+    put_unreachable_scheduler_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-terminal-persist-failure-path")
+
+    canonical =
+      canonical_request("request-orchestrator-terminal-persist-failure-path", stream?: false)
+
+    terminal_persister = fn _request, _terminal_attrs, _step_events ->
+      {:error, :terminal_write_failed}
+    end
+
+    assert {:error, {:terminal_persist_failed, :terminal_write_failed}} =
+             RequestOrchestrator.execute(canonical, model, terminal_persister: terminal_persister)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :dispatching
+
+    assert Enum.map(Requests.list_request_step_events(request), & &1.event_type) == [
+             "request_step.started"
+           ]
+
+    assert {:ok, :dispatching} = Orchard.Requests.RequestServer.get_state(request.id)
+  end
+
+  test "execute/3 persists failed terminal inference-turn steps on dispatch-error paths without using step_event_appender",
+       %{bundle: bundle} do
+    put_unreachable_scheduler_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-dispatch-error-terminal-step")
+
+    canonical =
+      canonical_request("request-orchestrator-dispatch-error-terminal-step", stream?: false)
+
+    step_event_appender = started_only_step_event_appender(self())
+
+    assert {:error, {:model_load_failed, _}} =
+             RequestOrchestrator.execute(canonical, model,
+               step_event_appender: step_event_appender
+             )
+
+    refute_receive {:unexpected_terminal_step_appender_call, _step_events}
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :failed
+
+    assert Enum.map(Requests.list_request_step_events(request), & &1.event_type) == [
+             "request_step.started",
+             "request_step.failed"
+           ]
   end
 
   test "execute/3 persists tooling provenance while forwarding resolved tool params only", %{
@@ -1070,6 +1425,30 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     Application.put_env(:orchard_node_agent, :runtime, runtime)
     ModelManager.reset()
   end
+
+  defp put_runtime_events(events) do
+    Application.put_env(:orchard_node_agent, :request_orchestrator_test_runtime_events, events)
+  end
+
+  defp started_only_step_event_appender(test_pid) do
+    fn request, step_events ->
+      case step_events do
+        [%{event_type: "request_step.started"}] ->
+          Requests.append_request_step_events(request, step_events)
+
+        _other ->
+          send(test_pid, {:unexpected_terminal_step_appender_call, step_events})
+          {:error, :unexpected_terminal_step_appender_call}
+      end
+    end
+  end
+
+  defp restore_runtime_events(nil),
+    do: Application.delete_env(:orchard_node_agent, :request_orchestrator_test_runtime_events)
+
+  defp restore_runtime_events(events),
+    do:
+      Application.put_env(:orchard_node_agent, :request_orchestrator_test_runtime_events, events)
 
   defp stage_test_bundle! do
     models_root = Node.models_root()

@@ -6,7 +6,7 @@ defmodule Orchard.Requests do
   import Ecto.Query
 
   alias Orchard.Repo
-  alias Orchard.Requests.{Request, RequestEvent}
+  alias Orchard.Requests.{Request, RequestEvent, RequestStepEvent}
 
   @spec create_request(map()) :: {:ok, struct()} | {:error, Ecto.Changeset.t()}
   def create_request(attrs) do
@@ -43,6 +43,22 @@ defmodule Orchard.Requests do
     |> Repo.all()
   end
 
+  @spec list_request_step_events(struct() | Ecto.UUID.t()) :: [RequestStepEvent.t()]
+  def list_request_step_events(%Request{id: request_id}), do: list_request_step_events(request_id)
+
+  def list_request_step_events(request_id) do
+    step_event_types = RequestStepEvent.step_event_types()
+
+    RequestEvent
+    |> where(
+      [event],
+      event.request_id == ^request_id and event.event_type in ^step_event_types
+    )
+    |> order_by([event], asc: event.seq)
+    |> Repo.all()
+    |> Enum.map(&RequestStepEvent.from_request_event!/1)
+  end
+
   @spec append_request_event(struct() | Ecto.UUID.t(), map()) ::
           {:ok, struct()} | {:error, Ecto.Changeset.t() | :request_not_found}
   def append_request_event(%Request{id: request_id}, attrs),
@@ -61,6 +77,25 @@ defmodule Orchard.Requests do
     |> unwrap_transaction_result()
   end
 
+  @spec append_request_step_events(struct() | Ecto.UUID.t(), [RequestStepEvent.t() | map()]) ::
+          {:ok, [RequestStepEvent.t()]}
+          | {:error,
+             Ecto.Changeset.t()
+             | :request_not_found
+             | {:invalid_step_event, pos_integer(), String.t()}}
+  def append_request_step_events(%Request{id: request_id}, step_events),
+    do: append_request_step_events(request_id, step_events)
+
+  def append_request_step_events(request_id, step_events) when is_list(step_events) do
+    case normalize_request_step_events(step_events) do
+      {:ok, normalized_step_events} ->
+        append_normalized_request_step_events(request_id, normalized_step_events)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
   defp insert_event_and_sync_state(request, request_id, attrs) do
     event_attrs =
       attrs
@@ -77,6 +112,42 @@ defmodule Orchard.Requests do
     %RequestEvent{}
     |> RequestEvent.changeset(event_attrs)
     |> Repo.insert()
+  end
+
+  defp insert_request_step_events(request_id, step_events) do
+    step_events
+    |> Enum.with_index(next_request_event_seq(request_id))
+    |> Enum.reduce_while([], fn {step_event, seq}, acc ->
+      event_attrs =
+        step_event
+        |> RequestStepEvent.to_request_event_attrs!()
+        |> Map.put("request_id", request_id)
+        |> Map.put("seq", seq)
+        |> default_occurred_at()
+
+      case %RequestEvent{} |> RequestEvent.changeset(event_attrs) |> Repo.insert() do
+        {:ok, request_event} ->
+          {:cont, [RequestStepEvent.from_request_event!(request_event) | acc]}
+
+        {:error, changeset} ->
+          Repo.rollback({:request_event_changeset, changeset})
+      end
+    end)
+    |> Enum.reverse()
+    |> then(&{:ok, &1})
+  end
+
+  defp append_normalized_request_step_events(request_id, normalized_step_events) do
+    Repo.transaction(fn ->
+      case lock_request(request_id) do
+        {:ok, _request} ->
+          insert_request_step_events(request_id, normalized_step_events)
+
+        {:error, :request_not_found} ->
+          Repo.rollback(:request_not_found)
+      end
+    end)
+    |> unwrap_transaction_result()
   end
 
   defp sync_request_state(request, event_attrs, raw_attrs) do
@@ -104,6 +175,50 @@ defmodule Orchard.Requests do
     |> unwrap_transaction_result()
   end
 
+  @spec mark_terminal_with_step_events(
+          struct() | Ecto.UUID.t(),
+          map(),
+          [RequestStepEvent.t() | map()]
+        ) ::
+          {:ok, struct()}
+          | {:error,
+             Ecto.Changeset.t()
+             | :already_terminal
+             | :request_not_found
+             | {:invalid_step_event, pos_integer(), String.t()}}
+  def mark_terminal_with_step_events(%Request{id: request_id}, attrs, step_events),
+    do: mark_terminal_with_step_events(request_id, attrs, step_events)
+
+  def mark_terminal_with_step_events(request_id, attrs, step_events) when is_list(step_events) do
+    with {:ok, normalized_step_events} <- normalize_request_step_events(step_events) do
+      Repo.transaction(fn ->
+        case lock_request(request_id) do
+          {:ok, current_request} ->
+            case terminal_step_insert_mode(current_request, attrs) do
+              :append ->
+                {:ok, _step_events} =
+                  insert_request_step_events(request_id, normalized_step_events)
+
+                case apply_terminal_update(current_request, attrs) do
+                  {:ok, updated_request} -> {:ok, updated_request}
+                  {:error, changeset} -> Repo.rollback({:request_changeset, changeset})
+                end
+
+              :skip ->
+                apply_terminal_update(current_request, attrs)
+
+              :already_terminal ->
+                Repo.rollback(:already_terminal)
+            end
+
+          {:error, :request_not_found} ->
+            Repo.rollback(:request_not_found)
+        end
+      end)
+      |> unwrap_transaction_result()
+    end
+  end
+
   defp apply_terminal_update(%Request{} = request, attrs) do
     # Allow idempotent terminal updates: if the row is already in a terminal
     # state (set by append_request_event's atomic state sync), still apply
@@ -121,6 +236,16 @@ defmodule Orchard.Requests do
 
       true ->
         Repo.rollback(:already_terminal)
+    end
+  end
+
+  defp terminal_step_insert_mode(%Request{} = request, attrs) do
+    target_state = Map.get(attrs, :state) || Map.get(attrs, "state")
+
+    cond do
+      request.state not in Request.terminal_states() -> :append
+      target_state != nil and request.state == target_state -> :skip
+      true -> :already_terminal
     end
   end
 
@@ -249,6 +374,24 @@ defmodule Orchard.Requests do
     |> case do
       nil -> 1
       seq -> seq + 1
+    end
+  end
+
+  defp normalize_request_step_events(step_events) do
+    step_events
+    |> Enum.with_index(1)
+    |> Enum.reduce_while({:ok, []}, fn {step_event, index}, {:ok, acc} ->
+      case RequestStepEvent.new(step_event) do
+        {:ok, normalized_step_event} ->
+          {:cont, {:ok, [normalized_step_event | acc]}}
+
+        {:error, reason} ->
+          {:halt, {:error, {:invalid_step_event, index, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, normalized_step_events} -> {:ok, Enum.reverse(normalized_step_events)}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -389,4 +532,10 @@ defmodule Orchard.Requests do
   defp unwrap_transaction_result({:ok, {:error, changeset}}), do: {:error, changeset}
   defp unwrap_transaction_result({:error, :request_not_found}), do: {:error, :request_not_found}
   defp unwrap_transaction_result({:error, :already_terminal}), do: {:error, :already_terminal}
+
+  defp unwrap_transaction_result({:error, {:request_event_changeset, changeset}}),
+    do: {:error, changeset}
+
+  defp unwrap_transaction_result({:error, {:request_changeset, changeset}}),
+    do: {:error, changeset}
 end

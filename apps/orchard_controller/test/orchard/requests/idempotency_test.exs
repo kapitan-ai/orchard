@@ -3,7 +3,8 @@ defmodule Orchard.Requests.IdempotencyTest do
 
   import Orchard.TestSupport.ModelRequestFixtures
 
-  alias Orchard.Requests.Idempotency
+  alias Orchard.Requests
+  alias Orchard.Requests.{Idempotency, RequestStepEvent}
 
   test "build_context/3 produces the same body hash for equivalent map key orderings" do
     tenant_id = Ecto.UUID.generate()
@@ -56,6 +57,53 @@ defmodule Orchard.Requests.IdempotencyTest do
     assert {:replay, %{id: ^request_id}} = Idempotency.resolve(context)
   end
 
+  test "resolve/1 replay behavior is unchanged when request_step events exist" do
+    tenant_id = Ecto.UUID.generate()
+    key = "idem-replay-step-events"
+    params = %{"model" => "test@v1", "messages" => [%{"role" => "user", "content" => "hi"}]}
+
+    assert {:ok, context} = Idempotency.build_context(tenant_id, key, params)
+
+    request =
+      create_request!(%{
+        tenant_id: tenant_id,
+        idempotency_key: key,
+        body_hash: context.body_hash,
+        stream: false,
+        state: :completed,
+        response_payload: %{"id" => "req_replay_steps", "object" => "chat.completion"}
+      })
+
+    inference_turn_step_id = RequestStepEvent.inference_turn_step_id(1, 1)
+
+    assert {:ok, _step_events} =
+             Requests.append_request_step_events(request, [
+               %{
+                 event_type: "request_step.started",
+                 step_id: inference_turn_step_id,
+                 step_type: "inference_turn",
+                 turn_index: 1,
+                 attempt: 1,
+                 parent_step_id: nil,
+                 boundary: "pre_side_effect",
+                 result: %{}
+               },
+               %{
+                 event_type: "request_step.completed",
+                 step_id: inference_turn_step_id,
+                 step_type: "inference_turn",
+                 turn_index: 1,
+                 attempt: 1,
+                 parent_step_id: nil,
+                 boundary: "post_observation",
+                 result: %{"finish_reason" => "stop"}
+               }
+             ])
+
+    request_id = request.id
+    assert {:replay, %{id: ^request_id}} = Idempotency.resolve(context)
+  end
+
   test "resolve/1 returns request_in_progress for matching active rows" do
     tenant_id = Ecto.UUID.generate()
     key = "idem-active"
@@ -69,6 +117,38 @@ defmodule Orchard.Requests.IdempotencyTest do
       body_hash: context.body_hash,
       state: :running
     })
+
+    assert {:conflict, :request_in_progress, _request} = Idempotency.resolve(context)
+  end
+
+  test "resolve/1 conflict behavior is unchanged when request_step events exist" do
+    tenant_id = Ecto.UUID.generate()
+    key = "idem-active-step-events"
+    params = %{"model" => "test@v1"}
+
+    assert {:ok, context} = Idempotency.build_context(tenant_id, key, params)
+
+    request =
+      create_request!(%{
+        tenant_id: tenant_id,
+        idempotency_key: key,
+        body_hash: context.body_hash,
+        state: :running
+      })
+
+    assert {:ok, _step_events} =
+             Requests.append_request_step_events(request, [
+               %{
+                 event_type: "request_step.started",
+                 step_id: RequestStepEvent.inference_turn_step_id(1, 1),
+                 step_type: "inference_turn",
+                 turn_index: 1,
+                 attempt: 1,
+                 parent_step_id: nil,
+                 boundary: "pre_side_effect",
+                 result: %{}
+               }
+             ])
 
     assert {:conflict, :request_in_progress, _request} = Idempotency.resolve(context)
   end

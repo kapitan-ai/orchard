@@ -7,7 +7,7 @@ defmodule OrchardConsole.RequestLiveTest do
   import Orchard.TestSupport.ModelRequestFixtures
   alias Orchard.Repo
   alias Orchard.Requests
-  alias Orchard.Requests.RequestEvent
+  alias Orchard.Requests.{RequestEvent, RequestStepEvent}
 
   @moduletag :live
   @moduletag :db
@@ -129,7 +129,6 @@ defmodule OrchardConsole.RequestLiveTest do
     end
 
     test "completed request shows formatted durations and tok/s", %{conn: conn} do
-      # Create a completed request with known timestamps
       request =
         create_request!(%{
           state: :completed,
@@ -702,6 +701,58 @@ defmodule OrchardConsole.RequestLiveTest do
       {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
 
       assert html =~ "value_123"
+    end
+
+    test "renders request_step timeline entries without specialized UI handling", %{conn: conn} do
+      request = create_request!(%{state: :running})
+      inference_turn_step_id = RequestStepEvent.inference_turn_step_id(1, 1)
+
+      assert {:ok, _step_events} =
+               Requests.append_request_step_events(request, [
+                 %{
+                   event_type: "request_step.started",
+                   step_id: inference_turn_step_id,
+                   step_type: "inference_turn",
+                   turn_index: 1,
+                   attempt: 1,
+                   parent_step_id: nil,
+                   boundary: "pre_side_effect",
+                   result: %{}
+                 },
+                 %{
+                   event_type: "request_step.proposed",
+                   step_id: RequestStepEvent.tool_call_step_id(1, "call_1"),
+                   step_type: "tool_call",
+                   turn_index: 1,
+                   attempt: 1,
+                   parent_step_id: inference_turn_step_id,
+                   boundary: "post_observation",
+                   result: %{"finish_reason" => "tool_calls"},
+                   call_id: "call_1",
+                   tool_name: "calendar.lookup",
+                   arguments_json: ~s({"date":"2026-04-11"})
+                 },
+                 %{
+                   event_type: "request_step.completed",
+                   step_id: inference_turn_step_id,
+                   step_type: "inference_turn",
+                   turn_index: 1,
+                   attempt: 1,
+                   parent_step_id: nil,
+                   boundary: "post_observation",
+                   result: %{"finish_reason" => "tool_calls"}
+                 }
+               ])
+
+      {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
+
+      assert html =~ "request_step.started"
+      assert html =~ "request_step.proposed"
+      assert html =~ "request_step.completed"
+      assert html =~ "inference_turn:t1:a1"
+      assert html =~ "tool_call:t1:ccall_1"
+      assert html =~ "calendar.lookup"
+      assert html =~ "tool_calls"
     end
 
     test "renders dash for nil event state", %{conn: conn} do

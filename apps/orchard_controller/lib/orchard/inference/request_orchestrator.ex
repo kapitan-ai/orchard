@@ -11,6 +11,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Inference.{
     CanonicalRequestSerializer,
     ChatError,
+    ToolCallAccumulator,
     ToolExecutionSemantics,
     ToolingValidation
   }
@@ -19,11 +20,18 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.RequestServer
+  alias Orchard.Requests.RequestStepEvent
 
   @type event_handler ::
           (Ecto.UUID.t(), InferenceEvent.t() -> :ok | :cancel)
   @type success_persistence ::
           (CanonicalRequest.t(), [InferenceEvent.t()] -> map())
+  @type step_event_appender ::
+          (struct() | Ecto.UUID.t(), [RequestStepEvent.t() | map()] ->
+             {:ok, [RequestStepEvent.t()]} | {:error, term()})
+  @type terminal_persister ::
+          (struct() | Ecto.UUID.t(), map(), [RequestStepEvent.t() | map()] ->
+             {:ok, struct()} | {:error, term()})
 
   @type execute_result ::
           {:ok, CanonicalRequest.t(), [InferenceEvent.t()]}
@@ -37,6 +45,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
     success_persistence = Keyword.get(opts, :success_persistence)
     idempotency = Keyword.get(opts, :idempotency)
 
+    step_event_appender =
+      Keyword.get(opts, :step_event_appender, &Requests.append_request_step_events/2)
+
+    terminal_persister =
+      Keyword.get(opts, :terminal_persister, &Requests.mark_terminal_with_step_events/3)
+
     with :ok <- validate_resolved_tooling(canonical),
          {:ok, db_request} <- persist_request(canonical, model, idempotency) do
       case start_fsm(db_request) do
@@ -47,12 +61,21 @@ defmodule Orchard.Inference.RequestOrchestrator do
             model,
             caller,
             event_handler,
-            success_persistence
+            success_persistence,
+            step_event_appender,
+            terminal_persister
           )
 
         {:error, reason} ->
-          fail_request(db_request, {:request_server_start_failed, reason})
-          {:error, {:request_server_start_failed, reason}}
+          case fail_request(
+                 db_request,
+                 {:request_server_start_failed, reason},
+                 nil,
+                 terminal_persister
+               ) do
+            :ok -> {:error, {:request_server_start_failed, reason}}
+            {:error, {:terminal_persist_failed, _} = persist_error} -> {:error, persist_error}
+          end
       end
     end
   end
@@ -63,26 +86,146 @@ defmodule Orchard.Inference.RequestOrchestrator do
          model,
          caller,
          event_handler,
-         success_persistence
+         success_persistence,
+         step_event_appender,
+         terminal_persister
        ) do
     result =
       with :ok <- advance_fsm(db_request.id, :validated),
            {:ok, schedule} <- schedule_request(canonical),
            {:ok, _} <- Requests.record_schedule(db_request, schedule),
            :ok <- advance_fsm(db_request.id, :scheduled),
-           :ok <- advance_fsm(db_request.id, :dispatching),
-           {:ok, events, first_token_at} <-
-             dispatch(db_request, canonical, model, schedule, caller, event_handler) do
-        finalize(db_request, canonical, model, events, first_token_at, success_persistence)
+           :ok <- advance_fsm(db_request.id, :dispatching) do
+        execute_inference_turn(
+          db_request,
+          canonical,
+          model,
+          schedule,
+          caller,
+          event_handler,
+          success_persistence,
+          step_event_appender,
+          terminal_persister
+        )
       end
 
     case result do
       {:ok, _, _} = success ->
         success
 
+      {:error, {:terminal_persist_failed, _} = persist_error, _step_context} ->
+        {:error, persist_error}
+
+      {:error, reason, step_context} ->
+        case fail_request(db_request, reason, step_context, terminal_persister) do
+          :ok -> {:error, reason}
+          {:error, {:terminal_persist_failed, _} = persist_error} -> {:error, persist_error}
+        end
+
+      {:error, {:terminal_persist_failed, _} = persist_error} ->
+        {:error, persist_error}
+
       {:error, reason} ->
-        fail_request(db_request, reason)
-        {:error, reason}
+        case fail_request(db_request, reason, nil, terminal_persister) do
+          :ok -> {:error, reason}
+          {:error, {:terminal_persist_failed, _} = persist_error} -> {:error, persist_error}
+        end
+    end
+  end
+
+  defp execute_inference_turn(
+         db_request,
+         canonical,
+         model,
+         schedule,
+         caller,
+         event_handler,
+         success_persistence,
+         step_event_appender,
+         terminal_persister
+       ) do
+    step_context = inference_turn_step_context(canonical)
+
+    case persist_inference_turn_started(db_request, step_context, step_event_appender) do
+      {:ok, persisted_step_context} ->
+        dispatch_started_inference_turn(
+          db_request,
+          canonical,
+          model,
+          schedule,
+          %{
+            caller: caller,
+            event_handler: event_handler,
+            success_persistence: success_persistence,
+            step_event_appender: step_event_appender,
+            terminal_persister: terminal_persister
+          },
+          persisted_step_context
+        )
+
+      {:error, reason} ->
+        {:error, {:request_step_start_failed, reason}}
+    end
+  end
+
+  defp dispatch_started_inference_turn(
+         db_request,
+         canonical,
+         model,
+         schedule,
+         execution_opts,
+         step_context
+       ) do
+    case dispatch(
+           db_request,
+           canonical,
+           model,
+           schedule,
+           execution_opts.caller,
+           execution_opts.event_handler
+         ) do
+      {:ok, events, first_token_at} ->
+        finalize_started_inference_turn(
+          db_request,
+          canonical,
+          model,
+          events,
+          first_token_at,
+          execution_opts.success_persistence,
+          step_context,
+          execution_opts.step_event_appender,
+          execution_opts.terminal_persister
+        )
+
+      {:error, reason} ->
+        {:error, reason, step_context}
+    end
+  end
+
+  defp finalize_started_inference_turn(
+         db_request,
+         canonical,
+         model,
+         events,
+         first_token_at,
+         success_persistence,
+         step_context,
+         step_event_appender,
+         terminal_persister
+       ) do
+    case finalize(
+           db_request,
+           canonical,
+           model,
+           events,
+           first_token_at,
+           success_persistence,
+           step_context,
+           step_event_appender,
+           terminal_persister
+         ) do
+      {:ok, _, _} = success -> success
+      {:error, reason} -> {:error, reason, step_context}
     end
   end
 
@@ -240,10 +383,28 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp finalize(db_request, canonical, _model, events, first_token_at, success_persistence) do
+  defp finalize(
+         db_request,
+         canonical,
+         _model,
+         events,
+         first_token_at,
+         success_persistence,
+         step_context,
+         step_event_appender,
+         terminal_persister
+       ) do
     case build_terminal_attrs(canonical, events, first_token_at, success_persistence) do
       {:ok, terminal_attrs} ->
-        persist_terminal(db_request, canonical, events, terminal_attrs)
+        persist_terminal(
+          db_request,
+          canonical,
+          events,
+          terminal_attrs,
+          step_context,
+          step_event_appender,
+          terminal_persister
+        )
 
       {:error, reason} ->
         {:error, reason}
@@ -282,29 +443,55 @@ defmodule Orchard.Inference.RequestOrchestrator do
     do: {:ok, Map.merge(terminal_attrs, success_attrs)}
 
   defp merge_success_attrs({:error, reason}, _terminal_attrs),
-    do: {:error, {:terminal_persist_failed, reason}}
+    do: {:error, reason}
 
-  defp persist_terminal(db_request, canonical, events, terminal_attrs) do
+  defp persist_terminal(
+         db_request,
+         canonical,
+         events,
+         terminal_attrs,
+         step_context,
+         _step_event_appender,
+         terminal_persister
+       ) do
     advance_fsm_best_effort(db_request.id, events)
-    advance_fsm_best_effort_terminal(db_request.id, terminal_attrs.state)
 
-    case Requests.mark_terminal(db_request, terminal_attrs) do
-      {:ok, _updated} -> {:ok, canonical, events}
-      {:error, reason} -> {:error, {:terminal_persist_failed, reason}}
+    case terminal_persister.(
+           db_request,
+           terminal_attrs,
+           post_observation_terminal_steps(canonical, events, terminal_attrs, step_context)
+         ) do
+      {:ok, _updated} ->
+        advance_fsm_best_effort_terminal(db_request.id, terminal_attrs.state)
+        {:ok, canonical, events}
+
+      {:error, reason} ->
+        {:error, {:terminal_persist_failed, reason}}
     end
   end
 
-  defp fail_request(db_request, reason) do
+  defp fail_request(
+         db_request,
+         reason,
+         step_context,
+         terminal_persister
+       ) do
     terminal_attrs =
       reason
       |> ChatError.from_execute_error()
       |> ChatError.terminal_attrs()
 
-    advance_fsm_best_effort_terminal(db_request.id, terminal_attrs.state)
+    case terminal_persister.(
+           db_request,
+           terminal_attrs,
+           failure_terminal_steps(terminal_attrs, step_context)
+         ) do
+      {:ok, _request} ->
+        advance_fsm_best_effort_terminal(db_request.id, terminal_attrs.state)
+        :ok
 
-    case Requests.mark_terminal(db_request, terminal_attrs) do
-      {:ok, _request} -> :ok
-      {:error, error} -> log_warn("fail_request mark_terminal error: #{inspect(error)}")
+      {:error, persist_reason} ->
+        {:error, {:terminal_persist_failed, persist_reason}}
     end
   end
 
@@ -350,6 +537,145 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
     Map.merge(base_attrs, usage)
   end
+
+  defp inference_turn_step_context(canonical) do
+    %{
+      turn_index: 1,
+      attempt: 1,
+      step_id: RequestStepEvent.inference_turn_step_id(1, 1),
+      model_id: canonical.model_ref.model_id,
+      model_version: canonical.model_ref.version
+    }
+  end
+
+  defp persist_inference_turn_started(db_request, step_context, step_event_appender) do
+    case step_event_appender.(db_request, [inference_turn_started_step(step_context)]) do
+      {:ok, _step_events} -> {:ok, step_context}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp post_observation_terminal_steps(canonical, events, terminal_attrs, step_context) do
+    build_tool_call_proposed_steps(canonical, events, step_context) ++
+      [terminal_inference_turn_step(events, terminal_attrs, step_context)]
+  end
+
+  defp failure_terminal_steps(_terminal_attrs, nil), do: []
+
+  defp failure_terminal_steps(terminal_attrs, step_context) do
+    [terminal_inference_turn_step([], terminal_attrs, step_context)]
+  end
+
+  defp inference_turn_started_step(step_context) do
+    %{
+      event_type: "request_step.started",
+      step_id: step_context.step_id,
+      step_type: "inference_turn",
+      turn_index: step_context.turn_index,
+      attempt: step_context.attempt,
+      parent_step_id: nil,
+      boundary: "pre_side_effect",
+      result: %{},
+      model_id: step_context.model_id,
+      model_version: step_context.model_version
+    }
+  end
+
+  defp terminal_inference_turn_step(events, terminal_attrs, step_context) do
+    %{
+      event_type: terminal_step_event_type(terminal_attrs.state),
+      step_id: step_context.step_id,
+      step_type: "inference_turn",
+      turn_index: step_context.turn_index,
+      attempt: step_context.attempt,
+      parent_step_id: nil,
+      boundary: "post_observation",
+      result: terminal_step_result(events, terminal_attrs),
+      model_id: step_context.model_id,
+      model_version: step_context.model_version
+    }
+  end
+
+  defp build_tool_call_proposed_steps(canonical, events, step_context) do
+    case terminal_finish_reason(events) do
+      "tool_calls" = finish_reason ->
+        accumulate_tool_call_proposals(canonical, events, step_context, finish_reason)
+
+      _other ->
+        []
+    end
+  end
+
+  defp accumulate_tool_call_proposals(canonical, events, step_context, finish_reason) do
+    case ToolCallAccumulator.from_events(events) do
+      {:ok, accumulator} ->
+        accumulator
+        |> ToolCallAccumulator.chat_tool_calls()
+        |> Enum.map(fn tool_call ->
+          tool_call_proposed_step(canonical, tool_call, step_context, finish_reason)
+        end)
+
+      {:error, reason} ->
+        log_warn("tool call proposal reconstruction failed: #{inspect(reason)}")
+        []
+    end
+  end
+
+  defp tool_call_proposed_step(canonical, tool_call, step_context, finish_reason) do
+    tool_call_id = map_value(tool_call, :id)
+    function = map_value(tool_call, :function)
+
+    %{
+      event_type: "request_step.proposed",
+      step_id: RequestStepEvent.tool_call_step_id(step_context.turn_index, tool_call_id),
+      step_type: "tool_call",
+      turn_index: step_context.turn_index,
+      attempt: step_context.attempt,
+      parent_step_id: step_context.step_id,
+      boundary: "post_observation",
+      result: %{"finish_reason" => finish_reason},
+      call_id: tool_call_id,
+      tool_name: map_value(function || %{}, :name),
+      arguments_json: map_value(function || %{}, :arguments),
+      model_id: canonical.model_ref.model_id,
+      model_version: canonical.model_ref.version
+    }
+  end
+
+  defp terminal_step_event_type(:completed), do: "request_step.completed"
+  defp terminal_step_event_type(:failed), do: "request_step.failed"
+  defp terminal_step_event_type(:cancelled), do: "request_step.cancelled"
+  defp terminal_step_event_type(:timed_out), do: "request_step.timed_out"
+  defp terminal_step_event_type(:interrupted), do: "request_step.interrupted"
+
+  defp terminal_step_result(events, terminal_attrs) do
+    %{}
+    |> maybe_put_result("finish_reason", terminal_finish_reason(events))
+    |> maybe_put_result("input_tokens", Map.get(terminal_attrs, :input_tokens))
+    |> maybe_put_result("output_tokens", Map.get(terminal_attrs, :output_tokens))
+    |> maybe_put_result("error_code", Map.get(terminal_attrs, :error_code))
+    |> maybe_put_result("error_message", Map.get(terminal_attrs, :error_message))
+    |> maybe_put_result("http_status", Map.get(terminal_attrs, :http_status))
+  end
+
+  defp terminal_finish_reason(events) do
+    case Enum.find(events, &(InferenceEvent.kind(&1) == :completed)) do
+      %{event: %InferenceEvent.Completed{finish_reason: finish_reason}} ->
+        map_finish_reason(finish_reason)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp map_finish_reason(:finish_reason_stop), do: "stop"
+  defp map_finish_reason(:finish_reason_length), do: "length"
+  defp map_finish_reason(:finish_reason_tool_calls), do: "tool_calls"
+  defp map_finish_reason(:finish_reason_unspecified), do: "stop"
+  defp map_finish_reason(_other), do: "stop"
+
+  defp maybe_put_result(result, _key, nil), do: result
+  defp maybe_put_result(result, key, value), do: Map.put(result, key, value)
 
   defp maybe_put_first_token_at(attrs, nil), do: attrs
   defp maybe_put_first_token_at(attrs, %DateTime{} = ts), do: Map.put(attrs, :first_token_at, ts)

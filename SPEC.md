@@ -400,6 +400,59 @@ The controller SHALL persist:
 
 The controller SHALL NOT rely on in-memory state for correctness after restart. ETS caches are acceleration only.
 
+### 3.7.1 Request-step durable contract
+
+Request-step persistence SHALL remain layered on `request_events` for the first hosted-execution prerequisite slice. The controller SHALL NOT introduce a separate `request_steps` table unless later implementation evidence proves `request_events` insufficient.
+
+Reserved request-step `event_type` values are:
+
+* `request_step.started`
+* `request_step.proposed`
+* `request_step.completed`
+* `request_step.failed`
+* `request_step.cancelled`
+* `request_step.timed_out`
+* `request_step.interrupted`
+* `request_step.indeterminate`
+
+Request-step rows SHALL always persist with `state = null`. They SHALL NOT mutate `requests.state`; coarse request lifecycle state remains owned by the request FSM and its existing lifecycle events.
+
+Supported `step_type` values are:
+
+* `inference_turn`
+* `tool_call`
+* `tool_execution`
+
+Boundary vocabulary is:
+
+* `pre_side_effect`
+* `post_observation`
+
+Boundary rules:
+
+* `request_step.started` SHALL use `pre_side_effect`
+* all other `request_step.*` events SHALL use `post_observation`
+
+Deterministic step identifiers SHALL use these formats:
+
+* inference turn: `inference_turn:t{turn_index}:a{attempt}`
+* tool call proposal: `tool_call:t{turn_index}:c{call_id}`
+* tool execution: `tool_execution:t{turn_index}:c{call_id}:a{attempt}`
+
+Each request-step payload SHALL carry:
+
+* `step_id`
+* `step_type`
+* `turn_index`
+* `attempt`
+* `parent_step_id`
+* `boundary`
+* `result`
+
+When applicable, payloads MAY also carry `call_id`, `tool_name`, `arguments_json`, `model_id`, and `model_version`.
+
+`tool_execution` steps and `request_step.indeterminate` are reserved valid durable shapes for later slices. This specification section only defines the persistence contract. It MUST NOT be interpreted as enabling controller-owned hosted `/v1/responses` tool-execution loops in the current slice.
+
 ### 3.8 Internal request lifecycle
 
 ```text
