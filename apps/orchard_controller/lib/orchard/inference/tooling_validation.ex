@@ -3,17 +3,27 @@ defmodule Orchard.Inference.ToolingValidation do
   Shared validation for tool-calling request fields across chat and responses endpoints.
   """
 
+  @ref_prefix "tool://"
+
   @type validation_error ::
           {:error, :unsupported_parameter, String.t()}
           | {:error, :invalid_value, String.t(), String.t()}
+
+  @type tool_state :: %{
+          inline_names: MapSet.t(String.t()),
+          ref_identities: MapSet.t({String.t(), String.t()}),
+          ref_versions_by_name: %{optional(String.t()) => String.t()},
+          refs_present?: boolean(),
+          tool_count: non_neg_integer()
+        }
 
   @spec validate(map()) :: :ok | validation_error()
   def validate(params) when is_map(params) do
     tool_choice = Map.get(params, "tool_choice")
 
-    with {:ok, tool_names} <- validate_tools(Map.get(params, "tools")),
+    with {:ok, tool_state} <- validate_tools(Map.get(params, "tools")),
          :ok <- validate_tool_choice_shape(tool_choice) do
-      validate_tool_choice_against_tools(tool_choice, tool_names)
+      validate_tool_choice_against_tools(tool_choice, tool_state)
     end
   end
 
@@ -29,37 +39,92 @@ defmodule Orchard.Inference.ToolingValidation do
 
   def effective_tool_calling?(_tools, _tool_choice), do: false
 
-  defp validate_tools(nil), do: {:ok, []}
+  defp validate_tools(nil), do: {:ok, empty_tool_state()}
 
   defp validate_tools(tools) when is_list(tools) do
-    Enum.reduce_while(tools, {:ok, MapSet.new()}, &validate_tool_entry/2)
-    |> case do
-      {:ok, names} -> {:ok, MapSet.to_list(names)}
-      error -> error
-    end
+    Enum.reduce_while(tools, {:ok, empty_tool_state()}, &validate_tool_entry/2)
   end
 
   defp validate_tools(_tools), do: {:error, :invalid_value, "tools", "must be an array"}
 
-  defp validate_tool_entry(tool, {:ok, names}) do
+  defp validate_tool_entry(tool, {:ok, state}) do
     case validate_tool(tool) do
-      {:ok, name} -> validate_unique_tool_name(name, names)
-      {:error, _type, _field} = error -> {:halt, error}
-      {:error, _type, _field, _reason} = error -> {:halt, error}
+      {:ok, {:inline, name}} ->
+        validate_unique_inline_name(name, state)
+
+      {:ok, {:ref, {name, version}}} ->
+        state
+        |> validate_unique_ref_identity(name, version)
+        |> validate_single_ref_version(name, version)
+
+      {:error, _type, _field} = error ->
+        {:halt, error}
+
+      {:error, _type, _field, _reason} = error ->
+        {:halt, error}
     end
   end
 
-  defp validate_unique_tool_name(name, names) do
+  defp validate_unique_inline_name(name, %{inline_names: names} = state) do
     if MapSet.member?(names, name) do
       {:halt, {:error, :invalid_value, "tools", "function names must be unique"}}
     else
-      {:cont, {:ok, MapSet.put(names, name)}}
+      {:cont,
+       {:ok, %{state | inline_names: MapSet.put(names, name), tool_count: state.tool_count + 1}}}
     end
+  end
+
+  defp validate_unique_ref_identity({:halt, _error} = halted, _name, _version), do: halted
+
+  defp validate_unique_ref_identity(%{ref_identities: identities} = state, name, version) do
+    identity = {name, version}
+
+    if MapSet.member?(identities, identity) do
+      {:halt, {:error, :invalid_value, "tools", "duplicate tool refs are not allowed"}}
+    else
+      %{
+        state
+        | ref_identities: MapSet.put(identities, identity),
+          refs_present?: true,
+          tool_count: state.tool_count + 1
+      }
+    end
+  end
+
+  defp validate_single_ref_version({:halt, _error} = halted, _name, _version), do: halted
+
+  defp validate_single_ref_version(%{ref_versions_by_name: versions} = state, name, version) do
+    case Map.get(versions, name) do
+      nil ->
+        {:cont, {:ok, %{state | ref_versions_by_name: Map.put(versions, name, version)}}}
+
+      ^version ->
+        {:cont, {:ok, state}}
+
+      _other_version ->
+        {:halt,
+         {:error, :invalid_value, "tools", "tool refs must use a single version per tool name"}}
+    end
+  end
+
+  defp validate_tool(%{"type" => "function", "function" => %{}, "ref" => _ref}) do
+    invalid_mixed_tool_entry()
   end
 
   defp validate_tool(%{"type" => "function", "function" => %{"name" => name}})
        when is_binary(name) and name != "" do
-    {:ok, name}
+    {:ok, {:inline, name}}
+  end
+
+  defp validate_tool(%{"type" => "function", "ref" => ref}) when is_binary(ref) do
+    case parse_tool_ref(ref) do
+      {:ok, name, version} -> {:ok, {:ref, {name, version}}}
+      :error -> invalid_tool_ref()
+    end
+  end
+
+  defp validate_tool(%{"type" => "function", "ref" => _ref}) do
+    invalid_tool_ref()
   end
 
   defp validate_tool(%{"type" => type}) when is_binary(type) and type != "function" do
@@ -68,7 +133,7 @@ defmodule Orchard.Inference.ToolingValidation do
 
   defp validate_tool(_tool) do
     {:error, :invalid_value, "tools",
-     "each tool must be an object with type \"function\" and a non-empty function name"}
+     "each tool must be an object with type \"function\" and exactly one of function or ref"}
   end
 
   defp validate_tool_choice_shape(nil), do: :ok
@@ -84,18 +149,28 @@ defmodule Orchard.Inference.ToolingValidation do
      "must be \"none\", \"auto\", \"required\", or {type: \"function\", function: {name: ...}}"}
   end
 
-  defp validate_tool_choice_against_tools("required", []), do: invalid_required_tools()
-  defp validate_tool_choice_against_tools("required", _tool_names), do: :ok
-  defp validate_tool_choice_against_tools(nil, _tool_names), do: :ok
+  defp validate_tool_choice_against_tools("required", %{tool_count: 0}),
+    do: invalid_required_tools()
 
-  defp validate_tool_choice_against_tools(choice, _tool_names) when choice in ["none", "auto"],
+  defp validate_tool_choice_against_tools("required", _tool_state), do: :ok
+  defp validate_tool_choice_against_tools(nil, _tool_state), do: :ok
+
+  defp validate_tool_choice_against_tools(choice, _tool_state) when choice in ["none", "auto"],
     do: :ok
 
   defp validate_tool_choice_against_tools(
          %{"type" => "function", "function" => %{"name" => name}},
-         tool_names
+         %{refs_present?: true}
+       )
+       when is_binary(name) do
+    :ok
+  end
+
+  defp validate_tool_choice_against_tools(
+         %{"type" => "function", "function" => %{"name" => name}},
+         %{inline_names: inline_names}
        ) do
-    if name in tool_names do
+    if MapSet.member?(inline_names, name) do
       :ok
     else
       {:error, :invalid_value, "tool_choice",
@@ -103,7 +178,55 @@ defmodule Orchard.Inference.ToolingValidation do
     end
   end
 
-  defp validate_tool_choice_against_tools(_choice, _tool_names), do: :ok
+  defp validate_tool_choice_against_tools(_choice, _tool_state), do: :ok
+
+  defp empty_tool_state do
+    %{
+      inline_names: MapSet.new(),
+      ref_identities: MapSet.new(),
+      ref_versions_by_name: %{},
+      refs_present?: false,
+      tool_count: 0
+    }
+  end
+
+  @spec parse_tool_ref(String.t()) :: {:ok, String.t(), String.t()} | :error
+  def parse_tool_ref(@ref_prefix <> rest) do
+    case String.split(rest, "@", parts: 2) do
+      [name, version] ->
+        case {validate_ref_part(name), validate_ref_part(version)} do
+          {:ok, :ok} -> {:ok, name, version}
+          _other -> :error
+        end
+
+      _other ->
+        :error
+    end
+  end
+
+  def parse_tool_ref(_ref), do: :error
+
+  @spec valid_tool_ref_part?(String.t()) :: boolean()
+  def valid_tool_ref_part?(value) when is_binary(value), do: validate_ref_part(value) == :ok
+  def valid_tool_ref_part?(_value), do: false
+
+  defp validate_ref_part(""), do: :error
+
+  defp validate_ref_part(value) do
+    if String.contains?(value, ["@", " ", "\n", "\t"]) do
+      :error
+    else
+      :ok
+    end
+  end
+
+  defp invalid_mixed_tool_entry do
+    {:error, :invalid_value, "tools", "each tool must include either function or ref, not both"}
+  end
+
+  defp invalid_tool_ref do
+    {:error, :invalid_value, "tools", "tool refs must match tool://<name>@<version>"}
+  end
 
   defp invalid_required_tools do
     {:error, :invalid_value, "tool_choice", "\"required\" requires at least one provided tool"}

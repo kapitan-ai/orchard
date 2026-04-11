@@ -5,6 +5,8 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
   alias Orchard.Inference.CanonicalRequestSerializer
 
   test "serialize/1 emits string-keyed endpoint-aware canonical data" do
+    tool_id = Ecto.UUID.generate()
+
     canonical =
       CanonicalRequest.new(%{
         internal_id: Ecto.UUID.generate(),
@@ -21,7 +23,21 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
         stream_include_usage: false,
         sampling: %{temperature: 0.7, top_p: 0.9, stop: ["END"], seed: 7},
         response_format: %{type: :text},
-        tooling: %{tools: [%{name: "calculator"}], tool_choice: %{type: "auto"}},
+        tooling: %{
+          tools: [%{name: "calculator"}],
+          requested_tools: [%{"type" => "function", "ref" => "tool://calculator@2026-04-10"}],
+          tool_choice: %{type: "auto"},
+          registry_snapshot: %{
+            entries: [
+              %{
+                tool_id: tool_id,
+                name: "calculator",
+                version: "2026-04-10",
+                execution_mode: :client_only
+              }
+            ]
+          }
+        },
         metadata: %{trace_id: "trace-1", tags: [:a, :b]},
         admission: %{timeout_ms: 10_000, queue_wait_ms: 50, max_cold_start_ms: 500},
         resolved_policy: %{
@@ -40,6 +56,25 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
     assert serialized["metadata"] == %{"trace_id" => "trace-1", "tags" => ["a", "b"]}
     assert serialized["sampling"]["stop"] == ["END"]
     assert serialized["resolved_policy"]["residency_preference"] == "prefer_loaded"
+
+    assert serialized["tooling"] == %{
+             "tools" => [%{"name" => "calculator"}],
+             "requested_tools" => [
+               %{"type" => "function", "ref" => "tool://calculator@2026-04-10"}
+             ],
+             "tool_choice" => %{"type" => "auto"},
+             "registry_snapshot" => %{
+               "entries" => [
+                 %{
+                   "tool_id" => tool_id,
+                   "name" => "calculator",
+                   "version" => "2026-04-10",
+                   "execution_mode" => "client_only"
+                 }
+               ]
+             }
+           }
+
     refute Map.has_key?(serialized, :endpoint)
   end
 

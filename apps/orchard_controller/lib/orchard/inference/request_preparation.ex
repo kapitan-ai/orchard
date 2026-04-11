@@ -2,7 +2,7 @@ defmodule Orchard.Inference.RequestPreparation do
   @moduledoc false
 
   alias Orchard.CanonicalRequest
-  alias Orchard.Inference.ToolingValidation
+  alias Orchard.Inference.{ToolingValidation, ToolRegistryResolver}
   alias Orchard.Models
   alias Orchard.Models.ManifestParser
   alias Orchard.Tokenizer.Client, as: TokenizerClient
@@ -18,6 +18,7 @@ defmodule Orchard.Inference.RequestPreparation do
 
     with {:ok, params} <- validate(params, validator),
          {:ok, canonical} <- normalizer.normalize(params, caller_context),
+         {:ok, canonical} <- resolve_requested_tools(canonical),
          {:ok, model} <- resolve_model(canonical),
          :ok <- enforce_tooling_support(canonical, model),
          {:ok, canonical} <- tokenize(canonical, model),
@@ -26,13 +27,20 @@ defmodule Orchard.Inference.RequestPreparation do
     end
   end
 
-  defp validate(params, validator) do
-    case validator.validate(params) do
-      {:ok, validated} -> {:ok, validated}
-      {:error, type, field} -> {:error, {:validation, {type, field}}}
-      {:error, type, field, reason} -> {:error, {:validation, {type, field, reason}}}
+  defp validate(params, validator), do: wrap_validation_result(validator.validate(params))
+
+  defp resolve_requested_tools(%CanonicalRequest{tooling: tooling} = canonical) do
+    case wrap_validation_result(ToolRegistryResolver.resolve(tooling)) do
+      {:ok, resolved_tooling} -> {:ok, %{canonical | tooling: resolved_tooling}}
+      {:error, _reason} = error -> error
     end
   end
+
+  defp wrap_validation_result({:ok, value}), do: {:ok, value}
+  defp wrap_validation_result({:error, type, field}), do: {:error, {:validation, {type, field}}}
+
+  defp wrap_validation_result({:error, type, field, reason}),
+    do: {:error, {:validation, {type, field, reason}}}
 
   defp resolve_model(%CanonicalRequest{model_ref: model_ref}) do
     case Models.get_model_by_identity(model_ref.model_id, model_ref.version) do

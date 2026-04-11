@@ -4,6 +4,7 @@ defmodule Orchard.API.ResponsesControllerTest do
   @moduletag :db
 
   import Orchard.TestSupport.ModelRequestFixtures
+  import Orchard.TestSupport.ToolRegistryTestSupport
 
   alias Orchard.API.Router
   alias Orchard.ArtifactBundle
@@ -228,6 +229,72 @@ defmodule Orchard.API.ResponsesControllerTest do
                "status" => "completed"
              }
            ]
+  end
+
+  test "valid ref-backed request succeeds without API shape changes" do
+    %{token: token} = create_api_key_with_token!("responses-ref-success")
+    create_tool!("lookup_weather", "2026-04-10")
+    executable = write_tokenizer_executable!()
+    on_exit(fn -> File.rm(executable) end)
+
+    model =
+      create_model!(%{
+        model_id: "responses-ref-success-model",
+        version: "v1",
+        state: :active,
+        capabilities: ["chat", "tool_calling"],
+        artifact_uri: "file://#{fixture_bundle_path()}",
+        artifact_source_uri: "file://#{fixture_bundle_path()}"
+      })
+
+    params = %{
+      "model" => "#{model.model_id}@#{model.version}",
+      "input" => "hello",
+      "tools" => [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+      "tool_choice" => "auto"
+    }
+
+    with_inference_overrides([tokenizer_mode: :port, tokenizer_executable: executable], fn ->
+      stub_responses_orchestrator(
+        prepare_real: true,
+        capture_execute_pid: self(),
+        events: [
+          InferenceEvent.accepted(1_710_000_123_000),
+          InferenceEvent.output_text_delta("Ref-backed responses tools are accepted."),
+          InferenceEvent.completed(:finish_reason_stop, nil)
+        ]
+      )
+
+      conn = post_responses(params, token)
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      assert body["object"] == "response"
+      assert body["model"] == "#{model.model_id}@#{model.version}"
+      assert body["output_text"] == "Ref-backed responses tools are accepted."
+
+      assert_receive {:captured_execute_canonical, canonical, prepared_model}
+      assert prepared_model.id == model.id
+      assert canonical.tooling.requested_tools == params["tools"]
+      assert canonical.tooling.tools == [function_definition("lookup_weather")]
+    end)
+  end
+
+  test "invalid ref-backed request returns stable validation error on tools" do
+    conn =
+      post_responses(%{
+        "model" => "responses-ref-missing-model@v1",
+        "input" => "hello",
+        "tools" => [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+        "tool_choice" => "auto"
+      })
+
+    assert conn.status == 400
+    body = Jason.decode!(conn.resp_body)
+    assert body["error"]["type"] == "invalid_request_error"
+    assert body["error"]["code"] == "invalid_value"
+    assert body["error"]["param"] == "tools"
+    assert body["error"]["message"] =~ "tool://lookup_weather@2026-04-10"
   end
 
   test "tool-calling request against a model without tool_calling capability returns tooling_not_supported",
@@ -938,16 +1005,26 @@ defmodule Orchard.API.ResponsesControllerTest do
   end
 
   defmodule StubResponsesOrchestrator do
-    def prepare(_params, _caller_context) do
+    alias Orchard.Inference.ResponsesOrchestrator
+
+    def prepare(params, caller_context) do
       config =
         Process.get({Orchard.API.ResponsesControllerTest, :stub_responses_orchestrator}, %{})
 
-      Keyword.fetch!(config, :prepare)
+      if Keyword.get(config, :prepare_real, false) do
+        ResponsesOrchestrator.prepare(params, caller_context)
+      else
+        Keyword.fetch!(config, :prepare)
+      end
     end
 
-    def execute(canonical, _model, opts) do
+    def execute(canonical, model, opts) do
       config =
         Process.get({Orchard.API.ResponsesControllerTest, :stub_responses_orchestrator}, %{})
+
+      if pid = Keyword.get(config, :capture_execute_pid) do
+        send(pid, {:captured_execute_canonical, canonical, model})
+      end
 
       if event_handler = Keyword.get(opts, :event_handler) do
         Enum.each(Keyword.get(config, :events, []), fn event ->

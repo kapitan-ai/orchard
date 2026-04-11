@@ -6,10 +6,10 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
 
   alias Orchard.Inference.ChatOrchestrator
   alias Orchard.TestSupport.ModelRequestFixtures
+  alias Orchard.Tools
 
   describe "prepare/2 context-window enforcement with omitted max_tokens" do
     test "rejects omitted max_tokens when prompt fills most of the context window" do
-      # Model with a small context window — 100 tokens.
       model =
         ModelRequestFixtures.create_model!(%{
           model_id: "test/small-context-model",
@@ -18,15 +18,11 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
           max_context_tokens: 100
         })
 
-      # In fake tokenizer mode, token count = whitespace-word count of the
-      # prompt lines. One user message becomes "user <content>\nassistant".
-      # 98 words of content + "user" + "assistant" = 100 input tokens.
       content = Enum.map_join(1..98, " ", fn i -> "word#{i}" end)
 
       params = %{
         "model" => "#{model.model_id}@#{model.version}",
         "messages" => [%{"role" => "user", "content" => content}]
-        # max_tokens intentionally omitted
       }
 
       assert {:error, {:context_overflow, detail}} = ChatOrchestrator.prepare(params, [])
@@ -46,11 +42,9 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
       params = %{
         "model" => "#{model.model_id}@#{model.version}",
         "messages" => [%{"role" => "user", "content" => "Hello"}]
-        # max_tokens intentionally omitted
       }
 
       assert {:ok, canonical, _model} = ChatOrchestrator.prepare(params, [])
-      # Canonical preserves nil — the default is applied at orchestration time only
       assert canonical.sampling.max_output_tokens == nil
     end
 
@@ -82,7 +76,6 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
           max_context_tokens: nil
         })
 
-      # Large prompt that would overflow any finite context window
       content = Enum.map_join(1..10_000, " ", fn i -> "word#{i}" end)
 
       params = %{
@@ -112,6 +105,74 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
 
       assert {:error, {:tooling_not_supported, detail}} = ChatOrchestrator.prepare(params, [])
       assert detail == "#{model.model_id}@#{model.version}"
+    end
+
+    test "rejects ref-backed tool-calling requests for models without tool_calling capability" do
+      create_tool!("lookup_weather", "2026-04-10")
+
+      model =
+        ModelRequestFixtures.create_model!(%{
+          model_id: "test/no-tool-capability-ref-model",
+          version: "v1",
+          state: :active,
+          capabilities: ["chat"]
+        })
+
+      params = %{
+        "model" => "#{model.model_id}@#{model.version}",
+        "messages" => [%{"role" => "user", "content" => "Hello"}],
+        "tools" => [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+        "tool_choice" => "auto"
+      }
+
+      assert {:error, {:tooling_not_supported, detail}} = ChatOrchestrator.prepare(params, [])
+      assert detail == "#{model.model_id}@#{model.version}"
+    end
+
+    test "validates refs before model resolution" do
+      params = %{
+        "model" => "missing-model@v1",
+        "messages" => [%{"role" => "user", "content" => "Hello"}],
+        "tools" => [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+        "tool_choice" => "auto"
+      }
+
+      assert {:error,
+              {:validation,
+               {:invalid_value, "tools",
+                "tool ref tool://lookup_weather@2026-04-10 was not found or is not active"}}} =
+               ChatOrchestrator.prepare(params, [])
+    end
+  end
+
+  defp create_tool!(name, version, overrides \\ %{}) do
+    attrs =
+      Map.merge(
+        %{
+          name: name,
+          version: version,
+          state: :active,
+          definition: %{
+            "type" => "function",
+            "function" => %{
+              "name" => name,
+              "description" => "Lookup details.",
+              "parameters" => %{
+                "type" => "object",
+                "properties" => %{"query" => %{"type" => "string"}}
+              }
+            }
+          },
+          execution_mode: :client_only,
+          source_kind: :manual,
+          source_ref: nil
+        },
+        overrides
+      )
+
+    case Tools.create_tool(attrs) do
+      {:ok, tool} -> tool
+      {:error, changeset} -> raise "create_tool! failed: #{inspect(changeset.errors)}"
     end
   end
 end

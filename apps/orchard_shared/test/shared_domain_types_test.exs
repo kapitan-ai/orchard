@@ -32,7 +32,14 @@ defmodule OrchardSharedDomainTypesTest do
         stream?: true,
         sampling: %Sampling{temperature: 0.7, top_p: 0.95, max_output_tokens: 128, stop: ["</s>"]},
         response_format: %ResponseFormat{type: :text},
-        tooling: %Tooling{tools: [%{"type" => "function"}], tool_choice: "auto"},
+        tooling: %Tooling{
+          tools: [%{"type" => "function"}],
+          requested_tools: [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-09"}],
+          tool_choice: "auto",
+          registry_snapshot: %{
+            entries: [%{"name" => "lookup_weather", "version" => "2026-04-09"}]
+          }
+        },
         metadata: %{"trace_id" => "trace_123"},
         admission: %Admission{timeout_ms: 30_000, queue_wait_ms: 5_000, max_cold_start_ms: 10_000},
         resolved_policy: %ResolvedPolicy{
@@ -47,7 +54,33 @@ defmodule OrchardSharedDomainTypesTest do
     assert updated.input_token_count == 12
     assert updated.model_ref.model_id == "mlx-community/phi-3"
     assert updated.sampling.max_output_tokens == 128
+
+    assert updated.tooling.requested_tools == [
+             %{"type" => "function", "ref" => "tool://lookup_weather@2026-04-09"}
+           ]
+
+    assert updated.tooling.registry_snapshot == %{
+             entries: [%{"name" => "lookup_weather", "version" => "2026-04-09"}]
+           }
+
     assert updated.resolved_policy.residency_preference == :prefer_loaded
+  end
+
+  test "canonical request spec section 3.4 tooling defaults keep old callers valid" do
+    request =
+      CanonicalRequest.new(%{
+        internal_id: "req_internal",
+        public_id: "req_public",
+        endpoint: :responses,
+        tenant_id: "tenant_123",
+        model_ref: %ModelRef{model_id: "mlx-community/phi-3", version: "main"},
+        tooling: %Tooling{tools: [%{"type" => "function"}], tool_choice: "auto"}
+      })
+
+    assert request.tooling.tools == [%{"type" => "function"}]
+    assert request.tooling.requested_tools == []
+    assert request.tooling.tool_choice == "auto"
+    assert request.tooling.registry_snapshot == %{entries: []}
   end
 
   test "canonical request normalizes nil defaults to shared nested structs" do
@@ -332,6 +365,28 @@ defmodule OrchardSharedDomainTypesTest do
         tenant_id: "tenant_123",
         model_ref: %ModelRef{model_id: "mlx-community/phi-3", version: "main"},
         tooling: %Tooling{tools: [%{"type" => "function"}], tool_choice: ""}
+      })
+    end
+
+    assert_raise ArgumentError, fn ->
+      CanonicalRequest.new(%{
+        internal_id: "req_internal",
+        public_id: "req_public",
+        endpoint: :chat_completions,
+        tenant_id: "tenant_123",
+        model_ref: %ModelRef{model_id: "mlx-community/phi-3", version: "main"},
+        tooling: %Tooling{requested_tools: [42]}
+      })
+    end
+
+    assert_raise ArgumentError, fn ->
+      CanonicalRequest.new(%{
+        internal_id: "req_internal",
+        public_id: "req_public",
+        endpoint: :chat_completions,
+        tenant_id: "tenant_123",
+        model_ref: %ModelRef{model_id: "mlx-community/phi-3", version: "main"},
+        tooling: %Tooling{registry_snapshot: %{entries: [42]}}
       })
     end
 

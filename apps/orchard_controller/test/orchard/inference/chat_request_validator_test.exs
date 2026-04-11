@@ -164,6 +164,25 @@ defmodule Orchard.Inference.ChatRequestValidatorTest do
       assert {:ok, _} = ChatRequestValidator.validate(params)
     end
 
+    test "accepts registry ref tools" do
+      params =
+        Map.put(@valid_params, "tools", [
+          %{"type" => "function", "ref" => "tool://lookup_weather@2026-04-09"}
+        ])
+
+      assert {:ok, _} = ChatRequestValidator.validate(params)
+    end
+
+    test "accepts named tool_choice when refs are present" do
+      params =
+        Map.merge(@valid_params, %{
+          "tools" => [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-09"}],
+          "tool_choice" => %{"type" => "function", "function" => %{"name" => "lookup_weather"}}
+        })
+
+      assert {:ok, _} = ChatRequestValidator.validate(params)
+    end
+
     test "rejects duplicate tool names" do
       params =
         Map.put(@valid_params, "tools", [
@@ -174,12 +193,54 @@ defmodule Orchard.Inference.ChatRequestValidatorTest do
       assert {:error, :invalid_value, "tools", _} = ChatRequestValidator.validate(params)
     end
 
+    test "rejects duplicate identical refs" do
+      params =
+        Map.put(@valid_params, "tools", [
+          %{"type" => "function", "ref" => "tool://lookup_weather@2026-04-09"},
+          %{"type" => "function", "ref" => "tool://lookup_weather@2026-04-09"}
+        ])
+
+      assert {:error, :invalid_value, "tools", _} = ChatRequestValidator.validate(params)
+    end
+
+    test "rejects same-name multi-version refs" do
+      params =
+        Map.put(@valid_params, "tools", [
+          %{"type" => "function", "ref" => "tool://lookup_weather@2026-04-09"},
+          %{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}
+        ])
+
+      assert {:error, :invalid_value, "tools", _} = ChatRequestValidator.validate(params)
+    end
+
+    test "rejects mixed function and ref tool entries" do
+      params =
+        Map.put(@valid_params, "tools", [
+          %{
+            "type" => "function",
+            "function" => %{"name" => "lookup_weather"},
+            "ref" => "tool://lookup_weather@2026-04-09"
+          }
+        ])
+
+      assert {:error, :invalid_value, "tools", _} = ChatRequestValidator.validate(params)
+    end
+
+    test "rejects invalid ref syntax" do
+      params =
+        Map.put(@valid_params, "tools", [
+          %{"type" => "function", "ref" => "tool://lookup_weather"}
+        ])
+
+      assert {:error, :invalid_value, "tools", _} = ChatRequestValidator.validate(params)
+    end
+
     test "rejects required tool_choice with empty tools" do
       params = Map.merge(@valid_params, %{"tools" => [], "tool_choice" => "required"})
       assert {:error, :invalid_value, "tool_choice", _} = ChatRequestValidator.validate(params)
     end
 
-    test "rejects named tool_choice when tool is missing" do
+    test "rejects named tool_choice when inline tool is missing and refs are absent" do
       params =
         Map.merge(@valid_params, %{
           "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],

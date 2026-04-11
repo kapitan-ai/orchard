@@ -30,7 +30,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
     success_persistence = Keyword.get(opts, :success_persistence)
     idempotency = Keyword.get(opts, :idempotency)
 
-    with {:ok, db_request} <- persist_request(canonical, model, idempotency) do
+    with :ok <- validate_resolved_tooling(canonical),
+         {:ok, db_request} <- persist_request(canonical, model, idempotency) do
       case start_fsm(db_request) do
         {:ok, _pid} ->
           run_dispatch_pipeline(
@@ -415,6 +416,222 @@ defmodule Orchard.Inference.RequestOrchestrator do
       tools_json: tools_json,
       tool_choice_json: tool_choice_json
     }
+  end
+
+  defp validate_resolved_tooling(%CanonicalRequest{tooling: tooling}) do
+    case unresolved_tooling_reason(tooling) do
+      nil -> :ok
+      reason -> {:error, {:invalid_canonical_tooling, reason}}
+    end
+  end
+
+  defp unresolved_tooling_reason(%CanonicalRequest.Tooling{} = tooling) do
+    cond do
+      unresolved_runtime_tools?(tooling.tools) ->
+        "tooling.tools must contain resolved function definitions only"
+
+      unresolved_requested_refs?(tooling.requested_tools) and
+          unresolved_registry_snapshot?(tooling.requested_tools, tooling.registry_snapshot) ->
+        "tool registry refs must be resolved before execute/3"
+
+      requested_tools_present?(tooling.requested_tools) and
+          not requested_tooling_aligned?(tooling) ->
+        "requested_tools, registry_snapshot, and tooling.tools must stay aligned"
+
+      true ->
+        nil
+    end
+  end
+
+  defp unresolved_runtime_tools?(tools) when is_list(tools) do
+    Enum.any?(tools, &ref_tool?/1)
+  end
+
+  defp unresolved_runtime_tools?(_tools), do: false
+
+  defp unresolved_requested_refs?(requested_tools) when is_list(requested_tools) do
+    requested_tool_refs(requested_tools) != []
+  end
+
+  defp unresolved_requested_refs?(_requested_tools), do: false
+
+  defp requested_tools_present?(requested_tools) when is_list(requested_tools),
+    do: requested_tools != []
+
+  defp requested_tools_present?(_requested_tools), do: false
+
+  defp unresolved_registry_snapshot?(requested_tools, registry_snapshot) do
+    requested_refs = requested_tool_refs(requested_tools)
+
+    case registry_snapshot_refs(registry_snapshot) do
+      {:ok, snapshot_refs} -> snapshot_refs != requested_refs
+      :error -> true
+    end
+  end
+
+  defp requested_tooling_aligned?(%CanonicalRequest.Tooling{} = tooling) do
+    requested_tools = tooling.requested_tools
+    runtime_tools = tooling.tools
+
+    is_list(runtime_tools) and
+      length(requested_tools) == length(runtime_tools) and
+      requested_tools_match_runtime?(requested_tools, runtime_tools) and
+      requested_refs_match_snapshot_and_runtime?(
+        requested_tools,
+        runtime_tools,
+        tooling.registry_snapshot
+      )
+  end
+
+  defp requested_tools_match_runtime?(requested_tools, runtime_tools) do
+    requested_tools
+    |> Enum.zip(runtime_tools)
+    |> Enum.all?(fn {requested_tool, runtime_tool} ->
+      case requested_tool_identity(requested_tool) do
+        {:inline, requested_name} -> requested_name == runtime_tool_name(runtime_tool)
+        {:ref, _requested_ref} -> is_binary(runtime_tool_name(runtime_tool))
+        :error -> false
+      end
+    end)
+  end
+
+  defp requested_refs_match_snapshot_and_runtime?(
+         requested_tools,
+         runtime_tools,
+         registry_snapshot
+       ) do
+    case requested_tool_refs(requested_tools) do
+      [] ->
+        inline_requested_tools_match_snapshot?(registry_snapshot)
+
+      _requested_refs ->
+        requested_refs_match_snapshot_entries?(requested_tools, runtime_tools, registry_snapshot)
+    end
+  end
+
+  defp inline_requested_tools_match_snapshot?(registry_snapshot) do
+    match?({:ok, []}, registry_snapshot_entries(registry_snapshot))
+  end
+
+  defp requested_refs_match_snapshot_entries?(requested_tools, runtime_tools, registry_snapshot) do
+    with {:ok, registry_entries} <- registry_snapshot_entries(registry_snapshot),
+         {:ok, []} <- consume_registry_entries(requested_tools, runtime_tools, registry_entries) do
+      true
+    else
+      _other -> false
+    end
+  end
+
+  defp consume_registry_entries(requested_tools, runtime_tools, registry_entries) do
+    requested_tools
+    |> Enum.zip(runtime_tools)
+    |> Enum.reduce_while({:ok, registry_entries}, &consume_registry_entry/2)
+  end
+
+  defp consume_registry_entry({requested_tool, runtime_tool}, {:ok, entries}) do
+    case requested_tool_identity(requested_tool) do
+      {:inline, _requested_name} -> {:cont, {:ok, entries}}
+      {:ref, requested_ref} -> consume_ref_registry_entry(entries, requested_ref, runtime_tool)
+      :error -> {:halt, :error}
+    end
+  end
+
+  defp consume_ref_registry_entry([entry | rest], requested_ref, runtime_tool) do
+    if registry_entry_matches_runtime?(entry, requested_ref, runtime_tool) do
+      {:cont, {:ok, rest}}
+    else
+      {:halt, :error}
+    end
+  end
+
+  defp consume_ref_registry_entry([], _requested_ref, _runtime_tool), do: {:halt, :error}
+
+  defp registry_entry_matches_runtime?(entry, requested_ref, runtime_tool) do
+    runtime_name = runtime_tool_name(runtime_tool)
+
+    map_value(entry, :ref) == requested_ref and map_value(entry, :name) == runtime_name and
+      is_binary(runtime_name)
+  end
+
+  defp requested_tool_refs(requested_tools) when is_list(requested_tools) do
+    Enum.flat_map(requested_tools, fn tool ->
+      case map_value(tool, :ref) do
+        ref when is_binary(ref) -> [ref]
+        _other -> []
+      end
+    end)
+  end
+
+  defp requested_tool_refs(_requested_tools), do: []
+
+  defp requested_tool_identity(tool) when is_map(tool) do
+    ref = map_value(tool, :ref)
+    name = tool |> map_value(:function) |> function_name()
+    has_ref? = map_has_key?(tool, :ref)
+    has_function? = map_has_key?(tool, :function)
+
+    cond do
+      has_ref? and has_function? -> :error
+      has_ref? and is_binary(ref) -> {:ref, ref}
+      has_function? and is_binary(name) -> {:inline, name}
+      true -> :error
+    end
+  end
+
+  defp requested_tool_identity(_tool), do: :error
+
+  defp runtime_tool_name(tool) when is_map(tool) do
+    if is_nil(map_value(tool, :ref)) do
+      tool |> map_value(:function) |> function_name()
+    else
+      nil
+    end
+  end
+
+  defp runtime_tool_name(_tool), do: nil
+
+  defp function_name(%{name: name}) when is_binary(name) and name != "", do: name
+  defp function_name(%{"name" => name}) when is_binary(name) and name != "", do: name
+  defp function_name(_function), do: nil
+
+  defp registry_snapshot_entries(%{entries: entries}) when is_list(entries), do: {:ok, entries}
+
+  defp registry_snapshot_entries(%{"entries" => entries}) when is_list(entries),
+    do: {:ok, entries}
+
+  defp registry_snapshot_entries(_registry_snapshot), do: :error
+
+  defp registry_snapshot_refs(%{entries: entries}), do: registry_snapshot_refs(entries)
+  defp registry_snapshot_refs(%{"entries" => entries}), do: registry_snapshot_refs(entries)
+
+  defp registry_snapshot_refs(entries) when is_list(entries) do
+    entries
+    |> Enum.reduce_while({:ok, []}, fn entry, {:ok, refs} ->
+      case map_value(entry, :ref) do
+        ref when is_binary(ref) -> {:cont, {:ok, [ref | refs]}}
+        _other -> {:halt, :error}
+      end
+    end)
+    |> case do
+      {:ok, refs} -> {:ok, Enum.reverse(refs)}
+      :error -> :error
+    end
+  end
+
+  defp registry_snapshot_refs(_registry_snapshot), do: :error
+
+  defp ref_tool?(tool) when is_map(tool) do
+    match?(value when is_binary(value), map_value(tool, :ref))
+  end
+
+  defp ref_tool?(_tool), do: false
+
+  defp map_value(map, key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp map_has_key?(map, key) do
+    Map.has_key?(map, key) or Map.has_key?(map, Atom.to_string(key))
   end
 
   defp serialize_tooling(%CanonicalRequest.Tooling{tools: tools, tool_choice: tool_choice}) do

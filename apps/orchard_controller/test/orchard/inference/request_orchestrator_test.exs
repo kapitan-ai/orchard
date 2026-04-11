@@ -346,7 +346,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.first_token_at == nil
   end
 
-  test "execute/3 forwards tool-calling params and stop sequences to the runtime", %{
+  test "execute/3 persists tooling provenance while forwarding resolved tool params only", %{
     bundle: bundle
   } do
     put_capturing_runtime_adapter_config()
@@ -363,12 +363,35 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       }
     ]
 
+    requested_tools = [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}]
+
+    tool_id = Ecto.UUID.generate()
+
+    registry_snapshot = %{
+      entries: [
+        %{
+          tool_id: tool_id,
+          ref: "tool://lookup_weather@2026-04-10",
+          name: "lookup_weather",
+          version: "2026-04-10",
+          execution_mode: "client_only",
+          source_kind: "manual",
+          source_ref: nil
+        }
+      ]
+    }
+
     canonical =
       canonical_request("request-orchestrator-tooling",
         stream?: false,
         stop: ["</tool_call>"],
         max_output_tokens: 24,
-        tooling: %{tools: tools, tool_choice: "auto"}
+        tooling: %{
+          tools: tools,
+          requested_tools: requested_tools,
+          tool_choice: "auto",
+          registry_snapshot: registry_snapshot
+        }
       )
 
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
@@ -377,6 +400,400 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert_receive {:captured_execute_request, execute_request}
     assert execute_request.params.max_output_tokens == 24
     assert execute_request.params.stop_sequences == ["</tool_call>"]
+    assert Jason.decode!(execute_request.params.tools_json) == tools
+    assert Jason.decode!(execute_request.params.tool_choice_json) == "auto"
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+
+    assert request.canonical_request["tooling"] == %{
+             "tools" => tools,
+             "requested_tools" => requested_tools,
+             "tool_choice" => "auto",
+             "registry_snapshot" => %{
+               "entries" => [
+                 %{
+                   "tool_id" => tool_id,
+                   "ref" => "tool://lookup_weather@2026-04-10",
+                   "name" => "lookup_weather",
+                   "version" => "2026-04-10",
+                   "execution_mode" => "client_only",
+                   "source_kind" => "manual",
+                   "source_ref" => nil
+                 }
+               ]
+             }
+           }
+  end
+
+  test "execute/3 rejects unresolved requested tool refs before insert", %{bundle: bundle} do
+    model = create_active_model!(bundle, "request-orchestrator-unresolved-requested-tools")
+
+    canonical =
+      canonical_request("request-orchestrator-unresolved-requested-tools",
+        stream?: false,
+        tooling: %{
+          tools: [],
+          requested_tools: [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+          tool_choice: "auto",
+          registry_snapshot: %{entries: []}
+        }
+      )
+
+    assert {:error,
+            {:invalid_canonical_tooling, "tool registry refs must be resolved before execute/3"}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    assert Requests.get_request_by_public_id(canonical.public_id) == nil
+  end
+
+  test "execute/3 rejects unresolved ref-only runtime tools before insert", %{bundle: bundle} do
+    model = create_active_model!(bundle, "request-orchestrator-unresolved-runtime-tools")
+
+    canonical =
+      canonical_request("request-orchestrator-unresolved-runtime-tools",
+        stream?: false,
+        tooling: %{
+          tools: [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+          requested_tools: [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+          tool_choice: "auto",
+          registry_snapshot: %{
+            entries: [
+              %{
+                ref: "tool://lookup_weather@2026-04-10",
+                name: "lookup_weather",
+                version: "2026-04-10",
+                tool_id: Ecto.UUID.generate()
+              }
+            ]
+          }
+        }
+      )
+
+    assert {:error,
+            {:invalid_canonical_tooling,
+             "tooling.tools must contain resolved function definitions only"}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    assert Requests.get_request_by_public_id(canonical.public_id) == nil
+  end
+
+  test "execute/3 rejects runtime tools that include both function and ref before insert", %{
+    bundle: bundle
+  } do
+    model = create_active_model!(bundle, "request-orchestrator-mixed-runtime-tools")
+
+    canonical =
+      canonical_request("request-orchestrator-mixed-runtime-tools",
+        stream?: false,
+        tooling: %{
+          tools: [
+            %{
+              "type" => "function",
+              "ref" => "tool://lookup_weather@2026-04-10",
+              "function" => %{"name" => "lookup_weather"}
+            }
+          ],
+          requested_tools: [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+          tool_choice: "auto",
+          registry_snapshot: %{
+            entries: [
+              %{
+                ref: "tool://lookup_weather@2026-04-10",
+                name: "lookup_weather",
+                version: "2026-04-10",
+                tool_id: Ecto.UUID.generate()
+              }
+            ]
+          }
+        }
+      )
+
+    assert {:error,
+            {:invalid_canonical_tooling,
+             "tooling.tools must contain resolved function definitions only"}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    assert Requests.get_request_by_public_id(canonical.public_id) == nil
+  end
+
+  test "execute/3 rejects requested tool refs with mismatched registry snapshots before insert",
+       %{
+         bundle: bundle
+       } do
+    model = create_active_model!(bundle, "request-orchestrator-mismatched-registry-snapshot")
+
+    canonical =
+      canonical_request("request-orchestrator-mismatched-registry-snapshot",
+        stream?: false,
+        tooling: %{
+          tools: [
+            %{
+              "type" => "function",
+              "function" => %{"name" => "lookup_weather", "description" => "Lookup weather"}
+            }
+          ],
+          requested_tools: [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+          tool_choice: "auto",
+          registry_snapshot: %{
+            entries: [
+              %{
+                ref: "tool://other_weather@2026-04-10",
+                name: "other_weather",
+                version: "2026-04-10",
+                tool_id: Ecto.UUID.generate()
+              }
+            ]
+          }
+        }
+      )
+
+    assert {:error,
+            {:invalid_canonical_tooling, "tool registry refs must be resolved before execute/3"}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    assert Requests.get_request_by_public_id(canonical.public_id) == nil
+  end
+
+  test "execute/3 rejects ref-backed requests with matching snapshot but empty runtime tools before insert",
+       %{bundle: bundle} do
+    model = create_active_model!(bundle, "request-orchestrator-empty-runtime-tools")
+
+    canonical =
+      canonical_request("request-orchestrator-empty-runtime-tools",
+        stream?: false,
+        tooling: %{
+          tools: [],
+          requested_tools: [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+          tool_choice: "auto",
+          registry_snapshot: %{
+            entries: [
+              %{
+                ref: "tool://lookup_weather@2026-04-10",
+                name: "lookup_weather",
+                version: "2026-04-10",
+                tool_id: Ecto.UUID.generate()
+              }
+            ]
+          }
+        }
+      )
+
+    assert {:error,
+            {:invalid_canonical_tooling,
+             "requested_tools, registry_snapshot, and tooling.tools must stay aligned"}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    assert Requests.get_request_by_public_id(canonical.public_id) == nil
+  end
+
+  test "execute/3 rejects incomplete runtime tools when requested_tools is present before insert",
+       %{bundle: bundle} do
+    model = create_active_model!(bundle, "request-orchestrator-incomplete-runtime-tools")
+
+    canonical =
+      canonical_request("request-orchestrator-incomplete-runtime-tools",
+        stream?: false,
+        tooling: %{
+          tools: [
+            %{
+              "type" => "function",
+              "function" => %{"name" => "lookup_weather", "description" => "Lookup weather"}
+            }
+          ],
+          requested_tools: [
+            %{
+              "type" => "function",
+              "function" => %{"name" => "lookup_weather", "description" => "Lookup weather"}
+            },
+            %{"type" => "function", "ref" => "tool://summarize_text@2026-04-10"}
+          ],
+          tool_choice: "auto",
+          registry_snapshot: %{
+            entries: [
+              %{
+                ref: "tool://summarize_text@2026-04-10",
+                name: "summarize_text",
+                version: "2026-04-10",
+                tool_id: Ecto.UUID.generate()
+              }
+            ]
+          }
+        }
+      )
+
+    assert {:error,
+            {:invalid_canonical_tooling,
+             "requested_tools, registry_snapshot, and tooling.tools must stay aligned"}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    assert Requests.get_request_by_public_id(canonical.public_id) == nil
+  end
+
+  test "execute/3 rejects wrong-order runtime tools when requested_tools is present before insert",
+       %{bundle: bundle} do
+    model = create_active_model!(bundle, "request-orchestrator-wrong-order-runtime-tools")
+
+    canonical =
+      canonical_request("request-orchestrator-wrong-order-runtime-tools",
+        stream?: false,
+        tooling: %{
+          tools: [
+            %{
+              "type" => "function",
+              "function" => %{"name" => "summarize_text", "description" => "Summarize text"}
+            },
+            %{
+              "type" => "function",
+              "function" => %{"name" => "lookup_weather", "description" => "Lookup weather"}
+            }
+          ],
+          requested_tools: [
+            %{
+              "type" => "function",
+              "function" => %{"name" => "lookup_weather", "description" => "Lookup weather"}
+            },
+            %{"type" => "function", "ref" => "tool://summarize_text@2026-04-10"}
+          ],
+          tool_choice: "auto",
+          registry_snapshot: %{
+            entries: [
+              %{
+                ref: "tool://summarize_text@2026-04-10",
+                name: "summarize_text",
+                version: "2026-04-10",
+                tool_id: Ecto.UUID.generate()
+              }
+            ]
+          }
+        }
+      )
+
+    assert {:error,
+            {:invalid_canonical_tooling,
+             "requested_tools, registry_snapshot, and tooling.tools must stay aligned"}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    assert Requests.get_request_by_public_id(canonical.public_id) == nil
+  end
+
+  test "execute/3 rejects inline-only requested tools with registry snapshot provenance before insert",
+       %{bundle: bundle} do
+    model = create_active_model!(bundle, "request-orchestrator-inline-only-snapshot")
+
+    canonical =
+      canonical_request("request-orchestrator-inline-only-snapshot",
+        stream?: false,
+        tooling: %{
+          tools: [
+            %{
+              "type" => "function",
+              "function" => %{"name" => "lookup_weather", "description" => "Lookup weather"}
+            }
+          ],
+          requested_tools: [
+            %{
+              "type" => "function",
+              "function" => %{"name" => "lookup_weather", "description" => "Lookup weather"}
+            }
+          ],
+          tool_choice: "auto",
+          registry_snapshot: %{
+            entries: [
+              %{
+                ref: "tool://lookup_weather@2026-04-10",
+                name: "lookup_weather",
+                version: "2026-04-10",
+                tool_id: Ecto.UUID.generate()
+              }
+            ]
+          }
+        }
+      )
+
+    assert {:error,
+            {:invalid_canonical_tooling,
+             "requested_tools, registry_snapshot, and tooling.tools must stay aligned"}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    assert Requests.get_request_by_public_id(canonical.public_id) == nil
+  end
+
+  test "execute/3 rejects malformed mixed requested tool entries before insert", %{
+    bundle: bundle
+  } do
+    model = create_active_model!(bundle, "request-orchestrator-mixed-requested-tool")
+
+    canonical =
+      canonical_request("request-orchestrator-mixed-requested-tool",
+        stream?: false,
+        tooling: %{
+          tools: [
+            %{
+              "type" => "function",
+              "function" => %{"name" => "lookup_weather", "description" => "Lookup weather"}
+            }
+          ],
+          requested_tools: [
+            %{
+              "type" => "function",
+              "ref" => "tool://lookup_weather@2026-04-10",
+              "function" => %{}
+            }
+          ],
+          tool_choice: "auto",
+          registry_snapshot: %{
+            entries: [
+              %{
+                ref: "tool://lookup_weather@2026-04-10",
+                name: "lookup_weather",
+                version: "2026-04-10",
+                tool_id: Ecto.UUID.generate()
+              }
+            ]
+          }
+        }
+      )
+
+    assert {:error,
+            {:invalid_canonical_tooling,
+             "requested_tools, registry_snapshot, and tooling.tools must stay aligned"}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    assert Requests.get_request_by_public_id(canonical.public_id) == nil
+  end
+
+  test "execute/3 preserves legacy runtime-only tooling when requested_tools is empty", %{
+    bundle: bundle
+  } do
+    put_capturing_runtime_adapter_config()
+
+    model =
+      create_active_model!(bundle, "request-orchestrator-legacy-runtime-tools",
+        capabilities: ["chat", "tool_calling"]
+      )
+
+    tools = [
+      %{
+        "type" => "function",
+        "function" => %{"name" => "lookup_weather", "description" => "Lookup weather"}
+      }
+    ]
+
+    canonical =
+      canonical_request("request-orchestrator-legacy-runtime-tools",
+        stream?: false,
+        tooling: %{
+          tools: tools,
+          requested_tools: [],
+          tool_choice: "auto",
+          registry_snapshot: %{entries: []}
+        }
+      )
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    assert_receive {:captured_execute_request, execute_request}
     assert Jason.decode!(execute_request.params.tools_json) == tools
     assert Jason.decode!(execute_request.params.tool_choice_json) == "auto"
   end

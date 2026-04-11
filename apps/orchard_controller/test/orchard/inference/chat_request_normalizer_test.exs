@@ -24,7 +24,14 @@ defmodule Orchard.Inference.ChatRequestNormalizerTest do
       assert req.stream? == false
       assert req.sampling == %Sampling{temperature: 1.0, top_p: 1.0}
       assert req.response_format == %ResponseFormat{type: :text}
-      assert req.tooling == %Tooling{tools: [], tool_choice: nil}
+
+      assert req.tooling == %Tooling{
+               tools: [],
+               requested_tools: [],
+               tool_choice: nil,
+               registry_snapshot: %{entries: []}
+             }
+
       assert req.metadata == %{}
       assert String.starts_with?(req.public_id, "chatcmpl-")
       assert is_binary(req.internal_id) and req.internal_id != ""
@@ -72,12 +79,19 @@ defmodule Orchard.Inference.ChatRequestNormalizerTest do
       assert req.stream? == true
     end
 
-    test "carries tools and tool_choice" do
-      tools = [%{"type" => "function", "function" => %{"name" => "f"}}]
+    test "preserves requested tools in order while leaving runtime tooling empty" do
+      tools = [
+        %{"type" => "function", "function" => %{"name" => "f"}},
+        %{"type" => "function", "ref" => "tool://lookup_weather@2026-04-09"}
+      ]
+
       params = Map.merge(@valid_params, %{"tools" => tools, "tool_choice" => "auto"})
       {:ok, req} = ChatRequestNormalizer.normalize(params)
-      assert req.tooling.tools == tools
+
+      assert req.tooling.tools == []
+      assert req.tooling.requested_tools == tools
       assert req.tooling.tool_choice == "auto"
+      assert req.tooling.registry_snapshot == %{entries: []}
     end
 
     test "carries seed" do

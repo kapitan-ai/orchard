@@ -124,8 +124,10 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
 
   defp build_tooling(params) do
     %Tooling{
-      tools: Map.get(params, "tools", []),
-      tool_choice: Map.get(params, "tool_choice")
+      tools: [],
+      requested_tools: Map.get(params, "tools", []),
+      tool_choice: Map.get(params, "tool_choice"),
+      registry_snapshot: %{entries: []}
     }
   end
 end

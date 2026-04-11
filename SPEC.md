@@ -286,7 +286,11 @@ All public inference requests SHALL normalize into one internal struct:
   },
   tooling: %{
     tools: [map()],
-    tool_choice: map() | String.t() | nil
+    requested_tools: [map()],
+    tool_choice: map() | String.t() | nil,
+    registry_snapshot: %{
+      entries: [map()]
+    }
   },
   metadata: map(),
   admission: %{
@@ -302,6 +306,14 @@ All public inference requests SHALL normalize into one internal struct:
   }
 }
 ```
+
+Tooling contract rules:
+
+* request `tools` entries MAY be inline function definitions or registry refs of the form `tool://<name>@<version>`
+* `tooling.requested_tools` SHALL preserve the normalized request `tools` array in original order
+* `tooling.tools` SHALL contain only controller-resolved runtime-ready tool definitions; registry ref placeholders SHALL NOT be forwarded past request preparation
+* `tooling.registry_snapshot.entries` SHALL capture controller-side registry provenance for ref-backed tools and SHALL be empty when no registry refs were requested
+* absent `tools` and `requested_tools` SHALL normalize to empty arrays; absent `tool_choice` SHALL normalize to `null`; absent `registry_snapshot` SHALL normalize to `%{entries: []}`
 
 ### 3.5 Prompt rendering and tokenization
 
@@ -320,9 +332,10 @@ Implementation requirement:
 Tokenizer contract v2 requirements:
 
 * the controller SHALL pass tool context into prompt rendering when a request includes tool configuration
+* registry-backed tool refs SHALL be resolved by the controller before prompt rendering
 * the render payload SHALL include:
 
-  * `tools` as an ordered array
+  * `tools` as the ordered array of resolved effective tool definitions
   * `tool_choice` as `null`, a string mode, or a named-function object
 
 * absent `tools` SHALL be represented as an empty array
@@ -1211,7 +1224,10 @@ Tool-calling request rules:
 
 * only function tools are supported in v1
 * base v1 chat tool calling is client-executed passthrough: emitted tool calls are returned to the caller, not executed by Orchard
+* each request `tools` entry MAY be either an inline function definition or `{"type":"function","ref":"tool://<name>@<version>"}`
+* the controller SHALL resolve registry refs before tokenization and dispatch; the runtime SHALL receive resolved function definitions only, never `tool://...` placeholders
 * inline request tools SHALL NOT be executed server-side by the platform
+* unresolved, inactive, or malformed registry refs SHALL be rejected as `400 invalid_request_error`
 * requests that enable tool calling against a model without tool-calling capability SHALL return `400 invalid_request_error`
 * `tool_choice` modes supported in v1:
 
@@ -1332,7 +1348,10 @@ Tool-calling request rules:
 
 * only function tools are supported in v1
 * base v1 Responses tool calling is client-executed passthrough unless a later phased extension explicitly enables server-side execution
+* each request `tools` entry MAY be either an inline function definition or `{"type":"function","ref":"tool://<name>@<version>"}`
+* the controller SHALL resolve registry refs before tokenization and dispatch; the runtime SHALL receive resolved function definitions only, never `tool://...` placeholders
 * inline request tools SHALL remain client-executed; they SHALL NOT be executed server-side unless first resolved from an approved registry entry explicitly marked as server-hostable
+* unresolved, inactive, or malformed registry refs SHALL be rejected as `400 invalid_request_error`
 * requests that enable tool calling against a model without tool-calling capability SHALL return `400 invalid_request_error`
 * `tool_choice` modes supported in v1:
 

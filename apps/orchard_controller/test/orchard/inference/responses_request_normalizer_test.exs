@@ -94,23 +94,29 @@ defmodule Orchard.Inference.ResponsesRequestNormalizerTest do
     assert request_omitted.stream? == false
   end
 
-  test "passes tools and tool_choice through to canonical tooling" do
+  test "preserves requested tools while keeping runtime tooling empty" do
+    requested_tools = [
+      %{"type" => "function", "function" => %{"name" => "lookup_weather"}},
+      %{"type" => "function", "ref" => "tool://lookup_docs@2026-04-10"}
+    ]
+
     {:ok, request} =
       ResponsesRequestNormalizer.normalize(%{
         "model" => "test-model@v1",
         "input" => "Hello",
-        "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
+        "tools" => requested_tools,
         "tool_choice" => %{"type" => "function", "function" => %{"name" => "lookup_weather"}}
       })
 
-    assert request.tooling.tools == [
-             %{"type" => "function", "function" => %{"name" => "lookup_weather"}}
-           ]
+    assert request.tooling.tools == []
+    assert request.tooling.requested_tools == requested_tools
 
     assert request.tooling.tool_choice == %{
              "type" => "function",
              "function" => %{"name" => "lookup_weather"}
            }
+
+    assert request.tooling.registry_snapshot == %{entries: []}
   end
 
   test "stream_include_usage remains false for responses" do

@@ -87,6 +87,19 @@ defmodule Orchard.Inference.ResponsesRequestValidatorTest do
     assert {:ok, _} = ResponsesRequestValidator.validate(params)
   end
 
+  test "accepts registry refs and mixed inline-plus-ref tools" do
+    params =
+      Map.merge(@valid_params, %{
+        "tools" => [
+          %{"type" => "function", "function" => %{"name" => "lookup_weather"}},
+          %{"type" => "function", "ref" => "tool://lookup_docs@2026-04-10"}
+        ],
+        "tool_choice" => %{"type" => "function", "function" => %{"name" => "lookup_docs"}}
+      })
+
+    assert {:ok, _} = ResponsesRequestValidator.validate(params)
+  end
+
   test "accepts nil tool_choice" do
     assert {:ok, _} =
              ResponsesRequestValidator.validate(Map.put(@valid_params, "tool_choice", nil))
@@ -97,6 +110,48 @@ defmodule Orchard.Inference.ResponsesRequestValidatorTest do
       Map.put(@valid_params, "tools", [
         %{"type" => "function", "function" => %{"name" => "lookup_weather"}},
         %{"type" => "function", "function" => %{"name" => "lookup_weather"}}
+      ])
+
+    assert {:error, :invalid_value, "tools", _} = ResponsesRequestValidator.validate(params)
+  end
+
+  test "rejects duplicate identical refs" do
+    params =
+      Map.put(@valid_params, "tools", [
+        %{"type" => "function", "ref" => "tool://lookup_weather@2026-04-09"},
+        %{"type" => "function", "ref" => "tool://lookup_weather@2026-04-09"}
+      ])
+
+    assert {:error, :invalid_value, "tools", _} = ResponsesRequestValidator.validate(params)
+  end
+
+  test "rejects same-name multi-version refs" do
+    params =
+      Map.put(@valid_params, "tools", [
+        %{"type" => "function", "ref" => "tool://lookup_weather@2026-04-09"},
+        %{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}
+      ])
+
+    assert {:error, :invalid_value, "tools", _} = ResponsesRequestValidator.validate(params)
+  end
+
+  test "rejects mixed function and ref tool entries" do
+    params =
+      Map.put(@valid_params, "tools", [
+        %{
+          "type" => "function",
+          "function" => %{"name" => "lookup_weather"},
+          "ref" => "tool://lookup_weather@2026-04-09"
+        }
+      ])
+
+    assert {:error, :invalid_value, "tools", _} = ResponsesRequestValidator.validate(params)
+  end
+
+  test "rejects invalid ref syntax" do
+    params =
+      Map.put(@valid_params, "tools", [
+        %{"type" => "function", "ref" => "tool://lookup_weather"}
       ])
 
     assert {:error, :invalid_value, "tools", _} = ResponsesRequestValidator.validate(params)

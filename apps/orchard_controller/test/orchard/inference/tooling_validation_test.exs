@@ -12,11 +12,35 @@ defmodule Orchard.Inference.ToolingValidationTest do
       assert :ok = ToolingValidation.validate(%{"tools" => []})
     end
 
-    test "accepts valid function tools with unique names" do
+    test "accepts valid inline function tools with unique names" do
       params = %{
         "tools" => [
-          %{"type" => "function", "function" => %{"name" => "lookup_weather"}},
-          %{"type" => "function", "function" => %{"name" => "lookup_news"}}
+          inline_tool("lookup_weather"),
+          inline_tool("lookup_news")
+        ],
+        "tool_choice" => "auto"
+      }
+
+      assert :ok = ToolingValidation.validate(params)
+    end
+
+    test "accepts valid registry ref tools" do
+      params = %{
+        "tools" => [
+          ref_tool("lookup_weather", "2026-04-09"),
+          ref_tool("lookup_news", "2026-04-10")
+        ],
+        "tool_choice" => "auto"
+      }
+
+      assert :ok = ToolingValidation.validate(params)
+    end
+
+    test "accepts mixed inline and ref tools" do
+      params = %{
+        "tools" => [
+          inline_tool("lookup_weather"),
+          ref_tool("lookup_docs", "2026-04-10")
         ],
         "tool_choice" => "auto"
       }
@@ -45,15 +69,61 @@ defmodule Orchard.Inference.ToolingValidationTest do
                })
     end
 
-    test "rejects duplicate function names" do
+    test "rejects mixed function and ref entries" do
+      assert {:error, :invalid_value, "tools",
+              "each tool must include either function or ref, not both"} =
+               ToolingValidation.validate(%{
+                 "tools" => [
+                   %{
+                     "type" => "function",
+                     "function" => %{"name" => "lookup_weather"},
+                     "ref" => "tool://lookup_weather@2026-04-09"
+                   }
+                 ]
+               })
+    end
+
+    test "rejects invalid ref syntax" do
+      assert {:error, :invalid_value, "tools", "tool refs must match tool://<name>@<version>"} =
+               ToolingValidation.validate(%{
+                 "tools" => [%{"type" => "function", "ref" => "tool://lookup_weather"}]
+               })
+    end
+
+    test "rejects duplicate function names for inline tools" do
       params = %{
         "tools" => [
-          %{"type" => "function", "function" => %{"name" => "lookup_weather"}},
-          %{"type" => "function", "function" => %{"name" => "lookup_weather"}}
+          inline_tool("lookup_weather"),
+          inline_tool("lookup_weather")
         ]
       }
 
       assert {:error, :invalid_value, "tools", "function names must be unique"} =
+               ToolingValidation.validate(params)
+    end
+
+    test "rejects duplicate identical refs" do
+      params = %{
+        "tools" => [
+          ref_tool("lookup_weather", "2026-04-09"),
+          ref_tool("lookup_weather", "2026-04-09")
+        ]
+      }
+
+      assert {:error, :invalid_value, "tools", "duplicate tool refs are not allowed"} =
+               ToolingValidation.validate(params)
+    end
+
+    test "rejects same tool name at multiple ref versions" do
+      params = %{
+        "tools" => [
+          ref_tool("lookup_weather", "2026-04-09"),
+          ref_tool("lookup_weather", "2026-04-10")
+        ]
+      }
+
+      assert {:error, :invalid_value, "tools",
+              "tool refs must use a single version per tool name"} =
                ToolingValidation.validate(params)
     end
 
@@ -65,22 +135,31 @@ defmodule Orchard.Inference.ToolingValidationTest do
       for choice <- ["none", "auto", "required"] do
         assert :ok =
                  ToolingValidation.validate(%{
-                   "tools" => [
-                     %{"type" => "function", "function" => %{"name" => "lookup_weather"}}
-                   ],
+                   "tools" => [inline_tool("lookup_weather")],
                    "tool_choice" => choice
                  })
       end
     end
 
-    test "accepts named function tool_choice when tool exists" do
+    test "accepts named function tool_choice when inline tool exists" do
       assert :ok =
                ToolingValidation.validate(%{
-                 "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
-                 "tool_choice" => %{
-                   "type" => "function",
-                   "function" => %{"name" => "lookup_weather"}
-                 }
+                 "tools" => [inline_tool("lookup_weather")],
+                 "tool_choice" => named_tool_choice("lookup_weather")
+               })
+    end
+
+    test "defers named function tool_choice existence checks when refs are present" do
+      assert :ok =
+               ToolingValidation.validate(%{
+                 "tools" => [ref_tool("lookup_weather", "2026-04-09")],
+                 "tool_choice" => named_tool_choice("lookup_weather")
+               })
+
+      assert :ok =
+               ToolingValidation.validate(%{
+                 "tools" => [inline_tool("lookup_weather"), ref_tool("lookup_docs", "2026-04-10")],
+                 "tool_choice" => named_tool_choice("lookup_docs")
                })
     end
 
@@ -97,14 +176,11 @@ defmodule Orchard.Inference.ToolingValidationTest do
                ToolingValidation.validate(%{"tools" => [], "tool_choice" => "required"})
     end
 
-    test "rejects named function tool_choice when tool is missing" do
+    test "rejects named function tool_choice when inline tool is missing and refs are absent" do
       assert {:error, :invalid_value, "tool_choice", _} =
                ToolingValidation.validate(%{
-                 "tools" => [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}],
-                 "tool_choice" => %{
-                   "type" => "function",
-                   "function" => %{"name" => "lookup_news"}
-                 }
+                 "tools" => [inline_tool("lookup_weather")],
+                 "tool_choice" => named_tool_choice("lookup_news")
                })
     end
   end
@@ -117,20 +193,28 @@ defmodule Orchard.Inference.ToolingValidationTest do
     end
 
     test "returns false for tool_choice none" do
-      tools = [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}]
+      tools = [inline_tool("lookup_weather")]
       refute ToolingValidation.effective_tool_calling?(tools, "none")
     end
 
     test "returns true for non-empty tools with nil or active tool choice" do
-      tools = [%{"type" => "function", "function" => %{"name" => "lookup_weather"}}]
+      tools = [inline_tool("lookup_weather")]
       assert ToolingValidation.effective_tool_calling?(tools, nil)
       assert ToolingValidation.effective_tool_calling?(tools, "auto")
       assert ToolingValidation.effective_tool_calling?(tools, "required")
-
-      assert ToolingValidation.effective_tool_calling?(tools, %{
-               "type" => "function",
-               "function" => %{"name" => "lookup_weather"}
-             })
+      assert ToolingValidation.effective_tool_calling?(tools, named_tool_choice("lookup_weather"))
     end
+  end
+
+  defp inline_tool(name) do
+    %{"type" => "function", "function" => %{"name" => name}}
+  end
+
+  defp ref_tool(name, version) do
+    %{"type" => "function", "ref" => "tool://#{name}@#{version}"}
+  end
+
+  defp named_tool_choice(name) do
+    %{"type" => "function", "function" => %{"name" => name}}
   end
 end

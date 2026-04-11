@@ -4,6 +4,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   @moduletag :db
 
   import Orchard.TestSupport.ModelRequestFixtures
+  import Orchard.TestSupport.ToolRegistryTestSupport
 
   alias Orchard.API.Router
   alias Orchard.ArtifactBundle
@@ -504,6 +505,76 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert choice["finish_reason"] == "tool_calls"
       assert choice["message"]["content"] == "Let me check."
       assert length(choice["message"]["tool_calls"]) == 1
+    end
+
+    @tag :db
+    test "valid ref-backed request succeeds without API shape changes" do
+      %{token: token} = create_api_key_with_token!("chat-ref-success")
+      create_tool!("lookup_weather", "2026-04-10")
+      executable = write_tokenizer_executable!()
+      on_exit(fn -> File.rm(executable) end)
+
+      model =
+        create_model!(%{
+          model_id: "chat-ref-success-model",
+          version: "v1",
+          state: :active,
+          capabilities: ["chat", "tool_calling"],
+          artifact_uri: "file://#{fixture_bundle_path()}",
+          artifact_source_uri: "file://#{fixture_bundle_path()}"
+        })
+
+      params = %{
+        "model" => "#{model.model_id}@#{model.version}",
+        "messages" => [%{"role" => "user", "content" => "hello"}],
+        "tools" => [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+        "tool_choice" => "auto"
+      }
+
+      with_inference_overrides([tokenizer_mode: :port, tokenizer_executable: executable], fn ->
+        stub_chat_orchestrator(
+          prepare_real: true,
+          capture_execute_pid: self(),
+          events: [
+            InferenceEvent.accepted(1_710_000_123_000),
+            InferenceEvent.output_text_delta("Ref-backed tools are accepted."),
+            InferenceEvent.completed(:finish_reason_stop, nil)
+          ]
+        )
+
+        conn = post_chat(params, token)
+
+        assert conn.status == 200
+        body = Jason.decode!(conn.resp_body)
+        assert body["object"] == "chat.completion"
+        assert body["model"] == "#{model.model_id}@#{model.version}"
+
+        assert get_in(body, ["choices", Access.at(0), "message", "content"]) ==
+                 "Ref-backed tools are accepted."
+
+        assert_receive {:captured_execute_canonical, canonical, prepared_model}
+        assert prepared_model.id == model.id
+        assert canonical.tooling.requested_tools == params["tools"]
+        assert canonical.tooling.tools == [function_definition("lookup_weather")]
+      end)
+    end
+
+    @tag :db
+    test "invalid ref-backed request returns stable validation error on tools" do
+      conn =
+        post_chat(%{
+          "model" => "chat-ref-missing-model@v1",
+          "messages" => [%{"role" => "user", "content" => "hello"}],
+          "tools" => [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+          "tool_choice" => "auto"
+        })
+
+      assert conn.status == 400
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == "invalid_request_error"
+      assert body["error"]["code"] == "invalid_value"
+      assert body["error"]["param"] == "tools"
+      assert body["error"]["message"] =~ "tool://lookup_weather@2026-04-10"
     end
 
     @tag :db
@@ -1156,16 +1227,26 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   end
 
   defmodule StubChatOrchestrator do
-    def prepare(_params, _caller_context) do
+    alias Orchard.Inference.ChatOrchestrator
+
+    def prepare(params, caller_context) do
       config =
         Process.get({Orchard.API.ChatCompletionsControllerTest, :stub_chat_orchestrator}, %{})
 
-      Keyword.fetch!(config, :prepare)
+      if Keyword.get(config, :prepare_real, false) do
+        ChatOrchestrator.prepare(params, caller_context)
+      else
+        Keyword.fetch!(config, :prepare)
+      end
     end
 
-    def execute(canonical, _model, opts) do
+    def execute(canonical, model, opts) do
       config =
         Process.get({Orchard.API.ChatCompletionsControllerTest, :stub_chat_orchestrator}, %{})
+
+      if pid = Keyword.get(config, :capture_execute_pid) do
+        send(pid, {:captured_execute_canonical, canonical, model})
+      end
 
       if event_handler = Keyword.get(opts, :event_handler) do
         Enum.each(Keyword.get(config, :events, []), fn event ->
