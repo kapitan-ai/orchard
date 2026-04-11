@@ -129,6 +129,39 @@ defmodule Orchard.Inference.ToolExecutionSemanticsTest do
              ]
     end
 
+    test "returns an empty execution snapshot when inline tooling is disabled via tool_choice none" do
+      inline_weather = function_definition("lookup_weather")
+
+      tooling = %Tooling{
+        requested_tools: [inline_weather],
+        tools: [inline_weather],
+        tool_choice: "none",
+        registry_snapshot: %{entries: []}
+      }
+
+      assert {:ok, %{entries: []}} = ToolExecutionSemantics.build(tooling)
+    end
+
+    test "returns an empty execution snapshot when ref-backed tooling is disabled via tool_choice none" do
+      tooling = %Tooling{
+        requested_tools: [ref_tool("lookup_docs", "2026-04-11")],
+        tools: [function_definition("lookup_docs")],
+        tool_choice: "none",
+        registry_snapshot: %{
+          entries: [
+            %{
+              "ref" => "tool://lookup_docs@2026-04-11",
+              "name" => "lookup_docs",
+              "version" => "2026-04-11",
+              "execution_mode" => "server_hostable"
+            }
+          ]
+        }
+      }
+
+      assert {:ok, %{entries: []}} = ToolExecutionSemantics.build(tooling)
+    end
+
     test "returns an empty execution snapshot for legacy runtime-only tooling" do
       tooling = %Tooling{
         requested_tools: [],

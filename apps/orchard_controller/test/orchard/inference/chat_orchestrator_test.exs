@@ -132,6 +132,52 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
       assert detail == "#{model.model_id}@#{model.version}"
     end
 
+    test "accepts tool_choice none for ref-backed tools on models without tool_calling capability" do
+      weather =
+        create_tool!("lookup_weather", "2026-04-10", %{
+          execution_mode: :server_hostable,
+          source_kind: :mcp_server,
+          source_ref: "mcp://weather-server/tools/lookup_weather"
+        })
+
+      model =
+        ModelRequestFixtures.create_model!(%{
+          model_id: "test/no-tool-capability-none-model",
+          version: "v1",
+          state: :active,
+          capabilities: ["chat"]
+        })
+
+      params = %{
+        "model" => "#{model.model_id}@#{model.version}",
+        "messages" => [%{"role" => "user", "content" => "Hello"}],
+        "tools" => [%{"type" => "function", "ref" => "tool://lookup_weather@2026-04-10"}],
+        "tool_choice" => "none"
+      }
+
+      assert {:ok, canonical, prepared_model} = ChatOrchestrator.prepare(params, [])
+      assert prepared_model.id == model.id
+
+      assert canonical.tooling.requested_tools == params["tools"]
+      assert canonical.tooling.tools == [weather.definition]
+
+      assert canonical.tooling.registry_snapshot == %{
+               entries: [
+                 %{
+                   "tool_id" => weather.id,
+                   "ref" => "tool://lookup_weather@2026-04-10",
+                   "name" => "lookup_weather",
+                   "version" => "2026-04-10",
+                   "execution_mode" => "server_hostable",
+                   "source_kind" => "mcp_server",
+                   "source_ref" => "mcp://weather-server/tools/lookup_weather"
+                 }
+               ]
+             }
+
+      assert canonical.tooling.execution_snapshot == %{entries: []}
+    end
+
     test "attaches ordered execution semantics after resolving mixed tools" do
       docs =
         create_tool!("lookup_docs", "2026-04-11", %{

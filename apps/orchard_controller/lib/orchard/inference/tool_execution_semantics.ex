@@ -2,6 +2,7 @@ defmodule Orchard.Inference.ToolExecutionSemantics do
   @moduledoc false
 
   alias Orchard.CanonicalRequest.Tooling
+  alias Orchard.Inference.ToolingValidation
 
   @type reason ::
           :tool_count_mismatch
@@ -15,12 +16,25 @@ defmodule Orchard.Inference.ToolExecutionSemantics do
   @type error_reason :: {:misaligned_tooling, reason()}
 
   @spec build(Tooling.t()) :: {:ok, Tooling.entries_snapshot()} | {:error, error_reason()}
-  def build(%Tooling{requested_tools: [], tools: runtime_tools}) when is_list(runtime_tools) do
-    {:ok, %{entries: []}}
+  def build(%Tooling{tools: runtime_tools} = tooling) when is_list(runtime_tools) do
+    cond do
+      not ToolingValidation.effective_tool_calling?(runtime_tools, tooling.tool_choice) ->
+        {:ok, %{entries: []}}
+
+      tooling.requested_tools == [] ->
+        {:ok, %{entries: []}}
+
+      is_list(tooling.requested_tools) ->
+        build_enabled_tooling(tooling, runtime_tools)
+
+      true ->
+        {:error, {:misaligned_tooling, :tool_count_mismatch}}
+    end
   end
 
-  def build(%Tooling{requested_tools: requested_tools, tools: runtime_tools} = tooling)
-      when is_list(requested_tools) and is_list(runtime_tools) do
+  def build(%Tooling{}), do: {:error, {:misaligned_tooling, :tool_count_mismatch}}
+
+  defp build_enabled_tooling(%Tooling{requested_tools: requested_tools} = tooling, runtime_tools) do
     with :ok <- ensure_matching_tool_counts(requested_tools, runtime_tools),
          {:ok, registry_entries} <- registry_snapshot_entries(tooling.registry_snapshot),
          {:ok, entries, []} <- build_entries(requested_tools, runtime_tools, registry_entries) do
@@ -33,8 +47,6 @@ defmodule Orchard.Inference.ToolExecutionSemantics do
         {:error, error_reason}
     end
   end
-
-  def build(%Tooling{}), do: {:error, {:misaligned_tooling, :tool_count_mismatch}}
 
   defp ensure_matching_tool_counts(requested_tools, runtime_tools) do
     if length(requested_tools) == length(runtime_tools) do
