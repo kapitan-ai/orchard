@@ -185,6 +185,21 @@ defmodule Orchard.Inference.ToolingValidationTest do
     end
   end
 
+  describe "tool ref helpers" do
+    test "parses valid tool refs" do
+      assert {:ok, "lookup_docs", "2026-04-11"} =
+               ToolingValidation.parse_tool_ref("tool://lookup_docs@2026-04-11")
+    end
+
+    test "rejects malformed tool refs and ref parts" do
+      assert :error = ToolingValidation.parse_tool_ref("tool://lookup docs@2026-04-11")
+      assert :error = ToolingValidation.parse_tool_ref("tool://lookup_docs@2026 04 11")
+      assert ToolingValidation.valid_tool_ref_part?("lookup_docs")
+      refute ToolingValidation.valid_tool_ref_part?("bad part")
+      refute ToolingValidation.valid_tool_ref_part?("bad@part")
+    end
+  end
+
   describe "effective_tool_calling?/2" do
     test "returns false without tools" do
       refute ToolingValidation.effective_tool_calling?([], nil)

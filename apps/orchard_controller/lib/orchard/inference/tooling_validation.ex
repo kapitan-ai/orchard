@@ -3,7 +3,7 @@ defmodule Orchard.Inference.ToolingValidation do
   Shared validation for tool-calling request fields across chat and responses endpoints.
   """
 
-  @ref_prefix "tool://"
+  alias Orchard.ToolRef
 
   @type validation_error ::
           {:error, :unsupported_parameter, String.t()}
@@ -191,34 +191,10 @@ defmodule Orchard.Inference.ToolingValidation do
   end
 
   @spec parse_tool_ref(String.t()) :: {:ok, String.t(), String.t()} | :error
-  def parse_tool_ref(@ref_prefix <> rest) do
-    case String.split(rest, "@", parts: 2) do
-      [name, version] ->
-        case {validate_ref_part(name), validate_ref_part(version)} do
-          {:ok, :ok} -> {:ok, name, version}
-          _other -> :error
-        end
-
-      _other ->
-        :error
-    end
-  end
-
-  def parse_tool_ref(_ref), do: :error
+  def parse_tool_ref(ref), do: ToolRef.parse(ref)
 
   @spec valid_tool_ref_part?(String.t()) :: boolean()
-  def valid_tool_ref_part?(value) when is_binary(value), do: validate_ref_part(value) == :ok
-  def valid_tool_ref_part?(_value), do: false
-
-  defp validate_ref_part(""), do: :error
-
-  defp validate_ref_part(value) do
-    if String.contains?(value, ["@", " ", "\n", "\t"]) do
-      :error
-    else
-      :ok
-    end
-  end
+  def valid_tool_ref_part?(value), do: ToolRef.valid_part?(value)
 
   defp invalid_mixed_tool_entry do
     {:error, :invalid_value, "tools", "each tool must include either function or ref, not both"}

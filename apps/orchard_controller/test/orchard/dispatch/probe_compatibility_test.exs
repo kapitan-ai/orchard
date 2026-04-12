@@ -260,6 +260,29 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
       assert_received {:node_resolved, @other_uuid}
     end
+
+    test "hosted tool fields remain additive to pre-dispatch probe compatibility", ctx do
+      configure_stub(%{
+        status:
+          {:ok,
+           Map.merge(full_status(@valid_uuid), %{
+             hosted_tool_capabilities: [
+               %{name: "lookup_docs", version: "2026-04-11", adapter_kind: "mcp"}
+             ],
+             hosted_tool_readiness: [
+               %{name: "lookup_docs", version: "2026-04-11", ready: true}
+             ]
+           })}
+      })
+
+      assert {:ok, _} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      assert_received {:ensure_model_loaded_called, req}
+      assert req.node_id == @valid_uuid
+    end
   end
 
   describe "probe transport failure" do

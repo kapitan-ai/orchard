@@ -38,6 +38,34 @@ defmodule Orchard.Cluster.V1.RuntimeHealth do
   field(:affected_model, 4, type: Orchard.Cluster.V1.ModelRef, json_name: "affectedModel")
 end
 
+defmodule Orchard.Cluster.V1.HostedToolCapability do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.HostedToolCapability",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:name, 1, type: :string)
+  field(:version, 2, type: :string)
+  field(:adapter_kind, 3, type: :string, json_name: "adapterKind")
+end
+
+defmodule Orchard.Cluster.V1.HostedToolReadiness do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.HostedToolReadiness",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:name, 1, type: :string)
+  field(:version, 2, type: :string)
+  field(:ready, 3, type: :bool)
+  field(:readiness_code, 4, type: :string, json_name: "readinessCode")
+  field(:readiness_message, 5, type: :string, json_name: "readinessMessage")
+end
+
 defmodule Orchard.Cluster.V1.StatusResponse do
   @moduledoc false
 
@@ -66,6 +94,18 @@ defmodule Orchard.Cluster.V1.StatusResponse do
   )
 
   field(:runtime_health, 5, type: Orchard.Cluster.V1.RuntimeHealth, json_name: "runtimeHealth")
+
+  field(:hosted_tool_capabilities, 6,
+    repeated: true,
+    type: Orchard.Cluster.V1.HostedToolCapability,
+    json_name: "hostedToolCapabilities"
+  )
+
+  field(:hosted_tool_readiness, 7,
+    repeated: true,
+    type: Orchard.Cluster.V1.HostedToolReadiness,
+    json_name: "hostedToolReadiness"
+  )
 end
 
 defmodule Orchard.Cluster.V1.EnsureModelLoadedRequest do

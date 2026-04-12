@@ -668,6 +668,39 @@ Node agent SHALL send heartbeats every 2 seconds with:
 }
 ```
 
+### 4.6.1 Hosted-tool capability and readiness observation
+
+Hosted-tool observation SHALL remain distinct from heartbeat inventory in the current implementation slice.
+
+Rules:
+
+* the active implementation seam for hosted-tool observation SHALL be `NodeRuntimeService.GetStatus` returning `StatusResponse`
+* heartbeat payloads MAY carry equivalent hosted-tool data in a later slice, but controller-owned hosted-tool observation SHALL currently be derived from status-probe ingestion
+* this contract defines future hosted routing inputs only; it SHALL NOT by itself enable controller-owned hosted `/v1/responses` execution or any other hosted execution behavior
+
+Hosted-tool observation vocabulary:
+
+* **static capability** identifies a node-advertised hosted tool by registry-compatible `name` and `version`, plus the local `adapter_kind`
+* **dynamic readiness** reports whether that same advertised hosted tool is currently ready on the node, with `ready`, `readiness_code`, and `readiness_message`
+* the controller SHALL derive canonical hosted-tool identity as `tool://<name>@<version>`
+* hosted-tool identity SHALL align with controller registry semantics; Orchard SHALL NOT introduce a second hosted-tool naming scheme
+
+Compatibility and defaulting rules:
+
+* absent hosted-tool capability/readiness fields on `StatusResponse` SHALL mean the node advertises no hosted tools
+* absent hosted-tool capability/readiness fields SHALL NOT be treated as a status-probe error
+* readiness without matching advertised capability for the same `tool://<name>@<version>` SHALL NOT make the node eligible for hosted routing
+
+Effective readiness rules for future hosted routing:
+
+* a node candidate is effectively ready for a hosted tool only when the controller registry contains an active tool with matching `name` and `version`
+* the registry tool `execution_mode` SHALL be `:server_hostable`
+* the node SHALL advertise matching static hosted-tool capability for the same `tool://<name>@<version>`
+* the node lifecycle state SHALL be `active`
+* node health SHALL be `healthy` or `degraded`
+* the node observation SHALL be fresh under Orchard's existing freshness thresholds
+* dynamic readiness for that tool SHALL exist and have `ready = true`
+
 ### 4.7 Pool model
 
 v1 SHALL support **exactly one pool per node**.
@@ -1795,6 +1828,49 @@ message RegisterNodeResponse {
   uint64 heartbeat_interval_ms = 5;
 }
 
+message HostedToolCapability {
+  string name = 1;
+  string version = 2;
+  string adapter_kind = 3;
+}
+
+message HostedToolReadiness {
+  string name = 1;
+  string version = 2;
+  bool ready = 3;
+  string readiness_code = 4;
+  string readiness_message = 5;
+}
+
+message StatusRequest {}
+
+message RuntimeNodeMetadata {
+  string node_id = 1;
+  string display_name = 2;
+  string hostname = 3;
+  string agent_version = 4;
+  string listen_host = 5;
+  uint32 listen_port = 6;
+  string worker_backend = 7;
+}
+
+message RuntimeHealth {
+  bool ready = 1;
+  string health_code = 2;
+  string health_message = 3;
+  ModelRef affected_model = 4;
+}
+
+message StatusResponse {
+  WorkerState worker_state = 1;
+  repeated ModelRef loaded_models = 2;
+  uint32 active_request_count = 3;
+  RuntimeNodeMetadata node_metadata = 4;
+  RuntimeHealth runtime_health = 5;
+  repeated HostedToolCapability hosted_tool_capabilities = 6;
+  repeated HostedToolReadiness hosted_tool_readiness = 7;
+}
+
 message EnsureModelLoadedRequest {
   string node_id = 1;
   string model_id = 2;
@@ -1894,6 +1970,14 @@ Internal tool-calling wire semantics:
 * `ToolCallDelta.tool_call_id` SHALL remain stable for the life of that tool call within the request
 * tool-call deltas SHALL preserve zero-based call index and append-only argument fragments in arrival order
 * if a request completes successfully after emitting one or more tool-call deltas, the terminal `Completed.finish_reason` SHALL be `FINISH_REASON_TOOL_CALLS`
+
+Hosted-tool capability/readiness wire semantics:
+
+* `StatusResponse.hosted_tool_capabilities` SHALL describe static hosted-tool advertisement only; it SHALL NOT be used to imply current readiness
+* `StatusResponse.hosted_tool_readiness` SHALL describe dynamic readiness only; it SHALL NOT create hosted-tool identity independent of capability advertisement
+* both hosted-tool lists SHALL align to controller registry identity via `name` + `version`, with canonical ref `tool://<name>@<version>`
+* `hosted_tool_capabilities` and `hosted_tool_readiness` SHALL default to empty when omitted by an older node agent
+* omitted hosted-tool fields SHALL mean “no advertised hosted tools” and SHALL preserve old-node / new-controller compatibility
 
 #### 7.5.4 Node registration flow
 

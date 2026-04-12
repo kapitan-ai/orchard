@@ -37,6 +37,17 @@ defmodule Orchard.Tools do
     Repo.get_by(Tool, name: name, version: version)
   end
 
+  @spec fetch_tool_by_identity(String.t(), String.t()) :: {:ok, Tool.t() | nil} | {:error, :unavailable}
+  def fetch_tool_by_identity(name, version) do
+    if repo_available?() do
+      {:ok, Repo.get_by(Tool, name: name, version: version)}
+    else
+      {:error, :unavailable}
+    end
+  rescue
+    _ -> {:error, :unavailable}
+  end
+
   @spec fetch_active_tools_by_identity([identity()]) :: %{optional(identity()) => Tool.t()}
   def fetch_active_tools_by_identity(identities) when is_list(identities) do
     identities = Enum.uniq(identities)
@@ -138,5 +149,10 @@ defmodule Orchard.Tools do
 
   defp maybe_filter_state(query, state) do
     where(query, [tool], tool.state == ^state)
+  end
+
+  defp repo_available? do
+    pid = Process.whereis(Orchard.Repo)
+    is_pid(pid) and Process.alive?(pid)
   end
 end

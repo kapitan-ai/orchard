@@ -55,6 +55,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       worker_prefix_cache_mode: "kv",
       worker_prefix_cache_max_entries: 8,
       worker_prefix_cache_max_bytes: 0,
+      hosted_tools: [],
       max_loaded_models: 0,
       fake_runtime?: false,
       hf: hf(),

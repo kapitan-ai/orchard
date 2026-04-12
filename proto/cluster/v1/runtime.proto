@@ -34,6 +34,27 @@ message RuntimeHealth {
   ModelRef affected_model = 4;
 }
 
+// Static hosted-tool capability advertised by the node. The controller derives
+// canonical identity as tool://<name>@<version> and matches against the tool
+// registry using the same name/version semantics.
+message HostedToolCapability {
+  string name = 1;
+  string version = 2;
+  string adapter_kind = 3;
+}
+
+// Dynamic hosted-tool readiness reported separately from static capability.
+// Readiness entries without matching capability should be ignored by the
+// controller. Absent readiness/capability lists mean the node advertises no
+// hosted tools.
+message HostedToolReadiness {
+  string name = 1;
+  string version = 2;
+  bool ready = 3;
+  string readiness_code = 4;
+  string readiness_message = 5;
+}
+
 // M1 assumes one effective worker/runtime path per node for the single-node MVP.
 // Fields 4-5 added for persistent node inventory (M3a Session 1).
 message StatusResponse {
@@ -42,6 +63,8 @@ message StatusResponse {
   uint32 active_request_count = 3;
   RuntimeNodeMetadata node_metadata = 4;
   RuntimeHealth runtime_health = 5;
+  repeated HostedToolCapability hosted_tool_capabilities = 6;
+  repeated HostedToolReadiness hosted_tool_readiness = 7;
 }
 
 message EnsureModelLoadedRequest {

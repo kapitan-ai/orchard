@@ -20,7 +20,8 @@ defmodule Orchard.NodesTest do
         rpc_port: 9444,
         state: :active,
         health: :healthy,
-        capabilities: %{}
+        capabilities: %{},
+        tool_readiness: %{}
       },
       overrides
     )
@@ -35,6 +36,17 @@ defmodule Orchard.NodesTest do
   end
 
   defp make_target(host, port), do: [host: host, port: port]
+
+  defp tool_ref(name, version), do: "tool://#{name}@#{version}"
+
+  defp hosted_tool_capability(name, version, adapter_kind \\ "mcp") do
+    %{
+      "ref" => tool_ref(name, version),
+      "name" => name,
+      "version" => version,
+      "adapter_kind" => adapter_kind
+    }
+  end
 
   defp make_status_response(meta_overrides), do: make_status_response(meta_overrides, nil)
 
@@ -92,6 +104,71 @@ defmodule Orchard.NodesTest do
       changeset = Node.changeset(%Node{}, node_attrs(%{rpc_port: 70_000}))
       refute changeset.valid?
       assert errors_on(changeset)[:rpc_port]
+    end
+
+    test "requires tool_readiness to be a map" do
+      changeset = Node.changeset(%Node{}, node_attrs(%{tool_readiness: nil}))
+      refute changeset.valid?
+      assert errors_on(changeset)[:tool_readiness]
+
+      changeset = Node.changeset(%Node{}, node_attrs(%{tool_readiness: "bad"}))
+      refute changeset.valid?
+      assert errors_on(changeset)[:tool_readiness]
+    end
+
+    test "rejects tool_readiness entries for refs missing from hosted_tools" do
+      changeset =
+        Node.changeset(
+          %Node{},
+          node_attrs(%{
+            capabilities: %{"hosted_tools" => []},
+            tool_readiness: %{
+              tool_ref("lookup_docs", "2026-04-11") => %{
+                "ready" => true,
+                "status_code" => "ok",
+                "status_message" => "ready"
+              }
+            }
+          })
+        )
+
+      refute changeset.valid?
+      assert errors_on(changeset)[:tool_readiness]
+    end
+
+    test "rejects tool_readiness entries with invalid payload types" do
+      ref = tool_ref("lookup_docs", "2026-04-11")
+
+      changeset =
+        Node.changeset(
+          %Node{},
+          node_attrs(%{
+            capabilities: %{"hosted_tools" => [hosted_tool_capability("lookup_docs", "2026-04-11")]},
+            tool_readiness: %{
+              ref => %{"ready" => "yes", "status_code" => "ok", "status_message" => "ready"}
+            }
+          })
+        )
+
+      refute changeset.valid?
+      assert errors_on(changeset)[:tool_readiness]
+    end
+
+    test "accepts tool_readiness entries that match hosted_tools" do
+      ref = tool_ref("lookup_docs", "2026-04-11")
+
+      changeset =
+        Node.changeset(
+          %Node{},
+          node_attrs(%{
+            capabilities: %{"hosted_tools" => [hosted_tool_capability("lookup_docs", "2026-04-11")]},
+            tool_readiness: %{
+              ref => %{ready: true, status_code: "ok", status_message: "ready"}
+            }
+          })
+        )
+
+      assert changeset.valid?
     end
 
     test "enum helpers" do
@@ -234,7 +311,8 @@ defmodule Orchard.NodesTest do
         make_status_response(%{listen_host: "10.0.0.5", worker_backend: "mlx"})
 
       assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
-      assert node.capabilities == %{"worker_backend" => "mlx"}
+      assert node.capabilities == %{"worker_backend" => "mlx", "hosted_tools" => []}
+      assert node.tool_readiness == %{}
     end
 
     test "empty worker_backend stores empty capabilities" do
@@ -244,7 +322,139 @@ defmodule Orchard.NodesTest do
         make_status_response(%{listen_host: "10.0.0.6", worker_backend: ""})
 
       assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
-      assert node.capabilities == %{}
+      assert node.capabilities == %{"hosted_tools" => []}
+      assert node.tool_readiness == %{}
+    end
+
+    test "persists hosted tool capability separately from tool readiness" do
+      target = make_target("10.0.0.7", 9444)
+
+      status = %{
+        node_metadata: %{
+          node_id: Ecto.UUID.generate(),
+          display_name: "tool-node",
+          hostname: "tool-node.local",
+          agent_version: "0.5.0",
+          listen_host: "10.0.0.7",
+          listen_port: 9444,
+          worker_backend: "mlx"
+        },
+        runtime_health: %{ready: true, health_code: "", health_message: ""},
+        hosted_tool_capabilities: [
+          %{name: "lookup_docs", version: "2026-04-11", adapter_kind: "mcp"}
+        ],
+        hosted_tool_readiness: [
+          %{
+            name: "lookup_docs",
+            version: "2026-04-11",
+            ready: false,
+            readiness_code: "warming",
+            readiness_message: "warming up"
+          }
+        ]
+      }
+
+      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+
+      assert node.capabilities == %{
+               "worker_backend" => "mlx",
+               "hosted_tools" => [
+                 %{
+                   "ref" => "tool://lookup_docs@2026-04-11",
+                   "name" => "lookup_docs",
+                   "version" => "2026-04-11",
+                   "adapter_kind" => "mcp"
+                 }
+               ]
+             }
+
+      assert node.tool_readiness == %{
+               "tool://lookup_docs@2026-04-11" => %{
+                 "ready" => false,
+                 "status_code" => "warming",
+                 "status_message" => "warming up"
+               }
+             }
+    end
+
+    test "drops readiness entries without matching capability" do
+      target = make_target("10.0.0.8", 9444)
+
+      status = %{
+        node_metadata: %{
+          node_id: Ecto.UUID.generate(),
+          display_name: "tool-node-no-readiness",
+          hostname: "tool-node-no-readiness.local",
+          agent_version: "0.5.0",
+          listen_host: "10.0.0.8",
+          listen_port: 9444,
+          worker_backend: "mlx"
+        },
+        runtime_health: %{ready: true, health_code: "", health_message: ""},
+        hosted_tool_capabilities: [
+          %{name: "lookup_docs", version: "2026-04-11", adapter_kind: "mcp"}
+        ],
+        hosted_tool_readiness: [
+          %{name: "other_tool", version: "2026-04-11", ready: true}
+        ]
+      }
+
+      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+
+      assert node.capabilities["hosted_tools"] == [
+               %{
+                 "ref" => "tool://lookup_docs@2026-04-11",
+                 "name" => "lookup_docs",
+                 "version" => "2026-04-11",
+                 "adapter_kind" => "mcp"
+               }
+             ]
+
+      assert node.tool_readiness == %{}
+    end
+
+    test "ignores malformed hosted tool entries without turning valid observation into noop" do
+      target = make_target("10.0.0.9", 9444)
+
+      status = %{
+        node_metadata: %{
+          node_id: Ecto.UUID.generate(),
+          display_name: "tool-node-malformed",
+          hostname: "tool-node-malformed.local",
+          agent_version: "0.5.0",
+          listen_host: "10.0.0.9",
+          listen_port: 9444,
+          worker_backend: "mlx"
+        },
+        runtime_health: %{ready: true, health_code: "", health_message: ""},
+        hosted_tool_capabilities: [
+          %{name: "bad tool", version: "2026-04-11", adapter_kind: "mcp"},
+          %{name: "lookup_docs", version: "2026-04-11", adapter_kind: "mcp"}
+        ],
+        hosted_tool_readiness: [
+          %{name: "lookup_docs", version: "2026-04-11", ready: "yes"},
+          %{name: "lookup_docs", version: "2026-04-11", ready: true, readiness_code: "ok"}
+        ]
+      }
+
+      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+
+      assert node.capabilities["hosted_tools"] == [
+               %{
+                 "ref" => "tool://lookup_docs@2026-04-11",
+                 "name" => "lookup_docs",
+                 "version" => "2026-04-11",
+                 "adapter_kind" => "mcp"
+               }
+             ]
+
+      assert node.tool_readiness == %{
+               "tool://lookup_docs@2026-04-11" => %{
+                 "ready" => true,
+                 "status_code" => "ok",
+                 "status_message" => ""
+               }
+             }
     end
   end
 
@@ -300,23 +510,42 @@ defmodule Orchard.NodesTest do
       now = DateTime.utc_now()
       earlier = DateTime.add(now, -60, :second)
 
-      insert_node!(%{
-        id: node_id,
-        advertise_addr: "10.0.0.20",
-        rpc_port: 9444,
-        last_heartbeat_at: now
-      })
+      existing =
+        insert_node!(%{
+          id: node_id,
+          advertise_addr: "10.0.0.20",
+          rpc_port: 9444,
+          last_heartbeat_at: now,
+          capabilities: %{"worker_backend" => "mlx", "hosted_tools" => []},
+          tool_readiness: %{}
+        })
 
       target = make_target("10.0.0.20", 9444)
 
-      status =
-        make_status_response(%{
+      status = %{
+        node_metadata: %{
           node_id: node_id,
+          display_name: existing.display_name,
+          hostname: existing.hostname,
+          agent_version: "0.2.0",
           listen_host: "10.0.0.20",
-          listen_port: 9444
-        })
+          listen_port: 9444,
+          worker_backend: "mlx"
+        },
+        runtime_health: %{ready: true, health_code: "", health_message: ""},
+        hosted_tool_capabilities: [
+          %{name: "lookup_docs", version: "2026-04-11", adapter_kind: "mcp"}
+        ],
+        hosted_tool_readiness: [
+          %{name: "lookup_docs", version: "2026-04-11", ready: true}
+        ]
+      }
 
       assert :noop = Nodes.observe_status(target, status, earlier)
+
+      reloaded = Repo.get!(Node, node_id)
+      assert reloaded.capabilities == existing.capabilities
+      assert reloaded.tool_readiness == existing.tool_readiness
     end
 
     test "rejects equal-timestamp observation" do

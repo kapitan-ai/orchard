@@ -24,6 +24,7 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Node.ModelAcquisition
   alias Orchard.Node.ModelAcquisition.Request, as: AcquisitionRequest
   alias Orchard.Node.ModelLoadFailure
+  alias Orchard.Node.ToolCapabilityCatalog
   alias Orchard.Node.WorkerProcess
   alias Orchard.Node.WorkerSupervisor
 
@@ -1107,12 +1108,16 @@ defmodule Orchard.Node.ModelManager do
   # -- Response helpers ------------------------------------------------------
 
   defp status_response(state) do
+    tool_snapshot = ToolCapabilityCatalog.snapshot()
+
     %StatusResponse{
       worker_state: worker_state(state),
       loaded_models: loaded_models(state),
       active_request_count: map_size(state.active_requests),
       node_metadata: build_node_metadata(),
-      runtime_health: aggregate_runtime_health(state)
+      runtime_health: aggregate_runtime_health(state),
+      hosted_tool_capabilities: tool_snapshot.capabilities,
+      hosted_tool_readiness: tool_snapshot.readiness
     }
   end
 

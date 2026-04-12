@@ -306,6 +306,50 @@ defmodule OrchardConsole.RuntimeTest do
       assert_received {:observe_status_called, _target, _response, _observed_at}
     end
 
+    test "hosted tool capability fields stay additive to runtime snapshot behavior" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           %{
+             worker_state: :WORKER_STATE_IDLE,
+             loaded_models: [],
+             active_request_count: 0,
+             node_metadata: %{node_id: "test-uuid"},
+             runtime_health: %{ready: true},
+             hosted_tool_capabilities: [
+               %{name: "lookup_docs", version: "2026-04-11", adapter_kind: "mcp"}
+             ],
+             hosted_tool_readiness: [
+               %{name: "lookup_docs", version: "2026-04-11", ready: true}
+             ]
+           }},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.worker_state == :idle
+      assert snapshot.node_metadata.node_id == "test-uuid"
+      assert snapshot.node_metadata.display_name == nil
+
+      assert snapshot.runtime_health == %{
+               ready: true,
+               health_code: nil,
+               health_message: nil,
+               affected_model: nil
+             }
+
+      assert_received {:observe_status_called, _target, response, _observed_at}
+
+      assert response.hosted_tool_capabilities == [
+               %{name: "lookup_docs", version: "2026-04-11", adapter_kind: "mcp"}
+             ]
+
+      assert response.hosted_tool_readiness == [
+               %{name: "lookup_docs", version: "2026-04-11", ready: true}
+             ]
+    end
+
     test "status error does not trigger observe_status" do
       stub_client(
         connect: {:ok, :ch},

@@ -184,6 +184,54 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.candidate_count == 2
     end
 
+    test "hosted tool capability and readiness data do not change inference ranking" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        Map.merge(
+          make_status(node_a.id,
+            host: "10.0.0.1",
+            port: 50_061,
+            loaded_models: [%{model_id: "test-model", version: "v1"}]
+          ),
+          %{
+            hosted_tool_capabilities: [
+              %{name: "lookup_docs", version: "2026-04-11", adapter_kind: "mcp"}
+            ],
+            hosted_tool_readiness: [
+              %{name: "lookup_docs", version: "2026-04-11", ready: false}
+            ]
+          }
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        Map.merge(
+          make_status(node_b.id, host: "10.0.0.2", port: 50_062),
+          %{
+            hosted_tool_capabilities: [
+              %{name: "lookup_docs", version: "2026-04-11", adapter_kind: "mcp"}
+            ],
+            hosted_tool_readiness: [
+              %{name: "lookup_docs", version: "2026-04-11", ready: true}
+            ]
+          }
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_a.id
+      assert schedule.selected_tier == "loaded"
+    end
+
     test "prefers lower active_request_count when both cold" do
       node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
       node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})

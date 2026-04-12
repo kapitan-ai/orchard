@@ -11,6 +11,8 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Cluster.V1.EnsureModelLoadedResponse
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.GenerationParams
+  alias Orchard.Cluster.V1.HostedToolCapability
+  alias Orchard.Cluster.V1.HostedToolReadiness
   alias Orchard.Cluster.V1.InferenceEvent, as: RPCInferenceEvent
   alias Orchard.Cluster.V1.ModelRef, as: RPCModelRef
   alias Orchard.Cluster.V1.NodeRuntimeService.Stub, as: NodeRuntimeStub
@@ -346,6 +348,7 @@ defmodule OrchardNodeAgentTest do
            )
 
     assert runtime[:worker_backend] == "stub"
+    assert runtime[:hosted_tools] == []
     assert runtime[:worker_ready_timeout_ms] == 5_000
     assert runtime[:worker_load_timeout_ms] == 5_000
     assert runtime[:worker_shutdown_timeout_ms] == 1_000
@@ -392,7 +395,99 @@ defmodule OrchardNodeAgentTest do
       assert response.worker_state == :WORKER_STATE_IDLE
       assert response.loaded_models == []
       assert response.active_request_count == 0
+      assert response.hosted_tool_capabilities == []
+      assert response.hosted_tool_readiness == []
     end)
+  end
+
+  test "get_status includes configured hosted tool capability and readiness" do
+    with_runtime_config(
+      [
+        hosted_tools: [
+          %{
+            name: "lookup_docs",
+            version: "2026-04-11",
+            adapter_kind: "mcp",
+            ready: false,
+            readiness_code: "warming",
+            readiness_message: "warming up"
+          },
+          %{name: "calculator", version: "2026-04-10", adapter_kind: "builtin"},
+          %{name: "lookup_docs", version: "2026-04-11", adapter_kind: "duplicate", ready: true}
+        ]
+      ],
+      fn ->
+        with_channel(fn channel ->
+          assert {:ok, %StatusResponse{} = response} =
+                   NodeRuntimeStub.get_status(channel, %StatusRequest{})
+
+          assert response.hosted_tool_capabilities == [
+                   %HostedToolCapability{
+                     name: "calculator",
+                     version: "2026-04-10",
+                     adapter_kind: "builtin"
+                   },
+                   %HostedToolCapability{
+                     name: "lookup_docs",
+                     version: "2026-04-11",
+                     adapter_kind: "mcp"
+                   }
+                 ]
+
+          assert response.hosted_tool_readiness == [
+                   %HostedToolReadiness{
+                     name: "calculator",
+                     version: "2026-04-10",
+                     ready: true,
+                     readiness_code: "",
+                     readiness_message: ""
+                   },
+                   %HostedToolReadiness{
+                     name: "lookup_docs",
+                     version: "2026-04-11",
+                     ready: false,
+                     readiness_code: "warming",
+                     readiness_message: "warming up"
+                   }
+                 ]
+        end)
+      end
+    )
+  end
+
+  test "malformed hosted tool config does not break get_status" do
+    with_runtime_config(
+      [
+        hosted_tools: [
+          %{name: "bad tool", version: "2026-04-10", adapter_kind: "mcp"},
+          %{name: "lookup_docs", version: "2026-04-11", adapter_kind: "mcp", ready: "yes"}
+        ]
+      ],
+      fn ->
+        with_channel(fn channel ->
+          assert {:ok, %StatusResponse{} = response} =
+                   NodeRuntimeStub.get_status(channel, %StatusRequest{})
+
+          assert response.hosted_tool_capabilities == [
+                   %HostedToolCapability{
+                     name: "lookup_docs",
+                     version: "2026-04-11",
+                     adapter_kind: "mcp"
+                   }
+                 ]
+
+          assert response.hosted_tool_readiness == [
+                   %HostedToolReadiness{
+                     name: "lookup_docs",
+                     version: "2026-04-11",
+                     ready: false,
+                     readiness_code: "invalid_config",
+                     readiness_message: "invalid hosted tool readiness configuration"
+                   }
+                 ]
+        end)
+      end
+    )
   end
 
   test "get_status includes node metadata" do

@@ -12,6 +12,8 @@ defmodule Orchard.Nodes do
   require Logger
 
   alias Orchard.Nodes.Node
+  alias Orchard.Nodes.ToolCapability
+  alias Orchard.Nodes.ToolReadiness
   alias Orchard.Repo
 
   # -- Read APIs --
@@ -235,7 +237,8 @@ defmodule Orchard.Nodes do
          rpc_port: port,
          health: derive_health(extract_runtime_health(status_response)),
          agent_version: non_empty_or(meta.agent_version, nil),
-         capabilities: build_capabilities(meta),
+         capabilities: build_capabilities(meta, status_response),
+         tool_readiness: build_tool_readiness(status_response),
          last_heartbeat_at: observed_at
        }}
     else
@@ -282,9 +285,50 @@ defmodule Orchard.Nodes do
     end
   end
 
-  defp build_capabilities(meta) do
+  defp build_capabilities(meta, status_response) do
     backend = Map.get(meta, :worker_backend, "")
-    if non_empty?(backend), do: %{"worker_backend" => backend}, else: %{}
+
+    hosted_tools =
+      status_response
+      |> extract_hosted_tool_capabilities()
+      |> ToolCapability.normalize_all()
+      |> ToolCapability.persist_all()
+
+    %{}
+    |> maybe_put_worker_backend(backend)
+    |> Map.put("hosted_tools", hosted_tools)
+  end
+
+  defp build_tool_readiness(status_response) do
+    capability_refs =
+      status_response
+      |> extract_hosted_tool_capabilities()
+      |> ToolCapability.normalize_all()
+      |> ToolCapability.refs()
+
+    status_response
+    |> extract_hosted_tool_readiness()
+    |> ToolReadiness.normalize_all(capability_refs)
+    |> ToolReadiness.persist_all()
+  end
+
+  defp extract_hosted_tool_capabilities(%{hosted_tool_capabilities: entries})
+       when is_list(entries),
+       do: entries
+
+  defp extract_hosted_tool_capabilities(_status_response), do: []
+
+  defp extract_hosted_tool_readiness(%{hosted_tool_readiness: entries}) when is_list(entries),
+    do: entries
+
+  defp extract_hosted_tool_readiness(_status_response), do: []
+
+  defp maybe_put_worker_backend(capabilities, backend) do
+    if non_empty?(backend) do
+      Map.put(capabilities, "worker_backend", backend)
+    else
+      capabilities
+    end
   end
 
   # -- Transactional Observe --
