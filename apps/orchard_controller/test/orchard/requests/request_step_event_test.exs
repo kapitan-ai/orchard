@@ -44,7 +44,7 @@ defmodule Orchard.Requests.RequestStepEventTest do
            }
   end
 
-  test "new/1 accepts string-keyed reserved tool_execution indeterminate shapes" do
+  test "new/1 accepts valid terminal tool_execution indeterminate shapes" do
     attrs = %{
       "event_type" => "request_step.indeterminate",
       "step_id" => RequestStepEvent.tool_execution_step_id(2, "call_7", 3),
@@ -53,7 +53,11 @@ defmodule Orchard.Requests.RequestStepEventTest do
       "attempt" => 3,
       "parent_step_id" => RequestStepEvent.tool_call_step_id(2, "call_7"),
       "boundary" => "post_observation",
-      "result" => %{"indeterminate_reason" => "controller_restart"},
+      "result" => %{
+        "error_code" => "tool_execution_indeterminate_controller_restarted",
+        "error_message" => "Tool execution became indeterminate after the controller restarted",
+        "indeterminate_reason" => "controller_restarted"
+      },
       "call_id" => "call_7",
       "tool_name" => "lookup_weather",
       "arguments_json" => "{\"city\":\"Singapore\"}"
@@ -64,6 +68,117 @@ defmodule Orchard.Requests.RequestStepEventTest do
     assert step_event.event_type == "request_step.indeterminate"
     assert step_event.call_id == "call_7"
     assert step_event.parent_step_id == "tool_call:t2:ccall_7"
+  end
+
+  test "new/1 accepts tool_execution started rows only with pre_side_effect empty results" do
+    attrs =
+      tool_execution_step_attrs(%{
+        event_type: "request_step.started",
+        boundary: "pre_side_effect"
+      })
+
+    assert {:ok, step_event} = RequestStepEvent.new(attrs)
+    assert step_event.result == %{}
+  end
+
+  test "new/1 rejects tool_execution started rows with non-empty result payloads" do
+    attrs =
+      tool_execution_step_attrs(%{
+        event_type: "request_step.started",
+        boundary: "pre_side_effect",
+        result: %{"remote_execution_ref" => "exec_123"}
+      })
+
+    assert {:error, reason} = RequestStepEvent.new(attrs)
+    assert reason =~ "request_step.started result must be an empty map"
+  end
+
+  test "new/1 rejects tool_execution indeterminate rows without indeterminate_reason" do
+    attrs =
+      tool_execution_step_attrs(%{
+        event_type: "request_step.indeterminate",
+        result: %{
+          "error_code" => "tool_execution_indeterminate",
+          "error_message" => "Tool execution became indeterminate"
+        }
+      })
+
+    assert {:error, reason} = RequestStepEvent.new(attrs)
+    assert reason =~ "indeterminate outcomes require indeterminate_reason"
+  end
+
+  test "new/1 rejects non-completed tool_execution rows missing durable error fields" do
+    attrs =
+      tool_execution_step_attrs(%{
+        event_type: "request_step.failed",
+        result: %{"error_code" => "tool_execution_failed"}
+      })
+
+    assert {:error, reason} = RequestStepEvent.new(attrs)
+    assert reason =~ "tool_execution result requires non-empty error_message"
+  end
+
+  test "new/1 rejects tool_execution rows with whitespace-only durable error fields" do
+    attrs =
+      tool_execution_step_attrs(%{
+        event_type: "request_step.failed",
+        result: %{
+          "error_code" => "   ",
+          "error_message" => "Tool execution failed"
+        }
+      })
+
+    assert {:error, reason} = RequestStepEvent.new(attrs)
+    assert reason =~ "tool_execution result requires non-empty error_code"
+  end
+
+  test "new/1 rejects completed tool_execution rows that carry indeterminate_reason" do
+    attrs =
+      tool_execution_step_attrs(%{
+        event_type: "request_step.completed",
+        result: %{"indeterminate_reason" => "result_not_observed"}
+      })
+
+    assert {:error, reason} = RequestStepEvent.new(attrs)
+    assert reason =~ "only indeterminate outcomes may include indeterminate_reason"
+  end
+
+  test "new/1 rejects tool_execution result keys outside the contract" do
+    attrs =
+      tool_execution_step_attrs(%{
+        event_type: "request_step.failed",
+        result: %{
+          "error_code" => "tool_execution_failed",
+          "error_message" => "Tool execution failed",
+          "unexpected_key" => "oops"
+        }
+      })
+
+    assert {:error, reason} = RequestStepEvent.new(attrs)
+    assert reason =~ "contains unexpected keys"
+    assert reason =~ "unexpected_key"
+  end
+
+  test "new/1 rejects tool_execution result fields with blank optional refs" do
+    attrs =
+      tool_execution_step_attrs(%{
+        event_type: "request_step.completed",
+        result: %{"remote_execution_ref" => "   "}
+      })
+
+    assert {:error, reason} = RequestStepEvent.new(attrs)
+    assert reason =~ "remote_execution_ref must be a non-empty string when present"
+  end
+
+  test "new/1 rejects unsupported tool_execution event types" do
+    attrs =
+      tool_execution_step_attrs(%{
+        event_type: "request_step.proposed",
+        result: %{"error_code" => "not_allowed"}
+      })
+
+    assert {:error, reason} = RequestStepEvent.new(attrs)
+    assert reason =~ "tool_execution steps only support"
   end
 
   test "new/1 accepts valid RequestStepEvent structs and revalidates malformed ones" do
@@ -165,6 +280,35 @@ defmodule Orchard.Requests.RequestStepEventTest do
     assert reason =~ "must not include call_id"
   end
 
+  test "from_request_event!/1 fails loudly for malformed persisted tool_execution payloads" do
+    request_event = %RequestEvent{
+      request_id: Ecto.UUID.generate(),
+      seq: 5,
+      event_type: "request_step.indeterminate",
+      state: nil,
+      occurred_at: ~U[2026-04-12 08:30:00.000000Z],
+      payload: %{
+        "step_id" => RequestStepEvent.tool_execution_step_id(2, "call_7", 1),
+        "step_type" => "tool_execution",
+        "turn_index" => 2,
+        "attempt" => 1,
+        "parent_step_id" => RequestStepEvent.tool_call_step_id(2, "call_7"),
+        "boundary" => "post_observation",
+        "result" => %{
+          "error_code" => "tool_execution_indeterminate_result_not_observed",
+          "error_message" => "Tool execution result was not observed"
+        },
+        "call_id" => "call_7",
+        "tool_name" => "lookup_weather",
+        "arguments_json" => "{\"city\":\"Singapore\"}"
+      }
+    }
+
+    assert_raise ArgumentError, ~r/indeterminate outcomes require indeterminate_reason/, fn ->
+      RequestStepEvent.from_request_event!(request_event)
+    end
+  end
+
   test "from_request_event!/1 fails loudly for malformed persisted step payloads" do
     request_event = %RequestEvent{
       request_id: Ecto.UUID.generate(),
@@ -199,6 +343,25 @@ defmodule Orchard.Requests.RequestStepEventTest do
         parent_step_id: nil,
         boundary: "post_observation",
         result: %{}
+      },
+      overrides
+    )
+  end
+
+  defp tool_execution_step_attrs(overrides) do
+    Map.merge(
+      %{
+        event_type: "request_step.completed",
+        step_id: RequestStepEvent.tool_execution_step_id(2, "call_7", 1),
+        step_type: "tool_execution",
+        turn_index: 2,
+        attempt: 1,
+        parent_step_id: RequestStepEvent.tool_call_step_id(2, "call_7"),
+        boundary: "post_observation",
+        result: %{},
+        call_id: "call_7",
+        tool_name: "lookup_weather",
+        arguments_json: "{\"city\":\"Singapore\"}"
       },
       overrides
     )

@@ -37,7 +37,8 @@ defmodule Orchard.Tools do
     Repo.get_by(Tool, name: name, version: version)
   end
 
-  @spec fetch_tool_by_identity(String.t(), String.t()) :: {:ok, Tool.t() | nil} | {:error, :unavailable}
+  @spec fetch_tool_by_identity(String.t(), String.t()) ::
+          {:ok, Tool.t() | nil} | {:error, :unavailable}
   def fetch_tool_by_identity(name, version) do
     if repo_available?() do
       {:ok, Repo.get_by(Tool, name: name, version: version)}

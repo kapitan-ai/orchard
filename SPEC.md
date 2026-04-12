@@ -451,7 +451,68 @@ Each request-step payload SHALL carry:
 
 When applicable, payloads MAY also carry `call_id`, `tool_name`, `arguments_json`, `model_id`, and `model_version`.
 
-`tool_execution` steps and `request_step.indeterminate` are reserved valid durable shapes for later slices. This specification section only defines the persistence contract. It MUST NOT be interpreted as enabling controller-owned hosted `/v1/responses` tool-execution loops in the current slice.
+`tool_execution` steps and `request_step.indeterminate` remain future-facing shapes for later hosted-execution slices, but their durable outcome contract is now defined in §3.7.2. This persistence section MUST NOT be interpreted as enabling controller-owned hosted `/v1/responses` tool-execution loops in the current slice.
+
+### 3.7.2 Future tool-execution outcome taxonomy
+
+This subsection defines the controller-owned outcome contract for a later phased hosted-tool extension. It SHALL be used when Orchard persists or projects the result of a `tool_execution` step. It MUST NOT be interpreted as enabling controller-owned hosted `/v1/responses` execution in the current slice.
+
+Tool-execution outcome vocabulary is:
+
+* `completed`
+* `failed`
+* `cancelled`
+* `timed_out`
+* `indeterminate`
+
+`indeterminate` SHALL be first-class at the `tool_execution` request-step layer. Orchard SHALL use `indeterminate` when the controller cannot safely claim the final externally observable outcome of a tool attempt. Orchard SHALL NOT flatten `indeterminate` into generic failure at the request-step layer.
+
+Initial `indeterminate_reason` vocabulary is:
+
+* `controller_restarted`
+* `executor_unreachable`
+* `timeout_after_start`
+* `cancel_ack_missing`
+* `result_not_observed`
+
+Request-step mapping rules:
+
+* terminal hosted-tool outcomes SHALL persist with `step_type = "tool_execution"` and `boundary = "post_observation"`
+* `completed` SHALL map to `request_step.completed`
+* `failed` SHALL map to `request_step.failed`
+* `cancelled` SHALL map to `request_step.cancelled`
+* `timed_out` SHALL map to `request_step.timed_out`
+* `indeterminate` SHALL map to `request_step.indeterminate`
+* terminal `tool_execution` result maps MAY carry `remote_execution_ref` and `side_effect_anchor`
+* non-completed terminal `tool_execution` result maps SHALL carry `error_code` and `error_message`
+* `indeterminate` terminal `tool_execution` result maps SHALL additionally carry `indeterminate_reason`
+* `completed`, `failed`, `cancelled`, and `timed_out` terminal `tool_execution` result maps SHALL NOT carry `indeterminate_reason`
+
+Coarse request terminal mapping rules:
+
+* `requests.state` SHALL remain coarse in this slice; Orchard SHALL NOT add request-level `indeterminate`
+* future hosted controller flows SHALL derive detailed tool outcome truth from `request_step.*` rows rather than the request row
+* `failed` SHALL map to request terminal `state = :failed`
+* `cancelled` SHALL map to request terminal `state = :cancelled`
+* `timed_out` SHALL map to request terminal `state = :timed_out`
+* `indeterminate` SHALL map to request terminal `state = :failed` plus tool-execution-specific `error_code` and `error_message`
+
+Retryability rules are:
+
+* `completed` SHALL never auto-retry
+* `failed` MAY become manually retryable in a later slice only when no durable `side_effect_anchor` exists; this slice SHALL default controller helpers to no auto-retry
+* `cancelled` SHALL never auto-retry
+* `timed_out` SHALL never auto-retry
+* `indeterminate` SHALL never auto-retry
+
+Future `/v1/responses` terminal projection rules are:
+
+* these rules are reserved for the first hosted `/v1/responses` slice; current client-executed passthrough behavior remains unchanged
+* `failed` SHALL project to terminal status `"failed"`
+* `timed_out` SHALL project to terminal status `"failed"`
+* `cancelled` SHALL project to terminal status `"incomplete"` only when partial tool-related output or items were already surfaced; otherwise it SHALL project to `"failed"`
+* `indeterminate` SHALL project to terminal status `"incomplete"` only when partial tool-related output or items were already surfaced; otherwise it SHALL project to `"failed"`
+* `indeterminate` SHALL NEVER be surfaced as a successful completed tool result
 
 ### 3.8 Internal request lifecycle
 

@@ -19,6 +19,7 @@ defmodule Orchard.API.ResponsesController do
     ChatError,
     ResponsesOrchestrator,
     ResponsesSerializer,
+    ResponsesTerminalStatus,
     ToolCallAccumulator
   }
 
@@ -206,7 +207,12 @@ defmodule Orchard.API.ResponsesController do
         usage = state.usage
         error_map = build_error_map(event)
         function_call_items = tool_call_items(state, :incomplete)
-        status = failed_response_status(event, function_call_items)
+
+        status =
+          ResponsesTerminalStatus.inference_failed_status(
+            event,
+            partial_output_surfaced?: function_call_items != []
+          )
 
         state
         |> maybe_emit_output_done(canonical, output_text)
@@ -342,6 +348,12 @@ defmodule Orchard.API.ResponsesController do
 
     function_call_items = tool_call_items(state, :incomplete)
 
+    status =
+      ResponsesTerminalStatus.execute_error_status(
+        reason,
+        partial_output_surfaced?: function_call_items != []
+      )
+
     state
     |> maybe_emit_output_done(canonical, output_text)
     |> emit_event(
@@ -353,7 +365,7 @@ defmodule Orchard.API.ResponsesController do
         error_map,
         created,
         function_call_items,
-        "failed"
+        status
       )
     )
     |> then(& &1.conn)
@@ -431,20 +443,5 @@ defmodule Orchard.API.ResponsesController do
 
   defp tool_call_items(state, status) do
     ToolCallAccumulator.responses_output_items(state.tool_call_accumulator, status)
-  end
-
-  defp failed_response_status(event, function_call_items) do
-    if function_call_items != [] and incomplete_terminal?(event) do
-      "incomplete"
-    else
-      "failed"
-    end
-  end
-
-  defp incomplete_terminal?(event) do
-    case ChatError.from_failed_event(event).kind do
-      kind when kind in [:request_cancelled, :request_interrupted] -> true
-      _other -> false
-    end
   end
 end

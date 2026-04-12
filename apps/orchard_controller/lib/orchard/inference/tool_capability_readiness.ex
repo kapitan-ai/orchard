@@ -79,7 +79,10 @@ defmodule Orchard.Inference.ToolCapabilityReadiness do
   end
 
   @type error_reason ::
-          :tool_registry_unavailable | :tool_not_found | :tool_inactive | :tool_not_server_hostable
+          :tool_registry_unavailable
+          | :tool_not_found
+          | :tool_inactive
+          | :tool_not_server_hostable
 
   @spec list_candidates(String.t(), String.t(), keyword()) ::
           {:ok, [Candidate.t()]} | {:error, error_reason()}

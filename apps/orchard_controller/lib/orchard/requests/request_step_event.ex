@@ -3,6 +3,7 @@ defmodule Orchard.Requests.RequestStepEvent do
   Typed contract for `request_step.*` events persisted in `request_events`.
   """
 
+  alias Orchard.Inference.ToolExecutionOutcome
   alias Orchard.Requests.RequestEvent
 
   @step_event_types [
@@ -143,7 +144,8 @@ defmodule Orchard.Requests.RequestStepEvent do
              attempt: attempt,
              call_id: call_id
            }),
-         :ok <- validate_parent_step_id(step_type, parent_step_id) do
+         :ok <- validate_parent_step_id(step_type, parent_step_id),
+         :ok <- validate_step_payload(step_type, event_type, result) do
       {:ok,
        %__MODULE__{
          request_id: request_id,
@@ -340,6 +342,35 @@ defmodule Orchard.Requests.RequestStepEvent do
        when step_type in ["tool_call", "tool_execution"] do
     {:error, "#{step_type} steps require a parent_step_id"}
   end
+
+  defp validate_step_payload("tool_execution", "request_step.started", result) do
+    if result == %{} do
+      :ok
+    else
+      {:error, "tool_execution request_step.started result must be an empty map"}
+    end
+  end
+
+  defp validate_step_payload("tool_execution", event_type, result)
+       when event_type in [
+              "request_step.completed",
+              "request_step.failed",
+              "request_step.cancelled",
+              "request_step.timed_out",
+              "request_step.indeterminate"
+            ] do
+    case ToolExecutionOutcome.from_request_step_result(event_type, result) do
+      {:ok, _outcome} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp validate_step_payload("tool_execution", event_type, _result) do
+    {:error,
+     "tool_execution steps only support request_step.started, request_step.completed, request_step.failed, request_step.cancelled, request_step.timed_out, or request_step.indeterminate; got: #{inspect(event_type)}"}
+  end
+
+  defp validate_step_payload(_step_type, _event_type, _result), do: :ok
 
   defp normalize_top_level_attrs(attrs) do
     Enum.reduce_while(attrs, {:ok, %{}}, fn {key, value}, {:ok, acc} ->

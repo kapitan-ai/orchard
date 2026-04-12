@@ -4,7 +4,7 @@ defmodule Orchard.API.InferenceControllerSupport do
   import Phoenix.Controller, only: [json: 2]
   import Orchard.API.ErrorHelpers, only: [send_error: 5]
 
-  alias Orchard.Inference.ChatError
+  alias Orchard.Inference.{ChatError, ToolExecutionOutcome}
   alias Orchard.Requests.Idempotency
 
   @spec extract_caller_context(Plug.Conn.t()) :: keyword()
@@ -49,9 +49,21 @@ defmodule Orchard.API.InferenceControllerSupport do
   @spec send_execute_error(Plug.Conn.t(), term()) :: Plug.Conn.t()
   def send_execute_error(conn, reason) do
     reason
+    |> execute_error_mapping()
+    |> send_chat_error(conn)
+  end
+
+  @spec execute_error_mapping(term()) :: map()
+  def execute_error_mapping({:tool_execution_outcome, outcome_or_attrs}) do
+    outcome_or_attrs
+    |> ToolExecutionOutcome.api_error_mapping!()
+    |> normalize_tool_api_mapping()
+  end
+
+  def execute_error_mapping(reason) do
+    reason
     |> ChatError.from_execute_error()
     |> ChatError.api_mapping()
-    |> send_chat_error(conn)
   end
 
   @spec send_idempotency_error(Plug.Conn.t(), term()) :: Plug.Conn.t()
@@ -65,16 +77,39 @@ defmodule Orchard.API.InferenceControllerSupport do
     send_chat_error(mapping, conn)
   end
 
+  @spec sse_error_mapping(term()) :: map()
   def sse_error_mapping({:idempotency_conflict, reason}) do
     reason
     |> Idempotency.conflict_mapping()
     |> Map.delete(:status)
   end
 
-  def sse_error_mapping(reason) do
+  def sse_error_mapping(reason), do: execute_sse_mapping(reason)
+
+  @spec execute_sse_mapping(term()) :: map()
+  def execute_sse_mapping({:tool_execution_outcome, outcome_or_attrs}) do
+    outcome_or_attrs
+    |> ToolExecutionOutcome.sse_error_mapping!()
+    |> normalize_tool_sse_mapping()
+  end
+
+  def execute_sse_mapping(reason) do
     reason
     |> ChatError.from_execute_error()
     |> ChatError.sse_mapping()
+  end
+
+  @spec execute_terminal_attrs(term()) :: map()
+  def execute_terminal_attrs({:tool_execution_outcome, outcome_or_attrs}) do
+    outcome_or_attrs
+    |> ToolExecutionOutcome.terminal_attrs!()
+    |> normalize_tool_terminal_attrs()
+  end
+
+  def execute_terminal_attrs(reason) do
+    reason
+    |> ChatError.from_execute_error()
+    |> ChatError.terminal_attrs()
   end
 
   defp maybe_build_idempotency_context(_tenant_id, nil, _params), do: {:ok, nil}
@@ -89,4 +124,29 @@ defmodule Orchard.API.InferenceControllerSupport do
       code: mapping.code
     )
   end
+
+  defp normalize_tool_api_mapping(:not_an_error) do
+    raise ArgumentError,
+          "completed tool outcomes do not map through execute_error_mapping/1"
+  end
+
+  defp normalize_tool_api_mapping(mapping) do
+    Map.put_new(mapping, :param, nil)
+  end
+
+  defp normalize_tool_sse_mapping(:not_an_error) do
+    raise ArgumentError,
+          "completed tool outcomes do not map through execute_sse_mapping/1"
+  end
+
+  defp normalize_tool_sse_mapping(mapping) do
+    Map.put_new(mapping, :param, nil)
+  end
+
+  defp normalize_tool_terminal_attrs(:not_terminal) do
+    raise ArgumentError,
+          "completed tool outcomes do not map through execute_terminal_attrs/1"
+  end
+
+  defp normalize_tool_terminal_attrs(terminal_attrs), do: terminal_attrs
 end

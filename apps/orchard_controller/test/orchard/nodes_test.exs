@@ -143,7 +143,9 @@ defmodule Orchard.NodesTest do
         Node.changeset(
           %Node{},
           node_attrs(%{
-            capabilities: %{"hosted_tools" => [hosted_tool_capability("lookup_docs", "2026-04-11")]},
+            capabilities: %{
+              "hosted_tools" => [hosted_tool_capability("lookup_docs", "2026-04-11")]
+            },
             tool_readiness: %{
               ref => %{"ready" => "yes", "status_code" => "ok", "status_message" => "ready"}
             }
@@ -161,7 +163,9 @@ defmodule Orchard.NodesTest do
         Node.changeset(
           %Node{},
           node_attrs(%{
-            capabilities: %{"hosted_tools" => [hosted_tool_capability("lookup_docs", "2026-04-11")]},
+            capabilities: %{
+              "hosted_tools" => [hosted_tool_capability("lookup_docs", "2026-04-11")]
+            },
             tool_readiness: %{
               ref => %{ready: true, status_code: "ok", status_message: "ready"}
             }

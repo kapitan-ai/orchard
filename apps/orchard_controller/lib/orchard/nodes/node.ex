@@ -100,7 +100,11 @@ defmodule Orchard.Nodes.Node do
         changeset
 
       true ->
-        add_error(changeset, :tool_readiness, "must reference hosted tools with valid readiness payloads")
+        add_error(
+          changeset,
+          :tool_readiness,
+          "must reference hosted tools with valid readiness payloads"
+        )
     end
   end
 

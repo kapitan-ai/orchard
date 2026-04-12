@@ -702,6 +702,134 @@ defmodule Orchard.API.ResponsesControllerTest do
            ]
   end
 
+  test "streaming interrupted partial tool calls remain incomplete in the terminal payload" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        InferenceEvent.accepted(1_710_000_123_000),
+        tool_call_event("call_0", %{
+          index: 0,
+          type: "function",
+          function: %{name: "lookup_weather", arguments_delta: "{\"city\":\"Sing"}
+        }),
+        InferenceEvent.failed("request_caller_disconnect", "caller exited", false)
+      ],
+      execute: {:ok, stub_responses_canonical(true), []}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    events = parse_typed_sse_events(conn)
+    assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+    terminal = List.last(events)
+    assert terminal.type == "response.failed"
+    assert terminal.data["response"]["status"] == "incomplete"
+
+    assert terminal.data["response"]["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => "{\"city\":\"Sing",
+               "status" => "incomplete"
+             }
+           ]
+  end
+
+  test "streaming tagged tool-outcome cancellation stays incomplete during fallback finalization" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        InferenceEvent.accepted(1_710_000_123_000),
+        tool_call_event("call_0", %{
+          index: 0,
+          type: "function",
+          function: %{name: "lookup_weather", arguments_delta: "{\"city\":\"Sing"}
+        })
+      ],
+      execute: {:error, {:tool_execution_outcome, %{status: :cancelled}}}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    events = parse_typed_sse_events(conn)
+    assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+    terminal = List.last(events)
+    assert terminal.type == "response.failed"
+    assert terminal.data["response"]["status"] == "incomplete"
+    assert terminal.data["response"]["error"]["code"] == "tool_execution_cancelled"
+    assert terminal.data["response"]["error"]["message"] == "Tool execution was cancelled"
+
+    assert terminal.data["response"]["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => "{\"city\":\"Sing",
+               "status" => "incomplete"
+             }
+           ]
+  end
+
+  test "streaming generic execute errors remain failed during fallback finalization even with partial tool calls" do
+    stub_responses_orchestrator(
+      prepare: {:ok, stub_responses_canonical(true), %{}},
+      events: [
+        InferenceEvent.accepted(1_710_000_123_000),
+        tool_call_event("call_0", %{
+          index: 0,
+          type: "function",
+          function: %{name: "lookup_weather", arguments_delta: "{\"city\":\"Sing"}
+        })
+      ],
+      execute: {:error, {:terminal_persist_failed, :boom}}
+    )
+
+    conn =
+      post_responses(%{
+        "model" => "stub-tool-model@v1",
+        "input" => "hello",
+        "stream" => true
+      })
+
+    assert conn.status == 200
+    events = parse_typed_sse_events(conn)
+    assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+    terminal = List.last(events)
+    assert terminal.type == "response.failed"
+    assert terminal.data["response"]["status"] == "failed"
+    assert terminal.data["response"]["error"]["code"] == "internal_error"
+    assert terminal.data["response"]["error"]["message"] == "Internal error"
+
+    assert terminal.data["response"]["output"] == [
+             %{
+               "type" => "function_call",
+               "id" => "call_0",
+               "call_id" => "call_0",
+               "name" => "lookup_weather",
+               "arguments" => "{\"city\":\"Sing",
+               "status" => "incomplete"
+             }
+           ]
+  end
+
   test "malformed post-start tool-call delta emits typed response.failed and no output_text.done" do
     stub_responses_orchestrator(
       prepare: {:ok, stub_responses_canonical(true), %{}},

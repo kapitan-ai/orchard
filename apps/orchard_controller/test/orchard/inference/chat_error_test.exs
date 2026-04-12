@@ -1,6 +1,7 @@
 defmodule Orchard.Inference.ChatErrorTest do
   use ExUnit.Case, async: true
 
+  alias Orchard.API.InferenceControllerSupport
   alias Orchard.Inference.{ChatError, ModelLoadFailure}
   alias Orchard.InferenceEvent
 
@@ -237,6 +238,75 @@ defmodule Orchard.Inference.ChatErrorTest do
              http_status: 500,
              error_code: "orchestration_error",
              error_message: "{:terminal_persist_failed, :boom}"
+           }
+  end
+
+  test "controller support can map future tool execution outcomes without overloading ChatError" do
+    reason =
+      {:tool_execution_outcome,
+       %{
+         status: :indeterminate,
+         error_code: "tool_execution_indeterminate_result_not_observed",
+         error_message: "Tool execution result was not observed",
+         indeterminate_reason: :result_not_observed
+       }}
+
+    assert InferenceControllerSupport.execute_error_mapping(reason) == %{
+             status: :internal_server_error,
+             type: "server_error",
+             code: "tool_execution_indeterminate_result_not_observed",
+             message: "Tool execution result was not observed",
+             param: nil
+           }
+
+    assert InferenceControllerSupport.sse_error_mapping(reason) == %{
+             type: "server_error",
+             code: "tool_execution_indeterminate_result_not_observed",
+             message: "Tool execution result was not observed",
+             param: nil
+           }
+  end
+
+  test "controller support keeps existing inference execute mapping behavior unchanged" do
+    assert InferenceControllerSupport.execute_error_mapping({:terminal_persist_failed, :boom}) ==
+             %{
+               status: :internal_server_error,
+               type: "api_error",
+               code: "internal_error",
+               message: "Internal error: {:terminal_persist_failed, :boom}",
+               param: nil
+             }
+
+    assert InferenceControllerSupport.sse_error_mapping({:terminal_persist_failed, :boom}) == %{
+             type: "server_error",
+             code: "internal_error",
+             message: "Internal error",
+             param: nil
+           }
+
+    assert InferenceControllerSupport.execute_terminal_attrs({:terminal_persist_failed, :boom}) ==
+             %{
+               state: :failed,
+               http_status: 500,
+               error_code: "orchestration_error",
+               error_message: "{:terminal_persist_failed, :boom}"
+             }
+  end
+
+  test "controller support stages terminal attrs for future tool execution outcomes distinctly" do
+    reason =
+      {:tool_execution_outcome,
+       %{
+         status: :timed_out,
+         error_code: "tool_execution_timed_out",
+         error_message: "Tool execution timed out"
+       }}
+
+    assert InferenceControllerSupport.execute_terminal_attrs(reason) == %{
+             state: :timed_out,
+             http_status: 504,
+             error_code: "tool_execution_timed_out",
+             error_message: "Tool execution timed out"
            }
   end
 end
