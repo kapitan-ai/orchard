@@ -166,7 +166,22 @@ The bundle persists only the extracted certificate pair:
 - `machine_certificate`
 
 Orchard does **not** persist Keygen JSON envelopes as runtime state, and Orchard
-hosts do **not** require a shipped Keygen admin token.
+hosts do **not** require or support a shipped Keygen admin token.
+
+### Activation workflow
+
+Activate a license with the packaged CLI:
+
+```bash
+sudo orchardctl license activate <key>
+```
+
+Activation uses the stable Orchard node ID as the machine fingerprint, performs
+Keygen validation + checkout, extracts the plaintext certificate pair, verifies
+that pair offline, and installs it atomically into `current.json`.
+
+If activation fails after a bundle already exists, Orchard keeps the previous
+local bundle untouched.
 
 Orchard ships the Keygen account ID, public verification key, and default API
 base URL as product config. Operators do **not** need to set
@@ -176,18 +191,31 @@ Orchard-directed alternate environments and debugging only. If you override the
 account ID or public key, keep them as a matching pair or activation/offline
 verification will fail.
 
+### Status and observation workflow
+
+- `orchardctl license status` inspects only local Orchard licensing state.
+- `orchardctl status` renders the controller's additive health payload when the
+  `"license"` block is present.
+- Controller `/health/ready` exposes license state for observation, but remains
+  **non-gating** — it does not change readiness semantics or HTTP status.
+
+### Licensing environment variables
+
+| Variable | Default | Intended use |
+|----------|---------|--------------|
+| `ORCHARD_LICENSE_ENFORCEMENT` | `warn` | Node-agent startup-only mode: `off`, `warn`, or `hard` (typically set in `node-agent.env`) |
+| `ORCHARD_LICENSE_BUNDLE_PATH` | `/Library/Application Support/Orchard/config/licensing/current.json` | Rare Orchard-directed override for alternate support-root layouts or debugging |
+| `ORCHARD_NODE_IDENTITY_PATH` | `/Library/Application Support/Orchard/data/node-id` | Rare override when Orchard support-root layout is intentionally changed |
+| `ORCHARD_KEYGEN_API_BASE_URL` | `https://api.keygen.sh` | Optional Orchard-directed override for alternate provider environments |
+| `ORCHARD_KEYGEN_ACCOUNT_ID` | built-in Orchard Keygen account ID | Optional override; keep paired with matching public key |
+| `ORCHARD_KEYGEN_PUBLIC_KEY` | built-in Orchard Ed25519 verification key | Optional override; keep paired with matching account ID |
+
 No Orchard host runtime requires or supports a shipped
 `ORCHARD_KEYGEN_ADMIN_TOKEN` dependency.
 
 ### Node-agent startup enforcement
 
-Licensing enforcement is **startup-only** for the packaged node-agent. The
-controller `/health/ready` payload exposes license state for observation, but it
-remains **non-gating** — it does not change readiness semantics or HTTP status.
-
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `ORCHARD_LICENSE_ENFORCEMENT` | `warn` | `off`, `warn`, or `hard` (set in `node-agent.env`) |
+Licensing enforcement is **startup-only** for the packaged node-agent.
 
 Mode behavior:
 - `off` — skip startup enforcement entirely
@@ -199,15 +227,25 @@ Mode behavior:
 v0 should roll out to design partners in **warn-first** mode. Keep packaged prod
 on `warn` until real packaged-host smoke is complete.
 
-### Rollback
+### Rollback / reset
 
-To remove runtime impact quickly, set:
+To remove runtime licensing impact quickly, set:
 
 ```bash
 ORCHARD_LICENSE_ENFORCEMENT=off
 ```
 
 Then restart the node-agent service.
+
+If you need to intentionally reset Orchard back to `missing_bundle`, remove the
+local bundle file:
+
+```bash
+sudo rm '/Library/Application Support/Orchard/config/licensing/current.json'
+```
+
+Do this only when you explicitly want Orchard to forget the current local
+license state.
 
 ### Confidence caveat
 

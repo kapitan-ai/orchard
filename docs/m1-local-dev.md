@@ -475,14 +475,52 @@ bundle-path validation rejects symlinks that resolve outside the bundle root.
 
 ## Licensing v0 notes
 
-- Source dev and test default `ORCHARD_LICENSE_ENFORCEMENT` to `off`.
-- Packaged prod defaults to `warn` for a warn-first rollout.
-- Enforcement is **startup-only** on the node-agent in v0.
-- Controller `/health/ready` exposes license state for observation only; it does
-  **not** gate readiness or change readiness reasons.
-- The local Orchard-owned bundle path is `<support_root>/config/licensing/current.json`.
-- Packaged-host confidence still depends on the real-host smoke tracked in
-  `orchard-workbench/todos/active/todo-orchardctl-start-stop.md`.
+### Contract
+
+- Orchard persists one Orchard-owned local bundle at
+  `<support_root>/config/licensing/current.json`.
+- The bundle stores only the extracted certificate pair:
+  - `license_certificate`
+  - `machine_certificate`
+- `orchardctl license activate <key>` uses the stable Orchard node ID as the
+  machine fingerprint, checks out both certificates, verifies them offline, and
+  installs the pair atomically.
+- Failed activation keeps the previous local bundle untouched.
+- Orchard does **not** persist Keygen JSON envelopes as runtime state and does
+  **not** ship a Keygen admin token dependency.
+
+### Observation surfaces
+
+- `orchardctl license status` inspects only local licensing state; it does not
+  contact the controller.
+- Controller `/health/ready` exposes license state for observation only; it
+  remains **non-gating** and does not change readiness reasons or HTTP status.
+- `orchardctl status` renders the controller's additive license payload when it
+  is present.
+
+### Licensing environment variables
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev/test) / `warn` (packaged prod) | Startup-only node-agent mode: `off`, `warn`, `hard` |
+| `ORCHARD_LICENSE_BUNDLE_PATH` | `<support_root>/config/licensing/current.json` | Rare override for Orchard-directed alternate layouts/debugging |
+| `ORCHARD_NODE_IDENTITY_PATH` | `<support_root>/data/node-id` | Override only when Orchard support-root layout is intentionally changed |
+| `ORCHARD_KEYGEN_API_BASE_URL` | `https://api.keygen.sh` | Optional override for Orchard-directed alternate environments |
+| `ORCHARD_KEYGEN_ACCOUNT_ID` | built-in Orchard Keygen account ID | Optional override; keep paired with matching public key |
+| `ORCHARD_KEYGEN_PUBLIC_KEY` | built-in Orchard Ed25519 verification key | Optional override; keep paired with matching account ID |
+
+### Rollout and rollback posture
+
+- Packaged prod defaults to `warn` for a warn-first rollout to design partners.
+- Enforcement remains **startup-only** on the node-agent in v0.
+- To remove runtime licensing impact quickly, set
+  `ORCHARD_LICENSE_ENFORCEMENT=off` and restart the node-agent (or the dev app
+  process when validating from source).
+
+### Confidence caveat
+
+Packaged-host confidence still depends on the real-host smoke tracked in
+`orchard-workbench/todos/active/todo-orchardctl-start-stop.md`.
 
 ## Rollback Procedure
 
