@@ -32,7 +32,7 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
 
   # ── Service Definitions ─────────────────────────────────────────────
 
-  @doc false
+  @doc "Returns Orchard launchd services in start or stop order for the current runtime."
   def services(direction, runtime) when direction in [:start, :stop] do
     configured = Map.get(runtime, :services)
 
@@ -51,7 +51,7 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
 
   # ── Root Check ─────────────────────────────────────────────────────
 
-  @doc false
+  @doc "Validates that the current runtime has root privileges for lifecycle commands."
   def require_root(command, runtime) do
     uid_fn = Map.get(runtime, :uid, &default_uid/0)
 
@@ -66,14 +66,14 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
 
   # ── Plist Detection ────────────────────────────────────────────────
 
-  @doc false
+  @doc "Returns packaged plist paths that are neither present on disk nor already loaded."
   def missing_plists(runtime) do
     services(:start, runtime)
     |> Enum.reject(fn svc -> plist_exists?(svc, runtime) or service_loaded?(svc, runtime) end)
     |> Enum.map(& &1.plist_path)
   end
 
-  @doc false
+  @doc "Returns whether any Orchard packaged plist exists for the current runtime."
   def any_plist_exists?(runtime) do
     file_regular? = Map.get(runtime, :file_regular?, &File.regular?/1)
     services = Map.get(runtime, :services, @all_services)
@@ -95,7 +95,7 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
 
   # ── Service State Detection ─────────────────────────────────────────
 
-  @doc false
+  @doc "Checks whether a launchd service is currently loaded."
   def service_loaded?(svc, runtime) do
     cmd_fn = Map.get(runtime, :cmd, &default_cmd/3)
 
@@ -107,54 +107,83 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
 
   # ── Idempotent Start/Stop ───────────────────────────────────────────
 
-  @doc false
+  @doc "Ensures a service is started, preserving idempotent and race-safe launchctl semantics."
   def ensure_started(svc, runtime) do
     if service_loaded?(svc, runtime) do
       {:already_running, svc}
     else
-      cmd_fn = Map.get(runtime, :cmd, &default_cmd/3)
-
-      case cmd_fn.("launchctl", ["bootstrap", "system", svc.plist_path], stderr_to_stdout: true) do
-        {_output, 0} ->
-          {:started, svc}
-
-        {output, code} ->
-          # Race: someone else may have started it between our check and bootstrap
-          if service_loaded?(svc, runtime) do
-            {:already_running, svc}
-          else
-            {:error,
-             "Error: failed to start #{svc.display_name} (#{svc.label}).\n" <>
-               format_launchctl_detail(output, code) <>
-               "\nCheck: /Library/Application Support/Orchard/logs/", 1}
-          end
-      end
+      bootstrap_service(svc, runtime)
     end
   end
 
-  @doc false
+  @doc "Ensures a service is stopped, preserving idempotent and race-safe launchctl semantics."
   def ensure_stopped(svc, runtime) do
-    if not service_loaded?(svc, runtime) do
-      {:already_stopped, svc}
+    if service_loaded?(svc, runtime) do
+      bootout_service(svc, runtime)
     else
-      cmd_fn = Map.get(runtime, :cmd, &default_cmd/3)
-
-      case cmd_fn.("launchctl", ["bootout", "system/#{svc.label}"], stderr_to_stdout: true) do
-        {_output, 0} ->
-          {:stopped, svc}
-
-        {output, code} ->
-          # Race: service may have exited between our check and bootout
-          if not service_loaded?(svc, runtime) do
-            {:already_stopped, svc}
-          else
-            {:error,
-             "Error: failed to stop #{svc.display_name} (#{svc.label}).\n" <>
-               format_launchctl_detail(output, code) <>
-               "\nTry: sudo launchctl bootout system/#{svc.label}", 1}
-          end
-      end
+      {:already_stopped, svc}
     end
+  end
+
+  defp bootstrap_service(svc, runtime) do
+    case run_launchctl(runtime, ["bootstrap", "system", svc.plist_path]) do
+      {_output, 0} ->
+        {:started, svc}
+
+      {output, code} ->
+        start_failure_result(svc, runtime, output, code)
+    end
+  end
+
+  defp bootout_service(svc, runtime) do
+    case run_launchctl(runtime, ["bootout", "system/#{svc.label}"]) do
+      {_output, 0} ->
+        {:stopped, svc}
+
+      {output, code} ->
+        stop_failure_result(svc, runtime, output, code)
+    end
+  end
+
+  defp start_failure_result(svc, runtime, output, code) do
+    if service_loaded?(svc, runtime) do
+      {:already_running, svc}
+    else
+      {:error,
+       lifecycle_error_message(
+         "start",
+         svc,
+         output,
+         code,
+         "Check: /Library/Application Support/Orchard/logs/"
+       ), 1}
+    end
+  end
+
+  defp stop_failure_result(svc, runtime, output, code) do
+    if service_loaded?(svc, runtime) do
+      {:error,
+       lifecycle_error_message(
+         "stop",
+         svc,
+         output,
+         code,
+         "Try: sudo launchctl bootout system/#{svc.label}"
+       ), 1}
+    else
+      {:already_stopped, svc}
+    end
+  end
+
+  defp lifecycle_error_message(action, svc, output, code, guidance) do
+    "Error: failed to #{action} #{svc.display_name} (#{svc.label}).\n" <>
+      format_launchctl_detail(output, code) <>
+      "\n" <> guidance
+  end
+
+  defp run_launchctl(runtime, args) do
+    cmd_fn = Map.get(runtime, :cmd, &default_cmd/3)
+    cmd_fn.("launchctl", args, stderr_to_stdout: true)
   end
 
   # ── Defaults ──────────────────────────────────────────────────────

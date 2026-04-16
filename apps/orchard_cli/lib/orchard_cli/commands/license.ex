@@ -230,14 +230,15 @@ defmodule OrchardCLI.Commands.License do
   end
 
   defp ensure_machine(runtime, config, license_key, license_id, fingerprint) do
-    with {:ok, machine_id} <-
-           lookup_existing_machine_id(runtime, config, license_key, fingerprint) do
-      case machine_id do
-        nil -> activate_machine(runtime, config, license_key, license_id, fingerprint)
-        _id -> {:ok, machine_id}
-      end
-    else
-      {:error, {:activation, _message}} = error -> error
+    case lookup_existing_machine_id(runtime, config, license_key, fingerprint) do
+      {:ok, nil} ->
+        activate_machine(runtime, config, license_key, license_id, fingerprint)
+
+      {:ok, machine_id} ->
+        {:ok, machine_id}
+
+      {:error, {:activation, _message}} = error ->
+        error
     end
   end
 
@@ -351,33 +352,60 @@ defmodule OrchardCLI.Commands.License do
          fingerprint,
          seen_urls
        ) do
+    with {:ok, seen_urls} <- track_machine_lookup_url(seen_urls, url),
+         {:ok, response} <- perform_request(runtime, request, :activation, "machine lookup"),
+         :ok <- ensure_success_status(response, "machine lookup", :activation),
+         {:ok, body} <- decode_json_body(response.body, "machine lookup", :activation) do
+      continue_machine_lookup(body, runtime, license_key, fingerprint, seen_urls)
+    end
+  end
+
+  defp continue_machine_lookup(body, runtime, license_key, fingerprint, seen_urls) do
+    with {:ok, machine_id} <- existing_machine_id(body, fingerprint),
+         {:ok, next_url} <- next_machine_page_url(body) do
+      finish_machine_lookup(machine_id, next_url, runtime, license_key, fingerprint, seen_urls)
+    end
+  end
+
+  defp finish_machine_lookup(
+         machine_id,
+         _next_url,
+         _runtime,
+         _license_key,
+         _fingerprint,
+         _seen_urls
+       )
+       when is_binary(machine_id) and machine_id != "" do
+    {:ok, machine_id}
+  end
+
+  defp finish_machine_lookup(_machine_id, next_url, runtime, license_key, fingerprint, seen_urls)
+       when is_binary(next_url) and next_url != "" do
+    do_lookup_existing_machine_id(
+      runtime,
+      machine_page_request(next_url, license_key),
+      license_key,
+      fingerprint,
+      seen_urls
+    )
+  end
+
+  defp finish_machine_lookup(
+         _machine_id,
+         _next_url,
+         _runtime,
+         _license_key,
+         _fingerprint,
+         _seen_urls
+       ) do
+    {:ok, nil}
+  end
+
+  defp track_machine_lookup_url(seen_urls, url) do
     if MapSet.member?(seen_urls, url) do
       {:error, {:activation, "Malformed response from machine lookup."}}
     else
-      seen_urls = MapSet.put(seen_urls, url)
-
-      with {:ok, response} <- perform_request(runtime, request, :activation, "machine lookup"),
-           :ok <- ensure_success_status(response, "machine lookup", :activation),
-           {:ok, body} <- decode_json_body(response.body, "machine lookup", :activation),
-           {:ok, machine_id} <- existing_machine_id(body, fingerprint),
-           {:ok, next_url} <- next_machine_page_url(body) do
-        cond do
-          is_binary(machine_id) and machine_id != "" ->
-            {:ok, machine_id}
-
-          is_binary(next_url) and next_url != "" ->
-            do_lookup_existing_machine_id(
-              runtime,
-              machine_page_request(next_url, license_key),
-              license_key,
-              fingerprint,
-              seen_urls
-            )
-
-          true ->
-            {:ok, nil}
-        end
-      end
+      {:ok, MapSet.put(seen_urls, url)}
     end
   end
 

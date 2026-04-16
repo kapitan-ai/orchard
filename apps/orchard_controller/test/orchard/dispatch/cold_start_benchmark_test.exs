@@ -18,14 +18,22 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
 
   import ExUnit.CaptureLog
 
+  @benchmark_env_var "ORCHARD_MLX_BENCH_MODEL_PATH"
+  @benchmark_skip_reason "Set #{@benchmark_env_var} to run MLX cold-start benchmark"
+  @benchmark_model_path System.get_env(@benchmark_env_var)
+
+  if is_nil(@benchmark_model_path) do
+    @moduletag skip: @benchmark_skip_reason
+  end
+
   alias Orchard.ArtifactBundle
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest}
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.Inference
   alias Orchard.Node.ModelManager
 
-  # Runtime gating: always compile, skip at runtime if env var missing
-  # This avoids compile-time fragility with MIX_ENV=benchmark
+  # Env-var gating: keep the file loadable, but skip the module cleanly when the
+  # benchmark bundle path is not provided on direct invocation.
 
   # Prompt classes: approximate token counts (actual depends on tokenizer)
   @prompt_classes [
@@ -35,9 +43,9 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
   ]
 
   setup_all do
-    case System.get_env("ORCHARD_MLX_BENCH_MODEL_PATH") do
+    case @benchmark_model_path do
       nil ->
-        {:skip, "Set ORCHARD_MLX_BENCH_MODEL_PATH to run MLX cold-start benchmark"}
+        :ok
 
       path ->
         # Reset node-agent state to ensure cold start
@@ -72,7 +80,6 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
     test "runs cold/warm dispatches for all prompt classes", %{bundle: bundle} do
       model_id = bundle.manifest_data["model_id"]
       version = bundle.manifest_data["version"]
-      model_load = model_load_request(bundle, model_id, version)
 
       IO.puts("")
       IO.puts(String.duplicate("=", 70))
@@ -142,7 +149,7 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
       {log, result} = run_dispatch(bundle, model_id, version, prompt, 1)
 
       assert {:ok, events} = result
-      assert length(events) >= 1
+      assert events != []
 
       # Actually parse the log and verify required fields are present
       timing = parse_dispatch_timing(log)
@@ -207,7 +214,8 @@ defmodule Orchard.Dispatch.ColdStartBenchmarkTest do
 
   defp parse_dispatch_timing(log_text) do
     # Parse dispatch_timing log line like:
-    # dispatch_timing request_id=X model_id=X version=X input_tokens=N model_already_loaded=true/false ...
+    # dispatch_timing request_id=X model_id=X version=X input_tokens=N
+    # model_already_loaded=true/false ...
     dispatch_line =
       log_text
       |> String.split("\n")

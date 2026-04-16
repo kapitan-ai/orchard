@@ -39,7 +39,7 @@ defmodule OrchardCLI.Commands.Status do
     end
   end
 
-  @doc false
+  @doc "Builds a structured status snapshot for the current Orchard controller probe."
   @spec snapshot(map()) :: map()
   def snapshot(runtime \\ default_runtime()) do
     version = Map.get(runtime, :version, fn -> Orchard.version() end).()
@@ -88,7 +88,7 @@ defmodule OrchardCLI.Commands.Status do
     end
   end
 
-  @doc false
+  @doc "Renders a human-readable status banner from a previously built snapshot."
   @spec render_snapshot(map()) :: String.t()
   def render_snapshot(%{state: :offline} = snap) do
     render_offline_banner(snap.display_version, snap.display_url)
@@ -109,26 +109,41 @@ defmodule OrchardCLI.Commands.Status do
     |> Enum.reduce_while(
       %{display_url: display_url, invalid_response: nil, saw_unreachable?: false},
       fn candidate, acc ->
-        url = candidate.base_url <> "/health/ready"
-        opts = build_request_opts(candidate)
-
-        case request_fn.(url, opts) do
-          {:ok, %{status: status, body: body}} when status in 200..599 ->
-            case decode_health_response(body) do
-              {:ok, parsed} ->
-                {:halt, {:ok, candidate.base_url, parsed}}
-
-              {:error, reason} ->
-                invalid_response = acc.invalid_response || {candidate.base_url, reason}
-                {:cont, %{acc | invalid_response: invalid_response}}
-            end
-
-          _ ->
-            {:cont, %{acc | saw_unreachable?: true}}
-        end
+        candidate
+        |> probe_candidate(request_fn)
+        |> reduce_probe_candidate(candidate, acc)
       end
     )
     |> finalize_probe_result()
+  end
+
+  defp probe_candidate(candidate, request_fn) do
+    url = candidate.base_url <> "/health/ready"
+    opts = build_request_opts(candidate)
+
+    case request_fn.(url, opts) do
+      {:ok, %{status: status, body: body}} when status in 200..599 ->
+        case decode_health_response(body) do
+          {:ok, parsed} -> {:ok, parsed}
+          {:error, reason} -> {:invalid_response, reason}
+        end
+
+      _other ->
+        :unreachable
+    end
+  end
+
+  defp reduce_probe_candidate({:ok, parsed}, candidate, _acc) do
+    {:halt, {:ok, candidate.base_url, parsed}}
+  end
+
+  defp reduce_probe_candidate({:invalid_response, reason}, candidate, acc) do
+    invalid_response = acc.invalid_response || {candidate.base_url, reason}
+    {:cont, %{acc | invalid_response: invalid_response}}
+  end
+
+  defp reduce_probe_candidate(:unreachable, _candidate, acc) do
+    {:cont, %{acc | saw_unreachable?: true}}
   end
 
   defp finalize_probe_result({:ok, _base_url, _body} = success), do: success
@@ -212,50 +227,58 @@ defmodule OrchardCLI.Commands.Status do
   end
 
   defp build_details(body, status_label) do
-    runtime = body["runtime"]
+    runtime_details =
+      body
+      |> Map.get("runtime")
+      |> runtime_detail_string()
 
-    cond do
-      # No runtime block or not a map (malformed payload)
-      not is_map(runtime) ->
-        detail_suffix(status_label, body["reason"], "runtime unavailable")
+    detail_suffix(status_label, body["reason"], runtime_details)
+  end
 
-      # Runtime probe itself failed (timeout, error, etc.)
-      runtime["status"] != "ok" ->
-        runtime_detail = "runtime #{runtime["status"] || "unavailable"}"
-        detail_suffix(status_label, body["reason"], runtime_detail)
+  defp runtime_detail_string(runtime) when not is_map(runtime), do: "runtime unavailable"
 
-      # Runtime is ok — build full detail string
-      true ->
-        parts = []
+  defp runtime_detail_string(%{"status" => "ok"} = runtime) do
+    runtime
+    |> runtime_ok_parts()
+    |> Enum.join(", ")
+  end
 
-        # Node presence
-        parts =
-          if runtime["node_id"],
-            do: parts ++ ["1 node"],
-            else: parts ++ ["0 nodes"]
+  defp runtime_detail_string(runtime) do
+    "runtime #{runtime["status"] || "unavailable"}"
+  end
 
-        # Worker state
-        worker = runtime["worker_state"]
-        parts = if worker, do: parts ++ [worker], else: parts
+  defp runtime_ok_parts(runtime) do
+    [
+      runtime_node_detail(runtime),
+      runtime_worker_detail(runtime),
+      runtime_model_detail(runtime),
+      runtime_health_detail(runtime)
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
 
-        # Model count
-        counts = runtime["counts"]
-        model_count = if is_map(counts), do: counts["loaded_models"] || 0, else: 0
+  defp runtime_node_detail(runtime) do
+    if runtime["node_id"], do: "1 node", else: "0 nodes"
+  end
 
-        model_text =
-          if model_count == 1, do: "1 model loaded", else: "#{model_count} models loaded"
+  defp runtime_worker_detail(runtime), do: runtime["worker_state"]
 
-        parts = parts ++ [model_text]
+  defp runtime_model_detail(runtime) do
+    count = loaded_model_count(runtime)
+    if count == 1, do: "1 model loaded", else: "#{count} models loaded"
+  end
 
-        # Runtime health (surface degraded/unhealthy when different from system status)
-        health = runtime["health"]
+  defp loaded_model_count(runtime) do
+    case runtime["counts"] do
+      %{} = counts -> counts["loaded_models"] || 0
+      _other -> 0
+    end
+  end
 
-        parts =
-          if health in ["degraded", "unhealthy"],
-            do: parts ++ ["health: #{health}"],
-            else: parts
-
-        detail_suffix(status_label, body["reason"], Enum.join(parts, ", "))
+  defp runtime_health_detail(runtime) do
+    case runtime["health"] do
+      health when health in ["degraded", "unhealthy"] -> "health: #{health}"
+      _other -> nil
     end
   end
 

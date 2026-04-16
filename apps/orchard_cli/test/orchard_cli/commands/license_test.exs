@@ -425,106 +425,83 @@ defmodule OrchardCLI.Commands.LicenseTest do
   end
 
   defp existing_machine_request(req) do
-    record_request(req)
-
-    case request_signature(req) do
-      {:post, url} ->
-        cond do
-          url == validation_url() ->
-            {:ok,
-             %{status: 200, body: %{"data" => %{"id" => "lic_123"}, "meta" => %{"valid" => true}}}}
-
-          url == license_checkout_url("lic_123") ->
-            {:ok,
-             %{
-               status: 200,
-               body: %{"data" => %{"attributes" => %{"certificate" => "LICENSE_CERTIFICATE"}}}
-             }}
-
-          url == machine_checkout_url("mach_existing") ->
-            {:ok,
-             %{
-               status: 200,
-               body: %{"data" => %{"attributes" => %{"certificate" => "MACHINE_CERTIFICATE"}}}
-             }}
-
-          true ->
-            flunk("unexpected request: #{inspect(req)}")
-        end
-
-      {:get, url} ->
-        if url == machines_url() <> "?limit=100" do
-          {:ok,
-           %{
-             status: 200,
-             body: %{
-               "data" => [
-                 %{"id" => "mach_existing", "attributes" => %{"fingerprint" => @node_id}}
-               ]
-             }
-           }}
-        else
-          flunk("unexpected request: #{inspect(req)}")
-        end
-    end
+    machine_lookup_request(req, [
+      machine_lookup_page(machines_url() <> "?limit=100", existing_machine_data())
+    ])
   end
 
   defp paginated_existing_machine_request(req) do
+    machine_lookup_request(req, [
+      machine_lookup_page(machines_url() <> "?limit=100", [], machines_page_url(2)),
+      machine_lookup_page(machines_page_url(2), existing_machine_data(), nil)
+    ])
+  end
+
+  defp machine_lookup_request(req, pages) do
     record_request(req)
 
     case request_signature(req) do
       {:post, url} ->
-        cond do
-          url == validation_url() ->
-            {:ok,
-             %{status: 200, body: %{"data" => %{"id" => "lic_123"}, "meta" => %{"valid" => true}}}}
-
-          url == license_checkout_url("lic_123") ->
-            {:ok,
-             %{
-               status: 200,
-               body: %{"data" => %{"attributes" => %{"certificate" => "LICENSE_CERTIFICATE"}}}
-             }}
-
-          url == machine_checkout_url("mach_existing") ->
-            {:ok,
-             %{
-               status: 200,
-               body: %{"data" => %{"attributes" => %{"certificate" => "MACHINE_CERTIFICATE"}}}
-             }}
-
-          true ->
-            flunk("unexpected request: #{inspect(req)}")
-        end
+        machine_lookup_post_response(url, req)
 
       {:get, url} ->
-        cond do
-          url == machines_url() <> "?limit=100" ->
-            {:ok,
-             %{
-               status: 200,
-               body: %{
-                 "data" => [],
-                 "links" => %{"next" => machines_page_url(2)}
-               }
-             }}
-
-          url == machines_page_url(2) ->
-            {:ok,
-             %{
-               status: 200,
-               body: %{
-                 "data" => [
-                   %{"id" => "mach_existing", "attributes" => %{"fingerprint" => @node_id}}
-                 ],
-                 "links" => %{"next" => nil}
-               }
-             }}
-
-          true ->
-            flunk("unexpected request: #{inspect(req)}")
-        end
+        machine_lookup_get_response(url, pages, req)
     end
+  end
+
+  defp machine_lookup_post_response(url, req) do
+    cond do
+      url == validation_url() ->
+        {:ok,
+         %{status: 200, body: %{"data" => %{"id" => "lic_123"}, "meta" => %{"valid" => true}}}}
+
+      url == license_checkout_url("lic_123") ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{"data" => %{"attributes" => %{"certificate" => "LICENSE_CERTIFICATE"}}}
+         }}
+
+      url == machine_checkout_url("mach_existing") ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{"data" => %{"attributes" => %{"certificate" => "MACHINE_CERTIFICATE"}}}
+         }}
+
+      true ->
+        flunk("unexpected request: #{inspect(req)}")
+    end
+  end
+
+  defp machine_lookup_get_response(url, pages, req) do
+    case Enum.find(pages, &(Map.fetch!(&1, :url) == url)) do
+      nil ->
+        flunk("unexpected request: #{inspect(req)}")
+
+      page ->
+        {:ok, %{status: 200, body: Map.fetch!(page, :body)}}
+    end
+  end
+
+  defp machine_lookup_page(url, data, next_url \\ :no_links) do
+    %{
+      url: url,
+      body: machine_lookup_body(data, next_url)
+    }
+  end
+
+  defp machine_lookup_body(data, :no_links), do: %{"data" => data}
+
+  defp machine_lookup_body(data, next_url) do
+    %{
+      "data" => data,
+      "links" => %{"next" => next_url}
+    }
+  end
+
+  defp existing_machine_data do
+    [%{"id" => "mach_existing", "attributes" => %{"fingerprint" => @node_id}}]
   end
 
   defp successful_activate_request_from_app_config(req) do
