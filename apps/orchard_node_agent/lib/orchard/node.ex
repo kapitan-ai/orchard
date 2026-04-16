@@ -4,6 +4,7 @@ defmodule Orchard.Node do
   """
 
   alias Orchard.Cluster.V1.ModelRef
+  alias Orchard.Licensing
   alias Orchard.Node.{FakeRuntimeAdapter, WorkerRuntimeAdapter}
 
   @default_worker_executable "orchard-worker-mlx"
@@ -14,6 +15,7 @@ defmodule Orchard.Node do
   @default_worker_prefix_cache_mode "kv"
   @default_worker_prefix_cache_max_entries 8
   @default_worker_prefix_cache_max_bytes 0
+  @valid_license_enforcement_modes [:off, :warn, :hard]
   @worker_socket_prefix "orchard-worker-"
   @worker_socket_suffix ".sock"
   @worker_log_prefix "orchard-worker-"
@@ -101,6 +103,19 @@ defmodule Orchard.Node do
 
   def runtime_adapter_impl do
     runtime_config()[:runtime_adapter_impl] || default_runtime_adapter_impl()
+  end
+
+  @spec license_enforcement() :: :off | :warn | :hard
+  def license_enforcement do
+    case runtime_config()[:license_enforcement] do
+      mode when mode in @valid_license_enforcement_modes -> mode
+      other -> raise "Invalid license enforcement mode: #{inspect(other)}"
+    end
+  end
+
+  @spec licensing_impl() :: module()
+  def licensing_impl do
+    runtime_config()[:licensing_impl] || Licensing
   end
 
   def worker_prefix_cache_mode do

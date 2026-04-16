@@ -15,10 +15,19 @@ defmodule Orchard.API.HealthController do
   @spec ready(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def ready(conn, _params) do
     runtime = probe_runtime()
+    license = probe_license()
 
     case Readiness.status() do
       {:ok, checks} ->
-        json(conn, Map.merge(build_metadata(), %{status: "ok", checks: checks, runtime: runtime}))
+        json(
+          conn,
+          Map.merge(build_metadata(), %{
+            status: "ok",
+            checks: checks,
+            runtime: runtime,
+            license: license
+          })
+        )
 
       {:error, reason, checks} ->
         conn
@@ -28,7 +37,8 @@ defmodule Orchard.API.HealthController do
             status: "error",
             reason: Atom.to_string(reason),
             checks: checks,
-            runtime: runtime
+            runtime: runtime,
+            license: license
           })
         )
     end
@@ -97,8 +107,26 @@ defmodule Orchard.API.HealthController do
   defp classify_health(%{ready: true}), do: "healthy"
   defp classify_health(_), do: "unknown"
 
+  defp probe_license do
+    licensing_impl().inspect_local()
+    |> Orchard.Licensing.health_summary()
+  rescue
+    _ ->
+      %{
+        status: "invalid",
+        reason: "malformed_bundle",
+        message: "license inspection failed",
+        expires_at: nil
+      }
+  end
+
   defp runtime_impl do
     Application.get_env(:orchard_controller, :console, [])
     |> Keyword.get(:runtime_impl, OrchardConsole.Runtime)
+  end
+
+  defp licensing_impl do
+    Application.get_env(:orchard_controller, :console, [])
+    |> Keyword.get(:licensing_impl, Orchard.Licensing)
   end
 end

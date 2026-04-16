@@ -43,8 +43,13 @@ config :orchard_node_agent,
       worker_ready_timeout_ms: 5_000,
       worker_load_timeout_ms: 5_000,
       worker_shutdown_timeout_ms: 1_000,
-      fake_runtime?: true
+      fake_runtime?: true,
+      license_enforcement: :off
     )
+
+config :orchard_shared,
+       :licensing,
+       Orchard.Config.M1RuntimeDefaults.licensing(test_root)
 
 # Console: enabled with no auth for deterministic test behavior.
 config :orchard_controller, :console,

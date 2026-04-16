@@ -103,8 +103,13 @@ config :orchard_node_agent,
       listen_address: [host: dev_node_agent_listen_host, port: dev_runtime_port],
       worker_executable:
         System.get_env("ORCHARD_WORKER_EXECUTABLE") ||
-          Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"])
+          Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
+      license_enforcement: :off
     )
+
+config :orchard_shared,
+       :licensing,
+       Orchard.Config.M1RuntimeDefaults.licensing(dev_root)
 
 # Console: enabled with no auth for frictionless local development.
 config :orchard_controller, :console,

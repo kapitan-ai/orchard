@@ -501,4 +501,51 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert {:ok, banner} = Status.run([], runtime)
     refute banner =~ "health:"
   end
+
+  test "renders license line when health payload includes a valid license block" do
+    response = ready_response()
+
+    body =
+      put_in(response.body, ["license"], %{
+        "status" => "valid",
+        "reason" => nil,
+        "message" => "License bundle is valid.",
+        "expires_at" => "2027-04-15T00:00:00Z"
+      })
+
+    response = %{response | body: body}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "License: valid"
+    assert banner =~ "License bundle is valid."
+    assert banner =~ "expires: 2027-04-15T00:00:00Z"
+  end
+
+  test "does not render a license line when the health payload omits the license block" do
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, ready_response()} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    refute banner =~ "License:"
+  end
+
+  test "ignores malformed license blocks for backward compatibility" do
+    response = ready_response()
+    response = put_in(response.body, ["license"], %{"status" => "valid"})
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    refute banner =~ "License:"
+  end
 end

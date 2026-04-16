@@ -14,6 +14,8 @@ defmodule Orchard.Node.Identity do
 
   require Logger
 
+  alias Orchard.NodeIdentityFile
+
   @uuid_regex ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
 
   @doc """
@@ -41,7 +43,7 @@ defmodule Orchard.Node.Identity do
   def resolve_identity!(runtime) do
     case Keyword.get(runtime, :node_id) do
       id when is_binary(id) and id != "" ->
-        validate_uuid!(id, :config)
+        validate_config_uuid!(id)
         id
 
       _ ->
@@ -52,76 +54,38 @@ defmodule Orchard.Node.Identity do
   defp resolve_from_file_or_generate!(runtime) do
     path = Keyword.fetch!(runtime, :node_identity_path)
 
-    case File.read(path) do
-      {:ok, content} ->
-        id = String.trim(content)
-        validate_uuid!(id, {:file, path})
+    case NodeIdentityFile.ensure(path) do
+      {:ok, id, :existing} ->
         id
 
-      {:error, :enoent} ->
-        generate_and_persist!(path)
-
-      {:error, reason} ->
-        raise "Cannot read node identity file #{path}: #{inspect(reason)}"
-    end
-  end
-
-  # NOTE: This path assumes single ownership of the identity file.
-  # Concurrent node-agent processes sharing the same node_identity_path
-  # are not supported — Orchard assumes one node-agent per support root.
-  # If concurrent startup is ever needed, use File.open(:exclusive) and
-  # adopt-on-race instead of overwrite.
-  defp generate_and_persist!(path) do
-    id = generate_uuid()
-    dir = Path.dirname(path)
-
-    case File.mkdir_p(dir) do
-      :ok -> :ok
-      {:error, reason} -> raise "Cannot create identity directory #{dir}: #{inspect(reason)}"
-    end
-
-    # Atomic write: temp file in same directory, then rename
-    tmp_path = path <> ".tmp." <> Base.encode16(:crypto.strong_rand_bytes(4))
-
-    case File.write(tmp_path, id <> "\n") do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        raise "Cannot write temporary identity file #{tmp_path}: #{inspect(reason)}"
-    end
-
-    case File.rename(tmp_path, path) do
-      :ok ->
+      {:ok, id, :generated} ->
         Logger.info("Generated new node identity: #{id} -> #{path}")
         id
 
-      {:error, reason} ->
-        File.rm(tmp_path)
-        raise "Cannot persist identity file #{path}: #{inspect(reason)}"
+      {:error, {:invalid_uuid, value}} ->
+        raise "Invalid node UUID from identity file #{path}: #{inspect(value)}"
+
+      {:error, {:read_failed, reason}} ->
+        raise "Cannot read node identity file #{path}: #{inspect(reason)}"
+
+      {:error, {:write_failed, reason}} ->
+        raise_write_error!(path, reason)
     end
   end
 
-  defp validate_uuid!(value, source) do
+  defp validate_config_uuid!(value) do
     unless Regex.match?(@uuid_regex, value) do
-      source_desc =
-        case source do
-          :config -> "config :node_id"
-          {:file, path} -> "identity file #{path}"
-        end
-
-      raise "Invalid node UUID from #{source_desc}: #{inspect(value)}"
+      raise "Invalid node UUID from config :node_id: #{inspect(value)}"
     end
   end
 
-  defp generate_uuid do
-    <<a::48, _::4, b::12, _::2, c::62>> = :crypto.strong_rand_bytes(16)
-    # UUIDv4: version 4, variant 10
-    <<a::48, 4::4, b::12, 2::2, c::62>>
-    |> Base.encode16(case: :lower)
-    |> then(fn hex ->
-      <<g1::binary-8, g2::binary-4, g3::binary-4, g4::binary-4, g5::binary-12>> = hex
-      "#{g1}-#{g2}-#{g3}-#{g4}-#{g5}"
-    end)
+  defp raise_write_error!(path, reason) do
+    dir = Path.dirname(path)
+
+    if File.dir?(dir) do
+      raise "Cannot persist identity file #{path}: #{inspect(reason)}"
+    else
+      raise "Cannot create identity directory #{dir}: #{inspect(reason)}"
+    end
   end
 end

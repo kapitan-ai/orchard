@@ -67,7 +67,8 @@ When installed via the macOS PKG:
 - CORS is configurable via `ORCHARD_CORS_ORIGINS`
 
 See [packaging/pkg/README.md](../packaging/pkg/README.md) for full operator
-documentation on transport modes, TLS management, and CORS configuration.
+documentation on transport modes, TLS management, CORS configuration, and the
+packaged licensing rollout posture.
 
 ## Configuration
 
@@ -102,6 +103,7 @@ documentation on transport modes, TLS management, and CORS configuration.
 | `ORCHARD_WORKER_BACKEND` | `mlx` | Inference backend |
 | `ORCHARD_FAKE_RUNTIME` | `false` | Use fake runtime (for testing without GPU) |
 | `ORCHARD_NODE_DISPLAY_NAME` | hostname | Human-readable node name shown in console |
+| `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev) / `warn` (packaged prod) | Startup-only licensing mode: `off`, `warn`, or `hard` |
 
 #### Controller Multi-Node (Source Dev)
 
@@ -470,6 +472,17 @@ bundle-path validation rejects symlinks that resolve outside the bundle root.
 |-------|------|--------------------|-------|
 | `mlx-community/Llama-3.2-1B-Instruct-4bit` | ~664 MB | ~1.5s | Fastest, recommended for CI |
 | `mlx-community/Qwen2.5-7B-Instruct-4bit` | ~4.5 GB | ~5s | Good mid-size validation |
+
+## Licensing v0 notes
+
+- Source dev and test default `ORCHARD_LICENSE_ENFORCEMENT` to `off`.
+- Packaged prod defaults to `warn` for a warn-first rollout.
+- Enforcement is **startup-only** on the node-agent in v0.
+- Controller `/health/ready` exposes license state for observation only; it does
+  **not** gate readiness or change readiness reasons.
+- The local Orchard-owned bundle path is `<support_root>/config/licensing/current.json`.
+- Packaged-host confidence still depends on the real-host smoke tracked in
+  `orchard-workbench/todos/active/todo-orchardctl-start-stop.md`.
 
 ## Rollback Procedure
 

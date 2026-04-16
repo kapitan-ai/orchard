@@ -154,6 +154,68 @@ not overwritten during package upgrades.
 | Readiness reports `migrations_current: false` (with DB reachable) | Migrations not run | Run `sudo "/Library/Application Support/Orchard/bin/orchard-controller" eval 'Orchard.Release.migrate()'` |
 | `WARNING: ignoring env file` in controller.log | File not root-owned or has group/world permission bits | `sudo chown root:wheel <file> && sudo chmod 600 <file>` |
 
+## Licensing v0
+
+Orchard licensing v0 stores one Orchard-owned local bundle at:
+
+- `/Library/Application Support/Orchard/config/licensing/current.json`
+
+The bundle persists only the extracted certificate pair:
+
+- `license_certificate`
+- `machine_certificate`
+
+Orchard does **not** persist Keygen JSON envelopes as runtime state, and Orchard
+hosts do **not** require a shipped Keygen admin token.
+
+Orchard ships the Keygen account ID, public verification key, and default API
+base URL as product config. Operators do **not** need to set
+`ORCHARD_KEYGEN_ACCOUNT_ID` or `ORCHARD_KEYGEN_PUBLIC_KEY` for normal installs.
+Those variables, plus `ORCHARD_KEYGEN_API_BASE_URL`, are optional overrides for
+Orchard-directed alternate environments and debugging only. If you override the
+account ID or public key, keep them as a matching pair or activation/offline
+verification will fail.
+
+No Orchard host runtime requires or supports a shipped
+`ORCHARD_KEYGEN_ADMIN_TOKEN` dependency.
+
+### Node-agent startup enforcement
+
+Licensing enforcement is **startup-only** for the packaged node-agent. The
+controller `/health/ready` payload exposes license state for observation, but it
+remains **non-gating** — it does not change readiness semantics or HTTP status.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `ORCHARD_LICENSE_ENFORCEMENT` | `warn` | `off`, `warn`, or `hard` (set in `node-agent.env`) |
+
+Mode behavior:
+- `off` — skip startup enforcement entirely
+- `warn` — log the licensing problem and continue startup
+- `hard` — abort node-agent startup when the local bundle is not valid
+
+### Rollout posture
+
+v0 should roll out to design partners in **warn-first** mode. Keep packaged prod
+on `warn` until real packaged-host smoke is complete.
+
+### Rollback
+
+To remove runtime impact quickly, set:
+
+```bash
+ORCHARD_LICENSE_ENFORCEMENT=off
+```
+
+Then restart the node-agent service.
+
+### Confidence caveat
+
+Packaged-host lifecycle confidence is still gated on the separate real-host smoke
+tracked in `orchard-workbench/todos/active/todo-orchardctl-start-stop.md`.
+Until that matrix runs on an actual PKG + launchd install, treat packaged
+licensing rollout as conservatively exercised rather than fully closed.
+
 ## Controller Transport Behavior
 
 The packaged controller defaults to **HTTPS**. Transport mode is resolved

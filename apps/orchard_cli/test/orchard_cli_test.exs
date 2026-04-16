@@ -19,7 +19,7 @@ defmodule OrchardCLITest do
     assert output =~ "orchardctl (M0 scaffold)"
 
     assert output =~
-             "status, start, stop, cluster, env, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
+             "status, start, stop, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
   end
 
   test "dispatches each placeholder command module" do
@@ -153,6 +153,24 @@ defmodule OrchardCLITest do
     output = capture_io(fn -> OrchardCLI.main(["status", "--help"], &no_halt/1) end)
     assert output =~ "orchardctl status"
     assert output =~ "health endpoint"
+  end
+
+  test "license help dispatches through main without network activity" do
+    output = capture_io(fn -> OrchardCLI.main(["license", "help"], &no_halt/1) end)
+    assert output =~ "orchardctl license"
+    assert output =~ "activate <key>"
+  end
+
+  test "license with missing subcommand exits non-zero" do
+    parent = self()
+
+    stderr =
+      capture_io(:stderr, fn ->
+        OrchardCLI.main(["license"], halt_stub(parent))
+      end)
+
+    assert stderr =~ "orchardctl license"
+    assert_received {:halt_called, 1}
   end
 
   test "status with extra args exits non-zero" do

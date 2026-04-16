@@ -188,14 +188,17 @@ defmodule OrchardCLI.Commands.Status do
   defp render_banner(display_version, base_url, body) do
     status_label = if body["status"] == "ok", do: "ready", else: "degraded"
     details = build_details(body, status_label)
+    license_line = render_license_line(body["license"])
 
-    """
-    \u{1F333} Orchard #{display_version}
-       Console: #{base_url}/console
-       API:     #{base_url}/v1
-       Status:  #{status_label}#{details}
-    """
-    |> String.trim()
+    [
+      "\u{1F333} Orchard #{display_version}",
+      "   Console: #{base_url}/console",
+      "   API:     #{base_url}/v1",
+      "   Status:  #{status_label}#{details}",
+      license_line
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
   end
 
   defp render_offline_banner(display_version, display_url) do
@@ -263,6 +266,24 @@ defmodule OrchardCLI.Commands.Status do
   defp detail_suffix(_status, _reason, runtime_details) do
     " (#{runtime_details})"
   end
+
+  defp render_license_line(%{"status" => status, "message" => message} = license)
+       when is_binary(status) and is_binary(message) do
+    reason = non_empty_string(Map.get(license, "reason"))
+    expires_at = non_empty_string(Map.get(license, "expires_at"))
+
+    suffix =
+      [reason && "reason: #{reason}", expires_at && "expires: #{expires_at}"]
+      |> Enum.reject(&is_nil/1)
+      |> case do
+        [] -> ""
+        parts -> " (" <> Enum.join(parts, ", ") <> ")"
+      end
+
+    "   License: #{status} — #{message}#{suffix}"
+  end
+
+  defp render_license_line(_license), do: nil
 
   # ── Endpoint Candidate Resolution ───────────────────────────────────
 

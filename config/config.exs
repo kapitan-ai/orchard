@@ -49,6 +49,10 @@ config :orchard_node_agent,
        :runtime,
        Orchard.Config.M1RuntimeDefaults.node_runtime(orchard_support_root)
 
+config :orchard_shared,
+       :licensing,
+       Orchard.Config.M1RuntimeDefaults.licensing(orchard_support_root)
+
 # esbuild (JS bundling for LiveView client hooks)
 config :esbuild,
   version: "0.25.0",

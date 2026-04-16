@@ -46,6 +46,19 @@ defmodule Orchard.API.HealthControllerTest.RuntimeTimeoutStub do
   end
 end
 
+defmodule Orchard.API.HealthControllerTest.LicensingValidStub do
+  @moduledoc false
+
+  def inspect_local do
+    %Orchard.Licensing{
+      state: :valid,
+      message: "License bundle is valid.",
+      bundle_path: "/tmp/current.json",
+      expires_at: ~U[2027-04-15 00:00:00Z]
+    }
+  end
+end
+
 defmodule Orchard.API.HealthControllerTest do
   use Orchard.ConnCase, async: false
 
@@ -58,7 +71,8 @@ defmodule Orchard.API.HealthControllerTest do
       :orchard_controller,
       :console,
       Keyword.merge(previous,
-        runtime_impl: Orchard.API.HealthControllerTest.RuntimeOkStub
+        runtime_impl: Orchard.API.HealthControllerTest.RuntimeOkStub,
+        licensing_impl: Orchard.API.HealthControllerTest.LicensingValidStub
       )
     )
 
@@ -93,6 +107,13 @@ defmodule Orchard.API.HealthControllerTest do
     assert body["checks"]["public_api_https_enabled"] == true
     # Runtime summary is additive and does not affect HTTP status
     assert is_map(body["runtime"])
+
+    assert body["license"] == %{
+             "status" => "valid",
+             "reason" => nil,
+             "message" => "License bundle is valid.",
+             "expires_at" => "2027-04-15T00:00:00Z"
+           }
   end
 
   test "health ready endpoint reflects transport degraded state", %{conn: _conn} do
@@ -187,5 +208,22 @@ defmodule Orchard.API.HealthControllerTest do
     # Default stub has runtime_health, so health is "healthy"
     body = Jason.decode!(conn.resp_body)
     assert body["runtime"]["health"] == "healthy"
+  end
+
+  test "health ready license summary is observational and does not change readiness semantics", %{
+    conn: _conn
+  } do
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    body = Jason.decode!(conn.resp_body)
+
+    assert conn.status == 503
+    assert body["status"] == "error"
+    assert body["reason"] == "postgres_reachable"
+    assert body["license"]["status"] == "valid"
+    assert body["license"]["message"] == "License bundle is valid."
   end
 end

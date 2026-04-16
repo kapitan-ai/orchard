@@ -49,6 +49,22 @@ env_optional_string = fn env_name ->
   end
 end
 
+env_license_enforcement = fn env_name, default ->
+  case System.get_env(env_name) || default do
+    "off" ->
+      :off
+
+    "warn" ->
+      :warn
+
+    "hard" ->
+      :hard
+
+    value ->
+      raise "environment variable #{env_name} must be one of off|warn|hard, got: #{inspect(value)}"
+  end
+end
+
 env_ip = fn env_name, default_string ->
   ip_string = System.get_env(env_name) || default_string
 
@@ -301,9 +317,33 @@ default_node_runtime = fn root ->
   ]
 end
 
+default_licensing = fn root ->
+  [
+    bundle_path: Path.join([root, "config", "licensing", "current.json"]),
+    node_identity_path: Path.join([root, "data", "node-id"]),
+    keygen_api_base_url: "https://api.keygen.sh",
+    keygen_account_id: "6f872d6f-52ce-4bbe-8b3f-b57669753f34",
+    keygen_public_key: "f1a328edc3d42967e8545c1361d2dc22622fad52aad0dc8e5d3b3cb95d7cb18a"
+  ]
+end
+
 if config_env() == :prod do
   orchard_support_root =
     System.get_env("ORCHARD_SUPPORT_ROOT") || "/Library/Application Support/Orchard"
+
+  licensing_overrides =
+    [
+      bundle_path: env_optional_string.("ORCHARD_LICENSE_BUNDLE_PATH"),
+      node_identity_path: env_optional_string.("ORCHARD_NODE_IDENTITY_PATH"),
+      keygen_api_base_url: env_optional_string.("ORCHARD_KEYGEN_API_BASE_URL"),
+      keygen_account_id: env_optional_string.("ORCHARD_KEYGEN_ACCOUNT_ID"),
+      keygen_public_key: env_optional_string.("ORCHARD_KEYGEN_PUBLIC_KEY")
+    ]
+    |> Enum.reject(fn {_key, value} -> is_nil(value) end)
+
+  config :orchard_shared,
+         :licensing,
+         Keyword.merge(default_licensing.(orchard_support_root), licensing_overrides)
 
   case System.get_env("RELEASE_NAME") || System.get_env("MIX_RELEASE_NAME") do
     "orchard_controller" ->
@@ -519,6 +559,7 @@ if config_env() == :prod do
 
                  v
                end).(),
+            license_enforcement: env_license_enforcement.("ORCHARD_LICENSE_ENFORCEMENT", "warn"),
             max_loaded_models: env_int.("ORCHARD_MAX_LOADED_MODELS", "0"),
             fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false),
             hf:

@@ -105,6 +105,15 @@ defmodule OrchardApplicationTest do
            )
   end
 
+  test "test environment aligns shared licensing paths with tmp/test" do
+    licensing = Application.fetch_env!(:orchard_shared, :licensing)
+
+    assert Path.type(licensing[:bundle_path]) == :absolute
+    assert Path.type(licensing[:node_identity_path]) == :absolute
+    assert String.ends_with?(licensing[:bundle_path], "/tmp/test/config/licensing/current.json")
+    assert String.ends_with?(licensing[:node_identity_path], "/tmp/test/data/node-id")
+  end
+
   defp stop_controller_app do
     case Application.stop(:orchard_controller) do
       :ok -> :ok

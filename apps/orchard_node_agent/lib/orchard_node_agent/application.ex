@@ -3,7 +3,7 @@ defmodule Orchard.NodeAgent.Application do
 
   use Application
 
-  alias Orchard.Node.Identity
+  alias Orchard.Node.{Identity, LicenseEnforcer}
   alias Orchard.Node.Supervisor, as: NodeSupervisor
 
   @impl true
@@ -11,6 +11,7 @@ defmodule Orchard.NodeAgent.Application do
     # Resolve and persist node identity before starting the supervision tree.
     # This ensures GetStatus can report stable metadata from first request.
     Identity.ensure_identity!()
+    LicenseEnforcer.enforce_startup!()
 
     Supervisor.start_link(
       [NodeSupervisor],

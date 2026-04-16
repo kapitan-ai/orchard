@@ -31,6 +31,7 @@ defmodule OrchardShared.MixProject do
 
   defp deps do
     [
+      {:jason, "~> 1.4"},
       {:grpc, "~> 0.11.5"},
       {:protobuf, "~> 0.16.0"},
       {:req, "~> 0.5", only: :test}
