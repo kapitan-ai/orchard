@@ -1,6 +1,9 @@
 defmodule Orchard.Inference.ChatOrchestratorPortModeTest do
   use Orchard.DataCase, async: false
 
+  import Orchard.TestSupport.ToolRegistryTestSupport,
+    only: [with_inference_overrides: 2, write_tokenizer_executable!: 0]
+
   alias Orchard.Inference.ChatOrchestrator
   alias Orchard.TestSupport.ModelRequestFixtures
 
@@ -71,22 +74,6 @@ assistant"
     end)
   end
 
-  defp with_inference_overrides(overrides, fun) when is_function(fun, 0) do
-    previous_inference = Application.fetch_env!(:orchard_controller, :inference)
-
-    Application.put_env(
-      :orchard_controller,
-      :inference,
-      Keyword.merge(previous_inference, overrides)
-    )
-
-    try do
-      fun.()
-    after
-      Application.put_env(:orchard_controller, :inference, previous_inference)
-    end
-  end
-
   defp create_port_mode_model!(artifact_uri) do
     ModelRequestFixtures.create_model!(%{
       model_id: "test-org/tiny-llm",
@@ -118,19 +105,4 @@ assistant"
     bundle_dir
   end
 
-  defp write_tokenizer_executable! do
-    script_path =
-      Path.join(
-        System.tmp_dir!(),
-        "orchard-tokenizer-port-test-#{System.unique_integer([:positive])}.sh"
-      )
-
-    File.write!(
-      script_path,
-      "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"contract_version\":1,\"ok\":true,\"result\":{\"rendered_prompt\":\"user hello orchard\\nassistant\",\"input_token_count\":3}}'\n"
-    )
-
-    File.chmod!(script_path, 0o755)
-    script_path
-  end
 end
