@@ -7,7 +7,6 @@
         excluded: ["_build/", "deps/"]
       },
       strict: true,
-      requires: ["deps/ex_dna/lib/ex_dna/integrations/credo.ex"],
       checks: [
         # Built-in overrides
         {Credo.Check.Readability.MaxLineLength, priority: :low, max_length: 100},

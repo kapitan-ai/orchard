@@ -168,15 +168,11 @@ Set `min_similarity: 0.85` in `.credo.exs` to also find structurally similar (no
 
 ## Technical Notes
 
-### Compile-Order Workaround
+### Credo Integration Notes
 
-`ExDNA.Credo` is conditionally compiled with `if Code.ensure_loaded?(Credo.Check)`. Since Hex strips dev-only deps from published packages, there's no compile-order guarantee between `credo` and `ex_dna`. The `.credo.exs` uses `requires` to force-load the integration module at runtime:
+As of `ex_dna` `1.3.1`, `ExDNA.Credo` compiles cleanly without the old consumer-side `requires` workaround. Orchard now relies on the package's built-in Credo integration directly from `.credo.exs`.
 
-```elixir
-requires: ["deps/ex_dna/lib/ex_dna/integrations/credo.ex"]
-```
-
-If you see `Ignoring an undefined check: ExDNA.Credo`, this workaround has been lost — restore the `requires` entry.
+If you see a warning about **redefining `ExDNA.Credo`**, the old runtime `requires` workaround has likely been reintroduced and should be removed. If you instead see `Ignoring an undefined check: ExDNA.Credo`, confirm the project is actually on `ex_dna` `1.3.1+` and that deps were recompiled after the upgrade.
 
 ### Config Files
 
