@@ -70,6 +70,9 @@ defmodule OrchardCLI.Commands.LicenseTest do
   @other_node_id "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
   @account_id "orchard-test"
   @public_key "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
+    @activation_required_codes ["NO_MACHINES", "NO_MACHINE", "FINGERPRINT_SCOPE_MISMATCH"]
+  @activation_required_primary_code "NO_MACHINES"
+  @activation_required_detail "fingerprint is not activated (has no associated machines)"
 
   setup do
     Process.put(:requests, [])
@@ -174,6 +177,140 @@ defmodule OrchardCLI.Commands.LicenseTest do
     refute Enum.any?(requests, fn req ->
              request_signature(req) == {:post, machines_url()}
            end)
+  end
+
+  test "activate continues to machine creation for allowlisted NO_MACHINES validate-key responses" do
+    runtime = runtime(request: &activation_required_new_machine_request/1)
+
+    assert {:ok, _message} = License.run(["activate", @license_key], runtime)
+
+    assert Enum.map(recorded_requests(), &request_signature/1) == [
+             {:post, validation_url()},
+             {:get, machines_url() <> "?limit=100"},
+             {:post, machines_url()},
+             {:post, license_checkout_url("lic_123")},
+             {:post, machine_checkout_url("mach_123")}
+           ]
+  end
+
+  test "activate reuses an existing machine for allowlisted NO_MACHINES validate-key responses" do
+    runtime = runtime(request: &activation_required_existing_machine_request/1)
+
+    assert {:ok, _message} = License.run(["activate", @license_key], runtime)
+
+    requests = recorded_requests()
+
+    assert Enum.map(requests, &request_signature/1) == [
+             {:post, validation_url()},
+             {:get, machines_url() <> "?limit=100"},
+             {:post, license_checkout_url("lic_123")},
+             {:post, machine_checkout_url("mach_existing")}
+           ]
+
+    refute Enum.any?(requests, fn req ->
+             request_signature(req) == {:post, machines_url()}
+           end)
+  end
+
+  test "activate continues to machine creation for NO_MACHINE validate-key responses" do
+    runtime = runtime(request: &activation_required_new_machine_request(&1, code: "NO_MACHINE"))
+
+    assert {:ok, _message} = License.run(["activate", @license_key], runtime)
+
+    assert Enum.map(recorded_requests(), &request_signature/1) == [
+             {:post, validation_url()},
+             {:get, machines_url() <> "?limit=100"},
+             {:post, machines_url()},
+             {:post, license_checkout_url("lic_123")},
+             {:post, machine_checkout_url("mach_123")}
+           ]
+  end
+
+  test "activate keeps unknown false validate-key codes as terminal failures" do
+    unknown_code = "FINGERPRINT_NOT_ACTIVE"
+    refute unknown_code in @activation_required_codes
+
+    runtime =
+      runtime(
+        request: fn req ->
+          validate_only_request(req, activation_required_validation_body(code: unknown_code))
+        end
+      )
+
+    assert {:error, message, 1} = License.run(["activate", @license_key], runtime)
+    assert message =~ @activation_required_detail
+
+    assert Enum.map(recorded_requests(), &request_signature/1) == [
+             {:post, validation_url()}
+           ]
+  end
+
+  test "activate treats allowlisted false validate-key responses without data ids as malformed" do
+    runtime =
+      runtime(
+        request: fn req ->
+          validate_only_request(req, activation_required_validation_body(license_id: nil))
+        end
+      )
+
+    assert {:error, message, 1} = License.run(["activate", @license_key], runtime)
+    assert message =~ "Malformed response from license validation"
+
+    assert Enum.map(recorded_requests(), &request_signature/1) == [
+             {:post, validation_url()}
+           ]
+  end
+
+  test "activate continues to machine creation for FINGERPRINT_SCOPE_MISMATCH validate-key responses" do
+    runtime = runtime(request: &activation_required_new_machine_request(&1, code: "FINGERPRINT_SCOPE_MISMATCH"))
+
+    assert {:ok, _message} = License.run(["activate", @license_key], runtime)
+
+    assert Enum.map(recorded_requests(), &request_signature/1) == [
+             {:post, validation_url()},
+             {:get, machines_url() <> "?limit=100"},
+             {:post, machines_url()},
+             {:post, license_checkout_url("lic_123")},
+             {:post, machine_checkout_url("mach_123")}
+           ]
+  end
+
+  test "activate reuses existing machine for FINGERPRINT_SCOPE_MISMATCH validate-key responses" do
+    runtime = runtime(request: &activation_required_existing_machine_request(&1, code: "FINGERPRINT_SCOPE_MISMATCH"))
+
+    assert {:ok, _message} = License.run(["activate", @license_key], runtime)
+
+    requests = recorded_requests()
+
+    assert Enum.map(requests, &request_signature/1) == [
+             {:post, validation_url()},
+             {:get, machines_url() <> "?limit=100"},
+             {:post, license_checkout_url("lic_123")},
+             {:post, machine_checkout_url("mach_existing")}
+           ]
+
+    refute Enum.any?(requests, fn req ->
+             request_signature(req) == {:post, machines_url()}
+           end)
+  end
+
+  test "activate treats FINGERPRINT_SCOPE_MISMATCH without license id as malformed" do
+    runtime =
+      runtime(
+        request: fn req ->
+          validate_only_request(
+            req,
+            activation_required_validation_body(code: "FINGERPRINT_SCOPE_MISMATCH", license_id: nil)
+          )
+        end
+      )
+
+    assert {:error, message, 1} = License.run(["activate", @license_key], runtime)
+    assert message =~ "Malformed response from license validation"
+
+    assert Enum.map(recorded_requests(), &request_signature/1) == [
+             {:post, validation_url()}
+           ]
   end
 
   test "activate returns actionable invalid-key error without echoing the key" do
@@ -379,17 +516,22 @@ defmodule OrchardCLI.Commands.LicenseTest do
     ]
   end
 
-  defp successful_activate_request(req) do
+  defp successful_activate_request(req, opts \\ []) do
+    validation_body = Keyword.get(opts, :validation_body, valid_validation_body())
+
     record_request(req)
 
     case request_signature(req) do
       {:post, url} ->
         cond do
           url == validation_url() ->
+            assert get_in(req, [:body, "meta", "key"]) == @license_key
+            assert get_in(req, [:body, "meta", "scope", "fingerprint"]) == @node_id
+
             {:ok,
              %{
                status: 200,
-               body: %{"data" => %{"id" => "lic_123"}, "meta" => %{"valid" => true}}
+               body: validation_body
              }}
 
           url == machines_url() ->
@@ -430,6 +572,20 @@ defmodule OrchardCLI.Commands.LicenseTest do
     ])
   end
 
+  defp activation_required_new_machine_request(req, opts \\ []) do
+    code = Keyword.get(opts, :code, @activation_required_primary_code)
+    successful_activate_request(req, validation_body: activation_required_validation_body(code: code))
+  end
+
+  defp activation_required_existing_machine_request(req, opts \\ []) do
+    code = Keyword.get(opts, :code, @activation_required_primary_code)
+    machine_lookup_request(
+      req,
+      [machine_lookup_page(machines_url() <> "?limit=100", existing_machine_data())],
+      activation_required_validation_body(code: code)
+    )
+  end
+
   defp paginated_existing_machine_request(req) do
     machine_lookup_request(req, [
       machine_lookup_page(machines_url() <> "?limit=100", [], machines_page_url(2)),
@@ -437,23 +593,22 @@ defmodule OrchardCLI.Commands.LicenseTest do
     ])
   end
 
-  defp machine_lookup_request(req, pages) do
+  defp machine_lookup_request(req, pages, validation_body \\ valid_validation_body()) do
     record_request(req)
 
     case request_signature(req) do
       {:post, url} ->
-        machine_lookup_post_response(url, req)
+        machine_lookup_post_response(url, req, validation_body)
 
       {:get, url} ->
         machine_lookup_get_response(url, pages, req)
     end
   end
 
-  defp machine_lookup_post_response(url, req) do
+  defp machine_lookup_post_response(url, req, validation_body) do
     cond do
       url == validation_url() ->
-        {:ok,
-         %{status: 200, body: %{"data" => %{"id" => "lic_123"}, "meta" => %{"valid" => true}}}}
+        {:ok, %{status: 200, body: validation_body}}
 
       url == license_checkout_url("lic_123") ->
         {:ok,
@@ -504,6 +659,45 @@ defmodule OrchardCLI.Commands.LicenseTest do
     [%{"id" => "mach_existing", "attributes" => %{"fingerprint" => @node_id}}]
   end
 
+  defp valid_validation_body do
+    %{"data" => %{"id" => "lic_123"}, "meta" => %{"valid" => true}}
+  end
+
+  defp activation_required_validation_body(opts) do
+    code = Keyword.get(opts, :code, @activation_required_primary_code)
+
+    body = %{
+      "meta" => %{
+        "code" => code,
+        "valid" => false,
+        "detail" => @activation_required_detail
+      }
+    }
+
+    case Keyword.get(opts, :license_id, "lic_123") do
+      nil -> body
+      license_id -> Map.put(body, "data", %{"id" => license_id})
+    end
+  end
+
+  defp validate_only_request(req, response_body) do
+    record_request(req)
+
+    case request_signature(req) do
+      {:post, url} ->
+        if url == validation_url() do
+          assert get_in(req, [:body, "meta", "key"]) == @license_key
+          assert get_in(req, [:body, "meta", "scope", "fingerprint"]) == @node_id
+          {:ok, %{status: 200, body: response_body}}
+        else
+          flunk("unexpected request: #{inspect(req)}")
+        end
+
+      _other ->
+        flunk("unexpected request: #{inspect(req)}")
+    end
+  end
+
   defp successful_activate_request_from_app_config(req) do
     account_id =
       Application.fetch_env!(:orchard_shared, :licensing)
@@ -515,6 +709,9 @@ defmodule OrchardCLI.Commands.LicenseTest do
       {:post, url} ->
         cond do
           url == validation_url(account_id) ->
+            assert get_in(req, [:body, "meta", "key"]) == @license_key
+            assert get_in(req, [:body, "meta", "scope", "fingerprint"]) == @node_id
+
             {:ok,
              %{
                status: 200,

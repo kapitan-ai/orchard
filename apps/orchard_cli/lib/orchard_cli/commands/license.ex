@@ -12,6 +12,7 @@ defmodule OrchardCLI.Commands.License do
   alias Orchard.NodeIdentityFile
 
   @default_keygen_api_base_url "https://api.keygen.sh"
+    @activation_required_validation_codes ["NO_MACHINES", "NO_MACHINE", "FINGERPRINT_SCOPE_MISMATCH"]
   @json_api_content_type "application/vnd.api+json"
 
   @type request_spec :: %{
@@ -205,10 +206,13 @@ defmodule OrchardCLI.Commands.License do
     end
   end
 
-  defp validate_key(runtime, config, license_key, _fingerprint) do
+  defp validate_key(runtime, config, license_key, fingerprint) do
     body = %{
       "meta" => %{
-        "key" => license_key
+        "key" => license_key,
+        "scope" => %{
+          "fingerprint" => fingerprint
+        }
       }
     }
 
@@ -456,6 +460,20 @@ defmodule OrchardCLI.Commands.License do
   defp extract_license_id(%{"meta" => %{"valid" => true}, "data" => %{"id" => license_id}})
        when is_binary(license_id) and license_id != "" do
     {:ok, license_id}
+  end
+
+  defp extract_license_id(%{
+         "meta" => %{"valid" => false, "code" => code},
+         "data" => %{"id" => license_id}
+       })
+       when code in @activation_required_validation_codes and is_binary(license_id) and
+              license_id != "" do
+    {:ok, license_id}
+  end
+
+  defp extract_license_id(%{"meta" => %{"valid" => false, "code" => code}})
+       when code in @activation_required_validation_codes do
+    {:error, {:validation, "Malformed response from license validation."}}
   end
 
   defp extract_license_id(%{"meta" => %{"valid" => false, "detail" => detail}})

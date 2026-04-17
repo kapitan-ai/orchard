@@ -64,9 +64,9 @@ defmodule Orchard.Licensing.Validator do
     malformed_state = malformed_state(kind)
     invalid_signature_state = invalid_signature_state(kind)
 
-    with {:ok, payload_json, signature} <- extract_signed_payload(certificate, kind),
+    with {:ok, payload_json, signing_input, signature} <- extract_signed_payload(certificate, kind),
          true <-
-           verify_signature(payload_json, signature, public_key) ||
+           verify_signature(signing_input, signature, public_key) ||
              {:error, invalid_signature_state},
          {:ok, payload} <- decode_payload_json(payload_json, malformed_state),
          {:ok, claims} <- normalize_certificate_payload(payload, kind) do
@@ -94,29 +94,45 @@ defmodule Orchard.Licensing.Validator do
 
     case Regex.named_captures(pattern, normalized) do
       %{"body" => body} ->
-        decode_signed_envelope(String.replace(body, "\n", ""), malformed_state)
+        decode_signed_envelope(String.replace(body, "\n", ""), kind, malformed_state)
 
       nil ->
         {:error, {malformed_state, "certificate delimiters are invalid"}}
     end
   end
 
-  defp decode_signed_envelope(encoded_body, malformed_state) do
+  defp decode_signed_envelope(encoded_body, kind, malformed_state) do
     with {:ok, body} <- decode_base64_field(encoded_body, malformed_state, "certificate body"),
          {:ok, envelope} <- decode_json_object(body, malformed_state, "certificate envelope"),
-         {:ok, payload_json} <- decode_payload_field(envelope, malformed_state),
-         {:ok, signature} <- decode_signature_field(envelope, malformed_state),
-         :ok <- validate_algorithm_fields(envelope, malformed_state) do
-      {:ok, payload_json, signature}
+         {:ok, payload_json, signing_input} <- extract_payload_and_signing_input(envelope, kind, malformed_state),
+         {:ok, signature} <- decode_signature_field(envelope, malformed_state) do
+      {:ok, payload_json, signing_input, signature}
     end
   end
 
-  defp decode_payload_field(%{"payload" => payload}, malformed_state) when is_binary(payload) do
-    decode_base64_field(payload, malformed_state, "payload")
-  end
+  # Extract payload and determine signing input bytes based on envelope format
+  defp extract_payload_and_signing_input(envelope, kind, malformed_state) do
+    cond do
+      # Orchard canonical format: payload field, sign over decoded bytes
+      Map.has_key?(envelope, "payload") and envelope["alg"] == "ed25519" and
+          envelope["enc"] == "base64" ->
+        with {:ok, payload_json} <- decode_base64_field(envelope["payload"], malformed_state, "payload") do
+          # Sign over decoded payload JSON bytes
+          {:ok, payload_json, payload_json}
+        end
 
-  defp decode_payload_field(_envelope, malformed_state) do
-    {:error, {malformed_state, "certificate payload is missing"}}
+      # Keygen checkout format: enc field, sign over "<kind>/<enc>" bytes
+      envelope["alg"] == "base64+ed25519" and Map.has_key?(envelope, "enc") ->
+        with {:ok, payload_json} <- decode_base64_field(envelope["enc"], malformed_state, "payload") do
+          # Sign over "<kind>/<base64_payload>" (e.g., "license/eyJ...")
+          signing_input = "#{kind}/#{envelope["enc"]}"
+          {:ok, payload_json, signing_input}
+        end
+
+      # Unknown format
+      true ->
+        {:error, {malformed_state, "certificate envelope format is invalid"}}
+    end
   end
 
   defp decode_signature_field(%{"sig" => signature}, malformed_state) when is_binary(signature) do
@@ -127,12 +143,7 @@ defmodule Orchard.Licensing.Validator do
     {:error, {malformed_state, "certificate signature is missing"}}
   end
 
-  defp validate_algorithm_fields(%{"alg" => "ed25519", "enc" => "base64"}, _malformed_state),
-    do: :ok
 
-  defp validate_algorithm_fields(_envelope, malformed_state) do
-    {:error, {malformed_state, "certificate algorithm metadata is invalid"}}
-  end
 
   defp verify_signature(payload_json, signature, public_key) do
     :crypto.verify(:eddsa, :none, payload_json, signature, [public_key, :ed25519])
@@ -165,7 +176,7 @@ defmodule Orchard.Licensing.Validator do
     end
   end
 
-  defp decode_base64_field(value, malformed_state, field_name) do
+  defp decode_base64_field(value, malformed_state, field_name) when is_binary(value) do
     case Base.decode64(value) do
       {:ok, decoded} ->
         {:ok, decoded}
@@ -173,6 +184,10 @@ defmodule Orchard.Licensing.Validator do
       :error ->
         {:error, {malformed_state, "#{field_name} is not valid base64"}}
     end
+  end
+
+  defp decode_base64_field(_value, malformed_state, field_name) do
+    {:error, {malformed_state, "#{field_name} must be a string"}}
   end
 
   defp normalize_certificate_payload(%{"data" => %{} = data}, :license) do

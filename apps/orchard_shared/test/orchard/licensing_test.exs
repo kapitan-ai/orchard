@@ -8,6 +8,13 @@ defmodule Orchard.LicensingTest do
   @private_key Base.decode16!(String.duplicate("01", 32), case: :mixed)
   @local_node_id "11111111-2222-4333-8444-555555555555"
   @other_node_id "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+  @golden_fixture "keygen_golden"
+  @golden_public_key_hex "f1a328edc3d42967e8545c1361d2dc22622fad52aad0dc8e5d3b3cb95d7cb18a"
+  @golden_public_key Base.decode16!(@golden_public_key_hex, case: :mixed)
+  @golden_fingerprint "19118aa3-33ec-4293-9078-ac28d4a412ef"
+  @golden_license_id "39820870-4eb1-4a98-8c04-0fd8a9c69fe3"
+  @golden_machine_id "5abda8c3-9ab4-4396-82b4-e285ae7fdb52"
+  @golden_expires_at ~U[2026-04-18 00:00:00.000Z]
   @now ~U[2026-04-15 00:00:00Z]
 
   setup do
@@ -89,6 +96,301 @@ defmodule Orchard.LicensingTest do
 
       assert status.state == :invalid_machine_signature
       assert status.message == "Machine certificate signature is invalid."
+    end
+
+    test "returns valid when the license certificate uses Keygen checkout envelope format", ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_license",
+          "mach_keygen_license",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          license_format: :keygen_checkout
+        )
+
+      write_bundle!(ctx.bundle_path, bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :valid
+      assert status.message == "License bundle is valid."
+      assert status.license_id == "lic_keygen_license"
+      assert status.machine_id == "mach_keygen_license"
+      assert status.fingerprint == @local_node_id
+    end
+
+    test "returns valid when the machine certificate uses Keygen checkout envelope format", ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_machine",
+          "mach_keygen_machine",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          machine_format: :keygen_checkout
+        )
+
+      write_bundle!(ctx.bundle_path, bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :valid
+      assert status.message == "License bundle is valid."
+      assert status.license_id == "lic_keygen_machine"
+      assert status.machine_id == "mach_keygen_machine"
+      assert status.fingerprint == @local_node_id
+    end
+
+    test "returns invalid_license_signature when a Keygen license certificate signature is tampered",
+         ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_sig_bad",
+          "mach_keygen_sig_bad",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          license_format: :keygen_checkout
+        )
+
+      tampered_bundle = %{
+        bundle
+        | license_certificate: tamper_signature(bundle.license_certificate)
+      }
+
+      write_bundle!(ctx.bundle_path, tampered_bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :invalid_license_signature
+      assert status.message == "License certificate signature is invalid."
+    end
+
+    test "returns invalid_machine_signature when a Keygen machine certificate enc payload is tampered",
+         ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_enc_bad",
+          "mach_keygen_enc_bad",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          machine_format: :keygen_checkout
+        )
+
+      tampered_enc = Base.encode64("{\"data\":{\"type\":\"machines\",\"id\":\"tampered\"}}")
+
+      tampered_bundle = %{
+        bundle
+        | machine_certificate: tamper_enc(bundle.machine_certificate, tampered_enc)
+      }
+
+      write_bundle!(ctx.bundle_path, tampered_bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :invalid_machine_signature
+      assert status.message == "Machine certificate signature is invalid."
+    end
+
+    test "returns malformed_license_certificate when a Keygen license certificate is missing enc",
+         ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_missing_enc",
+          "mach_keygen_missing_enc",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          license_format: :keygen_checkout
+        )
+
+      tampered_bundle = %{
+        bundle
+        | license_certificate: remove_enc(bundle.license_certificate)
+      }
+
+      write_bundle!(ctx.bundle_path, tampered_bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :malformed_license_certificate
+      assert status.message == "certificate envelope format is invalid"
+    end
+
+    test "returns malformed_machine_certificate when a Keygen machine certificate enc is not a string",
+         ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_non_string_enc",
+          "mach_keygen_non_string_enc",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          machine_format: :keygen_checkout
+        )
+
+      tampered_bundle = %{
+        bundle
+        | machine_certificate: tamper_enc(bundle.machine_certificate, 123)
+      }
+
+      write_bundle!(ctx.bundle_path, tampered_bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :malformed_machine_certificate
+      assert status.message == "payload must be a string"
+    end
+
+    test "returns malformed_license_certificate when a Keygen license certificate alg is unsupported",
+         ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_bad_alg",
+          "mach_keygen_bad_alg",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          license_format: :keygen_checkout,
+          machine_format: :keygen_checkout
+        )
+
+      tampered_bundle = %{
+        bundle
+        | license_certificate: tamper_alg(bundle.license_certificate, "ed25519")
+      }
+
+      write_bundle!(ctx.bundle_path, tampered_bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :malformed_license_certificate
+      assert status.message == "certificate envelope format is invalid"
+    end
+
+    test "returns malformed_machine_certificate when a Keygen machine certificate is missing sig",
+         ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_missing_sig",
+          "mach_keygen_missing_sig",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          license_format: :keygen_checkout,
+          machine_format: :keygen_checkout
+        )
+
+      tampered_bundle = %{
+        bundle
+        | machine_certificate: remove_sig(bundle.machine_certificate)
+      }
+
+      write_bundle!(ctx.bundle_path, tampered_bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :malformed_machine_certificate
+      assert status.message == "certificate signature is missing"
+    end
+
+    test "returns malformed_license_certificate when a Keygen license certificate sig is not a string",
+         ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_non_string_sig",
+          "mach_keygen_non_string_sig",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          license_format: :keygen_checkout,
+          machine_format: :keygen_checkout
+        )
+
+      tampered_bundle = %{
+        bundle
+        | license_certificate: tamper_sig(bundle.license_certificate, 123)
+      }
+
+      write_bundle!(ctx.bundle_path, tampered_bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :malformed_license_certificate
+      assert status.message == "certificate signature is missing"
+    end
+
+    test "returns malformed_machine_certificate when a Keygen machine certificate sig is invalid base64",
+         ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_bad_sig_base64",
+          "mach_keygen_bad_sig_base64",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          license_format: :keygen_checkout,
+          machine_format: :keygen_checkout
+        )
+
+      tampered_bundle = %{
+        bundle
+        | machine_certificate: tamper_sig(bundle.machine_certificate, "not_base64!!!")
+      }
+
+      write_bundle!(ctx.bundle_path, tampered_bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :malformed_machine_certificate
+      assert status.message == "signature is not valid base64"
+    end
+
+    test "returns valid for a real captured Keygen certificate pair", ctx do
+      copy_fixture!(@golden_fixture, ctx.bundle_path)
+      write_node_identity!(ctx.node_identity_path, @golden_fingerprint)
+
+      status =
+        Licensing.inspect_local(opts(ctx, keygen_public_key: @golden_public_key_hex))
+
+      assert status.state == :valid
+      assert status.message == "License bundle is valid."
+      assert status.bundle_path == ctx.bundle_path
+      assert status.fingerprint == @golden_fingerprint
+      assert status.local_node_fingerprint == @golden_fingerprint
+      assert status.license_id == @golden_license_id
+      assert status.machine_id == @golden_machine_id
+      assert status.licensee == nil
+      assert status.max_machines == 10
+      assert status.expires_at == @golden_expires_at
+    end
+
+    test "real captured Keygen certificates use base64+ed25519 envelopes" do
+      bundle = load_fixture_bundle!(@golden_fixture)
+      {_, _, license_envelope} = decode_certificate_envelope(bundle.license_certificate)
+      {_, _, machine_envelope} = decode_certificate_envelope(bundle.machine_certificate)
+
+      assert_keygen_checkout_envelope!(license_envelope)
+      assert_keygen_checkout_envelope!(machine_envelope)
+    end
+
+    test "real captured Keygen certificates verify with kind and encoded payload signing input" do
+      bundle = load_fixture_bundle!(@golden_fixture)
+
+      assert_keygen_signing_input!(bundle.license_certificate, "license")
+      assert_keygen_signing_input!(bundle.machine_certificate, "machine")
     end
 
     test "returns expired when the bundle expiry is in the past", ctx do
@@ -271,8 +573,65 @@ defmodule Orchard.LicensingTest do
       assert Bitwise.band(stat.mode, 0o777) == 0o600
     end
 
+    test "validates and installs a Keygen checkout bundle pair", ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_install",
+          "mach_keygen_install",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          license_format: :keygen_checkout,
+          machine_format: :keygen_checkout
+        )
+
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      assert {:ok, %Licensing{} = status} = Licensing.install_pair(bundle, opts(ctx))
+      assert status.state == :valid
+      assert status.license_id == "lic_keygen_install"
+      assert status.machine_id == "mach_keygen_install"
+      assert status.fingerprint == @local_node_id
+
+      assert Jason.decode!(File.read!(ctx.bundle_path)) == %{
+               "license_certificate" => bundle.license_certificate,
+               "machine_certificate" => bundle.machine_certificate
+             }
+
+      assert {:ok, stat} = File.stat(ctx.bundle_path)
+      assert Bitwise.band(stat.mode, 0o777) == 0o600
+    end
+
     test "keeps the last known good bundle when validation fails", ctx do
       original_bundle = load_fixture_bundle!("valid_bound_to_local")
+      write_bundle!(ctx.bundle_path, original_bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      bad_bundle = %{
+        original_bundle
+        | license_certificate: tamper_signature(original_bundle.license_certificate)
+      }
+
+      original_contents = File.read!(ctx.bundle_path)
+
+      assert {:error, %Licensing{state: :invalid_license_signature}} =
+               Licensing.install_pair(bad_bundle, opts(ctx))
+
+      assert File.read!(ctx.bundle_path) == original_contents
+    end
+
+    test "keeps the last known good Keygen bundle when tampered Keygen install fails", ctx do
+      original_bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_keygen_keep_good",
+          "mach_keygen_keep_good",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          license_format: :keygen_checkout,
+          machine_format: :keygen_checkout
+        )
+
       write_bundle!(ctx.bundle_path, original_bundle)
       write_node_identity!(ctx.node_identity_path, @local_node_id)
 
@@ -484,9 +843,33 @@ defmodule Orchard.LicensingTest do
   end
 
   defp tamper_signature(certificate) do
-    {header, footer, envelope} = decode_certificate_envelope(certificate)
     bad_signature = Base.encode64(:binary.copy(<<0>>, 64))
-    encode_certificate(header, footer, Map.put(envelope, "sig", bad_signature))
+    mutate_certificate_envelope(certificate, &Map.put(&1, "sig", bad_signature))
+  end
+
+  defp tamper_alg(certificate, value) do
+    mutate_certificate_envelope(certificate, &Map.put(&1, "alg", value))
+  end
+
+  defp tamper_sig(certificate, value) do
+    mutate_certificate_envelope(certificate, &Map.put(&1, "sig", value))
+  end
+
+  defp tamper_enc(certificate, value) do
+    mutate_certificate_envelope(certificate, &Map.put(&1, "enc", value))
+  end
+
+  defp remove_sig(certificate) do
+    mutate_certificate_envelope(certificate, &Map.delete(&1, "sig"))
+  end
+
+  defp remove_enc(certificate) do
+    mutate_certificate_envelope(certificate, &Map.delete(&1, "enc"))
+  end
+
+  defp mutate_certificate_envelope(certificate, mutator) do
+    {header, footer, envelope} = decode_certificate_envelope(certificate)
+    encode_certificate(header, footer, mutator.(envelope))
   end
 
   defp decode_certificate_envelope(certificate) do
@@ -513,6 +896,8 @@ defmodule Orchard.LicensingTest do
     machine_license_id = Keyword.get(overrides, :machine_license_id, license_id)
     licensee = Keyword.get(overrides, :licensee, "Acme Orchard Lab")
     max_machines = Keyword.get(overrides, :max_machines, 3)
+    license_format = Keyword.get(overrides, :license_format, :orchard_canonical)
+    machine_format = Keyword.get(overrides, :machine_format, :orchard_canonical)
 
     license_payload = %{
       "data" => %{
@@ -548,21 +933,48 @@ defmodule Orchard.LicensingTest do
     }
 
     %{
-      license_certificate: sign_certificate("LICENSE", license_payload),
-      machine_certificate: sign_certificate("MACHINE", machine_payload)
+      license_certificate:
+        if(license_format == :orchard_canonical,
+          do: sign_certificate("LICENSE", license_payload),
+          else: sign_certificate("LICENSE", license_payload, license_format)
+        ),
+      machine_certificate:
+        if(machine_format == :orchard_canonical,
+          do: sign_certificate("MACHINE", machine_payload),
+          else: sign_certificate("MACHINE", machine_payload, machine_format)
+        )
     }
   end
 
-  defp sign_certificate(kind, payload) do
-    payload_json = Jason.encode!(payload)
-    signature = :crypto.sign(:eddsa, :none, payload_json, [@private_key, :ed25519])
+  defp sign_certificate(kind, payload),
+    do: sign_certificate(kind, payload, :orchard_canonical)
 
-    envelope = %{
-      "alg" => "ed25519",
-      "enc" => "base64",
-      "payload" => Base.encode64(payload_json),
-      "sig" => Base.encode64(signature)
-    }
+  defp sign_certificate(kind, payload, format) do
+    payload_json = Jason.encode!(payload)
+
+    envelope =
+      case format do
+        :orchard_canonical ->
+          signature = :crypto.sign(:eddsa, :none, payload_json, [@private_key, :ed25519])
+
+          %{
+            "alg" => "ed25519",
+            "enc" => "base64",
+            "payload" => Base.encode64(payload_json),
+            "sig" => Base.encode64(signature)
+          }
+
+        :keygen_checkout ->
+          encoded_payload = Base.encode64(payload_json)
+          signing_input = String.downcase(kind) <> "/" <> encoded_payload
+          signature = :crypto.sign(:eddsa, :none, signing_input, [@private_key, :ed25519])
+
+          %{
+            "alg" => "base64+ed25519",
+            "enc" => encoded_payload,
+            "sig" => Base.encode64(signature)
+          }
+      end
 
     header = "-----BEGIN #{kind} FILE-----"
     footer = "-----END #{kind} FILE-----"
@@ -578,6 +990,36 @@ defmodule Orchard.LicensingTest do
       |> wrap_base64()
 
     Enum.join([header, body, footer, ""], "\n")
+  end
+
+  defp assert_keygen_checkout_envelope!(envelope) do
+    assert envelope["alg"] == "base64+ed25519"
+    assert is_binary(envelope["enc"])
+    assert is_binary(envelope["sig"])
+    refute Map.has_key?(envelope, "payload")
+  end
+
+  defp assert_keygen_signing_input!(certificate, kind) do
+    {_, _, envelope} = decode_certificate_envelope(certificate)
+    encoded_payload = envelope["enc"]
+    signature = Base.decode64!(envelope["sig"])
+    decoded_payload = Base.decode64!(encoded_payload)
+
+    assert :crypto.verify(
+             :eddsa,
+             :none,
+             kind <> "/" <> encoded_payload,
+             signature,
+             [@golden_public_key, :ed25519]
+           )
+
+    refute :crypto.verify(
+             :eddsa,
+             :none,
+             decoded_payload,
+             signature,
+             [@golden_public_key, :ed25519]
+           )
   end
 
   defp wrap_base64(encoded) do
