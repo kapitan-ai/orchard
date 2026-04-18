@@ -104,5 +104,4 @@ assistant"
     File.mkdir_p!(bundle_dir)
     bundle_dir
   end
-
 end

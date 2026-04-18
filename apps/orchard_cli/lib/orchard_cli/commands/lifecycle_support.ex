@@ -107,10 +107,10 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
 
   # ── Idempotent Start/Stop ───────────────────────────────────────────
 
-  @doc "Ensures a service is started, preserving idempotent and race-safe launchctl semantics."
+  @doc "Ensures a service is loaded in launchd, preserving idempotent and race-safe semantics."
   def ensure_started(svc, runtime) do
     if service_loaded?(svc, runtime) do
-      {:already_running, svc}
+      {:already_loaded, svc}
     else
       bootstrap_service(svc, runtime)
     end
@@ -128,7 +128,7 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
   defp bootstrap_service(svc, runtime) do
     case run_launchctl(runtime, ["bootstrap", "system", svc.plist_path]) do
       {_output, 0} ->
-        {:started, svc}
+        {:loaded, svc}
 
       {output, code} ->
         start_failure_result(svc, runtime, output, code)
@@ -147,7 +147,7 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
 
   defp start_failure_result(svc, runtime, output, code) do
     if service_loaded?(svc, runtime) do
-      {:already_running, svc}
+      {:already_loaded, svc}
     else
       {:error,
        lifecycle_error_message(

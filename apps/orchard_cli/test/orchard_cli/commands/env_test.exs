@@ -8,10 +8,67 @@ defmodule OrchardCLI.Commands.EnvTest do
   defp test_runtime(overrides \\ %{}) do
     Map.merge(
       %{
-        hostname: fn -> {:ok, ~c"testhost"} end
+        hostname: fn -> {:ok, ~c"testhost"} end,
+        current_user: fn -> {:ok, "orchard_test_user"} end,
+        find_executable: fn
+          "psql" -> "/usr/bin/psql"
+          "createdb" -> "/usr/bin/createdb"
+          _ -> nil
+        end,
+        cmd: fn
+          command, ["-U", "orchard_test_user", "orchard_controller"], _opts ->
+            if Path.basename(command) == "createdb" do
+              {:ok, ""}
+            else
+              {:error, 1, "unsupported command"}
+            end
+
+          _command, _args, _opts ->
+            {:error, 1, "unsupported command"}
+        end,
+        strong_rand_bytes: fn 32 ->
+          <<
+            0x00,
+            0x11,
+            0x22,
+            0x33,
+            0x44,
+            0x55,
+            0x66,
+            0x77,
+            0x88,
+            0x99,
+            0xAA,
+            0xBB,
+            0xCC,
+            0xDD,
+            0xEE,
+            0xFF,
+            0x10,
+            0x20,
+            0x30,
+            0x40,
+            0x50,
+            0x60,
+            0x70,
+            0x80,
+            0x90,
+            0xA0,
+            0xB0,
+            0xC0,
+            0xD0,
+            0xE0,
+            0xF0,
+            0x01
+          >>
+        end
       },
       overrides
     )
+  end
+
+  defp expected_secret_key_base do
+    "00112233445566778899aabbccddeeff102030405060708090a0b0c0d0e0f001"
   end
 
   # Helper: create a support root with fake executables
@@ -101,6 +158,8 @@ defmodule OrchardCLI.Commands.EnvTest do
       assert summary =~ "controller.env"
       assert summary =~ "node-agent.env"
       assert summary =~ "created"
+      assert summary =~ "SECRET_KEY_BASE generated"
+      assert summary =~ "DATABASE_URL generated for local PostgreSQL"
 
       # Verify files exist
       controller_env = Path.join([support_root, "config", "controller.env"])
@@ -110,9 +169,16 @@ defmodule OrchardCLI.Commands.EnvTest do
 
       # Verify content is properly quoted (support root has spaces)
       controller_content = File.read!(controller_env)
+
+      assert controller_content =~
+               "DATABASE_URL=\"ecto://orchard_test_user@localhost:5432/orchard_controller\""
+
+      assert controller_content =~ "SECRET_KEY_BASE=\"#{expected_secret_key_base()}\""
+      refute controller_content =~ ~r/^# DATABASE_URL=/m
+      refute controller_content =~ ~r/^# SECRET_KEY_BASE=/m
       assert controller_content =~ "ORCHARD_TOKENIZER_EXECUTABLE="
       assert controller_content =~ "Application Support"
-      # The path with spaces must be inside double quotes
+
       assert controller_content =~
                ~r/ORCHARD_TOKENIZER_EXECUTABLE="[^"]*Application Support[^"]*"/
 
@@ -204,6 +270,103 @@ defmodule OrchardCLI.Commands.EnvTest do
     end
   end
 
+  test "init writes commented database URL when postgres is not detected" do
+    tmp_dir =
+      System.tmp_dir!()
+      |> Path.join("orchard_env_no_pg_#{System.unique_integer([:positive])}")
+
+    try do
+      support_root = setup_support_root(tmp_dir)
+
+      runtime =
+        test_runtime(%{
+          find_executable: fn _ -> nil end,
+          detect_postgresql: fn -> :error end
+        })
+
+      assert {:ok, summary} = Env.run(["init", "--support-root", support_root], runtime)
+
+      controller_content =
+        Path.join([support_root, "config", "controller.env"])
+        |> File.read!()
+
+      assert controller_content =~
+               "# DATABASE_URL=\"ecto://USER@localhost:5432/orchard_controller\""
+
+      assert controller_content =~ "SECRET_KEY_BASE=\"#{expected_secret_key_base()}\""
+      assert summary =~ "PostgreSQL executable not detected"
+    after
+      File.rm_rf!(tmp_dir)
+    end
+  end
+
+  test "init treats createdb already exists as non-fatal" do
+    tmp_dir =
+      System.tmp_dir!()
+      |> Path.join("orchard_env_exists_#{System.unique_integer([:positive])}")
+
+    try do
+      support_root = setup_support_root(tmp_dir)
+
+      runtime =
+        test_runtime(%{
+          cmd: fn
+            command, ["-U", "orchard_test_user", "orchard_controller"], _opts ->
+              if Path.basename(command) == "createdb" do
+                {:error, 1, "database \"orchard_controller\" already exists"}
+              else
+                {:error, 1, "unsupported command"}
+              end
+
+            _command, _args, _opts ->
+              {:error, 1, "unsupported command"}
+          end
+        })
+
+      assert {:ok, summary} = Env.run(["init", "--support-root", support_root], runtime)
+      assert summary =~ "Database orchard_controller already exists"
+    after
+      File.rm_rf!(tmp_dir)
+    end
+  end
+
+  test "init treats createdb failure as non-fatal" do
+    tmp_dir =
+      System.tmp_dir!()
+      |> Path.join("orchard_env_createdb_fail_#{System.unique_integer([:positive])}")
+
+    try do
+      support_root = setup_support_root(tmp_dir)
+
+      runtime =
+        test_runtime(%{
+          cmd: fn
+            command, ["-U", "orchard_test_user", "orchard_controller"], _opts ->
+              if Path.basename(command) == "createdb" do
+                {:error, 2, "permission denied"}
+              else
+                {:error, 1, "unsupported command"}
+              end
+
+            _command, _args, _opts ->
+              {:error, 1, "unsupported command"}
+          end
+        })
+
+      assert {:ok, summary} = Env.run(["init", "--support-root", support_root], runtime)
+      assert summary =~ "Database auto-create failed"
+
+      controller_content =
+        Path.join([support_root, "config", "controller.env"])
+        |> File.read!()
+
+      assert controller_content =~
+               "DATABASE_URL=\"ecto://orchard_test_user@localhost:5432/orchard_controller\""
+    after
+      File.rm_rf!(tmp_dir)
+    end
+  end
+
   test "init skips existing files without --force" do
     tmp_dir =
       System.tmp_dir!() |> Path.join("orchard_env_skip_#{System.unique_integer([:positive])}")
@@ -211,12 +374,29 @@ defmodule OrchardCLI.Commands.EnvTest do
     try do
       support_root = setup_support_root(tmp_dir)
 
-      # Create first
-      {:ok, _} = Env.run(["init", "--support-root", support_root], test_runtime())
+      parent = self()
 
-      # Run again without --force
-      assert {:ok, summary} =
-               Env.run(["init", "--support-root", support_root], test_runtime())
+      runtime =
+        test_runtime(%{
+          cmd: fn
+            command, ["-U", "orchard_test_user", "orchard_controller"], _opts ->
+              if Path.basename(command) == "createdb" do
+                send(parent, :createdb_called)
+                {:ok, ""}
+              else
+                {:error, 1, "unsupported command"}
+              end
+
+            _command, _args, _opts ->
+              {:error, 1, "unsupported command"}
+          end
+        })
+
+      {:ok, _} = Env.run(["init", "--support-root", support_root], runtime)
+      assert_received :createdb_called
+
+      assert {:ok, summary} = Env.run(["init", "--support-root", support_root], runtime)
+      refute_received :createdb_called
 
       assert summary =~ "skipped"
       assert summary =~ "already exists"

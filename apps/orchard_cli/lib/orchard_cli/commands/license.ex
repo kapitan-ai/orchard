@@ -12,7 +12,11 @@ defmodule OrchardCLI.Commands.License do
   alias Orchard.NodeIdentityFile
 
   @default_keygen_api_base_url "https://api.keygen.sh"
-    @activation_required_validation_codes ["NO_MACHINES", "NO_MACHINE", "FINGERPRINT_SCOPE_MISMATCH"]
+  @activation_required_validation_codes [
+    "NO_MACHINES",
+    "NO_MACHINE",
+    "FINGERPRINT_SCOPE_MISMATCH"
+  ]
   @json_api_content_type "application/vnd.api+json"
 
   @type request_spec :: %{
@@ -697,7 +701,7 @@ defmodule OrchardCLI.Commands.License do
       ]
       |> maybe_put_body(body)
 
-    case Req.request(Req.new(req_opts)) do
+    case OrchardCLI.HTTP.request(req_opts) do
       {:ok, %Req.Response{status: status, body: body}} -> {:ok, %{status: status, body: body}}
       {:error, reason} -> {:error, reason}
     end

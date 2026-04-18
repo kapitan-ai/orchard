@@ -1,20 +1,21 @@
 #!/bin/sh
 set -eu
-# Orchard PKG postinstall — install wrappers, plists, resolve TLS state,
-# generate managed TLS if needed, and register services.
+# Orchard PKG postinstall — install wrappers/plists, resolve TLS state,
+# generate managed TLS if needed, and finish install markers.
 #
 # SPEC.md §11.4: postinstall creation of launchd plists,
 # optional managed DB enablement, optional controller-only or node-only modes.
 #
 # Flow (Sub-tasks 2–4 of Task 4):
-#   1. Install wrapper binaries and symlinks
-#   2. Install launchd plists (no bootstrap yet)
-#   3. Normalize directory ownership/permissions
-#   4. Read install context marker (diagnostic)
-#   5. Securely source controller.env if valid
-#   6. Resolve TLS mode and act (generate / validate / skip)
-#   7. Bootstrap services in dependency order with rollback
-#   8. Write completion marker and clean up context marker
+#   1. Install wrapper binaries
+#   2. Install wrapper symlinks into /usr/local/bin
+#   3. Install launchd plists (no bootstrap yet)
+#   4. Normalize directory ownership/permissions
+#   5. Read install context marker (diagnostic)
+#   6. Securely source controller.env if valid
+#   7. Resolve TLS mode and act (generate / validate / skip)
+#   8. Optionally bootstrap managed postgres only
+#   9. Write completion marker and clean up context marker
 
 ORCHARD_ROOT="/Library/Application Support/Orchard"
 LAUNCHD_SRC="$ORCHARD_ROOT/share/launchd"
@@ -175,10 +176,20 @@ for cmd in orchard-controller orchard-node-agent orchardctl orchard-managed-post
 done
 
 # ===========================================================================
-# 2. Symlink orchardctl into PATH (/usr/local/bin)
+# 2. Symlink wrappers into PATH (/usr/local/bin)
 # ===========================================================================
+# Note: Symlinks are created conditionally to support controller-only or
+# node-only install modes (SPEC.md §11.4). Missing binaries are skipped
+# without error as they may be intentionally absent in partial installs.
 mkdir -p /usr/local/bin
-ln -sf "$ORCHARD_ROOT/bin/orchardctl" /usr/local/bin/orchardctl
+for cmd in orchardctl orchard-controller orchard-node-agent; do
+  src="$ORCHARD_ROOT/bin/$cmd"
+  if [ -x "$src" ]; then
+    ln -sf "$src" "/usr/local/bin/$cmd"
+  else
+    printf 'postinstall: INFO: skipping PATH symlink for %s (not present - optional install mode)\n' "$cmd" >&2
+  fi
+done
 
 # ===========================================================================
 # 3. Install launchd plists (no bootstrap yet)
@@ -213,10 +224,12 @@ fi
 # would mask insecure controller.env ownership.
 chown root:wheel "$ORCHARD_ROOT"
 chown root:wheel "$ORCHARD_ROOT/bin" "$ORCHARD_ROOT/support"
-chown root:wheel "$ORCHARD_ROOT/config"
-chown root:wheel "$ORCHARD_ROOT/config/tls"
-chmod 0700 "$ORCHARD_ROOT/config"
-chmod 0700 "$ORCHARD_ROOT/config/tls"
+chown root:admin "$ORCHARD_ROOT/config" "$ORCHARD_ROOT/config/tls"
+chown root:wheel "$ORCHARD_ROOT/logs"
+# 0750 grants admin-group traversal/read while keeping access restricted.
+chmod 0750 "$ORCHARD_ROOT/config"
+chmod 0750 "$ORCHARD_ROOT/config/tls"
+chmod 0755 "$ORCHARD_ROOT/logs"
 
 # ===========================================================================
 # 5. Read install context marker (diagnostic)
@@ -241,6 +254,15 @@ printf 'postinstall: install_mode=%s reason=%s\n' "$install_mode" "$install_reas
 # 6. Securely source controller.env if valid
 # ===========================================================================
 secure_source_env "$ORCHARD_ROOT/config/controller.env"
+
+# Keep env files owner-only (0600) for security - secrets inside.
+# orchardctl CLI does not need to read these; it uses defaults/support-root discovery.
+for env_file in "$ORCHARD_ROOT/config/controller.env" "$ORCHARD_ROOT/config/node-agent.env"; do
+  if [ -f "$env_file" ]; then
+    chown root:wheel "$env_file"
+    chmod 0600 "$env_file"
+  fi
+done
 
 # ===========================================================================
 # 7. Resolve TLS mode and act
@@ -324,50 +346,13 @@ case "$tls_mode" in
 esac
 
 # ===========================================================================
-# 8. Bootstrap services in dependency order with rollback
+# 8. Optionally bootstrap managed postgres only
 # ===========================================================================
-bootstrapped=""  # space-delimited labels, prepended for reverse-order rollback
-
-rollback_and_exit() {
-  _rc="$1"
-  if [ -n "$bootstrapped" ]; then
-    printf 'postinstall: rolling back bootstrapped services...\n' >&2
-    for _svc in $bootstrapped; do
-      printf 'postinstall: bootout %s\n' "$_svc" >&2
-      launchctl bootout system/"$_svc" 2>/dev/null || true
-    done
-  fi
-  exit "$_rc"
-}
-
-# 8a. Managed Postgres (optional, first in dependency order)
 if [ -f /Library/LaunchDaemons/com.orchard.postgres.plist ] && \
    [ -x "$ORCHARD_ROOT/bin/orchard-managed-postgres" ]; then
-  if bootstrap_service com.orchard.postgres /Library/LaunchDaemons/com.orchard.postgres.plist; then
-    bootstrapped="com.orchard.postgres $bootstrapped"
-  else
+  if ! bootstrap_service com.orchard.postgres /Library/LaunchDaemons/com.orchard.postgres.plist; then
     printf 'postinstall: ERROR: failed to bootstrap com.orchard.postgres\n' >&2
-    rollback_and_exit 1
-  fi
-fi
-
-# 8b. Node agent
-if [ -f /Library/LaunchDaemons/com.orchard.node-agent.plist ]; then
-  if bootstrap_service com.orchard.node-agent /Library/LaunchDaemons/com.orchard.node-agent.plist; then
-    bootstrapped="com.orchard.node-agent $bootstrapped"
-  else
-    printf 'postinstall: ERROR: failed to bootstrap com.orchard.node-agent\n' >&2
-    rollback_and_exit 1
-  fi
-fi
-
-# 8c. Controller (last)
-if [ -f /Library/LaunchDaemons/com.orchard.controller.plist ]; then
-  if bootstrap_service com.orchard.controller /Library/LaunchDaemons/com.orchard.controller.plist; then
-    bootstrapped="com.orchard.controller $bootstrapped"
-  else
-    printf 'postinstall: ERROR: failed to bootstrap com.orchard.controller\n' >&2
-    rollback_and_exit 1
+    exit 1
   fi
 fi
 
@@ -384,5 +369,7 @@ mv -f "$complete_tmp" "$complete_file"
 # Remove transient context marker
 rm -f "$ORCHARD_ROOT/support/.pkg-install-context"
 
-printf 'Orchard postinstall complete.\n'
+printf 'Orchard installation complete.\n'
+printf 'Controller and node-agent launchd services were installed but not started.\n'
+printf 'Run: sudo orchardctl start\n'
 exit 0

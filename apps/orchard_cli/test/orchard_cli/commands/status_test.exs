@@ -351,6 +351,52 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert Keyword.get(opts, :ca_certfile) == "/path/to/ca.crt"
   end
 
+  # ── add_ca_cert_connect_options regression tests ───────────────────────
+
+  test "add_ca_cert_connect_options adds nested transport_opts for Req 0.5.x" do
+    opts = [connect_timeout: 5_000, receive_timeout: 10_000]
+
+    result = Status.add_ca_cert_connect_options(opts, "/path/to/ca.crt")
+
+    # Critical: must use :transport_opts (not :transport_options) with :cacertfile
+    # Note: connect_options only contains the nested transport_opts,
+    # not the top-level connect_timeout/receive_timeout
+    assert Keyword.get(result, :connect_options) == [
+             transport_opts: [cacertfile: "/path/to/ca.crt"]
+           ]
+
+    # Original opts preserved at top level
+    assert Keyword.get(result, :connect_timeout) == 5_000
+    assert Keyword.get(result, :receive_timeout) == 10_000
+  end
+
+  test "add_ca_cert_connect_options merges with existing transport_opts" do
+    opts = [
+      connect_timeout: 5_000,
+      connect_options: [
+        timeout: 3_000,
+        transport_opts: [custom_opt: :value]
+      ]
+    ]
+
+    result = Status.add_ca_cert_connect_options(opts, "/path/to/ca.crt")
+
+    transport_opts =
+      result
+      |> Keyword.get(:connect_options, [])
+      |> Keyword.get(:transport_opts, [])
+
+    # Must merge, not replace existing transport_opts
+    assert Keyword.get(transport_opts, :cacertfile) == "/path/to/ca.crt"
+    assert Keyword.get(transport_opts, :custom_opt) == :value
+  end
+
+  test "add_ca_cert_connect_options returns opts unchanged when cert is nil" do
+    opts = [connect_timeout: 5_000]
+    result = Status.add_ca_cert_connect_options(opts, nil)
+    assert result == opts
+  end
+
   # ── Invalid / Malformed Response ──────────────────────────────────────
 
   # Invalid responses are treated as failed candidates while probing.

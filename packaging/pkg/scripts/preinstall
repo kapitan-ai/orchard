@@ -25,9 +25,14 @@ for dir in bin config config/tls data models bundles logs support releases; do
   mkdir -p "$ORCHARD_ROOT/$dir"
 done
 
-# Harden sensitive directories
-chmod 0700 "$ORCHARD_ROOT/config"
-chmod 0700 "$ORCHARD_ROOT/config/tls"
+# Harden config directories for admin-group traversal/read
+chown root:admin "$ORCHARD_ROOT/config" "$ORCHARD_ROOT/config/tls"
+chmod 0750 "$ORCHARD_ROOT/config"
+chmod 0750 "$ORCHARD_ROOT/config/tls"
+
+# Ensure launchd log targets are accessible for daemon logging and diagnostics
+chown root:wheel "$ORCHARD_ROOT/logs"
+chmod 0755 "$ORCHARD_ROOT/logs"
 
 # --- 3. Detect install mode (fresh vs upgrade) -----------------------------
 # Used by postinstall to decide whether to auto-generate TLS certificates.

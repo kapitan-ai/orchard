@@ -65,10 +65,10 @@ defmodule OrchardCLI.Commands.Start do
 
   defp bootstrap_all([svc | rest], runtime, acc) do
     case LifecycleSupport.ensure_started(svc, runtime) do
-      {:started, _} = result ->
+      {:loaded, _} = result ->
         bootstrap_all(rest, runtime, [result | acc])
 
-      {:already_running, _} = result ->
+      {:already_loaded, _} = result ->
         bootstrap_all(rest, runtime, [result | acc])
 
       {:error, msg, code} ->
@@ -131,54 +131,54 @@ defmodule OrchardCLI.Commands.Start do
   end
 
   defp format_preface(results) do
-    all_already = Enum.all?(results, fn {action, _} -> action == :already_running end)
-    any_already = Enum.any?(results, fn {action, _} -> action == :already_running end)
+    all_already = Enum.all?(results, fn {action, _} -> action == :already_loaded end)
+    any_already = Enum.any?(results, fn {action, _} -> action == :already_loaded end)
 
     cond do
-      all_already -> "Orchard services already running."
-      any_already -> "Started Orchard services; some services were already running."
-      true -> "Started Orchard services."
+      all_already -> "Orchard services already loaded in launchd."
+      any_already -> "Loaded Orchard services into launchd; some services were already loaded."
+      true -> "Loaded Orchard services into launchd."
     end
   end
 
   defp format_partial_start_note(results) do
     ordered_results = Enum.reverse(results)
 
-    started =
+    loaded =
       ordered_results
-      |> Enum.filter(fn {action, _svc} -> action == :started end)
+      |> Enum.filter(fn {action, _svc} -> action == :loaded end)
       |> Enum.map(fn {_action, svc} -> svc.display_name end)
 
-    already_running =
+    already_loaded =
       ordered_results
-      |> Enum.filter(fn {action, _svc} -> action == :already_running end)
+      |> Enum.filter(fn {action, _svc} -> action == :already_loaded end)
       |> Enum.map(fn {_action, svc} -> svc.display_name end)
 
     note =
-      case {started, already_running} do
+      case {loaded, already_loaded} do
         {[], []} ->
           ""
 
-        {started, []} ->
-          "Note: #{format_service_bucket(started, :started)}"
+        {loaded, []} ->
+          "Note: #{format_service_bucket(loaded, :loaded)}"
 
-        {[], running} ->
-          "Note: #{format_service_bucket(running, :already_running)}"
+        {[], already_loaded} ->
+          "Note: #{format_service_bucket(already_loaded, :already_loaded)}"
 
-        {started, running} ->
-          "Note: #{format_service_bucket(started, :started)} " <>
-            "#{format_service_bucket(running, :already_running)}"
+        {loaded, already_loaded} ->
+          "Note: #{format_service_bucket(loaded, :loaded)} " <>
+            "#{format_service_bucket(already_loaded, :already_loaded)}"
       end
 
     "\n" <> note <> "\nRun: sudo orchardctl stop"
   end
 
-  defp format_service_bucket(names, :started) do
-    "#{join_display_names(names)} #{was_or_were(names)} started but not rolled back."
+  defp format_service_bucket(names, :loaded) do
+    "#{join_display_names(names)} #{was_or_were(names)} loaded into launchd but not rolled back."
   end
 
-  defp format_service_bucket(names, :already_running) do
-    "#{join_display_names(names)} #{was_or_were(names)} already running and not changed."
+  defp format_service_bucket(names, :already_loaded) do
+    "#{join_display_names(names)} #{was_or_were(names)} already loaded in launchd and not changed."
   end
 
   defp was_or_were([_one]), do: "was"

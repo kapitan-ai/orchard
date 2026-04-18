@@ -3,10 +3,11 @@ defmodule OrchardCLI.Commands.Env do
   CLI handler for `orchardctl env` commands.
 
   Supports:
-    orchardctl env init [options]     — Generate env file templates for packaged services
+    orchardctl env init [options]     — Generate env files for packaged services
   """
 
   @default_support_root "/Library/Application Support/Orchard"
+  @default_db_name "orchard_controller"
 
   # ── Public API ──────────────────────────────────────────────────────
 
@@ -89,7 +90,6 @@ defmodule OrchardCLI.Commands.Env do
 
     targets = targets_for_service(service)
 
-    # Pre-validate: check all required executables exist before writing anything
     with :ok <- validate_executables(targets, support_root) do
       config_dir = Path.join(support_root, "config")
 
@@ -98,7 +98,8 @@ defmodule OrchardCLI.Commands.Env do
 
         results =
           Enum.map(targets, fn target ->
-            {target, generate_env_file(target, config_dir, support_root, hostname, force)}
+            {target,
+             generate_env_file(target, config_dir, support_root, hostname, force, runtime)}
           end)
 
         format_results(results)
@@ -187,30 +188,44 @@ defmodule OrchardCLI.Commands.Env do
 
   # ── Env File Generation ─────────────────────────────────────────────
 
-  defp generate_env_file(target, config_dir, support_root, hostname, force) do
+  defp generate_env_file(target, config_dir, support_root, hostname, force, runtime) do
     filename = env_filename(target)
     target_path = Path.join(config_dir, filename)
 
     cond do
       not File.regular?(target_path) ->
-        content = render_env(target, support_root, hostname)
-        write_env_file(target_path, content)
-        :created
+        write_rendered_env(target, target_path, support_root, hostname, runtime, :created)
 
       force ->
-        content = render_env(target, support_root, hostname)
-        write_env_file(target_path, content)
-        :overwritten
+        write_rendered_env(target, target_path, support_root, hostname, runtime, :overwritten)
 
       true ->
-        :skipped_existing
+        %{status: :skipped_existing, notes: []}
     end
+  end
+
+  defp write_rendered_env(:controller, target_path, support_root, _hostname, runtime, status) do
+    controller_settings = build_controller_settings(runtime)
+
+    content = render_env(:controller, support_root, controller_settings)
+    write_env_file(target_path, content)
+
+    notes = controller_settings.notes ++ maybe_create_database(runtime, controller_settings)
+
+    %{status: status, notes: notes}
+  end
+
+  defp write_rendered_env(:node_agent, target_path, support_root, hostname, _runtime, status) do
+    content = render_env(:node_agent, support_root, hostname)
+    write_env_file(target_path, content)
+
+    %{status: status, notes: []}
   end
 
   defp env_filename(:controller), do: "controller.env"
   defp env_filename(:node_agent), do: "node-agent.env"
 
-  defp render_env(:controller, support_root, _hostname) do
+  defp render_env(:controller, support_root, controller_settings) do
     tokenizer_path = resolve_executable(:tokenizer, support_root)
 
     """
@@ -220,10 +235,10 @@ defmodule OrchardCLI.Commands.Env do
     # This file is sourced as POSIX shell. All values with spaces MUST be quoted.
     # See: packaging/pkg/README.md
 
-    # ── Required (fill these in) ──────────────────────────────────────
+    # ── Required ──────────────────────────────────────────────────────
 
-    # DATABASE_URL="postgres://USER:PASSWORD@localhost:5432/orchard_controller"
-    # SECRET_KEY_BASE="generate-with: mix phx.gen.secret"
+    #{controller_settings.database_url_line}
+    SECRET_KEY_BASE=#{shell_quote(controller_settings.secret_key_base)}
 
     # ── Optional ──────────────────────────────────────────────────────
 
@@ -256,6 +271,143 @@ defmodule OrchardCLI.Commands.Env do
 
     ORCHARD_WORKER_EXECUTABLE=#{shell_quote(worker_path)}
     """
+  end
+
+  defp build_controller_settings(runtime) do
+    secret_key_base = generate_secret_key_base(runtime)
+    user_result = resolve_current_user(runtime)
+    postgresql_result = detect_postgresql(runtime)
+
+    case {user_result, postgresql_result} do
+      {{:ok, username}, {:ok, _postgres_path}} ->
+        database_url = "ecto://#{username}@localhost:5432/#{@default_db_name}"
+
+        %{
+          secret_key_base: secret_key_base,
+          database_url: database_url,
+          database_url_line: "DATABASE_URL=#{shell_quote(database_url)}",
+          notes: [
+            "SECRET_KEY_BASE generated.",
+            "DATABASE_URL generated for local PostgreSQL."
+          ]
+        }
+
+      {{:error, :unknown_user}, _} ->
+        %{
+          secret_key_base: secret_key_base,
+          database_url: nil,
+          database_url_line: "# DATABASE_URL=\"ecto://USER@localhost:5432/#{@default_db_name}\"",
+          notes: [
+            "SECRET_KEY_BASE generated.",
+            "Could not resolve current user; DATABASE_URL left commented for manual setup."
+          ]
+        }
+
+      _ ->
+        %{
+          secret_key_base: secret_key_base,
+          database_url: nil,
+          database_url_line: "# DATABASE_URL=\"ecto://USER@localhost:5432/#{@default_db_name}\"",
+          notes: [
+            "SECRET_KEY_BASE generated.",
+            "PostgreSQL executable not detected; DATABASE_URL left commented for manual setup."
+          ]
+        }
+    end
+  end
+
+  defp resolve_current_user(runtime) do
+    current_user_fn = Map.fetch!(runtime, :current_user)
+
+    case current_user_fn.() do
+      {:ok, user} when is_binary(user) ->
+        user = String.trim(user)
+
+        if user == "" do
+          {:error, :unknown_user}
+        else
+          {:ok, user}
+        end
+
+      _ ->
+        {:error, :unknown_user}
+    end
+  end
+
+  defp detect_postgresql(runtime) do
+    case Map.get(runtime, :detect_postgresql) do
+      detector when is_function(detector, 0) ->
+        detector.()
+
+      _ ->
+        finder = Map.fetch!(runtime, :find_executable)
+
+        homebrew_candidates =
+          Path.wildcard("/opt/homebrew/opt/postgresql*/bin/psql") ++
+            Path.wildcard("/usr/local/opt/postgresql*/bin/psql")
+
+        case Enum.find(homebrew_candidates, &executable?/1) || finder.("psql") do
+          nil -> :error
+          path -> {:ok, path}
+        end
+    end
+  end
+
+  defp maybe_create_database(_runtime, %{database_url: nil}), do: []
+
+  defp maybe_create_database(runtime, %{database_url: _database_url}) do
+    finder = Map.fetch!(runtime, :find_executable)
+
+    with {:ok, username} <- resolve_current_user(runtime),
+         createdb_path when is_binary(createdb_path) <- detect_createdb(finder) do
+      run_createdb(runtime, createdb_path, username)
+    else
+      {:error, :unknown_user} ->
+        ["Could not resolve current user for createdb; database auto-create skipped."]
+
+      nil ->
+        ["createdb not found; database auto-create skipped."]
+
+      _ ->
+        ["createdb invocation skipped due to unsupported runtime command configuration."]
+    end
+  end
+
+  defp run_createdb(runtime, createdb_path, username) do
+    cmd = Map.fetch!(runtime, :cmd)
+    args = ["-U", username, @default_db_name]
+
+    case cmd.(createdb_path, args, stderr_to_stdout: true) do
+      {:ok, _output} ->
+        ["Database #{@default_db_name} created (or already available)."]
+
+      {:error, _status, output} ->
+        createdb_error_note(output)
+    end
+  end
+
+  defp createdb_error_note(output) do
+    if String.contains?(String.downcase(output), "already exists") do
+      ["Database #{@default_db_name} already exists."]
+    else
+      ["Database auto-create failed; continue after creating #{@default_db_name} manually."]
+    end
+  end
+
+  defp detect_createdb(finder) do
+    homebrew_candidates =
+      Path.wildcard("/opt/homebrew/opt/postgresql*/bin/createdb") ++
+        Path.wildcard("/usr/local/opt/postgresql*/bin/createdb")
+
+    Enum.find(homebrew_candidates, &executable?/1) || finder.("createdb")
+  end
+
+  defp generate_secret_key_base(runtime) do
+    strong_rand_bytes = Map.fetch!(runtime, :strong_rand_bytes)
+
+    32
+    |> strong_rand_bytes.()
+    |> Base.encode16(case: :lower)
   end
 
   # ── Shell Quoting ────────────────────────────────────────────────────
@@ -297,7 +449,6 @@ defmodule OrchardCLI.Commands.Env do
       File.rename!(tmp_path, target_path)
     rescue
       e ->
-        # Clean up temp file on failure
         File.rm(tmp_path)
         reraise e, __STACKTRACE__
     end
@@ -329,26 +480,98 @@ defmodule OrchardCLI.Commands.Env do
 
   defp format_results(results) do
     lines =
-      Enum.map(results, fn {target, status} ->
+      Enum.flat_map(results, fn {target, result} ->
         label = env_filename(target)
 
-        case status do
-          :created -> "  ✓ #{label} — created"
-          :overwritten -> "  ✓ #{label} — overwritten"
-          :skipped_existing -> "  ○ #{label} — skipped (already exists, use --force to overwrite)"
-        end
+        status = result_status(result)
+
+        status_line =
+          case status do
+            :created ->
+              "  ✓ #{label} — created"
+
+            :overwritten ->
+              "  ✓ #{label} — overwritten"
+
+            :skipped_existing ->
+              "  ○ #{label} — skipped (already exists, use --force to overwrite)"
+          end
+
+        notes =
+          result_notes(result)
+          |> Enum.map(fn note -> "      - #{note}" end)
+
+        [status_line | notes]
       end)
 
     summary = Enum.join(["Environment files:" | lines], "\n")
     {:ok, summary}
   end
 
+  defp result_status(%{status: status}), do: status
+  defp result_status(status) when is_atom(status), do: status
+
+  defp result_notes(%{notes: notes}) when is_list(notes), do: notes
+  defp result_notes(_), do: []
+
   # ── Default Runtime ─────────────────────────────────────────────────
 
   defp default_runtime do
     %{
-      hostname: fn -> :inet.gethostname() end
+      hostname: fn -> :inet.gethostname() end,
+      current_user: &default_current_user/0,
+      find_executable: &System.find_executable/1,
+      cmd: &default_cmd/3,
+      strong_rand_bytes: &:crypto.strong_rand_bytes/1
     }
+  end
+
+  defp default_current_user do
+    sudo_user = System.get_env("SUDO_USER")
+    user = System.get_env("USER")
+
+    cond do
+      present?(sudo_user) -> {:ok, String.trim(sudo_user)}
+      present?(user) -> {:ok, String.trim(user)}
+      true -> fallback_current_user()
+    end
+  end
+
+  defp fallback_current_user do
+    case default_cmd("id", ["-un"], stderr_to_stdout: true) do
+      {:ok, output} -> normalize_resolved_user(output)
+      _ -> {:error, :unknown_user}
+    end
+  end
+
+  defp normalize_resolved_user(output) do
+    value = String.trim(output)
+
+    if value == "" do
+      {:error, :unknown_user}
+    else
+      {:ok, value}
+    end
+  end
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
+
+  defp default_cmd(command, args, opts) do
+    {stderr_to_stdout, system_opts} = Keyword.pop(opts, :stderr_to_stdout, false)
+
+    try do
+      {output, status} =
+        System.cmd(command, args, [{:stderr_to_stdout, stderr_to_stdout} | system_opts])
+
+      if status == 0 do
+        {:ok, output}
+      else
+        {:error, status, output}
+      end
+    rescue
+      _ ->
+        {:error, 127, "command failed: #{command}"}
+    end
   end
 
   # ── Usage Text ──────────────────────────────────────────────────────
@@ -358,7 +581,7 @@ defmodule OrchardCLI.Commands.Env do
     orchardctl env <command>
 
     Commands:
-      init        Generate env file templates for packaged services
+      init        Generate env files for packaged services
 
     Run `orchardctl env <command> --help` for command-specific options.
     """
@@ -369,7 +592,7 @@ defmodule OrchardCLI.Commands.Env do
     """
     orchardctl env init [options]
 
-    Generate controller.env and node-agent.env templates with correctly-quoted
+    Generate controller.env and node-agent.env with correctly-quoted
     paths for the packaged Orchard installation. Values containing spaces are
     safely shell-quoted.
 

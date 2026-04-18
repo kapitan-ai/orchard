@@ -62,8 +62,10 @@ echo 'ORCHARD_WORKER_BACKEND=stub' | sudo tee \
 sudo chmod 600 '/Library/Application Support/Orchard/config/node-agent.env'
 ```
 
-The `config/` directory is set to mode `0700` by the installer, so only root
-can create or modify files within it.
+The `config/` directory is set to mode `0750` root:admin by the installer,
+allowing members of the admin group (GID 80) to traverse and read configuration.
+Private keys and secrets in env files remain protected via owner-only (0600)
+permissions.
 
 ### Shell quoting requirement
 
@@ -460,10 +462,15 @@ persists.
 
 ### Directories
 
-| Path | Mode | Owner | Set by |
-|------|------|-------|--------|
-| `config/` | `0700` | `root:wheel` | preinstall, postinstall |
-| `config/tls/` | `0700` | `root:wheel` | preinstall, postinstall |
+| Path | Mode | Owner | Group | Set by | Purpose |
+|------|------|-------|-------|--------|---------|
+| `config/` | `0750` | `root` | `admin` | preinstall, postinstall | Admin group read/traverse; secrets protected via file perms |
+| `config/tls/` | `0750` | `root` | `admin` | preinstall, postinstall | Admin group read/traverse for TLS verification |
+| `logs/` | `0755` | `root` | `wheel` | preinstall, postinstall | World-readable logs for troubleshooting |
+
+**Note**: The `admin` group (GID 80) is the standard macOS administrator group.
+Most developer accounts are members. This allows `orchardctl` CLI to function for
+admin users while keeping secrets protected.
 
 ### TLS files
 
@@ -493,21 +500,23 @@ certificates for the controller HTTPS listener.
 
 ### Installer behavior
 
-**Fresh install (no prior Orchard):**
-1. `preinstall` creates `config/tls/` directory (mode `0700`)
+### Fresh install (no prior Orchard):
+1. `preinstall` creates `config/tls/` directory (mode `0750` root:admin - admin group accessible)
 2. `postinstall` detects empty TLS state and runs:
    `orchardctl tls init --no-trust`
 3. Generates `ca.key`, `ca.crt`, `controller.key`, `controller.crt` under
    `config/tls/`
 4. Does **not** auto-trust the CA in Keychain (operator must run
    `sudo orchardctl tls trust-ca` manually)
-5. Bootstraps services after TLS generation succeeds
+5. Bootstraps managed PostgreSQL only (if present); controller and node-agent services must be started manually via `sudo orchardctl start`
 
 **Upgrade (existing install):**
 - Preserves existing managed TLS files (no overwrite, no regeneration)
 - If no TLS files exist (upgrading from pre-TLS version), generates them
 - Partial TLS state (some files missing) **aborts the install** with a
   clear error listing which files are present/missing
+- **Services are stopped during upgrade and NOT auto-restarted** — run
+  `sudo orchardctl start` after upgrade to restore services
 
 ### TLS modes
 
@@ -577,15 +586,19 @@ The installer writes diagnostic markers under `support/`:
 | `.pkg-install-context` | Transient: install mode (fresh/upgrade) | Written by preinstall, removed on postinstall success |
 | `.pkg-install-complete` | Persistent: last successful install timestamp | Written on postinstall success, never auto-removed |
 
-## Service bootstrap order
+## Service Bootstrap
 
-Postinstall bootstraps services in dependency order:
-1. `com.orchard.postgres` (if managed postgres is present)
-2. `com.orchard.node-agent`
-3. `com.orchard.controller`
+Postinstall **only bootstraps managed PostgreSQL** (if present). Controller and
+node-agent services are **not auto-started** during install to allow proper
+configuration first:
 
-Bootstrap failures trigger reverse-order rollback of previously started
-services and abort the install.
+1. Install PKG
+2. Run `sudo orchardctl env init` (auto-configures environment)
+3. Run `sudo orchard-controller eval 'Orchard.Release.migrate()'` (database)
+4. Run `sudo orchardctl start` (bootstraps controller + node-agent)
+
+This deferred bootstrap ensures services start with valid configuration
+rather than crash-looping with missing environment variables.
 
 ## Responsibilities
 
@@ -596,3 +609,59 @@ services and abort the install.
 - Generate managed TLS certificates on fresh install
 - Validate TLS state before bootstrapping services
 - Detect fresh install vs upgrade and write diagnostic markers
+
+## PKG Filename Policy
+
+Orchard PKG releases follow a structured naming convention to minimize user
+confusion while preserving build traceability.
+
+### Filename Format
+
+```
+Orchard-<app_version>-<YYYYMMDD>-<git_sha7>.pkg
+```
+
+| Component | Example | Purpose |
+|-----------|---------|---------|
+| `app_version` | `0.5.0-dev` | Matches `orchardctl status` output |
+| `YYYYMMDD` | `20260417` | Build date (chronological sorting) |
+| `git_sha7` | `e152300` | Traceability for debug/support |
+
+### Example
+
+```
+Orchard-0.5.0-dev-20260417-e152300.pkg
+```
+
+### Key Principles
+
+1. **App version first**: Users see `0.5.0-dev` in both filename and `orchardctl status`
+2. **Date for sorting**: Chronological ordering when multiple builds exist
+3. **Git hash last**: Developer/support traceability without user confusion
+4. **Hyphen separators**: Tooling-friendly (URLs, MDM, Jamf, etc.)
+
+### Version Mismatch Clarification
+
+The **PKG filename version** (e.g., `0.5.0-dev`) refers to the Orchard application
+version inside the package. This is the version reported by:
+- `orchardctl status`
+- `/health/ready` API endpoint
+- `Orchard.version/0` function
+
+This is distinct from packaging iteration numbers (previously used `v0.2.1`
+etc.) which caused confusion when the PKG claimed one version but the app
+reported another.
+
+### Enterprise Deployment
+
+For MDM/Jamf deployment automation:
+- Use the full traceable filename for internal tracking
+- Consider a symlink or alias `Orchard-latest-dev.pkg` for automation
+- Checksum verification is recommended for security
+
+### Historical Note
+
+Earlier PKG iterations used divergent versioning (PKG `v0.2.1` containing
+app `v0.5.0-dev`). This was corrected in the 0.5.0 release cycle to align
+with the policy above.
+

@@ -264,7 +264,8 @@ defmodule OrchardCLI.Commands.TLSTest do
     assert File.regular?(Path.join(dir, "controller.crt"))
     assert File.regular?(Path.join(dir, ".orchard-tls-meta.json"))
 
-    # Verify file permissions
+    # Verify directory/file permissions
+    assert file_mode(dir) == 0o750
     assert file_mode(Path.join(dir, "ca.key")) == 0o600
     assert file_mode(Path.join(dir, "ca.crt")) == 0o644
     assert file_mode(Path.join(dir, "controller.key")) == 0o600

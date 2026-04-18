@@ -64,7 +64,8 @@ defmodule Orchard.Licensing.Validator do
     malformed_state = malformed_state(kind)
     invalid_signature_state = invalid_signature_state(kind)
 
-    with {:ok, payload_json, signing_input, signature} <- extract_signed_payload(certificate, kind),
+    with {:ok, payload_json, signing_input, signature} <-
+           extract_signed_payload(certificate, kind),
          true <-
            verify_signature(signing_input, signature, public_key) ||
              {:error, invalid_signature_state},
@@ -104,7 +105,8 @@ defmodule Orchard.Licensing.Validator do
   defp decode_signed_envelope(encoded_body, kind, malformed_state) do
     with {:ok, body} <- decode_base64_field(encoded_body, malformed_state, "certificate body"),
          {:ok, envelope} <- decode_json_object(body, malformed_state, "certificate envelope"),
-         {:ok, payload_json, signing_input} <- extract_payload_and_signing_input(envelope, kind, malformed_state),
+         {:ok, payload_json, signing_input} <-
+           extract_payload_and_signing_input(envelope, kind, malformed_state),
          {:ok, signature} <- decode_signature_field(envelope, malformed_state) do
       {:ok, payload_json, signing_input, signature}
     end
@@ -116,14 +118,16 @@ defmodule Orchard.Licensing.Validator do
       # Orchard canonical format: payload field, sign over decoded bytes
       Map.has_key?(envelope, "payload") and envelope["alg"] == "ed25519" and
           envelope["enc"] == "base64" ->
-        with {:ok, payload_json} <- decode_base64_field(envelope["payload"], malformed_state, "payload") do
+        with {:ok, payload_json} <-
+               decode_base64_field(envelope["payload"], malformed_state, "payload") do
           # Sign over decoded payload JSON bytes
           {:ok, payload_json, payload_json}
         end
 
       # Keygen checkout format: enc field, sign over "<kind>/<enc>" bytes
       envelope["alg"] == "base64+ed25519" and Map.has_key?(envelope, "enc") ->
-        with {:ok, payload_json} <- decode_base64_field(envelope["enc"], malformed_state, "payload") do
+        with {:ok, payload_json} <-
+               decode_base64_field(envelope["enc"], malformed_state, "payload") do
           # Sign over "<kind>/<base64_payload>" (e.g., "license/eyJ...")
           signing_input = "#{kind}/#{envelope["enc"]}"
           {:ok, payload_json, signing_input}
@@ -142,8 +146,6 @@ defmodule Orchard.Licensing.Validator do
   defp decode_signature_field(_envelope, malformed_state) do
     {:error, {malformed_state, "certificate signature is missing"}}
   end
-
-
 
   defp verify_signature(payload_json, signature, public_key) do
     :crypto.verify(:eddsa, :none, payload_json, signature, [public_key, :ed25519])

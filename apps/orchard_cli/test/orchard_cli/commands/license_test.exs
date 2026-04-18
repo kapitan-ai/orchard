@@ -70,7 +70,7 @@ defmodule OrchardCLI.Commands.LicenseTest do
   @other_node_id "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
   @account_id "orchard-test"
   @public_key "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
-    @activation_required_codes ["NO_MACHINES", "NO_MACHINE", "FINGERPRINT_SCOPE_MISMATCH"]
+  @activation_required_codes ["NO_MACHINES", "NO_MACHINE", "FINGERPRINT_SCOPE_MISMATCH"]
   @activation_required_primary_code "NO_MACHINES"
   @activation_required_detail "fingerprint is not activated (has no associated machines)"
 
@@ -262,7 +262,10 @@ defmodule OrchardCLI.Commands.LicenseTest do
   end
 
   test "activate continues to machine creation for FINGERPRINT_SCOPE_MISMATCH validate-key responses" do
-    runtime = runtime(request: &activation_required_new_machine_request(&1, code: "FINGERPRINT_SCOPE_MISMATCH"))
+    runtime =
+      runtime(
+        request: &activation_required_new_machine_request(&1, code: "FINGERPRINT_SCOPE_MISMATCH")
+      )
 
     assert {:ok, _message} = License.run(["activate", @license_key], runtime)
 
@@ -276,7 +279,11 @@ defmodule OrchardCLI.Commands.LicenseTest do
   end
 
   test "activate reuses existing machine for FINGERPRINT_SCOPE_MISMATCH validate-key responses" do
-    runtime = runtime(request: &activation_required_existing_machine_request(&1, code: "FINGERPRINT_SCOPE_MISMATCH"))
+    runtime =
+      runtime(
+        request:
+          &activation_required_existing_machine_request(&1, code: "FINGERPRINT_SCOPE_MISMATCH")
+      )
 
     assert {:ok, _message} = License.run(["activate", @license_key], runtime)
 
@@ -300,7 +307,10 @@ defmodule OrchardCLI.Commands.LicenseTest do
         request: fn req ->
           validate_only_request(
             req,
-            activation_required_validation_body(code: "FINGERPRINT_SCOPE_MISMATCH", license_id: nil)
+            activation_required_validation_body(
+              code: "FINGERPRINT_SCOPE_MISMATCH",
+              license_id: nil
+            )
           )
         end
       )
@@ -574,11 +584,15 @@ defmodule OrchardCLI.Commands.LicenseTest do
 
   defp activation_required_new_machine_request(req, opts \\ []) do
     code = Keyword.get(opts, :code, @activation_required_primary_code)
-    successful_activate_request(req, validation_body: activation_required_validation_body(code: code))
+
+    successful_activate_request(req,
+      validation_body: activation_required_validation_body(code: code)
+    )
   end
 
   defp activation_required_existing_machine_request(req, opts \\ []) do
     code = Keyword.get(opts, :code, @activation_required_primary_code)
+
     machine_lookup_request(
       req,
       [machine_lookup_page(machines_url() <> "?limit=100", existing_machine_data())],

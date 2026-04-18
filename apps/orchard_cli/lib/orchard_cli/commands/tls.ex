@@ -779,7 +779,7 @@ defmodule OrchardCLI.Commands.TLS do
   # output_dir would break this atomicity guarantee.
   defp create_staging_dir(output_dir) do
     File.mkdir_p!(output_dir)
-    File.chmod!(output_dir, 0o700)
+    File.chmod!(output_dir, 0o750)
     suffix = :crypto.strong_rand_bytes(8) |> Base.encode16(case: :lower)
     staging_dir = Path.join(output_dir, ".staging-#{suffix}")
     File.mkdir_p!(staging_dir)

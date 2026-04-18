@@ -367,9 +367,9 @@ defmodule OrchardCLI.Commands.Status do
         redirect: false,
         connect_options: [timeout: connect_timeout]
       ]
-      |> maybe_add_ca_cert(ca_certfile)
+      |> add_ca_cert_connect_options(ca_certfile)
 
-    case Req.request(Req.new(req_opts), receive_timeout: receive_timeout) do
+    case OrchardCLI.HTTP.request(req_opts, receive_timeout: receive_timeout) do
       {:ok, %Req.Response{status: status, body: body}} ->
         {:ok, %{status: status, body: body}}
 
@@ -378,11 +378,22 @@ defmodule OrchardCLI.Commands.Status do
     end
   end
 
-  defp maybe_add_ca_cert(opts, nil), do: opts
+  # Extracted as a public helper for testability.
+  # CA cert path must be passed via transport_opts for Mint/Finch (Req 0.5.x).
+  @doc false
+  @spec add_ca_cert_connect_options(keyword(), String.t() | nil) :: keyword()
+  def add_ca_cert_connect_options(opts, nil), do: opts
 
-  defp maybe_add_ca_cert(opts, ca_path) do
-    Keyword.update(opts, :connect_options, [cacertfile: ca_path], fn connect_opts ->
-      Keyword.put(connect_opts, :cacertfile, ca_path)
+  def add_ca_cert_connect_options(opts, ca_path) when is_binary(ca_path) do
+    transport_opts = [cacertfile: ca_path]
+
+    Keyword.update(opts, :connect_options, [transport_opts: transport_opts], fn connect_opts ->
+      Keyword.update(
+        connect_opts,
+        :transport_opts,
+        transport_opts,
+        &Keyword.merge(&1, transport_opts)
+      )
     end)
   end
 

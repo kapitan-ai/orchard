@@ -126,7 +126,7 @@ defmodule OrchardCLI.Commands.StartTest do
     runtime = base_runtime(%{cmd: not_loaded_cmd(parent)})
 
     assert {:ok, banner} = Start.run([], runtime)
-    assert banner =~ "Started Orchard services."
+    assert banner =~ "Loaded Orchard services into launchd."
     assert banner =~ "Orchard v0.1.0"
 
     # Verify bootstrap order
@@ -141,12 +141,12 @@ defmodule OrchardCLI.Commands.StartTest do
     assert ctrl_plist =~ "controller"
   end
 
-  test "both already running shows informative message and banner" do
+  test "both already loaded shows informative message and banner" do
     parent = self()
     runtime = base_runtime(%{cmd: already_loaded_cmd(parent)})
 
     assert {:ok, banner} = Start.run([], runtime)
-    assert banner =~ "Orchard services already running."
+    assert banner =~ "Orchard services already loaded in launchd."
     assert banner =~ "Orchard v0.1.0"
 
     # No bootstrap calls should have been made
@@ -235,14 +235,14 @@ defmodule OrchardCLI.Commands.StartTest do
       |> Map.delete(:services)
 
     assert {:ok, banner} = Start.run([], runtime)
-    assert banner =~ "Started Orchard services"
+    assert banner =~ "Loaded Orchard services into launchd"
 
     cmds = collect_cmds()
     bootstrap_calls = Enum.filter(cmds, fn {_, args} -> match?(["bootstrap" | _], args) end)
     assert length(bootstrap_calls) == 2
   end
 
-  test "partial running: only missing service gets bootstrapped" do
+  test "partial loaded: only missing service gets bootstrapped" do
     parent = self()
     na_label = "com.orchard.node-agent"
     ctrl_label = "com.orchard.controller"
@@ -260,7 +260,7 @@ defmodule OrchardCLI.Commands.StartTest do
 
     runtime = base_runtime(%{cmd: cmd_fn})
     assert {:ok, banner} = Start.run([], runtime)
-    assert banner =~ "some services were already running"
+    assert banner =~ "some services were already loaded"
 
     cmds = collect_cmds()
     bootstrap_calls = Enum.filter(cmds, fn {_, args} -> match?(["bootstrap" | _], args) end)
@@ -270,6 +270,36 @@ defmodule OrchardCLI.Commands.StartTest do
   end
 
   # ── Readiness Timeout ────────────────────────────────────────────────
+
+  test "already-loaded services with unreachable readiness do not report already running" do
+    parent = self()
+    key = make_ref()
+    Process.put(key, 0)
+
+    monotonic_ms = fn ->
+      current = Process.get(key, 0)
+      Process.put(key, current + 25)
+      current
+    end
+
+    runtime =
+      base_runtime(%{
+        cmd: already_loaded_cmd(parent),
+        ready_timeout_ms: 50,
+        poll_interval_ms: 10,
+        monotonic_ms: monotonic_ms,
+        status_runtime: %{
+          version: fn -> "0.1.0" end,
+          endpoint_candidates: fn -> [%{base_url: "http://localhost:4000", ca_certfile: nil}] end,
+          request: fn _url, _opts -> {:error, :econnrefused} end
+        }
+      })
+
+    assert {:error, msg, 1} = Start.run([], runtime)
+    assert msg =~ "Orchard services already loaded in launchd."
+    refute msg =~ "already running"
+    assert msg =~ "did not become ready"
+  end
 
   test "readiness timeout returns error with last state" do
     parent = self()
@@ -380,7 +410,7 @@ defmodule OrchardCLI.Commands.StartTest do
       })
 
     assert {:ok, banner} = Start.run([], runtime)
-    assert banner =~ "Started Orchard services."
+    assert banner =~ "Loaded Orchard services into launchd."
     assert banner =~ "Orchard v0.1.0"
     assert Process.get(http_calls_key) == 2
   end
@@ -415,11 +445,11 @@ defmodule OrchardCLI.Commands.StartTest do
     assert {:error, msg, 1} = Start.run([], runtime)
     assert msg =~ "failed to start Controller"
     assert msg =~ "launchctl exit 5: Bootstrap failed"
-    assert msg =~ "Node Agent was started but not rolled back"
+    assert msg =~ "Node Agent was loaded into launchd but not rolled back"
     assert msg =~ "orchardctl stop"
   end
 
-  test "partial failure does not claim already-running services were started" do
+  test "partial failure does not claim already-loaded services were loaded" do
     parent = self()
     na_label = "com.orchard.node-agent"
 
@@ -448,8 +478,8 @@ defmodule OrchardCLI.Commands.StartTest do
     runtime = base_runtime(%{cmd: cmd_fn})
     assert {:error, msg, 1} = Start.run([], runtime)
     assert msg =~ "failed to start Controller"
-    assert msg =~ "Node Agent was already running and not changed"
-    refute msg =~ "Node Agent was started but not rolled back"
+    assert msg =~ "Node Agent was already loaded in launchd and not changed"
+    refute msg =~ "Node Agent was loaded into launchd but not rolled back"
   end
 
   test "multi-service partial failure preserves start order and pluralizes note" do
@@ -492,7 +522,7 @@ defmodule OrchardCLI.Commands.StartTest do
       }
 
     assert {:error, msg, 1} = Start.run([], runtime)
-    assert msg =~ "Managed Postgres, Node Agent were started but not rolled back"
+    assert msg =~ "Managed Postgres, Node Agent were loaded into launchd but not rolled back"
     refute msg =~ "Node Agent, Managed Postgres"
   end
 
