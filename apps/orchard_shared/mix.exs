@@ -34,7 +34,8 @@ defmodule OrchardShared.MixProject do
       {:jason, "~> 1.4"},
       {:grpc, "~> 0.11.5"},
       {:protobuf, "~> 0.16.0"},
-      {:sentry, "~> 12.0", runtime: false},
+      {:sentry, "~> 10.2", runtime: false},
+      {:hackney, "~> 1.8", runtime: false},
       {:req, "~> 0.5", only: :test}
     ]
   end
