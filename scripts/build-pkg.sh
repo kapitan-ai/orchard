@@ -19,6 +19,16 @@
 
 set -euo pipefail
 
+# Logging utilities (must be defined before use in argument parsing)
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
+
 # Parse arguments
 ALLOW_DIRTY=false
 DO_CLEAN=false
@@ -52,16 +62,6 @@ if [[ -z "$OUTPUT_DIR" ]]; then
     OUTPUT_DIR="$REPO_ROOT/artifacts/pkg-builds/$(date +%Y-%m-%d)"
 fi
 STAGING_BASE="/tmp/orchard-pkg-build-$$"
-
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-log_info() { echo -e "${GREEN}[INFO]${NC} $*"; }
-log_warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 
 # Enhanced error trap
 trap 'log_error "Build failed at line $LINENO"' ERR
@@ -160,14 +160,16 @@ log_info "Cleaning previous release builds..."
 cd "$REPO_ROOT"
 rm -rf _build/prod/rel/orchard_{controller,node_agent,cli}
 
-# Fetch deps and build assets
-log_info "Fetching Elixir dependencies..."
-mix deps.get
-
-log_info "Building assets..."
-mix assets.deploy
-
-# Build releases
+  # Fetch deps and build assets
+  log_info "Fetching Elixir dependencies..."
+  mix deps.get
+  
+  log_info "Building assets (controller app)..."
+  cd "$REPO_ROOT/apps/orchard_controller"
+  MIX_ENV=prod mix assets.deploy
+  cd "$REPO_ROOT"
+  
+  # Build releases
 log_info "Building Elixir releases..."
 export MIX_ENV=prod
 
