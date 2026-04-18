@@ -7,6 +7,15 @@ defmodule Orchard.Application do
 
   @impl true
   def start(_type, _args) do
+    case Orchard.SentryLogger.install_handler() do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        require Logger
+        Logger.warning("Sentry handler install failed, continuing without: #{inspect(reason)}")
+    end
+
     children =
       []
       |> maybe_add_repo()

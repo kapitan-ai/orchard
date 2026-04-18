@@ -70,6 +70,8 @@ defmodule OrchardConsole do
       use Phoenix.LiveView,
         layout: {OrchardConsole.Layouts, :app}
 
+      on_mount(Sentry.LiveViewHook)
+
       unquote(html_helpers())
     end
   end

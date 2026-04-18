@@ -47,6 +47,8 @@ defmodule Orchard.API.Endpoint do
     json_decoder: Jason
   )
 
+  plug(Sentry.PlugContext)
+
   plug(Plug.Session, @session_options)
 
   plug(Orchard.API.Router)

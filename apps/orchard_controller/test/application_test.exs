@@ -1,16 +1,20 @@
 defmodule OrchardApplicationTest do
   use ExUnit.Case, async: false
 
+  @sentry_dsn "https://public@example.invalid/1"
+
   setup do
     previous_env = %{
       start_repo: Application.get_env(:orchard_controller, :start_repo, true),
       start_endpoint: Application.get_env(:orchard_controller, :start_endpoint, true),
-      enable_db_checks: Application.get_env(:orchard_controller, :enable_db_checks, true)
+      enable_db_checks: Application.get_env(:orchard_controller, :enable_db_checks, true),
+      sentry_dsn: Application.get_env(:sentry, :dsn)
     }
 
     was_started = is_pid(Process.whereis(Orchard.Supervisor))
 
     stop_controller_app()
+    remove_sentry_handler()
 
     Application.put_env(:orchard_controller, :start_repo, false)
     Application.put_env(:orchard_controller, :start_endpoint, false)
@@ -22,6 +26,8 @@ defmodule OrchardApplicationTest do
       Application.put_env(:orchard_controller, :start_repo, previous_env.start_repo)
       Application.put_env(:orchard_controller, :start_endpoint, previous_env.start_endpoint)
       Application.put_env(:orchard_controller, :enable_db_checks, previous_env.enable_db_checks)
+      Application.put_env(:sentry, :dsn, previous_env.sentry_dsn)
+      remove_sentry_handler()
 
       if was_started do
         {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
@@ -105,6 +111,28 @@ defmodule OrchardApplicationTest do
            )
   end
 
+  test "no DSN leaves Sentry logger handler uninstalled" do
+    Application.put_env(:sentry, :dsn, nil)
+
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+
+    assert :logger.get_handler_config(Sentry.LoggerHandler) in [
+             {:error, :not_found},
+             {:error, {:not_found, Sentry.LoggerHandler}}
+           ]
+  end
+
+  test "DSN installs Sentry logger handler with expected metadata whitelist" do
+    Application.put_env(:sentry, :dsn, @sentry_dsn)
+
+    assert {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
+
+    assert {:ok, %{config: config}} = :logger.get_handler_config(Sentry.LoggerHandler)
+    assert config.capture_log_messages == false
+    assert config.metadata == [:request_id, :worker_model]
+    assert config.rate_limiting == [max_events: 50, interval: 60_000]
+  end
+
   test "test environment aligns shared licensing paths with tmp/test" do
     licensing = Application.fetch_env!(:orchard_shared, :licensing)
 
@@ -112,6 +140,14 @@ defmodule OrchardApplicationTest do
     assert Path.type(licensing[:node_identity_path]) == :absolute
     assert String.ends_with?(licensing[:bundle_path], "/tmp/test/config/licensing/current.json")
     assert String.ends_with?(licensing[:node_identity_path], "/tmp/test/data/node-id")
+  end
+
+  defp remove_sentry_handler do
+    case :logger.remove_handler(Sentry.LoggerHandler) do
+      :ok -> remove_sentry_handler()
+      {:error, :not_found} -> :ok
+      {:error, {:not_found, Sentry.LoggerHandler}} -> :ok
+    end
   end
 
   defp stop_controller_app do

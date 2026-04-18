@@ -29,7 +29,8 @@ defmodule OrchardNodeAgent.MixProject do
     [
       {:orchard_shared, in_umbrella: true},
       {:req, "~> 0.5"},
-      {:req_s3, "~> 0.2"}
+      {:req_s3, "~> 0.2"},
+      {:sentry, "~> 12.0"}
     ]
   end
 end

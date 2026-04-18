@@ -43,9 +43,12 @@ end
 
 env_optional_string = fn env_name ->
   case System.get_env(env_name) do
-    nil -> nil
-    "" -> nil
-    value -> value
+    nil ->
+      nil
+
+    value ->
+      trimmed = String.trim(value)
+      if trimmed == "", do: nil, else: trimmed
   end
 end
 
@@ -325,6 +328,25 @@ default_licensing = fn root ->
     keygen_account_id: "6f872d6f-52ce-4bbe-8b3f-b57669753f34",
     keygen_public_key: "f1a328edc3d42967e8545c1361d2dc22622fad52aad0dc8e5d3b3cb95d7cb18a"
   ]
+end
+
+if sentry_dsn = env_optional_string.("ORCHARD_SENTRY_DSN") do
+  release_name = System.get_env("RELEASE_NAME") || System.get_env("MIX_RELEASE_NAME") || "mix"
+  build_sha = Orchard.BuildInfo.git_sha()
+
+  if build_sha in ["unknown", "", nil] do
+    require Logger
+    Logger.warning("Sentry: BuildInfo SHA unavailable, release tagging may be inaccurate")
+  end
+
+  sentry_sha = if build_sha in [nil, ""], do: "unknown", else: build_sha
+
+  config :sentry,
+    dsn: sentry_dsn,
+    environment_name: env_optional_string.("ORCHARD_SENTRY_ENV") || to_string(config_env()),
+    release: "#{release_name}@#{sentry_sha}",
+    before_send: {Orchard.SentryFilter, :filter},
+    tags: %{build_sha: sentry_sha, build_date: Orchard.BuildInfo.build_date()}
 end
 
 if config_env() == :prod do
