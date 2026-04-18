@@ -81,6 +81,9 @@ This creates a native macOS PKG installer following the naming convention
 `Orchard-<version>-<date>-<git-sha>.pkg`. Use `--clean` for reproducible
 builds from scratch, or `--allow-dirty` for development builds.
 
+**Prerequisites:** Elixir, `uv`, and macOS. The script validates dependencies
+and provides helpful errors if anything is missing.
+
 See [packaging/pkg/README.md](packaging/pkg/README.md#building-the-pkg) for
 full build documentation.
 
