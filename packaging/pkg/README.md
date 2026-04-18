@@ -610,6 +610,60 @@ rather than crash-looping with missing environment variables.
 - Validate TLS state before bootstrapping services
 - Detect fresh install vs upgrade and write diagnostic markers
 
+## Building the PKG
+
+Orchard includes a build script at `scripts/build-pkg.sh` that automates the complete PKG creation process.
+
+### Quick Build
+
+```bash
+./scripts/build-pkg.sh
+```
+
+This produces a PKG file following the [naming convention below](#filename-format) in:
+```
+./artifacts/pkg-builds/YYYY-MM-DD/Orchard-<version>-<date>-<sha>.pkg
+```
+
+### Build Options
+
+| Flag | Purpose |
+|------|---------|
+| `--clean` | Deep clean: removes `_build/` and `deps/` before building (slow, but maximally reproducible) |
+| `--allow-dirty` | Build with uncommitted changes (marks PKG with `-dirty` suffix) |
+| `output_dir` | Custom output directory (default: `./artifacts/pkg-builds/YYYY-MM-DD/`) |
+
+### Build Requirements
+
+Before building:
+1. **Elixir/Mix**: Available on PATH (`mix --version`)
+2. **uv**: For Python venv setup (`uv --version`)
+3. **Git**: Clean working tree recommended (use `--allow-dirty` if needed)
+4. **macOS**: PKG build only works on macOS (uses `pkgbuild`)
+5. **No dev server running**: Ports 4000/50071 should be free (warns if in use)
+
+### Manual Build Recipe
+
+If you need to build manually or understand the process:
+
+```bash
+# 1. Setup Python venvs
+cd native/orchard_tokenizer && uv sync
+cd native/orchard_worker_mlx && uv sync --extra mlx
+
+# 2. Build releases
+export MIX_ENV=prod
+mix deps.get
+mix assets.deploy  # (from apps/orchard_controller)
+mix release orchard_controller
+mix release orchard_node_agent
+mix release orchard_cli
+
+# 3. Stage and build PKG (see build-pkg.sh for full details)
+```
+
+**Note:** The build script handles all steps above with proper error handling and validation.
+
 ## PKG Filename Policy
 
 Orchard PKG releases follow a structured naming convention to minimize user

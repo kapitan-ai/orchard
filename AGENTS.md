@@ -141,6 +141,36 @@ When to bypass `bin/dev`:
 
 See `docs/m1-local-dev.md` for full environment setup and configuration.
 
+## Packaging (PKG)
+
+**Build installer with:** `./scripts/build-pkg.sh`
+
+This script automates the complete PKG build process:
+- Python venv setup (tokenizer + MLX worker)
+- Elixir releases (controller, node-agent, CLI)
+- Asset compilation and dependency resolution
+- Staging with correct permissions
+- PKG creation with naming convention: `Orchard-<version>-<date>-<sha>.pkg`
+
+**Build options:**
+```bash
+./scripts/build-pkg.sh                    # Standard build
+./scripts/build-pkg.sh --clean          # Deep clean (slow, reproducible)
+./scripts/build-pkg.sh --allow-dirty    # Build with uncommitted changes
+./scripts/build-pkg.sh /custom/output   # Custom output directory
+```
+
+**When to build:**
+- Cutting a release for distribution
+- Testing packaging changes
+- Validating the full installer workflow
+
+**When NOT to build:**
+- During normal development (use `bin/dev`)
+- Quick CLI testing (use `mix compile` + `iex -S mix`)
+
+See `packaging/pkg/README.md` for full PKG operator documentation and `packaging/pkg/README.md#building-the-pkg` for detailed build instructions.
+
 ## Key Files
 
 | File | Purpose |

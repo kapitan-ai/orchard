@@ -69,6 +69,21 @@ See [docs/m1-local-dev.md](docs/m1-local-dev.md) for dev setup and
 [packaging/pkg/README.md](packaging/pkg/README.md) for operator transport
 configuration.
 
+### Building releases
+
+For distribution or testing the packaged installer:
+
+```bash
+./scripts/build-pkg.sh
+```
+
+This creates a native macOS PKG installer following the naming convention
+`Orchard-<version>-<date>-<git-sha>.pkg`. Use `--clean` for reproducible
+builds from scratch, or `--allow-dirty` for development builds.
+
+See [packaging/pkg/README.md](packaging/pkg/README.md#building-the-pkg) for
+full build documentation.
+
 ## Deployment modes
 
 1. **All-in-one** — single Mac runs everything (controller + node agent + worker + Postgres)
