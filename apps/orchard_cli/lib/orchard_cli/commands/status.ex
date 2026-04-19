@@ -203,15 +203,14 @@ defmodule OrchardCLI.Commands.Status do
   defp render_banner(display_version, base_url, body) do
     status_label = if body["status"] == "ok", do: "ready", else: "degraded"
     details = build_details(body, status_label)
-    license_line = render_license_line(body["license"])
+    license_lines = render_license_lines(body["license"])
 
-    [
-      "\u{1F333} Orchard #{display_version}",
-      "   Console: #{base_url}/console",
-      "   API:     #{base_url}/v1",
-      "   Status:  #{status_label}#{details}",
-      license_line
-    ]
+    ([
+       "\u{1F333} Orchard #{display_version}",
+       "   Console: #{base_url}/console",
+       "   API:     #{base_url}/v1",
+       "   Status:  #{status_label}#{details}"
+     ] ++ license_lines)
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
@@ -290,7 +289,7 @@ defmodule OrchardCLI.Commands.Status do
     " (#{runtime_details})"
   end
 
-  defp render_license_line(%{"status" => status, "message" => message} = license)
+  defp render_license_lines(%{"status" => status, "message" => message} = license)
        when is_binary(status) and is_binary(message) do
     reason = non_empty_string(Map.get(license, "reason"))
     expires_at = non_empty_string(Map.get(license, "expires_at"))
@@ -303,10 +302,40 @@ defmodule OrchardCLI.Commands.Status do
         parts -> " (" <> Enum.join(parts, ", ") <> ")"
       end
 
-    "   License: #{status} — #{message}#{suffix}"
+    ["   License: #{status} — #{message}#{suffix}" | tracking_lines(license["tracking"])]
   end
 
-  defp render_license_line(_license), do: nil
+  defp render_license_lines(_license), do: []
+
+  defp tracking_lines(tracking) when is_map(tracking) do
+    case format_tracking(tracking) do
+      nil -> []
+      formatted -> ["   Tracking: #{formatted}"]
+    end
+  end
+
+  defp tracking_lines(_tracking), do: []
+
+  defp format_tracking(tracking) do
+    [
+      tracking_part("program", tracking["program"]),
+      tracking_part("ref", tracking["reference"])
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      parts -> Enum.join(parts, " ")
+    end
+  end
+
+  defp tracking_part(_key, value) when not is_binary(value), do: nil
+
+  defp tracking_part(key, value) do
+    case non_empty_string(value) do
+      nil -> nil
+      trimmed -> "#{key}=#{trimmed}"
+    end
+  end
 
   # ── Endpoint Candidate Resolution ───────────────────────────────────
 

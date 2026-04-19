@@ -25,6 +25,11 @@ defmodule Orchard.Licensing do
 
   @type enforcement :: :off | :warn | :hard
 
+  @type tracking_metadata :: %{
+          program: String.t() | nil,
+          reference: String.t() | nil
+        }
+
   @type t :: %__MODULE__{
           state: state(),
           message: String.t(),
@@ -35,7 +40,8 @@ defmodule Orchard.Licensing do
           license_id: String.t() | nil,
           machine_id: String.t() | nil,
           licensee: String.t() | nil,
-          max_machines: pos_integer() | nil
+          max_machines: pos_integer() | nil,
+          metadata: tracking_metadata() | nil
         }
 
   defstruct state: :missing_bundle,
@@ -47,7 +53,8 @@ defmodule Orchard.Licensing do
             license_id: nil,
             machine_id: nil,
             licensee: nil,
-            max_machines: nil
+            max_machines: nil,
+            metadata: nil
 
   @doc """
   Inspect the Orchard-owned local licensing bundle and return a normalized
@@ -79,18 +86,46 @@ defmodule Orchard.Licensing do
   @doc """
   Produce a JSON-ready summary suitable for health/status surfaces.
   """
-  @spec health_summary(t()) :: %{
-          status: String.t(),
-          reason: String.t() | nil,
-          message: String.t(),
-          expires_at: String.t() | nil
+  @type health_summary :: %{
+          required(:status) => String.t(),
+          required(:reason) => String.t() | nil,
+          required(:message) => String.t(),
+          required(:expires_at) => String.t() | nil,
+          optional(:tracking) => tracking_metadata()
         }
+
+  @spec health_summary(t()) :: health_summary()
   def health_summary(%__MODULE__{} = status) do
-    %{
+    summary = %{
       status: health_status(status.state),
       reason: health_reason(status.state),
       message: status.message,
       expires_at: iso8601_or_nil(status.expires_at)
+    }
+
+    if is_map(status.metadata) do
+      Map.put(summary, :tracking, status.metadata)
+    else
+      summary
+    end
+  end
+
+  @doc """
+  Returns stable telemetry dimensions from licensing status.
+
+  This helper does not emit telemetry events; it prepares callers for future
+  observational enrichment.
+  """
+  @spec telemetry_dimensions(t()) :: %{
+          license_state: String.t(),
+          tracking_program: String.t() | nil,
+          tracking_reference: String.t() | nil
+        }
+  def telemetry_dimensions(%__MODULE__{} = status) do
+    %{
+      license_state: Atom.to_string(status.state),
+      tracking_program: tracking_field(status.metadata, :program),
+      tracking_reference: tracking_field(status.metadata, :reference)
     }
   end
 
@@ -245,7 +280,8 @@ defmodule Orchard.Licensing do
         license_id: claims.license_id,
         machine_id: claims.machine_id,
         licensee: claims.licensee,
-        max_machines: claims.max_machines
+        max_machines: claims.max_machines,
+        metadata: claims.metadata
       )
 
     cond do
@@ -289,6 +325,12 @@ defmodule Orchard.Licensing do
 
   defp iso8601_or_nil(nil), do: nil
   defp iso8601_or_nil(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+
+  defp tracking_field(metadata, key) when is_map(metadata) do
+    Map.get(metadata, key)
+  end
+
+  defp tracking_field(_metadata, _key), do: nil
 
   defp status(state, message, bundle_path, fields \\ []) do
     struct!(

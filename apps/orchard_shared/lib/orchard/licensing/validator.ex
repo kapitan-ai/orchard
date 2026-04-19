@@ -6,12 +6,18 @@ defmodule Orchard.Licensing.Validator do
           machine_certificate: String.t()
         }
 
+  @type tracking_metadata :: %{
+          program: String.t() | nil,
+          reference: String.t() | nil
+        }
+
   @type normalized_claims :: %{
           license_id: String.t(),
           machine_id: String.t(),
           fingerprint: String.t(),
           licensee: String.t() | nil,
           max_machines: pos_integer() | nil,
+          metadata: tracking_metadata() | nil,
           not_before: DateTime.t() | nil,
           expires_at: DateTime.t() | nil
         }
@@ -201,12 +207,14 @@ defmodule Orchard.Licensing.Validator do
          {:ok, expires_at} <- parse_optional_datetime(attributes["expiry"], :license, "expiry"),
          {:ok, max_machines} <-
            parse_optional_pos_integer(attributes["maxMachines"], :license, "maxMachines"),
-         {:ok, licensee} <- parse_optional_string(attributes["licensee"], :license, "licensee") do
+         {:ok, licensee} <- parse_optional_string(attributes["licensee"], :license, "licensee"),
+         {:ok, metadata} <- parse_tracking_metadata(attributes["metadata"], :license, "metadata") do
       {:ok,
        %{
          license_id: license_id,
          licensee: licensee,
          max_machines: max_machines,
+         metadata: metadata,
          not_before: not_before,
          expires_at: expires_at
        }}
@@ -250,6 +258,7 @@ defmodule Orchard.Licensing.Validator do
          fingerprint: machine_claims.fingerprint,
          licensee: license_claims.licensee,
          max_machines: license_claims.max_machines,
+         metadata: license_claims.metadata,
          not_before: latest_datetime(license_claims.not_before, machine_claims.not_before),
          expires_at: earliest_datetime(license_claims.expires_at, machine_claims.expires_at)
        }}
@@ -287,6 +296,41 @@ defmodule Orchard.Licensing.Validator do
 
   defp parse_optional_string(_value, kind, key) do
     {:error, {malformed_state(kind), "#{kind} certificate #{key} must be a non-empty string"}}
+  end
+
+  defp parse_tracking_metadata(nil, _kind, _key), do: {:ok, nil}
+
+  defp parse_tracking_metadata(metadata, _kind, _key) when not is_map(metadata), do: {:ok, nil}
+
+  defp parse_tracking_metadata(metadata, _kind, _key) do
+    case tracking_metadata_block(metadata) do
+      nil ->
+        {:ok, nil}
+
+      tracking ->
+        {:ok,
+         %{
+           program: normalize_tracking_string(tracking["program"]),
+           reference: normalize_tracking_string(tracking["reference"])
+         }}
+    end
+  end
+
+  defp tracking_metadata_block(metadata) do
+    Enum.find_value(["orchard_tracking", "orchardTracking"], fn key ->
+      case metadata[key] do
+        %{} = tracking -> tracking
+        _other -> nil
+      end
+    end)
+  end
+
+  defp normalize_tracking_string(nil), do: nil
+  defp normalize_tracking_string(value) when not is_binary(value), do: nil
+
+  defp normalize_tracking_string(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: String.downcase(trimmed)
   end
 
   defp parse_optional_pos_integer(nil, _kind, _key), do: {:ok, nil}

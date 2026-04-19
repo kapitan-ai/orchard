@@ -50,12 +50,15 @@ defmodule Orchard.API.HealthControllerTest.LicensingValidStub do
   @moduledoc false
 
   def inspect_local do
-    %Orchard.Licensing{
-      state: :valid,
-      message: "License bundle is valid.",
-      bundle_path: "/tmp/current.json",
-      expires_at: ~U[2027-04-15 00:00:00Z]
-    }
+    Process.get(
+      :licensing_status_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: "/tmp/current.json",
+        expires_at: ~U[2027-04-15 00:00:00Z]
+      }
+    )
   end
 end
 
@@ -65,6 +68,7 @@ defmodule Orchard.API.HealthControllerTest do
   alias Orchard.API.Router
 
   setup do
+    Process.delete(:licensing_status_response)
     previous = Application.get_env(:orchard_controller, :console, [])
 
     Application.put_env(
@@ -225,5 +229,33 @@ defmodule Orchard.API.HealthControllerTest do
     assert body["reason"] == "postgres_reachable"
     assert body["license"]["status"] == "valid"
     assert body["license"]["message"] == "License bundle is valid."
+  end
+
+  test "health ready includes license tracking when certificate metadata exists", %{conn: _conn} do
+    Process.put(
+      :licensing_status_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: "/tmp/current.json",
+        expires_at: ~U[2027-04-15 00:00:00Z],
+        metadata: %{program: "aieh", reference: "aieh-2026-001"}
+      }
+    )
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    body = Jason.decode!(conn.resp_body)
+
+    assert conn.status == 503
+    assert body["reason"] == "postgres_reachable"
+
+    assert body["license"]["tracking"] == %{
+             "program" => "aieh",
+             "reference" => "aieh-2026-001"
+           }
   end
 end

@@ -26,14 +26,25 @@ defmodule Orchard.Nodes do
   @spec list_nodes() :: [Node.t()]
   def list_nodes do
     if repo_available?() do
-      Node
-      |> order_by([n], asc: n.display_name, asc: n.id)
-      |> Repo.all()
+      list_nodes_for_upgrade!()
     else
       []
     end
   rescue
     _ -> []
+  end
+
+  @doc """
+  Lists node inventory for upgrade preflight.
+
+  Unlike `list_nodes/0`, this function lets query failures propagate so safety
+  checks can distinguish empty inventory from unavailable inventory.
+  """
+  @spec list_nodes_for_upgrade!() :: [struct()]
+  def list_nodes_for_upgrade! do
+    Node
+    |> order_by([n], asc: n.display_name, asc: n.id)
+    |> Repo.all()
   end
 
   @doc """

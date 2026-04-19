@@ -256,7 +256,7 @@ printf 'postinstall: install_mode=%s reason=%s\n' "$install_mode" "$install_reas
 secure_source_env "$ORCHARD_ROOT/config/controller.env"
 
 # Keep env files owner-only (0600) for security - secrets inside.
-# orchardctl CLI does not need to read these; it uses defaults/support-root discovery.
+# orchardctl sources controller.env for DB-backed commands when run with suitable privileges.
 for env_file in "$ORCHARD_ROOT/config/controller.env" "$ORCHARD_ROOT/config/node-agent.env"; do
   if [ -f "$env_file" ]; then
     chown root:wheel "$env_file"

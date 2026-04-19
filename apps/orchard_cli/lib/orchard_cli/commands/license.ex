@@ -5,6 +5,7 @@ defmodule OrchardCLI.Commands.License do
   Supports:
     orchardctl license activate <key> [--support-root PATH]
     orchardctl license status [--support-root PATH]
+    orchardctl license create --policy-id POLICY_ID --name NAME [options]
     orchardctl license help
   """
 
@@ -18,6 +19,7 @@ defmodule OrchardCLI.Commands.License do
     "FINGERPRINT_SCOPE_MISMATCH"
   ]
   @json_api_content_type "application/vnd.api+json"
+  @keygen_admin_token_env "ORCHARD_KEYGEN_ADMIN_TOKEN"
 
   @type request_spec :: %{
           method: :get | :post,
@@ -39,6 +41,7 @@ defmodule OrchardCLI.Commands.License do
     case args do
       ["activate" | rest] -> run_activate(rest, runtime)
       ["status" | rest] -> run_status(rest, runtime)
+      ["create" | rest] -> run_create(rest, runtime)
       ["help"] -> {:ok, group_usage()}
       ["--help"] -> {:ok, group_usage()}
       [] -> {:error, group_usage(), 1}
@@ -69,6 +72,19 @@ defmodule OrchardCLI.Commands.License do
 
       {:ok, opts} ->
         do_status(opts, runtime)
+    end
+  end
+
+  defp run_create(args, runtime) do
+    case parse_create_opts(args) do
+      {:help} ->
+        {:ok, create_usage()}
+
+      {:error, _, _} = error ->
+        error
+
+      {:ok, opts} ->
+        do_create(opts, runtime)
     end
   end
 
@@ -118,6 +134,65 @@ defmodule OrchardCLI.Commands.License do
     end
   end
 
+  defp parse_create_opts(args) do
+    switches = [
+      policy_id: :string,
+      name: :string,
+      max_machines: :integer,
+      expires_at: :string,
+      tracking_program: :string,
+      tracking_reference: :string,
+      dry_run: :boolean,
+      help: :boolean
+    ]
+
+    case OptionParser.parse(args, strict: switches) do
+      {parsed, [], []} ->
+        validate_create_opts(parsed)
+
+      {_parsed, positional, []} ->
+        {:error,
+         "Error: unexpected argument(s): #{Enum.join(positional, ", ")}\n\n#{create_usage()}", 1}
+
+      {_parsed, _positional, invalid} ->
+        invalid_str = Enum.map_join(invalid, ", ", fn {flag, _value} -> flag end)
+        {:error, "Error: unknown option(s): #{invalid_str}\n\n#{create_usage()}", 1}
+    end
+  end
+
+  defp validate_create_opts(opts) do
+    cond do
+      Keyword.get(opts, :help, false) ->
+        {:help}
+
+      is_nil(non_empty_string(Keyword.get(opts, :policy_id))) ->
+        {:error, "Error: missing required option: --policy-id\n\n#{create_usage()}", 1}
+
+      is_nil(non_empty_string(Keyword.get(opts, :name))) ->
+        {:error, "Error: missing required option: --name\n\n#{create_usage()}", 1}
+
+      not valid_create_max_machines?(Keyword.get(opts, :max_machines)) ->
+        {:error, "Error: --max-machines must be a positive integer\n\n#{create_usage()}", 1}
+
+      not valid_create_expires_at?(Keyword.get(opts, :expires_at)) ->
+        {:error, "Error: --expires-at must be ISO8601\n\n#{create_usage()}", 1}
+
+      true ->
+        {:ok, opts}
+    end
+  end
+
+  defp valid_create_max_machines?(nil), do: true
+  defp valid_create_max_machines?(value), do: is_integer(value) and value > 0
+
+  defp valid_create_expires_at?(nil), do: true
+
+  defp valid_create_expires_at?(value) when is_binary(value) do
+    match?({:ok, %DateTime{}, _offset}, DateTime.from_iso8601(value))
+  end
+
+  defp valid_create_expires_at?(_value), do: false
+
   defp do_activate(opts, license_key, runtime) do
     licensing_paths = resolve_licensing_paths(opts, runtime)
 
@@ -152,6 +227,16 @@ defmodule OrchardCLI.Commands.License do
       )
 
     {:ok, render_local_status(status)}
+  end
+
+  defp do_create(opts, runtime) do
+    payload = create_license_payload(opts)
+
+    if Keyword.get(opts, :dry_run, false) do
+      {:ok, Jason.encode!(payload, pretty: true)}
+    else
+      create_license_live(payload, runtime)
+    end
   end
 
   defp activation_config(licensing_paths, runtime) do
@@ -192,6 +277,62 @@ defmodule OrchardCLI.Commands.License do
       node_identity_path: non_empty_string(licensing_paths.node_identity_path),
       keygen_public_key: non_empty_string(shared[:keygen_public_key])
     }
+  end
+
+  defp create_config(runtime) do
+    shared = shared_licensing_config(runtime)
+
+    config = %{
+      keygen_api_base_url:
+        non_empty_string(shared[:keygen_api_base_url]) || @default_keygen_api_base_url,
+      keygen_account_id: non_empty_string(shared[:keygen_account_id])
+    }
+
+    if is_nil(config.keygen_account_id) do
+      {:error, {:create, "Keygen account ID is not configured."}}
+    else
+      {:ok, config}
+    end
+  end
+
+  defp create_license_live(payload, runtime) do
+    with {:ok, config} <- create_config(runtime),
+         {:ok, admin_token} <- admin_token(runtime),
+         result <- create_license_with_token(payload, runtime, config, admin_token) do
+      case result do
+        {:ok, message} ->
+          {:ok, message}
+
+        {:error, {:create, message}} ->
+          {:error, "Error: #{redact_token(message, admin_token)}", 1}
+      end
+    else
+      {:error, {:create, message}} -> {:error, "Error: #{message}", 1}
+    end
+  end
+
+  defp create_license_with_token(payload, runtime, config, admin_token) do
+    with {:ok, body} <- post_create_license(runtime, config, admin_token, payload),
+         {:ok, summary} <- extract_created_license_summary(body, payload) do
+      {:ok, render_created_license(summary)}
+    end
+  end
+
+  defp post_create_license(runtime, config, admin_token, payload) do
+    request = %{
+      method: :post,
+      url: keygen_url(config, ["licenses"]),
+      headers: admin_auth_headers(admin_token),
+      body: payload
+    }
+
+    with {:ok, response} <- perform_request(runtime, request, :create, "license creation"),
+         :ok <- ensure_success_status(response, "license creation", :create),
+         {:ok, body} <- decode_json_body(response.body, "license creation", :create) do
+      {:ok, body}
+    else
+      {:error, {:create, _message}} = error -> error
+    end
   end
 
   defp ensure_node_identity(runtime, path) do
@@ -572,16 +713,131 @@ defmodule OrchardCLI.Commands.License do
     "#{String.capitalize(action)} failed with HTTP #{status}."
   end
 
-  defp activation_success_message(%Licensing{} = status, node_id) do
+  defp create_license_payload(opts) do
+    attributes =
+      %{"name" => non_empty_string(Keyword.fetch!(opts, :name))}
+      |> maybe_put_create_attribute("maxMachines", Keyword.get(opts, :max_machines))
+      |> maybe_put_create_attribute("expiry", non_empty_string(Keyword.get(opts, :expires_at)))
+      |> maybe_put_create_metadata(opts)
+
+    %{
+      "data" => %{
+        "type" => "licenses",
+        "attributes" => attributes,
+        "relationships" => %{
+          "policy" => %{
+            "data" => %{
+              "type" => "policies",
+              "id" => non_empty_string(Keyword.fetch!(opts, :policy_id))
+            }
+          }
+        }
+      }
+    }
+  end
+
+  defp maybe_put_create_attribute(attributes, _key, nil), do: attributes
+  defp maybe_put_create_attribute(attributes, key, value), do: Map.put(attributes, key, value)
+
+  defp maybe_put_create_metadata(attributes, opts) do
+    tracking =
+      %{}
+      |> maybe_put_tracking_field(
+        "program",
+        normalize_create_tracking(Keyword.get(opts, :tracking_program))
+      )
+      |> maybe_put_tracking_field(
+        "reference",
+        normalize_create_tracking(Keyword.get(opts, :tracking_reference))
+      )
+
+    if map_size(tracking) == 0 do
+      attributes
+    else
+      Map.put(attributes, "metadata", %{"orchard_tracking" => tracking})
+    end
+  end
+
+  defp maybe_put_tracking_field(tracking, _key, nil), do: tracking
+  defp maybe_put_tracking_field(tracking, key, value), do: Map.put(tracking, key, value)
+
+  defp normalize_create_tracking(nil), do: nil
+
+  defp normalize_create_tracking(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> case do
+      "" -> nil
+      trimmed -> String.downcase(trimmed)
+    end
+  end
+
+  defp normalize_create_tracking(_value), do: nil
+
+  defp admin_token(runtime) do
+    case non_empty_string(admin_token_impl(runtime).(@keygen_admin_token_env)) do
+      nil ->
+        {:error,
+         {:create,
+          "ORCHARD_KEYGEN_ADMIN_TOKEN is required for live license creation. Use --dry-run to preview the request payload."}}
+
+      token ->
+        {:ok, token}
+    end
+  end
+
+  defp redact_token(message, token) when is_binary(message) and is_binary(token) do
+    String.replace(message, token, "[REDACTED]")
+  end
+
+  defp redact_token(message, _token), do: message
+
+  defp extract_created_license_summary(%{"data" => %{"id" => id, "attributes" => attrs}}, payload)
+       when is_binary(id) and is_map(attrs) do
+    {:ok,
+     %{
+       id: id,
+       key: non_empty_string(attrs["key"]),
+       tracking: get_in(payload, ["data", "attributes", "metadata", "orchard_tracking"])
+     }}
+  end
+
+  defp extract_created_license_summary(_body, _payload) do
+    {:error, {:create, "Malformed license creation response."}}
+  end
+
+  defp render_created_license(summary) do
+    ([
+       "License created",
+       "  License ID: #{summary.id}",
+       maybe_line("  License key: ", summary.key)
+     ] ++ created_tracking_lines(summary.tracking))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
+  end
+
+  defp created_tracking_lines(nil), do: []
+
+  defp created_tracking_lines(tracking) when is_map(tracking) do
     [
-      "License activated",
-      "  Node fingerprint: #{node_id}",
-      "  Bundle path: #{status.bundle_path}",
-      "  License state: #{status.state}",
-      maybe_line("  License ID: ", status.license_id),
-      maybe_line("  Machine ID: ", status.machine_id),
-      maybe_line("  Expires at: ", iso8601(status.expires_at))
+      maybe_tracking_line("Program", format_tracking_program(tracking["program"])),
+      maybe_tracking_line("Reference", tracking["reference"])
     ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp created_tracking_lines(_tracking), do: []
+
+  defp activation_success_message(%Licensing{} = status, node_id) do
+    ([
+       "License activated",
+       "  Node fingerprint: #{node_id}",
+       "  Bundle path: #{status.bundle_path}",
+       "  License state: #{status.state}",
+       maybe_line("  License ID: ", status.license_id),
+       maybe_line("  Machine ID: ", status.machine_id),
+       maybe_line("  Expires at: ", iso8601(status.expires_at))
+     ] ++ maybe_tracking_lines(status.metadata))
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
@@ -602,7 +858,7 @@ defmodule OrchardCLI.Commands.License do
            status.max_machines && Integer.to_string(status.max_machines)
          ),
          maybe_line("  Expires at: ", iso8601(status.expires_at))
-       ])
+       ] ++ maybe_tracking_lines(status.metadata))
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
@@ -650,8 +906,13 @@ defmodule OrchardCLI.Commands.License do
     [{"authorization", "License #{license_key}"} | json_api_headers()]
   end
 
+  defp admin_auth_headers(admin_token) do
+    [{"authorization", "Bearer #{admin_token}"} | json_api_headers()]
+  end
+
   defp licensing_impl(runtime), do: Map.get(runtime, :licensing_impl, Licensing)
   defp node_identity_impl(runtime), do: Map.get(runtime, :node_identity_impl, NodeIdentityFile)
+  defp admin_token_impl(runtime), do: Map.get(runtime, :admin_token, &System.get_env/1)
 
   defp shared_config_impl(runtime),
     do:
@@ -715,6 +976,29 @@ defmodule OrchardCLI.Commands.License do
   defp maybe_line(_label, nil), do: nil
   defp maybe_line(label, value), do: label <> value
 
+  defp maybe_tracking_lines(nil), do: []
+
+  defp maybe_tracking_lines(metadata) when is_map(metadata) do
+    [
+      maybe_tracking_line("Program", format_tracking_program(tracking_value(metadata, :program))),
+      maybe_tracking_line("Reference", tracking_value(metadata, :reference))
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp maybe_tracking_lines(_metadata), do: []
+
+  defp maybe_tracking_line(_label, nil), do: nil
+  defp maybe_tracking_line(label, value), do: "  Tracking #{label}: #{value}"
+
+  defp tracking_value(metadata, key),
+    do: Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+
+  defp format_tracking_program("aieh"), do: "AIEH"
+  defp format_tracking_program("100e"), do: "100E"
+  defp format_tracking_program("sip"), do: "SIP"
+  defp format_tracking_program(program), do: program
+
   defp iso8601(nil), do: nil
   defp iso8601(%DateTime{} = value), do: DateTime.to_iso8601(value)
 
@@ -738,13 +1022,14 @@ defmodule OrchardCLI.Commands.License do
 
   defp group_usage do
     """
-    Usage: orchardctl license <activate|status|help>
+    Usage: orchardctl license <activate|status|create|help>
 
     Manage Orchard's local dual-certificate license bundle.
 
     Commands:
       activate <key> [--support-root PATH]  Activate a license and install the local bundle
       status [--support-root PATH]          Inspect the local license bundle offline
+      create --policy-id ID --name NAME     Internal/admin: create a Keygen license
       help                                  Show this help
     """
     |> String.trim()
@@ -777,6 +1062,26 @@ defmodule OrchardCLI.Commands.License do
       --support-root PATH   Support root directory
                             (default precedence: --support-root, then
                              $ORCHARD_SUPPORT_ROOT, else current environment licensing config)
+    """
+    |> String.trim()
+  end
+
+  defp create_usage do
+    """
+    Usage: orchardctl license create --policy-id POLICY_ID --name NAME [options]
+
+    Internal/admin command for creating Keygen licenses. Live mode requires
+    ORCHARD_KEYGEN_ADMIN_TOKEN. The admin token is read from the environment
+    only; it is never persisted or printed.
+
+    Options:
+      --policy-id POLICY_ID          Keygen policy ID
+      --name NAME                    License name
+      --max-machines N               Optional maximum machines
+      --expires-at ISO8601           Optional expiry timestamp
+      --tracking-program VALUE       Optional tracking program (aieh, 100e, sip)
+      --tracking-reference VALUE     Optional tracking reference
+      --dry-run                      Print the JSON:API payload without network access
     """
     |> String.trim()
   end

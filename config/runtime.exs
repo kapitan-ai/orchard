@@ -16,6 +16,16 @@ env_int = fn env_name, default ->
   end
 end
 
+env_non_neg_int = fn env_name, default ->
+  value = env_int.(env_name, default)
+
+  if value < 0 do
+    raise "environment variable #{env_name} must be an integer >= 0, got: #{value}"
+  end
+
+  value
+end
+
 env_bool = fn env_name, default ->
   case System.get_env(env_name) do
     nil -> default
@@ -332,21 +342,13 @@ end
 
 if sentry_dsn = env_optional_string.("ORCHARD_SENTRY_DSN") do
   release_name = System.get_env("RELEASE_NAME") || System.get_env("MIX_RELEASE_NAME") || "mix"
-  build_sha = Orchard.BuildInfo.git_sha()
-
-  if build_sha in ["unknown", "", nil] do
-    require Logger
-    Logger.warning("Sentry: BuildInfo SHA unavailable, release tagging may be inaccurate")
-  end
-
-  sentry_sha = if build_sha in [nil, ""], do: "unknown", else: build_sha
 
   config :sentry,
     dsn: sentry_dsn,
     environment_name: env_optional_string.("ORCHARD_SENTRY_ENV") || to_string(config_env()),
-    release: "#{release_name}@#{sentry_sha}",
+    release: "#{release_name}@#{Orchard.BuildInfo.git_sha()}",
     before_send: {Orchard.SentryFilter, :filter},
-    tags: %{build_sha: sentry_sha, build_date: Orchard.BuildInfo.build_date()}
+    tags: %{build_sha: Orchard.BuildInfo.git_sha(), build_date: Orchard.BuildInfo.build_date()}
 end
 
 if config_env() == :prod do
@@ -366,6 +368,13 @@ if config_env() == :prod do
   config :orchard_shared,
          :licensing,
          Keyword.merge(default_licensing.(orchard_support_root), licensing_overrides)
+
+  config :orchard_controller,
+         :upgrade_preflight,
+         backup_manifest_path:
+           System.get_env("ORCHARD_UPGRADE_BACKUP_MANIFEST_PATH") ||
+             Path.join([orchard_support_root, "support", "upgrade-backup.json"]),
+         queue_tolerance: env_non_neg_int.("ORCHARD_UPGRADE_QUEUE_TOLERANCE", "0")
 
   case System.get_env("RELEASE_NAME") || System.get_env("MIX_RELEASE_NAME") do
     "orchard_controller" ->
@@ -522,6 +531,21 @@ if config_env() == :prod do
                  ca_certfile: cacertfile,
                  ca_cert_metadata_path: ca_meta_path
                ]
+
+    "orchard_cli" ->
+      database_url = System.get_env("DATABASE_URL")
+
+      if database_url do
+        config :orchard_controller, Orchard.Repo,
+          url: database_url,
+          pool_size: env_int.("POOL_SIZE", "10"),
+          socket_options: if(System.get_env("ECTO_IPV6") in ["true", "1"], do: [:inet6], else: [])
+      end
+
+      config :orchard_controller,
+        start_repo: not is_nil(database_url),
+        start_endpoint: false,
+        enable_db_checks: true
 
     "orchard_node_agent" ->
       config :orchard_node_agent,

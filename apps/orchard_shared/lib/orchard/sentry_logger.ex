@@ -3,7 +3,7 @@ defmodule Orchard.SentryLogger do
   Shared installer for the VM-global Sentry logger handler.
   """
 
-  @handler Sentry.LoggerHandler
+  @handler :"Elixir.Sentry.LoggerHandler"
   @handler_config %{
     config: %{
       capture_log_messages: false,
@@ -45,7 +45,7 @@ defmodule Orchard.SentryLogger do
   end
 
   defp add_handler do
-    case :logger.add_handler(@handler, Sentry.LoggerHandler, @handler_config) do
+    case :logger.add_handler(@handler, @handler, @handler_config) do
       :ok ->
         :ok
 

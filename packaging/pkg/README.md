@@ -28,7 +28,9 @@ Before starting the controller for the first time:
 ## Env File Overrides
 
 Wrapper scripts (`bin/orchard-node-agent`, `bin/orchard-controller`) source
-optional env files before starting the BEAM release:
+optional env files before starting the BEAM release. `bin/orchardctl` also
+sources `controller.env` so DB-backed CLI commands, including upgrade preflight,
+use the same database configuration as the controller:
 
 | Service | Env File |
 |---------|----------|
@@ -156,6 +158,155 @@ not overwritten during package upgrades.
 | Readiness reports `migrations_current: false` (with DB reachable) | Migrations not run | Run `sudo "/Library/Application Support/Orchard/bin/orchard-controller" eval 'Orchard.Release.migrate()'` |
 | `WARNING: ignoring env file` in controller.log | File not root-owned or has group/world permission bits | `sudo chown root:wheel <file> && sudo chmod 600 <file>` |
 
+## Upgrade Preflight
+
+Use `orchardctl upgrade plan` before installing a replacement PKG. The command
+runs the controller-side SPEC §13.7 preflight checks without changing Orchard
+state:
+
+```bash
+sudo orchardctl upgrade plan
+```
+
+The preflight validates the backup manifest, database reachability and migration
+lock availability, migration status, request activity, draining and
+decommissioning nodes, and node-agent version compatibility. Business logic runs
+inside the controller application (`Orchard.Upgrade.plan/1`); the CLI only
+renders the result and returns the mapped exit code.
+
+### Exit codes
+
+| Exit code | Status | Meaning |
+|-----------|--------|---------|
+| `0` | `safe` | All blocking checks passed. Warnings may still be present. |
+| `1` | `unsafe` | One or more checks are blocked, such as active requests, pending migrations, draining/decommissioning nodes, or incompatible node-agent versions. |
+| `2` | `config_error` | The preflight configuration is invalid, such as a malformed backup manifest or invalid queue tolerance. CLI usage errors also return `2`. |
+| `3` | `unreachable` | A required runtime dependency, typically Postgres or node inventory, could not be reached. |
+
+### JSON output
+
+Use `--json` for automation:
+
+```bash
+sudo orchardctl upgrade plan --json
+```
+
+JSON mode emits the raw `Orchard.Upgrade.plan/1` result map. Successful plans
+(exit `0`) are printed to stdout. Non-zero plan results follow the global
+`orchardctl` command-result contract and are printed to stderr before exiting
+with the mapped code.
+
+### Backup manifest
+
+Default path:
+
+```text
+/Library/Application Support/Orchard/support/upgrade-backup.json
+```
+
+The default is derived from `ORCHARD_SUPPORT_ROOT` when that variable is set:
+`$ORCHARD_SUPPORT_ROOT/support/upgrade-backup.json`.
+
+Minimum schema for the current preflight contract:
+
+```json
+{
+  "schema_version": 1,
+  "created_at": "2026-04-18T12:00:00Z",
+  "database": {
+    "location": "postgresql://localhost/orchard_controller"
+  },
+  "support_root": {
+    "location": "/Library/Application Support/Orchard"
+  }
+}
+```
+
+Only `schema_version` and `created_at` are currently required by preflight;
+additional fields document the operator backup source for future auditability.
+Create or refresh the manifest after completing your backup step:
+
+```bash
+sudo mkdir -p '/Library/Application Support/Orchard/support'
+sudo tee '/Library/Application Support/Orchard/support/upgrade-backup.json' >/dev/null <<'JSON'
+{
+  "schema_version": 1,
+  "created_at": "2026-04-18T12:00:00Z",
+  "database": {
+    "location": "postgresql://localhost/orchard_controller"
+  },
+  "support_root": {
+    "location": "/Library/Application Support/Orchard"
+  }
+}
+JSON
+sudo chown root:wheel '/Library/Application Support/Orchard/support/upgrade-backup.json'
+sudo chmod 600 '/Library/Application Support/Orchard/support/upgrade-backup.json'
+```
+
+### Upgrade preflight environment
+
+Set these in `controller.env` so both the controller and packaged `orchardctl`
+see the same policy:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORCHARD_UPGRADE_BACKUP_MANIFEST_PATH` | `$ORCHARD_SUPPORT_ROOT/support/upgrade-backup.json` | Override the backup manifest path checked by `orchardctl upgrade plan`. |
+| `ORCHARD_UPGRADE_QUEUE_TOLERANCE` | `0` | Maximum queued requests allowed during preflight. Must be an integer `>= 0`; active non-queued requests still block. |
+
+Example:
+
+```bash
+sudo tee -a '/Library/Application Support/Orchard/config/controller.env' >/dev/null <<'EOF'
+ORCHARD_UPGRADE_BACKUP_MANIFEST_PATH="/Library/Application Support/Orchard/support/upgrade-backup.json"
+ORCHARD_UPGRADE_QUEUE_TOLERANCE=0
+EOF
+sudo chown root:wheel '/Library/Application Support/Orchard/config/controller.env'
+sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
+```
+
+### Operator upgrade workflow
+
+1. **Plan with current state:**
+   ```bash
+   sudo orchardctl upgrade plan
+   ```
+   Resolve any `unsafe`, `config_error`, or `unreachable` result before
+   installing a replacement PKG.
+
+2. **Back up Orchard state:** back up Postgres and any required support-root
+   files, then write the backup manifest shown above.
+
+3. **Re-run preflight:**
+   ```bash
+   sudo orchardctl upgrade plan --json
+   ```
+   Confirm exit code `0` for a safe upgrade window.
+
+4. **Install the replacement PKG:**
+   ```bash
+   sudo installer -pkg Orchard-<version>-<date>-<sha>.pkg -target /
+   ```
+   Existing `controller.env`, support data, and TLS material are preserved.
+   Services are stopped during upgrade and are not auto-restarted.
+
+5. **Run migrations if the new release requires them:**
+   ```bash
+   sudo "/Library/Application Support/Orchard/bin/orchard-controller" eval 'Orchard.Release.migrate()'
+   ```
+
+6. **Start services:**
+   ```bash
+   sudo orchardctl start
+   ```
+
+7. **Verify readiness and version:**
+   ```bash
+   sudo orchardctl status
+   curl --cacert '/Library/Application Support/Orchard/config/tls/ca.crt' \
+     https://localhost:8443/health/ready
+   ```
+
 ## Licensing v0
 
 Orchard licensing v0 stores one Orchard-owned local bundle at:
@@ -200,6 +351,11 @@ verification will fail.
   `"license"` block is present.
 - Controller `/health/ready` exposes license state for observation, but remains
   **non-gating** — it does not change readiness semantics or HTTP status.
+
+If a license includes optional tracking metadata, `orchardctl license status`,
+`orchardctl status`, and `/health/ready` may display the tracking program and
+reference. This metadata is derived from the signed certificate, is used only
+for internal program attribution, and does not affect license enforcement.
 
 ### Licensing environment variables
 
@@ -718,4 +874,3 @@ For MDM/Jamf deployment automation:
 Earlier PKG iterations used divergent versioning (PKG `v0.2.1` containing
 app `v0.5.0-dev`). This was corrected in the 0.5.0 release cycle to align
 with the policy above.
-

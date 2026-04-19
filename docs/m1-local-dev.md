@@ -498,6 +498,30 @@ bundle-path validation rejects symlinks that resolve outside the bundle root.
 - `orchardctl status` renders the controller's additive license payload when it
   is present.
 
+### Optional tracking metadata
+
+License certificates may include optional AIEH/100E/SIP tracking metadata under
+the signed Keygen payload's `data.attributes.metadata` object. Orchard extracts
+only the tracking `program` and `reference` fields and treats them as
+observational, non-gating attribution data.
+
+Recommended program values:
+
+- `aieh`
+- `100e`
+- `sip`
+
+Tracking metadata is derived only from the signed certificate payload. It is not
+persisted outside the certificate pair, and `current.json` continues to contain
+only `license_certificate` and `machine_certificate`. Missing or malformed
+tracking metadata does not affect license validity or startup enforcement.
+
+When present, tracking metadata appears in:
+
+- `orchardctl license status`
+- Controller `/health/ready` JSON under `license.tracking`
+- `orchardctl status`, rendered from the controller health payload
+
 ### Licensing environment variables
 
 | Variable | Default | Notes |

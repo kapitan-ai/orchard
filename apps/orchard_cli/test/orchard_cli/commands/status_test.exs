@@ -572,6 +572,33 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert banner =~ "expires: 2027-04-15T00:00:00Z"
   end
 
+  test "renders license tracking line when health payload includes tracking metadata" do
+    response = ready_response()
+
+    body =
+      put_in(response.body, ["license"], %{
+        "status" => "valid",
+        "reason" => nil,
+        "message" => "License bundle is valid.",
+        "expires_at" => "2027-04-15T00:00:00Z",
+        "tracking" => %{
+          "program" => "aieh",
+          "reference" => "aieh-2026-001"
+        }
+      })
+
+    response = %{response | body: body}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "License: valid"
+    assert banner =~ "Tracking: program=aieh ref=aieh-2026-001"
+  end
+
   test "does not render a license line when the health payload omits the license block" do
     runtime =
       test_runtime(%{
@@ -580,6 +607,52 @@ defmodule OrchardCLI.Commands.StatusTest do
 
     assert {:ok, banner} = Status.run([], runtime)
     refute banner =~ "License:"
+  end
+
+  test "ignores malformed license tracking blocks for backward compatibility" do
+    response = ready_response()
+
+    body =
+      put_in(response.body, ["license"], %{
+        "status" => "valid",
+        "reason" => nil,
+        "message" => "License bundle is valid.",
+        "tracking" => "not-a-map"
+      })
+
+    response = %{response | body: body}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "License: valid"
+    refute banner =~ "Tracking:"
+  end
+
+  test "ignores empty license tracking fields for backward compatibility" do
+    response = ready_response()
+
+    body =
+      put_in(response.body, ["license"], %{
+        "status" => "valid",
+        "reason" => nil,
+        "message" => "License bundle is valid.",
+        "tracking" => %{"program" => "", "reference" => 123}
+      })
+
+    response = %{response | body: body}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "License: valid"
+    refute banner =~ "Tracking:"
   end
 
   test "ignores malformed license blocks for backward compatibility" do

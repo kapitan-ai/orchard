@@ -30,7 +30,7 @@ defmodule OrchardNodeAgent.MixProject do
       {:orchard_shared, in_umbrella: true},
       {:req, "~> 0.5"},
       {:req_s3, "~> 0.2"},
-      {:sentry, "~> 10.2"},
+      {:sentry, "~> 12.0"},
       {:hackney, "~> 1.8"}
     ]
   end

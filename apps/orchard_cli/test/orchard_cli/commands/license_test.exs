@@ -73,6 +73,7 @@ defmodule OrchardCLI.Commands.LicenseTest do
   @activation_required_codes ["NO_MACHINES", "NO_MACHINE", "FINGERPRINT_SCOPE_MISMATCH"]
   @activation_required_primary_code "NO_MACHINES"
   @activation_required_detail "fingerprint is not activated (has no associated machines)"
+  @admin_token "SECRET_ADMIN_TOKEN"
 
   setup do
     Process.put(:requests, [])
@@ -87,6 +88,7 @@ defmodule OrchardCLI.Commands.LicenseTest do
     assert message =~ "orchardctl license"
     assert message =~ "activate <key>"
     assert message =~ "status"
+    assert message =~ "create"
   end
 
   test "activate help returns usage" do
@@ -105,6 +107,13 @@ defmodule OrchardCLI.Commands.LicenseTest do
     refute message =~ "/Library/Application Support/Orchard"
   end
 
+  test "create help returns usage" do
+    assert {:ok, message} = License.run(["create", "--help"], runtime())
+    assert message =~ "orchardctl license create"
+    assert message =~ "ORCHARD_KEYGEN_ADMIN_TOKEN"
+    assert message =~ "--dry-run"
+  end
+
   test "activate ensures node identity, extracts certificates, installs the pair, and does not echo the key" do
     runtime = runtime(request: &successful_activate_request/1)
 
@@ -113,6 +122,8 @@ defmodule OrchardCLI.Commands.LicenseTest do
 
     assert message =~ "License activated"
     assert message =~ @support_root <> "/config/licensing/current.json"
+    refute message =~ "Tracking Program:"
+    refute message =~ "Tracking Reference:"
     refute message =~ @license_key
 
     assert_received {:node_identity_ensure, path}
@@ -145,6 +156,31 @@ defmodule OrchardCLI.Commands.LicenseTest do
            )
 
     refute Enum.any?(requests, &(request_header(&1, "authorization") == "Bearer #{@license_key}"))
+  end
+
+  test "activate success output renders tracking metadata without echoing the key" do
+    Process.put(
+      :install_pair_response,
+      {:ok,
+       %Orchard.Licensing{
+         state: :valid,
+         message: "License bundle is valid.",
+         bundle_path: Path.join([@support_root, "config", "licensing", "current.json"]),
+         fingerprint: @node_id,
+         local_node_fingerprint: @node_id,
+         expires_at: ~U[2027-04-15 00:00:00Z],
+         license_id: "lic_123",
+         machine_id: "mach_123",
+         metadata: %{program: "aieh", reference: "aieh-2026-001"}
+       }}
+    )
+
+    assert {:ok, message} =
+             License.run(["activate", @license_key, "--support-root", @support_root], runtime())
+
+    assert message =~ "Tracking Program: AIEH"
+    assert message =~ "Tracking Reference: aieh-2026-001"
+    refute message =~ @license_key
   end
 
   test "activate skips machine creation when the node fingerprint already exists" do
@@ -455,11 +491,36 @@ defmodule OrchardCLI.Commands.LicenseTest do
     assert message =~ "License bundle is valid."
     assert message =~ @support_root <> "/config/licensing/current.json"
     assert message =~ "Machine certificate fingerprint: #{@node_id}"
+    refute message =~ "Tracking Program:"
+    refute message =~ "Tracking Reference:"
     refute message =~ "Node fingerprint:"
 
     assert_received {:inspect_local, opts}
     assert opts[:bundle_path] == Path.join([@support_root, "config", "licensing", "current.json"])
     assert opts[:node_identity_path] == Path.join([@support_root, "data", "node-id"])
+    refute_received {:node_identity_ensure, _path}
+  end
+
+  test "status output renders tracking metadata with known program labels" do
+    Process.put(
+      :inspect_local_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: Path.join([@support_root, "config", "licensing", "current.json"]),
+        fingerprint: @node_id,
+        local_node_fingerprint: @node_id,
+        expires_at: ~U[2027-04-15 00:00:00Z],
+        license_id: "lic_123",
+        machine_id: "mach_123",
+        metadata: %{program: "100e", reference: "100e-2026-alpha"}
+      }
+    )
+
+    assert {:ok, message} = License.run(["status", "--support-root", @support_root], runtime())
+
+    assert message =~ "Tracking Program: 100E"
+    assert message =~ "Tracking Reference: 100e-2026-alpha"
     refute_received {:node_identity_ensure, _path}
   end
 
@@ -493,6 +554,150 @@ defmodule OrchardCLI.Commands.LicenseTest do
     assert message =~ "Machine certificate fingerprint: #{@other_node_id}"
     refute message =~ "Node fingerprint:"
     refute_received {:node_identity_ensure, _path}
+  end
+
+  test "create dry-run emits JSON API payload with orchard_tracking metadata" do
+    assert {:ok, output} =
+             License.run(
+               [
+                 "create",
+                 "--policy-id",
+                 "pol_123",
+                 "--name",
+                 "AIEH Trial",
+                 "--max-machines",
+                 "3",
+                 "--expires-at",
+                 "2027-04-15T00:00:00Z",
+                 "--tracking-program",
+                 " AIEH ",
+                 "--tracking-reference",
+                 " AIEH-2026-001 ",
+                 "--dry-run"
+               ],
+               runtime(request: &unexpected_request/1)
+             )
+
+    assert Jason.decode!(output) == %{
+             "data" => %{
+               "type" => "licenses",
+               "attributes" => %{
+                 "name" => "AIEH Trial",
+                 "maxMachines" => 3,
+                 "expiry" => "2027-04-15T00:00:00Z",
+                 "metadata" => %{
+                   "orchard_tracking" => %{
+                     "program" => "aieh",
+                     "reference" => "aieh-2026-001"
+                   }
+                 }
+               },
+               "relationships" => %{
+                 "policy" => %{
+                   "data" => %{"type" => "policies", "id" => "pol_123"}
+                 }
+               }
+             }
+           }
+
+    assert recorded_requests() == []
+  end
+
+  test "create dry-run omits metadata when tracking flags are absent" do
+    assert {:ok, output} =
+             License.run(
+               [
+                 "create",
+                 "--policy-id",
+                 "pol_123",
+                 "--name",
+                 "Plain Trial",
+                 "--dry-run"
+               ],
+               runtime(request: &unexpected_request/1)
+             )
+
+    attributes = get_in(Jason.decode!(output), ["data", "attributes"])
+
+    assert attributes == %{"name" => "Plain Trial"}
+    refute Map.has_key?(attributes, "metadata")
+    assert recorded_requests() == []
+  end
+
+  test "create live mode requires admin token and does not perform network request" do
+    runtime =
+      runtime(request: &unexpected_request/1)
+      |> Map.put(:admin_token, fn _name -> nil end)
+
+    assert {:error, message, 1} =
+             License.run(
+               ["create", "--policy-id", "pol_123", "--name", "AIEH Trial"],
+               runtime
+             )
+
+    assert message =~ "ORCHARD_KEYGEN_ADMIN_TOKEN is required"
+    refute message =~ @admin_token
+    assert recorded_requests() == []
+  end
+
+  test "create live mode posts payload with bearer admin token and renders created license" do
+    runtime =
+      runtime(request: &successful_create_request/1)
+      |> Map.put(:admin_token, fn "ORCHARD_KEYGEN_ADMIN_TOKEN" -> @admin_token end)
+
+    assert {:ok, message} =
+             License.run(
+               [
+                 "create",
+                 "--policy-id",
+                 "pol_123",
+                 "--name",
+                 "SIP Trial",
+                 "--tracking-program",
+                 "sip",
+                 "--tracking-reference",
+                 "sip-2026-001"
+               ],
+               runtime
+             )
+
+    assert message =~ "License created"
+    assert message =~ "License ID: lic_created"
+    assert message =~ "License key: CREATED-LICENSE-KEY"
+    assert message =~ "Tracking Program: SIP"
+    assert message =~ "Tracking Reference: sip-2026-001"
+    refute message =~ @admin_token
+
+    assert [request] = recorded_requests()
+    assert request_signature(request) == {:post, licenses_url()}
+    assert request_header(request, "authorization") == "Bearer #{@admin_token}"
+
+    assert get_in(request.body, ["data", "attributes", "metadata"]) == %{
+             "orchard_tracking" => %{
+               "program" => "sip",
+               "reference" => "sip-2026-001"
+             }
+           }
+  end
+
+  test "create live errors redact admin token" do
+    runtime =
+      runtime(
+        request: fn req ->
+          record_request(req)
+          {:error, {:leaked, @admin_token}}
+        end
+      )
+      |> Map.put(:admin_token, fn "ORCHARD_KEYGEN_ADMIN_TOKEN" -> @admin_token end)
+
+    assert {:error, message, 1} =
+             License.run(
+               ["create", "--policy-id", "pol_123", "--name", "AIEH Trial"],
+               runtime
+             )
+
+    refute message =~ @admin_token
+    assert message =~ "[REDACTED]"
   end
 
   defp runtime(overrides \\ []) do
@@ -574,6 +779,39 @@ defmodule OrchardCLI.Commands.LicenseTest do
           flunk("unexpected request: #{inspect(req)}")
         end
     end
+  end
+
+  defp successful_create_request(req) do
+    record_request(req)
+
+    case request_signature(req) do
+      {:post, url} ->
+        if url == licenses_url() do
+          assert request_header(req, "authorization") == "Bearer #{@admin_token}"
+          assert get_in(req, [:body, "data", "type"]) == "licenses"
+
+          {:ok,
+           %{
+             status: 201,
+             body: %{
+               "data" => %{
+                 "id" => "lic_created",
+                 "type" => "licenses",
+                 "attributes" => %{"key" => "CREATED-LICENSE-KEY"}
+               }
+             }
+           }}
+        else
+          flunk("unexpected request: #{inspect(req)}")
+        end
+
+      _other ->
+        flunk("unexpected request: #{inspect(req)}")
+    end
+  end
+
+  defp unexpected_request(req) do
+    flunk("unexpected request: #{inspect(req)}")
   end
 
   defp existing_machine_request(req) do
@@ -781,6 +1019,10 @@ defmodule OrchardCLI.Commands.LicenseTest do
 
   defp validation_url(account_id \\ @account_id) do
     "https://api.keygen.sh/v1/accounts/#{account_id}/licenses/actions/validate-key"
+  end
+
+  defp licenses_url(account_id \\ @account_id) do
+    "https://api.keygen.sh/v1/accounts/#{account_id}/licenses"
   end
 
   defp machines_url(account_id \\ @account_id) do

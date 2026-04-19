@@ -140,45 +140,31 @@ defmodule Orchard.SentryFilterTest do
     assert get_in(filtered, [:request, :payload, :safe_value, :nested]) == "ok"
   end
 
-  test "returns a sentry event struct when filtering sentry event input" do
-    event = %Sentry.Event{
-      event_id: "6b9b8e4653df4f7582f7225f5af13f08",
-      timestamp: "2026-04-18T10:00:00Z",
-      extra: %{token: "token-value"},
+  defmodule DummyEvent do
+    defstruct [:request, :data, :metadata, :token, :secret, :abs_path, :safe]
+  end
+
+  test "filters generic struct input without sentry compile dependency" do
+    event = %DummyEvent{
       request: %{"headers" => [{"authorization", "Bearer secret"}]},
-      contexts: %{metadata: %{tenant: "demo"}},
-      tags: %{api_key: "api-key-value"},
-      exception: [
-        %{
-          "stacktrace" => %{
-            "frames" => [
-              %{
-                "abs_path" =>
-                  "/Users/demo/orchard/apps/orchard_shared/lib/orchard/sentry_filter.ex"
-              }
-            ]
-          }
-        }
-      ],
-      message: %{"content" => "secret content"}
+      data: %{"prompt" => "secret prompt", "model" => "mlx-community/qwen2.5"},
+      metadata: %{"tenant" => "demo"},
+      token: "token-value",
+      secret: "secret-value",
+      abs_path: "/Users/demo/orchard/apps/orchard_shared/lib/orchard/sentry_filter.ex",
+      safe: "ok"
     }
 
     filtered = SentryFilter.filter(event)
 
-    assert %Sentry.Event{} = filtered
-    assert filtered.extra[:token] == "[Filtered]"
+    assert %DummyEvent{} = filtered
     assert get_in(filtered.request, ["headers", Access.at(0)]) == {"authorization", "[Filtered]"}
-    assert filtered.contexts[:metadata] == "[Filtered]"
-    assert filtered.tags[:api_key] == "[Filtered]"
-    assert get_in(filtered.message, ["content"]) == "[Filtered]"
-
-    assert get_in(filtered.exception, [
-             Access.at(0),
-             "stacktrace",
-             "frames",
-             Access.at(0),
-             "abs_path"
-           ]) ==
-             "[Filtered]"
+    assert filtered.data["prompt"] == "[Filtered]"
+    assert filtered.data["model"] == "mlx-community/qwen2.5"
+    assert filtered.metadata == "[Filtered]"
+    assert filtered.token == "[Filtered]"
+    assert filtered.secret == "[Filtered]"
+    assert filtered.abs_path == "[Filtered]"
+    assert filtered.safe == "ok"
   end
 end

@@ -2,8 +2,7 @@ defmodule Orchard.SentryFilter do
   @moduledoc """
   Shared Sentry event scrubber for Orchard.
 
-  Sentry 10.x `before_send` receives `%Sentry.Event{}` structs. We scrub known fields for
-  PII/secrets.
+  Operates on generic maps/structs so orchard_shared does not need a Sentry compile dependency.
   """
 
   @filtered "[Filtered]"
@@ -31,25 +30,18 @@ defmodule Orchard.SentryFilter do
                     "password"
                   ])
 
-  @spec filter(map() | %Sentry.Event{}) :: map() | %Sentry.Event{}
-  def filter(%Sentry.Event{} = event) do
-    %{
-      event
-      | extra: scrub_map(event.extra || %{}),
-        request: scrub_map(event.request || %{}),
-        contexts: scrub_map(event.contexts || %{}),
-        tags: scrub_map(event.tags || %{}),
-        exception: scrub_exceptions(event.exception),
-        message: scrub_message(event.message)
-    }
-  end
-
-  def filter(event) when is_map(event) do
-    # Sentry sometimes passes plain maps - scrub directly
+  @spec filter(map() | struct()) :: map() | struct()
+  def filter(event) when is_map(event) and not is_struct(event) do
     scrub_map(event)
   end
 
-  # For non-map inputs, pass through (shouldn't happen with Sentry events)
+  def filter(%_{} = event) do
+    event
+    |> Map.from_struct()
+    |> scrub_map()
+    |> then(&struct(event.__struct__, &1))
+  end
+
   def filter(other), do: other
 
   defp scrub_map(value) when is_map(value) do
@@ -83,10 +75,6 @@ defmodule Orchard.SentryFilter do
   defp scrub_nested(value) when is_map(value), do: scrub_map(value)
   defp scrub_nested(value), do: value
 
-  # Helper to scrub lists recursively (for exceptions which are lists)
-  defp scrub_list(list) when is_list(list), do: Enum.map(list, &scrub_nested/1)
-  defp scrub_list(other), do: scrub_nested(other)
-
   defp scrub_headers(headers) when is_map(headers) do
     # Don't convert Sentry.Interfaces.* structs to maps
     if is_struct(headers) do
@@ -119,10 +107,6 @@ defmodule Orchard.SentryFilter do
   end
 
   defp scrub_headers(other), do: scrub_map(other)
-
-  defp scrub_exceptions(exceptions), do: scrub_list(exceptions)
-
-  defp scrub_message(message), do: scrub_list(message)
 
   defp sensitive_header?(key) do
     normalized_key = normalize_key(key)

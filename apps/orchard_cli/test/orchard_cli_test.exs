@@ -23,7 +23,7 @@ defmodule OrchardCLITest do
   end
 
   test "dispatches each placeholder command module" do
-    placeholder_commands = ["cluster", "requests", "support", "upgrade"]
+    placeholder_commands = ["cluster", "requests", "support"]
 
     for command <- placeholder_commands do
       output = capture_io(fn -> OrchardCLI.main([command], &no_halt/1) end)
@@ -34,7 +34,7 @@ defmodule OrchardCLITest do
   test "placeholder commands do not trigger halt" do
     parent = self()
 
-    for command <- ["cluster", "requests", "support", "upgrade"] do
+    for command <- ["cluster", "requests", "support"] do
       capture_io(fn -> OrchardCLI.main([command], halt_stub(parent)) end)
       refute_received {:halt_called, _}
     end
@@ -189,6 +189,30 @@ defmodule OrchardCLITest do
     output = capture_io(fn -> OrchardCLI.main(["start", "--help"], &no_halt/1) end)
     assert output =~ "orchardctl start"
     assert output =~ "launchd"
+  end
+
+  test "upgrade help dispatches through main without running preflight" do
+    output = capture_io(fn -> OrchardCLI.main(["upgrade", "help"], &no_halt/1) end)
+    assert output =~ "orchardctl upgrade"
+    assert output =~ "orchardctl upgrade plan [--json]"
+  end
+
+  test "upgrade plan help dispatches through main without running preflight" do
+    output = capture_io(fn -> OrchardCLI.main(["upgrade", "plan", "--help"], &no_halt/1) end)
+    assert output =~ "orchardctl upgrade plan [--json]"
+    assert output =~ "SPEC 13.7"
+  end
+
+  test "upgrade unknown subcommand exits with usage error" do
+    parent = self()
+
+    stderr =
+      capture_io(:stderr, fn ->
+        OrchardCLI.main(["upgrade", "apply"], halt_stub(parent))
+      end)
+
+    assert stderr =~ "Unknown upgrade subcommand: apply"
+    assert_received {:halt_called, 2}
   end
 
   test "stop --help dispatches through main without side effects" do

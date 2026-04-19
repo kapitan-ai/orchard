@@ -50,6 +50,7 @@ defmodule Orchard.LicensingTest do
       assert status.machine_id == "mach_local"
       assert status.licensee == "Acme Orchard Lab"
       assert status.max_machines == 3
+      assert status.metadata == nil
       assert status.expires_at == ~U[2027-04-15 00:00:00Z]
     end
 
@@ -182,7 +183,10 @@ defmodule Orchard.LicensingTest do
           machine_format: :keygen_checkout
         )
 
-      tampered_enc = Base.encode64("{\"data\":{\"type\":\"machines\",\"id\":\"tampered\"}}")
+      tampered_enc =
+        %{"data" => %{"type" => "machines", "id" => "tampered"}}
+        |> Jason.encode!()
+        |> Base.encode64()
 
       tampered_bundle = %{
         bundle
@@ -374,7 +378,127 @@ defmodule Orchard.LicensingTest do
       assert status.machine_id == @golden_machine_id
       assert status.licensee == nil
       assert status.max_machines == 10
+      assert status.metadata == nil
       assert status.expires_at == @golden_expires_at
+    end
+
+    test "extracts orchard_tracking metadata from an Orchard-canonical license certificate",
+         ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_tracking_canonical",
+          "mach_tracking_canonical",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          metadata: %{
+            "orchard_tracking" => %{
+              "program" => " AIEH ",
+              "reference" => " AIEH-2026-001 "
+            }
+          }
+        )
+
+      write_bundle!(ctx.bundle_path, bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :valid
+      assert status.metadata == %{program: "aieh", reference: "aieh-2026-001"}
+    end
+
+    test "extracts observed Keygen checkout tracking metadata key from the signed payload",
+         ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_tracking_keygen",
+          "mach_tracking_keygen",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          license_format: :keygen_checkout,
+          metadata: %{
+            "orchardTracking" => %{
+              "program" => "100E",
+              "reference" => "100E-2026-ALPHA"
+            }
+          }
+        )
+
+      write_bundle!(ctx.bundle_path, bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :valid
+      assert status.metadata == %{program: "100e", reference: "100e-2026-alpha"}
+    end
+
+    test "ignores non-map certificate metadata without changing license state", ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_tracking_non_map_metadata",
+          "mach_tracking_non_map_metadata",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          metadata: "not-a-map"
+        )
+
+      write_bundle!(ctx.bundle_path, bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :valid
+      assert status.metadata == nil
+    end
+
+    test "ignores non-map orchard_tracking blocks without changing license state", ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_tracking_non_map_block",
+          "mach_tracking_non_map_block",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          metadata: %{"orchard_tracking" => "not-a-map"}
+        )
+
+      write_bundle!(ctx.bundle_path, bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :valid
+      assert status.metadata == nil
+    end
+
+    test "soft-parses blank and non-string tracking fields without invalidating the bundle",
+         ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_tracking_soft_fields",
+          "mach_tracking_soft_fields",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          metadata: %{
+            "orchard_tracking" => %{
+              "program" => "   ",
+              "reference" => 123
+            }
+          }
+        )
+
+      write_bundle!(ctx.bundle_path, bundle)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      status = Licensing.inspect_local(opts(ctx))
+
+      assert status.state == :valid
+      assert status.metadata == %{program: nil, reference: nil}
     end
 
     test "real captured Keygen certificates use base64+ed25519 envelopes" do
@@ -592,6 +716,7 @@ defmodule Orchard.LicensingTest do
       assert status.license_id == "lic_keygen_install"
       assert status.machine_id == "mach_keygen_install"
       assert status.fingerprint == @local_node_id
+      assert status.metadata == nil
 
       assert Jason.decode!(File.read!(ctx.bundle_path)) == %{
                "license_certificate" => bundle.license_certificate,
@@ -600,6 +725,36 @@ defmodule Orchard.LicensingTest do
 
       assert {:ok, stat} = File.stat(ctx.bundle_path)
       assert Bitwise.band(stat.mode, 0o777) == 0o600
+    end
+
+    test "returns tracking metadata while persisting only the certificate pair", ctx do
+      bundle =
+        build_signed_bundle(
+          @local_node_id,
+          "lic_tracking_install",
+          "mach_tracking_install",
+          "2026-01-01T00:00:00Z",
+          "2027-04-15T00:00:00Z",
+          license_format: :keygen_checkout,
+          machine_format: :keygen_checkout,
+          metadata: %{
+            "orchard_tracking" => %{
+              "program" => "SIP",
+              "reference" => "SIP-2026-001"
+            }
+          }
+        )
+
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      assert {:ok, %Licensing{} = status} = Licensing.install_pair(bundle, opts(ctx))
+      assert status.state == :valid
+      assert status.metadata == %{program: "sip", reference: "sip-2026-001"}
+
+      assert Jason.decode!(File.read!(ctx.bundle_path)) == %{
+               "license_certificate" => bundle.license_certificate,
+               "machine_certificate" => bundle.machine_certificate
+             }
     end
 
     test "keeps the last known good bundle when validation fails", ctx do
@@ -736,6 +891,70 @@ defmodule Orchard.LicensingTest do
                reason: "read_error",
                message: "Cannot read licensing bundle: :eacces.",
                expires_at: nil
+             }
+    end
+
+    test "adds tracking only when metadata is present" do
+      summary =
+        Licensing.health_summary(%Licensing{
+          state: :valid,
+          message: "License bundle is valid.",
+          bundle_path: "/tmp/current.json",
+          expires_at: ~U[2027-04-15 00:00:00Z],
+          metadata: %{program: "aieh", reference: "aieh-2026-001"}
+        })
+
+      assert summary == %{
+               status: "valid",
+               reason: nil,
+               message: "License bundle is valid.",
+               expires_at: "2027-04-15T00:00:00Z",
+               tracking: %{program: "aieh", reference: "aieh-2026-001"}
+             }
+    end
+
+    test "omits tracking for malformed metadata" do
+      summary =
+        Licensing.health_summary(%Licensing{
+          state: :valid,
+          message: "License bundle is valid.",
+          bundle_path: "/tmp/current.json",
+          metadata: "not-a-map"
+        })
+
+      refute Map.has_key?(summary, :tracking)
+    end
+  end
+
+  describe "telemetry_dimensions/1" do
+    test "returns stable dimensions with absent tracking fields" do
+      dimensions =
+        Licensing.telemetry_dimensions(%Licensing{
+          state: :missing_bundle,
+          message: "No local license bundle is installed.",
+          bundle_path: "/tmp/current.json"
+        })
+
+      assert dimensions == %{
+               license_state: "missing_bundle",
+               tracking_program: nil,
+               tracking_reference: nil
+             }
+    end
+
+    test "returns tracking dimensions when metadata is present" do
+      dimensions =
+        Licensing.telemetry_dimensions(%Licensing{
+          state: :valid,
+          message: "License bundle is valid.",
+          bundle_path: "/tmp/current.json",
+          metadata: %{program: "100e", reference: "100e-2026-alpha"}
+        })
+
+      assert dimensions == %{
+               license_state: "valid",
+               tracking_program: "100e",
+               tracking_reference: "100e-2026-alpha"
              }
     end
   end
@@ -896,19 +1115,24 @@ defmodule Orchard.LicensingTest do
     machine_license_id = Keyword.get(overrides, :machine_license_id, license_id)
     licensee = Keyword.get(overrides, :licensee, "Acme Orchard Lab")
     max_machines = Keyword.get(overrides, :max_machines, 3)
+    metadata = Keyword.get(overrides, :metadata)
     license_format = Keyword.get(overrides, :license_format, :orchard_canonical)
     machine_format = Keyword.get(overrides, :machine_format, :orchard_canonical)
+
+    license_attributes =
+      %{
+        "licensee" => licensee,
+        "maxMachines" => max_machines,
+        "notBefore" => not_before,
+        "expiry" => expiry
+      }
+      |> maybe_put_metadata(metadata)
 
     license_payload = %{
       "data" => %{
         "type" => "licenses",
         "id" => license_id,
-        "attributes" => %{
-          "licensee" => licensee,
-          "maxMachines" => max_machines,
-          "notBefore" => not_before,
-          "expiry" => expiry
-        }
+        "attributes" => license_attributes
       }
     }
 
@@ -948,6 +1172,9 @@ defmodule Orchard.LicensingTest do
 
   defp sign_certificate(kind, payload),
     do: sign_certificate(kind, payload, :orchard_canonical)
+
+  defp maybe_put_metadata(attributes, nil), do: attributes
+  defp maybe_put_metadata(attributes, metadata), do: Map.put(attributes, "metadata", metadata)
 
   defp sign_certificate(kind, payload, format) do
     payload_json = Jason.encode!(payload)

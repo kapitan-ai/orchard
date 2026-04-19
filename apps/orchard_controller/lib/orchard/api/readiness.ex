@@ -1,11 +1,7 @@
 defmodule Orchard.API.Readiness do
   @moduledoc false
 
-  alias Ecto.Adapters.SQL
   alias Orchard.Release
-  alias Orchard.Repo
-
-  @db_checks_key :enable_db_checks
 
   # Causal priority for failure-reason selection.
   # When multiple checks fail, the first false key in this list becomes the
@@ -27,7 +23,7 @@ defmodule Orchard.API.Readiness do
 
   @spec status() :: status_result()
   def status do
-    postgres_reachable = postgres_reachable?()
+    postgres_reachable = Release.postgres_reachable?()
 
     migrations_current =
       if postgres_reachable do
@@ -50,25 +46,8 @@ defmodule Orchard.API.Readiness do
     end
   end
 
-  defp postgres_reachable? do
-    if db_checks_enabled?() and Application.get_env(:orchard_controller, :start_repo, true) do
-      case SQL.query(Repo, "SELECT 1", []) do
-        {:ok, _result} -> true
-        {:error, _reason} -> false
-      end
-    else
-      false
-    end
-  rescue
-    _ -> false
-  end
-
   defp migrations_current? do
     Release.migrations_current?()
-  end
-
-  defp db_checks_enabled? do
-    Application.get_env(:orchard_controller, @db_checks_key, true)
   end
 
   defp public_api_https_enabled? do
