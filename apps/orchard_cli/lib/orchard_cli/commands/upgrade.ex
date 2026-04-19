@@ -38,7 +38,8 @@ defmodule OrchardCLI.Commands.Upgrade do
   defp parse_plan_args(args, _opts) do
     case rejected_plan_option(args) do
       nil ->
-        {parsed, rest, invalid} = OptionParser.parse(args, strict: [json: :boolean, help: :boolean])
+        {parsed, rest, invalid} =
+          OptionParser.parse(args, strict: [json: :boolean, help: :boolean])
 
         cond do
           invalid != [] ->

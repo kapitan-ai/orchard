@@ -13,6 +13,63 @@ defmodule OrchardCLITest do
     fn code -> send(parent, {:halt_called, code}) end
   end
 
+  defp check_status(plan, id) do
+    plan["checks"]
+    |> Enum.find(&(&1["id"] == id))
+    |> Map.fetch!("status")
+  end
+
+  defp repo_root do
+    Path.expand("../../..", __DIR__)
+  end
+
+  defp shell_quote(value) do
+    "'" <> String.replace(value, "'", "'\\''") <> "'"
+  end
+
+  defp db_backed_upgrade_script(missing_manifest_path) do
+    """
+    Application.ensure_all_started(:logger)
+    Application.ensure_all_started(:telemetry)
+    Application.ensure_all_started(:postgrex)
+    Application.ensure_all_started(:ecto_sql)
+    Logger.configure(level: :warning)
+
+    test_repo_config = Application.fetch_env!(:orchard_controller, Orchard.Repo)
+
+    encode = fn value -> value |> to_string() |> URI.encode_www_form() end
+    username = encode.(Keyword.fetch!(test_repo_config, :username))
+    password = encode.(Keyword.get(test_repo_config, :password, ""))
+    hostname = Keyword.get(test_repo_config, :hostname, "localhost")
+    database = encode.(Keyword.fetch!(test_repo_config, :database))
+
+    port =
+      case Keyword.get(test_repo_config, :port) do
+        nil -> ""
+        value -> ":\#{value}"
+      end
+
+    System.put_env("RELEASE_NAME", "orchard_cli")
+    System.delete_env("MIX_RELEASE_NAME")
+    System.put_env("DATABASE_URL", "ecto://\#{username}:\#{password}@\#{hostname}\#{port}/\#{database}")
+    System.put_env("ORCHARD_UPGRADE_BACKUP_MANIFEST_PATH", #{inspect(missing_manifest_path)})
+    System.put_env("ORCHARD_UPGRADE_QUEUE_TOLERANCE", "0")
+    System.put_env("POOL_SIZE", "2")
+
+    runtime_config = Config.Reader.read!("config/runtime.exs", env: :prod)
+    controller_config = Keyword.fetch!(runtime_config, :orchard_controller)
+
+    Enum.each(controller_config, fn
+      {Orchard.Repo, value} -> Application.put_env(:orchard_controller, Orchard.Repo, value)
+      {key, value} -> Application.put_env(:orchard_controller, key, value)
+    end)
+
+    Logger.configure(level: :debug)
+    {:ok, _pid} = Orchard.Repo.start_link()
+    OrchardCLI.main(["upgrade", "plan", "--json"])
+    """
+  end
+
   test "prints usage when invoked without arguments" do
     output = capture_io(fn -> OrchardCLI.main([], &no_halt/1) end)
 
@@ -201,6 +258,45 @@ defmodule OrchardCLITest do
     output = capture_io(fn -> OrchardCLI.main(["upgrade", "plan", "--help"], &no_halt/1) end)
     assert output =~ "orchardctl upgrade plan [--json]"
     assert output =~ "SPEC 13.7"
+  end
+
+  test "SPEC 13.7 DB-backed JSON upgrade plan keeps stdout empty on non-zero exit" do
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-cli-upgrade-json-#{System.unique_integer([:positive])}"
+      )
+
+    File.mkdir_p!(tmp_dir)
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+    script_path = Path.join(tmp_dir, "db_backed_upgrade_plan.exs")
+    stdout_path = Path.join(tmp_dir, "stdout.txt")
+    stderr_path = Path.join(tmp_dir, "stderr.txt")
+    missing_manifest_path = Path.join(tmp_dir, "missing-upgrade-manifest.json")
+
+    File.write!(script_path, db_backed_upgrade_script(missing_manifest_path))
+
+    command =
+      "MIX_ENV=test mix run --no-compile --no-deps-check --no-start #{shell_quote(script_path)} " <>
+        "> #{shell_quote(stdout_path)} 2> #{shell_quote(stderr_path)}"
+
+    {_shell_output, exit_status} = System.cmd("sh", ["-c", command], cd: repo_root())
+
+    stdout = File.read!(stdout_path)
+    stderr = File.read!(stderr_path)
+
+    assert exit_status == 1
+    assert stdout == ""
+
+    decoded = Jason.decode!(stderr)
+    assert decoded["status"] == "unsafe"
+    assert decoded["exit_code"] == 1
+    assert check_status(decoded, "backup_manifest") == "blocked"
+    assert check_status(decoded, "database_reachable") == "ok"
+    assert check_status(decoded, "database_lockable") == "ok"
+    assert check_status(decoded, "migrations_current") == "ok"
+    assert check_status(decoded, "request_activity") == "ok"
   end
 
   test "upgrade unknown subcommand exits with usage error" do

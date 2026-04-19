@@ -539,7 +539,11 @@ if config_env() == :prod do
         config :orchard_controller, Orchard.Repo,
           url: database_url,
           pool_size: env_int.("POOL_SIZE", "10"),
-          socket_options: if(System.get_env("ECTO_IPV6") in ["true", "1"], do: [:inet6], else: [])
+          socket_options:
+            if(System.get_env("ECTO_IPV6") in ["true", "1"], do: [:inet6], else: []),
+          # The packaged wrapper runs through release eval, so Repo query logs share
+          # orchardctl's CLI streams and can corrupt JSON output.
+          log: false
       end
 
       config :orchard_controller,
