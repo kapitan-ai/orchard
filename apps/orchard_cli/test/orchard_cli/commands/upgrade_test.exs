@@ -54,6 +54,34 @@ defmodule OrchardCLI.Commands.UpgradeTest do
     assert message =~ "orchardctl upgrade plan"
   end
 
+  test "plan rejects boolean negation for json as unknown option" do
+    parent = self()
+
+    runtime = %{
+      plan: fn _opts -> send(parent, :plan_called) end,
+      encode_json: &Jason.encode!/1
+    }
+
+    assert {:error, message, 2} = Upgrade.run(["plan", "--no-json"], runtime)
+    assert message =~ "Unknown option: --no-json"
+    assert message =~ "orchardctl upgrade plan"
+    refute_received :plan_called
+  end
+
+  test "plan rejects boolean negation for help as unknown option" do
+    parent = self()
+
+    runtime = %{
+      plan: fn _opts -> send(parent, :plan_called) end,
+      encode_json: &Jason.encode!/1
+    }
+
+    assert {:error, message, 2} = Upgrade.run(["plan", "--no-help"], runtime)
+    assert message =~ "Unknown option: --no-help"
+    assert message =~ "orchardctl upgrade plan"
+    refute_received :plan_called
+  end
+
   test "unexpected plan argument exits 2" do
     assert {:error, message, 2} = Upgrade.run(["plan", "extra"], runtime(plan_result("safe", 0)))
     assert message =~ "Unexpected argument for upgrade plan: extra"

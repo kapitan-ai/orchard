@@ -33,17 +33,35 @@ defmodule OrchardCLI.Commands.Upgrade do
     end
   end
 
-  defp parse_plan_args([], opts), do: {:run, opts}
-  defp parse_plan_args(["--json" | rest], opts), do: parse_plan_args(rest, %{opts | json?: true})
-  defp parse_plan_args(["--help"], _opts), do: :help
   defp parse_plan_args(["help"], _opts), do: :help
 
-  defp parse_plan_args([arg | _rest], _opts) do
-    if option?(arg) do
-      {:error, "Unknown option: #{arg}"}
-    else
-      {:error, "Unexpected argument for upgrade plan: #{arg}"}
+  defp parse_plan_args(args, _opts) do
+    case rejected_plan_option(args) do
+      nil ->
+        {parsed, rest, invalid} = OptionParser.parse(args, strict: [json: :boolean, help: :boolean])
+
+        cond do
+          invalid != [] ->
+            {option, _value} = List.first(invalid)
+            {:error, "Unknown option: #{option}"}
+
+          rest != [] ->
+            {:error, "Unexpected argument for upgrade plan: #{List.first(rest)}"}
+
+          Keyword.get(parsed, :help, false) ->
+            :help
+
+          true ->
+            {:run, %{json?: Keyword.get(parsed, :json, false)}}
+        end
+
+      option ->
+        {:error, "Unknown option: #{option}"}
     end
+  end
+
+  defp rejected_plan_option(args) do
+    Enum.find(args, &(&1 in ["--no-json", "--no-help"]))
   end
 
   defp execute_plan(%{json?: true}, runtime) do

@@ -407,10 +407,7 @@ license state.
 
 ### Confidence caveat
 
-Packaged-host lifecycle confidence is still gated on the separate real-host smoke
-tracked in `orchard-workbench/todos/active/todo-orchardctl-start-stop.md`.
-Until that matrix runs on an actual PKG + launchd install, treat packaged
-licensing rollout as conservatively exercised rather than fully closed.
+Packaged-host lifecycle smoke completed on 2026-04-18 against an actual PKG + launchd install, covering `orchardctl status`, `start`, and `stop`, including non-root status behavior and idempotent start/stop checks. Treat packaged licensing rollout as historically exercised for that release cycle rather than pending a separate active smoke gate.
 
 ## Controller Transport Behavior
 

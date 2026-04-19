@@ -40,9 +40,11 @@ defmodule Orchard.ReleaseTest do
     refute Release.migrations_current?()
   end
 
-  test "SPEC 13.7 migration status reports repo startup disabled" do
+  test "SPEC 13.7 DB helpers report repo startup disabled" do
     Application.put_env(:orchard_controller, :start_repo, false)
 
+    refute Release.postgres_reachable?()
+    assert Release.migration_lockable?() == {:error, :repo_not_started}
     assert Release.migration_status() == {:error, :repo_not_started}
     refute Release.migrations_current?()
   end

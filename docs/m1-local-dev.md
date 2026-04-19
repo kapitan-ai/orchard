@@ -501,9 +501,11 @@ bundle-path validation rejects symlinks that resolve outside the bundle root.
 ### Optional tracking metadata
 
 License certificates may include optional AIEH/100E/SIP tracking metadata under
-the signed Keygen payload's `data.attributes.metadata` object. Orchard extracts
-only the tracking `program` and `reference` fields and treats them as
-observational, non-gating attribution data.
+the signed Keygen payload's `data.attributes.metadata` object. Orchard accepts
+both nested key forms: `orchardTracking` (observed Keygen checkout payload) and
+`orchard_tracking` (compatibility alias). Orchard extracts only the tracking
+`program` and `reference` fields and treats them as observational, non-gating
+attribution data.
 
 Recommended program values:
 
@@ -543,8 +545,7 @@ When present, tracking metadata appears in:
 
 ### Confidence caveat
 
-Packaged-host confidence still depends on the real-host smoke tracked in
-`orchard-workbench/todos/active/todo-orchardctl-start-stop.md`.
+Packaged-host lifecycle smoke was completed on 2026-04-18 for the current PKG lifecycle surface (`orchardctl status`, `start`, and `stop`), including non-root status checks. Treat that as historical packaged verification context rather than an active source-dev gate.
 
 ## Rollback Procedure
 
