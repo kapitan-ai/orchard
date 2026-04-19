@@ -62,6 +62,9 @@ if [[ -z "$OUTPUT_DIR" ]]; then
     OUTPUT_DIR="$REPO_ROOT/artifacts/pkg-builds/$(date +%Y-%m-%d)"
 fi
 STAGING_BASE="/tmp/orchard-pkg-build-$$"
+PAYLOAD_ROOT_REL="Library/Application Support/Orchard"
+EXPECTED_STAGING_ROOT="$STAGING_BASE/$PAYLOAD_ROOT_REL"
+KNOWN_BAD_ROOT="$STAGING_BASE/Library Application Support"
 
 # Enhanced error trap
 trap 'log_error "Build failed at line $LINENO"' ERR
@@ -73,6 +76,67 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
+
+validate_staging_layout() {
+    local required_paths=(
+        "share/bin/orchardctl"
+        "share/bin/orchard-controller"
+        "share/bin/orchard-node-agent"
+        "share/launchd/com.orchard.controller.plist"
+        "share/launchd/com.orchard.node-agent.plist"
+        "releases/orchard_cli/bin/orchard_cli"
+        "releases/orchard_controller/bin/orchard_controller"
+        "releases/orchard_node_agent/bin/orchard_node_agent"
+    )
+    local rel_path
+
+    if [[ ! -d "$EXPECTED_STAGING_ROOT" ]]; then
+        log_error "Expected staging root missing: $EXPECTED_STAGING_ROOT"
+        return 1
+    fi
+
+    if [[ -e "$KNOWN_BAD_ROOT" ]]; then
+        log_error "Malformed staging root detected: $KNOWN_BAD_ROOT"
+        return 1
+    fi
+
+    for rel_path in "${required_paths[@]}"; do
+        if [[ ! -e "$EXPECTED_STAGING_ROOT/$rel_path" ]]; then
+            log_error "Missing staged payload path: $EXPECTED_STAGING_ROOT/$rel_path"
+            return 1
+        fi
+    done
+}
+
+validate_pkg_payload() {
+    local pkg_path="$1"
+    local payload_files
+    local required_entries=(
+        "./Library/Application Support/Orchard/share/bin/orchardctl"
+        "./Library/Application Support/Orchard/share/bin/orchard-controller"
+        "./Library/Application Support/Orchard/share/bin/orchard-node-agent"
+        "./Library/Application Support/Orchard/share/launchd/com.orchard.controller.plist"
+        "./Library/Application Support/Orchard/share/launchd/com.orchard.node-agent.plist"
+        "./Library/Application Support/Orchard/releases/orchard_cli/bin/orchard_cli"
+        "./Library/Application Support/Orchard/releases/orchard_controller/bin/orchard_controller"
+        "./Library/Application Support/Orchard/releases/orchard_node_agent/bin/orchard_node_agent"
+    )
+    local entry
+
+    payload_files="$(pkgutil --payload-files "$pkg_path")"
+
+    if grep -Fq "Library Application Support/" <<<"$payload_files"; then
+        log_error "Malformed payload root detected in PKG: Library Application Support/"
+        return 1
+    fi
+
+    for entry in "${required_entries[@]}"; do
+        if ! grep -Fqx "$entry" <<<"$payload_files"; then
+            log_error "Missing payload entry in PKG: $entry"
+            return 1
+        fi
+    done
+}
 
 cd "$REPO_ROOT"
 
@@ -184,7 +248,7 @@ mix release orchard_cli
 
 # Create staging directory
 log_info "Creating PKG staging..."
-STAGING="$STAGING_BASE/Library Application Support/Orchard"
+STAGING="$EXPECTED_STAGING_ROOT"
 mkdir -p "$STAGING"/{releases,native,share/{bin,launchd},config,logs,support}
 
 # Copy releases
@@ -232,6 +296,9 @@ for plist in "${PLIST_FILES[@]}"; do
 done
 # Note: com.orchard.postgres.plist is excluded (managed postgres not yet supported)
 
+log_info "Validating staging layout..."
+validate_staging_layout
+
 # Set permissions in staging
 log_info "Setting staging permissions..."
 find "$STAGING_BASE" -type d -exec chmod 755 {} \;
@@ -252,6 +319,13 @@ pkgbuild \
 
 # Verify PKG
 if [[ -f "$OUTPUT_DIR/$PKG_NAME" ]]; then
+    log_info "Validating PKG payload layout..."
+    if ! validate_pkg_payload "$OUTPUT_DIR/$PKG_NAME"; then
+        rm -f "$OUTPUT_DIR/$PKG_NAME"
+        log_error "Removed malformed PKG: $OUTPUT_DIR/$PKG_NAME"
+        exit 1
+    fi
+
     PKG_SIZE=$(du -h "$OUTPUT_DIR/$PKG_NAME" | cut -f1)
     log_info "✅ PKG built successfully: $PKG_NAME ($PKG_SIZE)"
     log_info "   Location: $OUTPUT_DIR/$PKG_NAME"

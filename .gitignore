@@ -26,6 +26,7 @@ erl_crash.dump
 /rel/artifacts/
 *.dmg
 *.pkg
+*.pkg.sha256
 
 # Database
 *.db
