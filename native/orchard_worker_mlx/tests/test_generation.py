@@ -651,13 +651,14 @@ def test_batch_generator_runtime_cancel_resets_after_bounded_drain_timeout() -> 
 def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
     class _WatchdogBlockedNextBatchGenerator:
         instances: list[_WatchdogBlockedNextBatchGenerator] = []
+        expected_initial_requests = 2
 
         def __init__(self, _model: Any, **_kwargs: Any) -> None:
             self.instance_index = len(type(self).instances)
             type(self).instances.append(self)
             self._next_uid = 0
-            self._active: list[int] = []
-            self._next_call_count = 0
+            self._active: dict[int, bool] = {}
+            self._second_token_emitted = False
             self.allow_second_next = threading.Event()
             self.entered_blocking_next = threading.Event()
             self.close_called = threading.Event()
@@ -675,7 +676,7 @@ def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
             for _ in prompts:
                 uid = self._next_uid
                 self._next_uid += 1
-                self._active.append(uid)
+                self._active[uid] = False
                 uids.append(uid)
             return uids
 
@@ -685,52 +686,32 @@ def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
                 threading.Event().wait(0.01)
                 return []
 
-            self._next_call_count += 1
-
             if self.instance_index > 0:
                 self._active.clear()
                 return [
-                    type(
-                        "BatchResp",
-                        (),
-                        {
-                            "uid": uid,
-                            "token": 11,
-                            "finish_reason": "stop",
-                            "prompt_cache": lambda: [],
-                        },
-                    )()
+                    self._response(uid, token=11, finish_reason="stop")
                     for uid in active
                 ]
 
-            if self._next_call_count == 1:
+            first_token_uids = [uid for uid, emitted in self._active.items() if not emitted]
+            if first_token_uids:
+                for uid in first_token_uids:
+                    self._active[uid] = True
+
                 return [
-                    type(
-                        "BatchResp",
-                        (),
-                        {
-                            "uid": uid,
-                            "token": 11,
-                            "finish_reason": None,
-                            "prompt_cache": lambda: [],
-                        },
-                    )()
-                    for uid in active
+                    self._response(uid, token=11, finish_reason=None)
+                    for uid in first_token_uids
                 ]
 
-            if self._next_call_count == 2:
+            if len(self._active) < self.expected_initial_requests:
+                threading.Event().wait(0.01)
+                return []
+
+            if not self._second_token_emitted:
                 self.allow_second_next.wait(timeout=5.0)
+                self._second_token_emitted = True
                 return [
-                    type(
-                        "BatchResp",
-                        (),
-                        {
-                            "uid": uid,
-                            "token": 12,
-                            "finish_reason": None,
-                            "prompt_cache": lambda: [],
-                        },
-                    )()
+                    self._response(uid, token=12, finish_reason=None)
                     for uid in active
                 ]
 
@@ -739,7 +720,20 @@ def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
             return []
 
         def close(self) -> None:
+            self.allow_second_next.set()
             self.close_called.set()
+
+        def _response(self, uid: int, *, token: int, finish_reason: str | None) -> Any:
+            return type(
+                "BatchResp",
+                (),
+                {
+                    "uid": uid,
+                    "token": token,
+                    "finish_reason": finish_reason,
+                    "prompt_cache": lambda: [],
+                },
+            )()
 
     def wait_for(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
         deadline = time.monotonic() + timeout
@@ -767,17 +761,21 @@ def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
 
     events_cancel: list[dict[str, Any]] = []
     events_waiter: list[dict[str, Any]] = []
+    errors_cancel: list[BackendError] = []
     errors_waiter: list[BackendError] = []
 
     def run_cancel() -> None:
-        events_cancel.extend(
-            generate_events(
-                session,
-                req_cancel,
-                cancel_event_cancel,
-                deps=runtime.generation_deps(),
+        try:
+            events_cancel.extend(
+                generate_events(
+                    session,
+                    req_cancel,
+                    cancel_event_cancel,
+                    deps=runtime.generation_deps(),
+                )
             )
-        )
+        except BackendError as exc:
+            errors_cancel.append(exc)
 
     def run_waiter() -> None:
         try:
@@ -832,6 +830,7 @@ def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
 
     assert thread_cancel.is_alive() is False
     assert thread_waiter.is_alive() is False
+    assert errors_cancel == []
     assert events_cancel[-1]["kind"] == "failed"
     assert events_cancel[-1]["code"] == "cancelled"
     assert first_generator.entered_blocking_next.is_set() is True
