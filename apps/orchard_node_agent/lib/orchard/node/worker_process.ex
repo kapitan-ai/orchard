@@ -126,7 +126,7 @@ defmodule Orchard.Node.WorkerProcess do
           {:reply, :ok, %{state | adapter_state: nil, loaded?: false, requests: %{}}}
 
         {:error, reason} ->
-          {:reply, {:error, reason}, state}
+          {:reply, {:error, reason}, %{state | adapter_state: nil, loaded?: false, requests: %{}}}
       end
     end
   end
@@ -220,6 +220,37 @@ defmodule Orchard.Node.WorkerProcess do
     end
   end
 
+  def handle_info({:runtime_adapter_done, _generation_ref, :worker_unavailable}, state) do
+    {:stop, :runtime_worker_unavailable, state}
+  end
+
+  def handle_info(
+        {:runtime_adapter_done, generation_ref, {:generation_task_failed, _kind, _reason}},
+        state
+      ) do
+    case fetch_request_by_generation_ref(state.requests, generation_ref) do
+      {:ok, {request_id, %{subscriber: subscriber}}} ->
+        failed_event =
+          InferenceEvent.failed(
+            "runtime_generation_task_failed",
+            "runtime generation task failed unexpectedly",
+            false
+          )
+
+        send(subscriber, {:node_runtime_event, request_id, failed_event})
+        next_state = finish_generation(state, request_id, generation_ref)
+        notify_request_finished(next_state.manager, request_id)
+        {:noreply, next_state}
+
+      :error ->
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:runtime_adapter_done, generation_ref, _reason}, state) do
+    handle_info({:runtime_adapter_done, generation_ref}, state)
+  end
+
   def handle_info({:runtime_adapter_done, generation_ref}, state) do
     case fetch_request_by_generation_ref(state.requests, generation_ref) do
       {:ok, {request_id, %{subscriber: subscriber}}} ->
@@ -279,10 +310,10 @@ defmodule Orchard.Node.WorkerProcess do
     if is_nil(state.adapter_state) do
       :ok
     else
-      # When the worker has already exited, skip the unload RPC to avoid a
-      # wasted timeout against a dead process.  Local cleanup (kill tasks,
+      # When the worker is already unavailable, skip the unload RPC to avoid a
+      # wasted timeout against a dead process. Local cleanup (kill tasks,
       # disconnect channel, remove socket) still runs inside the adapter.
-      opts = [force: true, skip_rpc: reason == :runtime_worker_exited]
+      opts = [force: true, skip_rpc: reason in [:runtime_worker_exited, :runtime_worker_unavailable]]
       _ = state.adapter.unload_model(state.adapter_state, opts)
       :ok
     end

@@ -54,6 +54,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
 from orchard_worker_mlx.backends import BackendError, cancelled_event
@@ -87,6 +88,7 @@ _LOOKUP_FAILED = "lookup_failed"
 _STORE_NOT_ATTEMPTED = "not_attempted"
 _STORE_SKIPPED_UNAVAILABLE = "skipped_unavailable"
 _STORE_SKIPPED_MISSING_TOKEN_ID = "skipped_missing_token_id"
+_STORE_SKIPPED_UNFINALIZED_BATCH = "skipped_unfinalized_batch"
 _STORE_SKIPPED_OVERSIZE = "skipped_oversize"
 _STORE_STORED = "stored"
 _STORE_FAILED = "store_failed"
@@ -134,7 +136,9 @@ class GenerationDeps:
     stream_generate: Callable[..., Iterator[Any]]
     make_sampler: Callable[..., Any]
     make_prompt_cache: Callable[[Any], Any] | None = None
-    trim_prompt_cache: Callable[[Any, int], int] | None = None
+    trim_prompt_cache: Callable[[Any, int], Any] | None = None
+    supports_orchard_stop_sequences: bool = True
+    uses_shared_batch_runtime: bool = False
 
 
 def _default_generation_deps() -> GenerationDeps:
@@ -150,7 +154,7 @@ def _default_generation_deps() -> GenerationDeps:
 
     # Optional prompt-cache helpers — fail-open if unavailable.
     _make_prompt_cache: Callable[[Any], Any] | None = None
-    _trim_prompt_cache: Callable[[Any, int], int] | None = None
+    _trim_prompt_cache: Callable[[Any, int], Any] | None = None
     try:
         from mlx_lm.models.cache import (
             make_prompt_cache as _make,
@@ -169,7 +173,864 @@ def _default_generation_deps() -> GenerationDeps:
         make_sampler=make_sampler,
         make_prompt_cache=_make_prompt_cache,
         trim_prompt_cache=_trim_prompt_cache,
+        supports_orchard_stop_sequences=True,
+        uses_shared_batch_runtime=False,
     )
+
+
+@dataclass(slots=True, frozen=True)
+class BatchGenerationDeps:
+    """Dependency seam for request-time batching with mlx_lm.BatchGenerator."""
+
+    batch_generator_cls: Any
+
+
+def _default_batch_generation_deps() -> BatchGenerationDeps:
+    try:
+        from mlx_lm.generate import BatchGenerator
+    except ImportError as exc:
+        raise BackendError(
+            "mlx_backend_unavailable",
+            f"MLX BatchGenerator not available: {exc}",
+        ) from exc
+
+    return BatchGenerationDeps(batch_generator_cls=BatchGenerator)
+
+
+def batch_generation_supported() -> bool:
+    """True when mlx_lm.BatchGenerator can be imported in this environment."""
+    try:
+        _default_batch_generation_deps()
+        return True
+    except BackendError:
+        return False
+
+
+@dataclass(slots=True)
+class _BatchRequestState:
+    request_id: int
+    prompt_ids: list[int]
+    max_tokens: int
+    sampler: Any
+    prompt_cache: Any | None
+    logits_processors: list[Any]
+    progress_callback: Callable[[int, int], None] | None
+    events: deque[tuple[int, str | None]] = field(default_factory=deque)
+    progress_events: deque[tuple[int, int]] = field(default_factory=deque)
+    uid: int | None = None
+    closed: bool = False
+    done: bool = False
+    error: Exception | None = None
+    cancel_deadline_monotonic: float | None = None
+    local_close_deadline_monotonic: float | None = None
+
+
+_WAIT_NEXT_TIMEOUT = object()
+
+
+class _BatchRequestStream:
+    """Per-request stream view over a shared BatchGenerator runtime."""
+
+    def __init__(
+        self,
+        runtime: BatchGeneratorRuntime,
+        request_id: int,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> None:
+        self._runtime = runtime
+        self._request_id = request_id
+        self._cancel_event = cancel_event
+
+        detokenizer = runtime.acquire_detokenizer()
+        try:
+            detokenizer.reset()
+        except Exception:
+            runtime.release_detokenizer(detokenizer)
+            raise
+
+        self._detokenizer = detokenizer
+        self._stop_token_ids: frozenset[int] = runtime.stop_token_ids
+        self._closed = False
+        self._terminal_returned = False
+        self._released_detokenizer = False
+
+    def __iter__(self) -> _BatchRequestStream:
+        return self
+
+    def __next__(self) -> Any:
+        if self._terminal_returned:
+            self._release_detokenizer()
+            raise StopIteration
+
+        try:
+            while True:
+                state, payload = self._runtime.wait_next(
+                    self._request_id,
+                    timeout_s=0.05 if self._cancel_event is not None else None,
+                )
+
+                if payload is _WAIT_NEXT_TIMEOUT:
+                    if self._cancel_event is not None and self._cancel_event.is_set():
+                        self.close(cancelled=True)
+                        raise StopIteration
+                    continue
+
+                if payload is None:
+                    self._runtime.finalize_request(self._request_id)
+                    self._release_detokenizer()
+                    raise StopIteration
+
+                kind = payload[0]
+                if kind == "progress":
+                    _, processed, total = payload
+                    cb = state.progress_callback
+                    if cb is not None:
+                        cb(processed, total)
+                    continue
+
+                _, token, finish_reason = payload
+
+                suppress_terminal_stop_token = (
+                    finish_reason == "stop" and token in self._stop_token_ids
+                )
+                if suppress_terminal_stop_token:
+                    text = ""
+                else:
+                    self._detokenizer.add_token(token)
+                    text = self._detokenizer.last_segment
+
+                if finish_reason is not None:
+                    if not suppress_terminal_stop_token:
+                        self._detokenizer.finalize()
+                        tail = self._detokenizer.last_segment
+                        if tail:
+                            text += tail
+                    self._terminal_returned = True
+                    self._runtime.finalize_request(self._request_id)
+                    self._release_detokenizer()
+                return SimpleNamespace(text=text, token=token, finish_reason=finish_reason)
+        except Exception:
+            self._runtime.finalize_request(self._request_id)
+            self._release_detokenizer()
+            raise
+
+    def close(self, *, cancelled: bool = True) -> None:
+        if self._closed:
+            return
+        self._closed = True
+
+        if cancelled:
+            self._runtime.cancel(self._request_id)
+            self._runtime.finalize_request(self._request_id, keep_active=True)
+        elif self._terminal_returned:
+            self._runtime.finalize_request(self._request_id)
+        else:
+            self._runtime.finalize_request(
+                self._request_id,
+                keep_active=True,
+                local_close=True,
+            )
+
+        self._release_detokenizer()
+
+    def _release_detokenizer(self) -> None:
+        if self._released_detokenizer:
+            return
+        self._released_detokenizer = True
+        self._runtime.release_detokenizer(self._detokenizer)
+
+
+_BATCH_CANCEL_DRAIN_TIMEOUT_S = 0.5
+_BATCH_LOCAL_CLOSE_DRAIN_TIMEOUT_S = 0.5
+_BATCH_RUNTIME_CLOSE_TIMEOUT_S = 1.0
+
+
+class BatchGeneratorRuntime:
+    """Shared request-time BatchGenerator runtime for one loaded model session."""
+
+    def __init__(
+        self,
+        session: Any,
+        *,
+        generation_deps: GenerationDeps | None = None,
+        batch_deps: BatchGenerationDeps | None = None,
+    ) -> None:
+        self._session = session
+        self._generation_deps = generation_deps or _default_generation_deps()
+        self._batch_deps = batch_deps or _default_batch_generation_deps()
+
+        self._lock = threading.Lock()
+        self._cv = threading.Condition(self._lock)
+        self._closed = False
+        self._next_request_id = 0
+        self._pending_request_ids: deque[int] = deque()
+        self._pending_by_id: dict[int, _BatchRequestState] = {}
+        self._active_by_uid: dict[int, _BatchRequestState] = {}
+        self._requests_by_id: dict[int, _BatchRequestState] = {}
+        self._detokenizer_lock = threading.Lock()
+        self._active_detokenizer_ids: set[int] = set()
+        self._detokenizer_factory = self._build_detokenizer_factory(session.tokenizer)
+        self._batch_generator_closed = False
+        self.stop_token_ids: frozenset[int] = frozenset(getattr(session, "eos_token_ids", ()))
+
+        self._reset_requested: str | None = None
+        self._batch_generator = self._build_batch_generator(session)
+        self._pump = threading.Thread(
+            target=self._run_loop, name="mlx-batch-generator", daemon=True
+        )
+        self._watchdog = threading.Thread(
+            target=self._deadline_watchdog_loop,
+            name="mlx-batch-generator-watchdog",
+            daemon=True,
+        )
+        self._pump.start()
+        self._watchdog.start()
+
+    @property
+    def tokenizer(self) -> Any:
+        return self._session.tokenizer
+
+    def generation_deps(self) -> GenerationDeps:
+        return GenerationDeps(
+            stream_generate=self.stream_generate,
+            make_sampler=self._generation_deps.make_sampler,
+            make_prompt_cache=self._generation_deps.make_prompt_cache,
+            trim_prompt_cache=self._generation_deps.trim_prompt_cache,
+            supports_orchard_stop_sequences=False,
+            uses_shared_batch_runtime=True,
+        )
+
+    def acquire_detokenizer(self) -> Any:
+        detokenizer = self._detokenizer_factory()
+        self._validate_detokenizer(detokenizer)
+
+        detokenizer_id = id(detokenizer)
+        with self._detokenizer_lock:
+            if detokenizer_id in self._active_detokenizer_ids:
+                raise BackendError(
+                    "generation_failed",
+                    "batch detokenizer instance is shared across requests",
+                    False,
+                )
+            self._active_detokenizer_ids.add(detokenizer_id)
+
+        return detokenizer
+
+    def release_detokenizer(self, detokenizer: Any) -> None:
+        with self._detokenizer_lock:
+            self._active_detokenizer_ids.discard(id(detokenizer))
+
+    def stream_generate(
+        self,
+        model: Any,
+        tokenizer: Any,
+        prompt_ids: list[int],
+        **kwargs: Any,
+    ) -> Iterator[Any]:
+        del model, tokenizer
+        stream = self._submit(prompt_ids, kwargs)
+        return stream
+
+    def close(self) -> None:
+        with self._cv:
+            if self._closed and self._batch_generator_closed:
+                return
+
+            self._closed = True
+            self._mark_all_closed_locked(
+                BackendError("generation_failed", "batch runtime closed", False)
+            )
+            batch_generator = self._batch_generator
+            self._cv.notify_all()
+
+        self._close_batch_generator_best_effort(batch_generator)
+
+        if self._pump.is_alive() and threading.current_thread() is not self._pump:
+            self._pump.join(timeout=_BATCH_RUNTIME_CLOSE_TIMEOUT_S)
+
+        if self._watchdog.is_alive() and threading.current_thread() is not self._watchdog:
+            self._watchdog.join(timeout=_BATCH_RUNTIME_CLOSE_TIMEOUT_S)
+
+        if self._pump.is_alive():
+            raise BackendError(
+                "batch_runtime_close_timeout",
+                "batch runtime did not stop after closing BatchGenerator",
+                True,
+            )
+
+        with self._cv:
+            self._batch_generator_closed = True
+
+    def wait_next(
+        self,
+        request_id: int,
+        *,
+        timeout_s: float | None = None,
+    ) -> tuple[_BatchRequestState, tuple[Any, ...] | None | object]:
+        with self._cv:
+            state = self._requests_by_id[request_id]
+
+            while True:
+                if state.progress_events:
+                    processed, total = state.progress_events.popleft()
+                    return state, ("progress", processed, total)
+
+                if state.events:
+                    token, finish_reason = state.events.popleft()
+                    return state, ("token", token, finish_reason)
+
+                if state.error is not None:
+                    raise state.error
+
+                if state.done:
+                    return state, None
+
+                if timeout_s is None:
+                    self._cv.wait()
+                elif not self._cv.wait(timeout=timeout_s):
+                    return state, _WAIT_NEXT_TIMEOUT
+
+    def cancel(self, request_id: int) -> None:
+        with self._cv:
+            state = self._requests_by_id.get(request_id)
+            if state is None:
+                return
+
+            state.closed = True
+            state.done = True
+            if state.uid is not None:
+                state.cancel_deadline_monotonic = time.monotonic() + _BATCH_CANCEL_DRAIN_TIMEOUT_S
+                state.local_close_deadline_monotonic = None
+            else:
+                self._finalize_request_locked(state)
+
+            self._pending_by_id.pop(request_id, None)
+            self._pending_request_ids = deque(
+                rid for rid in self._pending_request_ids if rid != request_id
+            )
+            self._cv.notify_all()
+
+    def finalize_request(
+        self,
+        request_id: int,
+        *,
+        keep_active: bool = False,
+        local_close: bool = False,
+    ) -> None:
+        with self._cv:
+            state = self._requests_by_id.get(request_id)
+            if state is None:
+                return
+            self._finalize_request_locked(
+                state,
+                keep_active=keep_active,
+                local_close=local_close,
+            )
+            self._cv.notify_all()
+
+    def _submit(self, prompt_ids: list[int], kwargs: dict[str, Any]) -> _BatchRequestStream:
+        max_tokens = _safe_int(kwargs.get("max_tokens", 0), default=0)
+        cancel_event = kwargs.get("cancel_event")
+        if max_tokens <= 0:
+            max_tokens = 1
+
+        with self._cv:
+            if self._closed:
+                raise BackendError("generation_failed", "batch runtime is closed", False)
+
+            request_id = self._next_request_id
+            self._next_request_id += 1
+            request_state = _BatchRequestState(
+                request_id=request_id,
+                prompt_ids=list(prompt_ids),
+                max_tokens=max_tokens,
+                sampler=kwargs.get("sampler"),
+                prompt_cache=kwargs.get("prompt_cache"),
+                logits_processors=[],
+                progress_callback=kwargs.get("prompt_progress_callback"),
+            )
+            self._requests_by_id[request_id] = request_state
+            self._pending_by_id[request_id] = request_state
+            self._pending_request_ids.append(request_id)
+            self._cv.notify_all()
+
+        try:
+            return _BatchRequestStream(self, request_id, cancel_event=cancel_event)
+        except Exception:
+            self.finalize_request(request_id)
+            raise
+
+    def _build_detokenizer_factory(self, tokenizer: Any) -> Callable[[], Any]:
+        maker = getattr(tokenizer, "make_detokenizer", None)
+        if callable(maker):
+            factory: Callable[[], Any] = maker
+        else:
+            try:
+                _ = tokenizer.detokenizer
+            except Exception as exc:
+                raise BackendError(
+                    "batch_runtime_unavailable",
+                    f"batch tokenizer detokenizer unavailable: {exc}",
+                    False,
+                ) from exc
+
+            def factory() -> Any:
+                return tokenizer.detokenizer
+
+        first = factory()
+        second = factory()
+        self._validate_detokenizer(first)
+        self._validate_detokenizer(second)
+        if first is second:
+            raise BackendError(
+                "batch_runtime_unavailable",
+                "batch tokenizer returned a shared detokenizer instance",
+                False,
+            )
+
+        return factory
+
+    def _validate_detokenizer(self, detokenizer: Any) -> None:
+        if detokenizer is None:
+            raise BackendError(
+                "batch_runtime_unavailable",
+                "batch tokenizer detokenizer is missing",
+                False,
+            )
+
+        for method_name in ("reset", "add_token", "finalize"):
+            method = getattr(detokenizer, method_name, None)
+            if not callable(method):
+                raise BackendError(
+                    "batch_runtime_unavailable",
+                    f"batch tokenizer detokenizer missing {method_name}()",
+                    False,
+                )
+
+        if not hasattr(detokenizer, "last_segment"):
+            raise BackendError(
+                "batch_runtime_unavailable",
+                "batch tokenizer detokenizer missing last_segment",
+                False,
+            )
+
+    def _build_batch_generator(self, session: Any) -> Any:
+        return self._batch_deps.batch_generator_cls(
+            session.model,
+            stop_tokens=set(getattr(session, "eos_token_ids", ())),
+            prefill_step_size=_prefill_step_size(session),
+            prompt_progress_callback=self._on_prompt_progress,
+        )
+
+    def _on_prompt_progress(self, updates: list[tuple[int, int, int]]) -> None:
+        with self._cv:
+            for uid, processed, total in updates:
+                state = self._active_by_uid.get(uid)
+                if state is None or state.closed:
+                    continue
+                state.progress_events.append((processed, total))
+            self._cv.notify_all()
+
+    def _run_loop(self) -> None:
+        while True:
+            pending_states: list[_BatchRequestState] = []
+            perform_reset = False
+
+            with self._cv:
+                while (
+                    not self._closed
+                    and self._reset_requested is None
+                    and not self._pending_request_ids
+                    and not self._active_by_uid
+                ):
+                    self._cv.wait()
+
+                if self._closed:
+                    self._mark_all_closed_locked(
+                        BackendError("generation_failed", "batch runtime closed", False)
+                    )
+                    return
+
+                if self._reset_requested is not None:
+                    perform_reset = True
+                else:
+                    pending_ids = list(self._pending_request_ids)
+                    self._pending_request_ids.clear()
+                    for request_id in pending_ids:
+                        state = self._pending_by_id.pop(request_id, None)
+                        if state is None or state.closed:
+                            continue
+                        pending_states.append(state)
+
+            if perform_reset:
+                self._perform_requested_reset()
+                continue
+
+            if pending_states:
+                try:
+                    raw_uids = self._batch_generator.insert(
+                        [state.prompt_ids for state in pending_states],
+                        max_tokens=[state.max_tokens for state in pending_states],
+                        caches=[state.prompt_cache for state in pending_states],
+                        samplers=[state.sampler for state in pending_states],
+                        logits_processors=[state.logits_processors for state in pending_states],
+                    )
+                    uids = self._validate_insert_uids(raw_uids, expected_count=len(pending_states))
+                except BackendError as exc:
+                    self._mark_states_failed(pending_states, exc)
+                    continue
+                except Exception as exc:
+                    self._mark_states_failed(
+                        pending_states,
+                        BackendError("generation_failed", f"batch insert failed: {exc}", False),
+                    )
+                    continue
+
+                with self._cv:
+                    for index, state in enumerate(pending_states):
+                        uid = uids[index]
+                        state.uid = uid
+                        self._active_by_uid[uid] = state
+
+            with self._cv:
+                if self._closed:
+                    self._mark_all_closed_locked(
+                        BackendError("generation_failed", "batch runtime closed", False)
+                    )
+                    return
+
+                if self._reset_requested is not None:
+                    perform_reset = True
+                    has_active = False
+                else:
+                    has_active = bool(self._active_by_uid)
+
+            if perform_reset:
+                self._perform_requested_reset()
+                continue
+
+            if not has_active:
+                continue
+
+            try:
+                responses = self._batch_generator.next()
+            except Exception as exc:
+                with self._cv:
+                    if self._closed or self._reset_requested is not None:
+                        self._cv.notify_all()
+                        continue
+                self._mark_all_failed(
+                    BackendError("generation_failed", f"batch generation failed: {exc}", False)
+                )
+                continue
+
+            try:
+                response_iter = iter(responses)
+            except TypeError:
+                self._mark_all_failed(
+                    BackendError(
+                        "generation_failed",
+                        "batch generation failed: invalid response container",
+                        False,
+                    )
+                )
+                continue
+
+            for response in response_iter:
+                if not self._apply_batch_response(response):
+                    self._mark_all_failed(
+                        BackendError(
+                            "generation_failed",
+                            "batch generation failed: malformed response payload",
+                            False,
+                        )
+                    )
+                    break
+
+    def _finalize_request_locked(
+        self,
+        state: _BatchRequestState,
+        *,
+        keep_active: bool = False,
+        keep_request: bool = False,
+        local_close: bool = False,
+    ) -> None:
+        request_id = state.request_id
+        if not keep_request:
+            self._requests_by_id.pop(request_id, None)
+        self._pending_by_id.pop(request_id, None)
+        self._pending_request_ids = deque(
+            rid for rid in self._pending_request_ids if rid != request_id
+        )
+
+        if state.uid is not None and not keep_active:
+            self._active_by_uid.pop(state.uid, None)
+
+        state.done = True
+        state.closed = True
+        if keep_active:
+            state.local_close_deadline_monotonic = (
+                time.monotonic() + _BATCH_LOCAL_CLOSE_DRAIN_TIMEOUT_S if local_close else None
+            )
+        else:
+            state.cancel_deadline_monotonic = None
+            state.local_close_deadline_monotonic = None
+
+    def _validate_insert_uids(self, raw_uids: Any, *, expected_count: int) -> list[int]:
+        try:
+            uids = list(raw_uids)
+        except TypeError as exc:
+            raise BackendError(
+                "generation_failed",
+                "batch insert returned a non-iterable uid container",
+                False,
+            ) from exc
+
+        if len(uids) != expected_count:
+            raise BackendError(
+                "generation_failed",
+                "batch insert returned an unexpected uid count",
+                False,
+            )
+
+        seen: set[int] = set()
+        for uid in uids:
+            if isinstance(uid, bool) or not isinstance(uid, int):
+                raise BackendError(
+                    "generation_failed",
+                    "batch insert returned an invalid uid",
+                    False,
+                )
+            if uid in seen:
+                raise BackendError(
+                    "generation_failed",
+                    "batch insert returned duplicate uids",
+                    False,
+                )
+            seen.add(uid)
+
+        return uids
+
+    def _apply_batch_response(self, response: Any) -> bool:
+        uid = getattr(response, "uid", None)
+        token = getattr(response, "token", None)
+        finish_reason = getattr(response, "finish_reason", None)
+
+        if isinstance(uid, bool) or not isinstance(uid, int):
+            return False
+
+        if isinstance(token, bool) or not isinstance(token, int):
+            self._fail_active_request(
+                uid,
+                BackendError(
+                    "generation_failed",
+                    "batch response token is invalid",
+                    False,
+                ),
+            )
+            return True
+
+        if finish_reason is not None and not isinstance(finish_reason, str):
+            self._fail_active_request(
+                uid,
+                BackendError(
+                    "generation_failed",
+                    "batch response finish_reason is invalid",
+                    False,
+                ),
+            )
+            return True
+
+        with self._cv:
+            state = self._active_by_uid.get(uid)
+            if state is None:
+                return True
+
+            if not state.closed:
+                state.events.append((token, finish_reason))
+
+            if finish_reason is not None:
+                self._finalize_request_cache(state, response)
+                self._finalize_request_locked(state, keep_request=True)
+
+            self._cv.notify_all()
+
+        return True
+
+    def _fail_active_request(self, uid: int, error: Exception) -> None:
+        with self._cv:
+            state = self._active_by_uid.get(uid)
+            if state is None:
+                return
+            state.error = error
+            self._finalize_request_locked(state, keep_request=True)
+            self._cv.notify_all()
+
+    def _deadline_watchdog_loop(self) -> None:
+        while True:
+            batch_generator = None
+            with self._cv:
+                if self._closed:
+                    return
+
+                now = time.monotonic()
+                has_cancel_timeout = any(
+                    state.cancel_deadline_monotonic is not None
+                    and state.cancel_deadline_monotonic <= now
+                    for state in self._active_by_uid.values()
+                )
+                has_local_close_timeout = any(
+                    state.local_close_deadline_monotonic is not None
+                    and state.local_close_deadline_monotonic <= now
+                    for state in self._active_by_uid.values()
+                )
+
+                if self._reset_requested is None and (
+                    has_cancel_timeout or has_local_close_timeout
+                ):
+                    message = (
+                        "batch runtime reset after cancellation drain timeout"
+                        if has_cancel_timeout
+                        else "batch runtime reset after local-close drain timeout"
+                    )
+                    batch_generator = self._request_reset_locked(message)
+                else:
+                    timeout = self._seconds_until_next_deadline_locked(now)
+                    self._cv.wait(timeout=timeout)
+                    continue
+
+            if batch_generator is not None:
+                self._close_batch_generator_best_effort(batch_generator)
+
+    def _seconds_until_next_deadline_locked(self, now: float) -> float:
+        deadlines = [
+            deadline
+            for state in self._active_by_uid.values()
+            for deadline in (state.cancel_deadline_monotonic, state.local_close_deadline_monotonic)
+            if deadline is not None
+        ]
+        if not deadlines:
+            return 0.1
+        return max(0.0, min(deadlines) - now)
+
+    def _request_reset_locked(self, message: str) -> Any | None:
+        if self._closed or self._reset_requested is not None:
+            return None
+
+        self._reset_requested = message
+        reset_error = BackendError(
+            "generation_failed",
+            # Intentional policy: true deadline drain timeout is treated as a
+            # retryable collateral failure for other active batch requests.
+            message,
+            True,
+        )
+
+        pending = list(self._pending_by_id.values())
+        self._pending_by_id.clear()
+        self._pending_request_ids.clear()
+
+        active = list(self._active_by_uid.values())
+        self._active_by_uid.clear()
+
+        for state in pending:
+            state.error = reset_error
+            self._finalize_request_locked(state, keep_request=True)
+
+        for state in active:
+            if state.closed:
+                self._finalize_request_locked(state, keep_request=True)
+            else:
+                state.error = reset_error
+                self._finalize_request_locked(state, keep_request=True)
+
+        self._cv.notify_all()
+        return self._batch_generator
+
+    def _perform_requested_reset(self) -> None:
+        with self._cv:
+            if self._closed or self._reset_requested is None:
+                return
+            self._reset_requested = None
+
+        try:
+            new_batch_generator = self._build_batch_generator(self._session)
+        except Exception:
+            self._mark_all_failed(
+                BackendError(
+                    "generation_failed",
+                    "batch runtime reset failed",
+                    False,
+                )
+            )
+            with self._cv:
+                self._closed = True
+                self._cv.notify_all()
+            return
+
+        with self._cv:
+            if self._closed:
+                self._cv.notify_all()
+                return
+            self._batch_generator = new_batch_generator
+            self._batch_generator_closed = False
+            self._cv.notify_all()
+
+    def _close_batch_generator_best_effort(self, batch_generator: Any | None) -> None:
+        close_fn = getattr(batch_generator, "close", None)
+        if callable(close_fn):
+            try:
+                close_fn()
+            except Exception:
+                pass
+
+    def _finalize_request_cache(self, state: _BatchRequestState, response: Any) -> None:
+        if state.prompt_cache is None:
+            return
+
+        cache_fn = getattr(response, "prompt_cache", None)
+        if not callable(cache_fn):
+            return
+
+        try:
+            extracted = list(cache_fn())
+        except Exception:
+            return
+
+        try:
+            state.prompt_cache.clear()
+            state.prompt_cache.extend(extracted)
+        except Exception:
+            pass
+
+    def _mark_states_failed(self, states: list[_BatchRequestState], error: Exception) -> None:
+        with self._cv:
+            for state in states:
+                state.error = error
+                self._finalize_request_locked(state, keep_request=True)
+            self._cv.notify_all()
+
+    def _mark_all_failed(self, error: Exception) -> None:
+        with self._cv:
+            targets = list(self._requests_by_id.values())
+            self._pending_by_id.clear()
+            self._pending_request_ids.clear()
+            self._active_by_uid.clear()
+            for state in targets:
+                state.error = error
+                self._finalize_request_locked(state, keep_request=True)
+            self._cv.notify_all()
+
+    def _mark_all_closed_locked(self, error: Exception) -> None:
+        targets = list(self._requests_by_id.values())
+        self._pending_by_id.clear()
+        self._pending_request_ids.clear()
+        self._active_by_uid.clear()
+        for state in targets:
+            state.error = error
+            self._finalize_request_locked(state, keep_request=True)
+        self._cv.notify_all()
 
 
 # ---------------------------------------------------------------------------
@@ -279,14 +1140,25 @@ def _response_token_id(response: Any) -> int | None:
     return token
 
 
-def _close_stream(stream: Any) -> None:
+def _close_stream(stream: Any, *, cancelled: bool = True) -> None:
     """Best-effort close of a stream_generate iterator."""
     close = getattr(stream, "close", None)
     if close is not None:
         try:
+            if cancelled:
+                close()
+            else:
+                close(cancelled=False)
+        except TypeError:
             close()
         except Exception:
             pass
+
+
+def _cache_finalized_for_store(stream: Any) -> bool:
+    if isinstance(stream, _BatchRequestStream):
+        return stream._terminal_returned
+    return True
 
 
 def _prefill_step_size(session: Any) -> int:
@@ -531,6 +1403,7 @@ def _maybe_store_prompt_cache(
     *,
     prompt_cache: Any | None,
     can_store: bool,
+    cache_finalized: bool = True,
 ) -> _CacheStoreResult:
     """Best-effort store of mutated prompt cache after successful generation.
 
@@ -542,6 +1415,8 @@ def _maybe_store_prompt_cache(
         return _CacheStoreResult(status=_STORE_SKIPPED_UNAVAILABLE)
     if not can_store:
         return _CacheStoreResult(status=_STORE_SKIPPED_MISSING_TOKEN_ID)
+    if not cache_finalized:
+        return _CacheStoreResult(status=_STORE_SKIPPED_UNFINALIZED_BATCH)
     try:
         t0 = time.monotonic()
         full_key = prompt_ids + generated_token_ids
@@ -615,10 +1490,20 @@ def generate_events(
     prompt_tokens = 0
     lookup_result = _CacheLookupResult(status=_LOOKUP_DISABLED)
     store_result = _CacheStoreResult()
+    stream: Any | None = None
 
     try:
         if max_output_tokens <= 0:
             yield _completed_event("FINISH_REASON_LENGTH", input_tokens, 0)
+            return
+
+        if stop_sequences and not deps.supports_orchard_stop_sequences:
+            yield {
+                "kind": "failed",
+                "code": "unsupported_generation_params",
+                "message": "stop_sequences are not supported with generation_mode=batch",
+                "retryable": False,
+            }
             return
 
         prompt_ids = _encode_prompt(session.tokenizer, prompt_text)
@@ -639,9 +1524,12 @@ def generate_events(
             yield cancelled_event()
             return
 
-        lookup_result = _prepare_prompt_cache(session, prompt_ids, deps=deps)
-        request_prompt_cache = lookup_result.prompt_cache
-        stream_prompt_ids = lookup_result.stream_prompt_ids
+        request_prompt_cache = None
+        stream_prompt_ids = prompt_ids
+        if not deps.uses_shared_batch_runtime:
+            lookup_result = _prepare_prompt_cache(session, prompt_ids, deps=deps)
+            request_prompt_cache = lookup_result.prompt_cache
+            stream_prompt_ids = lookup_result.stream_prompt_ids
 
         stream_kwargs: dict[str, Any] = {
             "max_tokens": max_output_tokens,
@@ -651,6 +1539,8 @@ def generate_events(
         }
         if request_prompt_cache is not None:
             stream_kwargs["prompt_cache"] = request_prompt_cache
+        if deps.uses_shared_batch_runtime:
+            stream_kwargs["cancel_event"] = cancel_event
 
         stream = deps.stream_generate(
             session.model,
@@ -672,7 +1562,7 @@ def generate_events(
                     flush_text = buf.flush()
                     if flush_text:
                         yield {"kind": "output_text_delta", "delta": flush_text}
-                _close_stream(stream)
+                _close_stream(stream, cancelled=True)
                 if tool_context is not None:
                     finalize_tool_calling(tool_context, terminal_kind="cancelled")
                     for event in tool_context.take_pending_events():
@@ -728,21 +1618,23 @@ def generate_events(
                 if stop_matched:
                     if safe_text:
                         yield {"kind": "output_text_delta", "delta": safe_text}
-                    _close_stream(stream)
-                    store_result = _maybe_store_prompt_cache(
-                        session,
-                        prompt_ids,
-                        generated_token_ids,
-                        prompt_cache=request_prompt_cache,
-                        can_store=can_store,
-                    )
+                    _close_stream(stream, cancelled=False)
+                    if not deps.uses_shared_batch_runtime:
+                        store_result = _maybe_store_prompt_cache(
+                            session,
+                            prompt_ids,
+                            generated_token_ids,
+                            prompt_cache=request_prompt_cache,
+                            can_store=can_store,
+                            cache_finalized=_cache_finalized_for_store(stream),
+                        )
                     yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
                     return
                 if safe_text:
                     yield {"kind": "output_text_delta", "delta": safe_text}
 
             if tool_context is not None and tool_context.pending_error is not None:
-                _close_stream(stream)
+                _close_stream(stream, cancelled=True)
                 yield {
                     "kind": "failed",
                     "code": tool_context.pending_error.code,
@@ -764,7 +1656,7 @@ def generate_events(
                             tool_calls_emitted = True
                         yield event
                     if final_error is not None:
-                        _close_stream(stream)
+                        _close_stream(stream, cancelled=True)
                         yield {
                             "kind": "failed",
                             "code": final_error.code,
@@ -773,13 +1665,14 @@ def generate_events(
                         }
                         return
 
-                store_result = _maybe_store_prompt_cache(
-                    session,
-                    prompt_ids,
-                    generated_token_ids,
-                    prompt_cache=request_prompt_cache,
-                    can_store=can_store,
-                )
+                if not deps.uses_shared_batch_runtime:
+                    store_result = _maybe_store_prompt_cache(
+                        session,
+                        prompt_ids,
+                        generated_token_ids,
+                        prompt_cache=request_prompt_cache,
+                        can_store=can_store,
+                    )
                 if tool_calls_emitted:
                     yield _completed_event(
                         "FINISH_REASON_TOOL_CALLS",
@@ -821,23 +1714,28 @@ def generate_events(
                     }
                     return
 
-            store_result = _maybe_store_prompt_cache(
-                session,
-                prompt_ids,
-                generated_token_ids,
-                prompt_cache=request_prompt_cache,
-                can_store=can_store,
-            )
+            if not deps.uses_shared_batch_runtime:
+                store_result = _maybe_store_prompt_cache(
+                    session,
+                    prompt_ids,
+                    generated_token_ids,
+                    prompt_cache=request_prompt_cache,
+                    can_store=can_store,
+                )
             finish = "FINISH_REASON_TOOL_CALLS" if tool_calls_emitted else "FINISH_REASON_STOP"
             yield _completed_event(finish, input_tokens, output_tokens)
     finally:
+        if stream is not None:
+            _close_stream(stream, cancelled=True)
+
         _emit_prefix_cache_log(
             prompt_tokens=prompt_tokens,
             lookup=lookup_result,
             store=store_result,
             final_stats=_safe_stats(getattr(session, "prefix_cache", None)),
         )
-        _safe_clear_session_cache(session)
+        if not deps.uses_shared_batch_runtime:
+            _safe_clear_session_cache(session)
 
 
 # ---------------------------------------------------------------------------

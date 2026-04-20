@@ -1,7 +1,61 @@
 defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   use ExUnit.Case, async: false
 
+  alias GRPC.RPCError
+  alias Orchard.Cluster.V1.{Ack, CancelInferenceRequest, ExecuteInferenceRequest, InferenceEvent}
+  alias Orchard.Cluster.V1.OutputTextDelta, as: ProtoOutputTextDelta
+  alias Orchard.Node.Worker.V1.{
+    LoadModelRequest,
+    WorkerRuntimeService,
+    WorkerStatusRequest,
+    WorkerStatusResponse
+  }
   alias Orchard.Node.WorkerRuntimeAdapter
+  alias Orchard.InferenceEvent, as: DomainInferenceEvent
+  alias Orchard.InferenceEvent.OutputTextDelta
+
+  defmodule OpenUnavailableWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream), do: %WorkerStatusResponse{ready: true}
+    def load_model(%LoadModelRequest{}, _stream), do: %Ack{ok: true}
+    def unload_model(_request, _stream), do: %Ack{ok: true}
+    def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
+
+    def generate(%ExecuteInferenceRequest{}, _stream) do
+      raise RPCError, status: :unavailable, message: "worker unavailable"
+    end
+  end
+
+  defmodule OpenUnavailableEndpoint do
+    use GRPC.Endpoint
+
+    run(OpenUnavailableWorkerService)
+  end
+
+  defmodule MidStreamUnavailableWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream), do: %WorkerStatusResponse{ready: true}
+    def load_model(%LoadModelRequest{}, _stream), do: %Ack{ok: true}
+    def unload_model(_request, _stream), do: %Ack{ok: true}
+    def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
+
+    def generate(%ExecuteInferenceRequest{}, stream) do
+      GRPC.Server.send_reply(
+        stream,
+        %InferenceEvent{event: {:output_text_delta, %ProtoOutputTextDelta{delta: "partial"}}}
+      )
+
+      raise RPCError, status: :unavailable, message: "worker unavailable"
+    end
+  end
+
+  defmodule MidStreamUnavailableEndpoint do
+    use GRPC.Endpoint
+
+    run(MidStreamUnavailableWorkerService)
+  end
 
   test "worker_cli_args omits generation and memory flags for default-compatible values" do
     args =
@@ -92,6 +146,121 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
                  end
   end
 
+  test "start_generation sends runtime_adapter_done when stream open returns worker_unavailable" do
+    with_worker_runtime_server(OpenUnavailableEndpoint, fn channel ->
+      state = adapter_stream_state(channel)
+      request = execute_request("req-open-unavailable")
+
+      {:ok, generation_ref, adapter_state} =
+        WorkerRuntimeAdapter.start_generation(state, request, owner: self())
+
+      assert Map.has_key?(adapter_state.generations, generation_ref)
+      assert adapter_state.generations[generation_ref].request_id == request.request_id
+      assert_receive {:runtime_adapter_done, ^generation_ref, :worker_unavailable}, 1_000
+      refute_receive {:runtime_adapter_event, ^generation_ref, _event}, 100
+
+      cleaned_state = WorkerRuntimeAdapter.finish_generation(adapter_state, generation_ref, [])
+      refute Map.has_key?(cleaned_state.generations, generation_ref)
+    end)
+  end
+
+  test "start_generation sends runtime_adapter_done when stream becomes unavailable after non-terminal event" do
+    with_worker_runtime_server(MidStreamUnavailableEndpoint, fn channel ->
+      state = adapter_stream_state(channel)
+      request = execute_request("req-mid-stream-unavailable")
+
+      {:ok, generation_ref, adapter_state} =
+        WorkerRuntimeAdapter.start_generation(state, request, owner: self())
+
+      assert_receive {
+                       :runtime_adapter_event,
+                       ^generation_ref,
+                       %DomainInferenceEvent{event: %OutputTextDelta{delta: "partial"}}
+                     },
+                     1_000
+
+      assert_receive {:runtime_adapter_done, ^generation_ref, :worker_unavailable}, 1_000
+      refute_receive {:runtime_adapter_event, ^generation_ref, _event}, 100
+
+      cleaned_state = WorkerRuntimeAdapter.finish_generation(adapter_state, generation_ref, [])
+      refute Map.has_key?(cleaned_state.generations, generation_ref)
+    end)
+  end
+
+  test "start_generation sends generation_task_failed when the stream task crashes unexpectedly" do
+    state = adapter_stream_state(:invalid_channel)
+    request = execute_request("req-task-crash")
+
+    {:ok, generation_ref, adapter_state} =
+      WorkerRuntimeAdapter.start_generation(state, request, owner: self())
+
+    assert_receive {:runtime_adapter_done, ^generation_ref, {:generation_task_failed, kind, _reason}},
+                   1_000
+
+    assert kind in [:error, :exit]
+
+    cleaned_state = WorkerRuntimeAdapter.finish_generation(adapter_state, generation_ref, [])
+    refute Map.has_key?(cleaned_state.generations, generation_ref)
+  end
+
+  defp with_worker_runtime_server(endpoint, fun)
+       when is_atom(endpoint) and is_function(fun, 1) do
+    port = free_tcp_port()
+
+    start_supervised!({
+      GRPC.Server.Supervisor,
+      endpoint: endpoint,
+      port: port,
+      start_server: true,
+      adapter_opts: [ip: {127, 0, 0, 1}]
+    })
+
+    {:ok, channel} = GRPC.Stub.connect("127.0.0.1:#{port}")
+
+    try do
+      wait_for_worker_service_ready(channel)
+      fun.(channel)
+    after
+      _ = GRPC.Stub.disconnect(channel)
+    end
+  end
+
+  defp free_tcp_port do
+    {:ok, socket} = :gen_tcp.listen(0, [:binary, active: false, reuseaddr: true])
+    {:ok, {_ip, port}} = :inet.sockname(socket)
+    :ok = :gen_tcp.close(socket)
+    port
+  end
+
+  defp wait_for_worker_service_ready(channel, attempts \\ 20)
+
+  defp wait_for_worker_service_ready(_channel, 0) do
+    flunk("worker runtime test server did not become ready")
+  end
+
+  defp wait_for_worker_service_ready(channel, attempts) do
+    case WorkerRuntimeService.Stub.get_status(channel, %WorkerStatusRequest{}, timeout: 500) do
+      {:ok, %WorkerStatusResponse{ready: true}} -> :ok
+      _other ->
+        Process.sleep(25)
+        wait_for_worker_service_ready(channel, attempts - 1)
+    end
+  end
+
+  defp adapter_stream_state(channel), do: %{channel: channel, generations: %{}}
+
+  defp execute_request(request_id) do
+    %ExecuteInferenceRequest{
+      request_id: request_id,
+      controller_session_id: "worker-runtime-adapter-test",
+      model_id: "test/unavailable-stream",
+      version: "v1",
+      rendered_prompt_utf8: "hello",
+      input_tokens: 1,
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000
+    }
+  end
+
   defp flag_value(args, flag) do
     args
     |> Enum.chunk_every(2)
@@ -117,7 +286,7 @@ defmodule Orchard.NodeTest do
     %{previous_runtime: previous_runtime}
   end
 
-  test "effective_worker_request_limit keeps WorkerRuntimeAdapter single-flight in batch mode", %{
+  test "effective_worker_request_limit allows WorkerRuntimeAdapter batch admission", %{
     previous_runtime: previous_runtime
   } do
     Application.put_env(
@@ -130,7 +299,7 @@ defmodule Orchard.NodeTest do
       )
     )
 
-    assert Node.effective_worker_request_limit() == 1
+    assert Node.effective_worker_request_limit() == 3
   end
 
   test "effective_worker_request_limit keeps non-worker adapters single-flight without explicit opt-in",
@@ -250,7 +419,7 @@ defmodule Orchard.NodeTest do
     end
   end
 
-  test "test-only non-worker batch flag is ignored for real WorkerRuntimeAdapter", %{
+  test "WorkerRuntimeAdapter batch admission does not depend on test-only non-worker flag", %{
     previous_runtime: previous_runtime
   } do
     Application.put_env(
@@ -264,7 +433,7 @@ defmodule Orchard.NodeTest do
       )
     )
 
-    assert Node.effective_worker_request_limit() == 1
+    assert Node.effective_worker_request_limit() == 3
   end
 
   test "false values fail fast for worker config keys instead of defaulting", %{

@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections import deque
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
 
 from orchard_worker_mlx.backends import BackendError
 from orchard_worker_mlx.generation import (
+    BatchGenerationDeps,
+    BatchGeneratorRuntime,
     GenerationDeps,
     StopSequenceBuffer,
     _make_prefill_progress_callback,
@@ -125,6 +129,1326 @@ def _collect_events(
     if cancel_event is None:
         cancel_event = threading.Event()
     return list(generate_events(session, request, cancel_event, deps=deps))
+
+
+class _ToyDetokenizer:
+    def __init__(self, tokenizer: _ToyTokenizer) -> None:
+        self._tokenizer = tokenizer
+        self.reset()
+
+    def reset(self) -> None:
+        self.offset = 0
+        self.text = ""
+        self.tokens: list[int] = []
+
+    def add_token(self, token: int) -> None:
+        self.tokens.append(token)
+        self.text += self._tokenizer.decode([token])
+
+    def finalize(self) -> None:
+        return None
+
+    @property
+    def last_segment(self) -> str:
+        segment = self.text[self.offset :]
+        self.offset = len(self.text)
+        return segment
+
+
+class _ToyTokenizer:
+    def __init__(self) -> None:
+        self._map = {11: "A", 12: "B", 21: "X", 22: "Y"}
+
+    def encode(self, _prompt: str, add_special_tokens: bool = False) -> list[int]:
+        assert add_special_tokens is False
+        return [1, 2, 3]
+
+    def decode(self, token_ids: list[int]) -> str:
+        return "".join(self._map.get(token_id, "?") for token_id in token_ids)
+
+    @property
+    def detokenizer(self) -> _ToyDetokenizer:
+        return _ToyDetokenizer(self)
+
+
+class _SharedDetokenizerTokenizer(_ToyTokenizer):
+    def __init__(self) -> None:
+        super().__init__()
+        self._shared = _ToyDetokenizer(self)
+
+    @property
+    def detokenizer(self) -> _ToyDetokenizer:
+        return self._shared
+
+
+class _ExplodingResetDetokenizer:
+    def __init__(self, tokenizer: _ToyTokenizer) -> None:
+        self._tokenizer = tokenizer
+        self.offset = 0
+        self.text = ""
+
+    def reset(self) -> None:
+        raise RuntimeError("detokenizer reset boom")
+
+    def add_token(self, token: int) -> None:
+        self.text += self._tokenizer.decode([token])
+
+    def finalize(self) -> None:
+        return None
+
+    @property
+    def last_segment(self) -> str:
+        segment = self.text[self.offset :]
+        self.offset = len(self.text)
+        return segment
+
+
+class _ExplodingResetTokenizer(_ToyTokenizer):
+    def make_detokenizer(self) -> _ExplodingResetDetokenizer:
+        return _ExplodingResetDetokenizer(self)
+
+
+class _FakeBatchGenerator:
+    def __init__(self, _model: Any, **kwargs: Any) -> None:
+        self._prompt_progress_callback = kwargs.get("prompt_progress_callback")
+        self._next_uid = 0
+        self._active: list[dict[str, Any]] = []
+
+    def insert(
+        self,
+        prompts: list[list[int]],
+        max_tokens: list[int],
+        caches: list[Any] | None = None,
+        samplers: list[Any] | None = None,
+        logits_processors: list[Any] | None = None,
+    ) -> list[int]:
+        del prompts, samplers, logits_processors
+        caches = caches or [None] * len(max_tokens)
+        uids: list[int] = []
+        for i, limit in enumerate(max_tokens):
+            uid = self._next_uid
+            self._next_uid += 1
+            base_tokens = [11, 12] if uid % 2 == 0 else [21, 22]
+            tokens = base_tokens[: max(1, min(limit, len(base_tokens)))]
+            self._active.append(
+                {
+                    "uid": uid,
+                    "tokens": tokens,
+                    "index": 0,
+                    "cache": caches[i],
+                    "progress_emitted": False,
+                }
+            )
+            uids.append(uid)
+        return uids
+
+    def next(self) -> list[Any]:
+        responses: list[Any] = []
+        survivors: list[dict[str, Any]] = []
+
+        for item in self._active:
+            uid = item["uid"]
+            tokens: list[int] = item["tokens"]
+            index = item["index"]
+
+            if not item["progress_emitted"] and callable(self._prompt_progress_callback):
+                self._prompt_progress_callback([(uid, 1, 3)])
+                item["progress_emitted"] = True
+
+            token = tokens[index]
+            index += 1
+            finish_reason = "stop" if index >= len(tokens) else None
+            item["index"] = index
+
+            cache_snapshot = [f"cache-{uid}"]
+            responses.append(
+                type(
+                    "BatchResp",
+                    (),
+                    {
+                        "uid": uid,
+                        "token": token,
+                        "finish_reason": finish_reason,
+                        "prompt_cache": (lambda snap=cache_snapshot: snap),
+                    },
+                )()
+            )
+
+            if finish_reason is None:
+                survivors.append(item)
+
+        self._active = survivors
+        return responses
+
+    def close(self) -> None:
+        return None
+
+
+def test_batch_generator_runtime_streams_through_generate_events() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    deltas = [event["delta"] for event in events if event["kind"] == "output_text_delta"]
+    assert deltas == ["A", "B"]
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+def test_batch_generator_runtime_rejects_shared_detokenizer_instances() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _SharedDetokenizerTokenizer()
+
+    with pytest.raises(BackendError) as exc_info:
+        BatchGeneratorRuntime(
+            session,
+            generation_deps=GenerationDeps(
+                stream_generate=lambda *_args, **_kwargs: iter([]),
+                make_sampler=lambda **_kw: MagicMock(),
+            ),
+            batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+        )
+
+    assert exc_info.value.code == "batch_runtime_unavailable"
+    assert "shared detokenizer" in exc_info.value.message
+
+
+def test_batch_generator_runtime_rolls_back_submit_state_on_stream_init_failure() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ExplodingResetTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+    with pytest.raises(RuntimeError, match="detokenizer reset boom"):
+        list(generate_events(session, request, threading.Event(), deps=runtime.generation_deps()))
+
+    assert runtime._requests_by_id == {}
+    assert runtime._pending_by_id == {}
+    assert runtime._active_by_uid == {}
+    assert runtime._active_detokenizer_ids == set()
+
+    runtime.close()
+
+
+def test_batch_generator_runtime_supports_two_concurrent_requests() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    req_a = _make_fake_request(input_tokens=3, max_output_tokens=2)
+    req_b = _make_fake_request(input_tokens=3, max_output_tokens=2)
+
+    results: dict[str, list[dict[str, Any]]] = {}
+
+    def run_request(name: str, request: Any) -> None:
+        results[name] = _collect_events(session, request, runtime.generation_deps())
+
+    thread_a = threading.Thread(target=run_request, args=("a", req_a))
+    thread_b = threading.Thread(target=run_request, args=("b", req_b))
+
+    thread_a.start()
+    thread_b.start()
+    thread_a.join(timeout=2.0)
+    thread_b.join(timeout=2.0)
+
+    runtime.close()
+
+    assert set(results.keys()) == {"a", "b"}
+    text_a = "".join(
+        event["delta"] for event in results["a"] if event["kind"] == "output_text_delta"
+    )
+    text_b = "".join(
+        event["delta"] for event in results["b"] if event["kind"] == "output_text_delta"
+    )
+    assert {text_a, text_b} == {"AB", "XY"}
+    assert results["a"][-1]["kind"] == "completed"
+    assert results["b"][-1]["kind"] == "completed"
+
+
+class _NeverFinishingBatchGenerator:
+    def __init__(self, _model: Any, **_kwargs: Any) -> None:
+        self._next_uid = 0
+        self._active_uids: list[int] = []
+        self.closed = False
+
+    def insert(
+        self,
+        prompts: list[list[int]],
+        max_tokens: list[int],
+        caches: list[Any] | None = None,
+        samplers: list[Any] | None = None,
+        logits_processors: list[Any] | None = None,
+    ) -> list[int]:
+        del max_tokens, caches, samplers, logits_processors
+        uids: list[int] = []
+        for _ in range(len(prompts)):
+            uid = self._next_uid
+            self._next_uid += 1
+            self._active_uids.append(uid)
+            uids.append(uid)
+        return uids
+
+    def next(self) -> list[Any]:
+        if not self._active_uids:
+            return []
+        return [
+            type(
+                "BatchResp",
+                (),
+                {
+                    "uid": uid,
+                    "token": 11,
+                    "finish_reason": None,
+                    "prompt_cache": lambda: [],
+                },
+            )()
+            for uid in self._active_uids
+        ]
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _StopVsLongBatchGenerator:
+    def __init__(self, _model: Any, **_kwargs: Any) -> None:
+        self._next_uid = 0
+        self._active: list[dict[str, Any]] = []
+
+    def insert(
+        self,
+        prompts: list[list[int]],
+        max_tokens: list[int],
+        caches: list[Any] | None = None,
+        samplers: list[Any] | None = None,
+        logits_processors: list[Any] | None = None,
+    ) -> list[int]:
+        del prompts, caches, samplers, logits_processors
+        uids: list[int] = []
+
+        for i, _max_tokens in enumerate(max_tokens):
+            uid = self._next_uid
+            self._next_uid += 1
+            if i == 0:
+                tokens = [11, 12, 12, 12, 12, 12]  # starts with "A"
+            else:
+                tokens = [21] * 8  # long-running request
+            self._active.append({"uid": uid, "tokens": tokens, "index": 0})
+            uids.append(uid)
+        return uids
+
+    def next(self) -> list[Any]:
+        responses: list[Any] = []
+        survivors: list[dict[str, Any]] = []
+
+        for item in self._active:
+            uid = item["uid"]
+            tokens: list[int] = item["tokens"]
+            index = item["index"]
+            token = tokens[index]
+            index += 1
+            item["index"] = index
+            finish_reason = "stop" if index >= len(tokens) else None
+
+            responses.append(
+                type(
+                    "BatchResp",
+                    (),
+                    {
+                        "uid": uid,
+                        "token": token,
+                        "finish_reason": finish_reason,
+                        "prompt_cache": lambda: [],
+                    },
+                )()
+            )
+            if finish_reason is None:
+                survivors.append(item)
+
+        self._active = survivors
+        threading.Event().wait(0.1)
+        return responses
+
+
+class _BlockingNextBatchGenerator:
+    def __init__(self, _model: Any, **_kwargs: Any) -> None:
+        self._next_uid = 0
+        self._active: list[int] = []
+        self.allow_next = threading.Event()
+        self.close_called = False
+
+    def insert(
+        self,
+        prompts: list[list[int]],
+        max_tokens: list[int],
+        caches: list[Any] | None = None,
+        samplers: list[Any] | None = None,
+        logits_processors: list[Any] | None = None,
+    ) -> list[int]:
+        del max_tokens, caches, samplers, logits_processors
+        uids: list[int] = []
+        for _ in prompts:
+            uid = self._next_uid
+            self._next_uid += 1
+            self._active.append(uid)
+            uids.append(uid)
+        return uids
+
+    def next(self) -> list[Any]:
+        self.allow_next.wait(timeout=5.0)
+        responses: list[Any] = []
+        active = list(self._active)
+        self._active.clear()
+
+        for uid in active:
+            responses.append(
+                type(
+                    "BatchResp",
+                    (),
+                    {
+                        "uid": uid,
+                        "token": 11,
+                        "finish_reason": "stop",
+                        "prompt_cache": lambda: [],
+                    },
+                )()
+            )
+
+        return responses
+
+    def close(self) -> None:
+        self.close_called = True
+
+
+class _StopThenNeverFinishBatchGenerator:
+    def __init__(self, _model: Any, **_kwargs: Any) -> None:
+        self._next_uid = 0
+        self._active: list[int] = []
+        self.close_called = False
+
+    def insert(
+        self,
+        prompts: list[list[int]],
+        max_tokens: list[int],
+        caches: list[Any] | None = None,
+        samplers: list[Any] | None = None,
+        logits_processors: list[Any] | None = None,
+    ) -> list[int]:
+        del max_tokens, caches, samplers, logits_processors
+        uids: list[int] = []
+        for _ in prompts:
+            uid = self._next_uid
+            self._next_uid += 1
+            self._active.append(uid)
+            uids.append(uid)
+        return uids
+
+    def next(self) -> list[Any]:
+        if not self._active:
+            threading.Event().wait(0.05)
+            return []
+
+        return [
+            type(
+                "BatchResp",
+                (),
+                {
+                    "uid": uid,
+                    "token": 11,
+                    "finish_reason": None,
+                    "prompt_cache": lambda: ["late-cache"],
+                },
+            )()
+            for uid in self._active
+        ]
+
+    def close(self) -> None:
+        self.close_called = True
+
+
+def test_batch_generator_runtime_cancel_resets_after_bounded_drain_timeout() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_NeverFinishingBatchGenerator),
+    )
+
+    req_a = _make_fake_request(input_tokens=3, max_output_tokens=128)
+    req_b = _make_fake_request(input_tokens=3, max_output_tokens=128)
+
+    cancel_event_a = threading.Event()
+    cancel_event_b = threading.Event()
+
+    events_a: list[dict[str, Any]] = []
+    events_b: list[dict[str, Any]] = []
+    error_b: list[BackendError] = []
+
+    def run_a() -> None:
+        events_a.extend(
+            generate_events(session, req_a, cancel_event_a, deps=runtime.generation_deps())
+        )
+
+    def run_b() -> None:
+        try:
+            events_b.extend(
+                generate_events(session, req_b, cancel_event_b, deps=runtime.generation_deps())
+            )
+        except BackendError as exc:
+            error_b.append(exc)
+
+    thread_a = threading.Thread(target=run_a)
+    thread_b = threading.Thread(target=run_b)
+    thread_a.start()
+    thread_b.start()
+
+    cancel_event_a.set()
+    thread_a.join(timeout=2.0)
+    thread_b.join(timeout=3.0)
+
+    runtime.close()
+
+    assert thread_a.is_alive() is False
+    assert thread_b.is_alive() is False
+    assert events_a[-1]["kind"] == "failed"
+    assert events_a[-1]["code"] == "cancelled"
+    assert error_b
+    assert error_b[0].code == "generation_failed"
+    assert "reset" in error_b[0].message
+
+
+def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
+    class _WatchdogBlockedNextBatchGenerator:
+        instances: list[_WatchdogBlockedNextBatchGenerator] = []
+
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self.instance_index = len(type(self).instances)
+            type(self).instances.append(self)
+            self._next_uid = 0
+            self._active: list[int] = []
+            self._next_call_count = 0
+            self.allow_second_next = threading.Event()
+            self.entered_blocking_next = threading.Event()
+            self.close_called = threading.Event()
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            uids: list[int] = []
+            for _ in prompts:
+                uid = self._next_uid
+                self._next_uid += 1
+                self._active.append(uid)
+                uids.append(uid)
+            return uids
+
+        def next(self) -> list[Any]:
+            active = list(self._active)
+            if not active:
+                threading.Event().wait(0.01)
+                return []
+
+            self._next_call_count += 1
+
+            if self.instance_index > 0:
+                self._active.clear()
+                return [
+                    type(
+                        "BatchResp",
+                        (),
+                        {
+                            "uid": uid,
+                            "token": 11,
+                            "finish_reason": "stop",
+                            "prompt_cache": lambda: [],
+                        },
+                    )()
+                    for uid in active
+                ]
+
+            if self._next_call_count == 1:
+                return [
+                    type(
+                        "BatchResp",
+                        (),
+                        {
+                            "uid": uid,
+                            "token": 11,
+                            "finish_reason": None,
+                            "prompt_cache": lambda: [],
+                        },
+                    )()
+                    for uid in active
+                ]
+
+            if self._next_call_count == 2:
+                self.allow_second_next.wait(timeout=5.0)
+                return [
+                    type(
+                        "BatchResp",
+                        (),
+                        {
+                            "uid": uid,
+                            "token": 12,
+                            "finish_reason": None,
+                            "prompt_cache": lambda: [],
+                        },
+                    )()
+                    for uid in active
+                ]
+
+            self.entered_blocking_next.set()
+            self.close_called.wait(timeout=5.0)
+            return []
+
+        def close(self) -> None:
+            self.close_called.set()
+
+    def wait_for(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            threading.Event().wait(0.01)
+        raise AssertionError("timed out waiting for condition")
+
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_WatchdogBlockedNextBatchGenerator),
+    )
+
+    req_cancel = _make_fake_request(input_tokens=3, max_output_tokens=128)
+    req_waiter = _make_fake_request(input_tokens=3, max_output_tokens=128)
+    cancel_event_cancel = threading.Event()
+    cancel_event_waiter = threading.Event()
+
+    events_cancel: list[dict[str, Any]] = []
+    events_waiter: list[dict[str, Any]] = []
+    errors_waiter: list[BackendError] = []
+
+    def run_cancel() -> None:
+        events_cancel.extend(
+            generate_events(
+                session,
+                req_cancel,
+                cancel_event_cancel,
+                deps=runtime.generation_deps(),
+            )
+        )
+
+    def run_waiter() -> None:
+        try:
+            events_waiter.extend(
+                generate_events(
+                    session,
+                    req_waiter,
+                    cancel_event_waiter,
+                    deps=runtime.generation_deps(),
+                )
+            )
+        except BackendError as exc:
+            errors_waiter.append(exc)
+
+    thread_cancel = threading.Thread(target=run_cancel)
+    thread_waiter = threading.Thread(target=run_waiter)
+    thread_cancel.start()
+    thread_waiter.start()
+
+    try:
+        wait_for(
+            lambda: sum(1 for event in events_cancel if event["kind"] == "output_text_delta") >= 1
+            and sum(1 for event in events_waiter if event["kind"] == "output_text_delta") >= 1
+        )
+
+        first_generator = _WatchdogBlockedNextBatchGenerator.instances[0]
+        cancel_event_cancel.set()
+        first_generator.allow_second_next.set()
+
+        wait_for(lambda: bool(events_cancel) and events_cancel[-1]["kind"] == "failed")
+        wait_for(first_generator.entered_blocking_next.is_set)
+        wait_for(first_generator.close_called.is_set, timeout=2.0)
+
+        thread_cancel.join(timeout=2.0)
+        thread_waiter.join(timeout=2.0)
+
+        wait_for(lambda: len(_WatchdogBlockedNextBatchGenerator.instances) >= 2)
+
+        fresh_request = _make_fake_request(input_tokens=3, max_output_tokens=8)
+        fresh_events = list(
+            generate_events(
+                session,
+                fresh_request,
+                threading.Event(),
+                deps=runtime.generation_deps(),
+            )
+        )
+    finally:
+        runtime.close()
+        thread_cancel.join(timeout=2.0)
+        thread_waiter.join(timeout=2.0)
+
+    assert thread_cancel.is_alive() is False
+    assert thread_waiter.is_alive() is False
+    assert events_cancel[-1]["kind"] == "failed"
+    assert events_cancel[-1]["code"] == "cancelled"
+    assert first_generator.entered_blocking_next.is_set() is True
+    assert first_generator.close_called.is_set() is True
+    assert errors_waiter
+    assert errors_waiter[0].code == "generation_failed"
+    assert errors_waiter[0].retryable is True
+    assert "cancellation drain timeout" in errors_waiter[0].message
+    assert fresh_events[-1]["kind"] == "completed"
+    assert fresh_events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+
+def test_batch_generator_runtime_cleans_request_state_on_normal_completion() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+    events = list(
+        generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+    )
+
+    assert events[-1]["kind"] == "completed"
+    assert runtime._requests_by_id == {}
+    assert runtime._pending_by_id == {}
+
+    runtime.close()
+
+
+def test_batch_generator_runtime_releases_detokenizer_after_terminal_service_break() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+    iterator = generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+
+    try:
+        for event in iterator:
+            if event["kind"] in ("completed", "failed"):
+                break
+    finally:
+        iterator.close()
+
+    assert runtime._active_detokenizer_ids == set()
+
+    runtime.close()
+
+
+def test_batch_generator_runtime_close_raises_if_pump_cannot_stop_after_generator_close() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_BlockingNextBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=4)
+    thread_errors: list[Exception] = []
+
+    def run() -> None:
+        try:
+            list(
+                generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+            )
+        except Exception as exc:  # pragma: no cover - should stay empty
+            thread_errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not runtime._active_by_uid:
+        threading.Event().wait(0.01)
+
+    assert runtime._active_by_uid
+
+    generator = cast(_BlockingNextBatchGenerator, runtime._batch_generator)
+
+    with pytest.raises(BackendError) as exc_info:
+        runtime.close()
+
+    assert exc_info.value.code == "batch_runtime_close_timeout"
+    assert runtime._pump.is_alive() is True
+    assert generator.close_called is True
+
+    generator.allow_next.set()
+    thread.join(timeout=2.0)
+    runtime.close()
+
+    assert thread.is_alive() is False
+    assert len(thread_errors) == 1
+    assert isinstance(thread_errors[0], BackendError)
+    assert thread_errors[0].code == "generation_failed"
+    assert "batch runtime closed" in thread_errors[0].message
+
+
+def test_batch_generator_runtime_cleans_request_state_on_cancel_close() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_NeverFinishingBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=128)
+    cancel_event = threading.Event()
+
+    events: list[dict[str, Any]] = []
+
+    def run() -> None:
+        events.extend(
+            generate_events(session, request, cancel_event, deps=runtime.generation_deps())
+        )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    cancel_event.set()
+    thread.join(timeout=2.0)
+
+    assert thread.is_alive() is False
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "cancelled"
+    assert runtime._requests_by_id == {}
+
+    runtime.close()
+
+
+
+def test_batch_generator_runtime_cancel_event_wakes_blocked_waiter() -> None:
+    class _BlockAfterFirstTokenBatchGenerator:
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self._next_uid = 0
+            self._active: list[int] = []
+            self._next_calls = 0
+            self._release_block = threading.Event()
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            uids: list[int] = []
+            for _ in prompts:
+                uid = self._next_uid
+                self._next_uid += 1
+                self._active.append(uid)
+                uids.append(uid)
+            return uids
+
+        def next(self) -> list[Any]:
+            active = list(self._active)
+            if not active:
+                threading.Event().wait(0.01)
+                return []
+
+            self._next_calls += 1
+            if self._next_calls == 1:
+                return [
+                    type(
+                        "BatchResp",
+                        (),
+                        {
+                            "uid": uid,
+                            "token": 11,
+                            "finish_reason": None,
+                            "prompt_cache": lambda: [],
+                        },
+                    )()
+                    for uid in active
+                ]
+
+            self._release_block.wait(timeout=5.0)
+            return []
+
+        def close(self) -> None:
+            self._release_block.set()
+
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_BlockAfterFirstTokenBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=128)
+    cancel_event = threading.Event()
+    events: list[dict[str, Any]] = []
+
+    def run() -> None:
+        events.extend(
+            generate_events(session, request, cancel_event, deps=runtime.generation_deps())
+        )
+
+    thread = threading.Thread(target=run)
+    thread.start()
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not events:
+        threading.Event().wait(0.01)
+
+    cancel_event.set()
+    thread.join(timeout=2.0)
+
+    assert thread.is_alive() is False
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "cancelled"
+
+    runtime.close()
+
+
+def test_batch_generator_runtime_cleans_request_state_on_runtime_close() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_NeverFinishingBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=128)
+    errors: list[BackendError] = []
+
+    def run() -> None:
+        try:
+            list(
+                generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+            )
+        except BackendError as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    threading.Event().wait(0.1)
+    runtime.close()
+    thread.join(timeout=2.0)
+
+    assert thread.is_alive() is False
+    assert errors
+    assert errors[0].code == "generation_failed"
+    assert runtime._requests_by_id == {}
+
+
+def test_batch_generator_runtime_suppresses_terminal_stop_token_text() -> None:
+    session = _make_fake_session(eos_token_ids=(12,))
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+    events = list(
+        generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+    )
+
+    deltas = [event["delta"] for event in events if event["kind"] == "output_text_delta"]
+    assert deltas == ["A"]
+    assert events[-1]["kind"] == "completed"
+
+    runtime.close()
+
+
+def test_batch_generator_runtime_rejects_stop_sequences_before_batch_submission() -> None:
+    clear_mock = MagicMock(name="clear_cache")
+    session = _make_fake_session(clear_cache=clear_mock)
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_StopThenNeverFinishBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=8, stop_sequences=["A"])
+    events = list(
+        generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+    )
+
+    assert events == [
+        {
+            "kind": "failed",
+            "code": "unsupported_generation_params",
+            "message": "stop_sequences are not supported with generation_mode=batch",
+            "retryable": False,
+        }
+    ]
+    assert runtime._requests_by_id == {}
+    assert runtime._pending_by_id == {}
+    assert runtime._active_by_uid == {}
+    clear_mock.assert_not_called()
+
+    runtime.close()
+
+
+def test_batch_runtime_zero_token_early_exit_does_not_clear_session_cache() -> None:
+    clear_mock = MagicMock(name="clear_cache")
+    session = _make_fake_session(clear_cache=clear_mock)
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=0)
+    events = list(
+        generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+    )
+
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_LENGTH"
+    clear_mock.assert_not_called()
+
+    runtime.close()
+
+
+
+def test_batch_runtime_does_not_clear_session_cache_per_request() -> None:
+    clear_mock = MagicMock(name="clear_cache")
+    session = _make_fake_session(clear_cache=clear_mock)
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+    events = list(
+        generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+    )
+
+    assert events[-1]["kind"] == "completed"
+    clear_mock.assert_not_called()
+
+    runtime.close()
+
+
+def test_batch_generator_runtime_generator_close_marks_request_cancelled_not_local_close() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_NeverFinishingBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=32)
+    iterator = generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+
+    try:
+        first_event = next(iterator)
+        assert first_event["kind"] == "output_text_delta"
+
+        iterator.close()
+
+        deadline = time.monotonic() + 1.0
+        state = None
+        while time.monotonic() < deadline:
+            active_states = list(runtime._active_by_uid.values())
+            if active_states:
+                state = active_states[0]
+                if state.cancel_deadline_monotonic is not None:
+                    break
+            threading.Event().wait(0.01)
+
+        assert state is not None
+        assert state.cancel_deadline_monotonic is not None
+        assert state.local_close_deadline_monotonic is None
+    finally:
+        runtime.close()
+
+
+def test_batch_stop_sequence_request_does_not_affect_other_batch_requests() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    req_stop = _make_fake_request(input_tokens=3, max_output_tokens=16, stop_sequences=["A"])
+    req_long = _make_fake_request(input_tokens=3, max_output_tokens=16)
+
+    events_stop: list[dict[str, Any]] = []
+    events_long: list[dict[str, Any]] = []
+    long_errors: list[BackendError] = []
+
+    def run_long() -> None:
+        try:
+            events_long.extend(
+                generate_events(
+                    session,
+                    req_long,
+                    threading.Event(),
+                    deps=runtime.generation_deps(),
+                )
+            )
+        except BackendError as exc:
+            long_errors.append(exc)
+
+    t_long = threading.Thread(target=run_long)
+    t_long.start()
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline and not runtime._active_by_uid:
+        threading.Event().wait(0.01)
+
+    events_stop.extend(
+        generate_events(session, req_stop, threading.Event(), deps=runtime.generation_deps())
+    )
+
+    t_long.join(timeout=2.0)
+    runtime.close()
+
+    assert t_long.is_alive() is False
+    assert events_stop == [
+        {
+            "kind": "failed",
+            "code": "unsupported_generation_params",
+            "message": "stop_sequences are not supported with generation_mode=batch",
+            "retryable": False,
+        }
+    ]
+    assert long_errors == []
+    assert events_long[-1]["kind"] == "completed"
+    assert events_long[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+class _MalformedBatchResponseGenerator:
+    def __init__(self, _model: Any, **_kwargs: Any) -> None:
+        self._next_uid = 0
+
+    def insert(
+        self,
+        prompts: list[list[int]],
+        max_tokens: list[int],
+        caches: list[Any] | None = None,
+        samplers: list[Any] | None = None,
+        logits_processors: list[Any] | None = None,
+    ) -> list[int]:
+        del max_tokens, caches, samplers, logits_processors
+        uids = list(range(self._next_uid, self._next_uid + len(prompts)))
+        self._next_uid += len(prompts)
+        return uids
+
+    def next(self) -> list[Any]:
+        return [
+            type(
+                "BadResp",
+                (),
+                {
+                    "uid": 0,
+                    "token": "bad-token",
+                    "finish_reason": None,
+                    "prompt_cache": lambda: [],
+                },
+            )()
+        ]
+
+
+class _BadThenGoodInsertBatchGenerator:
+    def __init__(self, _model: Any, **_kwargs: Any) -> None:
+        self._insert_calls = 0
+        self._active: list[dict[str, Any]] = []
+
+    def insert(
+        self,
+        prompts: list[list[int]],
+        max_tokens: list[int],
+        caches: list[Any] | None = None,
+        samplers: list[Any] | None = None,
+        logits_processors: list[Any] | None = None,
+    ) -> list[int]:
+        del caches, samplers, logits_processors
+        self._insert_calls += 1
+        if self._insert_calls == 1:
+            return [1, 1]
+
+        self._active = [
+            {"uid": 100 + i, "remaining": max(1, max_tokens[i])} for i in range(len(prompts))
+        ]
+        return [item["uid"] for item in self._active]
+
+    def next(self) -> list[Any]:
+        responses: list[Any] = []
+        survivors: list[dict[str, Any]] = []
+
+        for item in self._active:
+            item["remaining"] -= 1
+            finish_reason = "stop" if item["remaining"] <= 0 else None
+            responses.append(
+                type(
+                    "Resp",
+                    (),
+                    {
+                        "uid": item["uid"],
+                        "token": 11,
+                        "finish_reason": finish_reason,
+                        "prompt_cache": lambda: [],
+                    },
+                )()
+            )
+            if finish_reason is None:
+                survivors.append(item)
+
+        self._active = survivors
+        return responses
+
+
+def test_batch_generator_runtime_malformed_payload_fails_request_without_stranding_waiter() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_MalformedBatchResponseGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+
+    with pytest.raises(BackendError) as exc_info:
+        list(generate_events(session, request, threading.Event(), deps=runtime.generation_deps()))
+
+    runtime.close()
+
+    assert exc_info.value.code == "generation_failed"
+    assert "token" in exc_info.value.message
+
+
+def test_batch_generator_runtime_invalid_insert_uids_fail_request_and_keep_runtime_alive() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_BadThenGoodInsertBatchGenerator),
+    )
+
+    bad_request = _make_fake_request(input_tokens=3, max_output_tokens=1)
+
+    with pytest.raises(BackendError) as exc_info:
+        list(
+            generate_events(session, bad_request, threading.Event(), deps=runtime.generation_deps())
+        )
+
+    assert exc_info.value.code == "generation_failed"
+    assert "insert" in exc_info.value.message
+
+    good_request = _make_fake_request(input_tokens=3, max_output_tokens=1)
+    good_events = list(
+        generate_events(session, good_request, threading.Event(), deps=runtime.generation_deps())
+    )
+
+    runtime.close()
+
+    assert good_events[-1]["kind"] == "completed"
 
 
 # ===========================================================================
@@ -1230,10 +2554,12 @@ def test_tool_call_markers_can_share_chunks_with_text() -> None:
 
 
 def test_multi_tool_auto_emits_late_name_delta_after_argument_fragments() -> None:
-    tools_json = b'[' \
-        b'{"type":"function","function":{"name":"lookup_weather","parameters":{}}},' \
-        b'{"type":"function","function":{"name":"lookup_time","parameters":{}}}' \
-        b']'
+    tools_json = (
+        b"["
+        b'{"type":"function","function":{"name":"lookup_weather","parameters":{}}},'
+        b'{"type":"function","function":{"name":"lookup_time","parameters":{}}}'
+        b"]"
+    )
 
     def parser(text: str, tools: Any) -> dict[str, Any]:
         assert text == '{"city":"Singapore"}'
@@ -2174,6 +3500,40 @@ def test_iterator_exhaustion_success_stores() -> None:
 # --- No-store tests ---
 
 
+def test_batch_stop_sequence_rejection_does_not_store() -> None:
+    fake_cache = FakePrefixCache(lookup_result=None)
+    session = _make_fake_session(prefix_cache=fake_cache)
+    session.tokenizer = _ToyTokenizer()
+
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            make_prompt_cache=lambda _model: ["fresh-cache"],
+            trim_prompt_cache=lambda cache, _n: cache,
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_StopThenNeverFinishBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=8, stop_sequences=["A"])
+    events = list(
+        generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+    )
+
+    assert events == [
+        {
+            "kind": "failed",
+            "code": "unsupported_generation_params",
+            "message": "stop_sequences are not supported with generation_mode=batch",
+            "retryable": False,
+        }
+    ]
+    assert len(fake_cache.store_calls) == 0
+
+    runtime.close()
+
+
 def test_cancel_does_not_store() -> None:
     """Mid-generation cancel → store never called."""
     cancel = threading.Event()
@@ -2242,7 +3602,7 @@ def test_missing_token_id_disables_store() -> None:
     fake_cache = FakePrefixCache(lookup_result=None)
     responses = [
         FakeGenerationResponse(text="A", token=50),
-        FakeGenerationResponse(text="B", token=None),  # type: ignore[arg-type]  # intentionally invalid
+        FakeGenerationResponse(text="B", token=cast(Any, None)),  # intentionally invalid
         FakeGenerationResponse(text="C", token=52, finish_reason="stop"),
     ]
     deps, _, _ = _cache_deps(responses)

@@ -42,7 +42,8 @@ defmodule Orchard.Node.ModelLoadFailure do
   @worker_runtime_unavailable_codes MapSet.new([
                                       "mlx_backend_unavailable",
                                       "mlx_probe_failed",
-                                      "metal_unavailable"
+                                      "metal_unavailable",
+                                      "batch_runtime_unavailable"
                                     ])
 
   @worker_model_invalid_messages %{
@@ -64,7 +65,8 @@ defmodule Orchard.Node.ModelLoadFailure do
   @worker_runtime_unavailable_messages %{
     "mlx_backend_unavailable" => "MLX backend is unavailable on this node",
     "mlx_probe_failed" => "MLX backend probe failed on this node",
-    "metal_unavailable" => "Metal is unavailable on this node"
+    "metal_unavailable" => "Metal is unavailable on this node",
+    "batch_runtime_unavailable" => "MLX batch runtime is unavailable on this node"
   }
 
   @doc """

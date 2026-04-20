@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -160,7 +161,7 @@ def test_main_prints_version(capsys) -> None:
     assert capsys.readouterr().out.strip() == __version__
 
 
-def test_main_help_describes_generation_flags_as_non_concurrent_config(capsys) -> None:
+def test_main_help_describes_real_batch_concurrency_in_mlx_path(capsys) -> None:
     from orchard_worker_mlx.cli import main
 
     with pytest.raises(SystemExit) as exc_info:
@@ -168,7 +169,8 @@ def test_main_help_describes_generation_flags_as_non_concurrent_config(capsys) -
 
     assert exc_info.value.code == 0
     help_text = " ".join(capsys.readouterr().out.split())
-    assert "accepted generation flags do not enable concurrent generation yet" in help_text
+    assert "batch enables real concurrent generation in the mlx worker path" in help_text
+    assert "applies when --generation-mode=batch" in help_text
 
 
 def test_main_passes_generation_and_memory_config_to_serve(monkeypatch) -> None:
@@ -189,7 +191,7 @@ def test_main_passes_generation_and_memory_config_to_serve(monkeypatch) -> None:
                 "--socket-path",
                 "/tmp/orchard-worker.sock",
                 "--backend",
-                "stub",
+                "mlx",
                 "--generation-mode",
                 "batch",
                 "--max-concurrent-generations",
@@ -209,12 +211,30 @@ def test_main_passes_generation_and_memory_config_to_serve(monkeypatch) -> None:
     memory_budget_config = captured["memory_budget_config"]
 
     assert captured["socket_path"] == "/tmp/orchard-worker.sock"
-    assert captured["backend"] == "stub"
+    assert captured["backend"] == "mlx"
     assert generation_config.mode == "batch"
     assert generation_config.max_concurrent_generations == 3
     assert memory_budget_config.mode == "observe"
     assert memory_budget_config.utilization == 0.75
     assert memory_budget_config.overhead_bytes == 268_435_456
+
+
+def test_main_rejects_stub_backend_with_batch_mode(monkeypatch) -> None:
+    from orchard_worker_mlx import cli
+
+    monkeypatch.setattr(cli, "serve", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "--socket-path",
+                "/tmp/orchard-worker.sock",
+                "--backend",
+                "stub",
+                "--generation-mode",
+                "batch",
+            ]
+        )
 
 
 def test_main_uses_generation_and_memory_defaults(monkeypatch) -> None:
@@ -437,9 +457,6 @@ def test_configure_logging_bare_filename(tmp_path, monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 # Opt-in MLX smoke test (requires mlx extra + real model bundle)
 # ---------------------------------------------------------------------------
-
-import os
-import pytest
 
 _MLX_SMOKE_MODEL_PATH = os.environ.get("ORCHARD_MLX_SMOKE_MODEL_PATH")
 

@@ -209,9 +209,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
     cleanup_generation_tasks(state.generations)
     _ = disconnect_channel(state.channel)
-    :ok = cleanup_socket(state.socket_path)
+    socket_result = cleanup_socket(state.socket_path)
 
-    final_result = pick_result(unload_result, stop_result)
+    final_result = pick_unload_result(unload_result, stop_result, socket_result)
     duration_ms = System.monotonic_time(:millisecond) - start_time
 
     case final_result do
@@ -221,8 +221,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           duration_ms,
           Map.merge(unload_meta, %{
             outcome: :unloaded,
-            rpc_result: if(skip_rpc?, do: :skipped, else: :ok),
-            stop_result: :ok
+            rpc_result: if(skip_rpc?, do: :skipped, else: unload_result),
+            stop_result: stop_result,
+            socket_result: socket_result
           })
         )
 
@@ -233,7 +234,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           Map.merge(unload_meta, %{
             reason: reason,
             rpc_result: unload_result,
-            stop_result: stop_result
+            stop_result: stop_result,
+            socket_result: socket_result
           })
         )
     end
@@ -249,7 +251,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
     {:ok, pid} =
       Task.start(fn ->
-        stream_generation(state.channel, owner, generation_ref, request)
+        safe_stream_generation(state.channel, owner, generation_ref, request)
       end)
 
     generations = Map.put(state.generations, generation_ref, %{pid: pid, request_id: request_id})
@@ -660,28 +662,40 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
+  defp safe_stream_generation(channel, owner, generation_ref, request) do
+    try do
+      stream_generation(channel, owner, generation_ref, request)
+    catch
+      kind, reason ->
+        send(owner, {:runtime_adapter_done, generation_ref, {:generation_task_failed, kind, reason}})
+    end
+  end
+
   defp stream_generation(channel, owner, generation_ref, request) do
     case WorkerRuntimeService.Stub.generate(channel, request, timeout: :infinity) do
       {:ok, stream} ->
-        terminal_sent? =
-          Enum.reduce_while(stream, false, fn item, terminal_sent? ->
-            handle_stream_item(item, terminal_sent?, owner, generation_ref)
+        stream_result =
+          Enum.reduce_while(stream, :open, fn item, stream_result ->
+            handle_stream_item(item, stream_result, owner, generation_ref)
           end)
 
-        unless terminal_sent? do
-          send(owner, {:runtime_adapter_done, generation_ref})
-        end
+        emit_stream_done(owner, generation_ref, stream_result)
 
       {:error, reason} ->
         handle_stream_open_failure(reason, owner, generation_ref)
     end
   end
 
-  defp handle_stream_item({:ok, proto_event}, terminal_sent?, owner, generation_ref) do
+  defp handle_stream_item({:ok, proto_event}, stream_result, owner, generation_ref) do
     case InferenceEventMapper.from_proto(proto_event) do
       {:ok, event} ->
         send(owner, {:runtime_adapter_event, generation_ref, event})
-        {:cont, terminal_sent? or InferenceEvent.terminal?(event)}
+
+        if InferenceEvent.terminal?(event) do
+          {:halt, :terminal_sent}
+        else
+          {:cont, stream_result}
+        end
 
       {:error, reason} ->
         emit_runtime_failure(
@@ -691,40 +705,59 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           "worker emitted an invalid event: #{inspect(reason)}"
         )
 
-        {:halt, true}
+        {:halt, :terminal_sent}
     end
   end
 
-  defp handle_stream_item({:error, _reason}, true = terminal_sent?, _owner, _generation_ref) do
-    {:halt, terminal_sent?}
+  defp handle_stream_item({:error, _reason}, :terminal_sent = stream_result, _owner, _generation_ref) do
+    {:halt, stream_result}
   end
 
-  defp handle_stream_item({:error, reason}, _terminal_sent?, owner, generation_ref) do
-    if normalize_rpc_error(reason) == :worker_unavailable do
-      {:halt, true}
-    else
-      emit_runtime_failure(
-        owner,
-        generation_ref,
-        "runtime_stream_error",
-        "worker stream failed: #{format_rpc_error(reason)}"
-      )
+  defp handle_stream_item({:error, reason}, _stream_result, owner, generation_ref) do
+    cond do
+      worker_unavailable_error?(reason) ->
+        {:halt, {:done, :worker_unavailable}}
 
-      {:halt, true}
+      stream_cancelled_error?(reason) ->
+        {:halt, :open}
+
+      true ->
+        emit_runtime_failure(
+          owner,
+          generation_ref,
+          "runtime_stream_error",
+          "worker stream failed: #{format_rpc_error(reason)}"
+        )
+
+        {:halt, :terminal_sent}
     end
   end
 
   defp handle_stream_open_failure(reason, owner, generation_ref) do
-    unless normalize_rpc_error(reason) == :worker_unavailable do
-      emit_runtime_failure(
-        owner,
-        generation_ref,
-        "runtime_stream_error",
-        "worker stream failed: #{format_rpc_error(reason)}"
-      )
+    cond do
+      worker_unavailable_error?(reason) ->
+        send(owner, {:runtime_adapter_done, generation_ref, :worker_unavailable})
 
-      send(owner, {:runtime_adapter_done, generation_ref})
+      stream_cancelled_error?(reason) ->
+        send(owner, {:runtime_adapter_done, generation_ref})
+
+      true ->
+        emit_runtime_failure(
+          owner,
+          generation_ref,
+          "runtime_stream_error",
+          "worker stream failed: #{format_rpc_error(reason)}"
+        )
+
+        send(owner, {:runtime_adapter_done, generation_ref})
     end
+  end
+
+  defp emit_stream_done(_owner, _generation_ref, :terminal_sent), do: :ok
+  defp emit_stream_done(owner, generation_ref, :open), do: send(owner, {:runtime_adapter_done, generation_ref})
+
+  defp emit_stream_done(owner, generation_ref, {:done, reason}) do
+    send(owner, {:runtime_adapter_done, generation_ref, reason})
   end
 
   defp emit_runtime_failure(owner, generation_ref, code, message) do
@@ -843,16 +876,22 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-  defp pick_result(:ok, :ok), do: :ok
-  defp pick_result({:error, reason}, _other), do: {:error, reason}
-  defp pick_result(:ok, {:error, reason}), do: {:error, reason}
+  defp pick_unload_result(_rpc_result, {:error, reason}, _socket_result), do: {:error, reason}
+  defp pick_unload_result(_rpc_result, :ok, {:error, reason}), do: {:error, reason}
+  defp pick_unload_result({:error, reason}, :ok, :ok), do: {:error, reason}
+  defp pick_unload_result(:ok, :ok, :ok), do: :ok
 
-  # Load-specific RPC error normalization: preserves :deadline_exceeded as a
+  # Load-specific RPC error normalization: preserves deadline_exceeded as a
   # distinct reason so ModelLoadFailure classifies it as TIMEOUT (504), not
-  # RUNTIME_UNAVAILABLE (503).  Other RPC paths (unload, cancel, stream)
-  # intentionally coalesce deadline into :worker_unavailable.
-  defp normalize_load_rpc_error(%RPCError{status: :deadline_exceeded}), do: :deadline_exceeded
+  # RUNTIME_UNAVAILABLE (503). grpc-elixir may surface statuses as atoms or
+  # canonical integer codes depending on the failure path.
+  defp normalize_load_rpc_error(%RPCError{status: status}) when status in [:deadline_exceeded, 4],
+    do: :deadline_exceeded
+
   defp normalize_load_rpc_error(error), do: normalize_rpc_error(error)
+
+  defp worker_unavailable_error?(reason), do: normalize_rpc_error(reason) == :worker_unavailable
+  defp stream_cancelled_error?(reason), do: normalize_rpc_error(reason) == :rpc_cancelled
 
   defp normalize_rpc_error(%RPCError{status: status}), do: normalize_rpc_status(status)
   defp normalize_rpc_error(other), do: {:rpc_error, inspect(other)}
@@ -878,10 +917,11 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   defp parse_ack_failure(_), do: {"worker_load_failed", ""}
 
-  defp normalize_rpc_status(status)
-       when status in [:unavailable, :cancelled, :deadline_exceeded] do
+  defp normalize_rpc_status(status) when status in [:unavailable, :deadline_exceeded, 14, 4] do
     :worker_unavailable
   end
+
+  defp normalize_rpc_status(status) when status in [:cancelled, 1], do: :rpc_cancelled
 
   defp normalize_rpc_status(status), do: {:rpc_error, status}
 

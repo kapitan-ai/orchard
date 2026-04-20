@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -20,10 +21,9 @@ from orchard_worker_mlx.backends import (
 )
 from orchard_worker_mlx.model_loader import (
     GenerationRuntimeConfig,
-    MLXEnvironmentHealth,
     MemoryBudgetConfig,
+    MLXEnvironmentHealth,
 )
-
 
 # -- Backend protocol conformance --------------------------------------------
 
@@ -57,6 +57,16 @@ def test_build_backend_mlx_accepts_generation_and_memory_config() -> None:
     )
 
     assert isinstance(backend, Backend)
+
+
+def test_build_backend_stub_rejects_batch_mode() -> None:
+    with pytest.raises(BackendError) as exc_info:
+        build_backend(
+            "stub",
+            generation_config=GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2),
+        )
+
+    assert exc_info.value.code == "unsupported_backend_config"
 
 
 def test_build_backend_unsupported_raises() -> None:
@@ -108,15 +118,30 @@ def test_finish_generation_clamps_to_zero() -> None:
     assert backend.status()["active_request_count"] == 0
 
 
-def test_mlx_backend_batch_config_still_rejects_second_concurrent() -> None:
+def test_mlx_backend_batch_config_allows_concurrency_up_to_limit() -> None:
     session = _make_fake_session(model_id="m", version="v", bundle_path="/fake/path")
+    session.generation_config = GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2)
+
+    class FakeBatchRuntime:
+        def __init__(self, _session) -> None:
+            self._deps = MagicMock(name="batch_deps")
+
+        def generation_deps(self):
+            return self._deps
+
+        def close(self) -> None:
+            return None
+
     backend = MLXBackend(
         session_loader=lambda **_kwargs: session,
         session_unloader=lambda _session: None,
         generation_config=GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2),
+        batch_runtime_factory=lambda loaded_session: FakeBatchRuntime(loaded_session),
     )
 
     backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    backend.start_generation()
     backend.start_generation()
 
     with pytest.raises(BackendError) as exc_info:
@@ -185,6 +210,7 @@ def _make_fake_session(
 ):
     """Create a minimal fake LoadedModelSession for backend tests."""
     from unittest.mock import MagicMock
+
     from orchard_worker_mlx.model_loader import (
         BundleManifest,
         LoadedModelSession,
@@ -221,8 +247,6 @@ def _make_mlx_backend(
     unloader_calls=None,
 ):
     """Create an MLXBackend with injected fake loader/unloader."""
-    from orchard_worker_mlx.model_loader import ModelLoaderError
-
     if unloader_calls is None:
         unloader_calls = []
 
@@ -366,6 +390,98 @@ def test_mlx_backend_unload_with_active_generation_raises() -> None:
     assert len(unloader_calls) == 1
 
 
+def test_mlx_backend_unload_keeps_loaded_when_batch_runtime_close_fails() -> None:
+    session = _make_fake_session(model_id="m", version="v", bundle_path="/fake/path")
+    session.generation_config = GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2)
+    unload_calls: list[Any] = []
+
+    class FailingBatchRuntime:
+        def close(self) -> None:
+            raise BackendError("batch_runtime_close_timeout", "stuck batch runtime", True)
+
+        def generation_deps(self):
+            raise AssertionError("generation_deps should not be used in unload test")
+
+    backend = MLXBackend(
+        session_loader=lambda **_kwargs: session,
+        session_unloader=lambda loaded_session: unload_calls.append(loaded_session),
+        generation_config=GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2),
+        batch_runtime_factory=lambda _session: FailingBatchRuntime(),
+    )
+
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    with pytest.raises(BackendError) as exc_info:
+        backend.unload_model()
+
+    assert exc_info.value.code == "batch_runtime_close_timeout"
+    assert backend.status()["loaded"] is True
+    assert unload_calls == []
+
+    backend.start_generation()
+    backend.finish_generation()
+
+
+def test_mlx_backend_rejects_new_lifecycle_operations_while_unload_is_in_progress() -> None:
+    session = _make_fake_session(model_id="m", version="v", bundle_path="/fake/path")
+    session.generation_config = GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2)
+    unload_calls: list[Any] = []
+
+    class BlockingBatchRuntime:
+        def __init__(self) -> None:
+            self.close_entered = threading.Event()
+            self.allow_close = threading.Event()
+
+        def close(self) -> None:
+            self.close_entered.set()
+            self.allow_close.wait(timeout=5.0)
+
+        def generation_deps(self):
+            raise AssertionError("generation_deps should not be used in unload test")
+
+    runtime = BlockingBatchRuntime()
+    backend = MLXBackend(
+        session_loader=lambda **_kwargs: session,
+        session_unloader=lambda loaded_session: unload_calls.append(loaded_session),
+        generation_config=GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2),
+        batch_runtime_factory=lambda _session: runtime,
+    )
+
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    unload_errors: list[Exception] = []
+
+    def run_unload() -> None:
+        try:
+            backend.unload_model()
+        except Exception as exc:  # pragma: no cover - should stay empty
+            unload_errors.append(exc)
+
+    thread = threading.Thread(target=run_unload)
+    thread.start()
+    assert runtime.close_entered.wait(timeout=1.0) is True
+
+    with pytest.raises(BackendError) as start_exc:
+        backend.start_generation()
+    assert start_exc.value.code == "model_unloading"
+
+    with pytest.raises(BackendError) as load_exc:
+        backend.load_model(model_id="m", version="v", model_path="/fake/path")
+    assert load_exc.value.code == "model_unloading"
+
+    with pytest.raises(BackendError) as unload_exc:
+        backend.unload_model()
+    assert unload_exc.value.code == "model_unloading"
+
+    runtime.allow_close.set()
+    thread.join(timeout=2.0)
+
+    assert thread.is_alive() is False
+    assert unload_errors == []
+    assert backend.status()["loaded"] is False
+    assert unload_calls == [session]
+
+
 def test_mlx_backend_start_generation_requires_loaded() -> None:
     backend = _make_mlx_backend()
     with pytest.raises(BackendError) as exc_info:
@@ -386,6 +502,26 @@ def test_mlx_backend_single_flight() -> None:
     # After finish, a new generation should be allowed.
     backend.start_generation()
     backend.finish_generation()
+
+
+def test_mlx_backend_batch_runtime_failure_fails_load_and_keeps_backend_unloaded() -> None:
+    session = _make_fake_session(model_id="m", version="v", bundle_path="/fake/path")
+    session.generation_config = GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2)
+    unload_calls: list[Any] = []
+
+    backend = MLXBackend(
+        session_loader=lambda **_kwargs: session,
+        session_unloader=lambda loaded_session: unload_calls.append(loaded_session),
+        generation_config=GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2),
+        batch_runtime_factory=lambda _session: (_ for _ in ()).throw(RuntimeError("no batch")),
+    )
+
+    with pytest.raises(BackendError) as exc_info:
+        backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    assert exc_info.value.code == "batch_runtime_unavailable"
+    assert backend.status()["loaded"] is False
+    assert unload_calls == [session]
 
 
 def test_mlx_backend_generate_delegates_to_runner() -> None:
@@ -465,18 +601,22 @@ def test_mlx_backend_health_ready_when_di_seams_injected() -> None:
 
 def test_mlx_backend_health_ready_with_explicit_healthy_probe() -> None:
     """MLXBackend uses explicit health_probe when provided."""
-    probe = lambda: MLXEnvironmentHealth(ready=True)
-    backend = MLXBackend(health_probe=probe)
+
+    def healthy_probe() -> MLXEnvironmentHealth:
+        return MLXEnvironmentHealth(ready=True)
+
+    backend = MLXBackend(health_probe=healthy_probe)
     health = backend.health()
     assert health["ready"] is True
 
 
 def test_mlx_backend_health_unhealthy_with_explicit_probe() -> None:
     """MLXBackend reports unhealthy when probe returns unhealthy."""
-    probe = lambda: MLXEnvironmentHealth(
-        ready=False, code="mlx_backend_unavailable", message="no mlx"
-    )
-    backend = MLXBackend(health_probe=probe)
+
+    def unhealthy_probe() -> MLXEnvironmentHealth:
+        return MLXEnvironmentHealth(ready=False, code="mlx_backend_unavailable", message="no mlx")
+
+    backend = MLXBackend(health_probe=unhealthy_probe)
     health = backend.health()
     assert health["ready"] is False
     assert health["code"] == "mlx_backend_unavailable"

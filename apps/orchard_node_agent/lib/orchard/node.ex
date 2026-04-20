@@ -164,19 +164,21 @@ defmodule Orchard.Node do
   def effective_worker_request_limit do
     case runtime_adapter_impl() do
       WorkerRuntimeAdapter ->
-        1
+        request_limit_for_generation_mode(worker_generation_mode())
 
       _other ->
         if runtime_value(:test_only_allow_batch_admission_for_non_worker_adapters?, false) == true do
-          case worker_generation_mode() do
-            "batch" -> worker_max_concurrent_requests_per_model()
-            _ -> 1
-          end
+          request_limit_for_generation_mode(worker_generation_mode())
         else
           1
         end
     end
   end
+
+  defp request_limit_for_generation_mode("batch"),
+    do: worker_max_concurrent_requests_per_model()
+
+  defp request_limit_for_generation_mode(_mode), do: 1
 
   def worker_memory_budget_mode do
     case runtime_value(:worker_memory_budget_mode, @default_worker_memory_budget_mode) do

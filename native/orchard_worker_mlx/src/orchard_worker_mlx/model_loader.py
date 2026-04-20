@@ -72,8 +72,8 @@ _VALID_MEMORY_BUDGET_MODES = frozenset({"disabled", "observe"})
 class GenerationRuntimeConfig:
     """Process-scoped generation mode config.
 
-    This is carried from CLI -> service -> backend -> loader/session, but does
-    not enable batch behavior until the later Phase 1 implementation task lands.
+    This is carried from CLI -> service -> backend -> loader/session and is
+    consumed by backend admission/runtime wiring to select stream vs batch mode.
     """
 
     mode: str = "stream"

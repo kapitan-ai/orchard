@@ -375,7 +375,7 @@ defmodule Orchard.Node.ModelManager do
     end
   end
 
-  def handle_info({:DOWN, monitor_ref, :process, pid, _reason}, state) do
+  def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
     cond do
       # Load task crashed
       Map.has_key?(state.load_refs, monitor_ref) ->
@@ -394,9 +394,10 @@ defmodule Orchard.Node.ModelManager do
       # Worker process died
       Map.has_key?(state.worker_refs, monitor_ref) ->
         key = Map.fetch!(state.worker_refs, monitor_ref)
+        cleanup_reason = cleanup_reason_for_worker_exit(reason)
 
         next_state =
-          cleanup_worker_unavailable(drop_worker(state, key, monitor_ref), key, :worker_down)
+          cleanup_worker_unavailable(drop_worker(state, key, monitor_ref), key, cleanup_reason)
 
         {:noreply, next_state}
 
@@ -881,27 +882,28 @@ defmodule Orchard.Node.ModelManager do
   defp perform_unload(pid, key, monitor_ref, request, state) do
     case safe_unload(pid, force: request.force, evict: request.evict) do
       :ok ->
-        _ = DynamicSupervisor.terminate_child(WorkerSupervisor, pid)
-
         next_state =
           state
-          |> drop_worker(key, monitor_ref)
+          |> finalize_worker_removal(key, pid, monitor_ref)
           |> maybe_cleanup_unloaded_requests(key, request.force)
 
         {%Ack{ok: true, message: "unload accepted"}, next_state}
 
       {:error, :worker_unavailable} ->
         next_state =
-          cleanup_worker_unavailable(
-            drop_worker(state, key, monitor_ref),
-            key,
-            :worker_unavailable
-          )
+          state
+          |> finalize_worker_removal(key, pid, monitor_ref)
+          |> cleanup_worker_unavailable(key, :worker_unavailable)
 
         {%Ack{ok: true, message: "unload accepted"}, next_state}
 
       {:error, reason} ->
-        {%Ack{ok: false, message: "unload failed: #{inspect(reason)}"}, state}
+        next_state =
+          state
+          |> finalize_worker_removal(key, pid, monitor_ref)
+          |> maybe_cleanup_unloaded_requests(key, request.force)
+
+        {%Ack{ok: false, message: "unload failed: #{inspect(reason)}"}, next_state}
     end
   end
 
@@ -1039,6 +1041,14 @@ defmodule Orchard.Node.ModelManager do
       Map.delete(subscriber_refs, active_request.subscriber_monitor_ref)
     }
   end
+
+  defp finalize_worker_removal(state, key, pid, monitor_ref) do
+    _ = DynamicSupervisor.terminate_child(WorkerSupervisor, pid)
+    drop_worker(state, key, monitor_ref)
+  end
+
+  defp cleanup_reason_for_worker_exit(:runtime_worker_unavailable), do: :worker_unavailable
+  defp cleanup_reason_for_worker_exit(_reason), do: :worker_down
 
   defp request_failed_event(:worker_down) do
     Orchard.InferenceEvent.failed("worker_down", "worker process exited unexpectedly", false)
@@ -1405,23 +1415,21 @@ defmodule Orchard.Node.ModelManager do
   defp unload_worker_entry(state, key, entry, request) do
     case safe_unload(entry.pid, force: request.force, evict: request.evict) do
       :ok ->
-        _ = DynamicSupervisor.terminate_child(WorkerSupervisor, entry.pid)
-        next_state = drop_worker(state, key, entry.monitor_ref)
+        next_state = finalize_worker_removal(state, key, entry.pid, entry.monitor_ref)
         {:ok, next_state}
 
       {:error, :worker_unavailable} ->
         # Worker already gone — slot is freed, treat as success
         next_state =
-          cleanup_worker_unavailable(
-            drop_worker(state, key, entry.monitor_ref),
-            key,
-            :worker_unavailable
-          )
+          state
+          |> finalize_worker_removal(key, entry.pid, entry.monitor_ref)
+          |> cleanup_worker_unavailable(key, :worker_unavailable)
 
         {:ok, next_state}
 
       {:error, reason} ->
-        {:error, reason, state}
+        next_state = finalize_worker_removal(state, key, entry.pid, entry.monitor_ref)
+        {:error, reason, next_state}
     end
   end
 

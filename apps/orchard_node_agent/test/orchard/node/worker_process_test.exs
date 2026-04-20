@@ -275,6 +275,129 @@ defmodule Orchard.Node.WorkerProcessTest do
     )
   end
 
+  test "runtime_adapter_done releases request state and notifies manager" do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ConcurrentRuntimeAdapter,
+        worker_generation_mode: "stream"
+      ],
+      fn ->
+        pid = start_worker_process!()
+
+        try do
+          assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+
+          assert :ok =
+                   WorkerProcess.start_request(pid, "req-done", execute_request("req-done"),
+                     subscriber: self()
+                   )
+
+          generation_ref =
+            pid
+            |> :sys.get_state()
+            |> Map.fetch!(:requests)
+            |> Map.fetch!("req-done")
+            |> Map.fetch!(:generation_ref)
+
+          send(pid, {:runtime_adapter_done, generation_ref})
+
+          assert_receive {:node_runtime_event, "req-done",
+                          %Orchard.InferenceEvent{event: %{code: "runtime_stream_ended"}}},
+                         1_000
+
+          assert_receive {:worker_request_finished, ^pid, "req-done"}, 1_000
+
+          wait_until(fn ->
+            {:ok, %{active_request_count: 0}} = WorkerProcess.status(pid)
+          end)
+        after
+          GenServer.stop(pid, :normal, 1_000)
+        end
+      end
+    )
+  end
+
+  test "runtime_adapter_done with generation_task_failed emits deterministic failure" do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ConcurrentRuntimeAdapter,
+        worker_generation_mode: "stream"
+      ],
+      fn ->
+        pid = start_worker_process!()
+
+        try do
+          assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+
+          assert :ok =
+                   WorkerProcess.start_request(pid, "req-task-failed", execute_request("req-task-failed"),
+                     subscriber: self()
+                   )
+
+          generation_ref =
+            pid
+            |> :sys.get_state()
+            |> Map.fetch!(:requests)
+            |> Map.fetch!("req-task-failed")
+            |> Map.fetch!(:generation_ref)
+
+          send(pid, {:runtime_adapter_done, generation_ref, {:generation_task_failed, :error, :boom}})
+
+          assert_receive {:node_runtime_event, "req-task-failed",
+                          %Orchard.InferenceEvent{event: %{code: "runtime_generation_task_failed"}}},
+                         1_000
+
+          assert_receive {:worker_request_finished, ^pid, "req-task-failed"}, 1_000
+
+          wait_until(fn ->
+            {:ok, %{active_request_count: 0}} = WorkerProcess.status(pid)
+          end)
+        after
+          GenServer.stop(pid, :normal, 1_000)
+        end
+      end
+    )
+  end
+
+  test "runtime_adapter_done with worker_unavailable stops the worker process" do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ConcurrentRuntimeAdapter,
+        worker_generation_mode: "stream"
+      ],
+      fn ->
+        previous_trap_exit = Process.flag(:trap_exit, true)
+        pid = start_worker_process!()
+        monitor_ref = Process.monitor(pid)
+
+        try do
+          assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+
+          assert :ok =
+                   WorkerProcess.start_request(pid, "req-unavailable", execute_request("req-unavailable"),
+                     subscriber: self()
+                   )
+
+          generation_ref =
+            pid
+            |> :sys.get_state()
+            |> Map.fetch!(:requests)
+            |> Map.fetch!("req-unavailable")
+            |> Map.fetch!(:generation_ref)
+
+          send(pid, {:runtime_adapter_done, generation_ref, :worker_unavailable})
+
+          assert_receive {:EXIT, ^pid, :runtime_worker_unavailable}, 1_000
+          assert_receive {:DOWN, ^monitor_ref, :process, ^pid, :runtime_worker_unavailable}, 1_000
+        after
+          Process.flag(:trap_exit, previous_trap_exit)
+          Process.demonitor(monitor_ref, [:flush])
+          if Process.alive?(pid), do: GenServer.stop(pid, :normal, 1_000)
+        end
+      end
+    )
+  end
+
   test "multiple noeol fragments accumulate before eol flushes" do
     pid = start_worker_process!()
     port = open_test_port!()

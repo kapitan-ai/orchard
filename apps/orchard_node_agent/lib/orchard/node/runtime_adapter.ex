@@ -7,6 +7,17 @@ defmodule Orchard.Node.RuntimeAdapter do
 
     * `{:runtime_adapter_event, generation_ref, %Orchard.InferenceEvent{}}`
     * `{:runtime_adapter_done, generation_ref}`
+    * `{:runtime_adapter_done, generation_ref, reason}`
+
+  Adapters must send `{:runtime_adapter_done, generation_ref}` whenever an
+  adapter-owned stream ends without having emitted a terminal
+  `%Orchard.InferenceEvent{}`. When the adapter knows why the stream ended, it
+  should prefer the reasoned variant so the owning worker can distinguish plain
+  stream termination from worker-unavailable or adapter-task-failure cleanup.
+
+  `unload_model/2` is terminal/destructive from the caller's perspective: even
+  when it returns `{:error, reason}`, the adapter may already have torn down the
+  runtime locally and the caller must not continue to treat the model as loaded.
 
   `Accepted` remains owned by the gRPC runtime server so the node-runtime RPC
   contract stays explicit at the boundary.

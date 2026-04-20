@@ -205,6 +205,13 @@ defmodule Orchard.Node.ModelLoadFailureTest do
     assert f.code == "mlx_backend_unavailable"
   end
 
+  test "worker_load_failed with batch_runtime_unavailable -> RUNTIME_UNAVAILABLE" do
+    f = ModelLoadFailure.from_reason({:worker_load_failed, "batch_runtime_unavailable", "detail"})
+    assert f.category == :MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE
+    assert f.code == "batch_runtime_unavailable"
+    assert f.message == "MLX batch runtime is unavailable on this node"
+  end
+
   # -- TIMEOUT --
 
   test "deadline_exceeded -> TIMEOUT" do

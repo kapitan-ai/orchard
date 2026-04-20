@@ -25,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 # Default TTL for cancel tombstones (seconds).
 _DEFAULT_CANCEL_TOMBSTONE_TTL_S = 60.0
+_DEFAULT_GRPC_WORKER_HEADROOM = 2
+_DEFAULT_GRPC_WORKERS_MIN = 4
 
 
 @dataclass(slots=True)
@@ -154,36 +156,47 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
 
         generation_started = False
         terminal_emitted = False
+        backend_iterator: Iterator[dict[str, Any]] | None = None
         try:
             self._backend.start_generation()
             generation_started = True
 
-            for backend_event in self._backend.generate(request, cancel_event):
-                try:
-                    proto_event = build_inference_event(backend_event)
-                except BackendError as conv_exc:
-                    # Invalid backend event -> synthesize terminal failure.
-                    if not terminal_emitted:
-                        yield build_failed_event(
-                            conv_exc.code, conv_exc.message, conv_exc.retryable
-                        )
+            backend_iterator = self._backend.generate(request, cancel_event)
+            try:
+                for backend_event in backend_iterator:
+                    try:
+                        proto_event = build_inference_event(backend_event)
+                    except BackendError as conv_exc:
+                        # Invalid backend event -> synthesize terminal failure.
+                        if not terminal_emitted:
+                            yield build_failed_event(
+                                conv_exc.code, conv_exc.message, conv_exc.retryable
+                            )
+                            terminal_emitted = True
+                        break
+
+                    yield proto_event
+
+                    if _is_terminal_proto_event(proto_event):
                         terminal_emitted = True
-                    break
+                        break
 
-                yield proto_event
-
-                if _is_terminal_proto_event(proto_event):
+                # Backend iterator ended without a terminal event.
+                if not terminal_emitted:
+                    yield build_failed_event(
+                        "backend_missing_terminal",
+                        "backend ended without terminal event",
+                        False,
+                    )
                     terminal_emitted = True
-                    break
-
-            # Backend iterator ended without a terminal event.
-            if not terminal_emitted:
-                yield build_failed_event(
-                    "backend_missing_terminal",
-                    "backend ended without terminal event",
-                    False,
-                )
-                terminal_emitted = True
+            finally:
+                if backend_iterator is not None:
+                    close = getattr(backend_iterator, "close", None)
+                    if callable(close):
+                        try:
+                            close()
+                        except Exception:
+                            pass
 
         except BackendError as exc:
             if not terminal_emitted:
@@ -244,6 +257,28 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
             del self._cancel_entries[rid]
 
 
+def _derive_server_max_workers(generation_config: Any | None) -> int:
+    mode = (
+        getattr(generation_config, "mode", "stream") if generation_config is not None else "stream"
+    )
+    configured = (
+        getattr(generation_config, "max_concurrent_generations", 1)
+        if generation_config is not None
+        else 1
+    )
+
+    concurrency = 1
+    if mode == "batch":
+        try:
+            concurrency = int(configured)
+        except (TypeError, ValueError):
+            concurrency = 1
+
+    concurrency = max(1, concurrency)
+    derived = concurrency + _DEFAULT_GRPC_WORKER_HEADROOM
+    return max(_DEFAULT_GRPC_WORKERS_MIN, derived)
+
+
 def build_server(
     backend_name: str,
     *,
@@ -260,7 +295,8 @@ def build_server(
         generation_config=generation_config,
         memory_budget_config=memory_budget_config,
     )
-    server = grpc.server(ThreadPoolExecutor(max_workers=4))
+    max_workers = _derive_server_max_workers(generation_config)
+    server = grpc.server(ThreadPoolExecutor(max_workers=max_workers))
     worker_runtime_pb2_grpc.add_WorkerRuntimeServiceServicer_to_server(
         WorkerRuntimeServicer(
             backend,

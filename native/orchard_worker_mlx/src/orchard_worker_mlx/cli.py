@@ -77,8 +77,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         choices=["stream", "batch"],
         default="stream",
         help=(
-            "generation runtime mode config "
-            "(default: stream; accepted generation flags do not enable concurrent generation yet)"
+            "generation runtime mode "
+            "(default: stream; batch enables real concurrent generation in the mlx worker path)"
         ),
     )
     parser.add_argument(
@@ -86,8 +86,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         type=int,
         default=1,
         help=(
-            "generation runtime config only "
-            "(default: 1; accepted generation flags do not enable concurrent generation yet)"
+            "maximum concurrent generations in batch mode "
+            "(default: 1; applies when --generation-mode=batch)"
         ),
     )
     parser.add_argument(
@@ -113,6 +113,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.version:
         print(__version__)
         return 0
+
+    if args.backend == "stub" and args.generation_mode == "batch":
+        parser.error("backend=stub does not support --generation-mode=batch")
 
     _configure_logging(args.log_file)
 

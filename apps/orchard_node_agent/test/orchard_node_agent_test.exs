@@ -122,6 +122,80 @@ defmodule OrchardNodeAgentTest do
     end
   end
 
+  defmodule UnavailableDoneRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(_adapter_state, _opts) do
+      {:ok, %{ready: true, health_code: "", health_message: ""}}
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(adapter_state, %ExecuteInferenceRequest{} = request, opts) do
+      owner = Keyword.fetch!(opts, :owner)
+      generation_ref = make_ref()
+
+      {:ok, pid} =
+        Task.start(fn ->
+          send(owner, {:runtime_adapter_done, generation_ref, :worker_unavailable})
+        end)
+
+      generations =
+        Map.put(adapter_state.generations, generation_ref, %{pid: pid, request_id: request.request_id})
+
+      {:ok, generation_ref, %{adapter_state | generations: generations}}
+    end
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, generation_ref, _opts) do
+      %{adapter_state | generations: Map.delete(adapter_state.generations, generation_ref)}
+    end
+  end
+
+  defmodule FailingUnloadAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(_adapter_state, _opts) do
+      {:ok, %{ready: true, health_code: "", health_message: ""}}
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: {:error, :simulated_unload_failure}
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
   defmodule LoadTimeoutCapturingAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
 
@@ -829,6 +903,44 @@ defmodule OrchardNodeAgentTest do
                      1_000
 
       assert %StatusResponse{active_request_count: 0, loaded_models: []} = NodeStatus.current()
+    end)
+  end
+
+  test "worker_unavailable runtime done clears the worker and active request state", %{bundle: bundle} do
+    with_runtime_adapter(UnavailableDoneRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      request = execute_inference_request("req-worker-unavailable")
+
+      assert :ok = NodeStatus.prepare_request(request, self())
+      assert :ok = NodeStatus.start_request(request)
+
+      assert_receive {:node_runtime_event, "req-worker-unavailable",
+                      %Orchard.InferenceEvent{event: %{code: "worker_unavailable"}}},
+                     1_000
+
+      wait_until(fn -> worker_count() == 0 end)
+      assert %StatusResponse{active_request_count: 0, loaded_models: []} = NodeStatus.current()
+    end)
+  end
+
+  test "unload error does not leave stale loaded worker state", %{bundle: bundle} do
+    with_runtime_adapter(FailingUnloadAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      assert %{ok: false, message: message} =
+               NodeStatus.unload_model(%UnloadModelRequest{
+                 model_id: @test_model_id,
+                 version: @test_version,
+                 force: false,
+                 evict: false
+               })
+
+      assert message =~ "simulated_unload_failure"
+      wait_until(fn -> worker_count() == 0 end)
+      assert %StatusResponse{loaded_models: []} = NodeStatus.current()
     end)
   end
 

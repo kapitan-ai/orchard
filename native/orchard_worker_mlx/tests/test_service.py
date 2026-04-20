@@ -25,7 +25,12 @@ from orchard_worker_mlx.model_loader import (
     MemoryBudgetConfig,
     PrefixCacheLoadConfig,
 )
-from orchard_worker_mlx.service import WorkerRuntimeServicer, build_inference_event, build_server
+from orchard_worker_mlx.service import (
+    WorkerRuntimeServicer,
+    _derive_server_max_workers,
+    build_inference_event,
+    build_server,
+)
 
 # ---------------------------------------------------------------------------
 # Test helpers / fake backends
@@ -126,6 +131,89 @@ class StartGenerationCrashBackend(HappyBackend):
         raise RuntimeError("start boom")
 
 
+class ConcurrentGenerateBackend(HappyBackend):
+    """Backend that allows two concurrent Generate calls and tracks peak concurrency."""
+
+    def __init__(self) -> None:
+        super().__init__(events=[])
+        self._loaded = True
+        self._active_count = 0
+        self._peak_count = 0
+        self._lock = threading.Lock()
+        self._entered = threading.Event()
+
+    @property
+    def peak_count(self) -> int:
+        with self._lock:
+            return self._peak_count
+
+    def start_generation(self) -> None:
+        with self._lock:
+            self._active = True
+            self._active_count += 1
+            self._peak_count = max(self._peak_count, self._active_count)
+            if self._active_count >= 2:
+                self._entered.set()
+
+    def finish_generation(self) -> None:
+        with self._lock:
+            self._active_count = max(0, self._active_count - 1)
+            self._active = self._active_count > 0
+
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
+        self._entered.wait(timeout=2.0)
+        if cancel_event.is_set():
+            yield {
+                "kind": "failed",
+                "code": "cancelled",
+                "message": "request cancelled",
+                "retryable": False,
+            }
+            return
+
+        yield {"kind": "output_text_delta", "delta": f"hello-{request.request_id}"}
+        yield {
+            "kind": "completed",
+            "finish_reason": "FINISH_REASON_STOP",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+
+class _ClosableEventIterator:
+    def __init__(self, events: list[dict[str, Any]]) -> None:
+        self._iterator = iter(events)
+        self.closed = False
+
+    def __iter__(self) -> _ClosableEventIterator:
+        return self
+
+    def __next__(self) -> dict[str, Any]:
+        return next(self._iterator)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TerminalBreakCloseBackend(HappyBackend):
+    def __init__(self) -> None:
+        super().__init__(events=[])
+        self.iterator = _ClosableEventIterator(
+            [
+                {"kind": "output_text_delta", "delta": "before terminal"},
+                {
+                    "kind": "completed",
+                    "finish_reason": "FINISH_REASON_STOP",
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                },
+                {"kind": "output_text_delta", "delta": "after terminal"},
+            ]
+        )
+
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
+        del request, cancel_event
+        return self.iterator
+
+
 # -- Helpers -----------------------------------------------------------------
 
 
@@ -187,6 +275,16 @@ def test_build_server_passes_config_objects_to_backend_factory() -> None:
     assert captured["generation_config"] == generation_config
     assert captured["memory_budget_config"] == memory_budget_config
     server.stop(grace=0)
+
+
+def test_derive_server_max_workers_defaults_to_minimum_for_stream() -> None:
+    assert _derive_server_max_workers(None) == 4
+    assert _derive_server_max_workers(GenerationRuntimeConfig(mode="stream")) == 4
+
+
+def test_derive_server_max_workers_scales_with_batch_concurrency() -> None:
+    config = GenerationRuntimeConfig(mode="batch", max_concurrent_generations=6)
+    assert _derive_server_max_workers(config) == 8
 
 
 # ---------------------------------------------------------------------------
@@ -674,6 +772,47 @@ def test_cancel_mid_stream_produces_single_terminal() -> None:
     assert len(terminals) == 1
     assert terminals[0] == "failed"
     assert collected[-1].failed.code == "cancelled"
+
+
+def test_generate_supports_two_concurrent_servicer_calls() -> None:
+    backend = ConcurrentGenerateBackend()
+    servicer = _make_servicer(backend)
+    context = MagicMock()
+
+    results: dict[str, list[Any]] = {}
+
+    def run(req_id: str) -> None:
+        results[req_id] = list(servicer.Generate(_make_request(req_id), context))
+
+    t1 = threading.Thread(target=run, args=("req-1",))
+    t2 = threading.Thread(target=run, args=("req-2",))
+    t1.start()
+    t2.start()
+    t1.join(timeout=3.0)
+    t2.join(timeout=3.0)
+
+    assert t1.is_alive() is False
+    assert t2.is_alive() is False
+    assert backend.peak_count >= 2
+
+    assert [event.WhichOneof("event") for event in results["req-1"]] == [
+        "output_text_delta",
+        "completed",
+    ]
+    assert [event.WhichOneof("event") for event in results["req-2"]] == [
+        "output_text_delta",
+        "completed",
+    ]
+
+
+def test_generate_closes_backend_iterator_after_terminal_break() -> None:
+    backend = TerminalBreakCloseBackend()
+    servicer = _make_servicer(backend)
+
+    events = _collect_events(servicer)
+
+    assert [event.WhichOneof("event") for event in events] == ["output_text_delta", "completed"]
+    assert backend.iterator.closed is True
 
 
 # ---------------------------------------------------------------------------
