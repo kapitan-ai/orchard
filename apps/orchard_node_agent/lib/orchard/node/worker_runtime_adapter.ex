@@ -23,6 +23,11 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   @poll_interval_ms 50
   @rpc_timeout_ms 1_000
+  @default_generation_mode "stream"
+  @default_max_concurrent_generations 1
+  @default_memory_budget_mode "observe"
+  @default_memory_budget_utilization 0.90
+  @default_memory_budget_overhead_bytes 1_073_741_824
 
   @type generation_entry :: %{pid: pid(), request_id: String.t()}
 
@@ -87,6 +92,29 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     prefix_cache_max_bytes =
       Keyword.get(opts, :prefix_cache_max_bytes, Node.worker_prefix_cache_max_bytes())
 
+    generation_mode =
+      Keyword.get(opts, :generation_mode, Node.worker_generation_mode())
+
+    max_concurrent_generations =
+      Keyword.get(
+        opts,
+        :max_concurrent_generations,
+        Node.worker_max_concurrent_requests_per_model()
+      )
+
+    memory_budget_mode =
+      Keyword.get(opts, :memory_budget_mode, Node.worker_memory_budget_mode())
+
+    memory_budget_utilization =
+      Keyword.get(opts, :memory_budget_utilization, Node.worker_memory_budget_utilization())
+
+    memory_budget_overhead_bytes =
+      Keyword.get(
+        opts,
+        :memory_budget_overhead_bytes,
+        Node.worker_memory_budget_overhead_bytes()
+      )
+
     load_meta = %{
       model_id: model_ref.model_id,
       version: model_ref.version,
@@ -95,6 +123,11 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       ready_timeout_ms: ready_timeout_ms,
       load_timeout_ms: load_timeout_ms,
       shutdown_timeout_ms: shutdown_timeout_ms,
+      generation_mode: generation_mode,
+      max_concurrent_generations: max_concurrent_generations,
+      memory_budget_mode: memory_budget_mode,
+      memory_budget_utilization: memory_budget_utilization,
+      memory_budget_overhead_bytes: memory_budget_overhead_bytes,
       adapter: __MODULE__
     }
 
@@ -119,7 +152,12 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           shutdown_timeout_ms: shutdown_timeout_ms,
           prefix_cache_mode: prefix_cache_mode,
           prefix_cache_max_entries: prefix_cache_max_entries,
-          prefix_cache_max_bytes: prefix_cache_max_bytes
+          prefix_cache_max_bytes: prefix_cache_max_bytes,
+          generation_mode: generation_mode,
+          max_concurrent_generations: max_concurrent_generations,
+          memory_budget_mode: memory_budget_mode,
+          memory_budget_utilization: memory_budget_utilization,
+          memory_budget_overhead_bytes: memory_budget_overhead_bytes
         })
       end
 
@@ -262,13 +300,23 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          shutdown_timeout_ms: shutdown_timeout_ms,
          prefix_cache_mode: prefix_cache_mode,
          prefix_cache_max_entries: prefix_cache_max_entries,
-         prefix_cache_max_bytes: prefix_cache_max_bytes
+         prefix_cache_max_bytes: prefix_cache_max_bytes,
+         generation_mode: generation_mode,
+         max_concurrent_generations: max_concurrent_generations,
+         memory_budget_mode: memory_budget_mode,
+         memory_budget_utilization: memory_budget_utilization,
+         memory_budget_overhead_bytes: memory_budget_overhead_bytes
        }) do
     {:ok, port, os_pid} =
       start_worker_port(executable, socket_path, backend, log_path,
         prefix_cache_mode: prefix_cache_mode,
         prefix_cache_max_entries: prefix_cache_max_entries,
-        prefix_cache_max_bytes: prefix_cache_max_bytes
+        prefix_cache_max_bytes: prefix_cache_max_bytes,
+        generation_mode: generation_mode,
+        max_concurrent_generations: max_concurrent_generations,
+        memory_budget_mode: memory_budget_mode,
+        memory_budget_utilization: memory_budget_utilization,
+        memory_budget_overhead_bytes: memory_budget_overhead_bytes
       )
 
     case wait_for_worker_ready(socket_path, port, ready_timeout_ms) do
@@ -355,18 +403,35 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-  defp start_worker_port(executable, socket_path, backend, log_path, opts) do
+  @doc false
+  @spec worker_cli_args(keyword()) :: [String.t()]
+  def worker_cli_args(opts \\ []) do
     prefix_cache_mode = Keyword.get(opts, :prefix_cache_mode, "kv")
     prefix_cache_max_entries = Keyword.get(opts, :prefix_cache_max_entries, 8)
     prefix_cache_max_bytes = Keyword.get(opts, :prefix_cache_max_bytes, 0)
+    generation_mode = Keyword.get(opts, :generation_mode, @default_generation_mode)
 
-    cli_args = [
+    max_concurrent_generations =
+      Keyword.get(opts, :max_concurrent_generations, @default_max_concurrent_generations)
+
+    memory_budget_mode = Keyword.get(opts, :memory_budget_mode, @default_memory_budget_mode)
+
+    memory_budget_utilization =
+      Keyword.get(opts, :memory_budget_utilization, @default_memory_budget_utilization)
+
+    memory_budget_overhead_bytes =
+      Keyword.get(opts, :memory_budget_overhead_bytes, @default_memory_budget_overhead_bytes)
+
+    normalized_memory_budget_utilization =
+      normalize_memory_budget_utilization(memory_budget_utilization)
+
+    base_args = [
       "--socket-path",
-      socket_path,
+      to_string(Keyword.fetch!(opts, :socket_path)),
       "--backend",
-      backend,
+      to_string(Keyword.fetch!(opts, :backend)),
       "--log-file",
-      log_path,
+      to_string(Keyword.fetch!(opts, :log_path)),
       "--prefix-cache-mode",
       to_string(prefix_cache_mode),
       "--prefix-cache-max-entries",
@@ -374,6 +439,41 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       "--prefix-cache-max-bytes",
       Integer.to_string(prefix_cache_max_bytes)
     ]
+
+    if extended_generation_memory_flags?(
+         generation_mode,
+         max_concurrent_generations,
+         memory_budget_mode,
+         normalized_memory_budget_utilization,
+         memory_budget_overhead_bytes
+       ) do
+      base_args ++
+        [
+          "--generation-mode",
+          to_string(generation_mode),
+          "--max-concurrent-generations",
+          Integer.to_string(max_concurrent_generations),
+          "--memory-budget-mode",
+          to_string(memory_budget_mode),
+          "--memory-budget-utilization",
+          :erlang.float_to_binary(normalized_memory_budget_utilization, [:compact, decimals: 6]),
+          "--memory-budget-overhead-bytes",
+          Integer.to_string(memory_budget_overhead_bytes)
+        ]
+    else
+      base_args
+    end
+  end
+
+  defp start_worker_port(executable, socket_path, backend, log_path, opts) do
+    cli_args =
+      worker_cli_args(
+        Keyword.merge(opts,
+          socket_path: socket_path,
+          backend: backend,
+          log_path: log_path
+        )
+      )
 
     args = Enum.map(cli_args, &String.to_charlist/1)
 
@@ -392,6 +492,28 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       end
 
     {:ok, port, os_pid}
+  end
+
+  defp normalize_memory_budget_utilization(value) when is_float(value), do: value
+  defp normalize_memory_budget_utilization(value) when is_integer(value), do: value / 1
+
+  defp normalize_memory_budget_utilization(value) do
+    raise ArgumentError,
+          "memory_budget_utilization must be an integer or float, got: #{inspect(value)}"
+  end
+
+  defp extended_generation_memory_flags?(
+         generation_mode,
+         max_concurrent_generations,
+         memory_budget_mode,
+         memory_budget_utilization,
+         memory_budget_overhead_bytes
+       ) do
+    generation_mode != @default_generation_mode or
+      max_concurrent_generations != @default_max_concurrent_generations or
+      memory_budget_mode != @default_memory_budget_mode or
+      memory_budget_utilization != @default_memory_budget_utilization or
+      memory_budget_overhead_bytes != @default_memory_budget_overhead_bytes
   end
 
   defp wait_for_worker_ready(socket_path, port, timeout_ms) do

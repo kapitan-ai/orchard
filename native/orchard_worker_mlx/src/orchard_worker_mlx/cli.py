@@ -72,6 +72,42 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=0,
         help="maximum prefix cache byte budget; 0 disables (default: 0)",
     )
+    parser.add_argument(
+        "--generation-mode",
+        choices=["stream", "batch"],
+        default="stream",
+        help=(
+            "generation runtime mode config "
+            "(default: stream; accepted generation flags do not enable concurrent generation yet)"
+        ),
+    )
+    parser.add_argument(
+        "--max-concurrent-generations",
+        type=int,
+        default=1,
+        help=(
+            "generation runtime config only "
+            "(default: 1; accepted generation flags do not enable concurrent generation yet)"
+        ),
+    )
+    parser.add_argument(
+        "--memory-budget-mode",
+        choices=["disabled", "observe"],
+        default="observe",
+        help="memory-budget mode (default: observe; enforce is not yet supported)",
+    )
+    parser.add_argument(
+        "--memory-budget-utilization",
+        type=float,
+        default=0.90,
+        help="fraction of max recommended working set to target (default: 0.90)",
+    )
+    parser.add_argument(
+        "--memory-budget-overhead-bytes",
+        type=int,
+        default=1_073_741_824,
+        help="fixed memory-budget overhead in bytes (default: 1073741824)",
+    )
     args = parser.parse_args(argv)
 
     if args.version:
@@ -80,7 +116,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     _configure_logging(args.log_file)
 
-    from orchard_worker_mlx.model_loader import PrefixCacheLoadConfig
+    from orchard_worker_mlx.model_loader import (
+        GenerationRuntimeConfig,
+        MemoryBudgetConfig,
+        PrefixCacheLoadConfig,
+    )
 
     try:
         prefix_cache_config = PrefixCacheLoadConfig(
@@ -88,10 +128,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_entries=args.prefix_cache_max_entries,
             max_bytes=args.prefix_cache_max_bytes,
         )
+        generation_config = GenerationRuntimeConfig(
+            mode=args.generation_mode,
+            max_concurrent_generations=args.max_concurrent_generations,
+        )
+        memory_budget_config = MemoryBudgetConfig(
+            mode=args.memory_budget_mode,
+            utilization=args.memory_budget_utilization,
+            overhead_bytes=args.memory_budget_overhead_bytes,
+        )
     except ValueError as exc:
         parser.error(str(exc))
 
-    serve(args.socket_path, args.backend, prefix_cache_config=prefix_cache_config)
+    serve(
+        args.socket_path,
+        args.backend,
+        prefix_cache_config=prefix_cache_config,
+        generation_config=generation_config,
+        memory_budget_config=memory_budget_config,
+    )
     return 0
 
 

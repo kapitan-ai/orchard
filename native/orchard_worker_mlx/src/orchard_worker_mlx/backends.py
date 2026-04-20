@@ -150,8 +150,12 @@ class MLXBackend:
         generation_runner: Callable[..., Iterator[dict[str, Any]]] | None = None,
         health_probe: Callable[[], "MLXEnvironmentHealth"] | None = None,
         prefix_cache_config: Any | None = None,
+        generation_config: Any | None = None,
+        memory_budget_config: Any | None = None,
     ) -> None:
         from orchard_worker_mlx.model_loader import (
+            DEFAULT_GENERATION_RUNTIME_CONFIG,
+            DEFAULT_MEMORY_BUDGET_CONFIG,
             DEFAULT_PREFIX_CACHE_LOAD_CONFIG,
             MLXEnvironmentHealth,
             load_session as _load_session,
@@ -163,6 +167,8 @@ class MLXBackend:
         self._session_unloader = session_unloader or _unload_session
         self._generation_runner = generation_runner or _default_generation_runner()
         self._prefix_cache_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
+        self._generation_config = generation_config or DEFAULT_GENERATION_RUNTIME_CONFIG
+        self._memory_budget_config = memory_budget_config or DEFAULT_MEMORY_BUDGET_CONFIG
         self._session: Any | None = None
         self._active_request_count = 0
         self._lock = threading.Lock()
@@ -234,6 +240,8 @@ class MLXBackend:
                     version=version,
                     model_path=model_path,
                     prefix_cache_config=self._prefix_cache_config,
+                    generation_config=self._generation_config,
+                    memory_budget_config=self._memory_budget_config,
                 )
             except ModelLoaderError as exc:
                 raise BackendError(exc.code, exc.message, exc.retryable) from exc
@@ -292,12 +300,18 @@ def build_backend(
     name: str,
     *,
     prefix_cache_config: Any | None = None,
+    generation_config: Any | None = None,
+    memory_budget_config: Any | None = None,
 ) -> Backend:
     if name == "stub":
         return StubBackend()
 
     if name == "mlx":
-        return MLXBackend(prefix_cache_config=prefix_cache_config)
+        return MLXBackend(
+            prefix_cache_config=prefix_cache_config,
+            generation_config=generation_config,
+            memory_budget_config=memory_budget_config,
+        )
 
     raise BackendError("unsupported_backend", f"unsupported backend: {name}")
 

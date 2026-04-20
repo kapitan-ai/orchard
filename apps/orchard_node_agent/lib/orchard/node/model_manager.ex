@@ -272,7 +272,7 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp prepare_loaded_request(request, subscriber, key, pid, state) do
-    if model_has_active_request?(state.active_requests, key) do
+    if model_at_request_capacity?(state.active_requests, key) do
       {:reply, {:error, :model_busy}, state}
     else
       subscriber_monitor_ref = Process.monitor(subscriber)
@@ -1099,10 +1099,8 @@ defmodule Orchard.Node.ModelManager do
     end)
   end
 
-  defp model_has_active_request?(active_requests, key) do
-    Enum.any?(active_requests, fn {_request_id, active_request} ->
-      active_request.model_key == key
-    end)
+  defp model_at_request_capacity?(active_requests, key) do
+    active_request_count_for_model(active_requests, key) >= Node.effective_worker_request_limit()
   end
 
   # -- Response helpers ------------------------------------------------------

@@ -18,7 +18,11 @@ from orchard_worker_mlx.backends import (
     decode_metadata,
     safe_int,
 )
-from orchard_worker_mlx.model_loader import MLXEnvironmentHealth
+from orchard_worker_mlx.model_loader import (
+    GenerationRuntimeConfig,
+    MLXEnvironmentHealth,
+    MemoryBudgetConfig,
+)
 
 
 # -- Backend protocol conformance --------------------------------------------
@@ -39,6 +43,19 @@ def test_build_backend_stub_returns_backend() -> None:
 
 def test_build_backend_mlx_returns_backend() -> None:
     backend = build_backend("mlx")
+    assert isinstance(backend, Backend)
+
+
+def test_build_backend_mlx_accepts_generation_and_memory_config() -> None:
+    generation_config = GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2)
+    memory_budget_config = MemoryBudgetConfig(mode="observe", utilization=0.75)
+
+    backend = build_backend(
+        "mlx",
+        generation_config=generation_config,
+        memory_budget_config=memory_budget_config,
+    )
+
     assert isinstance(backend, Backend)
 
 
@@ -89,6 +106,23 @@ def test_finish_generation_clamps_to_zero() -> None:
     backend = StubBackend()
     backend.finish_generation()  # No-op when count is already 0
     assert backend.status()["active_request_count"] == 0
+
+
+def test_mlx_backend_batch_config_still_rejects_second_concurrent() -> None:
+    session = _make_fake_session(model_id="m", version="v", bundle_path="/fake/path")
+    backend = MLXBackend(
+        session_loader=lambda **_kwargs: session,
+        session_unloader=lambda _session: None,
+        generation_config=GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2),
+    )
+
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+    backend.start_generation()
+
+    with pytest.raises(BackendError) as exc_info:
+        backend.start_generation()
+
+    assert exc_info.value.code == "worker_busy"
 
 
 # -- decode_metadata ---------------------------------------------------------
@@ -220,6 +254,37 @@ def test_mlx_backend_load_success() -> None:
     status = backend.status()
     assert status["loaded"] is True
     assert status["active_request_count"] == 0
+
+
+def test_mlx_backend_load_passes_generation_and_memory_config_to_loader() -> None:
+    captured: dict[str, object] = {}
+
+    def fake_loader(**kwargs):
+        captured.update(kwargs)
+        return _make_fake_session(
+            model_id=kwargs["model_id"],
+            version=kwargs["version"],
+            bundle_path=kwargs["model_path"],
+        )
+
+    generation_config = GenerationRuntimeConfig(mode="batch", max_concurrent_generations=3)
+    memory_budget_config = MemoryBudgetConfig(
+        mode="observe",
+        utilization=0.75,
+        overhead_bytes=268_435_456,
+    )
+
+    backend = MLXBackend(
+        session_loader=fake_loader,
+        session_unloader=lambda _session: None,
+        generation_config=generation_config,
+        memory_budget_config=memory_budget_config,
+    )
+
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    assert captured["generation_config"] == generation_config
+    assert captured["memory_budget_config"] == memory_budget_config
 
 
 def test_mlx_backend_same_model_reload_is_idempotent() -> None:

@@ -354,6 +354,11 @@ defmodule OrchardNodeAgentTest do
     assert runtime[:worker_shutdown_timeout_ms] == 1_000
     assert Path.type(runtime[:worker_log_dir]) == :absolute
     assert String.ends_with?(runtime[:worker_log_dir], "/tmp/test/logs/workers")
+    assert runtime[:worker_generation_mode] == "stream"
+    assert runtime[:worker_max_concurrent_requests_per_model] == 1
+    assert runtime[:worker_memory_budget_mode] == "observe"
+    assert runtime[:worker_memory_budget_utilization] == 0.90
+    assert runtime[:worker_memory_budget_overhead_bytes] == 1_073_741_824
 
     assert Node.listen_host() == "127.0.0.1"
     assert Node.listen_port() == 50_071
@@ -365,6 +370,12 @@ defmodule OrchardNodeAgentTest do
     assert Node.worker_shutdown_timeout_ms() == 1_000
     assert is_binary(Node.worker_log_dir())
     assert is_binary(Node.worker_log_path(@test_model_id, @test_version))
+    assert Node.worker_generation_mode() == "stream"
+    assert Node.worker_max_concurrent_requests_per_model() == 1
+    assert Node.effective_worker_request_limit() == 1
+    assert Node.worker_memory_budget_mode() == "observe"
+    assert Node.worker_memory_budget_utilization() == 0.90
+    assert Node.worker_memory_budget_overhead_bytes() == 1_073_741_824
 
     # Eviction: disabled by default (0 normalizes to nil)
     assert runtime[:max_loaded_models] == 0
@@ -978,6 +989,89 @@ defmodule OrchardNodeAgentTest do
                       %OrchardInferenceEvent{event: %OrchardInferenceEvent.Completed{}}},
                      1_000
     end)
+  end
+
+  test "batch mode allows two active requests and rejects the third at prepare time",
+       %{bundle: bundle} do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: BlockingRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: 2,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      ],
+      fn ->
+        assert Node.effective_worker_request_limit() == 2
+
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        request1 = execute_inference_request("req-batch-first")
+        request2 = execute_inference_request("req-batch-second")
+        request3 = execute_inference_request("req-batch-third")
+
+        assert :ok = NodeStatus.prepare_request(request1, self())
+        assert :ok = NodeStatus.start_request(request1)
+        assert :ok = NodeStatus.prepare_request(request2, self())
+        assert :ok = NodeStatus.start_request(request2)
+
+        wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+
+        assert {:error, :model_busy} = NodeStatus.prepare_request(request3, self())
+
+        assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
+        assert %{ok: true} = NodeStatus.cancel_request(request2.request_id)
+        wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+      end
+    )
+  end
+
+  test "batch mode still maps third request to gRPC model_busy without Accepted", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: BlockingRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: 2,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      ],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        request1 = execute_inference_request("req-batch-grpc-first")
+        request2 = execute_inference_request("req-batch-grpc-second")
+
+        assert :ok = NodeStatus.prepare_request(request1, self())
+        assert :ok = NodeStatus.start_request(request1)
+        assert :ok = NodeStatus.prepare_request(request2, self())
+        assert :ok = NodeStatus.start_request(request2)
+
+        wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+
+        with_channel(fn channel ->
+          request3 = execute_inference_request("req-batch-grpc-third")
+          assert {:ok, event_stream} = NodeRuntimeStub.execute_inference(channel, request3)
+          events = Enum.to_list(event_stream)
+
+          assert [{:ok, %RPCInferenceEvent{event: {:failed, failed}}}] = events
+          assert failed.code == "model_busy"
+
+          accepted_events =
+            Enum.filter(events, fn
+              {:ok, %RPCInferenceEvent{event: {:accepted, _}}} -> true
+              _ -> false
+            end)
+
+          assert accepted_events == []
+        end)
+
+        assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
+        assert %{ok: true} = NodeStatus.cancel_request(request2.request_id)
+        wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+      end
+    )
   end
 
   # -- Acquisition-specific tests ---------------------------------------------

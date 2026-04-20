@@ -47,6 +47,11 @@ def main():
     parser.add_argument("--prefix-cache-mode", default="kv")
     parser.add_argument("--prefix-cache-max-entries", type=int, default=8)
     parser.add_argument("--prefix-cache-max-bytes", type=int, default=0)
+    parser.add_argument("--generation-mode", default="stream")
+    parser.add_argument("--max-concurrent-generations", type=int, default=1)
+    parser.add_argument("--memory-budget-mode", default="observe")
+    parser.add_argument("--memory-budget-utilization", type=float, default=0.90)
+    parser.add_argument("--memory-budget-overhead-bytes", type=int, default=1_073_741_824)
     args = parser.parse_args()
 
     socket_path = Path(args.socket_path)

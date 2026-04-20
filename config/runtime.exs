@@ -26,6 +26,25 @@ env_non_neg_int = fn env_name, default ->
   value
 end
 
+env_float = fn env_name, default ->
+  case System.get_env(env_name) || default do
+    value when is_float(value) ->
+      value
+
+    value when is_integer(value) ->
+      value / 1
+
+    value ->
+      case Float.parse(value) do
+        {parsed, ""} ->
+          parsed
+
+        _other ->
+          raise "environment variable #{env_name} must be a float, got: #{inspect(value)}"
+      end
+  end
+end
+
 env_bool = fn env_name, default ->
   case System.get_env(env_name) do
     nil -> default
@@ -313,6 +332,11 @@ default_node_runtime = fn root ->
     worker_prefix_cache_mode: "kv",
     worker_prefix_cache_max_entries: 8,
     worker_prefix_cache_max_bytes: 0,
+    worker_generation_mode: "stream",
+    worker_max_concurrent_requests_per_model: 1,
+    worker_memory_budget_mode: "observe",
+    worker_memory_budget_utilization: 0.90,
+    worker_memory_budget_overhead_bytes: 1_073_741_824,
     max_loaded_models: 0,
     fake_runtime?: false,
     hf: default_hf_config.(),
@@ -609,6 +633,48 @@ if config_env() == :prod do
 
                  v
                end).(),
+            worker_generation_mode:
+              (fn ->
+                 mode = System.get_env("ORCHARD_WORKER_GENERATION_MODE") || "stream"
+
+                 unless mode in ["stream", "batch"] do
+                   raise "ORCHARD_WORKER_GENERATION_MODE must be stream|batch, got: #{inspect(mode)}"
+                 end
+
+                 mode
+               end).(),
+            worker_max_concurrent_requests_per_model:
+              (fn ->
+                 v = env_int.("ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL", "1")
+
+                 if v < 1 do
+                   raise "ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL must be >= 1, got: #{v}"
+                 end
+
+                 v
+               end).(),
+            worker_memory_budget_mode:
+              (fn ->
+                 mode = System.get_env("ORCHARD_WORKER_MEMORY_BUDGET_MODE") || "observe"
+
+                 unless mode in ["disabled", "observe"] do
+                   raise "ORCHARD_WORKER_MEMORY_BUDGET_MODE must be disabled|observe (enforce not yet supported), got: #{inspect(mode)}"
+                 end
+
+                 mode
+               end).(),
+            worker_memory_budget_utilization:
+              (fn ->
+                 v = env_float.("ORCHARD_WORKER_MEMORY_BUDGET_UTILIZATION", "0.90")
+
+                 if v <= 0.0 or v > 1.0 do
+                   raise "ORCHARD_WORKER_MEMORY_BUDGET_UTILIZATION must be > 0.0 and <= 1.0, got: #{v}"
+                 end
+
+                 v
+               end).(),
+            worker_memory_budget_overhead_bytes:
+              env_non_neg_int.("ORCHARD_WORKER_MEMORY_BUDGET_OVERHEAD_BYTES", "1073741824"),
             license_enforcement: env_license_enforcement.("ORCHARD_LICENSE_ENFORCEMENT", "warn"),
             max_loaded_models: env_int.("ORCHARD_MAX_LOADED_MODELS", "0"),
             fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false),

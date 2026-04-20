@@ -15,6 +15,11 @@ defmodule Orchard.Node do
   @default_worker_prefix_cache_mode "kv"
   @default_worker_prefix_cache_max_entries 8
   @default_worker_prefix_cache_max_bytes 0
+  @default_worker_generation_mode "stream"
+  @default_worker_max_concurrent_requests_per_model 1
+  @default_worker_memory_budget_mode "observe"
+  @default_worker_memory_budget_utilization 0.90
+  @default_worker_memory_budget_overhead_bytes 1_073_741_824
   @valid_license_enforcement_modes [:off, :warn, :hard]
   @worker_socket_prefix "orchard-worker-"
   @worker_socket_suffix ".sock"
@@ -119,15 +124,94 @@ defmodule Orchard.Node do
   end
 
   def worker_prefix_cache_mode do
-    runtime_config()[:worker_prefix_cache_mode] || @default_worker_prefix_cache_mode
+    case runtime_value(:worker_prefix_cache_mode, @default_worker_prefix_cache_mode) do
+      mode when mode in ["disabled", "kv", "trie"] -> mode
+      other -> raise "invalid worker_prefix_cache_mode: #{inspect(other)}"
+    end
   end
 
   def worker_prefix_cache_max_entries do
-    runtime_config()[:worker_prefix_cache_max_entries] || @default_worker_prefix_cache_max_entries
+    case runtime_value(:worker_prefix_cache_max_entries, @default_worker_prefix_cache_max_entries) do
+      n when is_integer(n) and n >= 1 -> n
+      other -> raise "invalid worker_prefix_cache_max_entries: #{inspect(other)}"
+    end
   end
 
   def worker_prefix_cache_max_bytes do
-    runtime_config()[:worker_prefix_cache_max_bytes] || @default_worker_prefix_cache_max_bytes
+    case runtime_value(:worker_prefix_cache_max_bytes, @default_worker_prefix_cache_max_bytes) do
+      n when is_integer(n) and n >= 0 -> n
+      other -> raise "invalid worker_prefix_cache_max_bytes: #{inspect(other)}"
+    end
+  end
+
+  def worker_generation_mode do
+    case runtime_value(:worker_generation_mode, @default_worker_generation_mode) do
+      mode when mode in ["stream", "batch"] -> mode
+      other -> raise "invalid worker_generation_mode: #{inspect(other)}"
+    end
+  end
+
+  def worker_max_concurrent_requests_per_model do
+    case runtime_value(
+           :worker_max_concurrent_requests_per_model,
+           @default_worker_max_concurrent_requests_per_model
+         ) do
+      n when is_integer(n) and n >= 1 -> n
+      other -> raise "invalid worker_max_concurrent_requests_per_model: #{inspect(other)}"
+    end
+  end
+
+  def effective_worker_request_limit do
+    case runtime_adapter_impl() do
+      WorkerRuntimeAdapter ->
+        1
+
+      _other ->
+        if runtime_value(:test_only_allow_batch_admission_for_non_worker_adapters?, false) == true do
+          case worker_generation_mode() do
+            "batch" -> worker_max_concurrent_requests_per_model()
+            _ -> 1
+          end
+        else
+          1
+        end
+    end
+  end
+
+  def worker_memory_budget_mode do
+    case runtime_value(:worker_memory_budget_mode, @default_worker_memory_budget_mode) do
+      mode when mode in ["disabled", "observe"] -> mode
+      "enforce" -> raise "worker_memory_budget_mode=enforce is not supported yet"
+      other -> raise "invalid worker_memory_budget_mode: #{inspect(other)}"
+    end
+  end
+
+  def worker_memory_budget_utilization do
+    value =
+      runtime_value(:worker_memory_budget_utilization, @default_worker_memory_budget_utilization)
+
+    utilization =
+      cond do
+        is_float(value) -> value
+        is_integer(value) -> value / 1
+        true -> raise "invalid worker_memory_budget_utilization: #{inspect(value)}"
+      end
+
+    if utilization <= 0.0 or utilization > 1.0 do
+      raise "invalid worker_memory_budget_utilization: #{inspect(value)}"
+    end
+
+    utilization
+  end
+
+  def worker_memory_budget_overhead_bytes do
+    case runtime_value(
+           :worker_memory_budget_overhead_bytes,
+           @default_worker_memory_budget_overhead_bytes
+         ) do
+      n when is_integer(n) and n >= 0 -> n
+      other -> raise "invalid worker_memory_budget_overhead_bytes: #{inspect(other)}"
+    end
   end
 
   def worker_log_dir, do: runtime_config()[:worker_log_dir]
@@ -162,6 +246,14 @@ defmodule Orchard.Node do
     :crypto.hash(:sha256, model_id <> "@" <> version)
     |> Base.encode16(case: :lower)
     |> binary_part(0, @worker_identity_hash_length)
+  end
+
+  defp runtime_value(key, default) do
+    case Keyword.fetch(runtime_config(), key) do
+      {:ok, nil} -> default
+      {:ok, value} -> value
+      :error -> default
+    end
   end
 
   defp default_runtime_adapter_impl do

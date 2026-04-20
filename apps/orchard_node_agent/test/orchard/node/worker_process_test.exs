@@ -10,10 +10,52 @@ defmodule Orchard.Node.WorkerProcessTest do
 
   use ExUnit.Case, async: false
 
+  alias Orchard.Cluster.V1.EnsureModelLoadedRequest
+  alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.Node.WorkerProcess
 
   require Logger
+
+  defmodule ConcurrentRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(_adapter_state, _opts) do
+      {:ok, %{ready: true, health_code: "", health_message: ""}}
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(adapter_state, %ExecuteInferenceRequest{} = request, _opts) do
+      generation_ref = make_ref()
+
+      generations =
+        Map.put(adapter_state.generations, generation_ref, %{request_id: request.request_id})
+
+      {:ok, generation_ref, %{adapter_state | generations: generations}}
+    end
+
+    @impl true
+    def cancel_generation(adapter_state, generation_ref, _opts) do
+      {:ok, %{adapter_state | generations: Map.delete(adapter_state.generations, generation_ref)}}
+    end
+
+    @impl true
+    def finish_generation(adapter_state, generation_ref, _opts) do
+      %{adapter_state | generations: Map.delete(adapter_state.generations, generation_ref)}
+    end
+  end
 
   # -- Helpers ---------------------------------------------------------------
 
@@ -27,6 +69,29 @@ defmodule Orchard.Node.WorkerProcessTest do
       )
 
     pid
+  end
+
+  defp ensure_load_request do
+    %EnsureModelLoadedRequest{model_id: "test/buffer-model", version: "v1"}
+  end
+
+  defp execute_request(request_id) do
+    %ExecuteInferenceRequest{
+      request_id: request_id,
+      model_id: "test/buffer-model",
+      version: "v1"
+    }
+  end
+
+  defp with_runtime_config(overrides, fun) when is_list(overrides) and is_function(fun, 0) do
+    previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+    Application.put_env(:orchard_node_agent, :runtime, Keyword.merge(previous_runtime, overrides))
+
+    try do
+      fun.()
+    after
+      Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+    end
   end
 
   defp open_test_port! do
@@ -140,6 +205,74 @@ defmodule Orchard.Node.WorkerProcessTest do
     catch
       :exit, _ -> :ok
     end
+  end
+
+  test "stream mode keeps worker single-flight even when configured max is higher" do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ConcurrentRuntimeAdapter,
+        worker_generation_mode: "stream",
+        worker_max_concurrent_requests_per_model: 2
+      ],
+      fn ->
+        pid = start_worker_process!()
+
+        try do
+          assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+
+          assert :ok =
+                   WorkerProcess.start_request(pid, "req-1", execute_request("req-1"),
+                     subscriber: self()
+                   )
+
+          assert {:error, :model_busy} =
+                   WorkerProcess.start_request(pid, "req-2", execute_request("req-2"),
+                     subscriber: self()
+                   )
+
+          assert {:ok, %{active_request_count: 1}} = WorkerProcess.status(pid)
+        after
+          GenServer.stop(pid, :normal, 1_000)
+        end
+      end
+    )
+  end
+
+  test "batch mode allows requests up to the configured limit" do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ConcurrentRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: 2,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      ],
+      fn ->
+        pid = start_worker_process!()
+
+        try do
+          assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+
+          assert :ok =
+                   WorkerProcess.start_request(pid, "req-1", execute_request("req-1"),
+                     subscriber: self()
+                   )
+
+          assert :ok =
+                   WorkerProcess.start_request(pid, "req-2", execute_request("req-2"),
+                     subscriber: self()
+                   )
+
+          assert {:error, :model_busy} =
+                   WorkerProcess.start_request(pid, "req-3", execute_request("req-3"),
+                     subscriber: self()
+                   )
+
+          assert {:ok, %{active_request_count: 2}} = WorkerProcess.status(pid)
+        after
+          GenServer.stop(pid, :normal, 1_000)
+        end
+      end
+    )
   end
 
   test "multiple noeol fragments accumulate before eol flushes" do

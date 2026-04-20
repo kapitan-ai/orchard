@@ -15,7 +15,9 @@ import pytest
 from orchard_worker_mlx.model_loader import (
     BundleManifest,
     ChatTemplateSpec,
+    GenerationRuntimeConfig,
     LoadedModelSession,
+    MemoryBudgetConfig,
     MLXDeps,
     MLXEnvironmentHealth,
     MLXProbeDeps,
@@ -940,6 +942,60 @@ def test_prefix_cache_config_validation() -> None:
         PrefixCacheLoadConfig(max_entries=0)
     with pytest.raises(ValueError):
         PrefixCacheLoadConfig(max_bytes=-1)
+
+
+def test_generation_runtime_config_validation() -> None:
+    with pytest.raises(ValueError):
+        GenerationRuntimeConfig(mode="invalid")
+    with pytest.raises(ValueError):
+        GenerationRuntimeConfig(max_concurrent_generations=0)
+    with pytest.raises(ValueError):
+        GenerationRuntimeConfig(max_concurrent_generations=True)
+
+
+def test_memory_budget_config_validation() -> None:
+    with pytest.raises(ValueError):
+        MemoryBudgetConfig(mode="invalid")
+    with pytest.raises(ValueError):
+        MemoryBudgetConfig(mode="enforce")
+    with pytest.raises(ValueError):
+        MemoryBudgetConfig(utilization=0)
+    with pytest.raises(ValueError):
+        MemoryBudgetConfig(utilization=1.5)
+    with pytest.raises(ValueError):
+        MemoryBudgetConfig(utilization=True)
+    with pytest.raises(ValueError):
+        MemoryBudgetConfig(utilization=float("nan"))
+    with pytest.raises(ValueError):
+        MemoryBudgetConfig(utilization=float("inf"))
+    with pytest.raises(ValueError):
+        MemoryBudgetConfig(utilization=float("-inf"))
+    with pytest.raises(ValueError):
+        MemoryBudgetConfig(overhead_bytes=-1)
+    with pytest.raises(ValueError):
+        MemoryBudgetConfig(overhead_bytes=True)
+
+
+def test_load_session_stores_generation_and_memory_budget_config(writable_bundle: Path) -> None:
+    deps = _make_fake_deps(can_trim_prompt_cache_return=True)
+    generation_config = GenerationRuntimeConfig(mode="batch", max_concurrent_generations=3)
+    memory_budget_config = MemoryBudgetConfig(
+        mode="observe",
+        utilization=0.75,
+        overhead_bytes=268_435_456,
+    )
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+        generation_config=generation_config,
+        memory_budget_config=memory_budget_config,
+    )
+
+    assert session.generation_config == generation_config
+    assert session.memory_budget_config == memory_budget_config
 
 
 def test_unload_session_clears_populated_prefix_cache() -> None:

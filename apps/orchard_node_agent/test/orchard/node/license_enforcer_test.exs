@@ -35,8 +35,14 @@ defmodule Orchard.Node.LicenseEnforcerTest do
   end
 
   test "runtime defaults keep packaged warn and test env override off" do
-    assert M1RuntimeDefaults.node_runtime("/tmp/orchard")[:license_enforcement] ==
-             :warn
+    defaults = M1RuntimeDefaults.node_runtime("/tmp/orchard")
+
+    assert defaults[:license_enforcement] == :warn
+    assert defaults[:worker_generation_mode] == "stream"
+    assert defaults[:worker_max_concurrent_requests_per_model] == 1
+    assert defaults[:worker_memory_budget_mode] == "observe"
+    assert defaults[:worker_memory_budget_utilization] == 0.90
+    assert defaults[:worker_memory_budget_overhead_bytes] == 1_073_741_824
 
     assert Application.fetch_env!(:orchard_node_agent, :runtime)[:license_enforcement] == :off
   end

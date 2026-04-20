@@ -20,7 +20,12 @@ from orchard_worker_mlx.backends import (
     StubBackend,
 )
 from orchard_worker_mlx.generated.orchard.worker.v1 import worker_runtime_pb2
-from orchard_worker_mlx.service import WorkerRuntimeServicer, build_inference_event
+from orchard_worker_mlx.model_loader import (
+    GenerationRuntimeConfig,
+    MemoryBudgetConfig,
+    PrefixCacheLoadConfig,
+)
+from orchard_worker_mlx.service import WorkerRuntimeServicer, build_inference_event, build_server
 
 # ---------------------------------------------------------------------------
 # Test helpers / fake backends
@@ -156,6 +161,32 @@ def _collect_events(servicer: WorkerRuntimeServicer, request_id: str = "req-1"):
     request = _make_request(request_id)
     context = MagicMock()
     return list(servicer.Generate(request, context))
+
+
+def test_build_server_passes_config_objects_to_backend_factory() -> None:
+    captured: dict[str, Any] = {}
+    prefix_cache_config = PrefixCacheLoadConfig(mode="trie", max_entries=4)
+    generation_config = GenerationRuntimeConfig(mode="batch", max_concurrent_generations=2)
+    memory_budget_config = MemoryBudgetConfig(mode="observe", utilization=0.75)
+
+    def backend_factory(name: str, **kwargs: Any) -> Backend:
+        captured["name"] = name
+        captured.update(kwargs)
+        return StubBackend()
+
+    server = build_server(
+        "stub",
+        backend_factory=backend_factory,
+        prefix_cache_config=prefix_cache_config,
+        generation_config=generation_config,
+        memory_budget_config=memory_budget_config,
+    )
+
+    assert captured["name"] == "stub"
+    assert captured["prefix_cache_config"] == prefix_cache_config
+    assert captured["generation_config"] == generation_config
+    assert captured["memory_budget_config"] == memory_budget_config
+    server.stop(grace=0)
 
 
 # ---------------------------------------------------------------------------

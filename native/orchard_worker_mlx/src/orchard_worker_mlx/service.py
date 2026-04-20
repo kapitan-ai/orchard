@@ -249,12 +249,16 @@ def build_server(
     *,
     backend_factory: Callable[..., Backend] = build_backend,
     prefix_cache_config: Any | None = None,
+    generation_config: Any | None = None,
+    memory_budget_config: Any | None = None,
     clock: Callable[[], float] = time.monotonic,
     cancel_tombstone_ttl_s: float = _DEFAULT_CANCEL_TOMBSTONE_TTL_S,
 ) -> grpc.Server:
     backend = backend_factory(
         backend_name,
         prefix_cache_config=prefix_cache_config,
+        generation_config=generation_config,
+        memory_budget_config=memory_budget_config,
     )
     server = grpc.server(ThreadPoolExecutor(max_workers=4))
     worker_runtime_pb2_grpc.add_WorkerRuntimeServiceServicer_to_server(
@@ -273,6 +277,8 @@ def serve(
     backend_name: str,
     *,
     prefix_cache_config: Any | None = None,
+    generation_config: Any | None = None,
+    memory_budget_config: Any | None = None,
 ) -> None:
     logger.info("worker starting backend=%s socket_path=%s", backend_name, socket_path)
     socket = Path(socket_path)
@@ -281,7 +287,12 @@ def serve(
     if socket.exists():
         socket.unlink()
 
-    server = build_server(backend_name, prefix_cache_config=prefix_cache_config)
+    server = build_server(
+        backend_name,
+        prefix_cache_config=prefix_cache_config,
+        generation_config=generation_config,
+        memory_budget_config=memory_budget_config,
+    )
     bind_target = f"unix://{socket_path}"
     bound_port = server.add_insecure_port(bind_target)
 

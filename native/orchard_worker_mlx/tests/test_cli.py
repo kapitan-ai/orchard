@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import grpc
+import pytest
 
 from orchard_worker_mlx import __version__
 from orchard_worker_mlx.generated.cluster.v1 import common_pb2, runtime_pb2
@@ -157,6 +158,143 @@ def test_main_prints_version(capsys) -> None:
 
     assert main(["--socket-path", "/tmp/orchard-worker.sock", "--version"]) == 0
     assert capsys.readouterr().out.strip() == __version__
+
+
+def test_main_help_describes_generation_flags_as_non_concurrent_config(capsys) -> None:
+    from orchard_worker_mlx.cli import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["--help"])
+
+    assert exc_info.value.code == 0
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "accepted generation flags do not enable concurrent generation yet" in help_text
+
+
+def test_main_passes_generation_and_memory_config_to_serve(monkeypatch) -> None:
+    from orchard_worker_mlx import cli
+
+    captured: dict[str, object] = {}
+
+    def fake_serve(socket_path: str, backend: str, **kwargs: object) -> None:
+        captured["socket_path"] = socket_path
+        captured["backend"] = backend
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "serve", fake_serve)
+
+    assert (
+        cli.main(
+            [
+                "--socket-path",
+                "/tmp/orchard-worker.sock",
+                "--backend",
+                "stub",
+                "--generation-mode",
+                "batch",
+                "--max-concurrent-generations",
+                "3",
+                "--memory-budget-mode",
+                "observe",
+                "--memory-budget-utilization",
+                "0.75",
+                "--memory-budget-overhead-bytes",
+                "268435456",
+            ]
+        )
+        == 0
+    )
+
+    generation_config = captured["generation_config"]
+    memory_budget_config = captured["memory_budget_config"]
+
+    assert captured["socket_path"] == "/tmp/orchard-worker.sock"
+    assert captured["backend"] == "stub"
+    assert generation_config.mode == "batch"
+    assert generation_config.max_concurrent_generations == 3
+    assert memory_budget_config.mode == "observe"
+    assert memory_budget_config.utilization == 0.75
+    assert memory_budget_config.overhead_bytes == 268_435_456
+
+
+def test_main_uses_generation_and_memory_defaults(monkeypatch) -> None:
+    from orchard_worker_mlx import cli
+
+    captured: dict[str, object] = {}
+
+    def fake_serve(socket_path: str, backend: str, **kwargs: object) -> None:
+        captured["socket_path"] = socket_path
+        captured["backend"] = backend
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "serve", fake_serve)
+
+    assert cli.main(["--socket-path", "/tmp/orchard-worker.sock", "--backend", "stub"]) == 0
+
+    generation_config = captured["generation_config"]
+    memory_budget_config = captured["memory_budget_config"]
+
+    assert generation_config.mode == "stream"
+    assert generation_config.max_concurrent_generations == 1
+    assert memory_budget_config.mode == "observe"
+    assert memory_budget_config.utilization == 0.90
+    assert memory_budget_config.overhead_bytes == 1_073_741_824
+
+
+def test_main_rejects_invalid_generation_and_memory_config(monkeypatch) -> None:
+    from orchard_worker_mlx import cli
+
+    monkeypatch.setattr(cli, "serve", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "--socket-path",
+                "/tmp/orchard-worker.sock",
+                "--max-concurrent-generations",
+                "0",
+            ]
+        )
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "--socket-path",
+                "/tmp/orchard-worker.sock",
+                "--memory-budget-utilization",
+                "0",
+            ]
+        )
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "--socket-path",
+                "/tmp/orchard-worker.sock",
+                "--memory-budget-utilization",
+                "1.5",
+            ]
+        )
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "--socket-path",
+                "/tmp/orchard-worker.sock",
+                "--memory-budget-overhead-bytes",
+                "-1",
+            ]
+        )
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "--socket-path",
+                "/tmp/orchard-worker.sock",
+                "--memory-budget-mode",
+                "enforce",
+            ]
+        )
 
 
 def test_log_file_written_with_lifecycle_logs(tmp_path: Path) -> None:

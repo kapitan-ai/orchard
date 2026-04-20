@@ -145,7 +145,7 @@ defmodule Orchard.Node.WorkerProcess do
       Map.has_key?(state.requests, request_id) ->
         {:reply, {:error, :already_running}, state}
 
-      map_size(state.requests) > 0 ->
+      request_capacity_reached?(state) ->
         {:reply, {:error, :model_busy}, state}
 
       true ->
@@ -286,6 +286,10 @@ defmodule Orchard.Node.WorkerProcess do
       _ = state.adapter.unload_model(state.adapter_state, opts)
       :ok
     end
+  end
+
+  defp request_capacity_reached?(state) do
+    map_size(state.requests) >= Node.effective_worker_request_limit()
   end
 
   defp start_generation(request_id, request, subscriber, state) do

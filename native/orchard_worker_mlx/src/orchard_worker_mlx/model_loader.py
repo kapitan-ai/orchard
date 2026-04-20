@@ -5,6 +5,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import math
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -57,6 +58,81 @@ class PrefixCacheLoadConfig:
 
 
 DEFAULT_PREFIX_CACHE_LOAD_CONFIG = PrefixCacheLoadConfig()
+
+
+# ---------------------------------------------------------------------------
+# Generation + memory-budget runtime configuration
+# ---------------------------------------------------------------------------
+
+_VALID_GENERATION_MODES = frozenset({"stream", "batch"})
+_VALID_MEMORY_BUDGET_MODES = frozenset({"disabled", "observe"})
+
+
+@dataclass(slots=True, frozen=True)
+class GenerationRuntimeConfig:
+    """Process-scoped generation mode config.
+
+    This is carried from CLI -> service -> backend -> loader/session, but does
+    not enable batch behavior until the later Phase 1 implementation task lands.
+    """
+
+    mode: str = "stream"
+    max_concurrent_generations: int = 1
+
+    def __post_init__(self) -> None:
+        if self.mode not in _VALID_GENERATION_MODES:
+            raise ValueError(
+                f"mode must be one of {sorted(_VALID_GENERATION_MODES)}, got {self.mode!r}"
+            )
+        if not isinstance(self.max_concurrent_generations, int) or isinstance(
+            self.max_concurrent_generations, bool
+        ):
+            raise ValueError(
+                "max_concurrent_generations must be int, got "
+                f"{type(self.max_concurrent_generations).__name__}"
+            )
+        if self.max_concurrent_generations < 1:
+            raise ValueError(
+                f"max_concurrent_generations must be >= 1, got {self.max_concurrent_generations}"
+            )
+
+
+@dataclass(slots=True, frozen=True)
+class MemoryBudgetConfig:
+    """Process-scoped memory-budget config.
+
+    This is carried from CLI -> service -> backend -> loader/session. The
+    unsupported "enforce" mode is intentionally rejected until memory-budget
+    enforcement is implemented.
+    """
+
+    mode: str = "observe"
+    utilization: float = 0.90
+    overhead_bytes: int = 1_073_741_824
+
+    def __post_init__(self) -> None:
+        if self.mode not in _VALID_MEMORY_BUDGET_MODES:
+            raise ValueError(
+                f"mode must be one of {sorted(_VALID_MEMORY_BUDGET_MODES)}, got {self.mode!r}"
+            )
+        if not isinstance(self.utilization, (int, float)) or isinstance(self.utilization, bool):
+            raise ValueError(f"utilization must be numeric, got {type(self.utilization).__name__}")
+        utilization = float(self.utilization)
+        object.__setattr__(self, "utilization", utilization)
+        if not math.isfinite(utilization):
+            raise ValueError(f"utilization must be finite, got {utilization}")
+        if utilization <= 0.0 or utilization > 1.0:
+            raise ValueError(f"utilization must be > 0.0 and <= 1.0, got {utilization}")
+        if not isinstance(self.overhead_bytes, int) or isinstance(self.overhead_bytes, bool):
+            raise ValueError(
+                f"overhead_bytes must be int, got {type(self.overhead_bytes).__name__}"
+            )
+        if self.overhead_bytes < 0:
+            raise ValueError(f"overhead_bytes must be >= 0, got {self.overhead_bytes}")
+
+
+DEFAULT_GENERATION_RUNTIME_CONFIG = GenerationRuntimeConfig()
+DEFAULT_MEMORY_BUDGET_CONFIG = MemoryBudgetConfig()
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +622,8 @@ class LoadedModelSession:
     decode_cancel_stride: int = 1
     prefill_step_size: int = 2048
     prefix_cache: PrefixCache | None = None
+    generation_config: GenerationRuntimeConfig = DEFAULT_GENERATION_RUNTIME_CONFIG
+    memory_budget_config: MemoryBudgetConfig = DEFAULT_MEMORY_BUDGET_CONFIG
     tool_calling: dict[str, Any] = dataclass_field(
         default_factory=lambda: {"supported": False, "parser_type": None}
     )
@@ -841,6 +919,8 @@ def load_session(
     model_path: str,
     deps: MLXDeps | None = None,
     prefix_cache_config: PrefixCacheLoadConfig | None = None,
+    generation_config: GenerationRuntimeConfig | None = None,
+    memory_budget_config: MemoryBudgetConfig | None = None,
 ) -> LoadedModelSession:
     """Load a model bundle into a ready-to-generate session.
 
@@ -965,6 +1045,8 @@ def load_session(
 
     # --- prefix cache eligibility probe (fail-open) ---
     effective_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
+    effective_generation_config = generation_config or DEFAULT_GENERATION_RUNTIME_CONFIG
+    effective_memory_budget_config = memory_budget_config or DEFAULT_MEMORY_BUDGET_CONFIG
     prefix_cache = _build_prefix_cache(
         model,
         manifest,
@@ -985,6 +1067,8 @@ def load_session(
         clear_cache=deps.clear_cache,
         decode_cancel_stride=decode_cancel_stride,
         prefix_cache=prefix_cache,
+        generation_config=effective_generation_config,
+        memory_budget_config=effective_memory_budget_config,
         tool_calling=tool_calling,
     )
 
