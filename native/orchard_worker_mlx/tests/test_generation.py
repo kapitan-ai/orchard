@@ -7,7 +7,9 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock
 
@@ -49,6 +51,7 @@ def _make_fake_session(
     prefill_step_size: int = 2048,
     clear_cache: Any = None,
     prefix_cache: Any = None,
+    memory_budget_status: Any | None = None,
     tool_calling: dict[str, Any] | None = None,
     tool_parser: Any = None,
     tool_call_start: str | None = None,
@@ -64,6 +67,10 @@ def _make_fake_session(
     session.prefill_step_size = prefill_step_size
     session.clear_cache = clear_cache if clear_cache is not None else MagicMock(name="clear_cache")
     session.prefix_cache = prefix_cache
+    session.memory_budget_status = memory_budget_status or SimpleNamespace(
+        budget_available=False,
+        target_working_set_bytes=0,
+    )
     session.tool_calling = tool_calling or {"supported": False, "parser_type": None}
     session.tokenizer.tool_parser = tool_parser
     session.tokenizer.tool_call_start = tool_call_start
@@ -688,10 +695,7 @@ def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
 
             if self.instance_index > 0:
                 self._active.clear()
-                return [
-                    self._response(uid, token=11, finish_reason="stop")
-                    for uid in active
-                ]
+                return [self._response(uid, token=11, finish_reason="stop") for uid in active]
 
             first_token_uids = [uid for uid, emitted in self._active.items() if not emitted]
             if first_token_uids:
@@ -699,8 +703,7 @@ def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
                     self._active[uid] = True
 
                 return [
-                    self._response(uid, token=11, finish_reason=None)
-                    for uid in first_token_uids
+                    self._response(uid, token=11, finish_reason=None) for uid in first_token_uids
                 ]
 
             if len(self._active) < self.expected_initial_requests:
@@ -710,10 +713,7 @@ def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
             if not self._second_token_emitted:
                 self.allow_second_next.wait(timeout=5.0)
                 self._second_token_emitted = True
-                return [
-                    self._response(uid, token=12, finish_reason=None)
-                    for uid in active
-                ]
+                return [self._response(uid, token=12, finish_reason=None) for uid in active]
 
             self.entered_blocking_next.set()
             self.close_called.wait(timeout=5.0)
@@ -797,8 +797,10 @@ def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
 
     try:
         wait_for(
-            lambda: sum(1 for event in events_cancel if event["kind"] == "output_text_delta") >= 1
-            and sum(1 for event in events_waiter if event["kind"] == "output_text_delta") >= 1
+            lambda: (
+                sum(1 for event in events_cancel if event["kind"] == "output_text_delta") >= 1
+                and sum(1 for event in events_waiter if event["kind"] == "output_text_delta") >= 1
+            )
         )
 
         first_generator = _WatchdogBlockedNextBatchGenerator.instances[0]
@@ -841,7 +843,6 @@ def test_batch_generator_runtime_watchdog_resets_when_next_is_blocked() -> None:
     assert "cancellation drain timeout" in errors_waiter[0].message
     assert fresh_events[-1]["kind"] == "completed"
     assert fresh_events[-1]["finish_reason"] == "FINISH_REASON_STOP"
-
 
 
 def test_batch_generator_runtime_cleans_request_state_on_normal_completion() -> None:
@@ -980,7 +981,6 @@ def test_batch_generator_runtime_cleans_request_state_on_cancel_close() -> None:
     assert runtime._requests_by_id == {}
 
     runtime.close()
-
 
 
 def test_batch_generator_runtime_cancel_event_wakes_blocked_waiter() -> None:
@@ -1189,7 +1189,6 @@ def test_batch_runtime_zero_token_early_exit_does_not_clear_session_cache() -> N
     clear_mock.assert_not_called()
 
     runtime.close()
-
 
 
 def test_batch_runtime_does_not_clear_session_cache_per_request() -> None:
@@ -1733,6 +1732,225 @@ def test_zero_temperature_omits_temp_kwarg() -> None:
     assert len(captured_kwargs) == 1
     assert "temp" not in captured_kwargs[0]
     assert "top_p" not in captured_kwargs[0]
+
+
+class _WiredLimitTracker:
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+        self.enter_count = 0
+        self.exit_count = 0
+
+    def __call__(self, bytes_limit: int):
+        self.calls.append(bytes_limit)
+
+        @contextmanager
+        def _scope():
+            self.enter_count += 1
+            try:
+                yield
+            finally:
+                self.exit_count += 1
+
+        return _scope()
+
+
+class _ExplodingEnterWiredLimit:
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+        self.enter_count = 0
+        self.exit_count = 0
+
+    def __call__(self, bytes_limit: int):
+        self.calls.append(bytes_limit)
+        return self
+
+    def __enter__(self):
+        self.enter_count += 1
+        raise RuntimeError("wired_limit enter failed")
+
+    def __exit__(self, exc_type, exc, traceback):
+        self.exit_count += 1
+        return None
+
+
+def test_wired_limit_used_with_expected_target_working_set_bytes() -> None:
+    tracker = _WiredLimitTracker()
+    responses = [
+        FakeGenerationResponse(text="x", token=10, finish_reason="stop"),
+    ]
+
+    deps = GenerationDeps(
+        stream_generate=lambda m, t, p, **kw: iter(responses),
+        make_sampler=lambda **kw: MagicMock(),
+        wired_limit=tracker,
+    )
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=True,
+            target_working_set_bytes=123_456,
+        )
+    )
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert tracker.calls == [123_456]
+    assert tracker.enter_count == 1
+    assert tracker.exit_count == 1
+
+
+def test_wired_limit_unavailable_is_noop() -> None:
+    stream_calls = 0
+    responses = [
+        FakeGenerationResponse(text="x", token=10, finish_reason="stop"),
+    ]
+
+    def stream_generate(model, tokenizer, prompt_ids, **kwargs):
+        nonlocal stream_calls
+        stream_calls += 1
+        yield from responses
+
+    deps = GenerationDeps(
+        stream_generate=stream_generate,
+        make_sampler=lambda **kw: MagicMock(),
+        wired_limit=None,
+    )
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=True,
+            target_working_set_bytes=123_456,
+        )
+    )
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert stream_calls == 1
+
+
+def test_wired_limit_callable_failure_is_fail_open() -> None:
+    calls: list[int] = []
+    stream_calls = 0
+    responses = [
+        FakeGenerationResponse(text="x", token=10, finish_reason="stop"),
+    ]
+
+    def wired_limit(bytes_limit: int):
+        calls.append(bytes_limit)
+        raise RuntimeError("wired_limit failed")
+
+    def stream_generate(model, tokenizer, prompt_ids, **kwargs):
+        nonlocal stream_calls
+        stream_calls += 1
+        yield from responses
+
+    deps = GenerationDeps(
+        stream_generate=stream_generate,
+        make_sampler=lambda **kw: MagicMock(),
+        wired_limit=wired_limit,
+    )
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=True,
+            target_working_set_bytes=123_456,
+        )
+    )
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert stream_calls == 1
+    assert calls == [123_456]
+
+
+def test_wired_limit_context_entry_failure_is_fail_open() -> None:
+    tracker = _ExplodingEnterWiredLimit()
+    stream_calls = 0
+    responses = [
+        FakeGenerationResponse(text="x", token=10, finish_reason="stop"),
+    ]
+
+    def stream_generate(model, tokenizer, prompt_ids, **kwargs):
+        nonlocal stream_calls
+        stream_calls += 1
+        yield from responses
+
+    deps = GenerationDeps(
+        stream_generate=stream_generate,
+        make_sampler=lambda **kw: MagicMock(),
+        wired_limit=tracker,
+    )
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=True,
+            target_working_set_bytes=123_456,
+        )
+    )
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert stream_calls == 1
+    assert tracker.calls == [123_456]
+    assert tracker.enter_count == 1
+    assert tracker.exit_count == 0
+
+
+def test_wired_limit_skipped_for_shared_batch_runtime_with_budget_available() -> None:
+    tracker = _WiredLimitTracker()
+    responses = [
+        FakeGenerationResponse(text="x", token=10, finish_reason="stop"),
+    ]
+
+    deps = GenerationDeps(
+        stream_generate=lambda m, t, p, **kw: iter(responses),
+        make_sampler=lambda **kw: MagicMock(),
+        wired_limit=tracker,
+        uses_shared_batch_runtime=True,
+    )
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=True,
+            target_working_set_bytes=123_456,
+        )
+    )
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert tracker.calls == []
+    assert tracker.enter_count == 0
+    assert tracker.exit_count == 0
+
+
+def test_budget_unavailable_skips_wired_limit() -> None:
+    tracker = _WiredLimitTracker()
+    responses = [
+        FakeGenerationResponse(text="x", token=10, finish_reason="stop"),
+    ]
+
+    deps = GenerationDeps(
+        stream_generate=lambda m, t, p, **kw: iter(responses),
+        make_sampler=lambda **kw: MagicMock(),
+        wired_limit=tracker,
+    )
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=False,
+            target_working_set_bytes=123_456,
+        )
+    )
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert tracker.calls == []
 
 
 # ===========================================================================

@@ -53,6 +53,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
@@ -137,6 +138,7 @@ class GenerationDeps:
     make_sampler: Callable[..., Any]
     make_prompt_cache: Callable[[Any], Any] | None = None
     trim_prompt_cache: Callable[[Any, int], Any] | None = None
+    wired_limit: Callable[[int], Any] | None = None
     supports_orchard_stop_sequences: bool = True
     uses_shared_batch_runtime: bool = False
 
@@ -155,6 +157,7 @@ def _default_generation_deps() -> GenerationDeps:
     # Optional prompt-cache helpers — fail-open if unavailable.
     _make_prompt_cache: Callable[[Any], Any] | None = None
     _trim_prompt_cache: Callable[[Any, int], Any] | None = None
+    _wired_limit: Callable[[int], Any] | None = None
     try:
         from mlx_lm.models.cache import (
             make_prompt_cache as _make,
@@ -168,11 +171,19 @@ def _default_generation_deps() -> GenerationDeps:
     except (ImportError, AttributeError):
         pass
 
+    try:
+        from mlx_lm.generate import wired_limit as _wired_limit_impl
+
+        _wired_limit = _wired_limit_impl
+    except (ImportError, AttributeError):
+        pass
+
     return GenerationDeps(
         stream_generate=stream_generate,
         make_sampler=make_sampler,
         make_prompt_cache=_make_prompt_cache,
         trim_prompt_cache=_trim_prompt_cache,
+        wired_limit=_wired_limit,
         supports_orchard_stop_sequences=True,
         uses_shared_batch_runtime=False,
     )
@@ -397,6 +408,7 @@ class BatchGeneratorRuntime:
             make_sampler=self._generation_deps.make_sampler,
             make_prompt_cache=self._generation_deps.make_prompt_cache,
             trim_prompt_cache=self._generation_deps.trim_prompt_cache,
+            wired_limit=self._generation_deps.wired_limit,
             supports_orchard_stop_sequences=False,
             uses_shared_batch_runtime=True,
         )
@@ -1251,6 +1263,41 @@ def _safe_clear_session_cache(session: Any) -> None:
             pass
 
 
+def _wired_limit_target_working_set_bytes(session: Any) -> int:
+    """Return session working-set target bytes when wired_limit should apply."""
+    budget = getattr(session, "memory_budget_status", None)
+    if budget is None:
+        return 0
+
+    if getattr(budget, "budget_available", False) is not True:
+        return 0
+
+    target = getattr(budget, "target_working_set_bytes", 0)
+    if isinstance(target, bool) or not isinstance(target, int):
+        return 0
+
+    return target if target > 0 else 0
+
+
+def _enter_wired_limit_fail_open(
+    stack: ExitStack,
+    session: Any,
+    deps: GenerationDeps,
+) -> None:
+    """Best-effort wired-memory limit around single-request generation."""
+    if deps.uses_shared_batch_runtime or deps.wired_limit is None:
+        return
+
+    target_working_set_bytes = _wired_limit_target_working_set_bytes(session)
+    if target_working_set_bytes <= 0:
+        return
+
+    try:
+        stack.enter_context(deps.wired_limit(target_working_set_bytes))
+    except Exception:
+        logger.debug("wired_limit unavailable at runtime; continuing", exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # Cache telemetry helpers (internal)
 # ---------------------------------------------------------------------------
@@ -1542,83 +1589,134 @@ def generate_events(
         if deps.uses_shared_batch_runtime:
             stream_kwargs["cancel_event"] = cancel_event
 
-        stream = deps.stream_generate(
-            session.model,
-            session.tokenizer,
-            stream_prompt_ids,
-            **stream_kwargs,
-        )
+        with ExitStack() as stack:
+            _enter_wired_limit_fail_open(stack, session, deps)
 
-        output_tokens = 0
-        generated_token_ids: list[int] = []
-        can_store = True
+            stream = deps.stream_generate(
+                session.model,
+                session.tokenizer,
+                stream_prompt_ids,
+                **stream_kwargs,
+            )
 
-        for response in stream:
-            yield from _drain_prefill_progress(progress_queue)
-            output_tokens += 1
+            output_tokens = 0
+            generated_token_ids: list[int] = []
+            can_store = True
 
-            if output_tokens % stride == 0 and cancel_event.is_set():
-                if tool_context is None or not tool_context.stop_buffer_disabled:
+            for response in stream:
+                yield from _drain_prefill_progress(progress_queue)
+                output_tokens += 1
+
+                if output_tokens % stride == 0 and cancel_event.is_set():
+                    if tool_context is None or not tool_context.stop_buffer_disabled:
+                        flush_text = buf.flush()
+                        if flush_text:
+                            yield {"kind": "output_text_delta", "delta": flush_text}
+                    _close_stream(stream, cancelled=True)
+                    if tool_context is not None:
+                        finalize_tool_calling(tool_context, terminal_kind="cancelled")
+                        for event in tool_context.take_pending_events():
+                            if event["kind"] == "tool_call_delta":
+                                tool_calls_emitted = True
+                            yield event
+                    yield cancelled_event()
+                    return
+
+                finish_reason = response.finish_reason
+                token_id = _response_token_id(response)
+                orchard_eos = (
+                    token_id is not None
+                    and bool(eos_ids)
+                    and token_id in eos_ids
+                    and finish_reason is None
+                )
+
+                if token_id is None:
+                    can_store = False
+                elif can_store:
+                    generated_token_ids.append(token_id)
+
+                tool_mode_before = bool(tool_context and tool_context.stop_buffer_disabled)
+                emitted_events = (
+                    consume_tool_response(tool_context, response)
+                    if tool_context is not None
+                    else (
+                        [{"kind": "output_text_delta", "delta": response.text}]
+                        if response.text
+                        else []
+                    )
+                )
+
+                if tool_context is not None and not tool_mode_before and tool_context.in_tool_call:
                     flush_text = buf.flush()
                     if flush_text:
                         yield {"kind": "output_text_delta", "delta": flush_text}
-                _close_stream(stream, cancelled=True)
-                if tool_context is not None:
-                    finalize_tool_calling(tool_context, terminal_kind="cancelled")
-                    for event in tool_context.take_pending_events():
-                        if event["kind"] == "tool_call_delta":
-                            tool_calls_emitted = True
+
+                for event in emitted_events:
+                    if event["kind"] == "tool_call_delta":
+                        tool_calls_emitted = True
                         yield event
-                yield cancelled_event()
-                return
+                        continue
 
-            finish_reason = response.finish_reason
-            token_id = _response_token_id(response)
-            orchard_eos = (
-                token_id is not None
-                and bool(eos_ids)
-                and token_id in eos_ids
-                and finish_reason is None
-            )
+                    delta_text = event.get("delta", "")
+                    if not delta_text:
+                        continue
 
-            if token_id is None:
-                can_store = False
-            elif can_store:
-                generated_token_ids.append(token_id)
+                    if tool_context is not None and tool_context.stop_buffer_disabled:
+                        yield {"kind": "output_text_delta", "delta": delta_text}
+                        continue
 
-            tool_mode_before = bool(tool_context and tool_context.stop_buffer_disabled)
-            emitted_events = (
-                consume_tool_response(tool_context, response)
-                if tool_context is not None
-                else (
-                    [{"kind": "output_text_delta", "delta": response.text}] if response.text else []
-                )
-            )
-
-            if tool_context is not None and not tool_mode_before and tool_context.in_tool_call:
-                flush_text = buf.flush()
-                if flush_text:
-                    yield {"kind": "output_text_delta", "delta": flush_text}
-
-            for event in emitted_events:
-                if event["kind"] == "tool_call_delta":
-                    tool_calls_emitted = True
-                    yield event
-                    continue
-
-                delta_text = event.get("delta", "")
-                if not delta_text:
-                    continue
-
-                if tool_context is not None and tool_context.stop_buffer_disabled:
-                    yield {"kind": "output_text_delta", "delta": delta_text}
-                    continue
-
-                safe_text, stop_matched = buf.push(delta_text)
-                if stop_matched:
+                    safe_text, stop_matched = buf.push(delta_text)
+                    if stop_matched:
+                        if safe_text:
+                            yield {"kind": "output_text_delta", "delta": safe_text}
+                        _close_stream(stream, cancelled=False)
+                        if not deps.uses_shared_batch_runtime:
+                            store_result = _maybe_store_prompt_cache(
+                                session,
+                                prompt_ids,
+                                generated_token_ids,
+                                prompt_cache=request_prompt_cache,
+                                can_store=can_store,
+                                cache_finalized=_cache_finalized_for_store(stream),
+                            )
+                        yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
+                        return
                     if safe_text:
                         yield {"kind": "output_text_delta", "delta": safe_text}
-                    _close_stream(stream, cancelled=False)
+
+                if tool_context is not None and tool_context.pending_error is not None:
+                    _close_stream(stream, cancelled=True)
+                    yield {
+                        "kind": "failed",
+                        "code": tool_context.pending_error.code,
+                        "message": tool_context.pending_error.message,
+                        "retryable": tool_context.pending_error.retryable,
+                    }
+                    return
+
+                if orchard_eos or finish_reason is not None:
+                    if tool_context is None or not tool_context.stop_buffer_disabled:
+                        flush_text = buf.flush()
+                        if flush_text:
+                            yield {"kind": "output_text_delta", "delta": flush_text}
+
+                    if tool_context is not None:
+                        final_error = finalize_tool_calling(tool_context, terminal_kind="completed")
+                        for event in tool_context.take_pending_events():
+                            if event["kind"] == "tool_call_delta":
+                                tool_calls_emitted = True
+                            yield event
+                        if final_error is not None:
+                            _close_stream(stream, cancelled=True)
+                            yield {
+                                "kind": "failed",
+                                "code": final_error.code,
+                                "message": final_error.message,
+                                "retryable": final_error.retryable,
+                            }
+                            return
+
                     if not deps.uses_shared_batch_runtime:
                         store_result = _maybe_store_prompt_cache(
                             session,
@@ -1626,29 +1724,33 @@ def generate_events(
                             generated_token_ids,
                             prompt_cache=request_prompt_cache,
                             can_store=can_store,
-                            cache_finalized=_cache_finalized_for_store(stream),
                         )
-                    yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
+                    if tool_calls_emitted:
+                        yield _completed_event(
+                            "FINISH_REASON_TOOL_CALLS",
+                            input_tokens,
+                            output_tokens,
+                        )
+                    elif orchard_eos or finish_reason == "stop":
+                        yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
+                    else:
+                        yield _completed_event("FINISH_REASON_LENGTH", input_tokens, output_tokens)
                     return
-                if safe_text:
-                    yield {"kind": "output_text_delta", "delta": safe_text}
 
-            if tool_context is not None and tool_context.pending_error is not None:
-                _close_stream(stream, cancelled=True)
-                yield {
-                    "kind": "failed",
-                    "code": tool_context.pending_error.code,
-                    "message": tool_context.pending_error.message,
-                    "retryable": tool_context.pending_error.retryable,
-                }
-                return
-
-            if orchard_eos or finish_reason is not None:
-                if tool_context is None or not tool_context.stop_buffer_disabled:
-                    flush_text = buf.flush()
-                    if flush_text:
-                        yield {"kind": "output_text_delta", "delta": flush_text}
-
+            yield from _drain_prefill_progress(progress_queue)
+            if tool_context is None or not tool_context.stop_buffer_disabled:
+                flush_text = buf.flush()
+                if flush_text:
+                    yield {"kind": "output_text_delta", "delta": flush_text}
+            if cancel_event.is_set():
+                if tool_context is not None:
+                    finalize_tool_calling(tool_context, terminal_kind="cancelled")
+                    for event in tool_context.take_pending_events():
+                        if event["kind"] == "tool_call_delta":
+                            tool_calls_emitted = True
+                        yield event
+                yield cancelled_event()
+            else:
                 if tool_context is not None:
                     final_error = finalize_tool_calling(tool_context, terminal_kind="completed")
                     for event in tool_context.take_pending_events():
@@ -1656,7 +1758,6 @@ def generate_events(
                             tool_calls_emitted = True
                         yield event
                     if final_error is not None:
-                        _close_stream(stream, cancelled=True)
                         yield {
                             "kind": "failed",
                             "code": final_error.code,
@@ -1673,57 +1774,10 @@ def generate_events(
                         prompt_cache=request_prompt_cache,
                         can_store=can_store,
                     )
-                if tool_calls_emitted:
-                    yield _completed_event(
-                        "FINISH_REASON_TOOL_CALLS",
-                        input_tokens,
-                        output_tokens,
-                    )
-                elif orchard_eos or finish_reason == "stop":
-                    yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
-                else:
-                    yield _completed_event("FINISH_REASON_LENGTH", input_tokens, output_tokens)
-                return
+                finish = "FINISH_REASON_TOOL_CALLS" if tool_calls_emitted else "FINISH_REASON_STOP"
+                yield _completed_event(finish, input_tokens, output_tokens)
+            return
 
-        yield from _drain_prefill_progress(progress_queue)
-        if tool_context is None or not tool_context.stop_buffer_disabled:
-            flush_text = buf.flush()
-            if flush_text:
-                yield {"kind": "output_text_delta", "delta": flush_text}
-        if cancel_event.is_set():
-            if tool_context is not None:
-                finalize_tool_calling(tool_context, terminal_kind="cancelled")
-                for event in tool_context.take_pending_events():
-                    if event["kind"] == "tool_call_delta":
-                        tool_calls_emitted = True
-                    yield event
-            yield cancelled_event()
-        else:
-            if tool_context is not None:
-                final_error = finalize_tool_calling(tool_context, terminal_kind="completed")
-                for event in tool_context.take_pending_events():
-                    if event["kind"] == "tool_call_delta":
-                        tool_calls_emitted = True
-                    yield event
-                if final_error is not None:
-                    yield {
-                        "kind": "failed",
-                        "code": final_error.code,
-                        "message": final_error.message,
-                        "retryable": final_error.retryable,
-                    }
-                    return
-
-            if not deps.uses_shared_batch_runtime:
-                store_result = _maybe_store_prompt_cache(
-                    session,
-                    prompt_ids,
-                    generated_token_ids,
-                    prompt_cache=request_prompt_cache,
-                    can_store=can_store,
-                )
-            finish = "FINISH_REASON_TOOL_CALLS" if tool_calls_emitted else "FINISH_REASON_STOP"
-            yield _completed_event(finish, input_tokens, output_tokens)
     finally:
         if stream is not None:
             _close_stream(stream, cancelled=True)
