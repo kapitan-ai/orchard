@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import signal
 import threading
 import time
@@ -27,6 +28,18 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CANCEL_TOMBSTONE_TTL_S = 60.0
 _DEFAULT_GRPC_WORKER_HEADROOM = 2
 _DEFAULT_GRPC_WORKERS_MIN = 4
+_UINT64_MAX = 18_446_744_073_709_551_615
+_MEMORY_BUDGET_UINT64_FIELDS = (
+    "max_recommended_working_set_size_bytes",
+    "target_working_set_bytes",
+    "overhead_bytes",
+    "resident_memory_bytes",
+    "estimated_headroom_bytes",
+    "kv_cache_bytes_per_token",
+    "prefill_workspace_bytes_per_token",
+)
+_MEMORY_BUDGET_FLOAT_FIELDS = ("utilization",)
+_INVALID_MEMORY_BUDGET_NUMERIC_MESSAGE = "memory budget status contained invalid numeric fields"
 
 
 @dataclass(slots=True)
@@ -40,6 +53,126 @@ class CancelEntry:
     event: threading.Event
     phase: Literal["tombstone", "active"] = "tombstone"
     expires_at_monotonic: float | None = None
+
+
+def _status_bool(value: Any) -> bool:
+    return value is True
+
+
+def _valid_status_uint64(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _UINT64_MAX
+
+
+def _status_uint64(value: Any) -> int:
+    if _valid_status_uint64(value):
+        return value
+    return 0
+
+
+def _valid_status_float(value: Any) -> bool:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            converted = float(value)
+        except (OverflowError, ValueError):
+            return False
+
+        return math.isfinite(converted) and converted >= 0.0
+
+    return False
+
+
+def _status_float(value: Any) -> float:
+    if _valid_status_float(value):
+        return float(value)
+    return 0.0
+
+
+def _status_string(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _memory_budget_claims_usable(memory_budget: dict[str, Any]) -> bool:
+    return (
+        _status_string(memory_budget.get("status_code")) == "ok"
+        or _status_bool(memory_budget.get("budget_available"))
+        or _status_bool(memory_budget.get("headroom_available"))
+    )
+
+
+def _invalid_memory_budget_numeric_fields(memory_budget: dict[str, Any]) -> list[str]:
+    claims_usable = _memory_budget_claims_usable(memory_budget)
+    invalid_fields: list[str] = []
+
+    for field in _MEMORY_BUDGET_UINT64_FIELDS:
+        if field not in memory_budget:
+            if claims_usable:
+                invalid_fields.append(field)
+            continue
+
+        if not _valid_status_uint64(memory_budget[field]):
+            invalid_fields.append(field)
+
+    for field in _MEMORY_BUDGET_FLOAT_FIELDS:
+        if field not in memory_budget:
+            if claims_usable:
+                invalid_fields.append(field)
+            continue
+
+        if not _valid_status_float(memory_budget[field]):
+            invalid_fields.append(field)
+
+    return invalid_fields
+
+
+def _invalid_numeric_memory_budget_status_response(
+    memory_budget: dict[str, Any],
+) -> worker_runtime_pb2.WorkerMemoryBudgetStatus:
+    return worker_runtime_pb2.WorkerMemoryBudgetStatus(
+        mode="observe",
+        budget_available=False,
+        headroom_available=False,
+        status_code="invalid_status",
+        status_message=_INVALID_MEMORY_BUDGET_NUMERIC_MESSAGE,
+        source=_status_string(memory_budget.get("source")),
+    )
+
+
+def _memory_budget_status_response(memory_budget: Any) -> worker_runtime_pb2.WorkerMemoryBudgetStatus | None:
+    if memory_budget is None:
+        return None
+
+    if not isinstance(memory_budget, dict):
+        return worker_runtime_pb2.WorkerMemoryBudgetStatus(
+            mode="observe",
+            budget_available=False,
+            headroom_available=False,
+            status_code="invalid_status",
+            status_message="backend memory budget status was invalid",
+        )
+
+    if _invalid_memory_budget_numeric_fields(memory_budget):
+        return _invalid_numeric_memory_budget_status_response(memory_budget)
+
+    return worker_runtime_pb2.WorkerMemoryBudgetStatus(
+        mode=_status_string(memory_budget.get("mode")),
+        budget_available=_status_bool(memory_budget.get("budget_available")),
+        headroom_available=_status_bool(memory_budget.get("headroom_available")),
+        status_code=_status_string(memory_budget.get("status_code")),
+        status_message=_status_string(memory_budget.get("status_message")),
+        source=_status_string(memory_budget.get("source")),
+        max_recommended_working_set_size_bytes=_status_uint64(
+            memory_budget.get("max_recommended_working_set_size_bytes")
+        ),
+        utilization=_status_float(memory_budget.get("utilization")),
+        target_working_set_bytes=_status_uint64(memory_budget.get("target_working_set_bytes")),
+        overhead_bytes=_status_uint64(memory_budget.get("overhead_bytes")),
+        resident_memory_bytes=_status_uint64(memory_budget.get("resident_memory_bytes")),
+        estimated_headroom_bytes=_status_uint64(memory_budget.get("estimated_headroom_bytes")),
+        kv_cache_bytes_per_token=_status_uint64(memory_budget.get("kv_cache_bytes_per_token")),
+        prefill_workspace_bytes_per_token=_status_uint64(
+            memory_budget.get("prefill_workspace_bytes_per_token")
+        ),
+    )
 
 
 class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer):
@@ -61,13 +194,17 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
     ) -> worker_runtime_pb2.WorkerStatusResponse:
         status = self._backend.status()
         health = self._backend.health()
-        return worker_runtime_pb2.WorkerStatusResponse(
+        response = worker_runtime_pb2.WorkerStatusResponse(
             loaded=bool(status["loaded"]),
             active_request_count=int(status["active_request_count"]),
             ready=bool(health["ready"]),
             health_code=str(health["code"]),
             health_message=str(health["message"]),
         )
+        memory_budget = _memory_budget_status_response(status.get("memory_budget"))
+        if memory_budget is not None:
+            response.memory_budget.CopyFrom(memory_budget)
+        return response
 
     def LoadModel(
         self, request: worker_runtime_pb2.LoadModelRequest, context: grpc.ServicerContext

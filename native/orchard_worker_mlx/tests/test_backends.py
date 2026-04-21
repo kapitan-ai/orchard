@@ -273,11 +273,30 @@ def test_mlx_backend_initial_status_unloaded() -> None:
 
 
 def test_mlx_backend_load_success() -> None:
-    backend = _make_mlx_backend()
+    from orchard_worker_mlx.model_loader import MemoryBudgetStatus
+
+    session = _make_fake_session()
+    session.memory_budget_status = MemoryBudgetStatus(
+        mode="observe",
+        budget_available=True,
+        headroom_available=True,
+        status_code="ok",
+        max_recommended_working_set_size_bytes=8_000_000_000,
+        utilization=0.75,
+        target_working_set_bytes=6_000_000_000,
+        overhead_bytes=268_435_456,
+        resident_memory_bytes=2_048_000,
+        estimated_headroom_bytes=5_731_516_544,
+        kv_cache_bytes_per_token=16_384,
+        prefill_workspace_bytes_per_token=2_048,
+    )
+    backend = _make_mlx_backend(loader_session=session)
     backend.load_model(model_id="m", version="v", model_path="/fake/path")
     status = backend.status()
     assert status["loaded"] is True
     assert status["active_request_count"] == 0
+    assert status["memory_budget"]["status_code"] == "ok"
+    assert status["memory_budget"]["estimated_headroom_bytes"] == 5_731_516_544
 
 
 def test_mlx_backend_load_passes_generation_and_memory_config_to_loader() -> None:

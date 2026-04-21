@@ -25,7 +25,28 @@ defmodule Orchard.Node.WorkerProcessTest do
 
     @impl true
     def get_status(_adapter_state, _opts) do
-      {:ok, %{ready: true, health_code: "", health_message: ""}}
+      {:ok,
+       %{
+         ready: true,
+         health_code: "",
+         health_message: "",
+         memory_budget: %{
+           mode: "observe",
+           budget_available: true,
+           headroom_available: true,
+           status_code: "ok",
+           status_message: "",
+           source: "mlx.core.device_info.max_recommended_working_set_size",
+           max_recommended_working_set_size_bytes: 8_000_000_000,
+           utilization: 0.75,
+           target_working_set_bytes: 6_000_000_000,
+           overhead_bytes: 268_435_456,
+           resident_memory_bytes: 2_048_000,
+           estimated_headroom_bytes: 5_731_516_544,
+           kv_cache_bytes_per_token: 16_384,
+           prefill_workspace_bytes_per_token: 2_048
+         }
+       }}
     end
 
     @impl true
@@ -268,6 +289,30 @@ defmodule Orchard.Node.WorkerProcessTest do
                    )
 
           assert {:ok, %{active_request_count: 2}} = WorkerProcess.status(pid)
+        after
+          GenServer.stop(pid, :normal, 1_000)
+        end
+      end
+    )
+  end
+
+  test "status includes adapter memory budget when loaded" do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ConcurrentRuntimeAdapter,
+        worker_generation_mode: "stream"
+      ],
+      fn ->
+        pid = start_worker_process!()
+
+        try do
+          assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+          assert {:ok, status} = WorkerProcess.status(pid)
+          assert status.ready == true
+          assert status.memory_budget.mode == "observe"
+          assert status.memory_budget.budget_available == true
+          assert status.memory_budget.status_code == "ok"
+          assert status.memory_budget.estimated_headroom_bytes == 5_731_516_544
         after
           GenServer.stop(pid, :normal, 1_000)
         end

@@ -196,6 +196,236 @@ defmodule OrchardNodeAgentTest do
     def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
   end
 
+  defmodule MemoryBudgetRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(_adapter_state, _opts) do
+      {:ok,
+       %{
+         ready: true,
+         health_code: "",
+         health_message: "",
+         memory_budget: %{
+           mode: "observe",
+           budget_available: true,
+           headroom_available: true,
+           status_code: "ok",
+           status_message: "",
+           source: "mlx.core.device_info.max_recommended_working_set_size",
+           max_recommended_working_set_size_bytes: 8_000_000_000,
+           utilization: 0.75,
+           target_working_set_bytes: 6_000_000_000,
+           overhead_bytes: 268_435_456,
+           resident_memory_bytes: 2_048_000,
+           estimated_headroom_bytes: 5_731_516_544,
+           kv_cache_bytes_per_token: 16_384,
+           prefill_workspace_bytes_per_token: 2_048
+         }
+       }}
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
+  defmodule CountingStatusRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(_adapter_state, _opts) do
+      if pid = Process.whereis(:load_timeout_test_pid) do
+        send(pid, {:counting_status_probe, self()})
+      end
+
+      {:ok,
+       %{
+         ready: true,
+         health_code: "",
+         health_message: "",
+         memory_budget: %{
+           mode: "observe",
+           budget_available: true,
+           headroom_available: true,
+           status_code: "ok",
+           status_message: "",
+           source: "mlx.core.device_info.max_recommended_working_set_size",
+           max_recommended_working_set_size_bytes: 8_000_000_000,
+           utilization: 0.5,
+           target_working_set_bytes: 4_000_000_000,
+           overhead_bytes: 128_000_000,
+           resident_memory_bytes: 2_048_000,
+           estimated_headroom_bytes: 3_870_000_000,
+           kv_cache_bytes_per_token: 16_384,
+           prefill_workspace_bytes_per_token: 2_048
+         }
+       }}
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
+  defmodule StatusProbeShortCircuitAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @blocked_model_id "status-probe/blocked"
+
+    @impl true
+    def get_status(adapter_state, _opts) do
+      if pid = Process.whereis(:load_timeout_test_pid) do
+        send(pid, {:short_circuit_status_probe, self(), adapter_state.model_ref})
+      end
+
+      {:ok,
+       %{
+         ready: true,
+         health_code: "",
+         health_message: "",
+         memory_budget: %{
+           mode: "observe",
+           budget_available: true,
+           headroom_available: true,
+           status_code: "ok",
+           status_message: "",
+           source: "mlx.core.device_info.max_recommended_working_set_size",
+           max_recommended_working_set_size_bytes: 8_000_000_000,
+           utilization: 0.5,
+           target_working_set_bytes: 4_000_000_000,
+           overhead_bytes: 128_000_000,
+           resident_memory_bytes: 2_048_000,
+           estimated_headroom_bytes: 3_870_000_000,
+           kv_cache_bytes_per_token: 16_384,
+           prefill_workspace_bytes_per_token: 2_048
+         }
+       }}
+    end
+
+    @impl true
+    def load_model(%ModelRef{model_id: @blocked_model_id} = model_ref, _opts) do
+      if pid = Process.whereis(:load_timeout_test_pid) do
+        send(pid, {:short_circuit_blocking_load_started, self(), model_ref})
+      end
+
+      receive do
+        :finish_load -> {:ok, %{model_ref: model_ref, generations: %{}}}
+      after
+        30_000 -> {:error, :load_timeout}
+      end
+    end
+
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
+  defmodule InvalidMemoryBudgetRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(_adapter_state, _opts) do
+      utilization =
+        Application.fetch_env!(:orchard_node_agent, :runtime)
+        |> Keyword.get(:test_invalid_memory_budget_utilization, 0.0)
+
+      {:ok,
+       %{
+         ready: true,
+         health_code: "",
+         health_message: "",
+         memory_budget: %{
+           mode: "observe",
+           budget_available: true,
+           headroom_available: true,
+           status_code: "ok",
+           status_message: "",
+           source: "mlx.core.device_info.max_recommended_working_set_size",
+           max_recommended_working_set_size_bytes: -1,
+           utilization: utilization,
+           target_working_set_bytes: 18_446_744_073_709_551_616,
+           overhead_bytes: "bad",
+           resident_memory_bytes: true,
+           estimated_headroom_bytes: 18_446_744_073_709_551_615,
+           kv_cache_bytes_per_token: 16_384,
+           prefill_workspace_bytes_per_token: 340_282_366_920_938_463_463_374_607_431_768_211_456
+         }
+       }}
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
   defmodule LoadTimeoutCapturingAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
 
@@ -620,6 +850,96 @@ defmodule OrchardNodeAgentTest do
       assert response.runtime_health.ready == true
       assert response.runtime_health.health_code == ""
     end)
+  end
+
+  test "get_status includes runtime memory budgets for loaded models", %{bundle: bundle} do
+    request = ensure_model_loaded_request(bundle)
+
+    with_runtime_adapter(MemoryBudgetRuntimeAdapter, fn ->
+      with_channel(fn channel ->
+        assert {:ok, %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED}} =
+                 NodeRuntimeStub.ensure_model_loaded(channel, request)
+
+        assert {:ok, %StatusResponse{} = response} =
+                 NodeRuntimeStub.get_status(channel, %StatusRequest{})
+
+        assert [%{model_ref: %RPCModelRef{} = model_ref} = budget] = response.runtime_memory_budgets
+        assert model_ref.model_id == bundle.model_id
+        assert model_ref.version == bundle.version
+        assert budget.mode == "observe"
+        assert budget.budget_available == true
+        assert budget.headroom_available == true
+        assert budget.status_code == "ok"
+        assert budget.target_working_set_bytes == 6_000_000_000
+        assert budget.estimated_headroom_bytes == 5_731_516_544
+      end)
+    end)
+  end
+
+  test "get_status reuses one worker status snapshot for health and memory budgets", %{
+    bundle: bundle
+  } do
+    request = ensure_model_loaded_request(bundle)
+
+    with_runtime_adapter(CountingStatusRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(request)
+
+      assert %StatusResponse{} = response = NodeStatus.current()
+      assert response.runtime_health.ready == true
+      assert [%{model_ref: %RPCModelRef{} = model_ref}] = response.runtime_memory_budgets
+      assert model_ref.model_id == bundle.model_id
+      assert model_ref.version == bundle.version
+
+      assert_receive {:counting_status_probe, _worker_pid}, 1_000
+      refute_receive {:counting_status_probe, _worker_pid}, 100
+    end)
+  end
+
+  test "get_status skips loaded-worker budget probes while load is inflight", %{bundle: bundle} do
+    blocked_bundle = stage_test_bundle!("status-probe/blocked", "v1")
+
+    on_exit(fn ->
+      File.rm_rf(blocked_bundle.cache_path)
+      File.rm_rf(blocked_bundle.source_path)
+    end)
+
+    with_runtime_adapter(StatusProbeShortCircuitAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      ensure_task =
+        Task.async(fn ->
+          NodeStatus.ensure_model_loaded(ensure_model_loaded_request(blocked_bundle, 10_000))
+        end)
+
+      assert_receive {:short_circuit_blocking_load_started, blocking_pid, blocked_model_ref}, 1_000
+
+      assert %StatusResponse{} = response = NodeStatus.current()
+      assert response.runtime_health.ready == false
+      assert response.runtime_health.health_code == "starting"
+      assert response.runtime_health.health_message == "model load in progress"
+      assert response.runtime_health.affected_model.model_id == blocked_bundle.model_id
+      assert response.runtime_health.affected_model.version == blocked_bundle.version
+      assert response.runtime_memory_budgets == []
+      assert Enum.any?(response.loaded_models, &(&1.model_id == bundle.model_id and &1.version == bundle.version))
+      refute Enum.any?(response.loaded_models, &(&1.model_id == blocked_bundle.model_id and &1.version == blocked_bundle.version))
+      refute_receive {:short_circuit_status_probe, _pid, _model_ref}, 100
+
+      send(blocking_pid, :finish_load)
+
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               Task.await(ensure_task, 5_000)
+
+      assert blocked_model_ref.model_id == blocked_bundle.model_id
+      assert blocked_model_ref.version == blocked_bundle.version
+    end)
+  end
+
+  test "get_status downgrades invalid runtime memory budget values from runtime adapter", %{
+    bundle: bundle
+  } do
+    assert_invalid_runtime_memory_budget_is_downgraded(bundle, huge_integer_utilization())
   end
 
   test "ensure_model_loaded is idempotent and does not create duplicate workers", %{
@@ -2426,6 +2746,47 @@ defmodule OrchardNodeAgentTest do
   defp worker_pid do
     DynamicSupervisor.which_children(WorkerSupervisor)
     |> Enum.find_value(fn {_id, pid, _type, _modules} -> if is_pid(pid), do: pid end)
+  end
+
+  defp assert_invalid_runtime_memory_budget_is_downgraded(bundle, utilization) do
+    request = ensure_model_loaded_request(bundle)
+
+    with_runtime_config(
+      [
+        runtime_adapter_impl: InvalidMemoryBudgetRuntimeAdapter,
+        test_invalid_memory_budget_utilization: utilization
+      ],
+      fn ->
+        with_channel(fn channel ->
+          assert {:ok, %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED}} =
+                   NodeRuntimeStub.ensure_model_loaded(channel, request)
+
+          assert {:ok, %StatusResponse{} = response} =
+                   NodeRuntimeStub.get_status(channel, %StatusRequest{})
+
+          assert [%{model_ref: %RPCModelRef{} = model_ref} = budget] = response.runtime_memory_budgets
+          assert model_ref.model_id == bundle.model_id
+          assert model_ref.version == bundle.version
+          assert budget.mode == "observe"
+          assert budget.budget_available == false
+          assert budget.headroom_available == false
+          assert budget.status_code == "invalid_status"
+          assert budget.status_message == "memory budget status contained invalid numeric fields"
+          assert budget.max_recommended_working_set_size_bytes == 0
+          assert budget.utilization == 0.0
+          assert budget.target_working_set_bytes == 0
+          assert budget.overhead_bytes == 0
+          assert budget.resident_memory_bytes == 0
+          assert budget.estimated_headroom_bytes == 0
+          assert budget.kv_cache_bytes_per_token == 0
+          assert budget.prefill_workspace_bytes_per_token == 0
+        end)
+      end
+    )
+  end
+
+  defp huge_integer_utilization do
+    Integer.pow(2, 10_000)
   end
 
   defp with_runtime_adapter(adapter, fun) when is_function(fun, 0) do

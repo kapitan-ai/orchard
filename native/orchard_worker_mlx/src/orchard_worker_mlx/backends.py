@@ -6,7 +6,7 @@ import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol, TypedDict, runtime_checkable
+from typing import Any, NotRequired, Protocol, TypedDict, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +21,27 @@ class BackendError(Exception):
         return self.message
 
 
+class BackendMemoryBudgetStatus(TypedDict):
+    mode: str
+    budget_available: bool
+    headroom_available: bool
+    status_code: str
+    status_message: str
+    source: str
+    max_recommended_working_set_size_bytes: int
+    utilization: float
+    target_working_set_bytes: int
+    overhead_bytes: int
+    resident_memory_bytes: int
+    estimated_headroom_bytes: int
+    kv_cache_bytes_per_token: int
+    prefill_workspace_bytes_per_token: int
+
+
 class BackendStatus(TypedDict):
     loaded: bool
     active_request_count: int
+    memory_budget: NotRequired[BackendMemoryBudgetStatus]
 
 
 class BackendHealth(TypedDict):
@@ -213,10 +231,30 @@ class MLXBackend:
 
     def status(self) -> BackendStatus:
         with self._lock:
-            return BackendStatus(
-                loaded=self._session is not None,
+            loaded = self._session is not None
+            status = BackendStatus(
+                loaded=loaded,
                 active_request_count=self._active_request_count,
             )
+            if loaded and self._session is not None:
+                budget = self._session.memory_budget_status
+                status["memory_budget"] = BackendMemoryBudgetStatus(
+                    mode=budget.mode,
+                    budget_available=budget.budget_available,
+                    headroom_available=budget.headroom_available,
+                    status_code=budget.status_code,
+                    status_message=budget.status_message,
+                    source=budget.source,
+                    max_recommended_working_set_size_bytes=budget.max_recommended_working_set_size_bytes,
+                    utilization=budget.utilization,
+                    target_working_set_bytes=budget.target_working_set_bytes,
+                    overhead_bytes=budget.overhead_bytes,
+                    resident_memory_bytes=budget.resident_memory_bytes,
+                    estimated_headroom_bytes=budget.estimated_headroom_bytes,
+                    kv_cache_bytes_per_token=budget.kv_cache_bytes_per_token,
+                    prefill_workspace_bytes_per_token=budget.prefill_workspace_bytes_per_token,
+                )
+            return status
 
     def health(self) -> BackendHealth:
         return BackendHealth(

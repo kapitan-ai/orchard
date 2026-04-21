@@ -8,12 +8,30 @@ import "cluster/v1/runtime.proto";
 
 message WorkerStatusRequest {}
 
+message WorkerMemoryBudgetStatus {
+  string mode = 1;
+  bool budget_available = 2;
+  bool headroom_available = 3;
+  string status_code = 4;
+  string status_message = 5;
+  string source = 6;
+  uint64 max_recommended_working_set_size_bytes = 7;
+  double utilization = 8;
+  uint64 target_working_set_bytes = 9;
+  uint64 overhead_bytes = 10;
+  uint64 resident_memory_bytes = 11;
+  uint64 estimated_headroom_bytes = 12;
+  uint64 kv_cache_bytes_per_token = 13;
+  uint64 prefill_workspace_bytes_per_token = 14;
+}
+
 message WorkerStatusResponse {
   bool loaded = 1;
   uint32 active_request_count = 2;
   bool ready = 3;
   string health_code = 4;
   string health_message = 5;
+  WorkerMemoryBudgetStatus memory_budget = 6;
 }
 
 message LoadModelRequest {

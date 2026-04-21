@@ -6,6 +6,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   alias Orchard.Cluster.V1.OutputTextDelta, as: ProtoOutputTextDelta
   alias Orchard.Node.Worker.V1.{
     LoadModelRequest,
+    WorkerMemoryBudgetStatus,
     WorkerRuntimeService,
     WorkerStatusRequest,
     WorkerStatusResponse
@@ -55,6 +56,45 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     use GRPC.Endpoint
 
     run(MidStreamUnavailableWorkerService)
+  end
+
+  defmodule MemoryBudgetWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream) do
+      %WorkerStatusResponse{
+        ready: true,
+        health_code: "",
+        health_message: "",
+        memory_budget: %WorkerMemoryBudgetStatus{
+          mode: "observe",
+          budget_available: true,
+          headroom_available: true,
+          status_code: "ok",
+          status_message: "",
+          source: "mlx.core.device_info.max_recommended_working_set_size",
+          max_recommended_working_set_size_bytes: 8_000_000_000,
+          utilization: 0.75,
+          target_working_set_bytes: 6_000_000_000,
+          overhead_bytes: 268_435_456,
+          resident_memory_bytes: 2_048_000,
+          estimated_headroom_bytes: 5_731_516_544,
+          kv_cache_bytes_per_token: 16_384,
+          prefill_workspace_bytes_per_token: 2_048
+        }
+      }
+    end
+
+    def load_model(%LoadModelRequest{}, _stream), do: %Ack{ok: true}
+    def unload_model(_request, _stream), do: %Ack{ok: true}
+    def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
+    def generate(%ExecuteInferenceRequest{}, _stream), do: raise("not used")
+  end
+
+  defmodule MemoryBudgetEndpoint do
+    use GRPC.Endpoint
+
+    run(MemoryBudgetWorkerService)
   end
 
   test "worker_cli_args omits generation and memory flags for default-compatible values" do
@@ -144,6 +184,20 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
                      memory_budget_overhead_bytes: 0
                    )
                  end
+  end
+
+  test "get_status maps memory budget fields from worker status proto" do
+    with_worker_runtime_server(MemoryBudgetEndpoint, fn channel ->
+      assert {:ok, status} = WorkerRuntimeAdapter.get_status(%{channel: channel}, timeout_ms: 500)
+
+      assert status.ready == true
+      assert status.health_code == ""
+      assert status.memory_budget.mode == "observe"
+      assert status.memory_budget.budget_available == true
+      assert status.memory_budget.status_code == "ok"
+      assert status.memory_budget.target_working_set_bytes == 6_000_000_000
+      assert status.memory_budget.estimated_headroom_bytes == 5_731_516_544
+    end)
   end
 
   test "start_generation sends runtime_adapter_done when stream open returns worker_unavailable" do

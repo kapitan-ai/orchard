@@ -938,6 +938,20 @@ class UnhealthyBackend(HappyBackend):
         )
 
 
+class BudgetStatusBackend(HappyBackend):
+    def __init__(self, *, memory_budget: Any) -> None:
+        super().__init__()
+        self._loaded = True
+        self._memory_budget = memory_budget
+
+    def status(self) -> BackendStatus:
+        return BackendStatus(
+            loaded=True,
+            active_request_count=0,
+            memory_budget=self._memory_budget,
+        )
+
+
 def test_get_status_includes_health_fields_healthy() -> None:
     """GetStatus includes ready=True and empty code/message for healthy backend."""
     servicer = _make_servicer(HappyBackend())
@@ -954,6 +968,173 @@ def test_get_status_includes_health_fields_unhealthy() -> None:
     assert status.ready is False
     assert status.health_code == "mlx_backend_unavailable"
     assert status.health_message == "MLX not installed"
+
+
+def test_get_status_includes_memory_budget_fields() -> None:
+    servicer = _make_servicer(
+        BudgetStatusBackend(
+            memory_budget={
+                "mode": "observe",
+                "budget_available": True,
+                "headroom_available": True,
+                "status_code": "ok",
+                "status_message": "",
+                "source": "mlx.core.device_info.max_recommended_working_set_size",
+                "max_recommended_working_set_size_bytes": 8_000_000_000,
+                "utilization": 0.75,
+                "target_working_set_bytes": 6_000_000_000,
+                "overhead_bytes": 268_435_456,
+                "resident_memory_bytes": 2_048_000,
+                "estimated_headroom_bytes": 5_731_516_544,
+                "kv_cache_bytes_per_token": 16_384,
+                "prefill_workspace_bytes_per_token": 2_048,
+            }
+        )
+    )
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+    assert status.memory_budget.mode == "observe"
+    assert status.memory_budget.budget_available is True
+    assert status.memory_budget.status_code == "ok"
+    assert status.memory_budget.target_working_set_bytes == 6_000_000_000
+    assert status.memory_budget.estimated_headroom_bytes == 5_731_516_544
+
+
+def test_get_status_degrades_invalid_memory_budget_status() -> None:
+    servicer = _make_servicer(BudgetStatusBackend(memory_budget="not-a-map"))
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+    assert status.memory_budget.mode == "observe"
+    assert status.memory_budget.budget_available is False
+    assert status.memory_budget.headroom_available is False
+    assert status.memory_budget.status_code == "invalid_status"
+    assert status.memory_budget.status_message == "backend memory budget status was invalid"
+
+
+def test_get_status_downgrades_invalid_memory_budget_uint64_fields() -> None:
+    servicer = _make_servicer(
+        BudgetStatusBackend(
+            memory_budget={
+                "mode": "observe",
+                "budget_available": True,
+                "headroom_available": True,
+                "status_code": "ok",
+                "status_message": "",
+                "source": "mlx.core.device_info.max_recommended_working_set_size",
+                "max_recommended_working_set_size_bytes": -1,
+                "utilization": 0.75,
+                "target_working_set_bytes": 2**64,
+                "overhead_bytes": True,
+                "resident_memory_bytes": "2048",
+                "estimated_headroom_bytes": 2**64 - 1,
+                "kv_cache_bytes_per_token": 16_384,
+                "prefill_workspace_bytes_per_token": None,
+            }
+        )
+    )
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+    assert status.memory_budget.mode == "observe"
+    assert status.memory_budget.budget_available is False
+    assert status.memory_budget.headroom_available is False
+    assert status.memory_budget.status_code == "invalid_status"
+    assert status.memory_budget.status_message == "memory budget status contained invalid numeric fields"
+    assert status.memory_budget.max_recommended_working_set_size_bytes == 0
+    assert status.memory_budget.target_working_set_bytes == 0
+    assert status.memory_budget.overhead_bytes == 0
+    assert status.memory_budget.resident_memory_bytes == 0
+    assert status.memory_budget.estimated_headroom_bytes == 0
+    assert status.memory_budget.kv_cache_bytes_per_token == 0
+    assert status.memory_budget.prefill_workspace_bytes_per_token == 0
+    assert status.memory_budget.utilization == 0.0
+
+
+@pytest.mark.parametrize("utilization", [float("nan"), float("inf"), float("-inf")])
+def test_get_status_downgrades_non_finite_memory_budget_utilization(utilization: float) -> None:
+    servicer = _make_servicer(
+        BudgetStatusBackend(
+            memory_budget={
+                "mode": "observe",
+                "budget_available": True,
+                "headroom_available": True,
+                "status_code": "ok",
+                "status_message": "",
+                "source": "mlx.core.device_info.max_recommended_working_set_size",
+                "max_recommended_working_set_size_bytes": 8_000_000_000,
+                "utilization": utilization,
+                "target_working_set_bytes": 6_000_000_000,
+                "overhead_bytes": 268_435_456,
+                "resident_memory_bytes": 2_048_000,
+                "estimated_headroom_bytes": 5_731_516_544,
+                "kv_cache_bytes_per_token": 16_384,
+                "prefill_workspace_bytes_per_token": 2_048,
+            }
+        )
+    )
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+    assert status.memory_budget.mode == "observe"
+    assert status.memory_budget.budget_available is False
+    assert status.memory_budget.headroom_available is False
+    assert status.memory_budget.status_code == "invalid_status"
+    assert status.memory_budget.status_message == "memory budget status contained invalid numeric fields"
+    assert status.memory_budget.utilization == 0.0
+    assert status.memory_budget.target_working_set_bytes == 0
+
+
+def test_get_status_downgrades_huge_integer_memory_budget_utilization_without_raising() -> None:
+    servicer = _make_servicer(
+        BudgetStatusBackend(
+            memory_budget={
+                "mode": "observe",
+                "budget_available": True,
+                "headroom_available": True,
+                "status_code": "ok",
+                "status_message": "",
+                "source": "mlx.core.device_info.max_recommended_working_set_size",
+                "max_recommended_working_set_size_bytes": 8_000_000_000,
+                "utilization": 10**10_000,
+                "target_working_set_bytes": 6_000_000_000,
+                "overhead_bytes": 268_435_456,
+                "resident_memory_bytes": 2_048_000,
+                "estimated_headroom_bytes": 5_731_516_544,
+                "kv_cache_bytes_per_token": 16_384,
+                "prefill_workspace_bytes_per_token": 2_048,
+            }
+        )
+    )
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+    assert status.memory_budget.mode == "observe"
+    assert status.memory_budget.budget_available is False
+    assert status.memory_budget.headroom_available is False
+    assert status.memory_budget.status_code == "invalid_status"
+    assert status.memory_budget.status_message == "memory budget status contained invalid numeric fields"
+    assert status.memory_budget.utilization == 0.0
+    assert status.memory_budget.target_working_set_bytes == 0
+
+
+def test_get_status_downgrades_memory_budget_missing_required_numeric_field() -> None:
+    servicer = _make_servicer(
+        BudgetStatusBackend(
+            memory_budget={
+                "mode": "observe",
+                "budget_available": True,
+                "headroom_available": True,
+                "status_code": "ok",
+                "status_message": "",
+                "source": "mlx.core.device_info.max_recommended_working_set_size",
+                "max_recommended_working_set_size_bytes": 8_000_000_000,
+                "utilization": 0.75,
+                "overhead_bytes": 268_435_456,
+                "resident_memory_bytes": 2_048_000,
+                "estimated_headroom_bytes": 5_731_516_544,
+                "kv_cache_bytes_per_token": 16_384,
+                "prefill_workspace_bytes_per_token": 2_048,
+            }
+        )
+    )
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+    assert status.memory_budget.budget_available is False
+    assert status.memory_budget.headroom_available is False
+    assert status.memory_budget.status_code == "invalid_status"
+    assert status.memory_budget.status_message == "memory budget status contained invalid numeric fields"
+    assert status.memory_budget.target_working_set_bytes == 0
 
 
 def test_load_model_rejected_when_unhealthy() -> None:

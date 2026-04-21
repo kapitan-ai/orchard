@@ -131,6 +131,26 @@ class MemoryBudgetConfig:
             raise ValueError(f"overhead_bytes must be >= 0, got {self.overhead_bytes}")
 
 
+@dataclass(slots=True, frozen=True)
+class MemoryBudgetStatus:
+    """Observed working-set budget snapshot for one loaded model session."""
+
+    mode: str = "observe"
+    budget_available: bool = False
+    headroom_available: bool = False
+    status_code: str = "device_info_unavailable"
+    status_message: str = "MLX device info unavailable"
+    source: str = ""
+    max_recommended_working_set_size_bytes: int = 0
+    utilization: float = 0.90
+    target_working_set_bytes: int = 0
+    overhead_bytes: int = 0
+    resident_memory_bytes: int = 0
+    estimated_headroom_bytes: int = 0
+    kv_cache_bytes_per_token: int = 0
+    prefill_workspace_bytes_per_token: int = 0
+
+
 DEFAULT_GENERATION_RUNTIME_CONFIG = GenerationRuntimeConfig()
 DEFAULT_MEMORY_BUDGET_CONFIG = MemoryBudgetConfig()
 
@@ -427,6 +447,7 @@ class MLXDeps:
     eval_fn: Callable[[Any], None]
     clear_cache: Callable[[], None]
     monotonic: Callable[[], float]
+    device_info: Callable[[], Any] | None = None
     make_prompt_cache: Callable[[Any], Any] | None = None
     can_trim_prompt_cache: Callable[[Any], bool] | None = None
     make_sampler: Callable[..., Any] | None = None
@@ -510,6 +531,7 @@ def _default_mlx_deps() -> MLXDeps:
         eval_fn=mx.eval,
         clear_cache=mx.clear_cache,  # stable since mlx 0.22; see pyproject.toml floor
         monotonic=time.monotonic,
+        device_info=getattr(mx, "device_info", None),
         make_prompt_cache=_make_prompt_cache,
         can_trim_prompt_cache=_can_trim_prompt_cache,
         make_sampler=_make_sampler,
@@ -624,6 +646,9 @@ class LoadedModelSession:
     prefix_cache: PrefixCache | None = None
     generation_config: GenerationRuntimeConfig = DEFAULT_GENERATION_RUNTIME_CONFIG
     memory_budget_config: MemoryBudgetConfig = DEFAULT_MEMORY_BUDGET_CONFIG
+    memory_budget_status: MemoryBudgetStatus = dataclass_field(
+        default_factory=MemoryBudgetStatus
+    )
     tool_calling: dict[str, Any] = dataclass_field(
         default_factory=lambda: {"supported": False, "parser_type": None}
     )
@@ -727,6 +752,7 @@ _WARMUP_MAX_TOKENS = 50
 _WARMUP_PREFILL_STEP_SIZE = 2048
 _WARMUP_TARGET_CANCEL_INTERVAL_S = 0.05
 _WARMUP_MAX_STRIDE = 32
+_UINT64_MAX = 18_446_744_073_709_551_615
 
 
 def _run_warmup(
@@ -835,6 +861,157 @@ def _safe_clear_cache(clear_cache: Callable[[], None] | None) -> None:
             clear_cache()
         except Exception:
             pass
+
+
+def _is_positive_uint64(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= _UINT64_MAX
+
+
+def _compute_memory_budget_status(
+    manifest: BundleManifest,
+    deps: MLXDeps,
+    memory_budget_config: MemoryBudgetConfig,
+) -> MemoryBudgetStatus:
+    """Compute an observe-only working-set budget snapshot.
+
+    This helper is fail-open by design — any missing/invalid MLX device-info
+    signal produces an unavailable status rather than failing model load.
+    """
+    mode = memory_budget_config.mode
+    utilization = memory_budget_config.utilization
+    overhead_bytes = memory_budget_config.overhead_bytes
+    source = "mlx.core.device_info.max_recommended_working_set_size"
+    kv_cache_bytes_per_token = manifest.kv_cache_bytes_per_token or 0
+    prefill_workspace_bytes_per_token = manifest.prefill_workspace_bytes_per_token or 0
+    resident_memory_bytes = manifest.resident_memory_bytes or 0
+
+    if mode == "disabled":
+        return MemoryBudgetStatus(
+            mode=mode,
+            status_code="disabled",
+            status_message="memory budgeting disabled",
+            utilization=utilization,
+            overhead_bytes=overhead_bytes,
+            resident_memory_bytes=resident_memory_bytes,
+            kv_cache_bytes_per_token=kv_cache_bytes_per_token,
+            prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
+        )
+
+    device_info = deps.device_info
+    if device_info is None:
+        return MemoryBudgetStatus(
+            mode=mode,
+            status_code="device_info_unavailable",
+            status_message="MLX device info unavailable",
+            utilization=utilization,
+            overhead_bytes=overhead_bytes,
+            resident_memory_bytes=resident_memory_bytes,
+            kv_cache_bytes_per_token=kv_cache_bytes_per_token,
+            prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
+        )
+
+    try:
+        info = device_info()
+    except Exception as exc:
+        return MemoryBudgetStatus(
+            mode=mode,
+            status_code="compute_failed",
+            status_message=f"memory budget computation failed: {exc}",
+            utilization=utilization,
+            overhead_bytes=overhead_bytes,
+            resident_memory_bytes=resident_memory_bytes,
+            kv_cache_bytes_per_token=kv_cache_bytes_per_token,
+            prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
+        )
+
+    if not isinstance(info, dict):
+        return MemoryBudgetStatus(
+            mode=mode,
+            status_code="device_info_unavailable",
+            status_message="MLX device info unavailable",
+            utilization=utilization,
+            overhead_bytes=overhead_bytes,
+            resident_memory_bytes=resident_memory_bytes,
+            kv_cache_bytes_per_token=kv_cache_bytes_per_token,
+            prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
+        )
+
+    raw_working_set = info.get("max_recommended_working_set_size")
+    if not _is_positive_uint64(raw_working_set):
+        return MemoryBudgetStatus(
+            mode=mode,
+            status_code="device_info_invalid",
+            status_message="MLX device info returned an invalid working-set size",
+            source=source,
+            utilization=utilization,
+            overhead_bytes=overhead_bytes,
+            resident_memory_bytes=resident_memory_bytes,
+            kv_cache_bytes_per_token=kv_cache_bytes_per_token,
+            prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
+        )
+
+    max_recommended_working_set_size_bytes = raw_working_set
+
+    try:
+        target_working_set_bytes = int(math.floor(raw_working_set * utilization))
+        target_working_set_bytes = min(target_working_set_bytes, max_recommended_working_set_size_bytes)
+    except (ArithmeticError, OverflowError, ValueError) as exc:
+        return MemoryBudgetStatus(
+            mode=mode,
+            status_code="compute_failed",
+            status_message=f"memory budget computation failed: {exc}",
+            source=source,
+            max_recommended_working_set_size_bytes=max_recommended_working_set_size_bytes,
+            utilization=utilization,
+            overhead_bytes=overhead_bytes,
+            resident_memory_bytes=resident_memory_bytes,
+            kv_cache_bytes_per_token=kv_cache_bytes_per_token,
+            prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
+        )
+    resident_for_headroom = (
+        resident_memory_bytes
+        if resident_memory_bytes > 0 and not isinstance(resident_memory_bytes, bool)
+        else None
+    )
+
+    if resident_for_headroom is None:
+        return MemoryBudgetStatus(
+            mode=mode,
+            budget_available=True,
+            headroom_available=False,
+            status_code="resident_memory_unavailable",
+            status_message="resident memory estimate unavailable",
+            source=source,
+            max_recommended_working_set_size_bytes=max_recommended_working_set_size_bytes,
+            utilization=utilization,
+            target_working_set_bytes=target_working_set_bytes,
+            overhead_bytes=overhead_bytes,
+            resident_memory_bytes=resident_memory_bytes,
+            kv_cache_bytes_per_token=kv_cache_bytes_per_token,
+            prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
+        )
+
+    estimated_headroom_bytes = max(
+        target_working_set_bytes - (resident_for_headroom + overhead_bytes),
+        0,
+    )
+
+    return MemoryBudgetStatus(
+        mode=mode,
+        budget_available=True,
+        headroom_available=True,
+        status_code="ok",
+        status_message="",
+        source=source,
+        max_recommended_working_set_size_bytes=max_recommended_working_set_size_bytes,
+        utilization=utilization,
+        target_working_set_bytes=target_working_set_bytes,
+        overhead_bytes=overhead_bytes,
+        resident_memory_bytes=resident_memory_bytes,
+        estimated_headroom_bytes=estimated_headroom_bytes,
+        kv_cache_bytes_per_token=kv_cache_bytes_per_token,
+        prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
+    )
 
 
 def _build_prefix_cache(
@@ -1047,6 +1224,11 @@ def load_session(
     effective_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
     effective_generation_config = generation_config or DEFAULT_GENERATION_RUNTIME_CONFIG
     effective_memory_budget_config = memory_budget_config or DEFAULT_MEMORY_BUDGET_CONFIG
+    memory_budget_status = _compute_memory_budget_status(
+        manifest,
+        deps,
+        effective_memory_budget_config,
+    )
     prefix_cache = _build_prefix_cache(
         model,
         manifest,
@@ -1054,6 +1236,15 @@ def load_session(
         prefix_cache_config=effective_config,
     )
 
+    logger.info(
+        "load_session memory_budget mode=%s status=%s budget_available=%s headroom_available=%s target_bytes=%d headroom_bytes=%d",
+        memory_budget_status.mode,
+        memory_budget_status.status_code,
+        memory_budget_status.budget_available,
+        memory_budget_status.headroom_available,
+        memory_budget_status.target_working_set_bytes,
+        memory_budget_status.estimated_headroom_bytes,
+    )
     logger.info("load_session ok model_id=%s version=%s", model_id, version)
     return LoadedModelSession(
         manifest=manifest,
@@ -1069,6 +1260,7 @@ def load_session(
         prefix_cache=prefix_cache,
         generation_config=effective_generation_config,
         memory_budget_config=effective_memory_budget_config,
+        memory_budget_status=memory_budget_status,
         tool_calling=tool_calling,
     )
 

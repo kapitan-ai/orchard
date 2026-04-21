@@ -38,6 +38,8 @@ from orchard_worker_mlx.prefix_cache import KVPrefixCache, TriePrefixCache
 
 # ---------------------------------------------------------------------------
 # Fixture paths
+
+_DEFAULT_DEVICE_INFO = object()
 # ---------------------------------------------------------------------------
 
 # Canonical test bundle from Orchard controller fixtures.
@@ -96,6 +98,8 @@ def _make_fake_deps(
     can_trim_prompt_cache_return: bool = True,
     can_trim_prompt_cache_side_effect: Exception | None = None,
     make_sampler: Any = None,
+    device_info_result: Any = _DEFAULT_DEVICE_INFO,
+    device_info_side_effect: Exception | None = None,
 ) -> MLXDeps:
     fake_model = MagicMock(name="FakeModel")
     fake_tokenizer = MagicMock(name="FakeTokenizer")
@@ -157,6 +161,13 @@ def _make_fake_deps(
             raise can_trim_prompt_cache_side_effect
         return can_trim_prompt_cache_return
 
+    def _device_info() -> Any:
+        if device_info_side_effect is not None:
+            raise device_info_side_effect
+        if device_info_result is _DEFAULT_DEVICE_INFO:
+            return {"max_recommended_working_set_size": 8_589_934_592}
+        return device_info_result
+
     return MLXDeps(
         load_model=_load_model,
         load_tokenizer=_load_tokenizer,
@@ -164,6 +175,7 @@ def _make_fake_deps(
         eval_fn=MagicMock(name="eval_fn"),
         clear_cache=MagicMock(name="clear_cache"),
         monotonic=_monotonic,
+        device_info=_device_info,
         make_prompt_cache=_make_prompt_cache,
         can_trim_prompt_cache=_can_trim_prompt_cache,
         make_sampler=make_sampler,
@@ -996,6 +1008,170 @@ def test_load_session_stores_generation_and_memory_budget_config(writable_bundle
 
     assert session.generation_config == generation_config
     assert session.memory_budget_config == memory_budget_config
+
+
+def test_load_session_computes_memory_budget_status(writable_bundle: Path) -> None:
+    deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": 8_000_000_000})
+    memory_budget_config = MemoryBudgetConfig(
+        mode="observe",
+        utilization=0.75,
+        overhead_bytes=100_000,
+    )
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+        memory_budget_config=memory_budget_config,
+    )
+
+    status = session.memory_budget_status
+    assert status.mode == "observe"
+    assert status.status_code == "ok"
+    assert status.budget_available is True
+    assert status.headroom_available is True
+    assert status.max_recommended_working_set_size_bytes == 8_000_000_000
+    assert status.target_working_set_bytes == 6_000_000_000
+    assert status.overhead_bytes == 100_000
+    assert status.resident_memory_bytes == 2_048_000
+    assert status.estimated_headroom_bytes == 5_997_852_000
+    assert status.kv_cache_bytes_per_token == 16_384
+    assert status.prefill_workspace_bytes_per_token == 2_048
+
+
+def test_load_session_memory_budget_disabled_skips_device_info(writable_bundle: Path) -> None:
+    device_info = MagicMock(return_value={"max_recommended_working_set_size": 8_000_000_000})
+    deps = _make_fake_deps(device_info_result=None)
+    deps = MLXDeps(
+        load_model=deps.load_model,
+        load_tokenizer=deps.load_tokenizer,
+        stream_generate=deps.stream_generate,
+        eval_fn=deps.eval_fn,
+        clear_cache=deps.clear_cache,
+        monotonic=deps.monotonic,
+        device_info=device_info,
+        make_prompt_cache=deps.make_prompt_cache,
+        can_trim_prompt_cache=deps.can_trim_prompt_cache,
+        make_sampler=deps.make_sampler,
+    )
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+        memory_budget_config=MemoryBudgetConfig(mode="disabled"),
+    )
+
+    assert session.memory_budget_status.status_code == "disabled"
+    assert session.memory_budget_status.budget_available is False
+    assert session.memory_budget_status.headroom_available is False
+    device_info.assert_not_called()
+
+
+def test_load_session_memory_budget_handles_missing_device_info(writable_bundle: Path) -> None:
+    deps = _make_fake_deps(device_info_result=None)
+    deps = MLXDeps(
+        load_model=deps.load_model,
+        load_tokenizer=deps.load_tokenizer,
+        stream_generate=deps.stream_generate,
+        eval_fn=deps.eval_fn,
+        clear_cache=deps.clear_cache,
+        monotonic=deps.monotonic,
+        device_info=None,
+        make_prompt_cache=deps.make_prompt_cache,
+        can_trim_prompt_cache=deps.can_trim_prompt_cache,
+        make_sampler=deps.make_sampler,
+    )
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+
+    assert session.memory_budget_status.status_code == "device_info_unavailable"
+    assert session.memory_budget_status.budget_available is False
+    assert session.memory_budget_status.headroom_available is False
+
+
+def test_load_session_memory_budget_handles_invalid_device_info(writable_bundle: Path) -> None:
+    deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": 0})
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+
+    assert session.memory_budget_status.status_code == "device_info_invalid"
+    assert session.memory_budget_status.budget_available is False
+    assert session.memory_budget_status.headroom_available is False
+
+
+def test_load_session_memory_budget_handles_working_set_above_uint64(writable_bundle: Path) -> None:
+    deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": 2**64})
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+
+    assert session.memory_budget_status.status_code == "device_info_invalid"
+    assert session.memory_budget_status.budget_available is False
+    assert session.memory_budget_status.headroom_available is False
+    assert session.memory_budget_status.max_recommended_working_set_size_bytes == 0
+    assert session.memory_budget_status.target_working_set_bytes == 0
+
+
+def test_load_session_memory_budget_accepts_uint64_max(writable_bundle: Path) -> None:
+    deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": 2**64 - 1})
+    memory_budget_config = MemoryBudgetConfig(mode="observe", utilization=1.0, overhead_bytes=0)
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+        memory_budget_config=memory_budget_config,
+    )
+
+    assert session.memory_budget_status.status_code == "ok"
+    assert session.memory_budget_status.budget_available is True
+    assert session.memory_budget_status.headroom_available is True
+    assert session.memory_budget_status.max_recommended_working_set_size_bytes == 2**64 - 1
+    assert session.memory_budget_status.target_working_set_bytes == 2**64 - 1
+    assert session.memory_budget_status.resident_memory_bytes == 2_048_000
+    assert session.memory_budget_status.kv_cache_bytes_per_token == 16_384
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 2_048
+
+
+def test_load_session_memory_budget_headroom_unavailable_without_resident_memory(
+    writable_bundle: Path,
+) -> None:
+    manifest_path = writable_bundle / "manifest.json"
+    data = _read_fixture_manifest_dict()
+    data["resident_memory_bytes"] = 0
+    with open(manifest_path, "w") as f:
+        json.dump(data, f)
+
+    deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": 8_000_000_000})
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+
+    assert session.memory_budget_status.status_code == "resident_memory_unavailable"
+    assert session.memory_budget_status.budget_available is True
+    assert session.memory_budget_status.headroom_available is False
+    assert session.memory_budget_status.target_working_set_bytes == 7_200_000_000
 
 
 def test_unload_session_clears_populated_prefix_cache() -> None:

@@ -34,6 +34,25 @@ message RuntimeHealth {
   ModelRef affected_model = 4;
 }
 
+// Observe-only memory-budget snapshot for one loaded runtime/model.
+message RuntimeMemoryBudget {
+  ModelRef model_ref = 1;
+  string mode = 2;
+  bool budget_available = 3;
+  bool headroom_available = 4;
+  string status_code = 5;
+  string status_message = 6;
+  string source = 7;
+  uint64 max_recommended_working_set_size_bytes = 8;
+  double utilization = 9;
+  uint64 target_working_set_bytes = 10;
+  uint64 overhead_bytes = 11;
+  uint64 resident_memory_bytes = 12;
+  uint64 estimated_headroom_bytes = 13;
+  uint64 kv_cache_bytes_per_token = 14;
+  uint64 prefill_workspace_bytes_per_token = 15;
+}
+
 // Static hosted-tool capability advertised by the node. The controller derives
 // canonical identity as tool://<name>@<version> and matches against the tool
 // registry using the same name/version semantics.
@@ -65,6 +84,7 @@ message StatusResponse {
   RuntimeHealth runtime_health = 5;
   repeated HostedToolCapability hosted_tool_capabilities = 6;
   repeated HostedToolReadiness hosted_tool_readiness = 7;
+  repeated RuntimeMemoryBudget runtime_memory_budgets = 8;
 }
 
 message EnsureModelLoadedRequest {

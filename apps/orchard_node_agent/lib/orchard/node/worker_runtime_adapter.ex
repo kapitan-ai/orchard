@@ -18,7 +18,12 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   alias Orchard.InferenceEvent
   alias Orchard.Node
-  alias Orchard.Node.Worker.V1.{LoadModelRequest, WorkerRuntimeService, WorkerStatusRequest}
+  alias Orchard.Node.Worker.V1.{
+    LoadModelRequest,
+    WorkerMemoryBudgetStatus,
+    WorkerRuntimeService,
+    WorkerStatusRequest
+  }
   alias Orchard.PathUtils
 
   @poll_interval_ms 50
@@ -59,7 +64,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
          %{
            ready: Map.get(status, :ready, false),
            health_code: Map.get(status, :health_code, ""),
-           health_message: Map.get(status, :health_message, "")
+           health_message: Map.get(status, :health_message, ""),
+           memory_budget: memory_budget_from_proto(Map.get(status, :memory_budget))
          }}
 
       {:error, reason} ->
@@ -68,6 +74,31 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   def get_status(_adapter_state, _opts), do: {:error, :worker_unavailable}
+
+  defp memory_budget_from_proto(nil), do: nil
+
+  defp memory_budget_from_proto(%WorkerMemoryBudgetStatus{} = budget) do
+    %{
+      mode: Map.get(budget, :mode, ""),
+      budget_available: Map.get(budget, :budget_available, false),
+      headroom_available: Map.get(budget, :headroom_available, false),
+      status_code: Map.get(budget, :status_code, ""),
+      status_message: Map.get(budget, :status_message, ""),
+      source: Map.get(budget, :source, ""),
+      max_recommended_working_set_size_bytes:
+        Map.get(budget, :max_recommended_working_set_size_bytes, 0),
+      utilization: Map.get(budget, :utilization, 0.0),
+      target_working_set_bytes: Map.get(budget, :target_working_set_bytes, 0),
+      overhead_bytes: Map.get(budget, :overhead_bytes, 0),
+      resident_memory_bytes: Map.get(budget, :resident_memory_bytes, 0),
+      estimated_headroom_bytes: Map.get(budget, :estimated_headroom_bytes, 0),
+      kv_cache_bytes_per_token: Map.get(budget, :kv_cache_bytes_per_token, 0),
+      prefill_workspace_bytes_per_token:
+        Map.get(budget, :prefill_workspace_bytes_per_token, 0)
+    }
+  end
+
+  defp memory_budget_from_proto(_other), do: nil
 
   @impl true
   def load_model(%ModelRef{} = model_ref, opts) do

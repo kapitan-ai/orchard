@@ -751,6 +751,9 @@ Compatibility and defaulting rules:
 * absent hosted-tool capability/readiness fields on `StatusResponse` SHALL mean the node advertises no hosted tools
 * absent hosted-tool capability/readiness fields SHALL NOT be treated as a status-probe error
 * readiness without matching advertised capability for the same `tool://<name>@<version>` SHALL NOT make the node eligible for hosted routing
+* absent or empty `runtime_memory_budgets` on `StatusResponse` SHALL mean no memory-budget observation is available
+* absent or empty `runtime_memory_budgets` SHALL NOT be treated as a status-probe error
+* `runtime_memory_budgets` SHALL remain observe-only telemetry in this slice and SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, or hosted-tool eligibility
 
 Effective readiness rules for future hosted routing:
 
@@ -1922,6 +1925,24 @@ message RuntimeHealth {
   ModelRef affected_model = 4;
 }
 
+message RuntimeMemoryBudget {
+  ModelRef model_ref = 1;
+  string mode = 2;
+  bool budget_available = 3;
+  bool headroom_available = 4;
+  string status_code = 5;
+  string status_message = 6;
+  string source = 7;
+  uint64 max_recommended_working_set_size_bytes = 8;
+  double utilization = 9;
+  uint64 target_working_set_bytes = 10;
+  uint64 overhead_bytes = 11;
+  uint64 resident_memory_bytes = 12;
+  uint64 estimated_headroom_bytes = 13;
+  uint64 kv_cache_bytes_per_token = 14;
+  uint64 prefill_workspace_bytes_per_token = 15;
+}
+
 message StatusResponse {
   WorkerState worker_state = 1;
   repeated ModelRef loaded_models = 2;
@@ -1930,6 +1951,7 @@ message StatusResponse {
   RuntimeHealth runtime_health = 5;
   repeated HostedToolCapability hosted_tool_capabilities = 6;
   repeated HostedToolReadiness hosted_tool_readiness = 7;
+  repeated RuntimeMemoryBudget runtime_memory_budgets = 8;
 }
 
 message EnsureModelLoadedRequest {
@@ -2039,6 +2061,14 @@ Hosted-tool capability/readiness wire semantics:
 * both hosted-tool lists SHALL align to controller registry identity via `name` + `version`, with canonical ref `tool://<name>@<version>`
 * `hosted_tool_capabilities` and `hosted_tool_readiness` SHALL default to empty when omitted by an older node agent
 * omitted hosted-tool fields SHALL mean “no advertised hosted tools” and SHALL preserve old-node / new-controller compatibility
+
+Runtime memory-budget wire semantics:
+
+* `StatusResponse.runtime_memory_budgets` SHALL report observe-only memory-budget snapshots for loaded runtime/model paths
+* omitted or empty `runtime_memory_budgets` SHALL mean no memory-budget observation is available
+* omitted or empty `runtime_memory_budgets` SHALL NOT be treated as a node status error, readiness failure, or admission failure
+* `runtime_memory_budgets` SHALL NOT affect node readiness, request admission, model admission, scheduler eligibility, or hosted-tool eligibility in this implementation slice
+* scheduler memory eligibility SHALL continue to use the scheduler/model/node inputs defined elsewhere in this spec unless a later explicit contract promotes these observations to admission inputs
 
 #### 7.5.4 Node registration flow
 

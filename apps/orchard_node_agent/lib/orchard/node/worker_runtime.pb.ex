@@ -7,6 +7,44 @@ defmodule Orchard.Node.Worker.V1.WorkerStatusRequest do
     syntax: :proto3
 end
 
+defmodule Orchard.Node.Worker.V1.WorkerMemoryBudgetStatus do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "orchard.worker.v1.WorkerMemoryBudgetStatus",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:mode, 1, type: :string)
+  field(:budget_available, 2, type: :bool, json_name: "budgetAvailable")
+  field(:headroom_available, 3, type: :bool, json_name: "headroomAvailable")
+  field(:status_code, 4, type: :string, json_name: "statusCode")
+  field(:status_message, 5, type: :string, json_name: "statusMessage")
+  field(:source, 6, type: :string)
+
+  field(:max_recommended_working_set_size_bytes, 7,
+    type: :uint64,
+    json_name: "maxRecommendedWorkingSetSizeBytes"
+  )
+
+  field(:utilization, 8, type: :double)
+  field(:target_working_set_bytes, 9, type: :uint64, json_name: "targetWorkingSetBytes")
+  field(:overhead_bytes, 10, type: :uint64, json_name: "overheadBytes")
+  field(:resident_memory_bytes, 11, type: :uint64, json_name: "residentMemoryBytes")
+
+  field(:estimated_headroom_bytes, 12,
+    type: :uint64,
+    json_name: "estimatedHeadroomBytes"
+  )
+
+  field(:kv_cache_bytes_per_token, 13, type: :uint64, json_name: "kvCacheBytesPerToken")
+
+  field(:prefill_workspace_bytes_per_token, 14,
+    type: :uint64,
+    json_name: "prefillWorkspaceBytesPerToken"
+  )
+end
+
 defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do
   @moduledoc false
 
@@ -20,6 +58,11 @@ defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do
   field(:ready, 3, type: :bool)
   field(:health_code, 4, type: :string, json_name: "healthCode")
   field(:health_message, 5, type: :string, json_name: "healthMessage")
+
+  field(:memory_budget, 6,
+    type: Orchard.Node.Worker.V1.WorkerMemoryBudgetStatus,
+    json_name: "memoryBudget"
+  )
 end
 
 defmodule Orchard.Node.Worker.V1.LoadModelRequest do

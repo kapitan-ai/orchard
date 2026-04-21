@@ -9,6 +9,8 @@ defmodule Orchard.Node.ModelManager do
 
   use GenServer
 
+  import Bitwise, only: [band: 2, bsr: 2]
+
   require Logger
 
   alias Orchard.Cluster.V1.Ack
@@ -17,6 +19,7 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.Cluster.V1.RuntimeHealth
+  alias Orchard.Cluster.V1.RuntimeMemoryBudget
   alias Orchard.Cluster.V1.RuntimeNodeMetadata
   alias Orchard.Cluster.V1.StatusResponse
   alias Orchard.Cluster.V1.UnloadModelRequest
@@ -53,6 +56,19 @@ defmodule Orchard.Node.ModelManager do
           deadline_unix_ms: non_neg_integer(),
           timer_ref: reference() | nil
         }
+
+  @uint64_max 18_446_744_073_709_551_615
+  @memory_budget_uint64_fields [
+    :max_recommended_working_set_size_bytes,
+    :target_working_set_bytes,
+    :overhead_bytes,
+    :resident_memory_bytes,
+    :estimated_headroom_bytes,
+    :kv_cache_bytes_per_token,
+    :prefill_workspace_bytes_per_token
+  ]
+  @memory_budget_float_fields [:utilization]
+  @invalid_memory_budget_numeric_message "memory budget status contained invalid numeric fields"
 
   @type inflight_load :: %{
           request: EnsureModelLoadedRequest.t(),
@@ -1117,15 +1133,17 @@ defmodule Orchard.Node.ModelManager do
 
   defp status_response(state) do
     tool_snapshot = ToolCapabilityCatalog.snapshot()
+    {runtime_health, runtime_memory_budgets} = runtime_health_and_memory_budgets(state)
 
     %StatusResponse{
       worker_state: worker_state(state),
       loaded_models: loaded_models(state),
       active_request_count: map_size(state.active_requests),
       node_metadata: build_node_metadata(),
-      runtime_health: aggregate_runtime_health(state),
+      runtime_health: runtime_health,
       hosted_tool_capabilities: tool_snapshot.capabilities,
-      hosted_tool_readiness: tool_snapshot.readiness
+      hosted_tool_readiness: tool_snapshot.readiness,
+      runtime_memory_budgets: runtime_memory_budgets
     }
   end
 
@@ -1141,39 +1159,185 @@ defmodule Orchard.Node.ModelManager do
     }
   end
 
+  defp maybe_runtime_memory_budget(%ModelRef{} = model_ref, status_result) do
+    case status_result do
+      {:ok, %{memory_budget: budget}} when is_map(budget) ->
+        [runtime_memory_budget(model_ref, budget)]
+
+      _other ->
+        []
+    end
+  end
+
+  defp loaded_workers(state) do
+    state.workers
+    |> Enum.filter(fn {_key, entry} -> entry.placement_state == :PLACEMENT_STATE_LOADED end)
+    |> Enum.sort_by(fn {{model_id, version}, _} -> {model_id, version} end)
+  end
+
+  defp runtime_memory_budget(%ModelRef{} = model_ref, budget) do
+    if invalid_memory_budget_numeric_payload?(budget) do
+      invalid_runtime_memory_budget(model_ref, budget)
+    else
+      %RuntimeMemoryBudget{
+        model_ref: model_ref,
+        mode: budget_string(budget[:mode]),
+        budget_available: budget_bool(budget[:budget_available]),
+        headroom_available: budget_bool(budget[:headroom_available]),
+        status_code: budget_string(budget[:status_code]),
+        status_message: budget_string(budget[:status_message]),
+        source: budget_string(budget[:source]),
+        max_recommended_working_set_size_bytes:
+          budget_uint64(budget[:max_recommended_working_set_size_bytes]),
+        utilization: budget_float(budget[:utilization]),
+        target_working_set_bytes: budget_uint64(budget[:target_working_set_bytes]),
+        overhead_bytes: budget_uint64(budget[:overhead_bytes]),
+        resident_memory_bytes: budget_uint64(budget[:resident_memory_bytes]),
+        estimated_headroom_bytes: budget_uint64(budget[:estimated_headroom_bytes]),
+        kv_cache_bytes_per_token: budget_uint64(budget[:kv_cache_bytes_per_token]),
+        prefill_workspace_bytes_per_token:
+          budget_uint64(budget[:prefill_workspace_bytes_per_token])
+      }
+    end
+  end
+
+  defp budget_bool(value), do: value == true
+
+  defp budget_string(value) when is_binary(value), do: value
+  defp budget_string(_value), do: ""
+
+  defp invalid_memory_budget_numeric_payload?(budget) do
+    claims_usable = memory_budget_claims_usable?(budget)
+
+    Enum.any?(@memory_budget_uint64_fields, fn field ->
+      invalid_budget_uint64?(budget, field, claims_usable)
+    end) or
+      Enum.any?(@memory_budget_float_fields, fn field ->
+        invalid_budget_float?(budget, field, claims_usable)
+      end)
+  end
+
+  defp memory_budget_claims_usable?(budget) do
+    budget_string(budget[:status_code]) == "ok" or
+      budget_bool(budget[:budget_available]) or
+      budget_bool(budget[:headroom_available])
+  end
+
+  defp invalid_budget_uint64?(budget, field, claims_usable) do
+    case Map.fetch(budget, field) do
+      {:ok, value} -> not valid_budget_uint64?(value)
+      :error -> claims_usable
+    end
+  end
+
+  defp invalid_budget_float?(budget, field, claims_usable) do
+    case Map.fetch(budget, field) do
+      {:ok, value} -> not valid_budget_float?(value)
+      :error -> claims_usable
+    end
+  end
+
+  defp invalid_runtime_memory_budget(%ModelRef{} = model_ref, budget) do
+    %RuntimeMemoryBudget{
+      model_ref: model_ref,
+      mode: "observe",
+      budget_available: false,
+      headroom_available: false,
+      status_code: "invalid_status",
+      status_message: @invalid_memory_budget_numeric_message,
+      source: budget_string(budget[:source]),
+      max_recommended_working_set_size_bytes: 0,
+      utilization: 0.0,
+      target_working_set_bytes: 0,
+      overhead_bytes: 0,
+      resident_memory_bytes: 0,
+      estimated_headroom_bytes: 0,
+      kv_cache_bytes_per_token: 0,
+      prefill_workspace_bytes_per_token: 0
+    }
+  end
+
+  defp valid_budget_uint64?(value) do
+    is_integer(value) and value >= 0 and value <= @uint64_max
+  end
+
+  defp budget_uint64(value)
+       when is_integer(value) and value >= 0 and value <= @uint64_max,
+       do: value
+
+  defp budget_uint64(_value), do: 0
+
+  defp valid_budget_float?(value) when is_integer(value) and value >= 0 do
+    try do
+      float = value / 1
+      finite_float?(float) and float >= 0.0
+    rescue
+      ArithmeticError -> false
+    end
+  end
+
+  defp valid_budget_float?(value) when is_float(value) do
+    finite_float?(value) and value >= 0.0
+  end
+
+  defp valid_budget_float?(_value), do: false
+
+  defp budget_float(value) when is_integer(value) and value >= 0 do
+    try do
+      float = value / 1
+
+      if finite_float?(float), do: float, else: 0.0
+    rescue
+      ArithmeticError -> 0.0
+    end
+  end
+
+  defp budget_float(value) when is_float(value) do
+    if finite_float?(value) and value >= 0.0, do: value, else: 0.0
+  end
+
+  defp budget_float(_value), do: 0.0
+
+  defp finite_float?(value) when is_float(value) do
+    <<bits::unsigned-64>> = <<value::float-64>>
+    exponent = band(bsr(bits, 52), 0x7FF)
+    exponent != 0x7FF
+  end
+
   # Health aggregation algorithm:
-  # 1. Inflight loads → degraded/starting
-  # 2. Workers in LOADING state → degraded/starting
+  # 1. Inflight loads → degraded/starting (no worker status probes)
+  # 2. Workers in LOADING state → degraded/starting (no worker status probes)
   # 3. No workers → healthy
-  # 4. Probe each loaded worker; first unhealthy wins
-  # 5. All healthy → healthy
-  defp aggregate_runtime_health(state) do
+  # 4. Otherwise probe each loaded worker; first unhealthy wins
+  # 5. Runtime memory budgets are collected opportunistically from only the
+  #    worker status probes already needed for health.
+  defp runtime_health_and_memory_budgets(state) do
     cond do
       map_size(state.inflight_loads) > 0 ->
         first_inflight = first_sorted_model_ref(state.inflight_loads)
 
-        %RuntimeHealth{
-          ready: false,
-          health_code: "starting",
-          health_message: "model load in progress",
-          affected_model: first_inflight
-        }
+        {%RuntimeHealth{
+           ready: false,
+           health_code: "starting",
+           health_message: "model load in progress",
+           affected_model: first_inflight
+         }, []}
 
       has_loading_worker?(state) ->
         loading_ref = first_loading_worker_ref(state)
 
-        %RuntimeHealth{
-          ready: false,
-          health_code: "starting",
-          health_message: "model load in progress",
-          affected_model: loading_ref
-        }
+        {%RuntimeHealth{
+           ready: false,
+           health_code: "starting",
+           health_message: "model load in progress",
+           affected_model: loading_ref
+         }, []}
 
       map_size(state.workers) == 0 ->
-        %RuntimeHealth{ready: true, health_code: "", health_message: ""}
+        {%RuntimeHealth{ready: true, health_code: "", health_message: ""}, []}
 
       true ->
-        probe_workers_health(state)
+        probe_workers_health_and_memory_budgets(loaded_workers(state))
     end
   end
 
@@ -1208,40 +1372,37 @@ defmodule Orchard.Node.ModelManager do
   # NOTE: Sequential probing with 1s timeout per worker. Acceptable for
   # single-node / low-worker-count (capped by max_loaded_models). For
   # multi-node with many workers, consider parallel probing or cached health.
-  defp probe_workers_health(state) do
-    loaded_workers =
-      state.workers
-      |> Enum.filter(fn {_key, entry} -> entry.placement_state == :PLACEMENT_STATE_LOADED end)
-      |> Enum.sort_by(fn {{model_id, version}, _} -> {model_id, version} end)
+  defp probe_workers_health_and_memory_budgets(loaded_workers) do
+    {health, runtime_memory_budgets} =
+      Enum.reduce_while(loaded_workers, {nil, []}, fn {_key, entry}, {_, budgets} ->
+        status_result = WorkerProcess.status(entry.pid, timeout: 1_000)
+        updated_budgets = budgets ++ maybe_runtime_memory_budget(entry.model_ref, status_result)
 
-    Enum.reduce_while(loaded_workers, nil, fn {_key, entry}, _acc ->
-      case WorkerProcess.status(entry.pid, timeout: 1_000) do
-        {:ok, %{ready: true}} ->
-          {:cont, nil}
+        case status_result do
+          {:ok, %{ready: true}} ->
+            {:cont, {nil, updated_budgets}}
 
-        {:ok, %{ready: false} = status} ->
-          {:halt,
-           %RuntimeHealth{
-             ready: false,
-             health_code: status[:health_code] || "worker_unhealthy",
-             health_message: status[:health_message] || "",
-             affected_model: entry.model_ref
-           }}
+          {:ok, %{ready: false} = status} ->
+            {:halt,
+             {%RuntimeHealth{
+                ready: false,
+                health_code: status[:health_code] || "worker_unhealthy",
+                health_message: status[:health_message] || "",
+                affected_model: entry.model_ref
+              }, updated_budgets}}
 
-        {:error, _reason} ->
-          {:halt,
-           %RuntimeHealth{
-             ready: false,
-             health_code: "worker_status_error",
-             health_message: "worker status request failed",
-             affected_model: entry.model_ref
-           }}
-      end
-    end)
-    |> case do
-      nil -> %RuntimeHealth{ready: true, health_code: "", health_message: ""}
-      health -> health
-    end
+          {:error, _reason} ->
+            {:halt,
+             {%RuntimeHealth{
+                ready: false,
+                health_code: "worker_status_error",
+                health_message: "worker status request failed",
+                affected_model: entry.model_ref
+              }, updated_budgets}}
+        end
+      end)
+
+    {health || %RuntimeHealth{ready: true, health_code: "", health_message: ""}, runtime_memory_budgets}
   end
 
   defp worker_state(state) do

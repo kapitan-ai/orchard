@@ -177,7 +177,8 @@ defmodule Orchard.Node.WorkerProcess do
       active_request_count: map_size(state.requests),
       ready: adapter_health[:ready] || false,
       health_code: adapter_health[:health_code] || "",
-      health_message: adapter_health[:health_message] || ""
+      health_message: adapter_health[:health_message] || "",
+      memory_budget: adapter_health[:memory_budget]
     }
 
     {:reply, {:ok, status}, state}
