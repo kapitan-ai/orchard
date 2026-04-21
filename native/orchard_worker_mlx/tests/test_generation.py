@@ -21,6 +21,7 @@ from orchard_worker_mlx.generation import (
     BatchGeneratorRuntime,
     GenerationDeps,
     StopSequenceBuffer,
+    _build_wired_limit_context,
     _make_prefill_progress_callback,
     generate_events,
 )
@@ -889,7 +890,7 @@ def test_batch_generator_runtime_releases_detokenizer_after_terminal_service_bre
             if event["kind"] in ("completed", "failed"):
                 break
     finally:
-        iterator.close()
+        cast(Any, iterator).close()
 
     assert runtime._active_detokenizer_ids == set()
 
@@ -897,13 +898,20 @@ def test_batch_generator_runtime_releases_detokenizer_after_terminal_service_bre
 
 
 def test_batch_generator_runtime_close_raises_if_pump_cannot_stop_after_generator_close() -> None:
-    session = _make_fake_session()
+    tracker = _WiredLimitTracker()
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=True,
+            target_working_set_bytes=123_456,
+        )
+    )
     session.tokenizer = _ToyTokenizer()
     runtime = BatchGeneratorRuntime(
         session,
         generation_deps=GenerationDeps(
             stream_generate=lambda *_args, **_kwargs: iter([]),
             make_sampler=lambda **_kw: MagicMock(),
+            wired_limit=tracker,
         ),
         batch_deps=BatchGenerationDeps(batch_generator_cls=_BlockingNextBatchGenerator),
     )
@@ -936,10 +944,14 @@ def test_batch_generator_runtime_close_raises_if_pump_cannot_stop_after_generato
     assert exc_info.value.code == "batch_runtime_close_timeout"
     assert runtime._pump.is_alive() is True
     assert generator.close_called is True
+    assert tracker.enter_count == 1
+    assert tracker.exit_count == 0
 
     generator.allow_next.set()
     thread.join(timeout=2.0)
     runtime.close()
+
+    assert tracker.exit_count == 1
 
     assert thread.is_alive() is False
     assert len(thread_errors) == 1
@@ -1234,7 +1246,7 @@ def test_batch_generator_runtime_generator_close_marks_request_cancelled_not_loc
         first_event = next(iterator)
         assert first_event["kind"] == "output_text_delta"
 
-        iterator.close()
+        cast(Any, iterator).close()
 
         deadline = time.monotonic() + 1.0
         state = None
@@ -1773,6 +1785,261 @@ class _ExplodingEnterWiredLimit:
         return None
 
 
+class _FakeMXWiredLimit:
+    def __init__(self) -> None:
+        self.set_calls: list[int] = []
+        self.synchronize_count = 0
+
+    def set_wired_limit(self, bytes_limit: int) -> int:
+        self.set_calls.append(bytes_limit)
+        return 999_999
+
+    def synchronize(self) -> None:
+        self.synchronize_count += 1
+
+
+def test_wired_limit_context_sets_target_bytes_and_restores_previous_limit() -> None:
+    fake_mx = _FakeMXWiredLimit()
+    wired_limit = _build_wired_limit_context(fake_mx)
+
+    with wired_limit(123_456):
+        assert fake_mx.set_calls == [123_456]
+        assert fake_mx.synchronize_count == 0
+
+    assert fake_mx.set_calls == [123_456, 999_999]
+    assert fake_mx.synchronize_count == 1
+
+
+def test_batch_generator_runtime_cleans_partial_startup_after_pump_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = _WiredLimitTracker()
+    started_pumps: list[threading.Thread] = []
+
+    class _StartupFailureBatchGenerator:
+        instances: list[_StartupFailureBatchGenerator] = []
+
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self.close_called = False
+            type(self).instances.append(self)
+
+        def close(self) -> None:
+            self.close_called = True
+
+    original_start = threading.Thread.start
+
+    def start_or_fail(thread: threading.Thread) -> None:
+        if thread.name == "mlx-batch-generator":
+            started_pumps.append(thread)
+            original_start(thread)
+            return
+        if thread.name == "mlx-batch-generator-watchdog":
+            raise RuntimeError("watchdog start boom")
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start_or_fail)
+
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=True,
+            target_working_set_bytes=123_456,
+        )
+    )
+    session.tokenizer = _ToyTokenizer()
+
+    with pytest.raises(RuntimeError, match="watchdog start boom"):
+        BatchGeneratorRuntime(
+            session,
+            generation_deps=GenerationDeps(
+                stream_generate=lambda *_args, **_kwargs: iter([]),
+                make_sampler=lambda **_kw: MagicMock(),
+                wired_limit=tracker,
+            ),
+            batch_deps=BatchGenerationDeps(batch_generator_cls=_StartupFailureBatchGenerator),
+        )
+
+    assert len(_StartupFailureBatchGenerator.instances) == 1
+    assert _StartupFailureBatchGenerator.instances[0].close_called is True
+    assert started_pumps
+    assert all(not thread.is_alive() for thread in started_pumps)
+    assert tracker.enter_count == 1
+    assert tracker.exit_count == 1
+
+
+def test_batch_generator_runtime_cleans_partial_startup_before_threads_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tracker = _WiredLimitTracker()
+    started_threads: list[str] = []
+
+    class _PumpStartFailureBatchGenerator:
+        instances: list[_PumpStartFailureBatchGenerator] = []
+
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self.close_called = False
+            type(self).instances.append(self)
+
+        def close(self) -> None:
+            self.close_called = True
+
+    original_start = threading.Thread.start
+
+    def start_or_fail(thread: threading.Thread) -> None:
+        if thread.name == "mlx-batch-generator":
+            raise RuntimeError("pump start boom")
+        started_threads.append(thread.name)
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", start_or_fail)
+
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=True,
+            target_working_set_bytes=123_456,
+        )
+    )
+    session.tokenizer = _ToyTokenizer()
+
+    with pytest.raises(RuntimeError, match="pump start boom"):
+        BatchGeneratorRuntime(
+            session,
+            generation_deps=GenerationDeps(
+                stream_generate=lambda *_args, **_kwargs: iter([]),
+                make_sampler=lambda **_kw: MagicMock(),
+                wired_limit=tracker,
+            ),
+            batch_deps=BatchGenerationDeps(batch_generator_cls=_PumpStartFailureBatchGenerator),
+        )
+
+    assert len(_PumpStartFailureBatchGenerator.instances) == 1
+    assert _PumpStartFailureBatchGenerator.instances[0].close_called is True
+    assert started_threads == []
+    assert tracker.calls == [123_456]
+    assert tracker.enter_count == 1
+    assert tracker.exit_count == 1
+
+
+def test_batch_generator_runtime_uses_wired_limit_for_runtime_lifetime() -> None:
+    tracker = _WiredLimitTracker()
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=True,
+            target_working_set_bytes=123_456,
+        )
+    )
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            wired_limit=tracker,
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    try:
+        events = _collect_events(session, _make_fake_request(), runtime.generation_deps())
+        assert events[-1]["kind"] == "completed"
+        assert tracker.calls == [123_456]
+        assert tracker.enter_count == 1
+        assert tracker.exit_count == 0
+    finally:
+        runtime.close()
+
+    assert tracker.exit_count == 1
+
+
+def test_batch_generator_runtime_close_idempotently_closes_wired_limit_once() -> None:
+    tracker = _WiredLimitTracker()
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=True,
+            target_working_set_bytes=123_456,
+        )
+    )
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            wired_limit=tracker,
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    assert tracker.calls == [123_456]
+    assert tracker.enter_count == 1
+    assert tracker.exit_count == 0
+
+    runtime.close()
+
+    assert tracker.exit_count == 1
+
+    runtime.close()
+
+    assert tracker.exit_count == 1
+
+
+def test_batch_generator_runtime_wired_limit_entry_failure_is_fail_open() -> None:
+    tracker = _ExplodingEnterWiredLimit()
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=True,
+            target_working_set_bytes=123_456,
+        )
+    )
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            wired_limit=tracker,
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    try:
+        events = _collect_events(session, _make_fake_request(), runtime.generation_deps())
+        assert events[-1]["kind"] == "completed"
+        assert tracker.calls == [123_456]
+        assert tracker.enter_count == 1
+        assert tracker.exit_count == 0
+    finally:
+        runtime.close()
+
+
+def test_batch_generator_runtime_skips_wired_limit_without_available_budget() -> None:
+    tracker = _WiredLimitTracker()
+    session = _make_fake_session(
+        memory_budget_status=SimpleNamespace(
+            budget_available=False,
+            target_working_set_bytes=123_456,
+        )
+    )
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            wired_limit=tracker,
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    try:
+        events = _collect_events(session, _make_fake_request(), runtime.generation_deps())
+        assert events[-1]["kind"] == "completed"
+        assert tracker.calls == []
+        assert tracker.enter_count == 0
+        assert tracker.exit_count == 0
+    finally:
+        runtime.close()
+
+
 def test_wired_limit_used_with_expected_target_working_set_bytes() -> None:
     tracker = _WiredLimitTracker()
     responses = [
@@ -1898,6 +2165,67 @@ def test_wired_limit_context_entry_failure_is_fail_open() -> None:
     assert tracker.calls == [123_456]
     assert tracker.enter_count == 1
     assert tracker.exit_count == 0
+
+
+class _BudgetStatusTargetRaises:
+    budget_available = True
+
+    @property
+    def target_working_set_bytes(self) -> int:
+        raise RuntimeError("target lookup boom")
+
+
+def test_wired_limit_target_lookup_failure_is_fail_open() -> None:
+    tracker = _WiredLimitTracker()
+    stream_calls = 0
+    responses = [
+        FakeGenerationResponse(text="x", token=10, finish_reason="stop"),
+    ]
+
+    def stream_generate(model, tokenizer, prompt_ids, **kwargs):
+        nonlocal stream_calls
+        stream_calls += 1
+        yield from responses
+
+    deps = GenerationDeps(
+        stream_generate=stream_generate,
+        make_sampler=lambda **kw: MagicMock(),
+        wired_limit=tracker,
+    )
+    session = _make_fake_session(memory_budget_status=_BudgetStatusTargetRaises())
+    request = _make_fake_request()
+
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert stream_calls == 1
+    assert tracker.calls == []
+    assert tracker.enter_count == 0
+    assert tracker.exit_count == 0
+
+
+def test_wired_limit_target_lookup_failure_is_fail_open_for_batch_runtime() -> None:
+    tracker = _WiredLimitTracker()
+    session = _make_fake_session(memory_budget_status=_BudgetStatusTargetRaises())
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            wired_limit=tracker,
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    try:
+        events = _collect_events(session, _make_fake_request(), runtime.generation_deps())
+        assert events[-1]["kind"] == "completed"
+        assert tracker.calls == []
+        assert tracker.enter_count == 0
+        assert tracker.exit_count == 0
+    finally:
+        runtime.close()
 
 
 def test_wired_limit_skipped_for_shared_batch_runtime_with_budget_available() -> None:

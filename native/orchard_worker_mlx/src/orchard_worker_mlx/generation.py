@@ -53,10 +53,10 @@ import threading
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from orchard_worker_mlx.backends import BackendError, cancelled_event
 from orchard_worker_mlx.prefix_cache import PrefixCacheStats
@@ -143,6 +143,27 @@ class GenerationDeps:
     uses_shared_batch_runtime: bool = False
 
 
+def _build_wired_limit_context(mx_module: Any) -> Callable[[int], Any]:
+    # Keep this direct mlx.core helper so Orchard can apply its own byte target
+    # while preserving the GenerationDeps fail-open/testing seam.
+    @contextmanager
+    def _wired_limit(target_working_set_bytes: int) -> Iterator[None]:
+        old_limit = mx_module.set_wired_limit(target_working_set_bytes)
+        try:
+            yield
+        finally:
+            try:
+                mx_module.synchronize()
+            except Exception:
+                logger.debug("wired_limit synchronize failed; continuing", exc_info=True)
+            try:
+                mx_module.set_wired_limit(old_limit)
+            except Exception:
+                logger.debug("wired_limit restore failed; continuing", exc_info=True)
+
+    return _wired_limit
+
+
 def _default_generation_deps() -> GenerationDeps:
     """Import real MLX generation dependencies lazily."""
     try:
@@ -172,9 +193,9 @@ def _default_generation_deps() -> GenerationDeps:
         pass
 
     try:
-        from mlx_lm.generate import wired_limit as _wired_limit_impl
+        import mlx.core as mx
 
-        _wired_limit = _wired_limit_impl
+        _wired_limit = _build_wired_limit_context(mx)
     except (ImportError, AttributeError):
         pass
 
@@ -292,15 +313,16 @@ class _BatchRequestStream:
                     self._release_detokenizer()
                     raise StopIteration
 
-                kind = payload[0]
+                payload_tuple = cast(tuple[Any, ...], payload)
+                kind = payload_tuple[0]
                 if kind == "progress":
-                    _, processed, total = payload
+                    _, processed, total = payload_tuple
                     cb = state.progress_callback
                     if cb is not None:
                         cb(processed, total)
                     continue
 
-                _, token, finish_reason = payload
+                _, token, finish_reason = payload_tuple
 
                 suppress_terminal_stop_token = (
                     finish_reason == "stop" and token in self._stop_token_ids
@@ -383,20 +405,32 @@ class BatchGeneratorRuntime:
         self._active_detokenizer_ids: set[int] = set()
         self._detokenizer_factory = self._build_detokenizer_factory(session.tokenizer)
         self._batch_generator_closed = False
+        self._wired_limit_stack = ExitStack()
+        self._wired_limit_closed = False
         self.stop_token_ids: frozenset[int] = frozenset(getattr(session, "eos_token_ids", ()))
 
         self._reset_requested: str | None = None
-        self._batch_generator = self._build_batch_generator(session)
-        self._pump = threading.Thread(
-            target=self._run_loop, name="mlx-batch-generator", daemon=True
-        )
-        self._watchdog = threading.Thread(
-            target=self._deadline_watchdog_loop,
-            name="mlx-batch-generator-watchdog",
-            daemon=True,
-        )
-        self._pump.start()
-        self._watchdog.start()
+        try:
+            _enter_wired_limit_fail_open(
+                self._wired_limit_stack,
+                session,
+                self._generation_deps,
+                allow_shared_batch_runtime=True,
+            )
+            self._batch_generator = self._build_batch_generator(session)
+            self._pump = threading.Thread(
+                target=self._run_loop, name="mlx-batch-generator", daemon=True
+            )
+            self._watchdog = threading.Thread(
+                target=self._deadline_watchdog_loop,
+                name="mlx-batch-generator-watchdog",
+                daemon=True,
+            )
+            self._pump.start()
+            self._watchdog.start()
+        except Exception:
+            self._cleanup_partial_startup()
+            raise
 
     @property
     def tokenizer(self) -> Any:
@@ -447,6 +481,7 @@ class BatchGeneratorRuntime:
     def close(self) -> None:
         with self._cv:
             if self._closed and self._batch_generator_closed:
+                self._close_wired_limit()
                 return
 
             self._closed = True
@@ -473,6 +508,8 @@ class BatchGeneratorRuntime:
 
         with self._cv:
             self._batch_generator_closed = True
+
+        self._close_wired_limit()
 
     def wait_next(
         self,
@@ -915,6 +952,41 @@ class BatchGeneratorRuntime:
             if batch_generator is not None:
                 self._close_batch_generator_best_effort(batch_generator)
 
+    def _cleanup_partial_startup(self) -> None:
+        batch_generator = getattr(self, "_batch_generator", None)
+        pump = getattr(self, "_pump", None)
+        watchdog = getattr(self, "_watchdog", None)
+
+        with self._cv:
+            self._closed = True
+            self._mark_all_closed_locked(
+                BackendError("generation_failed", "batch runtime startup failed", False)
+            )
+            self._cv.notify_all()
+
+        self._close_batch_generator_best_effort(batch_generator)
+
+        if (
+            isinstance(pump, threading.Thread)
+            and pump.is_alive()
+            and threading.current_thread() is not pump
+        ):
+            pump.join(timeout=_BATCH_RUNTIME_CLOSE_TIMEOUT_S)
+
+        if (
+            isinstance(watchdog, threading.Thread)
+            and watchdog.is_alive()
+            and threading.current_thread() is not watchdog
+        ):
+            watchdog.join(timeout=_BATCH_RUNTIME_CLOSE_TIMEOUT_S)
+
+        # Only restore wired-limit once the pump is confirmed dead/not started;
+        # a live pump may still be unwinding MLX work.
+        if not isinstance(pump, threading.Thread) or not pump.is_alive():
+            with self._cv:
+                self._batch_generator_closed = True
+            self._close_wired_limit()
+
     def _seconds_until_next_deadline_locked(self, now: float) -> float:
         deadlines = [
             deadline
@@ -996,6 +1068,16 @@ class BatchGeneratorRuntime:
                 close_fn()
             except Exception:
                 pass
+
+    def _close_wired_limit(self) -> None:
+        if self._wired_limit_closed:
+            return
+
+        self._wired_limit_closed = True
+        try:
+            self._wired_limit_stack.close()
+        except Exception:
+            logger.debug("wired_limit close failed; continuing", exc_info=True)
 
     def _finalize_request_cache(self, state: _BatchRequestState, response: Any) -> None:
         if state.prompt_cache is None:
@@ -1283,16 +1365,19 @@ def _enter_wired_limit_fail_open(
     stack: ExitStack,
     session: Any,
     deps: GenerationDeps,
+    *,
+    allow_shared_batch_runtime: bool = False,
 ) -> None:
-    """Best-effort wired-memory limit around single-request generation."""
-    if deps.uses_shared_batch_runtime or deps.wired_limit is None:
+    """Best-effort wired-memory limit around request-time generation."""
+    if deps.wired_limit is None:
         return
-
-    target_working_set_bytes = _wired_limit_target_working_set_bytes(session)
-    if target_working_set_bytes <= 0:
+    if deps.uses_shared_batch_runtime and not allow_shared_batch_runtime:
         return
 
     try:
+        target_working_set_bytes = _wired_limit_target_working_set_bytes(session)
+        if target_working_set_bytes <= 0:
+            return
         stack.enter_context(deps.wired_limit(target_working_set_bytes))
     except Exception:
         logger.debug("wired_limit unavailable at runtime; continuing", exc_info=True)
