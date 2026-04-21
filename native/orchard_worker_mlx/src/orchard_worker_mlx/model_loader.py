@@ -7,7 +7,7 @@ import json
 import logging
 import math
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
@@ -646,9 +646,7 @@ class LoadedModelSession:
     prefix_cache: PrefixCache | None = None
     generation_config: GenerationRuntimeConfig = DEFAULT_GENERATION_RUNTIME_CONFIG
     memory_budget_config: MemoryBudgetConfig = DEFAULT_MEMORY_BUDGET_CONFIG
-    memory_budget_status: MemoryBudgetStatus = dataclass_field(
-        default_factory=MemoryBudgetStatus
-    )
+    memory_budget_status: MemoryBudgetStatus = dataclass_field(default_factory=MemoryBudgetStatus)
     tool_calling: dict[str, Any] = dataclass_field(
         default_factory=lambda: {"supported": False, "parser_type": None}
     )
@@ -867,6 +865,32 @@ def _is_positive_uint64(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= _UINT64_MAX
 
 
+def _extract_working_set_size_bytes(device_info: Mapping[str, Any]) -> int | None:
+    """Extract and normalize working-set size from MLX device info.
+
+    Accepts strict positive uint64 integers, integer-valued floats, and decimal
+    strings as a robustness guardrail for packaged-host/device-info variation.
+    """
+
+    raw_working_set = device_info.get("max_recommended_working_set_size")
+    normalized_value: Any = raw_working_set
+
+    if isinstance(raw_working_set, float):
+        if not math.isfinite(raw_working_set) or not raw_working_set.is_integer():
+            return None
+        normalized_value = int(raw_working_set)
+    elif isinstance(raw_working_set, str):
+        raw_text = raw_working_set.strip()
+        if raw_text == "":
+            return None
+        try:
+            normalized_value = int(raw_text, 10)
+        except ValueError:
+            return None
+
+    return normalized_value if _is_positive_uint64(normalized_value) else None
+
+
 def _compute_memory_budget_status(
     manifest: BundleManifest,
     deps: MLXDeps,
@@ -924,7 +948,7 @@ def _compute_memory_budget_status(
             prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
         )
 
-    if not isinstance(info, dict):
+    if not isinstance(info, Mapping):
         return MemoryBudgetStatus(
             mode=mode,
             status_code="device_info_unavailable",
@@ -936,8 +960,8 @@ def _compute_memory_budget_status(
             prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
         )
 
-    raw_working_set = info.get("max_recommended_working_set_size")
-    if not _is_positive_uint64(raw_working_set):
+    max_recommended_working_set_size_bytes = _extract_working_set_size_bytes(info)
+    if max_recommended_working_set_size_bytes is None:
         return MemoryBudgetStatus(
             mode=mode,
             status_code="device_info_invalid",
@@ -950,11 +974,13 @@ def _compute_memory_budget_status(
             prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
         )
 
-    max_recommended_working_set_size_bytes = raw_working_set
-
     try:
-        target_working_set_bytes = int(math.floor(raw_working_set * utilization))
-        target_working_set_bytes = min(target_working_set_bytes, max_recommended_working_set_size_bytes)
+        target_working_set_bytes = int(
+            math.floor(max_recommended_working_set_size_bytes * utilization)
+        )
+        target_working_set_bytes = min(
+            target_working_set_bytes, max_recommended_working_set_size_bytes
+        )
     except (ArithmeticError, OverflowError, ValueError) as exc:
         return MemoryBudgetStatus(
             mode=mode,
@@ -1237,7 +1263,8 @@ def load_session(
     )
 
     logger.info(
-        "load_session memory_budget mode=%s status=%s budget_available=%s headroom_available=%s target_bytes=%d headroom_bytes=%d",
+        "load_session memory_budget mode=%s status=%s budget_available=%s "
+        "headroom_available=%s target_bytes=%d headroom_bytes=%d",
         memory_budget_status.mode,
         memory_budget_status.status_code,
         memory_budget_status.budget_available,

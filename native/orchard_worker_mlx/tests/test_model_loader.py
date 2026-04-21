@@ -1112,6 +1112,54 @@ def test_load_session_memory_budget_handles_invalid_device_info(writable_bundle:
     assert session.memory_budget_status.headroom_available is False
 
 
+def test_load_session_memory_budget_accepts_string_working_set_size(writable_bundle: Path) -> None:
+    deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": "8000000000"})
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+
+    assert session.memory_budget_status.status_code == "ok"
+    assert session.memory_budget_status.budget_available is True
+    assert session.memory_budget_status.max_recommended_working_set_size_bytes == 8_000_000_000
+
+
+def test_load_session_memory_budget_accepts_integral_float_working_set_size(
+    writable_bundle: Path,
+) -> None:
+    deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": 8_000_000_000.0})
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+
+    assert session.memory_budget_status.status_code == "ok"
+    assert session.memory_budget_status.budget_available is True
+    assert session.memory_budget_status.max_recommended_working_set_size_bytes == 8_000_000_000
+
+
+def test_load_session_memory_budget_rejects_fractional_float_working_set_size(
+    writable_bundle: Path,
+) -> None:
+    deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": 8_000_000_000.5})
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+
+    assert session.memory_budget_status.status_code == "device_info_invalid"
+    assert session.memory_budget_status.budget_available is False
+
+
 def test_load_session_memory_budget_handles_working_set_above_uint64(writable_bundle: Path) -> None:
     deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": 2**64})
 
