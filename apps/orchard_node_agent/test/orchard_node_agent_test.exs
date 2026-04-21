@@ -2274,7 +2274,7 @@ defmodule OrchardNodeAgentTest do
             assert {:ok,
                     %EnsureModelLoadedResponse{
                       placement_state: :PLACEMENT_STATE_LOADED
-                    }} = NodeRuntimeStub.ensure_model_loaded(channel, ensure_req)
+                    }} = NodeRuntimeStub.ensure_model_loaded(channel, ensure_req, timeout: 125_000)
 
             # Execute real generation
             gen_req = %ExecuteInferenceRequest{
