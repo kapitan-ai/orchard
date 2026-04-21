@@ -205,6 +205,46 @@ defmodule Orchard.Models.ImporterTest do
       assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
       assert model.kv_cache_bytes_per_token == 0
     end
+
+    test "imports SPEC.md §6.4 bundle-builder derived resident_memory_bytes", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = new_source_dir(artifacts_root)
+
+      write_bundle_builder_input(source_dir, %{"max_position_embeddings" => 4096})
+      write_safetensors_index(source_dir, %{"metadata" => %{"total_size" => 6_442_450_944}})
+
+      assert {:ok, _bundle_dir} =
+               BundleBuilder.prepare_bundle(source_dir, "mlx-community/test-model", %{
+                 revision_sha: "rev-resident"
+               })
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(source_dir)
+      assert manifest.resident_memory_bytes == 6_442_450_944
+
+      assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+      assert model.resident_memory_bytes == 6_442_450_944
+    end
+
+    test "imports SPEC.md §6.4 fail-open resident_memory_bytes=0 when unknown", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = new_source_dir(artifacts_root)
+
+      write_bundle_builder_input(source_dir, %{"max_position_embeddings" => 4096})
+      File.rm!(Path.join(source_dir, "model.safetensors"))
+
+      assert {:ok, _bundle_dir} =
+               BundleBuilder.prepare_bundle(source_dir, "mlx-community/test-model", %{
+                 revision_sha: "rev-resident-zero"
+               })
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(source_dir)
+      assert manifest.resident_memory_bytes == 0
+
+      assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+      assert model.resident_memory_bytes == 0
+    end
   end
 
   describe "import_bundle/2 security" do
@@ -264,6 +304,10 @@ defmodule Orchard.Models.ImporterTest do
     File.write!(Path.join(source_dir, "config.json"), Jason.encode!(config_map))
     File.write!(Path.join(source_dir, "tokenizer.json"), ~s({"version": "1.0"}))
     File.write!(Path.join(source_dir, "model.safetensors"), "fake-weights")
+  end
+
+  defp write_safetensors_index(source_dir, data) do
+    File.write!(Path.join(source_dir, "model.safetensors.index.json"), Jason.encode!(data))
   end
 
   defp create_bundle(root, manifest_overrides) do

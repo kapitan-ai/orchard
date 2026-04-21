@@ -50,6 +50,7 @@ defmodule Orchard.Models.BundleBuilder do
          :ok <- validate_tokenizer(download_dir),
          {:ok, template_asset} <- resolve_chat_template(download_dir),
          {:ok, size_bytes} <- compute_bundle_size(download_dir),
+         resident_memory_bytes = estimate_resident_memory_bytes(download_dir),
          kv_cache_bytes_per_token = estimate_kv_cache_bytes_per_token(config),
          manifest =
            build_manifest(
@@ -57,6 +58,7 @@ defmodule Orchard.Models.BundleBuilder do
              version,
              max_context_tokens,
              size_bytes,
+             resident_memory_bytes,
              kv_cache_bytes_per_token,
              template_asset
            ),
@@ -171,6 +173,13 @@ defmodule Orchard.Models.BundleBuilder do
     case Integer.parse(String.trim(s)) do
       {n, ""} when n > 0 -> n
       _ -> nil
+    end
+  end
+
+  defp estimate_resident_memory_bytes(download_dir) do
+    case MemoryEstimator.resident_memory_bytes_from_bundle(download_dir) do
+      {:ok, value} -> value
+      :unknown -> 0
     end
   end
 
@@ -374,6 +383,7 @@ defmodule Orchard.Models.BundleBuilder do
          version,
          max_context_tokens,
          size_bytes,
+         resident_memory_bytes,
          kv_cache_bytes_per_token,
          template_asset
        ) do
@@ -385,7 +395,7 @@ defmodule Orchard.Models.BundleBuilder do
       "entrypoint" => ".",
       "sha256" => "pending",
       "size_bytes" => size_bytes,
-      "resident_memory_bytes" => 0,
+      "resident_memory_bytes" => resident_memory_bytes,
       "kv_cache_bytes_per_token" => kv_cache_bytes_per_token,
       "prefill_workspace_bytes_per_token" => 0,
       "max_context_tokens" => max_context_tokens,

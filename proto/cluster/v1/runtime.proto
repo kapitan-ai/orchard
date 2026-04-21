@@ -43,8 +43,9 @@ message RuntimeMemoryBudget {
   // Observe-only status vocabulary in the current slice:
   // ok | disabled | device_info_unavailable | device_info_invalid |
   // resident_memory_unavailable | compute_failed | invalid_status.
-  // Non-enforcement: status_code MUST NOT gate readiness, request admission,
-  // model admission, scheduler eligibility, or hosted-tool eligibility.
+  // Non-enforcement: status_code is not an enforcement input in this slice and
+  // MUST NOT alter readiness, request admission, model admission, scheduler
+  // eligibility, hosted-tool eligibility, or memory_budget_mode enforcement.
   string status_code = 5;
   string status_message = 6;
   string source = 7;
@@ -52,6 +53,9 @@ message RuntimeMemoryBudget {
   double utilization = 9;
   uint64 target_working_set_bytes = 10;
   uint64 overhead_bytes = 11;
+  // Static manifest-derived lower-bound/payload-size estimate copied from the
+  // model bundle. Not a runtime memory probe and not an enforcement input in
+  // this slice; observe-only and non-gating.
   uint64 resident_memory_bytes = 12;
   uint64 estimated_headroom_bytes = 13;
   uint64 kv_cache_bytes_per_token = 14;

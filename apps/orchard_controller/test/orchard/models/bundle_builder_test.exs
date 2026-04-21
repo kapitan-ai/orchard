@@ -282,6 +282,36 @@ defmodule Orchard.Models.BundleBuilderTest do
       assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.kv_cache_bytes_per_token == 49_152
     end
+
+    test "derives SPEC.md §6.4 resident_memory_bytes from safetensors index metadata", ctx do
+      write_minimal_bundle(ctx.tmp_dir)
+      write_safetensors_index(ctx.tmp_dir, %{"metadata" => %{"total_size" => 6_442_450_944}})
+
+      assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.resident_memory_bytes == 6_442_450_944
+    end
+
+    test "derives SPEC.md §6.4 resident_memory_bytes from safetensors file-size fallback", ctx do
+      write_minimal_bundle(ctx.tmp_dir)
+      File.write!(Path.join(ctx.tmp_dir, "model.safetensors.index.json"), "not json")
+
+      assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.resident_memory_bytes == byte_size("fake-weights")
+    end
+
+    test "writes SPEC.md §6.4 resident_memory_bytes=0 when no source is usable", ctx do
+      write_minimal_bundle(ctx.tmp_dir)
+      File.rm!(Path.join(ctx.tmp_dir, "model.safetensors"))
+
+      assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.resident_memory_bytes == 0
+    end
   end
 
   # -- Size accounting -------------------------------------------------------
@@ -521,5 +551,9 @@ defmodule Orchard.Models.BundleBuilderTest do
       config_map ->
         File.write!(Path.join(dir, "tokenizer_config.json"), Jason.encode!(config_map))
     end
+  end
+
+  defp write_safetensors_index(dir, data) do
+    File.write!(Path.join(dir, "model.safetensors.index.json"), Jason.encode!(data))
   end
 end

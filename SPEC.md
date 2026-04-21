@@ -1187,6 +1187,15 @@ Offline-importable model bundle SHALL be a tarball or directory with manifest:
 }
 ```
 
+`resident_memory_bytes` is static manifest-derived metadata in the current
+slice: it is a lower-bound/payload-size estimate derived from bundle artifacts
+(for MLX safetensors bundles, prefer `model.safetensors.index.json`
+`metadata.total_size`, then fail open to regular `.safetensors` file sizes when
+index metadata is unavailable). It is not a runtime memory probe. This metadata
+remains observe-only and SHALL NOT gate readiness, request admission, model
+admission, scheduler eligibility, hosted-tool eligibility, or
+`memory_budget_mode` enforcement.
+
 ### 6.5 Model import
 
 Models SHALL be imported via:
@@ -2070,7 +2079,9 @@ Runtime memory-budget wire semantics:
 * omitted or empty `runtime_memory_budgets` SHALL mean no memory-budget observation is available
 * omitted or empty `runtime_memory_budgets` SHALL NOT be treated as a node status error, readiness failure, or admission failure
 * `RuntimeMemoryBudget.status_code` values in this slice are: `ok`, `disabled`, `device_info_unavailable`, `device_info_invalid`, `resident_memory_unavailable`, `compute_failed`, `invalid_status`
-* these status codes are non-enforcement vocabulary only in this slice and SHALL NOT alter readiness, request admission, model admission, scheduler eligibility, or hosted-tool eligibility
+* `RuntimeMemoryBudget.resident_memory_bytes` is copied from static manifest-derived model metadata; it is a lower-bound/payload-size estimate, not a runtime memory probe
+* positive resident-memory metadata MAY make `status_code = ok` and `headroom_available = true` when the observe-only arithmetic has enough inputs, but that result SHALL remain non-gating
+* neither `RuntimeMemoryBudget.status_code` nor `RuntimeMemoryBudget.resident_memory_bytes` is an enforcement input in this slice; they SHALL NOT alter readiness, request admission, model admission, scheduler eligibility, hosted-tool eligibility, or `memory_budget_mode` enforcement
 * scheduler memory eligibility SHALL continue to use the scheduler/model/node inputs defined elsewhere in this spec unless a later explicit contract promotes these observations to admission inputs
 
 #### 7.5.4 Node registration flow
