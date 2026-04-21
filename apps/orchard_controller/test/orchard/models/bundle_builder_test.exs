@@ -226,6 +226,62 @@ defmodule Orchard.Models.BundleBuilderTest do
       assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.max_context_tokens == 8192
     end
+
+    test "derives kv_cache_bytes_per_token from config.json", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        config: %{
+          "max_position_embeddings" => 4096,
+          "num_hidden_layers" => 24,
+          "num_attention_heads" => 64,
+          "num_key_value_heads" => 16,
+          "head_dim" => 32,
+          "torch_dtype" => "float16"
+        }
+      )
+
+      assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.kv_cache_bytes_per_token == 49_152
+    end
+
+    test "writes kv_cache_bytes_per_token=0 when estimate is unknown", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        config: %{
+          "max_position_embeddings" => 4096,
+          "num_attention_heads" => 64,
+          "num_key_value_heads" => 16,
+          "head_dim" => 32,
+          "torch_dtype" => "float16"
+        }
+      )
+
+      assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.kv_cache_bytes_per_token == 0
+    end
+
+    test "derives kv_cache_bytes_per_token from nested text_config", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        config: %{
+          "model_type" => "gemma3",
+          "max_position_embeddings" => 4096,
+          "text_config" => %{
+            "num_hidden_layers" => 24,
+            "num_attention_heads" => 64,
+            "num_key_value_heads" => 16,
+            "head_dim" => 32,
+            "torch_dtype" => "fp16"
+          }
+        }
+      )
+
+      assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.kv_cache_bytes_per_token == 49_152
+    end
   end
 
   # -- Size accounting -------------------------------------------------------
@@ -350,7 +406,7 @@ defmodule Orchard.Models.BundleBuilderTest do
       assert {:ok, _bundle_dir} =
                BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
 
-      {:ok, manifest} = Orchard.Models.ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.max_context_tokens == nil
     end
 

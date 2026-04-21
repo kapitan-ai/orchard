@@ -12,6 +12,11 @@ message WorkerMemoryBudgetStatus {
   string mode = 1;
   bool budget_available = 2;
   bool headroom_available = 3;
+  // Observe-only status vocabulary in the current slice:
+  // ok | disabled | device_info_unavailable | device_info_invalid |
+  // resident_memory_unavailable | compute_failed | invalid_status.
+  // Non-enforcement: status_code MUST NOT gate readiness, request admission,
+  // model admission, scheduler eligibility, or hosted-tool eligibility.
   string status_code = 4;
   string status_message = 5;
   string source = 6;

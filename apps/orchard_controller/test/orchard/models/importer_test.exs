@@ -2,7 +2,9 @@ defmodule Orchard.Models.ImporterTest do
   use Orchard.DataCase, async: false
 
   alias Orchard.Models
+  alias Orchard.Models.BundleBuilder
   alias Orchard.Models.Importer
+  alias Orchard.Models.ManifestParser
 
   @fixture_bundle Path.expand("../../fixtures/bundles/test-model-bundle", __DIR__)
 
@@ -152,6 +154,57 @@ defmodule Orchard.Models.ImporterTest do
 
       assert staging_dirs == []
     end
+
+    test "imports bundle-builder derived kv_cache_bytes_per_token", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = new_source_dir(artifacts_root)
+
+      write_bundle_builder_input(source_dir, %{
+        "max_position_embeddings" => 4096,
+        "num_hidden_layers" => 24,
+        "num_attention_heads" => 64,
+        "num_key_value_heads" => 16,
+        "head_dim" => 32,
+        "torch_dtype" => "float16"
+      })
+
+      assert {:ok, _bundle_dir} =
+               BundleBuilder.prepare_bundle(source_dir, "mlx-community/test-model", %{
+                 revision_sha: "rev-a"
+               })
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(source_dir)
+      assert manifest.kv_cache_bytes_per_token == 49_152
+
+      assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+      assert model.kv_cache_bytes_per_token == 49_152
+    end
+
+    test "imports bundle-builder fail-open kv_cache_bytes_per_token=0 when unknown", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = new_source_dir(artifacts_root)
+
+      write_bundle_builder_input(source_dir, %{
+        "max_position_embeddings" => 4096,
+        "num_attention_heads" => 64,
+        "num_key_value_heads" => 16,
+        "head_dim" => 32,
+        "torch_dtype" => "float16"
+      })
+
+      assert {:ok, _bundle_dir} =
+               BundleBuilder.prepare_bundle(source_dir, "mlx-community/test-model", %{
+                 revision_sha: "rev-b"
+               })
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(source_dir)
+      assert manifest.kv_cache_bytes_per_token == 0
+
+      assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+      assert model.kv_cache_bytes_per_token == 0
+    end
   end
 
   describe "import_bundle/2 security" do
@@ -200,6 +253,18 @@ defmodule Orchard.Models.ImporterTest do
   end
 
   # -- Test helpers ----------------------------------------------------------
+
+  defp new_source_dir(root) do
+    source_dir = Path.join(root, "bundle_builder_source_#{:rand.uniform(1_000_000)}")
+    File.mkdir_p!(source_dir)
+    source_dir
+  end
+
+  defp write_bundle_builder_input(source_dir, config_map) do
+    File.write!(Path.join(source_dir, "config.json"), Jason.encode!(config_map))
+    File.write!(Path.join(source_dir, "tokenizer.json"), ~s({"version": "1.0"}))
+    File.write!(Path.join(source_dir, "model.safetensors"), "fake-weights")
+  end
 
   defp create_bundle(root, manifest_overrides) do
     bundle_dir = Path.join(root, "test_bundle_#{:rand.uniform(1_000_000)}")

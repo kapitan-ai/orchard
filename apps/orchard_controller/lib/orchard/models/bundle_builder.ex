@@ -17,6 +17,7 @@ defmodule Orchard.Models.BundleBuilder do
   require Logger
 
   alias Orchard.Models.ManifestParser
+  alias Orchard.Models.MemoryEstimator
 
   @template_candidates ["chat_template.jinja", "chat_template.jinja2"]
   @generated_template_name "chat_template.jinja"
@@ -44,12 +45,21 @@ defmodule Orchard.Models.BundleBuilder do
     with :ok <- validate_directory(download_dir),
          {:ok, repo_id} <- validate_repo_id(repo_id),
          {:ok, version} <- extract_version(detail_metadata),
-         {:ok, max_context_tokens} <- read_context_window(download_dir),
+         {:ok, config} <- read_model_config(download_dir),
+         {:ok, max_context_tokens} <- extract_context_tokens(config),
          :ok <- validate_tokenizer(download_dir),
          {:ok, template_asset} <- resolve_chat_template(download_dir),
          {:ok, size_bytes} <- compute_bundle_size(download_dir),
+         kv_cache_bytes_per_token = estimate_kv_cache_bytes_per_token(config),
          manifest =
-           build_manifest(repo_id, version, max_context_tokens, size_bytes, template_asset),
+           build_manifest(
+             repo_id,
+             version,
+             max_context_tokens,
+             size_bytes,
+             kv_cache_bytes_per_token,
+             template_asset
+           ),
          :ok <- write_and_validate_manifest(download_dir, manifest) do
       {:ok, download_dir}
     end
@@ -97,12 +107,12 @@ defmodule Orchard.Models.BundleBuilder do
 
   # -- Config Parsing --------------------------------------------------------
 
-  defp read_context_window(download_dir) do
+  defp read_model_config(download_dir) do
     config_path = Path.join(download_dir, "config.json")
 
-    with {:ok, json} <- read_json_file(config_path, :missing_config, :config_read),
-         {:ok, config} <- decode_json_object(json, :invalid_config_json) do
-      extract_context_tokens(config)
+    case read_json_file(config_path, :missing_config, :config_read) do
+      {:ok, json} -> decode_json_object(json, :invalid_config_json)
+      {:error, _} = error -> error
     end
   end
 
@@ -161,6 +171,13 @@ defmodule Orchard.Models.BundleBuilder do
     case Integer.parse(String.trim(s)) do
       {n, ""} when n > 0 -> n
       _ -> nil
+    end
+  end
+
+  defp estimate_kv_cache_bytes_per_token(config) do
+    case MemoryEstimator.kv_cache_bytes_per_token(config) do
+      {:ok, value} -> value
+      :unknown -> 0
     end
   end
 
@@ -352,7 +369,14 @@ defmodule Orchard.Models.BundleBuilder do
 
   # -- Manifest Assembly -----------------------------------------------------
 
-  defp build_manifest(repo_id, version, max_context_tokens, size_bytes, template_asset) do
+  defp build_manifest(
+         repo_id,
+         version,
+         max_context_tokens,
+         size_bytes,
+         kv_cache_bytes_per_token,
+         template_asset
+       ) do
     base = %{
       "model_id" => repo_id,
       "version" => version,
@@ -362,7 +386,7 @@ defmodule Orchard.Models.BundleBuilder do
       "sha256" => "pending",
       "size_bytes" => size_bytes,
       "resident_memory_bytes" => 0,
-      "kv_cache_bytes_per_token" => 0,
+      "kv_cache_bytes_per_token" => kv_cache_bytes_per_token,
       "prefill_workspace_bytes_per_token" => 0,
       "max_context_tokens" => max_context_tokens,
       "capabilities" => ["chat"],

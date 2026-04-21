@@ -754,6 +754,8 @@ Compatibility and defaulting rules:
 * absent or empty `runtime_memory_budgets` on `StatusResponse` SHALL mean no memory-budget observation is available
 * absent or empty `runtime_memory_budgets` SHALL NOT be treated as a status-probe error
 * `runtime_memory_budgets` SHALL remain observe-only telemetry in this slice and SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, or hosted-tool eligibility
+* current `RuntimeMemoryBudget.status_code` vocabulary is: `ok`, `disabled`, `device_info_unavailable`, `device_info_invalid`, `resident_memory_unavailable`, `compute_failed`, `invalid_status`
+* these status codes are observational only in this slice and SHALL NOT gate readiness, admission, or scheduling
 
 Effective readiness rules for future hosted routing:
 
@@ -2067,7 +2069,8 @@ Runtime memory-budget wire semantics:
 * `StatusResponse.runtime_memory_budgets` SHALL report observe-only memory-budget snapshots for loaded runtime/model paths
 * omitted or empty `runtime_memory_budgets` SHALL mean no memory-budget observation is available
 * omitted or empty `runtime_memory_budgets` SHALL NOT be treated as a node status error, readiness failure, or admission failure
-* `runtime_memory_budgets` SHALL NOT affect node readiness, request admission, model admission, scheduler eligibility, or hosted-tool eligibility in this implementation slice
+* `RuntimeMemoryBudget.status_code` values in this slice are: `ok`, `disabled`, `device_info_unavailable`, `device_info_invalid`, `resident_memory_unavailable`, `compute_failed`, `invalid_status`
+* these status codes are non-enforcement vocabulary only in this slice and SHALL NOT alter readiness, request admission, model admission, scheduler eligibility, or hosted-tool eligibility
 * scheduler memory eligibility SHALL continue to use the scheduler/model/node inputs defined elsewhere in this spec unless a later explicit contract promotes these observations to admission inputs
 
 #### 7.5.4 Node registration flow
