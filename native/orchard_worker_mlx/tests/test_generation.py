@@ -217,6 +217,149 @@ class _ExplodingResetTokenizer(_ToyTokenizer):
         return _ExplodingResetDetokenizer(self)
 
 
+class _InsertProgressOnlyBatchGenerator:
+    instances: list[_InsertProgressOnlyBatchGenerator] = []
+
+    def __init__(self, _model: Any, **kwargs: Any) -> None:
+        self._prompt_progress_callback = kwargs.get("prompt_progress_callback")
+        self._next_uid = 0
+        self._active: list[int] = []
+        self.insert_callback_emitted = False
+        self.__class__.instances.append(self)
+
+    def insert(
+        self,
+        prompts: list[list[int]],
+        max_tokens: list[int],
+        caches: list[Any] | None = None,
+        samplers: list[Any] | None = None,
+        logits_processors: list[Any] | None = None,
+    ) -> list[int]:
+        del max_tokens, caches, samplers, logits_processors
+        uids: list[int] = []
+        for _ in prompts:
+            uid = self._next_uid
+            self._next_uid += 1
+            self._active.append(uid)
+            uids.append(uid)
+        if callable(self._prompt_progress_callback):
+            self._prompt_progress_callback([(uid, 1, 3) for uid in uids])
+            self.insert_callback_emitted = True
+        return uids
+
+    def next(self) -> list[Any]:
+        responses = [
+            type(
+                "BatchResp",
+                (),
+                {
+                    "uid": uid,
+                    "token": 11,
+                    "finish_reason": "stop",
+                    "prompt_cache": lambda: [],
+                },
+            )()
+            for uid in self._active
+        ]
+        self._active = []
+        return responses
+
+    def close(self) -> None:
+        return None
+
+
+def _batch_response(uid: int, *, token: int = 11, finish_reason: str | None = None) -> Any:
+    return type(
+        "BatchResp",
+        (),
+        {
+            "uid": uid,
+            "token": token,
+            "finish_reason": finish_reason,
+            "prompt_cache": lambda: [],
+        },
+    )()
+
+
+class _AttributionBatchGenerator:
+    progress_by_next_call: list[list[tuple[int, Any, Any]]] = []
+    responses_by_next_call: list[list[tuple[int, int, str | None]]] = []
+    instances: list[_AttributionBatchGenerator] = []
+
+    def __init__(self, _model: Any, **kwargs: Any) -> None:
+        self._prompt_progress_callback = kwargs.get("prompt_progress_callback")
+        self._next_uid = 0
+        self._active: list[int] = []
+        self._next_calls = 0
+        self.insert_sizes: list[int] = []
+        self.__class__.instances.append(self)
+
+    def insert(
+        self,
+        prompts: list[list[int]],
+        max_tokens: list[int],
+        caches: list[Any] | None = None,
+        samplers: list[Any] | None = None,
+        logits_processors: list[Any] | None = None,
+    ) -> list[int]:
+        del max_tokens, caches, samplers, logits_processors
+        uids: list[int] = []
+        for _ in prompts:
+            uid = self._next_uid
+            self._next_uid += 1
+            self._active.append(uid)
+            uids.append(uid)
+        self.insert_sizes.append(len(prompts))
+        return uids
+
+    def next(self) -> list[Any]:
+        call_index = self._next_calls
+        self._next_calls += 1
+
+        if call_index < len(self.progress_by_next_call) and callable(
+            self._prompt_progress_callback
+        ):
+            self._prompt_progress_callback(
+                [
+                    (self._active[uid_index], processed, total)
+                    for uid_index, processed, total in self.progress_by_next_call[call_index]
+                    if uid_index < len(self._active)
+                ]
+            )
+
+        if call_index < len(self.responses_by_next_call):
+            response_plan = self.responses_by_next_call[call_index]
+        else:
+            response_plan = [(uid_index, 11, "stop") for uid_index in range(len(self._active))]
+
+        responses: list[Any] = []
+        terminal_uids: set[int] = set()
+        for uid_index, token, finish_reason in response_plan:
+            if uid_index >= len(self._active):
+                continue
+            uid = self._active[uid_index]
+            responses.append(_batch_response(uid, token=token, finish_reason=finish_reason))
+            if finish_reason is not None:
+                terminal_uids.add(uid)
+
+        self._active = [uid for uid in self._active if uid not in terminal_uids]
+        return responses
+
+    def close(self) -> None:
+        return None
+
+    @classmethod
+    def reset_plan(
+        cls,
+        *,
+        progress_by_next_call: list[list[tuple[int, Any, Any]]] | None = None,
+        responses_by_next_call: list[list[tuple[int, int, str | None]]] | None = None,
+    ) -> None:
+        cls.progress_by_next_call = progress_by_next_call or []
+        cls.responses_by_next_call = responses_by_next_call or []
+        cls.instances = []
+
+
 class _FakeBatchGenerator:
     def __init__(self, _model: Any, **kwargs: Any) -> None:
         self._prompt_progress_callback = kwargs.get("prompt_progress_callback")
@@ -293,6 +436,55 @@ class _FakeBatchGenerator:
         return None
 
 
+def _make_memory_budget_status(prefill_workspace_bytes_per_token: int = 0) -> Any:
+    from orchard_worker_mlx.model_loader import MemoryBudgetStatus
+
+    return MemoryBudgetStatus(
+        mode="observe",
+        budget_available=True,
+        headroom_available=True,
+        status_code="ok",
+        status_message="",
+        source="seed",
+        max_recommended_working_set_size_bytes=8_000_000_000,
+        utilization=0.75,
+        target_working_set_bytes=6_000_000_000,
+        overhead_bytes=268_435_456,
+        resident_memory_bytes=2_048_000,
+        estimated_headroom_bytes=5_731_516_544,
+        kv_cache_bytes_per_token=16_384,
+        prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
+    )
+
+
+def _make_attribution_runtime(
+    session: Any,
+    *,
+    memory_probe: Callable[[], Any] | None,
+    batch_generator_cls: type = _AttributionBatchGenerator,
+) -> BatchGeneratorRuntime:
+    return BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            current_memory_bytes=memory_probe,
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=batch_generator_cls),
+    )
+
+
+def _queue_batch_stream(runtime: BatchGeneratorRuntime, prompt_ids: list[int]) -> Any:
+    return runtime.stream_generate(
+        runtime._session.model,
+        runtime.tokenizer,
+        prompt_ids,
+        max_tokens=2,
+        sampler=MagicMock(),
+        prompt_progress_callback=lambda _processed, _total: None,
+    )
+
+
 def test_batch_generator_runtime_streams_through_generate_events() -> None:
     session = _make_fake_session()
     session.tokenizer = _ToyTokenizer()
@@ -316,6 +508,812 @@ def test_batch_generator_runtime_streams_through_generate_events() -> None:
     assert deltas == ["A", "B"]
     assert events[-1]["kind"] == "completed"
     assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+def test_batch_generator_runtime_ignores_insert_time_progress_before_uid_binding() -> None:
+    _InsertProgressOnlyBatchGenerator.instances = []
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_InsertProgressOnlyBatchGenerator),
+    )
+
+    request = _make_fake_request(input_tokens=3, max_output_tokens=1)
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    assert _InsertProgressOnlyBatchGenerator.instances[0].insert_callback_emitted is True
+    assert [event["kind"] for event in events] == ["output_text_delta", "completed"]
+
+
+def test_batch_prefill_attribution_updates_memory_budget_from_shared_runtime() -> None:
+    _AttributionBatchGenerator.reset_plan(
+        progress_by_next_call=[[(0, 10, 100)]],
+        responses_by_next_call=[[(0, 11, "stop")]],
+    )
+    memory_samples = iter([1_000, 5_000])
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status())
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(session, memory_probe=lambda: next(memory_samples))
+
+    try:
+        events = _collect_events(session, _make_fake_request(), runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    assert [event["kind"] for event in events] == [
+        "progress",
+        "output_text_delta",
+        "completed",
+    ]
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 400
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+def test_batch_prefill_attribution_is_high_water_only() -> None:
+    _AttributionBatchGenerator.reset_plan(
+        progress_by_next_call=[[(0, 10, 100)]],
+        responses_by_next_call=[[(0, 11, "stop")]],
+    )
+    memory_samples = iter([1_000, 3_000])
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status(500))
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(session, memory_probe=lambda: next(memory_samples))
+
+    try:
+        events = _collect_events(session, _make_fake_request(), runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    assert events[-1]["kind"] == "completed"
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 500
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+@pytest.mark.parametrize(
+    ("samples", "expected_calls"),
+    [
+        ([None], 1),
+        ([True], 1),
+        (["bad"], 1),
+        ([-1], 1),
+        ([1_000, None], 2),
+        ([1_000, True], 2),
+        ([1_000, "bad"], 2),
+        ([1_000, -1], 2),
+        ([5_000, 1_000], 2),
+    ],
+)
+def test_batch_prefill_attribution_invalid_probe_values_fail_open(
+    samples: list[Any],
+    expected_calls: int,
+) -> None:
+    _AttributionBatchGenerator.reset_plan(
+        progress_by_next_call=[[(0, 10, 100)]],
+        responses_by_next_call=[[(0, 11, "stop")]],
+    )
+    calls = 0
+    sample_iter = iter(samples)
+
+    def memory_probe() -> Any:
+        nonlocal calls
+        calls += 1
+        return next(sample_iter)
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status(123))
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(session, memory_probe=memory_probe)
+
+    try:
+        events = _collect_events(session, _make_fake_request(), runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    assert events[-1]["kind"] == "completed"
+    assert calls == expected_calls
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 123
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+@pytest.mark.parametrize("raise_on_call", [1, 2])
+def test_batch_prefill_attribution_probe_exceptions_fail_open(raise_on_call: int) -> None:
+    _AttributionBatchGenerator.reset_plan(
+        progress_by_next_call=[[(0, 10, 100)]],
+        responses_by_next_call=[[(0, 11, "stop")]],
+    )
+    calls = 0
+
+    def memory_probe() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == raise_on_call:
+            raise RuntimeError("probe boom")
+        return 1_000 if calls == 1 else 5_000
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status(123))
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(session, memory_probe=memory_probe)
+
+    try:
+        events = _collect_events(session, _make_fake_request(), runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    assert events[-1]["kind"] == "completed"
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 123
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+def test_batch_prefill_attribution_sanitizes_denominator_without_changing_progress_bridge() -> None:
+    _AttributionBatchGenerator.reset_plan(
+        progress_by_next_call=[
+            [
+                (0, True, 100),
+                (0, 0, 100),
+                (0, 8, 6),
+                (0, 7, 20),
+                (0, 7, 20),
+                (0, 5, 20),
+                (0, 10, 20),
+            ]
+        ],
+        responses_by_next_call=[[(0, 11, "stop")]],
+    )
+    memory_samples = iter([1_000, 5_000])
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status())
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(session, memory_probe=lambda: next(memory_samples))
+
+    try:
+        events = _collect_events(session, _make_fake_request(), runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    progress_messages = [event["message"] for event in events if event["kind"] == "progress"]
+    assert progress_messages == [
+        "processed 6/6 prompt tokens",
+        "processed 7/20 prompt tokens",
+        "processed 10/20 prompt tokens",
+    ]
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 400
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+def test_batch_prefill_attribution_finalizes_once_per_insert_set() -> None:
+    _AttributionBatchGenerator.reset_plan(
+        progress_by_next_call=[[(0, 10, 100)], []],
+        responses_by_next_call=[[(0, 11, None)], [(0, 12, "stop")]],
+    )
+    samples = [1_000, 5_000]
+    calls = 0
+
+    def memory_probe() -> int:
+        nonlocal calls
+        calls += 1
+        return samples[calls - 1]
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status())
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(session, memory_probe=memory_probe)
+
+    try:
+        events = _collect_events(session, _make_fake_request(), runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    assert [event["kind"] for event in events] == [
+        "progress",
+        "output_text_delta",
+        "output_text_delta",
+        "completed",
+    ]
+    assert calls == 2
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 400
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+def test_batch_prefill_attribution_uses_one_update_for_multi_member_insert_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _AttributionBatchGenerator.reset_plan(
+        progress_by_next_call=[[(0, 10, 100), (1, 20, 100)]],
+        responses_by_next_call=[[(0, 11, "stop"), (1, 21, "stop")]],
+    )
+    samples = [1_000, 7_000]
+    calls = 0
+
+    def memory_probe() -> int:
+        nonlocal calls
+        calls += 1
+        return samples[calls - 1]
+
+    delayed_pumps: list[threading.Thread] = []
+    original_start = threading.Thread.start
+
+    def delay_pump_start(thread: threading.Thread) -> None:
+        if thread.name == "mlx-batch-generator":
+            delayed_pumps.append(thread)
+            return
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", delay_pump_start)
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status())
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(session, memory_probe=memory_probe)
+
+    try:
+        stream_a = _queue_batch_stream(runtime, [1, 2, 3])
+        stream_b = _queue_batch_stream(runtime, [4, 5, 6])
+        assert delayed_pumps
+        original_start(delayed_pumps[0])
+
+        assert [chunk.text for chunk in stream_a] == ["A"]
+        assert [chunk.text for chunk in stream_b] == ["X"]
+    finally:
+        runtime.close()
+
+    assert _AttributionBatchGenerator.instances[0].insert_sizes == [2]
+    assert calls == 2
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 300
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+def test_batch_prefill_attribution_finalize_runs_after_notify() -> None:
+    _AttributionBatchGenerator.reset_plan(
+        progress_by_next_call=[[(0, 10, 100)]],
+        responses_by_next_call=[[(0, 11, "stop")]],
+    )
+    final_probe_entered = threading.Event()
+    release_final_probe = threading.Event()
+    calls = 0
+
+    def memory_probe() -> int:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 1_000
+        final_probe_entered.set()
+        release_final_probe.wait(timeout=5.0)
+        return 5_000
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status())
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(session, memory_probe=memory_probe)
+    events: list[dict[str, Any]] = []
+
+    def run_request() -> None:
+        events.extend(_collect_events(session, _make_fake_request(), runtime.generation_deps()))
+
+    thread = threading.Thread(target=run_request)
+    thread.start()
+
+    try:
+        assert final_probe_entered.wait(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if events and events[-1]["kind"] == "completed":
+                break
+            threading.Event().wait(0.01)
+        assert [event["kind"] for event in events] == [
+            "progress",
+            "output_text_delta",
+            "completed",
+        ]
+        release_final_probe.set()
+        thread.join(timeout=2.0)
+    finally:
+        release_final_probe.set()
+        runtime.close()
+        thread.join(timeout=2.0)
+
+    assert thread.is_alive() is False
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 400
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+def test_batch_prefill_attribution_interleaved_insert_sets_do_not_bleed() -> None:
+    class _InterleavedInsertSetBatchGenerator:
+        def __init__(self, _model: Any, **kwargs: Any) -> None:
+            self._prompt_progress_callback = kwargs.get("prompt_progress_callback")
+            self._next_uid = 0
+            self._active: list[int] = []
+            self._next_calls = 0
+            self.insert_sizes: list[int] = []
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            uids: list[int] = []
+            for _ in prompts:
+                uid = self._next_uid
+                self._next_uid += 1
+                self._active.append(uid)
+                uids.append(uid)
+            self.insert_sizes.append(len(prompts))
+            return uids
+
+        def next(self) -> list[Any]:
+            self._next_calls += 1
+            if self._next_calls == 1:
+                if callable(self._prompt_progress_callback):
+                    self._prompt_progress_callback([(self._active[0], 10, 100)])
+                return [_batch_response(self._active[0], token=11, finish_reason=None)]
+
+            if len(self._active) < 2:
+                threading.Event().wait(0.01)
+                return []
+            if callable(self._prompt_progress_callback):
+                self._prompt_progress_callback([(self._active[1], 20, 100)])
+            responses = [
+                _batch_response(self._active[0], token=12, finish_reason="stop"),
+                _batch_response(self._active[1], token=21, finish_reason="stop"),
+            ]
+            self._active = []
+            return responses
+
+        def close(self) -> None:
+            return None
+
+    samples = [1_000, 3_000, 5_000, 11_000]
+    calls = 0
+
+    def memory_probe() -> int:
+        nonlocal calls
+        calls += 1
+        return samples[calls - 1]
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status())
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(
+        session,
+        memory_probe=memory_probe,
+        batch_generator_cls=_InterleavedInsertSetBatchGenerator,
+    )
+
+    try:
+        stream_a = _queue_batch_stream(runtime, [1, 2, 3])
+        assert next(stream_a).text == "A"
+        stream_b = _queue_batch_stream(runtime, [4, 5, 6])
+        assert [chunk.text for chunk in stream_b] == ["X"]
+        assert [chunk.text for chunk in stream_a] == ["B"]
+    finally:
+        runtime.close()
+
+    generator = cast(_InterleavedInsertSetBatchGenerator, runtime._batch_generator)
+    assert generator.insert_sizes == [1, 1]
+    assert calls == 4
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 300
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+def test_batch_prefill_attribution_runtime_close_clears_insert_set_state() -> None:
+    class _BlockForeverAfterProgressBatchGenerator:
+        instances: list[_BlockForeverAfterProgressBatchGenerator] = []
+
+        def __init__(self, _model: Any, **kwargs: Any) -> None:
+            self._prompt_progress_callback = kwargs.get("prompt_progress_callback")
+            self._next_uid = 0
+            self._active: list[int] = []
+            self.progress_emitted = threading.Event()
+            self.closed = threading.Event()
+            self.__class__.instances.append(self)
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            uids: list[int] = []
+            for _ in prompts:
+                uid = self._next_uid
+                self._next_uid += 1
+                self._active.append(uid)
+                uids.append(uid)
+            return uids
+
+        def next(self) -> list[Any]:
+            if self._active and not self.progress_emitted.is_set():
+                if callable(self._prompt_progress_callback):
+                    self._prompt_progress_callback([(self._active[0], 10, 100)])
+                self.progress_emitted.set()
+            self.closed.wait(timeout=5.0)
+            return []
+
+        def close(self) -> None:
+            self.closed.set()
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status())
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(
+        session,
+        memory_probe=lambda: 1_000,
+        batch_generator_cls=_BlockForeverAfterProgressBatchGenerator,
+    )
+    errors: list[BackendError] = []
+
+    def run_request() -> None:
+        try:
+            list(
+                generate_events(
+                    session, _make_fake_request(), threading.Event(), deps=runtime.generation_deps()
+                )
+            )
+        except BackendError as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_request)
+    thread.start()
+    generator = _BlockForeverAfterProgressBatchGenerator.instances[0]
+    assert generator.progress_emitted.wait(timeout=2.0)
+
+    runtime.close()
+    thread.join(timeout=2.0)
+
+    assert thread.is_alive() is False
+    assert errors
+    assert errors[0].code == "generation_failed"
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+def test_batch_prefill_attribution_mark_all_failed_clears_insert_set_state() -> None:
+    class _RaiseAfterProgressBatchGenerator:
+        def __init__(self, _model: Any, **kwargs: Any) -> None:
+            self._prompt_progress_callback = kwargs.get("prompt_progress_callback")
+            self._next_uid = 0
+            self._active: list[int] = []
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            uids = list(range(self._next_uid, self._next_uid + len(prompts)))
+            self._next_uid += len(prompts)
+            self._active.extend(uids)
+            return uids
+
+        def next(self) -> list[Any]:
+            if callable(self._prompt_progress_callback):
+                self._prompt_progress_callback([(self._active[0], 10, 100)])
+            raise RuntimeError("next boom")
+
+        def close(self) -> None:
+            return None
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status(123))
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(
+        session,
+        memory_probe=lambda: 1_000,
+        batch_generator_cls=_RaiseAfterProgressBatchGenerator,
+    )
+
+    try:
+        with pytest.raises(BackendError) as exc_info:
+            _collect_events(session, _make_fake_request(), runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    assert exc_info.value.code == "generation_failed"
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 123
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+def test_batch_prefill_attribution_fail_active_request_clears_insert_set_state() -> None:
+    class _BadTokenAfterProgressBatchGenerator:
+        def __init__(self, _model: Any, **kwargs: Any) -> None:
+            self._prompt_progress_callback = kwargs.get("prompt_progress_callback")
+            self._next_uid = 0
+            self._active: list[int] = []
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            uids = list(range(self._next_uid, self._next_uid + len(prompts)))
+            self._next_uid += len(prompts)
+            self._active.extend(uids)
+            return uids
+
+        def next(self) -> list[Any]:
+            if callable(self._prompt_progress_callback):
+                self._prompt_progress_callback([(self._active[0], 10, 100)])
+            return [
+                type(
+                    "BadResp",
+                    (),
+                    {"uid": self._active[0], "token": "bad", "finish_reason": None},
+                )()
+            ]
+
+        def close(self) -> None:
+            return None
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status(123))
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(
+        session,
+        memory_probe=lambda: 1_000,
+        batch_generator_cls=_BadTokenAfterProgressBatchGenerator,
+    )
+
+    try:
+        with pytest.raises(BackendError) as exc_info:
+            _collect_events(session, _make_fake_request(), runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    assert exc_info.value.code == "generation_failed"
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 123
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+
+
+def test_batch_prefill_attribution_reset_during_insert_does_not_bind_stale_state() -> None:
+    class _BlockingInsertBatchGenerator:
+        instances: list[_BlockingInsertBatchGenerator] = []
+
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self.insert_started = threading.Event()
+            self.release_insert = threading.Event()
+            self._next_uid = 0
+            self.__class__.instances.append(self)
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            self.insert_started.set()
+            self.release_insert.wait(timeout=5.0)
+            uids = list(range(self._next_uid, self._next_uid + len(prompts)))
+            self._next_uid += len(prompts)
+            return uids
+
+        def next(self) -> list[Any]:
+            return []
+
+        def close(self) -> None:
+            self.release_insert.set()
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status(123))
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(
+        session,
+        memory_probe=lambda: 1_000,
+        batch_generator_cls=_BlockingInsertBatchGenerator,
+    )
+    errors: list[BackendError] = []
+
+    def run_request() -> None:
+        try:
+            list(
+                generate_events(
+                    session,
+                    _make_fake_request(),
+                    threading.Event(),
+                    deps=runtime.generation_deps(),
+                )
+            )
+        except BackendError as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_request)
+    thread.start()
+    generator = _BlockingInsertBatchGenerator.instances[0]
+    assert generator.insert_started.wait(timeout=2.0)
+
+    with runtime._cv:
+        stale_generator = runtime._request_reset_locked("test reset during insert")
+    assert stale_generator is not None
+    stale_generator.close()
+
+    try:
+        thread.join(timeout=2.0)
+    finally:
+        runtime.close()
+        thread.join(timeout=2.0)
+
+    assert thread.is_alive() is False
+    assert errors
+    assert errors[0].code == "generation_failed"
+    assert runtime._active_by_uid == {}
+    assert runtime._prefill_attribution_by_insert_set_id == {}
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 123
+
+
+def test_batch_prefill_attribution_cancel_during_insert_does_not_bind_stale_state() -> None:
+    class _BlockingInsertBatchGenerator:
+        instances: list[_BlockingInsertBatchGenerator] = []
+
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self.insert_started = threading.Event()
+            self.release_insert = threading.Event()
+            self._next_uid = 0
+            self.__class__.instances.append(self)
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            self.insert_started.set()
+            self.release_insert.wait(timeout=5.0)
+            uids = list(range(self._next_uid, self._next_uid + len(prompts)))
+            self._next_uid += len(prompts)
+            return uids
+
+        def next(self) -> list[Any]:
+            return []
+
+        def close(self) -> None:
+            self.release_insert.set()
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status(123))
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(
+        session,
+        memory_probe=lambda: 1_000,
+        batch_generator_cls=_BlockingInsertBatchGenerator,
+    )
+
+    stream = _queue_batch_stream(runtime, [1, 2, 3])
+    generator = _BlockingInsertBatchGenerator.instances[0]
+    assert generator.insert_started.wait(timeout=2.0)
+
+    stream.close(cancelled=True)
+    generator.release_insert.set()
+
+    deadline = time.monotonic() + 2.0
+    try:
+        while time.monotonic() < deadline:
+            with runtime._cv:
+                if (
+                    runtime._active_by_uid == {}
+                    and runtime._prefill_attribution_by_insert_set_id == {}
+                    and runtime._reset_requested is None
+                ):
+                    break
+            threading.Event().wait(0.01)
+    finally:
+        runtime.close()
+
+    with runtime._cv:
+        assert runtime._active_by_uid == {}
+        assert runtime._requests_by_id == {}
+        assert runtime._prefill_attribution_by_insert_set_id == {}
+        assert runtime._reset_requested is None
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 123
+
+
+@pytest.mark.parametrize("cancelled", [True, False])
+def test_batch_prefill_attribution_detaches_closed_member_before_finalize(
+    monkeypatch: pytest.MonkeyPatch,
+    cancelled: bool,
+) -> None:
+    class _BlockAfterProgressBatchGenerator:
+        instances: list[_BlockAfterProgressBatchGenerator] = []
+
+        def __init__(self, _model: Any, **kwargs: Any) -> None:
+            self._prompt_progress_callback = kwargs.get("prompt_progress_callback")
+            self._next_uid = 0
+            self._active: list[int] = []
+            self.progress_emitted = threading.Event()
+            self.release_response = threading.Event()
+            self.__class__.instances.append(self)
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            uids: list[int] = []
+            for _ in prompts:
+                uid = self._next_uid
+                self._next_uid += 1
+                self._active.append(uid)
+                uids.append(uid)
+            return uids
+
+        def next(self) -> list[Any]:
+            if len(self._active) >= 2 and not self.progress_emitted.is_set():
+                if callable(self._prompt_progress_callback):
+                    self._prompt_progress_callback(
+                        [(self._active[0], 100, 100), (self._active[1], 10, 100)]
+                    )
+                self.progress_emitted.set()
+                self.release_response.wait(timeout=5.0)
+                return [_batch_response(self._active[1], token=21, finish_reason="stop")]
+            threading.Event().wait(0.01)
+            return []
+
+        def close(self) -> None:
+            self.release_response.set()
+
+    samples = [1_000, 3_000]
+    calls = 0
+
+    def memory_probe() -> int:
+        nonlocal calls
+        calls += 1
+        return samples[calls - 1]
+
+    delayed_pumps: list[threading.Thread] = []
+    original_start = threading.Thread.start
+
+    def delay_pump_start(thread: threading.Thread) -> None:
+        if thread.name == "mlx-batch-generator":
+            delayed_pumps.append(thread)
+            return
+        original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", delay_pump_start)
+
+    session = _make_fake_session(memory_budget_status=_make_memory_budget_status())
+    session.tokenizer = _ToyTokenizer()
+    runtime = _make_attribution_runtime(
+        session,
+        memory_probe=memory_probe,
+        batch_generator_cls=_BlockAfterProgressBatchGenerator,
+    )
+
+    try:
+        stream_cancelled = _queue_batch_stream(runtime, [1, 2, 3])
+        stream_survivor = _queue_batch_stream(runtime, [4, 5, 6])
+        assert delayed_pumps
+        original_start(delayed_pumps[0])
+
+        generator = _BlockAfterProgressBatchGenerator.instances[0]
+        assert generator.progress_emitted.wait(timeout=2.0)
+        stream_cancelled.close(cancelled=cancelled)
+        generator.release_response.set()
+
+        assert [chunk.text for chunk in stream_survivor] == ["X"]
+    finally:
+        runtime.close()
+
+    assert calls == 2
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 200
+    assert runtime._prefill_attribution_by_insert_set_id == {}
 
 
 def test_batch_generator_runtime_rejects_shared_detokenizer_instances() -> None:

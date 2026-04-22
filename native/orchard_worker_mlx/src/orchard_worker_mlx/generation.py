@@ -245,6 +245,24 @@ def batch_generation_supported() -> bool:
 
 
 @dataclass(slots=True)
+class _BatchPrefillAttributionRecord:
+    insert_set_id: int
+    member_request_ids: set[int] = field(default_factory=set)
+    baseline_memory_bytes: int | None = None
+    accepted_processed_by_request_id: dict[int, int] = field(default_factory=dict)
+    accepted_total_by_request_id: dict[int, int] = field(default_factory=dict)
+    finalized: bool = False
+    finalize_in_flight: bool = False
+
+
+@dataclass(slots=True, frozen=True)
+class _BatchPrefillFinalizeCandidate:
+    insert_set_id: int
+    baseline_memory_bytes: int
+    prefill_processed_tokens: int
+
+
+@dataclass(slots=True)
 class _BatchRequestState:
     request_id: int
     prompt_ids: list[int]
@@ -256,6 +274,7 @@ class _BatchRequestState:
     events: deque[tuple[int, str | None]] = field(default_factory=deque)
     progress_events: deque[tuple[int, int]] = field(default_factory=deque)
     uid: int | None = None
+    insert_set_id: int | None = None
     closed: bool = False
     done: bool = False
     error: Exception | None = None
@@ -407,6 +426,8 @@ class BatchGeneratorRuntime:
         self._pending_by_id: dict[int, _BatchRequestState] = {}
         self._active_by_uid: dict[int, _BatchRequestState] = {}
         self._requests_by_id: dict[int, _BatchRequestState] = {}
+        self._next_insert_set_id = 0
+        self._prefill_attribution_by_insert_set_id: dict[int, _BatchPrefillAttributionRecord] = {}
         self._detokenizer_lock = threading.Lock()
         self._active_detokenizer_ids: set[int] = set()
         self._detokenizer_factory = self._build_detokenizer_factory(session.tokenizer)
@@ -553,6 +574,7 @@ class BatchGeneratorRuntime:
             if state is None:
                 return
 
+            self._detach_prefill_attribution_locked(state)
             state.closed = True
             state.done = True
             if state.uid is not None:
@@ -686,6 +708,7 @@ class BatchGeneratorRuntime:
                 if state is None or state.closed:
                     continue
                 state.progress_events.append((processed, total))
+                self._accept_prefill_attribution_progress_locked(state, processed, total)
             self._cv.notify_all()
 
     def _run_loop(self) -> None:
@@ -743,11 +766,67 @@ class BatchGeneratorRuntime:
                     )
                     continue
 
+                baseline_insert_set_id: int | None = None
+                stale_insert_batch_generator = None
                 with self._cv:
-                    for index, state in enumerate(pending_states):
-                        uid = uids[index]
-                        state.uid = uid
-                        self._active_by_uid[uid] = state
+                    if self._closed:
+                        self._mark_all_closed_locked(
+                            BackendError("generation_failed", "batch runtime closed", False)
+                        )
+                        return
+
+                    if self._reset_requested is not None:
+                        reset_error = BackendError(
+                            "generation_failed",
+                            self._reset_requested,
+                            True,
+                        )
+                        for state in pending_states:
+                            state.error = reset_error
+                            self._finalize_request_locked(state, keep_request=True)
+                        perform_reset = True
+                        self._cv.notify_all()
+                    else:
+                        bound_states: list[_BatchRequestState] = []
+                        stale_insert_detected = False
+                        for index, state in enumerate(pending_states):
+                            uid = uids[index]
+                            if (
+                                self._requests_by_id.get(state.request_id) is not state
+                                or state.closed
+                            ):
+                                stale_insert_detected = True
+                                continue
+                            state.uid = uid
+                            self._active_by_uid[uid] = state
+                            bound_states.append(state)
+
+                        if stale_insert_detected:
+                            stale_insert_batch_generator = self._request_reset_locked(
+                                "batch runtime reset after stale request returned from insert"
+                            )
+                            perform_reset = stale_insert_batch_generator is not None
+                        else:
+                            baseline_insert_set_id = self._create_prefill_attribution_record_locked(
+                                bound_states
+                            )
+
+                if stale_insert_batch_generator is not None:
+                    self._close_batch_generator_best_effort(stale_insert_batch_generator)
+
+                if perform_reset:
+                    self._perform_requested_reset()
+                    continue
+
+                if baseline_insert_set_id is not None:
+                    baseline_memory_bytes = _sample_current_memory_bytes_fail_open(
+                        self._generation_deps
+                    )
+                    with self._cv:
+                        self._store_prefill_attribution_baseline_locked(
+                            baseline_insert_set_id,
+                            baseline_memory_bytes,
+                        )
 
             with self._cv:
                 if self._closed:
@@ -812,6 +891,7 @@ class BatchGeneratorRuntime:
         keep_request: bool = False,
         local_close: bool = False,
     ) -> None:
+        self._detach_prefill_attribution_locked(state)
         request_id = state.request_id
         if not keep_request:
             self._requests_by_id.pop(request_id, None)
@@ -868,6 +948,194 @@ class BatchGeneratorRuntime:
 
         return uids
 
+    def _create_prefill_attribution_record_locked(
+        self,
+        states: list[_BatchRequestState],
+    ) -> int | None:
+        if not states:
+            return None
+
+        insert_set_id = self._next_insert_set_id
+        self._next_insert_set_id += 1
+        record = _BatchPrefillAttributionRecord(insert_set_id=insert_set_id)
+
+        for state in states:
+            if not self._is_prefill_attribution_member_eligible_locked(state):
+                continue
+            self._detach_prefill_attribution_locked(state)
+            state.insert_set_id = insert_set_id
+            record.member_request_ids.add(state.request_id)
+
+        if not record.member_request_ids:
+            return None
+
+        self._prefill_attribution_by_insert_set_id[insert_set_id] = record
+        return insert_set_id
+
+    def _store_prefill_attribution_baseline_locked(
+        self,
+        insert_set_id: int,
+        baseline_memory_bytes: int | None,
+    ) -> None:
+        record = self._prefill_attribution_by_insert_set_id.get(insert_set_id)
+        if record is None:
+            return
+
+        if not self._eligible_prefill_attribution_members_locked(record):
+            self._drop_prefill_attribution_record_locked(record)
+            return
+
+        record.baseline_memory_bytes = baseline_memory_bytes
+
+    def _accept_prefill_attribution_progress_locked(
+        self,
+        state: _BatchRequestState,
+        processed: Any,
+        total: Any,
+    ) -> None:
+        insert_set_id = state.insert_set_id
+        if insert_set_id is None:
+            return
+
+        record = self._prefill_attribution_by_insert_set_id.get(insert_set_id)
+        if record is None or state.request_id not in record.member_request_ids:
+            return
+
+        if isinstance(processed, bool) or not isinstance(processed, int):
+            return
+        if isinstance(total, bool) or not isinstance(total, int):
+            return
+        if processed <= 0 or total <= 0 or processed > total:
+            return
+
+        previous_processed = record.accepted_processed_by_request_id.get(state.request_id)
+        previous_total = record.accepted_total_by_request_id.get(state.request_id)
+        if previous_processed is not None:
+            if (
+                previous_total is not None
+                and total < previous_total
+                and processed <= previous_processed
+            ):
+                return
+            if processed <= previous_processed:
+                return
+
+        record.accepted_processed_by_request_id[state.request_id] = processed
+        record.accepted_total_by_request_id[state.request_id] = total
+
+    def _stage_prefill_attribution_finalize_locked(
+        self,
+        insert_set_id: int,
+    ) -> _BatchPrefillFinalizeCandidate | None:
+        record = self._prefill_attribution_by_insert_set_id.get(insert_set_id)
+        if record is None or record.finalized or record.baseline_memory_bytes is None:
+            return None
+
+        denominator = 0
+        for state in self._eligible_prefill_attribution_members_locked(record):
+            accepted = record.accepted_processed_by_request_id.get(state.request_id)
+            if accepted is not None:
+                denominator = max(denominator, accepted)
+
+        if denominator <= 0:
+            return None
+
+        record.finalized = True
+        record.finalize_in_flight = True
+        return _BatchPrefillFinalizeCandidate(
+            insert_set_id=insert_set_id,
+            baseline_memory_bytes=record.baseline_memory_bytes,
+            prefill_processed_tokens=denominator,
+        )
+
+    def _run_prefill_attribution_finalize_candidate(
+        self,
+        candidate: _BatchPrefillFinalizeCandidate | None,
+    ) -> None:
+        if candidate is None:
+            return
+
+        try:
+            _finalize_prefill_workspace_probe_fail_open(
+                self._session,
+                self._generation_deps,
+                baseline_memory_bytes=candidate.baseline_memory_bytes,
+                prefill_processed_tokens=candidate.prefill_processed_tokens,
+            )
+        except Exception:
+            logger.debug("batch prefill attribution finalize failed", exc_info=True)
+        finally:
+            with self._cv:
+                record = self._prefill_attribution_by_insert_set_id.get(candidate.insert_set_id)
+                if record is not None:
+                    record.finalize_in_flight = False
+                    self._remove_prefill_attribution_record_if_empty_locked(record)
+
+    def _eligible_prefill_attribution_members_locked(
+        self,
+        record: _BatchPrefillAttributionRecord,
+    ) -> list[_BatchRequestState]:
+        members: list[_BatchRequestState] = []
+        for request_id in record.member_request_ids:
+            state = self._requests_by_id.get(request_id)
+            if state is None:
+                continue
+            if (
+                state.insert_set_id == record.insert_set_id
+                and self._is_prefill_attribution_member_eligible_locked(state)
+            ):
+                members.append(state)
+        return members
+
+    def _is_prefill_attribution_member_eligible_locked(
+        self,
+        state: _BatchRequestState,
+    ) -> bool:
+        return (
+            self._requests_by_id.get(state.request_id) is state
+            and state.closed is False
+            and state.uid is not None
+            and self._active_by_uid.get(state.uid) is state
+        )
+
+    def _detach_prefill_attribution_locked(self, state: _BatchRequestState) -> None:
+        insert_set_id = state.insert_set_id
+        if insert_set_id is None:
+            return
+
+        state.insert_set_id = None
+        record = self._prefill_attribution_by_insert_set_id.get(insert_set_id)
+        if record is None:
+            return
+
+        record.member_request_ids.discard(state.request_id)
+        record.accepted_processed_by_request_id.pop(state.request_id, None)
+        record.accepted_total_by_request_id.pop(state.request_id, None)
+        self._remove_prefill_attribution_record_if_empty_locked(record)
+
+    def _clear_all_prefill_attribution_locked(self) -> None:
+        for state in self._requests_by_id.values():
+            state.insert_set_id = None
+        self._prefill_attribution_by_insert_set_id.clear()
+
+    def _remove_prefill_attribution_record_if_empty_locked(
+        self,
+        record: _BatchPrefillAttributionRecord,
+    ) -> None:
+        if record.member_request_ids or record.finalize_in_flight:
+            return
+        self._prefill_attribution_by_insert_set_id.pop(record.insert_set_id, None)
+
+    def _drop_prefill_attribution_record_locked(
+        self,
+        record: _BatchPrefillAttributionRecord,
+    ) -> None:
+        for request_id in list(record.member_request_ids):
+            state = self._requests_by_id.get(request_id)
+            if state is not None and state.insert_set_id == record.insert_set_id:
+                state.insert_set_id = None
+        self._prefill_attribution_by_insert_set_id.pop(record.insert_set_id, None)
+
     def _apply_batch_response(self, response: Any) -> bool:
         uid = getattr(response, "uid", None)
         token = getattr(response, "token", None)
@@ -898,13 +1166,22 @@ class BatchGeneratorRuntime:
             )
             return True
 
+        candidate: _BatchPrefillFinalizeCandidate | None = None
         with self._cv:
             state = self._active_by_uid.get(uid)
             if state is None:
                 return True
 
+            pre_finalize_open = not state.closed
+            pre_finalize_insert_set_id = state.insert_set_id
+
             if not state.closed:
                 state.events.append((token, finish_reason))
+
+            if pre_finalize_open and pre_finalize_insert_set_id is not None:
+                candidate = self._stage_prefill_attribution_finalize_locked(
+                    pre_finalize_insert_set_id
+                )
 
             if finish_reason is not None:
                 self._finalize_request_cache(state, response)
@@ -912,6 +1189,7 @@ class BatchGeneratorRuntime:
 
             self._cv.notify_all()
 
+        self._run_prefill_attribution_finalize_candidate(candidate)
         return True
 
     def _fail_active_request(self, uid: int, error: Exception) -> None:
@@ -1019,10 +1297,10 @@ class BatchGeneratorRuntime:
         )
 
         pending = list(self._pending_by_id.values())
+        active = list(self._active_by_uid.values())
+        self._clear_all_prefill_attribution_locked()
         self._pending_by_id.clear()
         self._pending_request_ids.clear()
-
-        active = list(self._active_by_uid.values())
         self._active_by_uid.clear()
 
         for state in pending:
@@ -1115,6 +1393,7 @@ class BatchGeneratorRuntime:
     def _mark_all_failed(self, error: Exception) -> None:
         with self._cv:
             targets = list(self._requests_by_id.values())
+            self._clear_all_prefill_attribution_locked()
             self._pending_by_id.clear()
             self._pending_request_ids.clear()
             self._active_by_uid.clear()
@@ -1125,6 +1404,7 @@ class BatchGeneratorRuntime:
 
     def _mark_all_closed_locked(self, error: Exception) -> None:
         targets = list(self._requests_by_id.values())
+        self._clear_all_prefill_attribution_locked()
         self._pending_by_id.clear()
         self._pending_request_ids.clear()
         self._active_by_uid.clear()
