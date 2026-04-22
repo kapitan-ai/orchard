@@ -23,6 +23,7 @@ defmodule Orchard.Models.Importer do
   alias Orchard.ModelManifest
   alias Orchard.Models
   alias Orchard.Models.ManifestParser
+  alias Orchard.Models.MemoryEstimator
 
   @type import_opts :: [activate: boolean(), artifacts_root: String.t()]
 
@@ -68,10 +69,11 @@ defmodule Orchard.Models.Importer do
     activate? = Keyword.get(opts, :activate, false)
 
     with :ok <- validate_source_path(source_path),
-         {:ok, manifest} <- ManifestParser.parse_from_bundle(source_path),
-         :ok <- validate_identity_safe(manifest),
-         :ok <- check_no_duplicate(manifest),
+         {:ok, source_manifest} <- ManifestParser.parse_from_bundle(source_path),
+         :ok <- validate_identity_safe(source_manifest),
+         :ok <- check_no_duplicate(source_manifest),
          {:ok, staged_path} <- stage_bundle(source_path, artifacts_root),
+         {:ok, manifest} <- maybe_top_up_resident_memory(staged_path, source_manifest),
          {:ok, sha256} <- compute_sha256(staged_path),
          {:ok, dest_path} <- finalize_staged(staged_path, manifest, artifacts_root) do
       case insert_catalog_record(manifest, dest_path, sha256, activate?) do
@@ -144,6 +146,95 @@ defmodule Orchard.Models.Importer do
 
       {:error, reason} ->
         {:error, {:mkdir_failed, "failed to create staging dir: #{inspect(reason)}"}}
+    end
+  end
+
+  # -- Manifest top-up ------------------------------------------------------
+
+  defp maybe_top_up_resident_memory(staged_path, %ModelManifest{} = manifest) do
+    if resident_memory_present?(manifest.resident_memory_bytes) do
+      {:ok, manifest}
+    else
+      maybe_write_estimated_resident_memory(staged_path, manifest)
+    end
+  end
+
+  defp resident_memory_present?(value) when is_integer(value) and value > 0, do: true
+  defp resident_memory_present?(_value), do: false
+
+  defp maybe_write_estimated_resident_memory(staged_path, manifest) do
+    case MemoryEstimator.resident_memory_bytes_from_bundle(staged_path) do
+      {:ok, resident_memory_bytes}
+      when is_integer(resident_memory_bytes) and resident_memory_bytes > 0 ->
+        with {:ok, manifest_map} <- read_manifest_map(staged_path),
+             :ok <-
+               write_manifest_map(
+                 staged_path,
+                 Map.put(manifest_map, "resident_memory_bytes", resident_memory_bytes)
+               ),
+             {:ok, reparsed} <- ManifestParser.parse_from_bundle(staged_path) do
+          {:ok, reparsed}
+        else
+          _error ->
+            # Fail-open: if manifest read/write/re-parse fails, use original manifest.
+            # This also prevents staged-directory cleanup leaks: the function never
+            # returns an error, so the outer with/else in import_bundle/2 does not
+            # need to handle top-up failures separately.
+            {:ok, manifest}
+        end
+
+      :unknown ->
+        # Estimator returned :unknown. Normalize missing/nil resident_memory_bytes
+        # to 0 on disk so the DB row (which uses manifest.resident_memory_bytes || 0)
+        # stays aligned with the persisted manifest file.
+        if is_nil(manifest.resident_memory_bytes) do
+          with {:ok, manifest_map} <- read_manifest_map(staged_path),
+               :ok <-
+                 write_manifest_map(
+                   staged_path,
+                   Map.put(manifest_map, "resident_memory_bytes", 0)
+                 ),
+               {:ok, reparsed} <- ManifestParser.parse_from_bundle(staged_path) do
+            {:ok, reparsed}
+          else
+            _error -> {:ok, manifest}
+          end
+        else
+          {:ok, manifest}
+        end
+    end
+  end
+
+  defp read_manifest_map(staged_path) do
+    manifest_path = Path.join(staged_path, "manifest.json")
+
+    case File.read(manifest_path) do
+      {:ok, json} ->
+        case Jason.decode(json) do
+          {:ok, manifest_map} when is_map(manifest_map) ->
+            {:ok, manifest_map}
+
+          {:ok, _other} ->
+            {:error, {:manifest_json, "manifest must decode to a JSON object"}}
+
+          {:error, %Jason.DecodeError{} = err} ->
+            {:error, {:manifest_json, Exception.message(err)}}
+        end
+
+      {:error, reason} ->
+        {:error, {:manifest_read, "failed to read #{manifest_path}: #{inspect(reason)}"}}
+    end
+  end
+
+  defp write_manifest_map(staged_path, manifest_map) do
+    manifest_path = Path.join(staged_path, "manifest.json")
+
+    case File.write(manifest_path, Jason.encode!(manifest_map)) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error, {:manifest_write, "failed to write #{manifest_path}: #{inspect(reason)}"}}
     end
   end
 

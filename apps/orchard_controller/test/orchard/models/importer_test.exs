@@ -245,6 +245,66 @@ defmodule Orchard.Models.ImporterTest do
       assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
       assert model.resident_memory_bytes == 0
     end
+
+    test "imports SPEC.md §6.4 CLI path tops up resident_memory_bytes from estimator and keeps DB aligned",
+         %{artifacts_root: artifacts_root} do
+      source_dir = create_bundle(artifacts_root, %{"resident_memory_bytes" => 0})
+      write_estimator_index(source_dir, 6_442_450_944)
+
+      assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+      assert model.resident_memory_bytes == 6_442_450_944
+
+      imported_bundle_path = artifact_path(model)
+      assert {:ok, imported_manifest} = ManifestParser.parse_from_bundle(imported_bundle_path)
+      assert imported_manifest.resident_memory_bytes == 6_442_450_944
+
+      persisted_model = Models.get_model!(model.id)
+      assert persisted_model.resident_memory_bytes == imported_manifest.resident_memory_bytes
+    end
+
+    test "imports SPEC.md §6.4 CLI path fail-open when resident estimator is unknown", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = create_bundle(artifacts_root, %{"resident_memory_bytes" => 0})
+
+      assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+      assert model.resident_memory_bytes == 0
+
+      imported_bundle_path = artifact_path(model)
+      assert {:ok, imported_manifest} = ManifestParser.parse_from_bundle(imported_bundle_path)
+      assert imported_manifest.resident_memory_bytes == 0
+    end
+
+    test "imports SPEC.md §6.4 CLI path tops up omitted resident_memory_bytes key from estimator",
+         %{artifacts_root: artifacts_root} do
+      source_dir = create_bundle_with_manifest(artifacts_root, base_manifest_without_resident())
+      write_estimator_index(source_dir, 6_442_450_944)
+
+      assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+      assert model.resident_memory_bytes == 6_442_450_944
+
+      imported_bundle_path = artifact_path(model)
+      assert {:ok, imported_manifest} = ManifestParser.parse_from_bundle(imported_bundle_path)
+      assert imported_manifest.resident_memory_bytes == 6_442_450_944
+
+      persisted_model = Models.get_model!(model.id)
+      assert persisted_model.resident_memory_bytes == imported_manifest.resident_memory_bytes
+    end
+
+    test "imports SPEC.md §6.4 CLI path normalizes omitted resident_memory_bytes key to 0 when estimator is unknown",
+         %{artifacts_root: artifacts_root} do
+      source_dir = create_bundle_with_manifest(artifacts_root, base_manifest_without_resident())
+
+      assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+      assert model.resident_memory_bytes == 0
+
+      imported_bundle_path = artifact_path(model)
+      assert {:ok, imported_manifest} = ManifestParser.parse_from_bundle(imported_bundle_path)
+      assert imported_manifest.resident_memory_bytes == 0
+
+      persisted_model = Models.get_model!(model.id)
+      assert persisted_model.resident_memory_bytes == 0
+    end
   end
 
   describe "import_bundle/2 security" do
@@ -310,11 +370,44 @@ defmodule Orchard.Models.ImporterTest do
     File.write!(Path.join(source_dir, "model.safetensors.index.json"), Jason.encode!(data))
   end
 
+  defp write_estimator_index(source_dir, total_size) do
+    write_safetensors_index(source_dir, %{"metadata" => %{"total_size" => total_size}})
+  end
+
   defp create_bundle(root, manifest_overrides) do
     bundle_dir = Path.join(root, "test_bundle_#{:rand.uniform(1_000_000)}")
     File.mkdir_p!(bundle_dir)
     write_manifest(bundle_dir, manifest_overrides)
     bundle_dir
+  end
+
+  defp create_bundle_with_manifest(root, manifest_map) do
+    bundle_dir = Path.join(root, "test_bundle_#{:rand.uniform(1_000_000)}")
+    File.mkdir_p!(bundle_dir)
+    File.write!(Path.join(bundle_dir, "manifest.json"), Jason.encode!(manifest_map))
+    bundle_dir
+  end
+
+  defp base_manifest_without_resident do
+    %{
+      "model_id" => "test-org/tiny-llm",
+      "version" => "mlx-q4-v1",
+      "format" => "mlx",
+      "artifact_layout" => "directory",
+      "entrypoint" => "weights/",
+      "sha256" => String.duplicate("a", 64),
+      "size_bytes" => 1024,
+      "kv_cache_bytes_per_token" => 16,
+      "prefill_workspace_bytes_per_token" => 8,
+      "max_context_tokens" => 4096,
+      "capabilities" => ["chat"],
+      "tokenizer" => %{"kind" => "huggingface_tokenizer_json", "path" => "tokenizer.json"},
+      "runtime_requirements" => %{"adapter" => "mlx_lm", "min_agent_capability" => "mlx"}
+    }
+  end
+
+  defp artifact_path(model) do
+    String.replace_prefix(model.artifact_uri, "file://", "")
   end
 
   defp write_manifest(bundle_dir, overrides) do
