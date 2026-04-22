@@ -375,9 +375,10 @@ defmodule Orchard.Node.WorkerProcessTest do
           assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
 
           assert :ok =
-                   WorkerProcess.start_request(pid, "req-task-failed", execute_request("req-task-failed"),
-                     subscriber: self()
-                   )
+                   WorkerProcess.start_request(
+                     pid,
+                     "req-task-failed",
+                     execute_request("req-task-failed"), subscriber: self())
 
           generation_ref =
             pid
@@ -386,10 +387,15 @@ defmodule Orchard.Node.WorkerProcessTest do
             |> Map.fetch!("req-task-failed")
             |> Map.fetch!(:generation_ref)
 
-          send(pid, {:runtime_adapter_done, generation_ref, {:generation_task_failed, :error, :boom}})
+          send(
+            pid,
+            {:runtime_adapter_done, generation_ref, {:generation_task_failed, :error, :boom}}
+          )
 
           assert_receive {:node_runtime_event, "req-task-failed",
-                          %Orchard.InferenceEvent{event: %{code: "runtime_generation_task_failed"}}},
+                          %Orchard.InferenceEvent{
+                            event: %{code: "runtime_generation_task_failed"}
+                          }},
                          1_000
 
           assert_receive {:worker_request_finished, ^pid, "req-task-failed"}, 1_000
@@ -419,9 +425,10 @@ defmodule Orchard.Node.WorkerProcessTest do
           assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
 
           assert :ok =
-                   WorkerProcess.start_request(pid, "req-unavailable", execute_request("req-unavailable"),
-                     subscriber: self()
-                   )
+                   WorkerProcess.start_request(
+                     pid,
+                     "req-unavailable",
+                     execute_request("req-unavailable"), subscriber: self())
 
           generation_ref =
             pid

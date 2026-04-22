@@ -1402,7 +1402,8 @@ defmodule Orchard.Node.ModelManager do
         end
       end)
 
-    {health || %RuntimeHealth{ready: true, health_code: "", health_message: ""}, runtime_memory_budgets}
+    {health || %RuntimeHealth{ready: true, health_code: "", health_message: ""},
+     runtime_memory_budgets}
   end
 
   defp worker_state(state) do

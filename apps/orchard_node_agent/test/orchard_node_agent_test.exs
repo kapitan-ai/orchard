@@ -152,7 +152,10 @@ defmodule OrchardNodeAgentTest do
         end)
 
       generations =
-        Map.put(adapter_state.generations, generation_ref, %{pid: pid, request_id: request.request_id})
+        Map.put(adapter_state.generations, generation_ref, %{
+          pid: pid,
+          request_id: request.request_id
+        })
 
       {:ok, generation_ref, %{adapter_state | generations: generations}}
     end
@@ -863,7 +866,9 @@ defmodule OrchardNodeAgentTest do
         assert {:ok, %StatusResponse{} = response} =
                  NodeRuntimeStub.get_status(channel, %StatusRequest{})
 
-        assert [%{model_ref: %RPCModelRef{} = model_ref} = budget] = response.runtime_memory_budgets
+        assert [%{model_ref: %RPCModelRef{} = model_ref} = budget] =
+                 response.runtime_memory_budgets
+
         assert model_ref.model_id == bundle.model_id
         assert model_ref.version == bundle.version
         assert budget.mode == "observe"
@@ -913,7 +918,8 @@ defmodule OrchardNodeAgentTest do
           NodeStatus.ensure_model_loaded(ensure_model_loaded_request(blocked_bundle, 10_000))
         end)
 
-      assert_receive {:short_circuit_blocking_load_started, blocking_pid, blocked_model_ref}, 1_000
+      assert_receive {:short_circuit_blocking_load_started, blocking_pid, blocked_model_ref},
+                     1_000
 
       assert %StatusResponse{} = response = NodeStatus.current()
       assert response.runtime_health.ready == false
@@ -922,8 +928,17 @@ defmodule OrchardNodeAgentTest do
       assert response.runtime_health.affected_model.model_id == blocked_bundle.model_id
       assert response.runtime_health.affected_model.version == blocked_bundle.version
       assert response.runtime_memory_budgets == []
-      assert Enum.any?(response.loaded_models, &(&1.model_id == bundle.model_id and &1.version == bundle.version))
-      refute Enum.any?(response.loaded_models, &(&1.model_id == blocked_bundle.model_id and &1.version == blocked_bundle.version))
+
+      assert Enum.any?(
+               response.loaded_models,
+               &(&1.model_id == bundle.model_id and &1.version == bundle.version)
+             )
+
+      refute Enum.any?(
+               response.loaded_models,
+               &(&1.model_id == blocked_bundle.model_id and &1.version == blocked_bundle.version)
+             )
+
       refute_receive {:short_circuit_status_probe, _pid, _model_ref}, 100
 
       send(blocking_pid, :finish_load)
@@ -1226,7 +1241,9 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
-  test "worker_unavailable runtime done clears the worker and active request state", %{bundle: bundle} do
+  test "worker_unavailable runtime done clears the worker and active request state", %{
+    bundle: bundle
+  } do
     with_runtime_adapter(UnavailableDoneRuntimeAdapter, fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
@@ -2274,7 +2291,8 @@ defmodule OrchardNodeAgentTest do
             assert {:ok,
                     %EnsureModelLoadedResponse{
                       placement_state: :PLACEMENT_STATE_LOADED
-                    }} = NodeRuntimeStub.ensure_model_loaded(channel, ensure_req, timeout: 125_000)
+                    }} =
+                     NodeRuntimeStub.ensure_model_loaded(channel, ensure_req, timeout: 125_000)
 
             # Execute real generation
             gen_req = %ExecuteInferenceRequest{
@@ -2764,7 +2782,9 @@ defmodule OrchardNodeAgentTest do
           assert {:ok, %StatusResponse{} = response} =
                    NodeRuntimeStub.get_status(channel, %StatusRequest{})
 
-          assert [%{model_ref: %RPCModelRef{} = model_ref} = budget] = response.runtime_memory_budgets
+          assert [%{model_ref: %RPCModelRef{} = model_ref} = budget] =
+                   response.runtime_memory_budgets
+
           assert model_ref.model_id == bundle.model_id
           assert model_ref.version == bundle.version
           assert budget.mode == "observe"

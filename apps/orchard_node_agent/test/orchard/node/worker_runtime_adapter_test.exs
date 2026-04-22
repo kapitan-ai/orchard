@@ -4,6 +4,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   alias GRPC.RPCError
   alias Orchard.Cluster.V1.{Ack, CancelInferenceRequest, ExecuteInferenceRequest, InferenceEvent}
   alias Orchard.Cluster.V1.OutputTextDelta, as: ProtoOutputTextDelta
+
   alias Orchard.Node.Worker.V1.{
     LoadModelRequest,
     WorkerMemoryBudgetStatus,
@@ -11,6 +12,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     WorkerStatusRequest,
     WorkerStatusResponse
   }
+
   alias Orchard.Node.WorkerRuntimeAdapter
   alias Orchard.InferenceEvent, as: DomainInferenceEvent
   alias Orchard.InferenceEvent.OutputTextDelta
@@ -248,7 +250,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     {:ok, generation_ref, adapter_state} =
       WorkerRuntimeAdapter.start_generation(state, request, owner: self())
 
-    assert_receive {:runtime_adapter_done, ^generation_ref, {:generation_task_failed, kind, _reason}},
+    assert_receive {:runtime_adapter_done, ^generation_ref,
+                    {:generation_task_failed, kind, _reason}},
                    1_000
 
     assert kind in [:error, :exit]
@@ -263,10 +266,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
     start_supervised!({
       GRPC.Server.Supervisor,
-      endpoint: endpoint,
-      port: port,
-      start_server: true,
-      adapter_opts: [ip: {127, 0, 0, 1}]
+      endpoint: endpoint, port: port, start_server: true, adapter_opts: [ip: {127, 0, 0, 1}]
     })
 
     {:ok, channel} = GRPC.Stub.connect("127.0.0.1:#{port}")
@@ -294,7 +294,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
   defp wait_for_worker_service_ready(channel, attempts) do
     case WorkerRuntimeService.Stub.get_status(channel, %WorkerStatusRequest{}, timeout: 500) do
-      {:ok, %WorkerStatusResponse{ready: true}} -> :ok
+      {:ok, %WorkerStatusResponse{ready: true}} ->
+        :ok
+
       _other ->
         Process.sleep(25)
         wait_for_worker_service_ready(channel, attempts - 1)

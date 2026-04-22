@@ -13,6 +13,8 @@ defmodule Orchard.Models.Model do
   @states [:registered, :active, :deprecated, :retired]
   @formats ["mlx", "gguf"]
 
+  @type t :: %__MODULE__{}
+
   schema "models" do
     field(:model_id, :string)
     field(:version, :string)

@@ -314,7 +314,11 @@ defmodule Orchard.Node.WorkerProcess do
       # When the worker is already unavailable, skip the unload RPC to avoid a
       # wasted timeout against a dead process. Local cleanup (kill tasks,
       # disconnect channel, remove socket) still runs inside the adapter.
-      opts = [force: true, skip_rpc: reason in [:runtime_worker_exited, :runtime_worker_unavailable]]
+      opts = [
+        force: true,
+        skip_rpc: reason in [:runtime_worker_exited, :runtime_worker_unavailable]
+      ]
+
       _ = state.adapter.unload_model(state.adapter_state, opts)
       :ok
     end

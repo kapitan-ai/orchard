@@ -11,7 +11,8 @@ defmodule Orchard.MixProject do
       aliases: aliases(),
       deps: deps(),
       releases: releases(),
-      test_coverage: [tool: ExCoveralls]
+      test_coverage: [tool: ExCoveralls],
+      dialyzer: [plt_add_apps: [:mix]]
     ]
   end
 

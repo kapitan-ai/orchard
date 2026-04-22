@@ -2,6 +2,7 @@ defmodule Orchard.Release do
   @moduledoc false
 
   alias Ecto.Adapters.SQL
+  alias Orchard.Models.ResidentMemoryBackfill
 
   @app :orchard_controller
   @db_checks_key :enable_db_checks
@@ -101,6 +102,20 @@ defmodule Orchard.Release do
       {:ok, :current} -> true
       {:ok, :pending} -> false
       {:error, _reason} -> false
+    end
+  end
+
+  @spec backfill_resident_memory(keyword()) :: ResidentMemoryBackfill.run_result()
+  def backfill_resident_memory(opts \\ []) do
+    load_app()
+
+    [repo | _] = repos()
+
+    case Ecto.Migrator.with_repo(repo, fn _started_repo ->
+           ResidentMemoryBackfill.run(opts)
+         end) do
+      {:ok, result, _apps} -> result
+      {:error, reason} -> {:error, reason}
     end
   end
 

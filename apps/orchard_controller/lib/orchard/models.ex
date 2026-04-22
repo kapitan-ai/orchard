@@ -47,6 +47,30 @@ defmodule Orchard.Models do
   end
 
   @doc """
+  Resolves a catalog artifact URI to a local path under the configured root.
+
+  Only `file://` URIs without host, query, or fragment are accepted. The
+  resolved path must stay within `Orchard.Inference.artifacts_root/0` and no
+  existing path component may be a symlink.
+  """
+  @spec artifact_local_path(Model.t() | String.t()) :: {:ok, String.t()} | {:error, term()}
+  def artifact_local_path(%Model{artifact_uri: artifact_uri}),
+    do: artifact_local_path(artifact_uri)
+
+  def artifact_local_path("file://" <> _rest = artifact_uri) do
+    with {:ok, local_path} <- file_uri_path(artifact_uri),
+         {:ok, artifacts_root} <- expanded_artifacts_root(),
+         expanded_path = Path.expand(local_path),
+         :ok <- validate_local_artifact_contained(expanded_path, artifacts_root),
+         :ok <- reject_symlink_components(expanded_path) do
+      {:ok, expanded_path}
+    end
+  end
+
+  def artifact_local_path(uri) when is_binary(uri), do: {:error, {:unsupported_uri, uri}}
+  def artifact_local_path(_uri), do: {:error, :invalid_artifact_uri}
+
+  @doc """
   Returns a summary of model catalog counts grouped by state.
 
   All states from `Model.states/0` are present in `by_state`, zero-filled
@@ -315,6 +339,74 @@ defmodule Orchard.Models do
         )
 
         :ok
+    end
+  end
+
+  defp file_uri_path(artifact_uri) do
+    uri = URI.parse(artifact_uri)
+
+    cond do
+      uri.scheme != "file" ->
+        {:error, {:unsupported_uri, artifact_uri}}
+
+      uri.host not in [nil, ""] ->
+        {:error, {:unsupported_file_uri_host, uri.host}}
+
+      uri.query || uri.fragment ->
+        {:error, {:unsupported_file_uri_parts, artifact_uri}}
+
+      not is_binary(uri.path) or uri.path == "" ->
+        {:error, {:invalid_file_uri, artifact_uri}}
+
+      true ->
+        {:ok, URI.decode(uri.path)}
+    end
+  end
+
+  defp expanded_artifacts_root do
+    case Orchard.Inference.artifacts_root() do
+      root when is_binary(root) and root != "" -> {:ok, Path.expand(root)}
+      other -> {:error, {:invalid_artifacts_root, other}}
+    end
+  end
+
+  defp validate_local_artifact_contained(path, artifacts_root) do
+    if String.starts_with?(path, artifacts_root <> "/") do
+      :ok
+    else
+      {:error, {:path_escape, path}}
+    end
+  end
+
+  defp reject_symlink_components(path) do
+    path
+    |> path_prefixes()
+    |> Enum.reduce_while(:ok, &reject_symlink_component/2)
+  end
+
+  defp path_prefixes(path) do
+    path
+    |> Path.split()
+    |> Enum.reduce([], fn
+      "/", [] -> ["/"]
+      part, [] -> [part]
+      part, acc -> acc ++ [Path.join(List.last(acc), part)]
+    end)
+  end
+
+  defp reject_symlink_component(component, :ok) do
+    case File.read_link(component) do
+      {:ok, _target} -> {:halt, {:error, {:path_symlink, component}}}
+      {:error, :enoent} -> {:halt, :ok}
+      {:error, _not_symlink} -> validate_readable_component(component)
+    end
+  end
+
+  defp validate_readable_component(component) do
+    case File.lstat(component) do
+      {:ok, _stat} -> {:cont, :ok}
+      {:error, :enoent} -> {:halt, :ok}
+      {:error, reason} -> {:halt, {:error, {:path_unreadable, component, reason}}}
     end
   end
 

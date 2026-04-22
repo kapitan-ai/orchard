@@ -18,12 +18,14 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   alias Orchard.InferenceEvent
   alias Orchard.Node
+
   alias Orchard.Node.Worker.V1.{
     LoadModelRequest,
     WorkerMemoryBudgetStatus,
     WorkerRuntimeService,
     WorkerStatusRequest
   }
+
   alias Orchard.PathUtils
 
   @poll_interval_ms 50
@@ -93,8 +95,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       resident_memory_bytes: Map.get(budget, :resident_memory_bytes, 0),
       estimated_headroom_bytes: Map.get(budget, :estimated_headroom_bytes, 0),
       kv_cache_bytes_per_token: Map.get(budget, :kv_cache_bytes_per_token, 0),
-      prefill_workspace_bytes_per_token:
-        Map.get(budget, :prefill_workspace_bytes_per_token, 0)
+      prefill_workspace_bytes_per_token: Map.get(budget, :prefill_workspace_bytes_per_token, 0)
     }
   end
 
@@ -698,7 +699,10 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       stream_generation(channel, owner, generation_ref, request)
     catch
       kind, reason ->
-        send(owner, {:runtime_adapter_done, generation_ref, {:generation_task_failed, kind, reason}})
+        send(
+          owner,
+          {:runtime_adapter_done, generation_ref, {:generation_task_failed, kind, reason}}
+        )
     end
   end
 
@@ -740,7 +744,12 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
-  defp handle_stream_item({:error, _reason}, :terminal_sent = stream_result, _owner, _generation_ref) do
+  defp handle_stream_item(
+         {:error, _reason},
+         :terminal_sent = stream_result,
+         _owner,
+         _generation_ref
+       ) do
     {:halt, stream_result}
   end
 
@@ -785,7 +794,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp emit_stream_done(_owner, _generation_ref, :terminal_sent), do: :ok
-  defp emit_stream_done(owner, generation_ref, :open), do: send(owner, {:runtime_adapter_done, generation_ref})
+
+  defp emit_stream_done(owner, generation_ref, :open),
+    do: send(owner, {:runtime_adapter_done, generation_ref})
 
   defp emit_stream_done(owner, generation_ref, {:done, reason}) do
     send(owner, {:runtime_adapter_done, generation_ref, reason})
