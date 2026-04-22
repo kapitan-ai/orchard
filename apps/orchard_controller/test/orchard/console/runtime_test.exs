@@ -350,6 +350,217 @@ defmodule OrchardConsole.RuntimeTest do
              ]
     end
 
+    test "SPEC 7.5.3 normalizes present runtime memory budgets with approved fields only" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           status_response(%{
+             runtime_memory_budgets: [
+               %{
+                 model_ref: %{model_id: "mlx-community/phi-3", version: "main"},
+                 mode: "observe",
+                 budget_available: true,
+                 headroom_available: false,
+                 status_code: "resident_memory_unavailable",
+                 status_message: "resident memory metadata missing",
+                 source: "worker",
+                 max_recommended_working_set_size_bytes: 50_000,
+                 utilization: 0.9,
+                 target_working_set_bytes: 45_000,
+                 overhead_bytes: 1_024,
+                 resident_memory_bytes: 0,
+                 estimated_headroom_bytes: 0,
+                 kv_cache_bytes_per_token: 16,
+                 prefill_workspace_bytes_per_token: 8
+               }
+             ]
+           })},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+
+      assert [
+               %{
+                 display_state: :observed,
+                 model_ref: "mlx-community/phi-3@main",
+                 mode: "observe",
+                 budget_available: true,
+                 headroom_available: false,
+                 status_code: "resident_memory_unavailable",
+                 status_message: "resident memory metadata missing",
+                 target_working_set_bytes: 45_000,
+                 resident_memory_bytes: 0,
+                 kv_cache_bytes_per_token: 16,
+                 prefill_workspace_bytes_per_token: 8
+               } = budget
+             ] = snapshot.runtime_memory_budgets
+
+      refute Map.has_key?(budget, :source)
+      refute Map.has_key?(budget, :estimated_headroom_bytes)
+      refute Map.has_key?(budget, :overhead_bytes)
+      assert snapshot.runtime_memory_budgets_truncated_count == 0
+    end
+
+    test "SPEC 7.5.3 preserves empty runtime memory budgets for absent telemetry" do
+      stub_client(
+        connect: {:ok, :ch},
+        status: {:ok, status_response()},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.runtime_memory_budgets == []
+      assert snapshot.runtime_memory_budgets_truncated_count == 0
+    end
+
+    test "SPEC 7.5.3 normalizes malformed non-list memory budgets to empty telemetry" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           status_response(%{
+             runtime_memory_budgets: %{unexpected: "shape"}
+           })},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.runtime_memory_budgets == []
+      assert snapshot.runtime_memory_budgets_truncated_count == 0
+    end
+
+    test "SPEC 7.5.3 tolerates partial memory budget payloads without failing" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           status_response(%{
+             runtime_memory_budgets: [
+               %{model_ref: %{model_id: "partial-model"}, status_code: "ok"}
+             ]
+           })},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+
+      assert [
+               %{
+                 display_state: :observed,
+                 model_ref: "partial-model",
+                 mode: "unknown",
+                 budget_available: nil,
+                 headroom_available: nil,
+                 status_code: "ok",
+                 status_message: nil,
+                 target_working_set_bytes: nil
+               }
+             ] = snapshot.runtime_memory_budgets
+    end
+
+    test "SPEC 7.5.3 safely normalizes malformed memory budget field values" do
+      long_status = String.duplicate("x", 120)
+      long_model_ref = String.duplicate("m", 200)
+      long_mode = String.duplicate("o", 60)
+      long_status_message = String.duplicate("s", 300)
+
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           status_response(%{
+             runtime_memory_budgets: [
+               %{
+                 model_ref: long_model_ref,
+                 mode: long_mode,
+                 budget_available: "true",
+                 headroom_available: 1,
+                 status_code: long_status,
+                 status_message: long_status_message,
+                 target_working_set_bytes: "45000",
+                 resident_memory_bytes: -1,
+                 kv_cache_bytes_per_token: nil,
+                 prefill_workspace_bytes_per_token: :unknown
+               },
+               "not a budget map"
+             ]
+           })},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+
+      assert [
+               %{
+                 display_state: :observed,
+                 model_ref: bounded_model_ref,
+                 mode: bounded_mode,
+                 budget_available: nil,
+                 headroom_available: nil,
+                 status_code: bounded_status,
+                 status_message: bounded_status_message,
+                 target_working_set_bytes: nil,
+                 resident_memory_bytes: nil,
+                 kv_cache_bytes_per_token: nil,
+                 prefill_workspace_bytes_per_token: nil
+               },
+               %{
+                 display_state: :invalid,
+                 model_ref: "unknown model",
+                 status_code: "invalid_status"
+               }
+             ] = snapshot.runtime_memory_budgets
+
+      assert String.length(bounded_model_ref) == 160
+      assert String.length(bounded_mode) == 40
+      assert String.length(bounded_status) == 80
+      assert String.length(bounded_status_message) == 240
+    end
+
+    test "SPEC 7.5.3 caps oversized runtime memory budget lists deterministically" do
+      budgets =
+        Enum.map(1..22, fn index ->
+          %{
+            model_ref: %{model_id: "model-#{index}", version: "main"},
+            mode: "observe",
+            budget_available: true,
+            headroom_available: false,
+            status_code: "ok",
+            status_message: "",
+            target_working_set_bytes: index,
+            resident_memory_bytes: 0,
+            kv_cache_bytes_per_token: 0,
+            prefill_workspace_bytes_per_token: 0
+          }
+        end)
+
+      stub_client(
+        connect: {:ok, :ch},
+        status: {:ok, status_response(%{runtime_memory_budgets: budgets})},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert length(snapshot.runtime_memory_budgets) == 20
+      assert hd(snapshot.runtime_memory_budgets).model_ref == "model-1@main"
+      assert List.last(snapshot.runtime_memory_budgets).model_ref == "model-20@main"
+      assert snapshot.runtime_memory_budgets_truncated_count == 2
+    end
+
+    test "SPEC 7.5.3 preserves empty memory budgets on unreachable snapshots" do
+      stub_client(
+        connect: {:error, {:connect_failed, :econnrefused}},
+        status: nil,
+        disconnect: nil
+      )
+
+      assert {:error, error} = Runtime.snapshot()
+      assert error.runtime_memory_budgets == []
+      assert error.runtime_memory_budgets_truncated_count == 0
+    end
+
     test "status error does not trigger observe_status" do
       stub_client(
         connect: {:ok, :ch},
@@ -987,5 +1198,18 @@ defmodule OrchardConsole.RuntimeTest do
   defp stub_client(stubs) do
     start_supervised!({Registry, keys: :duplicate, name: __MODULE__.StubRegistry})
     Registry.register(__MODULE__.StubRegistry, :stubs, stubs)
+  end
+
+  defp status_response(attrs \\ %{}) do
+    Map.merge(
+      %{
+        worker_state: :WORKER_STATE_IDLE,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: nil,
+        runtime_health: nil
+      },
+      attrs
+    )
   end
 end

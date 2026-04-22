@@ -218,6 +218,49 @@ defmodule OrchardConsole.NodesLive do
                       <% end %>
                     </div>
 
+                    <%!-- Observe-only Memory Telemetry --%>
+                    <div
+                      id={"nodes-memory-telemetry-#{t.target_dom_id}"}
+                      class="rounded-lg border border-slate-200 bg-slate-50/60 p-3 dark:border-slate-700 dark:bg-slate-900/50"
+                    >
+                      <div class="mb-2">
+                        <h4 class="text-sm font-medium text-slate-700 dark:text-slate-300">
+                          Memory Telemetry
+                        </h4>
+                        <p class="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                          Observe-only memory-budget diagnostics. This section is non-gating.
+                        </p>
+                      </div>
+
+                      <%= if t.runtime_memory_budgets == [] do %>
+                        <p
+                          id={"nodes-memory-telemetry-empty-#{t.target_dom_id}"}
+                          class="text-xs text-slate-400 dark:text-slate-500"
+                        >
+                          No memory-budget observation reported by this target.
+                        </p>
+                      <% else %>
+                        <.table id={"nodes-memory-telemetry-table-#{t.target_dom_id}"} rows={t.runtime_memory_budgets}>
+                          <:col :let={budget} label="Model" mono>{budget.model_ref}</:col>
+                          <:col :let={budget} label="Status">{memory_budget_status_label(budget)}</:col>
+                          <:col :let={budget} label="Working Set">{memory_budget_working_set_label(budget)}</:col>
+                          <:col :let={budget} label="Headroom Observation">{memory_budget_headroom_label(budget)}</:col>
+                          <:col :let={budget} label="Resident / KV / Prefill">
+                            {memory_budget_metadata_label(budget)}
+                          </:col>
+                        </.table>
+
+                        <p
+                          :if={t.runtime_memory_budgets_truncated_count > 0}
+                          id={"nodes-memory-telemetry-truncated-#{t.target_dom_id}"}
+                          class="mt-2 text-xs text-slate-500 dark:text-slate-400"
+                        >
+                          Showing {length(t.runtime_memory_budgets)} telemetry rows;
+                          {t.runtime_memory_budgets_truncated_count} additional row(s) omitted.
+                        </p>
+                      <% end %>
+                    </div>
+
                     <%!-- Loaded Models --%>
                     <div>
                       <h4 class="mb-2 text-sm font-medium text-slate-700 dark:text-slate-300">Loaded Models</h4>
@@ -310,6 +353,12 @@ defmodule OrchardConsole.NodesLive do
     }
   end
 
+  @memory_budget_limit 20
+  @max_model_ref_length 160
+  @max_mode_length 40
+  @max_status_code_length 80
+  @max_status_message_length 240
+
   defp normalize_runtime_target(entry) do
     target = entry.target
 
@@ -324,8 +373,106 @@ defmodule OrchardConsole.NodesLive do
       active_request_count: entry[:active_request_count] || 0,
       node_metadata: entry[:node_metadata],
       runtime_health: entry[:runtime_health],
+      runtime_memory_budgets: target_memory_budgets(entry),
+      runtime_memory_budgets_truncated_count: target_memory_budgets_truncated_count(entry),
       compatibility: target_compatibility(entry)
     }
+  end
+
+  defp target_memory_budgets(entry) do
+    case entry[:runtime_memory_budgets] do
+      budgets when is_list(budgets) ->
+        budgets
+        |> Enum.take(@memory_budget_limit)
+        |> Enum.map(&target_memory_budget_row/1)
+
+      _ ->
+        []
+    end
+  end
+
+  defp target_memory_budget_row(budget) when is_map(budget) do
+    %{
+      display_state: target_memory_budget_display_state(budget_get(budget, :display_state)),
+      model_ref: target_model_ref_string(budget_get(budget, :model_ref)),
+      mode: target_mode_string(budget_get(budget, :mode)),
+      budget_available: target_memory_budget_boolean(budget_get(budget, :budget_available)),
+      headroom_available: target_memory_budget_boolean(budget_get(budget, :headroom_available)),
+      status_code: target_status_code_string(budget_get(budget, :status_code)),
+      status_message: target_status_message_optional_string(budget_get(budget, :status_message)),
+      target_working_set_bytes:
+        target_memory_budget_integer(budget_get(budget, :target_working_set_bytes)),
+      resident_memory_bytes:
+        target_memory_budget_integer(budget_get(budget, :resident_memory_bytes)),
+      kv_cache_bytes_per_token:
+        target_memory_budget_integer(budget_get(budget, :kv_cache_bytes_per_token)),
+      prefill_workspace_bytes_per_token:
+        target_memory_budget_integer(budget_get(budget, :prefill_workspace_bytes_per_token))
+    }
+  end
+
+  defp target_memory_budget_row(_budget) do
+    %{
+      display_state: :invalid,
+      model_ref: "unknown model",
+      mode: "unknown",
+      budget_available: nil,
+      headroom_available: nil,
+      status_code: "invalid_status",
+      status_message: "memory budget telemetry payload was malformed",
+      target_working_set_bytes: nil,
+      resident_memory_bytes: nil,
+      kv_cache_bytes_per_token: nil,
+      prefill_workspace_bytes_per_token: nil
+    }
+  end
+
+  defp budget_get(budget, key), do: Map.get(budget, key, Map.get(budget, Atom.to_string(key)))
+
+  defp target_memory_budget_display_state(state) when state in [:observed, :invalid], do: state
+  defp target_memory_budget_display_state(_), do: :invalid
+
+  defp target_model_ref_string(value),
+    do: target_memory_budget_bounded_string(value, "unknown model", @max_model_ref_length)
+
+  defp target_mode_string(value),
+    do: target_memory_budget_bounded_string(value, "unknown", @max_mode_length)
+
+  defp target_status_code_string(value),
+    do: target_memory_budget_bounded_string(value, "unreported", @max_status_code_length)
+
+  defp target_status_message_optional_string(value),
+    do: target_memory_budget_bounded_optional_string(value, @max_status_message_length)
+
+  defp target_memory_budget_bounded_string(value, _fallback, limit)
+       when is_binary(value) and value != "",
+       do: String.slice(value, 0, limit)
+
+  defp target_memory_budget_bounded_string(_value, fallback, _limit), do: fallback
+
+  defp target_memory_budget_bounded_optional_string(value, limit)
+       when is_binary(value) and value != "",
+       do: String.slice(value, 0, limit)
+
+  defp target_memory_budget_bounded_optional_string(_value, _limit), do: nil
+
+  defp target_memory_budget_boolean(value) when is_boolean(value), do: value
+  defp target_memory_budget_boolean(_), do: nil
+
+  defp target_memory_budget_integer(value) when is_integer(value) and value >= 0, do: value
+  defp target_memory_budget_integer(_), do: nil
+
+  defp target_memory_budgets_truncated_count(entry) do
+    list_count =
+      case entry[:runtime_memory_budgets] do
+        budgets when is_list(budgets) -> max(length(budgets) - @memory_budget_limit, 0)
+        _ -> 0
+      end
+
+    case entry[:runtime_memory_budgets_truncated_count] do
+      count when is_integer(count) and count > 0 -> max(count, list_count)
+      _ -> list_count
+    end
   end
 
   defp target_compatibility(%{status: status}) when status != :ok, do: :unknown
@@ -482,12 +629,56 @@ defmodule OrchardConsole.NodesLive do
 
   defp has_health_detail?(_), do: false
 
+  # Observe-only memory telemetry display helpers.
+  defp memory_budget_status_label(%{display_state: :invalid}), do: "invalid telemetry"
+
+  defp memory_budget_status_label(%{status_code: code, status_message: message}) do
+    case message do
+      nil -> code
+      "" -> code
+      _ -> "#{code} — #{message}"
+    end
+  end
+
+  defp memory_budget_status_label(_), do: "unreported"
+
+  defp memory_budget_working_set_label(%{
+         budget_available: true,
+         target_working_set_bytes: bytes
+       })
+       when is_integer(bytes) and bytes >= 0,
+       do: "reported · #{format_bytes(bytes)}"
+
+  defp memory_budget_working_set_label(%{budget_available: true}), do: "reported"
+  defp memory_budget_working_set_label(_), do: "unreported"
+
+  defp memory_budget_headroom_label(%{headroom_available: true}), do: "estimate reported"
+  defp memory_budget_headroom_label(_), do: "estimate unavailable"
+
+  defp memory_budget_metadata_label(budget) do
+    [
+      "resident #{telemetry_presence_label(budget[:resident_memory_bytes])}",
+      "KV #{telemetry_presence_label(budget[:kv_cache_bytes_per_token])}",
+      "prefill #{telemetry_presence_label(budget[:prefill_workspace_bytes_per_token])}"
+    ]
+    |> Enum.join(" · ")
+  end
+
+  # Phase 2 observe-only contract: zero-valued resident/KV/prefill fields still
+  # mean the underlying estimate is missing or incomplete for operator purposes,
+  # so the UI keeps them in the neutral "unreported" bucket rather than
+  # implying a measured zero-byte observation.
+  defp telemetry_presence_label(value) when is_integer(value) and value > 0, do: "reported"
+  defp telemetry_presence_label(_), do: "unreported"
+
   # ===========================================================================
   # Format helpers
   # ===========================================================================
 
   defp format_count(nil), do: "\u2014"
   defp format_count(count) when is_integer(count), do: Integer.to_string(count)
+
+  defp format_bytes(bytes) when is_integer(bytes) and bytes >= 0, do: "#{bytes} bytes"
 
   defp format_address(%{advertise_addr: addr, rpc_port: port})
        when is_binary(addr) and is_integer(port),

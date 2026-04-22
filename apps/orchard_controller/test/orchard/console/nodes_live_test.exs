@@ -33,6 +33,55 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeFullStub do
   end
 end
 
+defmodule OrchardConsole.NodesLiveTest.RuntimeMemoryBudgetStub do
+  @moduledoc false
+  @default_target [host: "127.0.0.1", port: 50_071]
+
+  def cluster_snapshot(_opts \\ []) do
+    [
+      %{
+        target: @default_target,
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [%{model_id: "mlx-community/phi-3", version: "main"}],
+        active_request_count: 1,
+        node_metadata: %{
+          node_id: "550e8400-e29b-41d4-a716-446655440000",
+          display_name: "mawarduri",
+          hostname: "mawarduri.local",
+          listen_host: "127.0.0.1",
+          listen_port: 50_071,
+          agent_version: "0.1.0",
+          worker_backend: "mlx"
+        },
+        runtime_health: %{
+          ready: true,
+          health_code: nil,
+          health_message: nil,
+          affected_model: nil
+        },
+        runtime_memory_budgets: [
+          %{
+            display_state: :observed,
+            model_ref: "mlx-community/phi-3@main",
+            mode: "observe",
+            budget_available: true,
+            headroom_available: false,
+            status_code: "ok",
+            status_message: "observe-only snapshot",
+            target_working_set_bytes: 45_000,
+            resident_memory_bytes: 0,
+            kv_cache_bytes_per_token: 16,
+            prefill_workspace_bytes_per_token: 8
+          }
+        ],
+        runtime_memory_budgets_truncated_count: 1
+      }
+    ]
+  end
+end
+
 defmodule OrchardConsole.NodesLiveTest.RuntimeLegacyStub do
   @moduledoc false
   @default_target [host: "127.0.0.1", port: 50_071]
@@ -79,6 +128,187 @@ defmodule OrchardConsole.NodesLiveTest.RuntimePartialStub do
       }
     ]
   end
+end
+
+defmodule OrchardConsole.NodesLiveTest.RuntimeBudgetCompatibilityStub do
+  @moduledoc false
+
+  def cluster_snapshot(_opts \\ []) do
+    [
+      %{
+        target: [host: "127.0.0.1", port: 50_071],
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: %{
+          node_id: "full-node",
+          display_name: "full-budget-node",
+          hostname: "full.local",
+          listen_host: "127.0.0.1",
+          listen_port: 50_071,
+          agent_version: "0.2.0",
+          worker_backend: "mlx"
+        },
+        runtime_health: %{ready: true, health_code: nil, health_message: nil, affected_model: nil},
+        runtime_memory_budgets: [
+          %{
+            display_state: :observed,
+            model_ref: "full-model@main",
+            mode: "observe",
+            budget_available: true,
+            headroom_available: false,
+            status_code: "compute_failed",
+            status_message: "diagnostic only",
+            target_working_set_bytes: 1,
+            resident_memory_bytes: 0,
+            kv_cache_bytes_per_token: 0,
+            prefill_workspace_bytes_per_token: 0
+          }
+        ],
+        runtime_memory_budgets_truncated_count: 0
+      },
+      %{
+        target: [host: "10.0.0.2", port: 50_061],
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: %{
+          node_id: "partial-node",
+          display_name: "partial-budget-node",
+          hostname: "partial.local",
+          listen_host: "10.0.0.2",
+          listen_port: 50_061,
+          agent_version: "0.2.0",
+          worker_backend: "mlx"
+        },
+        runtime_health: nil,
+        runtime_memory_budgets: [],
+        runtime_memory_budgets_truncated_count: 0
+      },
+      %{
+        target: [host: "10.0.0.3", port: 50_061],
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: nil,
+        runtime_health: nil,
+        runtime_memory_budgets: :malformed,
+        runtime_memory_budgets_truncated_count: :malformed
+      }
+    ]
+  end
+end
+
+defmodule OrchardConsole.NodesLiveTest.RuntimeMalformedMemoryBudgetRowsStub do
+  @moduledoc false
+  @default_target [host: "127.0.0.1", port: 50_071]
+
+  def cluster_snapshot(_opts \\ []) do
+    [
+      %{
+        target: @default_target,
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: %{
+          node_id: "malformed-budget-node",
+          display_name: "malformed-budget-node",
+          hostname: "malformed.local",
+          listen_host: "127.0.0.1",
+          listen_port: 50_071,
+          agent_version: "0.2.0",
+          worker_backend: "mlx"
+        },
+        runtime_health: %{ready: true, health_code: nil, health_message: nil, affected_model: nil},
+        runtime_memory_budgets: [
+          %{},
+          %{
+            "model_ref" => "string-key-model",
+            "budget_available" => true,
+            "target_working_set_bytes" => -5,
+            "status_code" => "ok"
+          },
+          "not a budget row"
+        ],
+        runtime_memory_budgets_truncated_count: 0
+      }
+    ]
+  end
+end
+
+defmodule OrchardConsole.NodesLiveTest.RuntimeOversizedMemoryBudgetRowsStub do
+  @moduledoc false
+  @default_target [host: "127.0.0.1", port: 50_071]
+  @trimmed_model_suffix "MODEL-TRIMMED-SUFFIX"
+  @trimmed_message_suffix "MESSAGE-TRIMMED-SUFFIX"
+
+  def cluster_snapshot(_opts \\ []) do
+    oversized_budgets =
+      [
+        %{
+          display_state: :observed,
+          model_ref: String.duplicate("m", 160) <> @trimmed_model_suffix,
+          mode: "observe",
+          budget_available: true,
+          headroom_available: false,
+          status_code: "ok",
+          status_message: String.duplicate("s", 240) <> @trimmed_message_suffix,
+          target_working_set_bytes: 45_000,
+          resident_memory_bytes: 0,
+          kv_cache_bytes_per_token: 16,
+          prefill_workspace_bytes_per_token: 8
+        }
+      ] ++
+        Enum.map(2..25, fn index ->
+          %{
+            display_state: :observed,
+            model_ref: "model-#{index}@main",
+            mode: "observe",
+            budget_available: true,
+            headroom_available: false,
+            status_code: "ok",
+            status_message: nil,
+            target_working_set_bytes: index,
+            resident_memory_bytes: 0,
+            kv_cache_bytes_per_token: 0,
+            prefill_workspace_bytes_per_token: 0
+          }
+        end)
+
+    [
+      %{
+        target: @default_target,
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: %{
+          node_id: "oversized-budget-node",
+          display_name: "oversized-budget-node",
+          hostname: "oversized.local",
+          listen_host: "127.0.0.1",
+          listen_port: 50_071,
+          agent_version: "0.2.0",
+          worker_backend: "mlx"
+        },
+        runtime_health: %{ready: true, health_code: nil, health_message: nil, affected_model: nil},
+        runtime_memory_budgets: oversized_budgets,
+        runtime_memory_budgets_truncated_count: 0
+      }
+    ]
+  end
+
+  def trimmed_model_suffix, do: @trimmed_model_suffix
+  def trimmed_message_suffix, do: @trimmed_message_suffix
 end
 
 defmodule OrchardConsole.NodesLiveTest.RuntimeUnavailableStub do
@@ -408,6 +638,38 @@ defmodule OrchardConsole.NodesLiveTest do
       # DOM id based on target host:port
       assert html =~ ~s(id="nodes-runtime-card-127-0-0-1-50071")
     end
+
+    test "renders observe-only memory telemetry empty state when budgets are absent", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      telemetry = element(view, "#nodes-memory-telemetry-127-0-0-1-50071") |> render()
+
+      assert telemetry =~ "Memory Telemetry"
+      assert telemetry =~ "Observe-only memory-budget diagnostics"
+      assert telemetry =~ "non-gating"
+      assert telemetry =~ "No memory-budget observation reported by this target."
+      assert_no_memory_policy_terms(telemetry)
+    end
+
+    test "renders advisory memory telemetry details when budgets are present", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeMemoryBudgetStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      telemetry = element(view, "#nodes-memory-telemetry-127-0-0-1-50071") |> render()
+
+      assert telemetry =~ "mlx-community/phi-3@main"
+      assert telemetry =~ "ok — observe-only snapshot"
+      assert telemetry =~ "reported · 45000 bytes"
+      assert telemetry =~ "estimate unavailable"
+      assert telemetry =~ "resident unreported"
+      assert telemetry =~ "KV reported"
+      assert telemetry =~ "prefill reported"
+      assert telemetry =~ "1 additional row(s) omitted"
+      assert_no_memory_policy_terms(telemetry)
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -478,6 +740,81 @@ defmodule OrchardConsole.NodesLiveTest do
       {:ok, _view, html} = live(conn, "/console/nodes")
 
       refute html =~ "nodes-runtime-compat-"
+    end
+
+    test "memory telemetry does not change compatibility classification", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeBudgetCompatibilityStub)
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      refute html =~ "nodes-runtime-compat-127-0-0-1-50071"
+      assert html =~ "nodes-runtime-compat-10-0-0-2-50061"
+      assert html =~ "partial status metadata"
+      assert html =~ "nodes-runtime-compat-10-0-0-3-50061"
+      assert html =~ "does not report metadata or health"
+    end
+  end
+
+  describe "memory telemetry guardrails" do
+    test "memory telemetry alone does not change health labels or summary counts", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeBudgetCompatibilityStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      cluster = element(view, "#nodes-live-cluster-card") |> render()
+      unhealthy = element(view, "#cluster-unhealthy") |> render()
+
+      assert cluster =~ "3 target(s) configured"
+      assert cluster =~ "3 reachable"
+      assert unhealthy =~ "0"
+
+      full_card = element(view, "#nodes-runtime-card-127-0-0-1-50071") |> render()
+      assert full_card =~ "Healthy"
+      assert full_card =~ "compute_failed"
+    end
+
+    test "runtime unavailable without memory budgets still renders safely", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeUnavailableStub)
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      assert html =~ "nodes-runtime-unavailable-"
+      assert html =~ "Unavailable"
+      refute html =~ "nodes-memory-telemetry-127-0-0-1-50071"
+    end
+
+    test "malformed memory telemetry rows fail open as advisory rows", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeMalformedMemoryBudgetRowsStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      telemetry = element(view, "#nodes-memory-telemetry-127-0-0-1-50071") |> render()
+
+      assert telemetry =~ "unknown model"
+      assert telemetry =~ "string-key-model"
+      assert telemetry =~ "invalid telemetry"
+      assert telemetry =~ "unreported"
+      assert_no_memory_policy_terms(telemetry)
+    end
+
+    test "oversized memory telemetry stays bounded at the LiveView seam", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeOversizedMemoryBudgetRowsStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      telemetry = element(view, "#nodes-memory-telemetry-127-0-0-1-50071") |> render()
+
+      assert telemetry =~ "5 additional row(s) omitted"
+      assert telemetry =~ "model-20@main"
+      refute telemetry =~ "model-21@main"
+
+      refute telemetry =~
+               OrchardConsole.NodesLiveTest.RuntimeOversizedMemoryBudgetRowsStub.trimmed_model_suffix()
+
+      refute telemetry =~
+               OrchardConsole.NodesLiveTest.RuntimeOversizedMemoryBudgetRowsStub.trimmed_message_suffix()
+
+      assert_no_memory_policy_terms(telemetry)
     end
   end
 
@@ -691,6 +1028,14 @@ defmodule OrchardConsole.NodesLiveTest do
       :console,
       Keyword.put(previous, :runtime_impl, stub_module)
     )
+  end
+
+  defp assert_no_memory_policy_terms(html) do
+    refute html =~ "eligible"
+    refute html =~ "capacity OK"
+    refute html =~ "admittable"
+    refute html =~ "fits"
+    refute html =~ "can admit"
   end
 
   defp insert_node!(attrs) do

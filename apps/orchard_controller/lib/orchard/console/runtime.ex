@@ -33,12 +33,28 @@ defmodule OrchardConsole.Runtime do
           affected_model: String.t() | nil
         }
 
+  @type runtime_memory_budget :: %{
+          display_state: :observed | :invalid,
+          model_ref: String.t(),
+          mode: String.t(),
+          budget_available: boolean() | nil,
+          headroom_available: boolean() | nil,
+          status_code: String.t(),
+          status_message: String.t() | nil,
+          target_working_set_bytes: non_neg_integer() | nil,
+          resident_memory_bytes: non_neg_integer() | nil,
+          kv_cache_bytes_per_token: non_neg_integer() | nil,
+          prefill_workspace_bytes_per_token: non_neg_integer() | nil
+        }
+
   @type snapshot :: %{
           worker_state: worker_state(),
           loaded_models: [loaded_model()],
           active_request_count: non_neg_integer(),
           node_metadata: node_metadata() | nil,
-          runtime_health: runtime_health() | nil
+          runtime_health: runtime_health() | nil,
+          runtime_memory_budgets: [runtime_memory_budget()],
+          runtime_memory_budgets_truncated_count: non_neg_integer()
         }
 
   @type error_snapshot :: %{
@@ -49,7 +65,9 @@ defmodule OrchardConsole.Runtime do
           loaded_models: [],
           active_request_count: 0,
           node_metadata: nil,
-          runtime_health: nil
+          runtime_health: nil,
+          runtime_memory_budgets: [],
+          runtime_memory_budgets_truncated_count: 0
         }
 
   @doc """
@@ -74,7 +92,9 @@ defmodule OrchardConsole.Runtime do
           loaded_models: [loaded_model()],
           active_request_count: non_neg_integer(),
           node_metadata: node_metadata() | nil,
-          runtime_health: runtime_health() | nil
+          runtime_health: runtime_health() | nil,
+          runtime_memory_budgets: [runtime_memory_budget()],
+          runtime_memory_budgets_truncated_count: non_neg_integer()
         }
 
   @doc """
@@ -140,7 +160,9 @@ defmodule OrchardConsole.Runtime do
       loaded_models: [],
       active_request_count: 0,
       node_metadata: nil,
-      runtime_health: nil
+      runtime_health: nil,
+      runtime_memory_budgets: [],
+      runtime_memory_budgets_truncated_count: 0
     }
   end
 
@@ -247,7 +269,9 @@ defmodule OrchardConsole.Runtime do
       loaded_models: normalize_loaded_models(response.loaded_models),
       active_request_count: normalize_count(response.active_request_count),
       node_metadata: normalize_node_metadata(response),
-      runtime_health: normalize_runtime_health(response)
+      runtime_health: normalize_runtime_health(response),
+      runtime_memory_budgets: normalize_runtime_memory_budgets(response),
+      runtime_memory_budgets_truncated_count: runtime_memory_budgets_truncated_count(response)
     }
   end
 
@@ -341,6 +365,106 @@ defmodule OrchardConsole.Runtime do
   defp normalize_port(_), do: nil
 
   # ---------------------------------------------------------------------------
+  # Observe-only runtime memory budget normalization
+  # ---------------------------------------------------------------------------
+
+  @memory_budget_limit 20
+  @max_model_ref_length 160
+  @max_mode_length 40
+  @max_status_code_length 80
+  @max_status_message_length 240
+
+  defp normalize_runtime_memory_budgets(response) do
+    case Map.get(response, :runtime_memory_budgets, []) do
+      budgets when is_list(budgets) ->
+        budgets
+        |> Enum.take(@memory_budget_limit)
+        |> Enum.map(&normalize_runtime_memory_budget/1)
+
+      _ ->
+        []
+    end
+  end
+
+  defp runtime_memory_budgets_truncated_count(response) do
+    case Map.get(response, :runtime_memory_budgets, []) do
+      budgets when is_list(budgets) ->
+        max(length(budgets) - @memory_budget_limit, 0)
+
+      _ ->
+        0
+    end
+  end
+
+  defp normalize_runtime_memory_budget(budget) when is_map(budget) do
+    %{
+      display_state: :observed,
+      model_ref: normalize_budget_model_ref(Map.get(budget, :model_ref)),
+      mode: bounded_string(Map.get(budget, :mode), "unknown", @max_mode_length),
+      budget_available: normalize_budget_boolean(Map.get(budget, :budget_available)),
+      headroom_available: normalize_budget_boolean(Map.get(budget, :headroom_available)),
+      status_code:
+        bounded_string(Map.get(budget, :status_code), "unreported", @max_status_code_length),
+      status_message:
+        bounded_optional_string(Map.get(budget, :status_message), @max_status_message_length),
+      target_working_set_bytes:
+        normalize_budget_integer(Map.get(budget, :target_working_set_bytes)),
+      resident_memory_bytes: normalize_budget_integer(Map.get(budget, :resident_memory_bytes)),
+      kv_cache_bytes_per_token:
+        normalize_budget_integer(Map.get(budget, :kv_cache_bytes_per_token)),
+      prefill_workspace_bytes_per_token:
+        normalize_budget_integer(Map.get(budget, :prefill_workspace_bytes_per_token))
+    }
+  end
+
+  defp normalize_runtime_memory_budget(_budget) do
+    %{
+      display_state: :invalid,
+      model_ref: "unknown model",
+      mode: "unknown",
+      budget_available: nil,
+      headroom_available: nil,
+      status_code: "invalid_status",
+      status_message: "memory budget telemetry payload was malformed",
+      target_working_set_bytes: nil,
+      resident_memory_bytes: nil,
+      kv_cache_bytes_per_token: nil,
+      prefill_workspace_bytes_per_token: nil
+    }
+  end
+
+  defp normalize_budget_model_ref(value) do
+    case budget_model_ref_label(value) do
+      nil -> "unknown model"
+      label -> String.slice(label, 0, @max_model_ref_length)
+    end
+  end
+
+  defp budget_model_ref_label(%{model_id: id, version: version})
+       when is_binary(id) and id != "" and is_binary(version) and version != "",
+       do: "#{id}@#{version}"
+
+  defp budget_model_ref_label(%{model_id: id}) when is_binary(id) and id != "", do: id
+  defp budget_model_ref_label(value) when is_binary(value) and value != "", do: value
+  defp budget_model_ref_label(_), do: nil
+
+  defp normalize_budget_boolean(value) when is_boolean(value), do: value
+  defp normalize_budget_boolean(_), do: nil
+
+  defp normalize_budget_integer(value) when is_integer(value) and value >= 0, do: value
+  defp normalize_budget_integer(_), do: nil
+
+  defp bounded_string(value, _fallback, limit) when is_binary(value) and value != "",
+    do: String.slice(value, 0, limit)
+
+  defp bounded_string(_value, fallback, _limit), do: fallback
+
+  defp bounded_optional_string(value, limit) when is_binary(value) and value != "",
+    do: String.slice(value, 0, limit)
+
+  defp bounded_optional_string(_value, _limit), do: nil
+
+  # ---------------------------------------------------------------------------
   # Error snapshots
   # ---------------------------------------------------------------------------
 
@@ -368,7 +492,9 @@ defmodule OrchardConsole.Runtime do
       loaded_models: [],
       active_request_count: 0,
       node_metadata: nil,
-      runtime_health: nil
+      runtime_health: nil,
+      runtime_memory_budgets: [],
+      runtime_memory_budgets_truncated_count: 0
     }
   end
 
