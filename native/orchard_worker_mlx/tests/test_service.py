@@ -997,6 +997,7 @@ def test_get_status_includes_memory_budget_fields() -> None:
     assert status.memory_budget.status_code == "ok"
     assert status.memory_budget.target_working_set_bytes == 6_000_000_000
     assert status.memory_budget.estimated_headroom_bytes == 5_731_516_544
+    assert status.memory_budget.prefill_workspace_bytes_per_token == 2_048
 
 
 def test_get_status_degrades_invalid_memory_budget_status() -> None:
@@ -1035,7 +1036,10 @@ def test_get_status_downgrades_invalid_memory_budget_uint64_fields() -> None:
     assert status.memory_budget.budget_available is False
     assert status.memory_budget.headroom_available is False
     assert status.memory_budget.status_code == "invalid_status"
-    assert status.memory_budget.status_message == "memory budget status contained invalid numeric fields"
+    assert (
+        status.memory_budget.status_message
+        == "memory budget status contained invalid numeric fields"
+    )
     assert status.memory_budget.max_recommended_working_set_size_bytes == 0
     assert status.memory_budget.target_working_set_bytes == 0
     assert status.memory_budget.overhead_bytes == 0
@@ -1073,7 +1077,10 @@ def test_get_status_downgrades_non_finite_memory_budget_utilization(utilization:
     assert status.memory_budget.budget_available is False
     assert status.memory_budget.headroom_available is False
     assert status.memory_budget.status_code == "invalid_status"
-    assert status.memory_budget.status_message == "memory budget status contained invalid numeric fields"
+    assert (
+        status.memory_budget.status_message
+        == "memory budget status contained invalid numeric fields"
+    )
     assert status.memory_budget.utilization == 0.0
     assert status.memory_budget.target_working_set_bytes == 0
 
@@ -1104,7 +1111,10 @@ def test_get_status_downgrades_huge_integer_memory_budget_utilization_without_ra
     assert status.memory_budget.budget_available is False
     assert status.memory_budget.headroom_available is False
     assert status.memory_budget.status_code == "invalid_status"
-    assert status.memory_budget.status_message == "memory budget status contained invalid numeric fields"
+    assert (
+        status.memory_budget.status_message
+        == "memory budget status contained invalid numeric fields"
+    )
     assert status.memory_budget.utilization == 0.0
     assert status.memory_budget.target_working_set_bytes == 0
 
@@ -1133,7 +1143,10 @@ def test_get_status_downgrades_memory_budget_missing_required_numeric_field() ->
     assert status.memory_budget.budget_available is False
     assert status.memory_budget.headroom_available is False
     assert status.memory_budget.status_code == "invalid_status"
-    assert status.memory_budget.status_message == "memory budget status contained invalid numeric fields"
+    assert (
+        status.memory_budget.status_message
+        == "memory budget status contained invalid numeric fields"
+    )
     assert status.memory_budget.target_working_set_bytes == 0
 
 

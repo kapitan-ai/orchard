@@ -54,7 +54,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass, replace
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -122,7 +122,7 @@ class _CacheStoreResult:
 # ---------------------------------------------------------------------------
 
 
-@dataclass(slots=True, frozen=True)
+@dataclass(slots=True, frozen=True, kw_only=True)
 class GenerationDeps:
     """Narrow test seam for mocked MLX generation.
 
@@ -139,6 +139,7 @@ class GenerationDeps:
     make_prompt_cache: Callable[[Any], Any] | None = None
     trim_prompt_cache: Callable[[Any, int], Any] | None = None
     wired_limit: Callable[[int], Any] | None = None
+    current_memory_bytes: Callable[[], int | None] | None = None
     supports_orchard_stop_sequences: bool = True
     uses_shared_batch_runtime: bool = False
 
@@ -179,6 +180,7 @@ def _default_generation_deps() -> GenerationDeps:
     _make_prompt_cache: Callable[[Any], Any] | None = None
     _trim_prompt_cache: Callable[[Any, int], Any] | None = None
     _wired_limit: Callable[[int], Any] | None = None
+    _current_memory_bytes: Callable[[], int | None] | None = None
     try:
         from mlx_lm.models.cache import (
             make_prompt_cache as _make,
@@ -196,6 +198,9 @@ def _default_generation_deps() -> GenerationDeps:
         import mlx.core as mx
 
         _wired_limit = _build_wired_limit_context(mx)
+        maybe_memory_probe = getattr(mx, "get_active_memory", None)
+        if callable(maybe_memory_probe):
+            _current_memory_bytes = cast(Callable[[], int | None], maybe_memory_probe)
     except (ImportError, AttributeError):
         pass
 
@@ -205,6 +210,7 @@ def _default_generation_deps() -> GenerationDeps:
         make_prompt_cache=_make_prompt_cache,
         trim_prompt_cache=_trim_prompt_cache,
         wired_limit=_wired_limit,
+        current_memory_bytes=_current_memory_bytes,
         supports_orchard_stop_sequences=True,
         uses_shared_batch_runtime=False,
     )
@@ -443,6 +449,7 @@ class BatchGeneratorRuntime:
             make_prompt_cache=self._generation_deps.make_prompt_cache,
             trim_prompt_cache=self._generation_deps.trim_prompt_cache,
             wired_limit=self._generation_deps.wired_limit,
+            current_memory_bytes=self._generation_deps.current_memory_bytes,
             supports_orchard_stop_sequences=False,
             uses_shared_batch_runtime=True,
         )
@@ -1312,6 +1319,8 @@ def _make_prefill_progress_callback(
             prev_processed, prev_total = last[0]
             if total < prev_total:
                 return  # total decreased — nonsensical
+            if processed < prev_processed:
+                return  # processed regressed even if total grew
             if total == prev_total and processed <= prev_processed:
                 return  # not advancing
 
@@ -1324,15 +1333,107 @@ def _make_prefill_progress_callback(
 
 def _drain_prefill_progress(
     queue: deque[tuple[int, int]],
+    *,
+    last_processed_tokens_out: list[int] | None = None,
 ) -> Iterator[dict[str, Any]]:
     """Yield queued prefill progress as ``progress`` event dicts."""
     while queue:
         processed, total = queue.popleft()
+        if last_processed_tokens_out is not None:
+            last_processed_tokens_out.clear()
+            last_processed_tokens_out.append(processed)
         yield {
             "kind": "progress",
             "stage": "prefill",
             "message": f"processed {processed}/{total} prompt tokens",
         }
+
+
+def _sample_current_memory_bytes_fail_open(deps: GenerationDeps) -> int | None:
+    """Best-effort process-memory sample from the optional runtime seam."""
+    probe = deps.current_memory_bytes
+    if probe is None:
+        return None
+
+    try:
+        value = probe()
+    except Exception:
+        return None
+
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    if value < 0 or value > 2**64 - 1:
+        return None
+
+    return value
+
+
+def _update_session_prefill_workspace_bytes_per_token_high_water(
+    session: Any,
+    sampled_bytes_per_token: int,
+) -> None:
+    """High-water immutable update for ``memory_budget_status`` prefill estimate."""
+    if isinstance(sampled_bytes_per_token, bool) or not isinstance(sampled_bytes_per_token, int):
+        return
+    if sampled_bytes_per_token < 0 or sampled_bytes_per_token > 2**64 - 1:
+        return
+
+    budget = getattr(session, "memory_budget_status", None)
+    if budget is None or not is_dataclass(budget):
+        return
+
+    existing_raw = getattr(budget, "prefill_workspace_bytes_per_token", 0)
+    if isinstance(existing_raw, bool) or not isinstance(existing_raw, int) or existing_raw < 0:
+        existing = 0
+    else:
+        existing = existing_raw
+
+    next_value = max(existing, sampled_bytes_per_token)
+    if next_value == existing:
+        return
+
+    try:
+        session.memory_budget_status = replace(
+            budget,
+            prefill_workspace_bytes_per_token=next_value,
+        )
+    except Exception:
+        return
+
+
+def _finalize_prefill_workspace_probe_fail_open(
+    session: Any,
+    deps: GenerationDeps,
+    *,
+    baseline_memory_bytes: int | None,
+    prefill_processed_tokens: int | None,
+) -> None:
+    """Best-effort stream-prefill estimate update; fails open on all invalid paths."""
+    if baseline_memory_bytes is None:
+        return
+    if (
+        prefill_processed_tokens is None
+        or isinstance(prefill_processed_tokens, bool)
+        or not isinstance(prefill_processed_tokens, int)
+        or prefill_processed_tokens <= 0
+    ):
+        return
+
+    final_memory_bytes = _sample_current_memory_bytes_fail_open(deps)
+    if final_memory_bytes is None:
+        return
+
+    delta_bytes = final_memory_bytes - baseline_memory_bytes
+    if delta_bytes < 0:
+        return
+
+    sampled = delta_bytes // prefill_processed_tokens
+    if sampled < 0:
+        return
+
+    _update_session_prefill_workspace_bytes_per_token_high_water(session, sampled)
 
 
 def _safe_clear_session_cache(session: Any) -> None:
@@ -1651,6 +1752,7 @@ def generate_events(
 
         progress_queue: deque[tuple[int, int]] = deque()
         progress_callback = _make_prefill_progress_callback(progress_queue)
+        last_prefill_processed_tokens: list[int] = []
 
         if cancel_event.is_set():
             yield cancelled_event()
@@ -1684,12 +1786,39 @@ def generate_events(
                 **stream_kwargs,
             )
 
+            prefill_probe_baseline: int | None = None
+            prefill_probe_finalized = False
+            if not deps.uses_shared_batch_runtime:
+                prefill_probe_baseline = _sample_current_memory_bytes_fail_open(deps)
+
+            def finalize_prefill_probe_if_needed(drained_prefill: bool) -> None:
+                nonlocal prefill_probe_finalized
+
+                if not drained_prefill or prefill_probe_finalized or deps.uses_shared_batch_runtime:
+                    return
+
+                processed_tokens = (
+                    last_prefill_processed_tokens[-1] if last_prefill_processed_tokens else None
+                )
+                _finalize_prefill_workspace_probe_fail_open(
+                    session,
+                    deps,
+                    baseline_memory_bytes=prefill_probe_baseline,
+                    prefill_processed_tokens=processed_tokens,
+                )
+                prefill_probe_finalized = True
+
             output_tokens = 0
             generated_token_ids: list[int] = []
             can_store = True
 
             for response in stream:
-                yield from _drain_prefill_progress(progress_queue)
+                drained_prefill = bool(progress_queue)
+                yield from _drain_prefill_progress(
+                    progress_queue,
+                    last_processed_tokens_out=last_prefill_processed_tokens,
+                )
+                finalize_prefill_probe_if_needed(drained_prefill)
                 output_tokens += 1
 
                 if output_tokens % stride == 0 and cancel_event.is_set():
@@ -1822,7 +1951,12 @@ def generate_events(
                         yield _completed_event("FINISH_REASON_LENGTH", input_tokens, output_tokens)
                     return
 
-            yield from _drain_prefill_progress(progress_queue)
+            drained_prefill = bool(progress_queue)
+            yield from _drain_prefill_progress(
+                progress_queue,
+                last_processed_tokens_out=last_prefill_processed_tokens,
+            )
+            finalize_prefill_probe_if_needed(drained_prefill)
             if tool_context is None or not tool_context.stop_buffer_disabled:
                 flush_text = buf.flush()
                 if flush_text:

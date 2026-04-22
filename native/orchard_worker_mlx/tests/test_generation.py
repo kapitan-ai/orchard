@@ -23,6 +23,7 @@ from orchard_worker_mlx.generation import (
     StopSequenceBuffer,
     _build_wired_limit_context,
     _make_prefill_progress_callback,
+    _update_session_prefill_workspace_bytes_per_token_high_water,
     generate_events,
 )
 
@@ -3482,6 +3483,247 @@ def test_prefill_progress_default_step_size() -> None:
     assert captured_kwargs[0]["prefill_step_size"] == 2048
 
 
+def test_prefill_probe_finalizes_without_response_when_progress_is_queued() -> None:
+    from orchard_worker_mlx.model_loader import MemoryBudgetStatus
+
+    memory_samples = iter([1_000, 5_000])
+
+    def stream_with_prefill_no_response(model, tokenizer, prompt_ids, **kwargs):
+        cb = kwargs.get("prompt_progress_callback")
+        if cb:
+            cb(10, 100)
+        if False:
+            yield FakeGenerationResponse(text="never", token=10, finish_reason="stop")
+
+    deps = GenerationDeps(
+        stream_generate=stream_with_prefill_no_response,
+        make_sampler=lambda **kw: MagicMock(),
+        current_memory_bytes=lambda: next(memory_samples),
+    )
+    session = _make_fake_session(
+        memory_budget_status=MemoryBudgetStatus(
+            mode="observe",
+            budget_available=True,
+            headroom_available=True,
+            status_code="ok",
+            status_message="",
+            source="seed",
+            max_recommended_working_set_size_bytes=8_000_000_000,
+            utilization=0.75,
+            target_working_set_bytes=6_000_000_000,
+            overhead_bytes=268_435_456,
+            resident_memory_bytes=2_048_000,
+            estimated_headroom_bytes=5_731_516_544,
+            kv_cache_bytes_per_token=16_384,
+            prefill_workspace_bytes_per_token=0,
+        )
+    )
+
+    events = _collect_events(session, _make_fake_request(), deps)
+
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 400
+    assert events[-1]["kind"] == "completed"
+
+
+def test_prefill_workspace_probe_updates_memory_budget_from_stream_prefill() -> None:
+    from orchard_worker_mlx.model_loader import MemoryBudgetStatus
+
+    memory_samples = iter([1_000, 5_000])
+
+    def stream_with_prefill(model, tokenizer, prompt_ids, **kwargs):
+        cb = kwargs.get("prompt_progress_callback")
+        if cb:
+            cb(10, 100)
+        yield FakeGenerationResponse(text="ok", token=10, finish_reason="stop")
+
+    deps = GenerationDeps(
+        stream_generate=stream_with_prefill,
+        make_sampler=lambda **kw: MagicMock(),
+        current_memory_bytes=lambda: next(memory_samples),
+    )
+    session = _make_fake_session(
+        memory_budget_status=MemoryBudgetStatus(
+            mode="observe",
+            budget_available=True,
+            headroom_available=True,
+            status_code="ok",
+            status_message="",
+            source="seed",
+            max_recommended_working_set_size_bytes=8_000_000_000,
+            utilization=0.75,
+            target_working_set_bytes=6_000_000_000,
+            overhead_bytes=268_435_456,
+            resident_memory_bytes=2_048_000,
+            estimated_headroom_bytes=5_731_516_544,
+            kv_cache_bytes_per_token=16_384,
+            prefill_workspace_bytes_per_token=0,
+        )
+    )
+
+    _collect_events(session, _make_fake_request(), deps)
+
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 400
+
+
+def test_prefill_workspace_probe_is_high_water_only() -> None:
+    from orchard_worker_mlx.model_loader import MemoryBudgetStatus
+
+    memory_samples = iter([2_000, 4_000])
+
+    def stream_with_prefill(model, tokenizer, prompt_ids, **kwargs):
+        cb = kwargs.get("prompt_progress_callback")
+        if cb:
+            cb(10, 100)
+        yield FakeGenerationResponse(text="ok", token=10, finish_reason="stop")
+
+    deps = GenerationDeps(
+        stream_generate=stream_with_prefill,
+        make_sampler=lambda **kw: MagicMock(),
+        current_memory_bytes=lambda: next(memory_samples),
+    )
+    session = _make_fake_session(
+        memory_budget_status=MemoryBudgetStatus(
+            mode="observe",
+            budget_available=True,
+            headroom_available=True,
+            status_code="ok",
+            status_message="",
+            source="seed",
+            max_recommended_working_set_size_bytes=8_000_000_000,
+            utilization=0.75,
+            target_working_set_bytes=6_000_000_000,
+            overhead_bytes=268_435_456,
+            resident_memory_bytes=2_048_000,
+            estimated_headroom_bytes=5_731_516_544,
+            kv_cache_bytes_per_token=16_384,
+            prefill_workspace_bytes_per_token=300,
+        )
+    )
+
+    _collect_events(session, _make_fake_request(), deps)
+
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 300
+
+
+def test_prefill_workspace_probe_fail_open_paths_leave_value_unchanged() -> None:
+    from orchard_worker_mlx.model_loader import MemoryBudgetStatus
+
+    def _run_with(stream_fn, probe_fn):
+        session = _make_fake_session(
+            memory_budget_status=MemoryBudgetStatus(
+                prefill_workspace_bytes_per_token=111,
+            )
+        )
+        deps = GenerationDeps(
+            stream_generate=stream_fn,
+            make_sampler=lambda **kw: MagicMock(),
+            current_memory_bytes=probe_fn,
+        )
+        _collect_events(session, _make_fake_request(), deps)
+        return session.memory_budget_status.prefill_workspace_bytes_per_token
+
+    def stream_with_zero_tokens(model, tokenizer, prompt_ids, **kwargs):
+        cb = kwargs.get("prompt_progress_callback")
+        if cb:
+            cb(0, 100)
+        yield FakeGenerationResponse(text="ok", token=10, finish_reason="stop")
+
+    def stream_with_progress(model, tokenizer, prompt_ids, **kwargs):
+        cb = kwargs.get("prompt_progress_callback")
+        if cb:
+            cb(10, 100)
+        yield FakeGenerationResponse(text="ok", token=10, finish_reason="stop")
+
+    assert _run_with(stream_with_progress, lambda: None) == 111
+    assert _run_with(stream_with_progress, lambda: True) == 111
+    assert _run_with(stream_with_progress, lambda: False) == 111
+    assert _run_with(stream_with_progress, lambda: "bad") == 111
+    assert _run_with(stream_with_progress, lambda: -1) == 111
+    assert _run_with(stream_with_progress, lambda: 2**64) == 111
+
+    def raising_probe():
+        raise RuntimeError("boom")
+
+    assert _run_with(stream_with_progress, raising_probe) == 111
+    assert _run_with(stream_with_zero_tokens, lambda: 1_000) == 111
+
+    negative_delta_samples = iter([5_000, 1_000])
+    assert _run_with(stream_with_progress, lambda: next(negative_delta_samples)) == 111
+
+
+def test_prefill_workspace_probe_skips_shared_batch_runtime_without_probe_calls() -> None:
+    from orchard_worker_mlx.model_loader import MemoryBudgetStatus
+
+    probe_calls = 0
+
+    def current_memory_bytes() -> int:
+        nonlocal probe_calls
+        probe_calls += 1
+        return 1_000
+
+    def stream_shared_runtime(model, tokenizer, prompt_ids, **kwargs):
+        cb = kwargs.get("prompt_progress_callback")
+        if cb:
+            cb(10, 100)
+        yield FakeGenerationResponse(text="ok", token=10, finish_reason="stop")
+
+    deps = GenerationDeps(
+        stream_generate=stream_shared_runtime,
+        make_sampler=lambda **kw: MagicMock(),
+        current_memory_bytes=current_memory_bytes,
+        uses_shared_batch_runtime=True,
+    )
+    session = _make_fake_session(
+        memory_budget_status=MemoryBudgetStatus(prefill_workspace_bytes_per_token=123)
+    )
+
+    _collect_events(session, _make_fake_request(), deps)
+
+    assert probe_calls == 0
+    assert session.memory_budget_status.prefill_workspace_bytes_per_token == 123
+
+
+def test_prefill_workspace_update_helper_skips_invalid_budget_container() -> None:
+    session = _make_fake_session(memory_budget_status={"prefill_workspace_bytes_per_token": 100})
+
+    _update_session_prefill_workspace_bytes_per_token_high_water(session, 250)
+
+    assert session.memory_budget_status == {"prefill_workspace_bytes_per_token": 100}
+
+
+def test_prefill_workspace_update_helper_preserves_other_budget_fields() -> None:
+    from orchard_worker_mlx.model_loader import MemoryBudgetStatus
+
+    session = _make_fake_session(
+        memory_budget_status=MemoryBudgetStatus(
+            mode="observe",
+            budget_available=True,
+            headroom_available=True,
+            status_code="ok",
+            status_message="ready",
+            source="seed",
+            max_recommended_working_set_size_bytes=8_000_000_000,
+            utilization=0.75,
+            target_working_set_bytes=6_000_000_000,
+            overhead_bytes=268_435_456,
+            resident_memory_bytes=2_048_000,
+            estimated_headroom_bytes=5_731_516_544,
+            kv_cache_bytes_per_token=16_384,
+            prefill_workspace_bytes_per_token=100,
+        )
+    )
+
+    original = session.memory_budget_status
+    _update_session_prefill_workspace_bytes_per_token_high_water(session, 250)
+
+    updated = session.memory_budget_status
+    assert updated is not original
+    assert updated.prefill_workspace_bytes_per_token == 250
+    assert updated.status_code == "ok"
+    assert updated.target_working_set_bytes == 6_000_000_000
+    assert updated.kv_cache_bytes_per_token == 16_384
+
+
 # ===========================================================================
 # Prefill progress callback sanitization (unit tests)
 # ===========================================================================
@@ -3541,6 +3783,15 @@ def test_callback_accepts_increasing_total() -> None:
     cb(50, 100)
     cb(60, 200)  # total increased, processed also advanced
     assert len(q) == 2
+
+
+def test_callback_drops_processed_regression_when_total_increases() -> None:
+    q: deque[tuple[int, int]] = deque()
+    cb = _make_prefill_progress_callback(q)
+    cb(90, 100)
+    cb(50, 200)  # processed regressed even though total increased
+    assert len(q) == 1
+    assert q[0] == (90, 100)
 
 
 # ===========================================================================

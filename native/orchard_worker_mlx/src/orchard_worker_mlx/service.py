@@ -137,7 +137,9 @@ def _invalid_numeric_memory_budget_status_response(
     )
 
 
-def _memory_budget_status_response(memory_budget: Any) -> worker_runtime_pb2.WorkerMemoryBudgetStatus | None:
+def _memory_budget_status_response(
+    memory_budget: Any,
+) -> worker_runtime_pb2.WorkerMemoryBudgetStatus | None:
     if memory_budget is None:
         return None
 

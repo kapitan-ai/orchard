@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -297,6 +298,37 @@ def test_mlx_backend_load_success() -> None:
     assert status["active_request_count"] == 0
     assert status["memory_budget"]["status_code"] == "ok"
     assert status["memory_budget"]["estimated_headroom_bytes"] == 5_731_516_544
+    assert status["memory_budget"]["prefill_workspace_bytes_per_token"] == 2_048
+
+
+def test_mlx_backend_status_reflects_request_time_prefill_updates() -> None:
+    from orchard_worker_mlx.model_loader import MemoryBudgetStatus
+
+    session = _make_fake_session()
+    session.memory_budget_status = MemoryBudgetStatus(
+        mode="observe",
+        budget_available=True,
+        headroom_available=True,
+        status_code="ok",
+        max_recommended_working_set_size_bytes=8_000_000_000,
+        utilization=0.75,
+        target_working_set_bytes=6_000_000_000,
+        overhead_bytes=268_435_456,
+        resident_memory_bytes=2_048_000,
+        estimated_headroom_bytes=5_731_516_544,
+        kv_cache_bytes_per_token=16_384,
+        prefill_workspace_bytes_per_token=0,
+    )
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    session.memory_budget_status = replace(
+        session.memory_budget_status,
+        prefill_workspace_bytes_per_token=512,
+    )
+
+    status = backend.status()
+    assert status["memory_budget"]["prefill_workspace_bytes_per_token"] == 512
 
 
 def test_mlx_backend_load_passes_generation_and_memory_config_to_loader() -> None:
