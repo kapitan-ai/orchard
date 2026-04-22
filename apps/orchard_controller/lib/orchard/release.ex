@@ -105,18 +105,73 @@ defmodule Orchard.Release do
     end
   end
 
-  @spec backfill_resident_memory(keyword()) :: ResidentMemoryBackfill.run_result()
+  @spec backfill_resident_memory(keyword()) ::
+          ResidentMemoryBackfill.run_result() | {:error, term()}
   def backfill_resident_memory(opts \\ []) do
     load_app()
 
-    [repo | _] = repos()
+    with {:ok, repo} <- backfill_repo() do
+      with_repo_result =
+        try do
+          with_repo_result(repo, opts)
+        rescue
+          error -> {:startup_error, classify_backfill_startup_error(error)}
+        end
 
-    case Ecto.Migrator.with_repo(repo, fn _started_repo ->
-           ResidentMemoryBackfill.run(opts)
-         end) do
-      {:ok, result, _apps} -> result
-      {:error, reason} -> {:error, reason}
+      case with_repo_result do
+        {:ok, {:backfill_result, result}, _apps} -> result
+        {:ok, {:backfill_exception, error, stacktrace}, _apps} -> reraise error, stacktrace
+        {:ok, {:backfill_startup_error, reason}, _apps} -> {:error, reason}
+        {:error, reason} -> {:error, normalize_backfill_startup_error(reason)}
+        {:startup_error, reason} -> {:error, reason}
+      end
     end
+  end
+
+  defp run_backfill_callback(opts) do
+    try do
+      {:backfill_result, ResidentMemoryBackfill.run(opts)}
+    rescue
+      error -> {:backfill_exception, error, __STACKTRACE__}
+    end
+  end
+
+  defp with_repo_result(repo, opts) do
+    Ecto.Migrator.with_repo(repo, fn started_repo ->
+      case SQL.query(started_repo, @reachable_query, []) do
+        {:ok, _result} -> run_backfill_callback(opts)
+        {:error, reason} -> {:backfill_startup_error, classify_backfill_startup_error(reason)}
+      end
+    end)
+  end
+
+  defp normalize_backfill_startup_error({tag, _reason} = reason)
+       when tag in [:db_unreachable, :repo_start_failed] do
+    reason
+  end
+
+  defp normalize_backfill_startup_error(reason) do
+    classify_backfill_startup_error(reason)
+  end
+
+  defp classify_backfill_startup_error(%DBConnection.ConnectionError{} = error) do
+    {:db_unreachable, Exception.message(error)}
+  end
+
+  defp classify_backfill_startup_error(%DBConnection.OwnershipError{} = error) do
+    {:db_unreachable, Exception.message(error)}
+  end
+
+  defp classify_backfill_startup_error(%Postgrex.Error{} = error) do
+    {:db_unreachable, Exception.message(error)}
+  end
+
+  defp classify_backfill_startup_error(error) when is_exception(error) do
+    {:repo_start_failed, Exception.message(error)}
+  end
+
+  defp classify_backfill_startup_error(reason) do
+    {:repo_start_failed, inspect(reason)}
   end
 
   defp repo_reachable?(repo) do
@@ -187,6 +242,16 @@ defmodule Orchard.Release do
 
   defp start_repo? do
     Application.get_env(@app, :start_repo, true)
+  end
+
+  defp backfill_repo do
+    case Application.get_env(@app, :ecto_repos, :missing) do
+      :missing -> {:error, :missing_ecto_repos}
+      [Orchard.Repo] -> {:ok, Orchard.Repo}
+      [repo] -> {:error, {:unexpected_repo, repo}}
+      repos when is_list(repos) -> {:error, {:unexpected_repo_count, length(repos)}}
+      other -> {:error, {:invalid_ecto_repos, other}}
+    end
   end
 
   defp repos do

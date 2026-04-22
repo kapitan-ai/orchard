@@ -1,11 +1,11 @@
 ExUnit.start()
 
-case Process.whereis(Orchard.Repo) do
+case Process.whereis(Orchard.TestSupport.RepoManager) do
   nil ->
-    {:ok, _pid} = Orchard.Repo.start_link()
+    {:ok, _pid} = Orchard.TestSupport.RepoManager.start_link()
 
   _pid ->
     :ok
 end
 
-Ecto.Adapters.SQL.Sandbox.mode(Orchard.Repo, :manual)
+:ok = Orchard.TestSupport.RepoManager.ensure_repo_started()

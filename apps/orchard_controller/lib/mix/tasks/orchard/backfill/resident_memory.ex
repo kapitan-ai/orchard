@@ -4,8 +4,11 @@ defmodule Mix.Tasks.Orchard.Backfill.ResidentMemory do
   use Mix.Task
 
   alias Orchard.Models.ResidentMemoryBackfill
+  alias Orchard.Release
 
-  @requirements ["app.start"]
+  # The task only needs application config loaded here; the release wrapper handles
+  # repo startup independently so unrelated supervisor boot failures do not block it.
+  @requirements ["app.config"]
   @shortdoc "Backfill resident_memory_bytes for existing model bundles"
 
   @impl Mix.Task
@@ -20,13 +23,16 @@ defmodule Mix.Tasks.Orchard.Backfill.ResidentMemory do
 
     log = fn message -> IO.puts(message) end
 
-    case ResidentMemoryBackfill.run(apply: apply?, log: log) do
+    case Release.backfill_resident_memory(apply: apply?, log: log) do
       {:ok, result} ->
         print_summary(result)
 
-      {:error, result} ->
+      {:error, %ResidentMemoryBackfill{} = result} ->
         print_summary(result)
         raise "resident_memory_bytes backfill aborted; see critical rollback failure above"
+
+      {:error, reason} ->
+        Mix.raise("resident_memory_bytes backfill failed to start: #{inspect(reason)}")
     end
   end
 

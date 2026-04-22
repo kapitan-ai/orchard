@@ -30,7 +30,20 @@ defmodule Orchard.TestSupport.RepoHelpers do
     try do
       fun.()
     after
-      Process.register(repo_pid, Orchard.Repo)
+      case Process.whereis(Orchard.Repo) do
+        nil ->
+          if Process.alive?(repo_pid) do
+            Process.register(repo_pid, Orchard.Repo)
+          else
+            raise "Orchard.Repo exited while unregistered — cannot restore name"
+          end
+
+        ^repo_pid ->
+          :ok
+
+        other ->
+          raise "Orchard.Repo was re-registered to #{inspect(other)} while unregistered"
+      end
     end
   end
 end
