@@ -46,6 +46,13 @@ defmodule Orchard.Config.M1RuntimeDefaults do
         capacity: 1,
         owner_runtime: false,
         single_controller_ack: false
+      ],
+      cache_affinity: [
+        enabled: false,
+        max_prefix_bytes: 8_192,
+        max_age_ms: 300_000,
+        max_recent_requests: 32,
+        hmac_secret: nil
       ]
     ]
   end

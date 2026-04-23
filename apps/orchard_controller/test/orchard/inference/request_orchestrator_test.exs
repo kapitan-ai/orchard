@@ -23,6 +23,28 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler do
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubCacheAffinityScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request) do
+    with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
+      {:ok,
+       Map.merge(schedule, %{
+         cache_affinity_enabled: true,
+         cache_affinity_key: "hmac-sha256:#{String.duplicate("c", 64)}",
+         cache_affinity_hint_available: true,
+         cache_affinity_selected_match: true,
+         cache_affinity_source: "recent_completed_request",
+         cache_affinity_candidate_count: 1,
+         selected_cache_tier: "warm_prefix"
+       })}
+    end
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -208,6 +230,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   import Orchard.TestSupport.QueueAdmissionAPI,
     only: [assert_queue_metadata: 2, assert_queue_metadata: 3]
 
+  alias Orchard.Inference.RequestOrchestratorTest.StubCacheAffinityScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
   alias Orchard.ArtifactBundle
@@ -349,6 +372,30 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute :queued in states
 
     assert_queue_metadata(request, "immediate", granted?: true)
+  end
+
+  test "granted queue admission persists queue and cache-affinity scheduler metadata", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(enabled: true)
+    put_cache_affinity_scheduler_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-queue-cache-affinity")
+    canonical = canonical_request("request-orchestrator-queue-cache-affinity", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert_queue_metadata(request, "immediate", granted?: true)
+    assert decision["cache_affinity_enabled"] == true
+    assert decision["cache_affinity_hint_available"] == true
+    assert decision["cache_affinity_selected_match"] == true
+    assert decision["cache_affinity_source"] == "recent_completed_request"
+    assert decision["cache_affinity_candidate_count"] == 1
+    assert decision["selected_cache_tier"] == "warm_prefix"
   end
 
   test "queue admission acquire restart does not leave orchestrator admitted", %{
@@ -1617,6 +1664,14 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     Application.put_env(:orchard_controller, :inference, inference)
   end
 
+  defp put_cache_affinity_scheduler_config do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.merge(scheduler_impl: StubCacheAffinityScheduler)
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
   defp put_queue_admission_config(overrides) do
     inference = Application.fetch_env!(:orchard_controller, :inference)
     overrides = acknowledge_single_controller_when_enabled(overrides)
@@ -1872,6 +1927,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       {"request-orchestrator-idem-active", "v1"},
       {"request-orchestrator-queue-legacy", "v1"},
       {"request-orchestrator-queue-immediate", "v1"},
+      {"request-orchestrator-queue-cache-affinity", "v1"},
       {"request-orchestrator-queue-wait", "v1"},
       {"request-orchestrator-queue-full", "v1"},
       {"request-orchestrator-queue-timeout", "v1"},

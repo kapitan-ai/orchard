@@ -5,7 +5,7 @@ defmodule Orchard.Inference do
 
   use Supervisor
 
-  alias Orchard.Inference.QueueManager
+  alias Orchard.Inference.{CacheAffinity, QueueManager}
   alias Orchard.Requests.Supervisor, as: RequestsSupervisor
 
   @spec start_link(keyword()) :: Supervisor.on_start()
@@ -51,6 +51,19 @@ defmodule Orchard.Inference do
   @spec queue_admission_config() :: keyword()
   def queue_admission_config do
     Keyword.merge(default_queue_admission_config(), config()[:queue_admission] || [])
+  end
+
+  @spec cache_affinity_config() :: keyword()
+  def cache_affinity_config do
+    config()
+    |> Keyword.get(:cache_affinity, [])
+    |> CacheAffinity.normalize_config()
+  end
+
+  @spec cache_affinity_enabled?() :: boolean()
+  def cache_affinity_enabled? do
+    cache_affinity_config()
+    |> CacheAffinity.enabled?()
   end
 
   @spec queue_admission_enabled?() :: boolean()

@@ -140,6 +140,36 @@ defmodule Orchard.InferenceTest do
     end
   end
 
+  describe "cache_affinity_config/0" do
+    test "defaults disabled with bounded lookup settings" do
+      config = Inference.cache_affinity_config()
+
+      assert config[:enabled] == false
+      assert config[:max_prefix_bytes] == 8_192
+      assert config[:max_age_ms] == 300_000
+      assert config[:max_recent_requests] == 32
+      refute Inference.cache_affinity_enabled?()
+    end
+
+    test "normalizes invalid values without enabling affinity" do
+      put_inference(
+        cache_affinity: [
+          enabled: "true",
+          max_prefix_bytes: -1,
+          max_age_ms: -1,
+          max_recent_requests: 0
+        ]
+      )
+
+      config = Inference.cache_affinity_config()
+
+      assert config[:enabled] == false
+      assert config[:max_prefix_bytes] == 8_192
+      assert config[:max_age_ms] == 300_000
+      assert config[:max_recent_requests] == 32
+    end
+  end
+
   describe "scheduler auto-selection" do
     test "defaults to SingleNode when plural targets are absent" do
       put_inference(runtime_client_targets: [])

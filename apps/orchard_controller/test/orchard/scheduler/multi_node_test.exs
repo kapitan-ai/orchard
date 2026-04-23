@@ -1,8 +1,11 @@
 defmodule Orchard.Scheduler.MultiNodeTest do
   use Orchard.DataCase, async: false
 
+  import Orchard.TestSupport.ModelRequestFixtures
+
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
+  alias Orchard.Inference.CacheAffinity
   alias Orchard.Nodes.Node
   alias Orchard.Scheduler.MultiNode
 
@@ -42,13 +45,14 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   # -- Helpers --
 
-  defp canonical_request(model_id \\ "test-model", version \\ "v1") do
+  defp canonical_request(model_id \\ "test-model", version \\ "v1", overrides \\ []) do
     CanonicalRequest.new(%{
       internal_id: "int_#{System.unique_integer([:positive])}",
       public_id: "pub_#{System.unique_integer([:positive])}",
       endpoint: :chat_completions,
-      tenant_id: "tenant_test",
-      model_ref: %ModelRef{model_id: model_id, version: version}
+      tenant_id: Keyword.get(overrides, :tenant_id, Ecto.UUID.generate()),
+      model_ref: %ModelRef{model_id: model_id, version: version},
+      rendered_prompt: Keyword.get(overrides, :rendered_prompt, "shared system prefix\nhello")
     })
   end
 
@@ -106,6 +110,30 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   defp stub_connect_failure(host, port, reason) do
     Process.put({:stub_connect, {host, port}}, {:error, reason})
+  end
+
+  defp insert_recent_cache_affinity_request!(
+         tenant_id,
+         model_id,
+         version,
+         node_id,
+         affinity_key,
+         completed_at
+       ) do
+    create_request!(%{
+      tenant_id: tenant_id,
+      requested_model: "#{model_id}@#{version}",
+      state: :completed,
+      stream: false,
+      node_id: node_id,
+      completed_at: DateTime.truncate(completed_at, :microsecond),
+      scheduler_decision: %{"cache_affinity_key" => affinity_key}
+    })
+  end
+
+  defp cache_affinity_key!(request) do
+    {:ok, key} = CacheAffinity.derive_key(request, Orchard.Inference.cache_affinity_config())
+    key
   end
 
   defp put_inference(overrides) do
@@ -331,6 +359,132 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.node_id == id_a
+    end
+
+    test "omits cache-affinity metadata and preserves legacy tie-break when disabled" do
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      request = canonical_request()
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == id_a
+      refute Map.has_key?(schedule, :cache_affinity_enabled)
+      refute Map.has_key?(schedule, :cache_affinity_key)
+    end
+
+    test "uses cache-affinity as a tie-breaker for otherwise equivalent candidates" do
+      put_inference(cache_affinity: [enabled: true, max_age_ms: 300_000, max_recent_requests: 8])
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+      tenant_id = Ecto.UUID.generate()
+      request = canonical_request("test-model", "v1", tenant_id: tenant_id)
+      affinity_key = cache_affinity_key!(request)
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      insert_recent_cache_affinity_request!(
+        tenant_id,
+        "test-model",
+        "v1",
+        id_b,
+        affinity_key,
+        DateTime.utc_now()
+      )
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_b
+      assert schedule.cache_affinity_enabled == true
+      assert schedule.cache_affinity_key == affinity_key
+      assert schedule.cache_affinity_hint_available == true
+      assert schedule.cache_affinity_selected_match == true
+      assert schedule.cache_affinity_source == "recent_completed_request"
+      assert schedule.cache_affinity_candidate_count == 1
+      assert schedule.selected_cache_tier == "warm_prefix"
+      refute inspect(schedule) =~ request.rendered_prompt
+    end
+
+    test "does not let cache-affinity outrank active request count" do
+      put_inference(cache_affinity: [enabled: true, max_age_ms: 300_000, max_recent_requests: 8])
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+      tenant_id = Ecto.UUID.generate()
+      request = canonical_request("test-model", "v1", tenant_id: tenant_id)
+      affinity_key = cache_affinity_key!(request)
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      insert_recent_cache_affinity_request!(
+        tenant_id,
+        "test-model",
+        "v1",
+        id_b,
+        affinity_key,
+        DateTime.utc_now()
+      )
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b, host: "10.0.0.2", port: 50_062, active_request_count: 3)
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.cache_affinity_hint_available == true
+      assert schedule.cache_affinity_selected_match == false
+      assert schedule.cache_affinity_candidate_count == 1
+      assert schedule.selected_cache_tier == "hint_not_selected"
+    end
+
+    test "ignores stale cache-affinity placements" do
+      put_inference(cache_affinity: [enabled: true, max_age_ms: 1_000, max_recent_requests: 8])
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+      tenant_id = Ecto.UUID.generate()
+      request = canonical_request("test-model", "v1", tenant_id: tenant_id)
+      affinity_key = cache_affinity_key!(request)
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      insert_recent_cache_affinity_request!(
+        tenant_id,
+        "test-model",
+        "v1",
+        id_b,
+        affinity_key,
+        DateTime.add(DateTime.utc_now(), -5, :second)
+      )
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.cache_affinity_hint_available == false
+      assert schedule.cache_affinity_selected_match == false
+      assert schedule.cache_affinity_candidate_count == 0
+      assert schedule.selected_cache_tier == "no_hint"
     end
 
     test "falls back to SingleNode when all probes fail" do

@@ -88,6 +88,7 @@ packaged licensing rollout posture.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORCHARD_TOKENIZER_EXECUTABLE` | `native/.../orchard-tokenizer` | Path to tokenizer helper |
+| `ORCHARD_CACHE_AFFINITY_HMAC_SECRET` | _(unset)_ | Optional independent HMAC secret for cache-affinity keys. When unset, cache-affinity falls back to the endpoint `secret_key_base`. |
 | `PORT` | `4000` | HTTP listen port |
 
 #### Node Agent Runtime

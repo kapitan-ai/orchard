@@ -7,7 +7,8 @@ defmodule Orchard.Scheduler.MultiNode do
   1. Node has the requested model already loaded
   2. Lower `active_request_count`
   3. Healthier node (`:healthy` over `:degraded`)
-  4. Lexicographically smaller `node_id` (deterministic tie-break)
+  4. Cache-affinity match when explicitly enabled
+  5. Lexicographically smaller `node_id` (deterministic tie-break)
 
   Falls back to `SingleNode.default_schedule/1` when:
   - Only 0 or 1 targets are configured
@@ -18,6 +19,7 @@ defmodule Orchard.Scheduler.MultiNode do
   alias Orchard.CanonicalRequest
   alias Orchard.Dispatch.GrpcNodeRuntimeClient
   alias Orchard.Inference
+  alias Orchard.Inference.CacheAffinity
   alias Orchard.Nodes
   alias Orchard.Scheduler.SingleNode
 
@@ -90,20 +92,25 @@ defmodule Orchard.Scheduler.MultiNode do
     if candidates == [] do
       fallback_schedule(request, targets)
     else
-      ranked = rank_candidates(candidates)
+      {annotated_candidates, affinity_context} =
+        CacheAffinity.prepare(request, candidates, Inference.cache_affinity_config())
+
+      ranked = rank_candidates(annotated_candidates)
       selected = hd(ranked)
 
+      schedule = %{
+        strategy: :multi_node,
+        request_id: request.public_id,
+        runtime_client_target: selected.target,
+        request_timeout_ms: Inference.request_timeout_ms(),
+        model_load_timeout_ms: Inference.model_load_timeout_ms(),
+        node_id: selected.node_id,
+        candidate_count: length(ranked),
+        selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
+      }
+
       {:ok,
-       %{
-         strategy: :multi_node,
-         request_id: request.public_id,
-         runtime_client_target: selected.target,
-         request_timeout_ms: Inference.request_timeout_ms(),
-         model_load_timeout_ms: Inference.model_load_timeout_ms(),
-         node_id: selected.node_id,
-         candidate_count: length(ranked),
-         selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
-       }}
+       Map.merge(schedule, CacheAffinity.scheduler_metadata(affinity_context, ranked, selected))}
     end
   end
 
@@ -177,7 +184,9 @@ defmodule Orchard.Scheduler.MultiNode do
         c.active_request_count,
         # 3. Healthier first (:healthy = 0, :degraded = 1)
         health_rank(c.node.health),
-        # 4. Lexicographic node_id tie-break
+        # 4. Cache affinity after load, current load, and health
+        not Map.get(c, :cache_affinity_match?, false),
+        # 5. Lexicographic node_id tie-break
         c.node_id
       }
     end)

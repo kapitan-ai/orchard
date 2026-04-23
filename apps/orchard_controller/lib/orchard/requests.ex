@@ -250,6 +250,43 @@ defmodule Orchard.Requests do
   end
 
   @doc """
+  Returns recent completed request node IDs with matching cache-affinity metadata.
+  """
+  @spec recent_cache_affinity_nodes(
+          Ecto.UUID.t(),
+          String.t(),
+          String.t(),
+          String.t(),
+          keyword()
+        ) :: [Ecto.UUID.t()]
+  def recent_cache_affinity_nodes(tenant_id, model_id, version, affinity_key, opts \\ []) do
+    max_age_ms = bounded_non_negative_integer(Keyword.get(opts, :max_age_ms, 300_000), 300_000)
+
+    max_recent_requests =
+      bounded_positive_integer(Keyword.get(opts, :max_recent_requests, 32), 32)
+
+    now = Keyword.get(opts, :now, utc_now())
+    cutoff = DateTime.add(now, -max_age_ms, :millisecond)
+    requested_model = "#{model_id}@#{version}"
+
+    Request
+    |> where([request], request.tenant_id == ^tenant_id)
+    |> where([request], request.requested_model == ^requested_model)
+    |> where([request], request.state == :completed)
+    |> where([request], not is_nil(request.node_id) and not is_nil(request.completed_at))
+    |> where([request], request.completed_at >= ^cutoff)
+    |> where(
+      [request],
+      fragment("?->>? = ?", request.scheduler_decision, "cache_affinity_key", ^affinity_key)
+    )
+    |> order_by([request], desc: request.completed_at)
+    |> limit(^max_recent_requests)
+    |> select([request], request.node_id)
+    |> Repo.all()
+    |> Enum.uniq()
+  end
+
+  @doc """
   Persists the scheduler decision onto the request row.
 
   Sets `scheduler_decision` (normalized to JSON-safe map) and optionally
@@ -305,6 +342,14 @@ defmodule Orchard.Requests do
     end)
     |> unwrap_transaction_result()
   end
+
+  defp bounded_non_negative_integer(value, _default) when is_integer(value) and value >= 0,
+    do: value
+
+  defp bounded_non_negative_integer(_value, default), do: default
+
+  defp bounded_positive_integer(value, _default) when is_integer(value) and value > 0, do: value
+  defp bounded_positive_integer(_value, default), do: default
 
   defp normalize_schedule(schedule) when is_map(schedule) do
     normalize_schedule_value(schedule)

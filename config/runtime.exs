@@ -308,6 +308,12 @@ default_controller_inference = fn root ->
       capacity: 1,
       owner_runtime: false,
       single_controller_ack: false
+    ],
+    cache_affinity: [
+      enabled: false,
+      max_prefix_bytes: 8_192,
+      max_age_ms: 300_000,
+      max_recent_requests: 32
     ]
   ]
 end
@@ -497,6 +503,15 @@ if config_env() == :prod do
               owner_runtime: env_bool.("ORCHARD_QUEUE_ADMISSION_OWNER_RUNTIME", false),
               single_controller_ack:
                 env_bool.("ORCHARD_QUEUE_ADMISSION_SINGLE_CONTROLLER_ACK", false)
+            ],
+            cache_affinity: [
+              enabled: env_bool.("ORCHARD_CACHE_AFFINITY_ENABLED", false),
+              max_prefix_bytes: env_int.("ORCHARD_CACHE_AFFINITY_MAX_PREFIX_BYTES", "8192"),
+              max_age_ms: env_int.("ORCHARD_CACHE_AFFINITY_MAX_AGE_MS", "300000"),
+              max_recent_requests: env_int.("ORCHARD_CACHE_AFFINITY_MAX_RECENT_REQUESTS", "32"),
+              # Explicit secret for cache-affinity key HMAC derivation.
+              # If omitted, cache-affinity falls back to endpoint secret_key_base.
+              hmac_secret: env_optional_string.("ORCHARD_CACHE_AFFINITY_HMAC_SECRET")
             ]
           )
 

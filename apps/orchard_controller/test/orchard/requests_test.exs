@@ -691,6 +691,96 @@ defmodule Orchard.RequestsTest do
     end
   end
 
+  describe "recent_cache_affinity_nodes/5" do
+    test "returns matching completed nodes in recency order within tenant model and version scope" do
+      tenant_id = Ecto.UUID.generate()
+      other_tenant_id = Ecto.UUID.generate()
+      model_id = "mlx-community/cache-affinity"
+      affinity_key = "hmac-sha256:#{String.duplicate("a", 64)}"
+      now = ~U[2026-04-23 12:00:00.000000Z]
+      recent_node_id = Ecto.UUID.generate()
+      older_node_id = Ecto.UUID.generate()
+
+      create_request!(%{
+        tenant_id: tenant_id,
+        requested_model: "#{model_id}@v1",
+        state: :completed,
+        node_id: older_node_id,
+        completed_at: DateTime.add(now, -2, :second),
+        scheduler_decision: %{"cache_affinity_key" => affinity_key}
+      })
+
+      create_request!(%{
+        tenant_id: tenant_id,
+        requested_model: "#{model_id}@v1",
+        state: :completed,
+        node_id: recent_node_id,
+        completed_at: DateTime.add(now, -1, :second),
+        scheduler_decision: %{"cache_affinity_key" => affinity_key}
+      })
+
+      create_request!(%{
+        tenant_id: other_tenant_id,
+        requested_model: "#{model_id}@v1",
+        state: :completed,
+        node_id: Ecto.UUID.generate(),
+        completed_at: DateTime.add(now, -1, :second),
+        scheduler_decision: %{"cache_affinity_key" => affinity_key}
+      })
+
+      create_request!(%{
+        tenant_id: tenant_id,
+        requested_model: "#{model_id}@v2",
+        state: :completed,
+        node_id: Ecto.UUID.generate(),
+        completed_at: DateTime.add(now, -1, :second),
+        scheduler_decision: %{"cache_affinity_key" => affinity_key}
+      })
+
+      create_request!(%{
+        tenant_id: tenant_id,
+        requested_model: "#{model_id}@v1",
+        state: :completed,
+        node_id: Ecto.UUID.generate(),
+        completed_at: DateTime.add(now, -10, :minute),
+        scheduler_decision: %{"cache_affinity_key" => affinity_key}
+      })
+
+      assert Requests.recent_cache_affinity_nodes(tenant_id, model_id, "v1", affinity_key,
+               max_age_ms: 300_000,
+               max_recent_requests: 8,
+               now: now
+             ) == [recent_node_id, older_node_id]
+    end
+
+    test "bounds matching rows by max_recent_requests" do
+      tenant_id = Ecto.UUID.generate()
+      model_id = "mlx-community/cache-affinity-bound"
+      affinity_key = "hmac-sha256:#{String.duplicate("b", 64)}"
+      now = ~U[2026-04-23 12:00:00.000000Z]
+      newest_node_id = Ecto.UUID.generate()
+
+      Enum.each(1..3, fn index ->
+        node_id = if index == 1, do: newest_node_id, else: Ecto.UUID.generate()
+
+        create_request!(%{
+          tenant_id: tenant_id,
+          requested_model: "#{model_id}@v1",
+          state: :completed,
+          node_id: node_id,
+          completed_at: DateTime.add(now, -index, :second),
+          scheduler_decision: %{"cache_affinity_key" => affinity_key}
+        })
+      end)
+
+      assert Requests.recent_cache_affinity_nodes(tenant_id, model_id, "v1", affinity_key,
+               max_age_ms: 300_000,
+               max_recent_requests: 1,
+               now: now
+             ) == [newest_node_id]
+    end
+  end
+
   describe "record_schedule/2" do
     test "persists scheduler_decision as normalized JSON-safe map" do
       request = create_request!(%{public_id: "req_schedule_1"})
