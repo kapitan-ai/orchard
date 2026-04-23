@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 _VALID_PREFIX_CACHE_MODES = frozenset({"disabled", "kv", "trie"})
 _UINT32_MAX = 4_294_967_295
+_MAX_FINGERPRINT_BUFFER_SIZE = 64
 
 
 @dataclass(slots=True, frozen=True)
@@ -42,6 +43,7 @@ class PrefixCacheLoadConfig:
     mode: str = "kv"
     max_entries: int = 8
     max_bytes: int = 0
+    max_fingerprint_buffer_size: int = 8
 
     def __post_init__(self) -> None:
         if self.mode not in _VALID_PREFIX_CACHE_MODES:
@@ -53,13 +55,27 @@ class PrefixCacheLoadConfig:
         if self.max_entries < 1:
             raise ValueError(f"max_entries must be >= 1, got {self.max_entries}")
         if self.max_entries > _UINT32_MAX:
-            raise ValueError(
-                f"max_entries must be <= {_UINT32_MAX}, got {self.max_entries}"
-            )
+            raise ValueError(f"max_entries must be <= {_UINT32_MAX}, got {self.max_entries}")
         if not isinstance(self.max_bytes, int) or isinstance(self.max_bytes, bool):
             raise ValueError(f"max_bytes must be int, got {type(self.max_bytes).__name__}")
         if self.max_bytes < 0:
             raise ValueError(f"max_bytes must be >= 0, got {self.max_bytes}")
+        if not isinstance(self.max_fingerprint_buffer_size, int) or isinstance(
+            self.max_fingerprint_buffer_size, bool
+        ):
+            raise ValueError(
+                "max_fingerprint_buffer_size must be int, got "
+                f"{type(self.max_fingerprint_buffer_size).__name__}"
+            )
+        if self.max_fingerprint_buffer_size < 1:
+            raise ValueError(
+                f"max_fingerprint_buffer_size must be >= 1, got {self.max_fingerprint_buffer_size}"
+            )
+        if self.max_fingerprint_buffer_size > _MAX_FINGERPRINT_BUFFER_SIZE:
+            raise ValueError(
+                "max_fingerprint_buffer_size must be <= "
+                f"{_MAX_FINGERPRINT_BUFFER_SIZE}, got {self.max_fingerprint_buffer_size}"
+            )
 
 
 DEFAULT_PREFIX_CACHE_LOAD_CONFIG = PrefixCacheLoadConfig()
@@ -649,6 +665,7 @@ class LoadedModelSession:
     decode_cancel_stride: int = 1
     prefill_step_size: int = 2048
     prefix_cache: PrefixCache | None = None
+    prefix_cache_fingerprints: list[str] = dataclass_field(default_factory=list)
     generation_config: GenerationRuntimeConfig = DEFAULT_GENERATION_RUNTIME_CONFIG
     memory_budget_config: MemoryBudgetConfig = DEFAULT_MEMORY_BUDGET_CONFIG
     memory_budget_status: MemoryBudgetStatus = dataclass_field(default_factory=MemoryBudgetStatus)
@@ -1319,6 +1336,7 @@ def unload_session(
     session.tokenizer = None
     session.model_config = None
     session.prefix_cache = None
+    session.prefix_cache_fingerprints.clear()
     session.clear_cache = None
 
     try:

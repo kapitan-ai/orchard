@@ -15,7 +15,12 @@ from typing import Any, Literal
 
 import grpc
 
-from orchard_worker_mlx.backends import Backend, BackendError, build_backend
+from orchard_worker_mlx.backends import (
+    Backend,
+    BackendError,
+    build_backend,
+    valid_cache_affinity_fingerprint,
+)
 from orchard_worker_mlx.generated.cluster.v1 import common_pb2, events_pb2, runtime_pb2
 from orchard_worker_mlx.generated.orchard.worker.v1 import (
     worker_runtime_pb2,
@@ -54,6 +59,7 @@ _PREFIX_CACHE_UINT64_FIELDS = (
 )
 _PREFIX_CACHE_STATUS_CODES = frozenset({"ok", "disabled", "unavailable", "invalid_status", "error"})
 _INVALID_PREFIX_CACHE_MESSAGE = "backend prefix cache status was invalid"
+_MAX_PREFIX_CACHE_FINGERPRINTS = 64
 
 
 @dataclass(slots=True)
@@ -286,6 +292,19 @@ def _invalid_prefix_cache_numeric_fields(prefix_cache: dict[str, Any]) -> list[s
     return invalid_fields
 
 
+def _prefix_cache_fingerprints(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    fingerprints: list[str] = []
+    for fingerprint in value:
+        if valid_cache_affinity_fingerprint(fingerprint):
+            fingerprints.append(fingerprint)
+            if len(fingerprints) >= _MAX_PREFIX_CACHE_FINGERPRINTS:
+                break
+    return fingerprints
+
+
 def _prefix_cache_status_response(
     prefix_cache: Any,
     prefix_cache_config: Any | None,
@@ -305,6 +324,7 @@ def _prefix_cache_status_response(
         return _invalid_prefix_cache_status_response(prefix_cache_config)
 
     configured_max_entries, configured_max_bytes = _prefix_cache_caps(prefix_cache_config)
+    fingerprints = _prefix_cache_fingerprints(prefix_cache.get("prefix_cache_fingerprints"))
 
     return worker_runtime_pb2.WorkerPrefixCacheStatus(
         implementation=implementation,
@@ -321,6 +341,7 @@ def _prefix_cache_status_response(
         status_code=status_code,
         status_message=_status_string(prefix_cache.get("status_message")),
         session_started_unix_ms=_status_uint64(prefix_cache.get("session_started_unix_ms")),
+        prefix_cache_fingerprints=fingerprints,
     )
 
 
@@ -380,6 +401,7 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
             )
         )
         return response
+
     def LoadModel(
         self, request: worker_runtime_pb2.LoadModelRequest, context: grpc.ServicerContext
     ) -> common_pb2.Ack:
@@ -471,6 +493,13 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         try:
             self._backend.start_generation()
             generation_started = True
+
+            fingerprint = getattr(request, "cache_affinity_fingerprint", "")
+            if isinstance(fingerprint, str) and fingerprint != "":
+                try:
+                    self._backend.record_fingerprint(fingerprint)
+                except Exception:
+                    pass
 
             backend_iterator = self._backend.generate(request, cancel_event)
             try:

@@ -7,8 +7,9 @@ defmodule Orchard.Scheduler.MultiNode do
   1. Node has the requested model already loaded
   2. Lower `active_request_count`
   3. Healthier node (`:healthy` over `:degraded`)
-  4. Cache-affinity match when explicitly enabled
-  5. Lexicographically smaller `node_id` (deterministic tie-break)
+  4. Live prefix-cache fingerprint match when explicitly enabled
+  5. Cache-affinity match when explicitly enabled
+  6. Lexicographically smaller `node_id` (deterministic tie-break)
 
   Falls back to `SingleNode.default_schedule/1` when:
   - Only 0 or 1 targets are configured
@@ -21,6 +22,7 @@ defmodule Orchard.Scheduler.MultiNode do
   alias Orchard.Inference
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Nodes
+  alias Orchard.Runtime.PrefixCacheStatus
   alias Orchard.Scheduler.SingleNode
 
   @behaviour Orchard.Scheduler.SingleNode
@@ -92,10 +94,26 @@ defmodule Orchard.Scheduler.MultiNode do
     if candidates == [] do
       fallback_schedule(request, targets)
     else
-      {annotated_candidates, affinity_context} =
-        CacheAffinity.prepare(request, candidates, Inference.cache_affinity_config())
+      cache_affinity_config = Inference.cache_affinity_config()
 
-      ranked = rank_candidates(annotated_candidates)
+      {affinity_candidates, affinity_context} =
+        CacheAffinity.prepare(request, candidates, cache_affinity_config)
+
+      live_fingerprint_match_enabled? =
+        CacheAffinity.live_fingerprint_match_enabled?(cache_affinity_config)
+
+      annotated_candidates =
+        annotate_prefix_cache_fingerprint_matches(
+          affinity_candidates,
+          affinity_context,
+          live_fingerprint_match_enabled?
+        )
+
+      ranked =
+        rank_candidates(annotated_candidates,
+          live_fingerprint_match?: live_fingerprint_match_enabled?
+        )
+
       selected = hd(ranked)
 
       schedule =
@@ -110,6 +128,10 @@ defmodule Orchard.Scheduler.MultiNode do
           selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
         }
         |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
+        |> maybe_put_prefix_cache_fingerprint_match(
+          selected,
+          live_fingerprint_match_enabled?
+        )
 
       {:ok,
        Map.merge(schedule, CacheAffinity.scheduler_metadata(affinity_context, ranked, selected))}
@@ -181,6 +203,7 @@ defmodule Orchard.Scheduler.MultiNode do
     response
     |> Map.get(:runtime_prefix_cache_statuses, [])
     |> find_prefix_cache_status(model_ref)
+    |> PrefixCacheStatus.normalize_for_scheduler()
   end
 
   defp find_prefix_cache_status(statuses, model_ref) when is_list(statuses) do
@@ -209,10 +232,82 @@ defmodule Orchard.Scheduler.MultiNode do
   defp maybe_put_prefix_cache_status(map, nil), do: map
   defp maybe_put_prefix_cache_status(map, status), do: Map.put(map, :prefix_cache_status, status)
 
+  defp maybe_put_prefix_cache_fingerprint_match(map, _selected, false), do: map
+
+  defp maybe_put_prefix_cache_fingerprint_match(map, selected, true) do
+    Map.put(
+      map,
+      :prefix_cache_fingerprint_match?,
+      Map.get(selected, :prefix_cache_fingerprint_match?, false)
+    )
+  end
+
+  defp annotate_prefix_cache_fingerprint_matches(candidates, _affinity_context, false) do
+    candidates
+  end
+
+  defp annotate_prefix_cache_fingerprint_matches(candidates, affinity_context, true) do
+    affinity_key = Map.get(affinity_context, :affinity_key)
+
+    Enum.map(candidates, fn candidate ->
+      Map.put(
+        candidate,
+        :prefix_cache_fingerprint_match?,
+        prefix_cache_fingerprint_match?(candidate, affinity_key)
+      )
+    end)
+  end
+
+  defp prefix_cache_fingerprint_match?(_candidate, affinity_key) when not is_binary(affinity_key),
+    do: false
+
+  defp prefix_cache_fingerprint_match?(candidate, affinity_key) do
+    candidate
+    |> Map.get(:prefix_cache_status, %{})
+    |> Map.get(:prefix_cache_fingerprints, [])
+    |> Enum.member?(affinity_key)
+  end
+
   # -- Ranking --
 
-  @doc false
+  @doc """
+  Sorts candidates using the scheduler's deterministic tie-break order.
+  """
   def rank_candidates(candidates) do
+    rank_candidates(candidates, live_fingerprint_match?: false)
+  end
+
+  @doc """
+  Sorts candidates and optionally inserts the live fingerprint tie-breaker.
+  """
+  def rank_candidates(candidates, opts) do
+    if Keyword.get(opts, :live_fingerprint_match?, false) do
+      rank_candidates_with_live_fingerprint(candidates)
+    else
+      rank_candidates_without_live_fingerprint(candidates)
+    end
+  end
+
+  defp rank_candidates_with_live_fingerprint(candidates) do
+    Enum.sort_by(candidates, fn c ->
+      {
+        # 1. Loaded model first (false < true, so negate)
+        not c.loaded_model?,
+        # 2. Lower active_request_count
+        c.active_request_count,
+        # 3. Healthier first (:healthy = 0, :degraded = 1)
+        health_rank(c.node.health),
+        # 4. Live prefix-cache fingerprint match
+        not Map.get(c, :prefix_cache_fingerprint_match?, false),
+        # 5. Historical cache-affinity match
+        not Map.get(c, :cache_affinity_match?, false),
+        # 6. Lexicographic node_id tie-break
+        c.node_id
+      }
+    end)
+  end
+
+  defp rank_candidates_without_live_fingerprint(candidates) do
     Enum.sort_by(candidates, fn c ->
       {
         # 1. Loaded model first (false < true, so negate)

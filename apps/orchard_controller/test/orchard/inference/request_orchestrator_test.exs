@@ -71,8 +71,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScheduler do
            status_code: "ok",
            status_message: "active",
            session_started_unix_ms: 1_713_726_400_000,
+           prefix_cache_fingerprints: ["hmac-sha256:#{String.duplicate("a", 64)}"],
            prompt_fingerprint: "must-not-persist"
          },
+         prefix_cache_fingerprint_match?: true,
          selected_prefix_cache_status_code: "leaked",
          selected_prefix_cache_prompt_fingerprint: "must-not-persist"
        })}
@@ -294,6 +296,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   alias Orchard.ArtifactBundle
   alias Orchard.CanonicalRequest
+  alias Orchard.Inference.CacheAffinity
   alias Orchard.Inference.QueueManager
   alias Orchard.Inference.RequestOrchestrator
   alias Orchard.InferenceEvent
@@ -397,13 +400,18 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert decision["selected_prefix_cache_stores"] == 8
     assert decision["selected_prefix_cache_evictions"] == 1
     assert decision["selected_prefix_cache_session_started_unix_ms"] == 1_713_726_400_000
+    assert decision["selected_prefix_cache_fingerprint_count"] == 1
+    assert decision["selected_prefix_cache_warmth_indicator"] == true
+    assert decision["selected_prefix_cache_fingerprint_match"] == true
 
     refute Map.has_key?(decision, "prefix_cache_status")
     refute Map.has_key?(decision, "selected_prefix_cache_failures")
     refute Map.has_key?(decision, "selected_prefix_cache_status_message")
     refute Map.has_key?(decision, "selected_prefix_cache_configured_max_entries")
     refute Map.has_key?(decision, "selected_prefix_cache_prompt_fingerprint")
+    refute Map.has_key?(decision, "selected_prefix_cache_fingerprints")
     refute inspect(decision) =~ "prompt_fingerprint"
+    refute inspect(decision) =~ "hmac-sha256"
   end
 
   test "execute/3 strips prefix-cache scheduler metadata when introspection disabled", %{
@@ -1771,6 +1779,58 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert execute_request.params.tool_choice_json == ""
   end
 
+  test "execute/3 injects cache-affinity fingerprint only when live matching is enabled", %{
+    bundle: bundle
+  } do
+    put_capturing_runtime_adapter_config()
+
+    put_cache_affinity_config(
+      enabled: true,
+      live_fingerprint_match_enabled: true,
+      hmac_secret: "request-orchestrator-fingerprint-secret"
+    )
+
+    model = create_active_model!(bundle, "request-orchestrator-live-fingerprint")
+    canonical = canonical_request("request-orchestrator-live-fingerprint", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    assert_receive {:captured_execute_request, execute_request}
+
+    assert {:ok, expected_fingerprint} =
+             CacheAffinity.derive_key(canonical, Orchard.Inference.cache_affinity_config())
+
+    assert execute_request.cache_affinity_fingerprint == expected_fingerprint
+  end
+
+  test "execute/3 omits cache-affinity fingerprint when parent or child flag is disabled", %{
+    bundle: bundle
+  } do
+    put_capturing_runtime_adapter_config()
+
+    [
+      [enabled: false, live_fingerprint_match_enabled: true],
+      [enabled: true, live_fingerprint_match_enabled: false]
+    ]
+    |> Enum.with_index()
+    |> Enum.each(fn {cache_affinity, index} ->
+      put_cache_affinity_config(
+        Keyword.put(cache_affinity, :hmac_secret, "request-orchestrator-fingerprint-secret")
+      )
+
+      model_id = "request-orchestrator-live-fingerprint-disabled-#{index}"
+      model = create_active_model!(bundle, model_id)
+      canonical = canonical_request(model_id, stream?: false)
+
+      assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+      assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+      assert_receive {:captured_execute_request, execute_request}
+      assert execute_request.cache_affinity_fingerprint in [nil, ""]
+    end)
+  end
+
   defp put_multi_node_scheduler_config do
     inference =
       Application.fetch_env!(:orchard_controller, :inference)
@@ -1801,6 +1861,20 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       |> Keyword.merge(scheduler_impl: StubCacheAffinityScheduler)
 
     Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_cache_affinity_config(overrides) do
+    inference = Application.fetch_env!(:orchard_controller, :inference)
+
+    cache_affinity =
+      Orchard.Inference.cache_affinity_config()
+      |> Keyword.merge(overrides)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(inference, :cache_affinity, cache_affinity)
+    )
   end
 
   defp put_prefix_cache_scheduler_config(overrides) do

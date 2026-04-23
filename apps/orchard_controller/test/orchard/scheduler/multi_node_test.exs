@@ -512,6 +512,180 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       refute inspect(schedule) =~ request.rendered_prompt
     end
 
+    test "uses live prefix-cache fingerprint before historical cache-affinity" do
+      put_inference(
+        cache_affinity: [
+          enabled: true,
+          live_fingerprint_match_enabled: true,
+          max_age_ms: 300_000,
+          max_recent_requests: 8
+        ]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+      tenant_id = Ecto.UUID.generate()
+      request = canonical_request("test-model", "v1", tenant_id: tenant_id)
+      affinity_key = cache_affinity_key!(request)
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      insert_recent_cache_affinity_request!(
+        tenant_id,
+        "test-model",
+        "v1",
+        id_a,
+        affinity_key,
+        DateTime.utc_now()
+      )
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          runtime_prefix_cache_statuses: [
+            prefix_cache_status("test-model", "v1", %{
+              prefix_cache_fingerprints: [affinity_key]
+            })
+          ]
+        )
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_b
+      assert schedule.prefix_cache_fingerprint_match? == true
+      assert schedule.cache_affinity_hint_available == true
+      assert schedule.cache_affinity_selected_match == false
+      assert schedule.cache_affinity_candidate_count == 1
+    end
+
+    test "does not let live prefix-cache fingerprint outrank health" do
+      put_inference(
+        cache_affinity: [
+          enabled: true,
+          live_fingerprint_match_enabled: true,
+          max_age_ms: 300_000,
+          max_recent_requests: 8
+        ]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+      request = canonical_request("test-model", "v1")
+      affinity_key = cache_affinity_key!(request)
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061, health: :healthy})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062, health: :degraded})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          health: %{ready: true, health_code: "warn", health_message: "degraded"},
+          runtime_prefix_cache_statuses: [
+            prefix_cache_status("test-model", "v1", %{
+              prefix_cache_fingerprints: [affinity_key]
+            })
+          ]
+        )
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.prefix_cache_fingerprint_match? == false
+    end
+
+    test "marks live fingerprint match false when candidate set does not contain the affinity key" do
+      put_inference(
+        cache_affinity: [
+          enabled: true,
+          live_fingerprint_match_enabled: true,
+          max_age_ms: 300_000,
+          max_recent_requests: 8
+        ]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+      request = canonical_request("test-model", "v1")
+      non_matching = "hmac-sha256:" <> String.duplicate("f", 64)
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a,
+          host: "10.0.0.1",
+          port: 50_061,
+          runtime_prefix_cache_statuses: [
+            prefix_cache_status("test-model", "v1", %{
+              prefix_cache_fingerprints: [non_matching]
+            })
+          ]
+        )
+      )
+
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.prefix_cache_fingerprint_match? == false
+    end
+
+    test "ignores live prefix-cache fingerprints when the child flag is disabled" do
+      put_inference(
+        cache_affinity: [
+          enabled: true,
+          live_fingerprint_match_enabled: false,
+          max_age_ms: 300_000,
+          max_recent_requests: 8
+        ]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+      request = canonical_request("test-model", "v1")
+      affinity_key = cache_affinity_key!(request)
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          runtime_prefix_cache_statuses: [
+            prefix_cache_status("test-model", "v1", %{
+              prefix_cache_fingerprints: [affinity_key]
+            })
+          ]
+        )
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      refute Map.has_key?(schedule, :prefix_cache_fingerprint_match?)
+    end
+
     test "does not let cache-affinity outrank active request count" do
       put_inference(cache_affinity: [enabled: true, max_age_ms: 300_000, max_recent_requests: 8])
 

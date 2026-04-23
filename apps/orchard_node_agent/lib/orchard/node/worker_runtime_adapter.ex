@@ -36,6 +36,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   @default_memory_budget_mode "observe"
   @default_memory_budget_utilization 0.90
   @default_memory_budget_overhead_bytes 1_073_741_824
+  @prefix_cache_fingerprint_pattern ~r/^hmac-sha256:[a-f0-9]{64}$/
 
   @type generation_entry :: %{pid: pid(), request_id: String.t()}
 
@@ -120,11 +121,25 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       configured_max_bytes: Map.get(status, :configured_max_bytes, 0),
       status_code: Map.get(status, :status_code, ""),
       status_message: Map.get(status, :status_message, ""),
-      session_started_unix_ms: Map.get(status, :session_started_unix_ms, 0)
+      session_started_unix_ms: Map.get(status, :session_started_unix_ms, 0),
+      prefix_cache_fingerprints:
+        prefix_cache_fingerprints_from_proto(Map.get(status, :prefix_cache_fingerprints, []))
     }
   end
 
   defp prefix_cache_from_proto(_other), do: nil
+
+  defp prefix_cache_fingerprints_from_proto(fingerprints) when is_list(fingerprints) do
+    Enum.filter(fingerprints, &valid_prefix_cache_fingerprint?/1)
+  end
+
+  defp prefix_cache_fingerprints_from_proto(_fingerprints), do: []
+
+  defp valid_prefix_cache_fingerprint?(fingerprint) when is_binary(fingerprint) do
+    Regex.match?(@prefix_cache_fingerprint_pattern, fingerprint)
+  end
+
+  defp valid_prefix_cache_fingerprint?(_fingerprint), do: false
 
   @impl true
   def load_model(%ModelRef{} = model_ref, opts) do

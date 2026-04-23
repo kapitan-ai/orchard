@@ -58,6 +58,7 @@ class HappyBackend:
         ]
         self._loaded = False
         self._active = False
+        self.recorded_fingerprints: list[str] = []
 
     def status(self) -> BackendStatus:
         return BackendStatus(loaded=self._loaded, active_request_count=int(self._active))
@@ -81,6 +82,7 @@ class HappyBackend:
             "status_code": "unavailable",
             "status_message": "prefix cache unavailable",
             "session_started_unix_ms": 0,
+            "prefix_cache_fingerprints": list(self.recorded_fingerprints),
         }
 
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
@@ -94,6 +96,12 @@ class HappyBackend:
 
     def finish_generation(self) -> None:
         self._active = False
+
+    def record_fingerprint(self, fingerprint: str) -> None:
+        self.recorded_fingerprints.append(fingerprint)
+
+    def get_fingerprints(self) -> list[str]:
+        return list(self.recorded_fingerprints)
 
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         yield from self._events
@@ -257,6 +265,10 @@ def _make_request(request_id: str = "req-1") -> MagicMock:
     return req
 
 
+def _fingerprint(seed: int) -> str:
+    return f"hmac-sha256:{seed:064x}"
+
+
 def _make_cancel_request(request_id: str = "req-1") -> MagicMock:
     req = MagicMock()
     req.request_id = request_id
@@ -309,6 +321,115 @@ def test_derive_server_max_workers_scales_with_batch_concurrency() -> None:
 # ---------------------------------------------------------------------------
 # Test: progress and usage event mapping
 # ---------------------------------------------------------------------------
+
+
+def test_generate_records_valid_non_empty_fingerprint_and_get_status_publishes_it() -> None:
+    backend = HappyBackend()
+    servicer = _make_servicer(backend)
+    request = _make_request("req-fingerprint")
+    request.cache_affinity_fingerprint = _fingerprint(1)
+
+    list(servicer.Generate(request, MagicMock()))
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert backend.recorded_fingerprints == [_fingerprint(1)]
+    assert list(status.prefix_cache.prefix_cache_fingerprints) == [_fingerprint(1)]
+
+
+def test_generate_ignores_empty_fingerprint() -> None:
+    backend = HappyBackend()
+    servicer = _make_servicer(backend)
+    request = _make_request("req-empty-fingerprint")
+    request.cache_affinity_fingerprint = ""
+
+    list(servicer.Generate(request, MagicMock()))
+
+    assert backend.recorded_fingerprints == []
+
+
+def test_get_status_caps_fingerprints_to_protocol_limit() -> None:
+    fingerprints = [_fingerprint(index) for index in range(70)]
+
+    servicer = WorkerRuntimeServicer(
+        PrefixCacheStatusBackend(
+            prefix_cache_status={
+                "implementation": "kv",
+                "enabled": True,
+                "entry_count": 1,
+                "total_bytes": 128,
+                "hits": 1,
+                "misses": 0,
+                "failures": 0,
+                "stores": 1,
+                "evictions": 0,
+                "configured_max_entries": 8,
+                "configured_max_bytes": 0,
+                "status_code": "ok",
+                "status_message": "",
+                "session_started_unix_ms": 1,
+                "prefix_cache_fingerprints": fingerprints,
+            }
+        )
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert list(status.prefix_cache.prefix_cache_fingerprints) == fingerprints[:64]
+
+
+def test_unload_model_clears_published_fingerprints_when_backend_clears_state() -> None:
+    class ClearingFingerprintBackend(HappyBackend):
+        def unload_model(self) -> None:
+            self.recorded_fingerprints.clear()
+            super().unload_model()
+
+    backend = ClearingFingerprintBackend()
+    servicer = _make_servicer(backend)
+
+    request = _make_request("req-clear-fingerprint")
+    request.cache_affinity_fingerprint = _fingerprint(1)
+    list(servicer.Generate(request, MagicMock()))
+
+    before_unload = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+    assert list(before_unload.prefix_cache.prefix_cache_fingerprints) == [_fingerprint(1)]
+
+    ack = servicer.UnloadModel(MagicMock(), MagicMock())
+    assert ack.ok is True
+
+    after_unload = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+    assert list(after_unload.prefix_cache.prefix_cache_fingerprints) == []
+
+
+def test_get_status_drops_malformed_backend_fingerprints() -> None:
+    servicer = WorkerRuntimeServicer(
+        PrefixCacheStatusBackend(
+            prefix_cache_status={
+                "implementation": "kv",
+                "enabled": True,
+                "entry_count": 1,
+                "total_bytes": 128,
+                "hits": 1,
+                "misses": 0,
+                "failures": 0,
+                "stores": 1,
+                "evictions": 0,
+                "configured_max_entries": 8,
+                "configured_max_bytes": 0,
+                "status_code": "ok",
+                "status_message": "",
+                "session_started_unix_ms": 1,
+                "prefix_cache_fingerprints": [
+                    _fingerprint(1),
+                    "hmac-sha256:" + "A" * 64,
+                    "not-a-fingerprint",
+                ],
+            }
+        )
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert list(status.prefix_cache.prefix_cache_fingerprints) == [_fingerprint(1)]
 
 
 def test_happy_path_maps_progress_usage_and_completed() -> None:

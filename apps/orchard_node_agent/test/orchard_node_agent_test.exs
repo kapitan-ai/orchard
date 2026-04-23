@@ -553,6 +553,87 @@ defmodule OrchardNodeAgentTest do
     def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
   end
 
+  defmodule PrefixCacheFingerprintRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @malformed_fingerprint_model_id "prefix-cache/malformed-fingerprints"
+
+    @impl true
+    def get_status(adapter_state, _opts) do
+      {:ok,
+       %{
+         ready: true,
+         health_code: "",
+         health_message: "",
+         prefix_cache_status: prefix_cache_status_for(adapter_state)
+       }}
+    end
+
+    defp prefix_cache_status_for(%{
+           model_ref: %ModelRef{model_id: @malformed_fingerprint_model_id}
+         }) do
+      Map.put(base_prefix_cache_status(), :prefix_cache_fingerprints, "malformed")
+    end
+
+    defp prefix_cache_status_for(_adapter_state) do
+      fingerprints =
+        [
+          fingerprint(0),
+          fingerprint(1),
+          fingerprint(0),
+          "not-a-fingerprint",
+          "hmac-sha256:" <> String.duplicate("g", 64)
+        ] ++ Enum.map(2..70, &fingerprint/1)
+
+      Map.put(base_prefix_cache_status(), :prefix_cache_fingerprints, fingerprints)
+    end
+
+    defp base_prefix_cache_status do
+      %{
+        implementation: "kv",
+        enabled: true,
+        entry_count: 2,
+        total_bytes: 32_768,
+        hits: 12,
+        misses: 4,
+        failures: 1,
+        stores: 8,
+        evictions: 3,
+        configured_max_entries: 64,
+        configured_max_bytes: 1_048_576,
+        status_code: "ok",
+        status_message: "",
+        session_started_unix_ms: 1_713_726_400_000
+      }
+    end
+
+    defp fingerprint(index) do
+      "hmac-sha256:" <>
+        (index |> Integer.to_string(16) |> String.downcase() |> String.pad_leading(64, "0"))
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
   defmodule LoadTimeoutCapturingAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
 
@@ -1030,6 +1111,37 @@ defmodule OrchardNodeAgentTest do
         assert prefix_cache_status.status_code == "ok"
         assert prefix_cache_status.session_started_unix_ms == 1_713_726_400_000
       end)
+    end)
+  end
+
+  test "get_status sanitizes runtime prefix cache fingerprint sets", %{bundle: bundle} do
+    malformed_bundle = stage_test_bundle!("prefix-cache/malformed-fingerprints", "v1")
+
+    on_exit(fn ->
+      File.rm_rf(malformed_bundle.cache_path)
+      File.rm_rf(malformed_bundle.source_path)
+    end)
+
+    with_runtime_adapter(PrefixCacheFingerprintRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(malformed_bundle))
+
+      assert %StatusResponse{} = response = NodeStatus.current()
+
+      by_model =
+        Map.new(response.runtime_prefix_cache_statuses, fn status ->
+          {status.model_ref.model_id, status}
+        end)
+
+      fingerprints = by_model[bundle.model_id].prefix_cache_fingerprints
+
+      assert fingerprints == Enum.map(0..63, &prefix_cache_fingerprint/1)
+      assert MapSet.size(MapSet.new(fingerprints)) == 64
+      refute "not-a-fingerprint" in fingerprints
+      assert by_model[malformed_bundle.model_id].prefix_cache_fingerprints == []
     end)
   end
 
@@ -3002,6 +3114,11 @@ defmodule OrchardNodeAgentTest do
 
   defp huge_integer_utilization do
     Integer.pow(2, 10_000)
+  end
+
+  defp prefix_cache_fingerprint(index) do
+    "hmac-sha256:" <>
+      (index |> Integer.to_string(16) |> String.downcase() |> String.pad_leading(64, "0"))
   end
 
   defp with_runtime_adapter(adapter, fun) when is_function(fun, 0) do

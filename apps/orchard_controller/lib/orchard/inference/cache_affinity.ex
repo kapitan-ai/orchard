@@ -12,6 +12,7 @@ defmodule Orchard.Inference.CacheAffinity do
   @default_max_recent_requests 32
   @default_config [
     enabled: false,
+    live_fingerprint_match_enabled: false,
     max_prefix_bytes: @default_max_prefix_bytes,
     max_age_ms: @default_max_age_ms,
     max_recent_requests: @default_max_recent_requests,
@@ -28,9 +29,12 @@ defmodule Orchard.Inference.CacheAffinity do
   @spec normalize_config(term()) :: config()
   def normalize_config(raw_config) when is_list(raw_config) do
     merged = Keyword.merge(@default_config, raw_config)
+    enabled? = merged[:enabled] == true
 
     [
-      enabled: merged[:enabled] == true,
+      enabled: enabled?,
+      live_fingerprint_match_enabled:
+        enabled? and merged[:live_fingerprint_match_enabled] == true,
       max_prefix_bytes:
         positive_integer_or_default(merged[:max_prefix_bytes], @default_max_prefix_bytes),
       max_age_ms: non_negative_integer_or_default(merged[:max_age_ms], @default_max_age_ms),
@@ -45,6 +49,13 @@ defmodule Orchard.Inference.CacheAffinity do
   @spec enabled?(config()) :: boolean()
   def enabled?(config) when is_list(config), do: Keyword.get(config, :enabled) == true
   def enabled?(_config), do: false
+
+  @spec live_fingerprint_match_enabled?(config()) :: boolean()
+  def live_fingerprint_match_enabled?(config) when is_list(config) do
+    enabled?(config) and Keyword.get(config, :live_fingerprint_match_enabled) == true
+  end
+
+  def live_fingerprint_match_enabled?(_config), do: false
 
   @spec derive_key(CanonicalRequest.t(), config()) :: {:ok, String.t()} | :unavailable
   def derive_key(%CanonicalRequest{rendered_prompt: rendered_prompt}, config)

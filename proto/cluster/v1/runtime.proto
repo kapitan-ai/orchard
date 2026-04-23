@@ -85,6 +85,7 @@ message RuntimePrefixCacheStatus {
   string status_code = 13;
   string status_message = 14;
   uint64 session_started_unix_ms = 15;
+  repeated string prefix_cache_fingerprints = 16;
 }
 
 // Static hosted-tool capability advertised by the node. The controller derives
@@ -162,6 +163,7 @@ message ExecuteInferenceRequest {
   GenerationParams params = 7;
   uint64 deadline_unix_ms = 8;
   bytes metadata_json = 9;
+  string cache_affinity_fingerprint = 10;
 }
 
 message CancelInferenceRequest {

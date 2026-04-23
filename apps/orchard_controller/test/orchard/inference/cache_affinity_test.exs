@@ -24,11 +24,34 @@ defmodule Orchard.Inference.CacheAffinityTest do
     assert byte_size(digest) == 64
   end
 
+  test "derive_key/2 is idempotent and keeps the hmac-sha256 fingerprint format" do
+    request = canonical_request("stable prompt")
+    config = [hmac_secret: "independent-secret", max_prefix_bytes: 8_192]
+
+    assert {:ok, fingerprint_one} = CacheAffinity.derive_key(request, config)
+    assert {:ok, fingerprint_two} = CacheAffinity.derive_key(request, config)
+
+    assert fingerprint_one == fingerprint_two
+    assert String.match?(fingerprint_one, ~r/^hmac-sha256:[a-f0-9]{64}$/)
+  end
+
   test "derive_key/2 returns unavailable instead of raising for malformed config" do
     put_endpoint_secret_key_base(nil)
     request = canonical_request("prefix")
 
     assert :unavailable = CacheAffinity.derive_key(request, %{max_prefix_bytes: 1})
+  end
+
+  test "normalize_config/1 parent-gates live fingerprint matching" do
+    assert CacheAffinity.normalize_config(
+             enabled: false,
+             live_fingerprint_match_enabled: true
+           )[:live_fingerprint_match_enabled] == false
+
+    assert CacheAffinity.normalize_config(
+             enabled: true,
+             live_fingerprint_match_enabled: true
+           )[:live_fingerprint_match_enabled] == true
   end
 
   test "derive_key/2 falls back to endpoint secret when cache-affinity secret is not configured" do

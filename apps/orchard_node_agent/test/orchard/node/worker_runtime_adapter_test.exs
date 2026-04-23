@@ -14,9 +14,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     WorkerStatusResponse
   }
 
-  alias Orchard.Node.WorkerRuntimeAdapter
   alias Orchard.InferenceEvent, as: DomainInferenceEvent
   alias Orchard.InferenceEvent.OutputTextDelta
+  alias Orchard.Node.WorkerRuntimeAdapter
 
   defmodule OpenUnavailableWorkerService do
     use GRPC.Server, service: WorkerRuntimeService.Service
@@ -64,6 +64,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   defmodule MemoryBudgetWorkerService do
     use GRPC.Server, service: WorkerRuntimeService.Service
 
+    @fingerprint_a "hmac-sha256:" <> String.duplicate("a", 64)
+    @fingerprint_b "hmac-sha256:" <> String.duplicate("b", 64)
+
     def get_status(%WorkerStatusRequest{}, _stream) do
       %WorkerStatusResponse{
         ready: true,
@@ -99,7 +102,13 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
           configured_max_bytes: 1_048_576,
           status_code: "ok",
           status_message: "",
-          session_started_unix_ms: 1_713_726_400_000
+          session_started_unix_ms: 1_713_726_400_000,
+          prefix_cache_fingerprints: [
+            @fingerprint_a,
+            "hmac-sha256:" <> String.duplicate("A", 64),
+            @fingerprint_b,
+            "not-a-fingerprint"
+          ]
         }
       }
     end
@@ -222,6 +231,11 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       assert status.prefix_cache_status.total_bytes == 32_768
       assert status.prefix_cache_status.status_code == "ok"
       assert status.prefix_cache_status.session_started_unix_ms == 1_713_726_400_000
+
+      assert status.prefix_cache_status.prefix_cache_fingerprints == [
+               "hmac-sha256:" <> String.duplicate("a", 64),
+               "hmac-sha256:" <> String.duplicate("b", 64)
+             ]
     end)
   end
 

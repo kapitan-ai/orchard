@@ -9,6 +9,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Inference
 
   alias Orchard.Inference.{
+    CacheAffinity,
     CanonicalRequestSerializer,
     ChatError,
     QueueManager,
@@ -19,11 +20,11 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   alias Orchard.InferenceEvent
   alias Orchard.Requests
-  alias Orchard.Runtime.PrefixCacheStatus
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.Request
   alias Orchard.Requests.RequestServer
   alias Orchard.Requests.RequestStepEvent
+  alias Orchard.Runtime.PrefixCacheStatus
 
   @type event_handler ::
           (Ecto.UUID.t(), InferenceEvent.t() -> :ok | :cancel)
@@ -616,7 +617,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp maybe_merge_prefix_cache_fields(metadata, schedule) do
     if Inference.cache_introspection_enabled?() do
-      Map.merge(metadata, PrefixCacheStatus.selected_fields(prefix_cache_status(schedule)))
+      fields =
+        PrefixCacheStatus.selected_fields(prefix_cache_status(schedule),
+          fingerprint_match: prefix_cache_fingerprint_match(schedule)
+        )
+
+      Map.merge(metadata, fields)
     else
       metadata
     end
@@ -626,12 +632,27 @@ defmodule Orchard.Inference.RequestOrchestrator do
     Map.get(schedule, :prefix_cache_status) || Map.get(schedule, "prefix_cache_status")
   end
 
+  defp prefix_cache_fingerprint_match(schedule) do
+    cond do
+      Map.has_key?(schedule, :prefix_cache_fingerprint_match?) ->
+        Map.get(schedule, :prefix_cache_fingerprint_match?)
+
+      Map.has_key?(schedule, "prefix_cache_fingerprint_match?") ->
+        Map.get(schedule, "prefix_cache_fingerprint_match?")
+
+      true ->
+        nil
+    end
+  end
+
   defp strip_prefix_cache_metadata(schedule) do
     Map.reject(schedule, fn {key, _value} -> prefix_cache_metadata_key?(key) end)
   end
 
   defp prefix_cache_metadata_key?(:prefix_cache_status), do: true
   defp prefix_cache_metadata_key?("prefix_cache_status"), do: true
+  defp prefix_cache_metadata_key?(:prefix_cache_fingerprint_match?), do: true
+  defp prefix_cache_metadata_key?("prefix_cache_fingerprint_match?"), do: true
 
   defp prefix_cache_metadata_key?(key) when is_atom(key) do
     key
@@ -1037,6 +1058,24 @@ defmodule Orchard.Inference.RequestOrchestrator do
       deadline_unix_ms: deadline_ms,
       metadata_json: Jason.encode!(canonical.metadata)
     }
+    |> maybe_put_cache_affinity_fingerprint(canonical)
+  end
+
+  defp maybe_put_cache_affinity_fingerprint(execute_request, canonical) do
+    cache_affinity_config = Inference.cache_affinity_config()
+
+    if CacheAffinity.live_fingerprint_match_enabled?(cache_affinity_config) do
+      put_cache_affinity_fingerprint(execute_request, canonical, cache_affinity_config)
+    else
+      execute_request
+    end
+  end
+
+  defp put_cache_affinity_fingerprint(execute_request, canonical, cache_affinity_config) do
+    case CacheAffinity.derive_key(canonical, cache_affinity_config) do
+      {:ok, fingerprint} -> %{execute_request | cache_affinity_fingerprint: fingerprint}
+      :unavailable -> execute_request
+    end
   end
 
   defp build_model_load_request(model, schedule) do

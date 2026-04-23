@@ -55,6 +55,7 @@ message WorkerPrefixCacheStatus {
   string status_code = 12;
   string status_message = 13;
   uint64 session_started_unix_ms = 14;
+  repeated string prefix_cache_fingerprints = 15;
 }
 
 message WorkerStatusResponse {

@@ -73,6 +73,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="maximum prefix cache byte budget; 0 disables (default: 0)",
     )
     parser.add_argument(
+        "--max-fingerprint-buffer-size",
+        type=int,
+        default=8,
+        help="maximum published prefix-cache fingerprints, capped at 64 (default: 8)",
+    )
+    parser.add_argument(
         "--generation-mode",
         choices=["stream", "batch"],
         default="stream",
@@ -130,6 +136,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mode=args.prefix_cache_mode,
             max_entries=args.prefix_cache_max_entries,
             max_bytes=args.prefix_cache_max_bytes,
+            max_fingerprint_buffer_size=args.max_fingerprint_buffer_size,
         )
         generation_config = GenerationRuntimeConfig(
             mode=args.generation_mode,

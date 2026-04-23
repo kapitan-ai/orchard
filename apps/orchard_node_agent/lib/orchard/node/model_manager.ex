@@ -71,6 +71,8 @@ defmodule Orchard.Node.ModelManager do
   ]
   @memory_budget_float_fields [:utilization]
   @invalid_memory_budget_numeric_message "memory budget status contained invalid numeric fields"
+  @prefix_cache_fingerprint_cap 64
+  @prefix_cache_fingerprint_pattern ~r/^hmac-sha256:[a-f0-9]{64}$/
   @prefix_cache_uint32_fields [:entry_count, :configured_max_entries]
   @prefix_cache_uint64_fields [
     :total_bytes,
@@ -1318,7 +1320,8 @@ defmodule Orchard.Node.ModelManager do
         configured_max_bytes: budget_uint64(prefix_cache_status[:configured_max_bytes]),
         status_code: budget_string(prefix_cache_status[:status_code]),
         status_message: budget_string(prefix_cache_status[:status_message]),
-        session_started_unix_ms: budget_uint64(prefix_cache_status[:session_started_unix_ms])
+        session_started_unix_ms: budget_uint64(prefix_cache_status[:session_started_unix_ms]),
+        prefix_cache_fingerprints: prefix_cache_fingerprints(prefix_cache_status)
       }
     end
   end
@@ -1362,9 +1365,45 @@ defmodule Orchard.Node.ModelManager do
       configured_max_bytes: 0,
       status_code: "invalid_status",
       status_message: @invalid_prefix_cache_numeric_message,
-      session_started_unix_ms: 0
+      session_started_unix_ms: 0,
+      prefix_cache_fingerprints: []
     }
   end
+
+  defp prefix_cache_fingerprints(prefix_cache_status) do
+    prefix_cache_status
+    |> Map.get(:prefix_cache_fingerprints, [])
+    |> normalize_prefix_cache_fingerprints()
+  end
+
+  defp normalize_prefix_cache_fingerprints(fingerprints) when is_list(fingerprints) do
+    {_seen, ordered_fingerprints, _count} =
+      Enum.reduce_while(fingerprints, {MapSet.new(), [], 0}, fn fingerprint, {seen, acc, count} ->
+        cond do
+          count >= @prefix_cache_fingerprint_cap ->
+            {:halt, {seen, acc, count}}
+
+          not valid_prefix_cache_fingerprint?(fingerprint) ->
+            {:cont, {seen, acc, count}}
+
+          MapSet.member?(seen, fingerprint) ->
+            {:cont, {seen, acc, count}}
+
+          true ->
+            {:cont, {MapSet.put(seen, fingerprint), [fingerprint | acc], count + 1}}
+        end
+      end)
+
+    Enum.reverse(ordered_fingerprints)
+  end
+
+  defp normalize_prefix_cache_fingerprints(_fingerprints), do: []
+
+  defp valid_prefix_cache_fingerprint?(fingerprint) when is_binary(fingerprint) do
+    Regex.match?(@prefix_cache_fingerprint_pattern, fingerprint)
+  end
+
+  defp valid_prefix_cache_fingerprint?(_fingerprint), do: false
 
   defp valid_prefix_cache_uint32?(value) do
     is_integer(value) and value >= 0 and value <= @uint32_max

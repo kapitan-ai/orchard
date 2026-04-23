@@ -24,6 +24,7 @@ from orchard_worker_mlx.model_loader import (
     GenerationRuntimeConfig,
     MemoryBudgetConfig,
     MLXEnvironmentHealth,
+    PrefixCacheLoadConfig,
 )
 
 # -- Backend protocol conformance --------------------------------------------
@@ -241,11 +242,16 @@ def _make_fake_session(
     )
 
 
+def _fingerprint(seed: int) -> str:
+    return f"hmac-sha256:{seed:064x}"
+
+
 def _make_mlx_backend(
     *,
     loader_session=None,
     loader_error=None,
     unloader_calls=None,
+    prefix_cache_config=None,
 ):
     """Create an MLXBackend with injected fake loader/unloader."""
     if unloader_calls is None:
@@ -263,7 +269,11 @@ def _make_mlx_backend(
     def fake_unloader(session):
         unloader_calls.append(session)
 
-    return MLXBackend(session_loader=fake_loader, session_unloader=fake_unloader)
+    return MLXBackend(
+        session_loader=fake_loader,
+        session_unloader=fake_unloader,
+        prefix_cache_config=prefix_cache_config,
+    )
 
 
 def test_mlx_backend_initial_status_unloaded() -> None:
@@ -412,6 +422,56 @@ def test_mlx_backend_prefix_cache_status_ok() -> None:
     assert status["entry_count"] == 3
     assert status["stores"] == 5
     assert status["session_started_unix_ms"] == 444
+
+
+def test_mlx_backend_records_valid_fingerprint() -> None:
+    backend = _make_mlx_backend()
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    fingerprint = _fingerprint(1)
+    backend.record_fingerprint(fingerprint)
+
+    assert backend.get_fingerprints() == [fingerprint]
+    assert backend.prefix_cache_status()["prefix_cache_fingerprints"] == [fingerprint]
+
+
+def test_mlx_backend_drops_invalid_fingerprint_and_ignores_empty() -> None:
+    backend = _make_mlx_backend()
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    for fingerprint in [
+        "",
+        "hmac-sha256:" + "A" * 64,
+        "hmac-sha256:" + "a" * 63,
+        "sha256:" + "a" * 64,
+        "hmac-sha256:" + "g" * 64,
+    ]:
+        backend.record_fingerprint(fingerprint)
+
+    assert backend.get_fingerprints() == []
+
+
+def test_mlx_backend_fingerprint_buffer_is_fifo_bounded() -> None:
+    backend = _make_mlx_backend(
+        prefix_cache_config=PrefixCacheLoadConfig(max_fingerprint_buffer_size=2)
+    )
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    fingerprints = [_fingerprint(1), _fingerprint(2), _fingerprint(3)]
+    for fingerprint in fingerprints:
+        backend.record_fingerprint(fingerprint)
+
+    assert backend.get_fingerprints() == fingerprints[1:]
+
+
+def test_mlx_backend_unload_clears_fingerprint_buffer() -> None:
+    backend = _make_mlx_backend()
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+    backend.record_fingerprint(_fingerprint(1))
+
+    backend.unload_model()
+
+    assert backend.get_fingerprints() == []
 
 
 def test_mlx_backend_load_passes_generation_and_memory_config_to_loader() -> None:

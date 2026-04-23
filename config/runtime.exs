@@ -311,6 +311,7 @@ default_controller_inference = fn root ->
     ],
     cache_affinity: [
       enabled: false,
+      live_fingerprint_match_enabled: false,
       max_prefix_bytes: 8_192,
       max_age_ms: 300_000,
       max_recent_requests: 32
@@ -509,6 +510,8 @@ if config_env() == :prod do
             ],
             cache_affinity: [
               enabled: env_bool.("ORCHARD_CACHE_AFFINITY_ENABLED", false),
+              live_fingerprint_match_enabled:
+                env_bool.("ORCHARD_CACHE_AFFINITY_LIVE_FINGERPRINT_MATCH_ENABLED", false),
               max_prefix_bytes: env_int.("ORCHARD_CACHE_AFFINITY_MAX_PREFIX_BYTES", "8192"),
               max_age_ms: env_int.("ORCHARD_CACHE_AFFINITY_MAX_AGE_MS", "300000"),
               max_recent_requests: env_int.("ORCHARD_CACHE_AFFINITY_MAX_RECENT_REQUESTS", "32"),

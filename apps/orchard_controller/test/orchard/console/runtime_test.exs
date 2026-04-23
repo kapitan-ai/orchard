@@ -551,6 +551,8 @@ defmodule OrchardConsole.RuntimeTest do
     end
 
     test "SPEC 7.5.3 normalizes prefix-cache statuses with approved fields only" do
+      fingerprint = "hmac-sha256:" <> String.duplicate("a", 64)
+
       stub_client(
         connect: {:ok, :ch},
         status:
@@ -573,6 +575,7 @@ defmodule OrchardConsole.RuntimeTest do
                  status_code: "ok",
                  status_message: "active",
                  session_started_unix_ms: 1_713_726_400_000,
+                 prefix_cache_fingerprints: [fingerprint, "not-a-fingerprint"],
                  prompt_fingerprint: "must-not-leak"
                }
              ]
@@ -598,7 +601,38 @@ defmodule OrchardConsole.RuntimeTest do
       assert status.status_code == "ok"
       assert status.status_message == "active"
       assert status.session_started_unix_ms == 1_713_726_400_000
+      assert status.prefix_cache_fingerprint_count == 1
+      assert status.prefix_cache_warmth_indicator == true
+      refute Map.has_key?(status, :prefix_cache_fingerprints)
       refute Map.has_key?(status, :prompt_fingerprint)
+    end
+
+    test "SPEC 7.5.3 keeps raw prefix-cache fingerprints scheduler-internal only" do
+      fingerprints =
+        Enum.map(0..70, fn value ->
+          digest = value |> Integer.to_string(16) |> String.downcase()
+          "hmac-sha256:" <> String.pad_leading(digest, 64, "0")
+        end)
+
+      status = %{
+        model_ref: %{model_id: "mlx-community/phi-3", version: "main"},
+        implementation: "kv",
+        enabled: true,
+        entry_count: 2,
+        total_bytes: 32_768,
+        status_code: "ok",
+        prefix_cache_fingerprints: fingerprints ++ [hd(fingerprints), "not-a-fingerprint"]
+      }
+
+      scheduler_status = PrefixCacheStatus.normalize_for_scheduler(status)
+      telemetry_status = PrefixCacheStatus.normalize(status)
+
+      assert length(scheduler_status.prefix_cache_fingerprints) == 64
+      assert hd(scheduler_status.prefix_cache_fingerprints) == hd(fingerprints)
+      refute "not-a-fingerprint" in scheduler_status.prefix_cache_fingerprints
+      refute Map.has_key?(telemetry_status, :prefix_cache_fingerprints)
+      assert telemetry_status.prefix_cache_fingerprint_count == 64
+      assert telemetry_status.prefix_cache_warmth_indicator == true
     end
 
     test "SPEC 7.5.3 tolerates absent and malformed prefix-cache telemetry" do

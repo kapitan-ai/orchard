@@ -202,16 +202,20 @@ def test_main_passes_generation_and_memory_config_to_serve(monkeypatch) -> None:
                 "0.75",
                 "--memory-budget-overhead-bytes",
                 "268435456",
+                "--max-fingerprint-buffer-size",
+                "16",
             ]
         )
         == 0
     )
 
+    prefix_cache_config = captured["prefix_cache_config"]
     generation_config = captured["generation_config"]
     memory_budget_config = captured["memory_budget_config"]
 
     assert captured["socket_path"] == "/tmp/orchard-worker.sock"
     assert captured["backend"] == "mlx"
+    assert prefix_cache_config.max_fingerprint_buffer_size == 16
     assert generation_config.mode == "batch"
     assert generation_config.max_concurrent_generations == 3
     assert memory_budget_config.mode == "observe"
@@ -251,9 +255,11 @@ def test_main_uses_generation_and_memory_defaults(monkeypatch) -> None:
 
     assert cli.main(["--socket-path", "/tmp/orchard-worker.sock", "--backend", "stub"]) == 0
 
+    prefix_cache_config = captured["prefix_cache_config"]
     generation_config = captured["generation_config"]
     memory_budget_config = captured["memory_budget_config"]
 
+    assert prefix_cache_config.max_fingerprint_buffer_size == 8
     assert generation_config.mode == "stream"
     assert generation_config.max_concurrent_generations == 1
     assert memory_budget_config.mode == "observe"
@@ -313,6 +319,26 @@ def test_main_rejects_invalid_generation_and_memory_config(monkeypatch) -> None:
                 "/tmp/orchard-worker.sock",
                 "--memory-budget-mode",
                 "enforce",
+            ]
+        )
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "--socket-path",
+                "/tmp/orchard-worker.sock",
+                "--max-fingerprint-buffer-size",
+                "0",
+            ]
+        )
+
+    with pytest.raises(SystemExit):
+        cli.main(
+            [
+                "--socket-path",
+                "/tmp/orchard-worker.sock",
+                "--max-fingerprint-buffer-size",
+                "65",
             ]
         )
 

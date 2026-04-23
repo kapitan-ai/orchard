@@ -49,6 +49,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       ],
       cache_affinity: [
         enabled: false,
+        live_fingerprint_match_enabled: false,
         max_prefix_bytes: 8_192,
         max_age_ms: 300_000,
         max_recent_requests: 32,

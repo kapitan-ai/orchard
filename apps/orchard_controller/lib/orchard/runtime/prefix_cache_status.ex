@@ -22,7 +22,9 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
           required(:configured_max_bytes) => non_neg_integer() | nil,
           required(:status_code) => String.t(),
           required(:status_message) => String.t() | nil,
-          required(:session_started_unix_ms) => non_neg_integer() | nil
+          required(:session_started_unix_ms) => non_neg_integer() | nil,
+          required(:prefix_cache_fingerprint_count) => non_neg_integer(),
+          required(:prefix_cache_warmth_indicator) => boolean()
         }
 
   @selected_prefix_cache_keys [
@@ -35,7 +37,10 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
     :selected_prefix_cache_misses,
     :selected_prefix_cache_stores,
     :selected_prefix_cache_evictions,
-    :selected_prefix_cache_session_started_unix_ms
+    :selected_prefix_cache_session_started_unix_ms,
+    :selected_prefix_cache_fingerprint_count,
+    :selected_prefix_cache_warmth_indicator,
+    :selected_prefix_cache_fingerprint_match
   ]
 
   @status_codes ~w(ok disabled unavailable invalid_status error)
@@ -45,6 +50,8 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
   @max_implementation_length 40
   @max_status_code_length 80
   @max_status_message_length 240
+  @max_prefix_cache_fingerprints 64
+  @prefix_cache_fingerprint_pattern ~r/\Ahmac-sha256:[a-f0-9]{64}\z/
 
   @uint32_fields [:entry_count, :configured_max_entries]
 
@@ -89,7 +96,9 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
       status_code: normalize_status_code(value(status, :status_code)),
       status_message:
         bounded_optional_string(value(status, :status_message), @max_status_message_length),
-      session_started_unix_ms: normalize_uint64(value(status, :session_started_unix_ms))
+      session_started_unix_ms: normalize_uint64(value(status, :session_started_unix_ms)),
+      prefix_cache_fingerprint_count: prefix_cache_fingerprint_count(status),
+      prefix_cache_warmth_indicator: prefix_cache_warmth_indicator?(status)
     }
 
     if malformed_numeric_payload?(status) do
@@ -114,22 +123,46 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
       configured_max_bytes: nil,
       status_code: "invalid_status",
       status_message: "prefix-cache telemetry payload was malformed",
-      session_started_unix_ms: nil
+      session_started_unix_ms: nil,
+      prefix_cache_fingerprint_count: 0,
+      prefix_cache_warmth_indicator: false
     }
+  end
+
+  @doc """
+  Normalizes prefix-cache status for scheduler-internal matching.
+
+  This path retains only a validated, deduplicated, capped set of opaque HMAC
+  fingerprints. Persistence and UI callers MUST use `normalize/1` or
+  `selected_fields/2`, which expose derived fields only.
+  """
+  @spec normalize_for_scheduler(term()) :: map() | nil
+  def normalize_for_scheduler(nil), do: nil
+
+  def normalize_for_scheduler(status) when is_map(status) do
+    status
+    |> normalize()
+    |> Map.put(:prefix_cache_fingerprints, normalize_prefix_cache_fingerprints(status))
+  end
+
+  def normalize_for_scheduler(status) do
+    status
+    |> normalize()
+    |> Map.put(:prefix_cache_fingerprints, [])
   end
 
   @doc """
   Returns flat, sanitized selected-candidate fields for `scheduler_decision`.
   """
-  @spec selected_fields(term()) :: map()
-  def selected_fields(status) do
+  @spec selected_fields(term(), keyword()) :: map()
+  def selected_fields(status, opts \\ []) do
     case normalize(status) do
       nil ->
         %{}
 
       %{status_code: "ok"} = normalized ->
         normalized
-        |> ok_selected_fields()
+        |> ok_selected_fields(Keyword.get(opts, :fingerprint_match))
         |> reject_nil_values()
 
       normalized ->
@@ -141,7 +174,7 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
     end
   end
 
-  defp ok_selected_fields(normalized) do
+  defp ok_selected_fields(normalized, fingerprint_match?) do
     %{
       selected_prefix_cache_status_code: normalized.status_code,
       selected_prefix_cache_enabled: normalized.enabled,
@@ -152,7 +185,10 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
       selected_prefix_cache_misses: normalized.misses,
       selected_prefix_cache_stores: normalized.stores,
       selected_prefix_cache_evictions: normalized.evictions,
-      selected_prefix_cache_session_started_unix_ms: normalized.session_started_unix_ms
+      selected_prefix_cache_session_started_unix_ms: normalized.session_started_unix_ms,
+      selected_prefix_cache_fingerprint_count: normalized.prefix_cache_fingerprint_count,
+      selected_prefix_cache_warmth_indicator: normalized.prefix_cache_warmth_indicator,
+      selected_prefix_cache_fingerprint_match: fingerprint_match?
     }
   end
 
@@ -213,6 +249,48 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
   end
 
   defp normalize_status_code(_value), do: "invalid_status"
+
+  defp prefix_cache_fingerprint_count(status) do
+    status
+    |> normalize_prefix_cache_fingerprints()
+    |> length()
+  end
+
+  defp prefix_cache_warmth_indicator?(status), do: prefix_cache_fingerprint_count(status) > 0
+
+  defp normalize_prefix_cache_fingerprints(status) when is_map(status) do
+    status
+    |> value(:prefix_cache_fingerprints)
+    |> normalize_prefix_cache_fingerprint_list()
+  end
+
+  defp normalize_prefix_cache_fingerprints(_status), do: []
+
+  defp normalize_prefix_cache_fingerprint_list(fingerprints) when is_list(fingerprints) do
+    {_seen, ordered, _count} =
+      Enum.reduce_while(fingerprints, {MapSet.new(), [], 0}, fn fingerprint, {seen, acc, count} ->
+        cond do
+          count >= @max_prefix_cache_fingerprints ->
+            {:halt, {seen, acc, count}}
+
+          valid_prefix_cache_fingerprint?(fingerprint) and not MapSet.member?(seen, fingerprint) ->
+            {:cont, {MapSet.put(seen, fingerprint), [fingerprint | acc], count + 1}}
+
+          true ->
+            {:cont, {seen, acc, count}}
+        end
+      end)
+
+    Enum.reverse(ordered)
+  end
+
+  defp normalize_prefix_cache_fingerprint_list(_fingerprints), do: []
+
+  defp valid_prefix_cache_fingerprint?(fingerprint) when is_binary(fingerprint) do
+    Regex.match?(@prefix_cache_fingerprint_pattern, fingerprint)
+  end
+
+  defp valid_prefix_cache_fingerprint?(_fingerprint), do: false
 
   defp bounded_string(value, _fallback, limit) when is_binary(value) and value != "",
     do: String.slice(value, 0, limit)

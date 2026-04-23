@@ -731,6 +731,7 @@ def test_unload_session_clears_references() -> None:
     assert session.tokenizer is None
     assert session.model_config is None
     assert session.prefix_cache is None
+    assert session.prefix_cache_fingerprints == []
     clear_cache.assert_called_once()
     collect.assert_called_once()
 
@@ -957,6 +958,14 @@ def test_prefix_cache_config_validation() -> None:
         PrefixCacheLoadConfig(max_entries=2**32)
     with pytest.raises(ValueError):
         PrefixCacheLoadConfig(max_bytes=-1)
+    assert PrefixCacheLoadConfig().max_fingerprint_buffer_size == 8
+    assert PrefixCacheLoadConfig(max_fingerprint_buffer_size=64).max_fingerprint_buffer_size == 64
+    with pytest.raises(ValueError):
+        PrefixCacheLoadConfig(max_fingerprint_buffer_size=0)
+    with pytest.raises(ValueError):
+        PrefixCacheLoadConfig(max_fingerprint_buffer_size=65)
+    with pytest.raises(ValueError):
+        PrefixCacheLoadConfig(max_fingerprint_buffer_size=True)
 
 
 def test_generation_runtime_config_validation() -> None:
@@ -1236,12 +1245,14 @@ def test_unload_session_clears_populated_prefix_cache() -> None:
         model=MagicMock(),
         tokenizer=MagicMock(),
         prefix_cache=cache,
+        prefix_cache_fingerprints=["hmac-sha256:" + "a" * 64],
     )
     assert session.prefix_cache is cache
 
     unload_session(session, clear_cache=MagicMock(), collect=MagicMock(return_value=0))
 
     assert session.prefix_cache is None
+    assert session.prefix_cache_fingerprints == []
 
 
 # ===========================================================================

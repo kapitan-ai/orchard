@@ -145,6 +145,7 @@ defmodule Orchard.InferenceTest do
       config = Inference.cache_affinity_config()
 
       assert config[:enabled] == false
+      assert config[:live_fingerprint_match_enabled] == false
       assert config[:max_prefix_bytes] == 8_192
       assert config[:max_age_ms] == 300_000
       assert config[:max_recent_requests] == 32
@@ -155,6 +156,7 @@ defmodule Orchard.InferenceTest do
       put_inference(
         cache_affinity: [
           enabled: "true",
+          live_fingerprint_match_enabled: true,
           max_prefix_bytes: -1,
           max_age_ms: -1,
           max_recent_requests: 0
@@ -164,6 +166,7 @@ defmodule Orchard.InferenceTest do
       config = Inference.cache_affinity_config()
 
       assert config[:enabled] == false
+      assert config[:live_fingerprint_match_enabled] == false
       assert config[:max_prefix_bytes] == 8_192
       assert config[:max_age_ms] == 300_000
       assert config[:max_recent_requests] == 32

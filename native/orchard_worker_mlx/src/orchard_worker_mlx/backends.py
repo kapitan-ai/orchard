@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -23,6 +24,9 @@ class BackendError(Exception):
 
 _UINT32_MAX = 4_294_967_295
 _UINT64_MAX = 18_446_744_073_709_551_615
+_MAX_FINGERPRINT_BUFFER_SIZE = 64
+_DEFAULT_FINGERPRINT_BUFFER_SIZE = 8
+_FINGERPRINT_RE = re.compile(r"^hmac-sha256:[a-f0-9]{64}$")
 
 
 class BackendMemoryBudgetStatus(TypedDict):
@@ -57,6 +61,7 @@ class BackendPrefixCacheStatus(TypedDict):
     status_code: str
     status_message: str
     session_started_unix_ms: int
+    prefix_cache_fingerprints: NotRequired[list[str]]
 
 
 class _NormalizedPrefixCacheStats(TypedDict):
@@ -93,13 +98,21 @@ class Backend(Protocol):
     def unload_model(self) -> None: ...
     def start_generation(self) -> None: ...
     def finish_generation(self) -> None: ...
+    def record_fingerprint(self, fingerprint: str) -> None: ...
+    def get_fingerprints(self) -> list[str]: ...
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]: ...
 
 
 class StubBackend:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, max_fingerprint_buffer_size: int = _DEFAULT_FINGERPRINT_BUFFER_SIZE
+    ) -> None:
         self._loaded_model: tuple[str, str, str] | None = None
         self._active_request_count = 0
+        self._max_fingerprint_buffer_size = _normalize_fingerprint_buffer_size(
+            max_fingerprint_buffer_size
+        )
+        self._fingerprint_buffer: list[str] = []
         self._lock = threading.Lock()
 
     def status(self) -> BackendStatus:
@@ -116,6 +129,7 @@ class StubBackend:
         return _base_prefix_cache_status(
             status_code="unavailable",
             status_message="prefix cache status unavailable for backend",
+            prefix_cache_fingerprints=self.get_fingerprints(),
         )
 
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
@@ -131,6 +145,7 @@ class StubBackend:
         logger.info("stub unload_model")
         with self._lock:
             self._loaded_model = None
+            self._fingerprint_buffer.clear()
         logger.info("stub unload_model ok")
 
     def start_generation(self) -> None:
@@ -146,6 +161,23 @@ class StubBackend:
     def finish_generation(self) -> None:
         with self._lock:
             self._active_request_count = max(0, self._active_request_count - 1)
+
+    def record_fingerprint(self, fingerprint: str) -> None:
+        if not valid_cache_affinity_fingerprint(fingerprint):
+            return
+
+        with self._lock:
+            if self._loaded_model is None:
+                return
+            _append_fingerprint(
+                self._fingerprint_buffer,
+                fingerprint,
+                self._max_fingerprint_buffer_size,
+            )
+
+    def get_fingerprints(self) -> list[str]:
+        with self._lock:
+            return _fingerprint_snapshot(self._fingerprint_buffer)
 
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         return _stub_generate(request, cancel_event)
@@ -231,6 +263,9 @@ class MLXBackend:
         self._generation_runner_injected = generation_runner is not None
         self._batch_runtime_factory = batch_runtime_factory or _default_batch_runtime_factory()
         self._prefix_cache_config = prefix_cache_config or DEFAULT_PREFIX_CACHE_LOAD_CONFIG
+        self._max_fingerprint_buffer_size = _fingerprint_buffer_size_from_config(
+            self._prefix_cache_config
+        )
         self._generation_config = generation_config or DEFAULT_GENERATION_RUNTIME_CONFIG
         self._memory_budget_config = memory_budget_config or DEFAULT_MEMORY_BUDGET_CONFIG
         self._session: Any | None = None
@@ -305,6 +340,9 @@ class MLXBackend:
     def prefix_cache_status(self) -> BackendPrefixCacheStatus:
         with self._lock:
             session = self._session
+            fingerprints = _fingerprint_snapshot(
+                getattr(session, "prefix_cache_fingerprints", []) if session is not None else []
+            )
 
         config_max_entries = _status_uint32(getattr(self._prefix_cache_config, "max_entries", 0))
         config_max_bytes = _status_uint64(getattr(self._prefix_cache_config, "max_bytes", 0))
@@ -315,6 +353,7 @@ class MLXBackend:
                 configured_max_bytes=config_max_bytes,
                 status_code="unavailable",
                 status_message="model session is not loaded",
+                prefix_cache_fingerprints=fingerprints,
             )
 
         prefix_cache = getattr(session, "prefix_cache", None)
@@ -327,6 +366,7 @@ class MLXBackend:
                 session_started_unix_ms=_status_uint64(
                     getattr(session, "session_started_unix_ms", 0)
                 ),
+                prefix_cache_fingerprints=fingerprints,
             )
 
         try:
@@ -340,6 +380,7 @@ class MLXBackend:
                 session_started_unix_ms=_status_uint64(
                     getattr(session, "session_started_unix_ms", 0)
                 ),
+                prefix_cache_fingerprints=fingerprints,
             )
 
         normalized_stats = _normalize_prefix_cache_stats(stats)
@@ -352,6 +393,7 @@ class MLXBackend:
                 session_started_unix_ms=_status_uint64(
                     getattr(session, "session_started_unix_ms", 0)
                 ),
+                prefix_cache_fingerprints=fingerprints,
             )
 
         return BackendPrefixCacheStatus(
@@ -368,9 +410,8 @@ class MLXBackend:
             configured_max_bytes=config_max_bytes,
             status_code="ok",
             status_message="",
-            session_started_unix_ms=_status_uint64(
-                getattr(session, "session_started_unix_ms", 0)
-            ),
+            session_started_unix_ms=_status_uint64(getattr(session, "session_started_unix_ms", 0)),
+            prefix_cache_fingerprints=fingerprints,
         )
 
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
@@ -506,6 +547,26 @@ class MLXBackend:
         with self._lock:
             self._active_request_count = max(0, self._active_request_count - 1)
 
+    def record_fingerprint(self, fingerprint: str) -> None:
+        if not valid_cache_affinity_fingerprint(fingerprint):
+            return
+
+        with self._lock:
+            session = self._session
+            if session is None:
+                return
+            buffer = getattr(session, "prefix_cache_fingerprints", None)
+            if not isinstance(buffer, list):
+                return
+            _append_fingerprint(buffer, fingerprint, self._max_fingerprint_buffer_size)
+
+    def get_fingerprints(self) -> list[str]:
+        with self._lock:
+            session = self._session
+            if session is None:
+                return []
+            return _fingerprint_snapshot(getattr(session, "prefix_cache_fingerprints", []))
+
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         with self._lock:
             session = self._session
@@ -557,6 +618,7 @@ def _base_prefix_cache_status(
     status_code: str,
     status_message: str,
     session_started_unix_ms: int = 0,
+    prefix_cache_fingerprints: list[str] | None = None,
 ) -> BackendPrefixCacheStatus:
     return BackendPrefixCacheStatus(
         implementation=implementation,
@@ -573,7 +635,50 @@ def _base_prefix_cache_status(
         status_code=status_code,
         status_message=status_message,
         session_started_unix_ms=session_started_unix_ms,
+        prefix_cache_fingerprints=_fingerprint_snapshot(prefix_cache_fingerprints or []),
     )
+
+
+def valid_cache_affinity_fingerprint(fingerprint: Any) -> bool:
+    return isinstance(fingerprint, str) and _FINGERPRINT_RE.fullmatch(fingerprint) is not None
+
+
+def _normalize_fingerprint_buffer_size(value: Any) -> int:
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 1 <= value <= _MAX_FINGERPRINT_BUFFER_SIZE
+    ):
+        return value
+    return _DEFAULT_FINGERPRINT_BUFFER_SIZE
+
+
+def _fingerprint_buffer_size_from_config(config: Any | None) -> int:
+    return _normalize_fingerprint_buffer_size(
+        getattr(config, "max_fingerprint_buffer_size", _DEFAULT_FINGERPRINT_BUFFER_SIZE)
+    )
+
+
+def _append_fingerprint(buffer: list[str], fingerprint: str, capacity: int) -> None:
+    if fingerprint in buffer:
+        return
+
+    while len(buffer) >= capacity:
+        del buffer[0]
+    buffer.append(fingerprint)
+
+
+def _fingerprint_snapshot(fingerprints: Any) -> list[str]:
+    if not isinstance(fingerprints, list):
+        return []
+
+    snapshot: list[str] = []
+    for fingerprint in fingerprints:
+        if valid_cache_affinity_fingerprint(fingerprint):
+            snapshot.append(fingerprint)
+            if len(snapshot) >= _MAX_FINGERPRINT_BUFFER_SIZE:
+                break
+    return snapshot
 
 
 def _status_uint32(value: Any) -> int:
@@ -659,7 +764,9 @@ def build_backend(
                 "unsupported_backend_config",
                 "backend=stub does not support generation_mode=batch",
             )
-        return StubBackend()
+        return StubBackend(
+            max_fingerprint_buffer_size=_fingerprint_buffer_size_from_config(prefix_cache_config)
+        )
 
     if name == "mlx":
         return MLXBackend(

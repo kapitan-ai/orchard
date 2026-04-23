@@ -72,6 +72,12 @@ defmodule Orchard.Node.Worker.V1.WorkerPrefixCacheStatus do
   field(:status_code, 12, type: :string, json_name: "statusCode")
   field(:status_message, 13, type: :string, json_name: "statusMessage")
   field(:session_started_unix_ms, 14, type: :uint64, json_name: "sessionStartedUnixMs")
+
+  field(:prefix_cache_fingerprints, 15,
+    repeated: true,
+    type: :string,
+    json_name: "prefixCacheFingerprints"
+  )
 end
 
 defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do

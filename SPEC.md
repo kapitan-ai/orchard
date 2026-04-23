@@ -757,7 +757,7 @@ Compatibility and defaulting rules:
 * current `RuntimeMemoryBudget.status_code` vocabulary is: `ok`, `disabled`, `device_info_unavailable`, `device_info_invalid`, `resident_memory_unavailable`, `compute_failed`, `invalid_status`
 * absent or empty `runtime_prefix_cache_statuses` on `StatusResponse` SHALL mean no prefix-cache observation is available
 * absent or empty `runtime_prefix_cache_statuses` SHALL NOT be treated as a status-probe error
-* `runtime_prefix_cache_statuses` SHALL remain observe-only aggregate telemetry in Phase 4B and SHALL NOT affect node readiness, model admission, request admission, scheduler ranking, scheduling eligibility, queue ordering, hosted-tool eligibility, or `worker_generation_mode`
+* aggregate `runtime_prefix_cache_statuses` counters SHALL remain observe-only telemetry and SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, queue ordering, hosted-tool eligibility, or `worker_generation_mode`; the Phase 4C bounded HMAC fingerprint field MAY affect scheduler ranking only as the explicitly configured non-gating tie-breaker defined in §5.7 and §7.5.3
 * current `RuntimePrefixCacheStatus.status_code` vocabulary is: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
 * these status codes are observational only in this slice and SHALL NOT gate readiness, admission, or scheduling
 
@@ -1041,6 +1041,17 @@ Tie-break order:
 1. higher score
 2. lower active_requests
 3. lexicographically smaller `node_id`
+
+Controller-side cache-affinity ranking for the bounded Phase 4C implementation SHALL use the following late tie-break order among otherwise schedulable candidates in the same residency/load/health position:
+
+1. loaded model already present
+2. lower active request count
+3. healthier node (`healthy` before `degraded`)
+4. live prefix-cache fingerprint match, only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true`
+5. historical cache-affinity match from recent completed placements, when cache affinity is enabled
+6. lexicographically smaller `node_id`
+
+A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It SHALL bias ranking only after health and before historical affinity. It SHALL NOT change node eligibility, request admission, queue ordering, public error contracts, or runtime concurrency.
 
 ### 5.8 Scheduling algorithm
 
@@ -1974,6 +1985,7 @@ message RuntimePrefixCacheStatus {
   string status_code = 13;
   string status_message = 14;
   uint64 session_started_unix_ms = 15;
+  repeated string prefix_cache_fingerprints = 16;
 }
 
 message StatusResponse {
@@ -2042,6 +2054,7 @@ message ExecuteInferenceRequest {
   GenerationParams params = 7;
   uint64 deadline_unix_ms = 8;
   bytes metadata_json = 9;
+  string cache_affinity_fingerprint = 10;
 }
 
 message InferenceEvent {
@@ -2114,11 +2127,15 @@ Runtime prefix-cache wire semantics:
 * omitted, empty, stale, unavailable, or invalid prefix-cache observations SHALL NOT be treated as a node status error, readiness failure, admission failure, model-admission failure, or scheduler-eligibility failure
 * `RuntimePrefixCacheStatus.status_code` values in this slice are: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
 * `RuntimePrefixCacheStatus.enabled` SHALL represent worker configuration capability, not active cache availability; `enabled=false` is reserved for explicitly disabled cache configuration
-* prefix-cache telemetry SHALL be aggregate-only and SHALL NOT expose prompt text, prompt tokens, tenant identifiers, prompt fingerprints, or prompt-specific match results
-* neither `RuntimePrefixCacheStatus.status_code` nor counters such as `entry_count`, `total_bytes`, `hits`, `misses`, `stores`, or `evictions` are enforcement inputs in Phase 4B; they SHALL NOT alter runtime readiness, request admission, model admission, scheduler ranking, scheduler eligibility, queue ordering, hosted-tool eligibility, or `worker_generation_mode`
+* public prefix-cache telemetry SHALL NOT expose prompt text, prompt tokens, tenant identifiers, raw prompt fingerprints, raw token sequences, or raw prefix-cache fingerprint sets
+* `ExecuteInferenceRequest.cache_affinity_fingerprint` is an optional controller-derived opaque HMAC fingerprint. The controller SHALL populate it only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true`; otherwise it SHALL be omitted or empty.
+* worker `WorkerPrefixCacheStatus.prefix_cache_fingerprints` and node-agent `RuntimePrefixCacheStatus.prefix_cache_fingerprints` SHALL carry only controller-derived `hmac-sha256:<64 lowercase hex>` values. Workers SHALL retain a bounded recent FIFO buffer of these values with default capacity 8 and implementation cap 64. The set is an approximation of recent request locality, not proof of current prefix-cache residency.
+* the controller SHALL validate, deduplicate, and cap `RuntimePrefixCacheStatus.prefix_cache_fingerprints` to at most 64 entries before scheduler use. Invalid entries SHALL be dropped fail-open.
+* raw prefix-cache fingerprint sets SHALL be scheduler-internal only. Persistence and tenant/operator telemetry surfaces SHALL expose only derived non-linkable fields such as fingerprint count, warmth indicator, and selected-candidate match boolean; they SHALL NOT persist or render the raw set.
+* neither `RuntimePrefixCacheStatus.status_code` nor counters such as `entry_count`, `total_bytes`, `hits`, `misses`, `stores`, or `evictions` are enforcement inputs; they SHALL NOT alter runtime readiness, request admission, model admission, scheduler eligibility, queue ordering, hosted-tool eligibility, or `worker_generation_mode`
 * controller persistence of selected prefix-cache diagnostics in `requests.scheduler_decision` SHALL be guarded by `orchard_controller.inference.cache_introspection.enabled`, which defaults to `false`; when disabled, prefix-cache fields SHALL be stripped before scheduler-decision persistence
 * when `cache_introspection.enabled=true`, the controller SHALL persist only sanitized flat `selected_prefix_cache_*` scalars for the selected candidate and SHALL NOT persist the raw nested `prefix_cache_status` map; non-`ok` statuses SHALL persist only status code and enabled flag
-* this Phase 4B contract is traceable to `orchard-workbench/plans/plan-mlx-phase4-worker-prefix-cache-introspection.md`; prompt-specific matching and scheduler ranking by prefix-cache fields are deferred to later explicit contracts
+* this Phase 4B/4C contract is traceable to `orchard-workbench/plans/plan-mlx-phase4-worker-prefix-cache-introspection.md` and `orchard-workbench/plans/plan-mlx-phase4c-bounded-hmac-fingerprint-publication.md`
 
 #### 7.5.4 Node registration flow
 
