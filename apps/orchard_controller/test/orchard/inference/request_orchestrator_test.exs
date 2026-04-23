@@ -45,6 +45,63 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubCacheAffinityScheduler d
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request) do
+    with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
+      {:ok,
+       Map.merge(schedule, %{
+         prefix_cache_status: %{
+           model_ref: %{model_id: request.model_ref.model_id, version: request.model_ref.version},
+           implementation: "kv",
+           enabled: true,
+           entry_count: 3,
+           total_bytes: 32_768,
+           hits: 12,
+           misses: 4,
+           failures: 99,
+           stores: 8,
+           evictions: 1,
+           configured_max_entries: 16,
+           configured_max_bytes: 0,
+           status_code: "ok",
+           status_message: "active",
+           session_started_unix_ms: 1_713_726_400_000,
+           prompt_fingerprint: "must-not-persist"
+         },
+         selected_prefix_cache_status_code: "leaked",
+         selected_prefix_cache_prompt_fingerprint: "must-not-persist"
+       })}
+    end
+  end
+end
+
+defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheUnavailableScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request) do
+    with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
+      {:ok,
+       Map.put(schedule, :prefix_cache_status, %{
+         model_ref: %{model_id: request.model_ref.model_id, version: request.model_ref.version},
+         implementation: "kv",
+         enabled: true,
+         entry_count: 3,
+         total_bytes: 32_768,
+         status_code: "unavailable",
+         session_started_unix_ms: 1_713_726_400_000
+       })}
+    end
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -232,6 +289,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   alias Orchard.Inference.RequestOrchestratorTest.StubCacheAffinityScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+  alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScheduler
+  alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheUnavailableScheduler
 
   alias Orchard.ArtifactBundle
   alias Orchard.CanonicalRequest
@@ -312,6 +371,78 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.scheduler_decision["candidate_count"] == 2
     assert request.scheduler_decision["selected_tier"] == "loaded"
     assert request.scheduler_decision["node_id"] == scheduled_node_id()
+  end
+
+  test "execute/3 persists sanitized prefix-cache scheduler fields only when enabled", %{
+    bundle: bundle
+  } do
+    put_prefix_cache_scheduler_config(enabled: true)
+
+    model = create_active_model!(bundle, "request-orchestrator-multi-node")
+    canonical = canonical_request("request-orchestrator-multi-node", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert decision["selected_prefix_cache_status_code"] == "ok"
+    assert decision["selected_prefix_cache_enabled"] == true
+    assert decision["selected_prefix_cache_implementation"] == "kv"
+    assert decision["selected_prefix_cache_entry_count"] == 3
+    assert decision["selected_prefix_cache_total_bytes"] == 32_768
+    assert decision["selected_prefix_cache_hits"] == 12
+    assert decision["selected_prefix_cache_misses"] == 4
+    assert decision["selected_prefix_cache_stores"] == 8
+    assert decision["selected_prefix_cache_evictions"] == 1
+    assert decision["selected_prefix_cache_session_started_unix_ms"] == 1_713_726_400_000
+
+    refute Map.has_key?(decision, "prefix_cache_status")
+    refute Map.has_key?(decision, "selected_prefix_cache_failures")
+    refute Map.has_key?(decision, "selected_prefix_cache_status_message")
+    refute Map.has_key?(decision, "selected_prefix_cache_configured_max_entries")
+    refute Map.has_key?(decision, "selected_prefix_cache_prompt_fingerprint")
+    refute inspect(decision) =~ "prompt_fingerprint"
+  end
+
+  test "execute/3 strips prefix-cache scheduler metadata when introspection disabled", %{
+    bundle: bundle
+  } do
+    put_prefix_cache_scheduler_config(enabled: false)
+
+    model = create_active_model!(bundle, "request-orchestrator-multi-node")
+    canonical = canonical_request("request-orchestrator-multi-node", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    refute Map.has_key?(decision, "prefix_cache_status")
+    refute Enum.any?(Map.keys(decision), &String.starts_with?(&1, "selected_prefix_cache_"))
+  end
+
+  test "execute/3 persists only status and enabled for non-ok prefix-cache status", %{
+    bundle: bundle
+  } do
+    put_prefix_cache_unavailable_scheduler_config(enabled: true)
+
+    model = create_active_model!(bundle, "request-orchestrator-multi-node")
+    canonical = canonical_request("request-orchestrator-multi-node", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert decision["selected_prefix_cache_status_code"] == "unavailable"
+    assert decision["selected_prefix_cache_enabled"] == true
+    refute Map.has_key?(decision, "selected_prefix_cache_entry_count")
+    refute Map.has_key?(decision, "selected_prefix_cache_total_bytes")
+    refute Map.has_key?(decision, "selected_prefix_cache_session_started_unix_ms")
   end
 
   test "execute/3 overwrites scheduler-selected node attribution with runtime-resolved node id",
@@ -1670,6 +1801,28 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       |> Keyword.merge(scheduler_impl: StubCacheAffinityScheduler)
 
     Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_prefix_cache_scheduler_config(overrides) do
+    put_prefix_cache_scheduler_config(StubPrefixCacheScheduler, overrides)
+  end
+
+  defp put_prefix_cache_unavailable_scheduler_config(overrides) do
+    put_prefix_cache_scheduler_config(StubPrefixCacheUnavailableScheduler, overrides)
+  end
+
+  defp put_prefix_cache_scheduler_config(scheduler, overrides) do
+    inference = Application.fetch_env!(:orchard_controller, :inference)
+    cache_introspection = Keyword.merge([enabled: false], overrides)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.merge(inference,
+        scheduler_impl: scheduler,
+        cache_introspection: cache_introspection
+      )
+    )
   end
 
   defp put_queue_admission_config(overrides) do

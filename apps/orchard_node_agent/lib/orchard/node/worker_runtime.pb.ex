@@ -45,6 +45,35 @@ defmodule Orchard.Node.Worker.V1.WorkerMemoryBudgetStatus do
   )
 end
 
+defmodule Orchard.Node.Worker.V1.WorkerPrefixCacheStatus do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "orchard.worker.v1.WorkerPrefixCacheStatus",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:implementation, 1, type: :string)
+  field(:enabled, 2, type: :bool)
+  field(:entry_count, 3, type: :uint32, json_name: "entryCount")
+  field(:total_bytes, 4, type: :uint64, json_name: "totalBytes")
+  field(:hits, 5, type: :uint64)
+  field(:misses, 6, type: :uint64)
+  field(:failures, 7, type: :uint64)
+  field(:stores, 8, type: :uint64)
+  field(:evictions, 9, type: :uint64)
+
+  field(:configured_max_entries, 10,
+    type: :uint32,
+    json_name: "configuredMaxEntries"
+  )
+
+  field(:configured_max_bytes, 11, type: :uint64, json_name: "configuredMaxBytes")
+  field(:status_code, 12, type: :string, json_name: "statusCode")
+  field(:status_message, 13, type: :string, json_name: "statusMessage")
+  field(:session_started_unix_ms, 14, type: :uint64, json_name: "sessionStartedUnixMs")
+end
+
 defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do
   @moduledoc false
 
@@ -62,6 +91,11 @@ defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do
   field(:memory_budget, 6,
     type: Orchard.Node.Worker.V1.WorkerMemoryBudgetStatus,
     json_name: "memoryBudget"
+  )
+
+  field(:prefix_cache, 7,
+    type: Orchard.Node.Worker.V1.WorkerPrefixCacheStatus,
+    json_name: "prefixCache"
   )
 end
 

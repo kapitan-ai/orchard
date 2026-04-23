@@ -8,6 +8,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   alias Orchard.Node.Worker.V1.{
     LoadModelRequest,
     WorkerMemoryBudgetStatus,
+    WorkerPrefixCacheStatus,
     WorkerRuntimeService,
     WorkerStatusRequest,
     WorkerStatusResponse
@@ -83,6 +84,22 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
           estimated_headroom_bytes: 5_731_516_544,
           kv_cache_bytes_per_token: 16_384,
           prefill_workspace_bytes_per_token: 2_048
+        },
+        prefix_cache: %WorkerPrefixCacheStatus{
+          implementation: "kv",
+          enabled: true,
+          entry_count: 2,
+          total_bytes: 32_768,
+          hits: 12,
+          misses: 4,
+          failures: 1,
+          stores: 8,
+          evictions: 3,
+          configured_max_entries: 64,
+          configured_max_bytes: 1_048_576,
+          status_code: "ok",
+          status_message: "",
+          session_started_unix_ms: 1_713_726_400_000
         }
       }
     end
@@ -199,6 +216,12 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       assert status.memory_budget.status_code == "ok"
       assert status.memory_budget.target_working_set_bytes == 6_000_000_000
       assert status.memory_budget.estimated_headroom_bytes == 5_731_516_544
+      assert status.prefix_cache_status.implementation == "kv"
+      assert status.prefix_cache_status.enabled == true
+      assert status.prefix_cache_status.entry_count == 2
+      assert status.prefix_cache_status.total_bytes == 32_768
+      assert status.prefix_cache_status.status_code == "ok"
+      assert status.prefix_cache_status.session_started_unix_ms == 1_713_726_400_000
     end)
   end
 

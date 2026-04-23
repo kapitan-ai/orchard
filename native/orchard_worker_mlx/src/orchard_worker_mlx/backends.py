@@ -21,6 +21,10 @@ class BackendError(Exception):
         return self.message
 
 
+_UINT32_MAX = 4_294_967_295
+_UINT64_MAX = 18_446_744_073_709_551_615
+
+
 class BackendMemoryBudgetStatus(TypedDict):
     mode: str
     budget_available: bool
@@ -36,6 +40,34 @@ class BackendMemoryBudgetStatus(TypedDict):
     estimated_headroom_bytes: int
     kv_cache_bytes_per_token: int
     prefill_workspace_bytes_per_token: int
+
+
+class BackendPrefixCacheStatus(TypedDict):
+    implementation: str
+    enabled: bool
+    entry_count: int
+    total_bytes: int
+    hits: int
+    misses: int
+    failures: int
+    stores: int
+    evictions: int
+    configured_max_entries: int
+    configured_max_bytes: int
+    status_code: str
+    status_message: str
+    session_started_unix_ms: int
+
+
+class _NormalizedPrefixCacheStats(TypedDict):
+    implementation: str
+    entry_count: int
+    total_bytes: int
+    hits: int
+    misses: int
+    failures: int
+    stores: int
+    evictions: int
 
 
 class BackendStatus(TypedDict):
@@ -56,6 +88,7 @@ class Backend(Protocol):
 
     def status(self) -> BackendStatus: ...
     def health(self) -> BackendHealth: ...
+    def prefix_cache_status(self) -> BackendPrefixCacheStatus: ...
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None: ...
     def unload_model(self) -> None: ...
     def start_generation(self) -> None: ...
@@ -78,6 +111,12 @@ class StubBackend:
 
     def health(self) -> BackendHealth:
         return BackendHealth(ready=True, code="", message="")
+
+    def prefix_cache_status(self) -> BackendPrefixCacheStatus:
+        return _base_prefix_cache_status(
+            status_code="unavailable",
+            status_message="prefix cache status unavailable for backend",
+        )
 
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
         logger.info("stub load_model model_id=%s version=%s", model_id, version)
@@ -263,6 +302,77 @@ class MLXBackend:
             message=self._health["message"],
         )
 
+    def prefix_cache_status(self) -> BackendPrefixCacheStatus:
+        with self._lock:
+            session = self._session
+
+        config_max_entries = _status_uint32(getattr(self._prefix_cache_config, "max_entries", 0))
+        config_max_bytes = _status_uint64(getattr(self._prefix_cache_config, "max_bytes", 0))
+
+        if session is None:
+            return _base_prefix_cache_status(
+                configured_max_entries=config_max_entries,
+                configured_max_bytes=config_max_bytes,
+                status_code="unavailable",
+                status_message="model session is not loaded",
+            )
+
+        prefix_cache = getattr(session, "prefix_cache", None)
+        if prefix_cache is None:
+            return _base_prefix_cache_status(
+                configured_max_entries=config_max_entries,
+                configured_max_bytes=config_max_bytes,
+                status_code="unavailable",
+                status_message="prefix cache is not available",
+                session_started_unix_ms=_status_uint64(
+                    getattr(session, "session_started_unix_ms", 0)
+                ),
+            )
+
+        try:
+            stats = prefix_cache.stats()
+        except Exception as exc:
+            return _base_prefix_cache_status(
+                configured_max_entries=config_max_entries,
+                configured_max_bytes=config_max_bytes,
+                status_code="error",
+                status_message=f"prefix cache stats read failed: {exc}",
+                session_started_unix_ms=_status_uint64(
+                    getattr(session, "session_started_unix_ms", 0)
+                ),
+            )
+
+        normalized_stats = _normalize_prefix_cache_stats(stats)
+        if normalized_stats is None:
+            return _base_prefix_cache_status(
+                configured_max_entries=config_max_entries,
+                configured_max_bytes=config_max_bytes,
+                status_code="invalid_status",
+                status_message="prefix cache stats payload was invalid",
+                session_started_unix_ms=_status_uint64(
+                    getattr(session, "session_started_unix_ms", 0)
+                ),
+            )
+
+        return BackendPrefixCacheStatus(
+            implementation=normalized_stats["implementation"],
+            enabled=True,
+            entry_count=normalized_stats["entry_count"],
+            total_bytes=normalized_stats["total_bytes"],
+            hits=normalized_stats["hits"],
+            misses=normalized_stats["misses"],
+            failures=normalized_stats["failures"],
+            stores=normalized_stats["stores"],
+            evictions=normalized_stats["evictions"],
+            configured_max_entries=config_max_entries,
+            configured_max_bytes=config_max_bytes,
+            status_code="ok",
+            status_message="",
+            session_started_unix_ms=_status_uint64(
+                getattr(session, "session_started_unix_ms", 0)
+            ),
+        )
+
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
         from orchard_worker_mlx.model_loader import ModelLoaderError
 
@@ -429,6 +539,106 @@ def _default_batch_runtime_factory() -> Callable[[Any], Any]:
     from orchard_worker_mlx.generation import BatchGeneratorRuntime
 
     return BatchGeneratorRuntime
+
+
+def _base_prefix_cache_status(
+    *,
+    implementation: str = "unknown",
+    enabled: bool = True,
+    entry_count: int = 0,
+    total_bytes: int = 0,
+    hits: int = 0,
+    misses: int = 0,
+    failures: int = 0,
+    stores: int = 0,
+    evictions: int = 0,
+    configured_max_entries: int = 0,
+    configured_max_bytes: int = 0,
+    status_code: str,
+    status_message: str,
+    session_started_unix_ms: int = 0,
+) -> BackendPrefixCacheStatus:
+    return BackendPrefixCacheStatus(
+        implementation=implementation,
+        enabled=enabled,
+        entry_count=entry_count,
+        total_bytes=total_bytes,
+        hits=hits,
+        misses=misses,
+        failures=failures,
+        stores=stores,
+        evictions=evictions,
+        configured_max_entries=configured_max_entries,
+        configured_max_bytes=configured_max_bytes,
+        status_code=status_code,
+        status_message=status_message,
+        session_started_unix_ms=session_started_unix_ms,
+    )
+
+
+def _status_uint32(value: Any) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _UINT32_MAX:
+        return value
+    return 0
+
+
+def _status_uint64(value: Any) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _UINT64_MAX:
+        return value
+    return 0
+
+
+def _normalize_prefix_cache_stats(stats: Any) -> _NormalizedPrefixCacheStats | None:
+    if isinstance(stats, dict):
+        implementation = stats.get("implementation")
+        entry_count = stats.get("entry_count")
+        total_bytes = stats.get("total_bytes")
+        hits = stats.get("hits")
+        misses = stats.get("misses")
+        failures = stats.get("failures")
+        stores = stats.get("stores")
+        evictions = stats.get("evictions")
+    else:
+        implementation = getattr(stats, "implementation", None)
+        entry_count = getattr(stats, "entry_count", None)
+        total_bytes = getattr(stats, "total_bytes", None)
+        hits = getattr(stats, "hits", None)
+        misses = getattr(stats, "misses", None)
+        failures = getattr(stats, "failures", None)
+        stores = getattr(stats, "stores", None)
+        evictions = getattr(stats, "evictions", None)
+
+    if not isinstance(implementation, str) or implementation == "":
+        return None
+
+    normalized = _NormalizedPrefixCacheStats(
+        implementation=implementation,
+        entry_count=_status_uint32(entry_count),
+        total_bytes=_status_uint64(total_bytes),
+        hits=_status_uint64(hits),
+        misses=_status_uint64(misses),
+        failures=_status_uint64(failures),
+        stores=_status_uint64(stores),
+        evictions=_status_uint64(evictions),
+    )
+
+    required_fields = (
+        ("entry_count", entry_count),
+        ("total_bytes", total_bytes),
+        ("hits", hits),
+        ("misses", misses),
+        ("failures", failures),
+        ("stores", stores),
+        ("evictions", evictions),
+    )
+
+    for field_name, raw_value in required_fields:
+        is_uint32 = field_name == "entry_count"
+        validated = _status_uint32(raw_value) if is_uint32 else _status_uint64(raw_value)
+        if raw_value != validated:
+            return None
+
+    return normalized
 
 
 def build_backend(

@@ -72,6 +72,36 @@ defmodule Orchard.Cluster.V1.RuntimeMemoryBudget do
   )
 end
 
+defmodule Orchard.Cluster.V1.RuntimePrefixCacheStatus do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.RuntimePrefixCacheStatus",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:model_ref, 1, type: Orchard.Cluster.V1.ModelRef, json_name: "modelRef")
+  field(:implementation, 2, type: :string)
+  field(:enabled, 3, type: :bool)
+  field(:entry_count, 4, type: :uint32, json_name: "entryCount")
+  field(:total_bytes, 5, type: :uint64, json_name: "totalBytes")
+  field(:hits, 6, type: :uint64)
+  field(:misses, 7, type: :uint64)
+  field(:failures, 8, type: :uint64)
+  field(:stores, 9, type: :uint64)
+  field(:evictions, 10, type: :uint64)
+
+  field(:configured_max_entries, 11,
+    type: :uint32,
+    json_name: "configuredMaxEntries"
+  )
+
+  field(:configured_max_bytes, 12, type: :uint64, json_name: "configuredMaxBytes")
+  field(:status_code, 13, type: :string, json_name: "statusCode")
+  field(:status_message, 14, type: :string, json_name: "statusMessage")
+  field(:session_started_unix_ms, 15, type: :uint64, json_name: "sessionStartedUnixMs")
+end
+
 defmodule Orchard.Cluster.V1.HostedToolCapability do
   @moduledoc false
 
@@ -145,6 +175,12 @@ defmodule Orchard.Cluster.V1.StatusResponse do
     repeated: true,
     type: Orchard.Cluster.V1.RuntimeMemoryBudget,
     json_name: "runtimeMemoryBudgets"
+  )
+
+  field(:runtime_prefix_cache_statuses, 9,
+    repeated: true,
+    type: Orchard.Cluster.V1.RuntimePrefixCacheStatus,
+    json_name: "runtimePrefixCacheStatuses"
   )
 end
 

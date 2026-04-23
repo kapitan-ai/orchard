@@ -84,6 +84,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     loaded_models = Keyword.get(opts, :loaded_models, [])
     active_request_count = Keyword.get(opts, :active_request_count, 0)
     health = Keyword.get(opts, :health, nil)
+    prefix_cache_statuses = Keyword.get(opts, :runtime_prefix_cache_statuses, [])
     display_name = Keyword.get(opts, :display_name, "node-#{node_id}")
     host = Keyword.get(opts, :host, "10.0.0.1")
     port = Keyword.get(opts, :port, 9444)
@@ -100,7 +101,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       },
       runtime_health: health,
       loaded_models: loaded_models,
-      active_request_count: active_request_count
+      active_request_count: active_request_count,
+      runtime_prefix_cache_statuses: prefix_cache_statuses
     }
   end
 
@@ -129,6 +131,25 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       completed_at: DateTime.truncate(completed_at, :microsecond),
       scheduler_decision: %{"cache_affinity_key" => affinity_key}
     })
+  end
+
+  defp prefix_cache_status(model_id, version, attrs) do
+    Map.merge(
+      %{
+        model_ref: %{model_id: model_id, version: version},
+        implementation: "kv",
+        enabled: true,
+        entry_count: 0,
+        total_bytes: 0,
+        hits: 0,
+        misses: 0,
+        stores: 0,
+        evictions: 0,
+        status_code: "ok",
+        session_started_unix_ms: 1_713_726_400_000
+      },
+      attrs
+    )
   end
 
   defp cache_affinity_key!(request) do
@@ -377,6 +398,81 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.node_id == id_a
       refute Map.has_key?(schedule, :cache_affinity_enabled)
       refute Map.has_key?(schedule, :cache_affinity_key)
+    end
+
+    test "extracts matched prefix-cache status without changing ranking order" do
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a,
+          host: "10.0.0.1",
+          port: 50_061,
+          runtime_prefix_cache_statuses: [
+            prefix_cache_status("test-model", "v1", %{
+              implementation: "disabled",
+              enabled: false,
+              status_code: "disabled"
+            })
+          ]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          runtime_prefix_cache_statuses: [
+            prefix_cache_status("test-model", "v1", %{entry_count: 99, total_bytes: 9_999})
+          ]
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.prefix_cache_status.status_code == "disabled"
+      assert schedule.prefix_cache_status.enabled == false
+      assert schedule.candidate_count == 2
+    end
+
+    test "ignores malformed or non-matching prefix-cache statuses during extraction" do
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a,
+          host: "10.0.0.1",
+          port: 50_061,
+          runtime_prefix_cache_statuses: [
+            "not a status map",
+            prefix_cache_status("other-model", "v1", %{entry_count: 10})
+          ]
+        )
+      )
+
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      refute Map.has_key?(schedule, :prefix_cache_status)
     end
 
     test "uses cache-affinity as a tie-breaker for otherwise equivalent candidates" do

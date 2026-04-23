@@ -178,7 +178,8 @@ defmodule Orchard.Node.WorkerProcess do
       ready: adapter_health[:ready] || false,
       health_code: adapter_health[:health_code] || "",
       health_message: adapter_health[:health_message] || "",
-      memory_budget: adapter_health[:memory_budget]
+      memory_budget: adapter_health[:memory_budget],
+      prefix_cache_status: adapter_health[:prefix_cache_status]
     }
 
     {:reply, {:ok, status}, state}

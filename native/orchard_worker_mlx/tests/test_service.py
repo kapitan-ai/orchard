@@ -7,6 +7,7 @@ import logging
 import re
 import threading
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -63,6 +64,24 @@ class HappyBackend:
 
     def health(self) -> BackendHealth:
         return BackendHealth(ready=True, code="", message="")
+
+    def prefix_cache_status(self) -> dict[str, Any]:
+        return {
+            "implementation": "unknown",
+            "enabled": True,
+            "entry_count": 0,
+            "total_bytes": 0,
+            "hits": 0,
+            "misses": 0,
+            "failures": 0,
+            "stores": 0,
+            "evictions": 0,
+            "configured_max_entries": 0,
+            "configured_max_bytes": 0,
+            "status_code": "unavailable",
+            "status_message": "prefix cache unavailable",
+            "session_started_unix_ms": 0,
+        }
 
     def load_model(self, *, model_id: str, version: str, model_path: str) -> None:
         self._loaded = True
@@ -952,6 +971,15 @@ class BudgetStatusBackend(HappyBackend):
         )
 
 
+class PrefixCacheStatusBackend(HappyBackend):
+    def __init__(self, *, prefix_cache_status: Any) -> None:
+        super().__init__()
+        self._prefix_cache_status = prefix_cache_status
+
+    def prefix_cache_status(self) -> Any:
+        return self._prefix_cache_status
+
+
 def test_get_status_includes_health_fields_healthy() -> None:
     """GetStatus includes ready=True and empty code/message for healthy backend."""
     servicer = _make_servicer(HappyBackend())
@@ -1148,6 +1176,202 @@ def test_get_status_downgrades_memory_budget_missing_required_numeric_field() ->
         == "memory budget status contained invalid numeric fields"
     )
     assert status.memory_budget.target_working_set_bytes == 0
+
+
+def test_get_status_prefix_cache_disabled_config_is_authoritative() -> None:
+    backend = PrefixCacheStatusBackend(
+        prefix_cache_status={
+            "implementation": "kv",
+            "enabled": True,
+            "entry_count": 2,
+            "total_bytes": 128,
+            "hits": 1,
+            "misses": 0,
+            "failures": 0,
+            "stores": 1,
+            "evictions": 0,
+            "configured_max_entries": 8,
+            "configured_max_bytes": 0,
+            "status_code": "ok",
+            "status_message": "",
+            "session_started_unix_ms": 123,
+        }
+    )
+    backend.prefix_cache_status = MagicMock(side_effect=backend.prefix_cache_status)
+    servicer = WorkerRuntimeServicer(
+        backend,
+        prefix_cache_config=PrefixCacheLoadConfig(mode="disabled"),
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert status.prefix_cache.status_code == "disabled"
+    assert status.prefix_cache.enabled is False
+    backend.prefix_cache_status.assert_not_called()
+
+
+def test_get_status_prefix_cache_ok_emits_backend_stats() -> None:
+    servicer = WorkerRuntimeServicer(
+        PrefixCacheStatusBackend(
+            prefix_cache_status={
+                "implementation": "trie",
+                "enabled": True,
+                "entry_count": 3,
+                "total_bytes": 2048,
+                "hits": 5,
+                "misses": 2,
+                "failures": 1,
+                "stores": 7,
+                "evictions": 4,
+                "configured_max_entries": 16,
+                "configured_max_bytes": 1024,
+                "status_code": "ok",
+                "status_message": "",
+                "session_started_unix_ms": 999,
+            }
+        ),
+        prefix_cache_config=PrefixCacheLoadConfig(mode="trie", max_entries=16, max_bytes=1024),
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert status.prefix_cache.status_code == "ok"
+    assert status.prefix_cache.enabled is True
+    assert status.prefix_cache.implementation == "trie"
+    assert status.prefix_cache.entry_count == 3
+    assert status.prefix_cache.total_bytes == 2048
+    assert status.prefix_cache.hits == 5
+    assert status.prefix_cache.misses == 2
+    assert status.prefix_cache.failures == 1
+    assert status.prefix_cache.stores == 7
+    assert status.prefix_cache.evictions == 4
+    assert status.prefix_cache.session_started_unix_ms == 999
+
+
+def test_get_status_prefix_cache_unavailable_no_session_stays_enabled() -> None:
+    servicer = WorkerRuntimeServicer(
+        PrefixCacheStatusBackend(
+            prefix_cache_status={
+                "implementation": "unknown",
+                "enabled": True,
+                "entry_count": 0,
+                "total_bytes": 0,
+                "hits": 0,
+                "misses": 0,
+                "failures": 0,
+                "stores": 0,
+                "evictions": 0,
+                "configured_max_entries": 8,
+                "configured_max_bytes": 0,
+                "status_code": "unavailable",
+                "status_message": "model session is not loaded",
+                "session_started_unix_ms": 0,
+            }
+        )
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert status.prefix_cache.status_code == "unavailable"
+    assert status.prefix_cache.enabled is True
+
+
+def test_get_status_prefix_cache_error_stays_enabled() -> None:
+    servicer = WorkerRuntimeServicer(
+        PrefixCacheStatusBackend(
+            prefix_cache_status={
+                "implementation": "unknown",
+                "enabled": True,
+                "entry_count": 0,
+                "total_bytes": 0,
+                "hits": 0,
+                "misses": 0,
+                "failures": 0,
+                "stores": 0,
+                "evictions": 0,
+                "configured_max_entries": 8,
+                "configured_max_bytes": 0,
+                "status_code": "error",
+                "status_message": "prefix cache stats read failed: boom",
+                "session_started_unix_ms": 555,
+            }
+        )
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert status.prefix_cache.status_code == "error"
+    assert status.prefix_cache.enabled is True
+
+
+def test_get_status_prefix_cache_invalid_status_on_malformed_backend_payload() -> None:
+    servicer = WorkerRuntimeServicer(
+        PrefixCacheStatusBackend(
+            prefix_cache_status={
+                "implementation": "kv",
+                "enabled": True,
+                "entry_count": "bad",
+                "total_bytes": 1,
+                "hits": 1,
+                "misses": 1,
+                "failures": 0,
+                "stores": 1,
+                "evictions": 0,
+                "configured_max_entries": 8,
+                "configured_max_bytes": 0,
+                "status_code": "ok",
+                "status_message": "",
+                "session_started_unix_ms": 1,
+            }
+        )
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert status.prefix_cache.status_code == "invalid_status"
+    assert status.prefix_cache.enabled is True
+
+
+def test_get_status_prefix_cache_backend_exception_returns_error_status() -> None:
+    class PrefixCacheRaisesBackend(HappyBackend):
+        def prefix_cache_status(self) -> dict[str, Any]:
+            raise RuntimeError("telemetry boom")
+
+    servicer = WorkerRuntimeServicer(PrefixCacheRaisesBackend())
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert status.prefix_cache.status_code == "error"
+    assert status.prefix_cache.status_message == "telemetry boom"
+    assert status.prefix_cache.enabled is True
+
+
+def test_get_status_prefix_cache_caps_configured_max_entries_to_uint32_max() -> None:
+    servicer = WorkerRuntimeServicer(
+        PrefixCacheStatusBackend(
+            prefix_cache_status={
+                "implementation": "trie",
+                "enabled": True,
+                "entry_count": 1,
+                "total_bytes": 128,
+                "hits": 1,
+                "misses": 0,
+                "failures": 0,
+                "stores": 1,
+                "evictions": 0,
+                "configured_max_entries": 1,
+                "configured_max_bytes": 128,
+                "status_code": "ok",
+                "status_message": "",
+                "session_started_unix_ms": 1,
+            }
+        ),
+        prefix_cache_config=SimpleNamespace(mode="trie", max_entries=2**32 + 1, max_bytes=128),
+    )
+
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+
+    assert status.prefix_cache.configured_max_entries == 4_294_967_295
 
 
 def test_load_model_rejected_when_unhealthy() -> None:

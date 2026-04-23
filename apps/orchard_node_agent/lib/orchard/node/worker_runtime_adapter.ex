@@ -22,6 +22,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   alias Orchard.Node.Worker.V1.{
     LoadModelRequest,
     WorkerMemoryBudgetStatus,
+    WorkerPrefixCacheStatus,
     WorkerRuntimeService,
     WorkerStatusRequest
   }
@@ -67,7 +68,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
            ready: Map.get(status, :ready, false),
            health_code: Map.get(status, :health_code, ""),
            health_message: Map.get(status, :health_message, ""),
-           memory_budget: memory_budget_from_proto(Map.get(status, :memory_budget))
+           memory_budget: memory_budget_from_proto(Map.get(status, :memory_budget)),
+           prefix_cache_status: prefix_cache_from_proto(Map.get(status, :prefix_cache))
          }}
 
       {:error, reason} ->
@@ -100,6 +102,29 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp memory_budget_from_proto(_other), do: nil
+
+  defp prefix_cache_from_proto(nil), do: nil
+
+  defp prefix_cache_from_proto(%WorkerPrefixCacheStatus{} = status) do
+    %{
+      implementation: Map.get(status, :implementation, ""),
+      enabled: Map.get(status, :enabled, false),
+      entry_count: Map.get(status, :entry_count, 0),
+      total_bytes: Map.get(status, :total_bytes, 0),
+      hits: Map.get(status, :hits, 0),
+      misses: Map.get(status, :misses, 0),
+      failures: Map.get(status, :failures, 0),
+      stores: Map.get(status, :stores, 0),
+      evictions: Map.get(status, :evictions, 0),
+      configured_max_entries: Map.get(status, :configured_max_entries, 0),
+      configured_max_bytes: Map.get(status, :configured_max_bytes, 0),
+      status_code: Map.get(status, :status_code, ""),
+      status_message: Map.get(status, :status_message, ""),
+      session_started_unix_ms: Map.get(status, :session_started_unix_ms, 0)
+    }
+  end
+
+  defp prefix_cache_from_proto(_other), do: nil
 
   @impl true
   def load_model(%ModelRef{} = model_ref, opts) do

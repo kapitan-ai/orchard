@@ -314,6 +314,9 @@ default_controller_inference = fn root ->
       max_prefix_bytes: 8_192,
       max_age_ms: 300_000,
       max_recent_requests: 32
+    ],
+    cache_introspection: [
+      enabled: false
     ]
   ]
 end
@@ -512,6 +515,9 @@ if config_env() == :prod do
               # Explicit secret for cache-affinity key HMAC derivation.
               # If omitted, cache-affinity falls back to endpoint secret_key_base.
               hmac_secret: env_optional_string.("ORCHARD_CACHE_AFFINITY_HMAC_SECRET")
+            ],
+            cache_introspection: [
+              enabled: env_bool.("ORCHARD_CACHE_INTROSPECTION_ENABLED", false)
             ]
           )
 

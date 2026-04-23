@@ -19,6 +19,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   alias Orchard.InferenceEvent
   alias Orchard.Requests
+  alias Orchard.Runtime.PrefixCacheStatus
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.Request
   alias Orchard.Requests.RequestServer
@@ -244,7 +245,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
          terminal_persister
        ) do
     with {:ok, schedule} <- schedule_request(canonical),
-         {:ok, _} <- Requests.record_schedule(db_request, schedule),
+         {:ok, _} <-
+           Requests.record_schedule(db_request, scheduler_persistence_metadata(schedule)),
          :ok <- advance_fsm(db_request.id, :scheduled),
          :ok <- advance_fsm(db_request.id, :dispatching) do
       execute_inference_turn(db_request, canonical, model, schedule, %{
@@ -409,7 +411,11 @@ defmodule Orchard.Inference.RequestOrchestrator do
              execution_opts.terminal_persister
            ),
          {:ok, schedule} <- schedule_request(canonical),
-         {:ok, _} <- Requests.record_schedule(db_request, Map.merge(schedule, metadata)),
+         {:ok, _} <-
+           Requests.record_schedule(
+             db_request,
+             scheduler_persistence_metadata(Map.merge(schedule, metadata))
+           ),
          :ok <- advance_fsm(db_request.id, :scheduled),
          :ok <- advance_fsm(db_request.id, :dispatching) do
       execute_inference_turn(db_request, canonical, model, schedule, execution_opts)
@@ -601,6 +607,43 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp schedule_request(canonical) do
     Inference.scheduler().schedule(canonical)
   end
+
+  defp scheduler_persistence_metadata(schedule) do
+    schedule
+    |> strip_prefix_cache_metadata()
+    |> maybe_merge_prefix_cache_fields(schedule)
+  end
+
+  defp maybe_merge_prefix_cache_fields(metadata, schedule) do
+    if Inference.cache_introspection_enabled?() do
+      Map.merge(metadata, PrefixCacheStatus.selected_fields(prefix_cache_status(schedule)))
+    else
+      metadata
+    end
+  end
+
+  defp prefix_cache_status(schedule) do
+    Map.get(schedule, :prefix_cache_status) || Map.get(schedule, "prefix_cache_status")
+  end
+
+  defp strip_prefix_cache_metadata(schedule) do
+    Map.reject(schedule, fn {key, _value} -> prefix_cache_metadata_key?(key) end)
+  end
+
+  defp prefix_cache_metadata_key?(:prefix_cache_status), do: true
+  defp prefix_cache_metadata_key?("prefix_cache_status"), do: true
+
+  defp prefix_cache_metadata_key?(key) when is_atom(key) do
+    key
+    |> Atom.to_string()
+    |> prefix_cache_metadata_key?()
+  end
+
+  defp prefix_cache_metadata_key?(key) when is_binary(key) do
+    String.starts_with?(key, "selected_prefix_cache_")
+  end
+
+  defp prefix_cache_metadata_key?(_key), do: false
 
   defp dispatch(db_request, canonical, model, schedule, caller, event_handler) do
     execute_request = build_execute_request(canonical, schedule)

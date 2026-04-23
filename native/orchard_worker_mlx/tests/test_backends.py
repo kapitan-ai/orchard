@@ -331,6 +331,89 @@ def test_mlx_backend_status_reflects_request_time_prefill_updates() -> None:
     assert status["memory_budget"]["prefill_workspace_bytes_per_token"] == 512
 
 
+def test_mlx_backend_prefix_cache_status_unavailable_without_session() -> None:
+    backend = _make_mlx_backend()
+
+    status = backend.prefix_cache_status()
+
+    assert status["status_code"] == "unavailable"
+    assert status["enabled"] is True
+
+
+def test_mlx_backend_prefix_cache_status_unavailable_when_cache_none() -> None:
+    session = _make_fake_session()
+    session.prefix_cache = None
+    session.session_started_unix_ms = 1234
+
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    status = backend.prefix_cache_status()
+
+    assert status["status_code"] == "unavailable"
+    assert status["enabled"] is True
+    assert status["session_started_unix_ms"] == 1234
+
+
+def test_mlx_backend_prefix_cache_status_error_on_stats_exception() -> None:
+    session = _make_fake_session()
+    session.prefix_cache = MagicMock()
+    session.prefix_cache.stats.side_effect = RuntimeError("boom")
+    session.session_started_unix_ms = 222
+
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    status = backend.prefix_cache_status()
+
+    assert status["status_code"] == "error"
+    assert status["enabled"] is True
+    assert status["session_started_unix_ms"] == 222
+
+
+def test_mlx_backend_prefix_cache_status_invalid_on_malformed_stats() -> None:
+    session = _make_fake_session()
+    session.prefix_cache = MagicMock()
+    session.prefix_cache.stats.return_value = {"implementation": "kv", "entry_count": "bad"}
+    session.session_started_unix_ms = 333
+
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    status = backend.prefix_cache_status()
+
+    assert status["status_code"] == "invalid_status"
+    assert status["enabled"] is True
+
+
+def test_mlx_backend_prefix_cache_status_ok() -> None:
+    session = _make_fake_session()
+    session.prefix_cache = MagicMock()
+    session.prefix_cache.stats.return_value = {
+        "implementation": "trie",
+        "entry_count": 3,
+        "total_bytes": 2048,
+        "hits": 4,
+        "misses": 1,
+        "failures": 0,
+        "stores": 5,
+        "evictions": 2,
+    }
+    session.session_started_unix_ms = 444
+
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    status = backend.prefix_cache_status()
+
+    assert status["status_code"] == "ok"
+    assert status["enabled"] is True
+    assert status["implementation"] == "trie"
+    assert status["entry_count"] == 3
+    assert status["stores"] == 5
+    assert status["session_started_unix_ms"] == 444
+
+
 def test_mlx_backend_load_passes_generation_and_memory_config_to_loader() -> None:
     captured: dict[str, object] = {}
 
@@ -726,3 +809,8 @@ def test_build_backend_stub_health() -> None:
 def test_protocol_requires_health() -> None:
     """Backend protocol requires a health() method."""
     assert hasattr(Backend, "health")
+
+
+def test_protocol_requires_prefix_cache_status() -> None:
+    """Backend protocol requires a prefix_cache_status() method."""
+    assert hasattr(Backend, "prefix_cache_status")

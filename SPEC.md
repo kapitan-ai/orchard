@@ -755,6 +755,10 @@ Compatibility and defaulting rules:
 * absent or empty `runtime_memory_budgets` SHALL NOT be treated as a status-probe error
 * `runtime_memory_budgets` SHALL remain observe-only telemetry in this slice and SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, or hosted-tool eligibility
 * current `RuntimeMemoryBudget.status_code` vocabulary is: `ok`, `disabled`, `device_info_unavailable`, `device_info_invalid`, `resident_memory_unavailable`, `compute_failed`, `invalid_status`
+* absent or empty `runtime_prefix_cache_statuses` on `StatusResponse` SHALL mean no prefix-cache observation is available
+* absent or empty `runtime_prefix_cache_statuses` SHALL NOT be treated as a status-probe error
+* `runtime_prefix_cache_statuses` SHALL remain observe-only aggregate telemetry in Phase 4B and SHALL NOT affect node readiness, model admission, request admission, scheduler ranking, scheduling eligibility, queue ordering, hosted-tool eligibility, or `worker_generation_mode`
+* current `RuntimePrefixCacheStatus.status_code` vocabulary is: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
 * these status codes are observational only in this slice and SHALL NOT gate readiness, admission, or scheduling
 
 Effective readiness rules for future hosted routing:
@@ -1954,6 +1958,24 @@ message RuntimeMemoryBudget {
   uint64 prefill_workspace_bytes_per_token = 15;
 }
 
+message RuntimePrefixCacheStatus {
+  ModelRef model_ref = 1;
+  string implementation = 2;
+  bool enabled = 3;
+  uint32 entry_count = 4;
+  uint64 total_bytes = 5;
+  uint64 hits = 6;
+  uint64 misses = 7;
+  uint64 failures = 8;
+  uint64 stores = 9;
+  uint64 evictions = 10;
+  uint32 configured_max_entries = 11;
+  uint64 configured_max_bytes = 12;
+  string status_code = 13;
+  string status_message = 14;
+  uint64 session_started_unix_ms = 15;
+}
+
 message StatusResponse {
   WorkerState worker_state = 1;
   repeated ModelRef loaded_models = 2;
@@ -1963,6 +1985,7 @@ message StatusResponse {
   repeated HostedToolCapability hosted_tool_capabilities = 6;
   repeated HostedToolReadiness hosted_tool_readiness = 7;
   repeated RuntimeMemoryBudget runtime_memory_budgets = 8;
+  repeated RuntimePrefixCacheStatus runtime_prefix_cache_statuses = 9;
 }
 
 message EnsureModelLoadedRequest {
@@ -2083,6 +2106,19 @@ Runtime memory-budget wire semantics:
 * positive resident-memory metadata MAY make `status_code = ok` and `headroom_available = true` when the observe-only arithmetic has enough inputs, but that result SHALL remain non-gating
 * neither `RuntimeMemoryBudget.status_code` nor `RuntimeMemoryBudget.resident_memory_bytes` is an enforcement input in this slice; they SHALL NOT alter readiness, request admission, model admission, scheduler eligibility, hosted-tool eligibility, or `memory_budget_mode` enforcement
 * scheduler memory eligibility SHALL continue to use the scheduler/model/node inputs defined elsewhere in this spec unless a later explicit contract promotes these observations to admission inputs
+
+Runtime prefix-cache wire semantics:
+
+* `StatusResponse.runtime_prefix_cache_statuses` SHALL report observe-only aggregate prefix-cache snapshots for loaded runtime/model paths through the existing `GetStatus` probe; Orchard SHALL NOT add a separate prefix-cache scoring RPC in Phase 4B
+* omitted or empty `runtime_prefix_cache_statuses` SHALL mean no prefix-cache observation is available
+* omitted, empty, stale, unavailable, or invalid prefix-cache observations SHALL NOT be treated as a node status error, readiness failure, admission failure, model-admission failure, or scheduler-eligibility failure
+* `RuntimePrefixCacheStatus.status_code` values in this slice are: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
+* `RuntimePrefixCacheStatus.enabled` SHALL represent worker configuration capability, not active cache availability; `enabled=false` is reserved for explicitly disabled cache configuration
+* prefix-cache telemetry SHALL be aggregate-only and SHALL NOT expose prompt text, prompt tokens, tenant identifiers, prompt fingerprints, or prompt-specific match results
+* neither `RuntimePrefixCacheStatus.status_code` nor counters such as `entry_count`, `total_bytes`, `hits`, `misses`, `stores`, or `evictions` are enforcement inputs in Phase 4B; they SHALL NOT alter runtime readiness, request admission, model admission, scheduler ranking, scheduler eligibility, queue ordering, hosted-tool eligibility, or `worker_generation_mode`
+* controller persistence of selected prefix-cache diagnostics in `requests.scheduler_decision` SHALL be guarded by `orchard_controller.inference.cache_introspection.enabled`, which defaults to `false`; when disabled, prefix-cache fields SHALL be stripped before scheduler-decision persistence
+* when `cache_introspection.enabled=true`, the controller SHALL persist only sanitized flat `selected_prefix_cache_*` scalars for the selected candidate and SHALL NOT persist the raw nested `prefix_cache_status` map; non-`ok` statuses SHALL persist only status code and enabled flag
+* this Phase 4B contract is traceable to `orchard-workbench/plans/plan-mlx-phase4-worker-prefix-cache-introspection.md`; prompt-specific matching and scheduler ranking by prefix-cache fields are deferred to later explicit contracts
 
 #### 7.5.4 Node registration flow
 

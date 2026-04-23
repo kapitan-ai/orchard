@@ -98,16 +98,18 @@ defmodule Orchard.Scheduler.MultiNode do
       ranked = rank_candidates(annotated_candidates)
       selected = hd(ranked)
 
-      schedule = %{
-        strategy: :multi_node,
-        request_id: request.public_id,
-        runtime_client_target: selected.target,
-        request_timeout_ms: Inference.request_timeout_ms(),
-        model_load_timeout_ms: Inference.model_load_timeout_ms(),
-        node_id: selected.node_id,
-        candidate_count: length(ranked),
-        selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
-      }
+      schedule =
+        %{
+          strategy: :multi_node,
+          request_id: request.public_id,
+          runtime_client_target: selected.target,
+          request_timeout_ms: Inference.request_timeout_ms(),
+          model_load_timeout_ms: Inference.model_load_timeout_ms(),
+          node_id: selected.node_id,
+          candidate_count: length(ranked),
+          selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
+        }
+        |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
 
       {:ok,
        Map.merge(schedule, CacheAffinity.scheduler_metadata(affinity_context, ranked, selected))}
@@ -135,6 +137,9 @@ defmodule Orchard.Scheduler.MultiNode do
                     loaded_model?: model_loaded?(response, request),
                     active_request_count: response.active_request_count || 0
                   }
+                  |> maybe_put_prefix_cache_status(
+                    prefix_cache_status_for(response, request.model_ref)
+                  )
               end
 
             {:error, reason} ->
@@ -171,6 +176,38 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp model_loaded?(_, _), do: false
+
+  defp prefix_cache_status_for(response, %CanonicalRequest.ModelRef{} = model_ref) do
+    response
+    |> Map.get(:runtime_prefix_cache_statuses, [])
+    |> find_prefix_cache_status(model_ref)
+  end
+
+  defp find_prefix_cache_status(statuses, model_ref) when is_list(statuses) do
+    Enum.find(statuses, &prefix_cache_model_ref_matches?(&1, model_ref))
+  end
+
+  defp find_prefix_cache_status(_statuses, _model_ref), do: nil
+
+  defp prefix_cache_model_ref_matches?(status, model_ref) when is_map(status) do
+    case Map.get(status, :model_ref) || Map.get(status, "model_ref") do
+      %{model_id: model_id, version: version}
+      when is_binary(model_id) and is_binary(version) ->
+        model_id == model_ref.model_id and version == model_ref.version
+
+      %{"model_id" => model_id, "version" => version}
+      when is_binary(model_id) and is_binary(version) ->
+        model_id == model_ref.model_id and version == model_ref.version
+
+      _other ->
+        false
+    end
+  end
+
+  defp prefix_cache_model_ref_matches?(_status, _model_ref), do: false
+
+  defp maybe_put_prefix_cache_status(map, nil), do: map
+  defp maybe_put_prefix_cache_status(map, status), do: Map.put(map, :prefix_cache_status, status)
 
   # -- Ranking --
 

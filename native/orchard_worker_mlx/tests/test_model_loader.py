@@ -488,6 +488,7 @@ def test_load_session_success(writable_bundle: Path) -> None:
     assert session.decode_cancel_stride >= 1
     assert session.prefill_step_size == 2048
     assert isinstance(session.prefix_cache, KVPrefixCache)
+    assert session.session_started_unix_ms > 0
 
     # Verify deps were called correctly.
     deps.eval_fn.assert_called_once()
@@ -952,6 +953,8 @@ def test_prefix_cache_config_validation() -> None:
         PrefixCacheLoadConfig(mode="invalid")
     with pytest.raises(ValueError):
         PrefixCacheLoadConfig(max_entries=0)
+    with pytest.raises(ValueError):
+        PrefixCacheLoadConfig(max_entries=2**32)
     with pytest.raises(ValueError):
         PrefixCacheLoadConfig(max_bytes=-1)
 

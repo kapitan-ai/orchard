@@ -21,6 +21,7 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Cluster.V1.RuntimeHealth
   alias Orchard.Cluster.V1.RuntimeMemoryBudget
   alias Orchard.Cluster.V1.RuntimeNodeMetadata
+  alias Orchard.Cluster.V1.RuntimePrefixCacheStatus
   alias Orchard.Cluster.V1.StatusResponse
   alias Orchard.Cluster.V1.UnloadModelRequest
   alias Orchard.Node
@@ -57,6 +58,7 @@ defmodule Orchard.Node.ModelManager do
           timer_ref: reference() | nil
         }
 
+  @uint32_max 4_294_967_295
   @uint64_max 18_446_744_073_709_551_615
   @memory_budget_uint64_fields [
     :max_recommended_working_set_size_bytes,
@@ -69,6 +71,18 @@ defmodule Orchard.Node.ModelManager do
   ]
   @memory_budget_float_fields [:utilization]
   @invalid_memory_budget_numeric_message "memory budget status contained invalid numeric fields"
+  @prefix_cache_uint32_fields [:entry_count, :configured_max_entries]
+  @prefix_cache_uint64_fields [
+    :total_bytes,
+    :hits,
+    :misses,
+    :failures,
+    :stores,
+    :evictions,
+    :configured_max_bytes,
+    :session_started_unix_ms
+  ]
+  @invalid_prefix_cache_numeric_message "prefix cache status contained invalid numeric fields"
 
   @type inflight_load :: %{
           request: EnsureModelLoadedRequest.t(),
@@ -1133,7 +1147,9 @@ defmodule Orchard.Node.ModelManager do
 
   defp status_response(state) do
     tool_snapshot = ToolCapabilityCatalog.snapshot()
-    {runtime_health, runtime_memory_budgets} = runtime_health_and_memory_budgets(state)
+
+    {runtime_health, runtime_memory_budgets, runtime_prefix_cache_statuses} =
+      runtime_health_and_memory_budgets(state)
 
     %StatusResponse{
       worker_state: worker_state(state),
@@ -1143,7 +1159,8 @@ defmodule Orchard.Node.ModelManager do
       runtime_health: runtime_health,
       hosted_tool_capabilities: tool_snapshot.capabilities,
       hosted_tool_readiness: tool_snapshot.readiness,
-      runtime_memory_budgets: runtime_memory_budgets
+      runtime_memory_budgets: runtime_memory_budgets,
+      runtime_prefix_cache_statuses: runtime_prefix_cache_statuses
     }
   end
 
@@ -1167,6 +1184,31 @@ defmodule Orchard.Node.ModelManager do
       _other ->
         []
     end
+  end
+
+  defp maybe_runtime_prefix_cache_status(%ModelRef{} = model_ref, status_result) do
+    case status_result do
+      {:ok, status} when is_map(status) ->
+        if Map.has_key?(status, :prefix_cache_status) do
+          build_runtime_prefix_cache_status(model_ref, Map.get(status, :prefix_cache_status))
+        else
+          []
+        end
+
+      _other ->
+        []
+    end
+  end
+
+  defp build_runtime_prefix_cache_status(_model_ref, nil), do: []
+
+  defp build_runtime_prefix_cache_status(%ModelRef{} = model_ref, prefix_cache_status)
+       when is_map(prefix_cache_status) do
+    [runtime_prefix_cache_status(model_ref, prefix_cache_status)]
+  end
+
+  defp build_runtime_prefix_cache_status(%ModelRef{} = model_ref, _invalid_status) do
+    [invalid_runtime_prefix_cache_status(model_ref, %{})]
   end
 
   defp loaded_workers(state) do
@@ -1257,6 +1299,83 @@ defmodule Orchard.Node.ModelManager do
     }
   end
 
+  defp runtime_prefix_cache_status(%ModelRef{} = model_ref, prefix_cache_status) do
+    if invalid_prefix_cache_numeric_payload?(prefix_cache_status) do
+      invalid_runtime_prefix_cache_status(model_ref, prefix_cache_status)
+    else
+      %RuntimePrefixCacheStatus{
+        model_ref: model_ref,
+        implementation: budget_string(prefix_cache_status[:implementation]),
+        enabled: budget_bool(prefix_cache_status[:enabled]),
+        entry_count: prefix_cache_uint32(prefix_cache_status[:entry_count]),
+        total_bytes: budget_uint64(prefix_cache_status[:total_bytes]),
+        hits: budget_uint64(prefix_cache_status[:hits]),
+        misses: budget_uint64(prefix_cache_status[:misses]),
+        failures: budget_uint64(prefix_cache_status[:failures]),
+        stores: budget_uint64(prefix_cache_status[:stores]),
+        evictions: budget_uint64(prefix_cache_status[:evictions]),
+        configured_max_entries: prefix_cache_uint32(prefix_cache_status[:configured_max_entries]),
+        configured_max_bytes: budget_uint64(prefix_cache_status[:configured_max_bytes]),
+        status_code: budget_string(prefix_cache_status[:status_code]),
+        status_message: budget_string(prefix_cache_status[:status_message]),
+        session_started_unix_ms: budget_uint64(prefix_cache_status[:session_started_unix_ms])
+      }
+    end
+  end
+
+  defp invalid_prefix_cache_numeric_payload?(prefix_cache_status) do
+    Enum.any?(@prefix_cache_uint32_fields, fn field ->
+      invalid_prefix_cache_uint32?(prefix_cache_status, field)
+    end) or
+      Enum.any?(@prefix_cache_uint64_fields, fn field ->
+        invalid_prefix_cache_uint64?(prefix_cache_status, field)
+      end)
+  end
+
+  defp invalid_prefix_cache_uint32?(prefix_cache_status, field) do
+    case Map.fetch(prefix_cache_status, field) do
+      {:ok, value} -> not valid_prefix_cache_uint32?(value)
+      :error -> false
+    end
+  end
+
+  defp invalid_prefix_cache_uint64?(prefix_cache_status, field) do
+    case Map.fetch(prefix_cache_status, field) do
+      {:ok, value} -> not valid_budget_uint64?(value)
+      :error -> false
+    end
+  end
+
+  defp invalid_runtime_prefix_cache_status(%ModelRef{} = model_ref, prefix_cache_status) do
+    %RuntimePrefixCacheStatus{
+      model_ref: model_ref,
+      implementation: budget_string(prefix_cache_status[:implementation]),
+      enabled: budget_bool(prefix_cache_status[:enabled]),
+      entry_count: 0,
+      total_bytes: 0,
+      hits: 0,
+      misses: 0,
+      failures: 0,
+      stores: 0,
+      evictions: 0,
+      configured_max_entries: 0,
+      configured_max_bytes: 0,
+      status_code: "invalid_status",
+      status_message: @invalid_prefix_cache_numeric_message,
+      session_started_unix_ms: 0
+    }
+  end
+
+  defp valid_prefix_cache_uint32?(value) do
+    is_integer(value) and value >= 0 and value <= @uint32_max
+  end
+
+  defp prefix_cache_uint32(value)
+       when is_integer(value) and value >= 0 and value <= @uint32_max,
+       do: value
+
+  defp prefix_cache_uint32(_value), do: 0
+
   defp valid_budget_uint64?(value) do
     is_integer(value) and value >= 0 and value <= @uint64_max
   end
@@ -1308,9 +1427,9 @@ defmodule Orchard.Node.ModelManager do
   # 1. Inflight loads → degraded/starting (no worker status probes)
   # 2. Workers in LOADING state → degraded/starting (no worker status probes)
   # 3. No workers → healthy
-  # 4. Otherwise probe each loaded worker; first unhealthy wins
-  # 5. Runtime memory budgets are collected opportunistically from only the
-  #    worker status probes already needed for health.
+  # 4. Otherwise probe each loaded worker and keep the first unhealthy result
+  # 5. Runtime memory budgets and prefix-cache statuses are collected
+  #    opportunistically from those same worker probes.
   defp runtime_health_and_memory_budgets(state) do
     cond do
       map_size(state.inflight_loads) > 0 ->
@@ -1321,7 +1440,7 @@ defmodule Orchard.Node.ModelManager do
            health_code: "starting",
            health_message: "model load in progress",
            affected_model: first_inflight
-         }, []}
+         }, [], []}
 
       has_loading_worker?(state) ->
         loading_ref = first_loading_worker_ref(state)
@@ -1331,10 +1450,10 @@ defmodule Orchard.Node.ModelManager do
            health_code: "starting",
            health_message: "model load in progress",
            affected_model: loading_ref
-         }, []}
+         }, [], []}
 
       map_size(state.workers) == 0 ->
-        {%RuntimeHealth{ready: true, health_code: "", health_message: ""}, []}
+        {%RuntimeHealth{ready: true, health_code: "", health_message: ""}, [], []}
 
       true ->
         probe_workers_health_and_memory_budgets(loaded_workers(state))
@@ -1373,37 +1492,44 @@ defmodule Orchard.Node.ModelManager do
   # single-node / low-worker-count (capped by max_loaded_models). For
   # multi-node with many workers, consider parallel probing or cached health.
   defp probe_workers_health_and_memory_budgets(loaded_workers) do
-    {health, runtime_memory_budgets} =
-      Enum.reduce_while(loaded_workers, {nil, []}, fn {_key, entry}, {_, budgets} ->
+    {health, runtime_memory_budgets, runtime_prefix_cache_statuses} =
+      Enum.reduce(loaded_workers, {nil, [], []}, fn {_key, entry},
+                                                    {health, budgets, prefix_cache_statuses} ->
         status_result = WorkerProcess.status(entry.pid, timeout: 1_000)
+
         updated_budgets = budgets ++ maybe_runtime_memory_budget(entry.model_ref, status_result)
 
-        case status_result do
-          {:ok, %{ready: true}} ->
-            {:cont, {nil, updated_budgets}}
+        updated_prefix_cache_statuses =
+          prefix_cache_statuses ++
+            maybe_runtime_prefix_cache_status(entry.model_ref, status_result)
 
-          {:ok, %{ready: false} = status} ->
-            {:halt,
-             {%RuntimeHealth{
-                ready: false,
-                health_code: status[:health_code] || "worker_unhealthy",
-                health_message: status[:health_message] || "",
-                affected_model: entry.model_ref
-              }, updated_budgets}}
+        next_health = health || health_from_status_result(entry.model_ref, status_result)
 
-          {:error, _reason} ->
-            {:halt,
-             {%RuntimeHealth{
-                ready: false,
-                health_code: "worker_status_error",
-                health_message: "worker status request failed",
-                affected_model: entry.model_ref
-              }, updated_budgets}}
-        end
+        {next_health, updated_budgets, updated_prefix_cache_statuses}
       end)
 
     {health || %RuntimeHealth{ready: true, health_code: "", health_message: ""},
-     runtime_memory_budgets}
+     runtime_memory_budgets, runtime_prefix_cache_statuses}
+  end
+
+  defp health_from_status_result(_model_ref, {:ok, %{ready: true}}), do: nil
+
+  defp health_from_status_result(model_ref, {:ok, %{ready: false} = status}) do
+    %RuntimeHealth{
+      ready: false,
+      health_code: status[:health_code] || "worker_unhealthy",
+      health_message: status[:health_message] || "",
+      affected_model: model_ref
+    }
+  end
+
+  defp health_from_status_result(model_ref, {:error, _reason}) do
+    %RuntimeHealth{
+      ready: false,
+      health_code: "worker_status_error",
+      health_message: "worker status request failed",
+      affected_model: model_ref
+    }
   end
 
   defp worker_state(state) do

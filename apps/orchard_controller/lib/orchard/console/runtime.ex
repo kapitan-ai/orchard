@@ -11,6 +11,7 @@ defmodule OrchardConsole.Runtime do
   """
 
   alias Orchard.Inference
+  alias Orchard.Runtime.PrefixCacheStatus
 
   @type worker_state :: :starting | :idle | :busy | :stopping | :failed | :stopped | :unknown
 
@@ -54,7 +55,8 @@ defmodule OrchardConsole.Runtime do
           node_metadata: node_metadata() | nil,
           runtime_health: runtime_health() | nil,
           runtime_memory_budgets: [runtime_memory_budget()],
-          runtime_memory_budgets_truncated_count: non_neg_integer()
+          runtime_memory_budgets_truncated_count: non_neg_integer(),
+          runtime_prefix_cache_statuses: [PrefixCacheStatus.t()]
         }
 
   @type error_snapshot :: %{
@@ -67,7 +69,8 @@ defmodule OrchardConsole.Runtime do
           node_metadata: nil,
           runtime_health: nil,
           runtime_memory_budgets: [],
-          runtime_memory_budgets_truncated_count: 0
+          runtime_memory_budgets_truncated_count: 0,
+          runtime_prefix_cache_statuses: []
         }
 
   @doc """
@@ -94,7 +97,8 @@ defmodule OrchardConsole.Runtime do
           node_metadata: node_metadata() | nil,
           runtime_health: runtime_health() | nil,
           runtime_memory_budgets: [runtime_memory_budget()],
-          runtime_memory_budgets_truncated_count: non_neg_integer()
+          runtime_memory_budgets_truncated_count: non_neg_integer(),
+          runtime_prefix_cache_statuses: [PrefixCacheStatus.t()]
         }
 
   @doc """
@@ -162,7 +166,8 @@ defmodule OrchardConsole.Runtime do
       node_metadata: nil,
       runtime_health: nil,
       runtime_memory_budgets: [],
-      runtime_memory_budgets_truncated_count: 0
+      runtime_memory_budgets_truncated_count: 0,
+      runtime_prefix_cache_statuses: []
     }
   end
 
@@ -271,7 +276,8 @@ defmodule OrchardConsole.Runtime do
       node_metadata: normalize_node_metadata(response),
       runtime_health: normalize_runtime_health(response),
       runtime_memory_budgets: normalize_runtime_memory_budgets(response),
-      runtime_memory_budgets_truncated_count: runtime_memory_budgets_truncated_count(response)
+      runtime_memory_budgets_truncated_count: runtime_memory_budgets_truncated_count(response),
+      runtime_prefix_cache_statuses: normalize_runtime_prefix_cache_statuses(response)
     }
   end
 
@@ -396,6 +402,18 @@ defmodule OrchardConsole.Runtime do
     end
   end
 
+  defp normalize_runtime_prefix_cache_statuses(response) do
+    case Map.get(response, :runtime_prefix_cache_statuses, []) do
+      statuses when is_list(statuses) ->
+        statuses
+        |> Enum.map(&PrefixCacheStatus.normalize/1)
+        |> Enum.reject(&is_nil/1)
+
+      _ ->
+        []
+    end
+  end
+
   defp normalize_runtime_memory_budget(budget) when is_map(budget) do
     %{
       display_state: :observed,
@@ -494,7 +512,8 @@ defmodule OrchardConsole.Runtime do
       node_metadata: nil,
       runtime_health: nil,
       runtime_memory_budgets: [],
-      runtime_memory_budgets_truncated_count: 0
+      runtime_memory_budgets_truncated_count: 0,
+      runtime_prefix_cache_statuses: []
     }
   end
 

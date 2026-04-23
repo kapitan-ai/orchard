@@ -227,6 +227,22 @@ defmodule OrchardNodeAgentTest do
            estimated_headroom_bytes: 5_731_516_544,
            kv_cache_bytes_per_token: 16_384,
            prefill_workspace_bytes_per_token: 2_048
+         },
+         prefix_cache_status: %{
+           implementation: "kv",
+           enabled: true,
+           entry_count: 2,
+           total_bytes: 32_768,
+           hits: 12,
+           misses: 4,
+           failures: 1,
+           stores: 8,
+           evictions: 3,
+           configured_max_entries: 64,
+           configured_max_bytes: 1_048_576,
+           status_code: "ok",
+           status_message: "",
+           session_started_unix_ms: 1_713_726_400_000
          }
        }}
     end
@@ -282,6 +298,22 @@ defmodule OrchardNodeAgentTest do
            estimated_headroom_bytes: 3_870_000_000,
            kv_cache_bytes_per_token: 16_384,
            prefill_workspace_bytes_per_token: 2_048
+         },
+         prefix_cache_status: %{
+           implementation: "kv",
+           enabled: true,
+           entry_count: 1,
+           total_bytes: 16_384,
+           hits: 3,
+           misses: 1,
+           failures: 0,
+           stores: 2,
+           evictions: 0,
+           configured_max_entries: 64,
+           configured_max_bytes: 1_048_576,
+           status_code: "ok",
+           status_message: "",
+           session_started_unix_ms: 1_713_726_400_000
          }
        }}
     end
@@ -408,6 +440,98 @@ defmodule OrchardNodeAgentTest do
            prefill_workspace_bytes_per_token: 340_282_366_920_938_463_463_374_607_431_768_211_456
          }
        }}
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
+  defmodule PrefixCacheMixedRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @malformed_prefix_model_id "prefix-cache/malformed"
+
+    @impl true
+    def get_status(adapter_state, _opts) do
+      {:ok,
+       %{
+         ready: true,
+         health_code: "",
+         health_message: "",
+         memory_budget: %{
+           mode: "observe",
+           budget_available: true,
+           headroom_available: true,
+           status_code: "ok",
+           status_message: "",
+           source: "mlx.core.device_info.max_recommended_working_set_size",
+           max_recommended_working_set_size_bytes: 8_000_000_000,
+           utilization: 0.5,
+           target_working_set_bytes: 4_000_000_000,
+           overhead_bytes: 128_000_000,
+           resident_memory_bytes: 2_048_000,
+           estimated_headroom_bytes: 3_870_000_000,
+           kv_cache_bytes_per_token: 16_384,
+           prefill_workspace_bytes_per_token: 2_048
+         },
+         prefix_cache_status: prefix_cache_status_for(adapter_state)
+       }}
+    end
+
+    defp prefix_cache_status_for(%{model_ref: %ModelRef{model_id: @malformed_prefix_model_id}}) do
+      %{
+        implementation: "kv",
+        enabled: true,
+        entry_count: "invalid",
+        total_bytes: 16_384,
+        hits: 3,
+        misses: 1,
+        failures: 0,
+        stores: 2,
+        evictions: 0,
+        configured_max_entries: 64,
+        configured_max_bytes: 1_048_576,
+        status_code: "ok",
+        status_message: "",
+        session_started_unix_ms: 1_713_726_400_000
+      }
+    end
+
+    defp prefix_cache_status_for(_adapter_state) do
+      %{
+        implementation: "kv",
+        enabled: true,
+        entry_count: 2,
+        total_bytes: 32_768,
+        hits: 12,
+        misses: 4,
+        failures: 1,
+        stores: 8,
+        evictions: 3,
+        configured_max_entries: 64,
+        configured_max_bytes: 1_048_576,
+        status_code: "ok",
+        status_message: "",
+        session_started_unix_ms: 1_713_726_400_000
+      }
     end
 
     @impl true
@@ -881,6 +1005,70 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  test "get_status includes runtime prefix cache statuses for loaded models", %{bundle: bundle} do
+    request = ensure_model_loaded_request(bundle)
+
+    with_runtime_adapter(MemoryBudgetRuntimeAdapter, fn ->
+      with_channel(fn channel ->
+        assert {:ok, %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED}} =
+                 NodeRuntimeStub.ensure_model_loaded(channel, request)
+
+        assert {:ok, %StatusResponse{} = response} =
+                 NodeRuntimeStub.get_status(channel, %StatusRequest{})
+
+        assert [%{model_ref: %RPCModelRef{} = model_ref} = prefix_cache_status] =
+                 response.runtime_prefix_cache_statuses
+
+        assert model_ref.model_id == bundle.model_id
+        assert model_ref.version == bundle.version
+        assert prefix_cache_status.implementation == "kv"
+        assert prefix_cache_status.enabled == true
+        assert prefix_cache_status.entry_count == 2
+        assert prefix_cache_status.total_bytes == 32_768
+        assert prefix_cache_status.hits == 12
+        assert prefix_cache_status.misses == 4
+        assert prefix_cache_status.status_code == "ok"
+        assert prefix_cache_status.session_started_unix_ms == 1_713_726_400_000
+      end)
+    end)
+  end
+
+  test "get_status keeps other prefix cache entries when one worker reports malformed status", %{
+    bundle: bundle
+  } do
+    malformed_bundle = stage_test_bundle!("prefix-cache/malformed", "v1")
+
+    on_exit(fn ->
+      File.rm_rf(malformed_bundle.cache_path)
+      File.rm_rf(malformed_bundle.source_path)
+    end)
+
+    with_runtime_adapter(PrefixCacheMixedRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(malformed_bundle))
+
+      assert %StatusResponse{} = response = NodeStatus.current()
+      assert response.runtime_health.ready == true
+      assert length(response.runtime_memory_budgets) == 2
+      assert length(response.runtime_prefix_cache_statuses) == 2
+
+      by_model =
+        Map.new(response.runtime_prefix_cache_statuses, fn status ->
+          {status.model_ref.model_id, status}
+        end)
+
+      assert by_model[bundle.model_id].status_code == "ok"
+      assert by_model[bundle.model_id].entry_count == 2
+      assert by_model[malformed_bundle.model_id].status_code == "invalid_status"
+
+      assert by_model[malformed_bundle.model_id].status_message ==
+               "prefix cache status contained invalid numeric fields"
+    end)
+  end
+
   test "get_status reuses one worker status snapshot for health and memory budgets", %{
     bundle: bundle
   } do
@@ -893,8 +1081,14 @@ defmodule OrchardNodeAgentTest do
       assert %StatusResponse{} = response = NodeStatus.current()
       assert response.runtime_health.ready == true
       assert [%{model_ref: %RPCModelRef{} = model_ref}] = response.runtime_memory_budgets
+
+      assert [%{model_ref: %RPCModelRef{} = prefix_cache_model_ref}] =
+               response.runtime_prefix_cache_statuses
+
       assert model_ref.model_id == bundle.model_id
       assert model_ref.version == bundle.version
+      assert prefix_cache_model_ref.model_id == bundle.model_id
+      assert prefix_cache_model_ref.version == bundle.version
 
       assert_receive {:counting_status_probe, _worker_pid}, 1_000
       refute_receive {:counting_status_probe, _worker_pid}, 100
@@ -928,6 +1122,7 @@ defmodule OrchardNodeAgentTest do
       assert response.runtime_health.affected_model.model_id == blocked_bundle.model_id
       assert response.runtime_health.affected_model.version == blocked_bundle.version
       assert response.runtime_memory_budgets == []
+      assert response.runtime_prefix_cache_statuses == []
 
       assert Enum.any?(
                response.loaded_models,

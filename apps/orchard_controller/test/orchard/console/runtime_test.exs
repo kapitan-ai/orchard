@@ -1,6 +1,7 @@
 defmodule OrchardConsole.RuntimeTest do
   use ExUnit.Case, async: false
 
+  alias Orchard.Runtime.PrefixCacheStatus
   alias OrchardConsole.Runtime
   import Orchard.TestSupport.RepoHelpers
 
@@ -547,6 +548,93 @@ defmodule OrchardConsole.RuntimeTest do
       assert hd(snapshot.runtime_memory_budgets).model_ref == "model-1@main"
       assert List.last(snapshot.runtime_memory_budgets).model_ref == "model-20@main"
       assert snapshot.runtime_memory_budgets_truncated_count == 2
+    end
+
+    test "SPEC 7.5.3 normalizes prefix-cache statuses with approved fields only" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           status_response(%{
+             runtime_prefix_cache_statuses: [
+               %{
+                 model_ref: %{model_id: "mlx-community/phi-3", version: "main"},
+                 implementation: "kv",
+                 enabled: true,
+                 entry_count: 2,
+                 total_bytes: 32_768,
+                 hits: 12,
+                 misses: 4,
+                 failures: 1,
+                 stores: 8,
+                 evictions: 0,
+                 configured_max_entries: 8,
+                 configured_max_bytes: 0,
+                 status_code: "ok",
+                 status_message: "active",
+                 session_started_unix_ms: 1_713_726_400_000,
+                 prompt_fingerprint: "must-not-leak"
+               }
+             ]
+           })},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+
+      assert [status] = snapshot.runtime_prefix_cache_statuses
+      assert status.model_ref == "mlx-community/phi-3@main"
+      assert status.implementation == "kv"
+      assert status.enabled == true
+      assert status.entry_count == 2
+      assert status.total_bytes == 32_768
+      assert status.hits == 12
+      assert status.misses == 4
+      assert status.failures == 1
+      assert status.stores == 8
+      assert status.evictions == 0
+      assert status.configured_max_entries == 8
+      assert status.configured_max_bytes == 0
+      assert status.status_code == "ok"
+      assert status.status_message == "active"
+      assert status.session_started_unix_ms == 1_713_726_400_000
+      refute Map.has_key?(status, :prompt_fingerprint)
+    end
+
+    test "SPEC 7.5.3 tolerates absent and malformed prefix-cache telemetry" do
+      stub_client(
+        connect: {:ok, :ch},
+        status:
+          {:ok,
+           status_response(%{
+             runtime_prefix_cache_statuses: [
+               %{model_ref: %{model_id: "bad-model"}, status_code: "ok", total_bytes: "bad"},
+               "not a status map"
+             ]
+           })},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+
+      assert [malformed_numeric, malformed_shape] = snapshot.runtime_prefix_cache_statuses
+      assert malformed_numeric.status_code == "invalid_status"
+      assert malformed_numeric.total_bytes == nil
+      assert malformed_shape.status_code == "invalid_status"
+      assert malformed_shape.status_message == "prefix-cache telemetry payload was malformed"
+    end
+
+    test "SPEC 7.5.3 selected prefix-cache fields suppress non-ok counters" do
+      assert PrefixCacheStatus.selected_fields(%{
+               status_code: "unavailable",
+               enabled: true,
+               entry_count: 10,
+               total_bytes: 20,
+               session_started_unix_ms: 1_713_726_400_000
+             }) == %{
+               selected_prefix_cache_status_code: "unavailable",
+               selected_prefix_cache_enabled: true
+             }
     end
 
     test "SPEC 7.5.3 preserves empty memory budgets on unreachable snapshots" do

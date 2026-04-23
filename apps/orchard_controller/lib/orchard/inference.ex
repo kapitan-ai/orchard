@@ -66,6 +66,16 @@ defmodule Orchard.Inference do
     |> CacheAffinity.enabled?()
   end
 
+  @spec cache_introspection_config() :: keyword()
+  def cache_introspection_config do
+    Keyword.merge([enabled: false], config()[:cache_introspection] || [])
+  end
+
+  @spec cache_introspection_enabled?() :: boolean()
+  def cache_introspection_enabled? do
+    cache_introspection_config()[:enabled] == true
+  end
+
   @spec queue_admission_enabled?() :: boolean()
   def queue_admission_enabled? do
     config = queue_admission_config()

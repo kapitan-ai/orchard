@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _VALID_PREFIX_CACHE_MODES = frozenset({"disabled", "kv", "trie"})
+_UINT32_MAX = 4_294_967_295
 
 
 @dataclass(slots=True, frozen=True)
@@ -51,6 +52,10 @@ class PrefixCacheLoadConfig:
             raise ValueError(f"max_entries must be int, got {type(self.max_entries).__name__}")
         if self.max_entries < 1:
             raise ValueError(f"max_entries must be >= 1, got {self.max_entries}")
+        if self.max_entries > _UINT32_MAX:
+            raise ValueError(
+                f"max_entries must be <= {_UINT32_MAX}, got {self.max_entries}"
+            )
         if not isinstance(self.max_bytes, int) or isinstance(self.max_bytes, bool):
             raise ValueError(f"max_bytes must be int, got {type(self.max_bytes).__name__}")
         if self.max_bytes < 0:
@@ -647,6 +652,7 @@ class LoadedModelSession:
     generation_config: GenerationRuntimeConfig = DEFAULT_GENERATION_RUNTIME_CONFIG
     memory_budget_config: MemoryBudgetConfig = DEFAULT_MEMORY_BUDGET_CONFIG
     memory_budget_status: MemoryBudgetStatus = dataclass_field(default_factory=MemoryBudgetStatus)
+    session_started_unix_ms: int = 0
     tool_calling: dict[str, Any] = dataclass_field(
         default_factory=lambda: {"supported": False, "parser_type": None}
     )
@@ -1288,6 +1294,7 @@ def load_session(
         generation_config=effective_generation_config,
         memory_budget_config=effective_memory_budget_config,
         memory_budget_status=memory_budget_status,
+        session_started_unix_ms=int(time.time() * 1000),
         tool_calling=tool_calling,
     )
 

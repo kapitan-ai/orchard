@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CANCEL_TOMBSTONE_TTL_S = 60.0
 _DEFAULT_GRPC_WORKER_HEADROOM = 2
 _DEFAULT_GRPC_WORKERS_MIN = 4
+_UINT32_MAX = 4_294_967_295
 _UINT64_MAX = 18_446_744_073_709_551_615
 _MEMORY_BUDGET_UINT64_FIELDS = (
     "max_recommended_working_set_size_bytes",
@@ -40,6 +41,19 @@ _MEMORY_BUDGET_UINT64_FIELDS = (
 )
 _MEMORY_BUDGET_FLOAT_FIELDS = ("utilization",)
 _INVALID_MEMORY_BUDGET_NUMERIC_MESSAGE = "memory budget status contained invalid numeric fields"
+_PREFIX_CACHE_UINT32_FIELDS = ("entry_count", "configured_max_entries")
+_PREFIX_CACHE_UINT64_FIELDS = (
+    "total_bytes",
+    "hits",
+    "misses",
+    "failures",
+    "stores",
+    "evictions",
+    "configured_max_bytes",
+    "session_started_unix_ms",
+)
+_PREFIX_CACHE_STATUS_CODES = frozenset({"ok", "disabled", "unavailable", "invalid_status", "error"})
+_INVALID_PREFIX_CACHE_MESSAGE = "backend prefix cache status was invalid"
 
 
 @dataclass(slots=True)
@@ -57,6 +71,18 @@ class CancelEntry:
 
 def _status_bool(value: Any) -> bool:
     return value is True
+
+
+def _valid_status_uint32(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _UINT32_MAX
+
+
+def _status_uint32(value: Any) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        return 0
+    if value < 0:
+        return 0
+    return min(value, _UINT32_MAX)
 
 
 def _valid_status_uint64(value: Any) -> bool:
@@ -177,15 +203,138 @@ def _memory_budget_status_response(
     )
 
 
+def _prefix_cache_disabled(prefix_cache_config: Any | None) -> bool:
+    return _status_string(getattr(prefix_cache_config, "mode", "")) == "disabled"
+
+
+def _prefix_cache_caps(prefix_cache_config: Any | None) -> tuple[int, int]:
+    return (
+        _status_uint32(getattr(prefix_cache_config, "max_entries", 0)),
+        _status_uint64(getattr(prefix_cache_config, "max_bytes", 0)),
+    )
+
+
+def _error_prefix_cache_status_response(
+    prefix_cache_config: Any | None,
+    status_message: str,
+) -> worker_runtime_pb2.WorkerPrefixCacheStatus:
+    configured_max_entries, configured_max_bytes = _prefix_cache_caps(prefix_cache_config)
+    return worker_runtime_pb2.WorkerPrefixCacheStatus(
+        implementation="unknown",
+        enabled=True,
+        configured_max_entries=configured_max_entries,
+        configured_max_bytes=configured_max_bytes,
+        status_code="error",
+        status_message=status_message,
+    )
+
+
+def _disabled_prefix_cache_status_response(
+    prefix_cache_config: Any | None,
+) -> worker_runtime_pb2.WorkerPrefixCacheStatus:
+    configured_max_entries, configured_max_bytes = _prefix_cache_caps(prefix_cache_config)
+    return worker_runtime_pb2.WorkerPrefixCacheStatus(
+        implementation="disabled",
+        enabled=False,
+        configured_max_entries=configured_max_entries,
+        configured_max_bytes=configured_max_bytes,
+        status_code="disabled",
+        status_message="prefix cache disabled by config",
+    )
+
+
+def _invalid_prefix_cache_status_response(
+    prefix_cache_config: Any | None,
+) -> worker_runtime_pb2.WorkerPrefixCacheStatus:
+    configured_max_entries, configured_max_bytes = _prefix_cache_caps(prefix_cache_config)
+    return worker_runtime_pb2.WorkerPrefixCacheStatus(
+        implementation="unknown",
+        enabled=True,
+        configured_max_entries=configured_max_entries,
+        configured_max_bytes=configured_max_bytes,
+        status_code="invalid_status",
+        status_message=_INVALID_PREFIX_CACHE_MESSAGE,
+    )
+
+
+def _invalid_prefix_cache_numeric_fields(prefix_cache: dict[str, Any]) -> list[str]:
+    invalid_fields: list[str] = []
+
+    for field in _PREFIX_CACHE_UINT32_FIELDS:
+        if field not in prefix_cache:
+            invalid_fields.append(field)
+            continue
+
+        value = prefix_cache[field]
+        if not _valid_status_uint32(value):
+            invalid_fields.append(field)
+
+    for field in _PREFIX_CACHE_UINT64_FIELDS:
+        if field not in prefix_cache:
+            invalid_fields.append(field)
+            continue
+
+        value = prefix_cache[field]
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or value < 0
+            or value > _UINT64_MAX
+        ):
+            invalid_fields.append(field)
+
+    return invalid_fields
+
+
+def _prefix_cache_status_response(
+    prefix_cache: Any,
+    prefix_cache_config: Any | None,
+) -> worker_runtime_pb2.WorkerPrefixCacheStatus:
+    if not isinstance(prefix_cache, dict):
+        return _invalid_prefix_cache_status_response(prefix_cache_config)
+
+    status_code = _status_string(prefix_cache.get("status_code"))
+    if status_code not in _PREFIX_CACHE_STATUS_CODES:
+        return _invalid_prefix_cache_status_response(prefix_cache_config)
+
+    if _invalid_prefix_cache_numeric_fields(prefix_cache):
+        return _invalid_prefix_cache_status_response(prefix_cache_config)
+
+    implementation = _status_string(prefix_cache.get("implementation"))
+    if implementation == "":
+        return _invalid_prefix_cache_status_response(prefix_cache_config)
+
+    configured_max_entries, configured_max_bytes = _prefix_cache_caps(prefix_cache_config)
+
+    return worker_runtime_pb2.WorkerPrefixCacheStatus(
+        implementation=implementation,
+        enabled=True,
+        entry_count=int(_status_uint64(prefix_cache.get("entry_count"))),
+        total_bytes=_status_uint64(prefix_cache.get("total_bytes")),
+        hits=_status_uint64(prefix_cache.get("hits")),
+        misses=_status_uint64(prefix_cache.get("misses")),
+        failures=_status_uint64(prefix_cache.get("failures")),
+        stores=_status_uint64(prefix_cache.get("stores")),
+        evictions=_status_uint64(prefix_cache.get("evictions")),
+        configured_max_entries=configured_max_entries,
+        configured_max_bytes=configured_max_bytes,
+        status_code=status_code,
+        status_message=_status_string(prefix_cache.get("status_message")),
+        session_started_unix_ms=_status_uint64(prefix_cache.get("session_started_unix_ms")),
+    )
+
+
 class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer):
     def __init__(
         self,
         backend: Backend,
         *,
+        prefix_cache_config: Any | None = None,
         clock: Callable[[], float] = time.monotonic,
         cancel_tombstone_ttl_s: float = _DEFAULT_CANCEL_TOMBSTONE_TTL_S,
     ) -> None:
         self._backend = backend
+        self._prefix_cache_config = prefix_cache_config
         self._cancel_entries: dict[str, CancelEntry] = {}
         self._lock = threading.Lock()
         self._clock = clock
@@ -206,8 +355,31 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         memory_budget = _memory_budget_status_response(status.get("memory_budget"))
         if memory_budget is not None:
             response.memory_budget.CopyFrom(memory_budget)
-        return response
 
+        if _prefix_cache_disabled(self._prefix_cache_config):
+            response.prefix_cache.CopyFrom(
+                _disabled_prefix_cache_status_response(self._prefix_cache_config)
+            )
+            return response
+
+        try:
+            prefix_cache = self._backend.prefix_cache_status()
+        except Exception as exc:
+            response.prefix_cache.CopyFrom(
+                _error_prefix_cache_status_response(
+                    self._prefix_cache_config,
+                    str(exc),
+                )
+            )
+            return response
+
+        response.prefix_cache.CopyFrom(
+            _prefix_cache_status_response(
+                prefix_cache,
+                self._prefix_cache_config,
+            )
+        )
+        return response
     def LoadModel(
         self, request: worker_runtime_pb2.LoadModelRequest, context: grpc.ServicerContext
     ) -> common_pb2.Ack:
@@ -439,6 +611,7 @@ def build_server(
     worker_runtime_pb2_grpc.add_WorkerRuntimeServiceServicer_to_server(
         WorkerRuntimeServicer(
             backend,
+            prefix_cache_config=prefix_cache_config,
             clock=clock,
             cancel_tombstone_ttl_s=cancel_tombstone_ttl_s,
         ),

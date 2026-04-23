@@ -34,6 +34,29 @@ message WorkerMemoryBudgetStatus {
   uint64 prefill_workspace_bytes_per_token = 14;
 }
 
+message WorkerPrefixCacheStatus {
+  string implementation = 1;
+  bool enabled = 2;
+  uint32 entry_count = 3;
+  uint64 total_bytes = 4;
+  uint64 hits = 5;
+  uint64 misses = 6;
+  uint64 failures = 7;
+  uint64 stores = 8;
+  uint64 evictions = 9;
+  uint32 configured_max_entries = 10;
+  uint64 configured_max_bytes = 11;
+  // Observe-only status vocabulary in the current slice:
+  // ok | disabled | unavailable | invalid_status | error.
+  // Non-enforcement: prefix-cache status is informational in this slice and
+  // MUST NOT alter runtime readiness, request admission, model admission,
+  // scheduler eligibility, queue ordering, hosted-tool eligibility, or
+  // memory_budget_mode enforcement.
+  string status_code = 12;
+  string status_message = 13;
+  uint64 session_started_unix_ms = 14;
+}
+
 message WorkerStatusResponse {
   bool loaded = 1;
   uint32 active_request_count = 2;
@@ -41,6 +64,7 @@ message WorkerStatusResponse {
   string health_code = 4;
   string health_message = 5;
   WorkerMemoryBudgetStatus memory_budget = 6;
+  WorkerPrefixCacheStatus prefix_cache = 7;
 }
 
 message LoadModelRequest {

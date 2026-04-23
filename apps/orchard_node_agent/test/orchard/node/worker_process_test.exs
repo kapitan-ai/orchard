@@ -45,6 +45,22 @@ defmodule Orchard.Node.WorkerProcessTest do
            estimated_headroom_bytes: 5_731_516_544,
            kv_cache_bytes_per_token: 16_384,
            prefill_workspace_bytes_per_token: 2_048
+         },
+         prefix_cache_status: %{
+           implementation: "kv",
+           enabled: true,
+           entry_count: 2,
+           total_bytes: 32_768,
+           hits: 12,
+           misses: 4,
+           failures: 1,
+           stores: 8,
+           evictions: 3,
+           configured_max_entries: 64,
+           configured_max_bytes: 1_048_576,
+           status_code: "ok",
+           status_message: "",
+           session_started_unix_ms: 1_713_726_400_000
          }
        }}
     end
@@ -313,6 +329,11 @@ defmodule Orchard.Node.WorkerProcessTest do
           assert status.memory_budget.budget_available == true
           assert status.memory_budget.status_code == "ok"
           assert status.memory_budget.estimated_headroom_bytes == 5_731_516_544
+          assert status.prefix_cache_status.implementation == "kv"
+          assert status.prefix_cache_status.enabled == true
+          assert status.prefix_cache_status.entry_count == 2
+          assert status.prefix_cache_status.total_bytes == 32_768
+          assert status.prefix_cache_status.status_code == "ok"
         after
           GenServer.stop(pid, :normal, 1_000)
         end
@@ -378,7 +399,9 @@ defmodule Orchard.Node.WorkerProcessTest do
                    WorkerProcess.start_request(
                      pid,
                      "req-task-failed",
-                     execute_request("req-task-failed"), subscriber: self())
+                     execute_request("req-task-failed"),
+                     subscriber: self()
+                   )
 
           generation_ref =
             pid
@@ -428,7 +451,9 @@ defmodule Orchard.Node.WorkerProcessTest do
                    WorkerProcess.start_request(
                      pid,
                      "req-unavailable",
-                     execute_request("req-unavailable"), subscriber: self())
+                     execute_request("req-unavailable"),
+                     subscriber: self()
+                   )
 
           generation_ref =
             pid

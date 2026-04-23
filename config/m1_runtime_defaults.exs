@@ -53,6 +53,9 @@ defmodule Orchard.Config.M1RuntimeDefaults do
         max_age_ms: 300_000,
         max_recent_requests: 32,
         hmac_secret: nil
+      ],
+      cache_introspection: [
+        enabled: false
       ]
     ]
   end
