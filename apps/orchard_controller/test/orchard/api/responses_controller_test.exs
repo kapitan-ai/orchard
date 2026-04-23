@@ -4,11 +4,13 @@ defmodule Orchard.API.ResponsesControllerTest do
   @moduletag :db
 
   import Orchard.TestSupport.ModelRequestFixtures
+  import Orchard.TestSupport.QueueAdmissionAPI
   import Orchard.TestSupport.ToolRegistryTestSupport
 
   alias Orchard.API.Router
   alias Orchard.ArtifactBundle
   alias Orchard.Governance
+  alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.ModelManager
@@ -39,11 +41,21 @@ defmodule Orchard.API.ResponsesControllerTest do
     previous_orchestrator =
       Application.get_env(:orchard_controller, :api_responses_orchestrator_impl)
 
+    previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+    previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    previous_runtime_owner =
+      Application.get_env(:orchard_controller, :queue_admission_api_runtime_owner)
+
     ModelManager.reset()
     bundle = stage_test_bundle!()
 
     on_exit(fn ->
       restore_env(:api_responses_orchestrator_impl, previous_orchestrator)
+      restore_env(:queue_admission_api_runtime_owner, previous_runtime_owner)
+      Application.put_env(:orchard_controller, :inference, previous_inference)
+      Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+      QueueManager.reset()
       clear_responses_stub_config()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
       File.rm_rf(bundle.source_path)
@@ -361,6 +373,75 @@ defmodule Orchard.API.ResponsesControllerTest do
 
     assert body["error"]["message"] ==
              "Inference failed: model emitted tool call outside required function lookup_weather"
+  end
+
+  test "queue admission enabled queues overlapping same-model responses requests", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config!()
+    put_blocking_runtime_adapter!(self())
+    create_queue_model!(bundle, "responses-queue-overlap-model")
+
+    %{token: token} = create_api_key_with_token!("responses-queue-overlap")
+
+    params = %{
+      "model" => "responses-queue-overlap-model@v1",
+      "input" => "hello"
+    }
+
+    first = Task.async(fn -> post_responses(params, token) end)
+
+    assert_receive {:queue_admission_runtime_started, first_pid, first_request_id,
+                    "responses-queue-overlap-model"},
+                   2_000
+
+    second = Task.async(fn -> post_responses(params, token) end)
+
+    assert wait_for_queued_request("responses-queue-overlap-model@v1")
+
+    send(first_pid, :queue_admission_runtime_release)
+    first_conn = Task.await(first, 5_000)
+
+    assert_receive {:queue_admission_runtime_started, second_pid, second_request_id,
+                    "responses-queue-overlap-model"},
+                   2_000
+
+    refute second_request_id == first_request_id
+
+    send(second_pid, :queue_admission_runtime_release)
+    second_conn = Task.await(second, 5_000)
+
+    assert first_conn.status == 200
+    assert second_conn.status == 200
+
+    immediate = request_with_queue_result!("responses-queue-overlap-model@v1", "immediate")
+    queued = request_with_queue_result!("responses-queue-overlap-model@v1", "queued")
+
+    assert_queue_metadata(immediate, "immediate", granted?: true)
+    assert_queue_metadata(queued, "queued", queued?: true, granted?: true)
+  end
+
+  test "SPEC.md §7.2.7 returns top-level sync responses envelopes for busy and queue execute errors" do
+    cases = [
+      {:model_busy, 503, "server_error", "model_busy"},
+      {:queue_full, 429, "rate_limit_error", "queue_full"},
+      {:queue_timeout, 504, "server_error", "queue_timeout"}
+    ]
+
+    for {reason, status, type, code} <- cases do
+      stub_responses_orchestrator(
+        prepare: {:ok, stub_responses_canonical(false), %{}},
+        execute: {:error, reason}
+      )
+
+      conn = post_responses(%{"model" => "stub-tool-model@v1", "input" => "hello"})
+
+      assert conn.status == status
+      body = Jason.decode!(conn.resp_body)
+      assert body["error"]["type"] == type
+      assert body["error"]["code"] == code
+      refute Map.has_key?(body, "response")
+    end
   end
 
   test "replays completed tenant-scoped responses for the same idempotency key", %{bundle: bundle} do
@@ -830,6 +911,38 @@ defmodule Orchard.API.ResponsesControllerTest do
            ]
   end
 
+  test "SPEC.md §7.2.7 streaming busy and queue execute errors use nested response.error" do
+    cases = [
+      {:model_busy, "server_error", "model_busy"},
+      {:queue_full, "rate_limit_error", "queue_full"},
+      {:queue_timeout, "server_error", "queue_timeout"}
+    ]
+
+    for {reason, type, code} <- cases do
+      stub_responses_orchestrator(
+        prepare: {:ok, stub_responses_canonical(true), %{}},
+        execute: {:error, reason}
+      )
+
+      conn =
+        post_responses(%{
+          "model" => "stub-tool-model@v1",
+          "input" => "hello",
+          "stream" => true
+        })
+
+      assert conn.status == 200
+      events = parse_typed_sse_events(conn)
+      assert Enum.map(events, & &1.type) == ["response.created", "response.failed"]
+
+      terminal = List.last(events)
+      assert terminal.data["error"] == nil
+      assert terminal.data["response"]["status"] == "failed"
+      assert terminal.data["response"]["error"]["type"] == type
+      assert terminal.data["response"]["error"]["code"] == code
+    end
+  end
+
   test "malformed post-start tool-call delta emits typed response.failed and no output_text.done" do
     stub_responses_orchestrator(
       prepare: {:ok, stub_responses_canonical(true), %{}},
@@ -1118,7 +1231,8 @@ defmodule Orchard.API.ResponsesControllerTest do
         [
           {"responses-success-model", "v1"},
           {"responses-replay-model", "v1"},
-          {"responses-stream-model", "v1"}
+          {"responses-stream-model", "v1"},
+          {"responses-queue-overlap-model", "v1"}
         ],
         fn {model_id, version} ->
           cache_path = Path.join([models_root, model_id, version])

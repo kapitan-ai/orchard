@@ -11,6 +11,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Inference.{
     CanonicalRequestSerializer,
     ChatError,
+    QueueManager,
     ToolCallAccumulator,
     ToolExecutionSemantics,
     ToolingValidation
@@ -19,6 +20,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.InferenceEvent
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
+  alias Orchard.Requests.Request
   alias Orchard.Requests.RequestServer
   alias Orchard.Requests.RequestStepEvent
 
@@ -53,30 +55,56 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
     with :ok <- validate_resolved_tooling(canonical),
          {:ok, db_request} <- persist_request(canonical, model, idempotency) do
-      case start_fsm(db_request) do
-        {:ok, _pid} ->
-          run_dispatch_pipeline(
-            db_request,
-            canonical,
-            model,
-            caller,
-            event_handler,
-            success_persistence,
-            step_event_appender,
-            terminal_persister
-          )
+      start_and_dispatch(
+        db_request,
+        canonical,
+        model,
+        caller,
+        event_handler,
+        success_persistence,
+        step_event_appender,
+        terminal_persister
+      )
+    end
+  end
 
-        {:error, reason} ->
-          case fail_request(
-                 db_request,
-                 {:request_server_start_failed, reason},
-                 nil,
-                 terminal_persister
-               ) do
-            :ok -> {:error, {:request_server_start_failed, reason}}
-            {:error, {:terminal_persist_failed, _} = persist_error} -> {:error, persist_error}
-          end
-      end
+  defp start_and_dispatch(
+         db_request,
+         canonical,
+         model,
+         caller,
+         event_handler,
+         success_persistence,
+         step_event_appender,
+         terminal_persister
+       ) do
+    case start_fsm(db_request) do
+      {:ok, _pid} ->
+        run_dispatch_pipeline(
+          db_request,
+          canonical,
+          model,
+          caller,
+          event_handler,
+          success_persistence,
+          step_event_appender,
+          terminal_persister
+        )
+
+      {:error, reason} ->
+        handle_start_failure(db_request, reason, terminal_persister)
+    end
+  end
+
+  defp handle_start_failure(db_request, reason, terminal_persister) do
+    case fail_request(
+           db_request,
+           {:request_server_start_failed, reason},
+           nil,
+           terminal_persister
+         ) do
+      :ok -> {:error, {:request_server_start_failed, reason}}
+      {:error, {:terminal_persist_failed, _} = persist_error} -> {:error, persist_error}
     end
   end
 
@@ -90,76 +118,349 @@ defmodule Orchard.Inference.RequestOrchestrator do
          step_event_appender,
          terminal_persister
        ) do
-    result =
-      with :ok <- advance_fsm(db_request.id, :validated),
-           {:ok, schedule} <- schedule_request(canonical),
-           {:ok, _} <- Requests.record_schedule(db_request, schedule),
-           :ok <- advance_fsm(db_request.id, :scheduled),
-           :ok <- advance_fsm(db_request.id, :dispatching) do
-        execute_inference_turn(
-          db_request,
-          canonical,
-          model,
-          schedule,
-          caller,
-          event_handler,
-          success_persistence,
-          step_event_appender,
-          terminal_persister
-        )
-      end
-
-    case result do
-      {:ok, _, _} = success ->
-        success
-
-      {:error, {:terminal_persist_failed, _} = persist_error, _step_context} ->
-        {:error, persist_error}
-
-      {:error, reason, step_context} ->
-        case fail_request(db_request, reason, step_context, terminal_persister) do
-          :ok -> {:error, reason}
-          {:error, {:terminal_persist_failed, _} = persist_error} -> {:error, persist_error}
-        end
-
-      {:error, {:terminal_persist_failed, _} = persist_error} ->
-        {:error, persist_error}
-
-      {:error, reason} ->
-        case fail_request(db_request, reason, nil, terminal_persister) do
-          :ok -> {:error, reason}
-          {:error, {:terminal_persist_failed, _} = persist_error} -> {:error, persist_error}
-        end
-    end
+    db_request
+    |> dispatch_pipeline_result(
+      canonical,
+      model,
+      caller,
+      event_handler,
+      success_persistence,
+      step_event_appender,
+      terminal_persister
+    )
+    |> handle_dispatch_pipeline_result(db_request, terminal_persister)
   end
 
-  defp execute_inference_turn(
+  defp dispatch_pipeline_result(
          db_request,
          canonical,
          model,
-         schedule,
          caller,
          event_handler,
          success_persistence,
          step_event_appender,
          terminal_persister
        ) do
+    with :ok <- advance_fsm(db_request.id, :validated) do
+      dispatch_after_validation(
+        db_request,
+        canonical,
+        model,
+        caller,
+        event_handler,
+        success_persistence,
+        step_event_appender,
+        terminal_persister
+      )
+    end
+  end
+
+  defp dispatch_after_validation(
+         db_request,
+         canonical,
+         model,
+         caller,
+         event_handler,
+         success_persistence,
+         step_event_appender,
+         terminal_persister
+       ) do
+    if Inference.queue_admission_enabled?() do
+      run_queue_dispatch_pipeline(
+        db_request,
+        canonical,
+        model,
+        caller,
+        event_handler,
+        success_persistence,
+        step_event_appender,
+        terminal_persister
+      )
+    else
+      run_legacy_dispatch_pipeline(
+        db_request,
+        canonical,
+        model,
+        caller,
+        event_handler,
+        success_persistence,
+        step_event_appender,
+        terminal_persister
+      )
+    end
+  end
+
+  defp handle_dispatch_pipeline_result({:ok, _, _} = success, _db_request, _terminal_persister),
+    do: success
+
+  defp handle_dispatch_pipeline_result(
+         {:error, {:terminal_persist_failed, _} = persist_error, _step_context},
+         _db_request,
+         _terminal_persister
+       ),
+       do: {:error, persist_error}
+
+  defp handle_dispatch_pipeline_result(
+         {:error, reason, step_context},
+         db_request,
+         terminal_persister
+       ) do
+    fail_and_return_error(db_request, reason, step_context, terminal_persister)
+  end
+
+  defp handle_dispatch_pipeline_result(
+         {:error, {:terminal_persist_failed, _} = persist_error},
+         _db_request,
+         _terminal_persister
+       ),
+       do: {:error, persist_error}
+
+  defp handle_dispatch_pipeline_result(
+         {:error, {:admission_already_terminalized, reason}},
+         _db_request,
+         _terminal_persister
+       ),
+       do: {:error, reason}
+
+  defp handle_dispatch_pipeline_result({:error, reason}, db_request, terminal_persister) do
+    fail_and_return_error(db_request, reason, nil, terminal_persister)
+  end
+
+  defp fail_and_return_error(db_request, reason, step_context, terminal_persister) do
+    case fail_request(db_request, reason, step_context, terminal_persister) do
+      :ok -> {:error, reason}
+      {:error, {:terminal_persist_failed, _} = persist_error} -> {:error, persist_error}
+    end
+  end
+
+  defp run_legacy_dispatch_pipeline(
+         db_request,
+         canonical,
+         model,
+         caller,
+         event_handler,
+         success_persistence,
+         step_event_appender,
+         terminal_persister
+       ) do
+    with {:ok, schedule} <- schedule_request(canonical),
+         {:ok, _} <- Requests.record_schedule(db_request, schedule),
+         :ok <- advance_fsm(db_request.id, :scheduled),
+         :ok <- advance_fsm(db_request.id, :dispatching) do
+      execute_inference_turn(db_request, canonical, model, schedule, %{
+        caller: caller,
+        event_handler: event_handler,
+        success_persistence: success_persistence,
+        step_event_appender: step_event_appender,
+        terminal_persister: terminal_persister
+      })
+    end
+  end
+
+  defp run_queue_dispatch_pipeline(
+         db_request,
+         canonical,
+         model,
+         caller,
+         event_handler,
+         success_persistence,
+         step_event_appender,
+         terminal_persister
+       ) do
+    with :ok <- advance_fsm(db_request.id, :admitted),
+         {:ok, grant} <- acquire_queue_grant(db_request, canonical, caller) do
+      dispatch_if_queue_request_live(db_request, canonical, model, grant, %{
+        caller: caller,
+        event_handler: event_handler,
+        success_persistence: success_persistence,
+        step_event_appender: step_event_appender,
+        terminal_persister: terminal_persister
+      })
+    end
+  end
+
+  defp dispatch_if_queue_request_live(db_request, canonical, model, grant, execution_opts) do
+    if terminal_request?(db_request.id) do
+      Inference.queue_manager().release(grant)
+      {:error, {:admission_already_terminalized, terminal_queue_reason(db_request.id)}}
+    else
+      dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts)
+    end
+  end
+
+  defp acquire_queue_grant(db_request, canonical, caller) do
+    request = %{
+      request_id: db_request.id,
+      public_id: db_request.public_id,
+      tenant_id: db_request.tenant_id,
+      model_id: canonical.model_ref.model_id,
+      version: canonical.model_ref.version,
+      caller_pid: caller
+    }
+
+    case Inference.queue_manager().acquire(request) do
+      {:ok, %QueueManager.Grant{} = grant} ->
+        {:ok, grant}
+
+      {:queued, %QueueManager.Ticket{} = ticket} ->
+        await_queued_grant(db_request, ticket)
+
+      {:error, reason, metadata} ->
+        persist_queue_terminal_metadata(db_request, metadata, reason)
+    end
+  end
+
+  defp await_queued_grant(db_request, ticket) do
+    case record_queued_admission(db_request, ticket) do
+      :ok ->
+        consume_queued_grant(db_request, ticket, false)
+
+      {:error, :already_terminal} ->
+        consume_queued_grant(db_request, ticket, true)
+
+      {:error, reason} ->
+        if terminal_request?(db_request.id) do
+          consume_queued_grant(db_request, ticket, true)
+        else
+          Inference.queue_manager().abandon(ticket)
+          {:error, {:queue_metadata_persist_failed, reason}}
+        end
+    end
+  end
+
+  defp record_queued_admission(db_request, ticket) do
+    with :ok <- advance_fsm(db_request.id, :queued),
+         {:ok, _request} <-
+           Requests.record_schedule(db_request, QueueManager.queued_metadata(ticket)) do
+      :ok
+    end
+  end
+
+  defp consume_queued_grant(db_request, ticket, already_terminal?) do
+    case Inference.queue_manager().await(ticket) do
+      {:ok, %QueueManager.Grant{} = grant} ->
+        {:ok, grant}
+
+      {:error, reason, metadata} ->
+        handle_queue_await_error(db_request, metadata, reason, already_terminal?)
+    end
+  end
+
+  defp handle_queue_await_error(
+         db_request,
+         metadata,
+         :request_caller_disconnect,
+         already_terminal?
+       ) do
+    if already_terminal? or terminal_request?(db_request.id) do
+      {:error, {:admission_already_terminalized, terminal_queue_reason(db_request.id)}}
+    else
+      persist_queue_terminal_metadata(db_request, metadata, :request_caller_disconnect)
+    end
+  end
+
+  defp handle_queue_await_error(db_request, _metadata, _reason, true) do
+    {:error, {:admission_already_terminalized, terminal_queue_reason(db_request.id)}}
+  end
+
+  defp handle_queue_await_error(db_request, metadata, reason, false) do
+    if terminal_request?(db_request.id) do
+      {:error, {:admission_already_terminalized, terminal_queue_reason(db_request.id)}}
+    else
+      persist_queue_terminal_metadata(db_request, metadata, reason)
+    end
+  end
+
+  defp persist_queue_terminal_metadata(db_request, metadata, reason) do
+    case Requests.record_schedule(db_request, metadata) do
+      {:ok, _request} -> {:error, reason}
+      {:error, persist_reason} -> {:error, {:queue_metadata_persist_failed, persist_reason}}
+    end
+  end
+
+  defp terminal_request?(request_id) do
+    Requests.get_request!(request_id).state in Request.terminal_states()
+  end
+
+  defp terminal_queue_reason(request_id) do
+    case Requests.get_request!(request_id).error_code do
+      "request_controller_restarted" -> :request_controller_restarted
+      "request_caller_disconnect" -> :request_caller_disconnect
+      "queue_timeout" -> :queue_timeout
+      _other -> :already_terminal
+    end
+  end
+
+  defp dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
+    do_dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts)
+  after
+    Inference.queue_manager().release(grant)
+  end
+
+  defp do_dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
+    metadata = QueueManager.grant_metadata(grant)
+
+    with {:ok, _request} <- Requests.record_schedule(db_request, metadata),
+         :ok <-
+           ensure_caller_alive_before_schedule(
+             db_request,
+             execution_opts.caller,
+             metadata,
+             execution_opts.terminal_persister
+           ),
+         {:ok, schedule} <- schedule_request(canonical),
+         {:ok, _} <- Requests.record_schedule(db_request, Map.merge(schedule, metadata)),
+         :ok <- advance_fsm(db_request.id, :scheduled),
+         :ok <- advance_fsm(db_request.id, :dispatching) do
+      execute_inference_turn(db_request, canonical, model, schedule, execution_opts)
+    end
+  end
+
+  defp ensure_caller_alive_before_schedule(db_request, caller, metadata, terminal_persister) do
+    if Process.alive?(caller) do
+      :ok
+    else
+      interrupt_metadata = Map.put(metadata, :queue_result, :interrupted_before_dispatch)
+
+      with {:ok, _request} <- Requests.record_schedule(db_request, interrupt_metadata),
+           :ok <- terminalize_pre_dispatch_disconnect(db_request, terminal_persister) do
+        {:error, {:admission_already_terminalized, :request_caller_disconnect}}
+      end
+    end
+  end
+
+  defp terminalize_pre_dispatch_disconnect(db_request, terminal_persister) do
+    terminal_attrs = %{
+      state: :cancelled,
+      error_code: "request_caller_disconnect",
+      error_message: "Caller disconnected before scheduling"
+    }
+
+    case terminal_persister.(db_request, terminal_attrs, []) do
+      {:ok, _request} ->
+        advance_fsm_best_effort_terminal(db_request.id, :cancelled)
+        :ok
+
+      {:error, reason} ->
+        {:error, {:terminal_persist_failed, reason}}
+    end
+  end
+
+  defp execute_inference_turn(db_request, canonical, model, schedule, execution_opts) do
     step_context = inference_turn_step_context(canonical)
 
-    case persist_inference_turn_started(db_request, step_context, step_event_appender) do
+    case persist_inference_turn_started(
+           db_request,
+           step_context,
+           execution_opts.step_event_appender
+         ) do
       {:ok, persisted_step_context} ->
         dispatch_started_inference_turn(
           db_request,
           canonical,
           model,
           schedule,
-          %{
-            caller: caller,
-            event_handler: event_handler,
-            success_persistence: success_persistence,
-            step_event_appender: step_event_appender,
-            terminal_persister: terminal_persister
-          },
+          execution_opts,
           persisted_step_context
         )
 
@@ -188,13 +489,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
         finalize_started_inference_turn(
           db_request,
           canonical,
-          model,
           events,
           first_token_at,
-          execution_opts.success_persistence,
-          step_context,
-          execution_opts.step_event_appender,
-          execution_opts.terminal_persister
+          execution_opts,
+          step_context
         )
 
       {:error, reason} ->
@@ -205,25 +503,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp finalize_started_inference_turn(
          db_request,
          canonical,
-         model,
          events,
          first_token_at,
-         success_persistence,
-         step_context,
-         step_event_appender,
-         terminal_persister
+         execution_opts,
+         step_context
        ) do
-    case finalize(
-           db_request,
-           canonical,
-           model,
-           events,
-           first_token_at,
-           success_persistence,
-           step_context,
-           step_event_appender,
-           terminal_persister
-         ) do
+    case finalize(db_request, canonical, events, first_token_at, execution_opts, step_context) do
       {:ok, _, _} = success -> success
       {:error, reason} -> {:error, reason, step_context}
     end
@@ -383,18 +668,13 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp finalize(
-         db_request,
-         canonical,
-         _model,
-         events,
-         first_token_at,
-         success_persistence,
-         step_context,
-         step_event_appender,
-         terminal_persister
-       ) do
-    case build_terminal_attrs(canonical, events, first_token_at, success_persistence) do
+  defp finalize(db_request, canonical, events, first_token_at, execution_opts, step_context) do
+    case build_terminal_attrs(
+           canonical,
+           events,
+           first_token_at,
+           execution_opts.success_persistence
+         ) do
       {:ok, terminal_attrs} ->
         persist_terminal(
           db_request,
@@ -402,8 +682,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
           events,
           terminal_attrs,
           step_context,
-          step_event_appender,
-          terminal_persister
+          execution_opts.step_event_appender,
+          execution_opts.terminal_persister
         )
 
       {:error, reason} ->

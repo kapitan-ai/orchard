@@ -19,6 +19,9 @@ defmodule Orchard.Inference.ChatError do
           | :tokenization_invalid_request
           | :tokenization_internal
           | :model_load_failed
+          | :model_busy
+          | :queue_full
+          | :queue_timeout
           | :request_timed_out
           | :request_cancelled
           | :request_interrupted
@@ -97,6 +100,17 @@ defmodule Orchard.Inference.ChatError do
   @spec from_execute_error(term()) :: t()
   def from_execute_error({:model_load_failed, %ModelLoadFailure{} = failure}),
     do: build(:model_load_failed, model_load_failure: failure)
+
+  def from_execute_error(reason) when reason in [:model_busy, :queue_full, :queue_timeout],
+    do: build_admission_error(reason, nil)
+
+  def from_execute_error({kind, message})
+      when kind in [:model_busy, :queue_full, :queue_timeout] and is_binary(message),
+      do: build_admission_error(kind, message)
+
+  def from_execute_error({kind, detail})
+      when kind in [:model_busy, :queue_full, :queue_timeout],
+      do: build_admission_error(kind, nil, detail)
 
   def from_execute_error(reason), do: build(:internal, detail: reason)
 
@@ -210,6 +224,36 @@ defmodule Orchard.Inference.ChatError do
     |> Map.put(:param, nil)
   end
 
+  def api_mapping(%__MODULE__{kind: :model_busy}) do
+    %{
+      status: :service_unavailable,
+      type: "server_error",
+      code: "model_busy",
+      message: "Model is busy",
+      param: nil
+    }
+  end
+
+  def api_mapping(%__MODULE__{kind: :queue_full}) do
+    %{
+      status: :too_many_requests,
+      type: "rate_limit_error",
+      code: "queue_full",
+      message: "Inference queue is full",
+      param: nil
+    }
+  end
+
+  def api_mapping(%__MODULE__{kind: :queue_timeout}) do
+    %{
+      status: :gateway_timeout,
+      type: "server_error",
+      code: "queue_timeout",
+      message: "Request timed out waiting for admission",
+      param: nil
+    }
+  end
+
   def api_mapping(%__MODULE__{kind: :request_timed_out}) do
     %{
       status: :gateway_timeout,
@@ -294,6 +338,33 @@ defmodule Orchard.Inference.ChatError do
   def terminal_attrs(%__MODULE__{kind: :model_load_failed, model_load_failure: failure}),
     do: ModelLoadFailure.terminal_attrs(failure)
 
+  def terminal_attrs(%__MODULE__{kind: :model_busy} = error) do
+    %{
+      state: :failed,
+      http_status: 503,
+      error_code: error.source_code || "model_busy",
+      error_message: error.source_message || "Model is busy"
+    }
+  end
+
+  def terminal_attrs(%__MODULE__{kind: :queue_full} = error) do
+    %{
+      state: :failed,
+      http_status: 429,
+      error_code: error.source_code || "queue_full",
+      error_message: error.source_message || "Inference queue is full"
+    }
+  end
+
+  def terminal_attrs(%__MODULE__{kind: :queue_timeout} = error) do
+    %{
+      state: :timed_out,
+      http_status: 504,
+      error_code: error.source_code || "queue_timeout",
+      error_message: error.source_message || "Request timed out waiting for admission"
+    }
+  end
+
   def terminal_attrs(%__MODULE__{kind: :request_timed_out} = error) do
     %{
       state: :timed_out,
@@ -343,8 +414,20 @@ defmodule Orchard.Inference.ChatError do
     struct!(__MODULE__, Keyword.merge([kind: kind], attrs))
   end
 
+  defp build_admission_error(kind, message, detail \\ nil) do
+    build(kind,
+      detail: detail,
+      source_code: Atom.to_string(kind),
+      source_message: message
+    )
+  end
+
   defp failed_event_kind(code) when code in ["timed_out", "request_timeout", "deadline_exceeded"],
     do: :request_timed_out
+
+  defp failed_event_kind("model_busy"), do: :model_busy
+  defp failed_event_kind("queue_full"), do: :queue_full
+  defp failed_event_kind("queue_timeout"), do: :queue_timeout
 
   defp failed_event_kind("tooling_not_supported"), do: :tooling_not_supported
 

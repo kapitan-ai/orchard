@@ -37,7 +37,16 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       request_timeout_ms: @default_request_timeout_ms,
       model_load_timeout_ms: @default_model_load_timeout_ms,
       node_freshness_threshold_ms: 30_000,
-      node_unreachable_threshold_ms: 15_000
+      node_unreachable_threshold_ms: 15_000,
+      queue_admission: [
+        enabled: false,
+        max_wait_ms: 3_000,
+        max_queued_per_tenant: 32,
+        poll_interval_ms: 100,
+        capacity: 1,
+        owner_runtime: false,
+        single_controller_ack: false
+      ]
     ]
   end
 

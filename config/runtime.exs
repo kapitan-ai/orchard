@@ -299,7 +299,16 @@ default_controller_inference = fn root ->
     request_timeout_ms: 120_000,
     model_load_timeout_ms: 120_000,
     node_freshness_threshold_ms: 30_000,
-    node_unreachable_threshold_ms: 15_000
+    node_unreachable_threshold_ms: 15_000,
+    queue_admission: [
+      enabled: false,
+      max_wait_ms: 3_000,
+      max_queued_per_tenant: 32,
+      poll_interval_ms: 100,
+      capacity: 1,
+      owner_runtime: false,
+      single_controller_ack: false
+    ]
   ]
 end
 
@@ -477,7 +486,18 @@ if config_env() == :prod do
             model_load_timeout_ms: env_int.("ORCHARD_MODEL_LOAD_TIMEOUT_MS", "120000"),
             node_freshness_threshold_ms: env_int.("ORCHARD_NODE_FRESHNESS_THRESHOLD_MS", "30000"),
             node_unreachable_threshold_ms:
-              env_int.("ORCHARD_NODE_UNREACHABLE_THRESHOLD_MS", "15000")
+              env_int.("ORCHARD_NODE_UNREACHABLE_THRESHOLD_MS", "15000"),
+            queue_admission: [
+              enabled: env_bool.("ORCHARD_QUEUE_ADMISSION_ENABLED", false),
+              max_wait_ms: env_int.("ORCHARD_QUEUE_ADMISSION_MAX_WAIT_MS", "3000"),
+              max_queued_per_tenant:
+                env_int.("ORCHARD_QUEUE_ADMISSION_MAX_QUEUED_PER_TENANT", "32"),
+              poll_interval_ms: env_int.("ORCHARD_QUEUE_ADMISSION_POLL_INTERVAL_MS", "100"),
+              capacity: env_int.("ORCHARD_QUEUE_ADMISSION_CAPACITY", "1"),
+              owner_runtime: env_bool.("ORCHARD_QUEUE_ADMISSION_OWNER_RUNTIME", false),
+              single_controller_ack:
+                env_bool.("ORCHARD_QUEUE_ADMISSION_SINGLE_CONTROLLER_ACK", false)
+            ]
           )
 
       controller_hf_token =

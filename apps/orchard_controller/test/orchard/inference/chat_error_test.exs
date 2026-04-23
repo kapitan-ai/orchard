@@ -183,6 +183,70 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
   end
 
+  test "SPEC.md §7.2.7 model_busy failed events map to 503 server_error" do
+    event = InferenceEvent.failed("model_busy", "model already has an active request", false)
+    error = ChatError.from_failed_event(event)
+
+    assert ChatError.api_mapping(error) == %{
+             status: :service_unavailable,
+             type: "server_error",
+             code: "model_busy",
+             message: "Model is busy",
+             param: nil
+           }
+
+    assert ChatError.sse_mapping(error) == %{
+             type: "server_error",
+             code: "model_busy",
+             message: "Model is busy",
+             param: nil
+           }
+
+    assert ChatError.terminal_attrs(error) == %{
+             state: :failed,
+             http_status: 503,
+             error_code: "model_busy",
+             error_message: "model already has an active request"
+           }
+  end
+
+  test "SPEC.md §7.2.7 queue admission execute errors have explicit public mappings" do
+    cases = [
+      {:model_busy, :service_unavailable, "server_error", "model_busy", "Model is busy", :failed,
+       503},
+      {:queue_full, :too_many_requests, "rate_limit_error", "queue_full",
+       "Inference queue is full", :failed, 429},
+      {:queue_timeout, :gateway_timeout, "server_error", "queue_timeout",
+       "Request timed out waiting for admission", :timed_out, 504}
+    ]
+
+    for {reason, status, type, code, message, state, http_status} <- cases do
+      error = ChatError.from_execute_error(reason)
+
+      assert ChatError.api_mapping(error) == %{
+               status: status,
+               type: type,
+               code: code,
+               message: message,
+               param: nil
+             }
+
+      assert ChatError.sse_mapping(error) == %{
+               type: type,
+               code: code,
+               message: message,
+               param: nil
+             }
+
+      assert ChatError.terminal_attrs(error) == %{
+               state: state,
+               http_status: http_status,
+               error_code: code,
+               error_message: message
+             }
+    end
+  end
+
   test "model load failures delegate all mappings to ModelLoadFailure" do
     failure = %ModelLoadFailure{
       category: :timeout,

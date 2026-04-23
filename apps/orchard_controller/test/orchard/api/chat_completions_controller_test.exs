@@ -4,12 +4,14 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   @moduletag :db
 
   import Orchard.TestSupport.ModelRequestFixtures
+  import Orchard.TestSupport.QueueAdmissionAPI
   import Orchard.TestSupport.ToolRegistryTestSupport
 
   alias Orchard.API.Router
   alias Orchard.ArtifactBundle
   alias Orchard.Governance
   alias Orchard.Inference.ChatRequestNormalizer
+  alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.ModelManager
@@ -62,6 +64,11 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
   setup do
     previous_orchestrator = Application.get_env(:orchard_controller, :api_chat_orchestrator_impl)
+    previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+    previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+
+    previous_runtime_owner =
+      Application.get_env(:orchard_controller, :queue_admission_api_runtime_owner)
 
     # Reset node-agent state and stage a test bundle so model acquisition
     # succeeds for any model_id when the bundle is pre-cached.
@@ -70,6 +77,10 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
     on_exit(fn ->
       restore_env(:api_chat_orchestrator_impl, previous_orchestrator)
+      restore_env(:queue_admission_api_runtime_owner, previous_runtime_owner)
+      Application.put_env(:orchard_controller, :inference, previous_inference)
+      Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+      QueueManager.reset()
       clear_chat_stub_config()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
       File.rm_rf(bundle.source_path)
@@ -642,6 +653,82 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert body["error"]["message"] ==
                "Inference failed: model did not emit any required tool calls"
     end
+
+    @tag :db
+    test "queue admission enabled queues overlapping same-model chat completions", %{
+      bundle: bundle
+    } do
+      put_queue_admission_config!()
+      put_blocking_runtime_adapter!(self())
+      create_queue_model!(bundle, "chat-queue-overlap-model")
+
+      %{token: token} = create_api_key_with_token!("chat-queue-overlap")
+
+      params = %{
+        "model" => "chat-queue-overlap-model@v1",
+        "messages" => [%{"role" => "user", "content" => "hello"}]
+      }
+
+      first = Task.async(fn -> post_chat(params, token) end)
+
+      assert_receive {:queue_admission_runtime_started, first_pid, first_request_id,
+                      "chat-queue-overlap-model"},
+                     2_000
+
+      second = Task.async(fn -> post_chat(params, token) end)
+
+      assert wait_for_queued_request("chat-queue-overlap-model@v1")
+
+      send(first_pid, :queue_admission_runtime_release)
+      first_conn = Task.await(first, 5_000)
+
+      assert_receive {:queue_admission_runtime_started, second_pid, second_request_id,
+                      "chat-queue-overlap-model"},
+                     2_000
+
+      refute second_request_id == first_request_id
+
+      send(second_pid, :queue_admission_runtime_release)
+      second_conn = Task.await(second, 5_000)
+
+      assert first_conn.status == 200
+      assert second_conn.status == 200
+
+      immediate = request_with_queue_result!("chat-queue-overlap-model@v1", "immediate")
+      queued = request_with_queue_result!("chat-queue-overlap-model@v1", "queued")
+
+      assert_queue_metadata(immediate, "immediate", granted?: true)
+      assert_queue_metadata(queued, "queued", queued?: true, granted?: true)
+    end
+
+    test "SPEC.md §7.2.7 returns top-level chat envelopes for busy and queue execute errors" do
+      cases = [
+        {:model_busy, 503, "server_error", "model_busy"},
+        {:queue_full, 429, "rate_limit_error", "queue_full"},
+        {:queue_timeout, 504, "server_error", "queue_timeout"}
+      ]
+
+      for {reason, status, type, code} <- cases do
+        stub_chat_orchestrator(
+          prepare: {:ok, stub_chat_canonical(false), %{}},
+          execute: {:error, reason}
+        )
+
+        conn =
+          post_chat(%{
+            "model" => "stub-tool-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}]
+          })
+
+        assert conn.status == status
+        body = Jason.decode!(conn.resp_body)
+        assert body["error"]["type"] == type
+        assert body["error"]["code"] == code
+        assert Map.has_key?(body["error"], "message")
+        assert Map.has_key?(body["error"], "param")
+        refute Map.has_key?(body, "response")
+      end
+    end
   end
 
   describe "POST /v1/chat/completions (streaming pre-stream errors)" do
@@ -843,6 +930,35 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
              end)
 
       refute Enum.any?(events, fn {type, _payload} -> type == :done end)
+    end
+
+    test "SPEC.md §7.2.7 streaming busy and queue execute errors use chat SSE error envelope" do
+      cases = [
+        {:model_busy, "server_error", "model_busy"},
+        {:queue_full, "rate_limit_error", "queue_full"},
+        {:queue_timeout, "server_error", "queue_timeout"}
+      ]
+
+      for {reason, type, code} <- cases do
+        stub_chat_orchestrator(
+          prepare: {:ok, stub_chat_canonical(), %{}},
+          execute: {:error, reason}
+        )
+
+        conn =
+          post_chat(%{
+            "model" => "stub-tool-model@v1",
+            "messages" => [%{"role" => "user", "content" => "hello"}],
+            "stream" => true
+          })
+
+        assert conn.status == 200
+        events = parse_sse_body(conn.resp_body)
+        assert [{:error, payload}] = events
+        assert payload["error"]["type"] == type
+        assert payload["error"]["code"] == code
+        refute Enum.any?(events, fn {event_type, _payload} -> event_type == :done end)
+      end
     end
   end
 
@@ -1211,7 +1327,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       {"test-stream-model", "v1"},
       {"persist-model", "v1"},
       {"persist-non-stream-model", "v1"},
-      {"tenant-scope-model", "v1"}
+      {"tenant-scope-model", "v1"},
+      {"chat-queue-overlap-model", "v1"}
     ]
 
     cache_paths =

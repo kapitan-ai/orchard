@@ -103,30 +103,136 @@ defmodule Orchard.Inference.RequestOrchestratorTest.CapturingRuntimeAdapter do
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.PreAwaitTerminalQueueManager do
+  @moduledoc false
+
+  alias Orchard.Inference.QueueManager
+  alias Orchard.Requests
+  alias Orchard.Requests.RequestServer
+
+  def acquire(request) do
+    queue_key = "#{request.model_id}@#{request.version}"
+    queued_at = DateTime.utc_now() |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()
+    ticket_ref = make_ref()
+    result = pre_await_result(queue_key, queued_at)
+
+    terminalize_request(request.request_id, result)
+    Process.put({__MODULE__, ticket_ref}, result.await_result)
+
+    {:queued,
+     %QueueManager.Ticket{
+       server: __MODULE__,
+       ticket_ref: ticket_ref,
+       queue_key: queue_key,
+       queued_at: queued_at,
+       enqueued_monotonic_ms: System.monotonic_time(:millisecond),
+       max_wait_ms: 1
+     }}
+  end
+
+  def await(%QueueManager.Ticket{} = ticket) do
+    Process.delete({__MODULE__, ticket.ticket_ref})
+  end
+
+  def abandon(%QueueManager.Ticket{} = ticket) do
+    Process.delete({__MODULE__, ticket.ticket_ref})
+    :ok
+  end
+
+  def release(_grant), do: :ok
+
+  defp pre_await_result(queue_key, queued_at) do
+    queue_result =
+      Application.fetch_env!(
+        :orchard_controller,
+        :request_orchestrator_pre_await_queue_result
+      )
+
+    case queue_result do
+      :queue_timeout -> timeout_result(queue_key, queued_at)
+      :request_caller_disconnect -> disconnect_result(queue_key, queued_at)
+    end
+  end
+
+  defp timeout_result(queue_key, queued_at) do
+    metadata =
+      :queue_timeout
+      |> QueueManager.error_metadata(queue_key, 1)
+      |> Map.put(:queued_at, queued_at)
+
+    %{
+      await_result: {:error, :queue_timeout, metadata},
+      metadata: metadata,
+      transition: :timed_out,
+      terminal_attrs: %{
+        state: :timed_out,
+        http_status: 504,
+        error_code: "queue_timeout",
+        error_message: "Request timed out while waiting for admission"
+      }
+    }
+  end
+
+  defp disconnect_result(queue_key, queued_at) do
+    metadata =
+      :interrupted_before_dispatch
+      |> QueueManager.error_metadata(queue_key, 1)
+      |> Map.put(:queued_at, queued_at)
+
+    %{
+      await_result: {:error, :request_caller_disconnect, metadata},
+      metadata: metadata,
+      transition: :cancelled,
+      terminal_attrs: %{
+        state: :cancelled,
+        error_code: "request_caller_disconnect",
+        error_message: "Caller disconnected before admission"
+      }
+    }
+  end
+
+  defp terminalize_request(request_id, result) do
+    {:ok, _request} = Requests.record_schedule(request_id, result.metadata)
+    :ok = RequestServer.transition(request_id, result.transition)
+
+    {:ok, _request} =
+      request_id |> Requests.get_request!() |> Requests.mark_terminal(result.terminal_attrs)
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest do
   use Orchard.DataCase, async: false
 
   import Orchard.TestSupport.ModelRequestFixtures
 
+  import Orchard.TestSupport.QueueAdmissionAPI,
+    only: [assert_queue_metadata: 2, assert_queue_metadata: 3]
+
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
 
   alias Orchard.ArtifactBundle
   alias Orchard.CanonicalRequest
+  alias Orchard.Inference.QueueManager
   alias Orchard.Inference.RequestOrchestrator
   alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.ModelManager
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
+  alias Orchard.Requests.RequestServer
 
   setup do
     ModelManager.reset()
+    QueueManager.reset()
     bundle = stage_test_bundle!()
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     previous_runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 
     previous_runtime_events =
       Application.get_env(:orchard_node_agent, :request_orchestrator_test_runtime_events)
+
+    previous_pre_await_queue_result =
+      Application.get_env(:orchard_controller, :request_orchestrator_pre_await_queue_result)
 
     if Process.whereis(:request_orchestrator_test_pid) do
       Process.unregister(:request_orchestrator_test_pid)
@@ -142,6 +248,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       Application.put_env(:orchard_controller, :inference, previous_inference)
       Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
       restore_runtime_events(previous_runtime_events)
+      restore_pre_await_queue_result(previous_pre_await_queue_result)
+      QueueManager.reset()
       ModelManager.reset()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
       File.rm_rf(bundle.source_path)
@@ -201,6 +309,203 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.scheduler_decision["node_id"] == scheduled_node_id()
     assert request.node_id == runtime_node_id
     refute request.node_id == request.scheduler_decision["node_id"]
+  end
+
+  test "queue admission disabled preserves legacy validated to scheduled flow", %{bundle: bundle} do
+    put_queue_admission_config(enabled: false)
+
+    model = create_active_model!(bundle, "request-orchestrator-queue-legacy")
+    canonical = canonical_request("request-orchestrator-queue-legacy", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    states = request_event_states(request)
+
+    assert :validated in states
+    assert :scheduled in states
+    refute :admitted in states
+    refute :queued in states
+    refute Map.has_key?(request.scheduler_decision, "queueing_enabled")
+  end
+
+  test "queue admission enabled records immediate grant metadata before dispatch", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(enabled: true)
+
+    model = create_active_model!(bundle, "request-orchestrator-queue-immediate")
+    canonical = canonical_request("request-orchestrator-queue-immediate", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    states = request_event_states(request)
+
+    assert state_before?(states, :validated, :admitted)
+    assert state_before?(states, :admitted, :scheduled)
+    refute :queued in states
+
+    assert_queue_metadata(request, "immediate", granted?: true)
+  end
+
+  test "queue admission acquire restart does not leave orchestrator admitted", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(enabled: true)
+    put_capturing_runtime_adapter_config()
+
+    manager_pid = GenServer.whereis(QueueManager)
+    model = create_active_model!(bundle, "request-orchestrator-queue-acquire-restart")
+    canonical = canonical_request("request-orchestrator-queue-acquire-restart", stream?: false)
+
+    :ok = :sys.suspend(QueueManager)
+
+    task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
+    assert wait_until(fn -> request_state(canonical.public_id) == :admitted end)
+
+    Process.exit(manager_pid, :kill)
+    assert wait_until(fn -> manager_restarted?(QueueManager, manager_pid) end)
+
+    assert {:error, :request_controller_restarted} = Task.await(task, 2_000)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    states = request_event_states(request)
+
+    assert request.state == :interrupted
+    assert request.error_code == "request_controller_restarted"
+    refute :scheduled in states
+    assert_queue_metadata(request, "interrupted_controller_restarted")
+  end
+
+  test "queue admission enabled waits in queued state then schedules after grant", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(enabled: true, max_wait_ms: 1_000)
+
+    model = create_active_model!(bundle, "request-orchestrator-queue-wait")
+    canonical = canonical_request("request-orchestrator-queue-wait", stream?: false)
+
+    assert {:ok, held_grant} = hold_queue_lane(canonical)
+
+    task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
+    assert wait_until(fn -> request_state(canonical.public_id) == :queued end)
+
+    queued_request = Requests.get_request_by_public_id(canonical.public_id)
+    assert_queue_metadata(queued_request, "queued", queued?: true)
+
+    assert :ok = QueueManager.release(held_grant)
+    assert {:ok, ^canonical, events} = Task.await(task, 2_000)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    states = request_event_states(request)
+
+    assert state_before?(states, :admitted, :queued)
+    assert state_before?(states, :queued, :scheduled)
+    assert_queue_metadata(request, "queued", queued?: true, granted?: true)
+  end
+
+  test "queue admission returns queue_full before scheduling when tenant cap is exhausted", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(enabled: true, max_queued_per_tenant: 0)
+
+    model = create_active_model!(bundle, "request-orchestrator-queue-full")
+    canonical = canonical_request("request-orchestrator-queue-full", stream?: false)
+
+    assert {:ok, held_grant} = hold_queue_lane(canonical)
+    assert {:error, :queue_full} = RequestOrchestrator.execute(canonical, model)
+    assert :ok = QueueManager.release(held_grant)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :failed
+    assert request.http_status == 429
+    assert request.error_code == "queue_full"
+    assert_queue_metadata(request, "queue_full")
+    refute :scheduled in request_event_states(request)
+  end
+
+  test "queue admission returns queue_timeout from queued state without scheduling", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(enabled: true, max_wait_ms: 10)
+
+    model = create_active_model!(bundle, "request-orchestrator-queue-timeout")
+    canonical = canonical_request("request-orchestrator-queue-timeout", stream?: false)
+
+    assert {:ok, held_grant} = hold_queue_lane(canonical)
+    assert {:error, :queue_timeout} = RequestOrchestrator.execute(canonical, model)
+    assert :ok = QueueManager.release(held_grant)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.error_code == "queue_timeout"
+    assert_queue_metadata(request, "queue_timeout", queued?: true)
+    refute :scheduled in request_event_states(request)
+  end
+
+  test "pre-await queue terminalization surfaces original queue outcome", %{bundle: bundle} do
+    put_queue_admission_config(enabled: true)
+    put_pre_await_terminal_queue_manager()
+    put_capturing_runtime_adapter_config()
+
+    cases = [
+      {:queue_timeout, :timed_out, "queue_timeout", "queue_timeout"},
+      {:request_caller_disconnect, :cancelled, "request_caller_disconnect",
+       "interrupted_before_dispatch"}
+    ]
+
+    Enum.each(cases, fn {result, state, error_code, queue_result} ->
+      Application.put_env(
+        :orchard_controller,
+        :request_orchestrator_pre_await_queue_result,
+        result
+      )
+
+      model_id = "request-orchestrator-pre-await-#{result}"
+      model = create_active_model!(bundle, model_id)
+      canonical = canonical_request(model_id, stream?: false)
+
+      assert {:error, ^result} = RequestOrchestrator.execute(canonical, model)
+      refute_receive {:captured_execute_request, _request}
+
+      request = Requests.get_request_by_public_id(canonical.public_id)
+      assert request.state == state
+      assert request.error_code == error_code
+      assert_queue_metadata(request, queue_result, queued?: true)
+      refute :scheduled in request_event_states(request)
+    end)
+  end
+
+  test "post-grant pre-schedule caller disconnect releases grant and never dispatches", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(enabled: true)
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-queue-disconnect")
+    canonical = canonical_request("request-orchestrator-queue-disconnect", stream?: false)
+
+    caller = spawn(fn -> :ok end)
+    assert wait_until(fn -> not Process.alive?(caller) end)
+
+    assert {:error, :request_caller_disconnect} =
+             RequestOrchestrator.execute(canonical, model, caller: caller)
+
+    refute_receive {:captured_execute_request, _request}
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.state == :cancelled
+    assert request.error_code == "request_caller_disconnect"
+    assert_queue_metadata(request, "interrupted_before_dispatch", granted?: true)
+    refute :scheduled in request_event_states(request)
+
+    assert {:ok, next_grant} = hold_queue_lane(canonical)
+    assert :ok = QueueManager.release(next_grant)
   end
 
   test "execute/3 persists success payload attrs for completed non-stream requests", %{
@@ -580,7 +885,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
              "request_step.started"
            ]
 
-    assert {:ok, :running} = Orchard.Requests.RequestServer.get_state(request.id)
+    assert {:ok, :running} = RequestServer.get_state(request.id)
   end
 
   test "execute/3 does not route observed terminal persistence failures back through fail_request/4",
@@ -617,7 +922,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
              "request_step.started"
            ]
 
-    assert {:ok, :running} = Orchard.Requests.RequestServer.get_state(request.id)
+    assert {:ok, :running} = RequestServer.get_state(request.id)
   end
 
   test "execute/3 terminalizes via fail_request when success_persistence fails before terminal writes",
@@ -671,7 +976,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
              "request_step.started"
            ]
 
-    assert {:ok, :dispatching} = Orchard.Requests.RequestServer.get_state(request.id)
+    assert {:ok, :dispatching} = RequestServer.get_state(request.id)
   end
 
   test "execute/3 persists failed terminal inference-turn steps on dispatch-error paths without using step_event_appender",
@@ -1312,6 +1617,87 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     Application.put_env(:orchard_controller, :inference, inference)
   end
 
+  defp put_queue_admission_config(overrides) do
+    inference = Application.fetch_env!(:orchard_controller, :inference)
+    overrides = acknowledge_single_controller_when_enabled(overrides)
+    queue_config = Keyword.merge(Orchard.Inference.queue_admission_config(), overrides)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(inference, :queue_admission, queue_config)
+    )
+  end
+
+  defp put_pre_await_terminal_queue_manager do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.put(
+        :queue_manager_impl,
+        Orchard.Inference.RequestOrchestratorTest.PreAwaitTerminalQueueManager
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp acknowledge_single_controller_when_enabled(overrides) do
+    if Keyword.get(overrides, :enabled) == true do
+      overrides
+      |> Keyword.put_new(:single_controller_ack, true)
+      |> Keyword.put_new(:owner_runtime, true)
+    else
+      overrides
+    end
+  end
+
+  defp hold_queue_lane(canonical) do
+    QueueManager.acquire(%{
+      request_id: Ecto.UUID.generate(),
+      public_id: "held_#{System.unique_integer([:positive])}",
+      tenant_id: canonical.tenant_id,
+      model_id: canonical.model_ref.model_id,
+      version: canonical.model_ref.version,
+      caller_pid: self()
+    })
+  end
+
+  defp request_event_states(request) do
+    request
+    |> Requests.list_request_events()
+    |> Enum.map(& &1.state)
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp state_before?(states, first, second) do
+    Enum.find_index(states, &(&1 == first)) < Enum.find_index(states, &(&1 == second))
+  end
+
+  defp request_state(public_id) do
+    case Requests.get_request_by_public_id(public_id) do
+      nil -> nil
+      request -> request.state
+    end
+  end
+
+  defp wait_until(fun, attempts \\ 50)
+  defp wait_until(_fun, 0), do: false
+
+  defp wait_until(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(20)
+      wait_until(fun, attempts - 1)
+    end
+  end
+
+  defp manager_restarted?(manager, previous_pid) do
+    case GenServer.whereis(manager) do
+      pid when is_pid(pid) and pid != previous_pid -> true
+      _other -> false
+    end
+  end
+
   defp scheduled_node_id do
     StubMultiNodeScheduler.scheduled_node_id()
   end
@@ -1450,6 +1836,17 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     do:
       Application.put_env(:orchard_node_agent, :request_orchestrator_test_runtime_events, events)
 
+  defp restore_pre_await_queue_result(nil),
+    do: Application.delete_env(:orchard_controller, :request_orchestrator_pre_await_queue_result)
+
+  defp restore_pre_await_queue_result(result),
+    do:
+      Application.put_env(
+        :orchard_controller,
+        :request_orchestrator_pre_await_queue_result,
+        result
+      )
+
   defp stage_test_bundle! do
     models_root = Node.models_root()
     source_path = Path.join([models_root, ".test-source", "request-orchestrator-bundle"])
@@ -1472,7 +1869,13 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       {"request-orchestrator-serialization", "v1"},
       {"request-orchestrator-start-failure", "v1"},
       {"request-orchestrator-idem-replay", "v1"},
-      {"request-orchestrator-idem-active", "v1"}
+      {"request-orchestrator-idem-active", "v1"},
+      {"request-orchestrator-queue-legacy", "v1"},
+      {"request-orchestrator-queue-immediate", "v1"},
+      {"request-orchestrator-queue-wait", "v1"},
+      {"request-orchestrator-queue-full", "v1"},
+      {"request-orchestrator-queue-timeout", "v1"},
+      {"request-orchestrator-queue-disconnect", "v1"}
     ]
 
     cache_paths =

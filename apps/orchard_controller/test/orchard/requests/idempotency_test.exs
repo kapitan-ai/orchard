@@ -121,6 +121,25 @@ defmodule Orchard.Requests.IdempotencyTest do
     assert {:conflict, :request_in_progress, _request} = Idempotency.resolve(context)
   end
 
+  test "SPEC.md §3.9 treats admitted and queued rows as request_in_progress" do
+    for state <- [:admitted, :queued] do
+      tenant_id = Ecto.UUID.generate()
+      key = "idem-#{state}"
+      params = %{"model" => "test@v1", "state" => state}
+
+      assert {:ok, context} = Idempotency.build_context(tenant_id, key, params)
+
+      create_request!(%{
+        tenant_id: tenant_id,
+        idempotency_key: key,
+        body_hash: context.body_hash,
+        state: state
+      })
+
+      assert {:conflict, :request_in_progress, _request} = Idempotency.resolve(context)
+    end
+  end
+
   test "resolve/1 conflict behavior is unchanged when request_step events exist" do
     tenant_id = Ecto.UUID.generate()
     key = "idem-active-step-events"

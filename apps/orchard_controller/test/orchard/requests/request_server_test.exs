@@ -70,6 +70,21 @@ defmodule Orchard.Requests.RequestServerTest do
       assert {:error, :not_found} = RequestServer.get_state(request.id)
     end
 
+    test "SPEC.md §3.6 queue-ready path allows validated → admitted → queued → scheduled" do
+      request = create_request!()
+      {:ok, _} = RequestServer.start(request_id: request.id, public_id: request.public_id)
+
+      assert :ok = RequestServer.transition(request.id, :validated)
+      assert :ok = RequestServer.transition(request.id, :admitted)
+      assert {:ok, :admitted} = RequestServer.get_state(request.id)
+
+      assert :ok = RequestServer.transition(request.id, :queued)
+      assert {:ok, :queued} = RequestServer.get_state(request.id)
+
+      assert :ok = RequestServer.transition(request.id, :scheduled)
+      assert {:ok, :scheduled} = RequestServer.get_state(request.id)
+    end
+
     test "appends a request event on each transition" do
       request = create_request!()
       {:ok, _} = RequestServer.start(request_id: request.id, public_id: request.public_id)
