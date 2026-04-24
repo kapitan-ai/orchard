@@ -88,8 +88,54 @@ packaged licensing rollout posture.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORCHARD_TOKENIZER_EXECUTABLE` | `native/.../orchard-tokenizer` | Path to tokenizer helper |
+| `ORCHARD_CACHE_AFFINITY_ENABLED` | `false` | Enable cache-affinity scheduler hints in source-dev mode. |
+| `ORCHARD_CACHE_AFFINITY_LIVE_FINGERPRINT_MATCH_ENABLED` | `false` | Enable live fingerprint tie-break behavior for cache-affinity in source-dev mode. |
+| `ORCHARD_CACHE_AFFINITY_MAX_PREFIX_BYTES` | `8192` | Advanced tuning knob for prefix bytes used in cache-affinity keying. |
+| `ORCHARD_CACHE_AFFINITY_MAX_AGE_MS` | `300000` | Advanced tuning knob for max age window (ms) when reusing cache-affinity hints. |
+| `ORCHARD_CACHE_AFFINITY_MAX_RECENT_REQUESTS` | `32` | Advanced tuning knob for number of recent requests considered for cache-affinity hints. |
 | `ORCHARD_CACHE_AFFINITY_HMAC_SECRET` | _(unset)_ | Optional independent HMAC secret for cache-affinity keys. When unset, cache-affinity falls back to the endpoint `secret_key_base`. |
+| `ORCHARD_CACHE_INTROSPECTION_ENABLED` | `false` | Enable cache-introspection metadata publication in source-dev mode. |
 | `PORT` | `4000` | HTTP listen port |
+
+Cache-affinity and cache-introspection env vars are read when `config/dev.exs`
+is evaluated at BEAM startup. Restart `bin/dev` or `iex -S mix phx.server`
+after changing them.
+
+Source-dev defaults remain disabled unless explicitly enabled via env vars:
+`ORCHARD_CACHE_AFFINITY_ENABLED=false`,
+`ORCHARD_CACHE_AFFINITY_LIVE_FINGERPRINT_MATCH_ENABLED=false`, and
+`ORCHARD_CACHE_INTROSPECTION_ENABLED=false` when unset. The three advanced
+cache-affinity numeric knobs above are optional overrides for
+`:orchard_controller, :inference` and otherwise use shared M1 defaults.
+
+##### Cache-affinity config regression smoke (source-dev)
+
+Use these quick checks to confirm default-off behavior and env override wiring
+into `:orchard_controller, :inference`.
+
+```bash
+# 1) Unset -> default-off remains in controller inference config
+MIX_ENV=dev \
+mix run --no-start -e "$(cat <<'ELIXIR'
+inference = Application.get_env(:orchard_controller, :inference)
+IO.inspect(inference[:cache_affinity], label: "cache_affinity")
+ELIXIR
+)"
+
+# 2) Override selected knobs -> values land in :orchard_controller, :inference
+ORCHARD_CACHE_AFFINITY_ENABLED=true \
+ORCHARD_CACHE_AFFINITY_MAX_PREFIX_BYTES=4096 \
+ORCHARD_CACHE_AFFINITY_MAX_AGE_MS=600000 \
+ORCHARD_CACHE_AFFINITY_MAX_RECENT_REQUESTS=7 \
+ORCHARD_CACHE_INTROSPECTION_ENABLED=true \
+MIX_ENV=dev \
+mix run --no-start -e "$(cat <<'ELIXIR'
+inference = Application.get_env(:orchard_controller, :inference)
+IO.inspect(inference[:cache_affinity], label: "cache_affinity")
+IO.inspect(inference[:cache_introspection], label: "cache_introspection")
+ELIXIR
+)"
+```
 
 #### Node Agent Runtime
 

@@ -15,6 +15,42 @@ parse_port = fn val, var_name ->
   end
 end
 
+env_int = fn env_name, default ->
+  case System.get_env(env_name) || default do
+    value when is_integer(value) ->
+      value
+
+    value ->
+      case Integer.parse(value) do
+        {parsed, ""} ->
+          parsed
+
+        _other ->
+          raise "environment variable #{env_name} must be an integer, got: #{inspect(value)}"
+      end
+  end
+end
+
+env_bool = fn env_name, default ->
+  case System.get_env(env_name) do
+    nil -> default
+    value when value in ["1", "true", "TRUE", "yes", "YES", "on", "ON"] -> true
+    value when value in ["0", "false", "FALSE", "no", "NO", "off", "OFF"] -> false
+    value -> raise "environment variable #{env_name} must be a boolean, got: #{inspect(value)}"
+  end
+end
+
+env_optional_string = fn env_name ->
+  case System.get_env(env_name) do
+    nil ->
+      nil
+
+    value ->
+      trimmed = String.trim(value)
+      if trimmed == "", do: nil, else: trimmed
+  end
+end
+
 dev_runtime_port =
   case {System.get_env("ORCHARD_NODE_AGENT_LISTEN_PORT"),
         System.get_env("ORCHARD_RUNTIME_CLIENT_PORT")} do
@@ -77,6 +113,55 @@ end
 
 dev_runtime_targets = parse_runtime_targets.("ORCHARD_RUNTIME_CLIENT_TARGETS")
 
+controller_inference_defaults = Orchard.Config.M1RuntimeDefaults.controller_inference(dev_root)
+cache_affinity_defaults = Keyword.fetch!(controller_inference_defaults, :cache_affinity)
+cache_introspection_defaults = Keyword.fetch!(controller_inference_defaults, :cache_introspection)
+
+cache_affinity_config =
+  Keyword.merge(
+    cache_affinity_defaults,
+    enabled:
+      env_bool.(
+        "ORCHARD_CACHE_AFFINITY_ENABLED",
+        Keyword.fetch!(cache_affinity_defaults, :enabled)
+      ),
+    live_fingerprint_match_enabled:
+      env_bool.(
+        "ORCHARD_CACHE_AFFINITY_LIVE_FINGERPRINT_MATCH_ENABLED",
+        Keyword.fetch!(cache_affinity_defaults, :live_fingerprint_match_enabled)
+      ),
+    max_prefix_bytes:
+      env_int.(
+        "ORCHARD_CACHE_AFFINITY_MAX_PREFIX_BYTES",
+        Keyword.fetch!(cache_affinity_defaults, :max_prefix_bytes)
+      ),
+    max_age_ms:
+      env_int.(
+        "ORCHARD_CACHE_AFFINITY_MAX_AGE_MS",
+        Keyword.fetch!(cache_affinity_defaults, :max_age_ms)
+      ),
+    max_recent_requests:
+      env_int.(
+        "ORCHARD_CACHE_AFFINITY_MAX_RECENT_REQUESTS",
+        Keyword.fetch!(cache_affinity_defaults, :max_recent_requests)
+      ),
+    # Explicit secret for cache-affinity key HMAC derivation.
+    # If omitted, cache-affinity falls back to endpoint secret_key_base.
+    hmac_secret:
+      env_optional_string.("ORCHARD_CACHE_AFFINITY_HMAC_SECRET") ||
+        Keyword.get(cache_affinity_defaults, :hmac_secret)
+  )
+
+cache_introspection_config =
+  Keyword.merge(
+    cache_introspection_defaults,
+    enabled:
+      env_bool.(
+        "ORCHARD_CACHE_INTROSPECTION_ENABLED",
+        Keyword.fetch!(cache_introspection_defaults, :enabled)
+      )
+  )
+
 config :orchard_controller, Orchard.Repo,
   username: System.get_env("PGUSER") || "postgres",
   password: System.get_env("PGPASSWORD") || "postgres",
@@ -88,12 +173,14 @@ config :orchard_controller, Orchard.Repo,
 config :orchard_controller,
   inference:
     Keyword.merge(
-      Orchard.Config.M1RuntimeDefaults.controller_inference(dev_root),
+      controller_inference_defaults,
       runtime_client_target: [host: dev_runtime_client_host, port: dev_runtime_port],
       runtime_client_targets: dev_runtime_targets,
       tokenizer_executable:
         System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
-          Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"])
+          Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
+      cache_affinity: cache_affinity_config,
+      cache_introspection: cache_introspection_config
     )
 
 config :orchard_node_agent,
