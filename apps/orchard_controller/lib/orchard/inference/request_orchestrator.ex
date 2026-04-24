@@ -24,7 +24,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Requests.Request
   alias Orchard.Requests.RequestServer
   alias Orchard.Requests.RequestStepEvent
-  alias Orchard.Runtime.PrefixCacheStatus
+  alias Orchard.Runtime.{MemoryBudget, PrefixCacheStatus}
 
   @type event_handler ::
           (Ecto.UUID.t(), InferenceEvent.t() -> :ok | :cancel)
@@ -611,8 +611,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp scheduler_persistence_metadata(schedule) do
     schedule
-    |> strip_prefix_cache_metadata()
+    |> strip_scheduler_runtime_metadata()
     |> maybe_merge_prefix_cache_fields(schedule)
+    |> maybe_merge_memory_admission_fields(schedule)
   end
 
   defp maybe_merge_prefix_cache_fields(metadata, schedule) do
@@ -645,6 +646,36 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
+  defp maybe_merge_memory_admission_fields(metadata, schedule) do
+    if Inference.memory_admission_enabled?() do
+      memory_budget = memory_budget(schedule)
+      tier = memory_admission_tier(memory_budget)
+
+      metadata
+      |> Map.merge(%{memory_admission_enabled: true, memory_admission_tier: tier})
+      |> Map.merge(MemoryBudget.selected_fields(memory_budget))
+    else
+      metadata
+    end
+  end
+
+  defp memory_budget(schedule) do
+    Map.get(schedule, :memory_budget) || Map.get(schedule, "memory_budget")
+  end
+
+  defp memory_admission_tier(memory_budget) do
+    memory_budget
+    |> MemoryBudget.normalize_for_scheduler()
+    |> Map.get(:admission_tier, :headroom_unknown)
+    |> Atom.to_string()
+  end
+
+  defp strip_scheduler_runtime_metadata(schedule) do
+    schedule
+    |> strip_prefix_cache_metadata()
+    |> strip_memory_admission_metadata()
+  end
+
   defp strip_prefix_cache_metadata(schedule) do
     Map.reject(schedule, fn {key, _value} -> prefix_cache_metadata_key?(key) end)
   end
@@ -665,6 +696,31 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp prefix_cache_metadata_key?(_key), do: false
+
+  defp strip_memory_admission_metadata(schedule) do
+    Map.reject(schedule, fn {key, _value} -> memory_admission_metadata_key?(key) end)
+  end
+
+  defp memory_admission_metadata_key?(:memory_budget), do: true
+  defp memory_admission_metadata_key?("memory_budget"), do: true
+  defp memory_admission_metadata_key?(:memory_headroom_ok?), do: true
+  defp memory_admission_metadata_key?("memory_headroom_ok?"), do: true
+  defp memory_admission_metadata_key?(:memory_admission_enabled), do: true
+  defp memory_admission_metadata_key?("memory_admission_enabled"), do: true
+  defp memory_admission_metadata_key?(:memory_admission_tier), do: true
+  defp memory_admission_metadata_key?("memory_admission_tier"), do: true
+
+  defp memory_admission_metadata_key?(key) when is_atom(key) do
+    key
+    |> Atom.to_string()
+    |> memory_admission_metadata_key?()
+  end
+
+  defp memory_admission_metadata_key?(key) when is_binary(key) do
+    String.starts_with?(key, "selected_memory_")
+  end
+
+  defp memory_admission_metadata_key?(_key), do: false
 
   defp dispatch(db_request, canonical, model, schedule, caller, event_handler) do
     execute_request = build_execute_request(canonical, schedule)

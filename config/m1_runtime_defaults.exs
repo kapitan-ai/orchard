@@ -57,6 +57,9 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       ],
       cache_introspection: [
         enabled: false
+      ],
+      memory_admission: [
+        enabled: false
       ]
     ]
   end

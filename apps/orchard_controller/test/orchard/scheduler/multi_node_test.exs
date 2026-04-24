@@ -85,6 +85,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     active_request_count = Keyword.get(opts, :active_request_count, 0)
     health = Keyword.get(opts, :health, nil)
     prefix_cache_statuses = Keyword.get(opts, :runtime_prefix_cache_statuses, [])
+    memory_budgets = Keyword.get(opts, :runtime_memory_budgets, [])
     display_name = Keyword.get(opts, :display_name, "node-#{node_id}")
     host = Keyword.get(opts, :host, "10.0.0.1")
     port = Keyword.get(opts, :port, 9444)
@@ -102,6 +103,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       runtime_health: health,
       loaded_models: loaded_models,
       active_request_count: active_request_count,
+      runtime_memory_budgets: memory_budgets,
       runtime_prefix_cache_statuses: prefix_cache_statuses
     }
   end
@@ -147,6 +149,24 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         evictions: 0,
         status_code: "ok",
         session_started_unix_ms: 1_713_726_400_000
+      },
+      attrs
+    )
+  end
+
+  defp memory_budget(model_id, version, attrs) do
+    Map.merge(
+      %{
+        model_ref: %{model_id: model_id, version: version},
+        mode: "observe",
+        budget_available: true,
+        headroom_available: true,
+        status_code: "ok",
+        target_working_set_bytes: 8_000,
+        resident_memory_bytes: 4_000,
+        estimated_headroom_bytes: 4_000,
+        kv_cache_bytes_per_token: 1,
+        prefill_workspace_bytes_per_token: 2
       },
       attrs
     )
@@ -722,6 +742,286 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.cache_affinity_selected_match == false
       assert schedule.cache_affinity_candidate_count == 1
       assert schedule.selected_cache_tier == "hint_not_selected"
+    end
+
+    test "uses memory admission only as an enabled positive tie-breaker" do
+      put_inference(memory_admission: [enabled: true])
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          runtime_memory_budgets: [memory_budget("test-model", "v1", %{})]
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_b
+      assert schedule.memory_admission_enabled == true
+      assert schedule.memory_admission_tier == "headroom_ok"
+      assert schedule.memory_budget.status_code == "ok"
+    end
+
+    test "keeps memory telemetry rank-neutral and hidden when disabled" do
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          runtime_memory_budgets: [memory_budget("test-model", "v1", %{})]
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      refute Map.has_key?(schedule, :memory_budget)
+      refute Map.has_key?(schedule, :memory_admission_enabled)
+      refute Map.has_key?(schedule, :memory_admission_tier)
+    end
+
+    test "keeps memory admission below historical cache-affinity" do
+      put_inference(
+        cache_affinity: [enabled: true, max_age_ms: 300_000, max_recent_requests: 8],
+        memory_admission: [enabled: true]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+      tenant_id = Ecto.UUID.generate()
+      request = canonical_request("test-model", "v1", tenant_id: tenant_id)
+      affinity_key = cache_affinity_key!(request)
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      insert_recent_cache_affinity_request!(
+        tenant_id,
+        "test-model",
+        "v1",
+        id_a,
+        affinity_key,
+        DateTime.utc_now()
+      )
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          runtime_memory_budgets: [memory_budget("test-model", "v1", %{})]
+        )
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.cache_affinity_selected_match == true
+      assert schedule.memory_admission_tier == "headroom_unknown"
+    end
+
+    test "keeps memory admission below live prefix-cache fingerprint matching" do
+      put_inference(
+        cache_affinity: [
+          enabled: true,
+          live_fingerprint_match_enabled: true,
+          max_age_ms: 300_000,
+          max_recent_requests: 8
+        ],
+        memory_admission: [enabled: true]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000002"
+      id_b = "00000000-0000-0000-0000-000000000001"
+      request = canonical_request("test-model", "v1")
+      affinity_key = cache_affinity_key!(request)
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a,
+          host: "10.0.0.1",
+          port: 50_061,
+          runtime_prefix_cache_statuses: [
+            prefix_cache_status("test-model", "v1", %{prefix_cache_fingerprints: [affinity_key]})
+          ]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          runtime_memory_budgets: [memory_budget("test-model", "v1", %{})]
+        )
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.prefix_cache_fingerprint_match? == true
+      assert schedule.memory_admission_tier == "headroom_unknown"
+    end
+
+    test "does not let memory admission outrank loaded model residency" do
+      put_inference(memory_admission: [enabled: true])
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          runtime_memory_budgets: [memory_budget("test-model", "v1", %{})]
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.memory_admission_tier == "headroom_unknown"
+    end
+
+    test "does not let memory admission outrank health" do
+      put_inference(memory_admission: [enabled: true])
+
+      id_a = "00000000-0000-0000-0000-000000000002"
+      id_b = "00000000-0000-0000-0000-000000000001"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061, health: :healthy})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062, health: :degraded})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          health: %{ready: true, health_code: "warn", health_message: "degraded"},
+          runtime_memory_budgets: [memory_budget("test-model", "v1", %{})]
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.memory_admission_tier == "headroom_unknown"
+    end
+
+    test "does not let memory admission outrank active load" do
+      put_inference(memory_admission: [enabled: true])
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          active_request_count: 1,
+          runtime_memory_budgets: [memory_budget("test-model", "v1", %{})]
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.memory_admission_tier == "headroom_unknown"
+    end
+
+    test "treats non-matching and malformed memory telemetry as fail-open unknown" do
+      put_inference(memory_admission: [enabled: true])
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a,
+          host: "10.0.0.1",
+          port: 50_061,
+          runtime_memory_budgets: [
+            "not a budget map",
+            memory_budget("other-model", "v1", %{})
+          ]
+        )
+      )
+
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.memory_admission_tier == "headroom_unknown"
     end
 
     test "ignores stale cache-affinity placements" do

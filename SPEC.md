@@ -753,7 +753,9 @@ Compatibility and defaulting rules:
 * readiness without matching advertised capability for the same `tool://<name>@<version>` SHALL NOT make the node eligible for hosted routing
 * absent or empty `runtime_memory_budgets` on `StatusResponse` SHALL mean no memory-budget observation is available
 * absent or empty `runtime_memory_budgets` SHALL NOT be treated as a status-probe error
-* `runtime_memory_budgets` SHALL remain observe-only telemetry in this slice and SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, or hosted-tool eligibility
+* `runtime_memory_budgets` SHALL remain observe-only telemetry except for the Phase 4E scheduler-ranking guard defined in §5.7 and §7.5.3; it SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, hosted-tool eligibility, public error contracts, queue ordering, or memory-budget enforcement
+* when `memory_admission.enabled = true`, `Orchard.Scheduler.MultiNode` MAY use only `RuntimeMemoryBudget.status_code == "ok"` plus `headroom_available == true` as a positive, non-excluding ranking preference below loadedness, active request count, health, live prefix-cache fingerprint match, and historical cache affinity, and above deterministic `node_id`
+* absent, empty, stale, malformed, disabled, unavailable, invalid, device-info-failed, compute-failed, non-`ok`, or `headroom_available != true` memory telemetry SHALL be rank-neutral and fail open
 * current `RuntimeMemoryBudget.status_code` vocabulary is: `ok`, `disabled`, `device_info_unavailable`, `device_info_invalid`, `resident_memory_unavailable`, `compute_failed`, `invalid_status`
 * absent or empty `runtime_prefix_cache_statuses` on `StatusResponse` SHALL mean no prefix-cache observation is available
 * absent or empty `runtime_prefix_cache_statuses` SHALL NOT be treated as a status-probe error
@@ -1042,16 +1044,19 @@ Tie-break order:
 2. lower active_requests
 3. lexicographically smaller `node_id`
 
-Controller-side cache-affinity ranking for the bounded Phase 4C implementation SHALL use the following late tie-break order among otherwise schedulable candidates in the same residency/load/health position:
+The score/bonus model above is the broader M4 scheduling contract. The current bounded Phase 4C/4E implementation uses the late tie-break order below and does not introduce threshold-based memory admission or request rejection.
+
+Controller-side cache-affinity and memory-admission ranking for the bounded Phase 4C/4E implementation SHALL use the following late tie-break order among otherwise schedulable candidates in the same residency/load/health position:
 
 1. loaded model already present
 2. lower active request count
 3. healthier node (`healthy` before `degraded`)
 4. live prefix-cache fingerprint match, only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true`
 5. historical cache-affinity match from recent completed placements, when cache affinity is enabled
-6. lexicographically smaller `node_id`
+6. explicit memory-headroom observation, only when `memory_admission.enabled=true` and the candidate's matching `RuntimeMemoryBudget` has `status_code = "ok"` and `headroom_available = true`
+7. lexicographically smaller `node_id`
 
-A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It SHALL bias ranking only after health and before historical affinity. It SHALL NOT change node eligibility, request admission, queue ordering, public error contracts, or runtime concurrency.
+A live prefix-cache fingerprint match is a bounded, approximate warmth hint. It SHALL bias ranking only after health and before historical affinity. The memory-headroom observation is a bounded, positive-only hint. It SHALL bias ranking only after live and historical cache-affinity signals and before deterministic `node_id`; candidates with absent, malformed, unavailable, or non-`ok` memory-budget telemetry remain schedulable and rank-neutral. Neither hint SHALL change node eligibility, request admission, queue ordering, public error contracts, or runtime concurrency.
 
 ### 5.8 Scheduling algorithm
 
@@ -2116,9 +2121,11 @@ Runtime memory-budget wire semantics:
 * omitted or empty `runtime_memory_budgets` SHALL NOT be treated as a node status error, readiness failure, or admission failure
 * `RuntimeMemoryBudget.status_code` values in this slice are: `ok`, `disabled`, `device_info_unavailable`, `device_info_invalid`, `resident_memory_unavailable`, `compute_failed`, `invalid_status`
 * `RuntimeMemoryBudget.resident_memory_bytes` is copied from static manifest-derived model metadata; it is a lower-bound/payload-size estimate, not a runtime memory probe
-* positive resident-memory metadata MAY make `status_code = ok` and `headroom_available = true` when the observe-only arithmetic has enough inputs, but that result SHALL remain non-gating
-* neither `RuntimeMemoryBudget.status_code` nor `RuntimeMemoryBudget.resident_memory_bytes` is an enforcement input in this slice; they SHALL NOT alter readiness, request admission, model admission, scheduler eligibility, hosted-tool eligibility, or `memory_budget_mode` enforcement
-* scheduler memory eligibility SHALL continue to use the scheduler/model/node inputs defined elsewhere in this spec unless a later explicit contract promotes these observations to admission inputs
+* positive resident-memory metadata MAY make `status_code = ok` and `headroom_available = true` when the observe-only arithmetic has enough inputs; when `memory_admission.enabled = true`, that exact positive observation MAY be used by `Orchard.Scheduler.MultiNode` only as a non-gating, non-excluding ranking preference below loadedness, active request count, health, live prefix-cache fingerprint match, and historical cache affinity
+* neither `RuntimeMemoryBudget.status_code` nor `RuntimeMemoryBudget.resident_memory_bytes` is an enforcement input in this slice; they SHALL NOT alter readiness, request admission rejection, model admission, scheduler eligibility, hosted-tool eligibility, public error contracts, queue ordering, or `memory_budget_mode` enforcement
+* absent, empty, stale, malformed, disabled, unavailable, invalid, device-info-failed, compute-failed, non-`ok`, or `headroom_available != true` memory telemetry SHALL be rank-neutral and fail open
+* `estimated_headroom_bytes` SHALL NOT be used as a threshold, continuous score, request-rejection input, or operator-tunable memory admission knob in this slice
+* scheduler memory eligibility SHALL continue to use the scheduler/model/node inputs defined elsewhere in this spec; Phase 4E promotes only the hard-coded `status_code = ok` plus `headroom_available = true` case to a non-excluding scheduler-ranking preference
 
 Runtime prefix-cache wire semantics:
 

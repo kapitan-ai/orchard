@@ -76,6 +76,16 @@ defmodule Orchard.Inference do
     cache_introspection_config()[:enabled] == true
   end
 
+  @spec memory_admission_config() :: keyword()
+  def memory_admission_config do
+    Keyword.merge([enabled: false], config()[:memory_admission] || [])
+  end
+
+  @spec memory_admission_enabled?() :: boolean()
+  def memory_admission_enabled? do
+    memory_admission_config()[:enabled] == true
+  end
+
   @spec queue_admission_enabled?() :: boolean()
   def queue_admission_enabled? do
     config = queue_admission_config()

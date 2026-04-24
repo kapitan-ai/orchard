@@ -35,6 +35,10 @@ message RuntimeHealth {
 }
 
 // Observe-only memory-budget snapshot for one loaded runtime/model.
+// When controller memory_admission.enabled is true, Orchard.Scheduler.MultiNode
+// may use only status_code == "ok" plus headroom_available == true as a
+// positive, non-excluding ranking preference. Absent, malformed, unavailable,
+// non-ok, or headroom-unavailable telemetry remains rank-neutral and fail-open.
 message RuntimeMemoryBudget {
   ModelRef model_ref = 1;
   string mode = 2;
@@ -45,7 +49,10 @@ message RuntimeMemoryBudget {
   // resident_memory_unavailable | compute_failed | invalid_status.
   // Non-enforcement: status_code is not an enforcement input in this slice and
   // MUST NOT alter readiness, request admission, model admission, scheduler
-  // eligibility, hosted-tool eligibility, or memory_budget_mode enforcement.
+  // eligibility, hosted-tool eligibility, public errors, queue ordering, or
+  // memory_budget_mode enforcement. The sole Phase 4E scheduler exception is
+  // the hard-coded status_code == "ok" plus headroom_available == true positive
+  // ranking preference described above.
   string status_code = 5;
   string status_message = 6;
   string source = 7;

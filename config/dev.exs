@@ -116,6 +116,7 @@ dev_runtime_targets = parse_runtime_targets.("ORCHARD_RUNTIME_CLIENT_TARGETS")
 controller_inference_defaults = Orchard.Config.M1RuntimeDefaults.controller_inference(dev_root)
 cache_affinity_defaults = Keyword.fetch!(controller_inference_defaults, :cache_affinity)
 cache_introspection_defaults = Keyword.fetch!(controller_inference_defaults, :cache_introspection)
+memory_admission_defaults = Keyword.fetch!(controller_inference_defaults, :memory_admission)
 
 cache_affinity_config =
   Keyword.merge(
@@ -162,6 +163,16 @@ cache_introspection_config =
       )
   )
 
+memory_admission_config =
+  Keyword.merge(
+    memory_admission_defaults,
+    enabled:
+      env_bool.(
+        "ORCHARD_MEMORY_ADMISSION_ENABLED",
+        Keyword.fetch!(memory_admission_defaults, :enabled)
+      )
+  )
+
 config :orchard_controller, Orchard.Repo,
   username: System.get_env("PGUSER") || "postgres",
   password: System.get_env("PGPASSWORD") || "postgres",
@@ -180,7 +191,8 @@ config :orchard_controller,
         System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
       cache_affinity: cache_affinity_config,
-      cache_introspection: cache_introspection_config
+      cache_introspection: cache_introspection_config,
+      memory_admission: memory_admission_config
     )
 
 config :orchard_node_agent,

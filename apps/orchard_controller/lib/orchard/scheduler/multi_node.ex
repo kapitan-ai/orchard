@@ -9,7 +9,8 @@ defmodule Orchard.Scheduler.MultiNode do
   3. Healthier node (`:healthy` over `:degraded`)
   4. Live prefix-cache fingerprint match when explicitly enabled
   5. Cache-affinity match when explicitly enabled
-  6. Lexicographically smaller `node_id` (deterministic tie-break)
+  6. Memory headroom positive signal when explicitly enabled
+  7. Lexicographically smaller `node_id` (deterministic tie-break)
 
   Falls back to `SingleNode.default_schedule/1` when:
   - Only 0 or 1 targets are configured
@@ -22,7 +23,7 @@ defmodule Orchard.Scheduler.MultiNode do
   alias Orchard.Inference
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Nodes
-  alias Orchard.Runtime.PrefixCacheStatus
+  alias Orchard.Runtime.{MemoryBudget, PrefixCacheStatus}
   alias Orchard.Scheduler.SingleNode
 
   @behaviour Orchard.Scheduler.SingleNode
@@ -102,16 +103,20 @@ defmodule Orchard.Scheduler.MultiNode do
       live_fingerprint_match_enabled? =
         CacheAffinity.live_fingerprint_match_enabled?(cache_affinity_config)
 
+      memory_admission_enabled? = Inference.memory_admission_enabled?()
+
       annotated_candidates =
-        annotate_prefix_cache_fingerprint_matches(
-          affinity_candidates,
+        affinity_candidates
+        |> annotate_prefix_cache_fingerprint_matches(
           affinity_context,
           live_fingerprint_match_enabled?
         )
+        |> annotate_memory_admission(memory_admission_enabled?)
 
       ranked =
         rank_candidates(annotated_candidates,
-          live_fingerprint_match?: live_fingerprint_match_enabled?
+          live_fingerprint_match?: live_fingerprint_match_enabled?,
+          memory_admission?: memory_admission_enabled?
         )
 
       selected = hd(ranked)
@@ -132,6 +137,7 @@ defmodule Orchard.Scheduler.MultiNode do
           selected,
           live_fingerprint_match_enabled?
         )
+        |> maybe_put_memory_admission(selected, memory_admission_enabled?)
 
       {:ok,
        Map.merge(schedule, CacheAffinity.scheduler_metadata(affinity_context, ranked, selected))}
@@ -162,6 +168,7 @@ defmodule Orchard.Scheduler.MultiNode do
                   |> maybe_put_prefix_cache_status(
                     prefix_cache_status_for(response, request.model_ref)
                   )
+                  |> maybe_put_memory_budget(memory_budget_for(response, request.model_ref))
               end
 
             {:error, reason} ->
@@ -229,8 +236,40 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp prefix_cache_model_ref_matches?(_status, _model_ref), do: false
 
+  defp memory_budget_for(response, %CanonicalRequest.ModelRef{} = model_ref) do
+    response
+    |> Map.get(:runtime_memory_budgets, [])
+    |> find_memory_budget(model_ref)
+  end
+
+  defp find_memory_budget(budgets, model_ref) when is_list(budgets) do
+    Enum.find(budgets, &memory_budget_model_ref_matches?(&1, model_ref))
+  end
+
+  defp find_memory_budget(_budgets, _model_ref), do: nil
+
+  defp memory_budget_model_ref_matches?(budget, model_ref) when is_map(budget) do
+    case Map.get(budget, :model_ref) || Map.get(budget, "model_ref") do
+      %{model_id: model_id, version: version}
+      when is_binary(model_id) and is_binary(version) ->
+        model_id == model_ref.model_id and version == model_ref.version
+
+      %{"model_id" => model_id, "version" => version}
+      when is_binary(model_id) and is_binary(version) ->
+        model_id == model_ref.model_id and version == model_ref.version
+
+      _other ->
+        false
+    end
+  end
+
+  defp memory_budget_model_ref_matches?(_budget, _model_ref), do: false
+
   defp maybe_put_prefix_cache_status(map, nil), do: map
   defp maybe_put_prefix_cache_status(map, status), do: Map.put(map, :prefix_cache_status, status)
+
+  defp maybe_put_memory_budget(map, nil), do: map
+  defp maybe_put_memory_budget(map, budget), do: Map.put(map, :memory_budget, budget)
 
   defp maybe_put_prefix_cache_fingerprint_match(map, _selected, false), do: map
 
@@ -268,6 +307,32 @@ defmodule Orchard.Scheduler.MultiNode do
     |> Enum.member?(affinity_key)
   end
 
+  defp annotate_memory_admission(candidates, false), do: candidates
+
+  defp annotate_memory_admission(candidates, true) do
+    Enum.map(candidates, fn candidate ->
+      normalized = MemoryBudget.normalize_for_scheduler(Map.get(candidate, :memory_budget))
+      tier = Map.get(normalized, :admission_tier, :headroom_unknown)
+
+      candidate
+      |> Map.put(:memory_admission_tier, tier)
+      |> Map.put(:memory_headroom_ok?, tier == :headroom_ok)
+    end)
+  end
+
+  defp maybe_put_memory_admission(map, _selected, false), do: map
+
+  defp maybe_put_memory_admission(map, selected, true) do
+    Map.merge(map, %{
+      memory_admission_enabled: true,
+      memory_admission_tier:
+        selected
+        |> Map.get(:memory_admission_tier, :headroom_unknown)
+        |> Atom.to_string(),
+      memory_budget: Map.get(selected, :memory_budget)
+    })
+  end
+
   # -- Ranking --
 
   @doc """
@@ -278,50 +343,57 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   @doc """
-  Sorts candidates and optionally inserts the live fingerprint tie-breaker.
+  Sorts candidates and optionally inserts live fingerprint and memory tie-breakers.
   """
   def rank_candidates(candidates, opts) do
-    if Keyword.get(opts, :live_fingerprint_match?, false) do
-      rank_candidates_with_live_fingerprint(candidates)
-    else
-      rank_candidates_without_live_fingerprint(candidates)
-    end
+    live_fingerprint_match? = Keyword.get(opts, :live_fingerprint_match?, false)
+    memory_admission? = Keyword.get(opts, :memory_admission?, false)
+
+    Enum.sort_by(candidates, &rank_tuple(&1, live_fingerprint_match?, memory_admission?))
   end
 
-  defp rank_candidates_with_live_fingerprint(candidates) do
-    Enum.sort_by(candidates, fn c ->
-      {
-        # 1. Loaded model first (false < true, so negate)
-        not c.loaded_model?,
-        # 2. Lower active_request_count
-        c.active_request_count,
-        # 3. Healthier first (:healthy = 0, :degraded = 1)
-        health_rank(c.node.health),
-        # 4. Live prefix-cache fingerprint match
-        not Map.get(c, :prefix_cache_fingerprint_match?, false),
-        # 5. Historical cache-affinity match
-        not Map.get(c, :cache_affinity_match?, false),
-        # 6. Lexicographic node_id tie-break
-        c.node_id
-      }
-    end)
+  defp rank_tuple(candidate, true, true) do
+    base_rank(candidate) ++
+      [
+        not Map.get(candidate, :prefix_cache_fingerprint_match?, false),
+        not Map.get(candidate, :cache_affinity_match?, false),
+        not Map.get(candidate, :memory_headroom_ok?, false),
+        candidate.node_id
+      ]
   end
 
-  defp rank_candidates_without_live_fingerprint(candidates) do
-    Enum.sort_by(candidates, fn c ->
-      {
-        # 1. Loaded model first (false < true, so negate)
-        not c.loaded_model?,
-        # 2. Lower active_request_count
-        c.active_request_count,
-        # 3. Healthier first (:healthy = 0, :degraded = 1)
-        health_rank(c.node.health),
-        # 4. Cache affinity after load, current load, and health
-        not Map.get(c, :cache_affinity_match?, false),
-        # 5. Lexicographic node_id tie-break
-        c.node_id
-      }
-    end)
+  defp rank_tuple(candidate, true, false) do
+    base_rank(candidate) ++
+      [
+        not Map.get(candidate, :prefix_cache_fingerprint_match?, false),
+        not Map.get(candidate, :cache_affinity_match?, false),
+        candidate.node_id
+      ]
+  end
+
+  defp rank_tuple(candidate, false, true) do
+    base_rank(candidate) ++
+      [
+        not Map.get(candidate, :cache_affinity_match?, false),
+        not Map.get(candidate, :memory_headroom_ok?, false),
+        candidate.node_id
+      ]
+  end
+
+  defp rank_tuple(candidate, false, false) do
+    base_rank(candidate) ++
+      [
+        not Map.get(candidate, :cache_affinity_match?, false),
+        candidate.node_id
+      ]
+  end
+
+  defp base_rank(candidate) do
+    [
+      not candidate.loaded_model?,
+      candidate.active_request_count,
+      health_rank(candidate.node.health)
+    ]
   end
 
   defp health_rank(:healthy), do: 0

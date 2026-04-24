@@ -318,6 +318,9 @@ default_controller_inference = fn root ->
     ],
     cache_introspection: [
       enabled: false
+    ],
+    memory_admission: [
+      enabled: false
     ]
   ]
 end
@@ -521,6 +524,9 @@ if config_env() == :prod do
             ],
             cache_introspection: [
               enabled: env_bool.("ORCHARD_CACHE_INTROSPECTION_ENABLED", false)
+            ],
+            memory_admission: [
+              enabled: env_bool.("ORCHARD_MEMORY_ADMISSION_ENABLED", false)
             ]
           )
 

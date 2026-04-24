@@ -82,6 +82,83 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScheduler do
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubMemoryScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request) do
+    with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
+      {:ok,
+       Map.merge(schedule, %{
+         memory_admission_enabled: true,
+         memory_admission_tier: "headroom_unknown",
+         memory_budget: %{
+           model_ref: %{model_id: request.model_ref.model_id, version: request.model_ref.version},
+           mode: "observe",
+           budget_available: true,
+           headroom_available: true,
+           status_code: "ok",
+           status_message: "active",
+           target_working_set_bytes: 32_768,
+           resident_memory_bytes: 16_384,
+           estimated_headroom_bytes: 16_384,
+           kv_cache_bytes_per_token: 2,
+           prefill_workspace_bytes_per_token: 3,
+           overhead_bytes: 99
+         },
+         selected_memory_status_code: "leaked",
+         selected_memory_status_message: "must-not-persist"
+       })}
+    end
+  end
+end
+
+defmodule Orchard.Inference.RequestOrchestratorTest.StubMemoryUnavailableScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request) do
+    with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
+      {:ok,
+       Map.merge(schedule, %{
+         memory_admission_enabled: true,
+         memory_admission_tier: "headroom_unavailable",
+         memory_budget: %{
+           model_ref: %{model_id: request.model_ref.model_id, version: request.model_ref.version},
+           mode: "observe",
+           budget_available: true,
+           headroom_available: false,
+           status_code: "resident_memory_unavailable",
+           target_working_set_bytes: 32_768,
+           resident_memory_bytes: 0,
+           estimated_headroom_bytes: 0
+         }
+       })}
+    end
+  end
+end
+
+defmodule Orchard.Inference.RequestOrchestratorTest.StubMemoryTierOnlyScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request) do
+    with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
+      {:ok,
+       Map.merge(schedule, %{
+         memory_admission_enabled: true,
+         memory_admission_tier: "headroom_ok"
+       })}
+    end
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheUnavailableScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -290,6 +367,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     only: [assert_queue_metadata: 2, assert_queue_metadata: 3]
 
   alias Orchard.Inference.RequestOrchestratorTest.StubCacheAffinityScheduler
+  alias Orchard.Inference.RequestOrchestratorTest.StubMemoryScheduler
+  alias Orchard.Inference.RequestOrchestratorTest.StubMemoryTierOnlyScheduler
+  alias Orchard.Inference.RequestOrchestratorTest.StubMemoryUnavailableScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheUnavailableScheduler
@@ -451,6 +531,103 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(decision, "selected_prefix_cache_entry_count")
     refute Map.has_key?(decision, "selected_prefix_cache_total_bytes")
     refute Map.has_key?(decision, "selected_prefix_cache_session_started_unix_ms")
+  end
+
+  test "execute/3 derives memory-admission tier from raw budget before persistence", %{
+    bundle: bundle
+  } do
+    put_memory_scheduler_config(enabled: true)
+
+    model = create_active_model!(bundle, "request-orchestrator-memory-admission")
+    canonical = canonical_request("request-orchestrator-memory-admission", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert decision["memory_admission_enabled"] == true
+    # The scheduler stub deliberately supplies a stale/incorrect tier; persistence must trust
+    # the raw memory budget normalization instead.
+    assert decision["memory_admission_tier"] == "headroom_ok"
+    assert decision["selected_memory_status_code"] == "ok"
+    assert decision["selected_memory_budget_available"] == true
+    assert decision["selected_memory_headroom_available"] == true
+    assert decision["selected_memory_target_working_set_bytes"] == 32_768
+    assert decision["selected_memory_resident_memory_bytes"] == 16_384
+    assert decision["selected_memory_estimated_headroom_bytes"] == 16_384
+    assert decision["selected_memory_kv_cache_bytes_per_token"] == 2
+    assert decision["selected_memory_prefill_workspace_bytes_per_token"] == 3
+
+    refute Map.has_key?(decision, "memory_budget")
+    refute Map.has_key?(decision, "memory_headroom_ok?")
+    refute Map.has_key?(decision, "selected_memory_status_message")
+    refute Map.has_key?(decision, "selected_memory_overhead_bytes")
+    refute inspect(decision) =~ "must-not-persist"
+  end
+
+  test "execute/3 does not trust scheduler-supplied memory tier without raw budget", %{
+    bundle: bundle
+  } do
+    put_memory_scheduler_config(StubMemoryTierOnlyScheduler, enabled: true)
+
+    model = create_active_model!(bundle, "request-orchestrator-memory-admission")
+    canonical = canonical_request("request-orchestrator-memory-admission", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert decision["memory_admission_enabled"] == true
+    assert decision["memory_admission_tier"] == "headroom_unknown"
+    refute Enum.any?(Map.keys(decision), &String.starts_with?(&1, "selected_memory_"))
+  end
+
+  test "execute/3 strips memory-admission scheduler metadata when disabled", %{
+    bundle: bundle
+  } do
+    put_memory_scheduler_config(enabled: false)
+
+    model = create_active_model!(bundle, "request-orchestrator-memory-admission")
+    canonical = canonical_request("request-orchestrator-memory-admission", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    refute Map.has_key?(decision, "memory_budget")
+    refute Map.has_key?(decision, "memory_admission_enabled")
+    refute Map.has_key?(decision, "memory_admission_tier")
+    refute Enum.any?(Map.keys(decision), &String.starts_with?(&1, "selected_memory_"))
+  end
+
+  test "execute/3 persists only status and booleans for non-ok memory status", %{
+    bundle: bundle
+  } do
+    put_memory_unavailable_scheduler_config(enabled: true)
+
+    model = create_active_model!(bundle, "request-orchestrator-memory-admission")
+    canonical = canonical_request("request-orchestrator-memory-admission", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert decision["memory_admission_enabled"] == true
+    assert decision["memory_admission_tier"] == "headroom_unavailable"
+    assert decision["selected_memory_status_code"] == "resident_memory_unavailable"
+    assert decision["selected_memory_budget_available"] == true
+    assert decision["selected_memory_headroom_available"] == false
+    refute Map.has_key?(decision, "selected_memory_target_working_set_bytes")
+    refute Map.has_key?(decision, "selected_memory_resident_memory_bytes")
+    refute Map.has_key?(decision, "selected_memory_estimated_headroom_bytes")
   end
 
   test "execute/3 overwrites scheduler-selected node attribution with runtime-resolved node id",
@@ -1883,6 +2060,28 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   defp put_prefix_cache_unavailable_scheduler_config(overrides) do
     put_prefix_cache_scheduler_config(StubPrefixCacheUnavailableScheduler, overrides)
+  end
+
+  defp put_memory_scheduler_config(overrides) do
+    put_memory_scheduler_config(StubMemoryScheduler, overrides)
+  end
+
+  defp put_memory_unavailable_scheduler_config(overrides) do
+    put_memory_scheduler_config(StubMemoryUnavailableScheduler, overrides)
+  end
+
+  defp put_memory_scheduler_config(scheduler, overrides) do
+    inference = Application.fetch_env!(:orchard_controller, :inference)
+    memory_admission = Keyword.merge([enabled: false], overrides)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.merge(inference,
+        scheduler_impl: scheduler,
+        memory_admission: memory_admission
+      )
+    )
   end
 
   defp put_prefix_cache_scheduler_config(scheduler, overrides) do
