@@ -19,7 +19,6 @@ from orchard_worker_mlx.prefix_cache import (
     prompt_cache_length,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fake cache entries (simulate MLX cache objects without MLX imports)
 # ---------------------------------------------------------------------------
@@ -1105,3 +1104,135 @@ class TestTrieClearAndStats:
         cache.store([4, 5, 6], _make_fake_cache(3))
         assert len(cache) == 1
         assert cache.lookup([4, 5, 6, 7], trim_fn=fake_trim) is not None
+
+
+@pytest.mark.parametrize("cache", [KVPrefixCache(), TriePrefixCache()])
+def test_score_resident_match_and_no_match(cache: PrefixCache) -> None:
+    cache.store([1, 2, 3], _make_fake_cache(3))
+    cache.register_fingerprint("hmac-sha256:" + "a" * 64, (1, 2, 3))
+
+    assert cache.score("hmac-sha256:" + "a" * 64) == {
+        "resident": True,
+        "tier": "resident_fingerprint",
+    }
+    assert cache.score("hmac-sha256:" + "b" * 64) == {
+        "resident": False,
+        "tier": "no_match",
+    }
+    assert cache.score("invalid") == {
+        "resident": False,
+        "tier": "unknown",
+    }
+
+
+@pytest.mark.parametrize("cache", [KVPrefixCache(), TriePrefixCache()])
+def test_score_does_not_deepcopy_cache_entries(cache: PrefixCache) -> None:
+    class Uncopyable:
+        def __deepcopy__(self, memo: Any) -> None:
+            raise RuntimeError("should not deepcopy during score")
+
+    cache.store([1, 2], _make_fake_cache(2))
+    cache.register_fingerprint("hmac-sha256:" + "a" * 64, (1, 2))
+
+    if isinstance(cache, KVPrefixCache):
+        cache._entries[(1, 2)] = [Uncopyable()]
+    else:
+        cache._entries[(1, 2)].prompt_cache = [Uncopyable()]
+
+    assert cache.score("hmac-sha256:" + "a" * 64)["resident"] is True
+
+
+@pytest.mark.parametrize("cache", [KVPrefixCache(), TriePrefixCache()])
+def test_score_does_not_mutate_lookup_stats_or_lru(cache: PrefixCache) -> None:
+    cache.store([1, 2], _make_fake_cache(2))
+    cache.store([3, 4], _make_fake_cache(2))
+    cache.register_fingerprint("hmac-sha256:" + "a" * 64, (1, 2))
+
+    before_stats = cache.stats()
+    before_order = list(cache._entries.keys())
+
+    score = cache.score("hmac-sha256:" + "a" * 64)
+
+    after_stats = cache.stats()
+    after_order = list(cache._entries.keys())
+
+    assert score["resident"] is True
+    assert after_stats.hits == before_stats.hits
+    assert after_stats.misses == before_stats.misses
+    assert after_stats.failures == before_stats.failures
+    assert after_order == before_order
+
+
+@pytest.mark.parametrize("cache", [KVPrefixCache(max_entries=1), TriePrefixCache(max_entries=1)])
+def test_fingerprint_index_cleanup_on_eviction_and_clear(cache: PrefixCache) -> None:
+    cache.store([1, 2], _make_fake_cache(2))
+    cache.register_fingerprint("hmac-sha256:" + "a" * 64, (1, 2))
+
+    cache.store([9, 9], _make_fake_cache(2))  # evicts (1, 2)
+    assert cache.score("hmac-sha256:" + "a" * 64)["tier"] == "no_match"
+
+    cache.store([7, 7], _make_fake_cache(2))
+    cache.register_fingerprint("hmac-sha256:" + "c" * 64, (7, 7))
+    cache.clear()
+    assert cache.score("hmac-sha256:" + "c" * 64)["tier"] == "no_match"
+
+
+@pytest.mark.parametrize("cache", [KVPrefixCache(), TriePrefixCache()])
+def test_register_fingerprint_ignores_absent_key_before_future_store(
+    cache: PrefixCache,
+) -> None:
+    fingerprint = "hmac-sha256:" + "a" * 64
+
+    cache.register_fingerprint(fingerprint, (1, 2))
+
+    assert cache.score(fingerprint) == {"resident": False, "tier": "no_match"}
+    assert cache.score_stats()["fingerprint_index_size"] == 0
+
+    cache.store([1, 2], _make_fake_cache(2))
+
+    assert cache.score(fingerprint) == {"resident": False, "tier": "no_match"}
+    assert cache.score_stats()["fingerprint_index_size"] == 0
+
+
+def test_trie_fingerprint_cleanup_on_remove_entry_dedup() -> None:
+    cache = TriePrefixCache()
+    cache.store([1, 2], _make_fake_cache(2))
+    cache.register_fingerprint("hmac-sha256:" + "a" * 64, (1, 2))
+
+    cache.store([1, 2, 3], _make_fake_cache(3))  # dedup removes (1,2) via _remove_entry
+
+    assert cache.score("hmac-sha256:" + "a" * 64)["tier"] == "no_match"
+
+
+def test_reregister_fingerprint_updates_forward_and_reverse_indexes() -> None:
+    cache = KVPrefixCache(max_entries=2)
+    fp = "hmac-sha256:" + "a" * 64
+
+    cache.store([1], _make_fake_cache(1))
+    cache.store([2], _make_fake_cache(1))
+    cache.register_fingerprint(fp, (1,))
+    cache.register_fingerprint(fp, (2,))
+
+    cache.store([3], _make_fake_cache(1))  # evicts stale key (1,), not key (2,)
+
+    assert cache.score(fp) == {"resident": True, "tier": "resident_fingerprint"}
+    assert cache.score_stats()["fingerprint_index_size"] == 1
+
+
+def test_score_stats_are_separate_from_stats_counters() -> None:
+    cache = TriePrefixCache()
+    cache.store([1, 2, 3], _make_fake_cache(3))
+    cache.register_fingerprint("hmac-sha256:" + "a" * 64, (1, 2, 3))
+
+    baseline = cache.stats()
+    cache.score("hmac-sha256:" + "a" * 64)
+    cache.score("hmac-sha256:" + "b" * 64)
+    score_stats = cache.score_stats()
+    after = cache.stats()
+
+    assert score_stats["scores"] == 2
+    assert score_stats["score_hits"] == 1
+    assert score_stats["score_misses"] == 1
+    assert after.hits == baseline.hits
+    assert after.misses == baseline.misses
+    assert after.failures == baseline.failures

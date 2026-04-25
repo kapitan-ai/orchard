@@ -2,7 +2,17 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   use ExUnit.Case, async: false
 
   alias GRPC.RPCError
-  alias Orchard.Cluster.V1.{Ack, CancelInferenceRequest, ExecuteInferenceRequest, InferenceEvent}
+
+  alias Orchard.Cluster.V1.{
+    Ack,
+    CancelInferenceRequest,
+    ExecuteInferenceRequest,
+    InferenceEvent,
+    ModelRef,
+    ScorePrefixCacheRequest,
+    ScorePrefixCacheResponse
+  }
+
   alias Orchard.Cluster.V1.OutputTextDelta, as: ProtoOutputTextDelta
 
   alias Orchard.Node.Worker.V1.{
@@ -125,6 +135,60 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     run(MemoryBudgetWorkerService)
   end
 
+  defmodule ScorePrefixCacheWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream), do: %WorkerStatusResponse{ready: true}
+    def load_model(%LoadModelRequest{}, _stream), do: %Ack{ok: true}
+    def unload_model(_request, _stream), do: %Ack{ok: true}
+    def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
+    def generate(%ExecuteInferenceRequest{}, _stream), do: raise("not used")
+
+    def score_prefix_cache(%ScorePrefixCacheRequest{request_id: "ok"}, _stream) do
+      %ScorePrefixCacheResponse{
+        status_code: "ok",
+        status_message: "scored",
+        resident_fingerprint_match: true,
+        score_tier: "resident_fingerprint",
+        session_started_unix_ms: 1_713_726_400_000
+      }
+    end
+
+    def score_prefix_cache(%ScorePrefixCacheRequest{request_id: "unknown"}, _stream) do
+      %ScorePrefixCacheResponse{
+        status_code: "not_allowed",
+        status_message: "bad",
+        resident_fingerprint_match: true,
+        score_tier: "not_a_tier",
+        session_started_unix_ms: 0
+      }
+    end
+
+    def score_prefix_cache(%ScorePrefixCacheRequest{request_id: "contradictory_timeout"}, _stream) do
+      %ScorePrefixCacheResponse{
+        status_code: "timeout",
+        status_message: "too slow",
+        resident_fingerprint_match: true,
+        score_tier: "resident_fingerprint",
+        session_started_unix_ms: 1_713_726_400_000
+      }
+    end
+
+    def score_prefix_cache(%ScorePrefixCacheRequest{request_id: "timeout"}, _stream) do
+      raise RPCError, status: :deadline_exceeded, message: "too slow"
+    end
+
+    def score_prefix_cache(%ScorePrefixCacheRequest{request_id: "unimplemented"}, _stream) do
+      raise RPCError, status: :unimplemented, message: "missing"
+    end
+  end
+
+  defmodule ScorePrefixCacheEndpoint do
+    use GRPC.Endpoint
+
+    run(ScorePrefixCacheWorkerService)
+  end
+
   test "worker_cli_args omits generation and memory flags for default-compatible values" do
     args =
       WorkerRuntimeAdapter.worker_cli_args(
@@ -237,6 +301,177 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
                "hmac-sha256:" <> String.duplicate("b", 64)
              ]
     end)
+  end
+
+  test "score_prefix_cache normalizes successful worker responses" do
+    with_worker_runtime_server(ScorePrefixCacheEndpoint, fn channel ->
+      assert {:ok, response} =
+               WorkerRuntimeAdapter.score_prefix_cache(
+                 %{channel: channel},
+                 score_prefix_cache_request(),
+                 timeout_ms: 500
+               )
+
+      assert response.status_code == "ok"
+      assert response.resident_fingerprint_match == true
+      assert response.score_tier == "resident_fingerprint"
+      assert response.session_started_unix_ms == 1_713_726_400_000
+    end)
+  end
+
+  test "score_prefix_cache maps expired local timeout to timeout without RPC" do
+    assert {:ok, response} =
+             WorkerRuntimeAdapter.score_prefix_cache(
+               %{channel: :not_used},
+               score_prefix_cache_request(),
+               timeout_ms: 0
+             )
+
+    assert response.status_code == "timeout"
+    assert response.score_tier == "unknown"
+  end
+
+  test "score_prefix_cache maps worker UNIMPLEMENTED to unsupported_version" do
+    with_worker_runtime_server(ScorePrefixCacheEndpoint, fn channel ->
+      assert {:ok, response} =
+               WorkerRuntimeAdapter.score_prefix_cache(
+                 %{channel: channel},
+                 score_request("unimplemented"),
+                 timeout_ms: 500
+               )
+
+      assert response.status_code == "unsupported_version"
+      assert response.score_tier == "unknown"
+      assert response.resident_fingerprint_match == false
+    end)
+  end
+
+  test "normalize_score clamps unknown status and tier values" do
+    normalized =
+      WorkerRuntimeAdapter.normalize_score(%{
+        status_code: "surprise",
+        status_message: "ok",
+        resident_fingerprint_match: true,
+        score_tier: "bad-tier",
+        session_started_unix_ms: -1
+      })
+
+    assert normalized.status_code == "error"
+    assert normalized.score_tier == "unknown"
+    assert normalized.resident_fingerprint_match == false
+    assert normalized.session_started_unix_ms == 0
+  end
+
+  test "normalize_score enforces ScorePrefixCache diagnostic invariants" do
+    cases = [
+      {%{
+         status_code: "timeout",
+         resident_fingerprint_match: true,
+         score_tier: "resident_fingerprint"
+       }, "timeout", false, "unknown"},
+      {%{
+         status_code: "ok",
+         resident_fingerprint_match: false,
+         score_tier: "resident_fingerprint"
+       }, "ok", false, "unknown"},
+      {%{status_code: "ok", resident_fingerprint_match: true, score_tier: "no_match"}, "ok",
+       false, "unknown"},
+      {%{
+         status_code: "ok",
+         resident_fingerprint_match: false,
+         score_tier: "recent_fingerprint_only"
+       }, "ok", false, "recent_fingerprint_only"}
+    ]
+
+    for {input, status_code, resident?, score_tier} <- cases do
+      response = WorkerRuntimeAdapter.normalize_score(input)
+
+      assert response.status_code == status_code
+      assert response.resident_fingerprint_match == resident?
+      assert response.score_tier == score_tier
+    end
+  end
+
+  test "score_prefix_cache returns unavailable when adapter state lacks a channel" do
+    assert {:ok, response} =
+             WorkerRuntimeAdapter.score_prefix_cache(%{}, score_prefix_cache_request(),
+               timeout_ms: 500
+             )
+
+    assert response.status_code == "unavailable"
+  end
+
+  test "score_prefix_cache normalizes worker success and malformed values" do
+    with_worker_runtime_server(ScorePrefixCacheEndpoint, fn channel ->
+      assert {:ok, ok_response} =
+               WorkerRuntimeAdapter.score_prefix_cache(
+                 %{channel: channel},
+                 score_request("ok"),
+                 timeout_ms: 300
+               )
+
+      assert ok_response.status_code == "ok"
+      assert ok_response.score_tier == "resident_fingerprint"
+      assert ok_response.resident_fingerprint_match == true
+
+      assert {:ok, malformed_response} =
+               WorkerRuntimeAdapter.score_prefix_cache(
+                 %{channel: channel},
+                 score_request("unknown"),
+                 timeout_ms: 300
+               )
+
+      assert malformed_response.status_code == "error"
+      assert malformed_response.score_tier == "unknown"
+      assert malformed_response.session_started_unix_ms == 0
+
+      assert {:ok, contradictory_response} =
+               WorkerRuntimeAdapter.score_prefix_cache(
+                 %{channel: channel},
+                 score_request("contradictory_timeout"),
+                 timeout_ms: 300
+               )
+
+      assert contradictory_response.status_code == "timeout"
+      assert contradictory_response.score_tier == "unknown"
+      assert contradictory_response.resident_fingerprint_match == false
+    end)
+  end
+
+  test "score_prefix_cache maps timeout and unimplemented transport statuses" do
+    with_worker_runtime_server(ScorePrefixCacheEndpoint, fn channel ->
+      assert {:ok, timeout_response} =
+               WorkerRuntimeAdapter.score_prefix_cache(
+                 %{channel: channel},
+                 score_request("timeout"),
+                 timeout_ms: 300
+               )
+
+      assert timeout_response.status_code == "timeout"
+      assert timeout_response.score_tier == "unknown"
+
+      assert {:ok, unsupported_response} =
+               WorkerRuntimeAdapter.score_prefix_cache(
+                 %{channel: channel},
+                 score_request("unimplemented"),
+                 timeout_ms: 300
+               )
+
+      assert unsupported_response.status_code == "unsupported_version"
+      assert unsupported_response.score_tier == "unknown"
+    end)
+  end
+
+  test "score_prefix_cache returns unavailable when adapter state has no channel" do
+    assert {:ok, response} =
+             WorkerRuntimeAdapter.score_prefix_cache(
+               %{},
+               score_request("ok"),
+               timeout_ms: 300
+             )
+
+    assert response.status_code == "unavailable"
+    assert response.score_tier == "unknown"
   end
 
   test "start_generation sends runtime_adapter_done when stream open returns worker_unavailable" do
@@ -354,6 +589,16 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     }
   end
 
+  defp score_prefix_cache_request do
+    %ScorePrefixCacheRequest{
+      request_id: "ok",
+      controller_session_id: "worker-runtime-adapter-test",
+      model_ref: %ModelRef{model_id: "test/unavailable-stream", version: "v1"},
+      cache_affinity_fingerprint: "hmac-sha256:" <> String.duplicate("a", 64),
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000
+    }
+  end
+
   defp flag_value(args, flag) do
     args
     |> Enum.chunk_every(2)
@@ -361,6 +606,16 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       [^flag, value] -> value
       _other -> nil
     end)
+  end
+
+  defp score_request(request_id) do
+    %ScorePrefixCacheRequest{
+      request_id: request_id,
+      controller_session_id: "worker-runtime-adapter-test",
+      model_ref: %ModelRef{model_id: "test/model", version: "v1"},
+      cache_affinity_fingerprint: "hmac-sha256:" <> String.duplicate("a", 64),
+      deadline_unix_ms: System.system_time(:millisecond) + 1_000
+    }
   end
 end
 

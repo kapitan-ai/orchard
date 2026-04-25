@@ -13,11 +13,14 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     ExecuteInferenceRequest,
     InferenceEventMapper,
     ModelRef,
+    ScorePrefixCacheRequest,
+    ScorePrefixCacheResponse,
     UnloadModelRequest
   }
 
   alias Orchard.InferenceEvent
   alias Orchard.Node
+  alias Orchard.Node.ScorePrefixCacheResponse, as: ScoreResponse
 
   alias Orchard.Node.Worker.V1.{
     LoadModelRequest,
@@ -36,6 +39,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   @default_memory_budget_mode "observe"
   @default_memory_budget_utilization 0.90
   @default_memory_budget_overhead_bytes 1_073_741_824
+  @default_score_prefix_cache_timeout_ms 150
   @prefix_cache_fingerprint_pattern ~r/^hmac-sha256:[a-f0-9]{64}$/
 
   @type generation_entry :: %{pid: pid(), request_id: String.t()}
@@ -79,6 +83,43 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   def get_status(_adapter_state, _opts), do: {:error, :worker_unavailable}
+
+  @spec score_prefix_cache(state() | term(), ScorePrefixCacheRequest.t(), keyword()) ::
+          {:ok, ScorePrefixCacheResponse.t()} | {:error, term()}
+  def score_prefix_cache(%{channel: channel}, %ScorePrefixCacheRequest{} = request, opts) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, @default_score_prefix_cache_timeout_ms)
+
+    if timeout_ms <= 0 do
+      {:ok, ScoreResponse.response("timeout", "worker score request timed out")}
+    else
+      case WorkerRuntimeService.Stub.score_prefix_cache(channel, request, timeout: timeout_ms) do
+        {:ok, response} ->
+          {:ok, normalize_score(response)}
+
+        {:error, %RPCError{status: status}} when status in [:unimplemented, 12] ->
+          {:ok,
+           ScoreResponse.response(
+             "unsupported_version",
+             "worker does not support ScorePrefixCache"
+           )}
+
+        {:error, %RPCError{status: status}} when status in [:deadline_exceeded, 4] ->
+          {:ok, ScoreResponse.response("timeout", "worker score request timed out")}
+
+        {:error, reason} ->
+          {:ok,
+           ScoreResponse.response(
+             "error",
+             "worker score request failed: #{format_rpc_error(reason)}"
+           )}
+      end
+    end
+  end
+
+  def score_prefix_cache(_adapter_state, _request, _opts),
+    do: {:ok, ScoreResponse.response("unavailable", "worker runtime is unavailable")}
+
+  def normalize_score(response), do: ScoreResponse.normalize(response)
 
   defp memory_budget_from_proto(nil), do: nil
 

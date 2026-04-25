@@ -12,11 +12,14 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
     ExecuteInferenceRequest,
     InferenceEventMapper,
     NodeRuntimeService,
+    ScorePrefixCacheRequest,
+    ScorePrefixCacheResponse,
     StatusRequest,
     StatusResponse
   }
 
   alias Orchard.InferenceEvent
+  alias Orchard.Runtime.PrefixCacheScore
 
   @rpc_timeout_ms 5_000
 
@@ -119,6 +122,31 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
     end
   end
 
+  @doc "Score prefix-cache residency on a target. Always fail-open."
+  @spec score_prefix_cache(keyword(), ScorePrefixCacheRequest.t(), keyword()) ::
+          {:ok, ScorePrefixCacheResponse.t()}
+  def score_prefix_cache(target, %ScorePrefixCacheRequest{} = request, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @rpc_timeout_ms)
+
+    case connect(target) do
+      {:ok, channel} ->
+        try do
+          case NodeRuntimeService.Stub.score_prefix_cache(channel, request, timeout: timeout) do
+            {:ok, %ScorePrefixCacheResponse{} = response} ->
+              {:ok, normalize_score_response(response)}
+
+            {:error, reason} ->
+              {:ok, normalize_score_transport_error(reason)}
+          end
+        after
+          disconnect(channel)
+        end
+
+      {:error, {:connect_failed, reason}} ->
+        {:ok, normalize_score_transport_error(reason)}
+    end
+  end
+
   # -- Private ---------------------------------------------------------------
 
   defp stream_inference_events(channel, request, owner, task_ref) do
@@ -195,4 +223,48 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   end
 
   defp normalize_error(other), do: {:rpc_error, inspect(other)}
+
+  defp normalize_score_response(%ScorePrefixCacheResponse{} = response) do
+    normalized =
+      PrefixCacheScore.normalize_for_scheduler(%{
+        status_code: response.status_code,
+        resident_fingerprint_match: response.resident_fingerprint_match,
+        score_tier: response.score_tier,
+        session_started_unix_ms: response.session_started_unix_ms
+      })
+
+    %ScorePrefixCacheResponse{
+      status_code: normalized.status_code,
+      status_message: normalized.status_message,
+      resident_fingerprint_match: normalized.resident_fingerprint_match,
+      score_tier: normalized.score_tier,
+      session_started_unix_ms: normalized.session_started_unix_ms
+    }
+  end
+
+  defp normalize_score_transport_error(%GRPC.RPCError{status: status})
+       when status in [:unimplemented, 12] do
+    score_response("unsupported_version")
+  end
+
+  defp normalize_score_transport_error(%GRPC.RPCError{status: status})
+       when status in [:deadline_exceeded, 4] do
+    score_response("timeout")
+  end
+
+  defp normalize_score_transport_error(_reason) do
+    score_response("error")
+  end
+
+  defp score_response(status_code) do
+    normalized = PrefixCacheScore.normalize_for_scheduler(%{status_code: status_code})
+
+    %ScorePrefixCacheResponse{
+      status_code: normalized.status_code,
+      status_message: normalized.status_message,
+      resident_fingerprint_match: normalized.resident_fingerprint_match,
+      score_tier: normalized.score_tier,
+      session_started_unix_ms: normalized.session_started_unix_ms
+    }
+  end
 end

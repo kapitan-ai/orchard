@@ -11,6 +11,8 @@ defmodule Orchard.Node.RuntimeServer do
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.InferenceEvent
   alias Orchard.Cluster.V1.InferenceEventMapper
+  alias Orchard.Cluster.V1.ScorePrefixCacheRequest
+  alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.Cluster.V1.StatusRequest
   alias Orchard.Cluster.V1.UnloadModelRequest
   alias Orchard.InferenceEvent, as: DomainInferenceEvent
@@ -60,6 +62,12 @@ defmodule Orchard.Node.RuntimeServer do
         _stream
       ) do
     Status.cancel_request(request_id, controller_session_id)
+  end
+
+  @spec score_prefix_cache(ScorePrefixCacheRequest.t(), GRPC.Server.Stream.t()) ::
+          ScorePrefixCacheResponse.t()
+  def score_prefix_cache(%ScorePrefixCacheRequest{} = request, _stream) do
+    Status.score_prefix_cache(request)
   end
 
   defp forward_runtime_events(stream, request_id) do

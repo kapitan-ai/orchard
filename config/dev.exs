@@ -116,6 +116,10 @@ dev_runtime_targets = parse_runtime_targets.("ORCHARD_RUNTIME_CLIENT_TARGETS")
 controller_inference_defaults = Orchard.Config.M1RuntimeDefaults.controller_inference(dev_root)
 cache_affinity_defaults = Keyword.fetch!(controller_inference_defaults, :cache_affinity)
 cache_introspection_defaults = Keyword.fetch!(controller_inference_defaults, :cache_introspection)
+
+prefix_cache_scoring_defaults =
+  Keyword.fetch!(controller_inference_defaults, :prefix_cache_scoring)
+
 memory_admission_defaults = Keyword.fetch!(controller_inference_defaults, :memory_admission)
 
 cache_affinity_config =
@@ -163,6 +167,21 @@ cache_introspection_config =
       )
   )
 
+prefix_cache_scoring_config =
+  Keyword.merge(
+    prefix_cache_scoring_defaults,
+    enabled:
+      env_bool.(
+        "ORCHARD_PREFIX_CACHE_SCORING_ENABLED",
+        Keyword.fetch!(prefix_cache_scoring_defaults, :enabled)
+      ),
+    timeout_ms:
+      env_int.(
+        "ORCHARD_PREFIX_CACHE_SCORING_TIMEOUT_MS",
+        Keyword.fetch!(prefix_cache_scoring_defaults, :timeout_ms)
+      )
+  )
+
 memory_admission_config =
   Keyword.merge(
     memory_admission_defaults,
@@ -192,6 +211,7 @@ config :orchard_controller,
           Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
       cache_affinity: cache_affinity_config,
       cache_introspection: cache_introspection_config,
+      prefix_cache_scoring: prefix_cache_scoring_config,
       memory_admission: memory_admission_config
     )
 

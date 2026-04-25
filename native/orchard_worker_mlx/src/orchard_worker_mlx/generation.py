@@ -58,7 +58,11 @@ from dataclasses import dataclass, field, is_dataclass, replace
 from types import SimpleNamespace
 from typing import Any, cast
 
-from orchard_worker_mlx.backends import BackendError, cancelled_event
+from orchard_worker_mlx.backends import (
+    BackendError,
+    cancelled_event,
+    valid_cache_affinity_fingerprint,
+)
 from orchard_worker_mlx.prefix_cache import PrefixCacheStats
 from orchard_worker_mlx.tool_calling import (
     build_context as build_tool_calling_context,
@@ -1916,6 +1920,7 @@ def _maybe_store_prompt_cache(
     *,
     prompt_cache: Any | None,
     can_store: bool,
+    cache_affinity_fingerprint: str = "",
     cache_finalized: bool = True,
 ) -> _CacheStoreResult:
     """Best-effort store of mutated prompt cache after successful generation.
@@ -1934,6 +1939,19 @@ def _maybe_store_prompt_cache(
         t0 = time.monotonic()
         full_key = prompt_ids + generated_token_ids
         accepted = prefix_cache.store(full_key, prompt_cache)
+        if (
+            accepted is True
+            and valid_cache_affinity_fingerprint(cache_affinity_fingerprint)
+            and hasattr(prefix_cache, "register_fingerprint")
+        ):
+            try:
+                prefix_cache.register_fingerprint(
+                    cache_affinity_fingerprint,
+                    tuple(full_key),
+                )
+            except Exception:
+                pass
+
         elapsed = (time.monotonic() - t0) * 1000.0
         status = _STORE_STORED if accepted is not False else _STORE_SKIPPED_OVERSIZE
         return _CacheStoreResult(
@@ -1999,6 +2017,7 @@ def generate_events(
     top_p = _safe_float(getattr(params, "top_p", 0.0) if params else 0.0)
     input_tokens = _safe_int(getattr(request, "input_tokens", 0))
     stop_sequences = _normalize_stop_sequences(params)
+    cache_affinity_fingerprint = getattr(request, "cache_affinity_fingerprint", "")
 
     prompt_tokens = 0
     lookup_result = _CacheLookupResult(status=_LOOKUP_DISABLED)
@@ -2172,6 +2191,7 @@ def generate_events(
                                 generated_token_ids,
                                 prompt_cache=request_prompt_cache,
                                 can_store=can_store,
+                                cache_affinity_fingerprint=cache_affinity_fingerprint,
                                 cache_finalized=_cache_finalized_for_store(stream),
                             )
                         yield _completed_event("FINISH_REASON_STOP", input_tokens, output_tokens)
@@ -2218,6 +2238,7 @@ def generate_events(
                             generated_token_ids,
                             prompt_cache=request_prompt_cache,
                             can_store=can_store,
+                            cache_affinity_fingerprint=cache_affinity_fingerprint,
                         )
                     if tool_calls_emitted:
                         yield _completed_event(
@@ -2272,6 +2293,7 @@ def generate_events(
                         generated_token_ids,
                         prompt_cache=request_prompt_cache,
                         can_store=can_store,
+                        cache_affinity_fingerprint=cache_affinity_fingerprint,
                     )
                 finish = "FINISH_REASON_TOOL_CALLS" if tool_calls_emitted else "FINISH_REASON_STOP"
                 yield _completed_event(finish, input_tokens, output_tokens)

@@ -22,12 +22,12 @@ Design decisions (see plan-kv-prefix-cache.md Phase 1):
 from __future__ import annotations
 
 import copy
+import re
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
-
+from typing import Any, Literal, Protocol, TypedDict, runtime_checkable
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -70,6 +70,21 @@ class PrefixCacheStats:
     evictions: int
 
 
+_FINGERPRINT_RE = re.compile(r"^hmac-sha256:[a-f0-9]{64}$")
+
+ScoreTier = Literal[
+    "resident_fingerprint",
+    "recent_fingerprint_only",
+    "no_match",
+    "unknown",
+]
+
+
+class ScoreResult(TypedDict):
+    resident: bool
+    tier: ScoreTier
+
+
 @runtime_checkable
 class PrefixCache(Protocol):
     """Structural protocol for prefix-cache implementations.
@@ -94,6 +109,14 @@ class PrefixCache(Protocol):
     def clear(self) -> None: ...
 
     def stats(self) -> PrefixCacheStats: ...
+
+    def score(self, fingerprint: str) -> ScoreResult: ...
+
+    def score_stats(self) -> dict[str, int]: ...
+
+    def register_fingerprint(self, fingerprint: str, entry_key: tuple[int, ...]) -> None: ...
+
+    def unregister_fingerprint(self, fingerprint: str) -> None: ...
 
     def __len__(self) -> int: ...
 
@@ -204,6 +227,11 @@ class KVPrefixCache:
         self._failures: int = 0
         self._stores: int = 0
         self._evictions: int = 0
+        self._scores: int = 0
+        self._score_hits: int = 0
+        self._score_misses: int = 0
+        self._fingerprint_index: dict[str, tuple[int, ...]] = {}
+        self._entry_key_to_fingerprints: dict[tuple[int, ...], set[str]] = {}
 
     # -- public API ---------------------------------------------------------
 
@@ -345,6 +373,8 @@ class KVPrefixCache:
             self._entries.clear()
             self._entry_bytes.clear()
             self._total_bytes = 0
+            self._fingerprint_index.clear()
+            self._entry_key_to_fingerprints.clear()
 
     def stats(self) -> PrefixCacheStats:
         """Return an immutable snapshot of cache state and counters."""
@@ -360,6 +390,52 @@ class KVPrefixCache:
                 evictions=self._evictions,
             )
 
+    def score(self, fingerprint: str) -> ScoreResult:
+        with self._lock:
+            self._scores += 1
+            if not _valid_fingerprint(fingerprint):
+                self._score_misses += 1
+                return ScoreResult(resident=False, tier="unknown")
+
+            entry_key = self._fingerprint_index.get(fingerprint)
+            if entry_key is not None and entry_key in self._entries:
+                self._score_hits += 1
+                return ScoreResult(resident=True, tier="resident_fingerprint")
+
+            self._score_misses += 1
+            return ScoreResult(resident=False, tier="no_match")
+
+    def score_stats(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "scores": self._scores,
+                "score_hits": self._score_hits,
+                "score_misses": self._score_misses,
+                "fingerprint_index_size": len(self._fingerprint_index),
+            }
+
+    def register_fingerprint(self, fingerprint: str, entry_key: tuple[int, ...]) -> None:
+        if not _valid_fingerprint(fingerprint):
+            return
+
+        with self._lock:
+            normalized_key = _normalize_key(entry_key)
+            if normalized_key not in self._entries:
+                return
+
+            previous_key = self._fingerprint_index.get(fingerprint)
+            if previous_key is not None and previous_key != normalized_key:
+                self._remove_fingerprint_from_reverse_index(fingerprint, previous_key)
+
+            self._fingerprint_index[fingerprint] = normalized_key
+            self._entry_key_to_fingerprints.setdefault(normalized_key, set()).add(fingerprint)
+
+    def unregister_fingerprint(self, fingerprint: str) -> None:
+        with self._lock:
+            entry_key = self._fingerprint_index.pop(fingerprint, None)
+            if entry_key is not None:
+                self._remove_fingerprint_from_reverse_index(fingerprint, entry_key)
+
     def __len__(self) -> int:
         """Return the number of cached entries."""
         with self._lock:
@@ -373,22 +449,49 @@ class KVPrefixCache:
             return 0
         return prompt_cache_length(prompt_cache) * self._bytes_per_token
 
+    def _remove_fingerprint_from_reverse_index(
+        self,
+        fingerprint: str,
+        entry_key: tuple[int, ...],
+    ) -> None:
+        fingerprints = self._entry_key_to_fingerprints.get(entry_key)
+        if fingerprints is None:
+            return
+
+        fingerprints.discard(fingerprint)
+        if not fingerprints:
+            del self._entry_key_to_fingerprints[entry_key]
+
+    def _clear_fingerprints_for_entry(self, entry_key: tuple[int, ...]) -> None:
+        fingerprints = self._entry_key_to_fingerprints.pop(entry_key, set())
+        for fingerprint in fingerprints:
+            if self._fingerprint_index.get(fingerprint) == entry_key:
+                del self._fingerprint_index[fingerprint]
+
+    def _remove_entry(self, entry_key: tuple[int, ...]) -> None:
+        self._entries.pop(entry_key, None)
+        self._total_bytes -= self._entry_bytes.pop(entry_key, 0)
+        self._clear_fingerprints_for_entry(entry_key)
+
     def _evict_if_needed(self) -> None:
         """Evict oldest entries until within capacity.
 
         Must be called while holding ``_lock``.
         """
         while len(self._entries) > self._max_entries:
-            key, _ = self._entries.popitem(last=False)  # Remove oldest
+            key, _ = self._entries.popitem(last=False)
             self._total_bytes -= self._entry_bytes.pop(key, 0)
+            self._clear_fingerprints_for_entry(key)
             self._evictions += 1
 
 
 def _normalize_key(token_ids: Sequence[int]) -> tuple[int, ...]:
     """Convert any int sequence to a hashable tuple key."""
-    if isinstance(token_ids, tuple):
-        return token_ids
     return tuple(token_ids)
+
+
+def _valid_fingerprint(fingerprint: str) -> bool:
+    return isinstance(fingerprint, str) and _FINGERPRINT_RE.fullmatch(fingerprint) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -494,6 +597,11 @@ class TriePrefixCache:
         self._failures: int = 0
         self._stores: int = 0
         self._evictions: int = 0
+        self._scores: int = 0
+        self._score_hits: int = 0
+        self._score_misses: int = 0
+        self._fingerprint_index: dict[str, tuple[int, ...]] = {}
+        self._entry_key_to_fingerprints: dict[tuple[int, ...], set[str]] = {}
 
     # -- public API ---------------------------------------------------------
 
@@ -654,6 +762,8 @@ class TriePrefixCache:
             self._root = _TrieNode()
             self._entries.clear()
             self._total_bytes = 0
+            self._fingerprint_index.clear()
+            self._entry_key_to_fingerprints.clear()
 
     def stats(self) -> PrefixCacheStats:
         """Return an immutable snapshot of cache state and counters."""
@@ -668,6 +778,52 @@ class TriePrefixCache:
                 stores=self._stores,
                 evictions=self._evictions,
             )
+
+    def score(self, fingerprint: str) -> ScoreResult:
+        with self._lock:
+            self._scores += 1
+            if not _valid_fingerprint(fingerprint):
+                self._score_misses += 1
+                return ScoreResult(resident=False, tier="unknown")
+
+            entry_key = self._fingerprint_index.get(fingerprint)
+            if entry_key is not None and entry_key in self._entries:
+                self._score_hits += 1
+                return ScoreResult(resident=True, tier="resident_fingerprint")
+
+            self._score_misses += 1
+            return ScoreResult(resident=False, tier="no_match")
+
+    def score_stats(self) -> dict[str, int]:
+        with self._lock:
+            return {
+                "scores": self._scores,
+                "score_hits": self._score_hits,
+                "score_misses": self._score_misses,
+                "fingerprint_index_size": len(self._fingerprint_index),
+            }
+
+    def register_fingerprint(self, fingerprint: str, entry_key: tuple[int, ...]) -> None:
+        if not _valid_fingerprint(fingerprint):
+            return
+
+        with self._lock:
+            normalized_key = _normalize_key(entry_key)
+            if normalized_key not in self._entries:
+                return
+
+            previous_key = self._fingerprint_index.get(fingerprint)
+            if previous_key is not None and previous_key != normalized_key:
+                self._remove_fingerprint_from_reverse_index(fingerprint, previous_key)
+
+            self._fingerprint_index[fingerprint] = normalized_key
+            self._entry_key_to_fingerprints.setdefault(normalized_key, set()).add(fingerprint)
+
+    def unregister_fingerprint(self, fingerprint: str) -> None:
+        with self._lock:
+            entry_key = self._fingerprint_index.pop(fingerprint, None)
+            if entry_key is not None:
+                self._remove_fingerprint_from_reverse_index(fingerprint, entry_key)
 
     def __len__(self) -> int:
         """Return the number of cached entries."""
@@ -693,6 +849,25 @@ class TriePrefixCache:
             current = child
         return current
 
+    def _remove_fingerprint_from_reverse_index(
+        self,
+        fingerprint: str,
+        entry_key: tuple[int, ...],
+    ) -> None:
+        fingerprints = self._entry_key_to_fingerprints.get(entry_key)
+        if fingerprints is None:
+            return
+
+        fingerprints.discard(fingerprint)
+        if not fingerprints:
+            del self._entry_key_to_fingerprints[entry_key]
+
+    def _clear_fingerprints_for_entry(self, entry_key: tuple[int, ...]) -> None:
+        fingerprints = self._entry_key_to_fingerprints.pop(entry_key, set())
+        for fingerprint in fingerprints:
+            if self._fingerprint_index.get(fingerprint) == entry_key:
+                del self._fingerprint_index[fingerprint]
+
     def _remove_entry(self, entry: _CacheEntry) -> None:
         """Remove *entry* from trie, LRU, and byte accounting.
 
@@ -702,6 +877,7 @@ class TriePrefixCache:
         node.terminal_entry = None
         del self._entries[entry.key]
         self._total_bytes -= entry.byte_size
+        self._clear_fingerprints_for_entry(entry.key)
 
         # Prune empty leaf nodes upward.
         self._prune_upward(node)
@@ -755,18 +931,12 @@ class TriePrefixCache:
     def _evict_if_needed(self) -> None:
         """Evict oldest entries until within capacity and byte budget."""
         while len(self._entries) > self._max_entries:
-            _, oldest = self._entries.popitem(last=False)
-            oldest.node.terminal_entry = None
-            self._total_bytes -= oldest.byte_size
-            self._prune_upward(oldest.node)
-            self._refresh_representative_upward(oldest.node)
+            oldest = next(iter(self._entries.values()))
+            self._remove_entry(oldest)
             self._evictions += 1
 
         if self._max_bytes is not None:
             while self._total_bytes > self._max_bytes and self._entries:
-                _, oldest = self._entries.popitem(last=False)
-                oldest.node.terminal_entry = None
-                self._total_bytes -= oldest.byte_size
-                self._prune_upward(oldest.node)
-                self._refresh_representative_upward(oldest.node)
+                oldest = next(iter(self._entries.values()))
+                self._remove_entry(oldest)
                 self._evictions += 1

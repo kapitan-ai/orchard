@@ -173,6 +173,37 @@ defmodule Orchard.InferenceTest do
     end
   end
 
+  describe "prefix_cache_scoring_config/0" do
+    test "defaults disabled with a strict timeout" do
+      config = Inference.prefix_cache_scoring_config()
+
+      assert config[:enabled] == false
+      assert config[:timeout_ms] == 150
+      refute Inference.prefix_cache_scoring_enabled?()
+      assert Inference.prefix_cache_scoring_timeout_ms() == 150
+    end
+
+    test "enabled scoring is parent-gated by cache_affinity and live fingerprint match" do
+      put_inference(prefix_cache_scoring: [enabled: true, timeout_ms: 75])
+      refute Inference.prefix_cache_scoring_enabled?()
+
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: false],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 75]
+      )
+
+      refute Inference.prefix_cache_scoring_enabled?()
+
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 75]
+      )
+
+      assert Inference.prefix_cache_scoring_enabled?()
+      assert Inference.prefix_cache_scoring_timeout_ms() == 75
+    end
+  end
+
   describe "scheduler auto-selection" do
     test "defaults to SingleNode when plural targets are absent" do
       put_inference(runtime_client_targets: [])

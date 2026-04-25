@@ -474,6 +474,139 @@ def test_mlx_backend_unload_clears_fingerprint_buffer() -> None:
     assert backend.get_fingerprints() == []
 
 
+def test_mlx_backend_score_prefix_cache_disabled() -> None:
+    backend = _make_mlx_backend(prefix_cache_config=PrefixCacheLoadConfig(mode="disabled"))
+
+    score = backend.score_prefix_cache(
+        model_ref=MagicMock(model_id="m", version="v"),
+        fingerprint=_fingerprint(1),
+        request_id="req-1",
+        deadline_unix_ms=0,
+    )
+
+    assert score["status_code"] == "disabled"
+
+
+def test_mlx_backend_score_prefix_cache_unavailable_without_session() -> None:
+    backend = _make_mlx_backend()
+
+    score = backend.score_prefix_cache(
+        model_ref=MagicMock(model_id="m", version="v"),
+        fingerprint=_fingerprint(1),
+        request_id="req-1",
+        deadline_unix_ms=0,
+    )
+
+    assert score["status_code"] == "unavailable"
+
+
+def test_mlx_backend_score_prefix_cache_model_not_loaded() -> None:
+    backend = _make_mlx_backend()
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    score = backend.score_prefix_cache(
+        model_ref=MagicMock(model_id="other", version="v"),
+        fingerprint=_fingerprint(1),
+        request_id="req-1",
+        deadline_unix_ms=0,
+    )
+
+    assert score["status_code"] == "model_not_loaded"
+
+
+def test_mlx_backend_score_prefix_cache_invalid_fingerprint() -> None:
+    session = _make_fake_session(model_id="m", version="v", bundle_path="/fake/path")
+    session.prefix_cache = MagicMock()
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    score = backend.score_prefix_cache(
+        model_ref=MagicMock(model_id="m", version="v"),
+        fingerprint="invalid",
+        request_id="req-1",
+        deadline_unix_ms=0,
+    )
+
+    assert score["status_code"] == "invalid_request"
+
+
+def test_mlx_backend_score_prefix_cache_unavailable_without_cache() -> None:
+    session = _make_fake_session(model_id="m", version="v", bundle_path="/fake/path")
+    session.prefix_cache = None
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    score = backend.score_prefix_cache(
+        model_ref=MagicMock(model_id="m", version="v"),
+        fingerprint=_fingerprint(1),
+        request_id="req-1",
+        deadline_unix_ms=0,
+    )
+
+    assert score["status_code"] == "unavailable"
+
+
+def test_mlx_backend_score_prefix_cache_error_on_score_exception() -> None:
+    session = _make_fake_session(model_id="m", version="v", bundle_path="/fake/path")
+    session.prefix_cache = MagicMock()
+    session.prefix_cache.score.side_effect = RuntimeError("boom")
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    score = backend.score_prefix_cache(
+        model_ref=MagicMock(model_id="m", version="v"),
+        fingerprint=_fingerprint(1),
+        request_id="req-1",
+        deadline_unix_ms=0,
+    )
+
+    assert score["status_code"] == "error"
+    assert score["status_message"] == "score prefix cache unavailable"
+    assert "boom" not in score["status_message"]
+
+
+def test_mlx_backend_score_prefix_cache_ok_resident_match() -> None:
+    session = _make_fake_session(model_id="m", version="v", bundle_path="/fake/path")
+    session.prefix_cache = MagicMock()
+    session.prefix_cache.score.return_value = {"resident": True, "tier": "resident_fingerprint"}
+    session.session_started_unix_ms = 123
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    score = backend.score_prefix_cache(
+        model_ref=MagicMock(model_id="m", version="v"),
+        fingerprint=_fingerprint(1),
+        request_id="req-1",
+        deadline_unix_ms=0,
+    )
+
+    assert score["status_code"] == "ok"
+    assert score["resident_fingerprint_match"] is True
+    assert score["score_tier"] == "resident_fingerprint"
+    assert score["session_started_unix_ms"] == 123
+
+
+def test_mlx_backend_score_prefix_cache_recent_fingerprint_only_tier() -> None:
+    fingerprint = _fingerprint(9)
+    session = _make_fake_session(model_id="m", version="v", bundle_path="/fake/path")
+    session.prefix_cache = MagicMock()
+    session.prefix_cache.score.return_value = {"resident": False, "tier": "no_match"}
+    session.prefix_cache_fingerprints = [fingerprint]
+    backend = _make_mlx_backend(loader_session=session)
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    score = backend.score_prefix_cache(
+        model_ref=MagicMock(model_id="m", version="v"),
+        fingerprint=fingerprint,
+        request_id="req-1",
+        deadline_unix_ms=0,
+    )
+
+    assert score["status_code"] == "ok"
+    assert score["resident_fingerprint_match"] is False
+    assert score["score_tier"] == "recent_fingerprint_only"
+
+
 def test_mlx_backend_load_passes_generation_and_memory_config_to_loader() -> None:
     captured: dict[str, object] = {}
 

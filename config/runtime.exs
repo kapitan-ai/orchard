@@ -319,6 +319,10 @@ default_controller_inference = fn root ->
     cache_introspection: [
       enabled: false
     ],
+    prefix_cache_scoring: [
+      enabled: false,
+      timeout_ms: 150
+    ],
     memory_admission: [
       enabled: false
     ]
@@ -524,6 +528,19 @@ if config_env() == :prod do
             ],
             cache_introspection: [
               enabled: env_bool.("ORCHARD_CACHE_INTROSPECTION_ENABLED", false)
+            ],
+            prefix_cache_scoring: [
+              enabled: env_bool.("ORCHARD_PREFIX_CACHE_SCORING_ENABLED", false),
+              timeout_ms:
+                (fn ->
+                   timeout_ms = env_int.("ORCHARD_PREFIX_CACHE_SCORING_TIMEOUT_MS", "150")
+
+                   if timeout_ms <= 0 do
+                     raise "ORCHARD_PREFIX_CACHE_SCORING_TIMEOUT_MS must be > 0, got: #{timeout_ms}"
+                   end
+
+                   timeout_ms
+                 end).()
             ],
             memory_admission: [
               enabled: env_bool.("ORCHARD_MEMORY_ADMISSION_ENABLED", false)

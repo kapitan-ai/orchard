@@ -11,6 +11,11 @@ service NodeRuntimeService {
   rpc UnloadModel(UnloadModelRequest) returns (Ack);
   rpc ExecuteInference(ExecuteInferenceRequest) returns (stream InferenceEvent);
   rpc CancelInference(CancelInferenceRequest) returns (Ack);
+  // Phase 4D selected-candidate observe-only score path.
+  // Default-off and fail-open: non-ok statuses and transport failures are
+  // rank-neutral scheduler-internal telemetry and MUST NOT become tenant-facing
+  // request failures.
+  rpc ScorePrefixCache(ScorePrefixCacheRequest) returns (ScorePrefixCacheResponse);
 }
 
 message StatusRequest {}
@@ -157,6 +162,34 @@ message UnloadModelRequest {
   string version = 2;
   bool force = 3;
   bool evict = 4;
+}
+
+message ScorePrefixCacheRequest {
+  string request_id = 1;
+  string controller_session_id = 2;
+  ModelRef model_ref = 3;
+  // Opaque HMAC fingerprint (hmac-sha256:<64 lowercase hex>) with the same
+  // derivation as ExecuteInferenceRequest.cache_affinity_fingerprint.
+  // No prompt bytes or token IDs are included on this RPC in v1.
+  string cache_affinity_fingerprint = 4;
+  uint64 deadline_unix_ms = 5;
+}
+
+message ScorePrefixCacheResponse {
+  // Observe-only status vocabulary in this slice:
+  // ok | disabled | unavailable | model_not_loaded | timeout |
+  // invalid_request | error | unsupported_version.
+  // Any non-ok status is fail-open and rank-neutral in v1.
+  string status_code = 1;
+  string status_message = 2;
+  // True iff fingerprint is currently associated with a resident
+  // prefix-cache entry.
+  bool resident_fingerprint_match = 3;
+  // resident_fingerprint | recent_fingerprint_only | no_match | unknown.
+  // recent_fingerprint_only is diagnostic/approximate only and MUST NOT be
+  // treated as authoritative residency.
+  string score_tier = 4;
+  uint64 session_started_unix_ms = 5;
 }
 
 message ExecuteInferenceRequest {

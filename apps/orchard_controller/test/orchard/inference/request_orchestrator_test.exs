@@ -181,6 +181,58 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheUnavailableSc
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScoreScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request) do
+    with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
+      {:ok,
+       schedule
+       |> Map.put(:prefix_cache_score, %{
+         status_code: "ok",
+         status_message:
+           "request req_123 hmac-sha256:#{String.duplicate("d", 64)} /tmp/orchard tokens: [1,2,3]",
+         resident_fingerprint_match: true,
+         score_tier: "no_match",
+         session_started_unix_ms: 1_713_726_400_123
+       })
+       |> Map.put("prefix_cache_score", %{
+         "status_code" => "ok",
+         "status_message" => "must not persist",
+         "resident_fingerprint_match" => true,
+         "score_tier" => "resident_fingerprint",
+         "session_started_unix_ms" => 999
+       })
+       |> Map.put(:selected_prefix_cache_score_tier, "leaked")
+       |> Map.put(:selected_prefix_cache_score_status_message, "must-not-persist")}
+    end
+  end
+end
+
+defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScoreUnavailableScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request) do
+    with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
+      {:ok,
+       Map.put(schedule, :prefix_cache_score, %{
+         status_code: "timeout",
+         status_message:
+           "Traceback req_999 hmac-sha256:#{String.duplicate("e", 64)} /private/tmp/orchard",
+         resident_fingerprint_match: true,
+         score_tier: "resident_fingerprint",
+         session_started_unix_ms: 1_713_726_400_987
+       })}
+    end
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -533,6 +585,101 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(decision, "selected_prefix_cache_session_started_unix_ms")
   end
 
+  test "execute/3 persists sanitized selected-prefix-cache-score fields when both gates are enabled",
+       %{
+         bundle: bundle
+       } do
+    put_prefix_cache_score_scheduler_config(
+      cache_introspection_enabled: true,
+      prefix_cache_scoring_enabled: true
+    )
+
+    model = create_active_model!(bundle, "request-orchestrator-prefix-cache-score")
+    canonical = canonical_request("request-orchestrator-prefix-cache-score", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert decision["selected_prefix_cache_score_status_code"] == "ok"
+    assert decision["selected_prefix_cache_score_tier"] == "unknown"
+    assert decision["selected_prefix_cache_score_resident_fingerprint_match"] == false
+    assert decision["selected_prefix_cache_score_session_started_unix_ms"] == 1_713_726_400_123
+    assert decision["selected_prefix_cache_score_source"] == "score_prefix_cache_rpc"
+
+    refute Map.has_key?(decision, "prefix_cache_score")
+    assert is_binary(decision["selected_prefix_cache_score_status_message"])
+    refute decision["selected_prefix_cache_score_status_message"] == "must-not-persist"
+
+    refute inspect(decision) =~ "hmac-sha256"
+    refute inspect(decision) =~ "/tmp/orchard"
+    refute inspect(decision) =~ "req_123"
+  end
+
+  test "execute/3 strips selected-prefix-cache-score fields when scoring gate is disabled", %{
+    bundle: bundle
+  } do
+    put_prefix_cache_score_scheduler_config(
+      cache_introspection_enabled: true,
+      prefix_cache_scoring_enabled: false
+    )
+
+    model = create_active_model!(bundle, "request-orchestrator-prefix-cache-score-disabled")
+
+    canonical =
+      canonical_request("request-orchestrator-prefix-cache-score-disabled", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    refute Map.has_key?(decision, "prefix_cache_score")
+
+    refute Enum.any?(
+             Map.keys(decision),
+             &String.starts_with?(&1, "selected_prefix_cache_score_")
+           )
+  end
+
+  test "execute/3 persists bounded non-ok selected-prefix-cache-score diagnostics only", %{
+    bundle: bundle
+  } do
+    put_prefix_cache_score_scheduler_config(
+      scheduler:
+        Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScoreUnavailableScheduler,
+      cache_introspection_enabled: true,
+      prefix_cache_scoring_enabled: true
+    )
+
+    model = create_active_model!(bundle, "request-orchestrator-prefix-cache-score-timeout")
+
+    canonical =
+      canonical_request("request-orchestrator-prefix-cache-score-timeout", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert decision["selected_prefix_cache_score_status_code"] == "timeout"
+    assert decision["selected_prefix_cache_score_tier"] == "unknown"
+
+    assert decision["selected_prefix_cache_score_status_message"] ==
+             "prefix cache scoring timed out"
+
+    assert decision["selected_prefix_cache_score_source"] == "score_prefix_cache_rpc"
+    refute Map.has_key?(decision, "selected_prefix_cache_score_resident_fingerprint_match")
+    refute Map.has_key?(decision, "selected_prefix_cache_score_session_started_unix_ms")
+    refute inspect(decision) =~ "hmac-sha256"
+    refute inspect(decision) =~ "/private/tmp"
+    refute inspect(decision) =~ "req_999"
+  end
+
   test "execute/3 derives memory-admission tier from raw budget before persistence", %{
     bundle: bundle
   } do
@@ -809,6 +956,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.error_code == "queue_timeout"
     assert_queue_metadata(request, "queue_timeout", queued?: true)
     refute :scheduled in request_event_states(request)
+
+    refute Enum.any?(
+             Map.keys(request.scheduler_decision || %{}),
+             &String.starts_with?(&1, "selected_prefix_cache_score_")
+           )
   end
 
   test "pre-await queue terminalization surfaces original queue outcome", %{bundle: bundle} do
@@ -2068,6 +2220,38 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   defp put_memory_unavailable_scheduler_config(overrides) do
     put_memory_scheduler_config(StubMemoryUnavailableScheduler, overrides)
+  end
+
+  defp put_prefix_cache_score_scheduler_config(overrides) do
+    inference = Application.fetch_env!(:orchard_controller, :inference)
+
+    scheduler =
+      Keyword.get(
+        overrides,
+        :scheduler,
+        Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScoreScheduler
+      )
+
+    cache_affinity =
+      Orchard.Inference.cache_affinity_config()
+      |> Keyword.merge(enabled: true, live_fingerprint_match_enabled: true)
+
+    cache_introspection =
+      [enabled: Keyword.get(overrides, :cache_introspection_enabled, false)]
+
+    prefix_cache_scoring =
+      [enabled: Keyword.get(overrides, :prefix_cache_scoring_enabled, false), timeout_ms: 150]
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.merge(inference,
+        scheduler_impl: scheduler,
+        cache_affinity: cache_affinity,
+        cache_introspection: cache_introspection,
+        prefix_cache_scoring: prefix_cache_scoring
+      )
+    )
   end
 
   defp put_memory_scheduler_config(scheduler, overrides) do

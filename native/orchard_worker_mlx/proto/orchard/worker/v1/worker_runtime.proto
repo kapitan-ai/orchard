@@ -80,4 +80,10 @@ service WorkerRuntimeService {
   rpc UnloadModel(cluster.v1.UnloadModelRequest) returns (cluster.v1.Ack);
   rpc Generate(cluster.v1.ExecuteInferenceRequest) returns (stream cluster.v1.InferenceEvent);
   rpc Cancel(cluster.v1.CancelInferenceRequest) returns (cluster.v1.Ack);
+  // Phase 4D selected-candidate observe-only score path.
+  // Worker accepts only cache_affinity_fingerprint HMAC input in v1; prompt
+  // bytes and token IDs are explicitly out of scope for this RPC.
+  // Default-off/fail-open behavior is enforced by node-agent/controller callers.
+  rpc ScorePrefixCache(cluster.v1.ScorePrefixCacheRequest)
+      returns (cluster.v1.ScorePrefixCacheResponse);
 }

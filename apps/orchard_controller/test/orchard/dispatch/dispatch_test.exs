@@ -14,6 +14,8 @@ defmodule Orchard.Dispatch.DispatchTest do
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
     ExecuteInferenceRequest,
+    ModelRef,
+    ScorePrefixCacheRequest,
     StatusResponse
   }
 
@@ -100,6 +102,37 @@ defmodule Orchard.Dispatch.DispatchTest do
       assert :ok = Client.cancel_inference(channel, "req-nonexistent")
 
       Client.disconnect(channel)
+    end
+
+    test "score_prefix_cache canonicalizes worker status_message for model_not_loaded" do
+      target = Inference.runtime_client_target()
+
+      assert {:ok, response} =
+               Client.score_prefix_cache(
+                 target,
+                 score_prefix_cache_request("missing-model", "req-score-model-not-loaded")
+               )
+
+      assert response.status_code == "model_not_loaded"
+      assert response.status_message == "model not loaded"
+      refute response.status_message == "model is not loaded"
+      assert response.score_tier == "unknown"
+    end
+
+    test "score_prefix_cache canonicalizes transport failures to default error message" do
+      target = [host: "127.0.0.1", port: 1]
+
+      assert {:ok, response} =
+               Client.score_prefix_cache(
+                 target,
+                 score_prefix_cache_request("missing-model", "req-score-transport-error")
+               )
+
+      assert response.status_code == "error"
+      assert response.status_message == "prefix cache scoring error"
+      assert response.score_tier == "unknown"
+      assert response.resident_fingerprint_match == false
+      assert response.session_started_unix_ms == 0
     end
   end
 
@@ -303,6 +336,16 @@ defmodule Orchard.Dispatch.DispatchTest do
       runtime_client_target: Inference.runtime_client_target(),
       request_timeout_ms: Keyword.get(opts, :request_timeout_ms, 5_000),
       model_load_timeout_ms: Keyword.get(opts, :model_load_timeout_ms, 5_000)
+    }
+  end
+
+  defp score_prefix_cache_request(model_id, request_id) do
+    %ScorePrefixCacheRequest{
+      request_id: request_id,
+      controller_session_id: "controller-session-dispatch",
+      model_ref: %ModelRef{model_id: model_id, version: @version},
+      cache_affinity_fingerprint: "hmac-sha256:" <> String.duplicate("0", 64),
+      deadline_unix_ms: System.system_time(:millisecond) + 500
     }
   end
 

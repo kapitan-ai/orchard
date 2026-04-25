@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,21 @@ _UINT64_MAX = 18_446_744_073_709_551_615
 _MAX_FINGERPRINT_BUFFER_SIZE = 64
 _DEFAULT_FINGERPRINT_BUFFER_SIZE = 8
 _FINGERPRINT_RE = re.compile(r"^hmac-sha256:[a-f0-9]{64}$")
+_SCORE_PREFIX_CACHE_STATUS_CODES = frozenset(
+    {
+        "ok",
+        "disabled",
+        "unavailable",
+        "model_not_loaded",
+        "timeout",
+        "invalid_request",
+        "error",
+        "unsupported_version",
+    }
+)
+_SCORE_PREFIX_CACHE_TIERS = frozenset(
+    {"resident_fingerprint", "recent_fingerprint_only", "no_match", "unknown"}
+)
 
 
 class BackendMemoryBudgetStatus(TypedDict):
@@ -75,6 +91,14 @@ class _NormalizedPrefixCacheStats(TypedDict):
     evictions: int
 
 
+class BackendPrefixCacheScore(TypedDict):
+    status_code: str
+    status_message: str
+    resident_fingerprint_match: bool
+    score_tier: str
+    session_started_unix_ms: int
+
+
 class BackendStatus(TypedDict):
     loaded: bool
     active_request_count: int
@@ -100,6 +124,14 @@ class Backend(Protocol):
     def finish_generation(self) -> None: ...
     def record_fingerprint(self, fingerprint: str) -> None: ...
     def get_fingerprints(self) -> list[str]: ...
+    def score_prefix_cache(
+        self,
+        *,
+        model_ref: Any,
+        fingerprint: str,
+        request_id: str,
+        deadline_unix_ms: int,
+    ) -> BackendPrefixCacheScore: ...
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]: ...
 
 
@@ -178,6 +210,52 @@ class StubBackend:
     def get_fingerprints(self) -> list[str]:
         with self._lock:
             return _fingerprint_snapshot(self._fingerprint_buffer)
+
+    def score_prefix_cache(
+        self,
+        *,
+        model_ref: Any,
+        fingerprint: str,
+        request_id: str,
+        deadline_unix_ms: int,
+    ) -> BackendPrefixCacheScore:
+        del request_id
+
+        with self._lock:
+            loaded_model = self._loaded_model
+
+        if loaded_model is None:
+            return _score_prefix_cache_response(
+                status_code="unavailable",
+                status_message="model session is not loaded",
+            )
+
+        loaded_model_id, loaded_version, _ = loaded_model
+        if (
+            getattr(model_ref, "model_id", "") != loaded_model_id
+            or getattr(model_ref, "version", "") != loaded_version
+        ):
+            return _score_prefix_cache_response(
+                status_code="model_not_loaded",
+                status_message="model is not loaded on this worker",
+            )
+
+        if not valid_cache_affinity_fingerprint(fingerprint):
+            return _score_prefix_cache_response(
+                status_code="invalid_request",
+                status_message="cache affinity fingerprint is invalid",
+            )
+
+        if deadline_unix_ms > 0 and int(time.time() * 1000) > deadline_unix_ms:
+            return _score_prefix_cache_response(
+                status_code="timeout",
+                status_message="score prefix cache deadline exceeded",
+            )
+
+        return _score_prefix_cache_response(
+            status_code="unavailable",
+            status_message="prefix cache score unavailable for backend",
+        )
 
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         return _stub_generate(request, cancel_event)
@@ -567,6 +645,97 @@ class MLXBackend:
                 return []
             return _fingerprint_snapshot(getattr(session, "prefix_cache_fingerprints", []))
 
+    def score_prefix_cache(
+        self,
+        *,
+        model_ref: Any,
+        fingerprint: str,
+        request_id: str,
+        deadline_unix_ms: int,
+    ) -> BackendPrefixCacheScore:
+        del request_id
+
+        session_started_unix_ms = 0
+        if getattr(self._prefix_cache_config, "mode", "") == "disabled":
+            return _score_prefix_cache_response(
+                status_code="disabled",
+                status_message="prefix cache disabled by config",
+            )
+
+        with self._lock:
+            session = self._session
+
+        if session is None:
+            return _score_prefix_cache_response(
+                status_code="unavailable",
+                status_message="model session is not loaded",
+            )
+
+        session_started_unix_ms = _status_uint64(getattr(session, "session_started_unix_ms", 0))
+
+        if getattr(model_ref, "model_id", "") != getattr(
+            session.manifest, "model_id", ""
+        ) or getattr(model_ref, "version", "") != getattr(session.manifest, "version", ""):
+            return _score_prefix_cache_response(
+                status_code="model_not_loaded",
+                status_message="model is not loaded on this worker",
+                session_started_unix_ms=session_started_unix_ms,
+            )
+
+        if not valid_cache_affinity_fingerprint(fingerprint):
+            return _score_prefix_cache_response(
+                status_code="invalid_request",
+                status_message="cache affinity fingerprint is invalid",
+                session_started_unix_ms=session_started_unix_ms,
+            )
+
+        if deadline_unix_ms > 0 and int(time.time() * 1000) > deadline_unix_ms:
+            return _score_prefix_cache_response(
+                status_code="timeout",
+                status_message="score prefix cache deadline exceeded",
+                session_started_unix_ms=session_started_unix_ms,
+            )
+
+        prefix_cache = getattr(session, "prefix_cache", None)
+        if prefix_cache is None:
+            return _score_prefix_cache_response(
+                status_code="unavailable",
+                status_message="prefix cache is not available",
+                session_started_unix_ms=session_started_unix_ms,
+            )
+
+        try:
+            score = prefix_cache.score(fingerprint)
+        except Exception:
+            return _score_prefix_cache_response(
+                status_code="error",
+                status_message="score prefix cache unavailable",
+                session_started_unix_ms=session_started_unix_ms,
+            )
+
+        resident = bool(score.get("resident"))
+        tier_raw = score.get("tier")
+        tier = (
+            tier_raw
+            if isinstance(tier_raw, str) and tier_raw in _SCORE_PREFIX_CACHE_TIERS
+            else "unknown"
+        )
+
+        if (
+            not resident
+            and tier == "no_match"
+            and fingerprint
+            in _fingerprint_snapshot(getattr(session, "prefix_cache_fingerprints", []))
+        ):
+            tier = "recent_fingerprint_only"
+
+        return _score_prefix_cache_response(
+            status_code="ok",
+            resident_fingerprint_match=resident,
+            score_tier=tier,
+            session_started_unix_ms=session_started_unix_ms,
+        )
+
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         with self._lock:
             session = self._session
@@ -636,6 +805,29 @@ def _base_prefix_cache_status(
         status_message=status_message,
         session_started_unix_ms=session_started_unix_ms,
         prefix_cache_fingerprints=_fingerprint_snapshot(prefix_cache_fingerprints or []),
+    )
+
+
+def _score_prefix_cache_response(
+    *,
+    status_code: str,
+    status_message: str = "",
+    resident_fingerprint_match: bool = False,
+    score_tier: str = "unknown",
+    session_started_unix_ms: int = 0,
+) -> BackendPrefixCacheScore:
+    normalized_status = status_code if status_code in _SCORE_PREFIX_CACHE_STATUS_CODES else "error"
+    normalized_tier = score_tier if score_tier in _SCORE_PREFIX_CACHE_TIERS else "unknown"
+
+    if normalized_status != "ok":
+        resident_fingerprint_match = False
+
+    return BackendPrefixCacheScore(
+        status_code=normalized_status,
+        status_message=status_message,
+        resident_fingerprint_match=resident_fingerprint_match,
+        score_tier=normalized_tier,
+        session_started_unix_ms=_status_uint64(session_started_unix_ms),
     )
 
 

@@ -8,11 +8,17 @@ defmodule Orchard.Node.WorkerProcess do
   alias Orchard.Cluster.V1.EnsureModelLoadedRequest
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
   alias Orchard.Cluster.V1.ModelRef
+  alias Orchard.Cluster.V1.ScorePrefixCacheRequest
+  alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.RuntimeAdapter
+  alias Orchard.Node.ScorePrefixCacheResponse, as: ScoreResponse
 
   require Logger
+
+  @score_prefix_cache_default_timeout_ms 150
+  @score_prefix_cache_local_timeout_grace_ms 50
 
   @type state :: %{
           adapter: module(),
@@ -53,6 +59,22 @@ defmodule Orchard.Node.WorkerProcess do
   @spec cancel_request(pid(), String.t()) :: :ok | {:error, term()}
   def cancel_request(pid, request_id) when is_binary(request_id) do
     GenServer.call(pid, {:cancel_request, request_id})
+  end
+
+  @spec score_prefix_cache(pid(), ScorePrefixCacheRequest.t(), keyword()) ::
+          ScorePrefixCacheResponse.t()
+  def score_prefix_cache(pid, %ScorePrefixCacheRequest{} = request, opts \\ []) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, score_prefix_cache_timeout_ms(request))
+    opts = Keyword.put(opts, :timeout_ms, timeout_ms)
+    timeout = Keyword.get(opts, :timeout, score_prefix_cache_call_timeout(timeout_ms))
+
+    GenServer.call(pid, {:score_prefix_cache, request, opts}, timeout)
+  catch
+    :exit, {:timeout, _call} ->
+      score_prefix_cache_response("timeout", "score request timed out")
+
+    :exit, _reason ->
+      score_prefix_cache_response("unavailable", "worker process exited")
   end
 
   @doc """
@@ -201,6 +223,44 @@ defmodule Orchard.Node.WorkerProcess do
             {:reply, {:error, reason}, state}
         end
     end
+  end
+
+  def handle_call({:score_prefix_cache, %ScorePrefixCacheRequest{} = request, opts}, _from, state) do
+    timeout_ms = Keyword.get(opts, :timeout_ms, @score_prefix_cache_default_timeout_ms)
+
+    response =
+      cond do
+        not state.loaded? or state.adapter_state == nil ->
+          score_prefix_cache_response("model_not_loaded", "model is not loaded")
+
+        timeout_ms <= 0 ->
+          score_prefix_cache_response("timeout", "score request timed out")
+
+        request.model_ref != state.model_ref ->
+          score_prefix_cache_response("model_not_loaded", "model is not loaded")
+
+        function_exported?(state.adapter, :score_prefix_cache, 3) ->
+          case state.adapter.score_prefix_cache(state.adapter_state, request,
+                 timeout_ms: timeout_ms
+               ) do
+            {:ok, response} ->
+              normalize_score_prefix_cache_response(response)
+
+            {:error, :timeout} ->
+              score_prefix_cache_response("timeout", "score request timed out")
+
+            {:error, reason} ->
+              score_prefix_cache_response("error", "score request failed: #{inspect(reason)}")
+          end
+
+        true ->
+          score_prefix_cache_response(
+            "unsupported_version",
+            "runtime adapter does not support score_prefix_cache"
+          )
+      end
+
+    {:reply, response, state}
   end
 
   @impl true
@@ -437,5 +497,22 @@ defmodule Orchard.Node.WorkerProcess do
 
   defp flush_port_log_buffer(%{port_log_buffer: buffer} = state) do
     log_worker_line(buffer, state)
+  end
+
+  defp score_prefix_cache_timeout_ms(%ScorePrefixCacheRequest{deadline_unix_ms: deadline})
+       when is_integer(deadline) and deadline > 0 do
+    max(deadline - System.system_time(:millisecond), 0)
+  end
+
+  defp score_prefix_cache_timeout_ms(_request), do: @score_prefix_cache_default_timeout_ms
+
+  defp score_prefix_cache_call_timeout(timeout_ms) do
+    max(timeout_ms + @score_prefix_cache_local_timeout_grace_ms, 1)
+  end
+
+  defp normalize_score_prefix_cache_response(response), do: ScoreResponse.normalize(response)
+
+  defp score_prefix_cache_response(status_code, status_message) do
+    ScoreResponse.response(status_code, status_message)
   end
 end

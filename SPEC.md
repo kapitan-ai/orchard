@@ -1898,7 +1898,21 @@ service NodeRuntimeService {
   rpc UnloadModel(UnloadModelRequest) returns (Ack);
   rpc ExecuteInference(ExecuteInferenceRequest) returns (stream InferenceEvent);
   rpc CancelInference(CancelInferenceRequest) returns (Ack);
+  rpc ScorePrefixCache(ScorePrefixCacheRequest) returns (ScorePrefixCacheResponse);
   rpc RunDiagnostics(RunDiagnosticsRequest) returns (RunDiagnosticsResponse);
+}
+```
+
+#### 7.5.2a Worker-side service (node-agent ↔ worker)
+
+```proto
+service WorkerRuntimeService {
+  rpc GetStatus(WorkerStatusRequest) returns (WorkerStatusResponse);
+  rpc LoadModel(LoadModelRequest) returns (Ack);
+  rpc UnloadModel(UnloadModelRequest) returns (Ack);
+  rpc Generate(ExecuteInferenceRequest) returns (stream InferenceEvent);
+  rpc Cancel(CancelInferenceRequest) returns (Ack);
+  rpc ScorePrefixCache(ScorePrefixCacheRequest) returns (ScorePrefixCacheResponse);
 }
 ```
 
@@ -2049,6 +2063,28 @@ message GenerationParams {
   bytes tool_choice_json = 6;
 }
 
+message ScorePrefixCacheRequest {
+  string request_id = 1;
+  string controller_session_id = 2;
+  ModelRef model_ref = 3;
+  // Opaque HMAC fingerprint (hmac-sha256:<64 lowercase hex>) derived with the
+  // same algorithm as ExecuteInferenceRequest.cache_affinity_fingerprint.
+  // Prompt bytes and token IDs are forbidden on this RPC in v1.
+  string cache_affinity_fingerprint = 4;
+  uint64 deadline_unix_ms = 5;
+}
+
+message ScorePrefixCacheResponse {
+  // ok | disabled | unavailable | model_not_loaded | timeout |
+  // invalid_request | error | unsupported_version
+  string status_code = 1;
+  string status_message = 2;
+  bool resident_fingerprint_match = 3;
+  // resident_fingerprint | recent_fingerprint_only | no_match | unknown
+  string score_tier = 4;
+  uint64 session_started_unix_ms = 5;
+}
+
 message ExecuteInferenceRequest {
   string request_id = 1;
   string controller_session_id = 2;
@@ -2129,7 +2165,8 @@ Runtime memory-budget wire semantics:
 
 Runtime prefix-cache wire semantics:
 
-* `StatusResponse.runtime_prefix_cache_statuses` SHALL report observe-only aggregate prefix-cache snapshots for loaded runtime/model paths through the existing `GetStatus` probe; Orchard SHALL NOT add a separate prefix-cache scoring RPC in Phase 4B
+* `StatusResponse.runtime_prefix_cache_statuses` SHALL report observe-only aggregate prefix-cache snapshots for loaded runtime/model paths through the existing `GetStatus` probe
+* Orchard MAY issue a bounded `ScorePrefixCache` RPC in Phase 4D only for the already-selected candidate, after ranking, and at most once per request
 * omitted or empty `runtime_prefix_cache_statuses` SHALL mean no prefix-cache observation is available
 * omitted, empty, stale, unavailable, or invalid prefix-cache observations SHALL NOT be treated as a node status error, readiness failure, admission failure, model-admission failure, or scheduler-eligibility failure
 * `RuntimePrefixCacheStatus.status_code` values in this slice are: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
@@ -2139,10 +2176,17 @@ Runtime prefix-cache wire semantics:
 * worker `WorkerPrefixCacheStatus.prefix_cache_fingerprints` and node-agent `RuntimePrefixCacheStatus.prefix_cache_fingerprints` SHALL carry only controller-derived `hmac-sha256:<64 lowercase hex>` values. Workers SHALL retain a bounded recent FIFO buffer of these values with default capacity 8 and implementation cap 64. The set is an approximation of recent request locality, not proof of current prefix-cache residency.
 * the controller SHALL validate, deduplicate, and cap `RuntimePrefixCacheStatus.prefix_cache_fingerprints` to at most 64 entries before scheduler use. Invalid entries SHALL be dropped fail-open.
 * raw prefix-cache fingerprint sets SHALL be scheduler-internal only. Persistence and tenant/operator telemetry surfaces SHALL expose only derived non-linkable fields such as fingerprint count, warmth indicator, and selected-candidate match boolean; they SHALL NOT persist or render the raw set.
-* neither `RuntimePrefixCacheStatus.status_code` nor counters such as `entry_count`, `total_bytes`, `hits`, `misses`, `stores`, or `evictions` are enforcement inputs; they SHALL NOT alter runtime readiness, request admission, model admission, scheduler eligibility, queue ordering, hosted-tool eligibility, or `worker_generation_mode`
+* `ScorePrefixCacheRequest` in v1 SHALL carry only `cache_affinity_fingerprint` (`hmac-sha256:<64 lowercase hex>`). Prompt bytes and token IDs SHALL NOT be sent on this path.
+* worker score behavior SHALL be non-mutating in v1: scoring SHALL NOT deep-copy cache entries, trim tokens, update LRU order, or mutate Phase 4B `hits`/`misses`/`failures` counters.
+* `ScorePrefixCacheResponse.status_code` vocabulary is: `ok`, `disabled`, `unavailable`, `model_not_loaded`, `timeout`, `invalid_request`, `error`, `unsupported_version`.
+* `ScorePrefixCacheResponse.score_tier` vocabulary is: `resident_fingerprint`, `recent_fingerprint_only`, `no_match`, `unknown`. `recent_fingerprint_only` is diagnostic/approximate and SHALL NOT be treated as authoritative residency.
+* score telemetry is observe-only in this slice and SHALL NOT alter runtime readiness, request admission, model admission, scheduler eligibility, queue ordering, hosted-tool eligibility, `worker_generation_mode`, or `memory_budget_mode` enforcement.
+* score telemetry in this slice SHALL NOT change ranking order or Phase 4A/4B/4C/4E tie-break ordering; non-`ok` status, timeout, `UNIMPLEMENTED`/`unsupported_version`, and transport failures are rank-neutral fail-open scheduler-internal outcomes and SHALL never be surfaced as tenant-facing request errors.
 * controller persistence of selected prefix-cache diagnostics in `requests.scheduler_decision` SHALL be guarded by `orchard_controller.inference.cache_introspection.enabled`, which defaults to `false`; when disabled, prefix-cache fields SHALL be stripped before scheduler-decision persistence
+* score-RPC collection SHALL be default-off behind `orchard_controller.inference.prefix_cache_scoring.enabled` (default `false`).
+* when both `prefix_cache_scoring.enabled=true` and `cache_introspection.enabled=true`, the controller MAY persist only sanitized flat `selected_prefix_cache_score_*` scalars for the selected candidate; for non-`ok` score status only bounded status/tier/source diagnostics MAY persist.
 * when `cache_introspection.enabled=true`, the controller SHALL persist only sanitized flat `selected_prefix_cache_*` scalars for the selected candidate and SHALL NOT persist the raw nested `prefix_cache_status` map; non-`ok` statuses SHALL persist only status code and enabled flag
-* this Phase 4B/4C contract is traceable to `orchard-workbench/plans/plan-mlx-phase4-worker-prefix-cache-introspection.md` and `orchard-workbench/plans/plan-mlx-phase4c-bounded-hmac-fingerprint-publication.md`
+* this Phase 4B/4C/4D contract is traceable to `orchard-workbench/plans/plan-mlx-phase4-worker-prefix-cache-introspection.md`, `orchard-workbench/plans/plan-mlx-phase4c-bounded-hmac-fingerprint-publication.md`, and `orchard-workbench/plans/plan-mlx-phase4d-score-prefix-cache-rpc.md`
 
 #### 7.5.4 Node registration flow
 

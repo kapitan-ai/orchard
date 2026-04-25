@@ -24,7 +24,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Requests.Request
   alias Orchard.Requests.RequestServer
   alias Orchard.Requests.RequestStepEvent
-  alias Orchard.Runtime.{MemoryBudget, PrefixCacheStatus}
+  alias Orchard.Runtime.{MemoryBudget, PrefixCacheScore, PrefixCacheStatus}
 
   @type event_handler ::
           (Ecto.UUID.t(), InferenceEvent.t() -> :ok | :cancel)
@@ -613,6 +613,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     schedule
     |> strip_scheduler_runtime_metadata()
     |> maybe_merge_prefix_cache_fields(schedule)
+    |> maybe_merge_prefix_cache_score_fields(schedule)
     |> maybe_merge_memory_admission_fields(schedule)
   end
 
@@ -644,6 +645,23 @@ defmodule Orchard.Inference.RequestOrchestrator do
       true ->
         nil
     end
+  end
+
+  defp maybe_merge_prefix_cache_score_fields(metadata, schedule) do
+    if Inference.cache_introspection_enabled?() and Inference.prefix_cache_scoring_enabled?() do
+      fields =
+        schedule
+        |> prefix_cache_score()
+        |> PrefixCacheScore.selected_fields()
+
+      Map.merge(metadata, fields)
+    else
+      metadata
+    end
+  end
+
+  defp prefix_cache_score(schedule) do
+    Map.get(schedule, :prefix_cache_score) || Map.get(schedule, "prefix_cache_score")
   end
 
   defp maybe_merge_memory_admission_fields(metadata, schedule) do
@@ -684,6 +702,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp prefix_cache_metadata_key?("prefix_cache_status"), do: true
   defp prefix_cache_metadata_key?(:prefix_cache_fingerprint_match?), do: true
   defp prefix_cache_metadata_key?("prefix_cache_fingerprint_match?"), do: true
+  defp prefix_cache_metadata_key?(:prefix_cache_score), do: true
+  defp prefix_cache_metadata_key?("prefix_cache_score"), do: true
 
   defp prefix_cache_metadata_key?(key) when is_atom(key) do
     key

@@ -61,6 +61,11 @@ class NodeRuntimeServiceStub(object):
                 request_serializer=cluster_dot_v1_dot_runtime__pb2.CancelInferenceRequest.SerializeToString,
                 response_deserializer=cluster_dot_v1_dot_common__pb2.Ack.FromString,
                 _registered_method=True)
+        self.ScorePrefixCache = channel.unary_unary(
+                '/cluster.v1.NodeRuntimeService/ScorePrefixCache',
+                request_serializer=cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheRequest.SerializeToString,
+                response_deserializer=cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheResponse.FromString,
+                _registered_method=True)
 
 
 class NodeRuntimeServiceServicer(object):
@@ -96,6 +101,16 @@ class NodeRuntimeServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ScorePrefixCache(self, request, context):
+        """Phase 4D selected-candidate observe-only score path.
+        Default-off and fail-open: non-ok statuses and transport failures are
+        rank-neutral scheduler-internal telemetry and MUST NOT become tenant-facing
+        request failures.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_NodeRuntimeServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -123,6 +138,11 @@ def add_NodeRuntimeServiceServicer_to_server(servicer, server):
                     servicer.CancelInference,
                     request_deserializer=cluster_dot_v1_dot_runtime__pb2.CancelInferenceRequest.FromString,
                     response_serializer=cluster_dot_v1_dot_common__pb2.Ack.SerializeToString,
+            ),
+            'ScorePrefixCache': grpc.unary_unary_rpc_method_handler(
+                    servicer.ScorePrefixCache,
+                    request_deserializer=cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheRequest.FromString,
+                    response_serializer=cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -260,6 +280,33 @@ class NodeRuntimeService(object):
             '/cluster.v1.NodeRuntimeService/CancelInference',
             cluster_dot_v1_dot_runtime__pb2.CancelInferenceRequest.SerializeToString,
             cluster_dot_v1_dot_common__pb2.Ack.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ScorePrefixCache(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/cluster.v1.NodeRuntimeService/ScorePrefixCache',
+            cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheRequest.SerializeToString,
+            cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheResponse.FromString,
             options,
             channel_credentials,
             insecure,

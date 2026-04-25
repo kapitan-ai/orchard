@@ -58,6 +58,10 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       cache_introspection: [
         enabled: false
       ],
+      prefix_cache_scoring: [
+        enabled: false,
+        timeout_ms: 150
+      ],
       memory_admission: [
         enabled: false
       ]

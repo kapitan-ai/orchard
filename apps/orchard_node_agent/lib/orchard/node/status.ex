@@ -7,6 +7,8 @@ defmodule Orchard.Node.Status do
   alias Orchard.Cluster.V1.EnsureModelLoadedRequest
   alias Orchard.Cluster.V1.EnsureModelLoadedResponse
   alias Orchard.Cluster.V1.ExecuteInferenceRequest
+  alias Orchard.Cluster.V1.ScorePrefixCacheRequest
+  alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.Cluster.V1.StatusResponse
   alias Orchard.Cluster.V1.UnloadModelRequest
   alias Orchard.Node.ModelManager
@@ -40,5 +42,10 @@ defmodule Orchard.Node.Status do
   @spec cancel_request(String.t(), String.t() | nil) :: Ack.t()
   def cancel_request(request_id, controller_session_id \\ nil) when is_binary(request_id) do
     ModelManager.cancel_request(request_id, controller_session_id)
+  end
+
+  @spec score_prefix_cache(ScorePrefixCacheRequest.t()) :: ScorePrefixCacheResponse.t()
+  def score_prefix_cache(%ScorePrefixCacheRequest{} = request) do
+    ModelManager.score_prefix_cache(request)
   end
 end

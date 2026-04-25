@@ -4961,6 +4961,7 @@ class FakePrefixCache:
         self.store_result = store_result
         self.lookup_calls: list[tuple[list[int], Any]] = []
         self.store_calls: list[tuple[list[int], Any]] = []
+        self.register_calls: list[tuple[str, tuple[int, ...]]] = []
 
     def lookup(self, token_ids, *, trim_fn):
         self.lookup_calls.append((list(token_ids), trim_fn))
@@ -4973,6 +4974,9 @@ class FakePrefixCache:
         if self.store_side_effect is not None:
             raise self.store_side_effect
         return self.store_result
+
+    def register_fingerprint(self, fingerprint: str, entry_key: tuple[int, ...]) -> None:
+        self.register_calls.append((fingerprint, entry_key))
 
 
 @dataclass
@@ -5237,6 +5241,56 @@ def test_completed_stores_full_sequence_key() -> None:
     stored_key, stored_cache = fake_cache.store_calls[0]
     # Key is prompt_ids + generated_token_ids
     assert stored_key == [1, 2, 3, 50, 51, 52]
+
+
+def test_completed_store_registers_valid_cache_affinity_fingerprint() -> None:
+    fake_cache = FakePrefixCache(lookup_result=None)
+    responses = [
+        FakeGenerationResponse(text="A", token=50),
+        FakeGenerationResponse(text="", token=51, finish_reason="stop"),
+    ]
+    deps, _, _ = _cache_deps(responses)
+    session = _make_fake_session(prefix_cache=fake_cache)
+    session.tokenizer.encode.return_value = [1, 2, 3]
+    request = _make_fake_request()
+    request.cache_affinity_fingerprint = "hmac-sha256:" + "a" * 64
+
+    events = _collect_events(session, request, deps)
+
+    assert events[-1]["kind"] == "completed"
+    assert fake_cache.register_calls == [
+        (request.cache_affinity_fingerprint, (1, 2, 3, 50, 51)),
+    ]
+
+
+def test_skipped_or_failed_store_does_not_register_fingerprint() -> None:
+    request = _make_fake_request()
+    request.cache_affinity_fingerprint = "hmac-sha256:" + "a" * 64
+
+    truthy_cache = FakePrefixCache(lookup_result=None, store_result=1)
+    truthy_deps, _, _ = _cache_deps(
+        [FakeGenerationResponse(text="ok", token=1, finish_reason="stop")]
+    )
+    truthy_session = _make_fake_session(prefix_cache=truthy_cache)
+    _collect_events(truthy_session, request, truthy_deps)
+
+    skipped_cache = FakePrefixCache(lookup_result=None, store_result=False)
+    skipped_deps, _, _ = _cache_deps(
+        [FakeGenerationResponse(text="ok", token=1, finish_reason="stop")]
+    )
+    skipped_session = _make_fake_session(prefix_cache=skipped_cache)
+    _collect_events(skipped_session, request, skipped_deps)
+
+    failed_cache = FakePrefixCache(lookup_result=None, store_side_effect=RuntimeError("boom"))
+    failed_deps, _, _ = _cache_deps(
+        [FakeGenerationResponse(text="ok", token=1, finish_reason="stop")]
+    )
+    failed_session = _make_fake_session(prefix_cache=failed_cache)
+    _collect_events(failed_session, request, failed_deps)
+
+    assert truthy_cache.register_calls == []
+    assert skipped_cache.register_calls == []
+    assert failed_cache.register_calls == []
 
 
 def test_stop_sequence_terminal_stores() -> None:

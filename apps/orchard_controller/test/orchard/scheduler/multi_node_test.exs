@@ -1,10 +1,12 @@
 defmodule Orchard.Scheduler.MultiNodeTest do
   use Orchard.DataCase, async: false
 
+  import ExUnit.CaptureLog
   import Orchard.TestSupport.ModelRequestFixtures
 
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
+  alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Nodes.Node
   alias Orchard.Scheduler.MultiNode
@@ -41,6 +43,50 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     end
 
     def disconnect(_channel), do: :ok
+
+    def score_prefix_cache(target, request, _opts) do
+      key = {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
+      calls = Process.get(:stub_score_calls, [])
+      Process.put(:stub_score_calls, [{key, request} | calls])
+
+      case Process.get({:stub_score, key}) do
+        nil -> {:ok, %{status_code: "unavailable", score_tier: "unknown"}}
+        {:error, _reason} = error -> error
+        response -> {:ok, response}
+      end
+    end
+  end
+
+  defmodule StubClientWithoutScore do
+    @moduledoc false
+
+    def connect(target), do: StubClient.connect(target)
+    def status(target, opts), do: StubClient.status(target, opts)
+    def disconnect(channel), do: StubClient.disconnect(channel)
+  end
+
+  defmodule StubClientRaiseScore do
+    @moduledoc false
+
+    def connect(target), do: StubClient.connect(target)
+    def status(target, opts), do: StubClient.status(target, opts)
+    def disconnect(channel), do: StubClient.disconnect(channel)
+
+    def score_prefix_cache(_target, _request, _opts) do
+      raise "score call crashed"
+    end
+  end
+
+  defmodule StubClientExitScore do
+    @moduledoc false
+
+    def connect(target), do: StubClient.connect(target)
+    def status(target, opts), do: StubClient.status(target, opts)
+    def disconnect(channel), do: StubClient.disconnect(channel)
+
+    def score_prefix_cache(_target, _request, _opts) do
+      exit(:score_call_exit)
+    end
   end
 
   # -- Helpers --
@@ -116,6 +162,15 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     Process.put({:stub_connect, {host, port}}, {:error, reason})
   end
 
+  defp stub_score(host, port, response) do
+    Process.put({:stub_score, {host, port}}, response)
+  end
+
+  defp score_calls do
+    Process.get(:stub_score_calls, [])
+    |> Enum.reverse()
+  end
+
   defp insert_recent_cache_affinity_request!(
          tenant_id,
          model_id,
@@ -184,6 +239,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   setup do
     previous = Application.fetch_env!(:orchard_controller, :inference)
+    Process.delete(:stub_score_calls)
     on_exit(fn -> Application.put_env(:orchard_controller, :inference, previous) end)
     :ok
   end
@@ -704,6 +760,305 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert schedule.node_id == id_a
       refute Map.has_key?(schedule, :prefix_cache_fingerprint_match?)
+    end
+
+    test "prefix cache scoring probes only the selected candidate when enabled" do
+      put_inference(
+        cache_affinity: [
+          enabled: true,
+          live_fingerprint_match_enabled: true,
+          max_age_ms: 300_000,
+          max_recent_requests: 8
+        ],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 123]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}]
+        )
+      )
+
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      stub_score("10.0.0.1", 50_061, %{
+        status_code: "ok",
+        resident_fingerprint_match: true,
+        score_tier: "resident_fingerprint",
+        session_started_unix_ms: 123
+      })
+
+      stub_score("10.0.0.2", 50_062, %{status_code: "error", score_tier: "unknown"})
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.prefix_cache_score.status_code == "ok"
+      assert schedule.prefix_cache_score.score_tier == "resident_fingerprint"
+
+      assert [{{"10.0.0.1", 50_061}, score_request}] = score_calls()
+      assert score_request.request_id == request.public_id
+      assert score_request.controller_session_id == request.internal_id
+      assert score_request.model_ref.model_id == request.model_ref.model_id
+      assert score_request.model_ref.version == request.model_ref.version
+    end
+
+    test "prefix cache scoring is a no-op when live fingerprint matching is disabled" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: false],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 123]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      assert {:ok, schedule} = MultiNode.schedule(canonical_request(), status_client: StubClient)
+
+      refute Map.has_key?(schedule, :prefix_cache_score)
+      assert score_calls() == []
+    end
+
+    test "prefix cache scoring skips RPC when affinity key is unavailable" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 123]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(
+                 canonical_request("test-model", "v1", rendered_prompt: nil),
+                 status_client: StubClient
+               )
+
+      refute Map.has_key?(schedule, :prefix_cache_score)
+      assert score_calls() == []
+    end
+
+    test "issues exactly one selected-candidate score RPC when all gates are enabled" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 120]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a, host: "10.0.0.1", port: 50_061, active_request_count: 1)
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          runtime_prefix_cache_statuses: [
+            prefix_cache_status("test-model", "v1", %{prefix_cache_fingerprints: []})
+          ]
+        )
+      )
+
+      stub_score(
+        "10.0.0.2",
+        50_062,
+        %ScorePrefixCacheResponse{
+          status_code: "ok",
+          resident_fingerprint_match: true,
+          score_tier: "resident_fingerprint",
+          session_started_unix_ms: 1_713_726_400_000
+        }
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == id_b
+      assert schedule.prefix_cache_score.status_code == "ok"
+      assert [{{"10.0.0.2", 50_062}, _score_request}] = score_calls()
+    end
+
+    test "scoring enabled but live fingerprint disabled is an explicit no-op" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: false],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 120]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == id_a
+      assert score_calls() == []
+      refute Map.has_key?(schedule, :prefix_cache_score)
+    end
+
+    test "derive_key unavailable skips score RPC without changing ranking" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 120]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      request = canonical_request("test-model", "v1", rendered_prompt: nil)
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == id_a
+      assert score_calls() == []
+      refute Map.has_key?(schedule, :prefix_cache_score)
+    end
+
+    test "prefix cache scoring normalizes unsupported client versions without affecting selection" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 120]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}]
+        )
+      )
+
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      request =
+        canonical_request("test-model", "v1", rendered_prompt: "secret-prefix-cache-input")
+
+      log =
+        capture_log([level: :debug], fn ->
+          assert {:ok, schedule} =
+                   MultiNode.schedule(request, status_client: StubClientWithoutScore)
+
+          assert schedule.node_id == id_a
+          assert schedule.prefix_cache_score.status_code == "unsupported_version"
+          assert score_calls() == []
+        end)
+
+      assert log =~ "prefix cache score RPC fail-open"
+      assert log =~ "status_code=unsupported_version"
+      assert log =~ "reason=unsupported_version"
+      assert log =~ "target=10.0.0.1:50061"
+      assert log =~ "request_id=#{request.public_id}"
+      refute log =~ "secret-prefix-cache-input"
+    end
+
+    test "prefix cache scoring normalizes rescue and exit failures to error" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 120]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}]
+        )
+      )
+
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      request = canonical_request("test-model", "v1")
+
+      raise_log =
+        capture_log([level: :debug], fn ->
+          assert {:ok, raise_schedule} =
+                   MultiNode.schedule(request, status_client: StubClientRaiseScore)
+
+          assert raise_schedule.node_id == id_a
+          assert raise_schedule.prefix_cache_score.status_code == "error"
+        end)
+
+      assert raise_log =~ "prefix cache score RPC fail-open"
+      assert raise_log =~ "status_code=error"
+      assert raise_log =~ "reason=rescued_exception"
+      assert raise_log =~ "target=10.0.0.1:50061"
+      assert raise_log =~ "request_id=#{request.public_id}"
+      refute raise_log =~ "score call crashed"
+
+      exit_log =
+        capture_log([level: :debug], fn ->
+          assert {:ok, exit_schedule} =
+                   MultiNode.schedule(request, status_client: StubClientExitScore)
+
+          assert exit_schedule.node_id == id_a
+          assert exit_schedule.prefix_cache_score.status_code == "error"
+        end)
+
+      assert exit_log =~ "prefix cache score RPC fail-open"
+      assert exit_log =~ "status_code=error"
+      assert exit_log =~ "reason=exit"
+      assert exit_log =~ "target=10.0.0.1:50061"
+      assert exit_log =~ "request_id=#{request.public_id}"
+      refute exit_log =~ "score_call_exit"
+      refute exit_log =~ ":score_call_exit"
     end
 
     test "does not let cache-affinity outrank active request count" do

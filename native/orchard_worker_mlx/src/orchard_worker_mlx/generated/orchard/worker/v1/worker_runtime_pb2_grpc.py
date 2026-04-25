@@ -62,6 +62,11 @@ class WorkerRuntimeServiceStub(object):
                 request_serializer=cluster_dot_v1_dot_runtime__pb2.CancelInferenceRequest.SerializeToString,
                 response_deserializer=cluster_dot_v1_dot_common__pb2.Ack.FromString,
                 _registered_method=True)
+        self.ScorePrefixCache = channel.unary_unary(
+                '/orchard.worker.v1.WorkerRuntimeService/ScorePrefixCache',
+                request_serializer=cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheRequest.SerializeToString,
+                response_deserializer=cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheResponse.FromString,
+                _registered_method=True)
 
 
 class WorkerRuntimeServiceServicer(object):
@@ -97,6 +102,16 @@ class WorkerRuntimeServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ScorePrefixCache(self, request, context):
+        """Phase 4D selected-candidate observe-only score path.
+        Worker accepts only cache_affinity_fingerprint HMAC input in v1; prompt
+        bytes and token IDs are explicitly out of scope for this RPC.
+        Default-off/fail-open behavior is enforced by node-agent/controller callers.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_WorkerRuntimeServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -124,6 +139,11 @@ def add_WorkerRuntimeServiceServicer_to_server(servicer, server):
                     servicer.Cancel,
                     request_deserializer=cluster_dot_v1_dot_runtime__pb2.CancelInferenceRequest.FromString,
                     response_serializer=cluster_dot_v1_dot_common__pb2.Ack.SerializeToString,
+            ),
+            'ScorePrefixCache': grpc.unary_unary_rpc_method_handler(
+                    servicer.ScorePrefixCache,
+                    request_deserializer=cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheRequest.FromString,
+                    response_serializer=cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -261,6 +281,33 @@ class WorkerRuntimeService(object):
             '/orchard.worker.v1.WorkerRuntimeService/Cancel',
             cluster_dot_v1_dot_runtime__pb2.CancelInferenceRequest.SerializeToString,
             cluster_dot_v1_dot_common__pb2.Ack.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ScorePrefixCache(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/orchard.worker.v1.WorkerRuntimeService/ScorePrefixCache',
+            cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheRequest.SerializeToString,
+            cluster_dot_v1_dot_runtime__pb2.ScorePrefixCacheResponse.FromString,
             options,
             channel_credentials,
             insecure,

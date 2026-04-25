@@ -20,6 +20,7 @@ from orchard_worker_mlx.backends import (
     BackendStatus,
     StubBackend,
 )
+from orchard_worker_mlx.generated.cluster.v1 import common_pb2, runtime_pb2
 from orchard_worker_mlx.generated.orchard.worker.v1 import worker_runtime_pb2
 from orchard_worker_mlx.model_loader import (
     GenerationRuntimeConfig,
@@ -102,6 +103,23 @@ class HappyBackend:
 
     def get_fingerprints(self) -> list[str]:
         return list(self.recorded_fingerprints)
+
+    def score_prefix_cache(
+        self,
+        *,
+        model_ref: Any,
+        fingerprint: str,
+        request_id: str,
+        deadline_unix_ms: int,
+    ) -> dict[str, Any]:
+        del model_ref, fingerprint, request_id, deadline_unix_ms
+        return {
+            "status_code": "unavailable",
+            "status_message": "not implemented in HappyBackend",
+            "resident_fingerprint_match": False,
+            "score_tier": "unknown",
+            "session_started_unix_ms": 0,
+        }
 
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         yield from self._events
@@ -991,6 +1009,228 @@ def test_post_failed_events_suppressed() -> None:
     kinds = [e.WhichOneof("event") for e in events]
     assert kinds == ["output_text_delta", "failed"]
     assert events[-1].failed.code == "generation_failed"
+
+
+def test_score_prefix_cache_success_passthrough() -> None:
+    class ScoringBackend(HappyBackend):
+        def score_prefix_cache(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {
+                "status_code": "ok",
+                "status_message": "",
+                "resident_fingerprint_match": True,
+                "score_tier": "resident_fingerprint",
+                "session_started_unix_ms": 44,
+            }
+
+    servicer = _make_servicer(ScoringBackend())
+    request = runtime_pb2.ScorePrefixCacheRequest(
+        request_id="req-1",
+        model_ref=common_pb2.ModelRef(model_id="m", version="v"),
+        cache_affinity_fingerprint=_fingerprint(1),
+    )
+
+    response = servicer.ScorePrefixCache(request, MagicMock())
+
+    assert response.status_code == "ok"
+    assert response.resident_fingerprint_match is True
+    assert response.score_tier == "resident_fingerprint"
+    assert response.session_started_unix_ms == 44
+
+
+def test_score_prefix_cache_normalizes_contradictory_ok_diagnostics() -> None:
+    class ContradictoryScoringBackend(HappyBackend):
+        def score_prefix_cache(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {
+                "status_code": "ok",
+                "status_message": "",
+                "resident_fingerprint_match": True,
+                "score_tier": "no_match",
+                "session_started_unix_ms": 44,
+            }
+
+    servicer = _make_servicer(ContradictoryScoringBackend())
+    request = runtime_pb2.ScorePrefixCacheRequest(
+        request_id="req-1",
+        model_ref=common_pb2.ModelRef(model_id="m", version="v"),
+        cache_affinity_fingerprint=_fingerprint(1),
+    )
+
+    response = servicer.ScorePrefixCache(request, MagicMock())
+
+    assert response.status_code == "ok"
+    assert response.score_tier == "unknown"
+    assert response.resident_fingerprint_match is False
+
+
+def test_score_prefix_cache_normalizes_non_ok_diagnostics_to_unknown_and_false() -> None:
+    class TimeoutScoringBackend(HappyBackend):
+        def score_prefix_cache(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {
+                "status_code": "timeout",
+                "status_message": "timed out",
+                "resident_fingerprint_match": True,
+                "score_tier": "resident_fingerprint",
+                "session_started_unix_ms": 44,
+            }
+
+    servicer = _make_servicer(TimeoutScoringBackend())
+    request = runtime_pb2.ScorePrefixCacheRequest(
+        request_id="req-1",
+        model_ref=common_pb2.ModelRef(model_id="m", version="v"),
+        cache_affinity_fingerprint=_fingerprint(1),
+    )
+
+    response = servicer.ScorePrefixCache(request, MagicMock())
+
+    assert response.status_code == "timeout"
+    assert response.score_tier == "unknown"
+    assert response.resident_fingerprint_match is False
+
+
+def test_score_prefix_cache_normalizes_ok_resident_tier_without_resident_match() -> None:
+    class ContradictoryResidentTierBackend(HappyBackend):
+        def score_prefix_cache(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {
+                "status_code": "ok",
+                "status_message": "",
+                "resident_fingerprint_match": False,
+                "score_tier": "resident_fingerprint",
+                "session_started_unix_ms": 44,
+            }
+
+    servicer = _make_servicer(ContradictoryResidentTierBackend())
+    request = runtime_pb2.ScorePrefixCacheRequest(
+        request_id="req-1",
+        model_ref=common_pb2.ModelRef(model_id="m", version="v"),
+        cache_affinity_fingerprint=_fingerprint(1),
+    )
+
+    response = servicer.ScorePrefixCache(request, MagicMock())
+
+    assert response.status_code == "ok"
+    assert response.score_tier == "unknown"
+    assert response.resident_fingerprint_match is False
+
+
+def test_score_prefix_cache_invalid_request_without_model_ref() -> None:
+    servicer = _make_servicer(HappyBackend())
+
+    response = servicer.ScorePrefixCache(runtime_pb2.ScorePrefixCacheRequest(), MagicMock())
+
+    assert response.status_code == "invalid_request"
+
+
+def test_score_prefix_cache_invalid_fingerprint_rejected_before_backend() -> None:
+    class ScoringBackend(HappyBackend):
+        def __init__(self) -> None:
+            self.called = False
+
+        def score_prefix_cache(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            self.called = True
+            raise AssertionError("must not score")
+
+    backend = ScoringBackend()
+    servicer = _make_servicer(backend)
+    request = runtime_pb2.ScorePrefixCacheRequest(
+        request_id="req-1",
+        model_ref=common_pb2.ModelRef(model_id="m", version="v"),
+        cache_affinity_fingerprint="hmac-sha256:" + "A" * 64,
+    )
+
+    response = servicer.ScorePrefixCache(request, MagicMock())
+
+    assert response.status_code == "invalid_request"
+    assert response.resident_fingerprint_match is False
+    assert response.score_tier == "unknown"
+    assert backend.called is False
+
+
+def test_score_prefix_cache_disabled_config_precedes_backend_and_validation() -> None:
+    backend = HappyBackend()
+    backend.score_prefix_cache = MagicMock(side_effect=AssertionError("must not score"))
+    servicer = WorkerRuntimeServicer(
+        backend,
+        prefix_cache_config=PrefixCacheLoadConfig(mode="disabled"),
+    )
+
+    response = servicer.ScorePrefixCache(runtime_pb2.ScorePrefixCacheRequest(), MagicMock())
+
+    assert response.status_code == "disabled"
+    assert response.resident_fingerprint_match is False
+    backend.score_prefix_cache.assert_not_called()
+
+
+def test_score_prefix_cache_backend_error_maps_to_error_status() -> None:
+    class FailingScoringBackend(HappyBackend):
+        def score_prefix_cache(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            raise BackendError("score_failed", "score failure: backend internals")
+
+    servicer = _make_servicer(FailingScoringBackend())
+    request = runtime_pb2.ScorePrefixCacheRequest(
+        request_id="req-1",
+        model_ref=common_pb2.ModelRef(model_id="m", version="v"),
+        cache_affinity_fingerprint=_fingerprint(1),
+    )
+
+    response = servicer.ScorePrefixCache(request, MagicMock())
+
+    assert response.status_code == "error"
+    assert response.status_message == "score prefix cache unavailable"
+    assert response.resident_fingerprint_match is False
+    assert response.score_tier == "unknown"
+
+
+def test_score_prefix_cache_error_payload_scrubs_backend_error_details() -> None:
+    class ErrorPayloadBackend(HappyBackend):
+        def score_prefix_cache(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            return {
+                "status_code": "error",
+                "status_message": "prefix cache score failed: backend exploded with raw details",
+                "resident_fingerprint_match": False,
+                "score_tier": "unknown",
+                "session_started_unix_ms": 44,
+            }
+
+    servicer = _make_servicer(ErrorPayloadBackend())
+    request = runtime_pb2.ScorePrefixCacheRequest(
+        request_id="req-1",
+        model_ref=common_pb2.ModelRef(model_id="m", version="v"),
+        cache_affinity_fingerprint=_fingerprint(1),
+    )
+
+    response = servicer.ScorePrefixCache(request, MagicMock())
+
+    assert response.status_code == "error"
+    assert response.status_message == "score prefix cache unavailable"
+    assert "raw details" not in response.status_message
+
+
+def test_score_prefix_cache_unexpected_exception_uses_safe_error_status_message() -> None:
+    class CrashingScoringBackend(HappyBackend):
+        def score_prefix_cache(self, **kwargs: Any) -> dict[str, Any]:
+            del kwargs
+            raise RuntimeError("backend exploded with raw details")
+
+    servicer = _make_servicer(CrashingScoringBackend())
+    request = runtime_pb2.ScorePrefixCacheRequest(
+        request_id="req-1",
+        model_ref=common_pb2.ModelRef(model_id="m", version="v"),
+        cache_affinity_fingerprint=_fingerprint(1),
+    )
+
+    response = servicer.ScorePrefixCache(request, MagicMock())
+
+    assert response.status_code == "error"
+    assert response.status_message == "score prefix cache unavailable"
+    assert response.resident_fingerprint_match is False
+    assert response.score_tier == "unknown"
 
 
 # ---------------------------------------------------------------------------

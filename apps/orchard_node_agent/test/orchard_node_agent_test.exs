@@ -17,6 +17,8 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Cluster.V1.ModelRef, as: RPCModelRef
   alias Orchard.Cluster.V1.NodeRuntimeService.Stub, as: NodeRuntimeStub
   alias Orchard.Cluster.V1.OutputTextDelta
+  alias Orchard.Cluster.V1.ScorePrefixCacheRequest
+  alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.Cluster.V1.StatusRequest
   alias Orchard.Cluster.V1.StatusResponse
   alias Orchard.Cluster.V1.TokenUsage
@@ -264,6 +266,74 @@ defmodule OrchardNodeAgentTest do
 
     @impl true
     def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
+  defmodule ScorePrefixCacheRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+    alias Orchard.Cluster.V1.ScorePrefixCacheResponse
+
+    @impl true
+    def get_status(_adapter_state, _opts) do
+      {:ok, %{ready: true, health_code: "", health_message: ""}}
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+
+    def score_prefix_cache(_adapter_state, _request, _opts) do
+      mode =
+        Application.fetch_env!(:orchard_node_agent, :runtime)
+        |> Keyword.get(:test_score_prefix_cache_mode, :ok)
+
+      case mode do
+        :ok ->
+          {:ok,
+           %ScorePrefixCacheResponse{
+             status_code: "ok",
+             status_message: "",
+             resident_fingerprint_match: true,
+             score_tier: "resident_fingerprint",
+             session_started_unix_ms: 1_713_726_400_000
+           }}
+
+        :timeout ->
+          {:error, :timeout}
+
+        :contradictory_timeout ->
+          {:ok,
+           %ScorePrefixCacheResponse{
+             status_code: "timeout",
+             status_message: "timed out",
+             resident_fingerprint_match: true,
+             score_tier: "resident_fingerprint",
+             session_started_unix_ms: 1_713_726_400_000
+           }}
+
+        :malformed ->
+          {:ok, %{status_code: "unknown", score_tier: "invalid"}}
+
+        _other ->
+          {:error, :boom}
+      end
+    end
   end
 
   defmodule CountingStatusRuntimeAdapter do
@@ -705,6 +775,84 @@ defmodule OrchardNodeAgentTest do
     def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
   end
 
+  defmodule ConfigurableScoreRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(_adapter_state, _opts) do
+      {:ok, %{ready: true, health_code: "", health_message: ""}}
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+
+    def score_prefix_cache(_adapter_state, _request, _opts) do
+      mode =
+        Application.fetch_env!(:orchard_node_agent, :runtime)
+        |> Keyword.get(:test_score_mode, :ok)
+
+      case mode do
+        :ok ->
+          {:ok,
+           %{
+             status_code: "ok",
+             status_message: "scored",
+             resident_fingerprint_match: true,
+             score_tier: "resident_fingerprint",
+             session_started_unix_ms: 1_713_726_400_000
+           }}
+
+        :timeout ->
+          {:error, :timeout}
+
+        :contradictory_timeout ->
+          {:ok,
+           %{
+             status_code: "timeout",
+             status_message: "timed out",
+             resident_fingerprint_match: true,
+             score_tier: "resident_fingerprint",
+             session_started_unix_ms: 1_713_726_400_000
+           }}
+
+        :sleep ->
+          Process.sleep(200)
+          {:ok, %{status_code: "ok", score_tier: "resident_fingerprint"}}
+
+        :error ->
+          {:error, :worker_unavailable}
+
+        :malformed ->
+          {:ok,
+           %{
+             status_code: "not_allowed",
+             status_message: 123,
+             resident_fingerprint_match: "yes",
+             score_tier: "bad",
+             session_started_unix_ms: -1
+           }}
+      end
+    end
+  end
+
   defmodule DeadlineTestAdapter do
     @moduledoc """
     Adapter that blocks in load_model until the test process sends a release
@@ -1060,6 +1208,95 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  test "score_prefix_cache returns model_not_loaded when no matching worker exists" do
+    with_channel(fn channel ->
+      assert {:ok, %ScorePrefixCacheResponse{} = response} =
+               NodeRuntimeStub.score_prefix_cache(
+                 channel,
+                 score_prefix_cache_request("missing-model", "v1")
+               )
+
+      assert response.status_code == "model_not_loaded"
+      assert response.score_tier == "unknown"
+      assert response.resident_fingerprint_match == false
+    end)
+  end
+
+  test "score_prefix_cache returns unsupported_version when runtime adapter has no score hook", %{
+    bundle: bundle
+  } do
+    with_runtime_adapter(Orchard.Node.FakeRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      with_channel(fn channel ->
+        assert {:ok, %ScorePrefixCacheResponse{} = response} =
+                 NodeRuntimeStub.score_prefix_cache(
+                   channel,
+                   score_prefix_cache_request(bundle.model_id, bundle.version)
+                 )
+
+        assert response.status_code == "unsupported_version"
+      end)
+    end)
+  end
+
+  test "score_prefix_cache broker normalizes adapter timeout and malformed responses", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ScorePrefixCacheRuntimeAdapter,
+        test_score_prefix_cache_mode: :timeout
+      ],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        with_channel(fn channel ->
+          assert {:ok, %ScorePrefixCacheResponse{} = timeout_response} =
+                   NodeRuntimeStub.score_prefix_cache(
+                     channel,
+                     score_prefix_cache_request(bundle.model_id, bundle.version)
+                   )
+
+          assert timeout_response.status_code == "timeout"
+
+          runtime =
+            Application.fetch_env!(:orchard_node_agent, :runtime)
+            |> Keyword.put(:test_score_prefix_cache_mode, :contradictory_timeout)
+
+          Application.put_env(:orchard_node_agent, :runtime, runtime)
+
+          assert {:ok, %ScorePrefixCacheResponse{} = contradictory_response} =
+                   NodeRuntimeStub.score_prefix_cache(
+                     channel,
+                     score_prefix_cache_request(bundle.model_id, bundle.version)
+                   )
+
+          assert contradictory_response.status_code == "timeout"
+          assert contradictory_response.score_tier == "unknown"
+          assert contradictory_response.resident_fingerprint_match == false
+
+          runtime =
+            Application.fetch_env!(:orchard_node_agent, :runtime)
+            |> Keyword.put(:test_score_prefix_cache_mode, :malformed)
+
+          Application.put_env(:orchard_node_agent, :runtime, runtime)
+
+          assert {:ok, %ScorePrefixCacheResponse{} = malformed_response} =
+                   NodeRuntimeStub.score_prefix_cache(
+                     channel,
+                     score_prefix_cache_request(bundle.model_id, bundle.version)
+                   )
+
+          assert malformed_response.status_code == "error"
+          assert malformed_response.score_tier == "unknown"
+        end)
+      end
+    )
+  end
+
   test "get_status includes runtime memory budgets for loaded models", %{bundle: bundle} do
     request = ensure_model_loaded_request(bundle)
 
@@ -1178,6 +1415,116 @@ defmodule OrchardNodeAgentTest do
 
       assert by_model[malformed_bundle.model_id].status_message ==
                "prefix cache status contained invalid numeric fields"
+    end)
+  end
+
+  test "score_prefix_cache returns model_not_loaded when no worker is loaded" do
+    response = NodeStatus.score_prefix_cache(score_prefix_cache_request())
+
+    assert %ScorePrefixCacheResponse{status_code: "model_not_loaded"} = response
+    assert response.score_tier == "unknown"
+    assert response.resident_fingerprint_match == false
+  end
+
+  test "score_prefix_cache over gRPC returns normalized selected-worker response", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [runtime_adapter_impl: ConfigurableScoreRuntimeAdapter, test_score_mode: :ok],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        with_channel(fn channel ->
+          assert {:ok, %ScorePrefixCacheResponse{} = response} =
+                   NodeRuntimeStub.score_prefix_cache(channel, score_prefix_cache_request())
+
+          assert response.status_code == "ok"
+          assert response.score_tier == "resident_fingerprint"
+          assert response.resident_fingerprint_match == true
+          assert response.session_started_unix_ms == 1_713_726_400_000
+        end)
+      end
+    )
+  end
+
+  test "score_prefix_cache fail-open maps local score call timeout", %{bundle: bundle} do
+    with_runtime_config(
+      [runtime_adapter_impl: ConfigurableScoreRuntimeAdapter, test_score_mode: :sleep],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        request = %{
+          score_prefix_cache_request()
+          | deadline_unix_ms: System.system_time(:millisecond) + 10
+        }
+
+        response = NodeStatus.score_prefix_cache(request)
+        assert response.status_code == "timeout"
+        assert response.score_tier == "unknown"
+        assert response.resident_fingerprint_match == false
+      end
+    )
+  end
+
+  test "score_prefix_cache fail-open maps timeout and malformed adapter responses", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [runtime_adapter_impl: ConfigurableScoreRuntimeAdapter, test_score_mode: :timeout],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        timeout_response = NodeStatus.score_prefix_cache(score_prefix_cache_request())
+        assert timeout_response.status_code == "timeout"
+        assert timeout_response.score_tier == "unknown"
+        assert timeout_response.resident_fingerprint_match == false
+      end
+    )
+
+    with_runtime_config(
+      [runtime_adapter_impl: ConfigurableScoreRuntimeAdapter, test_score_mode: :malformed],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        malformed_response = NodeStatus.score_prefix_cache(score_prefix_cache_request())
+        assert malformed_response.status_code == "error"
+        assert malformed_response.score_tier == "unknown"
+        assert malformed_response.resident_fingerprint_match == false
+      end
+    )
+
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ConfigurableScoreRuntimeAdapter,
+        test_score_mode: :contradictory_timeout
+      ],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        contradictory_response = NodeStatus.score_prefix_cache(score_prefix_cache_request())
+        assert contradictory_response.status_code == "timeout"
+        assert contradictory_response.score_tier == "unknown"
+        assert contradictory_response.resident_fingerprint_match == false
+      end
+    )
+  end
+
+  test "score_prefix_cache returns unsupported_version when adapter lacks score RPC", %{
+    bundle: bundle
+  } do
+    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      response = NodeStatus.score_prefix_cache(score_prefix_cache_request())
+      assert response.status_code == "unsupported_version"
+      assert response.score_tier == "unknown"
+      assert response.resident_fingerprint_match == false
     end)
   end
 
@@ -3060,6 +3407,26 @@ defmodule OrchardNodeAgentTest do
       params: %GenerationParams{max_output_tokens: 16},
       deadline_unix_ms: System.system_time(:millisecond) + 5_000,
       metadata_json: ~s({"source":"test"})
+    }
+  end
+
+  defp score_prefix_cache_request do
+    %ScorePrefixCacheRequest{
+      request_id: "score-request-id",
+      controller_session_id: "score-controller-session",
+      model_ref: %RPCModelRef{model_id: @test_model_id, version: @test_version},
+      cache_affinity_fingerprint: "hmac-sha256:" <> String.duplicate("a", 64),
+      deadline_unix_ms: System.system_time(:millisecond) + 1_000
+    }
+  end
+
+  defp score_prefix_cache_request(model_id, version) do
+    %ScorePrefixCacheRequest{
+      request_id: "req-score-prefix-cache",
+      controller_session_id: "controller-session-1",
+      model_ref: %RPCModelRef{model_id: model_id, version: version},
+      cache_affinity_fingerprint: "hmac-sha256:" <> String.duplicate("a", 64),
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000
     }
   end
 

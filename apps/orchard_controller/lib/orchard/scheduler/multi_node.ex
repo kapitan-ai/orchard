@@ -19,12 +19,16 @@ defmodule Orchard.Scheduler.MultiNode do
   """
 
   alias Orchard.CanonicalRequest
+  alias Orchard.Cluster.V1.ModelRef, as: RPCModelRef
+  alias Orchard.Cluster.V1.ScorePrefixCacheRequest
   alias Orchard.Dispatch.GrpcNodeRuntimeClient
   alias Orchard.Inference
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Nodes
-  alias Orchard.Runtime.{MemoryBudget, PrefixCacheStatus}
+  alias Orchard.Runtime.{MemoryBudget, PrefixCacheScore, PrefixCacheStatus}
   alias Orchard.Scheduler.SingleNode
+
+  require Logger
 
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -48,7 +52,8 @@ defmodule Orchard.Scheduler.MultiNode do
   Schedule with injectable options for testing.
 
   Options:
-  - `:status_client` — module implementing `connect/1`, `status/2`, `disconnect/1`
+  - `:status_client` — module implementing `connect/1`, `status/2`, `disconnect/1`,
+    and (for prefix-cache scoring) `score_prefix_cache/3`
     (default: `GrpcNodeRuntimeClient`)
   - `:status_timeout_ms` — timeout for each status probe (default: #{@default_status_timeout_ms})
   - `:observed_at` — timestamp for observations (default: `DateTime.utc_now()`)
@@ -103,6 +108,7 @@ defmodule Orchard.Scheduler.MultiNode do
       live_fingerprint_match_enabled? =
         CacheAffinity.live_fingerprint_match_enabled?(cache_affinity_config)
 
+      prefix_cache_scoring_enabled? = Inference.prefix_cache_scoring_enabled?()
       memory_admission_enabled? = Inference.memory_admission_enabled?()
 
       annotated_candidates =
@@ -135,6 +141,14 @@ defmodule Orchard.Scheduler.MultiNode do
         |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
         |> maybe_put_prefix_cache_fingerprint_match(
           selected,
+          live_fingerprint_match_enabled?
+        )
+        |> maybe_put_prefix_cache_score(
+          request,
+          selected,
+          client,
+          cache_affinity_config,
+          prefix_cache_scoring_enabled?,
           live_fingerprint_match_enabled?
         )
         |> maybe_put_memory_admission(selected, memory_admission_enabled?)
@@ -319,6 +333,129 @@ defmodule Orchard.Scheduler.MultiNode do
       |> Map.put(:memory_headroom_ok?, tier == :headroom_ok)
     end)
   end
+
+  defp maybe_put_prefix_cache_score(
+         map,
+         _request,
+         _selected,
+         _client,
+         _cache_affinity_config,
+         false,
+         _live_fingerprint_match_enabled?
+       ),
+       do: map
+
+  defp maybe_put_prefix_cache_score(
+         map,
+         _request,
+         _selected,
+         _client,
+         _cache_affinity_config,
+         _prefix_cache_scoring_enabled?,
+         false
+       ),
+       do: map
+
+  defp maybe_put_prefix_cache_score(
+         map,
+         request,
+         selected,
+         client,
+         cache_affinity_config,
+         true,
+         true
+       ) do
+    case CacheAffinity.derive_key(request, cache_affinity_config) do
+      {:ok, fingerprint} ->
+        timeout_ms = Inference.prefix_cache_scoring_timeout_ms()
+
+        response =
+          %ScorePrefixCacheRequest{
+            request_id: request.public_id,
+            controller_session_id: request.internal_id,
+            model_ref: %RPCModelRef{
+              model_id: request.model_ref.model_id,
+              version: request.model_ref.version
+            },
+            cache_affinity_fingerprint: fingerprint,
+            deadline_unix_ms: System.system_time(:millisecond) + timeout_ms
+          }
+          |> score_prefix_cache_response(client, selected.target, timeout_ms)
+
+        Map.put(map, :prefix_cache_score, PrefixCacheScore.normalize_for_scheduler(response))
+
+      :unavailable ->
+        map
+    end
+  end
+
+  defp score_prefix_cache_response(request, client, target, timeout_ms) do
+    request_id = Map.get(request, :request_id)
+
+    if is_atom(client) and Code.ensure_loaded?(client) and
+         function_exported?(client, :score_prefix_cache, 3) do
+      try do
+        case client.score_prefix_cache(target, request, timeout: timeout_ms) do
+          {:ok, response} -> response
+          {:error, reason} -> score_prefix_cache_failure(reason, target, request_id)
+          _unexpected -> score_prefix_cache_failure(:unexpected_response, target, request_id)
+        end
+      rescue
+        _exception -> score_prefix_cache_failure(:rescued_exception, target, request_id)
+      catch
+        :exit, reason -> score_prefix_cache_failure({:exit, reason}, target, request_id)
+      end
+    else
+      score_prefix_cache_failure(:unsupported_version, target, request_id)
+    end
+  end
+
+  defp score_prefix_cache_failure(reason, target, request_id) do
+    failure = score_prefix_cache_failure(reason)
+
+    Logger.warning(
+      "prefix cache score RPC fail-open: status_code=#{failure.status_code} " <>
+        "reason=#{prefix_cache_score_failure_reason(reason)} " <>
+        "target=#{prefix_cache_score_target(target)} request_id=#{request_id || "unknown"}"
+    )
+
+    failure
+  end
+
+  defp score_prefix_cache_failure(:unsupported_version), do: %{status_code: "unsupported_version"}
+  defp score_prefix_cache_failure(:unimplemented), do: %{status_code: "unsupported_version"}
+
+  defp score_prefix_cache_failure(%{status: status}) when status in [:unimplemented, 12],
+    do: %{status_code: "unsupported_version"}
+
+  defp score_prefix_cache_failure({:rpc_error, status, _message})
+       when status in [:unimplemented, 12],
+       do: %{status_code: "unsupported_version"}
+
+  defp score_prefix_cache_failure({:exit, {:undef, _}}), do: %{status_code: "unsupported_version"}
+  defp score_prefix_cache_failure(_reason), do: %{status_code: "error"}
+
+  defp prefix_cache_score_failure_reason(:unsupported_version), do: "unsupported_version"
+  defp prefix_cache_score_failure_reason(:unimplemented), do: "unimplemented"
+  defp prefix_cache_score_failure_reason(:unexpected_response), do: "unexpected_response"
+  defp prefix_cache_score_failure_reason(:rescued_exception), do: "rescued_exception"
+
+  defp prefix_cache_score_failure_reason(%{status: status}) when status in [:unimplemented, 12],
+    do: "unimplemented"
+
+  defp prefix_cache_score_failure_reason({:rpc_error, status, _message})
+       when status in [:unimplemented, 12],
+       do: "unimplemented"
+
+  defp prefix_cache_score_failure_reason({:exit, {:undef, _}}), do: "exit_undef"
+  defp prefix_cache_score_failure_reason({:exit, _reason}), do: "exit"
+  defp prefix_cache_score_failure_reason(_reason), do: "error"
+
+  defp prefix_cache_score_target(target) when is_list(target) do
+    "#{Keyword.get(target, :host, "unknown")}:#{Keyword.get(target, :port, "unknown")}"
+  end
+
+  defp prefix_cache_score_target(_target), do: "unknown"
 
   defp maybe_put_memory_admission(map, _selected, false), do: map
 

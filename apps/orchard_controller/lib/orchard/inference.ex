@@ -86,6 +86,28 @@ defmodule Orchard.Inference do
     memory_admission_config()[:enabled] == true
   end
 
+  @spec prefix_cache_scoring_config() :: keyword()
+  def prefix_cache_scoring_config do
+    Keyword.merge([enabled: false, timeout_ms: 150], config()[:prefix_cache_scoring] || [])
+  end
+
+  @spec prefix_cache_scoring_enabled?() :: boolean()
+  def prefix_cache_scoring_enabled? do
+    scoring_enabled? = prefix_cache_scoring_config()[:enabled] == true
+
+    scoring_enabled? and
+      cache_affinity_enabled?() and
+      CacheAffinity.live_fingerprint_match_enabled?(cache_affinity_config())
+  end
+
+  @spec prefix_cache_scoring_timeout_ms() :: pos_integer()
+  def prefix_cache_scoring_timeout_ms do
+    case prefix_cache_scoring_config()[:timeout_ms] do
+      timeout when is_integer(timeout) and timeout > 0 -> timeout
+      _other -> 150
+    end
+  end
+
   @spec queue_admission_enabled?() :: boolean()
   def queue_admission_enabled? do
     config = queue_admission_config()

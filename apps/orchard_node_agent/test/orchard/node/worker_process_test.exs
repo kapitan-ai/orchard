@@ -22,6 +22,7 @@ defmodule Orchard.Node.WorkerProcessTest do
 
     alias Orchard.Cluster.V1.ExecuteInferenceRequest
     alias Orchard.Cluster.V1.ModelRef
+    alias Orchard.Cluster.V1.ScorePrefixCacheResponse
 
     @impl true
     def get_status(_adapter_state, _opts) do
@@ -30,39 +31,47 @@ defmodule Orchard.Node.WorkerProcessTest do
          ready: true,
          health_code: "",
          health_message: "",
-         memory_budget: %{
-           mode: "observe",
-           budget_available: true,
-           headroom_available: true,
-           status_code: "ok",
-           status_message: "",
-           source: "mlx.core.device_info.max_recommended_working_set_size",
-           max_recommended_working_set_size_bytes: 8_000_000_000,
-           utilization: 0.75,
-           target_working_set_bytes: 6_000_000_000,
-           overhead_bytes: 268_435_456,
-           resident_memory_bytes: 2_048_000,
-           estimated_headroom_bytes: 5_731_516_544,
-           kv_cache_bytes_per_token: 16_384,
-           prefill_workspace_bytes_per_token: 2_048
-         },
-         prefix_cache_status: %{
-           implementation: "kv",
-           enabled: true,
-           entry_count: 2,
-           total_bytes: 32_768,
-           hits: 12,
-           misses: 4,
-           failures: 1,
-           stores: 8,
-           evictions: 3,
-           configured_max_entries: 64,
-           configured_max_bytes: 1_048_576,
-           status_code: "ok",
-           status_message: "",
-           session_started_unix_ms: 1_713_726_400_000
-         }
+         memory_budget: memory_budget_status(),
+         prefix_cache_status: prefix_cache_status()
        }}
+    end
+
+    defp memory_budget_status do
+      %{
+        mode: "observe",
+        budget_available: true,
+        headroom_available: true,
+        status_code: "ok",
+        status_message: "",
+        source: "mlx.core.device_info.max_recommended_working_set_size",
+        max_recommended_working_set_size_bytes: 8_000_000_000,
+        utilization: 0.75,
+        target_working_set_bytes: 6_000_000_000,
+        overhead_bytes: 268_435_456,
+        resident_memory_bytes: 2_048_000,
+        estimated_headroom_bytes: 5_731_516_544,
+        kv_cache_bytes_per_token: 16_384,
+        prefill_workspace_bytes_per_token: 2_048
+      }
+    end
+
+    defp prefix_cache_status do
+      %{
+        implementation: "kv",
+        enabled: true,
+        entry_count: 2,
+        total_bytes: 32_768,
+        hits: 12,
+        misses: 4,
+        failures: 1,
+        stores: 8,
+        evictions: 3,
+        configured_max_entries: 64,
+        configured_max_bytes: 1_048_576,
+        status_code: "ok",
+        status_message: "",
+        session_started_unix_ms: 1_713_726_400_000
+      }
     end
 
     @impl true
@@ -92,6 +101,36 @@ defmodule Orchard.Node.WorkerProcessTest do
     def finish_generation(adapter_state, generation_ref, _opts) do
       %{adapter_state | generations: Map.delete(adapter_state.generations, generation_ref)}
     end
+
+    def score_prefix_cache(_adapter_state, _request, _opts) do
+      mode =
+        Application.fetch_env!(:orchard_node_agent, :runtime)
+        |> Keyword.get(:test_worker_process_score_mode, :ok)
+
+      case mode do
+        :contradictory_timeout ->
+          {:ok,
+           %ScorePrefixCacheResponse{
+             status_code: "timeout",
+             status_message: "timed out",
+             resident_fingerprint_match: true,
+             score_tier: "resident_fingerprint",
+             session_started_unix_ms: 1_713_726_400_000
+           }}
+
+        :timeout ->
+          {:error, :timeout}
+
+        :ok ->
+          {:ok,
+           %ScorePrefixCacheResponse{
+             status_code: "ok",
+             resident_fingerprint_match: true,
+             score_tier: "resident_fingerprint",
+             session_started_unix_ms: 1_713_726_400_000
+           }}
+      end
+    end
   end
 
   # -- Helpers ---------------------------------------------------------------
@@ -117,6 +156,15 @@ defmodule Orchard.Node.WorkerProcessTest do
       request_id: request_id,
       model_id: "test/buffer-model",
       version: "v1"
+    }
+  end
+
+  defp score_prefix_cache_request do
+    %Orchard.Cluster.V1.ScorePrefixCacheRequest{
+      request_id: "score-1",
+      model_ref: %ModelRef{model_id: "test/buffer-model", version: "v1"},
+      cache_affinity_fingerprint: "hmac-sha256:" <> String.duplicate("a", 64),
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000
     }
   end
 
@@ -220,6 +268,67 @@ defmodule Orchard.Node.WorkerProcessTest do
       Port.close(port)
       GenServer.stop(pid, :normal, 1_000)
     end
+  end
+
+  test "score_prefix_cache returns model_not_loaded before worker load" do
+    pid = start_worker_process!()
+
+    response = WorkerProcess.score_prefix_cache(pid, score_prefix_cache_request())
+
+    assert response.status_code == "model_not_loaded"
+    assert response.score_tier == "unknown"
+    assert response.resident_fingerprint_match == false
+  end
+
+  test "score_prefix_cache returns unsupported_version when adapter has no score hook" do
+    with_runtime_config([runtime_adapter_impl: Orchard.Node.FakeRuntimeAdapter], fn ->
+      pid = start_worker_process!()
+      assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+
+      response = WorkerProcess.score_prefix_cache(pid, score_prefix_cache_request())
+
+      assert response.status_code == "unsupported_version"
+      assert response.score_tier == "unknown"
+      assert response.resident_fingerprint_match == false
+    end)
+  end
+
+  test "score_prefix_cache normalizes timeout responses from adapter" do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ConcurrentRuntimeAdapter,
+        test_worker_process_score_mode: :timeout
+      ],
+      fn ->
+        pid = start_worker_process!()
+        assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+
+        response = WorkerProcess.score_prefix_cache(pid, score_prefix_cache_request())
+
+        assert response.status_code == "timeout"
+        assert response.score_tier == "unknown"
+        assert response.resident_fingerprint_match == false
+      end
+    )
+  end
+
+  test "score_prefix_cache normalizes contradictory adapter response invariants" do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: ConcurrentRuntimeAdapter,
+        test_worker_process_score_mode: :contradictory_timeout
+      ],
+      fn ->
+        pid = start_worker_process!()
+        assert :loaded = WorkerProcess.ensure_loaded(pid, ensure_load_request())
+
+        response = WorkerProcess.score_prefix_cache(pid, score_prefix_cache_request())
+
+        assert response.status_code == "timeout"
+        assert response.score_tier == "unknown"
+        assert response.resident_fingerprint_match == false
+      end
+    )
   end
 
   test "terminate flushes trailing partial line from port_log_buffer" do

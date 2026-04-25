@@ -22,12 +22,15 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Cluster.V1.RuntimeMemoryBudget
   alias Orchard.Cluster.V1.RuntimeNodeMetadata
   alias Orchard.Cluster.V1.RuntimePrefixCacheStatus
+  alias Orchard.Cluster.V1.ScorePrefixCacheRequest
+  alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.Cluster.V1.StatusResponse
   alias Orchard.Cluster.V1.UnloadModelRequest
   alias Orchard.Node
   alias Orchard.Node.ModelAcquisition
   alias Orchard.Node.ModelAcquisition.Request, as: AcquisitionRequest
   alias Orchard.Node.ModelLoadFailure
+  alias Orchard.Node.ScorePrefixCacheResponse, as: ScoreResponse
   alias Orchard.Node.ToolCapabilityCatalog
   alias Orchard.Node.WorkerProcess
   alias Orchard.Node.WorkerSupervisor
@@ -85,6 +88,8 @@ defmodule Orchard.Node.ModelManager do
     :session_started_unix_ms
   ]
   @invalid_prefix_cache_numeric_message "prefix cache status contained invalid numeric fields"
+  @score_prefix_cache_default_timeout_ms 150
+  @score_prefix_cache_local_timeout_grace_ms 50
 
   @type inflight_load :: %{
           request: EnsureModelLoadedRequest.t(),
@@ -146,6 +151,23 @@ defmodule Orchard.Node.ModelManager do
   @spec cancel_request(String.t(), String.t() | nil) :: Ack.t()
   def cancel_request(request_id, controller_session_id \\ nil) when is_binary(request_id) do
     GenServer.call(__MODULE__, {:cancel_request, request_id, controller_session_id})
+  end
+
+  @spec score_prefix_cache(ScorePrefixCacheRequest.t()) :: ScorePrefixCacheResponse.t()
+  def score_prefix_cache(%ScorePrefixCacheRequest{} = request) do
+    timeout_ms = score_prefix_cache_timeout_ms(request)
+
+    GenServer.call(
+      __MODULE__,
+      {:score_prefix_cache, request},
+      score_prefix_cache_manager_call_timeout(timeout_ms)
+    )
+  catch
+    :exit, {:timeout, _call} ->
+      score_prefix_cache_response("timeout", "score request timed out")
+
+    :exit, _reason ->
+      score_prefix_cache_response("unavailable", "model manager unavailable")
   end
 
   @impl true
@@ -280,6 +302,34 @@ defmodule Orchard.Node.ModelManager do
           {:error, reason} ->
             {:reply, %Ack{ok: false, message: "cancel failed: #{inspect(reason)}"}, state}
         end
+    end
+  end
+
+  def handle_call({:score_prefix_cache, %ScorePrefixCacheRequest{} = request}, _from, state) do
+    case request.model_ref do
+      %ModelRef{} = model_ref ->
+        key = model_key(model_ref.model_id, model_ref.version)
+
+        case Map.get(state.workers, key) do
+          %{placement_state: :PLACEMENT_STATE_LOADED, pid: pid} ->
+            timeout_ms = score_prefix_cache_timeout_ms(request)
+
+            response =
+              if timeout_ms <= 0 do
+                score_prefix_cache_response("timeout", "score request timed out")
+              else
+                safe_score_prefix_cache(pid, request, timeout_ms)
+              end
+
+            {:reply, normalize_score_prefix_cache_response(response), state}
+
+          _other ->
+            {:reply, score_prefix_cache_response("model_not_loaded", "model is not loaded"),
+             state}
+        end
+
+      _other ->
+        {:reply, score_prefix_cache_response("invalid_request", "model_ref is required"), state}
     end
   end
 
@@ -1127,6 +1177,34 @@ defmodule Orchard.Node.ModelManager do
     safe_worker_call(fn -> WorkerProcess.unload(pid, opts) end)
   end
 
+  defp safe_score_prefix_cache(pid, request, timeout_ms) do
+    safe_worker_call(fn ->
+      WorkerProcess.score_prefix_cache(pid, request,
+        timeout: score_prefix_cache_call_timeout(timeout_ms),
+        timeout_ms: timeout_ms
+      )
+    end)
+  end
+
+  defp normalize_score_prefix_cache_response(%ScorePrefixCacheResponse{} = response),
+    do: ScoreResponse.normalize(response)
+
+  defp normalize_score_prefix_cache_response({:error, :worker_unavailable}) do
+    score_prefix_cache_response("unavailable", "worker process became unavailable")
+  end
+
+  defp normalize_score_prefix_cache_response({:error, reason}) do
+    score_prefix_cache_response("error", "worker score_prefix_cache failed: #{inspect(reason)}")
+  end
+
+  defp normalize_score_prefix_cache_response(_other) do
+    score_prefix_cache_response("error", "worker score_prefix_cache returned malformed response")
+  end
+
+  defp score_prefix_cache_response(status_code, status_message) do
+    ScoreResponse.response(status_code, status_message)
+  end
+
   defp safe_worker_call(fun) when is_function(fun, 0) do
     fun.()
   catch
@@ -1610,6 +1688,21 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp remaining_budget_ms(_request), do: Node.worker_load_timeout_ms()
+
+  defp score_prefix_cache_timeout_ms(%ScorePrefixCacheRequest{deadline_unix_ms: deadline})
+       when is_integer(deadline) and deadline > 0 do
+    max(deadline - System.system_time(:millisecond), 0)
+  end
+
+  defp score_prefix_cache_timeout_ms(_request), do: @score_prefix_cache_default_timeout_ms
+
+  defp score_prefix_cache_call_timeout(timeout_ms) do
+    max(timeout_ms + @score_prefix_cache_local_timeout_grace_ms, 1)
+  end
+
+  defp score_prefix_cache_manager_call_timeout(timeout_ms) do
+    score_prefix_cache_call_timeout(timeout_ms) + @score_prefix_cache_local_timeout_grace_ms
+  end
 
   defp call_timeout_for(%EnsureModelLoadedRequest{deadline_unix_ms: deadline})
        when is_integer(deadline) and deadline > 0 do

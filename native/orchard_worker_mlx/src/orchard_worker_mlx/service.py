@@ -60,6 +60,22 @@ _PREFIX_CACHE_UINT64_FIELDS = (
 _PREFIX_CACHE_STATUS_CODES = frozenset({"ok", "disabled", "unavailable", "invalid_status", "error"})
 _INVALID_PREFIX_CACHE_MESSAGE = "backend prefix cache status was invalid"
 _MAX_PREFIX_CACHE_FINGERPRINTS = 64
+_SCORE_PREFIX_CACHE_STATUS_CODES = frozenset(
+    {
+        "ok",
+        "disabled",
+        "unavailable",
+        "model_not_loaded",
+        "timeout",
+        "invalid_request",
+        "error",
+        "unsupported_version",
+    }
+)
+_SCORE_PREFIX_CACHE_TIERS = frozenset(
+    {"resident_fingerprint", "recent_fingerprint_only", "no_match", "unknown"}
+)
+_SAFE_SCORE_PREFIX_CACHE_ERROR_MESSAGE = "score prefix cache unavailable"
 
 
 @dataclass(slots=True)
@@ -345,6 +361,62 @@ def _prefix_cache_status_response(
     )
 
 
+def _normalize_score_prefix_cache_diagnostics(
+    status_code: str,
+    score_tier: str,
+    resident: bool,
+) -> tuple[str, bool]:
+    if status_code != "ok":
+        return ("unknown", False)
+
+    if score_tier == "resident_fingerprint" and resident:
+        return (score_tier, resident)
+
+    if score_tier == "resident_fingerprint" and not resident:
+        return ("unknown", False)
+
+    if resident:
+        return ("unknown", False)
+
+    return (score_tier, False)
+
+
+def _score_prefix_cache_response(payload: Any) -> runtime_pb2.ScorePrefixCacheResponse:
+    if not isinstance(payload, dict):
+        return runtime_pb2.ScorePrefixCacheResponse(
+            status_code="error",
+            status_message="backend score prefix cache response was invalid",
+            resident_fingerprint_match=False,
+            score_tier="unknown",
+            session_started_unix_ms=0,
+        )
+
+    status_code = _status_string(payload.get("status_code"))
+    if status_code not in _SCORE_PREFIX_CACHE_STATUS_CODES:
+        status_code = "error"
+
+    score_tier = _status_string(payload.get("score_tier"))
+    if score_tier not in _SCORE_PREFIX_CACHE_TIERS:
+        score_tier = "unknown"
+
+    resident = _status_bool(payload.get("resident_fingerprint_match"))
+    score_tier, resident = _normalize_score_prefix_cache_diagnostics(
+        status_code, score_tier, resident
+    )
+
+    status_message = _status_string(payload.get("status_message"))
+    if status_code == "error":
+        status_message = _SAFE_SCORE_PREFIX_CACHE_ERROR_MESSAGE
+
+    return runtime_pb2.ScorePrefixCacheResponse(
+        status_code=status_code,
+        status_message=status_message,
+        resident_fingerprint_match=resident,
+        score_tier=score_tier,
+        session_started_unix_ms=_status_uint64(payload.get("session_started_unix_ms")),
+    )
+
+
 class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer):
     def __init__(
         self,
@@ -401,6 +473,74 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
             )
         )
         return response
+
+    def ScorePrefixCache(
+        self,
+        request: runtime_pb2.ScorePrefixCacheRequest,
+        context: grpc.ServicerContext,
+    ) -> runtime_pb2.ScorePrefixCacheResponse:
+        del context
+
+        if _prefix_cache_disabled(self._prefix_cache_config):
+            return runtime_pb2.ScorePrefixCacheResponse(
+                status_code="disabled",
+                status_message="prefix cache disabled by config",
+                resident_fingerprint_match=False,
+                score_tier="unknown",
+                session_started_unix_ms=0,
+            )
+
+        model_ref = getattr(request, "model_ref", None)
+        if (
+            model_ref is None
+            or _status_string(getattr(model_ref, "model_id", "")) == ""
+            or _status_string(getattr(model_ref, "version", "")) == ""
+        ):
+            return runtime_pb2.ScorePrefixCacheResponse(
+                status_code="invalid_request",
+                status_message="model_ref.model_id and model_ref.version are required",
+                resident_fingerprint_match=False,
+                score_tier="unknown",
+                session_started_unix_ms=0,
+            )
+
+        fingerprint = _status_string(getattr(request, "cache_affinity_fingerprint", ""))
+        if not valid_cache_affinity_fingerprint(fingerprint):
+            return runtime_pb2.ScorePrefixCacheResponse(
+                status_code="invalid_request",
+                status_message=(
+                    "cache_affinity_fingerprint must be hmac-sha256:<64 lowercase hex>"
+                ),
+                resident_fingerprint_match=False,
+                score_tier="unknown",
+                session_started_unix_ms=0,
+            )
+
+        try:
+            score_payload = self._backend.score_prefix_cache(
+                model_ref=model_ref,
+                fingerprint=fingerprint,
+                request_id=_status_string(getattr(request, "request_id", "")),
+                deadline_unix_ms=_status_uint64(getattr(request, "deadline_unix_ms", 0)),
+            )
+        except BackendError:
+            return runtime_pb2.ScorePrefixCacheResponse(
+                status_code="error",
+                status_message=_SAFE_SCORE_PREFIX_CACHE_ERROR_MESSAGE,
+                resident_fingerprint_match=False,
+                score_tier="unknown",
+                session_started_unix_ms=0,
+            )
+        except Exception:
+            return runtime_pb2.ScorePrefixCacheResponse(
+                status_code="error",
+                status_message=_SAFE_SCORE_PREFIX_CACHE_ERROR_MESSAGE,
+                resident_fingerprint_match=False,
+                score_tier="unknown",
+                session_started_unix_ms=0,
+            )
+
+        return _score_prefix_cache_response(score_payload)
 
     def LoadModel(
         self, request: worker_runtime_pb2.LoadModelRequest, context: grpc.ServicerContext

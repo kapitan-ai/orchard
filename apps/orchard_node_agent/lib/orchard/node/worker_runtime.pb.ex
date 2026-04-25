@@ -142,6 +142,12 @@ defmodule Orchard.Node.Worker.V1.WorkerRuntimeService.Service do
   )
 
   rpc(:Cancel, Orchard.Cluster.V1.CancelInferenceRequest, Orchard.Cluster.V1.Ack)
+
+  rpc(
+    :ScorePrefixCache,
+    Orchard.Cluster.V1.ScorePrefixCacheRequest,
+    Orchard.Cluster.V1.ScorePrefixCacheResponse
+  )
 end
 
 defmodule Orchard.Node.Worker.V1.WorkerRuntimeService.Stub do
