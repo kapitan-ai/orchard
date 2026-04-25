@@ -192,6 +192,21 @@ memory_admission_config =
       )
   )
 
+node_runtime_defaults = Orchard.Config.M1RuntimeDefaults.node_runtime(dev_root)
+
+worker_prefix_cache_mode =
+  (fn ->
+     mode =
+       System.get_env("ORCHARD_WORKER_PREFIX_CACHE_MODE") ||
+         Keyword.fetch!(node_runtime_defaults, :worker_prefix_cache_mode)
+
+     unless mode in ["disabled", "kv", "trie"] do
+       raise "ORCHARD_WORKER_PREFIX_CACHE_MODE must be disabled|kv|trie, got: #{inspect(mode)}"
+     end
+
+     mode
+   end).()
+
 config :orchard_controller, Orchard.Repo,
   username: System.get_env("PGUSER") || "postgres",
   password: System.get_env("PGPASSWORD") || "postgres",
@@ -218,11 +233,12 @@ config :orchard_controller,
 config :orchard_node_agent,
   runtime:
     Keyword.merge(
-      Orchard.Config.M1RuntimeDefaults.node_runtime(dev_root),
+      node_runtime_defaults,
       listen_address: [host: dev_node_agent_listen_host, port: dev_runtime_port],
       worker_executable:
         System.get_env("ORCHARD_WORKER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
+      worker_prefix_cache_mode: worker_prefix_cache_mode,
       license_enforcement: :off
     )
 

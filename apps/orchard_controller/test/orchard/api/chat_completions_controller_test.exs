@@ -1,3 +1,35 @@
+defmodule Orchard.API.ChatCompletionsControllerTest.UnsupportedVersionScoreScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference
+
+  @scheduled_node_id "00000000-0000-4000-a000-0000000000a4"
+
+  def schedule(%CanonicalRequest{} = request) do
+    {:ok,
+     %{
+       strategy: :multi_node,
+       request_id: request.public_id,
+       runtime_client_target: Inference.runtime_client_target(),
+       request_timeout_ms: Inference.request_timeout_ms(),
+       model_load_timeout_ms: Inference.model_load_timeout_ms(),
+       node_id: @scheduled_node_id,
+       candidate_count: 1,
+       selected_tier: :loaded,
+       selected_cache_tier: "warm_prefix",
+       prefix_cache_score: %{
+         status_code: "unsupported_version",
+         status_message:
+           "must not persist prompt=unsupported-version smoke token_ids=[1,2,3] hmac-sha256:#{String.duplicate("f", 64)} raw_score",
+         resident_fingerprint_match: true,
+         score_tier: "resident_fingerprint",
+         session_started_unix_ms: 1_713_726_400_456
+       }
+     }}
+  end
+end
+
 defmodule Orchard.API.ChatCompletionsControllerTest do
   use Orchard.ConnCase, async: false
 
@@ -15,6 +47,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
   alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.ModelManager
+  alias Orchard.Requests
   alias Orchard.Requests.Idempotency
 
   # When testing through Router.call/2 directly (not the Endpoint),
@@ -237,6 +270,89 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       assert request.response_payload == body
       assert request.response_preview != nil
       assert request.response_preview != ""
+    end
+
+    @tag :db
+    test "Phase 4D unsupported-version score smoke stays HTTP 200 and persists sanitized diagnostics",
+         %{
+           bundle: bundle
+         } do
+      inference = Application.fetch_env!(:orchard_controller, :inference)
+
+      Application.put_env(
+        :orchard_controller,
+        :inference,
+        inference
+        |> Keyword.put(:scheduler_impl, __MODULE__.UnsupportedVersionScoreScheduler)
+        |> Keyword.put(:cache_introspection, enabled: true)
+        |> Keyword.put(:prefix_cache_scoring, enabled: true, timeout_ms: 120)
+        |> Keyword.put(:cache_affinity,
+          enabled: true,
+          live_fingerprint_match_enabled: true,
+          hmac_secret: "unsupported-version-smoke-secret"
+        )
+      )
+
+      %{token: token} = create_api_key_with_token!("unsupported-version-score")
+
+      {:ok, _model} =
+        Orchard.Models.create_model(%{
+          model_id: "persist-non-stream-model",
+          version: "v1",
+          display_name: "Persist Non Stream Model",
+          artifact_uri: "file:///tmp/persist-non-stream-model",
+          artifact_sha256: bundle.hash,
+          state: :active,
+          format: "mlx",
+          backend: "mlx",
+          capabilities: ["chat"],
+          artifact_size_bytes: 1024,
+          resident_memory_bytes: 2048,
+          kv_cache_bytes_per_token: 128,
+          prefill_workspace_bytes_per_token: 64,
+          max_context_tokens: 131_072
+        })
+
+      conn =
+        post_chat(
+          %{
+            "model" => "persist-non-stream-model@v1",
+            "messages" => [
+              %{"role" => "user", "content" => "unsupported-version smoke prompt"}
+            ]
+          },
+          token
+        )
+
+      assert conn.status == 200
+      body = Jason.decode!(conn.resp_body)
+      assert body["object"] == "chat.completion"
+
+      request = Requests.get_request_by_public_id(body["id"])
+      assert request.state == :completed
+
+      decision = request.scheduler_decision
+      assert decision["strategy"] == "multi_node"
+      assert decision["candidate_count"] == 1
+      assert decision["selected_cache_tier"] == "warm_prefix"
+      assert decision["selected_prefix_cache_score_status_code"] == "unsupported_version"
+      assert decision["selected_prefix_cache_score_tier"] == "unknown"
+
+      assert decision["selected_prefix_cache_score_status_message"] ==
+               "prefix cache scoring unsupported version"
+
+      assert decision["selected_prefix_cache_score_source"] == "score_prefix_cache_rpc"
+      refute Map.has_key?(decision, "prefix_cache_score")
+      refute Map.has_key?(decision, "selected_prefix_cache_score_resident_fingerprint_match")
+      refute Map.has_key?(decision, "selected_prefix_cache_score_session_started_unix_ms")
+
+      encoded = Jason.encode!(decision)
+      refute encoded =~ "unsupported-version smoke prompt"
+      refute encoded =~ "\"prompt\""
+      refute encoded =~ "token_ids"
+      refute encoded =~ "hmac-sha256"
+      refute encoded =~ "raw_score"
+      refute encoded =~ "raw_cache"
     end
 
     @tag :db
