@@ -60,7 +60,9 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       ],
       prefix_cache_scoring: [
         enabled: false,
-        timeout_ms: 150
+        timeout_ms: 150,
+        ranking_mode: :observe_only,
+        max_ranking_candidates: 2
       ],
       memory_admission: [
         enabled: false

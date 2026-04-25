@@ -212,6 +212,82 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScoreSchedule
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubPromotedPrefixCacheScoreScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference
+
+  @promoted_node_id "00000000-0000-4000-a000-000000000222"
+
+  def promoted_node_id, do: @promoted_node_id
+
+  def schedule(%CanonicalRequest{} = request) do
+    {:ok,
+     %{
+       strategy: :multi_node,
+       request_id: request.public_id,
+       runtime_client_target: Inference.runtime_client_target(),
+       request_timeout_ms: Inference.request_timeout_ms(),
+       model_load_timeout_ms: Inference.model_load_timeout_ms(),
+       node_id: @promoted_node_id,
+       candidate_count: 2,
+       selected_tier: "cold",
+       cache_affinity_enabled: true,
+       cache_affinity_key: "hmac-sha256:#{String.duplicate("f", 64)}",
+       cache_affinity_hint_available: false,
+       cache_affinity_selected_match: false,
+       cache_affinity_source: "none",
+       cache_affinity_candidate_count: 0,
+       selected_cache_tier: "no_hint",
+       prefix_cache_fingerprint_match?: false,
+       prefix_cache_status: %{
+         model_ref: %{model_id: request.model_ref.model_id, version: request.model_ref.version},
+         implementation: "kv",
+         enabled: true,
+         entry_count: 77,
+         total_bytes: 7_700,
+         hits: 7,
+         misses: 0,
+         stores: 3,
+         evictions: 0,
+         status_code: "ok",
+         session_started_unix_ms: 1_713_726_400_222,
+         prefix_cache_fingerprints: []
+       },
+       memory_admission_enabled: true,
+       memory_admission_tier: "headroom_unavailable",
+       memory_budget: %{
+         model_ref: %{model_id: request.model_ref.model_id, version: request.model_ref.version},
+         mode: "observe",
+         budget_available: true,
+         headroom_available: false,
+         status_code: "resident_memory_unavailable",
+         target_working_set_bytes: 32_768,
+         resident_memory_bytes: 0,
+         estimated_headroom_bytes: 0
+       },
+       prefix_cache_score: %{
+         status_code: "ok",
+         status_message: "promoted resident challenger selected",
+         resident_fingerprint_match: true,
+         score_tier: "resident_fingerprint",
+         session_started_unix_ms: 222
+       },
+       selected_prefix_cache_score_status_message: "incumbent-selected-score-leak",
+       selected_prefix_cache_entry_count: 1,
+       selected_memory_status_code: "incumbent-memory-leak"
+     }
+     |> Map.put("prefix_cache_score", %{
+       "status_code" => "ok",
+       "status_message" => "incumbent must not persist",
+       "resident_fingerprint_match" => false,
+       "score_tier" => "no_match",
+       "session_started_unix_ms" => 111
+     })}
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScoreUnavailableScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -643,6 +719,56 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
              Map.keys(decision),
              &String.starts_with?(&1, "selected_prefix_cache_score_")
            )
+  end
+
+  test "execute/3 persists promoted winner metadata and final selected score only", %{
+    bundle: bundle
+  } do
+    promoted_scheduler =
+      Orchard.Inference.RequestOrchestratorTest.StubPromotedPrefixCacheScoreScheduler
+
+    put_prefix_cache_score_scheduler_config(
+      scheduler: promoted_scheduler,
+      cache_introspection_enabled: true,
+      prefix_cache_scoring_enabled: true,
+      memory_admission_enabled: true
+    )
+
+    model = create_active_model!(bundle, "request-orchestrator-promoted-score")
+    canonical = canonical_request("request-orchestrator-promoted-score", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert decision["strategy"] == "multi_node"
+    assert decision["node_id"] == promoted_scheduler.promoted_node_id()
+    assert decision["runtime_client_target"] == %{"host" => "127.0.0.1", "port" => 50_071}
+    assert decision["selected_tier"] == "cold"
+    assert decision["selected_cache_tier"] == "no_hint"
+    assert decision["cache_affinity_selected_match"] == false
+    assert decision["selected_prefix_cache_status_code"] == "ok"
+    assert decision["selected_prefix_cache_entry_count"] == 77
+    assert decision["selected_prefix_cache_total_bytes"] == 7_700
+    assert decision["selected_prefix_cache_fingerprint_match"] == false
+    assert decision["memory_admission_tier"] == "headroom_unavailable"
+    assert decision["selected_memory_status_code"] == "resident_memory_unavailable"
+    assert decision["selected_memory_headroom_available"] == false
+    refute Map.has_key?(decision, "selected_memory_resident_memory_bytes")
+    assert decision["selected_prefix_cache_score_status_code"] == "ok"
+    assert decision["selected_prefix_cache_score_tier"] == "resident_fingerprint"
+    assert decision["selected_prefix_cache_score_resident_fingerprint_match"] == true
+    assert decision["selected_prefix_cache_score_session_started_unix_ms"] == 222
+    assert decision["selected_prefix_cache_score_source"] == "score_prefix_cache_rpc"
+
+    refute Map.has_key?(decision, "prefix_cache_score")
+    refute Map.has_key?(decision, "prefix_cache_status")
+    refute Map.has_key?(decision, "memory_budget")
+    refute inspect(decision) =~ "incumbent must not persist"
+    refute inspect(decision) =~ "incumbent-selected-score-leak"
+    refute inspect(decision) =~ "incumbent-memory-leak"
   end
 
   test "execute/3 persists bounded non-ok selected-prefix-cache-score diagnostics only", %{
@@ -2242,6 +2368,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     prefix_cache_scoring =
       [enabled: Keyword.get(overrides, :prefix_cache_scoring_enabled, false), timeout_ms: 150]
 
+    memory_admission = [enabled: Keyword.get(overrides, :memory_admission_enabled, false)]
+
     Application.put_env(
       :orchard_controller,
       :inference,
@@ -2249,7 +2377,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
         scheduler_impl: scheduler,
         cache_affinity: cache_affinity,
         cache_introspection: cache_introspection,
-        prefix_cache_scoring: prefix_cache_scoring
+        prefix_cache_scoring: prefix_cache_scoring,
+        memory_admission: memory_admission
       )
     )
   end

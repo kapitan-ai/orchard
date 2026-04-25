@@ -88,7 +88,10 @@ defmodule Orchard.Inference do
 
   @spec prefix_cache_scoring_config() :: keyword()
   def prefix_cache_scoring_config do
-    Keyword.merge([enabled: false, timeout_ms: 150], config()[:prefix_cache_scoring] || [])
+    Keyword.merge(
+      [enabled: false, timeout_ms: 150, ranking_mode: :observe_only, max_ranking_candidates: 2],
+      config()[:prefix_cache_scoring] || []
+    )
   end
 
   @spec prefix_cache_scoring_enabled?() :: boolean()
@@ -98,6 +101,35 @@ defmodule Orchard.Inference do
     scoring_enabled? and
       cache_affinity_enabled?() and
       CacheAffinity.live_fingerprint_match_enabled?(cache_affinity_config())
+  end
+
+  @spec prefix_cache_scoring_ranking_mode() :: :observe_only | :tie_only
+  def prefix_cache_scoring_ranking_mode do
+    case prefix_cache_scoring_config()[:ranking_mode] do
+      :observe_only -> :observe_only
+      "observe_only" -> :observe_only
+      :tie_only -> :tie_only
+      "tie_only" -> :tie_only
+      _other -> :observe_only
+    end
+  end
+
+  @spec prefix_cache_scoring_ranking_active?() :: boolean()
+  def prefix_cache_scoring_ranking_active? do
+    prefix_cache_scoring_enabled?() and prefix_cache_scoring_ranking_mode() == :tie_only
+  end
+
+  # `1` is intentionally allowed as a diagnostic soft-disable for tie-only challenger scoring;
+  # values above `2` are accepted but the effective runtime cap for this slice is `2`.
+  @spec prefix_cache_scoring_max_ranking_candidates() :: pos_integer()
+  def prefix_cache_scoring_max_ranking_candidates do
+    case prefix_cache_scoring_config()[:max_ranking_candidates] do
+      max_candidates when is_integer(max_candidates) and max_candidates > 0 ->
+        min(max_candidates, 2)
+
+      _other ->
+        2
+    end
   end
 
   @spec prefix_cache_scoring_timeout_ms() :: pos_integer()

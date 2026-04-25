@@ -10,7 +10,8 @@ defmodule Orchard.Scheduler.MultiNode do
   4. Live prefix-cache fingerprint match when explicitly enabled
   5. Cache-affinity match when explicitly enabled
   6. Memory headroom positive signal when explicitly enabled
-  7. Lexicographically smaller `node_id` (deterministic tie-break)
+  7. Gated Phase 4D tie-only `ScorePrefixCache` reselection, when explicitly enabled
+  8. Lexicographically smaller `node_id` (deterministic tie-break)
 
   Falls back to `SingleNode.default_schedule/1` when:
   - Only 0 or 1 targets are configured
@@ -125,7 +126,16 @@ defmodule Orchard.Scheduler.MultiNode do
           memory_admission?: memory_admission_enabled?
         )
 
-      selected = hd(ranked)
+      {selected, selected_score} =
+        select_candidate_with_prefix_cache_score(
+          request,
+          ranked,
+          client,
+          cache_affinity_config,
+          prefix_cache_scoring_enabled?,
+          live_fingerprint_match_enabled?,
+          memory_admission_enabled?
+        )
 
       schedule =
         %{
@@ -143,14 +153,7 @@ defmodule Orchard.Scheduler.MultiNode do
           selected,
           live_fingerprint_match_enabled?
         )
-        |> maybe_put_prefix_cache_score(
-          request,
-          selected,
-          client,
-          cache_affinity_config,
-          prefix_cache_scoring_enabled?,
-          live_fingerprint_match_enabled?
-        )
+        |> maybe_put_prefix_cache_score(selected_score)
         |> maybe_put_memory_admission(selected, memory_admission_enabled?)
 
       {:ok,
@@ -334,60 +337,172 @@ defmodule Orchard.Scheduler.MultiNode do
     end)
   end
 
-  defp maybe_put_prefix_cache_score(
-         map,
+  defp maybe_put_prefix_cache_score(map, nil), do: map
+
+  defp maybe_put_prefix_cache_score(map, score), do: Map.put(map, :prefix_cache_score, score)
+
+  defp select_candidate_with_prefix_cache_score(
+         request,
+         ranked,
+         client,
+         cache_affinity_config,
+         prefix_cache_scoring_enabled?,
+         live_fingerprint_match_enabled?,
+         memory_admission_enabled?
+       ) do
+    selected = hd(ranked)
+
+    scoring_context =
+      prefix_cache_scoring_context(
+        request,
+        cache_affinity_config,
+        prefix_cache_scoring_enabled?,
+        live_fingerprint_match_enabled?
+      )
+
+    selected_score = score_prefix_cache_candidate(request, selected, client, scoring_context)
+
+    maybe_reselect_prefix_cache_candidate(
+      request,
+      ranked,
+      client,
+      scoring_context,
+      selected_score,
+      live_fingerprint_match_enabled?,
+      memory_admission_enabled?
+    )
+  end
+
+  defp prefix_cache_scoring_context(
          _request,
-         _selected,
-         _client,
          _cache_affinity_config,
          false,
          _live_fingerprint_match_enabled?
        ),
-       do: map
+       do: nil
 
-  defp maybe_put_prefix_cache_score(
-         map,
+  defp prefix_cache_scoring_context(
          _request,
-         _selected,
-         _client,
          _cache_affinity_config,
          _prefix_cache_scoring_enabled?,
          false
        ),
-       do: map
+       do: nil
 
-  defp maybe_put_prefix_cache_score(
-         map,
-         request,
-         selected,
-         client,
-         cache_affinity_config,
-         true,
-         true
-       ) do
+  defp prefix_cache_scoring_context(request, cache_affinity_config, true, true) do
     case CacheAffinity.derive_key(request, cache_affinity_config) do
       {:ok, fingerprint} ->
-        timeout_ms = Inference.prefix_cache_scoring_timeout_ms()
-
-        response =
-          %ScorePrefixCacheRequest{
-            request_id: request.public_id,
-            controller_session_id: request.internal_id,
-            model_ref: %RPCModelRef{
-              model_id: request.model_ref.model_id,
-              version: request.model_ref.version
-            },
-            cache_affinity_fingerprint: fingerprint,
-            deadline_unix_ms: System.system_time(:millisecond) + timeout_ms
-          }
-          |> score_prefix_cache_response(client, selected.target, timeout_ms)
-
-        Map.put(map, :prefix_cache_score, PrefixCacheScore.normalize_for_scheduler(response))
+        %{fingerprint: fingerprint, timeout_ms: Inference.prefix_cache_scoring_timeout_ms()}
 
       :unavailable ->
-        map
+        nil
     end
   end
+
+  defp score_prefix_cache_candidate(_request, _candidate, _client, nil), do: nil
+
+  defp score_prefix_cache_candidate(request, candidate, client, scoring_context) do
+    timeout_ms = scoring_context.timeout_ms
+
+    response =
+      %ScorePrefixCacheRequest{
+        request_id: request.public_id,
+        controller_session_id: request.internal_id,
+        model_ref: %RPCModelRef{
+          model_id: request.model_ref.model_id,
+          version: request.model_ref.version
+        },
+        cache_affinity_fingerprint: scoring_context.fingerprint,
+        deadline_unix_ms: System.system_time(:millisecond) + timeout_ms
+      }
+      |> score_prefix_cache_response(client, candidate.target, timeout_ms)
+
+    PrefixCacheScore.normalize_for_scheduler(response)
+  end
+
+  defp maybe_reselect_prefix_cache_candidate(
+         _request,
+         ranked,
+         _client,
+         _scoring_context,
+         nil,
+         _live_fingerprint_match_enabled?,
+         _memory_admission_enabled?
+       ),
+       do: {hd(ranked), nil}
+
+  defp maybe_reselect_prefix_cache_candidate(
+         request,
+         ranked,
+         client,
+         scoring_context,
+         selected_score,
+         live_fingerprint_match_enabled?,
+         memory_admission_enabled?
+       ) do
+    if Inference.prefix_cache_scoring_ranking_active?() do
+      maybe_reselect_tied_candidate(
+        request,
+        ranked,
+        client,
+        scoring_context,
+        selected_score,
+        live_fingerprint_match_enabled?,
+        memory_admission_enabled?
+      )
+    else
+      {hd(ranked), selected_score}
+    end
+  end
+
+  defp maybe_reselect_tied_candidate(
+         request,
+         ranked,
+         client,
+         scoring_context,
+         selected_score,
+         live_fingerprint_match_enabled?,
+         memory_admission_enabled?
+       ) do
+    case leading_tie_group(ranked, live_fingerprint_match_enabled?, memory_admission_enabled?) do
+      [incumbent, challenger] ->
+        challenger_score =
+          score_prefix_cache_candidate(request, challenger, client, scoring_context)
+
+        if prefix_cache_score_promotes?(selected_score, challenger_score) do
+          {challenger, challenger_score}
+        else
+          {incumbent, selected_score}
+        end
+
+      _no_two_candidate_tie ->
+        {hd(ranked), selected_score}
+    end
+  end
+
+  defp prefix_cache_score_promotes?(incumbent_score, challenger_score) do
+    comparable_ok_non_resident_score?(incumbent_score) and
+      authoritative_resident_score?(challenger_score)
+  end
+
+  defp comparable_ok_non_resident_score?(%{
+         status_code: "ok",
+         resident_fingerprint_match: false,
+         score_tier: score_tier
+       })
+       when score_tier in ["no_match", "recent_fingerprint_only"],
+       do: true
+
+  defp comparable_ok_non_resident_score?(_score), do: false
+
+  defp authoritative_resident_score?(%{
+         status_code: "ok",
+         resident_fingerprint_match: true,
+         score_tier: "resident_fingerprint"
+       }),
+       do: true
+
+  defp authoritative_resident_score?(_score), do: false
 
   defp score_prefix_cache_response(request, client, target, timeout_ms) do
     request_id = Map.get(request, :request_id)
@@ -536,6 +651,35 @@ defmodule Orchard.Scheduler.MultiNode do
   defp health_rank(:healthy), do: 0
   defp health_rank(:degraded), do: 1
   defp health_rank(_), do: 2
+
+  defp leading_tie_group([_first | _rest] = ranked, live_fingerprint_match?, memory_admission?) do
+    max_candidates = Inference.prefix_cache_scoring_max_ranking_candidates()
+
+    ranked
+    |> leading_rank_equivalent_candidates(live_fingerprint_match?, memory_admission?)
+    |> Enum.take(max_candidates)
+  end
+
+  defp leading_rank_equivalent_candidates(
+         [first | _rest] = ranked,
+         live_fingerprint_match?,
+         memory_admission?
+       ) do
+    leading_key = rank_equivalence_key(first, live_fingerprint_match?, memory_admission?)
+
+    tied =
+      Enum.take_while(ranked, fn candidate ->
+        rank_equivalence_key(candidate, live_fingerprint_match?, memory_admission?) == leading_key
+      end)
+
+    if length(tied) > 1, do: tied, else: []
+  end
+
+  defp rank_equivalence_key(candidate, live_fingerprint_match?, memory_admission?) do
+    candidate
+    |> rank_tuple(live_fingerprint_match?, memory_admission?)
+    |> Enum.drop(-1)
+  end
 
   # -- Helpers --
 

@@ -171,6 +171,176 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     |> Enum.reverse()
   end
 
+  defp reset_score_calls do
+    Process.delete(:stub_score_calls)
+  end
+
+  defp put_tie_only_scoring_config(overrides \\ []) do
+    put_inference(
+      cache_affinity: [
+        enabled: true,
+        live_fingerprint_match_enabled: true,
+        max_age_ms: 300_000,
+        max_recent_requests: 8
+      ],
+      prefix_cache_scoring:
+        Keyword.merge(
+          [enabled: true, timeout_ms: 123, ranking_mode: :tie_only, max_ranking_candidates: 2],
+          overrides
+        )
+    )
+  end
+
+  defp insert_ordered_nodes!(
+         id_a \\ "00000000-0000-0000-0000-000000000001",
+         id_b \\ "00000000-0000-0000-0000-000000000002"
+       ) do
+    insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+    insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+    {id_a, id_b}
+  end
+
+  defp set_node_health!(node_id, health) do
+    Node
+    |> Repo.get!(node_id)
+    |> Node.changeset(%{health: health})
+    |> Repo.update!()
+  end
+
+  defp stub_tied_cold_nodes(id_a, id_b, model_id \\ "test-model", version \\ "v1") do
+    stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+    stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+    canonical_request(model_id, version)
+  end
+
+  defp ok_non_resident_score(attrs \\ []) do
+    attrs
+    |> Map.new()
+    |> Map.merge(%{status_code: "ok", resident_fingerprint_match: false, score_tier: "no_match"})
+  end
+
+  defp ok_resident_score(attrs \\ []) do
+    attrs
+    |> Map.new()
+    |> Map.merge(%{
+      status_code: "ok",
+      resident_fingerprint_match: true,
+      score_tier: "resident_fingerprint"
+    })
+  end
+
+  defp non_ok_score(status_code), do: %{status_code: status_code, score_tier: "unknown"}
+
+  defp assert_score_does_not_invert_signal(signal, id_a, id_b) do
+    reset_score_calls()
+    set_node_health!(id_a, :healthy)
+    set_node_health!(id_b, if(signal == :health, do: :degraded, else: :healthy))
+
+    model_id = "test-model-#{signal}"
+    version = "v1"
+    request = canonical_request(model_id, version)
+    affinity_key = cache_affinity_key!(request)
+
+    stub_non_inversion_probes(signal, id_a, id_b, model_id, version, request, affinity_key)
+    stub_score("10.0.0.1", 50_061, ok_non_resident_score())
+    stub_score("10.0.0.2", 50_062, ok_resident_score())
+
+    assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+    assert schedule.node_id == id_a
+    assert [{{"10.0.0.1", 50_061}, _incumbent}] = score_calls()
+  end
+
+  defp stub_non_inversion_probes(:loadedness, id_a, id_b, model_id, version, _request, _key) do
+    stub_probe(
+      "10.0.0.1",
+      50_061,
+      make_status(id_a,
+        host: "10.0.0.1",
+        port: 50_061,
+        loaded_models: [%{model_id: model_id, version: version}]
+      )
+    )
+
+    stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+  end
+
+  defp stub_non_inversion_probes(:active_count, id_a, id_b, _model_id, _version, _request, _key) do
+    stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+    stub_probe(
+      "10.0.0.2",
+      50_062,
+      make_status(id_b, host: "10.0.0.2", port: 50_062, active_request_count: 1)
+    )
+  end
+
+  defp stub_non_inversion_probes(:health, id_a, id_b, _model_id, _version, _request, _key) do
+    stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+    stub_probe(
+      "10.0.0.2",
+      50_062,
+      make_status(id_b,
+        host: "10.0.0.2",
+        port: 50_062,
+        health: %{ready: true, health_code: "warn", health_message: "degraded"}
+      )
+    )
+  end
+
+  defp stub_non_inversion_probes(:live_fingerprint, id_a, id_b, model_id, version, _request, key) do
+    stub_probe(
+      "10.0.0.1",
+      50_061,
+      make_status(id_a,
+        host: "10.0.0.1",
+        port: 50_061,
+        runtime_prefix_cache_statuses: [
+          prefix_cache_status(model_id, version, %{prefix_cache_fingerprints: [key]})
+        ]
+      )
+    )
+
+    stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+  end
+
+  defp stub_non_inversion_probes(
+         :historical_affinity,
+         id_a,
+         id_b,
+         model_id,
+         version,
+         request,
+         key
+       ) do
+    insert_recent_cache_affinity_request!(
+      request.tenant_id,
+      model_id,
+      version,
+      id_a,
+      key,
+      DateTime.utc_now()
+    )
+
+    stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+    stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+  end
+
+  defp stub_non_inversion_probes(:memory_headroom, id_a, id_b, model_id, version, _request, _key) do
+    stub_probe(
+      "10.0.0.1",
+      50_061,
+      make_status(id_a,
+        host: "10.0.0.1",
+        port: 50_061,
+        runtime_memory_budgets: [memory_budget(model_id, version, %{})]
+      )
+    )
+
+    stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+  end
+
   defp insert_recent_cache_affinity_request!(
          tenant_id,
          model_id,
@@ -815,6 +985,412 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert score_request.model_ref.version == request.model_ref.version
     end
 
+    test "observe-only scoring preserves deterministic node_id parity for tied candidates" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 123]
+      )
+
+      {id_a, id_b} = insert_ordered_nodes!()
+      request = stub_tied_cold_nodes(id_a, id_b)
+
+      stub_score("10.0.0.1", 50_061, ok_non_resident_score())
+      stub_score("10.0.0.2", 50_062, ok_resident_score())
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.prefix_cache_score.status_code == "ok"
+      assert schedule.prefix_cache_score.resident_fingerprint_match == false
+      assert [{{"10.0.0.1", 50_061}, _incumbent}] = score_calls()
+    end
+
+    test "tie-only scoring promotes authoritative resident challenger over non-resident incumbent" do
+      put_inference(
+        cache_affinity: [
+          enabled: true,
+          live_fingerprint_match_enabled: true,
+          max_age_ms: 300_000,
+          max_recent_requests: 8
+        ],
+        memory_admission: [enabled: true],
+        prefix_cache_scoring: [
+          enabled: true,
+          timeout_ms: 123,
+          ranking_mode: :tie_only,
+          max_ranking_candidates: 2
+        ]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          runtime_prefix_cache_statuses: [
+            prefix_cache_status("test-model", "v1", %{entry_count: 77, total_bytes: 7_700})
+          ],
+          runtime_memory_budgets: [
+            memory_budget("test-model", "v1", %{
+              status_code: "resident_memory_unavailable",
+              budget_available: false,
+              headroom_available: false
+            })
+          ]
+        )
+      )
+
+      stub_score("10.0.0.1", 50_061, %{
+        status_code: "ok",
+        resident_fingerprint_match: false,
+        score_tier: "no_match",
+        session_started_unix_ms: 111
+      })
+
+      stub_score("10.0.0.2", 50_062, %{
+        status_code: "ok",
+        resident_fingerprint_match: true,
+        score_tier: "resident_fingerprint",
+        session_started_unix_ms: 222
+      })
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_b
+      assert schedule.runtime_client_target == [host: "10.0.0.2", port: 50_062]
+      assert schedule.selected_tier == "cold"
+      assert schedule.prefix_cache_fingerprint_match? == false
+      assert schedule.cache_affinity_selected_match == false
+      assert schedule.selected_cache_tier == "no_hint"
+      assert schedule.prefix_cache_status.entry_count == 77
+      assert schedule.memory_admission_tier == "headroom_unavailable"
+      assert schedule.memory_budget.status_code == "resident_memory_unavailable"
+      assert schedule.prefix_cache_score.status_code == "ok"
+      assert schedule.prefix_cache_score.resident_fingerprint_match == true
+      assert schedule.prefix_cache_score.score_tier == "resident_fingerprint"
+      assert schedule.prefix_cache_score.session_started_unix_ms == 222
+
+      assert [{{"10.0.0.1", 50_061}, _incumbent}, {{"10.0.0.2", 50_062}, _challenger}] =
+               score_calls()
+    end
+
+    test "tie-only scoring preserves base order when incumbent score is non-ok" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 123, ranking_mode: :tie_only]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      stub_score("10.0.0.1", 50_061, %{status_code: "error", score_tier: "unknown"})
+
+      stub_score("10.0.0.2", 50_062, %{
+        status_code: "ok",
+        resident_fingerprint_match: true,
+        score_tier: "resident_fingerprint"
+      })
+
+      assert {:ok, schedule} = MultiNode.schedule(canonical_request(), status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.prefix_cache_score.status_code == "error"
+
+      assert [{{"10.0.0.1", 50_061}, _incumbent}, {{"10.0.0.2", 50_062}, _challenger}] =
+               score_calls()
+    end
+
+    test "tie-only scoring preserves base order when challenger has no authoritative match" do
+      put_tie_only_scoring_config()
+
+      {id_a, id_b} = insert_ordered_nodes!()
+      request = stub_tied_cold_nodes(id_a, id_b)
+
+      stub_score("10.0.0.1", 50_061, ok_non_resident_score())
+      stub_score("10.0.0.2", 50_062, ok_non_resident_score())
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.prefix_cache_score.resident_fingerprint_match == false
+
+      assert [{{"10.0.0.1", 50_061}, _incumbent}, {{"10.0.0.2", 50_062}, _challenger}] =
+               score_calls()
+    end
+
+    test "tie-only scoring treats recent_fingerprint_only incumbent as comparable non-resident" do
+      put_tie_only_scoring_config()
+
+      {id_a, id_b} = insert_ordered_nodes!()
+      request = stub_tied_cold_nodes(id_a, id_b)
+
+      stub_score(
+        "10.0.0.1",
+        50_061,
+        ok_non_resident_score(score_tier: "recent_fingerprint_only")
+      )
+
+      stub_score("10.0.0.2", 50_062, ok_resident_score())
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_b
+      assert schedule.prefix_cache_score.resident_fingerprint_match == true
+    end
+
+    test "tie-only scoring preserves incumbent for contradictory ok score shapes" do
+      put_tie_only_scoring_config()
+
+      {id_a, id_b} = insert_ordered_nodes!()
+      request = stub_tied_cold_nodes(id_a, id_b)
+
+      for contradictory_incumbent <- [
+            %{status_code: "ok", resident_fingerprint_match: true, score_tier: "no_match"},
+            %{
+              status_code: "ok",
+              resident_fingerprint_match: false,
+              score_tier: "resident_fingerprint"
+            }
+          ] do
+        reset_score_calls()
+        stub_score("10.0.0.1", 50_061, contradictory_incumbent)
+        stub_score("10.0.0.2", 50_062, ok_resident_score())
+
+        assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+        assert schedule.node_id == id_a
+      end
+    end
+
+    test "tie-only scoring preserves incumbent when both candidates are authoritative resident" do
+      put_tie_only_scoring_config()
+
+      {id_a, id_b} = insert_ordered_nodes!()
+      request = stub_tied_cold_nodes(id_a, id_b)
+
+      stub_score("10.0.0.1", 50_061, ok_resident_score(session_started_unix_ms: 111))
+      stub_score("10.0.0.2", 50_062, ok_resident_score(session_started_unix_ms: 222))
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.prefix_cache_score.resident_fingerprint_match == true
+      assert schedule.prefix_cache_score.session_started_unix_ms == 111
+    end
+
+    test "tie-only scoring preserves incumbent when incumbent ok score is malformed" do
+      put_tie_only_scoring_config()
+
+      {id_a, id_b} = insert_ordered_nodes!()
+      request = stub_tied_cold_nodes(id_a, id_b)
+
+      for malformed_incumbent <- [
+            %{status_code: "ok"},
+            %{status_code: "ok", resident_fingerprint_match: false},
+            %{status_code: "ok", resident_fingerprint_match: false, score_tier: "unknown"}
+          ] do
+        reset_score_calls()
+        stub_score("10.0.0.1", 50_061, malformed_incumbent)
+        stub_score("10.0.0.2", 50_062, ok_resident_score())
+
+        assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+        assert schedule.node_id == id_a
+        assert schedule.prefix_cache_score.status_code == "ok"
+
+        assert [{{"10.0.0.1", 50_061}, _incumbent}, {{"10.0.0.2", 50_062}, _challenger}] =
+                 score_calls()
+      end
+    end
+
+    test "tie-only scoring fail-opens for non-ok scores from either candidate" do
+      put_tie_only_scoring_config()
+
+      {id_a, id_b} = insert_ordered_nodes!()
+      request = stub_tied_cold_nodes(id_a, id_b)
+
+      for status <- [
+            "timeout",
+            "error",
+            "unsupported_version",
+            "disabled",
+            "unavailable",
+            "model_not_loaded",
+            "invalid_request"
+          ] do
+        reset_score_calls()
+        stub_score("10.0.0.1", 50_061, ok_non_resident_score())
+        stub_score("10.0.0.2", 50_062, non_ok_score(status))
+
+        assert {:ok, challenger_non_ok_schedule} =
+                 MultiNode.schedule(request, status_client: StubClient)
+
+        assert challenger_non_ok_schedule.node_id == id_a
+        assert challenger_non_ok_schedule.prefix_cache_score.status_code == "ok"
+
+        assert [{{"10.0.0.1", 50_061}, _incumbent}, {{"10.0.0.2", 50_062}, _challenger}] =
+                 score_calls()
+
+        reset_score_calls()
+        stub_score("10.0.0.1", 50_061, non_ok_score(status))
+        stub_score("10.0.0.2", 50_062, ok_resident_score())
+
+        assert {:ok, incumbent_non_ok_schedule} =
+                 MultiNode.schedule(request, status_client: StubClient)
+
+        assert incumbent_non_ok_schedule.node_id == id_a
+        assert incumbent_non_ok_schedule.prefix_cache_score.status_code == status
+
+        assert [{{"10.0.0.1", 50_061}, _incumbent}, {{"10.0.0.2", 50_062}, _challenger}] =
+                 score_calls()
+      end
+    end
+
+    test "tie-only scoring caps leading tie scoring to two candidates" do
+      put_inference(
+        runtime_client_targets: [
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.2", port: 50_062],
+          [host: "10.0.0.3", port: 50_063]
+        ],
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [
+          enabled: true,
+          timeout_ms: 123,
+          ranking_mode: :tie_only,
+          max_ranking_candidates: 3
+        ]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+      id_c = "00000000-0000-0000-0000-000000000003"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+      insert_node!(%{id: id_c, advertise_addr: "10.0.0.3", rpc_port: 50_063})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+      stub_probe("10.0.0.3", 50_063, make_status(id_c, host: "10.0.0.3", port: 50_063))
+
+      stub_score("10.0.0.1", 50_061, ok_non_resident_score())
+      stub_score("10.0.0.2", 50_062, ok_non_resident_score())
+      stub_score("10.0.0.3", 50_063, ok_resident_score())
+
+      assert Orchard.Inference.prefix_cache_scoring_max_ranking_candidates() == 2
+      assert {:ok, schedule} = MultiNode.schedule(canonical_request(), status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.candidate_count == 3
+
+      assert [{{"10.0.0.1", 50_061}, _incumbent}, {{"10.0.0.2", 50_062}, _challenger}] =
+               score_calls()
+    end
+
+    test "tie-only score never inverts loadedness active-count health cache affinity or memory signals" do
+      put_inference(
+        cache_affinity: [
+          enabled: true,
+          live_fingerprint_match_enabled: true,
+          max_age_ms: 300_000,
+          max_recent_requests: 8
+        ],
+        memory_admission: [enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 123, ranking_mode: :tie_only]
+      )
+
+      {id_a, id_b} = insert_ordered_nodes!()
+
+      assert_score_does_not_invert_signal(:loadedness, id_a, id_b)
+      assert_score_does_not_invert_signal(:active_count, id_a, id_b)
+      assert_score_does_not_invert_signal(:health, id_a, id_b)
+      assert_score_does_not_invert_signal(:live_fingerprint, id_a, id_b)
+      assert_score_does_not_invert_signal(:historical_affinity, id_a, id_b)
+      assert_score_does_not_invert_signal(:memory_headroom, id_a, id_b)
+    end
+
+    test "tie-only scoring does not score challenger when stronger signals are not tied" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 123, ranking_mode: :tie_only]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}]
+        )
+      )
+
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      stub_score("10.0.0.1", 50_061, %{
+        status_code: "ok",
+        resident_fingerprint_match: false,
+        score_tier: "no_match"
+      })
+
+      stub_score("10.0.0.2", 50_062, %{
+        status_code: "ok",
+        resident_fingerprint_match: true,
+        score_tier: "resident_fingerprint"
+      })
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_a
+      assert schedule.selected_tier == "loaded"
+      assert [{{"10.0.0.1", 50_061}, _incumbent}] = score_calls()
+    end
+
+    test "tie-only scoring with leading tie preserves base order when derive_key is unavailable" do
+      put_tie_only_scoring_config()
+
+      {id_a, id_b} = insert_ordered_nodes!()
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      request = canonical_request("test-model", "v1", rendered_prompt: nil)
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.candidate_count == 2
+      assert schedule.node_id == id_a
+      assert schedule.runtime_client_target == [host: "10.0.0.1", port: 50_061]
+      assert score_calls() == []
+      refute Map.has_key?(schedule, :prefix_cache_score)
+    end
+
     test "prefix cache scoring is a no-op when live fingerprint matching is disabled" do
       put_inference(
         cache_affinity: [enabled: true, live_fingerprint_match_enabled: false],
@@ -937,6 +1513,29 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       put_inference(
         cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
         prefix_cache_scoring: [enabled: true, timeout_ms: 120]
+      )
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      request = canonical_request("test-model", "v1", rendered_prompt: nil)
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == id_a
+      assert score_calls() == []
+      refute Map.has_key?(schedule, :prefix_cache_score)
+    end
+
+    test "derive_key unavailable skips tie-only challenger score RPC without changing ranking" do
+      put_inference(
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 120, ranking_mode: :tie_only]
       )
 
       id_a = "00000000-0000-0000-0000-000000000001"

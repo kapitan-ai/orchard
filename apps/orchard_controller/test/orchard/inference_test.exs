@@ -24,11 +24,28 @@ defmodule Orchard.InferenceTest do
     end
   end
 
+  @config_env_vars [
+    "DATABASE_URL",
+    "MIX_RELEASE_NAME",
+    "ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES",
+    "ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE",
+    "ORCHARD_SUPPORT_ROOT",
+    "ORCHARD_TLS_DISABLED",
+    "RELEASE_NAME",
+    "SECRET_KEY_BASE"
+  ]
+
   setup do
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
+    env_snapshot =
+      System.get_env()
+      |> Enum.filter(fn {key, _value} -> config_env_key?(key) end)
+      |> Map.new()
+
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, previous_inference)
+      restore_env(env_snapshot)
     end)
 
     :ok
@@ -179,7 +196,12 @@ defmodule Orchard.InferenceTest do
 
       assert config[:enabled] == false
       assert config[:timeout_ms] == 150
+      assert config[:ranking_mode] == :observe_only
+      assert config[:max_ranking_candidates] == 2
       refute Inference.prefix_cache_scoring_enabled?()
+      refute Inference.prefix_cache_scoring_ranking_active?()
+      assert Inference.prefix_cache_scoring_ranking_mode() == :observe_only
+      assert Inference.prefix_cache_scoring_max_ranking_candidates() == 2
       assert Inference.prefix_cache_scoring_timeout_ms() == 150
     end
 
@@ -201,6 +223,156 @@ defmodule Orchard.InferenceTest do
 
       assert Inference.prefix_cache_scoring_enabled?()
       assert Inference.prefix_cache_scoring_timeout_ms() == 75
+    end
+
+    test "ranking mode only activates tie-only mode when parent scoring gates are enabled" do
+      put_inference(
+        prefix_cache_scoring: [enabled: true, ranking_mode: :tie_only],
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true]
+      )
+
+      assert Inference.prefix_cache_scoring_ranking_mode() == :tie_only
+      assert Inference.prefix_cache_scoring_ranking_active?()
+
+      put_inference(
+        prefix_cache_scoring: [enabled: true, ranking_mode: :observe_only],
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true]
+      )
+
+      refute Inference.prefix_cache_scoring_ranking_active?()
+    end
+
+    test "ranking helper accepts atom and string app config values" do
+      put_inference(prefix_cache_scoring: [ranking_mode: :tie_only])
+      assert Inference.prefix_cache_scoring_ranking_mode() == :tie_only
+
+      put_inference(prefix_cache_scoring: [ranking_mode: "tie_only"])
+      assert Inference.prefix_cache_scoring_ranking_mode() == :tie_only
+
+      put_inference(prefix_cache_scoring: [ranking_mode: :observe_only])
+      assert Inference.prefix_cache_scoring_ranking_mode() == :observe_only
+
+      put_inference(prefix_cache_scoring: [ranking_mode: "observe_only"])
+      assert Inference.prefix_cache_scoring_ranking_mode() == :observe_only
+    end
+
+    test "ranking helper falls back to observe_only for non-env invalid app config values" do
+      put_inference(prefix_cache_scoring: [ranking_mode: :bogus])
+
+      assert Inference.prefix_cache_scoring_ranking_mode() == :observe_only
+      refute Inference.prefix_cache_scoring_ranking_active?()
+    end
+
+    test "max ranking candidates helper falls back to default for invalid values and caps at 2" do
+      put_inference(prefix_cache_scoring: [max_ranking_candidates: 0])
+      assert Inference.prefix_cache_scoring_max_ranking_candidates() == 2
+
+      put_inference(prefix_cache_scoring: [max_ranking_candidates: "abc"])
+      assert Inference.prefix_cache_scoring_max_ranking_candidates() == 2
+
+      put_inference(prefix_cache_scoring: [max_ranking_candidates: 1])
+      assert Inference.prefix_cache_scoring_max_ranking_candidates() == 1
+
+      put_inference(prefix_cache_scoring: [max_ranking_candidates: 3])
+      assert Inference.prefix_cache_scoring_max_ranking_candidates() == 2
+    end
+  end
+
+  describe "prefix cache scoring env config" do
+    test "runtime.exs parses ranking env and accepts above-cap max candidates" do
+      inference =
+        read_runtime_controller_inference!(%{
+          "ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE" => "tie_only",
+          "ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES" => "3"
+        })
+
+      scoring = Keyword.fetch!(inference, :prefix_cache_scoring)
+
+      assert scoring[:ranking_mode] == :tie_only
+      assert scoring[:max_ranking_candidates] == 3
+
+      Application.put_env(:orchard_controller, :inference, inference)
+      assert Inference.prefix_cache_scoring_max_ranking_candidates() == 2
+
+      one_candidate =
+        read_runtime_controller_inference!(%{
+          "ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE" => "observe_only",
+          "ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES" => "1"
+        })
+        |> Keyword.fetch!(:prefix_cache_scoring)
+
+      assert one_candidate[:ranking_mode] == :observe_only
+      assert one_candidate[:max_ranking_candidates] == 1
+    end
+
+    test "dev.exs parses ranking env and accepts above-cap max candidates" do
+      inference =
+        read_dev_controller_inference!(%{
+          "ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE" => "tie_only",
+          "ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES" => "3"
+        })
+
+      scoring = Keyword.fetch!(inference, :prefix_cache_scoring)
+
+      assert scoring[:ranking_mode] == :tie_only
+      assert scoring[:max_ranking_candidates] == 3
+
+      Application.put_env(:orchard_controller, :inference, inference)
+      assert Inference.prefix_cache_scoring_max_ranking_candidates() == 2
+
+      one_candidate =
+        read_dev_controller_inference!(%{
+          "ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE" => "observe_only",
+          "ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES" => "1"
+        })
+        |> Keyword.fetch!(:prefix_cache_scoring)
+
+      assert one_candidate[:ranking_mode] == :observe_only
+      assert one_candidate[:max_ranking_candidates] == 1
+    end
+
+    test "runtime.exs fails loudly for invalid ranking env values" do
+      assert_raise RuntimeError,
+                   ~r/ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE must be observe_only\|tie_only/,
+                   fn ->
+                     read_runtime_controller_inference!(%{
+                       "ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE" => "bogus"
+                     })
+                   end
+    end
+
+    test "dev.exs fails loudly for invalid ranking env values" do
+      assert_raise RuntimeError,
+                   ~r/ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE must be observe_only\|tie_only/,
+                   fn ->
+                     read_dev_controller_inference!(%{
+                       "ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE" => "bogus"
+                     })
+                   end
+    end
+
+    test "runtime.exs fails loudly for non-positive and non-integer max candidates" do
+      for invalid <- ["0", "-1", "abc"] do
+        assert_raise RuntimeError,
+                     ~r/ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES|environment variable ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES/,
+                     fn ->
+                       read_runtime_controller_inference!(%{
+                         "ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES" => invalid
+                       })
+                     end
+      end
+    end
+
+    test "dev.exs fails loudly for non-positive and non-integer max candidates" do
+      for invalid <- ["0", "-1", "abc"] do
+        assert_raise RuntimeError,
+                     ~r/ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES|environment variable ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES/,
+                     fn ->
+                       read_dev_controller_inference!(%{
+                         "ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES" => invalid
+                       })
+                     end
+      end
     end
   end
 
@@ -284,6 +456,64 @@ defmodule Orchard.InferenceTest do
   defp put_inference(overrides) do
     config = Application.fetch_env!(:orchard_controller, :inference)
     Application.put_env(:orchard_controller, :inference, Keyword.merge(config, overrides))
+  end
+
+  defp read_runtime_controller_inference!(overrides) do
+    support_root = Path.join(System.tmp_dir!(), "orchard-prefix-cache-scoring-runtime-test")
+
+    base = %{
+      "DATABASE_URL" => "ecto://postgres:postgres@localhost/orchard_config_eval",
+      "MIX_RELEASE_NAME" => nil,
+      "ORCHARD_SUPPORT_ROOT" => support_root,
+      "ORCHARD_TLS_DISABLED" => "true",
+      "RELEASE_NAME" => "orchard_controller",
+      "SECRET_KEY_BASE" => String.duplicate("runtime-secret", 8)
+    }
+
+    read_config!(runtime_config_path(), :prod, Map.merge(base, overrides))
+    |> Keyword.fetch!(:orchard_controller)
+    |> Keyword.fetch!(:inference)
+  end
+
+  defp read_dev_controller_inference!(overrides) do
+    read_config!(dev_config_path(), :dev, overrides)
+    |> Keyword.fetch!(:orchard_controller)
+    |> Keyword.fetch!(:inference)
+  end
+
+  defp read_config!(path, env, env_overrides) do
+    clear_config_env!()
+
+    Enum.each(env_overrides, fn
+      {key, nil} -> System.delete_env(key)
+      {key, value} -> System.put_env(key, value)
+    end)
+
+    Config.Reader.read!(path, env: env)
+  end
+
+  defp runtime_config_path do
+    Path.expand("../../../../config/runtime.exs", __DIR__)
+  end
+
+  defp dev_config_path do
+    Path.expand("../../../../config/dev.exs", __DIR__)
+  end
+
+  defp restore_env(snapshot) do
+    clear_config_env!()
+    Enum.each(snapshot, fn {key, value} -> System.put_env(key, value) end)
+  end
+
+  defp clear_config_env! do
+    System.get_env()
+    |> Map.keys()
+    |> Enum.filter(&config_env_key?/1)
+    |> Enum.each(&System.delete_env/1)
+  end
+
+  defp config_env_key?(key) do
+    key in @config_env_vars or String.starts_with?(key, "ORCHARD_")
   end
 
   defp canonical_request do

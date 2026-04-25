@@ -321,7 +321,9 @@ default_controller_inference = fn root ->
     ],
     prefix_cache_scoring: [
       enabled: false,
-      timeout_ms: 150
+      timeout_ms: 150,
+      ranking_mode: :observe_only,
+      max_ranking_candidates: 2
     ],
     memory_admission: [
       enabled: false
@@ -540,6 +542,31 @@ if config_env() == :prod do
                    end
 
                    timeout_ms
+                 end).(),
+              ranking_mode:
+                (fn ->
+                   case System.get_env("ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE") ||
+                          "observe_only" do
+                     "observe_only" ->
+                       :observe_only
+
+                     "tie_only" ->
+                       :tie_only
+
+                     value ->
+                       raise "ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE must be observe_only|tie_only, got: #{inspect(value)}"
+                   end
+                 end).(),
+              max_ranking_candidates:
+                (fn ->
+                   max_ranking_candidates =
+                     env_int.("ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES", "2")
+
+                   if max_ranking_candidates <= 0 do
+                     raise "ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES must be > 0, got: #{max_ranking_candidates}"
+                   end
+
+                   max_ranking_candidates
                  end).()
             ],
             memory_admission: [
