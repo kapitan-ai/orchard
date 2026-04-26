@@ -6,6 +6,10 @@ Orchard is a sovereign on-prem LLM orchestration platform for Apple Silicon macO
 
 **SPEC.md** is the normative build contract. Every implementation decision must trace to a section in the spec. If the spec doesn't cover something, ask before improvising.
 
+## Product Repo Boundary
+
+This repository must remain self-contained product source. Do not add references or dependencies to `orchard-workbench`, RepoPrompt chat/session IDs, prompt-export files, or local planning artifacts. If planning material becomes durable product documentation, rewrite it as standalone Orchard documentation before committing it here. Transient RP exports belong outside this repo; `/prompt-exports/` is ignored.
+
 ## Architecture (from SPEC.md)
 
 - **Language**: Elixir/OTP (umbrella app)
@@ -135,7 +139,10 @@ the dev gRPC port to 50071 (avoiding conflict with the packaged BEAM on 50061),
 and starts `iex -S mix phx.server`.
 
 For source-dev cluster roles, use `bin/dev-controller` for the Phoenix/controller
-host and `bin/dev-node-agent` for a node-agent-only worker host.
+host and `bin/dev-node-agent` for a node-agent-only worker host. The current
+validated two-Mac smoke pattern is: start `bin/dev-node-agent` on the worker host
+with `ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0`, then start `bin/dev-controller`
+on the controller host with `ORCHARD_RUNTIME_CLIENT_TARGETS=<worker-ip>:50071`.
 
 When to bypass `bin/dev`:
 - `iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
@@ -171,6 +178,14 @@ This script automates the complete PKG build process:
 **When NOT to build:**
 - During normal development (use `bin/dev`)
 - Quick CLI testing (use `mix compile` + `iex -S mix`)
+
+The PKG is role-aware through a universal payload. Seed
+`/Library/Application Support/Orchard/support/.install-role.request` with
+`all`, `controller`, or `node-agent` before `installer` to control which
+LaunchDaemons are installed and managed. The persisted marker is
+`/Library/Application Support/Orchard/support/.install-role`. Managed Postgres
+is not installed or managed by default; controller hosts require external
+Postgres configuration.
 
 See `packaging/pkg/README.md` for full PKG operator documentation and `packaging/pkg/README.md#building-the-pkg` for detailed build instructions.
 

@@ -89,9 +89,11 @@ full build documentation.
 
 ## Deployment modes
 
-1. **All-in-one** — single Mac runs everything (controller + node agent + worker + Postgres)
+1. **All-in-one** — single Mac runs everything (controller + node agent + worker + external Postgres)
 2. **Controller + workers** — 1 Mac as control plane, 1–3 Macs as worker nodes
 3. **HA-lite** — up to 2 controllers with exactly 1 active leader, still within the overall 1–4 Mac deployment limit, with operator-managed endpoint failover
+
+The macOS PKG uses a universal payload with role selection at install time. Seed `/Library/Application Support/Orchard/support/.install-role.request` with `all`, `controller`, or `node-agent` before running `installer`; the installed marker is `/Library/Application Support/Orchard/support/.install-role`. Source development has matching split-role scripts: `bin/dev-controller` for the controller host and `bin/dev-node-agent` for worker hosts.
 
 ## Roadmap
 
