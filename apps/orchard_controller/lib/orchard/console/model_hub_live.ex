@@ -57,7 +57,7 @@ defmodule OrchardConsole.ModelHubLive do
       assigns.model_detail.gated == true ->
         {:noreply, socket}
 
-      download_busy?(assigns.download_status) ->
+      download_busy_for_selected?(assigns) ->
         {:noreply, socket}
 
       true ->
@@ -155,7 +155,7 @@ defmodule OrchardConsole.ModelHubLive do
           )
 
         # Now that selected_repo_id is known, rehydrate download state
-        # for this specific repo if we don't already have a visible download.
+        # for this specific repo when the coordinator has a snapshot.
         socket = maybe_rehydrate_for_repo(socket, detail.repo_id)
 
         {:noreply, socket}
@@ -332,7 +332,14 @@ defmodule OrchardConsole.ModelHubLive do
                         id="model-hub-download-button"
                         variant={:primary}
                         phx-click="download_model"
-                        disabled={@model_detail.gated == true or download_busy?(@download_status)}
+                        disabled={
+                          @model_detail.gated == true or
+                            download_busy_for_selected?(
+                              @download_status,
+                              @visible_download_key,
+                              @selected_repo_id
+                            )
+                        }
                       >
                         Download & Import
                       </.button>
@@ -666,12 +673,23 @@ defmodule OrchardConsole.ModelHubLive do
     end
   end
 
-  # TODO: download_busy? is globally scoped — it blocks the download button for
-  # ANY repo while any download is active. The coordinator supports concurrent
-  # downloads for different repo_ids, but the UI does not expose this yet.
-  # To fix: make busy check repo-scoped (compare visible_download_key repo_id
-  # against selected_repo_id). Acceptable for demo (single download at a time).
-  defp download_busy?(status), do: status in [:starting, :downloading, :preparing, :importing]
+  defp download_busy_for_selected?(%{
+         download_status: status,
+         visible_download_key: visible_key,
+         selected_repo_id: selected_repo_id
+       }) do
+    download_busy_for_selected?(status, visible_key, selected_repo_id)
+  end
+
+  defp download_busy_for_selected?(status, {repo_id, _revision}, selected_repo_id)
+       when is_binary(repo_id) do
+    active_download_status?(status) and repo_id == selected_repo_id
+  end
+
+  defp download_busy_for_selected?(_status, _visible_key, _selected_repo_id), do: false
+
+  defp active_download_status?(status),
+    do: status in [:starting, :downloading, :preparing, :importing]
 
   defp apply_download_snapshot(socket, %{status: status} = snapshot) do
     key = snapshot[:key]
@@ -708,14 +726,9 @@ defmodule OrchardConsole.ModelHubLive do
   end
 
   defp maybe_rehydrate_for_repo(socket, repo_id) do
-    if socket.assigns[:visible_download_key] != nil do
-      # Already showing a download — don't override
-      socket
-    else
-      case download_coordinator_impl().latest_snapshot_for_repo(repo_id) do
-        nil -> socket
-        snapshot -> apply_download_snapshot(socket, snapshot)
-      end
+    case download_coordinator_impl().latest_snapshot_for_repo(repo_id) do
+      nil -> socket
+      snapshot -> apply_download_snapshot(socket, snapshot)
     end
   end
 

@@ -736,6 +736,125 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert view |> element("#model-hub-download-progress-percent") |> render() =~ "Estimating"
     end
 
+    test "active download keeps selected repo download button disabled", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view
+      |> element("#model-hub-download-button")
+      |> render_click()
+
+      _download_ref = assert_download_started()
+
+      assert has_element?(view, "#model-hub-download-button[disabled]")
+    end
+
+    test "active download for another repo leaves selected repo download button enabled", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+
+      first = search_result_fixture("mlx-community/repo-a-4bit")
+      second = search_result_fixture("mlx-community/repo-b-4bit")
+      results = [first, second]
+
+      search_ref = assert_search_started(nil)
+      send_search_success(view, search_ref, nil, results)
+
+      detail_ref = assert_detail_started(first.repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(first.repo_id))
+
+      view
+      |> element("#model-hub-download-button")
+      |> render_click()
+
+      download_ref = assert_download_started()
+
+      send_download_started(download_ref, %{
+        repo_id: first.repo_id,
+        revision: "abc123",
+        total_files: 2,
+        total_bytes: 1024
+      })
+
+      assert has_element?(view, "#model-hub-download-button[disabled]")
+
+      view
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
+      |> render_click()
+
+      detail_ref = assert_detail_started(second.repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
+
+      refute has_element?(view, "#model-hub-download-button[disabled]")
+      assert has_element?(view, "#model-hub-download-button:not([disabled])")
+    end
+
+    test "switching back to a repo with an active download re-disables its button", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+
+      first = search_result_fixture("mlx-community/repo-a-4bit")
+      second = search_result_fixture("mlx-community/repo-b-4bit")
+      results = [first, second]
+
+      search_ref = assert_search_started(nil)
+      send_search_success(view, search_ref, nil, results)
+
+      detail_ref = assert_detail_started(first.repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(first.repo_id))
+
+      view
+      |> element("#model-hub-download-button")
+      |> render_click()
+
+      first_download_ref = assert_download_started()
+
+      send_download_started(first_download_ref, %{
+        repo_id: first.repo_id,
+        revision: "abc123",
+        total_files: 2,
+        total_bytes: 1024
+      })
+
+      view
+      |> element("#model-hub-result-#{dom_id_fragment(second.repo_id)}")
+      |> render_click()
+
+      detail_ref = assert_detail_started(second.repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(second.repo_id))
+
+      refute has_element?(view, "#model-hub-download-button[disabled]")
+
+      view
+      |> element("#model-hub-download-button")
+      |> render_click()
+
+      second_download_ref = assert_download_started()
+
+      send_download_started(second_download_ref, %{
+        repo_id: second.repo_id,
+        revision: "def456",
+        total_files: 3,
+        total_bytes: 2048
+      })
+
+      assert has_element?(view, "#model-hub-download-button[disabled]")
+
+      view
+      |> element("#model-hub-result-#{dom_id_fragment(first.repo_id)}")
+      |> render_click()
+
+      detail_ref = assert_detail_started(first.repo_id)
+      send_detail_success(view, detail_ref, detail_fixture(first.repo_id))
+
+      html = render(view)
+
+      assert has_element?(view, "#model-hub-download-button[disabled]")
+      assert html =~ first.repo_id
+    end
+
     test ":download_started moves to downloading and renders totals", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       _results = load_initial_results_and_detail(view)
