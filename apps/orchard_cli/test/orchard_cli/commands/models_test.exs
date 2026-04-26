@@ -14,7 +14,7 @@ defmodule OrchardCLI.Commands.ModelsTest do
 
   # -- Local test helpers --
 
-  defp create_model!(overrides \\ %{}) do
+  defp create_model!(overrides) do
     suffix = System.unique_integer([:positive, :monotonic])
 
     attrs =
