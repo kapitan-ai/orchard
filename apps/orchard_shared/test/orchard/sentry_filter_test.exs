@@ -125,7 +125,7 @@ defmodule Orchard.SentryFilterTest do
         "authorizationHeader" => "Bearer secret",
         "node_id" => "node-1",
         "orchard_node_id" => "node-2",
-        "orchard_node_hash" => "safe-hash",
+        "orchard_node_hash" => "0123456789abcdef",
         "input_tokens" => 12,
         "outputTokens" => 3,
         "token_usage" => %{total: 15}
@@ -145,10 +145,68 @@ defmodule Orchard.SentryFilterTest do
     assert filtered.extra["authorizationHeader"] == "[Filtered]"
     assert filtered.extra["node_id"] == "[Filtered]"
     assert filtered.extra["orchard_node_id"] == "[Filtered]"
-    assert filtered.extra["orchard_node_hash"] == "safe-hash"
+    assert filtered.extra["orchard_node_hash"] == "0123456789abcdef"
     assert filtered.extra["input_tokens"] == 12
     assert filtered.extra["outputTokens"] == 3
     assert filtered.extra["token_usage"] == %{total: 15}
+  end
+
+  test "preserves known Orchard HMAC correlation hashes while filtering adjacent secrets" do
+    event = %{
+      extra: %{
+        "orchard_api_key_hash" => "0123456789abcdef",
+        "orchardTenantHash" => "aaaaaaaaaaaaaaaa",
+        :orchard_principal_hash => "bbbbbbbbbbbbbbbb",
+        "orchard_node_hash" => "cccccccccccccccc",
+        "api_key" => "raw-api-key",
+        "api_key_id" => "raw-api-key-id",
+        "api_key_prefix" => "orch_prefix",
+        "secret_hash" => "secret-hash",
+        "api_key_hash" => "not-an-orchard-safe-field"
+      },
+      contexts: %{
+        orchard: %{
+          "orchard_api_key_hash" => "dddddddddddddddd",
+          "orchard_node_hash" => "not-a-valid-hash",
+          "x-api-key" => "header-style-secret"
+        }
+      },
+      breadcrumbs: [
+        %{
+          data: %{
+            orchard_api_key_hash: "eeeeeeeeeeeeeeee",
+            api_key: "breadcrumb-api-key"
+          }
+        }
+      ]
+    }
+
+    filtered = SentryFilter.filter(event)
+
+    assert filtered.extra["orchard_api_key_hash"] == "0123456789abcdef"
+    assert filtered.extra["orchardTenantHash"] == "aaaaaaaaaaaaaaaa"
+    assert filtered.extra.orchard_principal_hash == "bbbbbbbbbbbbbbbb"
+    assert filtered.extra["orchard_node_hash"] == "cccccccccccccccc"
+
+    assert filtered.extra["api_key"] == "[Filtered]"
+    assert filtered.extra["api_key_id"] == "[Filtered]"
+    assert filtered.extra["api_key_prefix"] == "[Filtered]"
+    assert filtered.extra["secret_hash"] == "[Filtered]"
+    assert filtered.extra["api_key_hash"] == "[Filtered]"
+
+    assert filtered.contexts.orchard["orchard_api_key_hash"] == "dddddddddddddddd"
+    assert filtered.contexts.orchard["orchard_node_hash"] == "[Filtered]"
+    assert filtered.contexts.orchard["x-api-key"] == "[Filtered]"
+
+    [breadcrumb] = filtered.breadcrumbs
+    assert breadcrumb.data.orchard_api_key_hash == "eeeeeeeeeeeeeeee"
+    assert breadcrumb.data.api_key == "[Filtered]"
+
+    refute inspect(filtered) =~ "raw-api-key"
+    refute inspect(filtered) =~ "raw-api-key-id"
+    refute inspect(filtered) =~ "orch_prefix"
+    refute inspect(filtered) =~ "header-style-secret"
+    refute inspect(filtered) =~ "breadcrumb-api-key"
   end
 
   test "scrubs user and host identity fields" do

@@ -30,6 +30,7 @@ defmodule Orchard.SentryFilter do
                     "access_token",
                     "refresh_token",
                     "api_key",
+                    "api_key_hash",
                     "api_key_prefix",
                     "apikey",
                     "key_prefix",
@@ -60,6 +61,13 @@ defmodule Orchard.SentryFilter do
                      "max_tokens",
                      "token_usage"
                    ])
+
+  @safe_correlation_hash_keys MapSet.new([
+                                "orchard_api_key_hash",
+                                "orchard_tenant_hash",
+                                "orchard_principal_hash",
+                                "orchard_node_hash"
+                              ])
 
   @spec filter(map() | struct()) :: map() | struct()
 
@@ -137,14 +145,27 @@ defmodule Orchard.SentryFilter do
        do: @filtered
 
   defp scrub_value(normalized_key, value) when is_binary(normalized_key) do
-    if sensitive_key?(normalized_key) do
-      @filtered
-    else
-      scrub_nested(value)
+    cond do
+      safe_correlation_hash_key?(normalized_key) ->
+        scrub_correlation_hash(value)
+
+      sensitive_key?(normalized_key) ->
+        @filtered
+
+      true ->
+        scrub_nested(value)
     end
   end
 
   defp scrub_value(_normalized_key, value), do: scrub_nested(value)
+
+  defp scrub_correlation_hash(value) when is_binary(value) do
+    if Regex.match?(~r/\A[0-9a-f]{16}\z/, value), do: value, else: @filtered
+  end
+
+  defp scrub_correlation_hash(_value), do: @filtered
+
+  defp safe_correlation_hash_key?(key), do: MapSet.member?(@safe_correlation_hash_keys, key)
 
   defp scrub_user(value) when is_nil(value) or value == %{}, do: value
 
