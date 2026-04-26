@@ -122,7 +122,7 @@ A neural tree rendered in translucent glass materials on a navy glass background
 Represents: neural network (AI/inference) + tree (orchard/growth/cultivation)
 
 **Generation details:** FLUX Pro 1.1 via fal.ai, forest green variant, seed 42.
-Source prompt and iteration history preserved in `orchard-workbench/notes/`.
+Source prompt and iteration history preserved in project design notes.
 
 ### Combined Lockup
 

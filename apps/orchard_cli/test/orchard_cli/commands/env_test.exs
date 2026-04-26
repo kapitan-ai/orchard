@@ -176,16 +176,25 @@ defmodule OrchardCLI.Commands.EnvTest do
       assert controller_content =~ "SECRET_KEY_BASE=\"#{expected_secret_key_base()}\""
       refute controller_content =~ ~r/^# DATABASE_URL=/m
       refute controller_content =~ ~r/^# SECRET_KEY_BASE=/m
+      assert controller_content =~ "ORCHARD_RUNTIME_CLIENT_TARGETS"
+      assert controller_content =~ "ORCHARD_PUBLIC_HOST=\"replace-with-lan-or-tailscale-host\""
       assert controller_content =~ "ORCHARD_TOKENIZER_EXECUTABLE="
       assert controller_content =~ "Application Support"
 
       assert controller_content =~
                ~r/ORCHARD_TOKENIZER_EXECUTABLE="[^"]*Application Support[^"]*"/
 
+      refute controller_content =~ "ORCHARD_NODE_AGENT_LISTEN_HOST"
+
       node_agent_content = File.read!(node_agent_env)
+      assert node_agent_content =~ "ORCHARD_NODE_AGENT_LISTEN_HOST"
+      assert node_agent_content =~ "ORCHARD_NODE_AGENT_LISTEN_PORT=\"50061\""
       assert node_agent_content =~ "ORCHARD_WORKER_EXECUTABLE="
       assert node_agent_content =~ "ORCHARD_NODE_DISPLAY_NAME="
+      assert node_agent_content =~ "Pending M3 join flow"
+      assert node_agent_content =~ "ORCHARD_JOIN_BOOTSTRAP_TOKEN"
       assert node_agent_content =~ ~r/ORCHARD_WORKER_EXECUTABLE="[^"]*Application Support[^"]*"/
+      refute node_agent_content =~ "ORCHARD_RUNTIME_CLIENT_TARGETS"
 
       # Verify file permissions (0600)
       {:ok, %{mode: mode}} = File.stat(controller_env)
@@ -243,8 +252,14 @@ defmodule OrchardCLI.Commands.EnvTest do
       refute summary =~ "node-agent.env"
 
       config_dir = Path.join(support_root, "config")
-      assert File.regular?(Path.join(config_dir, "controller.env"))
+      controller_env = Path.join(config_dir, "controller.env")
+      assert File.regular?(controller_env)
       refute File.exists?(Path.join(config_dir, "node-agent.env"))
+
+      content = File.read!(controller_env)
+      assert content =~ "ORCHARD_RUNTIME_CLIENT_TARGETS"
+      assert content =~ "ORCHARD_PUBLIC_HOST=\"replace-with-lan-or-tailscale-host\""
+      refute content =~ "ORCHARD_NODE_AGENT_LISTEN_HOST"
     after
       File.rm_rf!(tmp_dir)
     end
@@ -265,6 +280,15 @@ defmodule OrchardCLI.Commands.EnvTest do
 
       refute summary =~ "controller.env"
       assert summary =~ "node-agent.env"
+
+      content =
+        Path.join([support_root, "config", "node-agent.env"])
+        |> File.read!()
+
+      assert content =~ "ORCHARD_NODE_AGENT_LISTEN_HOST"
+      assert content =~ "ORCHARD_NODE_AGENT_LISTEN_PORT=\"50061\""
+      assert content =~ "Pending M3 join flow"
+      refute content =~ "ORCHARD_RUNTIME_CLIENT_TARGETS"
     after
       File.rm_rf!(tmp_dir)
     end

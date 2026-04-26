@@ -242,12 +242,19 @@ defmodule OrchardCLI.Commands.Env do
 
     # ── Optional ──────────────────────────────────────────────────────
 
-    # Browser-facing host for LiveView websocket origin check.
-    # Set to the IP or hostname clients use to reach the console.
-    # ORCHARD_PUBLIC_HOST="replace-with-browser-host-or-ip"
+    # Controller gRPC runtime targets for worker placement.
+    # Comma-separated host:port entries (example: "10.0.0.21:50061,10.0.0.22:50061").
+    # Leave unset for single-node/all-in-one installs.
+    # ORCHARD_RUNTIME_CLIENT_TARGETS="replace-with-host:port,host:port"
+
+    # Browser-facing host for LiveView websocket origin checks.
+    # Set to the LAN/Tailscale hostname or IP operators use in the browser URL.
+    # ORCHARD_PUBLIC_HOST="replace-with-lan-or-tailscale-host"
 
     # ── Packaged Paths (auto-detected) ────────────────────────────────
 
+    # Defaults to the packaged tokenizer path under support_root/native/.
+    # Override only when intentionally using a custom tokenizer executable.
     ORCHARD_TOKENIZER_EXECUTABLE=#{shell_quote(tokenizer_path)}
     """
   end
@@ -262,14 +269,35 @@ defmodule OrchardCLI.Commands.Env do
     # This file is sourced as POSIX shell. All values with spaces MUST be quoted.
     # See: packaging/pkg/README.md
 
+    # ── Node Agent Network ────────────────────────────────────────────
+
+    # Node-agent bind host. Default runtime behavior is loopback-only.
+    # Set 0.0.0.0 when this node must be reachable by a remote controller.
+    # ORCHARD_NODE_AGENT_LISTEN_HOST="0.0.0.0"
+
+    # Node-agent gRPC listen port.
+    # Packaged default is 50061 (source-dev scripts typically use 50071).
+    # ORCHARD_NODE_AGENT_LISTEN_PORT="50061"
+
     # ── Node Identity ─────────────────────────────────────────────────
 
+    # Friendly node name shown in controller inventory/status views.
     ORCHARD_NODE_DISPLAY_NAME=#{shell_quote(hostname)}
     ORCHARD_WORKER_BACKEND="mlx"
 
     # ── Packaged Paths (auto-detected) ────────────────────────────────
 
+    # Defaults to the packaged worker path under support_root/native/.
+    # Override only when intentionally using a custom worker executable.
     ORCHARD_WORKER_EXECUTABLE=#{shell_quote(worker_path)}
+
+    # ── Future Join / Bootstrap Placeholders (M3, not active yet) ─────
+
+    # Pending M3 join flow: these placeholders are documentation only today.
+    # Do not set until M3 join/bootstrap support is implemented.
+    # ORCHARD_JOIN_CONTROLLER_TARGET="controller-host:50061"
+    # ORCHARD_JOIN_BOOTSTRAP_TOKEN="replace-with-issued-token"
+    # ORCHARD_JOIN_TLS_CA_PATH="/Library/Application Support/Orchard/config/tls/ca.crt"
     """
   end
 

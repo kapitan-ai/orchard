@@ -10,6 +10,8 @@ defmodule OrchardCLI.Commands.Status do
     orchardctl status help  — Show usage
   """
 
+  alias OrchardCLI.Commands.LifecycleSupport
+
   @default_support_root "/Library/Application Support/Orchard"
   @connect_timeout_ms 2_000
   @receive_timeout_ms 3_000
@@ -31,6 +33,9 @@ defmodule OrchardCLI.Commands.Status do
 
   defp run_status(runtime) do
     case snapshot(runtime) do
+      %{state: :install_error, error: message} ->
+        {:error, message, 1}
+
       %{state: :invalid_response, display_url: url, error: message} ->
         {:error, "Error: invalid health response from #{url}: #{message}", 1}
 
@@ -39,10 +44,42 @@ defmodule OrchardCLI.Commands.Status do
     end
   end
 
-  @doc "Builds a structured status snapshot for the current Orchard controller probe."
+  @doc "Builds a structured status snapshot for the current Orchard install role."
   @spec snapshot(map()) :: map()
   def snapshot(runtime \\ default_runtime()) do
     version = Map.get(runtime, :version, fn -> Orchard.version() end).()
+
+    case LifecycleSupport.detect_install_role(runtime) do
+      {:ok, role} ->
+        runtime = Map.put(runtime, :install_role, role)
+        snapshot_for_role(runtime, version, role)
+
+      {:error, :legacy_not_found, _message, _code} ->
+        snapshot_for_role(runtime, version, :source_dev)
+
+      {:error, _reason, message, _code} ->
+        %{
+          version: version,
+          display_version: format_display_version(version, nil),
+          state: :install_error,
+          role: nil,
+          error: message
+        }
+    end
+  end
+
+  defp snapshot_for_role(runtime, version, :node_agent = role) do
+    %{
+      version: version,
+      display_version: format_display_version(version, nil),
+      state: :node_agent,
+      role: role,
+      node_agent_loaded?: node_agent_loaded?(runtime),
+      node_agent_health: node_agent_health(runtime)
+    }
+  end
+
+  defp snapshot_for_role(runtime, version, role) do
     candidates = Map.get(runtime, :endpoint_candidates, &default_endpoint_candidates/0).()
     request_fn = Map.get(runtime, :request, &default_request/2)
 
@@ -57,6 +94,7 @@ defmodule OrchardCLI.Commands.Status do
           version: remote_version,
           display_version: display_version,
           state: state,
+          role: role,
           base_url: base_url,
           display_url: base_url,
           body: body
@@ -69,6 +107,7 @@ defmodule OrchardCLI.Commands.Status do
           version: version,
           display_version: display_version,
           state: :offline,
+          role: role,
           base_url: nil,
           display_url: display_url,
           body: nil
@@ -79,6 +118,7 @@ defmodule OrchardCLI.Commands.Status do
           version: version,
           display_version: format_display_version(version, nil),
           state: :invalid_response,
+          role: role,
           base_url: nil,
           display_url: display_url,
           body: nil,
@@ -90,13 +130,44 @@ defmodule OrchardCLI.Commands.Status do
 
   @doc "Renders a human-readable status banner from a previously built snapshot."
   @spec render_snapshot(map()) :: String.t()
+  def render_snapshot(%{state: :install_error, error: message}) do
+    message
+  end
+
+  def render_snapshot(%{state: :node_agent} = snap) do
+    render_node_agent_banner(snap)
+  end
+
   def render_snapshot(%{state: :offline} = snap) do
-    render_offline_banner(snap.display_version, snap.display_url)
+    render_offline_banner(snap.display_version, snap.display_url, snap.role)
   end
 
   def render_snapshot(snap) do
-    render_banner(snap.display_version, snap.base_url, snap.body)
+    render_banner(snap.display_version, snap.base_url, snap.body, snap.role)
   end
+
+  # ── Node-Agent Local Status ─────────────────────────────────────────
+
+  defp node_agent_loaded?(runtime) do
+    LifecycleSupport.services(:start, runtime)
+    |> Enum.find(&(&1.id == :node_agent))
+    |> case do
+      nil -> false
+      service -> LifecycleSupport.service_loaded?(service, runtime)
+    end
+  end
+
+  defp node_agent_health(runtime) do
+    case Map.get(runtime, :node_agent_health) do
+      health_fn when is_function(health_fn, 0) -> normalize_node_agent_health(health_fn.())
+      _other -> :not_available
+    end
+  end
+
+  defp normalize_node_agent_health({:ok, health}) when is_map(health), do: {:ok, health}
+  defp normalize_node_agent_health({:error, reason}), do: {:error, inspect(reason)}
+  defp normalize_node_agent_health(health) when is_map(health), do: {:ok, health}
+  defp normalize_node_agent_health(_other), do: :not_available
 
   # ── Candidate Probing ───────────────────────────────────────────────
 
@@ -200,13 +271,17 @@ defmodule OrchardCLI.Commands.Status do
 
   # ── Banner Rendering ────────────────────────────────────────────────
 
-  defp render_banner(display_version, base_url, body) do
+  defp display_status_role(:source_dev), do: "source-dev"
+  defp display_status_role(role), do: LifecycleSupport.display_role(role)
+
+  defp render_banner(display_version, base_url, body, role) do
     status_label = if body["status"] == "ok", do: "ready", else: "degraded"
     details = build_details(body, status_label)
     license_lines = render_license_lines(body["license"])
 
     ([
        "\u{1F333} Orchard #{display_version}",
+       "   Role:    #{display_status_role(role)}",
        "   Console: #{base_url}/console",
        "   API:     #{base_url}/v1",
        "   Status:  #{status_label}#{details}"
@@ -215,15 +290,52 @@ defmodule OrchardCLI.Commands.Status do
     |> Enum.join("\n")
   end
 
-  defp render_offline_banner(display_version, display_url) do
+  defp render_offline_banner(display_version, display_url, role) do
     """
     \u{1F333} Orchard #{display_version}
+       Role:    #{display_status_role(role)}
        Console: #{display_url}/console
        API:     #{display_url}/v1
        Status:  offline (controller unreachable)
     """
     |> String.trim()
   end
+
+  defp render_node_agent_banner(snap) do
+    [
+      "\u{1F333} Orchard #{snap.display_version}",
+      "   Role:    #{display_status_role(snap.role)}",
+      "   Node Agent: #{launchd_state_label(snap.node_agent_loaded?)}",
+      node_agent_health_line(snap.node_agent_health),
+      "   Controller: remote/not checked"
+    ]
+    |> Enum.join("\n")
+  end
+
+  defp launchd_state_label(true), do: "loaded"
+  defp launchd_state_label(false), do: "not loaded"
+
+  defp node_agent_health_line(:not_available) do
+    "   Node Agent Health: not checked (no local node-agent health/readiness probe available)"
+  end
+
+  defp node_agent_health_line({:error, reason}) do
+    "   Node Agent Health: unavailable (#{reason})"
+  end
+
+  defp node_agent_health_line({:ok, health}) do
+    ready = Map.get(health, :ready, Map.get(health, "ready"))
+    code = Map.get(health, :health_code, Map.get(health, "health_code"))
+    message = Map.get(health, :health_message, Map.get(health, "health_message"))
+
+    ["   Node Agent Health: #{readiness_label(ready)}", code, message]
+    |> Enum.reject(&(is_nil(&1) or &1 == ""))
+    |> Enum.join(" — ")
+  end
+
+  defp readiness_label(true), do: "ready"
+  defp readiness_label(false), do: "not ready"
+  defp readiness_label(_unknown), do: "reported"
 
   defp build_details(body, status_label) do
     runtime_details =

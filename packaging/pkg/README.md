@@ -25,6 +25,96 @@ Before starting the controller for the first time:
 3. Create `controller.env` with the required variables (see below).
 4. Run release migrations (see below).
 
+## Install Role Selection
+
+Orchard ships a **universal PKG payload**. The install role controls which
+system LaunchDaemon plists are installed and later managed; it does not remove
+binaries or other payload files.
+
+Role contract:
+
+| Role | LaunchDaemons installed | Intended host |
+|------|-------------------------|---------------|
+| `all` | controller + node-agent | Single-machine/default install |
+| `controller` | controller only | Control-plane host |
+| `node-agent` | node-agent only | Worker-node host |
+
+The default role is `all`. The persistent source of truth is:
+
+```text
+/Library/Application Support/Orchard/support/.install-role
+```
+
+To select or change a role, seed this request file **before** running
+`installer`:
+
+```text
+/Library/Application Support/Orchard/support/.install-role.request
+```
+
+The file must contain exactly one of `all`, `controller`, or `node-agent`
+(optionally followed by a newline). The installer validates the request,
+installs only the selected LaunchDaemons, removes any stale out-of-role
+controller/node-agent plist from a prior role, atomically writes `.install-role`,
+and deletes `.install-role.request` after success. On upgrade, if no request file
+is present, the installer preserves the existing `.install-role`; if neither file
+exists, it defaults to `all`.
+
+MDM/Jamf automation should create the same root-owned request file before
+installing the universal PKG. Recommended request-file permissions are
+`0600 root:wheel`.
+
+### Role install examples
+
+Controller-only host:
+
+```bash
+sudo install -d -o root -g wheel -m 0755 \
+  '/Library/Application Support/Orchard/support'
+printf 'controller\n' | sudo tee \
+  '/Library/Application Support/Orchard/support/.install-role.request' >/dev/null
+sudo chown root:wheel \
+  '/Library/Application Support/Orchard/support/.install-role.request'
+sudo chmod 0600 \
+  '/Library/Application Support/Orchard/support/.install-role.request'
+sudo installer -pkg Orchard-<version>-<date>-<sha>.pkg -target /
+sudo cat '/Library/Application Support/Orchard/support/.install-role'
+```
+
+Node-agent-only host:
+
+```bash
+sudo install -d -o root -g wheel -m 0755 \
+  '/Library/Application Support/Orchard/support'
+printf 'node-agent\n' | sudo tee \
+  '/Library/Application Support/Orchard/support/.install-role.request' >/dev/null
+sudo chown root:wheel \
+  '/Library/Application Support/Orchard/support/.install-role.request'
+sudo chmod 0600 \
+  '/Library/Application Support/Orchard/support/.install-role.request'
+sudo installer -pkg Orchard-<version>-<date>-<sha>.pkg -target /
+sudo cat '/Library/Application Support/Orchard/support/.install-role'
+```
+
+All-in-one/default host:
+
+```bash
+sudo install -d -o root -g wheel -m 0755 \
+  '/Library/Application Support/Orchard/support'
+printf 'all\n' | sudo tee \
+  '/Library/Application Support/Orchard/support/.install-role.request' >/dev/null
+sudo chown root:wheel \
+  '/Library/Application Support/Orchard/support/.install-role.request'
+sudo chmod 0600 \
+  '/Library/Application Support/Orchard/support/.install-role.request'
+sudo installer -pkg Orchard-<version>-<date>-<sha>.pkg -target /
+sudo cat '/Library/Application Support/Orchard/support/.install-role'
+```
+
+You can also omit `.install-role.request` for a fresh all-in-one install, because
+`all` is the default. To change roles later, write a new `.install-role.request`
+with the desired role and reinstall the universal PKG.
+
 ## Env File Overrides
 
 Wrapper scripts (`bin/orchard-node-agent`, `bin/orchard-controller`) source
@@ -85,6 +175,11 @@ ORCHARD_TOKENIZER_EXECUTABLE=/Library/Application Support/Orchard/native/orchard
 ```
 
 Use `orchardctl env init` (below) to generate correctly-quoted templates.
+You can target a specific role template with `--service controller`,
+`--service node-agent`, or keep `--service all` for both files. Generated
+templates include role-aware guidance comments (for controller runtime targets /
+public host / tokenizer path, and for node-agent listen host+port / identity /
+worker path, plus clearly marked M3 join placeholders).
 
 ### Controller env file lifecycle
 
@@ -661,7 +756,7 @@ certificates for the controller HTTPS listener.
    `config/tls/`
 4. Does **not** auto-trust the CA in Keychain (operator must run
    `sudo orchardctl tls trust-ca` manually)
-5. Bootstraps managed PostgreSQL only (if present); controller and node-agent services must be started manually via `sudo orchardctl start`
+5. Does not bootstrap managed PostgreSQL; role-selected controller/node-agent services must be started manually via `sudo orchardctl start`
 
 **Upgrade (existing install):**
 - Preserves existing managed TLS files (no overwrite, no regeneration)
@@ -732,23 +827,27 @@ sudo orchardctl tls trust-ca  # optional: trust CA in Keychain
 
 ### Install context markers
 
-The installer writes diagnostic markers under `support/`:
+The installer writes role and diagnostic markers under `support/`:
 
 | File | Purpose | Lifecycle |
 |------|---------|-----------|
+| `.install-role.request` | Transient: requested install role (`all`, `controller`, `node-agent`) | Created by operator/MDM before install, removed on postinstall success |
+| `.install-role` | Persistent: selected install role and lifecycle source of truth | Atomically written on postinstall success, preserved on upgrades unless a new request is seeded |
 | `.pkg-install-context` | Transient: install mode (fresh/upgrade) | Written by preinstall, removed on postinstall success |
 | `.pkg-install-complete` | Persistent: last successful install timestamp | Written on postinstall success, never auto-removed |
 
 ## Service Bootstrap
 
-Postinstall **only bootstraps managed PostgreSQL** (if present). Controller and
+Postinstall does **not install or bootstrap managed PostgreSQL**. Controller and
 node-agent services are **not auto-started** during install to allow proper
-configuration first:
+configuration first. `sudo orchardctl start` starts the services selected by the
+installed role:
 
-1. Install PKG
-2. Run `sudo orchardctl env init` (auto-configures environment)
-3. Run `sudo orchard-controller eval 'Orchard.Release.migrate()'` (database)
-4. Run `sudo orchardctl start` (bootstraps controller + node-agent)
+1. Optionally seed `.install-role.request` (omit for default `all`)
+2. Install PKG
+3. Run `sudo orchardctl env init` (auto-configures environment)
+4. Run `sudo orchard-controller eval 'Orchard.Release.migrate()'` (database, for controller/all roles)
+5. Run `sudo orchardctl start` (bootstraps role-selected services)
 
 This deferred bootstrap ensures services start with valid configuration
 rather than crash-looping with missing environment variables.
@@ -758,7 +857,7 @@ rather than crash-looping with missing environment variables.
 - Package Orchard releases into install paths under `/Library/Application Support/Orchard/`
 - Install wrapper commands into `/Library/Application Support/Orchard/bin/`
 - Expose `orchardctl` via `/usr/local/bin/orchardctl`
-- Install launchd plists under `/Library/LaunchDaemons/` and `/Library/LaunchAgents/`
+- Install role-selected launchd plists under `/Library/LaunchDaemons/` and tray LaunchAgent under `/Library/LaunchAgents/`
 - Generate managed TLS certificates on fresh install
 - Validate TLS state before bootstrapping services
 - Detect fresh install vs upgrade and write diagnostic markers
@@ -783,8 +882,24 @@ This produces a PKG file following the [naming convention below](#filename-forma
 | Flag | Purpose |
 |------|---------|
 | `--clean` | Deep clean: removes `_build/` and `deps/` before building (slow, but maximally reproducible) |
-| `--allow-dirty` | Build with uncommitted changes (marks PKG with `-dirty` suffix) |
+| `--allow-dirty` | Supported dev-build escape hatch when your tree is not clean (adds `-dirty` to the git SHA segment) |
 | `output_dir` | Custom output directory (default: `./artifacts/pkg-builds/YYYY-MM-DD/`) |
+
+### Dev PKG path (no signing/notarization/stapling)
+
+Use the same scripted packaging path, with `--allow-dirty` when needed:
+
+```bash
+./scripts/build-pkg.sh --allow-dirty
+```
+
+This is the supported development PKG lane: same staging, payload checks,
+scripted `pkgbuild`, and layout validation as the standard build. It does not
+add a separate `--dev` mode.
+
+After build/install, use the role request-file workflow from
+[Install Role Selection](#install-role-selection) (`.install-role.request`)
+rather than environment-variable installer overrides.
 
 ### Build Requirements
 
@@ -795,27 +910,28 @@ Before building:
 4. **macOS**: PKG build only works on macOS (uses `pkgbuild`)
 5. **No dev server running**: Ports 4000/50071 should be free (warns if in use)
 
-### Manual Build Recipe
+### Manual packaging fallback (`pkgbuild`)
 
-If you need to build manually or understand the process:
+If scripted behavior drifts or you need operator-level debugging, use a direct
+`pkgbuild` fallback with the same root/scripts structure as `build-pkg.sh`:
 
 ```bash
-# 1. Setup Python venvs
-cd native/orchard_tokenizer && uv sync
-cd native/orchard_worker_mlx && uv sync --extra mlx
-
-# 2. Build releases
-export MIX_ENV=prod
-mix deps.get
-mix assets.deploy  # (from apps/orchard_controller)
-mix release orchard_controller
-mix release orchard_node_agent
-mix release orchard_cli
-
-# 3. Stage and build PKG (see build-pkg.sh for full details)
+pkgbuild \
+  --root /tmp/orchard-pkg-build-<pid> \
+  --scripts /Users/<you>/Hacks/orchard/packaging/pkg/scripts \
+  --identifier com.orchard.pkg \
+  --version <app_version> \
+  --install-location / \
+  /tmp/Orchard-<version>-<date>-<sha>.pkg
 ```
 
-**Note:** The build script handles all steps above with proper error handling and validation.
+Keep staged ownership/modes equivalent to the script (root-owned payload paths,
+launchd plists `0644`, wrappers `0755`) and use the same role request-file
+contract in [Install Role Selection](#install-role-selection) before installing
+the fallback PKG.
+
+**Note:** Prefer `scripts/build-pkg.sh` for normal operation; it also validates
+staging/payload layout and writes checksums.
 
 ## PKG Filename Policy
 
@@ -827,6 +943,10 @@ confusion while preserving build traceability.
 ```
 Orchard-<app_version>-<YYYYMMDD>-<git_sha7>.pkg
 ```
+
+There is no separate "dev" filename marker. Development builds use the same
+format; when `--allow-dirty` is used, `-dirty` is appended to the git-SHA
+segment only.
 
 | Component | Example | Purpose |
 |-----------|---------|---------|

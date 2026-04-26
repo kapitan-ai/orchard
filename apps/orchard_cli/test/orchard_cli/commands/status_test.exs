@@ -9,6 +9,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     Map.merge(
       %{
         version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "all"} end,
         endpoint_candidates: fn -> [%{base_url: "http://localhost:4000", ca_certfile: nil}] end,
         request: fn _url, _opts -> {:error, :econnrefused} end
       },
@@ -125,12 +126,122 @@ defmodule OrchardCLI.Commands.StatusTest do
 
     assert {:ok, banner} = Status.run([], runtime)
     assert banner =~ "\u{1F333} Orchard v0.1.0"
+    assert banner =~ "Role:    all"
     assert banner =~ "Console: http://localhost:4000/console"
     assert banner =~ "API:     http://localhost:4000/v1"
     assert banner =~ "Status:  ready"
     assert banner =~ "1 node"
     assert banner =~ "idle"
     assert banner =~ "1 model loaded"
+  end
+
+  test "controller role shows role line and controller status" do
+    runtime =
+      test_runtime(%{
+        read_install_role: fn -> {:ok, "controller"} end,
+        request: fn _url, _opts -> {:ok, ready_response()} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Role:    controller"
+    assert banner =~ "Status:  ready"
+    assert banner =~ "Console: http://localhost:4000/console"
+  end
+
+  test "source-dev fallback probes controller when marker and plists are missing" do
+    runtime =
+      test_runtime(%{
+        read_install_role: fn -> {:error, :enoent} end,
+        file_regular?: fn _path -> false end,
+        request: fn _url, _opts -> {:ok, ready_response()} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Role:    source-dev"
+    assert banner =~ "Status:  ready"
+    assert banner =~ "Console: http://localhost:4000/console"
+  end
+
+  test "source-dev fallback shows offline when controller is unreachable" do
+    runtime =
+      test_runtime(%{
+        read_install_role: fn -> {:error, :enoent} end,
+        file_regular?: fn _path -> false end,
+        request: fn _url, _opts -> {:error, :econnrefused} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Role:    source-dev"
+    assert banner =~ "Status:  offline (controller unreachable)"
+  end
+
+  test "invalid marker returns install error and does not probe controller" do
+    parent = self()
+
+    runtime =
+      test_runtime(%{
+        read_install_role: fn -> {:ok, "bogus"} end,
+        request: fn _url, _opts ->
+          send(parent, :controller_polled)
+          {:ok, ready_response()}
+        end
+      })
+
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid Orchard install role marker"
+    refute_received :controller_polled
+  end
+
+  test "node-agent role reports local launchd state and skips local controller checks" do
+    parent = self()
+
+    runtime =
+      test_runtime(%{
+        read_install_role: fn -> {:ok, "node-agent"} end,
+        cmd: fn prog, args, _opts ->
+          send(parent, {:cmd, prog, args})
+
+          case {prog, args} do
+            {"launchctl", ["print", "system/com.orchard.node-agent"]} ->
+              {"{\n\t\"pid\" : 123;\n}\n", 0}
+
+            _other ->
+              {"Could not find service\n", 113}
+          end
+        end,
+        request: fn _url, _opts ->
+          send(parent, :controller_polled)
+          {:error, :unexpected_poll}
+        end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Role:    node-agent"
+    assert banner =~ "Node Agent: loaded"
+    assert banner =~ "Node Agent Health: not checked"
+    assert banner =~ "Controller: remote/not checked"
+    refute_received :controller_polled
+
+    cmds = collect_cmds()
+
+    assert Enum.any?(cmds, fn {_prog, args} ->
+             args == ["print", "system/com.orchard.node-agent"]
+           end)
+  end
+
+  test "node-agent role surfaces injected local health" do
+    runtime =
+      test_runtime(%{
+        read_install_role: fn -> {:ok, "node-agent"} end,
+        cmd: fn _prog, _args, _opts -> {"Could not find service\n", 113} end,
+        node_agent_health: fn -> {:ok, %{ready: false, health_code: "starting"}} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Role:    node-agent"
+    assert banner =~ "Node Agent: not loaded"
+    assert banner =~ "Node Agent Health: not ready — starting"
+    assert banner =~ "Controller: remote/not checked"
   end
 
   test "ready banner with plural models" do
@@ -666,5 +777,17 @@ defmodule OrchardCLI.Commands.StatusTest do
 
     assert {:ok, banner} = Status.run([], runtime)
     refute banner =~ "License:"
+  end
+
+  defp collect_cmds do
+    collect_cmds([])
+  end
+
+  defp collect_cmds(acc) do
+    receive do
+      {:cmd, prog, args} -> collect_cmds([{prog, args} | acc])
+    after
+      10 -> Enum.reverse(acc)
+    end
   end
 end

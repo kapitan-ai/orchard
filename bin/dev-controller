@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# bin/dev-controller — Source-dev controller role startup for Orchard.
+# Creates/migrates the dev DB, sets the dev gRPC target port, starts Phoenix.
+# Use ORCHARD_RUNTIME_CLIENT_TARGETS for multi-host source-dev clusters.
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$REPO_ROOT"
+
+# Preflight
+[[ -f mix.exs ]] || { echo "error: mix.exs not found in $REPO_ROOT" >&2; exit 1; }
+command -v mix >/dev/null || { echo "error: mix not found on PATH" >&2; exit 1; }
+
+export MIX_ENV=dev
+
+# Resolve dev runtime port (default 50071, avoids packaged BEAM on 50061).
+# Supports both env var names for parity with config/runtime.exs.
+node_port="${ORCHARD_NODE_AGENT_LISTEN_PORT:-}"
+client_port="${ORCHARD_RUNTIME_CLIENT_PORT:-}"
+
+if [[ -z "$node_port" && -z "$client_port" ]]; then
+  resolved_port=50071
+elif [[ -n "$node_port" && -z "$client_port" ]]; then
+  resolved_port="$node_port"
+elif [[ -z "$node_port" && -n "$client_port" ]]; then
+  resolved_port="$client_port"
+elif [[ "$node_port" == "$client_port" ]]; then
+  resolved_port="$node_port"
+else
+  echo "error: port mismatch — ORCHARD_NODE_AGENT_LISTEN_PORT=$node_port vs ORCHARD_RUNTIME_CLIENT_PORT=$client_port" >&2
+  exit 1
+fi
+
+export ORCHARD_NODE_AGENT_LISTEN_PORT="$resolved_port"
+export ORCHARD_RUNTIME_CLIENT_PORT="$resolved_port"
+export ORCHARD_RUNTIME_CLIENT_TARGETS="${ORCHARD_RUNTIME_CLIENT_TARGETS:-127.0.0.1:${resolved_port}}"
+
+# Bootstrap dev database. The controller owns the schema.
+echo "==> Ensuring dev database..."
+mix ecto.create --quiet
+mix ecto.migrate --quiet
+
+# Start the source-dev controller.
+echo "==> Starting Orchard dev controller (role: controller)"
+echo "==> HTTP endpoint: 127.0.0.1:${PORT:-4000}"
+echo "==> Runtime client targets: ${ORCHARD_RUNTIME_CLIENT_TARGETS}"
+cd "$REPO_ROOT/apps/orchard_controller"
+exec iex -S mix phx.server

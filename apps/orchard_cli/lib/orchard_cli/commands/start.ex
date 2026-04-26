@@ -28,33 +28,36 @@ defmodule OrchardCLI.Commands.Start do
 
   defp run_start(runtime) do
     with :ok <- LifecycleSupport.require_root("start", runtime),
-         :ok <- validate_packaged_install(runtime) do
-      start_services(runtime)
+         {:ok, role} <- LifecycleSupport.install_role(runtime),
+         runtime = Map.put(runtime, :install_role, role),
+         :ok <- validate_packaged_install(runtime, role) do
+      start_services(runtime, role)
     end
   end
 
-  defp validate_packaged_install(runtime) do
+  defp validate_packaged_install(runtime, role) do
     case LifecycleSupport.missing_plists(runtime) do
       [] ->
         :ok
 
       missing ->
+        role_name = LifecycleSupport.display_role(role)
         paths = Enum.join(missing, "\n  ")
 
         {:error,
-         "Error: Orchard packaged install not found.\n" <>
-           "Missing plist(s):\n  #{paths}\n\n" <>
+         "Error: Orchard packaged install for role #{role_name} is incomplete.\n" <>
+           "Missing plist(s) for role #{role_name}:\n  #{paths}\n\n" <>
            "orchardctl start/stop manage packaged launchd services only.\n" <>
            "For development, use: bin/dev", 1}
     end
   end
 
-  defp start_services(runtime) do
+  defp start_services(runtime, role) do
     services = LifecycleSupport.services(:start, runtime)
 
     case bootstrap_all(services, runtime, []) do
       {:ok, results} ->
-        poll_and_render(results, runtime)
+        render_start_result(results, runtime, role)
 
       {:error, _msg, _code} = err ->
         err
@@ -80,8 +83,23 @@ defmodule OrchardCLI.Commands.Start do
     end
   end
 
-  defp poll_and_render(results, runtime) do
-    status_runtime = Map.get(runtime, :status_runtime)
+  defp render_start_result(results, _runtime, :node_agent) do
+    preface = format_preface(results, :node_agent)
+
+    {:ok,
+     preface <>
+       "\n\n" <>
+       "Node Agent role: local launchd state updated.\n" <>
+       "Controller: remote/not checked for node-agent role.\n" <>
+       "Run: orchardctl status"}
+  end
+
+  defp render_start_result(results, runtime, role) do
+    poll_and_render(results, runtime, role)
+  end
+
+  defp poll_and_render(results, runtime, role) do
+    status_runtime = status_runtime_with_role(runtime, role)
     timeout_ms = Map.get(runtime, :ready_timeout_ms, @default_ready_timeout_ms)
     poll_ms = Map.get(runtime, :poll_interval_ms, @default_poll_interval_ms)
     monotonic_ms = Map.get(runtime, :monotonic_ms, fn -> System.monotonic_time(:millisecond) end)
@@ -90,7 +108,7 @@ defmodule OrchardCLI.Commands.Start do
     deadline = monotonic_ms.() + timeout_ms
     snap = poll_ready(status_runtime, deadline, poll_ms, monotonic_ms, sleep_fn)
 
-    preface = format_preface(results)
+    preface = format_preface(results, role)
 
     case snap.state do
       :ready ->
@@ -130,15 +148,29 @@ defmodule OrchardCLI.Commands.Start do
     end
   end
 
-  defp format_preface(results) do
+  defp status_runtime_with_role(runtime, role) do
+    status_runtime =
+      case Map.get(runtime, :status_runtime, %{}) do
+        %{} = configured -> configured
+        _other -> %{}
+      end
+
+    Map.put_new(status_runtime, :install_role, role)
+  end
+
+  defp format_preface(results, role) do
     all_already = Enum.all?(results, fn {action, _} -> action == :already_loaded end)
     any_already = Enum.any?(results, fn {action, _} -> action == :already_loaded end)
+    role_line = "\nRole: #{LifecycleSupport.display_role(role)}"
 
-    cond do
-      all_already -> "Orchard services already loaded in launchd."
-      any_already -> "Loaded Orchard services into launchd; some services were already loaded."
-      true -> "Loaded Orchard services into launchd."
-    end
+    message =
+      cond do
+        all_already -> "Orchard services already loaded in launchd."
+        any_already -> "Loaded Orchard services into launchd; some services were already loaded."
+        true -> "Loaded Orchard services into launchd."
+      end
+
+    message <> role_line
   end
 
   defp format_partial_start_note(results) do

@@ -27,6 +27,7 @@ defmodule OrchardCLI.Commands.StopTest do
       %{
         uid: fn -> 0 end,
         services: test_services(),
+        read_install_role: fn -> {:ok, "all"} end,
         file_regular?: fn _path -> true end,
         cmd: fn _prog, _args, _opts -> {"\n", 0} end
       },
@@ -92,13 +93,14 @@ defmodule OrchardCLI.Commands.StopTest do
 
     runtime =
       base_runtime(%{
+        read_install_role: fn -> {:error, :enoent} end,
         file_regular?: fn _path -> false end,
         cmd: not_loaded_cmd(parent)
       })
 
     assert {:error, msg, 1} = Stop.run([], runtime)
     assert msg =~ "packaged install not found"
-    assert msg =~ "bin/dev"
+    assert msg =~ "install role"
   end
 
   test "plists exist but services not loaded shows already stopped" do
@@ -115,6 +117,62 @@ defmodule OrchardCLI.Commands.StopTest do
   end
 
   # ── Successful Stop ──────────────────────────────────────────────────
+
+  test "controller role stops controller only" do
+    parent = self()
+
+    runtime =
+      base_runtime(%{read_install_role: fn -> {:ok, "controller"} end, cmd: loaded_cmd(parent)})
+
+    assert {:ok, msg} = Stop.run([], runtime)
+    assert msg =~ "Stopped Orchard services."
+    assert msg =~ "Role: controller"
+
+    cmds = collect_cmds()
+    bootout_calls = Enum.filter(cmds, fn {_, args} -> match?(["bootout" | _], args) end)
+    assert [{_, ["bootout", target]}] = bootout_calls
+    assert target =~ "controller"
+  end
+
+  test "node-agent role stops node-agent only" do
+    parent = self()
+
+    runtime =
+      base_runtime(%{read_install_role: fn -> {:ok, "node-agent"} end, cmd: loaded_cmd(parent)})
+
+    assert {:ok, msg} = Stop.run([], runtime)
+    assert msg =~ "Stopped Orchard services."
+    assert msg =~ "Role: node-agent"
+
+    cmds = collect_cmds()
+    bootout_calls = Enum.filter(cmds, fn {_, args} -> match?(["bootout" | _], args) end)
+    assert [{_, ["bootout", target]}] = bootout_calls
+    assert target =~ "node-agent"
+  end
+
+  test "node-agent role does not stop postgres when postgres is loaded" do
+    parent = self()
+
+    runtime =
+      base_runtime(%{
+        read_install_role: fn -> {:ok, "node-agent"} end,
+        file_regular?: fn path ->
+          String.ends_with?(path, "com.orchard.postgres.plist") or
+            String.ends_with?(path, "com.orchard.node-agent.plist")
+        end,
+        cmd: loaded_cmd(parent)
+      })
+      |> Map.delete(:services)
+
+    assert {:ok, msg} = Stop.run([], runtime)
+    assert msg =~ "Stopped Orchard services."
+
+    cmds = collect_cmds()
+    bootout_calls = Enum.filter(cmds, fn {_, args} -> match?(["bootout" | _], args) end)
+    assert [{_, ["bootout", target]}] = bootout_calls
+    assert target =~ "node-agent"
+    refute target =~ "postgres"
+  end
 
   test "stops services in reverse order: controller then node-agent" do
     parent = self()
@@ -157,7 +215,7 @@ defmodule OrchardCLI.Commands.StopTest do
     assert length(bootout_calls) == 1
   end
 
-  test "includes managed postgres last on start, first on stop when installed" do
+  test "ignores stale managed postgres when stopping" do
     parent = self()
     postgres_label = "com.orchard.postgres"
     ctrl_label = "com.orchard.controller"
@@ -193,13 +251,15 @@ defmodule OrchardCLI.Commands.StopTest do
 
     assert [
              {_, ["bootout", controller_target]},
-             {_, ["bootout", node_agent_target]},
-             {_, ["bootout", postgres_target]}
+             {_, ["bootout", node_agent_target]}
            ] = bootout_calls
 
     assert controller_target =~ "controller"
     assert node_agent_target =~ "node-agent"
-    assert postgres_target =~ "postgres"
+
+    refute Enum.any?(cmds, fn {_prog, args} ->
+             args == ["print", "system/com.orchard.postgres"]
+           end)
   end
 
   # ── Bootout Failure ──────────────────────────────────────────────────

@@ -150,7 +150,7 @@ if lsof -ti :4000 >/dev/null 2>&1 || lsof -ti :50071 >/dev/null 2>&1; then
 fi
 
 # Get version info using Mix (reliable extraction)
-APP_VERSION=$(mix run -e 'IO.puts(Mix.Project.config()[:version])' 2>/dev/null | tail -1)
+APP_VERSION=$(mix run --no-start -e 'IO.puts(Mix.Project.config()[:version])' 2>/dev/null | tail -1)
 if [[ -z "$APP_VERSION" ]] || [[ "$APP_VERSION" == *" "* ]]; then
     log_error "Failed to extract version from mix.exs"
     log_error "Ensure mix is available and project compiles"

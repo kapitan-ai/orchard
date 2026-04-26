@@ -24,8 +24,10 @@ defmodule OrchardCLI.Commands.Stop do
 
   defp run_stop(runtime) do
     with :ok <- LifecycleSupport.require_root("stop", runtime),
+         {:ok, role} <- LifecycleSupport.install_role(runtime),
+         runtime = Map.put(runtime, :install_role, role),
          :ok <- validate_packaged_context(runtime) do
-      stop_services(runtime)
+      stop_services(runtime, role)
     end
   end
 
@@ -43,12 +45,12 @@ defmodule OrchardCLI.Commands.Stop do
     end
   end
 
-  defp stop_services(runtime) do
+  defp stop_services(runtime, role) do
     services = LifecycleSupport.services(:stop, runtime)
 
     case bootout_all(services, runtime, []) do
       {:ok, results} ->
-        {:ok, format_result(results)}
+        {:ok, format_result(results, role)}
 
       {:error, _msg, _code} = err ->
         err
@@ -77,15 +79,19 @@ defmodule OrchardCLI.Commands.Stop do
     end
   end
 
-  defp format_result(results) do
+  defp format_result(results, role) do
     all_already = Enum.all?(results, fn {action, _} -> action == :already_stopped end)
     any_already = Enum.any?(results, fn {action, _} -> action == :already_stopped end)
+    role_line = "\nRole: #{LifecycleSupport.display_role(role)}"
 
-    cond do
-      all_already -> "Orchard services are already stopped."
-      any_already -> "Stopped Orchard services; some services were already stopped."
-      true -> "Stopped Orchard services."
-    end
+    message =
+      cond do
+        all_already -> "Orchard services are already stopped."
+        any_already -> "Stopped Orchard services; some services were already stopped."
+        true -> "Stopped Orchard services."
+      end
+
+    message <> role_line
   end
 
   # ── Default Runtime ──────────────────────────────────────────────────

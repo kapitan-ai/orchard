@@ -46,6 +46,7 @@ erl_crash.dump
 
 # Pi
 .pi/
+/prompt-exports/
 
 # ex_dna cache
 .ex_dna_cache

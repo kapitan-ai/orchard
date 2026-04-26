@@ -1,7 +1,7 @@
 defmodule OrchardCLI.Commands.StartTest do
   use ExUnit.Case, async: true
 
-  alias OrchardCLI.Commands.Start
+  alias OrchardCLI.Commands.{LifecycleSupport, Start}
 
   # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -27,6 +27,7 @@ defmodule OrchardCLI.Commands.StartTest do
       %{
         uid: fn -> 0 end,
         services: test_services(),
+        read_install_role: fn -> {:ok, "all"} end,
         file_regular?: fn _path -> true end,
         cmd: fn _prog, _args, _opts -> {"\n", 0} end,
         monotonic_ms: fn -> 0 end,
@@ -113,13 +114,171 @@ defmodule OrchardCLI.Commands.StartTest do
 
   test "missing plists returns packaged-install error" do
     parent = self()
-    runtime = base_runtime(%{file_regular?: fn _path -> false end, cmd: not_loaded_cmd(parent)})
+
+    runtime =
+      base_runtime(%{
+        read_install_role: fn -> {:error, :enoent} end,
+        file_regular?: fn _path -> false end,
+        cmd: not_loaded_cmd(parent)
+      })
+
     assert {:error, msg, 1} = Start.run([], runtime)
     assert msg =~ "packaged install not found"
+    assert msg =~ "install role"
+  end
+
+  test "missing role-specific plist names the active role" do
+    parent = self()
+
+    runtime =
+      base_runtime(%{
+        read_install_role: fn -> {:ok, "controller\n"} end,
+        file_regular?: fn _path -> false end,
+        cmd: not_loaded_cmd(parent)
+      })
+
+    assert {:error, msg, 1} = Start.run([], runtime)
+    assert msg =~ "role controller"
+    assert msg =~ "/tmp/test-controller.plist"
+    refute msg =~ "/tmp/test-node-agent.plist"
     assert msg =~ "bin/dev"
   end
 
+  test "controller role filters start services to controller only" do
+    runtime =
+      %{
+        read_install_role: fn -> {:ok, "controller"} end,
+        file_regular?: fn path ->
+          String.ends_with?(path, "com.orchard.postgres.plist") or
+            String.ends_with?(path, "com.orchard.controller.plist")
+        end,
+        cmd: fn _prog, _args, _opts -> {"Could not find service\n", 113} end
+      }
+
+    services = LifecycleSupport.services(:start, runtime)
+    assert Enum.map(services, & &1.id) == [:controller]
+    refute Enum.any?(services, &(&1.id == :node_agent))
+  end
+
+  test "lone stale postgres plist is not treated as packaged context" do
+    postgres = %{
+      id: :postgres,
+      label: "com.orchard.postgres",
+      plist_path: "/tmp/test-postgres.plist",
+      display_name: "Managed Postgres"
+    }
+
+    runtime =
+      base_runtime(%{
+        services: [postgres],
+        read_install_role: fn -> {:ok, "all"} end,
+        file_regular?: fn _path -> true end
+      })
+
+    refute LifecycleSupport.any_plist_exists?(runtime)
+    assert LifecycleSupport.services(:start, runtime) == []
+  end
+
+  test "node-agent role filters start services to node-agent only" do
+    runtime = base_runtime(%{read_install_role: fn -> {:ok, "node-agent"} end})
+
+    services = LifecycleSupport.services(:start, runtime)
+    assert Enum.map(services, & &1.id) == [:node_agent]
+    refute Enum.any?(services, &(&1.id == :controller))
+  end
+
+  test "node-agent role excludes postgres even when postgres plist is installed" do
+    runtime =
+      base_runtime(%{
+        read_install_role: fn -> {:ok, "node-agent"} end,
+        file_regular?: fn path ->
+          String.ends_with?(path, "com.orchard.postgres.plist") or
+            String.ends_with?(path, "com.orchard.node-agent.plist")
+        end,
+        cmd: fn _prog, _args, _opts -> {"Could not find service\n", 113} end
+      })
+      |> Map.delete(:services)
+
+    services = LifecycleSupport.services(:start, runtime)
+    assert Enum.map(services, & &1.id) == [:node_agent]
+    refute Enum.any?(services, &(&1.id == :postgres))
+  end
+
+  test "missing marker falls back to plist inference for all role" do
+    runtime =
+      base_runtime(%{
+        read_install_role: fn -> {:error, :enoent} end,
+        file_regular?: fn path ->
+          path in ["/tmp/test-node-agent.plist", "/tmp/test-controller.plist"]
+        end
+      })
+
+    assert {:ok, :all} = LifecycleSupport.install_role(runtime)
+  end
+
+  test "invalid marker returns actionable error" do
+    runtime =
+      base_runtime(%{
+        read_install_role: fn -> {:ok, "bogus"} end,
+        file_regular?: fn path -> path == "/tmp/test-controller.plist" end
+      })
+
+    assert {:error, msg, 1} = LifecycleSupport.install_role(runtime)
+    assert msg =~ "invalid Orchard install role marker"
+    assert msg =~ "Expected one of: all, controller, node-agent"
+    assert msg =~ ~s(Found: "bogus")
+  end
+
+  test "missing marker falls back to plist inference for controller role" do
+    runtime =
+      base_runtime(%{
+        read_install_role: fn -> {:error, :enoent} end,
+        file_regular?: fn path -> path == "/tmp/test-controller.plist" end
+      })
+
+    assert {:ok, :controller} = LifecycleSupport.install_role(runtime)
+  end
+
+  test "missing marker falls back to plist inference for node-agent role" do
+    runtime =
+      base_runtime(%{
+        read_install_role: fn -> {:error, :enoent} end,
+        file_regular?: fn path -> path == "/tmp/test-node-agent.plist" end
+      })
+
+    assert {:ok, :node_agent} = LifecycleSupport.install_role(runtime)
+  end
+
   # ── Successful Start ─────────────────────────────────────────────────
+
+  test "node-agent role starts without polling controller readiness" do
+    parent = self()
+
+    runtime =
+      base_runtime(%{
+        read_install_role: fn -> {:ok, "node-agent"} end,
+        cmd: not_loaded_cmd(parent),
+        status_runtime: %{
+          version: fn -> "0.1.0" end,
+          endpoint_candidates: fn -> [%{base_url: "http://localhost:4000", ca_certfile: nil}] end,
+          request: fn _url, _opts ->
+            send(parent, :controller_polled)
+            {:error, :unexpected_poll}
+          end
+        }
+      })
+
+    assert {:ok, banner} = Start.run([], runtime)
+    assert banner =~ "Loaded Orchard services into launchd."
+    assert banner =~ "Role: node-agent"
+    assert banner =~ "Controller: remote/not checked"
+    refute_received :controller_polled
+
+    cmds = collect_cmds()
+    bootstrap_calls = Enum.filter(cmds, fn {_, args} -> match?(["bootstrap" | _], args) end)
+    assert [{_, ["bootstrap", "system", plist]}] = bootstrap_calls
+    assert plist =~ "node-agent"
+  end
 
   test "starts services in order: node-agent then controller" do
     parent = self()
@@ -155,7 +314,7 @@ defmodule OrchardCLI.Commands.StartTest do
     assert bootstrap_calls == []
   end
 
-  test "includes managed postgres first when its plist is installed" do
+  test "ignores stale managed postgres plist when starting" do
     parent = self()
 
     runtime =
@@ -199,17 +358,16 @@ defmodule OrchardCLI.Commands.StartTest do
     bootstrap_calls = Enum.filter(cmds, fn {_, args} -> match?(["bootstrap" | _], args) end)
 
     assert [
-             {_, ["bootstrap", "system", postgres_plist]},
              {_, ["bootstrap", "system", node_agent_plist]},
              {_, ["bootstrap", "system", controller_plist]}
            ] = bootstrap_calls
 
-    assert postgres_plist =~ "postgres"
     assert node_agent_plist =~ "node-agent"
     assert controller_plist =~ "controller"
+    refute Enum.any?(bootstrap_calls, fn {_, [_, _, plist]} -> plist =~ "postgres" end)
   end
 
-  test "already-loaded optional postgres does not fail validation when plist is missing" do
+  test "already-loaded stale postgres is ignored when plist is missing" do
     parent = self()
     postgres_label = "com.orchard.postgres"
 
@@ -240,6 +398,10 @@ defmodule OrchardCLI.Commands.StartTest do
     cmds = collect_cmds()
     bootstrap_calls = Enum.filter(cmds, fn {_, args} -> match?(["bootstrap" | _], args) end)
     assert length(bootstrap_calls) == 2
+
+    refute Enum.any?(cmds, fn {_prog, args} ->
+             args == ["print", "system/com.orchard.postgres"]
+           end)
   end
 
   test "partial loaded: only missing service gets bootstrapped" do
@@ -482,7 +644,7 @@ defmodule OrchardCLI.Commands.StartTest do
     refute msg =~ "Node Agent was loaded into launchd but not rolled back"
   end
 
-  test "multi-service partial failure preserves start order and pluralizes note" do
+  test "partial failure ignores stale postgres and preserves start order" do
     parent = self()
 
     runtime =
@@ -522,8 +684,8 @@ defmodule OrchardCLI.Commands.StartTest do
       }
 
     assert {:error, msg, 1} = Start.run([], runtime)
-    assert msg =~ "Managed Postgres, Node Agent were loaded into launchd but not rolled back"
-    refute msg =~ "Node Agent, Managed Postgres"
+    assert msg =~ "Node Agent was loaded into launchd but not rolled back"
+    refute msg =~ "Managed Postgres"
   end
 
   # ── Helper ───────────────────────────────────────────────────────────

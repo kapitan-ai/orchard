@@ -134,6 +134,9 @@ This single command creates the dev database if needed, runs migrations, sets
 the dev gRPC port to 50071 (avoiding conflict with the packaged BEAM on 50061),
 and starts `iex -S mix phx.server`.
 
+For source-dev cluster roles, use `bin/dev-controller` for the Phoenix/controller
+host and `bin/dev-node-agent` for a node-agent-only worker host.
+
 When to bypass `bin/dev`:
 - `iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
 - `iex -S mix phx.server` — manual server start with custom env vars

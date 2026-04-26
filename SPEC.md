@@ -2193,7 +2193,7 @@ Runtime prefix-cache wire semantics:
 * score-RPC collection SHALL be default-off behind `orchard_controller.inference.prefix_cache_scoring.enabled` (default `false`).
 * when both `prefix_cache_scoring.enabled=true` and `cache_introspection.enabled=true`, the controller MAY persist only sanitized flat `selected_prefix_cache_score_*` scalars for the selected candidate; for non-`ok` score status only bounded status/tier/source diagnostics MAY persist.
 * when `cache_introspection.enabled=true`, the controller SHALL persist only sanitized flat `selected_prefix_cache_*` scalars for the selected candidate and SHALL NOT persist the raw nested `prefix_cache_status` map; non-`ok` statuses SHALL persist only status code and enabled flag
-* this Phase 4B/4C/4D contract is traceable to `orchard-workbench/plans/plan-mlx-phase4-worker-prefix-cache-introspection.md`, `orchard-workbench/plans/plan-mlx-phase4c-bounded-hmac-fingerprint-publication.md`, and `orchard-workbench/plans/plan-mlx-phase4d-score-prefix-cache-rpc.md`
+* this Phase 4B/4C/4D contract is traceable to the Phase 4 worker-prefix-cache introspection, bounded HMAC fingerprint publication, and score prefix-cache RPC planning artifacts
 
 #### 7.5.4 Node registration flow
 
