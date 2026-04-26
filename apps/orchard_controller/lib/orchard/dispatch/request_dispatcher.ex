@@ -23,6 +23,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: DefaultClient
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
+  alias Orchard.SentryContext
 
   require Logger
 
@@ -34,6 +35,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
               model_id: "unknown",
               version: "unknown",
               input_tokens: 0,
+              node_id: nil,
+              scheduler_strategy: nil,
               model_already_loaded: :unknown,
               ensure_model_loaded_ms: :na,
               accepted_monotonic_ms: nil,
@@ -53,6 +56,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             model_id: String.t(),
             version: String.t(),
             input_tokens: non_neg_integer(),
+            node_id: String.t() | nil,
+            scheduler_strategy: atom() | String.t() | nil,
             model_already_loaded: boolean() | :unknown,
             ensure_model_loaded_ms: non_neg_integer() | :na,
             accepted_monotonic_ms: integer() | nil,
@@ -75,6 +80,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         model_id: Keyword.get(opts, :model_id, "unknown"),
         version: Keyword.get(opts, :version, "unknown"),
         input_tokens: Keyword.get(opts, :input_tokens, 0),
+        node_id: Keyword.get(opts, :node_id),
+        scheduler_strategy: Keyword.get(opts, :scheduler_strategy),
         model_already_loaded: :unknown,
         ensure_model_loaded_ms: :na,
         accepted_monotonic_ms: nil,
@@ -152,25 +159,29 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         request_id: request_id,
         model_id: model_load_request.model_id,
         version: model_load_request.version,
-        input_tokens: execute_request.input_tokens
+        input_tokens: execute_request.input_tokens,
+        scheduler_strategy: Map.get(schedule, :strategy)
       )
+
+    put_dispatch_base_context(metrics)
 
     case client.connect(target) do
       {:ok, channel} ->
         try do
           # Pre-dispatch status probe: resolve node identity, persist observation,
           # and patch the model load request with the discovered node_id.
-          model_load_request =
+          {model_load_request, metrics} =
             probe_and_resolve_node(
               client,
               channel,
               target,
               model_load_request,
-              on_node_resolved
+              on_node_resolved,
+              metrics
             )
 
-          # Measure ensure_model_loaded duration
           ensure_start = System.monotonic_time(:millisecond)
+          put_ensure_model_load_started_context(metrics)
 
           case do_ensure_model_loaded(
                  client,
@@ -188,6 +199,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
                   model_already_loaded: ensure_load_meta.already_loaded
               }
 
+              put_ensure_model_load_completed_context(metrics)
+
               result =
                 do_execute_and_stream(
                   client,
@@ -203,11 +216,15 @@ defmodule Orchard.Dispatch.RequestDispatcher do
               # Public API returns {:ok, events} - discard metrics from return value
               case result do
                 {:ok, events, final_metrics} ->
+                  final_metrics = finalize_metrics(final_metrics, :ok)
+                  put_dispatch_terminal_context(final_metrics, target)
                   emit_timing_log(final_metrics, :ok)
                   {:ok, events}
 
                 {:error, reason} ->
-                  emit_timing_log(metrics, {:error, reason})
+                  error_metrics = finalize_metrics(metrics, {:error, reason})
+                  put_dispatch_terminal_context(error_metrics, target)
+                  emit_timing_log(error_metrics, {:error, reason})
                   {:error, reason}
               end
 
@@ -220,7 +237,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
                   model_already_loaded: false
               }
 
-              emit_timing_log(metrics, {:error, {:model_load_failed, reason}})
+              error_metrics = finalize_metrics(metrics, {:error, {:model_load_failed, reason}})
+              put_dispatch_terminal_context(error_metrics, target)
+              emit_timing_log(error_metrics, {:error, {:model_load_failed, reason}})
               {:error, {:model_load_failed, reason}}
           end
         after
@@ -229,7 +248,12 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
       {:error, {:connect_failed, _reason} = reason} ->
         mark_transport_failure(target, reason)
-        emit_timing_log(metrics, {:error, {:model_load_failed, :node_unavailable}})
+
+        error_metrics =
+          finalize_metrics(metrics, {:error, {:model_load_failed, :node_unavailable}})
+
+        put_dispatch_terminal_context(error_metrics, target)
+        emit_timing_log(error_metrics, {:error, {:model_load_failed, :node_unavailable}})
         {:error, {:model_load_failed, ModelLoadFailure.from_transport_reason(:node_unavailable)}}
     end
   end
@@ -238,7 +262,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   # Pre-dispatch status probe: best-effort node identity resolution.
   # Never aborts dispatch on failure.
-  defp probe_and_resolve_node(client, channel, target, model_load_request, on_node_resolved) do
+  defp probe_and_resolve_node(
+         client,
+         channel,
+         target,
+         model_load_request,
+         on_node_resolved,
+         metrics
+       ) do
     case client.status(channel, timeout: @status_probe_timeout_ms) do
       {:ok, response} ->
         # Best-effort persistence
@@ -255,22 +286,24 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         case extract_node_id(response) do
           {:ok, node_id} ->
             invoke_callback_safe(on_node_resolved, node_id)
-            %{model_load_request | node_id: node_id}
+            metrics = %{metrics | node_id: node_id}
+            put_node_resolved_context(metrics, target)
+            {%{model_load_request | node_id: node_id}, metrics}
 
           :error ->
-            model_load_request
+            {model_load_request, metrics}
         end
 
       {:error, reason} ->
         # Probe failure is non-fatal, but we still record transport reachability
         # best-effort for node health.
         mark_transport_failure(target, reason)
-        model_load_request
+        {model_load_request, metrics}
     end
   rescue
     error ->
       Logger.warning("Status probe failed unexpectedly: #{inspect(error)}")
-      model_load_request
+      {model_load_request, metrics}
   end
 
   defp extract_node_id(%{node_metadata: %{node_id: node_id}}) when is_binary(node_id) do
@@ -374,6 +407,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             {:ok, Enum.reverse(events), metrics}
 
           cancelled_by_handler?(handler_result) ->
+            put_cancel_sent_context(metrics, :client_disconnect)
             _ = client.cancel_inference(channel, request_id)
 
             drain_until_terminal_or_done(
@@ -414,10 +448,12 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         end
 
       {:dispatch_timeout, ^timer_ref} ->
+        put_cancel_sent_context(metrics, :timeout)
         _ = client.cancel_inference(channel, request_id)
         drain_until_terminal_or_done(%{loop_ctx | metrics: metrics}, events, :timeout)
 
       {:DOWN, ^caller_ref, :process, _pid, _reason} ->
+        put_cancel_sent_context(metrics, :caller_disconnect)
         _ = client.cancel_inference(channel, request_id)
         drain_until_terminal_or_done(%{loop_ctx | metrics: metrics}, events, :caller_disconnect)
     end
@@ -458,6 +494,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
           |> increment_event_count()
           |> update_metrics_for_terminal(timeout_event, :synthesized)
 
+        put_terminal_synthesized_context(metrics, cancel_reason)
+
         {:ok, Enum.reverse([timeout_event | events]), metrics}
     after
       5_000 ->
@@ -476,6 +514,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
           metrics
           |> increment_event_count()
           |> update_metrics_for_terminal(timeout_event, :synthesized)
+
+        put_terminal_synthesized_context(metrics, cancel_reason)
 
         {:ok, Enum.reverse([timeout_event | events]), metrics}
     end
@@ -517,6 +557,120 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     Process.demonitor(caller_ref, [:flush])
   end
 
+  defp put_dispatch_base_context(%Metrics{} = metrics) do
+    if SentryContext.controller_enabled?() do
+      metrics
+      |> SentryContext.build_dispatch_tags(scheduler_strategy: metrics.scheduler_strategy)
+      |> SentryContext.put_tags()
+    end
+  end
+
+  defp put_node_resolved_context(%Metrics{} = metrics, target) do
+    if SentryContext.controller_enabled?() do
+      metrics
+      |> SentryContext.build_dispatch_extra(dispatch_context_opts(metrics, target))
+      |> SentryContext.put_extra()
+
+      put_dispatch_breadcrumb("node.resolved", :info, %{
+        node_hash: SentryContext.hash_id(metrics.node_id),
+        scheduler_strategy: metrics.scheduler_strategy,
+        target_host_sanitized: "[redacted]"
+      })
+    end
+  end
+
+  defp put_ensure_model_load_started_context(%Metrics{} = metrics) do
+    put_dispatch_breadcrumb("ensure_model_load.started", :info, model_context_data(metrics))
+  end
+
+  defp put_ensure_model_load_completed_context(%Metrics{} = metrics) do
+    data =
+      metrics
+      |> model_context_data()
+      |> Map.merge(%{
+        already_loaded: metrics.model_already_loaded,
+        ensure_model_loaded_ms: metrics.ensure_model_loaded_ms
+      })
+
+    put_dispatch_breadcrumb("ensure_model_load.completed", :info, data)
+  end
+
+  defp put_first_delta_context(%Metrics{} = metrics) do
+    data =
+      metrics
+      |> model_context_data()
+      |> Map.put(:accepted_to_first_delta_ms, metrics.accepted_to_first_delta_ms)
+
+    put_dispatch_breadcrumb("first_delta.received", :info, data)
+  end
+
+  defp put_cancel_sent_context(%Metrics{} = metrics, reason) do
+    data =
+      metrics
+      |> model_context_data()
+      |> Map.put(:reason, reason)
+
+    put_dispatch_breadcrumb("cancel.sent", :warning, data)
+  end
+
+  defp put_terminal_synthesized_context(%Metrics{} = metrics, reason) do
+    data =
+      metrics
+      |> model_context_data()
+      |> Map.merge(%{reason: reason, terminal_source: :synthesized})
+
+    put_dispatch_breadcrumb("terminal.synthesized", :warning, data)
+  end
+
+  defp put_dispatch_terminal_context(%Metrics{} = metrics, target) do
+    if SentryContext.controller_enabled?() do
+      metrics
+      |> SentryContext.build_dispatch_extra(dispatch_context_opts(metrics, target))
+      |> SentryContext.put_extra()
+
+      metrics
+      |> SentryContext.build_dispatch_tags(scheduler_strategy: metrics.scheduler_strategy)
+      |> SentryContext.put_tags()
+    end
+  end
+
+  defp put_dispatch_breadcrumb(message, level, data) do
+    if SentryContext.controller_enabled?() do
+      SentryContext.add_breadcrumb(
+        category: "orchard.dispatch",
+        message: message,
+        level: level,
+        data: compact_nil_values(data)
+      )
+    end
+  end
+
+  defp dispatch_context_opts(%Metrics{} = metrics, target) do
+    [
+      node_id: metrics.node_id,
+      scheduler_strategy: metrics.scheduler_strategy,
+      target_host: target_host(target)
+    ]
+  end
+
+  defp model_context_data(%Metrics{} = metrics) do
+    %{
+      node_hash: SentryContext.hash_id(metrics.node_id),
+      model_id: metrics.model_id,
+      model_version: metrics.version,
+      scheduler_strategy: metrics.scheduler_strategy
+    }
+    |> compact_nil_values()
+  end
+
+  defp target_host(target) when is_list(target), do: Keyword.get(target, :host)
+  defp target_host(%{} = target), do: Map.get(target, :host) || Map.get(target, "host")
+  defp target_host(_target), do: nil
+
+  defp compact_nil_values(map) do
+    Map.reject(map, fn {_key, value} -> is_nil(value) end)
+  end
+
   # -- Metrics tracking -----------------------------------------------------
 
   # Update metrics based on the event type.
@@ -546,21 +700,25 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   # Track first OutputTextDelta (measures time from accepted to first output)
   defp track_first_delta(
          %Metrics{first_delta_monotonic_ms: nil} = metrics,
-         %InferenceEvent{event: %InferenceEvent.OutputTextDelta{}} = _event
-       ) do
+         %InferenceEvent{event: %InferenceEvent.OutputTextDelta{delta: delta}}
+       )
+       when delta != "" do
     now_ms = System.monotonic_time(:millisecond)
     metrics = %{metrics | first_delta_monotonic_ms: now_ms}
 
-    # Compute accepted_to_first_delta_ms if we have accepted timestamp
-    case metrics.accepted_monotonic_ms do
-      nil ->
-        if metrics.anomaly == :none,
-          do: %{metrics | anomaly: :delta_before_accepted},
-          else: metrics
+    metrics =
+      case metrics.accepted_monotonic_ms do
+        nil ->
+          if metrics.anomaly == :none,
+            do: %{metrics | anomaly: :delta_before_accepted},
+            else: metrics
 
-      accepted_ms ->
-        %{metrics | accepted_to_first_delta_ms: now_ms - accepted_ms}
-    end
+        accepted_ms ->
+          %{metrics | accepted_to_first_delta_ms: now_ms - accepted_ms}
+      end
+
+    put_first_delta_context(metrics)
+    metrics
   end
 
   defp track_first_delta(metrics, _event), do: metrics

@@ -18,6 +18,7 @@ defmodule Orchard.API.ChatCompletionsController do
   alias Orchard.API.{InferenceControllerSupport, SSE}
   alias Orchard.Inference.{ChatError, ChatOrchestrator, ChatResponseSerializer}
   alias Orchard.InferenceEvent
+  alias Orchard.SentryContext
 
   @spec create(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def create(conn, params) do
@@ -101,6 +102,14 @@ defmodule Orchard.API.ChatCompletionsController do
   # -- Streaming (SSE) response ----------------------------------------------
 
   defp handle_streaming(conn, canonical, model, idempotency) do
+    case do_handle_streaming(conn, canonical, model, idempotency) do
+      result ->
+        SentryContext.clear_all()
+        result
+    end
+  end
+
+  defp do_handle_streaming(conn, canonical, model, idempotency) do
     case SSE.start(conn) do
       {:ok, conn} ->
         stream_completion(conn, canonical, model, idempotency)

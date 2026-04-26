@@ -29,6 +29,8 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.ModelManifest.Tokenizer
   alias Orchard.Node
   alias Orchard.Node.ModelManager
+  alias Orchard.Node.RuntimeServer
+  alias Orchard.Node.SentryTelemetryBridge
   alias Orchard.Node.SharedContract
   alias Orchard.Node.Status, as: NodeStatus
   alias Orchard.Node.Supervisor, as: NodeSupervisor
@@ -898,6 +900,9 @@ defmodule OrchardNodeAgentTest do
   end
 
   setup do
+    previous_sentry_enrichment = Application.get_env(:orchard_shared, :sentry_enrichment)
+    clear_sentry_context()
+
     :ok = NodeStatus.reset()
     wait_until(fn -> worker_count() == 0 end)
 
@@ -910,6 +915,8 @@ defmodule OrchardNodeAgentTest do
     Process.register(self(), :load_timeout_test_pid)
 
     on_exit(fn ->
+      restore_sentry_enrichment(previous_sentry_enrichment)
+      clear_sentry_context()
       File.rm_rf(bundle.cache_path)
       File.rm_rf(bundle.source_path)
       File.rm_rf(Path.join(Node.models_root(), ".staging"))
@@ -922,6 +929,140 @@ defmodule OrchardNodeAgentTest do
     vsn = Application.spec(:orchard_node_agent, :vsn)
     expected = if is_list(vsn), do: List.to_string(vsn), else: to_string(vsn)
     assert Orchard.NodeAgent.version() == expected
+  end
+
+  describe "Sentry telemetry bridge" do
+    test "maps only whitelisted lifecycle telemetry to breadcrumbs" do
+      assert {:ok, breadcrumb} =
+               SentryTelemetryBridge.breadcrumb_for_event(
+                 [:orchard, :node, :model_manager, :load, :exception],
+                 %{duration_ms: 12},
+                 %{
+                   model_id: @test_model_id,
+                   version: @test_version,
+                   reason: :worker_unavailable,
+                   rpc_result: {:error, "/tmp/private/token-secret"},
+                   source_url: "https://example.invalid/private",
+                   path: "/tmp/private"
+                 }
+               )
+
+      assert breadcrumb[:category] == "orchard.node.model_manager.load"
+      assert breadcrumb[:message] == "model_manager.load.exception"
+      assert breadcrumb[:level] == :warning
+      assert breadcrumb[:data].duration_ms == 12
+      assert breadcrumb[:data].model_id == @test_model_id
+      assert breadcrumb[:data].reason == "worker_unavailable"
+      assert breadcrumb[:data].rpc_result == "error"
+      refute Map.has_key?(breadcrumb[:data], :source_url)
+      refute Map.has_key?(breadcrumb[:data], :path)
+
+      assert :ignore =
+               SentryTelemetryBridge.breadcrumb_for_event(
+                 [:orchard, :node, :model_acquisition, :progress],
+                 %{},
+                 %{path: "/tmp/private"}
+               )
+    end
+
+    test "sanitizes non-allowlisted telemetry reasons" do
+      assert {:ok, breadcrumb} =
+               SentryTelemetryBridge.breadcrumb_for_event(
+                 [:orchard, :node, :model_manager, :load, :exception],
+                 %{duration_ms: 12},
+                 %{
+                   model_id: String.duplicate("a", 140),
+                   version: @test_version,
+                   reason: {:error, "/tmp/private?token=secret"},
+                   rpc_result: "https://example.invalid/private?token=secret",
+                   stop_result: {:error, "/tmp/private?token=secret"},
+                   cancel_reason: "private-token-secret"
+                 }
+               )
+
+      assert breadcrumb[:level] == :error
+      assert breadcrumb[:data].reason == "unexpected_error"
+      assert breadcrumb[:data].rpc_result == "[redacted]"
+      assert breadcrumb[:data].stop_result == "error"
+      assert breadcrumb[:data].cancel_reason == "unexpected_cancel"
+      refute inspect(breadcrumb[:data]) =~ "/tmp/private"
+      refute inspect(breadcrumb[:data]) =~ "example.invalid"
+      assert String.ends_with?(breadcrumb[:data].model_id, "...")
+      assert byte_size(breadcrumb[:data].model_id) < 140
+    end
+
+    test "handler records breadcrumbs only when node telemetry enrichment and request context are enabled" do
+      Application.put_env(:orchard_shared, :sentry_enrichment,
+        enabled?: true,
+        node_agent_enabled?: true,
+        telemetry_breadcrumbs_enabled?: true
+      )
+
+      Sentry.Context.set_extra_context(%{orchard_request_id: "req_node"})
+
+      SentryTelemetryBridge.handle_event(
+        [:orchard, :node, :worker_runtime, :load, :start],
+        %{system_time: System.system_time()},
+        %{model_id: @test_model_id, version: @test_version, backend: "stub"},
+        nil
+      )
+
+      assert [%{message: "worker_runtime.load.start", data: data}] =
+               Sentry.Context.get_all().breadcrumbs
+
+      assert data.model_id == @test_model_id
+      assert data.version == @test_version
+      assert data.backend == "stub"
+    end
+
+    test "handler skips breadcrumbs when enrichment flags or request context are absent" do
+      for config <- [
+            [enabled?: false, node_agent_enabled?: true, telemetry_breadcrumbs_enabled?: true],
+            [enabled?: true, node_agent_enabled?: false, telemetry_breadcrumbs_enabled?: true],
+            [enabled?: true, node_agent_enabled?: true, telemetry_breadcrumbs_enabled?: false],
+            [enabled?: true, node_agent_enabled?: true, telemetry_breadcrumbs_enabled?: true]
+          ] do
+        clear_sentry_context()
+        Application.put_env(:orchard_shared, :sentry_enrichment, config)
+
+        SentryTelemetryBridge.handle_event(
+          [:orchard, :node, :worker_runtime, :load, :start],
+          %{system_time: System.system_time()},
+          %{model_id: @test_model_id, version: @test_version, backend: "stub"},
+          nil
+        )
+
+        assert Sentry.Context.get_all().breadcrumbs == []
+      end
+    end
+
+    test "handler drops manager telemetry without request-scoped context by design" do
+      Application.put_env(:orchard_shared, :sentry_enrichment,
+        enabled?: true,
+        node_agent_enabled?: true,
+        telemetry_breadcrumbs_enabled?: true
+      )
+
+      SentryTelemetryBridge.handle_event(
+        [:orchard, :node, :model_manager, :load, :stop],
+        %{duration_ms: 5},
+        %{model_id: @test_model_id, version: @test_version, outcome: :ok},
+        nil
+      )
+
+      assert Sentry.Context.get_all().breadcrumbs == []
+    end
+  end
+
+  describe "runtime server Sentry context" do
+    test "prepare_request failure reason code never exposes raw terms" do
+      assert RuntimeServer.safe_failure_reason_code(:model_busy) == "model_busy"
+      assert RuntimeServer.safe_failure_reason_code("worker-unavailable") == "worker_unavailable"
+      assert RuntimeServer.safe_failure_reason_code(:not_allowlisted) == "runtime_error"
+
+      assert RuntimeServer.safe_failure_reason_code({:error, "/tmp/private?token=secret"}) ==
+               "runtime_error"
+    end
   end
 
   test "node supervisor is already part of the started application tree" do
@@ -3628,4 +3769,16 @@ defmodule OrchardNodeAgentTest do
     assert matching == [],
            "Expected no #{inspect(event_name)} events, got #{length(matching)}: #{inspect(matching)}"
   end
+
+  defp clear_sentry_context do
+    if Code.ensure_loaded?(Sentry.Context) do
+      Sentry.Context.clear_all()
+    end
+  end
+
+  defp restore_sentry_enrichment(nil),
+    do: Application.delete_env(:orchard_shared, :sentry_enrichment)
+
+  defp restore_sentry_enrichment(config),
+    do: Application.put_env(:orchard_shared, :sentry_enrichment, config)
 end

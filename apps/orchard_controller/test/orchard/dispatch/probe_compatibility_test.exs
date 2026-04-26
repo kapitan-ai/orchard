@@ -81,6 +81,8 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
   use Orchard.DataCase, async: false
 
+  import Orchard.TestSupport.SentryContextHelpers
+
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
     EnsureModelLoadedResponse,
@@ -93,6 +95,8 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   @valid_uuid "550e8400-e29b-41d4-a716-446655440000"
   @other_uuid "660f9511-f30c-52e5-b827-557766551111"
   @stub_client Orchard.Dispatch.ProbeCompatibilityTest.StubClient
+
+  setup :setup_sentry_context
 
   setup do
     start_supervised!({Registry, keys: :duplicate, name: @stub_client.registry_name()})
@@ -248,6 +252,27 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       assert req.node_id == @valid_uuid
     end
 
+    test "Sentry controller enrichment records node resolution and ensure-load breadcrumbs",
+         ctx do
+      enable_controller_sentry()
+      configure_stub(%{status: {:ok, full_status(@valid_uuid)}})
+
+      assert {:ok, _} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      context = sentry_context()
+
+      assert "node.resolved" in breadcrumb_messages()
+      assert "ensure_model_load.started" in breadcrumb_messages()
+      assert "ensure_model_load.completed" in breadcrumb_messages()
+      assert context.extra.orchard_node_hash == Orchard.SentryContext.hash_id(@valid_uuid)
+      assert context.extra.orchard_target_host_sanitized == "[redacted]"
+      refute inspect(context) =~ @valid_uuid
+      refute inspect(context) =~ "127.0.0.1"
+    end
+
     test "on_node_resolved callback receives discovered UUID", ctx do
       configure_stub(%{status: {:ok, full_status(@other_uuid)}})
       callback = fn node_id -> send(self(), {:node_resolved, node_id}) end
@@ -324,6 +349,31 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
         )
 
       assert marked.health == :unreachable
+    end
+  end
+
+  describe "Sentry cancellation enrichment" do
+    test "handler cancellation records cancel and synthesized terminal breadcrumbs", ctx do
+      enable_controller_sentry()
+      configure_stub(%{execute: {:accepted_then_error, :client_closed}})
+
+      handler = fn _request_id, event ->
+        if Orchard.InferenceEvent.kind(event) == :accepted, do: :cancel, else: :ok
+      end
+
+      assert {:ok, events} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client,
+                 event_handler: handler
+               )
+
+      assert List.last(events) |> Orchard.InferenceEvent.terminal?()
+      assert "cancel.sent" in breadcrumb_messages()
+      assert "terminal.synthesized" in breadcrumb_messages()
+
+      cancel = sentry_context().breadcrumbs |> Enum.find(&(&1.message == "cancel.sent"))
+      assert cancel.level == :warning
+      assert cancel.data.reason == :client_disconnect
     end
   end
 

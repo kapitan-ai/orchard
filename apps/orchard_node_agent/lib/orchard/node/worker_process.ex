@@ -474,7 +474,9 @@ defmodule Orchard.Node.WorkerProcess do
     metadata = [
       worker_model: state.worker_model,
       worker_socket: state.worker_socket_path,
-      worker_log_path: state.worker_log_path
+      worker_log_path: state.worker_log_path,
+      orchard_node_id: Orchard.Node.node_id(),
+      model_backend: Orchard.Node.worker_backend()
     ]
 
     Logger.log(level, line, metadata)

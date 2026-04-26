@@ -962,6 +962,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       # No error events
       error_events = Enum.filter(events, fn {type, _} -> type == :error end)
       assert error_events == []
+
+      assert Sentry.Context.get_all().extra == %{}
+      assert Sentry.Context.get_all().breadcrumbs == []
     end
   end
 

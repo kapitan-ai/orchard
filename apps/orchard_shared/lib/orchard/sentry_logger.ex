@@ -7,7 +7,7 @@ defmodule Orchard.SentryLogger do
   @handler_config %{
     config: %{
       capture_log_messages: false,
-      metadata: [:request_id, :worker_model],
+      metadata: [:request_id, :worker_model, :orchard_node_id, :model_backend],
       rate_limiting: [max_events: 50, interval: 60_000]
     }
   }

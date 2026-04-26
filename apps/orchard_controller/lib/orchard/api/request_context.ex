@@ -1,6 +1,7 @@
 defmodule Orchard.API.RequestContext do
   alias Orchard.API.ErrorHelpers
   alias Orchard.Governance
+  alias Orchard.SentryContext
 
   @moduledoc """
   Plug that resolves authenticated caller context for `/v1/*` requests.
@@ -43,6 +44,7 @@ defmodule Orchard.API.RequestContext do
     case Governance.authenticate_api_key(token) do
       {:ok, auth_context} ->
         Governance.touch_api_key_last_used(auth_context.api_key_id)
+        put_auth_success_context(auth_context)
 
         conn
         |> Plug.Conn.assign(:tenant_id, auth_context.tenant_id)
@@ -69,7 +71,45 @@ defmodule Orchard.API.RequestContext do
 
   defp audit_auth_failure(conn, token, reason) do
     Governance.audit_api_key_auth_failure(token, reason)
+    put_auth_failure_context(reason)
     conn
+  end
+
+  defp put_auth_success_context(auth_context) do
+    if SentryContext.controller_enabled?() do
+      put_api_tags()
+
+      auth_context
+      |> SentryContext.build_caller_extra()
+      |> SentryContext.put_extra()
+
+      SentryContext.add_breadcrumb(
+        category: "orchard.auth",
+        message: "auth.success",
+        level: :info,
+        data: %{auth_mechanism: "bearer"}
+      )
+    end
+  end
+
+  defp put_auth_failure_context(reason) do
+    if SentryContext.controller_enabled?() do
+      put_api_tags()
+
+      SentryContext.add_breadcrumb(
+        category: "orchard.auth",
+        message: "auth.failure",
+        level: :warning,
+        data: %{reason: reason}
+      )
+    end
+  end
+
+  defp put_api_tags do
+    SentryContext.put_tags(%{
+      orchard_app: "controller",
+      orchard_surface: "api"
+    })
   end
 
   defp send_auth_error(conn) do

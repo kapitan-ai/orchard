@@ -11,6 +11,16 @@ defmodule Orchard.API.EndpointRegressionTest do
   @moduletag :live
 
   describe "API security after LiveView endpoint changes" do
+    test "endpoint clears process-local Sentry context after completed requests", %{conn: conn} do
+      Sentry.Context.set_extra_context(%{orchard_request_id: "stale-request"})
+
+      conn = get(conn, "/health/live")
+
+      assert conn.status == 200
+      assert Sentry.Context.get_all().extra == %{}
+      assert Sentry.Context.get_all().breadcrumbs == []
+    end
+
     test "POST /v1/chat/completions still returns 401 for unauthenticated form-urlencoded input",
          %{conn: conn} do
       conn =

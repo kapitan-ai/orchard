@@ -1,6 +1,8 @@
 defmodule OrchardNodeAgentApplicationTest do
   use ExUnit.Case, async: false
 
+  alias Orchard.Node.SentryTelemetryBridge
+
   @sentry_dsn "https://public@example.invalid/1"
 
   setup do
@@ -18,6 +20,7 @@ defmodule OrchardNodeAgentApplicationTest do
     stop_controller_app()
     stop_node_agent_app()
     remove_sentry_handler()
+    SentryTelemetryBridge.detach()
 
     Application.put_env(:orchard_controller, :start_repo, false)
     Application.put_env(:orchard_controller, :start_endpoint, false)
@@ -43,6 +46,7 @@ defmodule OrchardNodeAgentApplicationTest do
       )
 
       remove_sentry_handler()
+      SentryTelemetryBridge.detach()
 
       if controller_was_started do
         {:ok, _apps} = Application.ensure_all_started(:orchard_controller)
@@ -74,8 +78,9 @@ defmodule OrchardNodeAgentApplicationTest do
 
     assert {:ok, %{config: config}} = :logger.get_handler_config(Sentry.LoggerHandler)
     assert config.capture_log_messages == false
-    assert config.metadata == [:request_id, :worker_model]
+    assert config.metadata == [:request_id, :worker_model, :orchard_node_id, :model_backend]
     assert config.rate_limiting == [max_events: 50, interval: 60_000]
+    assert :ok = SentryTelemetryBridge.attach()
   end
 
   test "controller and node-agent in one VM keep exactly one Sentry handler" do
@@ -85,7 +90,7 @@ defmodule OrchardNodeAgentApplicationTest do
     assert {:ok, _apps} = Application.ensure_all_started(:orchard_node_agent)
 
     assert {:ok, %{config: config}} = :logger.get_handler_config(Sentry.LoggerHandler)
-    assert config.metadata == [:request_id, :worker_model]
+    assert config.metadata == [:request_id, :worker_model, :orchard_node_id, :model_backend]
 
     handler_count =
       :logger.get_handler_ids()

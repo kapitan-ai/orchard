@@ -657,6 +657,9 @@ defmodule Orchard.API.ResponsesControllerTest do
     response_id = terminal.data["response"]["id"]
     request = Requests.get_request_by_public_id(response_id)
     assert request.first_token_at != nil
+
+    assert Sentry.Context.get_all().extra == %{}
+    assert Sentry.Context.get_all().breadcrumbs == []
   end
 
   test "streaming empty-string text delta still emits output_text.done before terminal" do

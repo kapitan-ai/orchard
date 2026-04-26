@@ -16,7 +16,17 @@ defmodule Orchard.Node.RuntimeServer do
   alias Orchard.Cluster.V1.StatusRequest
   alias Orchard.Cluster.V1.UnloadModelRequest
   alias Orchard.InferenceEvent, as: DomainInferenceEvent
+  alias Orchard.Node
   alias Orchard.Node.Status
+  alias Orchard.SentryContext
+
+  @known_failure_reasons MapSet.new([
+                           :model_busy,
+                           :model_not_loaded,
+                           :request_already_active,
+                           :request_not_prepared,
+                           :worker_unavailable
+                         ])
 
   @spec get_status(StatusRequest.t(), GRPC.Server.Stream.t()) ::
           Orchard.Cluster.V1.StatusResponse.t()
@@ -35,6 +45,21 @@ defmodule Orchard.Node.RuntimeServer do
 
   @spec execute_inference(ExecuteInferenceRequest.t(), GRPC.Server.Stream.t()) :: :ok
   def execute_inference(%ExecuteInferenceRequest{} = request, stream) do
+    SentryContext.clear_all()
+
+    # Completed requests clear process-local Sentry context for future gRPC
+    # process reuse. Exceptions intentionally skip this branch so crash capture
+    # can still see the request context set below.
+    case do_execute_inference(request, stream) do
+      result ->
+        SentryContext.clear_all()
+        result
+    end
+  end
+
+  defp do_execute_inference(%ExecuteInferenceRequest{} = request, stream) do
+    put_execute_request_context(request)
+
     case Status.prepare_request(request, self()) do
       :ok ->
         send_accepted(stream)
@@ -48,6 +73,7 @@ defmodule Orchard.Node.RuntimeServer do
         end
 
       {:error, reason} ->
+        put_prepare_request_failed_context(reason)
         send_failed(stream, reason)
     end
   end
@@ -116,4 +142,66 @@ defmodule Orchard.Node.RuntimeServer do
 
   defp normalize_failure_reason(reason),
     do: {"runtime_error", "runtime request failed: #{inspect(reason)}"}
+
+  @doc false
+  @spec safe_failure_reason_code(term()) :: String.t()
+  def safe_failure_reason_code(reason) when is_atom(reason) do
+    if MapSet.member?(@known_failure_reasons, reason) do
+      Atom.to_string(reason)
+    else
+      "runtime_error"
+    end
+  end
+
+  def safe_failure_reason_code(reason) when is_binary(reason) do
+    reason
+    |> String.downcase()
+    |> String.replace(~r/[^a-z0-9_]+/, "_")
+    |> then(fn value ->
+      if value in [
+           "model_busy",
+           "model_not_loaded",
+           "request_already_active",
+           "request_not_prepared",
+           "worker_unavailable"
+         ] do
+        value
+      else
+        "runtime_error"
+      end
+    end)
+  end
+
+  def safe_failure_reason_code(_reason), do: "runtime_error"
+
+  defp put_execute_request_context(%ExecuteInferenceRequest{} = request) do
+    if SentryContext.node_agent_enabled?() do
+      SentryContext.put_tags(%{
+        orchard_app: "node_agent",
+        orchard_surface: "grpc",
+        worker_backend: Node.worker_backend()
+      })
+
+      request
+      |> SentryContext.build_node_request_extra()
+      |> SentryContext.put_extra()
+
+      SentryContext.add_breadcrumb(
+        category: "orchard.grpc",
+        message: "execute_inference.requested",
+        level: :info
+      )
+    end
+  end
+
+  defp put_prepare_request_failed_context(reason) do
+    if SentryContext.node_agent_enabled?() do
+      SentryContext.add_breadcrumb(
+        category: "orchard.grpc",
+        message: "prepare_request.failed",
+        level: :warning,
+        data: %{reason: safe_failure_reason_code(reason)}
+      )
+    end
+  end
 end

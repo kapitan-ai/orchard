@@ -1,5 +1,7 @@
 import Config
 
+require Logger
+
 env_int = fn env_name, default ->
   case System.get_env(env_name) || default do
     value when is_integer(value) ->
@@ -392,6 +394,24 @@ default_licensing = fn root ->
   ]
 end
 
+sentry_enrichment_enabled? = env_bool.("ORCHARD_SENTRY_ENRICHMENT_ENABLED", false)
+sentry_hash_secret = env_optional_string.("ORCHARD_SENTRY_HASH_SECRET")
+
+if sentry_enrichment_enabled? and is_nil(sentry_hash_secret) do
+  Logger.warning("ORCHARD_SENTRY_HASH_SECRET is unset; Sentry identifier hashes will be omitted")
+end
+
+config :orchard_shared,
+       :sentry_enrichment,
+       enabled?: sentry_enrichment_enabled?,
+       controller_enabled?:
+         env_bool.("ORCHARD_SENTRY_CONTROLLER_ENRICHMENT_ENABLED", sentry_enrichment_enabled?),
+       node_agent_enabled?:
+         env_bool.("ORCHARD_SENTRY_NODE_ENRICHMENT_ENABLED", sentry_enrichment_enabled?),
+       telemetry_breadcrumbs_enabled?:
+         env_bool.("ORCHARD_SENTRY_TELEMETRY_BREADCRUMBS_ENABLED", false),
+       hash_secret: sentry_hash_secret
+
 if sentry_dsn = env_optional_string.("ORCHARD_SENTRY_DSN") do
   release_name = System.get_env("RELEASE_NAME") || System.get_env("MIX_RELEASE_NAME") || "mix"
 
@@ -400,6 +420,7 @@ if sentry_dsn = env_optional_string.("ORCHARD_SENTRY_DSN") do
     environment_name: env_optional_string.("ORCHARD_SENTRY_ENV") || to_string(config_env()),
     release: "#{release_name}@#{Orchard.BuildInfo.git_sha()}",
     before_send: {Orchard.SentryFilter, :filter},
+    server_name: "[redacted]",
     tags: %{build_sha: Orchard.BuildInfo.git_sha(), build_date: Orchard.BuildInfo.build_date()}
 end
 

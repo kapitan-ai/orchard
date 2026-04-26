@@ -40,6 +40,7 @@ defmodule Orchard.API.Endpoint do
   plug(Plug.Telemetry, event_prefix: [:orchard, :api])
   plug(Plug.Head)
   plug(Orchard.API.CORS)
+  plug(Orchard.API.SentryContextBoundary)
 
   plug(Plug.Parsers,
     parsers: [:json],

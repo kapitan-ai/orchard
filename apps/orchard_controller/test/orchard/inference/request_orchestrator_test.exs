@@ -490,6 +490,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   use Orchard.DataCase, async: false
 
   import Orchard.TestSupport.ModelRequestFixtures
+  import Orchard.TestSupport.SentryContextHelpers
 
   import Orchard.TestSupport.QueueAdmissionAPI,
     only: [assert_queue_metadata: 2, assert_queue_metadata: 3]
@@ -513,6 +514,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.RequestServer
+
+  setup :setup_sentry_context
 
   setup do
     ModelManager.reset()
@@ -564,6 +567,101 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     request = Requests.get_request_by_public_id(canonical.public_id)
     assert request.endpoint == :responses
     assert request.canonical_request["endpoint"] == "responses"
+  end
+
+  test "Sentry controller enrichment records request lifecycle breadcrumbs and public request extra",
+       %{bundle: bundle} do
+    put_multi_node_scheduler_config()
+    enable_controller_sentry()
+
+    model = create_active_model!(bundle, "request-orchestrator-sentry-lifecycle")
+
+    canonical =
+      canonical_request("request-orchestrator-sentry-lifecycle",
+        endpoint: :responses,
+        stream?: true,
+        tooling: %{tools: [lookup_weather_tool_definition()], tool_choice: "auto"}
+      )
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    context = sentry_context()
+
+    assert context.extra.orchard_request_id == request.public_id
+    assert context.extra.orchard_db_request_id == request.public_id
+    assert context.extra.orchard_endpoint == :responses
+    assert context.extra.orchard_stream == true
+    assert context.extra.orchard_tooling == true
+    assert context.extra.orchard_model_id == "request-orchestrator-sentry-lifecycle"
+    assert context.extra.orchard_model_version == "v1"
+
+    assert context.tags.orchard_app == "controller"
+    assert context.tags.orchard_surface == "api"
+    assert context.tags.orchard_endpoint == "responses"
+    assert context.tags.stream == "true"
+    assert context.tags.tooling == "true"
+    assert context.tags.scheduler_strategy == "multi_node"
+
+    assert breadcrumb_messages() == [
+             "request.validated",
+             "request.persisted",
+             "request.scheduled",
+             "node.resolved",
+             "ensure_model_load.started",
+             "ensure_model_load.completed",
+             "first_delta.received"
+           ]
+
+    scheduled = Enum.find(context.breadcrumbs, &(&1.message == "request.scheduled"))
+
+    assert scheduled.data == %{
+             scheduler_strategy: :multi_node,
+             node_hash: Orchard.SentryContext.hash_id(scheduled_node_id())
+           }
+
+    resolved = Enum.find(context.breadcrumbs, &(&1.message == "node.resolved"))
+    assert is_binary(resolved.data.node_hash)
+    refute inspect(context) =~ scheduled_node_id()
+  end
+
+  test "execute/3 does not emit Sentry persisted breadcrumb for idempotency replay", %{
+    bundle: bundle
+  } do
+    enable_controller_sentry()
+    model = create_active_model!(bundle, "request-orchestrator-idem-replay")
+    tenant_id = Ecto.UUID.generate()
+    key = "req-orch-replay-sentry"
+    params = %{"model" => "request-orchestrator-idem-replay@v1"}
+    {:ok, idempotency} = Idempotency.build_context(tenant_id, key, params)
+
+    existing =
+      create_request!(%{
+        public_id: "req_existing_replay_sentry",
+        tenant_id: tenant_id,
+        idempotency_key: key,
+        body_hash: idempotency.body_hash,
+        stream: false,
+        state: :completed,
+        requested_model: "request-orchestrator-idem-replay@v1",
+        response_payload: %{"id" => "req_existing_replay_sentry"}
+      })
+
+    canonical =
+      canonical_request("request-orchestrator-idem-replay",
+        tenant_id: tenant_id,
+        public_id: "req_new_replay_sentry"
+      )
+
+    existing_id = existing.id
+
+    assert {:replay, %{id: ^existing_id}} =
+             RequestOrchestrator.execute(canonical, model, idempotency: idempotency)
+
+    assert "request.validated" in breadcrumb_messages()
+    refute "request.persisted" in breadcrumb_messages()
+    refute Map.has_key?(sentry_context().extra, :orchard_request_id)
   end
 
   test "execute/3 persists multi-node schedule metadata and scheduler-selected node attribution",

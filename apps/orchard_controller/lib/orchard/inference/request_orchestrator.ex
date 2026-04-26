@@ -25,6 +25,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   alias Orchard.Requests.RequestServer
   alias Orchard.Requests.RequestStepEvent
   alias Orchard.Runtime.{MemoryBudget, PrefixCacheScore, PrefixCacheStatus}
+  alias Orchard.SentryContext
 
   @type event_handler ::
           (Ecto.UUID.t(), InferenceEvent.t() -> :ok | :cancel)
@@ -56,7 +57,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
       Keyword.get(opts, :terminal_persister, &Requests.mark_terminal_with_step_events/3)
 
     with :ok <- validate_resolved_tooling(canonical),
+         :ok <- put_request_validated_context(canonical),
          {:ok, db_request} <- persist_request(canonical, model, idempotency) do
+      put_request_persisted_context(db_request, canonical)
+
       start_and_dispatch(
         db_request,
         canonical,
@@ -248,6 +252,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     with {:ok, schedule} <- schedule_request(canonical),
          {:ok, _} <-
            Requests.record_schedule(db_request, scheduler_persistence_metadata(schedule)),
+         :ok <- put_request_scheduled_context(schedule),
          :ok <- advance_fsm(db_request.id, :scheduled),
          :ok <- advance_fsm(db_request.id, :dispatching) do
       execute_inference_turn(db_request, canonical, model, schedule, %{
@@ -417,6 +422,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
              db_request,
              scheduler_persistence_metadata(Map.merge(schedule, metadata))
            ),
+         :ok <- put_request_scheduled_context(Map.merge(schedule, metadata)),
          :ok <- advance_fsm(db_request.id, :scheduled),
          :ok <- advance_fsm(db_request.id, :dispatching) do
       execute_inference_turn(db_request, canonical, model, schedule, execution_opts)
@@ -798,6 +804,90 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp maybe_capture_first_token(_event, _capture_key), do: :ok
+
+  defp put_request_validated_context(canonical) do
+    if SentryContext.controller_enabled?() do
+      SentryContext.add_breadcrumb(
+        category: "orchard.request",
+        message: "request.validated",
+        level: :info,
+        data: request_lifecycle_data(canonical)
+      )
+    end
+
+    :ok
+  end
+
+  defp put_request_persisted_context(db_request, canonical) do
+    if SentryContext.controller_enabled?() do
+      canonical = %{canonical | public_id: db_request.public_id}
+
+      db_request
+      |> SentryContext.build_request_extra(canonical)
+      |> SentryContext.put_extra()
+
+      SentryContext.put_tags(request_tags(canonical))
+
+      SentryContext.add_breadcrumb(
+        category: "orchard.request",
+        message: "request.persisted",
+        level: :info,
+        data: %{orchard_request_id: db_request.public_id}
+      )
+    end
+
+    :ok
+  end
+
+  defp put_request_scheduled_context(schedule) do
+    if SentryContext.controller_enabled?() do
+      SentryContext.put_tags(%{scheduler_strategy: map_value(schedule, :strategy)})
+
+      SentryContext.add_breadcrumb(
+        category: "orchard.request",
+        message: "request.scheduled",
+        level: :info,
+        data: schedule_lifecycle_data(schedule)
+      )
+    end
+
+    :ok
+  end
+
+  defp request_tags(canonical) do
+    %{
+      orchard_app: "controller",
+      orchard_surface: "api",
+      orchard_endpoint: canonical.endpoint,
+      stream: canonical.stream?,
+      tooling: tooling_enabled?(canonical.tooling)
+    }
+  end
+
+  defp request_lifecycle_data(canonical) do
+    %{
+      endpoint: canonical.endpoint,
+      stream: canonical.stream?,
+      tooling: tooling_enabled?(canonical.tooling),
+      model_id: canonical.model_ref.model_id,
+      model_version: canonical.model_ref.version
+    }
+  end
+
+  defp schedule_lifecycle_data(schedule) do
+    %{}
+    |> put_if_present(:scheduler_strategy, map_value(schedule, :strategy))
+    |> put_if_present(:node_hash, SentryContext.hash_id(map_value(schedule, :node_id)))
+  end
+
+  defp tooling_enabled?(%CanonicalRequest.Tooling{} = tooling) do
+    tooling.tools != [] or tooling.requested_tools != [] or not is_nil(tooling.tool_choice)
+  end
+
+  defp tooling_enabled?(_tooling), do: false
+
+  defp put_if_present(map, _key, nil), do: map
+  defp put_if_present(map, key, value), do: Map.put(map, key, value)
 
   defp build_node_resolved_callback(request_id) do
     fn node_id ->

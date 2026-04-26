@@ -9,6 +9,8 @@ defmodule Orchard.Dispatch.DispatchTest do
 
   use ExUnit.Case, async: false
 
+  import Orchard.TestSupport.SentryContextHelpers
+
   alias Orchard.ArtifactBundle
 
   alias Orchard.Cluster.V1.{
@@ -29,6 +31,8 @@ defmodule Orchard.Dispatch.DispatchTest do
 
   @model_id "mlx-community/phi-3"
   @version "main"
+
+  setup :setup_sentry_context
 
   setup do
     # Reset node-agent state between tests to avoid model-already-loaded
@@ -155,6 +159,38 @@ defmodule Orchard.Dispatch.DispatchTest do
         |> Enum.map(& &1.event.delta)
 
       assert deltas == ["orchard ", "ready"]
+    end
+
+    test "Sentry controller enrichment records sparse dispatch context", %{bundle: bundle} do
+      enable_controller_sentry()
+      schedule = build_schedule("req-dispatch-sentry")
+      execute = execute_request("req-dispatch-sentry")
+      model_load = model_load_request(bundle)
+
+      assert {:ok, events} = RequestDispatcher.dispatch(schedule, execute, model_load)
+      assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+      context = sentry_context()
+      messages = breadcrumb_messages()
+
+      assert context.tags.orchard_app == "controller"
+      assert context.tags.orchard_surface == "api"
+      assert context.tags.scheduler_strategy == "single_node"
+      assert context.tags.failure_category == "ok"
+      assert context.tags.terminal_source == "stream"
+
+      assert context.extra.orchard_scheduler_strategy == :single_node
+      assert context.extra.orchard_target_host_sanitized == "[redacted]"
+      assert is_integer(context.extra.orchard_ensure_model_loaded_ms)
+      assert is_integer(context.extra.orchard_accepted_to_first_delta_ms)
+      assert is_integer(context.extra.orchard_accepted_to_terminal_ms)
+      assert context.extra.orchard_event_count == length(events)
+
+      assert "node.resolved" in messages
+      assert "ensure_model_load.started" in messages
+      assert "ensure_model_load.completed" in messages
+      assert Enum.count(messages, &(&1 == "first_delta.received")) == 1
+      refute inspect(context) =~ "127.0.0.1"
     end
 
     test "dispatches with event_handler callback", %{bundle: bundle} do

@@ -14,6 +14,7 @@ defmodule Orchard.API.ResponsesController do
   import Orchard.API.ErrorHelpers, only: [send_error: 5]
 
   alias Orchard.API.{InferenceControllerSupport, SSE}
+  alias Orchard.SentryContext
 
   alias Orchard.Inference.{
     ChatError,
@@ -95,6 +96,14 @@ defmodule Orchard.API.ResponsesController do
   # -- Streaming (SSE) response ----------------------------------------------
 
   defp handle_streaming(conn, canonical, model, idempotency) do
+    case do_handle_streaming(conn, canonical, model, idempotency) do
+      result ->
+        SentryContext.clear_all()
+        result
+    end
+  end
+
+  defp do_handle_streaming(conn, canonical, model, idempotency) do
     case SSE.start(conn) do
       {:ok, conn} ->
         stream_responses(conn, canonical, model, idempotency)

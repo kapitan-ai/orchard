@@ -2,6 +2,7 @@ defmodule Orchard.API.RequestContextTest do
   use Orchard.ConnCase, async: false
 
   import Ecto.Query
+  import Orchard.TestSupport.SentryContextHelpers
 
   alias Orchard.API.RequestContext
   alias Orchard.API.Router
@@ -9,6 +10,9 @@ defmodule Orchard.API.RequestContextTest do
   alias Orchard.Governance.{ApiKey, AuditLog}
   alias Orchard.Inference.ChatRequestNormalizer
   alias Orchard.Repo
+  alias Orchard.SentryContext
+
+  setup :setup_sentry_context
 
   describe "RequestContext plug" do
     @describetag :db
@@ -69,6 +73,62 @@ defmodule Orchard.API.RequestContextTest do
       assert conn.halted
       assert conn.status == 401
       assert Jason.decode!(conn.resp_body)["error"]["code"] == "invalid_api_key"
+    end
+
+    test "Sentry controller enrichment records auth success with hashed caller IDs only" do
+      enable_controller_sentry()
+
+      %{api_key: api_key, token: token, tenant: tenant} =
+        create_api_key_with_token!("request-context-sentry")
+
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> RequestContext.call([])
+
+      refute conn.halted
+      context = sentry_context()
+
+      assert context.tags == %{orchard_app: "controller", orchard_surface: "api"}
+
+      assert context.extra == %{
+               orchard_api_key_hash: SentryContext.hash_id(api_key.id),
+               orchard_principal_hash: SentryContext.hash_id(tenant.id),
+               orchard_tenant_hash: SentryContext.hash_id(tenant.id)
+             }
+
+      assert [%{message: "auth.success", level: :info, data: %{auth_mechanism: "bearer"}}] =
+               context.breadcrumbs
+
+      refute inspect(context) =~ token
+      refute inspect(context) =~ api_key.token_prefix
+    end
+
+    test "Sentry controller enrichment records auth failure without bearer material" do
+      enable_controller_sentry()
+
+      %{api_key: api_key, token: token} =
+        create_api_key_with_token!("request-context-sentry-failure")
+
+      bad_token = swap_token_secret(token)
+
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Bearer #{bad_token}")
+        |> RequestContext.call([])
+
+      assert conn.halted
+      assert conn.status == 401
+
+      context = sentry_context()
+      assert context.tags == %{orchard_app: "controller", orchard_surface: "api"}
+
+      assert [
+               %{message: "auth.failure", level: :warning, data: %{reason: :invalid_api_key}}
+             ] = context.breadcrumbs
+
+      refute inspect(context) =~ bad_token
+      refute inspect(context) =~ api_key.token_prefix
     end
 
     test "successful auth best-effort updates api_keys.last_used_at" do
