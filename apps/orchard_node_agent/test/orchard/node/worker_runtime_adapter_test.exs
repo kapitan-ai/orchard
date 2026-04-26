@@ -303,6 +303,23 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     end)
   end
 
+  test "connect_worker_socket uses a direct UDS channel without connection supervisor refresh" do
+    with_worker_runtime_unix_server(MemoryBudgetEndpoint, fn channel, socket_path ->
+      assert %GRPC.Channel{
+               host: {:local, ^socket_path},
+               port: 0,
+               scheme: "unix",
+               adapter_payload: %{conn_pid: conn_pid}
+             } = channel
+
+      assert is_pid(conn_pid)
+      assert {:error, :no_connection} = GRPC.Client.Connection.pick_channel(channel)
+
+      assert {:ok, status} = WorkerRuntimeAdapter.get_status(%{channel: channel}, timeout_ms: 500)
+      assert status.ready == true
+    end)
+  end
+
   test "score_prefix_cache normalizes successful worker responses" do
     with_worker_runtime_server(ScorePrefixCacheEndpoint, fn channel ->
       assert {:ok, response} =
@@ -548,6 +565,32 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       fun.(channel)
     after
       _ = GRPC.Stub.disconnect(channel)
+    end
+  end
+
+  defp with_worker_runtime_unix_server(endpoint, fun)
+       when is_atom(endpoint) and is_function(fun, 2) do
+    socket_path =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-worker-runtime-adapter-#{System.unique_integer([:positive])}.sock"
+      )
+
+    File.rm(socket_path)
+
+    start_supervised!({
+      GRPC.Server.Supervisor,
+      endpoint: endpoint, port: 0, start_server: true, adapter_opts: [ip: {:local, socket_path}]
+    })
+
+    {:ok, channel} = WorkerRuntimeAdapter.connect_worker_socket(socket_path)
+
+    try do
+      wait_for_worker_service_ready(channel)
+      fun.(channel, socket_path)
+    after
+      _ = channel.adapter.disconnect(channel)
+      File.rm(socket_path)
     end
   end
 

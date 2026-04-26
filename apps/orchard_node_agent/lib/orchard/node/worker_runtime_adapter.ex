@@ -6,7 +6,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   @behaviour Orchard.Node.RuntimeAdapter
 
-  alias GRPC.RPCError
+  alias GRPC.{Channel, RPCError}
 
   alias Orchard.Cluster.V1.{
     CancelInferenceRequest,
@@ -658,7 +658,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp try_connect_and_check(socket_path, port, deadline) do
     remaining_ms = deadline - System.monotonic_time(:millisecond)
 
-    case GRPC.Stub.connect(socket_path) do
+    case connect_worker_socket(socket_path) do
       {:ok, channel} ->
         check_connected_worker(channel, socket_path, port, deadline, remaining_ms)
 
@@ -698,6 +698,25 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp retry_wait_for_worker_ready(socket_path, port, deadline) do
     Process.sleep(@poll_interval_ms)
     do_wait_for_worker_ready(socket_path, port, deadline)
+  end
+
+  @doc false
+  @spec connect_worker_socket(String.t()) :: {:ok, Channel.t()} | {:error, term()}
+  def connect_worker_socket(socket_path) when is_binary(socket_path) do
+    %Channel{
+      host: {:local, socket_path},
+      port: 0,
+      scheme: "unix",
+      cred: nil,
+      ref: make_ref(),
+      adapter: GRPC.Client.Adapters.Gun,
+      codec: GRPC.Codec.Proto,
+      interceptors: [],
+      compressor: nil,
+      accepted_compressors: [],
+      headers: []
+    }
+    |> GRPC.Client.Adapters.Gun.connect([])
   end
 
   # Classify worker health from GetStatus response.
@@ -991,6 +1010,13 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp disconnect_channel(nil), do: :ok
+
+  defp disconnect_channel(%Channel{host: {:local, _path}, adapter: adapter} = channel) do
+    case adapter.disconnect(channel) do
+      {:ok, _channel} -> :ok
+      {:error, _reason} -> :ok
+    end
+  end
 
   defp disconnect_channel(channel) do
     case GRPC.Stub.disconnect(channel) do
