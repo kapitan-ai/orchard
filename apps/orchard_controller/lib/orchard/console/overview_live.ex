@@ -12,6 +12,7 @@ defmodule OrchardConsole.OverviewLive do
   alias Orchard.Models.Model
   alias Orchard.Requests
   alias Orchard.Requests.Request
+  alias Phoenix.LiveView.JS
 
   @readiness_check_order [
     :controller_boot_completed,
@@ -224,7 +225,11 @@ defmodule OrchardConsole.OverviewLive do
                           <button
                             id={"overview-quickstart-action-#{step.dom_id}"}
                             type="button"
-                            data-quickstart-action="open-guide"
+                            phx-click={
+                              JS.dispatch("orchard:quickstart-guide:open",
+                                to: "#overview-quickstart-guide"
+                              )
+                            }
                             data-quickstart-action-emphasis={Atom.to_string(step.status)}
                             class={quickstart_cta_class(step.status)}
                           >

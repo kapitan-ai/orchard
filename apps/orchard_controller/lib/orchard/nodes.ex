@@ -131,7 +131,7 @@ defmodule Orchard.Nodes do
   def get_node!(id), do: Repo.get!(Node, id)
 
   @doc """
-  Looks up a node by its advertise address and RPC port.
+  Looks up a node by its connection target.
 
   Accepts a target keyword list matching the scheduler/dispatch shape:
   `[host: "127.0.0.1", port: 50071]`.
@@ -142,9 +142,7 @@ defmodule Orchard.Nodes do
   def lookup_by_target(target) do
     with true <- repo_available?(),
          {:ok, host, port} <- validate_target(target) do
-      Node
-      |> where([n], n.advertise_addr == ^host and n.rpc_port == ^port)
-      |> Repo.one()
+      lookup_node_by_target(host, port)
     else
       _ -> nil
     end
@@ -246,6 +244,8 @@ defmodule Orchard.Nodes do
          hostname: non_empty_or(meta.hostname, target_host(target)),
          advertise_addr: non_empty_or(meta.listen_host, target_host(target)),
          rpc_port: port,
+         connect_host: connect_host(target),
+         connect_port: connect_port(target),
          health: derive_health(extract_runtime_health(status_response)),
          agent_version: non_empty_or(meta.agent_version, nil),
          capabilities: build_capabilities(meta, status_response),
@@ -372,15 +372,41 @@ defmodule Orchard.Nodes do
 
   defp load_conflicting_nodes(observation) do
     Node
-    |> where(
-      [n],
-      n.id == ^observation.id or
-        n.display_name == ^observation.display_name or
-        (n.advertise_addr == ^observation.advertise_addr and
-           n.rpc_port == ^observation.rpc_port)
-    )
+    |> where(^conflicting_node_filter(observation))
     |> lock("FOR UPDATE")
     |> Repo.all()
+  end
+
+  defp conflicting_node_filter(observation) do
+    base_filter =
+      dynamic(
+        [n],
+        n.id == ^observation.id or
+          n.display_name == ^observation.display_name
+      )
+
+    base_filter =
+      if routable_advertise_addr?(observation.advertise_addr) do
+        dynamic(
+          [n],
+          ^base_filter or
+            (n.advertise_addr == ^observation.advertise_addr and
+               n.rpc_port == ^observation.rpc_port)
+        )
+      else
+        base_filter
+      end
+
+    if valid_connect_target?(observation.connect_host, observation.connect_port) do
+      dynamic(
+        [n],
+        ^base_filter or
+          (n.connect_host == ^observation.connect_host and
+             n.connect_port == ^observation.connect_port)
+      )
+    else
+      base_filter
+    end
   end
 
   defp classify_conflicting_nodes(conflicting, observation) do
@@ -394,7 +420,8 @@ defmodule Orchard.Nodes do
   defp ensure_no_identity_conflict(%{existing_by_target: %Node{id: id}}, observation)
        when id != observation.id do
     Logger.warning(
-      "Node identity conflict: target #{observation.advertise_addr}:#{observation.rpc_port} " <>
+      "Node identity conflict: advertised target #{observation.advertise_addr}:#{observation.rpc_port} " <>
+        "connect target #{format_connect_target(observation)} " <>
         "claimed by #{observation.id} but registered to #{id}"
     )
 
@@ -441,8 +468,7 @@ defmodule Orchard.Nodes do
   end
 
   defp target_match?(node, observation) do
-    node.advertise_addr == observation.advertise_addr and
-      node.rpc_port == observation.rpc_port
+    advertised_target_match?(node, observation) or connect_target_match?(node, observation)
   end
 
   # -- Mark Unreachable --
@@ -464,10 +490,8 @@ defmodule Orchard.Nodes do
   end
 
   defp fetch_node_for_transport_update(host, port) do
-    Node
-    |> where([n], n.advertise_addr == ^host and n.rpc_port == ^port)
-    |> lock("FOR UPDATE")
-    |> Repo.one()
+    fetch_node_by_connect_target(host, port) ||
+      fetch_legacy_node_by_advertise_target(host, port)
   end
 
   defp update_transport_failure_health(%Node{} = node, observed_at) do
@@ -530,8 +554,85 @@ defmodule Orchard.Nodes do
   defp target_host(target), do: Keyword.get(target, :host, "")
   defp target_port(target), do: Keyword.get(target, :port)
 
+  defp connect_host(target) do
+    case Keyword.get(target, :host) do
+      host when is_binary(host) and host != "" -> host
+      _other -> nil
+    end
+  end
+
+  defp connect_port(target) do
+    case Keyword.get(target, :port) do
+      port when is_integer(port) and port in 1..65_535 -> port
+      _other -> nil
+    end
+  end
+
+  defp lookup_node_by_target(host, port) do
+    lookup_node_by_connect_target(host, port) ||
+      lookup_legacy_node_by_advertise_target(host, port)
+  end
+
+  defp lookup_node_by_connect_target(host, port) do
+    connect_target_query(host, port)
+    |> Repo.one()
+  end
+
+  defp lookup_legacy_node_by_advertise_target(host, port) do
+    legacy_advertise_target_query(host, port)
+    |> Repo.one()
+  end
+
+  defp fetch_node_by_connect_target(host, port) do
+    connect_target_query(host, port)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp fetch_legacy_node_by_advertise_target(host, port) do
+    legacy_advertise_target_query(host, port)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp connect_target_query(host, port) do
+    Node
+    |> where([n], n.connect_host == ^host and n.connect_port == ^port)
+  end
+
+  defp legacy_advertise_target_query(host, port) do
+    Node
+    |> where(
+      [n],
+      is_nil(n.connect_host) and is_nil(n.connect_port) and n.advertise_addr == ^host and
+        n.rpc_port == ^port
+    )
+  end
+
+  defp advertised_target_match?(node, observation) do
+    routable_advertise_addr?(observation.advertise_addr) and
+      node.advertise_addr == observation.advertise_addr and
+      node.rpc_port == observation.rpc_port
+  end
+
+  defp connect_target_match?(node, observation) do
+    valid_connect_target?(node.connect_host, node.connect_port) and
+      node.connect_host == observation.connect_host and
+      node.connect_port == observation.connect_port
+  end
+
   defp non_empty?(value), do: is_binary(value) and value != ""
   defp non_empty_or(value, fallback), do: if(non_empty?(value), do: value, else: fallback)
+
+  defp valid_connect_target?(host, port), do: non_empty?(host) and is_integer(port)
+
+  defp routable_advertise_addr?(addr), do: non_empty?(addr) and addr not in ["0.0.0.0", "::"]
+
+  defp format_connect_target(%{connect_host: host, connect_port: port})
+       when is_binary(host) and is_integer(port),
+       do: "#{host}:#{port}"
+
+  defp format_connect_target(_observation), do: "unknown"
 
   defp zero_fill(counts, values) do
     Map.new(values, fn v -> {v, Map.get(counts, v, 0)} end)

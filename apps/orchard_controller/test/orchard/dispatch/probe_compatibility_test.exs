@@ -185,8 +185,10 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       hostname: Keyword.get(opts, :hostname, "target.local"),
       display_name:
         Keyword.get(opts, :display_name, "target-node-#{System.unique_integer([:positive])}"),
-      advertise_addr: host,
-      rpc_port: port,
+      advertise_addr: Keyword.get(opts, :advertise_addr, host),
+      rpc_port: Keyword.get(opts, :rpc_port, port),
+      connect_host: Keyword.get(opts, :connect_host),
+      connect_port: Keyword.get(opts, :connect_port),
       state: Keyword.get(opts, :state, :active),
       health: Keyword.get(opts, :health, :healthy),
       capabilities: %{},
@@ -395,6 +397,30 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
           rpc_port: Keyword.fetch!(ctx.schedule.runtime_client_target, :port)
         )
 
+      assert marked.health == :degraded
+    end
+
+    test "connect failure marks bind-all advertised node by actual connect target", ctx do
+      target = ctx.schedule.runtime_client_target
+
+      node =
+        insert_target_node!(target,
+          advertise_addr: "0.0.0.0",
+          connect_host: Keyword.fetch!(target, :host),
+          connect_port: Keyword.fetch!(target, :port)
+        )
+
+      configure_stub(%{connect: {:error, {:connect_failed, :econnrefused}}})
+
+      assert {:error, {:model_load_failed, failure}} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      assert failure.code == "node_unavailable"
+
+      marked = Repo.get!(Node, node.id)
+      assert marked.advertise_addr == "0.0.0.0"
       assert marked.health == :degraded
     end
 

@@ -106,6 +106,26 @@ defmodule Orchard.NodesTest do
       assert errors_on(changeset)[:rpc_port]
     end
 
+    test "invalid connect_port" do
+      changeset = Node.changeset(%Node{}, node_attrs(%{connect_port: 0}))
+      refute changeset.valid?
+      assert errors_on(changeset)[:connect_port]
+
+      changeset = Node.changeset(%Node{}, node_attrs(%{connect_port: 70_000}))
+      refute changeset.valid?
+      assert errors_on(changeset)[:connect_port]
+    end
+
+    test "connect target fields must be populated as a pair" do
+      changeset = Node.changeset(%Node{}, node_attrs(%{connect_host: "10.0.0.1"}))
+      refute changeset.valid?
+      assert errors_on(changeset)[:connect_port]
+
+      changeset = Node.changeset(%Node{}, node_attrs(%{connect_port: 9444}))
+      refute changeset.valid?
+      assert errors_on(changeset)[:connect_host]
+    end
+
     test "requires tool_readiness to be a map" do
       changeset = Node.changeset(%Node{}, node_attrs(%{tool_readiness: nil}))
       refute changeset.valid?
@@ -242,6 +262,27 @@ defmodule Orchard.NodesTest do
       assert found.id == node.id
     end
 
+    test "returns node for persisted connect target before advertise target" do
+      legacy =
+        insert_node!(%{
+          advertise_addr: "100.90.207.78",
+          rpc_port: 50_071,
+          display_name: "legacy-target"
+        })
+
+      node =
+        insert_node!(%{
+          advertise_addr: "0.0.0.0",
+          rpc_port: 9444,
+          connect_host: "100.90.207.78",
+          connect_port: 50_071
+        })
+
+      found = Nodes.lookup_by_target(host: "100.90.207.78", port: 50_071)
+      assert found.id == node.id
+      refute found.id == legacy.id
+    end
+
     test "returns nil for no match" do
       assert Nodes.lookup_by_target(host: "10.0.0.99", port: 9444) == nil
     end
@@ -277,6 +318,29 @@ defmodule Orchard.NodesTest do
       assert node.hostname == "test-host.local"
       assert node.advertise_addr == "10.0.0.1"
       assert node.rpc_port == 9444
+      assert node.connect_host == "10.0.0.1"
+      assert node.connect_port == 9444
+    end
+
+    test "persists connect target separately from advertised bind-all address" do
+      node_id = Ecto.UUID.generate()
+      target = make_target("100.90.207.78", 50_071)
+      now = DateTime.utc_now()
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          display_name: "bind-all-node",
+          hostname: "bind-all.local",
+          listen_host: "0.0.0.0",
+          listen_port: 50_071
+        })
+
+      assert {:ok, node} = Nodes.observe_status(target, status, now)
+      assert node.advertise_addr == "0.0.0.0"
+      assert node.rpc_port == 50_071
+      assert node.connect_host == "100.90.207.78"
+      assert node.connect_port == 50_071
     end
 
     test "persists health mapping: nil runtime_health -> healthy" do
@@ -599,6 +663,32 @@ defmodule Orchard.NodesTest do
       assert log =~ "identity conflict"
     end
 
+    test "bind-all advertised target does not conflict when connect target differs" do
+      insert_node!(%{
+        id: Ecto.UUID.generate(),
+        advertise_addr: "0.0.0.0",
+        rpc_port: 50_071,
+        connect_host: "100.90.207.78",
+        connect_port: 50_071
+      })
+
+      target = make_target("100.90.207.79", 50_071)
+      different_id = Ecto.UUID.generate()
+
+      status =
+        make_status_response(%{
+          node_id: different_id,
+          display_name: "second-bind-all",
+          listen_host: "0.0.0.0",
+          listen_port: 50_071
+        })
+
+      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert node.id == different_id
+      assert node.advertise_addr == "0.0.0.0"
+      assert node.connect_host == "100.90.207.79"
+    end
+
     test "display_name conflict: same name, different UUID" do
       insert_node!(%{display_name: "shared-name", advertise_addr: "10.0.0.31", rpc_port: 9444})
       target = make_target("10.0.0.32", 9444)
@@ -710,6 +800,28 @@ defmodule Orchard.NodesTest do
 
       assert {:ok, marked} =
                Nodes.mark_target_unreachable(make_target("10.0.0.50", 9444), observed_at)
+
+      assert marked.id == node.id
+      assert marked.health == :degraded
+    end
+
+    test "marks node by connect target when advertised address is bind-all" do
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "0.0.0.0",
+          rpc_port: 50_071,
+          connect_host: "100.90.207.78",
+          connect_port: 50_071,
+          health: :healthy,
+          last_heartbeat_at: hb_time
+        })
+
+      observed_at = DateTime.add(hb_time, 5, :second)
+
+      assert {:ok, marked} =
+               Nodes.mark_target_unreachable(make_target("100.90.207.78", 50_071), observed_at)
 
       assert marked.id == node.id
       assert marked.health == :degraded
@@ -853,6 +965,32 @@ defmodule Orchard.NodesTest do
                  observed_at
                )
 
+      assert marked.health == :unreachable
+    end
+
+    test "connect failure updates persisted health through connect target mismatch" do
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "0.0.0.0",
+          rpc_port: 50_071,
+          connect_host: "100.90.207.78",
+          connect_port: 50_071,
+          health: :healthy,
+          last_heartbeat_at: hb_time
+        })
+
+      observed_at = DateTime.add(hb_time, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 make_target("100.90.207.78", 50_071),
+                 {:connect_failed, :econnrefused},
+                 observed_at
+               )
+
+      assert marked.id == node.id
       assert marked.health == :unreachable
     end
 

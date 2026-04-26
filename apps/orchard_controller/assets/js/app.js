@@ -147,12 +147,6 @@ Hooks.OverviewQuickstart = {
       } else if (action === "recover") {
         event.preventDefault()
         this.pushEvent("quickstart_recover", {})
-      } else if (action === "open-guide") {
-        event.preventDefault()
-        let guideEl = document.getElementById("overview-quickstart-guide")
-        if (guideEl) {
-          guideEl.dispatchEvent(new CustomEvent("orchard:quickstart-guide:open", {bubbles: false}))
-        }
       }
     }
 

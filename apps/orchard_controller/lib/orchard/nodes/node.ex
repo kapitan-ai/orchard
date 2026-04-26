@@ -33,6 +33,8 @@ defmodule Orchard.Nodes.Node do
     field(:display_name, :string)
     field(:advertise_addr, :string)
     field(:rpc_port, :integer)
+    field(:connect_host, :string)
+    field(:connect_port, :integer)
     field(:state, Ecto.Enum, values: @states)
     field(:health, Ecto.Enum, values: @health_values)
     field(:capabilities, :map, default: %{})
@@ -58,6 +60,8 @@ defmodule Orchard.Nodes.Node do
       :display_name,
       :advertise_addr,
       :rpc_port,
+      :connect_host,
+      :connect_port,
       :state,
       :health,
       :capabilities,
@@ -78,11 +82,36 @@ defmodule Orchard.Nodes.Node do
     |> validate_length(:hostname, min: 1)
     |> validate_length(:display_name, min: 1)
     |> validate_length(:advertise_addr, min: 1)
+    |> validate_length(:connect_host, min: 1)
     |> validate_number(:rpc_port, greater_than: 0, less_than_or_equal_to: 65_535)
+    |> validate_number(:connect_port, greater_than: 0, less_than_or_equal_to: 65_535)
+    |> validate_connect_target_pair()
     |> validate_tool_readiness_contract()
     |> unique_constraint(:display_name)
     |> unique_constraint([:advertise_addr, :rpc_port])
+    |> unique_constraint([:connect_host, :connect_port])
     |> check_constraint(:rpc_port, name: :nodes_rpc_port_range)
+    |> check_constraint(:connect_port, name: :nodes_connect_port_range)
+    |> check_constraint(:connect_host, name: :nodes_connect_target_pair)
+  end
+
+  defp validate_connect_target_pair(changeset) do
+    connect_host = get_field(changeset, :connect_host)
+    connect_port = get_field(changeset, :connect_port)
+
+    case {is_nil(connect_host), is_nil(connect_port)} do
+      {true, true} ->
+        changeset
+
+      {false, false} ->
+        changeset
+
+      {true, false} ->
+        add_error(changeset, :connect_host, "must be present when connect_port is present")
+
+      {false, true} ->
+        add_error(changeset, :connect_port, "must be present when connect_host is present")
+    end
   end
 
   defp validate_tool_readiness_contract(changeset) do

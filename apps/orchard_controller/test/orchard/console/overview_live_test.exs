@@ -420,11 +420,15 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert view |> element("#overview-quickstart-action-create-api-key") |> render() =~
                ~s(href="/console/tenants")
 
-      # Step 5 (pending) shows open-guide button, not a navigation link
+      # Step 5 (pending) dispatches the guide-open event, not a navigation link
       assert has_element?(view, "#overview-quickstart-action-connect-your-tools")
 
-      assert view |> element("#overview-quickstart-action-connect-your-tools") |> render() =~
-               ~s(data-quickstart-action="open-guide")
+      step_5_action =
+        view |> element("#overview-quickstart-action-connect-your-tools") |> render()
+
+      assert step_5_action =~ "orchard:quickstart-guide:open"
+      assert step_5_action =~ "#overview-quickstart-guide"
+      refute step_5_action =~ ~s(data-quickstart-action="open-guide")
 
       # Pending steps have pending emphasis
       assert view |> element("#overview-quickstart-action-import-first-model") |> render() =~
@@ -576,14 +580,17 @@ defmodule OrchardConsole.OverviewLiveTest do
       refute has_element?(view, "#overview-quickstart-action-run-test-request")
       refute has_element?(view, "#overview-quickstart-action-create-api-key")
 
-      # Step 5 is current with open-guide button and current emphasis
+      # Step 5 is current with guide-open dispatch button and current emphasis
       assert has_element?(view, "#overview-quickstart-action-connect-your-tools")
 
-      assert view |> element("#overview-quickstart-action-connect-your-tools") |> render() =~
-               ~s(data-quickstart-action="open-guide")
+      step_5_action =
+        view |> element("#overview-quickstart-action-connect-your-tools") |> render()
 
-      assert view |> element("#overview-quickstart-action-connect-your-tools") |> render() =~
-               ~s(data-quickstart-action-emphasis="current")
+      assert step_5_action =~ "orchard:quickstart-guide:open"
+      assert step_5_action =~ "#overview-quickstart-guide"
+      refute step_5_action =~ ~s(data-quickstart-action="open-guide")
+
+      assert step_5_action =~ ~s(data-quickstart-action-emphasis="current")
     end
 
     test "goes straight from hydrating to compact completed for returning completed users", %{
