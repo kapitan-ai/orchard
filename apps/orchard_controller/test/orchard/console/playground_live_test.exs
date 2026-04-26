@@ -59,16 +59,22 @@ defmodule OrchardConsole.PlaygroundLiveTest do
 
     test "shows error when no models available", %{conn: conn} do
       stub_models([])
-      {:ok, _view, html} = live(conn, "/console/playground")
+      {:ok, view, html} = live(conn, "/console/playground")
 
       assert html =~ "No active models available."
+      assert html =~ "playground-models-empty"
+      assert html =~ "Download and import a model from Model Hub"
+      assert has_element?(view, ~s|#playground-browse-model-hub[href="/console/model-hub"]|)
+      assert html =~ "Browse Model Hub"
     end
 
     test "shows error when model loading fails", %{conn: conn} do
       stub_models(:error)
-      {:ok, _view, html} = live(conn, "/console/playground")
+      {:ok, view, html} = live(conn, "/console/playground")
 
       assert html =~ "Active model list unavailable."
+      assert html =~ "playground-models-error"
+      refute has_element?(view, "#playground-browse-model-hub")
     end
 
     test "has correct page title and nav", %{conn: conn} do

@@ -481,13 +481,23 @@ defmodule OrchardConsole.ModelHubLive do
                   {String.slice(@download_result[:version] || "", 0..11)}
                 </span>
               </p>
-              <.link
-                id="model-hub-download-models-link"
-                navigate={~p"/console/models"}
-                class="inline-block text-sm font-medium text-forest-600 hover:text-forest-700 dark:text-emerald-400 dark:hover:text-emerald-300"
-              >
-                View in Models &rarr;
-              </.link>
+              <div class="flex flex-wrap items-center gap-3">
+                <.link
+                  :if={@download_result[:state] == :active}
+                  id="model-hub-download-playground-link"
+                  navigate={~p"/console/playground"}
+                  class="inline-flex items-center rounded-md bg-forest-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-forest-700 dark:bg-emerald-600 dark:hover:bg-emerald-700"
+                >
+                  Open Playground &rarr;
+                </.link>
+                <.link
+                  id="model-hub-download-models-link"
+                  navigate={~p"/console/models"}
+                  class="inline-block text-sm font-medium text-forest-600 hover:text-forest-700 dark:text-emerald-400 dark:hover:text-emerald-300"
+                >
+                  View in Models &rarr;
+                </.link>
+              </div>
             </div>
           </div>
 

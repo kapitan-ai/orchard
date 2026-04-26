@@ -632,9 +632,28 @@ defmodule OrchardConsole.PlaygroundLive do
 
           <div class="space-y-4">
             <.state_message
-              :if={@models_status in [:empty, :error]}
+              :if={@models_status == :empty}
+              id="playground-models-empty"
+              kind={:empty}
+              layout={:compact}
+              title={@models_error}
+              body="Download and import a model from Model Hub, then return here to send your first test message."
+            >
+              <:action>
+                <.link
+                  id="playground-browse-model-hub"
+                  navigate={~p"/console/model-hub"}
+                  class="inline-flex items-center rounded-md bg-navy px-3 py-1.5 text-xs font-medium text-white hover:bg-navy-700 dark:bg-sky-500 dark:hover:bg-sky-400"
+                >
+                  Browse Model Hub
+                </.link>
+              </:action>
+            </.state_message>
+
+            <.state_message
+              :if={@models_status == :error}
               id="playground-models-error"
-              kind={if @models_status == :empty, do: :empty, else: :error}
+              kind={:error}
               layout={:compact}
               title={@models_error}
             />

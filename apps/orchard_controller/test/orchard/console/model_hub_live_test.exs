@@ -892,10 +892,45 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
       assert html =~ "abc123def456"
       assert has_element?(view, "#model-hub-download-models-link")
+
+      assert has_element?(
+               view,
+               ~s|#model-hub-download-playground-link[href="/console/playground"]|
+             )
+
       # Button should be re-enabled
       refute has_element?(view, "#model-hub-download-button[disabled]")
       # Progress should be gone
       refute html =~ "model-hub-download-progress"
+    end
+
+    test ":download_finished {:ok, ...} omits Playground CTA when model is not active", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      _results = load_initial_results_and_detail(view)
+
+      view |> element("#model-hub-download-button") |> render_click()
+      download_ref = assert_download_started()
+
+      send_download_started(download_ref, %{
+        repo_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        revision: "abc123",
+        total_files: 2,
+        total_bytes: 1024
+      })
+
+      send_download_success(download_ref, %{
+        model_id: "mlx-community/Llama-3.2-1B-Instruct-4bit",
+        version: "abc123def456",
+        state: :registered
+      })
+
+      html = render(view)
+      assert html =~ "model-hub-download-complete"
+      assert html =~ "Model imported successfully."
+      assert has_element?(view, "#model-hub-download-models-link")
+      refute has_element?(view, "#model-hub-download-playground-link")
     end
 
     test ":download_finished {:error, ...} shows error with retry", %{conn: conn} do
@@ -1158,13 +1193,14 @@ defmodule OrchardConsole.ModelHubLiveTest do
 
       # Unmount and remount
       stop_view(view)
-      {:ok, _remounted_view, html} = live(conn, "/console/model-hub")
+      {:ok, remounted_view, html} = live(conn, "/console/model-hub")
 
       # Success panel visible immediately from rehydration
       assert html =~ "model-hub-download-complete"
       assert html =~ "Model is now active."
       assert html =~ "mlx-community/Llama-3.2-1B-Instruct-4bit"
       assert html =~ "abc123def456"
+      assert has_element?(remounted_view, "#model-hub-download-playground-link")
       refute html =~ "model-hub-download-progress"
     end
 
