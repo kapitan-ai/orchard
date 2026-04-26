@@ -750,7 +750,10 @@ def _derive_server_max_workers(generation_config: Any | None) -> int:
     concurrency = 1
     if mode == "batch":
         try:
-            concurrency = int(configured)
+            if configured == "auto":
+                concurrency = int(getattr(generation_config, "auto_max_concurrent_generations", 1))
+            else:
+                concurrency = int(configured)
         except (TypeError, ValueError):
             concurrency = 1
 

@@ -362,8 +362,9 @@ default_node_runtime = fn root ->
     worker_prefix_cache_mode: "kv",
     worker_prefix_cache_max_entries: 8,
     worker_prefix_cache_max_bytes: 0,
-    worker_generation_mode: "stream",
-    worker_max_concurrent_requests_per_model: 1,
+    worker_generation_mode: "batch",
+    worker_max_concurrent_requests_per_model: "auto",
+    worker_auto_max_concurrent_requests_per_model: 3,
     worker_memory_budget_mode: "observe",
     worker_memory_budget_utilization: 0.90,
     worker_memory_budget_overhead_bytes: 1_073_741_824,
@@ -750,7 +751,7 @@ if config_env() == :prod do
                end).(),
             worker_generation_mode:
               (fn ->
-                 mode = System.get_env("ORCHARD_WORKER_GENERATION_MODE") || "stream"
+                 mode = System.get_env("ORCHARD_WORKER_GENERATION_MODE") || "batch"
 
                  unless mode in ["stream", "batch"] do
                    raise "ORCHARD_WORKER_GENERATION_MODE must be stream|batch, got: #{inspect(mode)}"
@@ -760,10 +761,27 @@ if config_env() == :prod do
                end).(),
             worker_max_concurrent_requests_per_model:
               (fn ->
-                 v = env_int.("ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL", "1")
+                 value =
+                   System.get_env("ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL") || "auto"
+
+                 if value == "auto" do
+                   "auto"
+                 else
+                   v = env_int.("ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL", "auto")
+
+                   if v < 1 do
+                     raise "ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL must be auto or >= 1, got: #{v}"
+                   end
+
+                   v
+                 end
+               end).(),
+            worker_auto_max_concurrent_requests_per_model:
+              (fn ->
+                 v = env_int.("ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL", "3")
 
                  if v < 1 do
-                   raise "ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL must be >= 1, got: #{v}"
+                   raise "ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL must be >= 1, got: #{v}"
                  end
 
                  v

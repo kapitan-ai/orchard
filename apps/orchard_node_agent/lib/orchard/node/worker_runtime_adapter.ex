@@ -34,8 +34,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
 
   @poll_interval_ms 50
   @rpc_timeout_ms 1_000
-  @default_generation_mode "stream"
-  @default_max_concurrent_generations 1
+  @default_generation_mode "batch"
+  @default_max_concurrent_generations "auto"
+  @default_auto_max_concurrent_generations 3
   @default_memory_budget_mode "observe"
   @default_memory_budget_utilization 0.90
   @default_memory_budget_overhead_bytes 1_073_741_824
@@ -215,6 +216,13 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
         Node.worker_max_concurrent_requests_per_model()
       )
 
+    auto_max_concurrent_generations =
+      Keyword.get(
+        opts,
+        :auto_max_concurrent_generations,
+        Node.worker_auto_max_concurrent_requests_per_model()
+      )
+
     memory_budget_mode =
       Keyword.get(opts, :memory_budget_mode, Node.worker_memory_budget_mode())
 
@@ -238,6 +246,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       shutdown_timeout_ms: shutdown_timeout_ms,
       generation_mode: generation_mode,
       max_concurrent_generations: max_concurrent_generations,
+      auto_max_concurrent_generations: auto_max_concurrent_generations,
       memory_budget_mode: memory_budget_mode,
       memory_budget_utilization: memory_budget_utilization,
       memory_budget_overhead_bytes: memory_budget_overhead_bytes,
@@ -268,6 +277,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           prefix_cache_max_bytes: prefix_cache_max_bytes,
           generation_mode: generation_mode,
           max_concurrent_generations: max_concurrent_generations,
+          auto_max_concurrent_generations: auto_max_concurrent_generations,
           memory_budget_mode: memory_budget_mode,
           memory_budget_utilization: memory_budget_utilization,
           memory_budget_overhead_bytes: memory_budget_overhead_bytes
@@ -529,6 +539,13 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     max_concurrent_generations =
       Keyword.get(opts, :max_concurrent_generations, @default_max_concurrent_generations)
 
+    auto_max_concurrent_generations =
+      Keyword.get(
+        opts,
+        :auto_max_concurrent_generations,
+        @default_auto_max_concurrent_generations
+      )
+
     memory_budget_mode = Keyword.get(opts, :memory_budget_mode, @default_memory_budget_mode)
 
     memory_budget_utilization =
@@ -558,6 +575,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     if extended_generation_memory_flags?(
          generation_mode,
          max_concurrent_generations,
+         auto_max_concurrent_generations,
          memory_budget_mode,
          normalized_memory_budget_utilization,
          memory_budget_overhead_bytes
@@ -567,7 +585,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
           "--generation-mode",
           to_string(generation_mode),
           "--max-concurrent-generations",
-          Integer.to_string(max_concurrent_generations),
+          to_string(max_concurrent_generations),
+          "--auto-max-concurrent-generations",
+          Integer.to_string(auto_max_concurrent_generations),
           "--memory-budget-mode",
           to_string(memory_budget_mode),
           "--memory-budget-utilization",
@@ -620,12 +640,14 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   defp extended_generation_memory_flags?(
          generation_mode,
          max_concurrent_generations,
+         auto_max_concurrent_generations,
          memory_budget_mode,
          memory_budget_utilization,
          memory_budget_overhead_bytes
        ) do
     generation_mode != @default_generation_mode or
       max_concurrent_generations != @default_max_concurrent_generations or
+      auto_max_concurrent_generations != @default_auto_max_concurrent_generations or
       memory_budget_mode != @default_memory_budget_mode or
       memory_budget_utilization != @default_memory_budget_utilization or
       memory_budget_overhead_bytes != @default_memory_budget_overhead_bytes

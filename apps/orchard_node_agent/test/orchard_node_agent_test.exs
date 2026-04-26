@@ -1157,6 +1157,7 @@ defmodule OrchardNodeAgentTest do
     assert String.ends_with?(runtime[:worker_log_dir], "/tmp/test/logs/workers")
     assert runtime[:worker_generation_mode] == "stream"
     assert runtime[:worker_max_concurrent_requests_per_model] == 1
+    assert runtime[:worker_auto_max_concurrent_requests_per_model] == 3
     assert runtime[:worker_memory_budget_mode] == "observe"
     assert runtime[:worker_memory_budget_utilization] == 0.90
     assert runtime[:worker_memory_budget_overhead_bytes] == 1_073_741_824
@@ -1173,6 +1174,7 @@ defmodule OrchardNodeAgentTest do
     assert is_binary(Node.worker_log_path(@test_model_id, @test_version))
     assert Node.worker_generation_mode() == "stream"
     assert Node.worker_max_concurrent_requests_per_model() == 1
+    assert Node.worker_auto_max_concurrent_requests_per_model() == 3
     assert Node.effective_worker_request_limit() == 1
     assert Node.worker_memory_budget_mode() == "observe"
     assert Node.worker_memory_budget_utilization() == 0.90

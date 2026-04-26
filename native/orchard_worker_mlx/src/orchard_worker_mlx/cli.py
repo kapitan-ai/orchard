@@ -12,6 +12,18 @@ from orchard_worker_mlx.service import serve
 _LOG_FORMAT = "[%(levelname)s] %(name)s %(message)s"
 
 
+def _positive_int_or_auto(value: str) -> int | str:
+    if value == "auto":
+        return "auto"
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a positive integer or 'auto'") from exc
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer or 'auto'")
+    return parsed
+
+
 def _configure_logging(log_file: str | None = None) -> None:
     """Configure stdlib logging with stdout stream + optional file handler."""
     root = logging.getLogger()
@@ -35,6 +47,7 @@ def _configure_logging(log_file: str | None = None) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    argv_list = list(argv) if argv is not None else sys.argv[1:]
     parser = argparse.ArgumentParser(
         prog="orchard-worker-mlx",
         description="Orchard MLX worker runtime entrypoint.",
@@ -81,19 +94,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--generation-mode",
         choices=["stream", "batch"],
-        default="stream",
+        default="batch",
         help=(
             "generation runtime mode "
-            "(default: stream; batch enables real concurrent generation in the mlx worker path)"
+            "(default: batch; enables real concurrent generation in the mlx worker path)"
         ),
     )
     parser.add_argument(
         "--max-concurrent-generations",
-        type=int,
-        default=1,
+        type=_positive_int_or_auto,
+        default="auto",
         help=(
             "maximum concurrent generations in batch mode "
-            "(default: 1; applies when --generation-mode=batch)"
+            "(default: auto; applies when --generation-mode=batch)"
+        ),
+    )
+    parser.add_argument(
+        "--auto-max-concurrent-generations",
+        type=int,
+        default=3,
+        help=(
+            "upper bound for auto concurrency in batch mode "
+            "(default: 3; applies when --max-concurrent-generations=auto)"
         ),
     )
     parser.add_argument(
@@ -114,11 +136,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=1_073_741_824,
         help="fixed memory-budget overhead in bytes (default: 1073741824)",
     )
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv_list)
 
     if args.version:
         print(__version__)
         return 0
+
+    if args.backend == "stub" and "--generation-mode" not in argv_list:
+        args.generation_mode = "stream"
 
     if args.backend == "stub" and args.generation_mode == "batch":
         parser.error("backend=stub does not support --generation-mode=batch")
@@ -141,6 +166,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         generation_config = GenerationRuntimeConfig(
             mode=args.generation_mode,
             max_concurrent_generations=args.max_concurrent_generations,
+            auto_max_concurrent_generations=args.auto_max_concurrent_generations,
         )
         memory_budget_config = MemoryBudgetConfig(
             mode=args.memory_budget_mode,

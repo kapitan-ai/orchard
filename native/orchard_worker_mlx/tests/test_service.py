@@ -336,6 +336,15 @@ def test_derive_server_max_workers_scales_with_batch_concurrency() -> None:
     assert _derive_server_max_workers(config) == 8
 
 
+def test_derive_server_max_workers_scales_with_auto_batch_cap() -> None:
+    config = GenerationRuntimeConfig(
+        mode="batch",
+        max_concurrent_generations="auto",
+        auto_max_concurrent_generations=6,
+    )
+    assert _derive_server_max_workers(config) == 8
+
+
 # ---------------------------------------------------------------------------
 # Test: progress and usage event mapping
 # ---------------------------------------------------------------------------

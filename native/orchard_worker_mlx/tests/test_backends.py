@@ -23,6 +23,7 @@ from orchard_worker_mlx.backends import (
 from orchard_worker_mlx.model_loader import (
     GenerationRuntimeConfig,
     MemoryBudgetConfig,
+    MemoryBudgetStatus,
     MLXEnvironmentHealth,
     PrefixCacheLoadConfig,
 )
@@ -239,6 +240,7 @@ def _make_fake_session(
         tokenizer_path=Path(bundle_path) / "tokenizer.json",
         model=MagicMock(),
         tokenizer=MagicMock(),
+        generation_config=GenerationRuntimeConfig(mode="stream"),
     )
 
 
@@ -618,7 +620,7 @@ def test_mlx_backend_load_passes_generation_and_memory_config_to_loader() -> Non
             bundle_path=kwargs["model_path"],
         )
 
-    generation_config = GenerationRuntimeConfig(mode="batch", max_concurrent_generations=3)
+    generation_config = GenerationRuntimeConfig(mode="stream", max_concurrent_generations=3)
     memory_budget_config = MemoryBudgetConfig(
         mode="observe",
         utilization=0.75,
@@ -715,6 +717,54 @@ def test_mlx_backend_unload_with_active_generation_raises() -> None:
     backend.unload_model()
     assert backend.status()["loaded"] is False
     assert len(unloader_calls) == 1
+
+
+def test_mlx_backend_auto_batch_config_resolves_concurrency_from_memory_budget() -> None:
+    session = _make_fake_session(model_id="m", version="v", bundle_path="/fake/path")
+    session.manifest = replace(session.manifest, size_bytes=2_500_000_000)
+    session.generation_config = GenerationRuntimeConfig(
+        mode="batch",
+        max_concurrent_generations="auto",
+        auto_max_concurrent_generations=4,
+        auto_concurrency_request_budget_bytes=2_000_000_000,
+    )
+    session.memory_budget_status = MemoryBudgetStatus(
+        mode="observe",
+        budget_available=True,
+        headroom_available=True,
+        status_code="ok",
+        target_working_set_bytes=10_000_000_000,
+        overhead_bytes=1_000_000_000,
+        resident_memory_bytes=0,
+    )
+
+    class FakeBatchRuntime:
+        def __init__(self, _session) -> None:
+            self._deps = MagicMock(name="batch_deps")
+
+        def generation_deps(self):
+            return self._deps
+
+        def close(self) -> None:
+            return None
+
+    backend = MLXBackend(
+        session_loader=lambda **_kwargs: session,
+        session_unloader=lambda _session: None,
+        generation_config=session.generation_config,
+        batch_runtime_factory=lambda loaded_session: FakeBatchRuntime(loaded_session),
+    )
+
+    backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    backend.start_generation()
+    backend.start_generation()
+    backend.start_generation()
+
+    with pytest.raises(BackendError) as exc_info:
+        backend.start_generation()
+
+    assert exc_info.value.code == "worker_busy"
 
 
 def test_mlx_backend_unload_keeps_loaded_when_batch_runtime_close_fails() -> None:

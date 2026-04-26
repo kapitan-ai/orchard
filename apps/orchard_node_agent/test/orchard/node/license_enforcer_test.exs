@@ -38,8 +38,9 @@ defmodule Orchard.Node.LicenseEnforcerTest do
     defaults = M1RuntimeDefaults.node_runtime("/tmp/orchard")
 
     assert defaults[:license_enforcement] == :warn
-    assert defaults[:worker_generation_mode] == "stream"
-    assert defaults[:worker_max_concurrent_requests_per_model] == 1
+    assert defaults[:worker_generation_mode] == "batch"
+    assert defaults[:worker_max_concurrent_requests_per_model] == "auto"
+    assert defaults[:worker_auto_max_concurrent_requests_per_model] == 3
     assert defaults[:worker_memory_budget_mode] == "observe"
     assert defaults[:worker_memory_budget_utilization] == 0.90
     assert defaults[:worker_memory_budget_overhead_bytes] == 1_073_741_824

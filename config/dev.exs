@@ -237,6 +237,57 @@ worker_prefix_cache_mode =
      mode
    end).()
 
+worker_generation_mode =
+  (fn ->
+     mode =
+       System.get_env("ORCHARD_WORKER_GENERATION_MODE") ||
+         Keyword.fetch!(node_runtime_defaults, :worker_generation_mode)
+
+     unless mode in ["stream", "batch"] do
+       raise "ORCHARD_WORKER_GENERATION_MODE must be stream|batch, got: #{inspect(mode)}"
+     end
+
+     mode
+   end).()
+
+worker_max_concurrent_requests_per_model =
+  (fn ->
+     value =
+       System.get_env("ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL") ||
+         Keyword.fetch!(node_runtime_defaults, :worker_max_concurrent_requests_per_model)
+
+     if value == "auto" do
+       "auto"
+     else
+       v =
+         case value do
+           n when is_integer(n) -> n
+           n -> env_int.("ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL", n)
+         end
+
+       if v < 1 do
+         raise "ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL must be auto or >= 1, got: #{v}"
+       end
+
+       v
+     end
+   end).()
+
+worker_auto_max_concurrent_requests_per_model =
+  (fn ->
+     v =
+       env_int.(
+         "ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL",
+         Keyword.fetch!(node_runtime_defaults, :worker_auto_max_concurrent_requests_per_model)
+       )
+
+     if v < 1 do
+       raise "ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL must be >= 1, got: #{v}"
+     end
+
+     v
+   end).()
+
 config :orchard_controller, Orchard.Repo,
   username: System.get_env("PGUSER") || "postgres",
   password: System.get_env("PGPASSWORD") || "postgres",
@@ -269,6 +320,10 @@ config :orchard_node_agent,
         System.get_env("ORCHARD_WORKER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
       worker_prefix_cache_mode: worker_prefix_cache_mode,
+      worker_generation_mode: worker_generation_mode,
+      worker_max_concurrent_requests_per_model: worker_max_concurrent_requests_per_model,
+      worker_auto_max_concurrent_requests_per_model:
+        worker_auto_max_concurrent_requests_per_model,
       license_enforcement: :off
     )
 

@@ -18,6 +18,7 @@ from orchard_worker_mlx.model_loader import (
     GenerationRuntimeConfig,
     LoadedModelSession,
     MemoryBudgetConfig,
+    MemoryBudgetStatus,
     MLXDeps,
     MLXEnvironmentHealth,
     MLXProbeDeps,
@@ -969,12 +970,66 @@ def test_prefix_cache_config_validation() -> None:
 
 
 def test_generation_runtime_config_validation() -> None:
+    assert GenerationRuntimeConfig().mode == "batch"
+    assert GenerationRuntimeConfig().max_concurrent_generations == "auto"
+    assert GenerationRuntimeConfig().auto_max_concurrent_generations == 3
+
     with pytest.raises(ValueError):
         GenerationRuntimeConfig(mode="invalid")
     with pytest.raises(ValueError):
         GenerationRuntimeConfig(max_concurrent_generations=0)
     with pytest.raises(ValueError):
         GenerationRuntimeConfig(max_concurrent_generations=True)
+    with pytest.raises(ValueError):
+        GenerationRuntimeConfig(max_concurrent_generations="bad")
+    with pytest.raises(ValueError):
+        GenerationRuntimeConfig(auto_max_concurrent_generations=0)
+    with pytest.raises(ValueError):
+        GenerationRuntimeConfig(auto_concurrency_request_budget_bytes=0)
+
+
+def test_generation_runtime_config_resolves_auto_concurrency_from_memory_budget() -> None:
+    manifest = BundleManifest(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        format="mlx",
+        artifact_layout="directory",
+        entrypoint="weights/",
+        sha256="abcdef" * 10 + "abcdef1234",
+        max_context_tokens=4096,
+        capabilities=("chat",),
+        tokenizer=TokenizerSpec(kind="huggingface_tokenizer_json", path="tokenizer.json"),
+        runtime_requirements=RuntimeRequirementsSpec(adapter="mlx_lm", min_agent_capability="mlx"),
+        size_bytes=2_500_000_000,
+    )
+    status = MemoryBudgetStatus(
+        mode="observe",
+        budget_available=True,
+        headroom_available=True,
+        status_code="ok",
+        target_working_set_bytes=10_000_000_000,
+        overhead_bytes=1_000_000_000,
+        resident_memory_bytes=0,
+    )
+
+    config = GenerationRuntimeConfig(
+        mode="batch",
+        max_concurrent_generations="auto",
+        auto_max_concurrent_generations=4,
+        auto_concurrency_request_budget_bytes=2_000_000_000,
+    )
+
+    assert config.resolved_max_concurrent_generations(manifest, status) == 3
+    assert (
+        GenerationRuntimeConfig(mode="stream").resolved_max_concurrent_generations(manifest, status)
+        == 1
+    )
+    assert (
+        GenerationRuntimeConfig(
+            mode="batch", max_concurrent_generations=2
+        ).resolved_max_concurrent_generations(manifest, status)
+        == 2
+    )
 
 
 def test_memory_budget_config_validation() -> None:

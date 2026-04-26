@@ -536,10 +536,18 @@ class MLXBackend:
             if not self._generation_runner_injected and session.generation_config.mode == "batch":
                 try:
                     batch_runtime = self._batch_runtime_factory(session)
-                    max_concurrent_requests = session.generation_config.max_concurrent_generations
+                    max_concurrent_requests = (
+                        session.generation_config.resolved_max_concurrent_generations(
+                            session.manifest,
+                            session.memory_budget_status,
+                        )
+                    )
                     logger.info(
-                        "mlx batch generation enabled max_concurrent_generations=%d",
+                        "mlx batch generation enabled max_concurrent_generations=%d "
+                        "configured=%s auto_cap=%d",
                         max_concurrent_requests,
+                        session.generation_config.max_concurrent_generations,
+                        session.generation_config.auto_max_concurrent_generations,
                     )
                 except Exception as exc:
                     try:

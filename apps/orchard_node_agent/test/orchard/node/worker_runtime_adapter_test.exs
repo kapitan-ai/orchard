@@ -231,6 +231,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
     assert flag_value(args, "--generation-mode") == "batch"
     assert flag_value(args, "--max-concurrent-generations") == "3"
+    assert flag_value(args, "--auto-max-concurrent-generations") == "3"
     assert flag_value(args, "--memory-budget-mode") == "disabled"
     assert flag_value(args, "--memory-budget-utilization") == "0.75"
     assert flag_value(args, "--memory-budget-overhead-bytes") == "268435456"
@@ -693,6 +694,24 @@ defmodule Orchard.NodeTest do
     assert Node.effective_worker_request_limit() == 3
   end
 
+  test "effective_worker_request_limit uses auto upper bound for WorkerRuntimeAdapter batch admission",
+       %{
+         previous_runtime: previous_runtime
+       } do
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.merge(previous_runtime,
+        runtime_adapter_impl: Orchard.Node.WorkerRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: "auto",
+        worker_auto_max_concurrent_requests_per_model: 4
+      )
+    )
+
+    assert Node.effective_worker_request_limit() == 4
+  end
+
   test "effective_worker_request_limit keeps non-worker adapters single-flight without explicit opt-in",
        %{
          previous_runtime: previous_runtime
@@ -779,6 +798,20 @@ defmodule Orchard.NodeTest do
 
     assert_raise RuntimeError, ~r/invalid worker_max_concurrent_requests_per_model/, fn ->
       Node.worker_max_concurrent_requests_per_model()
+    end
+  end
+
+  test "worker_auto_max_concurrent_requests_per_model fails fast on invalid values", %{
+    previous_runtime: previous_runtime
+  } do
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.merge(previous_runtime, worker_auto_max_concurrent_requests_per_model: 0)
+    )
+
+    assert_raise RuntimeError, ~r/invalid worker_auto_max_concurrent_requests_per_model/, fn ->
+      Node.worker_auto_max_concurrent_requests_per_model()
     end
   end
 

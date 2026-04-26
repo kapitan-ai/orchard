@@ -7,6 +7,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     "ORCHARD_SUPPORT_ROOT",
     "ORCHARD_WORKER_GENERATION_MODE",
     "ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL",
+    "ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL",
     "ORCHARD_WORKER_MEMORY_BUDGET_MODE",
     "ORCHARD_WORKER_MEMORY_BUDGET_UTILIZATION",
     "ORCHARD_WORKER_MEMORY_BUDGET_OVERHEAD_BYTES"
@@ -41,10 +42,20 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
 
   test "runtime.exs rejects invalid ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL=0 in prod" do
     assert_raise RuntimeError,
-                 ~r/ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL must be >= 1/,
+                 ~r/ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL must be auto or >= 1/,
                  fn ->
                    read_runtime_config!(%{
                      "ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL" => "0"
+                   })
+                 end
+  end
+
+  test "runtime.exs rejects invalid ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL=0 in prod" do
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL must be >= 1/,
+                 fn ->
+                   read_runtime_config!(%{
+                     "ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL" => "0"
                    })
                  end
   end
@@ -71,8 +82,9 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
       |> Keyword.fetch!(:orchard_node_agent)
       |> Keyword.fetch!(:runtime)
 
-    assert runtime[:worker_generation_mode] == "stream"
-    assert runtime[:worker_max_concurrent_requests_per_model] == 1
+    assert runtime[:worker_generation_mode] == "batch"
+    assert runtime[:worker_max_concurrent_requests_per_model] == "auto"
+    assert runtime[:worker_auto_max_concurrent_requests_per_model] == 3
     assert runtime[:worker_memory_budget_mode] == "observe"
     assert runtime[:worker_memory_budget_utilization] == 0.90
     assert runtime[:worker_memory_budget_overhead_bytes] == 1_073_741_824
@@ -83,6 +95,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
       read_runtime_config!(%{
         "ORCHARD_WORKER_GENERATION_MODE" => "batch",
         "ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL" => "2",
+        "ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL" => "4",
         "ORCHARD_WORKER_MEMORY_BUDGET_MODE" => "observe",
         "ORCHARD_WORKER_MEMORY_BUDGET_UTILIZATION" => "0.75",
         "ORCHARD_WORKER_MEMORY_BUDGET_OVERHEAD_BYTES" => "268435456"
@@ -95,6 +108,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
 
     assert runtime[:worker_generation_mode] == "batch"
     assert runtime[:worker_max_concurrent_requests_per_model] == 2
+    assert runtime[:worker_auto_max_concurrent_requests_per_model] == 4
     assert runtime[:worker_memory_budget_mode] == "observe"
     assert runtime[:worker_memory_budget_utilization] == 0.75
     assert runtime[:worker_memory_budget_overhead_bytes] == 268_435_456

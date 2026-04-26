@@ -87,6 +87,7 @@ DEFAULT_PREFIX_CACHE_LOAD_CONFIG = PrefixCacheLoadConfig()
 
 _VALID_GENERATION_MODES = frozenset({"stream", "batch"})
 _VALID_MEMORY_BUDGET_MODES = frozenset({"disabled", "observe"})
+DEFAULT_AUTO_CONCURRENCY_REQUEST_BUDGET_BYTES = 2 * 1024 * 1024 * 1024
 
 
 @dataclass(slots=True, frozen=True)
@@ -97,25 +98,82 @@ class GenerationRuntimeConfig:
     consumed by backend admission/runtime wiring to select stream vs batch mode.
     """
 
-    mode: str = "stream"
-    max_concurrent_generations: int = 1
+    mode: str = "batch"
+    max_concurrent_generations: int | str = "auto"
+    auto_max_concurrent_generations: int = 3
+    auto_concurrency_request_budget_bytes: int = DEFAULT_AUTO_CONCURRENCY_REQUEST_BUDGET_BYTES
 
     def __post_init__(self) -> None:
         if self.mode not in _VALID_GENERATION_MODES:
             raise ValueError(
                 f"mode must be one of {sorted(_VALID_GENERATION_MODES)}, got {self.mode!r}"
             )
-        if not isinstance(self.max_concurrent_generations, int) or isinstance(
-            self.max_concurrent_generations, bool
+        if self.max_concurrent_generations != "auto" and (
+            not isinstance(self.max_concurrent_generations, int)
+            or isinstance(self.max_concurrent_generations, bool)
         ):
             raise ValueError(
-                "max_concurrent_generations must be int, got "
+                "max_concurrent_generations must be int or 'auto', got "
                 f"{type(self.max_concurrent_generations).__name__}"
             )
-        if self.max_concurrent_generations < 1:
+        if isinstance(self.max_concurrent_generations, int) and self.max_concurrent_generations < 1:
             raise ValueError(
                 f"max_concurrent_generations must be >= 1, got {self.max_concurrent_generations}"
             )
+        if not isinstance(self.auto_max_concurrent_generations, int) or isinstance(
+            self.auto_max_concurrent_generations, bool
+        ):
+            raise ValueError(
+                "auto_max_concurrent_generations must be int, got "
+                f"{type(self.auto_max_concurrent_generations).__name__}"
+            )
+        if self.auto_max_concurrent_generations < 1:
+            raise ValueError(
+                "auto_max_concurrent_generations must be >= 1, got "
+                f"{self.auto_max_concurrent_generations}"
+            )
+        if not isinstance(self.auto_concurrency_request_budget_bytes, int) or isinstance(
+            self.auto_concurrency_request_budget_bytes, bool
+        ):
+            raise ValueError(
+                "auto_concurrency_request_budget_bytes must be int, got "
+                f"{type(self.auto_concurrency_request_budget_bytes).__name__}"
+            )
+        if self.auto_concurrency_request_budget_bytes < 1:
+            raise ValueError(
+                "auto_concurrency_request_budget_bytes must be >= 1, got "
+                f"{self.auto_concurrency_request_budget_bytes}"
+            )
+
+    def resolved_max_concurrent_generations(
+        self,
+        manifest: BundleManifest,
+        memory_budget_status: MemoryBudgetStatus,
+    ) -> int:
+        if self.mode != "batch":
+            return 1
+
+        if isinstance(self.max_concurrent_generations, int):
+            return self.max_concurrent_generations
+
+        target_bytes = memory_budget_status.target_working_set_bytes
+        overhead_bytes = max(memory_budget_status.overhead_bytes, 0)
+        resident_bytes = _positive_int_or_none(manifest.resident_memory_bytes)
+        if resident_bytes is None:
+            resident_bytes = _positive_int_or_none(manifest.size_bytes)
+
+        if target_bytes <= 0 or resident_bytes is None:
+            return 1
+
+        headroom_bytes = max(target_bytes - (resident_bytes + overhead_bytes), 0)
+        estimated = headroom_bytes // self.auto_concurrency_request_budget_bytes
+        return min(self.auto_max_concurrent_generations, max(1, int(estimated)))
+
+
+def _positive_int_or_none(value: int | None) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
 
 
 @dataclass(slots=True, frozen=True)

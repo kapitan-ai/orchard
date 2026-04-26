@@ -15,8 +15,9 @@ defmodule Orchard.Node do
   @default_worker_prefix_cache_mode "kv"
   @default_worker_prefix_cache_max_entries 8
   @default_worker_prefix_cache_max_bytes 0
-  @default_worker_generation_mode "stream"
-  @default_worker_max_concurrent_requests_per_model 1
+  @default_worker_generation_mode "batch"
+  @default_worker_max_concurrent_requests_per_model "auto"
+  @default_worker_auto_max_concurrent_requests_per_model 3
   @default_worker_memory_budget_mode "observe"
   @default_worker_memory_budget_utilization 0.90
   @default_worker_memory_budget_overhead_bytes 1_073_741_824
@@ -156,8 +157,33 @@ defmodule Orchard.Node do
            :worker_max_concurrent_requests_per_model,
            @default_worker_max_concurrent_requests_per_model
          ) do
-      n when is_integer(n) and n >= 1 -> n
-      other -> raise "invalid worker_max_concurrent_requests_per_model: #{inspect(other)}"
+      "auto" ->
+        "auto"
+
+      n when is_integer(n) and n >= 1 ->
+        n
+
+      n when is_binary(n) ->
+        parse_positive_int_string(n, :worker_max_concurrent_requests_per_model)
+
+      other ->
+        raise "invalid worker_max_concurrent_requests_per_model: #{inspect(other)}"
+    end
+  end
+
+  def worker_auto_max_concurrent_requests_per_model do
+    case runtime_value(
+           :worker_auto_max_concurrent_requests_per_model,
+           @default_worker_auto_max_concurrent_requests_per_model
+         ) do
+      n when is_integer(n) and n >= 1 ->
+        n
+
+      n when is_binary(n) ->
+        parse_positive_int_string(n, :worker_auto_max_concurrent_requests_per_model)
+
+      other ->
+        raise "invalid worker_auto_max_concurrent_requests_per_model: #{inspect(other)}"
     end
   end
 
@@ -175,10 +201,21 @@ defmodule Orchard.Node do
     end
   end
 
-  defp request_limit_for_generation_mode("batch"),
-    do: worker_max_concurrent_requests_per_model()
+  defp request_limit_for_generation_mode("batch") do
+    case worker_max_concurrent_requests_per_model() do
+      "auto" -> worker_auto_max_concurrent_requests_per_model()
+      n -> n
+    end
+  end
 
   defp request_limit_for_generation_mode(_mode), do: 1
+
+  defp parse_positive_int_string(value, config_key) do
+    case Integer.parse(value) do
+      {n, ""} when n >= 1 -> n
+      _other -> raise "invalid #{config_key}: #{inspect(value)}"
+    end
+  end
 
   def worker_memory_budget_mode do
     case runtime_value(:worker_memory_budget_mode, @default_worker_memory_budget_mode) do

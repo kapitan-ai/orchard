@@ -169,7 +169,7 @@ def test_main_help_describes_real_batch_concurrency_in_mlx_path(capsys) -> None:
 
     assert exc_info.value.code == 0
     help_text = " ".join(capsys.readouterr().out.split())
-    assert "batch enables real concurrent generation in the mlx worker path" in help_text
+    assert "default: batch; enables real concurrent generation in the mlx worker path" in help_text
     assert "applies when --generation-mode=batch" in help_text
 
 
@@ -196,6 +196,8 @@ def test_main_passes_generation_and_memory_config_to_serve(monkeypatch) -> None:
                 "batch",
                 "--max-concurrent-generations",
                 "3",
+                "--auto-max-concurrent-generations",
+                "4",
                 "--memory-budget-mode",
                 "observe",
                 "--memory-budget-utilization",
@@ -218,6 +220,7 @@ def test_main_passes_generation_and_memory_config_to_serve(monkeypatch) -> None:
     assert prefix_cache_config.max_fingerprint_buffer_size == 16
     assert generation_config.mode == "batch"
     assert generation_config.max_concurrent_generations == 3
+    assert generation_config.auto_max_concurrent_generations == 4
     assert memory_budget_config.mode == "observe"
     assert memory_budget_config.utilization == 0.75
     assert memory_budget_config.overhead_bytes == 268_435_456
@@ -261,7 +264,8 @@ def test_main_uses_generation_and_memory_defaults(monkeypatch) -> None:
 
     assert prefix_cache_config.max_fingerprint_buffer_size == 8
     assert generation_config.mode == "stream"
-    assert generation_config.max_concurrent_generations == 1
+    assert generation_config.max_concurrent_generations == "auto"
+    assert generation_config.auto_max_concurrent_generations == 3
     assert memory_budget_config.mode == "observe"
     assert memory_budget_config.utilization == 0.90
     assert memory_budget_config.overhead_bytes == 1_073_741_824
