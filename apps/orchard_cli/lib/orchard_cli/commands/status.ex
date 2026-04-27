@@ -414,10 +414,29 @@ defmodule OrchardCLI.Commands.Status do
         parts -> " (" <> Enum.join(parts, ", ") <> ")"
       end
 
-    ["   License: #{status} — #{message}#{suffix}" | tracking_lines(license["tracking"])]
+    ([
+       "   License: #{status} — #{message}#{suffix}",
+       license_identity_line("License ID", license["license_id"]),
+       license_identity_line("Machine ID", license["machine_id"]),
+       license_identity_line("Licensee", license["licensee"]),
+       license_identity_line("Max machines", license["max_machines"])
+     ] ++ tracking_lines(license["tracking"]))
+    |> Enum.reject(&is_nil/1)
   end
 
   defp render_license_lines(_license), do: []
+
+  defp license_identity_line(_label, nil), do: nil
+
+  defp license_identity_line(label, value) when is_binary(value) do
+    case non_empty_string(value) do
+      nil -> nil
+      trimmed -> "   #{label}: #{trimmed}"
+    end
+  end
+
+  defp license_identity_line(label, value) when is_integer(value), do: "   #{label}: #{value}"
+  defp license_identity_line(_label, _value), do: nil
 
   defp tracking_lines(tracking) when is_map(tracking) do
     case format_tracking(tracking) do
@@ -519,9 +538,13 @@ defmodule OrchardCLI.Commands.Status do
     end
   end
 
-  # Extracted as a public helper for testability.
-  # CA cert path must be passed via transport_opts for Mint/Finch (Req 0.5.x).
-  @doc false
+  @doc """
+  Adds a CA certificate path to Req connection options for controller health probes.
+
+  Req 0.5.x passes CA certificate paths to Mint/Finch through nested
+  `:transport_opts`, so this helper preserves existing connection options while
+  adding `:cacertfile`.
+  """
   @spec add_ca_cert_connect_options(keyword(), String.t() | nil) :: keyword()
   def add_ca_cert_connect_options(opts, nil), do: opts
 

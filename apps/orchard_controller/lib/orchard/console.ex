@@ -30,10 +30,10 @@ defmodule OrchardConsole do
 
     sha = Orchard.BuildInfo.git_sha()
 
-    if sha not in ["unknown", ""] do
-      base <> " (" <> sha <> ")"
-    else
+    if sha in ["unknown", ""] do
       base
+    else
+      base <> " (" <> sha <> ")"
     end
   end
 
@@ -49,7 +49,8 @@ defmodule OrchardConsole do
 
     case OrchardConsole.Auth.authorize_live_session(session, config) do
       :ok ->
-        {:cont, socket}
+        {:cont,
+         Phoenix.Component.assign(socket, :license_status, OrchardConsole.LicenseStatus.fetch())}
 
       {:error, _reason} ->
         {:halt, Phoenix.LiveView.redirect(socket, to: "/console")}

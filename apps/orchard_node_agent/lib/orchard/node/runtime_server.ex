@@ -25,7 +25,8 @@ defmodule Orchard.Node.RuntimeServer do
                            :model_not_loaded,
                            :request_already_active,
                            :request_not_prepared,
-                           :worker_unavailable
+                           :worker_unavailable,
+                           :license_invalid
                          ])
 
   @spec get_status(StatusRequest.t(), GRPC.Server.Stream.t()) ::
@@ -140,6 +141,9 @@ defmodule Orchard.Node.RuntimeServer do
   defp normalize_failure_reason(:worker_unavailable),
     do: {"worker_unavailable", "worker process became unavailable"}
 
+  defp normalize_failure_reason(:license_invalid),
+    do: {"license_invalid", "node-agent license invalid"}
+
   defp normalize_failure_reason(reason),
     do: {"runtime_error", "runtime request failed: #{inspect(reason)}"}
 
@@ -163,7 +167,8 @@ defmodule Orchard.Node.RuntimeServer do
            "model_not_loaded",
            "request_already_active",
            "request_not_prepared",
-           "worker_unavailable"
+           "worker_unavailable",
+           "license_invalid"
          ] do
         value
       else

@@ -1,0 +1,122 @@
+defmodule OrchardConsole.LicenseStatus do
+  @moduledoc false
+
+  alias Orchard.Licensing
+  alias Orchard.Licensing.Gate
+
+  @type summary :: %{
+          required(:state) => Licensing.state(),
+          required(:status) => String.t(),
+          required(:reason) => String.t() | nil,
+          required(:message) => String.t(),
+          required(:expires_at) => String.t() | nil,
+          required(:license_id) => String.t() | nil,
+          required(:machine_id) => String.t() | nil,
+          required(:licensee) => String.t() | nil,
+          required(:max_machines) => pos_integer() | nil,
+          required(:tracking) => Licensing.tracking_metadata() | nil,
+          required(:activation_guidance) => String.t() | nil
+        }
+
+  @spec fetch() :: summary()
+  def fetch do
+    licensing_impl().inspect_local()
+    |> summarize()
+  rescue
+    _ ->
+      summarize(%Licensing{
+        state: :malformed_bundle,
+        message: "License inspection failed.",
+        bundle_path: ""
+      })
+  end
+
+  @spec valid?(summary()) :: boolean()
+  def valid?(%{state: :valid}), do: true
+  def valid?(_summary), do: false
+
+  @spec badge_label(summary()) :: String.t()
+  def badge_label(%{state: :valid, licensee: licensee}) do
+    non_empty_string(licensee) || "Licensed"
+  end
+
+  def badge_label(%{reason: reason, status: status}) do
+    reason
+    |> non_empty_string()
+    |> Kernel.||(status)
+    |> humanize_state()
+  end
+
+  @spec badge_tone(summary()) :: :neutral | :warning
+  def badge_tone(%{state: :valid}), do: :neutral
+  def badge_tone(_summary), do: :warning
+
+  @spec state_label(summary()) :: String.t()
+  def state_label(%{state: state}), do: humanize_state(Atom.to_string(state))
+
+  @spec tracking_label(summary()) :: String.t() | nil
+  def tracking_label(%{tracking: tracking}) when is_map(tracking) do
+    [
+      tracking_part("program", Map.get(tracking, :program)),
+      tracking_part("ref", Map.get(tracking, :reference))
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      parts -> Enum.join(parts, " ")
+    end
+  end
+
+  def tracking_label(_summary), do: nil
+
+  defp summarize(%Licensing{} = status) do
+    health = Licensing.health_summary(status)
+    activation_guidance = activation_guidance(status)
+
+    %{
+      state: status.state,
+      status: health.status,
+      reason: health.reason,
+      message: status.message,
+      expires_at: health.expires_at,
+      license_id: status.license_id,
+      machine_id: status.machine_id,
+      licensee: status.licensee,
+      max_machines: status.max_machines,
+      tracking: status.metadata,
+      activation_guidance: activation_guidance
+    }
+  end
+
+  defp activation_guidance(%Licensing{state: :valid}), do: nil
+  defp activation_guidance(%Licensing{} = status), do: Gate.denial(status).activation_guidance
+
+  defp licensing_impl do
+    Application.get_env(:orchard_controller, :console, [])
+    |> Keyword.get(:licensing_impl, Orchard.Licensing)
+  end
+
+  defp tracking_part(_label, value) when not is_binary(value), do: nil
+
+  defp tracking_part(label, value) do
+    case non_empty_string(value) do
+      nil -> nil
+      trimmed -> "#{label}=#{trimmed}"
+    end
+  end
+
+  defp humanize_state(value) do
+    value
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  defp non_empty_string(nil), do: nil
+
+  defp non_empty_string(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed != "", do: trimmed
+  end
+
+  defp non_empty_string(_value), do: nil
+end

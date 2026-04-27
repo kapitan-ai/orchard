@@ -104,6 +104,10 @@ defmodule Orchard.API.HealthControllerTest do
 
     assert conn.status == 503
     assert body["status"] == "error"
+    assert body["version"] == Orchard.version()
+    assert body["build_ref"] == Orchard.BuildInfo.git_sha()
+    assert body["build_date"] == Orchard.BuildInfo.build_date()
+    assert body["build_channel"] == Orchard.BuildInfo.build_channel()
     assert body["reason"] == "postgres_reachable"
     assert body["checks"]["controller_boot_completed"] == true
     assert body["checks"]["postgres_reachable"] == false
@@ -257,5 +261,110 @@ defmodule Orchard.API.HealthControllerTest do
              "program" => "aieh",
              "reference" => "aieh-2026-001"
            }
+  end
+
+  test "health ready includes license identifiers for valid bundles", %{conn: _conn} do
+    Process.put(
+      :licensing_status_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: "/tmp/current.json",
+        expires_at: ~U[2027-04-15 00:00:00Z],
+        license_id: "lic_visible",
+        machine_id: "mach_visible",
+        licensee: "Acme Orchard Lab",
+        max_machines: 3
+      }
+    )
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    body = Jason.decode!(conn.resp_body)
+
+    assert body["license"]["license_id"] == "lic_visible"
+    assert body["license"]["machine_id"] == "mach_visible"
+    assert body["license"]["licensee"] == "Acme Orchard Lab"
+    assert body["license"]["max_machines"] == 3
+  end
+
+  test "health ready includes license identifiers for signed invalid states", %{conn: _conn} do
+    for state <- [:expired, :not_yet_valid, :fingerprint_mismatch] do
+      Process.put(
+        :licensing_status_response,
+        %Orchard.Licensing{
+          state: state,
+          message: "Signed but invalid license.",
+          bundle_path: "/tmp/current.json",
+          license_id: "lic_visible",
+          machine_id: "mach_visible",
+          licensee: "Acme Orchard Lab",
+          max_machines: 3
+        }
+      )
+
+      conn =
+        build_conn(:get, "/health/ready")
+        |> put_req_header("accept", "application/json")
+        |> Router.call(Router.init([]))
+
+      body = Jason.decode!(conn.resp_body)
+
+      assert body["license"]["license_id"] == "lic_visible"
+      assert body["license"]["machine_id"] == "mach_visible"
+      assert body["license"]["licensee"] == "Acme Orchard Lab"
+      assert body["license"]["max_machines"] == 3
+    end
+  end
+
+  test "health ready omits license identifiers when bundle is missing", %{conn: _conn} do
+    Process.put(
+      :licensing_status_response,
+      %Orchard.Licensing{
+        state: :missing_bundle,
+        message: "No local license bundle is installed.",
+        bundle_path: "/tmp/current.json"
+      }
+    )
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    license = conn.resp_body |> Jason.decode!() |> Map.fetch!("license")
+
+    for key <- ["license_id", "machine_id", "licensee", "max_machines"] do
+      refute Map.has_key?(license, key)
+    end
+  end
+
+  test "health ready omits license identifiers for invalid signature states", %{conn: _conn} do
+    Process.put(
+      :licensing_status_response,
+      %Orchard.Licensing{
+        state: :invalid_license_signature,
+        message: "failed signature validation",
+        bundle_path: "/tmp/current.json",
+        license_id: "lic_hidden",
+        machine_id: "mach_hidden",
+        licensee: "Hidden",
+        max_machines: 1
+      }
+    )
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    license = conn.resp_body |> Jason.decode!() |> Map.fetch!("license")
+
+    for key <- ["license_id", "machine_id", "licensee", "max_machines"] do
+      refute Map.has_key?(license, key)
+    end
   end
 end

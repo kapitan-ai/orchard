@@ -21,7 +21,6 @@ defmodule Orchard.Node do
   @default_worker_memory_budget_mode "observe"
   @default_worker_memory_budget_utilization 0.90
   @default_worker_memory_budget_overhead_bytes 1_073_741_824
-  @valid_license_enforcement_modes [:off, :warn, :hard]
   @worker_socket_prefix "orchard-worker-"
   @worker_socket_suffix ".sock"
   @worker_log_prefix "orchard-worker-"
@@ -111,13 +110,8 @@ defmodule Orchard.Node do
     runtime_config()[:runtime_adapter_impl] || default_runtime_adapter_impl()
   end
 
-  @spec license_enforcement() :: :off | :warn | :hard
-  def license_enforcement do
-    case runtime_config()[:license_enforcement] do
-      mode when mode in @valid_license_enforcement_modes -> mode
-      other -> raise "Invalid license enforcement mode: #{inspect(other)}"
-    end
-  end
+  @spec license_enforcement() :: Licensing.enforcement()
+  def license_enforcement, do: Licensing.enforcement_mode()
 
   @spec licensing_impl() :: module()
   def licensing_impl do
@@ -132,7 +126,10 @@ defmodule Orchard.Node do
   end
 
   def worker_prefix_cache_max_entries do
-    case runtime_value(:worker_prefix_cache_max_entries, @default_worker_prefix_cache_max_entries) do
+    case runtime_value(
+           :worker_prefix_cache_max_entries,
+           @default_worker_prefix_cache_max_entries
+         ) do
       n when is_integer(n) and n >= 1 -> n
       other -> raise "invalid worker_prefix_cache_max_entries: #{inspect(other)}"
     end
@@ -193,7 +190,10 @@ defmodule Orchard.Node do
         request_limit_for_generation_mode(worker_generation_mode())
 
       _other ->
-        if runtime_value(:test_only_allow_batch_admission_for_non_worker_adapters?, false) == true do
+        batch_admission? =
+          runtime_value(:test_only_allow_batch_admission_for_non_worker_adapters?, false) == true
+
+        if batch_admission? do
           request_limit_for_generation_mode(worker_generation_mode())
         else
           1

@@ -710,6 +710,59 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert banner =~ "Tracking: program=aieh ref=aieh-2026-001"
   end
 
+  test "renders license identifiers when health payload includes them" do
+    response = ready_response()
+
+    body =
+      put_in(response.body, ["license"], %{
+        "status" => "valid",
+        "reason" => nil,
+        "message" => "License bundle is valid.",
+        "license_id" => "lic_visible",
+        "machine_id" => "mach_visible",
+        "licensee" => "Acme Orchard Lab",
+        "max_machines" => 3
+      })
+
+    response = %{response | body: body}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "License ID: lic_visible"
+    assert banner =~ "Machine ID: mach_visible"
+    assert banner =~ "Licensee: Acme Orchard Lab"
+    assert banner =~ "Max machines: 3"
+  end
+
+  test "omits license identifiers when health payload excludes them" do
+    response = ready_response()
+
+    body =
+      put_in(response.body, ["license"], %{
+        "status" => "missing",
+        "reason" => "missing_bundle",
+        "message" => "No local license bundle is installed."
+      })
+
+    response = %{response | body: body}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "License: missing"
+    refute banner =~ "License ID:"
+    refute banner =~ "Machine ID:"
+    refute banner =~ "Licensee:"
+    refute banner =~ "Max machines:"
+  end
+
   test "does not render a license line when the health payload omits the license block" do
     runtime =
       test_runtime(%{

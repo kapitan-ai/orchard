@@ -25,19 +25,21 @@ defmodule Orchard.Node.LicenseEnforcerTest do
 
   setup do
     previous_runtime = Application.get_env(:orchard_node_agent, :runtime, [])
+    previous_licensing = Application.get_env(:orchard_shared, :licensing, [])
 
     on_exit(fn ->
       Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
+      Application.put_env(:orchard_shared, :licensing, previous_licensing)
       Process.delete(:license_status)
     end)
 
-    %{previous_runtime: previous_runtime}
+    %{previous_runtime: previous_runtime, previous_licensing: previous_licensing}
   end
 
-  test "runtime defaults keep packaged warn and test env override off" do
+  test "shared licensing enforcement is authoritative for startup policy" do
     defaults = M1RuntimeDefaults.node_runtime("/tmp/orchard")
 
-    assert defaults[:license_enforcement] == :warn
+    refute Keyword.has_key?(defaults, :license_enforcement)
     assert defaults[:worker_generation_mode] == "batch"
     assert defaults[:worker_max_concurrent_requests_per_model] == "auto"
     assert defaults[:worker_auto_max_concurrent_requests_per_model] == 3
@@ -45,11 +47,11 @@ defmodule Orchard.Node.LicenseEnforcerTest do
     assert defaults[:worker_memory_budget_utilization] == 0.90
     assert defaults[:worker_memory_budget_overhead_bytes] == 1_073_741_824
 
-    assert Application.fetch_env!(:orchard_node_agent, :runtime)[:license_enforcement] == :off
+    assert Application.fetch_env!(:orchard_shared, :licensing)[:enforcement_mode] == :off
   end
 
   test ":off skips licensing checks entirely", %{previous_runtime: previous_runtime} do
-    put_runtime(previous_runtime, license_enforcement: :off)
+    put_runtime(previous_runtime, enforcement_mode: :off)
 
     assert :ok = LicenseEnforcer.enforce_startup!()
     refute_received :licensing_inspected
@@ -65,7 +67,7 @@ defmodule Orchard.Node.LicenseEnforcerTest do
       }
     )
 
-    put_runtime(previous_runtime, license_enforcement: :warn)
+    put_runtime(previous_runtime, enforcement_mode: :warn)
 
     log =
       capture_log([level: :warning], fn ->
@@ -87,7 +89,7 @@ defmodule Orchard.Node.LicenseEnforcerTest do
       }
     )
 
-    put_runtime(previous_runtime, license_enforcement: :hard)
+    put_runtime(previous_runtime, enforcement_mode: :hard)
 
     assert_raise RuntimeError,
                  ~r/Node-agent startup blocked by licensing: License bundle has expired\./,
@@ -110,7 +112,7 @@ defmodule Orchard.Node.LicenseEnforcerTest do
       }
     )
 
-    put_runtime(previous_runtime, license_enforcement: :hard)
+    put_runtime(previous_runtime, enforcement_mode: :hard)
 
     log =
       capture_log([level: :warning], fn ->
@@ -124,7 +126,7 @@ defmodule Orchard.Node.LicenseEnforcerTest do
   test "invalid enforcement values fail fast before license inspection", %{
     previous_runtime: previous_runtime
   } do
-    put_runtime(previous_runtime, license_enforcement: :sometimes)
+    put_runtime(previous_runtime, enforcement_mode: :sometimes)
 
     assert_raise RuntimeError, ~r/Invalid license enforcement mode: :sometimes/, fn ->
       LicenseEnforcer.enforce_startup!()
@@ -134,9 +136,19 @@ defmodule Orchard.Node.LicenseEnforcerTest do
   end
 
   defp put_runtime(previous_runtime, overrides) do
+    {enforcement_mode, runtime_overrides} = Keyword.pop(overrides, :enforcement_mode)
+
+    if enforcement_mode do
+      licensing =
+        Application.get_env(:orchard_shared, :licensing, [])
+        |> Keyword.put(:enforcement_mode, enforcement_mode)
+
+      Application.put_env(:orchard_shared, :licensing, licensing)
+    end
+
     runtime =
       previous_runtime
-      |> Keyword.merge(overrides)
+      |> Keyword.merge(runtime_overrides)
       |> Keyword.put(:licensing_impl, Orchard.Node.LicenseEnforcerTest.LicensingSpy)
 
     Application.put_env(:orchard_node_agent, :runtime, runtime)

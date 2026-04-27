@@ -140,6 +140,37 @@ validate_pkg_payload() {
 
 cd "$REPO_ROOT"
 
+export MIX_ENV=prod
+
+if [[ -z "${ORCHARD_BUILD_CHANNEL+x}" ]]; then
+    ORCHARD_BUILD_CHANNEL="trial"
+else
+    ORCHARD_BUILD_CHANNEL="$(printf '%s' "$ORCHARD_BUILD_CHANNEL" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+fi
+
+if [[ -z "$ORCHARD_BUILD_CHANNEL" ]]; then
+    log_error "Distributed PKG builds require ORCHARD_BUILD_CHANNEL to be non-empty"
+    log_error "Allowed values: internal, trial, pilot, release"
+    log_error "Unset ORCHARD_BUILD_CHANNEL to use the default channel: trial"
+    exit 1
+fi
+
+case "$ORCHARD_BUILD_CHANNEL" in
+    internal|trial|pilot|release)
+        export ORCHARD_BUILD_CHANNEL
+        ;;
+    dev)
+        log_error "Distributed PKG builds do not support ORCHARD_BUILD_CHANNEL=dev"
+        log_error "Allowed values: internal, trial, pilot, release"
+        exit 1
+        ;;
+    *)
+        log_error "Invalid ORCHARD_BUILD_CHANNEL: $ORCHARD_BUILD_CHANNEL"
+        log_error "Allowed values: internal, trial, pilot, release"
+        exit 1
+        ;;
+esac
+
 # Preflight: Check for port conflicts (warn only)
 if lsof -ti :4000 >/dev/null 2>&1 || lsof -ti :50071 >/dev/null 2>&1; then
     log_warn "Dev server ports (4000 or 50071) appear to be in use"
@@ -165,6 +196,7 @@ log_info "Building Orchard PKG"
 log_info "  App version: $APP_VERSION"
 log_info "  Git SHA: $GIT_SHA"
 log_info "  Build date: $BUILD_DATE"
+log_info "  Build channel: $ORCHARD_BUILD_CHANNEL"
 log_info "  Output: $OUTPUT_DIR/$PKG_NAME"
 
 # Ensure output directory exists early (fail fast)
@@ -222,7 +254,7 @@ done
 # Clean previous release builds
 log_info "Cleaning previous release builds..."
 cd "$REPO_ROOT"
-rm -rf _build/prod/rel/orchard_{controller,node_agent,cli}
+rm -rf _build/prod/rel/orchard_{controller,node_agent,cli} _build/prod/lib/orchard_shared
 
   # Fetch deps and build assets
   log_info "Fetching Elixir dependencies..."
@@ -235,7 +267,6 @@ rm -rf _build/prod/rel/orchard_{controller,node_agent,cli}
   
   # Build releases
 log_info "Building Elixir releases..."
-export MIX_ENV=prod
 
 log_info "  → orchard_controller"
 mix release orchard_controller

@@ -16,6 +16,7 @@ defmodule Orchard.LicensingTest do
   @golden_machine_id "5abda8c3-9ab4-4396-82b4-e285ae7fdb52"
   @golden_expires_at ~U[2026-04-18 00:00:00.000Z]
   @now ~U[2026-04-15 00:00:00Z]
+  @license_identity_keys [:license_id, :machine_id, :licensee, :max_machines]
 
   setup do
     tmp_dir =
@@ -32,6 +33,36 @@ defmodule Orchard.LicensingTest do
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
 
     %{tmp_dir: tmp_dir, bundle_path: bundle_path, node_identity_path: node_identity_path}
+  end
+
+  describe "resolve_enforcement_mode/2" do
+    test "defaults dev, empty, and nil build channels to off" do
+      assert Licensing.resolve_enforcement_mode(nil, "dev") == :off
+      assert Licensing.resolve_enforcement_mode(nil, "") == :off
+      assert Licensing.resolve_enforcement_mode(nil, "   ") == :off
+      assert Licensing.resolve_enforcement_mode(nil, nil) == :off
+    end
+
+    test "defaults accepted distributed build channels to hard" do
+      assert Licensing.resolve_enforcement_mode(nil, "internal") == :hard
+      assert Licensing.resolve_enforcement_mode(nil, "trial") == :hard
+      assert Licensing.resolve_enforcement_mode(nil, "pilot") == :hard
+      assert Licensing.resolve_enforcement_mode(nil, "release") == :hard
+      assert Licensing.resolve_enforcement_mode(nil, " trial ") == :hard
+    end
+
+    test "rejects unknown build channels when deriving defaults" do
+      assert_raise RuntimeError,
+                   ~r/^Invalid Orchard build channel: "staging"\. Accepted channels: dev, internal, trial, pilot, release$/,
+                   fn -> Licensing.resolve_enforcement_mode(nil, "staging") end
+    end
+
+    test "explicit enforcement overrides build-channel defaults" do
+      assert Licensing.resolve_enforcement_mode("warn", "trial") == :warn
+      assert Licensing.resolve_enforcement_mode(:off, "trial") == :off
+      assert Licensing.resolve_enforcement_mode("hard", "staging") == :hard
+      assert Licensing.resolve_enforcement_mode(:warn, "staging") == :warn
+    end
   end
 
   describe "inspect_local/1" do
@@ -911,6 +942,80 @@ defmodule Orchard.LicensingTest do
                expires_at: "2027-04-15T00:00:00Z",
                tracking: %{program: "aieh", reference: "aieh-2026-001"}
              }
+    end
+
+    test "adds license identifiers for valid bundles when present", ctx do
+      copy_fixture!("valid_bound_to_local", ctx.bundle_path)
+      write_node_identity!(ctx.node_identity_path, @local_node_id)
+
+      summary =
+        ctx
+        |> opts()
+        |> Licensing.inspect_local()
+        |> Licensing.health_summary()
+
+      assert summary.license_id == "lic_valid_local"
+      assert summary.machine_id == "mach_local"
+      assert summary.licensee == "Acme Orchard Lab"
+      assert summary.max_machines == 3
+    end
+
+    test "omits license identifiers when a valid bundle has nil identifier fields" do
+      summary =
+        Licensing.health_summary(%Licensing{
+          state: :valid,
+          message: "License bundle is valid.",
+          bundle_path: "/tmp/current.json"
+        })
+
+      for key <- @license_identity_keys do
+        refute Map.has_key?(summary, key)
+      end
+    end
+
+    test "includes license identifiers for signed invalid states" do
+      for state <- [:expired, :not_yet_valid, :fingerprint_mismatch] do
+        summary =
+          Licensing.health_summary(%Licensing{
+            state: state,
+            message: "Signed but invalid license.",
+            bundle_path: "/tmp/current.json",
+            license_id: "lic_visible",
+            machine_id: "mach_visible",
+            licensee: "Acme Orchard Lab",
+            max_machines: 3
+          })
+
+        assert summary.license_id == "lic_visible"
+        assert summary.machine_id == "mach_visible"
+        assert summary.licensee == "Acme Orchard Lab"
+        assert summary.max_machines == 3
+      end
+    end
+
+    test "omits license identifiers for missing and unsafe invalid states" do
+      for state <- [
+            :missing_bundle,
+            :invalid_license_signature,
+            :malformed_bundle,
+            :read_error,
+            :config_error
+          ] do
+        summary =
+          Licensing.health_summary(%Licensing{
+            state: state,
+            message: "License is unavailable.",
+            bundle_path: "/tmp/current.json",
+            license_id: "lic_hidden",
+            machine_id: "mach_hidden",
+            licensee: "Hidden",
+            max_machines: 1
+          })
+
+        for key <- @license_identity_keys do
+          refute Map.has_key?(summary, key)
+        end
+      end
     end
 
     test "omits tracking for malformed metadata" do

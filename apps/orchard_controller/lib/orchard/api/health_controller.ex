@@ -52,7 +52,8 @@ defmodule Orchard.API.HealthController do
     %{
       version: Orchard.version(),
       build_ref: Orchard.BuildInfo.git_sha(),
-      build_date: Orchard.BuildInfo.build_date()
+      build_date: Orchard.BuildInfo.build_date(),
+      build_channel: Orchard.BuildInfo.build_channel()
     }
   end
 

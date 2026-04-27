@@ -447,16 +447,23 @@ verification will fail.
 - Controller `/health/ready` exposes license state for observation, but remains
   **non-gating** — it does not change readiness semantics or HTTP status.
 
+**Exposure posture:** `/health/ready` is intentionally unauthenticated for
+operational readiness checks, so health endpoints should be network-restricted
+to trusted operator/support paths (for example, VPN/private-network access,
+firewall rules, or reverse-proxy allowlists). Do not expose these endpoints
+directly to the public internet.
+
 If a license includes optional tracking metadata, `orchardctl license status`,
 `orchardctl status`, and `/health/ready` may display the tracking program and
-reference. This metadata is derived from the signed certificate, is used only
-for internal program attribution, and does not affect license enforcement.
+reference. This metadata and other license identifiers are intended for
+operator/support diagnostics and do not affect license enforcement.
 
 ### Licensing environment variables
 
 | Variable | Default | Intended use |
 |----------|---------|--------------|
-| `ORCHARD_LICENSE_ENFORCEMENT` | `warn` | Node-agent startup-only mode: `off`, `warn`, or `hard` (typically set in `node-agent.env`) |
+| `ORCHARD_BUILD_CHANNEL` | `trial` for scripted PKG builds; `dev` for source builds | Compile-time build identity surfaced in `/health/ready`. Distributed package builds must use a non-`dev` channel. |
+| `ORCHARD_LICENSE_ENFORCEMENT` | `hard` for distributed channels; `off` for `dev` | Shared controller/node-agent/CLI enforcement mode: `off`, `warn`, or `hard`. Explicit values override the build-channel default for recovery. |
 | `ORCHARD_LICENSE_BUNDLE_PATH` | `/Library/Application Support/Orchard/config/licensing/current.json` | Rare Orchard-directed override for alternate support-root layouts or debugging |
 | `ORCHARD_NODE_IDENTITY_PATH` | `/Library/Application Support/Orchard/data/node-id` | Rare override when Orchard support-root layout is intentionally changed |
 | `ORCHARD_KEYGEN_API_BASE_URL` | `https://api.keygen.sh` | Optional Orchard-directed override for alternate provider environments |
@@ -466,19 +473,18 @@ for internal program attribution, and does not affect license enforcement.
 No Orchard host runtime requires or supports a shipped
 `ORCHARD_KEYGEN_ADMIN_TOKEN` dependency.
 
-### Node-agent startup enforcement
+### Node-agent enforcement
 
-Licensing enforcement is **startup-only** for the packaged node-agent.
+Licensing enforcement for the packaged node-agent covers both startup checks and runtime useful-work admission. The node-agent reads the same shared licensing enforcement mode as controller and CLI release code.
 
 Mode behavior:
-- `off` — skip startup enforcement entirely
-- `warn` — log the licensing problem and continue startup
-- `hard` — abort node-agent startup when the local bundle is not valid
+- `off` — skip startup checks and allow runtime useful-work admission
+- `warn` — log the licensing problem during startup checks and continue; runtime useful-work admission remains non-blocking without per-admission warn logs
+- `hard` — abort node-agent startup or deny new useful work when the local bundle is not valid
 
 ### Rollout posture
 
-v0 should roll out to design partners in **warn-first** mode. Keep packaged prod
-on `warn` until real packaged-host smoke is complete.
+Distributed PKG builds default to `ORCHARD_BUILD_CHANNEL=trial`, which defaults license enforcement to `hard` unless `ORCHARD_LICENSE_ENFORCEMENT` is explicitly set. Source development and tests keep enforcement `off`.
 
 ### Rollback / reset
 
@@ -878,6 +884,8 @@ This produces a PKG file following the [naming convention below](#filename-forma
 ```
 
 ### Build Options
+
+The script exports `ORCHARD_BUILD_CHANNEL=trial` when the variable is unset. If `ORCHARD_BUILD_CHANNEL=dev`, the PKG build fails before release assembly because distributed packages must not ship with source-dev enforcement defaults.
 
 | Flag | Purpose |
 |------|---------|

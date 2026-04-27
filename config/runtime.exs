@@ -83,22 +83,6 @@ env_optional_string = fn env_name ->
   end
 end
 
-env_license_enforcement = fn env_name, default ->
-  case System.get_env(env_name) || default do
-    "off" ->
-      :off
-
-    "warn" ->
-      :warn
-
-    "hard" ->
-      :hard
-
-    value ->
-      raise "environment variable #{env_name} must be one of off|warn|hard, got: #{inspect(value)}"
-  end
-end
-
 env_ip = fn env_name, default_string ->
   ip_string = System.get_env(env_name) || default_string
 
@@ -429,6 +413,12 @@ if config_env() == :prod do
   orchard_support_root =
     System.get_env("ORCHARD_SUPPORT_ROOT") || "/Library/Application Support/Orchard"
 
+  license_enforcement_mode =
+    Orchard.Licensing.resolve_enforcement_mode(
+      env_optional_string.("ORCHARD_LICENSE_ENFORCEMENT"),
+      Orchard.BuildInfo.build_channel()
+    )
+
   licensing_overrides =
     [
       bundle_path: env_optional_string.("ORCHARD_LICENSE_BUNDLE_PATH"),
@@ -439,9 +429,12 @@ if config_env() == :prod do
     ]
     |> Enum.reject(fn {_key, value} -> is_nil(value) end)
 
-  config :orchard_shared,
-         :licensing,
-         Keyword.merge(default_licensing.(orchard_support_root), licensing_overrides)
+  licensing_config =
+    default_licensing.(orchard_support_root)
+    |> Keyword.merge(licensing_overrides)
+    |> Keyword.put(:enforcement_mode, license_enforcement_mode)
+
+  config :orchard_shared, :licensing, licensing_config
 
   config :orchard_controller,
          :upgrade_preflight,
@@ -808,7 +801,6 @@ if config_env() == :prod do
                end).(),
             worker_memory_budget_overhead_bytes:
               env_non_neg_int.("ORCHARD_WORKER_MEMORY_BUDGET_OVERHEAD_BYTES", "1073741824"),
-            license_enforcement: env_license_enforcement.("ORCHARD_LICENSE_ENFORCEMENT", "warn"),
             max_loaded_models: env_int.("ORCHARD_MAX_LOADED_MODELS", "0"),
             fake_runtime?: env_bool.("ORCHARD_FAKE_RUNTIME", false),
             hf:

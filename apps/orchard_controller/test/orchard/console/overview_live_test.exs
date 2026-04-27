@@ -130,6 +130,50 @@ defmodule OrchardConsole.OverviewLiveTest.RuntimeDegradedStub do
   end
 end
 
+defmodule OrchardConsole.OverviewLiveTest.LicensingValidStub do
+  @moduledoc false
+
+  def inspect_local do
+    %Orchard.Licensing{
+      state: :valid,
+      message: "License bundle is valid.",
+      bundle_path: "/tmp/current.json",
+      expires_at: ~U[2027-04-15 00:00:00Z],
+      license_id: "lic_console_valid",
+      machine_id: "mach_console_valid",
+      licensee: "Acme Orchard Lab",
+      max_machines: 3,
+      metadata: %{program: "aieh", reference: "aieh-2026-001"}
+    }
+  end
+end
+
+defmodule OrchardConsole.OverviewLiveTest.LicensingMissingStub do
+  @moduledoc false
+
+  def inspect_local do
+    %Orchard.Licensing{
+      state: :missing_bundle,
+      message: "No local license bundle is installed.",
+      bundle_path: "/tmp/current.json"
+    }
+  end
+end
+
+defmodule OrchardConsole.OverviewLiveTest.LicensingExpiredStub do
+  @moduledoc false
+
+  def inspect_local do
+    %Orchard.Licensing{
+      state: :expired,
+      message: "License bundle has expired.",
+      bundle_path: "/tmp/current.json",
+      expires_at: ~U[2026-04-15 00:00:00Z],
+      licensee: "Expired Orchard Lab"
+    }
+  end
+end
+
 defmodule OrchardConsole.OverviewLiveTest do
   use Orchard.ConnCase, async: false
 
@@ -152,6 +196,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       :console,
       Keyword.merge(previous,
         runtime_impl: OrchardConsole.OverviewLiveTest.RuntimeStub,
+        licensing_impl: OrchardConsole.OverviewLiveTest.LicensingValidStub,
         refresh_interval_ms: 60_000
       )
     )
@@ -258,6 +303,24 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "Overview"
     end
 
+    test "renders valid license badge in the shared shell", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      badge = view |> element("#console-license-badge") |> render()
+      assert badge =~ "Acme Orchard Lab"
+      refute badge =~ "orchardctl license activate"
+    end
+
+    test "renders activation badge in the shared shell for invalid licenses", %{conn: conn} do
+      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingMissingStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      badge = view |> element("#console-license-badge") |> render()
+      assert badge =~ "Missing bundle"
+      assert badge =~ "orchardctl license activate &lt;key&gt;"
+    end
+
     test "sidebar toggle button has JS toggle_class command wired", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
@@ -265,6 +328,40 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "phx-click"
       assert html =~ "sidebar-collapsed"
       assert html =~ "console-shell"
+    end
+  end
+
+  describe "license visibility" do
+    test "overview license card renders valid license identity and expiry", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console")
+
+      card = view |> element("#overview-license-card") |> render()
+      assert card =~ "Acme Orchard Lab"
+      assert card =~ "2027-04-15T00:00:00Z"
+      assert card =~ "program=aieh ref=aieh-2026-001"
+      refute card =~ "Activation required"
+    end
+
+    test "overview license card renders activation guidance for a missing license", %{conn: conn} do
+      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingMissingStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      activation = view |> element("#overview-license-activation") |> render()
+      assert activation =~ "Activation required"
+      assert activation =~ "orchardctl license activate &lt;key&gt;"
+    end
+
+    test "overview license card renders activation guidance for an expired license", %{conn: conn} do
+      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingExpiredStub)
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      card = view |> element("#overview-license-card") |> render()
+      assert card =~ "Expired"
+      assert card =~ "Expired Orchard Lab"
+      assert card =~ "2026-04-15T00:00:00Z"
+      assert card =~ "orchardctl license activate &lt;key&gt;"
     end
   end
 
@@ -400,11 +497,11 @@ defmodule OrchardConsole.OverviewLiveTest do
       {:ok, view, _html} = live(conn, "/console")
       hydrate_quickstart(view)
 
-      # Step 1 (current, no action) shows automatic note
+      # Current system-health row shows automatic note
       assert has_element?(view, "#overview-quickstart-note-system-healthy")
       refute has_element?(view, "#overview-quickstart-action-system-healthy")
 
-      # Steps 2-4 (pending) show navigation links
+      # Pending setup rows show navigation links
       assert has_element?(view, "#overview-quickstart-action-import-first-model")
 
       assert view |> element("#overview-quickstart-action-import-first-model") |> render() =~
@@ -420,7 +517,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert view |> element("#overview-quickstart-action-create-api-key") |> render() =~
                ~s(href="/console/tenants")
 
-      # Step 5 (pending) dispatches the guide-open event, not a navigation link
+      # Pending integration-guide row dispatches the guide-open event, not a navigation link
       assert has_element?(view, "#overview-quickstart-action-connect-your-tools")
 
       step_5_action =
@@ -536,7 +633,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert_quickstart_hydrating(view)
       hydrate_quickstart(view)
 
-      # Step 1 completed: shows checkmark indicator, no action
+      # Completed system-health row shows checkmark indicator, no action
       assert has_element?(view, "#overview-quickstart-indicator-system-healthy")
       # Checkmark indicator contains the check SVG path
       assert view |> element("#overview-quickstart-indicator-system-healthy") |> render() =~
@@ -544,13 +641,13 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       refute has_element?(view, "#overview-quickstart-action-system-healthy")
 
-      # Step 2 current: has current emphasis
+      # Current import-model row has current emphasis
       assert has_element?(view, "#overview-quickstart-action-import-first-model")
 
       assert view |> element("#overview-quickstart-action-import-first-model") |> render() =~
                ~s(data-quickstart-action-emphasis="current")
 
-      # Steps 3-5 pending: have pending emphasis
+      # Remaining pending rows have pending emphasis
       assert view |> element("#overview-quickstart-action-run-test-request") |> render() =~
                ~s(data-quickstart-action-emphasis="pending")
 
@@ -580,7 +677,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       refute has_element?(view, "#overview-quickstart-action-run-test-request")
       refute has_element?(view, "#overview-quickstart-action-create-api-key")
 
-      # Step 5 is current with guide-open dispatch button and current emphasis
+      # Current integration-guide row has guide-open dispatch button and current emphasis
       assert has_element?(view, "#overview-quickstart-action-connect-your-tools")
 
       step_5_action =

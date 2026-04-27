@@ -4,6 +4,7 @@ defmodule Orchard.Licensing do
   minimal licensing v0 bundle contract.
   """
 
+  alias Orchard.Licensing.GateCache
   alias Orchard.Licensing.LocalStore
   alias Orchard.Licensing.Validator
   alias Orchard.NodeIdentityFile
@@ -24,6 +25,11 @@ defmodule Orchard.Licensing do
           | :read_error
 
   @type enforcement :: :off | :warn | :hard
+
+  @valid_enforcement_modes [:off, :warn, :hard]
+  @valid_build_channels ["dev", "internal", "trial", "pilot", "release"]
+  @distributed_build_channels ["internal", "trial", "pilot", "release"]
+  @health_identity_states [:valid, :expired, :not_yet_valid, :fingerprint_mismatch]
 
   @type tracking_metadata :: %{
           program: String.t() | nil,
@@ -55,6 +61,71 @@ defmodule Orchard.Licensing do
             licensee: nil,
             max_machines: nil,
             metadata: nil
+
+  @doc """
+  Resolve the effective license enforcement mode from shared licensing config.
+  """
+  @spec enforcement_mode() :: enforcement()
+  def enforcement_mode do
+    :orchard_shared
+    |> Application.get_env(:licensing, [])
+    |> Keyword.get(:enforcement_mode, :off)
+    |> normalize_enforcement_mode!()
+  end
+
+  @doc """
+  Resolve explicit enforcement or derive the distributed-build default from the build channel.
+
+  Accepted build channels: `dev`, `internal`, `trial`, `pilot`, `release`.
+  """
+  @spec resolve_enforcement_mode(String.t() | atom() | nil, String.t() | nil) :: enforcement()
+  def resolve_enforcement_mode(nil, build_channel),
+    do: default_enforcement_mode_for_build_channel!(build_channel)
+
+  def resolve_enforcement_mode(value, _build_channel), do: normalize_enforcement_mode!(value)
+
+  @doc false
+  @spec normalize_enforcement_mode!(String.t() | atom()) :: enforcement()
+  def normalize_enforcement_mode!(mode) when mode in @valid_enforcement_modes, do: mode
+
+  def normalize_enforcement_mode!(mode) when is_binary(mode) do
+    case String.trim(mode) do
+      "off" -> :off
+      "warn" -> :warn
+      "hard" -> :hard
+      _other -> raise "Invalid license enforcement mode: #{inspect(mode)}"
+    end
+  end
+
+  def normalize_enforcement_mode!(mode) do
+    raise "Invalid license enforcement mode: #{inspect(mode)}"
+  end
+
+  defp default_enforcement_mode_for_build_channel!(nil), do: :off
+
+  defp default_enforcement_mode_for_build_channel!(build_channel) when is_binary(build_channel) do
+    case String.trim(build_channel) do
+      "" ->
+        :off
+
+      "dev" ->
+        :off
+
+      channel when channel in @distributed_build_channels ->
+        :hard
+
+      channel ->
+        raise "Invalid Orchard build channel: #{inspect(channel)}. #{valid_build_channels_message()}"
+    end
+  end
+
+  defp default_enforcement_mode_for_build_channel!(build_channel) do
+    raise "Invalid Orchard build channel: #{inspect(build_channel)}. #{valid_build_channels_message()}"
+  end
+
+  defp valid_build_channels_message do
+    "Accepted channels: #{Enum.join(@valid_build_channels, ", ")}"
+  end
 
   @doc """
   Inspect the Orchard-owned local licensing bundle and return a normalized
@@ -91,6 +162,10 @@ defmodule Orchard.Licensing do
           required(:reason) => String.t() | nil,
           required(:message) => String.t(),
           required(:expires_at) => String.t() | nil,
+          optional(:license_id) => String.t(),
+          optional(:machine_id) => String.t(),
+          optional(:licensee) => String.t(),
+          optional(:max_machines) => pos_integer(),
           optional(:tracking) => tracking_metadata()
         }
 
@@ -103,11 +178,9 @@ defmodule Orchard.Licensing do
       expires_at: iso8601_or_nil(status.expires_at)
     }
 
-    if is_map(status.metadata) do
-      Map.put(summary, :tracking, status.metadata)
-    else
-      summary
-    end
+    summary
+    |> maybe_put_license_identity(status)
+    |> maybe_put_tracking(status.metadata)
   end
 
   @doc """
@@ -254,7 +327,8 @@ defmodule Orchard.Licensing do
          %__MODULE__{} = status <-
            claims_to_status(claims, node_id, config.bundle_path, config.now),
          :ok <- ensure_installable(status),
-         :ok <- LocalStore.write(config.bundle_path, pair) do
+         :ok <- LocalStore.write(config.bundle_path, pair),
+         :ok <- GateCache.refresh() do
       {:ok, status}
     else
       {:error, %__MODULE__{} = status} ->
@@ -325,6 +399,25 @@ defmodule Orchard.Licensing do
 
   defp iso8601_or_nil(nil), do: nil
   defp iso8601_or_nil(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
+
+  defp maybe_put_license_identity(summary, %__MODULE__{state: state} = status)
+       when state in @health_identity_states do
+    summary
+    |> maybe_put_non_nil(:license_id, status.license_id)
+    |> maybe_put_non_nil(:machine_id, status.machine_id)
+    |> maybe_put_non_nil(:licensee, status.licensee)
+    |> maybe_put_non_nil(:max_machines, status.max_machines)
+  end
+
+  defp maybe_put_license_identity(summary, %__MODULE__{}), do: summary
+
+  defp maybe_put_tracking(summary, metadata) when is_map(metadata),
+    do: Map.put(summary, :tracking, metadata)
+
+  defp maybe_put_tracking(summary, _metadata), do: summary
+
+  defp maybe_put_non_nil(summary, _key, nil), do: summary
+  defp maybe_put_non_nil(summary, key, value), do: Map.put(summary, key, value)
 
   defp tracking_field(metadata, key) when is_map(metadata) do
     Map.get(metadata, key)

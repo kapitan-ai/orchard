@@ -93,7 +93,6 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       worker_memory_budget_mode: "observe",
       worker_memory_budget_utilization: 0.90,
       worker_memory_budget_overhead_bytes: 1_073_741_824,
-      license_enforcement: :warn,
       hosted_tools: [],
       max_loaded_models: 0,
       fake_runtime?: false,

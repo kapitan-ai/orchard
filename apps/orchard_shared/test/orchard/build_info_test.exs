@@ -19,4 +19,12 @@ defmodule Orchard.BuildInfoTest do
     assert is_binary(date)
     assert {:ok, _} = Date.from_iso8601(date)
   end
+
+  test "build_channel returns a non-empty trimmed string" do
+    channel = BuildInfo.build_channel()
+
+    assert is_binary(channel)
+    assert channel != ""
+    assert channel == String.trim(channel)
+  end
 end

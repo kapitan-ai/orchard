@@ -335,6 +335,70 @@ defmodule OrchardConsole.OverviewLive do
         </div>
       </.card>
 
+      <.card>
+        <:title>License</:title>
+        <:subtitle>Orchard product license state for operator recovery.</:subtitle>
+
+        <div id="overview-license-card" class="space-y-4">
+          <div class="flex flex-wrap items-center gap-2">
+            <.badge tone={OrchardConsole.LicenseStatus.badge_tone(@license_status)}>
+              {OrchardConsole.LicenseStatus.state_label(@license_status)}
+            </.badge>
+            <span
+              :if={@license_status.licensee}
+              id="overview-license-licensee"
+              class="text-sm font-medium text-slate-900 dark:text-slate-100"
+            >
+              {@license_status.licensee}
+            </span>
+          </div>
+
+          <dl class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div>
+              <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                State
+              </dt>
+              <dd class="mt-1 text-sm font-mono text-slate-900 dark:text-slate-100">
+                {OrchardConsole.LicenseStatus.state_label(@license_status)}
+              </dd>
+            </div>
+            <div :if={@license_status.expires_at}>
+              <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Expires
+              </dt>
+              <dd id="overview-license-expiry" class="mt-1 text-sm font-mono text-slate-900 dark:text-slate-100">
+                {@license_status.expires_at}
+              </dd>
+            </div>
+            <div :if={@license_status.licensee}>
+              <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Licensee
+              </dt>
+              <dd class="mt-1 text-sm text-slate-900 dark:text-slate-100">
+                {@license_status.licensee}
+              </dd>
+            </div>
+            <div :if={OrchardConsole.LicenseStatus.tracking_label(@license_status)}>
+              <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                Tracking
+              </dt>
+              <dd id="overview-license-tracking" class="mt-1 text-sm font-mono text-slate-900 dark:text-slate-100">
+                {OrchardConsole.LicenseStatus.tracking_label(@license_status)}
+              </dd>
+            </div>
+          </dl>
+
+          <div
+            :if={!OrchardConsole.LicenseStatus.valid?(@license_status)}
+            id="overview-license-activation"
+            class="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800/60 dark:bg-amber-950/30 dark:text-amber-200"
+          >
+            <p class="font-medium">Activation required for licensed product use.</p>
+            <p class="mt-1">{@license_status.activation_guidance}</p>
+          </div>
+        </div>
+      </.card>
+
       <div class="grid gap-6 lg:grid-cols-2">
         <%!-- Readiness --%>
         <.card>
@@ -495,6 +559,7 @@ defmodule OrchardConsole.OverviewLive do
     request_summary = fetch_request_summary()
     request_performance = fetch_request_performance()
     has_active_api_keys = fetch_active_api_keys()
+    license_status = OrchardConsole.LicenseStatus.fetch()
     client_state = quickstart_client_state(socket)
 
     assign(socket,
@@ -504,6 +569,7 @@ defmodule OrchardConsole.OverviewLive do
       request_summary: request_summary,
       request_performance: request_performance,
       has_active_api_keys: has_active_api_keys,
+      license_status: license_status,
       quickstart:
         build_quickstart(
           readiness,
