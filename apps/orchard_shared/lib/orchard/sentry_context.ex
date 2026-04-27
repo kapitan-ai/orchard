@@ -5,7 +5,10 @@ defmodule Orchard.SentryContext do
 
   require Logger
 
+  alias Orchard.Licensing
+
   @warning_key {__MODULE__, :sdk_warning_logged?}
+  @cached_license_key {__MODULE__, :cached_license_context}
   @redacted "[redacted]"
 
   @type source :: map() | struct() | nil
@@ -118,6 +121,76 @@ defmodule Orchard.SentryContext do
     |> compact_nil_values()
   end
 
+  @spec build_license_extra(Licensing.t() | term()) :: map()
+  def build_license_extra(%Licensing{} = status) do
+    status
+    |> Licensing.health_summary()
+    |> license_extra_from_health()
+  end
+
+  def build_license_extra(_status), do: %{}
+
+  @spec build_license_tags(Licensing.t() | term()) :: map()
+  def build_license_tags(%Licensing{} = status) do
+    status
+    |> Licensing.health_summary()
+    |> license_tags_from_health()
+  end
+
+  def build_license_tags(_status), do: %{}
+
+  @type surface :: :controller | :node_agent | :all
+
+  @spec apply_license_status(Licensing.t() | term(), surface()) :: :ok
+  def apply_license_status(status, surface \\ :all)
+
+  def apply_license_status(%Licensing{} = status, surface) do
+    if surface_enabled?(surface) do
+      put_extra(build_license_extra(status))
+      put_tags(build_license_tags(status))
+    end
+
+    :ok
+  end
+
+  def apply_license_status(_status, _surface), do: :ok
+
+  @spec cache_license_status(Licensing.t() | term()) :: :ok
+  def cache_license_status(%Licensing{} = status) do
+    :persistent_term.put(@cached_license_key, %{
+      extra: build_license_extra(status),
+      tags: build_license_tags(status)
+    })
+
+    :ok
+  end
+
+  def cache_license_status(_status), do: :ok
+
+  @spec apply_cached_license_status(surface()) :: :ok
+  def apply_cached_license_status(surface \\ :all) do
+    if surface_enabled?(surface) do
+      case :persistent_term.get(@cached_license_key, nil) do
+        %{extra: extra, tags: tags} ->
+          put_extra(extra)
+          put_tags(tags)
+
+        _missing_or_invalid ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  @spec clear_cached_license_status() :: :ok
+  def clear_cached_license_status do
+    :persistent_term.erase(@cached_license_key)
+    :ok
+  rescue
+    ArgumentError -> :ok
+  end
+
   @spec put_extra(map()) :: :ok
   def put_extra(attrs) when is_map(attrs), do: call_context(:set_extra_context, attrs)
   def put_extra(_attrs), do: :ok
@@ -160,6 +233,66 @@ defmodule Orchard.SentryContext do
     _exception -> false
   catch
     _kind, _reason -> false
+  end
+
+  defp license_extra_from_health(%{status: status} = health) do
+    base = %{orchard_license_state: status}
+
+    if license_identity_allowed?(health) do
+      tracking = Map.get(health, :tracking, %{})
+
+      %{
+        orchard_license_state: status,
+        orchard_license_id: Map.get(health, :license_id),
+        orchard_machine_id_hash: hash_id(Map.get(health, :machine_id)),
+        orchard_max_machines: Map.get(health, :max_machines),
+        orchard_expires_at: Map.get(health, :expires_at),
+        orchard_tracking_program: Map.get(tracking, :program),
+        orchard_tracking_reference: Map.get(tracking, :reference),
+        orchard_build_channel: Orchard.BuildInfo.build_channel(),
+        orchard_build_ref: build_ref()
+      }
+      |> compact_nil_values()
+    else
+      base
+    end
+  end
+
+  defp license_extra_from_health(_health), do: %{}
+
+  defp license_tags_from_health(%{status: status} = health) do
+    tags = %{orchard_license_state: status}
+
+    if license_identity_allowed?(health) do
+      tracking = Map.get(health, :tracking, %{})
+
+      %{
+        orchard_license_state: status,
+        orchard_build_channel: Orchard.BuildInfo.build_channel(),
+        orchard_tracking_program: Map.get(tracking, :program),
+        orchard_tracking_reference: Map.get(tracking, :reference)
+      }
+      |> compact_nil_values()
+      |> normalize_tags()
+    else
+      tags
+    end
+  end
+
+  defp license_tags_from_health(_health), do: %{}
+
+  defp license_identity_allowed?(%{reason: reason})
+       when reason in [nil, "expired", "not_yet_valid", "fingerprint_mismatch"],
+       do: true
+
+  defp license_identity_allowed?(_health), do: false
+
+  defp build_ref do
+    if function_exported?(Orchard.BuildInfo, :build_ref, 0) do
+      apply(Orchard.BuildInfo, :build_ref, [])
+    else
+      Orchard.BuildInfo.git_sha()
+    end
   end
 
   defp put_hashed(acc, key, value) do
@@ -212,6 +345,11 @@ defmodule Orchard.SentryContext do
   end
 
   defp master_enabled?, do: config_value(:enabled?, false)
+
+  defp surface_enabled?(:controller), do: controller_enabled?()
+  defp surface_enabled?(:node_agent), do: node_agent_enabled?()
+  defp surface_enabled?(:all), do: master_enabled?()
+  defp surface_enabled?(_unknown), do: false
 
   defp config_value(key, default) do
     :orchard_shared

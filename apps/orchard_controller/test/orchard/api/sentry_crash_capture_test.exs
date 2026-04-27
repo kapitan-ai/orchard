@@ -3,11 +3,15 @@ defmodule Orchard.API.SentryCrashCaptureTest do
 
   @moduletag :db
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.RequestContext
+  alias Orchard.API.SentryContextBoundary
   alias Orchard.Governance
+  alias Orchard.Licensing
   alias Orchard.Repo
   alias Orchard.SentryContext
   alias Orchard.SentryLogger
+  alias __MODULE__.{ControlledCrash, CrashingRequestProcess}
 
   defmodule ControlledCrash do
     defexception message: "controlled request-process crash"
@@ -30,6 +34,7 @@ defmodule Orchard.API.SentryCrashCaptureTest do
       conn =
         :get
         |> Plug.Test.conn("/v1/models")
+        |> SentryContextBoundary.call([])
         |> Plug.Conn.put_req_header("authorization", "Bearer #{token}")
         |> RequestContext.call([])
 
@@ -48,6 +53,7 @@ defmodule Orchard.API.SentryCrashCaptureTest do
 
     remove_sentry_handler()
     SentryContext.clear_all()
+    SentryContext.clear_cached_license_status()
 
     Application.put_env(:sentry, :dsn, "https://public@example.invalid/1")
     Application.put_env(:sentry, :before_send, {Orchard.SentryFilter, :filter})
@@ -67,15 +73,29 @@ defmodule Orchard.API.SentryCrashCaptureTest do
     :ok = SentryLogger.install_handler()
     _flushed_reports = Sentry.Test.pop_sentry_reports()
 
+    license_status = %Licensing{
+      state: :valid,
+      message: "License bundle is valid.",
+      bundle_path: "/tmp/orchard-license.json",
+      license_id: "lic_controller_sentry_crash_test",
+      machine_id: "mach_controller_sentry_crash_test",
+      licensee: "Controller Sentry Crash Test",
+      max_machines: 2,
+      metadata: %{program: "eval", reference: "phase-6"}
+    }
+
+    SentryContext.cache_license_status(license_status)
+
     on_exit(fn ->
       remove_sentry_handler()
       restore_sentry_env(previous_sentry)
       restore_enrichment(previous_enrichment)
       restore_sentry_handler(previous_handler)
       SentryContext.clear_all()
+      SentryContext.clear_cached_license_status()
     end)
 
-    :ok
+    %{license_status: license_status}
   end
 
   test "logger-captured request-process crash preserves safe controller Sentry context" do
@@ -86,8 +106,10 @@ defmodule Orchard.API.SentryCrashCaptureTest do
     :persistent_term.put(token_ref, token)
     on_exit(fn -> :persistent_term.erase(token_ref) end)
 
-    {:ok, pid} = CrashingRequestProcess.start(token_ref: token_ref)
-    Ecto.Adapters.SQL.Sandbox.allow(Repo, self(), pid)
+    {:ok, pid} =
+      CrashingRequestProcess.start(token_ref: token_ref)
+
+    Sandbox.allow(Repo, self(), pid)
     :ok = Sentry.Test.allow_sentry_reports(self(), pid)
 
     ref = Process.monitor(pid)
@@ -100,8 +122,16 @@ defmodule Orchard.API.SentryCrashCaptureTest do
     assert event.source == :logger
     assert event.original_exception.__struct__ == ControlledCrash
 
-    assert event.tags == %{orchard_app: "controller", orchard_surface: "api"}
+    assert event.tags.orchard_app == "controller"
+    assert event.tags.orchard_surface == "api"
+    assert event.tags.orchard_license_state == "valid"
+    assert event.tags.orchard_tracking_program == "eval"
+    assert event.tags.orchard_tracking_reference == "phase-6"
 
+    assert event.extra.orchard_license_state == "valid"
+    assert event.extra.orchard_license_id == "lic_controller_sentry_crash_test"
+    assert event.extra.orchard_tracking_program == "eval"
+    assert event.extra.orchard_tracking_reference == "phase-6"
     assert event.extra.orchard_api_key_hash == SentryContext.hash_id(api_key.id)
     assert event.extra.orchard_principal_hash == SentryContext.hash_id(tenant.id)
     assert event.extra.orchard_tenant_hash == SentryContext.hash_id(tenant.id)
@@ -124,28 +154,22 @@ defmodule Orchard.API.SentryCrashCaptureTest do
   end
 
   defp pop_controlled_crash_report(deadline \\ System.monotonic_time(:millisecond) + 5_000) do
-    case Sentry.Test.pop_sentry_reports() do
-      [] ->
-        if System.monotonic_time(:millisecond) >= deadline do
-          flunk("request-process crash reached :DOWN but no Sentry event was collected")
-        else
-          Process.sleep(25)
-          pop_controlled_crash_report(deadline)
-        end
+    events = Sentry.Test.pop_sentry_reports()
+    event = Enum.find(events, &controlled_crash_event?/1)
 
-      events ->
-        case Enum.find(events, &controlled_crash_event?/1) do
-          nil ->
-            if System.monotonic_time(:millisecond) >= deadline do
-              flunk("Sentry reports were collected, but none matched the controlled crash")
-            else
-              Process.sleep(25)
-              pop_controlled_crash_report(deadline)
-            end
+    cond do
+      event ->
+        event
 
-          event ->
-            event
-        end
+      System.monotonic_time(:millisecond) < deadline ->
+        Process.sleep(25)
+        pop_controlled_crash_report(deadline)
+
+      events == [] ->
+        flunk("request-process crash reached :DOWN but no Sentry event was collected")
+
+      true ->
+        flunk("Sentry reports were collected, but none matched the controlled crash")
     end
   end
 

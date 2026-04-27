@@ -1,6 +1,7 @@
 defmodule Orchard.SentryContextTest do
   use ExUnit.Case, async: false
 
+  alias Orchard.Licensing
   alias Orchard.SentryContext
 
   @config_key {Orchard.SentryContext, :sdk_warning_logged?}
@@ -9,11 +10,13 @@ defmodule Orchard.SentryContextTest do
     previous_config = Application.get_env(:orchard_shared, :sentry_enrichment)
     erase_warning_marker()
     clear_sentry_context()
+    SentryContext.clear_cached_license_status()
 
     on_exit(fn ->
       restore_config(previous_config)
       erase_warning_marker()
       clear_sentry_context()
+      SentryContext.clear_cached_license_status()
     end)
 
     :ok
@@ -182,6 +185,156 @@ defmodule Orchard.SentryContextTest do
            }
   end
 
+  test "build_license_extra returns allowlisted license and build context" do
+    Application.put_env(:orchard_shared, :sentry_enrichment, hash_secret: "hash-secret")
+
+    assert SentryContext.build_license_extra(license_status()) == %{
+             orchard_license_state: "valid",
+             orchard_license_id: "lic_eval_123",
+             orchard_machine_id_hash: SentryContext.hash_id("mach_eval_456"),
+             orchard_max_machines: 3,
+             orchard_expires_at: "2027-04-15T00:00:00Z",
+             orchard_tracking_program: "aieh",
+             orchard_tracking_reference: "aieh-2026-001",
+             orchard_build_channel: Orchard.BuildInfo.build_channel(),
+             orchard_build_ref: Orchard.BuildInfo.git_sha()
+           }
+  end
+
+  test "build_license_extra emits only state for missing and unsafe invalid states" do
+    for {state, expected_state} <- [
+          missing_bundle: "missing",
+          invalid_license_signature: "invalid"
+        ] do
+      status =
+        license_status(
+          state: state,
+          expires_at: ~U[2027-04-15 00:00:00Z],
+          message: "License is unavailable."
+        )
+
+      assert SentryContext.build_license_extra(status) == %{
+               orchard_license_state: expected_state
+             }
+    end
+  end
+
+  test "build_license_extra omits machine hash when hash secret is unset" do
+    Application.put_env(:orchard_shared, :sentry_enrichment, hash_secret: nil)
+
+    extra = SentryContext.build_license_extra(license_status())
+
+    refute Map.has_key?(extra, :orchard_machine_id_hash)
+
+    assert Map.drop(extra, [:orchard_machine_id_hash]) == %{
+             orchard_license_state: "valid",
+             orchard_license_id: "lic_eval_123",
+             orchard_max_machines: 3,
+             orchard_expires_at: "2027-04-15T00:00:00Z",
+             orchard_tracking_program: "aieh",
+             orchard_tracking_reference: "aieh-2026-001",
+             orchard_build_channel: Orchard.BuildInfo.build_channel(),
+             orchard_build_ref: Orchard.BuildInfo.git_sha()
+           }
+  end
+
+  test "build_license_tags emits tag-safe license dimensions and omits nil tracking fields" do
+    status = license_status(metadata: %{program: "aieh", reference: nil})
+
+    assert SentryContext.build_license_tags(status) == %{
+             orchard_license_state: "valid",
+             orchard_build_channel: Orchard.BuildInfo.build_channel(),
+             orchard_tracking_program: "aieh"
+           }
+  end
+
+  test "apply_license_status no-ops when enrichment is disabled" do
+    Application.put_env(:orchard_shared, :sentry_enrichment,
+      enabled?: false,
+      hash_secret: "hash-secret"
+    )
+
+    assert :ok = SentryContext.apply_license_status(license_status())
+    assert sentry_context().extra == %{}
+    assert sentry_context().tags == %{}
+  end
+
+  test "apply_license_status honors per-surface enrichment flags" do
+    Application.put_env(:orchard_shared, :sentry_enrichment,
+      enabled?: true,
+      controller_enabled?: false,
+      node_agent_enabled?: true,
+      hash_secret: "hash-secret"
+    )
+
+    assert :ok = SentryContext.apply_license_status(license_status(), :controller)
+    assert sentry_context().extra == %{}
+
+    assert :ok = SentryContext.apply_license_status(license_status(), :node_agent)
+    assert sentry_context().extra.orchard_license_state == "valid"
+  end
+
+  test "cached license status can be reapplied after context clearing" do
+    Application.put_env(:orchard_shared, :sentry_enrichment,
+      enabled?: true,
+      hash_secret: "hash-secret"
+    )
+
+    status = license_status()
+
+    assert :ok = SentryContext.cache_license_status(status)
+    assert :ok = SentryContext.apply_cached_license_status()
+    assert sentry_context().extra.orchard_license_state == "valid"
+
+    assert :ok = SentryContext.clear_all()
+    assert sentry_context().extra == %{}
+
+    assert :ok = SentryContext.apply_cached_license_status()
+
+    assert sentry_context().extra.orchard_machine_id_hash ==
+             SentryContext.hash_id("mach_eval_456")
+
+    assert sentry_context().tags.orchard_tracking_reference == "aieh-2026-001"
+  end
+
+  test "cached license status honors master kill switch" do
+    Application.put_env(:orchard_shared, :sentry_enrichment,
+      enabled?: false,
+      hash_secret: "hash-secret"
+    )
+
+    assert :ok = SentryContext.cache_license_status(license_status())
+    assert :ok = SentryContext.apply_cached_license_status()
+
+    assert sentry_context().extra == %{}
+    assert sentry_context().tags == %{}
+  end
+
+  test "cached license status honors per-surface enrichment flags" do
+    Application.put_env(:orchard_shared, :sentry_enrichment,
+      enabled?: true,
+      controller_enabled?: true,
+      node_agent_enabled?: false,
+      hash_secret: "hash-secret"
+    )
+
+    assert :ok = SentryContext.cache_license_status(license_status())
+    assert :ok = SentryContext.apply_cached_license_status(:node_agent)
+    assert sentry_context().extra == %{}
+
+    assert :ok = SentryContext.apply_cached_license_status(:controller)
+    assert sentry_context().extra.orchard_license_state == "valid"
+  end
+
+  test "license helpers handle nil and non-license inputs" do
+    assert SentryContext.build_license_extra(nil) == %{}
+    assert SentryContext.build_license_extra(%{}) == %{}
+    assert SentryContext.build_license_tags(nil) == %{}
+    assert SentryContext.build_license_tags(%{}) == %{}
+    assert :ok = SentryContext.apply_license_status(nil)
+    assert :ok = SentryContext.apply_license_status(%{})
+  end
+
   test "side-effect wrappers no-op when enrichment is disabled" do
     Application.put_env(:orchard_shared, :sentry_enrichment, enabled?: false)
 
@@ -224,6 +377,22 @@ defmodule Orchard.SentryContextTest do
   end
 
   defp sentry_context, do: Sentry.Context.get_all()
+
+  defp license_status(overrides \\ []) do
+    defaults = [
+      state: :valid,
+      message: "License bundle is valid.",
+      bundle_path: "/tmp/current.json",
+      expires_at: ~U[2027-04-15 00:00:00Z],
+      license_id: "lic_eval_123",
+      machine_id: "mach_eval_456",
+      licensee: "Acme Orchard Lab",
+      max_machines: 3,
+      metadata: %{program: "aieh", reference: "aieh-2026-001"}
+    ]
+
+    struct!(Licensing, Keyword.merge(defaults, overrides))
+  end
 
   defp clear_sentry_context do
     if Code.ensure_loaded?(Sentry.Context) do

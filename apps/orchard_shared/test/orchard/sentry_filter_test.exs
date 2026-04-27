@@ -126,6 +126,14 @@ defmodule Orchard.SentryFilterTest do
         "node_id" => "node-1",
         "orchard_node_id" => "node-2",
         "orchard_node_hash" => "0123456789abcdef",
+        "machine_id" => "raw-machine-id",
+        "orchardMachineId" => "raw-orchard-machine-id",
+        "fingerprint" => "raw-fingerprint",
+        "local_node_fingerprint" => "raw-local-node-fingerprint",
+        "nodeFingerprint" => "raw-node-fingerprint",
+        "licenseFingerprint" => "raw-license-fingerprint",
+        "keyFingerprint" => "raw-key-fingerprint",
+        "remoteMachineId" => "raw-remote-machine-id",
         "input_tokens" => 12,
         "outputTokens" => 3,
         "token_usage" => %{total: 15}
@@ -146,6 +154,14 @@ defmodule Orchard.SentryFilterTest do
     assert filtered.extra["node_id"] == "[Filtered]"
     assert filtered.extra["orchard_node_id"] == "[Filtered]"
     assert filtered.extra["orchard_node_hash"] == "0123456789abcdef"
+    assert filtered.extra["machine_id"] == "[Filtered]"
+    assert filtered.extra["orchardMachineId"] == "[Filtered]"
+    assert filtered.extra["fingerprint"] == "[Filtered]"
+    assert filtered.extra["local_node_fingerprint"] == "[Filtered]"
+    assert filtered.extra["nodeFingerprint"] == "[Filtered]"
+    assert filtered.extra["licenseFingerprint"] == "[Filtered]"
+    assert filtered.extra["keyFingerprint"] == "[Filtered]"
+    assert filtered.extra["remoteMachineId"] == "[Filtered]"
     assert filtered.extra["input_tokens"] == 12
     assert filtered.extra["outputTokens"] == 3
     assert filtered.extra["token_usage"] == %{total: 15}
@@ -207,6 +223,149 @@ defmodule Orchard.SentryFilterTest do
     refute inspect(filtered) =~ "orch_prefix"
     refute inspect(filtered) =~ "header-style-secret"
     refute inspect(filtered) =~ "breadcrumb-api-key"
+  end
+
+  test "scrubs explicit license secret keys in extra and breadcrumb data" do
+    secret_keys = [
+      "license_certificate",
+      "machine_certificate",
+      "activation_key",
+      "license_key",
+      "keygen_admin_token",
+      "orchard_keygen_admin_token",
+      "keygen_public_key",
+      "keygen_private_key",
+      "private_key",
+      "certificate",
+      "key",
+      "certificate_pem",
+      "private_key_pem",
+      "key_pem",
+      "signing_key",
+      "public_key",
+      "certfile",
+      "keyfile",
+      "pem",
+      "cert",
+      "certificate_chain",
+      "bundle_path",
+      "node_identity_path",
+      "models_root",
+      "worker_log_dir",
+      "artifact_uri"
+    ]
+
+    event = %{
+      extra: Map.new(secret_keys, &{&1, "secret-#{&1}"}),
+      breadcrumbs: [
+        %{
+          data:
+            secret_keys
+            |> Enum.map(&String.to_atom/1)
+            |> Map.new(&{&1, "breadcrumb-secret-#{&1}"})
+        }
+      ]
+    }
+
+    filtered = SentryFilter.filter(event)
+
+    for key <- secret_keys do
+      assert filtered.extra[key] == "[Filtered]"
+    end
+
+    [breadcrumb] = filtered.breadcrumbs
+
+    for key <- Enum.map(secret_keys, &String.to_atom/1) do
+      assert breadcrumb.data[key] == "[Filtered]"
+    end
+  end
+
+  test "preserves valid orchard machine hash and filters malformed values" do
+    event = %{
+      extra: %{
+        orchard_machine_id_hash: "abc123def4567890"
+      },
+      contexts: %{
+        orchard: %{
+          "orchard_machine_id_hash" => "not-a-valid-hash"
+        }
+      }
+    }
+
+    filtered = SentryFilter.filter(event)
+
+    assert filtered.extra.orchard_machine_id_hash == "abc123def4567890"
+    assert filtered.contexts.orchard["orchard_machine_id_hash"] == "[Filtered]"
+  end
+
+  test "scrubs nested Keygen-style certificate and key payloads" do
+    event = %{
+      contexts: %{
+        keygen: %{
+          data: %{
+            attributes: %{
+              certificate: "raw-certificate",
+              key: "raw-license-key",
+              fingerprint: "raw-machine-fingerprint"
+            }
+          }
+        }
+      }
+    }
+
+    filtered = SentryFilter.filter(event)
+
+    attrs = filtered.contexts.keygen.data.attributes
+    assert attrs.certificate == "[Filtered]"
+    assert attrs.key == "[Filtered]"
+    assert attrs.fingerprint == "[Filtered]"
+    refute inspect(filtered) =~ "raw-certificate"
+    refute inspect(filtered) =~ "raw-license-key"
+    refute inspect(filtered) =~ "raw-machine-fingerprint"
+  end
+
+  test "scrubs path-like suffixes without filtering safe Orchard hashes" do
+    event = %{
+      extra: %{
+        "download_path" => "/Users/test/private/model",
+        "cacheDir" => "/Library/Application Support/Orchard/cache",
+        "modelsRoot" => "/Library/Application Support/Orchard/models",
+        "source_uri" => "file:///private/current.json",
+        "orchard_machine_id_hash" => "abc123def4567890"
+      }
+    }
+
+    filtered = SentryFilter.filter(event)
+
+    assert filtered.extra["download_path"] == "[Filtered]"
+    assert filtered.extra["cacheDir"] == "[Filtered]"
+    assert filtered.extra["modelsRoot"] == "[Filtered]"
+    assert filtered.extra["source_uri"] == "[Filtered]"
+    assert filtered.extra["orchard_machine_id_hash"] == "abc123def4567890"
+    refute inspect(filtered) =~ "/Library/Application Support/Orchard"
+  end
+
+  test "passes through non-sensitive license traceability fields" do
+    traceability = %{
+      orchard_license_state: "valid",
+      orchard_license_id: "lic_eval_123",
+      orchard_expires_at: "2027-04-15T00:00:00Z",
+      orchard_max_machines: 3,
+      orchard_tracking_program: "aieh",
+      orchard_tracking_reference: "aieh-2026-001",
+      orchard_build_channel: "trial",
+      orchard_build_ref: "abc1234"
+    }
+
+    event = %{extra: traceability}
+
+    assert SentryFilter.filter(event).extra == traceability
+  end
+
+  test "does not preserve raw licensee identity as Sentry traceability" do
+    filtered = SentryFilter.filter(%{extra: %{licensee: "Acme Orchard Lab"}})
+
+    assert filtered.extra.licensee == "[Filtered]"
   end
 
   test "scrubs user and host identity fields" do

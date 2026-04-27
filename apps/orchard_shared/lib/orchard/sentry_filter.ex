@@ -16,7 +16,10 @@ defmodule Orchard.SentryFilter do
                     "rendered_prompt",
                     "metadata",
                     "abs_path",
+                    "certificate",
                     "filename",
+                    "fingerprint",
+                    "key",
                     "source_url",
                     "url",
                     "raw_url",
@@ -25,6 +28,10 @@ defmodule Orchard.SentryFilter do
                     "path",
                     "node_id",
                     "orchard_node_id",
+                    "machine_id",
+                    "orchard_machine_id",
+                    "local_node_fingerprint",
+                    "node_fingerprint",
                     "token",
                     "token_prefix",
                     "access_token",
@@ -49,7 +56,29 @@ defmodule Orchard.SentryFilter do
                     "cookie",
                     "cookies",
                     "email",
-                    "ip_address"
+                    "ip_address",
+                    "licensee",
+                    "license_certificate",
+                    "machine_certificate",
+                    "activation_key",
+                    "license_key",
+                    "keygen_admin_token",
+                    "orchard_keygen_admin_token",
+                    "keygen_public_key",
+                    "keygen_private_key",
+                    "private_key",
+                    "certificate_pem",
+                    "private_key_pem",
+                    "key_pem",
+                    "signing_key",
+                    "public_key",
+                    "certfile",
+                    "keyfile",
+                    "bundle_path",
+                    "node_identity_path",
+                    "models_root",
+                    "worker_log_dir",
+                    "artifact_uri"
                   ])
 
   @safe_token_keys MapSet.new([
@@ -66,7 +95,8 @@ defmodule Orchard.SentryFilter do
                                 "orchard_api_key_hash",
                                 "orchard_tenant_hash",
                                 "orchard_principal_hash",
-                                "orchard_node_hash"
+                                "orchard_node_hash",
+                                "orchard_machine_id_hash"
                               ])
 
   @spec filter(map() | struct()) :: map() | struct()
@@ -149,7 +179,7 @@ defmodule Orchard.SentryFilter do
       safe_correlation_hash_key?(normalized_key) ->
         scrub_correlation_hash(value)
 
-      sensitive_key?(normalized_key) ->
+      sensitive_key?(normalized_key) or sensitive_suffix?(normalized_key) ->
         @filtered
 
       true ->
@@ -192,6 +222,32 @@ defmodule Orchard.SentryFilter do
       String.ends_with?(key, "_secret") or
       String.ends_with?(key, "_password") or
       (String.ends_with?(key, "_token") and not MapSet.member?(@safe_token_keys, key))
+  end
+
+  defp sensitive_suffix?(key) do
+    Enum.any?(
+      [
+        "_certificate",
+        "_certificate_pem",
+        "_certificate_chain",
+        "_private_key",
+        "_private_key_pem",
+        "_public_key",
+        "_signing_key",
+        "_key_pem",
+        "_keyfile",
+        "_certfile",
+        "_fingerprint",
+        "_machine_id",
+        "_path",
+        "_dir",
+        "_root",
+        "_uri",
+        "_pem",
+        "_cert"
+      ],
+      &String.ends_with?(key, &1)
+    ) or key in ["pem", "cert", "certificate_chain"]
   end
 
   defp normalize_key(key) when is_atom(key), do: key |> Atom.to_string() |> normalize_key()

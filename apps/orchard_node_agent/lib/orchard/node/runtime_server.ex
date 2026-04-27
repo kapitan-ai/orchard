@@ -47,6 +47,7 @@ defmodule Orchard.Node.RuntimeServer do
   @spec execute_inference(ExecuteInferenceRequest.t(), GRPC.Server.Stream.t()) :: :ok
   def execute_inference(%ExecuteInferenceRequest{} = request, stream) do
     SentryContext.clear_all()
+    SentryContext.apply_cached_license_status(:node_agent)
 
     # Completed requests clear process-local Sentry context for future gRPC
     # process reuse. Exceptions intentionally skip this branch so crash capture
