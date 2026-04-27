@@ -941,6 +941,156 @@ the fallback PKG.
 **Note:** Prefer `scripts/build-pkg.sh` for normal operation; it also validates
 staging/payload layout and writes checksums.
 
+## Signing and notarization
+
+`scripts/build-pkg.sh` produces a generic **unsigned** PKG artifact. Distribution
+signing and notarization are an explicit second step performed with
+`scripts/sign-pkg.sh`; the build script never signs silently and never selects a
+local signing identity by default.
+
+Prerequisites:
+
+1. Apple Xcode Command Line Tools or Xcode are installed so `productsign`,
+   `xcrun notarytool`, and `xcrun stapler` are available.
+2. A **Developer ID Installer** certificate for the Orchard developer account is
+   installed in the signing keychain.
+3. A notarytool keychain profile has been created, for example:
+   ```bash
+   xcrun notarytool store-credentials orchard-notary
+   ```
+
+Sign, notarize, staple, and write the final SHA-256 plus notary evidence:
+
+```bash
+ORCHARD_PKG_SIGNING_IDENTITY='Developer ID Installer: Example, Inc. (TEAMID)' \
+ORCHARD_NOTARYTOOL_PROFILE=orchard-notary \
+  scripts/sign-pkg.sh \
+    --input artifacts/pkg-builds/YYYY-MM-DD/Orchard-<version>-<date>-<sha>.pkg \
+    --output artifacts/pkg-builds/YYYY-MM-DD/Orchard-<version>-<date>-<sha>-signed.pkg
+```
+
+The same values can be supplied as flags instead of environment variables:
+
+```bash
+scripts/sign-pkg.sh \
+  --identity 'Developer ID Installer: Example, Inc. (TEAMID)' \
+  --notary-profile orchard-notary \
+  --input artifacts/pkg-builds/YYYY-MM-DD/Orchard-<version>-<date>-<sha>.pkg \
+  --output artifacts/pkg-builds/YYYY-MM-DD/Orchard-<version>-<date>-<sha>-signed.pkg
+```
+
+For release rehearsals or CI wiring checks without contacting Apple services:
+
+```bash
+scripts/sign-pkg.sh --dry-run \
+  --identity 'Developer ID Installer: Example, Inc. (TEAMID)' \
+  --notary-profile orchard-notary \
+  --input /tmp/Orchard.pkg \
+  --output /tmp/Orchard-signed.pkg
+```
+
+The script writes:
+
+- `Orchard-<version>-<date>-<sha>-signed.pkg`
+- `Orchard-<version>-<date>-<sha>-signed.pkg.sha256`
+- `Orchard-<version>-<date>-<sha>-signed.pkg.notary.json`
+
+Copy the SHA-256 and notary submission ID/status into the release manifest.
+
+Verify the signed package before distribution:
+
+```bash
+pkgutil --check-signature Orchard-<version>-<date>-<sha>-signed.pkg
+spctl -a -t install -vv Orchard-<version>-<date>-<sha>-signed.pkg
+xcrun stapler validate Orchard-<version>-<date>-<sha>-signed.pkg
+shasum -a 256 Orchard-<version>-<date>-<sha>-signed.pkg
+```
+
+Keep signing credentials, App Store Connect credentials, notary profile
+secrets, activation keys, and customer identifiers out of package payloads,
+casks, MDM policies, logs, and documentation examples.
+
+## Homebrew private cask
+
+A private Homebrew tap can install the same signed and notarized PKG used for
+direct downloads. The cask should pin the exact SHA-256 of the signed PKG and
+must not embed license keys, customer names, organization identifiers, or other
+customer-specific material.
+
+Example private cask:
+
+```ruby
+cask "orchard" do
+  version "0.5.0"
+  sha256 "<signed-pkg-sha256>"
+
+  url "https://downloads.example.com/orchard/Orchard-#{version}-20260427-abcdef0-signed.pkg"
+  name "Orchard"
+  desc "On-prem LLM orchestration platform for Apple Silicon macOS"
+  homepage "https://example.com/orchard"
+
+  pkg "Orchard-#{version}-20260427-abcdef0-signed.pkg"
+
+  uninstall launchctl: [
+              "com.orchard.controller",
+              "com.orchard.node-agent",
+            ],
+            pkgutil: "com.orchard.pkg",
+            delete: [
+              "/Library/Application Support/Orchard/bin/orchardctl",
+              "/Library/Application Support/Orchard/bin/orchard-controller",
+              "/Library/Application Support/Orchard/bin/orchard-node-agent",
+              "/Library/LaunchDaemons/com.orchard.controller.plist",
+              "/Library/LaunchDaemons/com.orchard.node-agent.plist",
+            ]
+
+  zap trash: [
+    "/Library/Application Support/Orchard/logs",
+  ]
+end
+```
+
+Install from the private tap according to the tap's access policy, then activate
+out-of-band:
+
+```bash
+brew install --cask <private-tap>/orchard/orchard
+sudo orchardctl license activate <key>
+```
+
+Activation remains a separate operator step because evaluator/customer identity
+lives in the license service and local activation bundle, not in the package or
+Homebrew cask.
+
+## Jamf / managed deployment
+
+Jamf Pro and equivalent MDM tools should deploy the same signed and notarized
+PKG used for direct and Homebrew installs. Upload the signed PKG, scope it to the
+intended Macs, and use standard policy ordering for prerequisites such as the
+install role request file, database configuration, and service start workflow.
+
+Customer specificity should live in activation, not in a repackaged Orchard
+installer. Common patterns are:
+
+- a scoped post-install script that runs
+  `orchardctl license activate "$ORCHARD_LICENSE_KEY"` after the PKG is
+  installed, with `ORCHARD_LICENSE_KEY` loaded from a protected Jamf parameter
+  or secret store;
+- an MDM-managed secret/profile that the activation script reads at runtime;
+- a signed license seed package or profile only when interactive or online
+  activation is not available.
+
+Jamf policy logs can capture script arguments and stdout/stderr. Do not hardcode
+license keys in reusable policies, package payloads, casks, or visible command
+examples. Prefer a protected parameter, secret store, or short-lived one-time
+activation handoff, and ensure scripts do not echo keys. Record only safe
+activation outcomes such as license state, license ID, expiry, and tracking
+program/reference.
+
+The distribution artifact remains generic across direct download, Homebrew, and
+Jamf. Evaluator/customer attribution and limits are enforced by license
+activation and Keygen policy/license records.
+
 ## PKG Filename Policy
 
 Orchard PKG releases follow a structured naming convention to minimize user

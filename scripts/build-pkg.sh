@@ -8,7 +8,10 @@
 #   --clean          Deep clean: removes _build/ and deps/ before building
 #   output_dir       Destination directory (default: ./artifacts/pkg-builds/YYYY-MM-DD)
 #
-# Outputs: Orchard-<app_version>-<YYYYMMDD>-<git_sha7>.pkg
+# Outputs: unsigned generic Orchard-<app_version>-<YYYYMMDD>-<git_sha7>.pkg
+#
+# Signing and notarization are intentionally separate. Use scripts/sign-pkg.sh
+# with an explicit Developer ID Installer identity and notarytool profile.
 #
 # Examples:
 #   ./scripts/build-pkg.sh                                    # Standard build
@@ -358,12 +361,13 @@ if [[ -f "$OUTPUT_DIR/$PKG_NAME" ]]; then
     fi
 
     PKG_SIZE=$(du -h "$OUTPUT_DIR/$PKG_NAME" | cut -f1)
-    log_info "✅ PKG built successfully: $PKG_NAME ($PKG_SIZE)"
+    log_info "Unsigned PKG built successfully: $PKG_NAME ($PKG_SIZE)"
     log_info "   Location: $OUTPUT_DIR/$PKG_NAME"
     
     # Generate checksum
-    shasum -a 256 "$OUTPUT_DIR/$PKG_NAME" > "$OUTPUT_DIR/$PKG_NAME.sha256"
-    log_info "   Checksum: $OUTPUT_DIR/$PKG_NAME.sha256"
+    PKG_SHA256="$(shasum -a 256 "$OUTPUT_DIR/$PKG_NAME" | awk '{print $1}')"
+    printf '%s  %s\n' "$PKG_SHA256" "$PKG_NAME" > "$OUTPUT_DIR/$PKG_NAME.sha256"
+    log_info "   Unsigned checksum: $OUTPUT_DIR/$PKG_NAME.sha256"
 else
     log_error "PKG build failed!"
     exit 1
@@ -371,7 +375,10 @@ fi
 
 log_info "Build complete!"
 echo ""
-echo "To test the PKG:"
+echo "To test the unsigned PKG locally:"
 echo "  sudo installer -pkg \"$OUTPUT_DIR/$PKG_NAME\" -target /"
 echo "  sudo orchardctl env init"
 echo "  sudo orchardctl start"
+echo ""
+echo "To sign and notarize for distribution:"
+echo "  scripts/sign-pkg.sh --identity '<Developer ID Installer identity>' --notary-profile '<profile>' --input \"$OUTPUT_DIR/$PKG_NAME\" --output \"$OUTPUT_DIR/${PKG_NAME%.pkg}-signed.pkg\""
