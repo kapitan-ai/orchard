@@ -174,11 +174,42 @@ defmodule OrchardConsole.OverviewLiveTest.LicensingExpiredStub do
   end
 end
 
+defmodule OrchardConsole.OverviewLiveTest.LicensingPartialTrackingStub do
+  @moduledoc false
+
+  def inspect_local do
+    %Orchard.Licensing{
+      state: :valid,
+      message: "License bundle is valid.",
+      bundle_path: "/tmp/current.json",
+      metadata: %{program: "   ", reference: "aieh-2026-001"}
+    }
+  end
+end
+
+defmodule OrchardConsole.OverviewLiveTest.LicensingInvalidSignatureRawFieldsStub do
+  @moduledoc false
+
+  def inspect_local do
+    %Orchard.Licensing{
+      state: :invalid_license_signature,
+      message: "License certificate signature is invalid.",
+      bundle_path: "/tmp/current.json",
+      license_id: "lic_hidden",
+      machine_id: "mach_hidden",
+      licensee: "Hidden Licensee",
+      max_machines: 1,
+      metadata: %{program: "aieh", reference: "aieh-2026-001"}
+    }
+  end
+end
+
 defmodule OrchardConsole.OverviewLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
   import Ecto.Query
+  import Orchard.TestSupport.LicenseGateHelpers
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.Endpoint
   alias Orchard.Governance
@@ -209,6 +240,18 @@ defmodule OrchardConsole.OverviewLiveTest do
   end
 
   describe "GET /console" do
+    test "hard mode keeps overview and license panel reachable", %{conn: conn} do
+      set_license_enforcement(:hard)
+      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingMissingStub)
+
+      {:ok, view, html} = live(conn, "/console")
+
+      assert html =~ "System Status"
+      assert has_element?(view, "#overview-license-card")
+      assert html =~ "orchardctl license activate"
+      assert html =~ "orchardctl license status"
+    end
+
     test "renders overview page with section titles", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
@@ -340,6 +383,33 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert card =~ "2027-04-15T00:00:00Z"
       assert card =~ "program=aieh ref=aieh-2026-001"
       refute card =~ "Activation required"
+    end
+
+    test "overview license card renders sanitized partial tracking", %{conn: conn} do
+      put_console_config(
+        licensing_impl: OrchardConsole.OverviewLiveTest.LicensingPartialTrackingStub
+      )
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      card = view |> element("#overview-license-card") |> render()
+      assert card =~ "ref=aieh-2026-001"
+      refute card =~ "program="
+    end
+
+    test "overview license card omits unsafe identity and tracking for invalid signature", %{
+      conn: conn
+    } do
+      put_console_config(
+        licensing_impl: OrchardConsole.OverviewLiveTest.LicensingInvalidSignatureRawFieldsStub
+      )
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      card = view |> element("#overview-license-card") |> render()
+      refute card =~ "Hidden Licensee"
+      refute card =~ "program=aieh"
+      refute card =~ "ref=aieh-2026-001"
     end
 
     test "overview license card renders activation guidance for a missing license", %{conn: conn} do

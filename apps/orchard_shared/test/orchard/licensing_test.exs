@@ -944,6 +944,42 @@ defmodule Orchard.LicensingTest do
              }
     end
 
+    test "omits tracking when tracking metadata fields are nil" do
+      summary =
+        Licensing.health_summary(%Licensing{
+          state: :valid,
+          message: "License bundle is valid.",
+          bundle_path: "/tmp/current.json",
+          metadata: %{program: nil, reference: nil}
+        })
+
+      refute Map.has_key?(summary, :tracking)
+    end
+
+    test "keeps partial tracking when one tracking metadata field is present" do
+      summary =
+        Licensing.health_summary(%Licensing{
+          state: :valid,
+          message: "License bundle is valid.",
+          bundle_path: "/tmp/current.json",
+          metadata: %{program: nil, reference: "aieh-2026-001"}
+        })
+
+      assert summary.tracking == %{reference: "aieh-2026-001"}
+    end
+
+    test "normalizes tracking by trimming strings and omitting blank values" do
+      summary =
+        Licensing.health_summary(%Licensing{
+          state: :valid,
+          message: "License bundle is valid.",
+          bundle_path: "/tmp/current.json",
+          metadata: %{program: "  aieh  ", reference: "   "}
+        })
+
+      assert summary.tracking == %{program: "aieh"}
+    end
+
     test "adds license identifiers for valid bundles when present", ctx do
       copy_fixture!("valid_bound_to_local", ctx.bundle_path)
       write_node_identity!(ctx.node_identity_path, @local_node_id)
@@ -1025,6 +1061,18 @@ defmodule Orchard.LicensingTest do
           message: "License bundle is valid.",
           bundle_path: "/tmp/current.json",
           metadata: "not-a-map"
+        })
+
+      refute Map.has_key?(summary, :tracking)
+    end
+
+    test "omits tracking for unsafe invalid states" do
+      summary =
+        Licensing.health_summary(%Licensing{
+          state: :invalid_license_signature,
+          message: "License certificate signature is invalid.",
+          bundle_path: "/tmp/current.json",
+          metadata: %{program: "aieh", reference: "aieh-2026-001"}
         })
 
       refute Map.has_key?(summary, :tracking)

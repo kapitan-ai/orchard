@@ -710,7 +710,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert banner =~ "Tracking: program=aieh ref=aieh-2026-001"
   end
 
-  test "renders license identifiers when health payload includes them" do
+  test "renders plan mandated safe license identity fields from health payload" do
     response = ready_response()
 
     body =
@@ -718,10 +718,15 @@ defmodule OrchardCLI.Commands.StatusTest do
         "status" => "valid",
         "reason" => nil,
         "message" => "License bundle is valid.",
+        "expires_at" => "2027-04-15T00:00:00Z",
         "license_id" => "lic_visible",
         "machine_id" => "mach_visible",
         "licensee" => "Acme Orchard Lab",
-        "max_machines" => 3
+        "max_machines" => 3,
+        "tracking" => %{
+          "program" => "aieh",
+          "reference" => "aieh-2026-001"
+        }
       })
 
     response = %{response | body: body}
@@ -732,10 +737,12 @@ defmodule OrchardCLI.Commands.StatusTest do
       })
 
     assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "expires: 2027-04-15T00:00:00Z"
     assert banner =~ "License ID: lic_visible"
     assert banner =~ "Machine ID: mach_visible"
     assert banner =~ "Licensee: Acme Orchard Lab"
     assert banner =~ "Max machines: 3"
+    assert banner =~ "Tracking: program=aieh ref=aieh-2026-001"
   end
 
   test "omits license identifiers when health payload excludes them" do

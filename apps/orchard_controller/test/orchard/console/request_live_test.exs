@@ -3,6 +3,7 @@ defmodule OrchardConsole.RequestLiveTest do
 
   import Phoenix.LiveViewTest
   import Ecto.Query
+  import Orchard.TestSupport.LicenseGateHelpers
   alias Ecto.Adapters.SQL.Sandbox
   import Orchard.TestSupport.ModelRequestFixtures
   alias Orchard.Repo
@@ -32,6 +33,17 @@ defmodule OrchardConsole.RequestLiveTest do
   # ===========================================================================
 
   describe "request summary" do
+    test "hard mode keeps request detail diagnostics reachable", %{conn: conn} do
+      set_license_enforcement(:hard)
+      request = create_request!(%{state: :completed, requested_model: "mlx-community/phi-3@main"})
+
+      {:ok, _view, html} = live(conn, "/console/requests/#{request.public_id}")
+
+      assert html =~ "Request Summary"
+      assert html =~ request.public_id
+      assert html =~ "mlx-community/phi-3@main"
+    end
+
     test "renders summary card with request metadata", %{conn: conn} do
       request =
         create_request!(%{

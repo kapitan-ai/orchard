@@ -45,35 +45,15 @@ defmodule OrchardConsole.ModelHubLive do
   end
 
   def handle_event("download_model", _params, socket) do
-    %{assigns: assigns} = socket
-
-    cond do
-      assigns.detail_status != :ok ->
-        {:noreply, socket}
-
-      assigns.model_detail == nil ->
-        {:noreply, socket}
-
-      assigns.model_detail.gated == true ->
-        {:noreply, socket}
-
-      download_busy_for_selected?(assigns) ->
-        {:noreply, socket}
-
-      true ->
-        {:noreply, start_download_via_coordinator(socket, assigns.model_detail.repo_id)}
-    end
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      handle_download_model(socket)
+    end)
   end
 
   def handle_event("retry_download", _params, socket) do
-    case socket.assigns do
-      %{download_status: :error, download_progress: %{repo_id: repo_id}}
-      when is_binary(repo_id) and repo_id != "" ->
-        {:noreply, start_download_via_coordinator(socket, repo_id)}
-
-      _ ->
-        {:noreply, socket}
-    end
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      handle_retry_download(socket)
+    end)
   end
 
   @impl true
@@ -539,6 +519,38 @@ defmodule OrchardConsole.ModelHubLive do
       </div>
     </div>
     """
+  end
+
+  defp handle_download_model(socket) do
+    %{assigns: assigns} = socket
+
+    cond do
+      assigns.detail_status != :ok ->
+        {:noreply, socket}
+
+      assigns.model_detail == nil ->
+        {:noreply, socket}
+
+      assigns.model_detail.gated == true ->
+        {:noreply, socket}
+
+      download_busy_for_selected?(assigns) ->
+        {:noreply, socket}
+
+      true ->
+        {:noreply, start_download_via_coordinator(socket, assigns.model_detail.repo_id)}
+    end
+  end
+
+  defp handle_retry_download(socket) do
+    case socket.assigns do
+      %{download_status: :error, download_progress: %{repo_id: repo_id}}
+      when is_binary(repo_id) and repo_id != "" ->
+        {:noreply, start_download_via_coordinator(socket, repo_id)}
+
+      _ ->
+        {:noreply, socket}
+    end
   end
 
   defp assign_defaults(socket) do

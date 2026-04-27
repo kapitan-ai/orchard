@@ -32,8 +32,8 @@ defmodule Orchard.Licensing do
   @health_identity_states [:valid, :expired, :not_yet_valid, :fingerprint_mismatch]
 
   @type tracking_metadata :: %{
-          program: String.t() | nil,
-          reference: String.t() | nil
+          optional(:program) => String.t(),
+          optional(:reference) => String.t()
         }
 
   @type t :: %__MODULE__{
@@ -180,7 +180,7 @@ defmodule Orchard.Licensing do
 
     summary
     |> maybe_put_license_identity(status)
-    |> maybe_put_tracking(status.metadata)
+    |> maybe_put_tracking(status)
   end
 
   @doc """
@@ -411,16 +411,46 @@ defmodule Orchard.Licensing do
 
   defp maybe_put_license_identity(summary, %__MODULE__{}), do: summary
 
-  defp maybe_put_tracking(summary, metadata) when is_map(metadata),
-    do: Map.put(summary, :tracking, metadata)
+  defp maybe_put_tracking(summary, %__MODULE__{state: state, metadata: metadata})
+       when state in @health_identity_states do
+    case normalize_tracking_metadata(metadata) do
+      nil -> summary
+      tracking -> Map.put(summary, :tracking, tracking)
+    end
+  end
 
-  defp maybe_put_tracking(summary, _metadata), do: summary
+  defp maybe_put_tracking(summary, %__MODULE__{}), do: summary
 
   defp maybe_put_non_nil(summary, _key, nil), do: summary
   defp maybe_put_non_nil(summary, key, value), do: Map.put(summary, key, value)
 
+  defp normalize_tracking_metadata(metadata) when is_map(metadata) do
+    tracking =
+      %{}
+      |> maybe_put_tracking_metadata(:program, normalize_tracking_field(metadata, :program))
+      |> maybe_put_tracking_metadata(:reference, normalize_tracking_field(metadata, :reference))
+
+    if map_size(tracking) == 0, do: nil, else: tracking
+  end
+
+  defp normalize_tracking_metadata(_metadata), do: nil
+
+  defp maybe_put_tracking_metadata(tracking, _key, nil), do: tracking
+  defp maybe_put_tracking_metadata(tracking, key, value), do: Map.put(tracking, key, value)
+
+  defp normalize_tracking_field(metadata, key),
+    do: metadata |> tracking_field(key) |> normalize_tracking_value()
+
+  defp normalize_tracking_value(nil), do: nil
+  defp normalize_tracking_value(value) when not is_binary(value), do: nil
+
+  defp normalize_tracking_value(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
   defp tracking_field(metadata, key) when is_map(metadata) do
-    Map.get(metadata, key)
+    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
   end
 
   defp tracking_field(_metadata, _key), do: nil

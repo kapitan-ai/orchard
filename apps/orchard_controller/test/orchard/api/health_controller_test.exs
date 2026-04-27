@@ -263,6 +263,49 @@ defmodule Orchard.API.HealthControllerTest do
            }
   end
 
+  test "health ready omits blank tracking subkeys and keeps present subkeys", %{conn: _conn} do
+    Process.put(
+      :licensing_status_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: "/tmp/current.json",
+        metadata: %{program: "   ", reference: "aieh-2026-001"}
+      }
+    )
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    license = conn.resp_body |> Jason.decode!() |> Map.fetch!("license")
+
+    assert license["tracking"] == %{"reference" => "aieh-2026-001"}
+    refute Map.has_key?(license["tracking"], "program")
+  end
+
+  test "health ready omits tracking when tracking metadata sanitizes to empty", %{conn: _conn} do
+    Process.put(
+      :licensing_status_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: "/tmp/current.json",
+        metadata: %{program: nil, reference: "  "}
+      }
+    )
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    license = conn.resp_body |> Jason.decode!() |> Map.fetch!("license")
+
+    refute Map.has_key?(license, "tracking")
+  end
+
   test "health ready includes license identifiers for valid bundles", %{conn: _conn} do
     Process.put(
       :licensing_status_response,

@@ -77,13 +77,13 @@ defmodule OrchardConsole.LicenseStatus do
       state: status.state,
       status: health.status,
       reason: health.reason,
-      message: status.message,
+      message: health.message,
       expires_at: health.expires_at,
-      license_id: status.license_id,
-      machine_id: status.machine_id,
-      licensee: status.licensee,
-      max_machines: status.max_machines,
-      tracking: status.metadata,
+      license_id: Map.get(health, :license_id),
+      machine_id: Map.get(health, :machine_id),
+      licensee: Map.get(health, :licensee),
+      max_machines: Map.get(health, :max_machines),
+      tracking: Map.get(health, :tracking),
       activation_guidance: activation_guidance
     }
   end

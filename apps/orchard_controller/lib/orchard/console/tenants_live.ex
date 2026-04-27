@@ -24,21 +24,9 @@ defmodule OrchardConsole.TenantsLive do
 
   @impl true
   def handle_event("create_tenant", %{"tenant" => params}, socket) do
-    case Governance.create_tenant(params) do
-      {:ok, tenant} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Created tenant #{tenant.slug}.")
-         |> assign_blank_form()
-         |> load_tenants()}
-
-      {:error, %Ecto.Changeset{} = changeset} ->
-        form = changeset_to_form(changeset, :tenant, %{"slug" => "", "name" => ""})
-        {:noreply, assign(socket, tenant_form: form)}
-    end
-  rescue
-    _ ->
-      {:noreply, put_flash(socket, :error, "Unable to create tenant.")}
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      create_tenant(socket, params)
+    end)
   end
 
   @impl true
@@ -131,6 +119,24 @@ defmodule OrchardConsole.TenantsLive do
   end
 
   # -- Private helpers --
+
+  defp create_tenant(socket, params) do
+    case Governance.create_tenant(params) do
+      {:ok, tenant} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Created tenant #{tenant.slug}.")
+         |> assign_blank_form()
+         |> load_tenants()}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        form = changeset_to_form(changeset, :tenant, %{"slug" => "", "name" => ""})
+        {:noreply, assign(socket, tenant_form: form)}
+    end
+  rescue
+    _ ->
+      {:noreply, put_flash(socket, :error, "Unable to create tenant.")}
+  end
 
   defp assign_loading_state(socket) do
     assign(socket,

@@ -33,64 +33,15 @@ defmodule OrchardConsole.TenantDetailLive do
 
   @impl true
   def handle_event("create_api_key", %{"api_key" => params}, socket) do
-    case Governance.create_api_key(socket.assigns.tenant.id, params) do
-      {:ok, %{api_key: api_key, token: token}} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Created API key #{api_key.name}.")
-         |> assign(
-           generated_secret: %{
-             api_key_id: api_key.id,
-             name: api_key.name,
-             token_prefix: api_key.token_prefix,
-             token: token,
-             copy_status: :idle
-           }
-         )
-         |> assign_blank_form()
-         |> load_tenant_detail()}
-
-      {:error, %Ecto.Changeset{} = changeset} ->
-        form = changeset_to_form(changeset, :api_key, %{"name" => ""})
-        {:noreply, assign(socket, api_key_form: form)}
-
-      {:error, :tenant_not_found} ->
-        {:noreply, assign(socket, detail_status: :not_found)}
-    end
-  rescue
-    _ ->
-      {:noreply, put_flash(socket, :error, "Unable to create API key.")}
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      create_api_key(socket, params)
+    end)
   end
 
   def handle_event("revoke_api_key", %{"id" => api_key_id}, socket) do
-    case Governance.revoke_api_key(socket.assigns.tenant, api_key_id) do
-      {:ok, api_key} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "Revoked API key #{api_key.name}.")
-         |> load_tenant_detail()}
-
-      {:error, :api_key_not_found} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "API key not found.")
-         |> load_tenant_detail()}
-
-      {:error, :tenant_not_found} ->
-        {:noreply, assign(socket, detail_status: :not_found)}
-
-      {:error, _} ->
-        {:noreply,
-         socket
-         |> put_flash(:error, "Unable to revoke API key.")
-         |> load_tenant_detail()}
-    end
-  rescue
-    _ ->
-      {:noreply,
-       socket
-       |> put_flash(:error, "Unable to revoke API key.")
-       |> load_tenant_detail()}
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      revoke_api_key(socket, api_key_id)
+    end)
   end
 
   def handle_event("dismiss_generated_secret", _params, socket) do
@@ -346,6 +297,67 @@ defmodule OrchardConsole.TenantDetailLive do
   end
 
   # -- Private helpers --
+
+  defp create_api_key(socket, params) do
+    case Governance.create_api_key(socket.assigns.tenant.id, params) do
+      {:ok, %{api_key: api_key, token: token}} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Created API key #{api_key.name}.")
+         |> assign(
+           generated_secret: %{
+             api_key_id: api_key.id,
+             name: api_key.name,
+             token_prefix: api_key.token_prefix,
+             token: token,
+             copy_status: :idle
+           }
+         )
+         |> assign_blank_form()
+         |> load_tenant_detail()}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        form = changeset_to_form(changeset, :api_key, %{"name" => ""})
+        {:noreply, assign(socket, api_key_form: form)}
+
+      {:error, :tenant_not_found} ->
+        {:noreply, assign(socket, detail_status: :not_found)}
+    end
+  rescue
+    _ ->
+      {:noreply, put_flash(socket, :error, "Unable to create API key.")}
+  end
+
+  defp revoke_api_key(socket, api_key_id) do
+    case Governance.revoke_api_key(socket.assigns.tenant, api_key_id) do
+      {:ok, api_key} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Revoked API key #{api_key.name}.")
+         |> load_tenant_detail()}
+
+      {:error, :api_key_not_found} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "API key not found.")
+         |> load_tenant_detail()}
+
+      {:error, :tenant_not_found} ->
+        {:noreply, assign(socket, detail_status: :not_found)}
+
+      {:error, _} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Unable to revoke API key.")
+         |> load_tenant_detail()}
+    end
+  rescue
+    _ ->
+      {:noreply,
+       socket
+       |> put_flash(:error, "Unable to revoke API key.")
+       |> load_tenant_detail()}
+  end
 
   defp assign_blank_form(socket) do
     assign(socket, api_key_form: to_form(%{"name" => ""}, as: :api_key))

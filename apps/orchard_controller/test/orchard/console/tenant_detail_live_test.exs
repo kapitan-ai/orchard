@@ -2,6 +2,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
+  import Orchard.TestSupport.LicenseGateHelpers
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
@@ -58,6 +59,36 @@ defmodule OrchardConsole.TenantDetailLiveTest do
   end
 
   describe "create API key" do
+    test "hard mode denies API key creation without issuing a secret", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      set_license_enforcement(:hard)
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      html =
+        view
+        |> form("#tenant-api-key-create-form", api_key: %{name: "blocked-key"})
+        |> render_submit()
+
+      assert_license_denial(html)
+      assert has_element?(view, "#tenant-api-key-create-card")
+      refute html =~ "tenant-api-key-secret-card"
+      assert {:ok, []} = Governance.list_api_keys_for_tenant(tenant)
+    end
+
+    test "warn mode permits API key creation", %{conn: conn, tenant: tenant} do
+      set_license_enforcement(:warn)
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      view
+      |> form("#tenant-api-key-create-form", api_key: %{name: "warn-key"})
+      |> render_submit()
+
+      assert {:ok, [api_key]} = Governance.list_api_keys_for_tenant(tenant)
+      assert api_key.name == "warn-key"
+    end
+
     test "creates key, shows secret card, and resets form", %{conn: conn, tenant: tenant} do
       {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
 

@@ -25,19 +25,27 @@ defmodule OrchardConsole.ModelsLive do
 
   @impl true
   def handle_event("activate", %{"id" => id}, socket) do
-    {:noreply, apply_transition(socket, id, &Models.activate_model/1, :activate)}
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      {:noreply, apply_transition(socket, id, &Models.activate_model/1, :activate)}
+    end)
   end
 
   def handle_event("deprecate", %{"id" => id}, socket) do
-    {:noreply, apply_transition(socket, id, &Models.deprecate_model/1, :deprecate)}
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      {:noreply, apply_transition(socket, id, &Models.deprecate_model/1, :deprecate)}
+    end)
   end
 
   def handle_event("retire", %{"id" => id}, socket) do
-    {:noreply, apply_transition(socket, id, &Models.retire_model/1, :retire)}
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      {:noreply, apply_transition(socket, id, &Models.retire_model/1, :retire)}
+    end)
   end
 
   def handle_event("delete", %{"id" => id}, socket) do
-    {:noreply, apply_delete(socket, id)}
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      {:noreply, apply_delete(socket, id)}
+    end)
   end
 
   @impl true

@@ -556,6 +556,241 @@ defmodule OrchardCLI.Commands.LicenseTest do
     refute_received {:node_identity_ensure, _path}
   end
 
+  test "status output for invalid signature omits unsafe identity and tracking details" do
+    Process.put(
+      :inspect_local_response,
+      %Orchard.Licensing{
+        state: :invalid_license_signature,
+        message: "License certificate signature is invalid.",
+        bundle_path: Path.join([@support_root, "config", "licensing", "current.json"]),
+        fingerprint: @node_id,
+        local_node_fingerprint: @node_id,
+        license_id: "lic_hidden",
+        machine_id: "mach_hidden",
+        licensee: "Hidden",
+        max_machines: 1,
+        metadata: %{program: "aieh", reference: "aieh-2026-001"}
+      }
+    )
+
+    assert {:ok, message} = License.run(["status", "--support-root", @support_root], runtime())
+
+    assert message =~ "License status: invalid_license_signature"
+    assert message =~ "Message: License certificate signature is invalid."
+
+    assert message =~
+             "Bundle path: #{Path.join([@support_root, "config", "licensing", "current.json"])}"
+
+    refute message =~ "Local node fingerprint"
+    refute message =~ "Machine certificate fingerprint"
+    refute message =~ "License ID"
+    refute message =~ "Machine ID"
+    refute message =~ "Licensee"
+    refute message =~ "Max machines"
+    refute message =~ "Tracking Program"
+    refute message =~ "Tracking Reference"
+  end
+
+  test "status json valid license emits stable safe schema with tracking" do
+    Process.put(
+      :inspect_local_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: Path.join([@support_root, "config", "licensing", "current.json"]),
+        fingerprint: @node_id,
+        local_node_fingerprint: @node_id,
+        expires_at: ~U[2027-04-15 00:00:00Z],
+        license_id: "lic_123",
+        machine_id: "mach_123",
+        licensee: "Acme Orchard Lab",
+        max_machines: 3,
+        metadata: %{program: "aieh", reference: "aieh-2026-001"}
+      }
+    )
+
+    assert {:ok, output} =
+             License.run(["status", "--support-root", @support_root, "--json"], runtime())
+
+    assert Jason.decode!(output) == %{
+             "state" => "valid",
+             "message" => "License bundle is valid.",
+             "bundle_path" => Path.join([@support_root, "config", "licensing", "current.json"]),
+             "fingerprint" => @node_id,
+             "local_node_fingerprint" => @node_id,
+             "license_id" => "lic_123",
+             "machine_id" => "mach_123",
+             "licensee" => "Acme Orchard Lab",
+             "max_machines" => 3,
+             "expires_at" => "2027-04-15T00:00:00Z",
+             "tracking" => %{"program" => "aieh", "reference" => "aieh-2026-001"}
+           }
+
+    assert output =~ "{\n"
+    assert output =~ "\n  \"state\""
+    refute output =~ ": null"
+    refute output =~ "LICENSE_CERTIFICATE"
+    refute output =~ "MACHINE_CERTIFICATE"
+    refute output =~ "admin_token"
+    refute output =~ @admin_token
+    refute_received {:node_identity_ensure, _path}
+  end
+
+  test "status json missing license omits identity fields entirely" do
+    Process.put(
+      :inspect_local_response,
+      %Orchard.Licensing{
+        state: :missing_bundle,
+        message: "No local license bundle is installed.",
+        bundle_path: Path.join([@support_root, "config", "licensing", "current.json"])
+      }
+    )
+
+    assert {:ok, output} =
+             License.run(["status", "--support-root", @support_root, "--json"], runtime())
+
+    decoded = Jason.decode!(output)
+
+    assert decoded["state"] == "missing"
+    assert decoded["reason"] == "missing_bundle"
+    assert decoded["message"] == "No local license bundle is installed."
+    refute Map.has_key?(decoded, "license_id")
+    refute Map.has_key?(decoded, "machine_id")
+    refute Map.has_key?(decoded, "licensee")
+    refute Map.has_key?(decoded, "max_machines")
+    refute Map.has_key?(decoded, "tracking")
+    refute output =~ ": null"
+  end
+
+  test "status json invalid license omits unsafe identity and fingerprint fields" do
+    Process.put(
+      :inspect_local_response,
+      %Orchard.Licensing{
+        state: :invalid_license_signature,
+        message: "License certificate signature is invalid.",
+        bundle_path: Path.join([@support_root, "config", "licensing", "current.json"]),
+        fingerprint: @node_id,
+        local_node_fingerprint: @node_id,
+        license_id: "lic_bad_sig",
+        machine_id: "mach_bad_sig",
+        licensee: "Acme Orchard Lab",
+        max_machines: 3,
+        metadata: %{program: "aieh", reference: "aieh-2026-001"}
+      }
+    )
+
+    assert {:ok, output} =
+             License.run(["status", "--support-root", @support_root, "--json"], runtime())
+
+    decoded = Jason.decode!(output)
+
+    assert decoded["state"] == "invalid"
+    assert decoded["reason"] == "invalid_license_signature"
+
+    for key <- [
+          "license_id",
+          "machine_id",
+          "licensee",
+          "max_machines",
+          "tracking",
+          "fingerprint",
+          "local_node_fingerprint"
+        ] do
+      refute Map.has_key?(decoded, key)
+    end
+
+    refute output =~ ": null"
+  end
+
+  test "status json omits nil tracking fields and keeps present tracking subkeys" do
+    Process.put(
+      :inspect_local_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: Path.join([@support_root, "config", "licensing", "current.json"]),
+        metadata: %{program: nil, reference: nil}
+      }
+    )
+
+    assert {:ok, output} =
+             License.run(["status", "--support-root", @support_root, "--json"], runtime())
+
+    refute Map.has_key?(Jason.decode!(output), "tracking")
+
+    Process.put(
+      :inspect_local_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: Path.join([@support_root, "config", "licensing", "current.json"]),
+        metadata: %{program: "aieh", reference: nil}
+      }
+    )
+
+    assert {:ok, output} =
+             License.run(["status", "--support-root", @support_root, "--json"], runtime())
+
+    assert Jason.decode!(output)["tracking"] == %{"program" => "aieh"}
+  end
+
+  test "status json omits tracking when metadata is missing or empty" do
+    Process.put(
+      :inspect_local_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: Path.join([@support_root, "config", "licensing", "current.json"]),
+        metadata: nil
+      }
+    )
+
+    assert {:ok, output} =
+             License.run(["status", "--support-root", @support_root, "--json"], runtime())
+
+    refute Map.has_key?(Jason.decode!(output), "tracking")
+
+    Process.put(
+      :inspect_local_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: Path.join([@support_root, "config", "licensing", "current.json"]),
+        metadata: %{}
+      }
+    )
+
+    assert {:ok, output} =
+             License.run(["status", "--support-root", @support_root, "--json"], runtime())
+
+    refute Map.has_key?(Jason.decode!(output), "tracking")
+  end
+
+  test "status json omits absent identifiers instead of encoding null" do
+    Process.put(
+      :inspect_local_response,
+      %Orchard.Licensing{
+        state: :valid,
+        message: "License bundle is valid.",
+        bundle_path: Path.join([@support_root, "config", "licensing", "current.json"]),
+        fingerprint: @node_id,
+        local_node_fingerprint: @node_id,
+        expires_at: ~U[2027-04-15 00:00:00Z]
+      }
+    )
+
+    assert {:ok, output} =
+             License.run(["status", "--support-root", @support_root, "--json"], runtime())
+
+    decoded = Jason.decode!(output)
+
+    refute Map.has_key?(decoded, "license_id")
+    refute Map.has_key?(decoded, "machine_id")
+    refute Map.has_key?(decoded, "licensee")
+    refute Map.has_key?(decoded, "max_machines")
+    refute output =~ ": null"
+  end
+
   test "create dry-run emits JSON API payload with orchard_tracking metadata" do
     assert {:ok, output} =
              License.run(

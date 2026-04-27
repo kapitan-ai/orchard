@@ -20,6 +20,7 @@ defmodule OrchardCLI.Commands.License do
   ]
   @json_api_content_type "application/vnd.api+json"
   @keygen_admin_token_env "ORCHARD_KEYGEN_ADMIN_TOKEN"
+  @cli_fingerprint_states [:valid, :expired, :not_yet_valid, :fingerprint_mismatch]
 
   @type request_spec :: %{
           method: :get | :post,
@@ -118,7 +119,7 @@ defmodule OrchardCLI.Commands.License do
   end
 
   defp parse_status_opts(args) do
-    switches = [support_root: :string, help: :boolean]
+    switches = [support_root: :string, json: :boolean, help: :boolean]
 
     case OptionParser.parse(args, strict: switches) do
       {parsed, [], []} ->
@@ -226,7 +227,7 @@ defmodule OrchardCLI.Commands.License do
         keygen_public_key: config.keygen_public_key
       )
 
-    {:ok, render_local_status(status)}
+    {:ok, render_status(status, opts)}
   end
 
   defp do_create(opts, runtime) do
@@ -842,26 +843,93 @@ defmodule OrchardCLI.Commands.License do
     |> Enum.join("\n")
   end
 
+  defp render_status(%Licensing{} = status, opts) do
+    if Keyword.get(opts, :json, false) do
+      render_status_json(status)
+    else
+      render_local_status(status)
+    end
+  end
+
+  defp render_status_json(%Licensing{} = status) do
+    status
+    |> status_json_payload()
+    |> Jason.encode!(pretty: true)
+  end
+
+  defp status_json_payload(%Licensing{} = status) do
+    health = Licensing.health_summary(status)
+
+    %{}
+    |> maybe_put_json_field(:state, health[:status])
+    |> maybe_put_json_field(:reason, health[:reason])
+    |> maybe_put_json_field(:message, health[:message])
+    |> maybe_put_json_field(:bundle_path, status.bundle_path)
+    |> maybe_put_status_json_fingerprints(status)
+    |> maybe_put_json_field(:license_id, health[:license_id])
+    |> maybe_put_json_field(:machine_id, health[:machine_id])
+    |> maybe_put_json_field(:licensee, health[:licensee])
+    |> maybe_put_json_field(:max_machines, health[:max_machines])
+    |> maybe_put_json_field(:expires_at, health[:expires_at])
+    |> maybe_put_json_field(:tracking, status_json_tracking(health[:tracking]))
+  end
+
+  defp status_json_tracking(metadata) when is_map(metadata) do
+    tracking =
+      %{}
+      |> maybe_put_json_field(:program, tracking_value(metadata, :program))
+      |> maybe_put_json_field(:reference, tracking_value(metadata, :reference))
+
+    if map_size(tracking) == 0, do: nil, else: tracking
+  end
+
+  defp status_json_tracking(_metadata), do: nil
+
+  defp maybe_put_json_field(payload, _key, nil), do: payload
+
+  defp maybe_put_json_field(payload, key, value) when is_binary(value) do
+    case non_empty_string(value) do
+      nil -> payload
+      trimmed -> Map.put(payload, key, trimmed)
+    end
+  end
+
+  defp maybe_put_json_field(payload, key, value), do: Map.put(payload, key, value)
+
   defp render_local_status(%Licensing{} = status) do
+    health = Licensing.health_summary(status)
+
     ([
        "License status: #{status.state}",
-       "  Message: #{status.message}",
+       "  Message: #{health[:message]}",
        "  Bundle path: #{status.bundle_path}"
        | fingerprint_lines(status)
      ] ++
        [
-         maybe_line("  License ID: ", status.license_id),
-         maybe_line("  Machine ID: ", status.machine_id),
-         maybe_line("  Licensee: ", status.licensee),
+         maybe_line("  License ID: ", health[:license_id]),
+         maybe_line("  Machine ID: ", health[:machine_id]),
+         maybe_line("  Licensee: ", health[:licensee]),
          maybe_line(
            "  Max machines: ",
-           status.max_machines && Integer.to_string(status.max_machines)
+           health[:max_machines] && Integer.to_string(health[:max_machines])
          ),
-         maybe_line("  Expires at: ", iso8601(status.expires_at))
-       ] ++ maybe_tracking_lines(status.metadata))
+         maybe_line("  Expires at: ", health[:expires_at])
+       ] ++ maybe_tracking_lines(health[:tracking]))
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
+
+  defp maybe_put_status_json_fingerprints(payload, %Licensing{state: state} = status)
+       when state in @cli_fingerprint_states do
+    payload
+    |> maybe_put_json_field(:fingerprint, status.fingerprint)
+    |> maybe_put_json_field(:local_node_fingerprint, status.local_node_fingerprint)
+  end
+
+  defp maybe_put_status_json_fingerprints(payload, %Licensing{}), do: payload
+
+  defp fingerprint_lines(%Licensing{state: state}) when state not in @cli_fingerprint_states,
+    do: []
 
   defp fingerprint_lines(%Licensing{fingerprint: nil}), do: []
 
@@ -1053,7 +1121,7 @@ defmodule OrchardCLI.Commands.License do
 
   defp status_usage do
     """
-    Usage: orchardctl license status [--support-root PATH]
+    Usage: orchardctl license status [--support-root PATH] [--json]
 
     Inspect the local Orchard license bundle offline without contacting the
     controller and without generating a node identity as a side effect.
@@ -1062,6 +1130,7 @@ defmodule OrchardCLI.Commands.License do
       --support-root PATH   Support root directory
                             (default precedence: --support-root, then
                              $ORCHARD_SUPPORT_ROOT, else current environment licensing config)
+      --json                Print a stable support/Jamf automation JSON payload
     """
     |> String.trim()
   end
