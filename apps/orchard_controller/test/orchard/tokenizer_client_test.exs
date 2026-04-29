@@ -93,6 +93,64 @@ defmodule Orchard.Tokenizer.ClientTest do
     )
   end
 
+  test "port mode render_and_count request stays on contract v2" do
+    {capture_executable, capture_file} = write_capture_request_executable!()
+
+    on_exit(fn ->
+      File.rm(capture_executable)
+      File.rm(capture_file)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        assert {:ok, %{input_token_count: input_token_count}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: huggingface_manifest(),
+                   bundle_root: huggingface_fixture_root()
+                 )
+
+        assert input_token_count > 0
+        assert {:ok, raw_request} = File.read(capture_file)
+
+        assert %{
+                 "contract_version" => 2,
+                 "command" => "render_and_count",
+                 "assets" => %{},
+                 "request" => %{}
+               } = Jason.decode!(raw_request)
+      end
+    )
+  end
+
+  test "port mode rejects contract v3 response for render_and_count" do
+    response_executable =
+      write_response_executable!(%{
+        "contract_version" => 3,
+        "ok" => true,
+        "result" => %{"rendered_prompt" => "x", "input_token_count" => 1}
+      })
+
+    on_exit(fn -> File.rm(response_executable) end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: response_executable
+      ],
+      fn ->
+        assert {:error, :invalid_response} =
+                 Client.tokenize(canonical_request(),
+                   manifest: huggingface_manifest(),
+                   bundle_root: huggingface_fixture_root()
+                 )
+      end
+    )
+  end
+
   test "port mode forwards tools and tool_choice into template context" do
     with_inference_overrides(
       [
@@ -965,6 +1023,54 @@ defmodule Orchard.Tokenizer.ClientTest do
     File.ln_s!(outside_config, Path.join(fixture_root, "tokenizer_config.json"))
 
     {fixture_root, outside_root}
+  end
+
+  defp write_capture_request_executable! do
+    capture_file =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-tokenizer-captured-request-#{System.unique_integer([:positive])}.json"
+      )
+
+    response =
+      Jason.encode!(%{
+        contract_version: 2,
+        ok: true,
+        result: %{
+          rendered_prompt: "captured",
+          input_token_count: 1
+        }
+      })
+
+    script_path =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-tokenizer-capture-#{System.unique_integer([:positive])}.sh"
+      )
+
+    File.write!(
+      script_path,
+      "#!/bin/sh\ncat > \"#{capture_file}\"\nprintf '%s\\n' '#{response}'\n"
+    )
+
+    File.chmod!(script_path, 0o755)
+    {script_path, capture_file}
+  end
+
+  defp write_response_executable!(response_map) do
+    script_path =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-tokenizer-response-#{System.unique_integer([:positive])}.sh"
+      )
+
+    File.write!(
+      script_path,
+      "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '#{Jason.encode!(response_map)}'\n"
+    )
+
+    File.chmod!(script_path, 0o755)
+    script_path
   end
 
   defp write_sleeping_executable! do

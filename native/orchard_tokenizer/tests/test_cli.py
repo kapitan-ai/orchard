@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import sentencepiece as sentencepiece
 
@@ -18,7 +18,7 @@ def test_build_success_response_returns_structured_result() -> None:
     payload = build_success_response("system orchard\nassistant", 2)
 
     assert payload == {
-        "contract_version": 2,
+        "contract_version": 3,
         "ok": True,
         "result": {
             "rendered_prompt": "system orchard\nassistant",
@@ -31,7 +31,7 @@ def test_build_error_response_returns_stable_category_shape() -> None:
     payload = build_error_response("missing_assets", "tokenizer asset is missing")
 
     assert payload == {
-        "contract_version": 2,
+        "contract_version": 3,
         "ok": False,
         "error": {
             "category": "missing_assets",
@@ -65,7 +65,8 @@ def test_main_supports_sentencepiece_tokenizer_models(tmp_path: Path, capsys) ->
     corpus_path.write_text("system orchard\nuser hello orchard\nassistant\n", encoding="utf-8")
 
     model_prefix = tmp_path / "tokenizer"
-    sentencepiece.SentencePieceTrainer.train(
+    sentencepiece_train = cast(Any, sentencepiece.SentencePieceTrainer).train
+    sentencepiece_train(
         input=str(corpus_path),
         model_prefix=str(model_prefix),
         vocab_size=32,
@@ -328,3 +329,271 @@ def test_main_accepts_contract_v1_payloads_for_backward_compatibility(capsys) ->
     response = json.loads(capsys.readouterr().out)
     assert response["ok"] is True
     assert response["contract_version"] == 1
+
+
+def test_main_extract_catalog_rejects_contract_v2(capsys, tmp_path: Path) -> None:
+    tokenizer_config_path = tmp_path / "tokenizer_config.json"
+    tokenizer_config_path.write_text("{}", encoding="utf-8")
+
+    payload = {
+        "contract_version": 2,
+        "command": "extract_safe_tokenization_catalog",
+        "assets": {
+            "tokenizer_config_path": str(tokenizer_config_path),
+        },
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["contract_version"] == 2
+    assert response["error"]["category"] == "invalid_input"
+    assert (
+        response["error"]["message"]
+        == "extract_safe_tokenization_catalog requires contract_version 3"
+    )
+
+
+def test_main_extracts_safe_tokenization_catalog(capsys, tmp_path: Path) -> None:
+    tokenizer_config_path = tmp_path / "tokenizer_config.json"
+    tokenizer_config_path.write_text(
+        json.dumps(
+            {
+                "chat_template": [
+                    {"name": "non-default", "template": "<ignored_first>"},
+                    {"name": "default", "template": "<from_default>"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = {
+        "contract_version": 3,
+        "command": "extract_safe_tokenization_catalog",
+        "assets": {
+            "tokenizer_config_path": str(tokenizer_config_path),
+        },
+        "options": {"tool_parser_type": "qwen2"},
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response == {
+        "contract_version": 3,
+        "ok": True,
+        "result": {
+            "control_tokens_chat_template": ["<from_default>"],
+            "control_tokens_wrapper_tool": ["</tool_call>", "<tool_call>"],
+            "chat_template_literals_count": 1,
+            "wrapper_tool_markers_count": 2,
+        },
+    }
+
+
+def test_main_extracts_safe_tokenization_catalog_from_template_only(capsys, tmp_path: Path) -> None:
+    chat_template_path = tmp_path / "chat_template.jinja"
+    chat_template_path.write_text(
+        "prefix {{ '<|template_only|>' }} suffix",
+        encoding="utf-8",
+    )
+
+    payload = {
+        "contract_version": 3,
+        "command": "extract_safe_tokenization_catalog",
+        "assets": {
+            "chat_template_path": str(chat_template_path),
+        },
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    assert response["result"]["control_tokens_chat_template"] == ["<|template_only|>"]
+    assert response["result"]["chat_template_literals_count"] == 1
+
+
+def test_main_extract_catalog_excludes_non_rendered_control_constants(
+    capsys, tmp_path: Path
+) -> None:
+    chat_template_path = tmp_path / "chat_template.jinja"
+    chat_template_path.write_text(
+        "{{ '</tool_call>' }}{% set marker = '<non_rendered_set>' %}",
+        encoding="utf-8",
+    )
+
+    payload = {
+        "contract_version": 3,
+        "command": "extract_safe_tokenization_catalog",
+        "assets": {
+            "chat_template_path": str(chat_template_path),
+        },
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    assert response["result"]["control_tokens_chat_template"] == ["</tool_call>"]
+    assert response["result"]["chat_template_literals_count"] == 1
+
+
+def test_main_extract_catalog_includes_attribute_xml_control_tags(capsys, tmp_path: Path) -> None:
+    tokenizer_config_path = tmp_path / "tokenizer_config.json"
+    tokenizer_config_path.write_text("{}", encoding="utf-8")
+
+    chat_template_path = tmp_path / "chat_template.jinja"
+    chat_template_path.write_text(
+        '<tool_call type="function">{{ messages[0]["content"] }}</tool_call>',
+        encoding="utf-8",
+    )
+
+    payload = {
+        "contract_version": 3,
+        "command": "extract_safe_tokenization_catalog",
+        "assets": {
+            "tokenizer_config_path": str(tokenizer_config_path),
+            "chat_template_path": str(chat_template_path),
+        },
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    assert response["result"]["control_tokens_chat_template"] == [
+        "</tool_call>",
+        '<tool_call type="function">',
+    ]
+    assert response["result"]["chat_template_literals_count"] == 2
+
+
+def test_main_extract_catalog_includes_closing_control_tags(capsys, tmp_path: Path) -> None:
+    tokenizer_config_path = tmp_path / "tokenizer_config.json"
+    tokenizer_config_path.write_text("{}", encoding="utf-8")
+
+    chat_template_path = tmp_path / "chat_template.jinja"
+    chat_template_path.write_text(
+        "<s>{{ messages[0]['content'] }}</s><tool_call></tool_call>",
+        encoding="utf-8",
+    )
+
+    payload = {
+        "contract_version": 3,
+        "command": "extract_safe_tokenization_catalog",
+        "assets": {
+            "tokenizer_config_path": str(tokenizer_config_path),
+            "chat_template_path": str(chat_template_path),
+        },
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    assert response["result"]["control_tokens_chat_template"] == [
+        "</s>",
+        "</tool_call>",
+        "<s>",
+        "<tool_call>",
+    ]
+
+
+def test_main_extract_catalog_counts_raw_observations_before_dedupe(capsys, tmp_path: Path) -> None:
+    tokenizer_config_path = tmp_path / "tokenizer_config.json"
+    tokenizer_config_path.write_text("{}", encoding="utf-8")
+
+    chat_template_path = tmp_path / "chat_template.jinja"
+    chat_template_path.write_text("</s></s>", encoding="utf-8")
+
+    payload = {
+        "contract_version": 3,
+        "command": "extract_safe_tokenization_catalog",
+        "assets": {
+            "tokenizer_config_path": str(tokenizer_config_path),
+            "chat_template_path": str(chat_template_path),
+        },
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    assert response["result"]["control_tokens_chat_template"] == ["</s>"]
+    assert response["result"]["chat_template_literals_count"] == 2
+
+
+def test_main_extract_catalog_returns_missing_assets_for_missing_chat_template(
+    capsys, tmp_path: Path
+) -> None:
+    tokenizer_config_path = tmp_path / "tokenizer_config.json"
+    tokenizer_config_path.write_text("{}", encoding="utf-8")
+
+    payload = {
+        "contract_version": 3,
+        "command": "extract_safe_tokenization_catalog",
+        "assets": {
+            "tokenizer_config_path": str(tokenizer_config_path),
+            "chat_template_path": str(tmp_path / "missing.jinja"),
+        },
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 3
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "missing_assets"
+
+
+def test_main_extract_catalog_returns_invalid_input_for_malformed_template(
+    capsys, tmp_path: Path
+) -> None:
+    tokenizer_config_path = tmp_path / "tokenizer_config.json"
+    tokenizer_config_path.write_text("{}", encoding="utf-8")
+
+    chat_template_path = tmp_path / "chat_template.jinja"
+    chat_template_path.write_text("{# broken", encoding="utf-8")
+
+    payload = {
+        "contract_version": 3,
+        "command": "extract_safe_tokenization_catalog",
+        "assets": {
+            "tokenizer_config_path": str(tokenizer_config_path),
+            "chat_template_path": str(chat_template_path),
+        },
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "invalid_input"
+    assert "chat template asset is invalid:" in response["error"]["message"]
+
+
+def test_main_extract_catalog_requires_an_asset_path(capsys) -> None:
+    payload = {
+        "contract_version": 3,
+        "command": "extract_safe_tokenization_catalog",
+        "assets": {},
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "invalid_input"
+    assert (
+        response["error"]["message"]
+        == "assets must include tokenizer_config_path or chat_template_path"
+    )
+
+
+def test_main_extract_catalog_rejects_blank_tokenizer_config_path(capsys) -> None:
+    payload = {
+        "contract_version": 3,
+        "command": "extract_safe_tokenization_catalog",
+        "assets": {"tokenizer_config_path": ""},
+    }
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "invalid_input"
+    assert (
+        response["error"]["message"]
+        == "assets.tokenizer_config_path must be a non-empty string when provided"
+    )

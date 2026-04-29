@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "added_tokens": [
+    {"id": 1, "content": "<|im_start|>", "special": true},
+    {"id": 2, "content": "<|im_end|>", "special": false},
+    {"id": 3, "content": "", "special": true},
+    {"id": 4, "special": true},
+    "not-an-object"
+  ]
+}

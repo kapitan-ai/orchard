@@ -1,5 +1,5 @@
 defmodule Orchard.Models.BundleBuilderTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
 
@@ -48,7 +48,11 @@ defmodule Orchard.Models.BundleBuilderTest do
 
     test "uses existing chat_template.jinja2", ctx do
       template_content = "{% for msg in messages %}{{ msg.content }}{% endfor %}"
-      write_minimal_bundle(ctx.tmp_dir)
+
+      write_minimal_bundle(ctx.tmp_dir,
+        tokenizer_config: %{"add_bos_token" => true}
+      )
+
       File.write!(Path.join(ctx.tmp_dir, "chat_template.jinja2"), template_content)
 
       assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
@@ -353,7 +357,11 @@ defmodule Orchard.Models.BundleBuilderTest do
   describe "manifest round-trip" do
     test "generated manifest passes ManifestParser + ModelManifest validation", ctx do
       template = "{% for m in messages %}{{ m.content }}{% endfor %}"
-      write_minimal_bundle(ctx.tmp_dir, chat_template: template)
+
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: template,
+        tokenizer_config: %{"add_bos_token" => true}
+      )
 
       assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
 
@@ -372,6 +380,320 @@ defmodule Orchard.Models.BundleBuilderTest do
       assert manifest.runtime_requirements.min_agent_capability == "mlx"
       assert manifest.chat_template.path == "chat_template.jinja"
       assert is_binary(manifest.chat_template.sha256)
+    end
+  end
+
+  # -- Safe tokenization catalog --------------------------------------------
+
+  describe "safe tokenization catalog" do
+    test "generates SPEC.md §6.4 effective catalog from tokenizer, config, template, and wrapper sources",
+         ctx do
+      copy_tokenizer_fixture!("qwen2_added_tokens", ctx.tmp_dir)
+
+      helper =
+        write_catalog_helper!(ctx.tmp_dir, %{
+          "control_tokens_chat_template" => ["<template_only>", "<|im_start|>"],
+          "control_tokens_wrapper_tool" => ["</tool_call>", "<tool_call>"],
+          "chat_template_literals_count" => 2,
+          "wrapper_tool_markers_count" => 2
+        })
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.tokenizer.config_path == "tokenizer_config.json"
+
+      assert manifest.safe_tokenization.control_tokens == [
+               "</s>",
+               "</tool_call>",
+               "<extra_token>",
+               "<s>",
+               "<template_only>",
+               "<tool_call>",
+               "<|im_end|>",
+               "<|im_start|>"
+             ]
+
+      assert manifest.safe_tokenization.catalog_sha256 ==
+               hash_catalog(manifest.safe_tokenization.control_tokens)
+
+      assert manifest.safe_tokenization.catalog_source.added_tokens_count == 2
+      assert manifest.safe_tokenization.catalog_source.config_singletons_count == 2
+      assert manifest.safe_tokenization.catalog_source.additional_special_tokens_count == 2
+      assert manifest.safe_tokenization.catalog_source.chat_template_literals_count == 2
+      assert manifest.safe_tokenization.catalog_source.wrapper_tool_markers_count == 2
+      assert manifest.safe_tokenization.catalog_source.extra_count == 0
+
+      raw = read_manifest_json!(ctx.tmp_dir)
+      refute Map.has_key?(raw["safe_tokenization"], "compatible")
+      refute Map.has_key?(raw["safe_tokenization"], "template_compatible")
+      refute Map.has_key?(raw["safe_tokenization"], "incompatibility_reason")
+    end
+
+    test "records wrapper markers even when they are absent from added_tokens", ctx do
+      copy_tokenizer_fixture!("wrapper_marker_only", ctx.tmp_dir)
+
+      helper =
+        write_catalog_helper!(ctx.tmp_dir, %{
+          "control_tokens_chat_template" => [],
+          "control_tokens_wrapper_tool" => ["</tool_call>", "<tool_call>"],
+          "chat_template_literals_count" => 0,
+          "wrapper_tool_markers_count" => 2
+        })
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.safe_tokenization.control_tokens == ["</tool_call>", "<tool_call>"]
+      assert manifest.safe_tokenization.catalog_source.added_tokens_count == 0
+      assert manifest.safe_tokenization.catalog_source.wrapper_tool_markers_count == 2
+    end
+
+    test "extracts object-form additional_special_tokens without invoking helper", ctx do
+      copy_tokenizer_fixture!("additional_special_tokens_object_form", ctx.tmp_dir)
+
+      assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.safe_tokenization.control_tokens == ["<object_special>", "<string_special>"]
+      assert manifest.safe_tokenization.catalog_source.additional_special_tokens_count == 2
+      assert manifest.safe_tokenization.catalog_source.chat_template_literals_count == 0
+      assert manifest.safe_tokenization.catalog_source.wrapper_tool_markers_count == 0
+    end
+
+    test "invokes helper for SPEC.md §6.4 bracket-style template without angle bracket",
+         ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "[INST] {{ messages[0].content }} [/INST]",
+        tokenizer_config: %{"add_bos_token" => true}
+      )
+
+      helper =
+        write_catalog_helper!(ctx.tmp_dir, %{
+          "control_tokens_chat_template" => ["[/INST]", "[INST]"],
+          "control_tokens_wrapper_tool" => [],
+          "chat_template_literals_count" => 4,
+          "wrapper_tool_markers_count" => 0
+        })
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.safe_tokenization.control_tokens == ["[/INST]", "[INST]"]
+      assert manifest.safe_tokenization.catalog_source.chat_template_literals_count == 4
+    end
+
+    test "counts SPEC.md §6.4 local source observations before dedupe", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        tokenizer:
+          Jason.encode!(%{
+            "added_tokens" => [
+              %{"content" => "<dup>"},
+              %{"content" => "<dup>"},
+              %{"content" => ""},
+              %{"content" => "<added>"}
+            ]
+          }),
+        tokenizer_config: %{
+          "bos_token" => "<s>",
+          "eos_token" => %{"content" => "<s>"},
+          "additional_special_tokens" => [
+            "<extra>",
+            "<extra>",
+            %{"content" => "<extra_obj>"},
+            %{"content" => ""},
+            123
+          ]
+        }
+      )
+
+      capture_log(fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+
+      assert manifest.safe_tokenization.control_tokens == [
+               "<added>",
+               "<dup>",
+               "<extra>",
+               "<extra_obj>",
+               "<s>"
+             ]
+
+      assert manifest.safe_tokenization.catalog_source.added_tokens_count == 3
+      assert manifest.safe_tokenization.catalog_source.config_singletons_count == 2
+      assert manifest.safe_tokenization.catalog_source.additional_special_tokens_count == 3
+    end
+
+    test "extracts template literals when chat template exists without tokenizer_config.json",
+         ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "prefix <|template_without_config|> suffix"
+      )
+
+      helper =
+        write_catalog_helper!(ctx.tmp_dir, %{
+          "control_tokens_chat_template" => ["<|template_without_config|>"],
+          "control_tokens_wrapper_tool" => [],
+          "chat_template_literals_count" => 1,
+          "wrapper_tool_markers_count" => 0
+        })
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.tokenizer.config_path == nil
+      assert manifest.chat_template.path == "chat_template.jinja"
+      assert manifest.safe_tokenization.control_tokens == ["<|template_without_config|>"]
+      assert manifest.safe_tokenization.catalog_source.chat_template_literals_count == 1
+    end
+
+    test "surfaces helper invalid_input for malformed jinja without angle bracket", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        tokenizer_config: %{"chat_template" => "{% if messages"}
+      )
+
+      helper =
+        write_catalog_error_helper!(
+          ctx.tmp_dir,
+          "invalid_input",
+          "chat template asset is invalid"
+        )
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:error,
+                {:safe_tokenization_helper_unavailable,
+                 {:invalid_input, "chat template asset is invalid"}}} =
+                 BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      refute File.exists?(Path.join(ctx.tmp_dir, "manifest.json"))
+    end
+
+    test "extracts wrapper markers when tokenizer_config has parser metadata but no template",
+         ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        tokenizer_config: %{"tool_parser_type" => "qwen2"}
+      )
+
+      helper =
+        write_catalog_helper!(ctx.tmp_dir, %{
+          "control_tokens_chat_template" => [],
+          "control_tokens_wrapper_tool" => ["</tool_call>", "<tool_call>"],
+          "chat_template_literals_count" => 0,
+          "wrapper_tool_markers_count" => 2
+        })
+
+      log =
+        capture_log(fn ->
+          with_inference_overrides([tokenizer_executable: helper], fn ->
+            assert {:ok, _} =
+                     BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+          end)
+        end)
+
+      assert log =~ "no chat template found"
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.chat_template == nil
+      assert manifest.safe_tokenization.control_tokens == ["</tool_call>", "<tool_call>"]
+      assert manifest.safe_tokenization.catalog_source.wrapper_tool_markers_count == 2
+    end
+
+    test "skips malformed added_tokens entries that do not carry string content", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        tokenizer:
+          Jason.encode!(%{
+            "added_tokens" => [
+              %{"content" => "<valid>"},
+              %{"content" => ""},
+              %{"content" => 123},
+              %{"not_content" => "<missing>"},
+              "not-an-object"
+            ]
+          })
+      )
+
+      assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.safe_tokenization.control_tokens == ["<valid>"]
+      assert manifest.safe_tokenization.catalog_source.added_tokens_count == 1
+    end
+
+    test "aborts manifest write when safe-tokenization helper is unavailable", ctx do
+      copy_tokenizer_fixture!("wrapper_marker_only", ctx.tmp_dir)
+      missing_executable = Path.join(ctx.tmp_dir, "missing-helper")
+
+      with_inference_overrides([tokenizer_executable: missing_executable], fn ->
+        assert {:error, {:safe_tokenization_helper_unavailable, :unavailable}} =
+                 BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      refute File.exists?(Path.join(ctx.tmp_dir, "manifest.json"))
+    end
+
+    test "aborts manifest write when safe-tokenization helper times out", ctx do
+      copy_tokenizer_fixture!("wrapper_marker_only", ctx.tmp_dir)
+      helper = write_sleeping_catalog_helper!(ctx.tmp_dir)
+
+      with_app_env(:bundle_build_catalog_timeout_ms, 10, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:error, {:safe_tokenization_helper_unavailable, :timeout}} =
+                   BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+        end)
+      end)
+
+      refute File.exists?(Path.join(ctx.tmp_dir, "manifest.json"))
+    end
+
+    test "rejects helper source count without emitted tokens", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "plain template",
+        tokenizer_config: %{"add_bos_token" => true}
+      )
+
+      helper =
+        write_catalog_helper!(ctx.tmp_dir, %{
+          "control_tokens_chat_template" => [],
+          "control_tokens_wrapper_tool" => [],
+          "chat_template_literals_count" => 1,
+          "wrapper_tool_markers_count" => 0
+        })
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:error, {:safe_tokenization_helper_unavailable, :invalid_response}} =
+                 BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      refute File.exists?(Path.join(ctx.tmp_dir, "manifest.json"))
+    end
+
+    test "aborts manifest write when safe-tokenization helper response is malformed", ctx do
+      copy_tokenizer_fixture!("wrapper_marker_only", ctx.tmp_dir)
+
+      helper =
+        write_catalog_helper!(ctx.tmp_dir, %{
+          "control_tokens_chat_template" => [],
+          "control_tokens_wrapper_tool" => ["<tool_call>", "<tool_call>", ""],
+          "chat_template_literals_count" => 0,
+          "wrapper_tool_markers_count" => 3
+        })
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:error, {:safe_tokenization_helper_unavailable, :invalid_response}} =
+                 BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      refute File.exists?(Path.join(ctx.tmp_dir, "manifest.json"))
     end
   end
 
@@ -555,5 +877,114 @@ defmodule Orchard.Models.BundleBuilderTest do
 
   defp write_safetensors_index(dir, data) do
     File.write!(Path.join(dir, "model.safetensors.index.json"), Jason.encode!(data))
+  end
+
+  defp tokenizer_fixture_root do
+    Path.expand("../../fixtures/tokenizer", __DIR__)
+  end
+
+  defp copy_tokenizer_fixture!(name, destination) do
+    source = Path.join(tokenizer_fixture_root(), name)
+
+    source
+    |> Path.join("*")
+    |> Path.wildcard()
+    |> Enum.each(fn path ->
+      File.cp_r!(path, Path.join(destination, Path.basename(path)))
+    end)
+  end
+
+  defp write_catalog_helper!(dir, result) do
+    response =
+      Jason.encode!(%{
+        "contract_version" => 3,
+        "ok" => true,
+        "result" => result
+      })
+
+    write_executable!(dir, "catalog-helper.sh", """
+    #!/bin/sh
+    cat >/dev/null
+    cat <<'JSON'
+    #{response}
+    JSON
+    """)
+  end
+
+  defp write_catalog_error_helper!(dir, category, message) do
+    response =
+      Jason.encode!(%{
+        "contract_version" => 3,
+        "ok" => false,
+        "error" => %{"category" => category, "message" => message}
+      })
+
+    write_executable!(dir, "catalog-error-helper.sh", """
+    #!/bin/sh
+    cat >/dev/null
+    cat <<'JSON'
+    #{response}
+    JSON
+    """)
+  end
+
+  defp write_sleeping_catalog_helper!(dir) do
+    write_executable!(dir, "sleeping-catalog-helper.sh", """
+    #!/bin/sh
+    cat >/dev/null
+    sleep 1
+    """)
+  end
+
+  defp write_executable!(dir, name, content) do
+    path = Path.join(dir, name)
+    File.write!(path, content)
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  defp with_inference_overrides(overrides, fun) when is_function(fun, 0) do
+    previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.merge(previous_inference, overrides)
+    )
+
+    try do
+      fun.()
+    after
+      Application.put_env(:orchard_controller, :inference, previous_inference)
+    end
+  end
+
+  defp with_app_env(key, value, fun) when is_function(fun, 0) do
+    previous = Application.get_env(:orchard_controller, key, :orchard_missing_env)
+    Application.put_env(:orchard_controller, key, value)
+
+    try do
+      fun.()
+    after
+      case previous do
+        :orchard_missing_env -> Application.delete_env(:orchard_controller, key)
+        value -> Application.put_env(:orchard_controller, key, value)
+      end
+    end
+  end
+
+  defp read_manifest_json!(dir) do
+    dir
+    |> Path.join("manifest.json")
+    |> File.read!()
+    |> Jason.decode!()
+  end
+
+  defp hash_catalog(control_tokens) do
+    control_tokens
+    |> Enum.intersperse(<<0>>)
+    |> IO.iodata_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 end

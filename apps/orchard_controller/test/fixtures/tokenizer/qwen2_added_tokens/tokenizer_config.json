@@ -1,0 +1,6 @@
+{
+  "bos_token": "<s>",
+  "eos_token": {"content": "</s>"},
+  "additional_special_tokens": ["<extra_token>", {"content": "<tool_call>"}],
+  "tool_parser_type": "qwen2"
+}

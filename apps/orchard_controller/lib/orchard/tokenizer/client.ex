@@ -9,7 +9,7 @@ defmodule Orchard.Tokenizer.Client do
   alias Orchard.PathUtils
   alias Orchard.Tokenizer.{CallerStrings, ControlTokenDetector, Telemetry}
 
-  @contract_version 2
+  @render_and_count_contract_version 2
   @default_timeout_ms 5_000
   @control_token_catalog_kinds ~w(huggingface_tokenizer_json)
 
@@ -79,7 +79,7 @@ defmodule Orchard.Tokenizer.Client do
     with {:ok, assets} <- resolve_assets(opts) do
       {:ok,
        %{
-         contract_version: @contract_version,
+         contract_version: @render_and_count_contract_version,
          command: "render_and_count",
          assets: assets,
          request: %{
@@ -369,7 +369,7 @@ defmodule Orchard.Tokenizer.Client do
 
   defp normalize_response(
          %{
-           "contract_version" => @contract_version,
+           "contract_version" => @render_and_count_contract_version,
            "ok" => true,
            "result" => %{
              "rendered_prompt" => rendered_prompt,
@@ -385,7 +385,7 @@ defmodule Orchard.Tokenizer.Client do
 
   defp normalize_response(
          %{
-           "contract_version" => @contract_version,
+           "contract_version" => @render_and_count_contract_version,
            "ok" => false,
            "error" => %{"category" => category, "message" => message}
          },

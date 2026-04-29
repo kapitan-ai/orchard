@@ -21,9 +21,13 @@ defmodule Orchard.Models.BundleBuilder do
 
   @template_candidates ["chat_template.jinja", "chat_template.jinja2"]
   @generated_template_name "chat_template.jinja"
+  @tokenizer_config_name "tokenizer_config.json"
+  @catalog_contract_version 3
+  @default_catalog_timeout_ms 30_000
+  @config_singleton_token_keys ~w(bos_token eos_token pad_token unk_token cls_token sep_token mask_token)
 
   @spec prepare_bundle(String.t(), String.t(), map()) ::
-          {:ok, String.t()} | {:error, {atom(), String.t()}}
+          {:ok, String.t()} | {:error, {atom(), term()}}
   def prepare_bundle(download_dir, repo_id, detail_metadata)
 
   def prepare_bundle(download_dir, _repo_id, _detail_metadata)
@@ -48,20 +52,31 @@ defmodule Orchard.Models.BundleBuilder do
          {:ok, config} <- read_model_config(download_dir),
          {:ok, max_context_tokens} <- extract_context_tokens(config),
          :ok <- validate_tokenizer(download_dir),
+         {:ok, tokenizer_json} <- read_tokenizer_json(download_dir),
+         {:ok, tokenizer_config_asset} <- read_tokenizer_config_if_present(download_dir),
          {:ok, template_asset} <- resolve_chat_template(download_dir),
+         {:ok, safe_tokenization} <-
+           build_safe_tokenization(
+             download_dir,
+             tokenizer_json,
+             tokenizer_config_asset,
+             template_asset
+           ),
          {:ok, size_bytes} <- compute_bundle_size(download_dir),
          resident_memory_bytes = estimate_resident_memory_bytes(download_dir),
          kv_cache_bytes_per_token = estimate_kv_cache_bytes_per_token(config),
          manifest =
-           build_manifest(
-             repo_id,
-             version,
-             max_context_tokens,
-             size_bytes,
-             resident_memory_bytes,
-             kv_cache_bytes_per_token,
-             template_asset
-           ),
+           build_manifest(%{
+             repo_id: repo_id,
+             version: version,
+             max_context_tokens: max_context_tokens,
+             size_bytes: size_bytes,
+             resident_memory_bytes: resident_memory_bytes,
+             kv_cache_bytes_per_token: kv_cache_bytes_per_token,
+             template_asset: template_asset,
+             tokenizer_config_asset: tokenizer_config_asset,
+             safe_tokenization: safe_tokenization
+           }),
          :ok <- write_and_validate_manifest(download_dir, manifest) do
       {:ok, download_dir}
     end
@@ -141,16 +156,7 @@ defmodule Orchard.Models.BundleBuilder do
           {:halt, {:ok, n}}
 
         {:ok, s} when is_binary(s) ->
-          case parse_positive_integer(s) do
-            nil ->
-              {:halt,
-               {:error,
-                {:invalid_config,
-                 "config.json contains #{key} but value is not a positive integer: #{inspect(s)}"}}}
-
-            n ->
-              {:halt, {:ok, n}}
-          end
+          {:halt, parse_context_window_string(key, s)}
 
         {:ok, bad} ->
           {:halt,
@@ -159,6 +165,18 @@ defmodule Orchard.Models.BundleBuilder do
              "config.json contains #{key} but value is not a positive integer: #{inspect(bad)}"}}}
       end
     end)
+  end
+
+  defp parse_context_window_string(key, value) do
+    case parse_positive_integer(value) do
+      nil ->
+        {:error,
+         {:invalid_config,
+          "config.json contains #{key} but value is not a positive integer: #{inspect(value)}"}}
+
+      n ->
+        {:ok, n}
+    end
   end
 
   defp find_context_window_or_nil(config, keys) do
@@ -202,6 +220,29 @@ defmodule Orchard.Models.BundleBuilder do
     end
   end
 
+  defp read_tokenizer_json(download_dir) do
+    path = Path.join(download_dir, "tokenizer.json")
+
+    case read_json_file(path, :missing_tokenizer, :tokenizer_read) do
+      {:ok, json} -> decode_json_object(json, :invalid_tokenizer_json)
+      {:error, _} = error -> error
+    end
+  end
+
+  defp read_tokenizer_config_if_present(download_dir) do
+    path = Path.join(download_dir, @tokenizer_config_name)
+
+    if File.regular?(path) do
+      with {:ok, json} <-
+             read_json_file(path, :invalid_tokenizer_config, :invalid_tokenizer_config),
+           {:ok, config} <- decode_json_object(json, :invalid_tokenizer_config) do
+        {:ok, %{path: @tokenizer_config_name, absolute_path: path, config: config}}
+      end
+    else
+      {:ok, nil}
+    end
+  end
+
   # -- Chat Template Resolution ----------------------------------------------
 
   defp resolve_chat_template(download_dir) do
@@ -239,7 +280,7 @@ defmodule Orchard.Models.BundleBuilder do
   end
 
   defp extract_template_from_tokenizer_config(download_dir) do
-    config_path = Path.join(download_dir, "tokenizer_config.json")
+    config_path = Path.join(download_dir, @tokenizer_config_name)
 
     if File.regular?(config_path) do
       with {:ok, json} <-
@@ -323,6 +364,359 @@ defmodule Orchard.Models.BundleBuilder do
     )
   end
 
+  # -- Safe Tokenization Catalog ---------------------------------------------
+
+  defp build_safe_tokenization(
+         download_dir,
+         tokenizer_json,
+         tokenizer_config_asset,
+         template_asset
+       ) do
+    with {:ok, helper_catalog} <-
+           maybe_extract_native_catalog(download_dir, tokenizer_config_asset, template_asset) do
+      added_tokens = extract_added_tokens(tokenizer_json)
+      config_singletons = extract_config_singletons(tokenizer_config_asset)
+      additional_special_tokens = extract_additional_special_tokens(tokenizer_config_asset)
+      extras = source_catalog([])
+
+      control_tokens =
+        merge_catalog_sources([
+          added_tokens.tokens,
+          config_singletons.tokens,
+          additional_special_tokens.tokens,
+          helper_catalog.chat_template_literals,
+          helper_catalog.wrapper_tool_markers,
+          extras.tokens
+        ])
+
+      {:ok,
+       %{
+         "control_tokens" => control_tokens,
+         "catalog_sha256" => hash_catalog(control_tokens),
+         "catalog_source" => %{
+           "added_tokens_count" => added_tokens.count,
+           "config_singletons_count" => config_singletons.count,
+           "additional_special_tokens_count" => additional_special_tokens.count,
+           "chat_template_literals_count" => helper_catalog.chat_template_literals_count,
+           "wrapper_tool_markers_count" => helper_catalog.wrapper_tool_markers_count,
+           "extra_count" => extras.count
+         }
+       }}
+    end
+  end
+
+  defp extract_added_tokens(%{"added_tokens" => added_tokens}) when is_list(added_tokens) do
+    added_tokens
+    |> Enum.flat_map(fn
+      %{"content" => content} when is_binary(content) -> [content]
+      _other -> []
+    end)
+    |> source_catalog()
+  end
+
+  defp extract_added_tokens(_tokenizer_json), do: source_catalog([])
+
+  defp extract_config_singletons(%{config: config}) do
+    @config_singleton_token_keys
+    |> Enum.flat_map(fn key -> extract_token_value(Map.get(config, key)) end)
+    |> source_catalog()
+  end
+
+  defp extract_config_singletons(_tokenizer_config_asset), do: source_catalog([])
+
+  defp extract_additional_special_tokens(%{config: %{"additional_special_tokens" => tokens}})
+       when is_list(tokens) do
+    tokens
+    |> Enum.flat_map(&extract_token_value/1)
+    |> source_catalog()
+  end
+
+  defp extract_additional_special_tokens(_tokenizer_config_asset), do: source_catalog([])
+
+  defp extract_token_value(value) when is_binary(value), do: [value]
+  defp extract_token_value(%{"content" => content}) when is_binary(content), do: [content]
+  defp extract_token_value(_value), do: []
+
+  defp source_catalog(tokens) do
+    observations = Enum.filter(tokens, &(is_binary(&1) and &1 != ""))
+
+    %{
+      tokens: sort_unique_utf8(observations),
+      count: length(observations)
+    }
+  end
+
+  defp source_catalog_tokens(tokens) do
+    tokens
+    |> Enum.reject(&(&1 == ""))
+    |> sort_unique_utf8()
+  end
+
+  defp merge_catalog_sources(sources) do
+    sources
+    |> List.flatten()
+    |> Enum.reject(&(&1 == ""))
+    |> sort_unique_utf8()
+  end
+
+  defp sort_unique_utf8(tokens) do
+    tokens
+    |> MapSet.new()
+    |> Enum.sort_by(&:erlang.iolist_to_binary(&1), :asc)
+  end
+
+  defp maybe_extract_native_catalog(download_dir, tokenizer_config_asset, template_asset) do
+    if should_invoke_safe_helper?(download_dir, tokenizer_config_asset, template_asset) do
+      extract_native_catalog(download_dir, tokenizer_config_asset, template_asset)
+    else
+      {:ok, empty_helper_catalog()}
+    end
+  end
+
+  defp should_invoke_safe_helper?(_download_dir, tokenizer_config_asset, template_asset) do
+    not is_nil(template_asset) or is_binary(tool_parser_type(tokenizer_config_asset))
+  end
+
+  defp extract_native_catalog(download_dir, tokenizer_config_asset, template_asset) do
+    with {:ok, executable_path} <-
+           resolve_catalog_executable(Orchard.Inference.tokenizer_executable()),
+         payload = build_catalog_payload(download_dir, tokenizer_config_asset, template_asset),
+         {:ok, response_json, exit_status} <-
+           run_catalog_helper(executable_path, Jason.encode!(payload), catalog_timeout_ms()),
+         {:ok, response} <- decode_json_response(response_json),
+         {:ok, catalog} <- normalize_catalog_response(response, exit_status) do
+      {:ok, catalog}
+    else
+      {:error, reason} -> {:error, {:safe_tokenization_helper_unavailable, reason}}
+    end
+  end
+
+  defp build_catalog_payload(download_dir, tokenizer_config_asset, template_asset) do
+    assets =
+      %{}
+      |> maybe_put_catalog_tokenizer_config_path(tokenizer_config_asset)
+      |> maybe_put_chat_template_path(download_dir, template_asset)
+
+    %{
+      "contract_version" => @catalog_contract_version,
+      "command" => "extract_safe_tokenization_catalog",
+      "assets" => assets,
+      "options" => catalog_options(tokenizer_config_asset)
+    }
+  end
+
+  defp maybe_put_catalog_tokenizer_config_path(assets, %{absolute_path: absolute_path}) do
+    Map.put(assets, "tokenizer_config_path", absolute_path)
+  end
+
+  defp maybe_put_catalog_tokenizer_config_path(assets, _tokenizer_config_asset), do: assets
+
+  defp maybe_put_chat_template_path(assets, _download_dir, nil), do: assets
+
+  defp maybe_put_chat_template_path(assets, download_dir, %{path: path}) do
+    Map.put(assets, "chat_template_path", Path.expand(path, download_dir))
+  end
+
+  defp catalog_options(tokenizer_config_asset) do
+    case tool_parser_type(tokenizer_config_asset) do
+      parser_type when is_binary(parser_type) -> %{"tool_parser_type" => parser_type}
+      nil -> %{}
+    end
+  end
+
+  defp tool_parser_type(%{config: config}) do
+    cond do
+      is_binary(Map.get(config, "tool_parser_type")) and Map.get(config, "tool_parser_type") != "" ->
+        Map.fetch!(config, "tool_parser_type")
+
+      is_binary(Map.get(config, "tool_parser")) and Map.get(config, "tool_parser") != "" ->
+        Map.fetch!(config, "tool_parser")
+
+      true ->
+        nil
+    end
+  end
+
+  defp tool_parser_type(_tokenizer_config_asset), do: nil
+
+  defp empty_helper_catalog do
+    %{
+      chat_template_literals: [],
+      wrapper_tool_markers: [],
+      chat_template_literals_count: 0,
+      wrapper_tool_markers_count: 0
+    }
+  end
+
+  defp catalog_timeout_ms do
+    Application.get_env(
+      :orchard_controller,
+      :bundle_build_catalog_timeout_ms,
+      @default_catalog_timeout_ms
+    )
+  end
+
+  defp resolve_catalog_executable(path) when is_binary(path) and path != "" do
+    case Path.type(path) do
+      :absolute ->
+        expanded_path = Path.expand(path)
+
+        case File.stat(expanded_path) do
+          {:ok, %File.Stat{type: :regular}} -> {:ok, expanded_path}
+          _other -> {:error, :unavailable}
+        end
+
+      _relative ->
+        case System.find_executable(path) do
+          resolved_path when is_binary(resolved_path) -> {:ok, resolved_path}
+          _other -> {:error, :unavailable}
+        end
+    end
+  end
+
+  defp resolve_catalog_executable(_path), do: {:error, :unavailable}
+
+  defp run_catalog_helper(executable_path, request_json, timeout_ms)
+       when is_binary(executable_path) and is_binary(request_json) and is_integer(timeout_ms) and
+              timeout_ms > 0 do
+    request_path = write_catalog_request_file!(request_json)
+
+    try do
+      port =
+        Port.open(
+          {:spawn_executable, ~c"/bin/sh"},
+          [
+            :binary,
+            :exit_status,
+            :use_stdio,
+            {:args,
+             [
+               "-c",
+               ~s(exec "$1" < "$2"),
+               "orchard-tokenizer-catalog",
+               executable_path,
+               request_path
+             ]}
+          ]
+        )
+
+      collect_catalog_output(port, [], timeout_ms)
+    after
+      File.rm(request_path)
+    end
+  rescue
+    ArgumentError -> {:error, :unavailable}
+  end
+
+  defp run_catalog_helper(_executable_path, _request_json, _timeout_ms), do: {:error, :timeout}
+
+  defp write_catalog_request_file!(request_json) do
+    request_path =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-tokenizer-catalog-request-#{System.unique_integer([:positive])}.json"
+      )
+
+    File.write!(request_path, request_json)
+    request_path
+  end
+
+  defp collect_catalog_output(port, chunks, timeout_ms) do
+    receive do
+      {^port, {:data, data}} ->
+        collect_catalog_output(port, [data | chunks], timeout_ms)
+
+      {^port, {:exit_status, exit_status}} ->
+        {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary(), exit_status}
+    after
+      timeout_ms ->
+        Port.close(port)
+        {:error, :timeout}
+    end
+  end
+
+  defp decode_json_response(response_json) when is_binary(response_json) do
+    case Jason.decode(response_json) do
+      {:ok, response} when is_map(response) -> {:ok, response}
+      _other -> {:error, :invalid_response}
+    end
+  end
+
+  defp normalize_catalog_response(
+         %{
+           "contract_version" => @catalog_contract_version,
+           "ok" => true,
+           "result" => result
+         } = response,
+         0
+       )
+       when is_map(result) do
+    with true <- exact_keys?(response, ["contract_version", "ok", "result"]),
+         true <-
+           exact_keys?(result, [
+             "control_tokens_chat_template",
+             "control_tokens_wrapper_tool",
+             "chat_template_literals_count",
+             "wrapper_tool_markers_count"
+           ]),
+         chat_template_literals = Map.fetch!(result, "control_tokens_chat_template"),
+         wrapper_tool_markers = Map.fetch!(result, "control_tokens_wrapper_tool"),
+         chat_template_literals_count = Map.fetch!(result, "chat_template_literals_count"),
+         wrapper_tool_markers_count = Map.fetch!(result, "wrapper_tool_markers_count"),
+         :ok <- validate_helper_source(chat_template_literals, chat_template_literals_count),
+         :ok <- validate_helper_source(wrapper_tool_markers, wrapper_tool_markers_count) do
+      {:ok,
+       %{
+         chat_template_literals: chat_template_literals,
+         wrapper_tool_markers: wrapper_tool_markers,
+         chat_template_literals_count: chat_template_literals_count,
+         wrapper_tool_markers_count: wrapper_tool_markers_count
+       }}
+    else
+      _invalid -> {:error, :invalid_response}
+    end
+  end
+
+  defp normalize_catalog_response(
+         %{
+           "contract_version" => @catalog_contract_version,
+           "ok" => false,
+           "error" => %{"category" => category, "message" => message}
+         },
+         _exit_status
+       )
+       when is_binary(category) and is_binary(message) do
+    {:error, {normalize_catalog_error_category(category), message}}
+  end
+
+  defp normalize_catalog_response(_response, _exit_status), do: {:error, :invalid_response}
+
+  defp exact_keys?(map, keys) do
+    MapSet.new(Map.keys(map)) == MapSet.new(keys)
+  end
+
+  defp validate_helper_source(tokens, count)
+       when is_list(tokens) and is_integer(count) and count >= 0 do
+    if valid_helper_tokens?(tokens) and valid_helper_count?(tokens, count) do
+      :ok
+    else
+      {:error, :invalid_response}
+    end
+  end
+
+  defp validate_helper_source(_tokens, _count), do: {:error, :invalid_response}
+
+  defp valid_helper_tokens?(tokens) do
+    Enum.all?(tokens, &(is_binary(&1) and &1 != "")) and source_catalog_tokens(tokens) == tokens
+  end
+
+  defp valid_helper_count?([], count), do: count == 0
+  defp valid_helper_count?(tokens, count), do: count >= length(tokens)
+
+  defp normalize_catalog_error_category("invalid_input"), do: :invalid_input
+  defp normalize_catalog_error_category("missing_assets"), do: :missing_assets
+  defp normalize_catalog_error_category(_category), do: :internal_error
+
   # -- Bundle Size Calculation -----------------------------------------------
 
   defp compute_bundle_size(download_dir) do
@@ -378,39 +772,36 @@ defmodule Orchard.Models.BundleBuilder do
 
   # -- Manifest Assembly -----------------------------------------------------
 
-  defp build_manifest(
-         repo_id,
-         version,
-         max_context_tokens,
-         size_bytes,
-         resident_memory_bytes,
-         kv_cache_bytes_per_token,
-         template_asset
-       ) do
+  defp build_manifest(attrs) do
+    tokenizer =
+      %{
+        "kind" => "huggingface_tokenizer_json",
+        "path" => "tokenizer.json"
+      }
+      |> maybe_put_tokenizer_config_path(attrs.tokenizer_config_asset)
+
     base = %{
-      "model_id" => repo_id,
-      "version" => version,
+      "model_id" => attrs.repo_id,
+      "version" => attrs.version,
       "format" => "mlx",
       "artifact_layout" => "directory",
       "entrypoint" => ".",
       "sha256" => "pending",
-      "size_bytes" => size_bytes,
-      "resident_memory_bytes" => resident_memory_bytes,
-      "kv_cache_bytes_per_token" => kv_cache_bytes_per_token,
+      "size_bytes" => attrs.size_bytes,
+      "resident_memory_bytes" => attrs.resident_memory_bytes,
+      "kv_cache_bytes_per_token" => attrs.kv_cache_bytes_per_token,
       "prefill_workspace_bytes_per_token" => 0,
-      "max_context_tokens" => max_context_tokens,
+      "max_context_tokens" => attrs.max_context_tokens,
       "capabilities" => ["chat"],
-      "tokenizer" => %{
-        "kind" => "huggingface_tokenizer_json",
-        "path" => "tokenizer.json"
-      },
+      "tokenizer" => tokenizer,
+      "safe_tokenization" => attrs.safe_tokenization,
       "runtime_requirements" => %{
         "adapter" => "mlx_lm",
         "min_agent_capability" => "mlx"
       }
     }
 
-    case template_asset do
+    case attrs.template_asset do
       %{path: path, sha256: sha256} ->
         Map.put(base, "chat_template", %{"path" => path, "sha256" => sha256})
 
@@ -418,6 +809,12 @@ defmodule Orchard.Models.BundleBuilder do
         base
     end
   end
+
+  defp maybe_put_tokenizer_config_path(tokenizer, %{path: path}) do
+    Map.put(tokenizer, "config_path", path)
+  end
+
+  defp maybe_put_tokenizer_config_path(tokenizer, _tokenizer_config_asset), do: tokenizer
 
   # -- Manifest Write & Validation -------------------------------------------
 
@@ -474,6 +871,14 @@ defmodule Orchard.Models.BundleBuilder do
 
   defp compute_sha256(content) do
     :crypto.hash(:sha256, content)
+    |> Base.encode16(case: :lower)
+  end
+
+  defp hash_catalog(control_tokens) do
+    control_tokens
+    |> Enum.intersperse(<<0>>)
+    |> IO.iodata_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
     |> Base.encode16(case: :lower)
   end
 end

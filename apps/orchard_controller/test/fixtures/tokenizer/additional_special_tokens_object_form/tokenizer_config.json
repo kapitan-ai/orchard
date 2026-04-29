@@ -1,0 +1,8 @@
+{
+  "additional_special_tokens": [
+    {"content": "<object_special>"},
+    "<string_special>",
+    {"content": ""},
+    {"not_content": "<ignored>"}
+  ]
+}

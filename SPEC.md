@@ -1198,11 +1198,28 @@ Offline-importable model bundle SHALL be a tarball or directory with manifest:
   "capabilities": ["chat", "tool_calling", "json_mode"],
   "tokenizer": {
     "kind": "huggingface_tokenizer_json",
-    "path": "tokenizer.json"
+    "path": "tokenizer.json",
+    "config_path": "tokenizer_config.json"
   },
   "chat_template": {
     "path": "chat_template.jinja",
     "sha256": "hex"
+  },
+  "safe_tokenization": {
+    "control_tokens": ["</s>", "<operator_defined>", "<s>", "<|im_end|>", "<|im_start|>"],
+    "extra_control_token_strings": ["<operator_defined>"],
+    "catalog_sha256": "64-character lowercase hex",
+    "catalog_source": {
+      "added_tokens_count": 2,
+      "config_singletons_count": 2,
+      "additional_special_tokens_count": 0,
+      "chat_template_literals_count": 2,
+      "wrapper_tool_markers_count": 0,
+      "extra_count": 1
+    },
+    "compatible": true,
+    "template_compatible": true,
+    "incompatibility_reason": null
   },
   "runtime_requirements": {
     "adapter": "mlx_lm",
@@ -1210,6 +1227,68 @@ Offline-importable model bundle SHALL be a tarball or directory with manifest:
   }
 }
 ```
+
+Manifest fields added for safe tokenization are optional and SHALL NOT require a
+manifest version bump in the Phase 1 compatibility posture. Older manifests
+that omit `tokenizer.config_path` and `safe_tokenization` remain valid. When a
+bundle contains `tokenizer_config.json`, BundleBuilder SHALL derive
+`tokenizer.config_path` as that bundle-relative path. When the file is absent,
+the field SHALL be omitted.
+
+`safe_tokenization.control_tokens` is the sorted, deduplicated effective
+catalog of control-token strings known at bundle-build time. BundleBuilder
+SHALL derive it from:
+
+1. every string `content` in `tokenizer.json.added_tokens[]`, regardless of
+   token metadata flags;
+2. tokenizer config singleton token keys `bos_token`, `eos_token`, `pad_token`,
+   `unk_token`, `cls_token`, `sep_token`, and `mask_token`, accepting either a
+   string value or an object with string `content`;
+3. `tokenizer_config.json.additional_special_tokens[]`, accepting string values
+   and object values with string `content`;
+4. control-token literal candidates found from chat-template sources;
+5. static wrapper tool markers for known MLX-LM tool parser types; and
+6. `extra_control_token_strings` supplied by supported bundle inputs, when any
+   such input exists.
+
+For source #4, accepted candidate patterns SHALL include:
+- pipe-style angle markers such as `<|...|>`;
+- XML-like opening and closing markers such as `<tool_call>` and `</tool_call>`;
+- bracket-style markers such as `[INST]` and `[/INST]`.
+
+Source #4 extraction SHALL scan Jinja template literal text plus string constants
+that are part of rendered output expressions. String constants that appear only
+in non-rendered control-flow/template statements are out of scope for source #4
+cataloging.
+
+Empty strings SHALL be dropped. The final catalog SHALL be deduplicated by exact
+UTF-8 byte equality and sorted lexicographically by UTF-8 bytes. The
+`catalog_sha256` value SHALL be the lowercase SHA-256 hex digest computed over
+the final catalog with NUL separators:
+
+```elixir
+Base.encode16(:crypto.hash(:sha256, IO.iodata_to_binary(Enum.intersperse(catalog, <<0>>))), case: :lower)
+```
+
+`safe_tokenization.catalog_source` SHALL contain exactly these non-negative
+integer count fields: `added_tokens_count`, `config_singletons_count`,
+`additional_special_tokens_count`, `chat_template_literals_count`,
+`wrapper_tool_markers_count`, and `extra_count`. Counts are per-source
+observations before cross-source deduplication; their sum is not required to
+equal the final catalog length.
+
+`extra_control_token_strings` is optional. When present, it SHALL be a sorted,
+deduplicated list of non-empty strings, SHALL be a subset of
+`safe_tokenization.control_tokens`, and contributes to `extra_count`.
+`catalog_source.extra_count` SHALL equal the number of entries in
+`extra_control_token_strings`; when `extra_control_token_strings` is absent,
+`extra_count` SHALL be `0`.
+
+`compatible`, `template_compatible`, and `incompatibility_reason` are parsed for
+forward compatibility. Runtime components SHALL NOT mutate bundle manifests.
+BundleBuilder SHALL NOT write eager compatibility outcomes in Phase 1; writing
+`compatible=false`, `template_compatible=false`, or an incompatibility reason is
+reserved for a later compatibility-checking phase.
 
 `resident_memory_bytes` is static manifest-derived metadata in the current
 slice: it is a lower-bound/payload-size estimate derived from bundle artifacts
