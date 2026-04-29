@@ -7,9 +7,11 @@ defmodule Orchard.Tokenizer.Client do
   alias Orchard.Inference.ToolingValidation
   alias Orchard.ModelManifest
   alias Orchard.PathUtils
+  alias Orchard.Tokenizer.{CallerStrings, ControlTokenDetector, Telemetry}
 
   @contract_version 2
   @default_timeout_ms 5_000
+  @control_token_catalog_kinds ~w(huggingface_tokenizer_json)
 
   @type tokenization_result :: %{
           rendered_prompt: binary(),
@@ -64,6 +66,7 @@ defmodule Orchard.Tokenizer.Client do
     timeout_ms = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
 
     with {:ok, payload} <- build_payload(request, opts),
+         :ok <- observe_control_token_inputs(request, payload, opts),
          {:ok, executable_path} <- resolve_executable(executable()),
          {:ok, response_json, exit_status} <-
            run_executable(executable_path, Jason.encode!(payload), timeout_ms),
@@ -87,6 +90,68 @@ defmodule Orchard.Tokenizer.Client do
        }}
     end
   end
+
+  defp observe_control_token_inputs(%CanonicalRequest{} = request, payload, opts) do
+    manifest = Keyword.get(opts, :manifest)
+
+    try do
+      assets = Map.get(payload, :assets, %{})
+      tokenizer_kind = Map.get(assets, :tokenizer_kind)
+
+      if tokenizer_kind in @control_token_catalog_kinds do
+        assets
+        |> Map.get(:tokenizer_path)
+        |> observe_control_token_inputs(request, manifest, opts)
+      end
+    rescue
+      _exception ->
+        Telemetry.emit_detector_error(:detector_exception, request, manifest)
+    catch
+      kind, _reason ->
+        Telemetry.emit_detector_error({:detector_catch, kind}, request, manifest)
+    end
+
+    :ok
+  end
+
+  defp observe_control_token_inputs(tokenizer_path, request, manifest, opts)
+       when is_binary(tokenizer_path) do
+    detector = Keyword.get(opts, :control_token_detector, ControlTokenDetector)
+
+    case detector.partial_catalog(tokenizer_path) do
+      {:ok, catalog, diagnostics} ->
+        Enum.each(diagnostics, fn diagnostic ->
+          Telemetry.emit_detector_error(diagnostic, request, manifest)
+        end)
+
+        hits =
+          request.input_items
+          |> CallerStrings.walk_caller_strings(request.tooling.tools, request.tooling.tool_choice)
+          |> then(&detector.detect(catalog, &1))
+
+        Telemetry.emit_control_token_hits(hits, request, manifest)
+
+      {:error, reason} ->
+        Telemetry.emit_detector_error({:catalog_load_failed, reason}, request, manifest)
+    end
+  end
+
+  defp observe_control_token_inputs(tokenizer_path, request, manifest, _opts) do
+    Telemetry.emit_detector_error(
+      {:missing_tokenizer_path, value_kind(tokenizer_path)},
+      request,
+      manifest
+    )
+  end
+
+  defp value_kind(value) when is_nil(value), do: nil
+  defp value_kind(value) when is_binary(value), do: :binary
+  defp value_kind(value) when is_atom(value), do: :atom
+  defp value_kind(value) when is_integer(value), do: :integer
+  defp value_kind(value) when is_float(value), do: :float
+  defp value_kind(value) when is_list(value), do: :list
+  defp value_kind(value) when is_map(value), do: :map
+  defp value_kind(_value), do: :other
 
   defp resolve_assets(opts) do
     manifest = Keyword.get(opts, :manifest)
