@@ -8,6 +8,12 @@ defmodule Orchard.Tokenizer.Telemetry do
 
   @control_token_event [:orchard, :tokenizer, :control_token_in_user_content]
   @detector_error_event [:orchard, :tokenizer, :detector_error]
+  @degraded_no_manifest_catalog_event [
+    :orchard,
+    :tokenizer,
+    :safe_tokenization,
+    :degraded_no_manifest_catalog
+  ]
   @missing_partial_catalog_sources [:chat_template_literals, :wrapper_tool_markers]
   @metadata_limit 16
   @literal_metadata_bytes 64
@@ -39,6 +45,21 @@ defmodule Orchard.Tokenizer.Telemetry do
         partial_detection: true,
         missing_catalog_sources: @missing_partial_catalog_sources,
         truncated: length(hits) > @metadata_limit
+      })
+    )
+
+    :ok
+  end
+
+  @spec emit_degraded_no_manifest_catalog(CanonicalRequest.t(), ModelManifest.t() | nil) :: :ok
+  def emit_degraded_no_manifest_catalog(%CanonicalRequest{} = request, manifest) do
+    :telemetry.execute(
+      @degraded_no_manifest_catalog_event,
+      %{count: 1},
+      request_metadata(request, manifest)
+      |> Map.merge(%{
+        tokenizer_safe_mode: :on,
+        degraded_reason: :no_manifest_catalog
       })
     )
 

@@ -165,6 +165,33 @@ defmodule Orchard.Inference do
   @spec tokenizer_mode() :: atom() | nil
   def tokenizer_mode, do: config()[:tokenizer_mode]
 
+  @spec tokenizer_safe_mode() :: :off | :on | :reject
+  def tokenizer_safe_mode do
+    case config()[:tokenizer_safe_mode] || :off do
+      :off ->
+        :off
+
+      "off" ->
+        :off
+
+      :on ->
+        :on
+
+      "on" ->
+        :on
+
+      :reject ->
+        :reject
+
+      "reject" ->
+        :reject
+
+      other ->
+        raise ArgumentError,
+              "Orchard inference tokenizer_safe_mode must be :off, :on, or :reject, got: #{inspect(other)}"
+    end
+  end
+
   @spec tokenizer_executable() :: String.t() | nil
   def tokenizer_executable, do: config()[:tokenizer_executable]
 

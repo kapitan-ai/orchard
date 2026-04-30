@@ -157,6 +157,75 @@ defmodule Orchard.InferenceTest do
     end
   end
 
+  describe "tokenizer_safe_mode/0" do
+    test "defaults to :off when not configured" do
+      config = Application.fetch_env!(:orchard_controller, :inference)
+
+      Application.put_env(
+        :orchard_controller,
+        :inference,
+        Keyword.delete(config, :tokenizer_safe_mode)
+      )
+
+      assert Inference.tokenizer_safe_mode() == :off
+    end
+
+    test "accepts off/on/reject from app config" do
+      put_inference(tokenizer_safe_mode: :off)
+      assert Inference.tokenizer_safe_mode() == :off
+
+      put_inference(tokenizer_safe_mode: :on)
+      assert Inference.tokenizer_safe_mode() == :on
+
+      put_inference(tokenizer_safe_mode: :reject)
+      assert Inference.tokenizer_safe_mode() == :reject
+    end
+
+    test "runtime.exs parses ORCHARD_TOKENIZER_SAFE_MODE" do
+      assert read_runtime_controller_inference!(%{"ORCHARD_TOKENIZER_SAFE_MODE" => "off"})[
+               :tokenizer_safe_mode
+             ] == :off
+
+      assert read_runtime_controller_inference!(%{"ORCHARD_TOKENIZER_SAFE_MODE" => "on"})[
+               :tokenizer_safe_mode
+             ] == :on
+
+      assert read_runtime_controller_inference!(%{"ORCHARD_TOKENIZER_SAFE_MODE" => "reject"})[
+               :tokenizer_safe_mode
+             ] == :reject
+    end
+
+    test "dev.exs parses ORCHARD_TOKENIZER_SAFE_MODE" do
+      assert read_dev_controller_inference!(%{"ORCHARD_TOKENIZER_SAFE_MODE" => "off"})[
+               :tokenizer_safe_mode
+             ] == :off
+
+      assert read_dev_controller_inference!(%{"ORCHARD_TOKENIZER_SAFE_MODE" => "on"})[
+               :tokenizer_safe_mode
+             ] == :on
+
+      assert read_dev_controller_inference!(%{"ORCHARD_TOKENIZER_SAFE_MODE" => "reject"})[
+               :tokenizer_safe_mode
+             ] == :reject
+    end
+
+    test "runtime.exs fails loudly for invalid ORCHARD_TOKENIZER_SAFE_MODE" do
+      assert_raise RuntimeError, ~r/ORCHARD_TOKENIZER_SAFE_MODE must be off\|on\|reject/, fn ->
+        read_runtime_controller_inference!(%{"ORCHARD_TOKENIZER_SAFE_MODE" => "invalid"})
+      end
+    end
+
+    test "Inference.tokenizer_safe_mode/0 fails loudly for invalid app config" do
+      put_inference(tokenizer_safe_mode: :invalid)
+
+      assert_raise ArgumentError,
+                   ~r/tokenizer_safe_mode must be :off, :on, or :reject/,
+                   fn ->
+                     Inference.tokenizer_safe_mode()
+                   end
+    end
+  end
+
   describe "cache_affinity_config/0" do
     test "defaults disabled with bounded lookup settings" do
       config = Inference.cache_affinity_config()

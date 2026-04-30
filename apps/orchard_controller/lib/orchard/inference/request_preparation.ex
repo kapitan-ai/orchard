@@ -75,9 +75,8 @@ defmodule Orchard.Inference.RequestPreparation do
 
   defp tokenize(canonical, model) do
     with {:ok, tokenizer_opts} <- build_tokenizer_opts(model),
-         {:ok, %{rendered_prompt: prompt, input_token_count: count}} <-
-           TokenizerClient.tokenize(canonical, tokenizer_opts) do
-      {:ok, CanonicalRequest.with_tokenization(canonical, prompt, count)}
+         {:ok, tokenization} <- TokenizerClient.tokenize(canonical, tokenizer_opts) do
+      {:ok, apply_tokenization(canonical, tokenization)}
     else
       {:error, {:tokenization, _reason}} = error ->
         error
@@ -85,6 +84,17 @@ defmodule Orchard.Inference.RequestPreparation do
       {:error, reason} ->
         {:error, {:tokenization, reason}}
     end
+  end
+
+  defp apply_tokenization(
+         canonical,
+         %{rendered_prompt: prompt, input_token_count: count, prompt_token_ids: prompt_token_ids}
+       ) do
+    CanonicalRequest.with_tokenization(canonical, prompt, count, prompt_token_ids)
+  end
+
+  defp apply_tokenization(canonical, %{rendered_prompt: prompt, input_token_count: count}) do
+    CanonicalRequest.with_tokenization(canonical, prompt, count)
   end
 
   defp build_tokenizer_opts(model) do

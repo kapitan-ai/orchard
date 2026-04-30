@@ -11,6 +11,17 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
   alias Orchard.TestSupport.ModelRequestFixtures
   alias Orchard.Tools
 
+  defmodule SegmentedTokenizerClient do
+    def tokenize(_canonical, _opts) do
+      {:ok,
+       %{
+         rendered_prompt: "segmented prompt",
+         input_token_count: 2,
+         prompt_token_ids: [17, 18]
+       }}
+    end
+  end
+
   describe "prepare/2 context-window enforcement with omitted max_tokens" do
     test "rejects omitted max_tokens when prompt fills most of the context window" do
       model =
@@ -68,6 +79,32 @@ defmodule Orchard.Inference.ChatOrchestratorTest do
 
       assert {:ok, canonical, _model} = ChatOrchestrator.prepare(params, [])
       assert canonical.sampling.max_output_tokens == 50
+    end
+
+    test "threads segmented prompt_token_ids into canonical request state" do
+      model =
+        ModelRequestFixtures.create_model!(%{
+          model_id: "test/segmented-tokenization-model",
+          version: "v1",
+          state: :active,
+          max_context_tokens: 131_072
+        })
+
+      params = %{
+        "model" => "#{model.model_id}@#{model.version}",
+        "messages" => [%{"role" => "user", "content" => "Hello"}],
+        "max_tokens" => 50
+      }
+
+      with_inference_overrides(
+        [tokenizer_mode: :fake, tokenizer_client_impl: SegmentedTokenizerClient],
+        fn ->
+          assert {:ok, canonical, _model} = ChatOrchestrator.prepare(params, [])
+          assert canonical.rendered_prompt == "segmented prompt"
+          assert canonical.input_token_count == 2
+          assert canonical.prompt_token_ids == [17, 18]
+        end
+      )
     end
 
     test "nil max_context_tokens skips overflow enforcement" do

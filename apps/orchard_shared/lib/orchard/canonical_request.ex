@@ -104,6 +104,7 @@ defmodule Orchard.CanonicalRequest do
             input_items: [],
             rendered_prompt: nil,
             input_token_count: 0,
+            prompt_token_ids: nil,
             stream?: false,
             stream_include_usage: false,
             sampling: nil,
@@ -126,6 +127,7 @@ defmodule Orchard.CanonicalRequest do
           input_items: [map()],
           rendered_prompt: binary() | nil,
           input_token_count: non_neg_integer(),
+          prompt_token_ids: [non_neg_integer()] | nil,
           stream?: boolean(),
           stream_include_usage: boolean(),
           sampling: Sampling.t(),
@@ -183,13 +185,42 @@ defmodule Orchard.CanonicalRequest do
     %__MODULE__{
       request
       | rendered_prompt: rendered_prompt,
-        input_token_count: input_token_count
+        input_token_count: input_token_count,
+        prompt_token_ids: nil
     }
   end
 
   def with_tokenization(request, rendered_prompt, input_token_count) do
     raise ArgumentError,
           "#{inspect(__MODULE__)} with_tokenization expects a canonical request, binary rendered_prompt, and non-negative integer input_token_count, got: #{inspect({request, rendered_prompt, input_token_count})}"
+  end
+
+  @spec with_tokenization(t(), binary(), non_neg_integer(), [non_neg_integer()]) :: t()
+  def with_tokenization(
+        %__MODULE__{} = request,
+        rendered_prompt,
+        input_token_count,
+        prompt_token_ids
+      )
+      when is_binary(rendered_prompt) and is_integer(input_token_count) and
+             input_token_count >= 0 and is_list(prompt_token_ids) do
+    if length(prompt_token_ids) == input_token_count and
+         Enum.all?(prompt_token_ids, &(is_integer(&1) and &1 >= 0)) do
+      %__MODULE__{
+        request
+        | rendered_prompt: rendered_prompt,
+          input_token_count: input_token_count,
+          prompt_token_ids: prompt_token_ids
+      }
+    else
+      raise ArgumentError,
+            "#{inspect(__MODULE__)} with_tokenization expects prompt_token_ids length to equal input_token_count and IDs to be non-negative integers, got count=#{inspect(input_token_count)} ids=#{inspect(prompt_token_ids)}"
+    end
+  end
+
+  def with_tokenization(request, rendered_prompt, input_token_count, prompt_token_ids) do
+    raise ArgumentError,
+          "#{inspect(__MODULE__)} with_tokenization expects a canonical request, binary rendered_prompt, non-negative integer input_token_count, and list of non-negative integer prompt_token_ids, got: #{inspect({request, rendered_prompt, input_token_count, prompt_token_ids})}"
   end
 
   defp put_default_struct(attrs, key, default_struct) do
@@ -279,24 +310,47 @@ defmodule Orchard.CanonicalRequest do
   end
 
   defp validate_tokenization_state!(
-         %__MODULE__{rendered_prompt: nil, input_token_count: 0} = struct
+         %__MODULE__{rendered_prompt: nil, input_token_count: 0, prompt_token_ids: nil} = struct
        ),
        do: struct
 
   defp validate_tokenization_state!(
-         %__MODULE__{rendered_prompt: rendered_prompt, input_token_count: input_token_count} =
-           struct
+         %__MODULE__{
+           rendered_prompt: rendered_prompt,
+           input_token_count: input_token_count,
+           prompt_token_ids: nil
+         } = struct
        )
        when is_binary(rendered_prompt) and is_integer(input_token_count) and
               input_token_count >= 0,
        do: struct
 
+  defp validate_tokenization_state!(
+         %__MODULE__{
+           rendered_prompt: rendered_prompt,
+           input_token_count: input_token_count,
+           prompt_token_ids: prompt_token_ids
+         } = struct
+       )
+       when is_binary(rendered_prompt) and is_integer(input_token_count) and
+              input_token_count >= 0 and
+              is_list(prompt_token_ids) do
+    if length(prompt_token_ids) == input_token_count and
+         Enum.all?(prompt_token_ids, &(is_integer(&1) and &1 >= 0)) do
+      struct
+    else
+      raise ArgumentError,
+            "#{inspect(__MODULE__)} prompt_token_ids must contain non-negative integers and match input_token_count, got: #{inspect({input_token_count, prompt_token_ids})}"
+    end
+  end
+
   defp validate_tokenization_state!(%__MODULE__{
          rendered_prompt: rendered_prompt,
-         input_token_count: input_token_count
+         input_token_count: input_token_count,
+         prompt_token_ids: prompt_token_ids
        }) do
     raise ArgumentError,
-          "#{inspect(__MODULE__)} tokenization state must be either an unset rendered_prompt with zero input_token_count or a rendered_prompt paired with a non-negative input_token_count, got: #{inspect({rendered_prompt, input_token_count})}"
+          "#{inspect(__MODULE__)} tokenization state must be one of {nil, 0, nil}, {rendered_prompt, input_token_count, nil}, or {rendered_prompt, input_token_count, prompt_token_ids}, got: #{inspect({rendered_prompt, input_token_count, prompt_token_ids})}"
   end
 
   defp validate_stream!(

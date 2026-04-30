@@ -7,20 +7,30 @@ defmodule Orchard.Tokenizer.Client do
   alias Orchard.Inference.ToolingValidation
   alias Orchard.ModelManifest
   alias Orchard.PathUtils
-  alias Orchard.Tokenizer.{CallerStrings, ControlTokenDetector, Telemetry}
+  alias Orchard.Tokenizer.{CallerStrings, CompatibilityCache, ControlTokenDetector, Telemetry}
 
   @render_and_count_contract_version 2
+  @render_and_count_segmented_contract_version 3
   @default_timeout_ms 5_000
   @control_token_catalog_kinds ~w(huggingface_tokenizer_json)
+  @segmented_tokenizer_kinds ~w(huggingface_tokenizer_json tokenizer_json)
+  @skip_sentinel_preflight_env "ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT"
 
   @type tokenization_result :: %{
-          rendered_prompt: binary(),
-          input_token_count: non_neg_integer()
+          required(:rendered_prompt) => binary(),
+          required(:input_token_count) => non_neg_integer(),
+          optional(:prompt_token_ids) => [non_neg_integer()]
         }
 
   @type error_reason ::
-          {:invalid_input | :missing_assets | :unsupported_tokenizer | :internal_error,
-           String.t()}
+          {:invalid_input
+           | :missing_assets
+           | :unsupported_tokenizer
+           | :internal_error
+           | :safe_tokenization_incompatible_tokenizer
+           | :safe_tokenization_incompatible_template
+           | :safe_tokenization_marker_collision
+           | :safe_tokenization_catalog_hash_mismatch, String.t()}
           | :invalid_response
           | :timeout
           | :unavailable
@@ -65,30 +75,112 @@ defmodule Orchard.Tokenizer.Client do
   defp port_tokenize(%CanonicalRequest{} = request, opts) do
     timeout_ms = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
 
-    with {:ok, payload} <- build_payload(request, opts),
-         :ok <- observe_control_token_inputs(request, payload, opts),
+    with {:ok, plan} <- build_tokenization_plan(request, opts),
+         :ok <- observe_control_token_inputs(request, plan.payload, opts),
          {:ok, executable_path} <- resolve_executable(executable()),
          {:ok, response_json, exit_status} <-
-           run_executable(executable_path, Jason.encode!(payload), timeout_ms),
+           run_executable(
+             executable_path,
+             Jason.encode!(plan.payload),
+             timeout_ms,
+             Map.get(plan, :helper_env, [])
+           ),
          {:ok, response} <- decode_response(response_json) do
-      normalize_response(response, exit_status)
+      normalize_response(response, exit_status, plan)
     end
   end
 
-  defp build_payload(%CanonicalRequest{} = request, opts) do
-    with {:ok, assets} <- resolve_assets(opts) do
+  defp build_tokenization_plan(%CanonicalRequest{} = request, opts) do
+    case Orchard.Inference.tokenizer_safe_mode() do
+      :off -> build_legacy_plan(request, opts)
+      :on -> build_safe_plan_or_degrade(request, opts)
+      :reject -> build_safe_plan_or_reject(request, opts)
+    end
+  end
+
+  defp build_legacy_plan(%CanonicalRequest{} = request, opts) do
+    with {:ok, assets} <- resolve_legacy_assets(opts) do
+      {:ok, %{mode: :legacy, payload: legacy_payload(request, assets)}}
+    end
+  end
+
+  defp build_safe_plan_or_degrade(%CanonicalRequest{} = request, opts) do
+    case safe_tokenization_from_opts(opts) do
+      {:ok, nil, manifest} ->
+        Telemetry.emit_degraded_no_manifest_catalog(request, manifest)
+        build_legacy_plan(request, opts)
+
+      {:ok, safe_tokenization, manifest} ->
+        build_segmented_plan(request, opts, manifest, safe_tokenization)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp build_safe_plan_or_reject(%CanonicalRequest{} = request, opts) do
+    case safe_tokenization_from_opts(opts) do
+      {:ok, nil, _manifest} ->
+        {:error,
+         {:invalid_input,
+          "tokenizer_safe_mode=:reject requires a manifest safe_tokenization catalog"}}
+
+      {:ok, safe_tokenization, manifest} ->
+        build_segmented_plan(request, opts, manifest, safe_tokenization)
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp build_segmented_plan(
+         %CanonicalRequest{} = request,
+         opts,
+         %ModelManifest{} = manifest,
+         safe_tokenization
+       ) do
+    with :ok <- ensure_manifest_safe_tokenization_compatible(safe_tokenization),
+         {:ok, cache_key} <- compatibility_cache_key(manifest, safe_tokenization),
+         {:ok, cache_metadata} <- ensure_cache_compatible(cache_key),
+         {:ok, assets} <- resolve_segmented_assets(opts) do
       {:ok,
        %{
-         contract_version: @render_and_count_contract_version,
-         command: "render_and_count",
-         assets: assets,
-         request: %{
-           input_items: request.input_items,
-           tools: request.tooling.tools,
-           tool_choice: request.tooling.tool_choice
-         }
+         mode: :segmented,
+         cache_key: cache_key,
+         payload: segmented_payload(request, assets, safe_tokenization),
+         helper_env: segmented_helper_env(cache_metadata)
        }}
     end
+  end
+
+  defp legacy_payload(%CanonicalRequest{} = request, assets) do
+    %{
+      contract_version: @render_and_count_contract_version,
+      command: "render_and_count",
+      assets: assets,
+      request: request_payload(request)
+    }
+  end
+
+  defp segmented_payload(%CanonicalRequest{} = request, assets, safe_tokenization) do
+    %{
+      contract_version: @render_and_count_segmented_contract_version,
+      command: "render_and_count_segmented",
+      assets: assets,
+      safe_tokenization: %{
+        control_tokens: safe_tokenization.control_tokens,
+        catalog_sha256: safe_tokenization.catalog_sha256
+      },
+      request: request_payload(request)
+    }
+  end
+
+  defp request_payload(%CanonicalRequest{} = request) do
+    %{
+      input_items: request.input_items,
+      tools: request.tooling.tools,
+      tool_choice: request.tooling.tool_choice
+    }
   end
 
   defp observe_control_token_inputs(%CanonicalRequest{} = request, payload, opts) do
@@ -153,31 +245,178 @@ defmodule Orchard.Tokenizer.Client do
   defp value_kind(value) when is_map(value), do: :map
   defp value_kind(_value), do: :other
 
-  defp resolve_assets(opts) do
-    manifest = Keyword.get(opts, :manifest)
-    bundle_root = Keyword.get(opts, :bundle_root)
+  defp safe_tokenization_from_opts(opts) do
+    case Keyword.get(opts, :manifest) do
+      %ModelManifest{safe_tokenization: safe_tokenization} = manifest ->
+        {:ok, safe_tokenization, manifest}
 
-    with {:ok, {tokenizer_kind, tokenizer_path, chat_template_path}} <-
-           extract_manifest_assets(manifest),
-         {:ok, resolved_tokenizer_path} <- resolve_asset_path(tokenizer_path, bundle_root),
-         {:ok, resolved_chat_template_path} <-
-           resolve_asset_path(chat_template_path, bundle_root) do
-      {:ok,
-       %{
-         tokenizer_kind: tokenizer_kind,
-         tokenizer_path: resolved_tokenizer_path,
-         chat_template_path: resolved_chat_template_path
-       }}
-    else
-      {:error, _reason} = error ->
-        error
+      _other ->
+        {:error,
+         {:invalid_input,
+          "tokenizer opts must include :manifest with an Orchard.ModelManifest and optional :bundle_root"}}
     end
   end
 
-  defp extract_manifest_assets(%ModelManifest{tokenizer: tokenizer, chat_template: chat_template}) do
-    with {:ok, tokenizer_kind, tokenizer_path} <- extract_tokenizer_asset(tokenizer),
+  defp ensure_manifest_safe_tokenization_compatible(
+         %{template_compatible: false} = safe_tokenization
+       ) do
+    {:error,
+     {:safe_tokenization_incompatible_template,
+      "manifest safe_tokenization marks this chat template incompatible: #{inspect(safe_tokenization.incompatibility_reason)}"}}
+  end
+
+  defp ensure_manifest_safe_tokenization_compatible(%{compatible: false} = safe_tokenization) do
+    {:error,
+     {:safe_tokenization_incompatible_tokenizer,
+      "manifest safe_tokenization marks this bundle incompatible: #{inspect(safe_tokenization.incompatibility_reason)}"}}
+  end
+
+  defp ensure_manifest_safe_tokenization_compatible(_safe_tokenization), do: :ok
+
+  defp compatibility_cache_key(
+         %ModelManifest{sha256: bundle_sha256},
+         %{catalog_sha256: catalog_sha256}
+       )
+       when is_binary(bundle_sha256) and bundle_sha256 != "" and
+              is_binary(catalog_sha256) and catalog_sha256 != "" do
+    {:ok, {bundle_sha256, catalog_sha256}}
+  end
+
+  defp compatibility_cache_key(_manifest, _safe_tokenization) do
+    {:error,
+     {:invalid_input,
+      "manifest safe_tokenization must include a non-empty catalog_sha256 for segmented tokenization"}}
+  end
+
+  defp ensure_cache_compatible({bundle_sha256, catalog_sha256}) do
+    case CompatibilityCache.get(bundle_sha256, catalog_sha256) do
+      :unknown ->
+        {:ok, nil}
+
+      {:compatible, %{template_compatible: false} = metadata} ->
+        {:error,
+         {:safe_tokenization_incompatible_template,
+          "cached safe-tokenization template incompatibility: #{inspect(metadata)}"}}
+
+      {:compatible, metadata} ->
+        {:ok, metadata}
+
+      {:incompatible, reason} ->
+        {:error, cached_incompatibility_error(reason)}
+    end
+  end
+
+  defp segmented_helper_env(%{sentinel_preflight_validated: true}) do
+    [{@skip_sentinel_preflight_env, "1"}]
+  end
+
+  defp segmented_helper_env(_metadata), do: [{@skip_sentinel_preflight_env, "0"}]
+
+  defp cached_incompatibility_error(%{category: category} = reason) when is_binary(category) do
+    {normalize_reason_category(reason),
+     "cached safe-tokenization incompatibility: #{inspect(reason)}"}
+  end
+
+  defp cached_incompatibility_error(%{"category" => category} = reason)
+       when is_binary(category) do
+    {normalize_reason_category(reason),
+     "cached safe-tokenization incompatibility: #{inspect(reason)}"}
+  end
+
+  defp cached_incompatibility_error(reason) do
+    {:safe_tokenization_incompatible_tokenizer,
+     "cached safe-tokenization incompatibility: #{inspect(reason)}"}
+  end
+
+  defp resolve_legacy_assets(opts) do
+    manifest = Keyword.get(opts, :manifest)
+    bundle_root = Keyword.get(opts, :bundle_root)
+
+    with {:ok, manifest_assets} <- extract_manifest_assets(manifest),
+         {:ok, resolved_tokenizer_path} <-
+           resolve_asset_path(manifest_assets.tokenizer_path, bundle_root),
+         {:ok, resolved_chat_template_path} <-
+           resolve_asset_path(manifest_assets.chat_template_path, bundle_root) do
+      {:ok,
+       %{
+         tokenizer_kind: manifest_assets.tokenizer_kind,
+         tokenizer_path: resolved_tokenizer_path,
+         chat_template_path: resolved_chat_template_path
+       }}
+    end
+  end
+
+  defp resolve_segmented_assets(opts) do
+    manifest = Keyword.get(opts, :manifest)
+    bundle_root = Keyword.get(opts, :bundle_root)
+
+    with {:ok, manifest_assets} <- extract_manifest_assets(manifest),
+         :ok <- ensure_segmented_tokenizer_kind(manifest_assets.tokenizer_kind),
+         {:ok, resolved_tokenizer_path} <-
+           resolve_asset_path(manifest_assets.tokenizer_path, bundle_root),
+         {:ok, resolved_chat_template_path} <-
+           resolve_asset_path(manifest_assets.chat_template_path, bundle_root),
+         {:ok, resolved_tokenizer_config_path} <-
+           resolve_tokenizer_config_asset(
+             manifest_assets.tokenizer_config_path,
+             manifest_assets.tokenizer_path,
+             bundle_root
+           ) do
+      {:ok,
+       %{
+         tokenizer_kind: manifest_assets.tokenizer_kind,
+         tokenizer_path: resolved_tokenizer_path,
+         tokenizer_config_path: resolved_tokenizer_config_path,
+         chat_template_path: resolved_chat_template_path
+       }}
+    end
+  end
+
+  defp ensure_segmented_tokenizer_kind(tokenizer_kind)
+       when tokenizer_kind in @segmented_tokenizer_kinds,
+       do: :ok
+
+  defp ensure_segmented_tokenizer_kind(tokenizer_kind) do
+    {:error,
+     {:unsupported_tokenizer,
+      "safe tokenization segmented mode requires a HuggingFace tokenizer, got: #{inspect(tokenizer_kind)}"}}
+  end
+
+  defp resolve_tokenizer_config_asset(config_path, _tokenizer_path, bundle_root)
+       when is_binary(config_path) and config_path != "" do
+    resolve_asset_path(config_path, bundle_root)
+  end
+
+  defp resolve_tokenizer_config_asset(_config_path, tokenizer_path, bundle_root)
+       when is_binary(tokenizer_path) and tokenizer_path != "" do
+    fallback_path = Path.join(Path.dirname(tokenizer_path), "tokenizer_config.json")
+
+    case resolve_asset_path(fallback_path, bundle_root) do
+      {:ok, resolved_path} ->
+        {:ok, resolved_path}
+
+      {:error, _reason} ->
+        {:error,
+         {:missing_assets,
+          "safe tokenization requires tokenizer.config_path or sibling tokenizer_config.json"}}
+    end
+  end
+
+  defp extract_manifest_assets(
+         %ModelManifest{tokenizer: tokenizer, chat_template: chat_template} = manifest
+       ) do
+    with {:ok, tokenizer_kind, tokenizer_path, tokenizer_config_path} <-
+           extract_tokenizer_asset(tokenizer),
          {:ok, chat_template_path} <- extract_chat_template_asset(chat_template) do
-      {:ok, {tokenizer_kind, tokenizer_path, chat_template_path}}
+      {:ok,
+       %{
+         tokenizer_kind: tokenizer_kind,
+         tokenizer_path: tokenizer_path,
+         tokenizer_config_path: tokenizer_config_path,
+         chat_template_path: chat_template_path,
+         safe_tokenization: manifest.safe_tokenization,
+         bundle_sha256: manifest.sha256
+       }}
     end
   end
 
@@ -187,9 +426,14 @@ defmodule Orchard.Tokenizer.Client do
       "tokenizer opts must include :manifest with an Orchard.ModelManifest and optional :bundle_root"}}
   end
 
+  defp extract_tokenizer_asset(%{kind: kind, path: path, config_path: config_path})
+       when is_binary(kind) and kind != "" and is_binary(path) and path != "" do
+    {:ok, kind, path, config_path}
+  end
+
   defp extract_tokenizer_asset(%{kind: kind, path: path})
        when is_binary(kind) and kind != "" and is_binary(path) and path != "" do
-    {:ok, kind, path}
+    {:ok, kind, path, nil}
   end
 
   defp extract_tokenizer_asset(_other) do
@@ -308,9 +552,9 @@ defmodule Orchard.Tokenizer.Client do
 
   defp resolve_executable(_path), do: {:error, :unavailable}
 
-  defp run_executable(executable_path, request_json, timeout_ms)
+  defp run_executable(executable_path, request_json, timeout_ms, helper_env)
        when is_binary(executable_path) and is_binary(request_json) and is_integer(timeout_ms) and
-              timeout_ms > 0 do
+              timeout_ms > 0 and is_list(helper_env) do
     request_path = write_request_file!(request_json)
 
     try do
@@ -323,7 +567,7 @@ defmodule Orchard.Tokenizer.Client do
             :use_stdio,
             {:args,
              ["-c", ~s(exec "$1" < "$2"), "orchard-tokenizer-port", executable_path, request_path]}
-          ]
+          ] ++ port_env_options(helper_env)
         )
 
       collect_port_output(port, [], timeout_ms)
@@ -333,6 +577,17 @@ defmodule Orchard.Tokenizer.Client do
   rescue
     ArgumentError ->
       {:error, :unavailable}
+  end
+
+  defp port_env_options([]), do: []
+
+  defp port_env_options(helper_env) do
+    env =
+      Enum.map(helper_env, fn {key, value} ->
+        {String.to_charlist(key), String.to_charlist(value)}
+      end)
+
+    [{:env, env}]
   end
 
   defp write_request_file!(request_json) do
@@ -376,7 +631,8 @@ defmodule Orchard.Tokenizer.Client do
              "input_token_count" => input_token_count
            }
          },
-         0
+         0,
+         %{mode: :legacy}
        )
        when is_binary(rendered_prompt) and is_integer(input_token_count) and
               input_token_count >= 0 do
@@ -389,17 +645,207 @@ defmodule Orchard.Tokenizer.Client do
            "ok" => false,
            "error" => %{"category" => category, "message" => message}
          },
-         _exit_status
+         _exit_status,
+         %{mode: :legacy}
        )
        when is_binary(category) and is_binary(message) do
     {:error, {normalize_error_category(category), message}}
   end
 
-  defp normalize_response(_response, _exit_status), do: {:error, :invalid_response}
+  defp normalize_response(
+         %{
+           "contract_version" => @render_and_count_segmented_contract_version,
+           "ok" => true,
+           "result" => result
+         },
+         0,
+         %{mode: :segmented, cache_key: cache_key}
+       )
+       when is_map(result) do
+    normalize_segmented_success(result, cache_key)
+  end
+
+  defp normalize_response(
+         %{
+           "contract_version" => @render_and_count_segmented_contract_version,
+           "ok" => false,
+           "error" => %{"category" => category, "message" => message} = error
+         },
+         _exit_status,
+         %{mode: :segmented, cache_key: cache_key}
+       )
+       when is_binary(category) and is_binary(message) do
+    maybe_cache_segmented_incompatibility(cache_key, category, error)
+    {:error, {normalize_error_category(category), message}}
+  end
+
+  defp normalize_response(_response, _exit_status, _plan), do: {:error, :invalid_response}
+
+  defp normalize_segmented_success(
+         %{
+           "rendered_prompt" => rendered_prompt,
+           "input_token_count" => input_token_count,
+           "prompt_token_ids" => prompt_token_ids
+         } = result,
+         {bundle_sha256, catalog_sha256} = cache_key
+       )
+       when is_binary(rendered_prompt) and is_integer(input_token_count) and
+              input_token_count >= 0 and is_list(prompt_token_ids) do
+    with :ok <- ensure_segmented_result_compatible(result, cache_key),
+         true <- valid_prompt_token_ids?(prompt_token_ids, input_token_count) do
+      CompatibilityCache.put_compatible(bundle_sha256, catalog_sha256, %{
+        template_compatible: true,
+        sentinel_preflight_validated: true
+      })
+
+      {:ok,
+       %{
+         rendered_prompt: rendered_prompt,
+         input_token_count: input_token_count,
+         prompt_token_ids: prompt_token_ids
+       }}
+    else
+      false -> {:error, :invalid_response}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp normalize_segmented_success(_result, _cache_key), do: {:error, :invalid_response}
+
+  defp ensure_segmented_result_compatible(result, cache_key) do
+    compatible? = Map.get(result, "compatible", true)
+    template_compatible? = Map.get(result, "template_compatible", true)
+
+    cond do
+      compatible? != true ->
+        reason = Map.get(result, "incompatibility_reason") || %{"category" => "unknown"}
+        maybe_cache_segmented_incompatibility(cache_key, reason)
+
+        {:error,
+         {normalize_reason_category(reason), "safe tokenization helper returned incompatible"}}
+
+      template_compatible? != true ->
+        reason =
+          Map.get(result, "incompatibility_reason") ||
+            %{"category" => "safe_tokenization_incompatible_template"}
+
+        maybe_cache_segmented_incompatibility(cache_key, reason)
+
+        {:error,
+         {:safe_tokenization_incompatible_template,
+          "safe tokenization helper returned template_compatible=false"}}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp valid_prompt_token_ids?(prompt_token_ids, input_token_count) do
+    length(prompt_token_ids) == input_token_count and
+      Enum.all?(prompt_token_ids, &(is_integer(&1) and &1 >= 0))
+  end
+
+  defp maybe_cache_segmented_incompatibility(cache_key, category, error)
+       when category in [
+              "safe_tokenization_incompatible_tokenizer",
+              "safe_tokenization_incompatible_template"
+            ] do
+    maybe_cache_segmented_incompatibility(cache_key, Map.put(error, "category", category))
+  end
+
+  defp maybe_cache_segmented_incompatibility(_cache_key, _category, _error), do: :ok
+
+  defp maybe_cache_segmented_incompatibility({bundle_sha256, catalog_sha256}, reason) do
+    case normalize_reason_category(reason) do
+      category
+      when category in [
+             :safe_tokenization_incompatible_tokenizer,
+             :safe_tokenization_incompatible_template
+           ] ->
+        CompatibilityCache.put_incompatible(
+          bundle_sha256,
+          catalog_sha256,
+          normalize_cache_reason(reason)
+        )
+
+      _other ->
+        :ok
+    end
+  end
+
+  defp normalize_cache_reason(%{"category" => category, "details" => %{"reason" => reason}})
+       when is_binary(category) and is_map(reason) do
+    case reason do
+      %{"category" => inner} when is_binary(inner) ->
+        Map.put_new(reason, "outer_category", category)
+
+      _other ->
+        reason
+        |> Map.put("category", category)
+        |> Map.put_new("outer_category", category)
+    end
+  end
+
+  defp normalize_cache_reason(%{"category" => category} = reason) when is_binary(category),
+    do: reason
+
+  defp normalize_cache_reason(%{category: category} = reason) when is_binary(category), do: reason
+  defp normalize_cache_reason(reason), do: reason
+
+  defp normalize_reason_category(%{"category" => category, "outer_category" => outer_category})
+       when is_binary(category) and is_binary(outer_category) do
+    case normalize_error_category(outer_category) do
+      :internal_error -> normalize_reason_category_from_category(category)
+      normalized -> normalized
+    end
+  end
+
+  defp normalize_reason_category(%{"outer_category" => outer_category})
+       when is_binary(outer_category),
+       do: normalize_error_category(outer_category)
+
+  defp normalize_reason_category(%{"category" => category}) when is_binary(category),
+    do: normalize_reason_category_from_category(category)
+
+  defp normalize_reason_category(%{category: category}) when is_binary(category),
+    do: normalize_reason_category_from_category(category)
+
+  defp normalize_reason_category(_reason), do: :internal_error
+
+  defp normalize_reason_category_from_category("dual_render_mismatch"),
+    do: :safe_tokenization_incompatible_template
+
+  defp normalize_reason_category_from_category(category)
+       when category in [
+              "per_codepoint_decode_mismatch",
+              "reserved_id_persists",
+              "reserved_id_set_overlap",
+              "empty_literal"
+            ],
+       do: :safe_tokenization_incompatible_tokenizer
+
+  defp normalize_reason_category_from_category(category),
+    do: normalize_error_category(category)
 
   defp normalize_error_category("invalid_input"), do: :invalid_input
   defp normalize_error_category("missing_assets"), do: :missing_assets
   defp normalize_error_category("unsupported_tokenizer"), do: :unsupported_tokenizer
+
+  defp normalize_error_category("safe_tokenization_incompatible_tokenizer"),
+    do: :safe_tokenization_incompatible_tokenizer
+
+  defp normalize_error_category("safe_tokenization_incompatible_template"),
+    do: :safe_tokenization_incompatible_template
+
+  defp normalize_error_category("safe_tokenization_marker_collision"),
+    do: :safe_tokenization_marker_collision
+
+  defp normalize_error_category("safe_tokenization_catalog_hash_mismatch"),
+    do: :safe_tokenization_catalog_hash_mismatch
+
+  defp normalize_error_category("dual_render_mismatch"),
+    do: :safe_tokenization_incompatible_template
+
   defp normalize_error_category(_category), do: :internal_error
 
   defp build_prompt_lines(input_items) when is_list(input_items) do

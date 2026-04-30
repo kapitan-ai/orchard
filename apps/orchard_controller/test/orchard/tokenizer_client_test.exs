@@ -4,8 +4,8 @@ defmodule Orchard.Tokenizer.ClientTest do
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
   alias Orchard.ModelManifest
-  alias Orchard.ModelManifest.{ChatTemplate, RuntimeRequirements, Tokenizer}
-  alias Orchard.Tokenizer.Client
+  alias Orchard.ModelManifest.{ChatTemplate, RuntimeRequirements, SafeTokenization, Tokenizer}
+  alias Orchard.Tokenizer.{Client, CompatibilityCache}
 
   defmodule RaisingControlTokenDetector do
     def partial_catalog(_tokenizer_path), do: raise(RuntimeError, "secret /tmp/caller-data")
@@ -27,9 +27,11 @@ defmodule Orchard.Tokenizer.ClientTest do
 
   setup do
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+    CompatibilityCache.clear()
 
     on_exit(fn ->
       Application.put_env(:orchard_controller, :inference, previous_inference)
+      CompatibilityCache.clear()
     end)
 
     :ok
@@ -146,6 +148,656 @@ defmodule Orchard.Tokenizer.ClientTest do
                  Client.tokenize(canonical_request(),
                    manifest: huggingface_manifest(),
                    bundle_root: huggingface_fixture_root()
+                 )
+      end
+    )
+  end
+
+  test "safe mode on forwards manifest catalog and explicit tokenizer config to segmented helper" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    {capture_executable, capture_file} = write_capture_request_executable!(segmented_response())
+
+    on_exit(fn ->
+      File.rm(capture_executable)
+      File.rm(capture_file)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+
+        assert {:ok,
+                %{
+                  rendered_prompt: "segmented",
+                  input_token_count: 2,
+                  prompt_token_ids: [101, 102]
+                }} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root
+                 )
+
+        assert {:ok, raw_request} = File.read(capture_file)
+        request = Jason.decode!(raw_request)
+
+        assert request["contract_version"] == 3
+        assert request["command"] == "render_and_count_segmented"
+
+        assert request["safe_tokenization"] == %{
+                 "control_tokens" => safe_control_tokens(),
+                 "catalog_sha256" => catalog_sha256(safe_control_tokens())
+               }
+
+        assert request["assets"]["tokenizer_config_path"] ==
+                 realpath!(Path.join(fixture_root, "tokenizer_config.json"))
+
+        assert {:compatible, %{template_compatible: true, sentinel_preflight_validated: true}} =
+                 CompatibilityCache.get(
+                   manifest.sha256,
+                   manifest.safe_tokenization.catalog_sha256
+                 )
+      end
+    )
+  end
+
+  test "safe mode skips sentinel preflight after a compatible pair is cached" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+    {capture_executable, env_file} = write_env_capture_executable!(segmented_response())
+
+    on_exit(fn ->
+      File.rm(capture_executable)
+      File.rm(env_file)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        assert {:ok, %{prompt_token_ids: [101, 102]}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root
+                 )
+
+        assert {:compatible, %{template_compatible: true, sentinel_preflight_validated: true}} =
+                 CompatibilityCache.get(
+                   manifest.sha256,
+                   manifest.safe_tokenization.catalog_sha256
+                 )
+
+        assert {:ok, %{prompt_token_ids: [101, 102]}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root
+                 )
+
+        assert ["0", "1"] = env_capture_lines(env_file)
+      end
+    )
+  end
+
+  test "safe mode ignores ambient sentinel skip env before compatibility is cached" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+    {capture_executable, env_file} = write_env_capture_executable!(segmented_response())
+    previous_skip_env = System.get_env("ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT")
+
+    System.put_env("ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT", "1")
+
+    on_exit(fn ->
+      restore_skip_sentinel_preflight_env(previous_skip_env)
+      File.rm(capture_executable)
+      File.rm(env_file)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        assert {:ok, %{prompt_token_ids: [101, 102]}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root
+                 )
+
+        assert {:ok, %{prompt_token_ids: [101, 102]}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root
+                 )
+
+        assert ["0", "1"] = env_capture_lines(env_file)
+      end
+    )
+  end
+
+  test "safe mode cached compatible verdict without sentinel metadata does not skip preflight" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+    {capture_executable, env_file} = write_env_capture_executable!(segmented_response())
+
+    assert :ok =
+             CompatibilityCache.put_compatible(
+               manifest.sha256,
+               manifest.safe_tokenization.catalog_sha256,
+               %{template_compatible: true}
+             )
+
+    on_exit(fn ->
+      File.rm(capture_executable)
+      File.rm(env_file)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :reject,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        assert {:ok, %{prompt_token_ids: [101, 102]}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root
+                 )
+
+        assert ["0"] = env_capture_lines(env_file)
+
+        assert {:compatible, %{template_compatible: true, sentinel_preflight_validated: true}} =
+                 CompatibilityCache.get(
+                   manifest.sha256,
+                   manifest.safe_tokenization.catalog_sha256
+                 )
+      end
+    )
+  end
+
+  test "safe mode on falls back to legacy v2 and emits telemetry when manifest has no catalog" do
+    {capture_executable, capture_file} = write_capture_request_executable!()
+
+    on_exit(fn ->
+      File.rm(capture_executable)
+      File.rm(capture_file)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        event_ref =
+          attach_telemetry([
+            :orchard,
+            :tokenizer,
+            :safe_tokenization,
+            :degraded_no_manifest_catalog
+          ])
+
+        assert {:ok, %{rendered_prompt: "captured", input_token_count: 1}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: huggingface_manifest(),
+                   bundle_root: huggingface_fixture_root()
+                 )
+
+        assert {:ok, raw_request} = File.read(capture_file)
+
+        assert %{"contract_version" => 2, "command" => "render_and_count"} =
+                 Jason.decode!(raw_request)
+
+        assert_receive {^event_ref, _event, %{count: 1}, metadata}
+        assert metadata.degraded_reason == :no_manifest_catalog
+        assert metadata.tokenizer_safe_mode == :on
+      end
+    )
+  end
+
+  test "safe mode reject fails closed when manifest has no catalog" do
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :reject,
+        tokenizer_executable: "/missing/orchard-tokenizer"
+      ],
+      fn ->
+        assert {:error, {:invalid_input, message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: huggingface_manifest(),
+                   bundle_root: huggingface_fixture_root()
+                 )
+
+        assert message =~ "requires a manifest safe_tokenization catalog"
+      end
+    )
+  end
+
+  test "safe mode reject succeeds through segmented helper for compatible manifest" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    {capture_executable, capture_file} = write_capture_request_executable!(segmented_response())
+
+    on_exit(fn ->
+      File.rm(capture_executable)
+      File.rm(capture_file)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :reject,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        assert {:ok, %{prompt_token_ids: [101, 102]}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: safe_huggingface_manifest(config_path: "tokenizer_config.json"),
+                   bundle_root: fixture_root
+                 )
+
+        assert {:ok, raw_request} = File.read(capture_file)
+
+        assert %{"contract_version" => 3, "command" => "render_and_count_segmented"} =
+                 Jason.decode!(raw_request)
+      end
+    )
+  end
+
+  test "safe mode uses sibling tokenizer_config fallback and fails closed when absent" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    {capture_executable, capture_file} = write_capture_request_executable!(segmented_response())
+
+    on_exit(fn ->
+      File.rm(capture_executable)
+      File.rm(capture_file)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        assert {:ok, %{prompt_token_ids: [101, 102]}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: safe_huggingface_manifest(),
+                   bundle_root: fixture_root
+                 )
+
+        assert {:ok, raw_request} = File.read(capture_file)
+        request = Jason.decode!(raw_request)
+
+        assert request["assets"]["tokenizer_config_path"] ==
+                 realpath!(Path.join(fixture_root, "tokenizer_config.json"))
+      end
+    )
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: capture_executable
+      ],
+      fn ->
+        assert {:error, {:missing_assets, message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: safe_huggingface_manifest(),
+                   bundle_root: huggingface_fixture_root()
+                 )
+
+        assert message =~ "tokenizer.config_path"
+      end
+    )
+  end
+
+  test "safe mode short-circuits cached incompatibility before helper dispatch" do
+    manifest = safe_huggingface_manifest()
+
+    assert :ok =
+             CompatibilityCache.put_incompatible(
+               manifest.sha256,
+               manifest.safe_tokenization.catalog_sha256,
+               %{
+                 "category" => "safe_tokenization_incompatible_template"
+               }
+             )
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: "/missing/orchard-tokenizer"
+      ],
+      fn ->
+        assert {:error, {:safe_tokenization_incompatible_template, message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: huggingface_fixture_root()
+                 )
+
+        assert message =~ "cached safe-tokenization incompatibility"
+      end
+    )
+  end
+
+  test "safe mode fails closed for cached template_compatible false verdict" do
+    manifest = safe_huggingface_manifest()
+
+    assert :ok =
+             CompatibilityCache.put_compatible(
+               manifest.sha256,
+               manifest.safe_tokenization.catalog_sha256,
+               %{template_compatible: false}
+             )
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :reject,
+        tokenizer_executable: "/missing/orchard-tokenizer"
+      ],
+      fn ->
+        assert {:error, {:safe_tokenization_incompatible_template, message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: huggingface_fixture_root()
+                 )
+
+        assert message =~ "cached safe-tokenization template incompatibility"
+      end
+    )
+  end
+
+  test "safe mode fails closed and caches helper success with template_compatible false" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+
+    response_executable =
+      write_response_executable!(segmented_response(%{template_compatible: false}))
+
+    on_exit(fn ->
+      File.rm(response_executable)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: response_executable
+      ],
+      fn ->
+        assert {:error, {:safe_tokenization_incompatible_template, message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root
+                 )
+
+        assert message =~ "template_compatible=false"
+
+        assert {:incompatible, %{"category" => "safe_tokenization_incompatible_template"}} =
+                 CompatibilityCache.get(
+                   manifest.sha256,
+                   manifest.safe_tokenization.catalog_sha256
+                 )
+      end
+    )
+  end
+
+  test "safe mode caches only tokenizer and template incompatibility helper errors" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+
+    template_error_executable =
+      write_response_executable!(
+        segmented_error_response("safe_tokenization_incompatible_template")
+      )
+
+    marker_error_executable =
+      write_response_executable!(segmented_error_response("safe_tokenization_marker_collision"))
+
+    on_exit(fn ->
+      File.rm(template_error_executable)
+      File.rm(marker_error_executable)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: template_error_executable
+      ],
+      fn ->
+        assert {:error, {:safe_tokenization_incompatible_template, _message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root
+                 )
+
+        assert {:incompatible,
+                %{
+                  "category" => "dual_render_mismatch",
+                  "outer_category" => "safe_tokenization_incompatible_template"
+                }} =
+                 CompatibilityCache.get(
+                   manifest.sha256,
+                   manifest.safe_tokenization.catalog_sha256
+                 )
+      end
+    )
+
+    CompatibilityCache.clear()
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: marker_error_executable
+      ],
+      fn ->
+        assert {:error, {:safe_tokenization_marker_collision, _message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root
+                 )
+
+        assert :unknown =
+                 CompatibilityCache.get(
+                   manifest.sha256,
+                   manifest.safe_tokenization.catalog_sha256
+                 )
+      end
+    )
+  end
+
+  test "safe mode caches helper template error preserving inner reason and outer category" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+
+    response_executable =
+      write_response_executable!(%{
+        contract_version: 3,
+        ok: false,
+        error: %{
+          category: "safe_tokenization_incompatible_template",
+          message: "segmented helper failed",
+          details: %{
+            "reason" => %{
+              "category" => "dual_render_mismatch",
+              "leaf_class" => "messages[0].content",
+              "sentinel_index" => 0,
+              "first_diff_offset" => 0
+            }
+          }
+        }
+      })
+
+    on_exit(fn ->
+      File.rm(response_executable)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: response_executable
+      ],
+      fn ->
+        assert {:error, {:safe_tokenization_incompatible_template, _message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root
+                 )
+
+        assert {:incompatible,
+                %{
+                  "category" => "dual_render_mismatch",
+                  "outer_category" => "safe_tokenization_incompatible_template",
+                  "leaf_class" => "messages[0].content",
+                  "sentinel_index" => 0,
+                  "first_diff_offset" => 0
+                }} =
+                 CompatibilityCache.get(
+                   manifest.sha256,
+                   manifest.safe_tokenization.catalog_sha256
+                 )
+      end
+    )
+  end
+
+  test "safe mode maps cached direct dual_render_mismatch to template incompatibility" do
+    manifest = safe_huggingface_manifest()
+
+    assert :ok =
+             CompatibilityCache.put_incompatible(
+               manifest.sha256,
+               manifest.safe_tokenization.catalog_sha256,
+               %{
+                 "category" => "dual_render_mismatch",
+                 "leaf_class" => "messages[0].content",
+                 "sentinel_index" => 0,
+                 "first_diff_offset" => 0
+               }
+             )
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: "/missing/orchard-tokenizer"
+      ],
+      fn ->
+        assert {:error, {:safe_tokenization_incompatible_template, message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: huggingface_fixture_root()
+                 )
+
+        assert message =~ "cached safe-tokenization incompatibility"
+      end
+    )
+  end
+
+  test "safe mode maps cached incompatibility using outer_category when present" do
+    manifest = safe_huggingface_manifest()
+
+    assert :ok =
+             CompatibilityCache.put_incompatible(
+               manifest.sha256,
+               manifest.safe_tokenization.catalog_sha256,
+               %{
+                 "category" => "marker_walk_mismatch",
+                 "outer_category" => "safe_tokenization_incompatible_template"
+               }
+             )
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: "/missing/orchard-tokenizer"
+      ],
+      fn ->
+        assert {:error, {:safe_tokenization_incompatible_template, message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: huggingface_fixture_root()
+                 )
+
+        assert message =~ "cached safe-tokenization incompatibility"
+      end
+    )
+  end
+
+  test "safe mode caches inner reason category and outer classification for template_compatible false" do
+    fixture_root = fixture_root_with_tokenizer_config!()
+    manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+
+    response_executable =
+      write_response_executable!(
+        segmented_response(%{
+          template_compatible: false,
+          incompatibility_reason: %{
+            "category" => "dual_render_mismatch",
+            "outer_category" => "safe_tokenization_incompatible_template",
+            "leaf_class" => "messages[0].content",
+            "sentinel_index" => 0,
+            "first_diff_offset" => 0
+          }
+        })
+      )
+
+    on_exit(fn ->
+      File.rm(response_executable)
+      File.rm_rf!(fixture_root)
+    end)
+
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_safe_mode: :on,
+        tokenizer_executable: response_executable
+      ],
+      fn ->
+        assert {:error, {:safe_tokenization_incompatible_template, message}} =
+                 Client.tokenize(canonical_request(),
+                   manifest: manifest,
+                   bundle_root: fixture_root
+                 )
+
+        assert message =~ "template_compatible=false"
+
+        assert {:incompatible,
+                %{
+                  "category" => "dual_render_mismatch",
+                  "outer_category" => "safe_tokenization_incompatible_template",
+                  "leaf_class" => "messages[0].content",
+                  "sentinel_index" => 0,
+                  "first_diff_offset" => 0
+                }} =
+                 CompatibilityCache.get(
+                   manifest.sha256,
+                   manifest.safe_tokenization.catalog_sha256
                  )
       end
     )
@@ -935,6 +1587,41 @@ defmodule Orchard.Tokenizer.ClientTest do
     manifest_with_chat_template("chat_template_control.jinja")
   end
 
+  defp safe_huggingface_manifest(opts \\ []) do
+    base = huggingface_manifest()
+    %Tokenizer{} = tokenizer = base.tokenizer
+    config_path = Keyword.get(opts, :config_path)
+
+    %ModelManifest{
+      base
+      | tokenizer: %Tokenizer{tokenizer | config_path: config_path},
+        safe_tokenization: safe_tokenization()
+    }
+  end
+
+  defp safe_tokenization do
+    %SafeTokenization{
+      control_tokens: safe_control_tokens(),
+      catalog_sha256: catalog_sha256(safe_control_tokens()),
+      catalog_source: %SafeTokenization.CatalogSource{
+        added_tokens_count: 2,
+        config_singletons_count: 0,
+        additional_special_tokens_count: 0,
+        chat_template_literals_count: 0,
+        wrapper_tool_markers_count: 0,
+        extra_count: 0
+      }
+    }
+  end
+
+  defp safe_control_tokens, do: ["<|im_start|>", "<|im_end|>"]
+
+  defp catalog_sha256(tokens) do
+    :sha256
+    |> :crypto.hash(Enum.join(tokens, <<0>>))
+    |> Base.encode16(case: :lower)
+  end
+
   defp manifest_with_chat_template(chat_template_path) do
     ModelManifest.new(%{
       model_id: "mlx-community/phi-3",
@@ -987,6 +1674,57 @@ defmodule Orchard.Tokenizer.ClientTest do
     Client.executable()
   end
 
+  defp realpath!(path) do
+    {:ok, realpath} = Orchard.PathUtils.resolve_realpath(path)
+    realpath
+  end
+
+  defp fixture_root_with_tokenizer_config! do
+    fixture_root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-tokenizer-safe-mode-#{System.unique_integer([:positive])}"
+      )
+
+    File.cp_r!(huggingface_fixture_root(), fixture_root)
+    File.write!(Path.join(fixture_root, "tokenizer_config.json"), Jason.encode!(%{}))
+    fixture_root
+  end
+
+  defp segmented_response(result_overrides \\ %{}) do
+    result =
+      Map.merge(
+        %{
+          rendered_prompt: "segmented",
+          input_token_count: 2,
+          prompt_token_ids: [101, 102],
+          compatible: true,
+          template_compatible: true,
+          incompatibility_reason: nil,
+          safe_encoding_events: []
+        },
+        result_overrides
+      )
+
+    %{
+      contract_version: 3,
+      ok: true,
+      result: result
+    }
+  end
+
+  defp segmented_error_response(category) do
+    %{
+      contract_version: 3,
+      ok: false,
+      error: %{
+        category: category,
+        message: "segmented helper failed",
+        details: %{"reason" => %{"category" => "dual_render_mismatch"}}
+      }
+    }
+  end
+
   defp write_fixture_with_malformed_tokenizer_config! do
     fixture_root =
       Path.join(
@@ -1025,22 +1763,14 @@ defmodule Orchard.Tokenizer.ClientTest do
     {fixture_root, outside_root}
   end
 
-  defp write_capture_request_executable! do
+  defp write_capture_request_executable!(response_map \\ legacy_capture_response()) do
     capture_file =
       Path.join(
         System.tmp_dir!(),
         "orchard-tokenizer-captured-request-#{System.unique_integer([:positive])}.json"
       )
 
-    response =
-      Jason.encode!(%{
-        contract_version: 2,
-        ok: true,
-        result: %{
-          rendered_prompt: "captured",
-          input_token_count: 1
-        }
-      })
+    response = Jason.encode!(response_map)
 
     script_path =
       Path.join(
@@ -1055,6 +1785,56 @@ defmodule Orchard.Tokenizer.ClientTest do
 
     File.chmod!(script_path, 0o755)
     {script_path, capture_file}
+  end
+
+  defp write_env_capture_executable!(response_map) do
+    env_file =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-tokenizer-captured-env-#{System.unique_integer([:positive])}.txt"
+      )
+
+    response = Jason.encode!(response_map)
+
+    script_path =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-tokenizer-env-capture-#{System.unique_integer([:positive])}.sh"
+      )
+
+    File.write!(
+      script_path,
+      "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"${ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT:-}\" >> \"#{env_file}\"\nprintf '%s\\n' '#{response}'\n"
+    )
+
+    File.chmod!(script_path, 0o755)
+    {script_path, env_file}
+  end
+
+  defp env_capture_lines(env_file) do
+    env_file
+    |> File.read!()
+    |> String.split("\n", trim: false)
+    |> Enum.drop(-1)
+  end
+
+  defp restore_skip_sentinel_preflight_env(nil) do
+    System.delete_env("ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT")
+  end
+
+  defp restore_skip_sentinel_preflight_env(value) do
+    System.put_env("ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT", value)
+  end
+
+  defp legacy_capture_response do
+    %{
+      contract_version: 2,
+      ok: true,
+      result: %{
+        rendered_prompt: "captured",
+        input_token_count: 1
+      }
+    }
   end
 
   defp write_response_executable!(response_map) do

@@ -19,6 +19,7 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
         input_items: [%{"role" => "user", meta: %{turn: 1}}],
         rendered_prompt: "hello",
         input_token_count: 12,
+        prompt_token_ids: Enum.to_list(1..12),
         stream?: false,
         stream_include_usage: false,
         sampling: %{temperature: 0.7, top_p: 0.9, stop: ["END"], seed: 7},
@@ -96,6 +97,7 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
            }
 
     refute Map.has_key?(serialized, :endpoint)
+    refute Map.has_key?(serialized, "prompt_token_ids")
   end
 
   test "serialize/1 rejects embedded structs in plain data fields" do

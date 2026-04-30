@@ -83,6 +83,22 @@ env_optional_string = fn env_name ->
   end
 end
 
+env_tokenizer_safe_mode = fn env_name, default ->
+  case System.get_env(env_name) || default do
+    value when value in [:off, "off"] ->
+      :off
+
+    value when value in [:on, "on"] ->
+      :on
+
+    value when value in [:reject, "reject"] ->
+      :reject
+
+    value ->
+      raise "#{env_name} must be off|on|reject, got: #{inspect(value)}"
+  end
+end
+
 env_ip = fn env_name, default_string ->
   ip_string = System.get_env(env_name) || default_string
 
@@ -279,6 +295,7 @@ default_controller_inference = fn root ->
   [
     tokenizer_mode: :port,
     tokenizer_executable: "orchard-tokenizer",
+    tokenizer_safe_mode: :off,
     artifacts_root: Path.join(root, "bundles"),
     runtime_client_target: [host: "127.0.0.1", port: 50_061],
     runtime_client_targets: [],
@@ -508,6 +525,7 @@ if config_env() == :prod do
             default_controller_inference.(orchard_support_root),
             tokenizer_executable:
               System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") || "orchard-tokenizer",
+            tokenizer_safe_mode: env_tokenizer_safe_mode.("ORCHARD_TOKENIZER_SAFE_MODE", "off"),
             artifacts_root:
               System.get_env("ORCHARD_ARTIFACTS_ROOT") ||
                 Path.join(orchard_support_root, "bundles"),

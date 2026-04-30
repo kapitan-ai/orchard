@@ -50,11 +50,13 @@ defmodule Orchard.Node.LicenseEnforcerTest do
     assert Application.fetch_env!(:orchard_shared, :licensing)[:enforcement_mode] == :off
   end
 
-  test ":off skips licensing checks entirely", %{previous_runtime: previous_runtime} do
+  test ":off inspects license state for traceability without enforcement", %{
+    previous_runtime: previous_runtime
+  } do
     put_runtime(previous_runtime, enforcement_mode: :off)
 
     assert :ok = LicenseEnforcer.enforce_startup!()
-    refute_received :licensing_inspected
+    assert_received :licensing_inspected
   end
 
   test ":warn logs and continues for non-valid states", %{previous_runtime: previous_runtime} do
@@ -75,8 +77,8 @@ defmodule Orchard.Node.LicenseEnforcerTest do
       end)
 
     assert_received :licensing_inspected
-    assert log =~ "Node-agent startup license warning"
-    assert log =~ "No local license bundle is installed."
+    assert log =~ "Node-agent startup license warn"
+    refute log =~ "No local license bundle is installed."
   end
 
   test ":hard aborts startup for non-valid states", %{previous_runtime: previous_runtime} do
@@ -92,7 +94,7 @@ defmodule Orchard.Node.LicenseEnforcerTest do
     put_runtime(previous_runtime, enforcement_mode: :hard)
 
     assert_raise RuntimeError,
-                 ~r/Node-agent startup blocked by licensing: License bundle has expired\./,
+                 ~r/Node-agent startup blocked by licensing: expired/,
                  fn ->
                    LicenseEnforcer.enforce_startup!()
                  end

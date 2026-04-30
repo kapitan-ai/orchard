@@ -51,6 +51,22 @@ env_optional_string = fn env_name ->
   end
 end
 
+env_tokenizer_safe_mode = fn env_name, default ->
+  case System.get_env(env_name) || default do
+    value when value in [:off, "off"] ->
+      :off
+
+    value when value in [:on, "on"] ->
+      :on
+
+    value when value in [:reject, "reject"] ->
+      :reject
+
+    value ->
+      raise "#{env_name} must be off|on|reject, got: #{inspect(value)}"
+  end
+end
+
 dev_runtime_port =
   case {System.get_env("ORCHARD_NODE_AGENT_LISTEN_PORT"),
         System.get_env("ORCHARD_RUNTIME_CLIENT_PORT")} do
@@ -305,6 +321,7 @@ config :orchard_controller,
       tokenizer_executable:
         System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
+      tokenizer_safe_mode: env_tokenizer_safe_mode.("ORCHARD_TOKENIZER_SAFE_MODE", :off),
       cache_affinity: cache_affinity_config,
       cache_introspection: cache_introspection_config,
       prefix_cache_scoring: prefix_cache_scoring_config,

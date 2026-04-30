@@ -89,7 +89,12 @@ defmodule Orchard.Application do
   end
 
   defp maybe_add_inference_stack(children) do
-    children ++ [{GRPC.Client.Supervisor, []}, Orchard.Inference]
+    children ++
+      [
+        {GRPC.Client.Supervisor, []},
+        Orchard.Tokenizer.CompatibilityCache,
+        Orchard.Inference
+      ]
   end
 
   defp add_pubsub_and_coordinator(children) do

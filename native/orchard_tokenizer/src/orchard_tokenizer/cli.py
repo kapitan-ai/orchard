@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -15,6 +16,20 @@ from tokenizers import Tokenizer
 
 from orchard_tokenizer import __version__
 from orchard_tokenizer.catalog import extract_safe_tokenization_catalog
+from orchard_tokenizer.safe_segmented import (
+    SafeSegmentedError,
+    catalog_sha256,
+    choose_marker_nonce,
+    details_for_error,
+    dual_render_guard,
+    dual_render_guard_sentinel_matrix,
+    encode_rendered_segments,
+    event_to_dict,
+    load_two_tokenizers,
+    precompute_safe_ids,
+    tag_caller_strings,
+    walk_rendered,
+)
 
 # Prompt-shaping tokens that must be resolved when referenced by a template.
 # If a template uses {{ bos_token }} or {{ eos_token }}, the value MUST come
@@ -38,6 +53,7 @@ SENTENCEPIECE_KINDS: Final[set[str]] = {
     "sentencepiece_model",
     "sentencepiece_tokenizer_model",
 }
+_SKIP_SENTINEL_PREFLIGHT_ENV: Final[str] = "ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT"
 
 
 @dataclass(slots=True)
@@ -45,6 +61,7 @@ class TokenizerCliError(Exception):
     category: str
     message: str
     exit_code: int
+    details: dict[str, Any] | None = None
 
     def __str__(self) -> str:
         return self.message
@@ -82,14 +99,19 @@ def build_error_response(
     message: str,
     *,
     contract_version: int = CONTRACT_VERSION,
+    details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    error: dict[str, Any] = {
+        "category": category,
+        "message": message,
+    }
+    if details:
+        error["details"] = details
+
     return {
         "contract_version": contract_version,
         "ok": False,
-        "error": {
-            "category": category,
-            "message": message,
-        },
+        "error": error,
     }
 
 
@@ -130,6 +152,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     exc.category,
                     exc.message,
                     contract_version=response_contract_version,
+                    details=exc.details,
                 ),
                 ensure_ascii=False,
             )
@@ -189,6 +212,31 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
     if command == "render_and_count":
         return _execute_render_and_count(payload, int(contract_version))
 
+    if command == "render_and_count_segmented":
+        if int(contract_version) != CONTRACT_VERSION:
+            raise TokenizerCliError(
+                "invalid_input",
+                "render_and_count_segmented requires contract_version 3",
+                2,
+            )
+
+        try:
+            return {
+                "contract_version": int(contract_version),
+                **_execute_render_and_count_segmented(payload),
+            }
+        except SafeSegmentedError as exc:
+            raise TokenizerCliError(
+                exc.category,
+                str(exc),
+                2,
+                details_for_error(exc),
+            ) from exc
+        except FileNotFoundError as exc:
+            raise TokenizerCliError("missing_assets", str(exc), 3) from exc
+        except OSError as exc:
+            raise TokenizerCliError("missing_assets", str(exc), 3) from exc
+
     if command == "extract_safe_tokenization_catalog":
         if int(contract_version) != CONTRACT_VERSION:
             raise TokenizerCliError(
@@ -242,6 +290,182 @@ def _execute_render_and_count(payload: dict[str, Any], contract_version: int) ->
         "rendered_prompt": rendered_prompt,
         "input_token_count": input_token_count,
     }
+
+
+def _execute_render_and_count_segmented(payload: dict[str, Any]) -> dict[str, Any]:
+    assets = require_mapping(payload, "assets")
+    request = require_mapping(payload, "request")
+
+    tokenizer_kind = require_non_empty_string(assets, "tokenizer_kind", category="invalid_input")
+    if tokenizer_kind not in HF_TOKENIZER_KINDS:
+        raise TokenizerCliError(
+            "unsupported_tokenizer",
+            f"render_and_count_segmented requires a HuggingFace tokenizer, got: {tokenizer_kind}",
+            4,
+        )
+
+    tokenizer_path = Path(
+        require_non_empty_string(assets, "tokenizer_path", category="missing_assets")
+    )
+    tokenizer_config_path = Path(
+        require_non_empty_string(assets, "tokenizer_config_path", category="missing_assets")
+    )
+    chat_template_path = Path(
+        require_non_empty_string(assets, "chat_template_path", category="missing_assets")
+    )
+
+    if not tokenizer_config_path.is_file():
+        raise TokenizerCliError(
+            "missing_assets",
+            f"tokenizer config asset is missing: {tokenizer_config_path}",
+            3,
+        )
+
+    control_tokens, expected_catalog_sha256 = _require_safe_tokenization_catalog(payload)
+    actual_catalog_sha256 = catalog_sha256(control_tokens)
+    if actual_catalog_sha256 != expected_catalog_sha256:
+        raise SafeSegmentedError(
+            "safe_tokenization_catalog_hash_mismatch",
+            "safe tokenization catalog hash does not match control_tokens",
+            reason={
+                "category": "catalog_hash_mismatch",
+                "expected": expected_catalog_sha256,
+                "actual": actual_catalog_sha256,
+            },
+        )
+
+    if os.environ.get(_SKIP_SENTINEL_PREFLIGHT_ENV) != "1":
+        _run_template_sentinel_preflight(
+            control_tokens,
+            chat_template_path,
+            tokenizer_config_path,
+        )
+
+    messages = normalize_messages_preserving_message_fields(request)
+    tools = normalize_tools(request.get("tools", []))
+    tool_choice = request.get("tool_choice", None)
+    input_items = request.get("input_items")
+
+    prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
+    baseline_render = render_prompt(
+        messages,
+        prompt_lines,
+        chat_template_path,
+        tokenizer_config_path,
+        tools=tools,
+        tool_choice=tool_choice,
+    )
+
+    nonce = choose_marker_nonce(input_items, tools, tool_choice)
+    tagged_payload, marker_pairs = tag_caller_strings(input_items, tools, tool_choice, nonce)
+    tagged_request = {"input_items": tagged_payload["input_items"]}
+    tagged_messages = normalize_messages_preserving_message_fields(tagged_request)
+    tagged_tools = normalize_tools(tagged_payload["tools"])
+    tagged_tool_choice = tagged_payload["tool_choice"]
+    tagged_prompt_lines = [f"{message['role']} {message['content']}" for message in tagged_messages]
+    tagged_render = render_prompt(
+        tagged_messages,
+        tagged_prompt_lines,
+        chat_template_path,
+        tokenizer_config_path,
+        tools=tagged_tools,
+        tool_choice=tagged_tool_choice,
+    )
+    dual_render_guard(baseline_render, tagged_render, marker_pairs)
+
+    try:
+        tokenizer_template, tokenizer_safe = load_two_tokenizers(tokenizer_path)
+    except Exception as exc:
+        raise TokenizerCliError(
+            "missing_assets",
+            f"tokenizer asset is invalid: {tokenizer_path}",
+            3,
+        ) from exc
+
+    safe_ids_result = precompute_safe_ids(control_tokens, tokenizer_template, tokenizer_safe)
+    segments = walk_rendered(tagged_render, marker_pairs)
+    rendered_prompt, prompt_token_ids, events = encode_rendered_segments(
+        segments,
+        control_tokens,
+        safe_ids_result.safe_ids,
+        tokenizer_template,
+        tokenizer_safe,
+    )
+
+    decoded_prompt = tokenizer_template.decode(prompt_token_ids, skip_special_tokens=False)
+    if decoded_prompt != rendered_prompt:
+        raise SafeSegmentedError(
+            "safe_tokenization_incompatible_tokenizer",
+            "segmented token IDs do not decode to the rendered prompt",
+            reason={
+                "category": "per_codepoint_decode_mismatch",
+                "first_diff_offset": _first_diff_offset(decoded_prompt, rendered_prompt),
+            },
+        )
+
+    return {
+        "rendered_prompt": rendered_prompt,
+        "input_token_count": len(prompt_token_ids),
+        "prompt_token_ids": prompt_token_ids,
+        "compatible": True,
+        "template_compatible": True,
+        "incompatibility_reason": None,
+        "safe_encoding_events": [event_to_dict(event) for event in events],
+    }
+
+
+def _run_template_sentinel_preflight(
+    control_tokens: list[str],
+    chat_template_path: Path,
+    tokenizer_config_path: Path,
+) -> None:
+    def render_payload(payload: dict[str, Any]) -> str:
+        request = {"input_items": payload["input_items"]}
+        messages = normalize_messages_preserving_message_fields(request)
+        tools = normalize_tools(payload.get("tools", []))
+        tool_choice = payload.get("tool_choice", None)
+        prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
+        return render_prompt(
+            messages,
+            prompt_lines,
+            chat_template_path,
+            tokenizer_config_path,
+            tools=tools,
+            tool_choice=tool_choice,
+        )
+
+    dual_render_guard_sentinel_matrix(control_tokens, render_payload)
+
+
+def _require_safe_tokenization_catalog(payload: dict[str, Any]) -> tuple[list[str], str]:
+    safe_tokenization = require_mapping(payload, "safe_tokenization")
+    control_tokens = safe_tokenization.get("control_tokens")
+    catalog_hash = safe_tokenization.get("catalog_sha256")
+
+    if not isinstance(control_tokens, list) or not all(
+        isinstance(token, str) for token in control_tokens
+    ):
+        raise TokenizerCliError(
+            "invalid_input",
+            "safe_tokenization.control_tokens must be an array of strings",
+            2,
+        )
+
+    if not isinstance(catalog_hash, str) or catalog_hash == "":
+        raise TokenizerCliError(
+            "invalid_input",
+            "safe_tokenization.catalog_sha256 must be a non-empty string",
+            2,
+        )
+
+    return cast(list[str], control_tokens), catalog_hash
+
+
+def _first_diff_offset(left: str, right: str) -> int:
+    for index, (left_char, right_char) in enumerate(zip(left, right, strict=False)):
+        if left_char != right_char:
+            return index
+    return min(len(left), len(right))
 
 
 def require_mapping(payload: dict[str, Any], field_name: str) -> dict[str, Any]:
@@ -306,6 +530,42 @@ def normalize_messages(request: dict[str, Any]) -> list[dict[str, str]]:
     return messages
 
 
+def normalize_messages_preserving_message_fields(request: dict[str, Any]) -> list[dict[str, Any]]:
+    input_items = request.get("input_items")
+
+    if not isinstance(input_items, list):
+        raise TokenizerCliError(
+            "invalid_input",
+            f"request.input_items must be a list, got: {input_items!r}",
+            2,
+        )
+
+    messages: list[dict[str, Any]] = []
+    for index, item in enumerate(input_items):
+        if not isinstance(item, dict):
+            raise TokenizerCliError(
+                "invalid_input",
+                f"request.input_items[{index}] must be an object, got: {item!r}",
+                2,
+            )
+
+        item_map = cast(dict[str, Any], item)
+        role = item_map.get("role")
+        if not isinstance(role, str) or role == "":
+            raise TokenizerCliError(
+                "invalid_input",
+                f"request.input_items[{index}].role must be a non-empty string",
+                2,
+            )
+
+        message = item_map.copy()
+        message["role"] = role
+        message["content"] = normalize_content(item_map.get("content"), index)
+        messages.append(message)
+
+    return messages
+
+
 def normalize_tools(tools: Any) -> list[dict[str, Any]]:
     if not isinstance(tools, list):
         raise TokenizerCliError(
@@ -363,7 +623,7 @@ def normalize_content(content: Any, item_index: int) -> str:
 
 
 def render_prompt(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     prompt_lines: list[str],
     chat_template_path: Path,
     tokenizer_config_path: Path | None = None,
