@@ -296,6 +296,7 @@ default_controller_inference = fn root ->
     tokenizer_mode: :port,
     tokenizer_executable: "orchard-tokenizer",
     tokenizer_safe_mode: :off,
+    tokenizer_safe_mode_prefer_capable: false,
     artifacts_root: Path.join(root, "bundles"),
     runtime_client_target: [host: "127.0.0.1", port: 50_061],
     runtime_client_targets: [],
@@ -544,6 +545,8 @@ if config_env() == :prod do
             tokenizer_executable:
               System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") || "orchard-tokenizer",
             tokenizer_safe_mode: env_tokenizer_safe_mode.("ORCHARD_TOKENIZER_SAFE_MODE", "off"),
+            tokenizer_safe_mode_prefer_capable:
+              env_bool.("ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE", false),
             artifacts_root:
               System.get_env("ORCHARD_ARTIFACTS_ROOT") ||
                 Path.join(orchard_support_root, "bundles"),

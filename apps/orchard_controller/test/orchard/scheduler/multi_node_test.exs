@@ -132,6 +132,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     health = Keyword.get(opts, :health, nil)
     prefix_cache_statuses = Keyword.get(opts, :runtime_prefix_cache_statuses, [])
     memory_budgets = Keyword.get(opts, :runtime_memory_budgets, [])
+    supports_prompt_token_ids = Keyword.get(opts, :supports_prompt_token_ids, false)
     display_name = Keyword.get(opts, :display_name, "node-#{node_id}")
     host = Keyword.get(opts, :host, "10.0.0.1")
     port = Keyword.get(opts, :port, 9444)
@@ -150,7 +151,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       loaded_models: loaded_models,
       active_request_count: active_request_count,
       runtime_memory_budgets: memory_budgets,
-      runtime_prefix_cache_statuses: prefix_cache_statuses
+      runtime_prefix_cache_statuses: prefix_cache_statuses,
+      supports_prompt_token_ids: supports_prompt_token_ids
     }
   end
 
@@ -1976,6 +1978,328 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert schedule.node_id == id_a
       assert schedule.memory_admission_tier == "headroom_unknown"
+    end
+
+    test "prefers prompt-token-capable worker when opt-in flag and safe mode are enabled" do
+      put_inference(tokenizer_safe_mode: :on, tokenizer_safe_mode_prefer_capable: true)
+
+      id_legacy = "00000000-0000-0000-0000-000000000001"
+      id_capable = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_legacy, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_capable, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_legacy, host: "10.0.0.1", port: 50_061, supports_prompt_token_ids: false)
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_capable, host: "10.0.0.2", port: 50_062, supports_prompt_token_ids: true)
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(canonical_request(), status_client: StubClient)
+
+      assert schedule.node_id == id_capable
+      assert schedule.runtime_client_target == [host: "10.0.0.2", port: 50_062]
+    end
+
+    test "keeps prompt-token capability rank-neutral when preference flag is disabled" do
+      put_inference(tokenizer_safe_mode: :on, tokenizer_safe_mode_prefer_capable: false)
+
+      id_legacy = "00000000-0000-0000-0000-000000000001"
+      id_capable = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_legacy, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_capable, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_legacy, host: "10.0.0.1", port: 50_061, supports_prompt_token_ids: false)
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_capable, host: "10.0.0.2", port: 50_062, supports_prompt_token_ids: true)
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(canonical_request(), status_client: StubClient)
+
+      assert schedule.node_id == id_legacy
+      assert schedule.runtime_client_target == [host: "10.0.0.1", port: 50_061]
+    end
+
+    test "keeps prompt-token capability rank-neutral when safe mode is off" do
+      put_inference(tokenizer_safe_mode: :off, tokenizer_safe_mode_prefer_capable: true)
+
+      id_legacy = "00000000-0000-0000-0000-000000000001"
+      id_capable = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_legacy, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_capable, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_legacy, host: "10.0.0.1", port: 50_061, supports_prompt_token_ids: false)
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_capable, host: "10.0.0.2", port: 50_062, supports_prompt_token_ids: true)
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(canonical_request(), status_client: StubClient)
+
+      assert schedule.node_id == id_legacy
+    end
+
+    test "keeps capable-worker preference below historical cache-affinity" do
+      put_inference(
+        tokenizer_safe_mode: :on,
+        tokenizer_safe_mode_prefer_capable: true,
+        cache_affinity: [enabled: true, max_age_ms: 300_000, max_recent_requests: 8]
+      )
+
+      id_cache_match_legacy = "00000000-0000-0000-0000-000000000001"
+      id_capable = "00000000-0000-0000-0000-000000000002"
+      tenant_id = Ecto.UUID.generate()
+      request = canonical_request("test-model", "v1", tenant_id: tenant_id)
+      affinity_key = cache_affinity_key!(request)
+
+      insert_node!(%{id: id_cache_match_legacy, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_capable, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      insert_recent_cache_affinity_request!(
+        tenant_id,
+        "test-model",
+        "v1",
+        id_cache_match_legacy,
+        affinity_key,
+        DateTime.utc_now()
+      )
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_cache_match_legacy,
+          host: "10.0.0.1",
+          port: 50_061,
+          supports_prompt_token_ids: false
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_capable, host: "10.0.0.2", port: 50_062, supports_prompt_token_ids: true)
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_cache_match_legacy
+      assert schedule.cache_affinity_selected_match == true
+    end
+
+    test "keeps capable-worker preference below live prefix-cache fingerprint matching" do
+      put_inference(
+        tokenizer_safe_mode: :on,
+        tokenizer_safe_mode_prefer_capable: true,
+        cache_affinity: [
+          enabled: true,
+          live_fingerprint_match_enabled: true,
+          max_age_ms: 300_000,
+          max_recent_requests: 8
+        ]
+      )
+
+      id_live_match_legacy = "00000000-0000-0000-0000-000000000001"
+      id_capable = "00000000-0000-0000-0000-000000000002"
+      request = canonical_request("test-model", "v1")
+      affinity_key = cache_affinity_key!(request)
+
+      insert_node!(%{id: id_live_match_legacy, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_capable, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_live_match_legacy,
+          host: "10.0.0.1",
+          port: 50_061,
+          supports_prompt_token_ids: false,
+          runtime_prefix_cache_statuses: [
+            prefix_cache_status("test-model", "v1", %{prefix_cache_fingerprints: [affinity_key]})
+          ]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_capable, host: "10.0.0.2", port: 50_062, supports_prompt_token_ids: true)
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_live_match_legacy
+      assert schedule.prefix_cache_fingerprint_match? == true
+    end
+
+    test "keeps capable-worker preference above memory admission" do
+      put_inference(
+        tokenizer_safe_mode: :on,
+        tokenizer_safe_mode_prefer_capable: true,
+        memory_admission: [enabled: true]
+      )
+
+      id_capable = "00000000-0000-0000-0000-000000000002"
+      id_memory = "00000000-0000-0000-0000-000000000001"
+
+      insert_node!(%{id: id_capable, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_memory, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_capable, host: "10.0.0.1", port: 50_061, supports_prompt_token_ids: true)
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_memory,
+          host: "10.0.0.2",
+          port: 50_062,
+          supports_prompt_token_ids: false,
+          runtime_memory_budgets: [memory_budget("test-model", "v1", %{})]
+        )
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(canonical_request(), status_client: StubClient)
+
+      assert schedule.node_id == id_capable
+      assert schedule.memory_admission_tier == "headroom_unknown"
+    end
+
+    test "ranker uses live capability annotation instead of persisted node capabilities" do
+      id_persisted_capable_live_legacy = "00000000-0000-0000-0000-000000000001"
+      id_live_capable_persisted_legacy = "00000000-0000-0000-0000-000000000002"
+
+      persisted_capable_live_legacy = %{
+        node_id: id_persisted_capable_live_legacy,
+        loaded_model?: false,
+        active_request_count: 0,
+        cache_affinity_match?: false,
+        capable_worker_preferred?: false,
+        node: %{health: :healthy, capabilities: %{"supports_prompt_token_ids" => true}}
+      }
+
+      live_capable_persisted_legacy = %{
+        node_id: id_live_capable_persisted_legacy,
+        loaded_model?: false,
+        active_request_count: 0,
+        cache_affinity_match?: false,
+        capable_worker_preferred?: true,
+        node: %{health: :healthy, capabilities: %{"supports_prompt_token_ids" => false}}
+      }
+
+      assert [first, second] =
+               MultiNode.rank_candidates(
+                 [persisted_capable_live_legacy, live_capable_persisted_legacy],
+                 prefer_capable_workers?: true
+               )
+
+      assert first.node_id == id_live_capable_persisted_legacy
+      assert second.node_id == id_persisted_capable_live_legacy
+    end
+
+    test "still schedules deterministically when all workers are legacy" do
+      put_inference(tokenizer_safe_mode: :on, tokenizer_safe_mode_prefer_capable: true)
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe("10.0.0.1", 50_061, make_status(id_a, host: "10.0.0.1", port: 50_061))
+      stub_probe("10.0.0.2", 50_062, make_status(id_b, host: "10.0.0.2", port: 50_062))
+
+      assert {:ok, schedule} = MultiNode.schedule(canonical_request(), status_client: StubClient)
+      assert schedule.node_id == id_a
+    end
+
+    test "keeps deterministic tie order when all workers are capable" do
+      put_inference(tokenizer_safe_mode: :on, tokenizer_safe_mode_prefer_capable: true)
+
+      id_a = "00000000-0000-0000-0000-000000000001"
+      id_b = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_a, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_b, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a, host: "10.0.0.1", port: 50_061, supports_prompt_token_ids: true)
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b, host: "10.0.0.2", port: 50_062, supports_prompt_token_ids: true)
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(canonical_request(), status_client: StubClient)
+      assert schedule.node_id == id_a
+    end
+
+    test "tie-only prefix scoring does not invert capable-worker preference" do
+      put_inference(
+        tokenizer_safe_mode: :on,
+        tokenizer_safe_mode_prefer_capable: true,
+        cache_affinity: [enabled: true, live_fingerprint_match_enabled: true],
+        prefix_cache_scoring: [enabled: true, timeout_ms: 123, ranking_mode: :tie_only]
+      )
+
+      id_legacy = "00000000-0000-0000-0000-000000000001"
+      id_capable = "00000000-0000-0000-0000-000000000002"
+
+      insert_node!(%{id: id_legacy, advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      insert_node!(%{id: id_capable, advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_legacy, host: "10.0.0.1", port: 50_061, supports_prompt_token_ids: false)
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_capable, host: "10.0.0.2", port: 50_062, supports_prompt_token_ids: true)
+      )
+
+      stub_score("10.0.0.1", 50_061, ok_resident_score())
+      stub_score("10.0.0.2", 50_062, ok_non_resident_score())
+
+      request = canonical_request()
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+
+      assert schedule.node_id == id_capable
+      assert [{{"10.0.0.2", 50_062}, score_request}] = score_calls()
+      assert score_request.request_id == request.public_id
+      assert score_request.controller_session_id == request.internal_id
+      assert score_request.model_ref.model_id == request.model_ref.model_id
+      assert score_request.model_ref.version == request.model_ref.version
     end
 
     test "ignores stale cache-affinity placements" do

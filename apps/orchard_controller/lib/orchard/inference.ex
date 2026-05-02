@@ -192,6 +192,11 @@ defmodule Orchard.Inference do
     end
   end
 
+  @spec tokenizer_safe_mode_prefer_capable_workers?() :: boolean()
+  def tokenizer_safe_mode_prefer_capable_workers? do
+    config()[:tokenizer_safe_mode_prefer_capable] == true
+  end
+
   @spec tokenizer_executable() :: String.t() | nil
   def tokenizer_executable, do: config()[:tokenizer_executable]
 

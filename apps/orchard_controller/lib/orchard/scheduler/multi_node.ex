@@ -9,9 +9,10 @@ defmodule Orchard.Scheduler.MultiNode do
   3. Healthier node (`:healthy` over `:degraded`)
   4. Live prefix-cache fingerprint match when explicitly enabled
   5. Cache-affinity match when explicitly enabled
-  6. Memory headroom positive signal when explicitly enabled
-  7. Gated Phase 4D tie-only `ScorePrefixCache` reselection, when explicitly enabled
-  8. Lexicographically smaller `node_id` (deterministic tie-break)
+  6. Prompt-token-ID capable worker preference when explicitly enabled and safe mode is not `:off`
+  7. Memory headroom positive signal when explicitly enabled
+  8. Gated Phase 4D tie-only `ScorePrefixCache` reselection, when explicitly enabled
+  9. Lexicographically smaller `node_id` (deterministic tie-break)
 
   Falls back to `SingleNode.default_schedule/1` when:
   - Only 0 or 1 targets are configured
@@ -112,19 +113,26 @@ defmodule Orchard.Scheduler.MultiNode do
       prefix_cache_scoring_enabled? = Inference.prefix_cache_scoring_enabled?()
       memory_admission_enabled? = Inference.memory_admission_enabled?()
 
+      prefer_capable_workers? =
+        Inference.tokenizer_safe_mode_prefer_capable_workers?() and
+          Inference.tokenizer_safe_mode() != :off
+
       annotated_candidates =
         affinity_candidates
         |> annotate_prefix_cache_fingerprint_matches(
           affinity_context,
           live_fingerprint_match_enabled?
         )
+        |> annotate_capable_workers(prefer_capable_workers?)
         |> annotate_memory_admission(memory_admission_enabled?)
 
-      ranked =
-        rank_candidates(annotated_candidates,
-          live_fingerprint_match?: live_fingerprint_match_enabled?,
-          memory_admission?: memory_admission_enabled?
-        )
+      ranking_opts = [
+        live_fingerprint_match?: live_fingerprint_match_enabled?,
+        prefer_capable_workers?: prefer_capable_workers?,
+        memory_admission?: memory_admission_enabled?
+      ]
+
+      ranked = rank_candidates(annotated_candidates, ranking_opts)
 
       {selected, selected_score} =
         select_candidate_with_prefix_cache_score(
@@ -133,8 +141,7 @@ defmodule Orchard.Scheduler.MultiNode do
           client,
           cache_affinity_config,
           prefix_cache_scoring_enabled?,
-          live_fingerprint_match_enabled?,
-          memory_admission_enabled?
+          ranking_opts
         )
 
       schedule =
@@ -180,7 +187,8 @@ defmodule Orchard.Scheduler.MultiNode do
                     node_id: node_id,
                     target: target,
                     loaded_model?: model_loaded?(response, request),
-                    active_request_count: response.active_request_count || 0
+                    active_request_count: response.active_request_count || 0,
+                    supports_prompt_token_ids: prompt_token_ids_supported?(response)
                   }
                   |> maybe_put_prefix_cache_status(
                     prefix_cache_status_for(response, request.model_ref)
@@ -222,6 +230,10 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp model_loaded?(_, _), do: false
+
+  defp prompt_token_ids_supported?(%{supports_prompt_token_ids: true}), do: true
+  defp prompt_token_ids_supported?(%{"supports_prompt_token_ids" => true}), do: true
+  defp prompt_token_ids_supported?(_response), do: false
 
   defp prefix_cache_status_for(response, %CanonicalRequest.ModelRef{} = model_ref) do
     response
@@ -324,6 +336,18 @@ defmodule Orchard.Scheduler.MultiNode do
     |> Enum.member?(affinity_key)
   end
 
+  defp annotate_capable_workers(candidates, false), do: candidates
+
+  defp annotate_capable_workers(candidates, true) do
+    Enum.map(candidates, fn candidate ->
+      Map.put(
+        candidate,
+        :capable_worker_preferred?,
+        Map.get(candidate, :supports_prompt_token_ids, false) == true
+      )
+    end)
+  end
+
   defp annotate_memory_admission(candidates, false), do: candidates
 
   defp annotate_memory_admission(candidates, true) do
@@ -347,8 +371,7 @@ defmodule Orchard.Scheduler.MultiNode do
          client,
          cache_affinity_config,
          prefix_cache_scoring_enabled?,
-         live_fingerprint_match_enabled?,
-         memory_admission_enabled?
+         ranking_opts
        ) do
     selected = hd(ranked)
 
@@ -357,7 +380,7 @@ defmodule Orchard.Scheduler.MultiNode do
         request,
         cache_affinity_config,
         prefix_cache_scoring_enabled?,
-        live_fingerprint_match_enabled?
+        Keyword.get(ranking_opts, :live_fingerprint_match?, false)
       )
 
     selected_score = score_prefix_cache_candidate(request, selected, client, scoring_context)
@@ -368,8 +391,7 @@ defmodule Orchard.Scheduler.MultiNode do
       client,
       scoring_context,
       selected_score,
-      live_fingerprint_match_enabled?,
-      memory_admission_enabled?
+      ranking_opts
     )
   end
 
@@ -426,8 +448,7 @@ defmodule Orchard.Scheduler.MultiNode do
          _client,
          _scoring_context,
          nil,
-         _live_fingerprint_match_enabled?,
-         _memory_admission_enabled?
+         _ranking_opts
        ),
        do: {hd(ranked), nil}
 
@@ -437,8 +458,7 @@ defmodule Orchard.Scheduler.MultiNode do
          client,
          scoring_context,
          selected_score,
-         live_fingerprint_match_enabled?,
-         memory_admission_enabled?
+         ranking_opts
        ) do
     if Inference.prefix_cache_scoring_ranking_active?() do
       maybe_reselect_tied_candidate(
@@ -447,8 +467,7 @@ defmodule Orchard.Scheduler.MultiNode do
         client,
         scoring_context,
         selected_score,
-        live_fingerprint_match_enabled?,
-        memory_admission_enabled?
+        ranking_opts
       )
     else
       {hd(ranked), selected_score}
@@ -461,10 +480,9 @@ defmodule Orchard.Scheduler.MultiNode do
          client,
          scoring_context,
          selected_score,
-         live_fingerprint_match_enabled?,
-         memory_admission_enabled?
+         ranking_opts
        ) do
-    case leading_tie_group(ranked, live_fingerprint_match_enabled?, memory_admission_enabled?) do
+    case leading_tie_group(ranked, ranking_opts) do
       [incumbent, challenger] ->
         challenger_score =
           score_prefix_cache_candidate(request, challenger, client, scoring_context)
@@ -591,54 +609,47 @@ defmodule Orchard.Scheduler.MultiNode do
   Sorts candidates using the scheduler's deterministic tie-break order.
   """
   def rank_candidates(candidates) do
-    rank_candidates(candidates, live_fingerprint_match?: false)
+    rank_candidates(candidates, [])
   end
 
   @doc """
-  Sorts candidates and optionally inserts live fingerprint and memory tie-breakers.
+  Sorts candidates and optionally inserts live fingerprint, capability, and memory tie-breakers.
   """
   def rank_candidates(candidates, opts) do
-    live_fingerprint_match? = Keyword.get(opts, :live_fingerprint_match?, false)
-    memory_admission? = Keyword.get(opts, :memory_admission?, false)
+    ranking_opts = [
+      live_fingerprint_match?: Keyword.get(opts, :live_fingerprint_match?, false),
+      prefer_capable_workers?: Keyword.get(opts, :prefer_capable_workers?, false),
+      memory_admission?: Keyword.get(opts, :memory_admission?, false)
+    ]
 
-    Enum.sort_by(candidates, &rank_tuple(&1, live_fingerprint_match?, memory_admission?))
+    Enum.sort_by(candidates, &rank_tuple(&1, ranking_opts))
   end
 
-  defp rank_tuple(candidate, true, true) do
-    base_rank(candidate) ++
-      [
-        not Map.get(candidate, :prefix_cache_fingerprint_match?, false),
-        not Map.get(candidate, :cache_affinity_match?, false),
-        not Map.get(candidate, :memory_headroom_ok?, false),
-        candidate.node_id
-      ]
+  defp rank_tuple(candidate, ranking_opts) do
+    base_rank(candidate) ++ optional_rank_terms(candidate, ranking_opts) ++ [candidate.node_id]
   end
 
-  defp rank_tuple(candidate, true, false) do
-    base_rank(candidate) ++
-      [
-        not Map.get(candidate, :prefix_cache_fingerprint_match?, false),
-        not Map.get(candidate, :cache_affinity_match?, false),
-        candidate.node_id
-      ]
+  defp optional_rank_terms(candidate, ranking_opts) do
+    [
+      maybe_rank_term(
+        Keyword.get(ranking_opts, :live_fingerprint_match?, false),
+        not Map.get(candidate, :prefix_cache_fingerprint_match?, false)
+      ),
+      not Map.get(candidate, :cache_affinity_match?, false),
+      maybe_rank_term(
+        Keyword.get(ranking_opts, :prefer_capable_workers?, false),
+        not Map.get(candidate, :capable_worker_preferred?, false)
+      ),
+      maybe_rank_term(
+        Keyword.get(ranking_opts, :memory_admission?, false),
+        not Map.get(candidate, :memory_headroom_ok?, false)
+      )
+    ]
+    |> Enum.reject(&is_nil/1)
   end
 
-  defp rank_tuple(candidate, false, true) do
-    base_rank(candidate) ++
-      [
-        not Map.get(candidate, :cache_affinity_match?, false),
-        not Map.get(candidate, :memory_headroom_ok?, false),
-        candidate.node_id
-      ]
-  end
-
-  defp rank_tuple(candidate, false, false) do
-    base_rank(candidate) ++
-      [
-        not Map.get(candidate, :cache_affinity_match?, false),
-        candidate.node_id
-      ]
-  end
+  defp maybe_rank_term(true, term), do: term
+  defp maybe_rank_term(false, _term), do: nil
 
   defp base_rank(candidate) do
     [
@@ -652,32 +663,28 @@ defmodule Orchard.Scheduler.MultiNode do
   defp health_rank(:degraded), do: 1
   defp health_rank(_), do: 2
 
-  defp leading_tie_group([_first | _rest] = ranked, live_fingerprint_match?, memory_admission?) do
+  defp leading_tie_group([_first | _rest] = ranked, ranking_opts) do
     max_candidates = Inference.prefix_cache_scoring_max_ranking_candidates()
 
     ranked
-    |> leading_rank_equivalent_candidates(live_fingerprint_match?, memory_admission?)
+    |> leading_rank_equivalent_candidates(ranking_opts)
     |> Enum.take(max_candidates)
   end
 
-  defp leading_rank_equivalent_candidates(
-         [first | _rest] = ranked,
-         live_fingerprint_match?,
-         memory_admission?
-       ) do
-    leading_key = rank_equivalence_key(first, live_fingerprint_match?, memory_admission?)
+  defp leading_rank_equivalent_candidates([first | _rest] = ranked, ranking_opts) do
+    leading_key = rank_equivalence_key(first, ranking_opts)
 
     tied =
       Enum.take_while(ranked, fn candidate ->
-        rank_equivalence_key(candidate, live_fingerprint_match?, memory_admission?) == leading_key
+        rank_equivalence_key(candidate, ranking_opts) == leading_key
       end)
 
     if length(tied) > 1, do: tied, else: []
   end
 
-  defp rank_equivalence_key(candidate, live_fingerprint_match?, memory_admission?) do
+  defp rank_equivalence_key(candidate, ranking_opts) do
     candidate
-    |> rank_tuple(live_fingerprint_match?, memory_admission?)
+    |> rank_tuple(ranking_opts)
     |> Enum.drop(-1)
   end
 
