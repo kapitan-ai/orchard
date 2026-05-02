@@ -133,6 +133,7 @@ message StatusResponse {
   repeated HostedToolReadiness hosted_tool_readiness = 7;
   repeated RuntimeMemoryBudget runtime_memory_budgets = 8;
   repeated RuntimePrefixCacheStatus runtime_prefix_cache_statuses = 9;
+  bool supports_prompt_token_ids = 10;
 }
 
 message EnsureModelLoadedRequest {
@@ -155,6 +156,8 @@ message EnsureModelLoadedResponse {
   ModelLoadFailureCategory failure_category = 3;
   string failure_code = 4;
   string failure_message = 5;
+
+  bool worker_supports_prompt_token_ids = 6;
 }
 
 message UnloadModelRequest {
@@ -204,6 +207,7 @@ message ExecuteInferenceRequest {
   uint64 deadline_unix_ms = 8;
   bytes metadata_json = 9;
   string cache_affinity_fingerprint = 10;
+  repeated uint32 prompt_token_ids = 11;
 }
 
 message CancelInferenceRequest {

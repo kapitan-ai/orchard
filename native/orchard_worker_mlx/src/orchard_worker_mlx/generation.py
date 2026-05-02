@@ -2009,13 +2009,13 @@ def generate_events(
     if deps is None:
         deps = _default_generation_deps()
 
-    prompt_text = _decode_prompt(request.rendered_prompt_utf8)
-
     params = getattr(request, "params", None)
     max_output_tokens = _safe_int(getattr(params, "max_output_tokens", 0) if params else 0)
     temperature = _safe_float(getattr(params, "temperature", 0.0) if params else 0.0)
     top_p = _safe_float(getattr(params, "top_p", 0.0) if params else 0.0)
     input_tokens = _safe_int(getattr(request, "input_tokens", 0))
+    prompt_ids = _prompt_token_ids_from_request(request, input_tokens)
+    prompt_text = None if prompt_ids is not None else _decode_prompt(request.rendered_prompt_utf8)
     stop_sequences = _normalize_stop_sequences(params)
     cache_affinity_fingerprint = getattr(request, "cache_affinity_fingerprint", "")
 
@@ -2038,7 +2038,8 @@ def generate_events(
             }
             return
 
-        prompt_ids = _encode_prompt(session.tokenizer, prompt_text)
+        if prompt_ids is None:
+            prompt_ids = _encode_prompt(session.tokenizer, cast(str, prompt_text))
         prompt_tokens = len(prompt_ids)
         sampler = _build_sampler(temperature, top_p, deps)
 
@@ -2345,6 +2346,22 @@ def _decode_prompt(payload: bytes | str | None) -> str:
         f"rendered_prompt_utf8 has unsupported type: {type(payload).__name__}",
         False,
     )
+
+
+def _prompt_token_ids_from_request(request: Any, input_tokens: int) -> list[int] | None:
+    prompt_token_ids = list(getattr(request, "prompt_token_ids", []) or [])
+    if not prompt_token_ids:
+        return None
+
+    if len(prompt_token_ids) != input_tokens:
+        raise BackendError(
+            "prompt_token_ids_length_mismatch",
+            f"prompt_token_ids length {len(prompt_token_ids)} does not match "
+            f"input_tokens {input_tokens}",
+            False,
+        )
+
+    return [int(token_id) for token_id in prompt_token_ids]
 
 
 def _encode_prompt(tokenizer: Any, prompt_text: str) -> list[int]:

@@ -414,6 +414,60 @@ defmodule OrchardNodeAgentTest do
     def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
   end
 
+  defmodule PromptTokenIdsRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @legacy_model_id "prompt-token-ids/legacy"
+    @status_error_model_id "prompt-token-ids/status-error"
+
+    @impl true
+    def get_status(adapter_state, _opts) do
+      if pid = Process.whereis(:load_timeout_test_pid) do
+        send(pid, {:prompt_token_ids_status_probe, self(), adapter_state.model_ref})
+      end
+
+      status_sleep_ms =
+        Application.fetch_env!(:orchard_node_agent, :runtime)
+        |> Keyword.get(:test_prompt_token_ids_status_sleep_ms, 0)
+
+      if status_sleep_ms > 0, do: Process.sleep(status_sleep_ms)
+
+      status = %{ready: true, health_code: "", health_message: ""}
+
+      cond do
+        adapter_state.model_ref.model_id == @status_error_model_id ->
+          {:error, :simulated_status_failure}
+
+        adapter_state.model_ref.model_id == @legacy_model_id ->
+          {:ok, status}
+
+        true ->
+          {:ok, Map.put(status, :supports_prompt_token_ids, true)}
+      end
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, _opts) do
+      {:ok, %{model_ref: model_ref, generations: %{}}}
+    end
+
+    @impl true
+    def unload_model(_adapter_state, _opts), do: :ok
+
+    @impl true
+    def start_generation(_adapter_state, %ExecuteInferenceRequest{}, _opts),
+      do: {:error, :not_implemented}
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts), do: {:ok, adapter_state}
+
+    @impl true
+    def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
   defmodule StatusProbeShortCircuitAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
 
@@ -1356,6 +1410,186 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  test "get_status advertises prompt token id support when loaded worker reports support", %{
+    bundle: bundle
+  } do
+    with_runtime_adapter(PromptTokenIdsRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      assert %StatusResponse{} = response = NodeStatus.current()
+
+      assert response.supports_prompt_token_ids == true
+    end)
+  end
+
+  test "get_status defaults prompt token id support to false for legacy worker status" do
+    legacy_bundle = stage_test_bundle!("prompt-token-ids/legacy", "v1")
+
+    on_exit(fn ->
+      File.rm_rf(legacy_bundle.cache_path)
+      File.rm_rf(legacy_bundle.source_path)
+    end)
+
+    with_runtime_adapter(PromptTokenIdsRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(legacy_bundle))
+
+      assert %StatusResponse{} = response = NodeStatus.current()
+
+      assert response.supports_prompt_token_ids == false
+    end)
+  end
+
+  test "get_status reports prompt token id support only when every loaded worker supports it", %{
+    bundle: bundle
+  } do
+    legacy_bundle = stage_test_bundle!("prompt-token-ids/legacy", "v1")
+
+    on_exit(fn ->
+      File.rm_rf(legacy_bundle.cache_path)
+      File.rm_rf(legacy_bundle.source_path)
+    end)
+
+    with_runtime_adapter(PromptTokenIdsRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(legacy_bundle))
+
+      assert %StatusResponse{} = response = NodeStatus.current()
+
+      assert response.supports_prompt_token_ids == false
+    end)
+  end
+
+  test "get_status treats worker_status_error as not prompt token id capable", %{
+    bundle: bundle
+  } do
+    status_error_bundle = stage_test_bundle!("prompt-token-ids/status-error", "v1")
+
+    on_exit(fn ->
+      File.rm_rf(status_error_bundle.cache_path)
+      File.rm_rf(status_error_bundle.source_path)
+    end)
+
+    with_runtime_adapter(PromptTokenIdsRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(status_error_bundle))
+
+      assert %StatusResponse{} = response = NodeStatus.current()
+
+      assert response.supports_prompt_token_ids == false
+    end)
+  end
+
+  test "ensure_model_loaded includes prompt token id support after fresh load", %{bundle: bundle} do
+    with_runtime_adapter(PromptTokenIdsRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{
+               already_loaded: false,
+               placement_state: :PLACEMENT_STATE_LOADED,
+               worker_supports_prompt_token_ids: true
+             } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      assert_receive {:prompt_token_ids_status_probe, _worker_pid, model_ref}, 1_000
+      assert model_ref.model_id == bundle.model_id
+      assert model_ref.version == bundle.version
+    end)
+  end
+
+  test "ensure_model_loaded includes prompt token id support for already-loaded worker", %{
+    bundle: bundle
+  } do
+    with_runtime_adapter(PromptTokenIdsRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      flush_prompt_token_ids_status_probes()
+
+      assert %EnsureModelLoadedResponse{
+               already_loaded: true,
+               placement_state: :PLACEMENT_STATE_LOADED,
+               worker_supports_prompt_token_ids: true
+             } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      assert_receive {:prompt_token_ids_status_probe, _worker_pid, model_ref}, 1_000
+      assert model_ref.model_id == bundle.model_id
+      assert model_ref.version == bundle.version
+    end)
+  end
+
+  test "ensure_model_loaded already-loaded support probe honors expired deadline", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: PromptTokenIdsRuntimeAdapter,
+        test_prompt_token_ids_status_sleep_ms: 700
+      ],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 5_000))
+
+        flush_prompt_token_ids_status_probes()
+
+        assert %EnsureModelLoadedResponse{
+                 already_loaded: false,
+                 placement_state: :PLACEMENT_STATE_FAILED,
+                 failure_category: :MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT,
+                 failure_code: "deadline_exceeded",
+                 worker_supports_prompt_token_ids: false
+               } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 200))
+      end
+    )
+  end
+
+  test "ensure_model_loaded fresh support probe caps status wait to remaining deadline", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: PromptTokenIdsRuntimeAdapter,
+        test_prompt_token_ids_status_sleep_ms: 700
+      ],
+      fn ->
+        started_at = System.monotonic_time(:millisecond)
+
+        assert %EnsureModelLoadedResponse{
+                 placement_state: :PLACEMENT_STATE_FAILED,
+                 failure_category: :MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT,
+                 failure_code: "deadline_exceeded",
+                 worker_supports_prompt_token_ids: false
+               } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 200))
+
+        elapsed_ms = System.monotonic_time(:millisecond) - started_at
+        assert elapsed_ms < 500
+      end
+    )
+  end
+
+  test "ensure_model_loaded honors deadlines that expire during fresh support probe", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: PromptTokenIdsRuntimeAdapter,
+        test_prompt_token_ids_status_sleep_ms: 900
+      ],
+      fn ->
+        assert %EnsureModelLoadedResponse{
+                 placement_state: :PLACEMENT_STATE_FAILED,
+                 failure_category: :MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT,
+                 failure_code: "deadline_exceeded",
+                 worker_supports_prompt_token_ids: false
+               } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 700))
+      end
+    )
+  end
+
   test "score_prefix_cache returns model_not_loaded when no matching worker exists" do
     with_channel(fn channel ->
       assert {:ok, %ScorePrefixCacheResponse{} = response} =
@@ -1685,6 +1919,8 @@ defmodule OrchardNodeAgentTest do
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
                NodeStatus.ensure_model_loaded(request)
 
+      flush_counting_status_probes()
+
       assert %StatusResponse{} = response = NodeStatus.current()
       assert response.runtime_health.ready == true
       assert [%{model_ref: %RPCModelRef{} = model_ref}] = response.runtime_memory_budgets
@@ -1713,6 +1949,8 @@ defmodule OrchardNodeAgentTest do
     with_runtime_adapter(StatusProbeShortCircuitAdapter, fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
                NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      flush_short_circuit_status_probes()
 
       ensure_task =
         Task.async(fn ->
@@ -3676,6 +3914,33 @@ defmodule OrchardNodeAgentTest do
   defp worker_count do
     DynamicSupervisor.which_children(WorkerSupervisor)
     |> Enum.count(fn {_id, pid, _type, _modules} -> is_pid(pid) end)
+  end
+
+  defp flush_prompt_token_ids_status_probes do
+    receive do
+      {:prompt_token_ids_status_probe, _worker_pid, _model_ref} ->
+        flush_prompt_token_ids_status_probes()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp flush_counting_status_probes do
+    receive do
+      {:counting_status_probe, _worker_pid} ->
+        flush_counting_status_probes()
+    after
+      0 -> :ok
+    end
+  end
+
+  defp flush_short_circuit_status_probes do
+    receive do
+      {:short_circuit_status_probe, _worker_pid, _model_ref} ->
+        flush_short_circuit_status_probes()
+    after
+      0 -> :ok
+    end
   end
 
   defp worker_pid do

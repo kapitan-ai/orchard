@@ -1222,7 +1222,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
       input_tokens: canonical.input_token_count,
       params: build_generation_params(canonical),
       deadline_unix_ms: deadline_ms,
-      metadata_json: Jason.encode!(canonical.metadata)
+      metadata_json: Jason.encode!(canonical.metadata),
+      prompt_token_ids: canonical.prompt_token_ids || []
     }
     |> maybe_put_cache_affinity_fingerprint(canonical)
   end

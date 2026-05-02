@@ -66,6 +66,7 @@ message WorkerStatusResponse {
   string health_message = 5;
   WorkerMemoryBudgetStatus memory_budget = 6;
   WorkerPrefixCacheStatus prefix_cache = 7;
+  bool supports_prompt_token_ids = 8;
 }
 
 message LoadModelRequest {

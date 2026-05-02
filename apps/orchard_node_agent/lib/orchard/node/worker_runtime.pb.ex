@@ -103,6 +103,8 @@ defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do
     type: Orchard.Node.Worker.V1.WorkerPrefixCacheStatus,
     json_name: "prefixCache"
   )
+
+  field(:supports_prompt_token_ids, 8, type: :bool, json_name: "supportsPromptTokenIds")
 end
 
 defmodule Orchard.Node.Worker.V1.LoadModelRequest do

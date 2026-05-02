@@ -90,11 +90,13 @@ def _make_fake_request(
     stop_sequences: list[str] | None = None,
     tools_json: bytes | str = b"",
     tool_choice_json: bytes | str = b"",
+    prompt_token_ids: list[int] | None = None,
 ) -> Any:
     """Create a minimal fake ExecuteInferenceRequest."""
     request = MagicMock()
     request.rendered_prompt_utf8 = prompt
     request.input_tokens = input_tokens
+    request.prompt_token_ids = prompt_token_ids or []
     params = MagicMock()
     params.max_output_tokens = max_output_tokens
     params.temperature = temperature
@@ -107,12 +109,14 @@ def _make_fake_request(
 
 
 def _make_deps(
-    responses: list[FakeGenerationResponse],
+    responses: list[FakeGenerationResponse] | None = None,
     *,
+    stream_generate: Any = None,
     make_prompt_cache: Any = None,
     trim_prompt_cache: Any = None,
 ) -> GenerationDeps:
     """Create GenerationDeps that yields the given responses."""
+    responses = responses or []
 
     def fake_stream_generate(model, tokenizer, prompt_ids, **kwargs):
         yield from responses
@@ -121,7 +125,7 @@ def _make_deps(
         return MagicMock(name="FakeSampler")
 
     return GenerationDeps(
-        stream_generate=fake_stream_generate,
+        stream_generate=stream_generate or fake_stream_generate,
         make_sampler=fake_make_sampler,
         make_prompt_cache=make_prompt_cache,
         trim_prompt_cache=trim_prompt_cache,
@@ -2494,19 +2498,123 @@ def test_basic_generation_emits_deltas_and_completed() -> None:
 
 
 def test_input_tokens_from_request_not_retokenized() -> None:
-    """input_tokens in usage comes from the request, not re-counted."""
+    """input_tokens in usage comes from the request when prompt IDs are supplied."""
     responses = [
         FakeGenerationResponse(text="ok", token=10, finish_reason="stop"),
     ]
     session = _make_fake_session()
-    request = _make_fake_request(input_tokens=42)
+    request = _make_fake_request(input_tokens=3, prompt_token_ids=[101, 102, 103])
     deps = _make_deps(responses)
 
     events = _collect_events(session, request, deps)
     completed = events[-1]
-    assert completed["usage"]["input_tokens"] == 42
+    assert completed["usage"]["input_tokens"] == 3
     assert completed["usage"]["output_tokens"] == 1
-    assert completed["usage"]["total_tokens"] == 43
+    assert completed["usage"]["total_tokens"] == 4
+    session.tokenizer.encode.assert_not_called()
+
+
+def test_prompt_token_ids_are_used_without_reencoding() -> None:
+    calls: list[list[int]] = []
+
+    def recording_stream_generate(model, tokenizer, prompt_ids, **kwargs):
+        del model, tokenizer, kwargs
+        calls.append(list(prompt_ids))
+        yield FakeGenerationResponse(text="ok", token=10, finish_reason="stop")
+
+    session = _make_fake_session()
+    request = _make_fake_request(input_tokens=3, prompt_token_ids=[10, 20, 30])
+    deps = _make_deps(stream_generate=recording_stream_generate)
+
+    events = _collect_events(session, request, deps)
+
+    assert calls == [[10, 20, 30]]
+    session.tokenizer.encode.assert_not_called()
+    assert events[-1]["kind"] == "completed"
+
+
+def test_prompt_token_ids_length_mismatch_fails_before_stream_generate() -> None:
+    calls: list[list[int]] = []
+
+    def recording_stream_generate(model, tokenizer, prompt_ids, **kwargs):
+        del model, tokenizer, kwargs
+        calls.append(list(prompt_ids))
+        yield FakeGenerationResponse(text="ok", token=10, finish_reason="stop")
+
+    session = _make_fake_session()
+    request = _make_fake_request(input_tokens=2, prompt_token_ids=[10, 20, 30])
+    deps = _make_deps(stream_generate=recording_stream_generate)
+
+    with pytest.raises(BackendError) as exc_info:
+        _collect_events(session, request, deps)
+
+    assert exc_info.value.code == "prompt_token_ids_length_mismatch"
+    assert calls == []
+
+
+def test_prompt_token_ids_length_mismatch_fails_before_invalid_prompt_decode() -> None:
+    calls: list[list[int]] = []
+
+    def recording_stream_generate(model, tokenizer, prompt_ids, **kwargs):
+        del model, tokenizer, kwargs
+        calls.append(list(prompt_ids))
+        yield FakeGenerationResponse(text="ok", token=10, finish_reason="stop")
+
+    session = _make_fake_session()
+    request = _make_fake_request(
+        prompt=b"\xff\xfe",
+        input_tokens=2,
+        prompt_token_ids=[10, 20, 30],
+    )
+    deps = _make_deps(stream_generate=recording_stream_generate)
+
+    with pytest.raises(BackendError) as exc_info:
+        _collect_events(session, request, deps)
+
+    assert exc_info.value.code == "prompt_token_ids_length_mismatch"
+    session.tokenizer.encode.assert_not_called()
+    assert calls == []
+
+
+def test_prompt_token_ids_length_mismatch_fails_before_max_output_tokens_zero() -> None:
+    calls: list[list[int]] = []
+
+    def recording_stream_generate(model, tokenizer, prompt_ids, **kwargs):
+        del model, tokenizer, kwargs
+        calls.append(list(prompt_ids))
+        yield FakeGenerationResponse(text="ok", token=10, finish_reason="stop")
+
+    session = _make_fake_session()
+    request = _make_fake_request(
+        input_tokens=2,
+        max_output_tokens=0,
+        prompt_token_ids=[10, 20, 30],
+    )
+    deps = _make_deps(stream_generate=recording_stream_generate)
+
+    with pytest.raises(BackendError) as exc_info:
+        _collect_events(session, request, deps)
+
+    assert exc_info.value.code == "prompt_token_ids_length_mismatch"
+    assert calls == []
+
+
+def test_prompt_token_ids_absent_falls_back_to_reencode() -> None:
+    calls: list[list[int]] = []
+
+    def recording_stream_generate(model, tokenizer, prompt_ids, **kwargs):
+        del model, tokenizer, kwargs
+        calls.append(list(prompt_ids))
+        yield FakeGenerationResponse(text="ok", token=10, finish_reason="stop")
+
+    session = _make_fake_session()
+    request = _make_fake_request(input_tokens=3, prompt_token_ids=[])
+    deps = _make_deps(stream_generate=recording_stream_generate)
+
+    _collect_events(session, request, deps)
+
+    assert calls == [[1, 2, 3]]
+    session.tokenizer.encode.assert_called_once_with("hello world", add_special_tokens=False)
 
 
 def test_empty_text_chunks_not_emitted() -> None:

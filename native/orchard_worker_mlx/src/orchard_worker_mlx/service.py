@@ -444,6 +444,7 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
             ready=bool(health["ready"]),
             health_code=str(health["code"]),
             health_message=str(health["message"]),
+            supports_prompt_token_ids=True,
         )
         memory_budget = _memory_budget_status_response(status.get("memory_budget"))
         if memory_budget is not None:

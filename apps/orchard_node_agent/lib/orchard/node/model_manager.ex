@@ -90,6 +90,7 @@ defmodule Orchard.Node.ModelManager do
   @invalid_prefix_cache_numeric_message "prefix cache status contained invalid numeric fields"
   @score_prefix_cache_default_timeout_ms 150
   @score_prefix_cache_local_timeout_grace_ms 50
+  @prompt_token_ids_support_probe_max_timeout_ms 1_000
 
   @type inflight_load :: %{
           request: EnsureModelLoadedRequest.t(),
@@ -200,11 +201,21 @@ defmodule Orchard.Node.ModelManager do
     cond do
       # Already loaded — fast path
       match?(%{placement_state: :PLACEMENT_STATE_LOADED}, Map.get(state.workers, key)) ->
-        {:reply,
-         %EnsureModelLoadedResponse{
-           already_loaded: true,
-           placement_state: :PLACEMENT_STATE_LOADED
-         }, touch_worker_last_used(state, key)}
+        entry = Map.fetch!(state.workers, key)
+        deadline_ms = effective_deadline_ms(request, System.system_time(:millisecond))
+
+        case probe_worker_prompt_token_ids_support(entry, deadline_ms) do
+          {:ok, supports_prompt_token_ids?} ->
+            {:reply,
+             %EnsureModelLoadedResponse{
+               already_loaded: true,
+               placement_state: :PLACEMENT_STATE_LOADED,
+               worker_supports_prompt_token_ids: supports_prompt_token_ids?
+             }, touch_worker_last_used(state, key)}
+
+          {:error, :deadline_exceeded} ->
+            {:reply, ModelLoadFailure.to_response(:deadline_exceeded), state}
+        end
 
       # Inflight load exists — join or reject
       Map.has_key?(state.inflight_loads, key) ->
@@ -660,10 +671,7 @@ defmodule Orchard.Node.ModelManager do
         # Reply expired waiters with deadline_exceeded, valid ones with success
         reply_waiters(expired, ModelLoadFailure.to_response(:deadline_exceeded))
 
-        reply_waiters(valid, %EnsureModelLoadedResponse{
-          already_loaded: false,
-          placement_state: :PLACEMENT_STATE_LOADED
-        })
+        reply_loaded_waiters_with_prompt_token_support(valid, Map.get(state.workers, key))
 
         state
 
@@ -1228,8 +1236,8 @@ defmodule Orchard.Node.ModelManager do
   defp status_response(state) do
     tool_snapshot = ToolCapabilityCatalog.snapshot()
 
-    {runtime_health, runtime_memory_budgets, runtime_prefix_cache_statuses} =
-      runtime_health_and_memory_budgets(state)
+    {runtime_health, runtime_memory_budgets, runtime_prefix_cache_statuses,
+     supports_prompt_token_ids} = runtime_health_and_memory_budgets(state)
 
     %StatusResponse{
       worker_state: worker_state(state),
@@ -1240,7 +1248,8 @@ defmodule Orchard.Node.ModelManager do
       hosted_tool_capabilities: tool_snapshot.capabilities,
       hosted_tool_readiness: tool_snapshot.readiness,
       runtime_memory_budgets: runtime_memory_budgets,
-      runtime_prefix_cache_statuses: runtime_prefix_cache_statuses
+      runtime_prefix_cache_statuses: runtime_prefix_cache_statuses,
+      supports_prompt_token_ids: supports_prompt_token_ids
     }
   end
 
@@ -1557,7 +1566,7 @@ defmodule Orchard.Node.ModelManager do
            health_code: "starting",
            health_message: "model load in progress",
            affected_model: first_inflight
-         }, [], []}
+         }, [], [], false}
 
       has_loading_worker?(state) ->
         loading_ref = first_loading_worker_ref(state)
@@ -1567,10 +1576,10 @@ defmodule Orchard.Node.ModelManager do
            health_code: "starting",
            health_message: "model load in progress",
            affected_model: loading_ref
-         }, [], []}
+         }, [], [], false}
 
       map_size(state.workers) == 0 ->
-        {%RuntimeHealth{ready: true, health_code: "", health_message: ""}, [], []}
+        {%RuntimeHealth{ready: true, health_code: "", health_message: ""}, [], [], false}
 
       true ->
         probe_workers_health_and_memory_budgets(loaded_workers(state))
@@ -1609,9 +1618,13 @@ defmodule Orchard.Node.ModelManager do
   # single-node / low-worker-count (capped by max_loaded_models). For
   # multi-node with many workers, consider parallel probing or cached health.
   defp probe_workers_health_and_memory_budgets(loaded_workers) do
-    {health, runtime_memory_budgets, runtime_prefix_cache_statuses} =
-      Enum.reduce(loaded_workers, {nil, [], []}, fn {_key, entry},
-                                                    {health, budgets, prefix_cache_statuses} ->
+    support_state = %{seen_success?: false, all_true?: true}
+
+    {health, runtime_memory_budgets, runtime_prefix_cache_statuses, support_state} =
+      Enum.reduce(loaded_workers, {nil, [], [], support_state}, fn {_key, entry},
+                                                                   {health, budgets,
+                                                                    prefix_cache_statuses,
+                                                                    support_state} ->
         status_result = WorkerProcess.status(entry.pid, timeout: 1_000)
 
         updated_budgets = budgets ++ maybe_runtime_memory_budget(entry.model_ref, status_result)
@@ -1621,13 +1634,154 @@ defmodule Orchard.Node.ModelManager do
             maybe_runtime_prefix_cache_status(entry.model_ref, status_result)
 
         next_health = health || health_from_status_result(entry.model_ref, status_result)
+        support_state = aggregate_supports_prompt_token_ids(support_state, status_result)
 
-        {next_health, updated_budgets, updated_prefix_cache_statuses}
+        {next_health, updated_budgets, updated_prefix_cache_statuses, support_state}
       end)
 
     {health || %RuntimeHealth{ready: true, health_code: "", health_message: ""},
-     runtime_memory_budgets, runtime_prefix_cache_statuses}
+     runtime_memory_budgets, runtime_prefix_cache_statuses,
+     supports_prompt_token_ids_value(support_state)}
   end
+
+  defp supports_prompt_token_ids_value(%{seen_success?: true, all_true?: true}), do: true
+  defp supports_prompt_token_ids_value(_support_state), do: false
+
+  defp aggregate_supports_prompt_token_ids(
+         support_state,
+         {:ok, %{health_code: "worker_status_error"}}
+       ) do
+    %{support_state | all_true?: false}
+  end
+
+  defp aggregate_supports_prompt_token_ids(
+         support_state,
+         {:ok, %{supports_prompt_token_ids: true}}
+       ) do
+    %{support_state | seen_success?: true}
+  end
+
+  defp aggregate_supports_prompt_token_ids(support_state, {:ok, _status}) do
+    %{support_state | seen_success?: true, all_true?: false}
+  end
+
+  defp aggregate_supports_prompt_token_ids(support_state, {:error, _reason}) do
+    %{support_state | all_true?: false}
+  end
+
+  defp reply_loaded_waiters_with_prompt_token_support(waiters, entry) do
+    _support_cache =
+      waiters
+      |> waiters_by_deadline()
+      |> Enum.reduce(:not_probed, fn waiter, support_cache ->
+        reply_loaded_waiter_with_support_cache(waiter, support_cache, entry)
+      end)
+
+    :ok
+  end
+
+  defp waiters_by_deadline(waiters) do
+    waiters
+    |> Enum.with_index()
+    |> Enum.sort_by(fn {waiter, index} -> {waiter.deadline_unix_ms, index} end)
+    |> Enum.map(fn {waiter, _index} -> waiter end)
+  end
+
+  defp reply_loaded_waiter_with_support_cache(waiter, support_cache, entry) do
+    cond do
+      deadline_expired?(waiter.deadline_unix_ms) ->
+        reply_deadline_exceeded(waiter)
+        support_cache
+
+      support_cache?(support_cache) ->
+        {:ok, supports_prompt_token_ids?} = support_cache
+        reply_loaded_waiter_if_valid(waiter, supports_prompt_token_ids?)
+        support_cache
+
+      true ->
+        probe_and_reply_loaded_waiter(waiter, entry)
+    end
+  end
+
+  defp support_cache?({:ok, _supports_prompt_token_ids?}), do: true
+  defp support_cache?(_support_cache), do: false
+
+  defp probe_and_reply_loaded_waiter(waiter, entry) do
+    case probe_worker_prompt_token_ids_support(entry, waiter.deadline_unix_ms) do
+      {:ok, supports_prompt_token_ids?} = next_cache ->
+        reply_loaded_waiter_if_valid(waiter, supports_prompt_token_ids?)
+        next_cache
+
+      {:error, :deadline_exceeded} ->
+        reply_deadline_exceeded(waiter)
+        :not_probed
+    end
+  end
+
+  defp reply_deadline_exceeded(waiter) do
+    GenServer.reply(waiter.from, ModelLoadFailure.to_response(:deadline_exceeded))
+  end
+
+  defp reply_loaded_waiter_if_valid(waiter, supports_prompt_token_ids?) do
+    if deadline_expired?(waiter.deadline_unix_ms) do
+      GenServer.reply(waiter.from, ModelLoadFailure.to_response(:deadline_exceeded))
+    else
+      GenServer.reply(waiter.from, loaded_response(supports_prompt_token_ids?))
+    end
+  end
+
+  defp loaded_response(supports_prompt_token_ids?) do
+    %EnsureModelLoadedResponse{
+      already_loaded: false,
+      placement_state: :PLACEMENT_STATE_LOADED,
+      worker_supports_prompt_token_ids: supports_prompt_token_ids?
+    }
+  end
+
+  defp probe_worker_prompt_token_ids_support(nil, _deadline_unix_ms), do: {:ok, false}
+
+  defp probe_worker_prompt_token_ids_support(entry, deadline_unix_ms) do
+    case remaining_probe_budget_ms(deadline_unix_ms) do
+      {:ok, remaining_ms} ->
+        timeout_ms = min(remaining_ms, @prompt_token_ids_support_probe_max_timeout_ms)
+
+        entry.pid
+        |> WorkerProcess.status(timeout: timeout_ms)
+        |> normalize_prompt_token_ids_support_status(deadline_unix_ms)
+
+      {:error, :deadline_exceeded} = error ->
+        error
+    end
+  end
+
+  defp normalize_prompt_token_ids_support_status(status_result, deadline_unix_ms) do
+    cond do
+      deadline_expired?(deadline_unix_ms) ->
+        {:error, :deadline_exceeded}
+
+      match?({:ok, %{health_code: "worker_status_error"}}, status_result) ->
+        {:ok, false}
+
+      match?({:ok, %{supports_prompt_token_ids: true}}, status_result) ->
+        {:ok, true}
+
+      true ->
+        {:ok, false}
+    end
+  end
+
+  defp remaining_probe_budget_ms(deadline_unix_ms) do
+    remaining_ms = deadline_unix_ms - System.system_time(:millisecond)
+
+    if remaining_ms <= 0 do
+      {:error, :deadline_exceeded}
+    else
+      {:ok, remaining_ms}
+    end
+  end
+
+  defp deadline_expired?(deadline_unix_ms),
+    do: deadline_unix_ms <= System.system_time(:millisecond)
 
   defp health_from_status_result(_model_ref, {:ok, %{ready: true}}), do: nil
 

@@ -336,7 +336,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest.CapturingRuntimeAdapter do
 
   @impl true
   def get_status(_adapter_state, _opts),
-    do: {:ok, %{ready: true, health_code: "", health_message: ""}}
+    do:
+      {:ok, %{ready: true, health_code: "", health_message: "", supports_prompt_token_ids: true}}
 
   @impl true
   def load_model(%ModelRef{} = model_ref, _opts), do: {:ok, %{model_ref: model_ref}}
@@ -2332,6 +2333,24 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert execute_request.params.tool_choice_json == ""
   end
 
+  test "execute/3 includes controller prompt token ids in execute request", %{bundle: bundle} do
+    put_capturing_runtime_adapter_config()
+    put_tokenizer_safe_mode(:on)
+
+    model = create_active_model!(bundle, "request-orchestrator-prompt-token-ids")
+
+    canonical =
+      "request-orchestrator-prompt-token-ids"
+      |> canonical_request(stream?: false)
+      |> CanonicalRequest.with_tokenization("hello token ids", 3, [101, 102, 103])
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    assert_receive {:captured_execute_request, execute_request}
+    assert execute_request.prompt_token_ids == [101, 102, 103]
+  end
+
   test "execute/3 injects cache-affinity fingerprint only when live matching is enabled", %{
     bundle: bundle
   } do
@@ -2428,6 +2447,14 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       :inference,
       Keyword.put(inference, :cache_affinity, cache_affinity)
     )
+  end
+
+  defp put_tokenizer_safe_mode(mode) do
+    previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+    inference = Keyword.put(previous_inference, :tokenizer_safe_mode, mode)
+
+    Application.put_env(:orchard_controller, :inference, inference)
+    on_exit(fn -> Application.put_env(:orchard_controller, :inference, previous_inference) end)
   end
 
   defp put_prefix_cache_scheduler_config(overrides) do

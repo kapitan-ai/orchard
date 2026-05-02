@@ -21,6 +21,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   }
 
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: DefaultClient
+  alias Orchard.Inference
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
   alias Orchard.SentryContext
@@ -165,96 +166,120 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
     put_dispatch_base_context(metrics)
 
-    case client.connect(target) do
-      {:ok, channel} ->
-        try do
-          # Pre-dispatch status probe: resolve node identity, persist observation,
-          # and patch the model load request with the discovered node_id.
-          {model_load_request, metrics} =
-            probe_and_resolve_node(
-              client,
-              channel,
-              target,
-              model_load_request,
-              on_node_resolved,
-              metrics
-            )
-
-          ensure_start = System.monotonic_time(:millisecond)
-          put_ensure_model_load_started_context(metrics)
-
-          case do_ensure_model_loaded(
-                 client,
-                 channel,
-                 target,
-                 model_load_request,
-                 model_load_timeout
-               ) do
-            {:ok, ensure_load_meta} ->
-              ensure_end = System.monotonic_time(:millisecond)
-
-              metrics = %{
-                metrics
-                | ensure_model_loaded_ms: ensure_end - ensure_start,
-                  model_already_loaded: ensure_load_meta.already_loaded
-              }
-
-              put_ensure_model_load_completed_context(metrics)
-
-              result =
-                do_execute_and_stream(
+    case preensure_prompt_token_ids_gate(execute_request, schedule, model_load_request) do
+      :ok ->
+        case client.connect(target) do
+          {:ok, channel} ->
+            try do
+              # Pre-dispatch status probe: resolve node identity, persist observation,
+              # and patch the model load request with the discovered node_id.
+              {model_load_request, metrics} =
+                probe_and_resolve_node(
                   client,
                   channel,
                   target,
-                  execute_request,
-                  metrics,
-                  timeout_ms,
-                  caller,
-                  event_handler
+                  model_load_request,
+                  on_node_resolved,
+                  metrics
                 )
 
-              # Public API returns {:ok, events} - discard metrics from return value
-              case result do
-                {:ok, events, final_metrics} ->
-                  final_metrics = finalize_metrics(final_metrics, :ok)
-                  put_dispatch_terminal_context(final_metrics, target)
-                  emit_timing_log(final_metrics, :ok)
-                  {:ok, events}
+              ensure_start = System.monotonic_time(:millisecond)
+              put_ensure_model_load_started_context(metrics)
+
+              case do_ensure_model_loaded(
+                     client,
+                     channel,
+                     target,
+                     model_load_request,
+                     model_load_timeout
+                   ) do
+                {:ok, ensure_load_meta} ->
+                  ensure_end = System.monotonic_time(:millisecond)
+
+                  metrics = %{
+                    metrics
+                    | ensure_model_loaded_ms: ensure_end - ensure_start,
+                      model_already_loaded: ensure_load_meta.already_loaded
+                  }
+
+                  put_ensure_model_load_completed_context(metrics)
+
+                  result =
+                    case gate_prompt_token_ids(
+                           execute_request,
+                           ensure_load_meta,
+                           schedule,
+                           model_load_request
+                         ) do
+                      {:ok, gated_execute_request} ->
+                        do_execute_and_stream(
+                          client,
+                          channel,
+                          target,
+                          gated_execute_request,
+                          metrics,
+                          timeout_ms,
+                          caller,
+                          event_handler
+                        )
+
+                      {:error, reason} ->
+                        {:error, {:dispatch_failed, reason}}
+                    end
+
+                  # Public API returns {:ok, events} - discard metrics from return value
+                  case result do
+                    {:ok, events, final_metrics} ->
+                      final_metrics = finalize_metrics(final_metrics, :ok)
+                      put_dispatch_terminal_context(final_metrics, target)
+                      emit_timing_log(final_metrics, :ok)
+                      {:ok, events}
+
+                    {:error, reason} ->
+                      error_metrics = finalize_metrics(metrics, {:error, reason})
+                      put_dispatch_terminal_context(error_metrics, target)
+                      emit_timing_log(error_metrics, {:error, reason})
+                      {:error, reason}
+                  end
 
                 {:error, reason} ->
-                  error_metrics = finalize_metrics(metrics, {:error, reason})
+                  ensure_end = System.monotonic_time(:millisecond)
+
+                  metrics = %{
+                    metrics
+                    | ensure_model_loaded_ms: ensure_end - ensure_start,
+                      model_already_loaded: false
+                  }
+
+                  error_metrics =
+                    finalize_metrics(metrics, {:error, {:model_load_failed, reason}})
+
                   put_dispatch_terminal_context(error_metrics, target)
-                  emit_timing_log(error_metrics, {:error, reason})
-                  {:error, reason}
+                  emit_timing_log(error_metrics, {:error, {:model_load_failed, reason}})
+                  {:error, {:model_load_failed, reason}}
               end
+            after
+              client.disconnect(channel)
+            end
 
-            {:error, reason} ->
-              ensure_end = System.monotonic_time(:millisecond)
+          {:error, {:connect_failed, _reason} = reason} ->
+            mark_transport_failure(target, reason)
 
-              metrics = %{
-                metrics
-                | ensure_model_loaded_ms: ensure_end - ensure_start,
-                  model_already_loaded: false
-              }
+            error_metrics =
+              finalize_metrics(metrics, {:error, {:model_load_failed, :node_unavailable}})
 
-              error_metrics = finalize_metrics(metrics, {:error, {:model_load_failed, reason}})
-              put_dispatch_terminal_context(error_metrics, target)
-              emit_timing_log(error_metrics, {:error, {:model_load_failed, reason}})
-              {:error, {:model_load_failed, reason}}
-          end
-        after
-          client.disconnect(channel)
+            put_dispatch_terminal_context(error_metrics, target)
+            emit_timing_log(error_metrics, {:error, {:model_load_failed, :node_unavailable}})
+
+            {:error,
+             {:model_load_failed, ModelLoadFailure.from_transport_reason(:node_unavailable)}}
         end
 
-      {:error, {:connect_failed, _reason} = reason} ->
-        mark_transport_failure(target, reason)
-
-        error_metrics =
-          finalize_metrics(metrics, {:error, {:model_load_failed, :node_unavailable}})
-
+      {:error, reason} ->
+        error_metrics = finalize_metrics(metrics, {:error, {:dispatch_failed, reason}})
         put_dispatch_terminal_context(error_metrics, target)
-        emit_timing_log(error_metrics, {:error, {:model_load_failed, :node_unavailable}})
-        {:error, {:model_load_failed, ModelLoadFailure.from_transport_reason(:node_unavailable)}}
+        emit_timing_log(error_metrics, {:error, {:dispatch_failed, reason}})
+        {:error, {:dispatch_failed, reason}}
     end
   end
 
@@ -326,7 +351,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       {:ok, %EnsureModelLoadedResponse{} = response} ->
         case normalize_placement_state(response.placement_state) do
           :loaded ->
-            {:ok, %{already_loaded: response.already_loaded}}
+            {:ok,
+             %{
+               already_loaded: response.already_loaded,
+               worker_supports_prompt_token_ids: response.worker_supports_prompt_token_ids
+             }}
 
           :failed ->
             {:error, ModelLoadFailure.from_response(response)}
@@ -342,6 +371,77 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         mark_transport_failure(target, reason)
         {:error, ModelLoadFailure.from_transport_reason(reason)}
     end
+  end
+
+  defp preensure_prompt_token_ids_gate(request, schedule, model_load_request) do
+    mode = Inference.tokenizer_safe_mode()
+    prompt_token_ids = request.prompt_token_ids || []
+
+    if mode == :reject and prompt_token_ids == [] do
+      metadata =
+        prompt_token_id_gate_metadata(request, %{}, schedule, model_load_request)
+        |> Map.put(:reason, :missing_prompt_token_ids)
+
+      {:error, {:missing_prompt_token_ids, metadata}}
+    else
+      :ok
+    end
+  end
+
+  # supports_prompt_token_ids persisted under Nodes capabilities is observational
+  # inventory from status probes and must not be used as dispatch eligibility
+  # authority. EnsureModelLoadedResponse is the authoritative capability gate.
+  defp gate_prompt_token_ids(request, ensure_result, schedule, model_load_request) do
+    mode = Inference.tokenizer_safe_mode()
+    prompt_token_ids = request.prompt_token_ids || []
+    supports_prompt_token_ids? = Map.get(ensure_result, :worker_supports_prompt_token_ids, false)
+    metadata = prompt_token_id_gate_metadata(request, ensure_result, schedule, model_load_request)
+
+    cond do
+      mode == :off ->
+        {:ok, %{request | prompt_token_ids: []}}
+
+      mode in [:on, :reject] and prompt_token_ids != [] and supports_prompt_token_ids? ->
+        Orchard.Tokenizer.Telemetry.prompt_token_ids_dispatched(
+          metadata,
+          length(prompt_token_ids)
+        )
+
+        {:ok, request}
+
+      mode == :on and prompt_token_ids != [] ->
+        Orchard.Tokenizer.Telemetry.unsafe_mode_active(
+          Map.put(metadata, :reason, :legacy_worker_no_capability)
+        )
+
+        {:ok, %{request | prompt_token_ids: []}}
+
+      mode == :on ->
+        {:ok, %{request | prompt_token_ids: []}}
+
+      mode == :reject and prompt_token_ids == [] ->
+        {:error,
+         {:missing_prompt_token_ids, Map.put(metadata, :reason, :missing_prompt_token_ids)}}
+
+      mode == :reject ->
+        {:error,
+         {:legacy_worker_no_capability, Map.put(metadata, :reason, :legacy_worker_no_capability)}}
+    end
+  end
+
+  defp prompt_token_id_gate_metadata(request, ensure_result, schedule, model_load_request) do
+    %{
+      model_id: request.model_id || model_load_request.model_id,
+      version: request.version || model_load_request.version,
+      request_id: request.request_id,
+      node_id: model_load_request.node_id,
+      worker_id:
+        Map.get(schedule, :worker_id) || Map.get(schedule, :node_id) || model_load_request.node_id,
+      scheduler_strategy: Map.get(schedule, :strategy),
+      worker_supports_prompt_token_ids:
+        Map.get(ensure_result, :worker_supports_prompt_token_ids, false)
+    }
+    |> compact_nil_values()
   end
 
   defp normalize_placement_state(:PLACEMENT_STATE_LOADED), do: :loaded

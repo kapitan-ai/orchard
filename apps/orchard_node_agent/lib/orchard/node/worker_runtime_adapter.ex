@@ -75,7 +75,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
            health_code: Map.get(status, :health_code, ""),
            health_message: Map.get(status, :health_message, ""),
            memory_budget: memory_budget_from_proto(Map.get(status, :memory_budget)),
-           prefix_cache_status: prefix_cache_from_proto(Map.get(status, :prefix_cache))
+           prefix_cache_status: prefix_cache_from_proto(Map.get(status, :prefix_cache)),
+           supports_prompt_token_ids: Map.get(status, :supports_prompt_token_ids, false) || false
          }}
 
       {:error, reason} ->

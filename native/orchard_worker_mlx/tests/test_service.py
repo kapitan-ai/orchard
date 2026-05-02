@@ -157,6 +157,19 @@ class MidIterationBackendErrorBackend(HappyBackend):
         )
 
 
+class PromptTokenIdsMismatchBackend(HappyBackend):
+    """Raises the prompt_token_ids length mismatch backend error."""
+
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
+        del request, cancel_event
+        raise BackendError(
+            "prompt_token_ids_length_mismatch",
+            "prompt_token_ids length 3 does not match input_tokens 2",
+            retryable=False,
+        )
+        yield
+
+
 class MissingTerminalBackend(HappyBackend):
     """Yields only non-terminal events then stops."""
 
@@ -525,6 +538,17 @@ def test_backend_error_mid_iteration_produces_terminal_failure() -> None:
     assert events[-1].failed.code == "generation_failed"
     assert "mid-stream" in events[-1].failed.message
     assert events[-1].failed.retryable is True
+
+
+def test_prompt_token_ids_length_mismatch_produces_terminal_failure() -> None:
+    servicer = _make_servicer(PromptTokenIdsMismatchBackend())
+
+    events = _collect_events(servicer)
+
+    assert len(events) == 1
+    assert events[0].WhichOneof("event") == "failed"
+    assert events[0].failed.code == "prompt_token_ids_length_mismatch"
+    assert events[0].failed.retryable is False
 
 
 def test_start_generation_crash_produces_terminal_failure() -> None:
@@ -1357,6 +1381,12 @@ def test_get_status_includes_health_fields_healthy() -> None:
     assert status.ready is True
     assert status.health_code == ""
     assert status.health_message == ""
+
+
+def test_get_status_advertises_supports_prompt_token_ids() -> None:
+    servicer = _make_servicer(HappyBackend())
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), None)
+    assert status.supports_prompt_token_ids is True
 
 
 def test_get_status_includes_health_fields_unhealthy() -> None:

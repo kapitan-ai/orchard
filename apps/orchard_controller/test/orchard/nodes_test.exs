@@ -379,8 +379,36 @@ defmodule Orchard.NodesTest do
         make_status_response(%{listen_host: "10.0.0.5", worker_backend: "mlx"})
 
       assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
-      assert node.capabilities == %{"worker_backend" => "mlx", "hosted_tools" => []}
+
+      assert node.capabilities == %{
+               "worker_backend" => "mlx",
+               "supports_prompt_token_ids" => false,
+               "hosted_tools" => []
+             }
+
       assert node.tool_readiness == %{}
+    end
+
+    test "stores prompt token id support in capabilities" do
+      target = make_target("10.0.0.50", 9444)
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.50", worker_backend: "mlx"})
+        |> Map.put(:supports_prompt_token_ids, true)
+
+      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert node.capabilities["supports_prompt_token_ids"] == true
+    end
+
+    test "stores missing prompt token id support as false in capabilities" do
+      target = make_target("10.0.0.51", 9444)
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.51", worker_backend: "mlx"})
+        |> Map.put(:supports_prompt_token_ids, false)
+
+      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert node.capabilities["supports_prompt_token_ids"] == false
     end
 
     test "empty worker_backend stores empty capabilities" do
@@ -390,7 +418,7 @@ defmodule Orchard.NodesTest do
         make_status_response(%{listen_host: "10.0.0.6", worker_backend: ""})
 
       assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
-      assert node.capabilities == %{"hosted_tools" => []}
+      assert node.capabilities == %{"supports_prompt_token_ids" => false, "hosted_tools" => []}
       assert node.tool_readiness == %{}
     end
 
@@ -426,6 +454,7 @@ defmodule Orchard.NodesTest do
 
       assert node.capabilities == %{
                "worker_backend" => "mlx",
+               "supports_prompt_token_ids" => false,
                "hosted_tools" => [
                  %{
                    "ref" => "tool://lookup_docs@2026-04-11",

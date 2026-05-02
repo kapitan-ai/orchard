@@ -349,6 +349,8 @@ Tokenizer contract v2 requirements:
 * token counting SHALL apply to the final rendered prompt after any tool-aware template expansion
 * tokenizer modes that cannot represent tool context SHALL reject tool-calling requests rather than silently dropping tool metadata
 
+Tokenizer contract v3 adds controller-authoritative prompt token IDs for safe-tokenization-capable workers. When controller safe tokenization produces `prompt_token_ids`, capable workers must use those IDs directly rather than re-encoding rendered prompt text. Manifest compatibility trust remains governed by §6.4 and the runtime manifest-trust configuration; worker capability is advertised by the worker, not by the manifest.
+
 The controller SHALL reject requests when:
 
 * `input_tokens + max_output_tokens > model.max_context_tokens`
@@ -751,6 +753,7 @@ Compatibility and defaulting rules:
 * absent hosted-tool capability/readiness fields on `StatusResponse` SHALL mean the node advertises no hosted tools
 * absent hosted-tool capability/readiness fields SHALL NOT be treated as a status-probe error
 * readiness without matching advertised capability for the same `tool://<name>@<version>` SHALL NOT make the node eligible for hosted routing
+* `supports_prompt_token_ids` indicates that the node's loaded worker can accept controller-supplied prompt token IDs on `ExecuteInferenceRequest`. Absence or `false` is treated as legacy capability, not as a probe failure.
 * absent or empty `runtime_memory_budgets` on `StatusResponse` SHALL mean no memory-budget observation is available
 * absent or empty `runtime_memory_budgets` SHALL NOT be treated as a status-probe error
 * `runtime_memory_budgets` SHALL remain observe-only telemetry except for the Phase 4E scheduler-ranking guard defined in §5.7 and §7.5.3; it SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, hosted-tool eligibility, public error contracts, queue ordering, or memory-budget enforcement
@@ -2136,6 +2139,7 @@ message StatusResponse {
   repeated HostedToolReadiness hosted_tool_readiness = 7;
   repeated RuntimeMemoryBudget runtime_memory_budgets = 8;
   repeated RuntimePrefixCacheStatus runtime_prefix_cache_statuses = 9;
+  bool supports_prompt_token_ids = 10;
 }
 
 message EnsureModelLoadedRequest {
@@ -2164,6 +2168,7 @@ message EnsureModelLoadedResponse {
   ModelLoadFailureCategory failure_category = 3;
   string failure_code = 4;
   string failure_message = 5;
+  bool worker_supports_prompt_token_ids = 6;
 }
 
 enum FinishReason {
@@ -2215,6 +2220,7 @@ message ExecuteInferenceRequest {
   uint64 deadline_unix_ms = 8;
   bytes metadata_json = 9;
   string cache_affinity_fingerprint = 10;
+  repeated uint32 prompt_token_ids = 11;
 }
 
 message InferenceEvent {
@@ -2334,6 +2340,7 @@ Admin creates bootstrap token or provisions node
 * include exactly one terminal `Completed` or `Failed`
 * stop emitting additional events after the terminal event
 * preserve tool-call argument bytes exactly once tool-call emission has begun; stop-sequence handling SHALL NOT truncate tool-call JSON fragments
+* when `prompt_token_ids` is non-empty, validate that `len(prompt_token_ids) == input_tokens` before any model invocation; on mismatch, return a structured `prompt_token_ids_length_mismatch` failure; on match, use the supplied IDs directly; when the field is empty, legacy workers and legacy dispatch paths continue to re-encode `rendered_prompt_utf8`
 * be cancelled by request id
 
 #### 7.5.6 Orphan request handling

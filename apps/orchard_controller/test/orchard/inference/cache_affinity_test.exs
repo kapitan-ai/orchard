@@ -42,6 +42,16 @@ defmodule Orchard.Inference.CacheAffinityTest do
     assert :unavailable = CacheAffinity.derive_key(request, %{max_prefix_bytes: 1})
   end
 
+  test "prompt_token_ids do not affect cache affinity key" do
+    request = canonical_request("hello")
+    with_ids = %{request | prompt_token_ids: [1, 2, 3]}
+    without_ids = %{request | prompt_token_ids: []}
+    config = [hmac_secret: "independent-secret"]
+
+    assert CacheAffinity.derive_key(with_ids, config) ==
+             CacheAffinity.derive_key(without_ids, config)
+  end
+
   test "normalize_config/1 parent-gates live fingerprint matching" do
     assert CacheAffinity.normalize_config(
              enabled: false,

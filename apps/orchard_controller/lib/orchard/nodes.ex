@@ -307,6 +307,10 @@ defmodule Orchard.Nodes do
 
     %{}
     |> maybe_put_worker_backend(backend)
+    |> Map.put(
+      "supports_prompt_token_ids",
+      Map.get(status_response, :supports_prompt_token_ids, false)
+    )
     |> Map.put("hosted_tools", hosted_tools)
   end
 

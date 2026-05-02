@@ -8,6 +8,8 @@ defmodule Orchard.Tokenizer.Telemetry do
 
   @control_token_event [:orchard, :tokenizer, :control_token_in_user_content]
   @detector_error_event [:orchard, :tokenizer, :detector_error]
+  @prompt_token_ids_dispatched_event [:orchard, :tokenizer, :prompt_token_ids_dispatched]
+  @unsafe_mode_active_event [:orchard, :tokenizer, :unsafe_mode_active]
   @degraded_no_manifest_catalog_event [
     :orchard,
     :tokenizer,
@@ -61,6 +63,28 @@ defmodule Orchard.Tokenizer.Telemetry do
         tokenizer_safe_mode: :on,
         degraded_reason: :no_manifest_catalog
       })
+    )
+
+    :ok
+  end
+
+  @spec prompt_token_ids_dispatched(map(), non_neg_integer()) :: :ok
+  def prompt_token_ids_dispatched(metadata, token_count) when is_map(metadata) do
+    :telemetry.execute(
+      @prompt_token_ids_dispatched_event,
+      %{token_count: token_count},
+      metadata
+    )
+
+    :ok
+  end
+
+  @spec unsafe_mode_active(map()) :: :ok
+  def unsafe_mode_active(metadata) when is_map(metadata) do
+    :telemetry.execute(
+      @unsafe_mode_active_event,
+      %{count: 1},
+      metadata
     )
 
     :ok

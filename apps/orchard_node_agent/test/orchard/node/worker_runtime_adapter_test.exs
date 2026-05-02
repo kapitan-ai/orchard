@@ -135,6 +135,41 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
     run(MemoryBudgetWorkerService)
   end
 
+  defmodule PromptTokenIdsSupportWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream) do
+      %WorkerStatusResponse{ready: true, supports_prompt_token_ids: true}
+    end
+
+    def load_model(%LoadModelRequest{}, _stream), do: %Ack{ok: true}
+    def unload_model(_request, _stream), do: %Ack{ok: true}
+    def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
+    def generate(%ExecuteInferenceRequest{}, _stream), do: raise("not used")
+  end
+
+  defmodule PromptTokenIdsSupportEndpoint do
+    use GRPC.Endpoint
+
+    run(PromptTokenIdsSupportWorkerService)
+  end
+
+  defmodule LegacyPromptTokenIdsWorkerService do
+    use GRPC.Server, service: WorkerRuntimeService.Service
+
+    def get_status(%WorkerStatusRequest{}, _stream), do: %WorkerStatusResponse{ready: true}
+    def load_model(%LoadModelRequest{}, _stream), do: %Ack{ok: true}
+    def unload_model(_request, _stream), do: %Ack{ok: true}
+    def cancel(%CancelInferenceRequest{}, _stream), do: %Ack{ok: true}
+    def generate(%ExecuteInferenceRequest{}, _stream), do: raise("not used")
+  end
+
+  defmodule LegacyPromptTokenIdsEndpoint do
+    use GRPC.Endpoint
+
+    run(LegacyPromptTokenIdsWorkerService)
+  end
+
   defmodule ScorePrefixCacheWorkerService do
     use GRPC.Server, service: WorkerRuntimeService.Service
 
@@ -277,6 +312,22 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
                      memory_budget_overhead_bytes: 0
                    )
                  end
+  end
+
+  test "get_status maps prompt token id support from worker status proto" do
+    with_worker_runtime_server(PromptTokenIdsSupportEndpoint, fn channel ->
+      assert {:ok, status} = WorkerRuntimeAdapter.get_status(%{channel: channel}, timeout_ms: 500)
+
+      assert status.supports_prompt_token_ids == true
+    end)
+  end
+
+  test "get_status defaults prompt token id support to false for legacy worker status" do
+    with_worker_runtime_server(LegacyPromptTokenIdsEndpoint, fn channel ->
+      assert {:ok, status} = WorkerRuntimeAdapter.get_status(%{channel: channel}, timeout_ms: 500)
+
+      assert status.supports_prompt_token_ids == false
+    end)
   end
 
   test "get_status maps memory budget fields from worker status proto" do

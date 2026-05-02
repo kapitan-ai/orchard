@@ -183,6 +183,8 @@ defmodule Orchard.Cluster.V1.StatusResponse do
     type: Orchard.Cluster.V1.RuntimePrefixCacheStatus,
     json_name: "runtimePrefixCacheStatuses"
   )
+
+  field(:supports_prompt_token_ids, 10, type: :bool, json_name: "supportsPromptTokenIds")
 end
 
 defmodule Orchard.Cluster.V1.EnsureModelLoadedRequest do
@@ -226,6 +228,11 @@ defmodule Orchard.Cluster.V1.EnsureModelLoadedResponse do
 
   field(:failure_code, 4, type: :string, json_name: "failureCode")
   field(:failure_message, 5, type: :string, json_name: "failureMessage")
+
+  field(:worker_supports_prompt_token_ids, 6,
+    type: :bool,
+    json_name: "workerSupportsPromptTokenIds"
+  )
 end
 
 defmodule Orchard.Cluster.V1.UnloadModelRequest do
@@ -290,6 +297,7 @@ defmodule Orchard.Cluster.V1.ExecuteInferenceRequest do
   field(:deadline_unix_ms, 8, type: :uint64, json_name: "deadlineUnixMs")
   field(:metadata_json, 9, type: :bytes, json_name: "metadataJson")
   field(:cache_affinity_fingerprint, 10, type: :string, json_name: "cacheAffinityFingerprint")
+  field(:prompt_token_ids, 11, repeated: true, type: :uint32, json_name: "promptTokenIds")
 end
 
 defmodule Orchard.Cluster.V1.CancelInferenceRequest do
