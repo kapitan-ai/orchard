@@ -353,6 +353,8 @@ Tokenizer contract v3 adds controller-authoritative prompt token IDs for safe-to
 
 Tokenizer observability includes `[:orchard, :tokenizer, :prompt_token_ids_dispatched]` when capable workers receive controller-supplied IDs, `[:orchard, :tokenizer, :unsafe_mode_active]` when safe-mode falls back to legacy rendered-prompt dispatch, and `[:orchard, :tokenizer, :parity_drift]` when a capable worker rejects controller-supplied `prompt_token_ids` with `prompt_token_ids_length_mismatch`. The parity-drift event is an operator-visible invariant breach counter; it is emitted only for worker stream failures, not controller-synthesized timeout or cancellation failures.
 
+The controller SHALL also emit `[:orchard, :tokenizer, :catalog_drift]` when the live request-time partial control-token catalog derived from `tokenizer.json.added_tokens` entries with `special=true`, tokenizer-config named singleton tokens, and `tokenizer_config.json.additional_special_tokens` contains entries absent from `manifest.safe_tokenization.control_tokens`. This signal is one-directional (`added` drift only) and partial: it MUST NOT emit `removed` entries, and it does not detect manifest entries removed from the live artifacts, non-special `added_tokens`, chat-template-literal drift, or wrapper-tool-marker drift.
+
 The controller SHALL reject requests when:
 
 * `input_tokens + max_output_tokens > model.max_context_tokens`
@@ -1328,8 +1330,13 @@ For imported bundles, a manifest-authored positive declaration
 import pipeline has validated bundle identity and structure. This trust lets the
 importer skip redundant preflight and lets runtime seed the positive
 compatibility cache, subject to the operator kill switch for manifest
-compatibility declarations. Detecting post-import tokenizer/template drift is
-deferred to a later hardening phase.
+compatibility declarations. Runtime drift detection is incremental: the controller
+currently emits `[:orchard, :tokenizer, :catalog_drift]` when request-time partial
+catalog extraction observes tokenizer special added tokens, tokenizer-config named
+singletons, or additional special tokens absent from
+`manifest.safe_tokenization.control_tokens`; full post-import tokenizer/template
+drift detection, including removed entries and chat-template or wrapper-tool-marker
+drift, remains deferred to a later hardening phase.
 
 `resident_memory_bytes` is static manifest-derived metadata in the current
 slice: it is a lower-bound/payload-size estimate derived from bundle artifacts
@@ -2344,6 +2351,7 @@ Admin creates bootstrap token or provisions node
 * preserve tool-call argument bytes exactly once tool-call emission has begun; stop-sequence handling SHALL NOT truncate tool-call JSON fragments
 * when `prompt_token_ids` is non-empty, validate that `len(prompt_token_ids) == input_tokens` before any model invocation; on mismatch, return a structured `prompt_token_ids_length_mismatch` failure; on match, use the supplied IDs directly; when the field is empty, legacy workers and legacy dispatch paths continue to re-encode `rendered_prompt_utf8`
 * a controller that receives a worker stream failure with code `prompt_token_ids_length_mismatch` SHALL emit `[:orchard, :tokenizer, :parity_drift]` with structured request/model/node metadata and a bounded worker message; the controller SHALL NOT parse length values from the message text
+* a controller that observes catalog drift SHALL emit `[:orchard, :tokenizer, :catalog_drift]` with `%{count: 1}`, request/model metadata, `endpoint`, `bundle_id`, trusted `bundle_sha256` when available, `catalog_sha256`, bounded `added` token metadata, full `added_count`, and explicit `partial_detection: true`; the event SHALL NOT include `removed` entries until runtime helper re-extraction or source-tagged manifests exist
 * be cancelled by request id
 
 #### 7.5.6 Orphan request handling

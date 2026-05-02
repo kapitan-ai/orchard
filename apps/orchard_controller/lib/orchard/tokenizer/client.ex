@@ -21,7 +21,7 @@ defmodule Orchard.Tokenizer.Client do
   @render_and_count_segmented_contract_version 3
   @default_timeout_ms 5_000
   @default_runtime_max_stdout_bytes 16_777_216
-  @control_token_catalog_kinds ~w(huggingface_tokenizer_json)
+  @control_token_catalog_kinds ~w(huggingface_tokenizer_json tokenizer_json)
   @segmented_tokenizer_kinds ~w(huggingface_tokenizer_json tokenizer_json)
   @tokenizer_incompatibility_categories ~w(
     per_codepoint_decode_mismatch
@@ -242,6 +242,7 @@ defmodule Orchard.Tokenizer.Client do
           |> then(&detector.detect(catalog, &1))
 
         Telemetry.emit_control_token_hits(hits, request, manifest)
+        maybe_emit_catalog_drift(catalog, manifest, request, opts)
 
       {:error, reason} ->
         Telemetry.emit_detector_error({:catalog_load_failed, reason}, request, manifest)
@@ -255,6 +256,64 @@ defmodule Orchard.Tokenizer.Client do
       manifest
     )
   end
+
+  defp maybe_emit_catalog_drift(
+         _catalog,
+         %ModelManifest{safe_tokenization: nil},
+         _request,
+         _opts
+       ),
+       do: :ok
+
+  defp maybe_emit_catalog_drift(_catalog, nil, _request, _opts), do: :ok
+
+  defp maybe_emit_catalog_drift(
+         catalog,
+         %ModelManifest{safe_tokenization: %{control_tokens: control_tokens} = safe_tokenization} =
+           manifest,
+         %CanonicalRequest{} = request,
+         opts
+       )
+       when is_list(catalog) and is_list(control_tokens) do
+    added =
+      catalog
+      |> MapSet.new()
+      |> MapSet.difference(MapSet.new(control_tokens))
+      |> MapSet.to_list()
+      |> Enum.sort()
+
+    case added do
+      [] ->
+        :ok
+
+      added ->
+        Telemetry.catalog_drift(%{
+          request_id: request.public_id,
+          model_id: request.model_ref.model_id,
+          version: request.model_ref.version,
+          endpoint: request.endpoint,
+          bundle_id: manifest.sha256,
+          bundle_sha256: Keyword.get(opts, :bundle_sha256),
+          catalog_sha256: safe_tokenization.catalog_sha256,
+          added: added,
+          added_count: length(added),
+          partial_detection: true,
+          covered_catalog_sources: [
+            :tokenizer_special_added_tokens,
+            :tokenizer_config_singletons,
+            :additional_special_tokens
+          ],
+          missing_catalog_sources: [
+            :tokenizer_non_special_added_tokens,
+            :chat_template_literals,
+            :wrapper_tool_markers
+          ],
+          drift_direction: :added_only
+        })
+    end
+  end
+
+  defp maybe_emit_catalog_drift(_catalog, _manifest, _request, _opts), do: :ok
 
   defp value_kind(value) when is_nil(value), do: nil
   defp value_kind(value) when is_binary(value), do: :binary

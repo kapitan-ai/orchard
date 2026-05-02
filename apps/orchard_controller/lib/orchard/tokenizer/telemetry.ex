@@ -11,6 +11,7 @@ defmodule Orchard.Tokenizer.Telemetry do
   @prompt_token_ids_dispatched_event [:orchard, :tokenizer, :prompt_token_ids_dispatched]
   @unsafe_mode_active_event [:orchard, :tokenizer, :unsafe_mode_active]
   @parity_drift_event [:orchard, :tokenizer, :parity_drift]
+  @catalog_drift_event [:orchard, :tokenizer, :catalog_drift]
   @degraded_no_manifest_catalog_event [
     :orchard,
     :tokenizer,
@@ -19,6 +20,7 @@ defmodule Orchard.Tokenizer.Telemetry do
   ]
   @missing_partial_catalog_sources [:chat_template_literals, :wrapper_tool_markers]
   @metadata_limit 16
+  @catalog_drift_added_limit 16
   @literal_metadata_bytes 64
   @worker_message_metadata_bytes 256
 
@@ -112,6 +114,26 @@ defmodule Orchard.Tokenizer.Telemetry do
     :ok
   end
 
+  @spec catalog_drift(map()) :: :ok
+  def catalog_drift(metadata) when is_map(metadata) do
+    added = Map.get(metadata, :added, [])
+
+    metadata =
+      metadata
+      |> Map.put(:added, bounded_catalog_drift_added(added))
+      |> Map.put(:added_metadata_max_count, @catalog_drift_added_limit)
+      |> Map.put(:added_metadata_max_bytes, @literal_metadata_bytes)
+      |> Map.put(:added_truncated, is_list(added) and length(added) > @catalog_drift_added_limit)
+
+    :telemetry.execute(
+      @catalog_drift_event,
+      %{count: 1},
+      metadata
+    )
+
+    :ok
+  end
+
   @spec emit_detector_error(term(), CanonicalRequest.t(), ModelManifest.t() | nil) :: :ok
   def emit_detector_error(reason, %CanonicalRequest{} = request, manifest) do
     %{category: category, detail: detail} = normalize_detector_error(reason)
@@ -156,6 +178,22 @@ defmodule Orchard.Tokenizer.Telemetry do
       end
     end)
   end
+
+  defp bounded_catalog_drift_added(added) when is_list(added) do
+    added
+    |> Enum.take(@catalog_drift_added_limit)
+    |> Enum.map(&bounded_literal/1)
+    |> Enum.map(fn literal ->
+      %{
+        value: literal.value,
+        byte_size: literal.byte_size,
+        family: literal.family,
+        truncated: literal.truncated
+      }
+    end)
+  end
+
+  defp bounded_catalog_drift_added(_added), do: []
 
   defp bounded_worker_message(message) when byte_size(message) <= @worker_message_metadata_bytes,
     do: message
