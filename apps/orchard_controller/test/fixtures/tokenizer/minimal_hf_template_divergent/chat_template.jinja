@@ -1,0 +1,3 @@
+{%- for message in messages -%}
+{%- if message['content'] == '' -%}EMPTY_PATH{%- else -%}{{ message['content'] }}{%- endif -%}
+{%- endfor -%}

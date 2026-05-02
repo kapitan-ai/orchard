@@ -181,6 +181,15 @@ defmodule Orchard.Models.ManifestParser do
 
   defp atomize_safe_tokenization_nested(%{safe_tokenization: safe} = atom_map)
        when is_map(safe) do
+    derived_fields = %{
+      compatible_declared?: Map.has_key?(safe, :compatible),
+      template_compatible_declared?: Map.has_key?(safe, :template_compatible),
+      preflight_compatible_declared?:
+        Map.get(safe, :compatible) == true and Map.get(safe, :template_compatible) == true
+    }
+
+    atom_map = update_in(atom_map, [:safe_tokenization], &Map.merge(&1, derived_fields))
+
     with {:ok, atom_map} <- atomize_catalog_source(atom_map) do
       atomize_incompatibility_reason(atom_map)
     end
@@ -405,19 +414,19 @@ defmodule Orchard.Models.ManifestParser do
   end
 
   defp validate_incompatibility_presence(%{
-         compatible: true,
-         incompatibility_reason: reason
-       })
-       when not is_nil(reason) do
-    {:error, {:validation, "incompatibility_reason is not allowed unless compatible=false"}}
-  end
-
-  defp validate_incompatibility_presence(%{
          compatible_present?: false,
          incompatibility_reason: reason
        })
        when not is_nil(reason) do
     {:error, {:validation, "incompatibility_reason is not allowed when compatible is absent"}}
+  end
+
+  defp validate_incompatibility_presence(%{
+         compatible: true,
+         incompatibility_reason: reason
+       })
+       when not is_nil(reason) do
+    {:error, {:validation, "incompatibility_reason is not allowed unless compatible=false"}}
   end
 
   defp validate_incompatibility_presence(_context), do: :ok
@@ -452,21 +461,33 @@ defmodule Orchard.Models.ManifestParser do
   defp validate_incompatibility_reason(_reason, _template_compatible),
     do: {:error, {:validation, "incompatibility_reason must be an object"}}
 
+  defp validate_tokenizer_reason(%{category: "empty_literal"} = reason, template_compatible) do
+    case Map.get(reason, :literal) do
+      "" ->
+        validate_tokenizer_template_compatible(template_compatible)
+
+      _other ->
+        {:error, {:validation, "empty_literal requires literal=\"\""}}
+    end
+  end
+
   defp validate_tokenizer_reason(reason, template_compatible) do
     case Map.get(reason, :literal) do
       literal when is_binary(literal) and literal != "" ->
-        if template_compatible == false do
-          {:error,
-           {:validation,
-            "template_compatible=false is only valid with incompatibility_reason.category=dual_render_mismatch"}}
-        else
-          :ok
-        end
+        validate_tokenizer_template_compatible(template_compatible)
 
-      _ ->
+      _other ->
         {:error, {:validation, "tokenizer incompatibility categories require non-empty literal"}}
     end
   end
+
+  defp validate_tokenizer_template_compatible(false) do
+    {:error,
+     {:validation,
+      "template_compatible=false is only valid with incompatibility_reason.category=dual_render_mismatch"}}
+  end
+
+  defp validate_tokenizer_template_compatible(_template_compatible), do: :ok
 
   defp validate_dual_render_reason(reason, template_compatible) do
     cond do

@@ -427,9 +427,275 @@ defmodule Orchard.Models.BundleBuilderTest do
       assert manifest.safe_tokenization.catalog_source.extra_count == 0
 
       raw = read_manifest_json!(ctx.tmp_dir)
+      assert raw["safe_tokenization"]["compatible"] == true
+      assert raw["safe_tokenization"]["template_compatible"] == true
+      refute Map.has_key?(raw["safe_tokenization"], "incompatibility_reason")
+    end
+
+    test "eager preflight writes compatible/template_compatible on success", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "{% for msg in messages %}{{ msg.content }}{% endfor %}",
+        tokenizer_config: %{"add_bos_token" => true}
+      )
+
+      helper =
+        write_catalog_helper!(ctx.tmp_dir, %{
+          "control_tokens_chat_template" => ["<template_only>"],
+          "control_tokens_wrapper_tool" => [],
+          "chat_template_literals_count" => 1,
+          "wrapper_tool_markers_count" => 0
+        })
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      raw = read_manifest_json!(ctx.tmp_dir)
+      assert raw["safe_tokenization"]["compatible"] == true
+      assert raw["safe_tokenization"]["template_compatible"] == true
+      refute Map.has_key?(raw["safe_tokenization"], "incompatibility_reason")
+    end
+
+    test "eager preflight writes dual_render_mismatch incompatibility", ctx do
+      copy_tokenizer_fixture!("minimal_hf_template_divergent", ctx.tmp_dir)
+
+      helper =
+        write_catalog_helper!(
+          ctx.tmp_dir,
+          %{
+            "control_tokens_chat_template" => [],
+            "control_tokens_wrapper_tool" => [],
+            "chat_template_literals_count" => 0,
+            "wrapper_tool_markers_count" => 0
+          },
+          incompatible_preflight_result(
+            %{
+              "category" => "dual_render_mismatch",
+              "leaf_class" => "message_content",
+              "sentinel_index" => 0,
+              "first_diff_offset" => 1
+            },
+            false
+          )
+        )
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      raw = read_manifest_json!(ctx.tmp_dir)
+      assert raw["safe_tokenization"]["compatible"] == false
+      assert raw["safe_tokenization"]["template_compatible"] == false
+
+      assert raw["safe_tokenization"]["incompatibility_reason"] == %{
+               "category" => "dual_render_mismatch",
+               "leaf_class" => "message_content",
+               "sentinel_index" => 0,
+               "first_diff_offset" => 1
+             }
+    end
+
+    test "eager preflight writes reserved_id_persists incompatibility", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "{% for msg in messages %}{{ msg.content }}{% endfor %}",
+        tokenizer_config: %{"add_bos_token" => true}
+      )
+
+      helper =
+        write_catalog_helper!(
+          ctx.tmp_dir,
+          %{
+            "control_tokens_chat_template" => ["<reserved>"],
+            "control_tokens_wrapper_tool" => [],
+            "chat_template_literals_count" => 1,
+            "wrapper_tool_markers_count" => 0
+          },
+          incompatible_preflight_result(%{
+            "category" => "reserved_id_persists",
+            "literal" => "<reserved>"
+          })
+        )
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      raw = read_manifest_json!(ctx.tmp_dir)
+      assert raw["safe_tokenization"]["compatible"] == false
+      assert raw["safe_tokenization"]["template_compatible"] == true
+
+      assert raw["safe_tokenization"]["incompatibility_reason"] == %{
+               "category" => "reserved_id_persists",
+               "literal" => "<reserved>"
+             }
+    end
+
+    test "SPEC.md §6.4 accepts empty_literal preflight verdict through manifest validation",
+         ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "{% for msg in messages %}{{ msg.content }}{% endfor %}",
+        tokenizer_config: %{"add_bos_token" => true}
+      )
+
+      helper =
+        write_catalog_helper!(
+          ctx.tmp_dir,
+          %{
+            "control_tokens_chat_template" => ["<reserved>"],
+            "control_tokens_wrapper_tool" => [],
+            "chat_template_literals_count" => 1,
+            "wrapper_tool_markers_count" => 0
+          },
+          incompatible_preflight_result(%{"category" => "empty_literal", "literal" => ""})
+        )
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
+      assert manifest.safe_tokenization.compatible == false
+      assert manifest.safe_tokenization.template_compatible == true
+      assert manifest.safe_tokenization.incompatibility_reason.category == "empty_literal"
+      assert manifest.safe_tokenization.incompatibility_reason.literal == ""
+
+      raw = read_manifest_json!(ctx.tmp_dir)
+
+      assert raw["safe_tokenization"]["incompatibility_reason"] == %{
+               "category" => "empty_literal",
+               "literal" => ""
+             }
+    end
+
+    test "eager preflight helper failure leaves manifest fields unset", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "{% for msg in messages %}{{ msg.content }}{% endfor %}",
+        tokenizer_config: %{"add_bos_token" => true}
+      )
+
+      helper =
+        write_catalog_helper!(
+          ctx.tmp_dir,
+          %{
+            "control_tokens_chat_template" => ["<template_only>"],
+            "control_tokens_wrapper_tool" => [],
+            "chat_template_literals_count" => 1,
+            "wrapper_tool_markers_count" => 0
+          },
+          preflight_error_response("safe_tokenization_catalog_hash_mismatch", "catalog mismatch")
+        )
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      raw = read_manifest_json!(ctx.tmp_dir)
       refute Map.has_key?(raw["safe_tokenization"], "compatible")
       refute Map.has_key?(raw["safe_tokenization"], "template_compatible")
       refute Map.has_key?(raw["safe_tokenization"], "incompatibility_reason")
+    end
+
+    test "eager preflight timeout leaves manifest fields unset", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "{% for msg in messages %}{{ msg.content }}{% endfor %}",
+        tokenizer_config: %{"add_bos_token" => true}
+      )
+
+      helper =
+        write_catalog_then_sleeping_preflight_helper!(ctx.tmp_dir, %{
+          "control_tokens_chat_template" => ["<template_only>"],
+          "control_tokens_wrapper_tool" => [],
+          "chat_template_literals_count" => 1,
+          "wrapper_tool_markers_count" => 0
+        })
+
+      with_app_env(:bundle_build_preflight_timeout_ms, 10, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+        end)
+      end)
+
+      raw = read_manifest_json!(ctx.tmp_dir)
+      refute Map.has_key?(raw["safe_tokenization"], "compatible")
+      refute Map.has_key?(raw["safe_tokenization"], "template_compatible")
+      refute Map.has_key?(raw["safe_tokenization"], "incompatibility_reason")
+    end
+
+    test "eager preflight invalid helper success leaves manifest fields unset", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "{% for msg in messages %}{{ msg.content }}{% endfor %}",
+        tokenizer_config: %{"add_bos_token" => true}
+      )
+
+      helper =
+        write_catalog_helper!(
+          ctx.tmp_dir,
+          %{
+            "control_tokens_chat_template" => ["<template_only>"],
+            "control_tokens_wrapper_tool" => [],
+            "chat_template_literals_count" => 1,
+            "wrapper_tool_markers_count" => 0
+          },
+          incompatible_preflight_result(%{"category" => "not_an_allowed_category"})
+        )
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+      end)
+
+      raw = read_manifest_json!(ctx.tmp_dir)
+      refute Map.has_key?(raw["safe_tokenization"], "compatible")
+      refute Map.has_key?(raw["safe_tokenization"], "template_compatible")
+      refute Map.has_key?(raw["safe_tokenization"], "incompatibility_reason")
+    end
+
+    test "eager preflight disabled keeps Phase 1 manifest shape", ctx do
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "{% for msg in messages %}{{ msg.content }}{% endfor %}",
+        tokenizer_config: %{"add_bos_token" => true}
+      )
+
+      helper =
+        write_catalog_helper!(ctx.tmp_dir, %{
+          "control_tokens_chat_template" => ["<template_only>"],
+          "control_tokens_wrapper_tool" => [],
+          "chat_template_literals_count" => 1,
+          "wrapper_tool_markers_count" => 0
+        })
+
+      with_app_env(:bundle_build_eager_preflight_enabled, false, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+        end)
+      end)
+
+      raw = read_manifest_json!(ctx.tmp_dir)
+      refute Map.has_key?(raw["safe_tokenization"], "compatible")
+      refute Map.has_key?(raw["safe_tokenization"], "template_compatible")
+      refute Map.has_key?(raw["safe_tokenization"], "incompatibility_reason")
+    end
+
+    test "catalog helper request uses private temp directory and cleans it up", ctx do
+      tmp_root = Path.join(ctx.tmp_dir, "transport-tmp")
+      File.mkdir_p!(tmp_root)
+
+      write_minimal_bundle(ctx.tmp_dir,
+        chat_template: "{% for msg in messages %}{{ msg.content }}{% endfor %}",
+        tokenizer_config: %{"add_bos_token" => true}
+      )
+
+      helper = write_private_catalog_transport_asserting_helper!(ctx.tmp_dir)
+
+      with_tmpdir(tmp_root, fn ->
+        with_app_env(:bundle_build_eager_preflight_enabled, false, fn ->
+          with_inference_overrides([tokenizer_executable: helper], fn ->
+            assert {:ok, _} =
+                     BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+          end)
+        end)
+
+        assert catalog_transport_dirs(tmp_root) == []
+      end)
     end
 
     test "records wrapper markers even when they are absent from added_tokens", ctx do
@@ -539,22 +805,38 @@ defmodule Orchard.Models.BundleBuilderTest do
       )
 
       helper =
-        write_catalog_helper!(ctx.tmp_dir, %{
-          "control_tokens_chat_template" => ["<|template_without_config|>"],
-          "control_tokens_wrapper_tool" => [],
-          "chat_template_literals_count" => 1,
-          "wrapper_tool_markers_count" => 0
-        })
+        write_catalog_helper!(
+          ctx.tmp_dir,
+          %{
+            "control_tokens_chat_template" => ["<|template_without_config|>"],
+            "control_tokens_wrapper_tool" => [],
+            "chat_template_literals_count" => 1,
+            "wrapper_tool_markers_count" => 0
+          },
+          preflight_error_response(
+            "safe_tokenization_catalog_hash_mismatch",
+            "should not be called"
+          )
+        )
+
+      error_ref = attach_telemetry([:orchard, :tokenizer, :bundle_preflight, :error])
 
       with_inference_overrides([tokenizer_executable: helper], fn ->
         assert {:ok, _} = BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
       end)
+
+      refute_receive {^error_ref, [:orchard, :tokenizer, :bundle_preflight, :error], _, _}
 
       assert {:ok, manifest} = ManifestParser.parse_from_bundle(ctx.tmp_dir)
       assert manifest.tokenizer.config_path == nil
       assert manifest.chat_template.path == "chat_template.jinja"
       assert manifest.safe_tokenization.control_tokens == ["<|template_without_config|>"]
       assert manifest.safe_tokenization.catalog_source.chat_template_literals_count == 1
+
+      raw = read_manifest_json!(ctx.tmp_dir)
+      refute Map.has_key?(raw["safe_tokenization"], "compatible")
+      refute Map.has_key?(raw["safe_tokenization"], "template_compatible")
+      refute Map.has_key?(raw["safe_tokenization"], "incompatibility_reason")
     end
 
     test "surfaces helper invalid_input for malformed jinja without angle bracket", ctx do
@@ -648,6 +930,39 @@ defmodule Orchard.Models.BundleBuilderTest do
       with_app_env(:bundle_build_catalog_timeout_ms, 10, fn ->
         with_inference_overrides([tokenizer_executable: helper], fn ->
           assert {:error, {:safe_tokenization_helper_unavailable, :timeout}} =
+                   BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+        end)
+      end)
+
+      refute File.exists?(Path.join(ctx.tmp_dir, "manifest.json"))
+    end
+
+    test "SPEC.md §6.4 catalog helper timeout is an absolute deadline", ctx do
+      copy_tokenizer_fixture!("wrapper_marker_only", ctx.tmp_dir)
+      helper = write_dribbling_catalog_helper!(ctx.tmp_dir)
+
+      with_app_env(:bundle_build_catalog_timeout_ms, 200, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          {elapsed_us, result} =
+            :timer.tc(fn ->
+              BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
+            end)
+
+          assert {:error, {:safe_tokenization_helper_unavailable, :timeout}} = result
+          assert System.convert_time_unit(elapsed_us, :microsecond, :millisecond) < 350
+        end)
+      end)
+
+      refute File.exists?(Path.join(ctx.tmp_dir, "manifest.json"))
+    end
+
+    test "SPEC.md §6.4 catalog helper stdout is cumulatively capped", ctx do
+      copy_tokenizer_fixture!("wrapper_marker_only", ctx.tmp_dir)
+      helper = write_oversized_catalog_stdout_helper!(ctx.tmp_dir)
+
+      with_app_env(:bundle_build_catalog_max_stdout_bytes, 64, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:error, {:safe_tokenization_helper_unavailable, {:stdout_too_large, 64}}} =
                    BundleBuilder.prepare_bundle(ctx.tmp_dir, @repo_id, @detail_metadata)
         end)
       end)
@@ -894,20 +1209,87 @@ defmodule Orchard.Models.BundleBuilderTest do
     end)
   end
 
-  defp write_catalog_helper!(dir, result) do
-    response =
+  defp write_catalog_helper!(dir, result, preflight_result \\ compatible_preflight_result()) do
+    catalog_response =
       Jason.encode!(%{
         "contract_version" => 3,
         "ok" => true,
         "result" => result
       })
 
+    preflight_response = Jason.encode!(preflight_result)
+
     write_executable!(dir, "catalog-helper.sh", """
     #!/bin/sh
-    cat >/dev/null
-    cat <<'JSON'
-    #{response}
+    payload=$(cat)
+    case "$payload" in
+      *'"command":"preflight_safe_tokenization"'*)
+        cat <<'JSON'
+    #{preflight_response}
     JSON
+        ;;
+      *)
+        cat <<'JSON'
+    #{catalog_response}
+    JSON
+        ;;
+    esac
+    """)
+  end
+
+  defp compatible_preflight_result do
+    %{
+      "contract_version" => 3,
+      "ok" => true,
+      "result" => %{
+        "compatible" => true,
+        "template_compatible" => true,
+        "incompatibility_reason" => nil
+      }
+    }
+  end
+
+  defp incompatible_preflight_result(reason, template_compatible \\ true) do
+    %{
+      "contract_version" => 3,
+      "ok" => true,
+      "result" => %{
+        "compatible" => false,
+        "template_compatible" => template_compatible,
+        "incompatibility_reason" => reason
+      }
+    }
+  end
+
+  defp preflight_error_response(category, message) do
+    %{
+      "contract_version" => 3,
+      "ok" => false,
+      "error" => %{"category" => category, "message" => message}
+    }
+  end
+
+  defp write_catalog_then_sleeping_preflight_helper!(dir, result) do
+    catalog_response =
+      Jason.encode!(%{
+        "contract_version" => 3,
+        "ok" => true,
+        "result" => result
+      })
+
+    write_executable!(dir, "catalog-sleeping-preflight-helper.sh", """
+    #!/bin/sh
+    payload=$(cat)
+    case "$payload" in
+      *'"command":"preflight_safe_tokenization"'*)
+        sleep 1
+        ;;
+      *)
+        cat <<'JSON'
+    #{catalog_response}
+    JSON
+        ;;
+    esac
     """)
   end
 
@@ -928,10 +1310,79 @@ defmodule Orchard.Models.BundleBuilderTest do
     """)
   end
 
+  defp write_private_catalog_transport_asserting_helper!(dir) do
+    response =
+      Jason.encode!(%{
+        "contract_version" => 3,
+        "ok" => true,
+        "result" => %{
+          "control_tokens_chat_template" => ["<template_only>"],
+          "control_tokens_wrapper_tool" => [],
+          "chat_template_literals_count" => 1,
+          "wrapper_tool_markers_count" => 0
+        }
+      })
+
+    write_executable!(dir, "catalog-transport-asserting-helper.sh", """
+    #!/bin/sh
+    set -eu
+    tmp="${TMPDIR:-/tmp}"
+    count=0
+    selected=""
+
+    for candidate in "$tmp"/orchard-tokenizer-catalog-*; do
+      [ -e "$candidate" ] || continue
+
+      if [ -d "$candidate" ]; then
+        count=$((count + 1))
+        selected="$candidate"
+      fi
+    done
+
+    [ "$count" -eq 1 ] || exit 21
+
+    request="$selected/request.json"
+    [ -f "$request" ] || exit 22
+    [ ! -L "$request" ] || exit 23
+
+    mode=$(stat -f '%Lp' "$selected" 2>/dev/null || stat -c '%a' "$selected" 2>/dev/null || echo unknown)
+    [ "$mode" = "700" ] || exit 24
+
+    payload=$(cat)
+
+    case "$payload" in
+      *'"command":"extract_safe_tokenization_catalog"'*) ;;
+      *) exit 25 ;;
+    esac
+
+    cat <<'JSON'
+    #{response}
+    JSON
+    """)
+  end
+
   defp write_sleeping_catalog_helper!(dir) do
     write_executable!(dir, "sleeping-catalog-helper.sh", """
     #!/bin/sh
     cat >/dev/null
+    sleep 1
+    """)
+  end
+
+  defp write_dribbling_catalog_helper!(dir) do
+    write_executable!(dir, "dribbling-catalog-helper.sh", """
+    #!/bin/sh
+    perl -e '$| = 1; for (1..20) { print "x" x 1024; select(undef, undef, undef, 0.02); }' 2>/dev/null || true
+    """)
+  end
+
+  defp write_oversized_catalog_stdout_helper!(dir) do
+    write_executable!(dir, "oversized-catalog-stdout-helper.sh", """
+    #!/bin/sh
+    cat >/dev/null
+    printf '%s' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    printf '%s' 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+    printf '%s' 'c'
     sleep 1
     """)
   end
@@ -973,11 +1424,49 @@ defmodule Orchard.Models.BundleBuilderTest do
     end
   end
 
+  defp with_tmpdir(tmp_dir, fun) when is_function(fun, 0) do
+    previous = System.get_env("TMPDIR")
+    System.put_env("TMPDIR", tmp_dir)
+
+    try do
+      fun.()
+    after
+      restore_env("TMPDIR", previous)
+    end
+  end
+
+  defp restore_env(key, nil), do: System.delete_env(key)
+  defp restore_env(key, value), do: System.put_env(key, value)
+
+  defp catalog_transport_dirs(tmp_root) do
+    tmp_root
+    |> Path.join("orchard-tokenizer-catalog-*")
+    |> Path.wildcard()
+    |> Enum.filter(&File.dir?/1)
+  end
+
   defp read_manifest_json!(dir) do
     dir
     |> Path.join("manifest.json")
     |> File.read!()
     |> Jason.decode!()
+  end
+
+  defp attach_telemetry(event) do
+    parent = self()
+    ref = make_ref()
+
+    :telemetry.attach(
+      inspect(ref),
+      event,
+      fn emitted_event, measurements, metadata, _config ->
+        send(parent, {ref, emitted_event, measurements, metadata})
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(inspect(ref)) end)
+    ref
   end
 
   defp hash_catalog(control_tokens) do

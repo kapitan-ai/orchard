@@ -17,7 +17,7 @@ from orchard_tokenizer.cli import (
     build_success_response,
     main,
 )
-from orchard_tokenizer.safe_segmented import catalog_sha256
+from orchard_tokenizer.safe_segmented import SafeSegmentedError, catalog_sha256
 
 
 def test_build_success_response_returns_structured_result() -> None:
@@ -143,6 +143,14 @@ def test_main_prints_version(capsys) -> None:
 
 
 def fixture_root() -> Path:
+    return tokenizer_fixture_root() / "minimal_hf"
+
+
+def divergent_fixture_root() -> Path:
+    return tokenizer_fixture_root() / "minimal_hf_template_divergent"
+
+
+def tokenizer_fixture_root() -> Path:
     return (
         Path(__file__).resolve().parents[3]
         / "apps"
@@ -150,7 +158,6 @@ def fixture_root() -> Path:
         / "test"
         / "fixtures"
         / "tokenizer"
-        / "minimal_hf"
     )
 
 
@@ -894,6 +901,202 @@ def test_segmented_render_and_count_requires_explicit_tokenizer_config(
     assert response["error"]["category"] == "missing_assets"
 
 
+def test_preflight_safe_tokenization_compatible_returns_compatible_true(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    payload = preflight_payload(bundle, ["<|im_end|>", "<|im_start|>"])
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    assert result == {
+        "compatible": True,
+        "template_compatible": True,
+        "incompatibility_reason": None,
+    }
+
+
+def test_preflight_safe_tokenization_dual_render_mismatch_returns_compatible_false_template_false(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    write_template_that_branches_on_empty(bundle["chat_template_path"])
+    payload = preflight_payload(bundle, ["<|im_end|>"])
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    assert_dual_render_mismatch_result(result)
+
+
+def test_preflight_safe_tokenization_divergent_fixture_returns_dual_render_mismatch(
+    capsys,
+) -> None:
+    bundle = {
+        "tokenizer_path": divergent_fixture_root() / "tokenizer.json",
+        "tokenizer_config_path": divergent_fixture_root() / "tokenizer_config.json",
+        "chat_template_path": divergent_fixture_root() / "chat_template.jinja",
+    }
+    payload = preflight_payload(bundle, [])
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    assert_dual_render_mismatch_result(result)
+
+
+def test_preflight_safe_tokenization_per_codepoint_decode_mismatch_returns_compatible_false(
+    tmp_path: Path, capsys
+) -> None:
+    tokenizer_config_path = tmp_path / "tokenizer_config.json"
+    tokenizer_config_path.write_text("{}", encoding="utf-8")
+    bundle = {
+        "tokenizer_path": fixture_root() / "tokenizer.json",
+        "tokenizer_config_path": tokenizer_config_path,
+        "chat_template_path": fixture_root() / "chat_template.jinja",
+    }
+    payload = preflight_payload(bundle, ["<|im_start|>"])
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    assert result["compatible"] is False
+    assert result["template_compatible"] is True
+    assert result["incompatibility_reason"] == {
+        "category": "per_codepoint_decode_mismatch",
+        "literal": "<|im_start|>",
+    }
+
+
+def test_preflight_safe_tokenization_reserved_id_persists_returns_compatible_false(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    payload = preflight_payload(bundle, ["h"])
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    assert result["compatible"] is False
+    assert result["template_compatible"] is True
+    assert result["incompatibility_reason"] == {
+        "category": "reserved_id_persists",
+        "literal": "h",
+    }
+
+
+def test_preflight_safe_tokenization_reserved_id_set_overlap_returns_compatible_false(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    # Classification-only coverage: constructing a compact, otherwise-compatible
+    # tokenizer that naturally overlaps a different reserved ID is brittle here.
+    def raise_overlap(*_args: Any, **_kwargs: Any) -> None:
+        raise SafeSegmentedError(
+            "safe_tokenization_incompatible_tokenizer",
+            "safe tokenization catalog literal cannot be encoded without reserved IDs",
+            reason={"category": "reserved_id_set_overlap", "literal": "overlap"},
+            literal="overlap",
+        )
+
+    monkeypatch.setattr("orchard_tokenizer.cli.precompute_safe_ids", raise_overlap)
+    bundle = _make_segmented_bundle(tmp_path)
+    payload = preflight_payload(bundle, ["<|im_end|>", "<|im_start|>"])
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    assert result["compatible"] is False
+    assert result["template_compatible"] is True
+    assert result["incompatibility_reason"] == {
+        "category": "reserved_id_set_overlap",
+        "literal": "overlap",
+    }
+
+
+def test_preflight_safe_tokenization_empty_literal_returns_compatible_false(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    payload = preflight_payload(bundle, [""])
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    assert result["compatible"] is False
+    assert result["template_compatible"] is True
+    assert result["incompatibility_reason"] == {
+        "category": "empty_literal",
+        "literal": "",
+    }
+
+
+def test_preflight_safe_tokenization_catalog_hash_mismatch_returns_error_envelope(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    payload = preflight_payload(bundle, ["<|im_end|>"])
+    payload["safe_tokenization"]["catalog_sha256"] = "0" * 64
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "safe_tokenization_catalog_hash_mismatch"
+    assert response["error"]["details"]["reason"]["category"] == "catalog_hash_mismatch"
+
+
+def test_preflight_safe_tokenization_missing_assets_returns_error_envelope(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    payload = preflight_payload(bundle, ["<|im_end|>"])
+    payload["assets"]["tokenizer_path"] = str(tmp_path / "missing-tokenizer.json")
+
+    assert main(["--request-json", json.dumps(payload)]) == 3
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "missing_assets"
+
+
+def test_preflight_safe_tokenization_unsupported_command_for_v2_payload_returns_error(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    payload = preflight_payload(bundle, ["<|im_end|>"])
+    payload["contract_version"] = 2
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["contract_version"] == 2
+    assert response["error"]["category"] == "invalid_input"
+    assert response["error"]["message"] == "preflight_safe_tokenization requires contract_version 3"
+
+
+def test_preflight_safe_tokenization_unsupported_tokenizer_returns_error(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    payload = preflight_payload(bundle, ["<|im_end|>"])
+    payload["assets"]["tokenizer_kind"] = "sentencepiece_tokenizer_model"
+
+    assert main(["--request-json", json.dumps(payload)]) == 4
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "unsupported_tokenizer"
+
+
 def _make_segmented_bundle(tmp_path: Path) -> dict[str, Path]:
     tokenizer_path = _build_segmented_tokenizer(tmp_path)
     tokenizer_config_path = tmp_path / "tokenizer_config.json"
@@ -947,3 +1150,36 @@ def segmented_payload(bundle: dict[str, Path], control_tokens: list[str]) -> dic
             "tool_choice": None,
         },
     }
+
+
+def preflight_payload(bundle: dict[str, Path], control_tokens: list[str]) -> dict[str, Any]:
+    payload = segmented_payload(bundle, control_tokens)
+    payload["command"] = "preflight_safe_tokenization"
+    del payload["request"]
+    return payload
+
+
+def assert_single_success_result(response: dict[str, Any]) -> dict[str, Any]:
+    assert response["contract_version"] == 3
+    assert response["ok"] is True
+    result = response["result"]
+    assert "ok" not in result
+    assert "result" not in result
+    return cast(dict[str, Any], result)
+
+
+def assert_dual_render_mismatch_result(result: dict[str, Any]) -> None:
+    assert result["compatible"] is False
+    assert result["template_compatible"] is False
+    assert result["incompatibility_reason"]["category"] == "dual_render_mismatch"
+    assert result["incompatibility_reason"]["leaf_class"] == "messages[0].content"
+    assert result["incompatibility_reason"]["sentinel_index"] == 0
+    assert isinstance(result["incompatibility_reason"]["first_diff_offset"], int)
+
+
+def write_template_that_branches_on_empty(path: Path) -> None:
+    path.write_text(
+        "{% if messages[0]['content'] == '' %}EMPTY{% else %}"
+        "{{ messages[0]['content'] }}{% endif %}",
+        encoding="utf-8",
+    )

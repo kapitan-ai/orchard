@@ -1218,8 +1218,7 @@ Offline-importable model bundle SHALL be a tarball or directory with manifest:
       "extra_count": 1
     },
     "compatible": true,
-    "template_compatible": true,
-    "incompatibility_reason": null
+    "template_compatible": true
   },
   "runtime_requirements": {
     "adapter": "mlx_lm",
@@ -1284,11 +1283,48 @@ deduplicated list of non-empty strings, SHALL be a subset of
 `extra_control_token_strings`; when `extra_control_token_strings` is absent,
 `extra_count` SHALL be `0`.
 
-`compatible`, `template_compatible`, and `incompatibility_reason` are parsed for
-forward compatibility. Runtime components SHALL NOT mutate bundle manifests.
-BundleBuilder SHALL NOT write eager compatibility outcomes in Phase 1; writing
-`compatible=false`, `template_compatible=false`, or an incompatibility reason is
-reserved for a later compatibility-checking phase.
+When eager safe-tokenization preflight finds a chat-template incompatibility,
+the `safe_tokenization` object SHALL carry a structured verdict such as:
+
+```json
+{
+  "control_tokens": ["</s>", "<s>", "<|im_end|>", "<|im_start|>"],
+  "catalog_sha256": "64-character lowercase hex",
+  "catalog_source": {
+    "added_tokens_count": 2,
+    "config_singletons_count": 2,
+    "additional_special_tokens_count": 0,
+    "chat_template_literals_count": 0,
+    "wrapper_tool_markers_count": 0,
+    "extra_count": 0
+  },
+  "compatible": false,
+  "template_compatible": false,
+  "incompatibility_reason": {
+    "category": "dual_render_mismatch",
+    "leaf_class": "messages[0].content",
+    "sentinel_index": 0,
+    "first_diff_offset": 12
+  }
+}
+```
+
+Accepted `incompatibility_reason.category` values are
+`per_codepoint_decode_mismatch`, `reserved_id_persists`,
+`reserved_id_set_overlap`, `empty_literal`, and `dual_render_mismatch`.
+`compatible`, `template_compatible`, and `incompatibility_reason` are written by
+BundleBuilder and `Orchard.Models.Importer` at bundle-build or import time when
+eager preflight is enabled. Runtime components SHALL NOT mutate bundle
+manifests. Helper failure or timeout MUST omit these verdict fields entirely and
+MUST NOT write JSON `null`.
+
+For imported bundles, a manifest-authored positive declaration
+(`compatible=true` and `template_compatible=true`) MAY be trusted only after the
+import pipeline has validated bundle identity and structure. This trust lets the
+importer skip redundant preflight and lets runtime seed the positive
+compatibility cache, subject to the operator kill switch for manifest
+compatibility declarations. Detecting post-import tokenizer/template drift is
+deferred to a later hardening phase.
 
 `resident_memory_bytes` is static manifest-derived metadata in the current
 slice: it is a lower-bound/payload-size estimate derived from bundle artifacts

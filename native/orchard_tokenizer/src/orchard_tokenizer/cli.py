@@ -54,6 +54,15 @@ SENTENCEPIECE_KINDS: Final[set[str]] = {
     "sentencepiece_tokenizer_model",
 }
 _SKIP_SENTINEL_PREFLIGHT_ENV: Final[str] = "ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT"
+_DETERMINISTIC_PREFLIGHT_INCOMPATIBILITIES: Final[frozenset[str]] = frozenset(
+    {
+        "per_codepoint_decode_mismatch",
+        "reserved_id_persists",
+        "reserved_id_set_overlap",
+        "empty_literal",
+        "dual_render_mismatch",
+    }
+)
 
 
 @dataclass(slots=True)
@@ -255,6 +264,41 @@ def execute_contract(payload: dict[str, Any]) -> dict[str, Any]:
         except FileNotFoundError as exc:
             raise TokenizerCliError("missing_assets", str(exc), 3) from exc
 
+    if command == "preflight_safe_tokenization":
+        if int(contract_version) != CONTRACT_VERSION:
+            raise TokenizerCliError(
+                "invalid_input",
+                "preflight_safe_tokenization requires contract_version 3",
+                2,
+            )
+
+        try:
+            return {
+                "contract_version": int(contract_version),
+                **_execute_preflight_safe_tokenization(payload),
+            }
+        except SafeSegmentedError as exc:
+            reason = exc.reason if isinstance(exc.reason, dict) else {}
+            category = reason.get("category")
+            if category in _DETERMINISTIC_PREFLIGHT_INCOMPATIBILITIES:
+                return {
+                    "contract_version": int(contract_version),
+                    "compatible": False,
+                    "template_compatible": category != "dual_render_mismatch",
+                    "incompatibility_reason": reason,
+                }
+
+            raise TokenizerCliError(
+                exc.category,
+                str(exc),
+                2,
+                details_for_error(exc),
+            ) from exc
+        except FileNotFoundError as exc:
+            raise TokenizerCliError("missing_assets", str(exc), 3) from exc
+        except OSError as exc:
+            raise TokenizerCliError("missing_assets", str(exc), 3) from exc
+
     raise TokenizerCliError("invalid_input", f"unsupported command: {command!r}", 2)
 
 
@@ -289,6 +333,70 @@ def _execute_render_and_count(payload: dict[str, Any], contract_version: int) ->
         "contract_version": contract_version,
         "rendered_prompt": rendered_prompt,
         "input_token_count": input_token_count,
+    }
+
+
+def _execute_preflight_safe_tokenization(payload: dict[str, Any]) -> dict[str, Any]:
+    assets = require_mapping(payload, "assets")
+
+    tokenizer_kind = require_non_empty_string(assets, "tokenizer_kind", category="invalid_input")
+    if tokenizer_kind not in HF_TOKENIZER_KINDS:
+        raise TokenizerCliError(
+            "unsupported_tokenizer",
+            f"preflight_safe_tokenization requires a HuggingFace tokenizer, got: {tokenizer_kind}",
+            4,
+        )
+
+    tokenizer_path = Path(
+        require_non_empty_string(assets, "tokenizer_path", category="missing_assets")
+    )
+    tokenizer_config_path = Path(
+        require_non_empty_string(assets, "tokenizer_config_path", category="missing_assets")
+    )
+    chat_template_path = Path(
+        require_non_empty_string(assets, "chat_template_path", category="missing_assets")
+    )
+
+    if not tokenizer_config_path.is_file():
+        raise TokenizerCliError(
+            "missing_assets",
+            f"tokenizer config asset is missing: {tokenizer_config_path}",
+            3,
+        )
+
+    control_tokens, expected_catalog_sha256 = _require_safe_tokenization_catalog(payload)
+    actual_catalog_sha256 = catalog_sha256(control_tokens)
+    if actual_catalog_sha256 != expected_catalog_sha256:
+        raise SafeSegmentedError(
+            "safe_tokenization_catalog_hash_mismatch",
+            "safe tokenization catalog hash does not match control_tokens",
+            reason={
+                "category": "catalog_hash_mismatch",
+                "expected": expected_catalog_sha256,
+                "actual": actual_catalog_sha256,
+            },
+        )
+
+    try:
+        tokenizer_template, tokenizer_safe = load_two_tokenizers(tokenizer_path)
+    except Exception as exc:
+        raise TokenizerCliError(
+            "missing_assets",
+            f"tokenizer asset is invalid: {tokenizer_path}",
+            3,
+        ) from exc
+
+    precompute_safe_ids(control_tokens, tokenizer_template, tokenizer_safe)
+    _run_template_sentinel_preflight(
+        control_tokens,
+        chat_template_path,
+        tokenizer_config_path,
+    )
+
+    return {
+        "compatible": True,
+        "template_compatible": True,
+        "incompatibility_reason": None,
     }
 
 

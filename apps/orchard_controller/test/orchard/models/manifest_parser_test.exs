@@ -68,6 +68,38 @@ defmodule Orchard.Models.ManifestParserTest do
       assert {:ok, %ModelManifest{} = manifest} = ManifestParser.parse_json(json)
       assert manifest.tokenizer.config_path == "tokenizer_config.json"
       assert manifest.safe_tokenization.compatible == true
+      refute manifest.safe_tokenization.preflight_compatible_declared?
+    end
+
+    test "tracks explicit positive preflight verdict presence" do
+      json =
+        valid_manifest_json_with_safe_tokenization()
+        |> Jason.decode!()
+        |> put_in(["safe_tokenization", "compatible"], true)
+        |> put_in(["safe_tokenization", "template_compatible"], true)
+        |> Jason.encode!()
+
+      assert {:ok, %ModelManifest{} = manifest} = ManifestParser.parse_json(json)
+      assert manifest.safe_tokenization.preflight_compatible_declared?
+    end
+
+    test "does not track partial positive preflight verdict presence" do
+      json =
+        valid_manifest_json_with_safe_tokenization()
+        |> Jason.decode!()
+        |> put_in(["safe_tokenization", "template_compatible"], true)
+        |> Jason.encode!()
+
+      assert {:ok, %ModelManifest{} = manifest} = ManifestParser.parse_json(json)
+      refute manifest.safe_tokenization.preflight_compatible_declared?
+    end
+
+    test "does not track absent preflight verdict presence" do
+      assert {:ok, %ModelManifest{} = manifest} =
+               valid_manifest_json_with_safe_tokenization()
+               |> ManifestParser.parse_json()
+
+      refute manifest.safe_tokenization.preflight_compatible_declared?
     end
 
     test "rejects non-object JSON" do
@@ -154,6 +186,17 @@ defmodule Orchard.Models.ManifestParserTest do
         |> Jason.encode!()
 
       assert {:error, {:validation, _message}} = ManifestParser.parse_json(json)
+    end
+
+    test "rejects safe_tokenization missing control_tokens" do
+      json =
+        valid_manifest_json_with_safe_tokenization()
+        |> Jason.decode!()
+        |> update_in(["safe_tokenization"], &Map.delete(&1, "control_tokens"))
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "control_tokens is required"
     end
 
     test "rejects control_tokens when value is not a list" do
@@ -421,6 +464,60 @@ defmodule Orchard.Models.ManifestParserTest do
       assert message =~ "requires incompatibility_reason"
     end
 
+    test "rejects compatible absent with incompatibility reason set" do
+      json =
+        valid_manifest_json_with_safe_tokenization(false, "reserved_id_persists")
+        |> Jason.decode!()
+        |> update_in(["safe_tokenization"], &Map.delete(&1, "compatible"))
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "incompatibility_reason is not allowed when compatible is absent"
+    end
+
+    test "rejects template_compatible false with non-dual-render category" do
+      json =
+        valid_manifest_json_with_safe_tokenization(false, "reserved_id_persists")
+        |> Jason.decode!()
+        |> put_in(["safe_tokenization", "template_compatible"], false)
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+
+      assert message =~
+               "template_compatible=false is only valid with incompatibility_reason.category=dual_render_mismatch"
+    end
+
+    test "accepts safe_tokenization with reserved_id_set_overlap reason" do
+      json = valid_manifest_json_with_safe_tokenization(false, "reserved_id_set_overlap")
+
+      assert {:ok, %ModelManifest{} = manifest} = ManifestParser.parse_json(json)
+      assert manifest.safe_tokenization.compatible == false
+
+      assert manifest.safe_tokenization.incompatibility_reason.category ==
+               "reserved_id_set_overlap"
+    end
+
+    test "accepts safe_tokenization with empty_literal reason" do
+      json =
+        valid_manifest_json_with_safe_tokenization(false, "empty_literal")
+        |> Jason.decode!()
+        |> put_in(["safe_tokenization", "incompatibility_reason", "literal"], "")
+        |> Jason.encode!()
+
+      assert {:ok, %ModelManifest{} = manifest} = ManifestParser.parse_json(json)
+      assert manifest.safe_tokenization.compatible == false
+      assert manifest.safe_tokenization.incompatibility_reason.category == "empty_literal"
+      assert manifest.safe_tokenization.incompatibility_reason.literal == ""
+    end
+
+    test "rejects empty_literal reason with non-empty literal" do
+      json = valid_manifest_json_with_safe_tokenization(false, "empty_literal")
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "empty_literal requires literal=\"\""
+    end
+
     test "accepts dual_render_mismatch only with template_compatible false and required fields" do
       json =
         valid_manifest_json_with_safe_tokenization(false, "dual_render_mismatch")
@@ -435,6 +532,81 @@ defmodule Orchard.Models.ManifestParserTest do
         |> Jason.encode!()
 
       assert {:ok, _manifest} = ManifestParser.parse_json(json)
+    end
+
+    test "rejects dual_render_mismatch missing leaf_class" do
+      json =
+        valid_dual_render_mismatch_json()
+        |> Jason.decode!()
+        |> update_in(
+          ["safe_tokenization", "incompatibility_reason"],
+          &Map.delete(&1, "leaf_class")
+        )
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "dual_render_mismatch requires leaf_class"
+    end
+
+    test "rejects dual_render_mismatch missing sentinel_index" do
+      json =
+        valid_dual_render_mismatch_json()
+        |> Jason.decode!()
+        |> update_in(
+          ["safe_tokenization", "incompatibility_reason"],
+          &Map.delete(&1, "sentinel_index")
+        )
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "dual_render_mismatch requires non-negative sentinel_index"
+    end
+
+    test "rejects dual_render_mismatch missing first_diff_offset" do
+      json =
+        valid_dual_render_mismatch_json()
+        |> Jason.decode!()
+        |> update_in(
+          ["safe_tokenization", "incompatibility_reason"],
+          &Map.delete(&1, "first_diff_offset")
+        )
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "dual_render_mismatch requires non-negative first_diff_offset"
+    end
+
+    test "rejects dual_render_mismatch negative sentinel_index" do
+      json =
+        valid_dual_render_mismatch_json()
+        |> Jason.decode!()
+        |> put_in(["safe_tokenization", "incompatibility_reason", "sentinel_index"], -1)
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "dual_render_mismatch requires non-negative sentinel_index"
+    end
+
+    test "rejects dual_render_mismatch negative first_diff_offset" do
+      json =
+        valid_dual_render_mismatch_json()
+        |> Jason.decode!()
+        |> put_in(["safe_tokenization", "incompatibility_reason", "first_diff_offset"], -1)
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "dual_render_mismatch requires non-negative first_diff_offset"
+    end
+
+    test "rejects dual_render_mismatch with template_compatible true" do
+      json =
+        valid_dual_render_mismatch_json()
+        |> Jason.decode!()
+        |> put_in(["safe_tokenization", "template_compatible"], true)
+        |> Jason.encode!()
+
+      assert {:error, {:validation, message}} = ManifestParser.parse_json(json)
+      assert message =~ "dual_render_mismatch requires template_compatible=false"
     end
 
     test "parses manifest without optional chat_template" do
@@ -458,6 +630,19 @@ defmodule Orchard.Models.ManifestParserTest do
       assert {:ok, %ModelManifest{size_bytes: nil, resident_memory_bytes: nil}} =
                ManifestParser.parse_json(json)
     end
+  end
+
+  defp valid_dual_render_mismatch_json do
+    valid_manifest_json_with_safe_tokenization(false, "dual_render_mismatch")
+    |> Jason.decode!()
+    |> put_in(["safe_tokenization", "template_compatible"], false)
+    |> put_in(["safe_tokenization", "incompatibility_reason"], %{
+      "category" => "dual_render_mismatch",
+      "leaf_class" => "tool_call",
+      "sentinel_index" => 0,
+      "first_diff_offset" => 1
+    })
+    |> Jason.encode!()
   end
 
   defp valid_manifest_json do

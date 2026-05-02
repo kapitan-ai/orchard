@@ -49,6 +49,22 @@ defmodule Orchard.Tokenizer.CompatibilityCache do
     )
   end
 
+  @spec put_compatible_if_safe(String.t(), String.t(), compatibility_metadata()) :: :ok
+  def put_compatible_if_safe(
+        bundle_sha256,
+        catalog_sha256,
+        %{template_compatible: template_compatible} = metadata
+      )
+      when is_binary(bundle_sha256) and is_binary(catalog_sha256) and
+             is_boolean(template_compatible) do
+    compatible_metadata = normalize_compatible_metadata!(metadata, template_compatible)
+
+    GenServer.call(
+      __MODULE__,
+      {:put_compatible_if_safe, {bundle_sha256, catalog_sha256}, compatible_metadata}
+    )
+  end
+
   defp normalize_compatible_metadata!(
          %{sentinel_preflight_validated: sentinel_preflight_validated},
          template_compatible
@@ -92,6 +108,25 @@ defmodule Orchard.Tokenizer.CompatibilityCache do
   @impl true
   def handle_call({:put, key, verdict}, _from, state) do
     true = :ets.insert(@table, {key, verdict})
+    {:reply, :ok, state}
+  end
+
+  @impl true
+  def handle_call({:put_compatible_if_safe, key, metadata}, _from, state) do
+    case :ets.lookup(@table, key) do
+      [] ->
+        true = :ets.insert(@table, {key, {:compatible, metadata}})
+
+      [{^key, {:compatible, %{template_compatible: true}}}] ->
+        true = :ets.insert(@table, {key, {:compatible, metadata}})
+
+      [{^key, {:compatible, %{template_compatible: false}}}] ->
+        :ok
+
+      [{^key, {:incompatible, _reason}}] ->
+        :ok
+    end
+
     {:reply, :ok, state}
   end
 

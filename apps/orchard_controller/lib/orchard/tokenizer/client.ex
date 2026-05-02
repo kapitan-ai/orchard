@@ -7,14 +7,30 @@ defmodule Orchard.Tokenizer.Client do
   alias Orchard.Inference.ToolingValidation
   alias Orchard.ModelManifest
   alias Orchard.PathUtils
-  alias Orchard.Tokenizer.{CallerStrings, CompatibilityCache, ControlTokenDetector, Telemetry}
+
+  alias Orchard.Tokenizer.{
+    CallerStrings,
+    CompatibilityCache,
+    ControlTokenDetector,
+    HelperOutputCollector,
+    HelperRequestTransport,
+    Telemetry
+  }
 
   @render_and_count_contract_version 2
   @render_and_count_segmented_contract_version 3
   @default_timeout_ms 5_000
+  @default_runtime_max_stdout_bytes 16_777_216
   @control_token_catalog_kinds ~w(huggingface_tokenizer_json)
   @segmented_tokenizer_kinds ~w(huggingface_tokenizer_json tokenizer_json)
+  @tokenizer_incompatibility_categories ~w(
+    per_codepoint_decode_mismatch
+    reserved_id_persists
+    reserved_id_set_overlap
+    empty_literal
+  )
   @skip_sentinel_preflight_env "ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT"
+  @sha256_hex ~r/\A[0-9a-f]{64}\z/
 
   @type tokenization_result :: %{
           required(:rendered_prompt) => binary(),
@@ -31,6 +47,7 @@ defmodule Orchard.Tokenizer.Client do
            | :safe_tokenization_incompatible_template
            | :safe_tokenization_marker_collision
            | :safe_tokenization_catalog_hash_mismatch, String.t()}
+          | {:stdout_too_large, pos_integer()}
           | :invalid_response
           | :timeout
           | :unavailable
@@ -74,6 +91,7 @@ defmodule Orchard.Tokenizer.Client do
 
   defp port_tokenize(%CanonicalRequest{} = request, opts) do
     timeout_ms = Keyword.get(opts, :timeout_ms, @default_timeout_ms)
+    max_stdout_bytes = runtime_max_stdout_bytes(opts)
 
     with {:ok, plan} <- build_tokenization_plan(request, opts),
          :ok <- observe_control_token_inputs(request, plan.payload, opts),
@@ -83,6 +101,7 @@ defmodule Orchard.Tokenizer.Client do
              executable_path,
              Jason.encode!(plan.payload),
              timeout_ms,
+             max_stdout_bytes,
              Map.get(plan, :helper_env, [])
            ),
          {:ok, response} <- decode_response(response_json) do
@@ -136,13 +155,14 @@ defmodule Orchard.Tokenizer.Client do
   defp build_segmented_plan(
          %CanonicalRequest{} = request,
          opts,
-         %ModelManifest{} = manifest,
+         %ModelManifest{} = _manifest,
          safe_tokenization
        ) do
     with :ok <- ensure_manifest_safe_tokenization_compatible(safe_tokenization),
-         {:ok, cache_key} <- compatibility_cache_key(manifest, safe_tokenization),
-         {:ok, cache_metadata} <- ensure_cache_compatible(cache_key),
-         {:ok, assets} <- resolve_segmented_assets(opts) do
+         {:ok, assets} <- resolve_segmented_assets(opts),
+         {:ok, cache_key} <- compatibility_cache_key(opts, safe_tokenization),
+         :ok <- maybe_seed_manifest_preflight_compatible(cache_key, safe_tokenization),
+         {:ok, cache_metadata} <- ensure_cache_compatible(cache_key) do
       {:ok,
        %{
          mode: :segmented,
@@ -273,19 +293,51 @@ defmodule Orchard.Tokenizer.Client do
 
   defp ensure_manifest_safe_tokenization_compatible(_safe_tokenization), do: :ok
 
-  defp compatibility_cache_key(
-         %ModelManifest{sha256: bundle_sha256},
-         %{catalog_sha256: catalog_sha256}
-       )
-       when is_binary(bundle_sha256) and bundle_sha256 != "" and
-              is_binary(catalog_sha256) and catalog_sha256 != "" do
-    {:ok, {bundle_sha256, catalog_sha256}}
+  defp compatibility_cache_key(opts, %{catalog_sha256: catalog_sha256})
+       when is_binary(catalog_sha256) and catalog_sha256 != "" do
+    case Keyword.get(opts, :bundle_sha256) do
+      bundle_sha256 when is_binary(bundle_sha256) ->
+        if String.match?(bundle_sha256, @sha256_hex) do
+          {:ok, {bundle_sha256, catalog_sha256}}
+        else
+          {:error,
+           {:invalid_input,
+            "tokenizer opts must include trusted :bundle_sha256 as 64-character lowercase hex for segmented tokenization"}}
+        end
+
+      _other ->
+        {:error,
+         {:invalid_input,
+          "tokenizer opts must include trusted :bundle_sha256 for segmented tokenization"}}
+    end
   end
 
-  defp compatibility_cache_key(_manifest, _safe_tokenization) do
+  defp compatibility_cache_key(_opts, _safe_tokenization) do
     {:error,
      {:invalid_input,
       "manifest safe_tokenization must include a non-empty catalog_sha256 for segmented tokenization"}}
+  end
+
+  # Positive manifest declarations share the import-time trust boundary: they may
+  # seed only when the operator accepts authored compatibility claims.
+  defp maybe_seed_manifest_preflight_compatible(
+         {bundle_sha256, catalog_sha256},
+         %{preflight_compatible_declared?: true}
+       ) do
+    if trust_manifest_compatibility_declarations?() do
+      CompatibilityCache.put_compatible_if_safe(bundle_sha256, catalog_sha256, %{
+        template_compatible: true,
+        sentinel_preflight_validated: true
+      })
+    else
+      :ok
+    end
+  end
+
+  defp maybe_seed_manifest_preflight_compatible(_cache_key, _safe_tokenization), do: :ok
+
+  defp trust_manifest_compatibility_declarations? do
+    Application.get_env(:orchard_controller, :trust_manifest_compatibility_declarations, true)
   end
 
   defp ensure_cache_compatible({bundle_sha256, catalog_sha256}) do
@@ -414,8 +466,7 @@ defmodule Orchard.Tokenizer.Client do
          tokenizer_path: tokenizer_path,
          tokenizer_config_path: tokenizer_config_path,
          chat_template_path: chat_template_path,
-         safe_tokenization: manifest.safe_tokenization,
-         bundle_sha256: manifest.sha256
+         safe_tokenization: manifest.safe_tokenization
        }}
     end
   end
@@ -552,32 +603,58 @@ defmodule Orchard.Tokenizer.Client do
 
   defp resolve_executable(_path), do: {:error, :unavailable}
 
-  defp run_executable(executable_path, request_json, timeout_ms, helper_env)
-       when is_binary(executable_path) and is_binary(request_json) and is_integer(timeout_ms) and
-              timeout_ms > 0 and is_list(helper_env) do
-    request_path = write_request_file!(request_json)
+  defp runtime_max_stdout_bytes(opts) do
+    case Keyword.get(opts, :max_stdout_bytes) do
+      value when is_integer(value) and value > 0 ->
+        value
 
-    try do
-      port =
-        Port.open(
-          {:spawn_executable, ~c"/bin/sh"},
-          [
-            :binary,
-            :exit_status,
-            :use_stdio,
-            {:args,
-             ["-c", ~s(exec "$1" < "$2"), "orchard-tokenizer-port", executable_path, request_path]}
-          ] ++ port_env_options(helper_env)
-        )
-
-      collect_port_output(port, [], timeout_ms)
-    after
-      File.rm(request_path)
+      _other ->
+        case Application.get_env(:orchard_controller, :tokenizer_runtime_max_stdout_bytes) do
+          value when is_integer(value) and value > 0 -> value
+          _other -> @default_runtime_max_stdout_bytes
+        end
     end
+  end
+
+  defp run_executable(executable_path, request_json, timeout_ms, max_stdout_bytes, helper_env)
+       when is_binary(executable_path) and is_binary(request_json) and is_integer(timeout_ms) and
+              timeout_ms > 0 and is_integer(max_stdout_bytes) and max_stdout_bytes > 0 and
+              is_list(helper_env) do
+    HelperRequestTransport.with_secure_request_file(
+      "orchard-tokenizer-request",
+      request_json,
+      fn request_path ->
+        port =
+          Port.open(
+            {:spawn_executable, ~c"/bin/sh"},
+            [
+              :binary,
+              :exit_status,
+              :use_stdio,
+              {:args,
+               [
+                 "-c",
+                 ~s(exec "$1" < "$2"),
+                 "orchard-tokenizer-port",
+                 executable_path,
+                 request_path
+               ]}
+            ] ++ port_env_options(helper_env)
+          )
+
+        HelperOutputCollector.collect(port, timeout_ms, max_stdout_bytes)
+      end
+    )
+    |> map_request_transport_failure()
   rescue
     ArgumentError ->
       {:error, :unavailable}
   end
+
+  defp map_request_transport_failure({:error, {:request_transport_failed, _reason}}),
+    do: {:error, :unavailable}
+
+  defp map_request_transport_failure(result), do: result
 
   defp port_env_options([]), do: []
 
@@ -588,31 +665,6 @@ defmodule Orchard.Tokenizer.Client do
       end)
 
     [{:env, env}]
-  end
-
-  defp write_request_file!(request_json) do
-    request_path =
-      Path.join(
-        System.tmp_dir!(),
-        "orchard-tokenizer-request-#{System.unique_integer([:positive])}.json"
-      )
-
-    File.write!(request_path, request_json)
-    request_path
-  end
-
-  defp collect_port_output(port, chunks, timeout_ms) do
-    receive do
-      {^port, {:data, data}} ->
-        collect_port_output(port, [data | chunks], timeout_ms)
-
-      {^port, {:exit_status, exit_status}} ->
-        {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary(), exit_status}
-    after
-      timeout_ms ->
-        Port.close(port)
-        {:error, :timeout}
-    end
   end
 
   defp decode_response(response_json) when is_binary(response_json) do
@@ -713,32 +765,84 @@ defmodule Orchard.Tokenizer.Client do
   defp normalize_segmented_success(_result, _cache_key), do: {:error, :invalid_response}
 
   defp ensure_segmented_result_compatible(result, cache_key) do
-    compatible? = Map.get(result, "compatible", true)
-    template_compatible? = Map.get(result, "template_compatible", true)
+    compatible? = Map.get(result, "compatible")
+    template_compatible? = Map.get(result, "template_compatible")
+    incompatibility_reason = Map.get(result, "incompatibility_reason")
 
     cond do
-      compatible? != true ->
-        reason = Map.get(result, "incompatibility_reason") || %{"category" => "unknown"}
+      not is_boolean(compatible?) ->
+        {:error, :invalid_response}
+
+      not is_boolean(template_compatible?) ->
+        {:error, :invalid_response}
+
+      compatible? == true and template_compatible? == true and is_nil(incompatibility_reason) ->
+        :ok
+
+      compatible? == false ->
+        validate_incompatible_segmented_success(
+          template_compatible?,
+          incompatibility_reason,
+          cache_key
+        )
+
+      true ->
+        {:error, :invalid_response}
+    end
+  end
+
+  defp validate_incompatible_segmented_success(template_compatible?, reason, cache_key) do
+    case validate_segmented_incompatibility_reason(reason, template_compatible?) do
+      :ok ->
         maybe_cache_segmented_incompatibility(cache_key, reason)
 
         {:error,
          {normalize_reason_category(reason), "safe tokenization helper returned incompatible"}}
 
-      template_compatible? != true ->
-        reason =
-          Map.get(result, "incompatibility_reason") ||
-            %{"category" => "safe_tokenization_incompatible_template"}
-
-        maybe_cache_segmented_incompatibility(cache_key, reason)
-
-        {:error,
-         {:safe_tokenization_incompatible_template,
-          "safe tokenization helper returned template_compatible=false"}}
-
-      true ->
-        :ok
+      :error ->
+        {:error, :invalid_response}
     end
   end
+
+  defp validate_segmented_incompatibility_reason(
+         %{"category" => category} = reason,
+         template_compatible?
+       )
+       when category in @tokenizer_incompatibility_categories do
+    if template_compatible? == true and valid_tokenizer_reason?(reason, category) do
+      :ok
+    else
+      :error
+    end
+  end
+
+  defp validate_segmented_incompatibility_reason(
+         %{"category" => "dual_render_mismatch"} = reason,
+         template_compatible?
+       ) do
+    if template_compatible? == false and valid_dual_render_reason?(reason) do
+      :ok
+    else
+      :error
+    end
+  end
+
+  defp validate_segmented_incompatibility_reason(_reason, _template_compatible?), do: :error
+
+  defp valid_tokenizer_reason?(reason, "empty_literal"),
+    do: Map.get(reason, "literal") == ""
+
+  defp valid_tokenizer_reason?(reason, _category),
+    do: non_empty_binary?(Map.get(reason, "literal"))
+
+  defp valid_dual_render_reason?(reason) do
+    non_empty_binary?(Map.get(reason, "leaf_class")) and
+      non_negative_integer?(Map.get(reason, "sentinel_index")) and
+      non_negative_integer?(Map.get(reason, "first_diff_offset"))
+  end
+
+  defp non_empty_binary?(value), do: is_binary(value) and value != ""
+  defp non_negative_integer?(value), do: is_integer(value) and value >= 0
 
   defp valid_prompt_token_ids?(prompt_token_ids, input_token_count) do
     length(prompt_token_ids) == input_token_count and
@@ -816,12 +920,7 @@ defmodule Orchard.Tokenizer.Client do
     do: :safe_tokenization_incompatible_template
 
   defp normalize_reason_category_from_category(category)
-       when category in [
-              "per_codepoint_decode_mismatch",
-              "reserved_id_persists",
-              "reserved_id_set_overlap",
-              "empty_literal"
-            ],
+       when category in @tokenizer_incompatibility_categories,
        do: :safe_tokenization_incompatible_tokenizer
 
   defp normalize_reason_category_from_category(category),

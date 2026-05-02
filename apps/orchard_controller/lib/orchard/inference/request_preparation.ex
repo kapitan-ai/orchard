@@ -109,8 +109,12 @@ defmodule Orchard.Inference.RequestPreparation do
     bundle_root = uri_to_local_path(model.artifact_uri)
 
     case ManifestParser.parse_from_bundle(bundle_root) do
-      {:ok, manifest} -> {:ok, [manifest: manifest, bundle_root: bundle_root]}
-      {:error, _reason} -> {:error, manifest_tokenization_error()}
+      {:ok, manifest} ->
+        {:ok,
+         [manifest: manifest, bundle_root: bundle_root, bundle_sha256: model.artifact_sha256]}
+
+      {:error, _reason} ->
+        {:error, manifest_tokenization_error()}
     end
   end
 

@@ -5,6 +5,8 @@ defmodule Orchard.InferenceTest do
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
   alias Orchard.Inference
+  alias Orchard.Inference.ChatOrchestrator
+  alias Orchard.Models
   alias Orchard.Scheduler.{MultiNode, SingleNode}
   alias Orchard.Tokenizer.Client
 
@@ -12,7 +14,12 @@ defmodule Orchard.InferenceTest do
     @behaviour Orchard.Tokenizer.Client
 
     def tokenize(%CanonicalRequest{} = request, opts) do
-      {:ok, %{public_id: request.public_id, opts: opts, tokenizer: :fake}}
+      if Keyword.get(opts, :source) == :test do
+        {:ok, %{public_id: request.public_id, opts: opts, tokenizer: :fake}}
+      else
+        send(self(), {:fake_tokenizer_opts, opts})
+        {:ok, %{rendered_prompt: "fake", input_token_count: 1, prompt_token_ids: [1]}}
+      end
     end
   end
 
@@ -27,6 +34,8 @@ defmodule Orchard.InferenceTest do
   @config_env_vars [
     "DATABASE_URL",
     "MIX_RELEASE_NAME",
+    "ORCHARD_BUNDLE_BUILD_EAGER_PREFLIGHT_ENABLED",
+    "ORCHARD_BUNDLE_BUILD_PREFLIGHT_TIMEOUT_MS",
     "ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES",
     "ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE",
     "ORCHARD_SUPPORT_ROOT",
@@ -35,7 +44,9 @@ defmodule Orchard.InferenceTest do
     "SECRET_KEY_BASE"
   ]
 
-  setup do
+  setup tags do
+    if tags[:db], do: Orchard.DataCase.setup_sandbox(tags)
+
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
     env_snapshot =
@@ -76,6 +87,45 @@ defmodule Orchard.InferenceTest do
              Client.executable(),
              "/native/orchard_tokenizer/bin/orchard-tokenizer"
            )
+  end
+
+  @tag :db
+  test "request preparation passes trusted catalog artifact sha256 to tokenizer opts" do
+    bundle_root = Path.expand("../fixtures/bundles/test-model-bundle", __DIR__)
+    artifact_sha256 = String.duplicate("d", 64)
+
+    put_inference(tokenizer_mode: :port, tokenizer_client_impl: FakeTokenizer)
+
+    assert {:ok, _model} =
+             Models.create_model(%{
+               model_id: "cache-authority-model",
+               version: "v1",
+               artifact_uri: "file://" <> bundle_root,
+               artifact_source_uri: "file://" <> bundle_root,
+               artifact_sha256: artifact_sha256,
+               artifact_size_bytes: 1_024,
+               resident_memory_bytes: 2_048,
+               kv_cache_bytes_per_token: 16,
+               prefill_workspace_bytes_per_token: 8,
+               max_context_tokens: 8_192,
+               state: :active,
+               format: "mlx",
+               capabilities: ["chat"],
+               tokenizer: %{"kind" => "huggingface_tokenizer_json", "path" => "tokenizer.json"},
+               runtime_requirements: %{"adapter" => "mlx_lm"}
+             })
+
+    assert {:ok, canonical, _model} =
+             ChatOrchestrator.prepare(%{
+               "model" => "cache-authority-model@v1",
+               "messages" => [%{"role" => "user", "content" => "hello"}]
+             })
+
+    assert canonical.input_token_count == 1
+    assert_receive {:fake_tokenizer_opts, opts}
+    assert Keyword.fetch!(opts, :bundle_sha256) == artifact_sha256
+    assert Keyword.fetch!(opts, :bundle_root) == bundle_root
+    refute Keyword.fetch!(opts, :manifest).sha256 == artifact_sha256
   end
 
   test "tokenizer and scheduler seams are injectable" do
@@ -347,6 +397,56 @@ defmodule Orchard.InferenceTest do
     end
   end
 
+  describe "bundle-build safe-tokenization preflight env config" do
+    test "runtime.exs parses eager preflight flags" do
+      controller_config =
+        read_runtime_controller_config!(%{
+          "ORCHARD_BUNDLE_BUILD_EAGER_PREFLIGHT_ENABLED" => "false",
+          "ORCHARD_BUNDLE_BUILD_PREFLIGHT_TIMEOUT_MS" => "12345"
+        })
+
+      assert controller_config[:bundle_build_eager_preflight_enabled] == false
+      assert controller_config[:bundle_build_preflight_timeout_ms] == 12_345
+    end
+
+    test "runtime.exs parses trust manifest compatibility declarations false" do
+      controller_config =
+        read_runtime_controller_config!(%{
+          "ORCHARD_TRUST_MANIFEST_COMPATIBILITY_DECLARATIONS" => "false"
+        })
+
+      assert controller_config[:trust_manifest_compatibility_declarations] == false
+    end
+
+    test "runtime.exs fails loudly for invalid trust manifest compatibility env value" do
+      assert_raise RuntimeError,
+                   ~r/ORCHARD_TRUST_MANIFEST_COMPATIBILITY_DECLARATIONS must be a boolean/,
+                   fn ->
+                     read_runtime_controller_config!(%{
+                       "ORCHARD_TRUST_MANIFEST_COMPATIBILITY_DECLARATIONS" => "maybe"
+                     })
+                   end
+    end
+
+    test "runtime.exs fails loudly for invalid eager preflight env values" do
+      assert_raise RuntimeError,
+                   ~r/ORCHARD_BUNDLE_BUILD_EAGER_PREFLIGHT_ENABLED must be a boolean/,
+                   fn ->
+                     read_runtime_controller_config!(%{
+                       "ORCHARD_BUNDLE_BUILD_EAGER_PREFLIGHT_ENABLED" => "maybe"
+                     })
+                   end
+
+      assert_raise RuntimeError,
+                   ~r/ORCHARD_BUNDLE_BUILD_PREFLIGHT_TIMEOUT_MS must be > 0/,
+                   fn ->
+                     read_runtime_controller_config!(%{
+                       "ORCHARD_BUNDLE_BUILD_PREFLIGHT_TIMEOUT_MS" => "0"
+                     })
+                   end
+    end
+  end
+
   describe "prefix cache scoring env config" do
     test "runtime.exs parses ranking env and accepts above-cap max candidates" do
       inference =
@@ -528,7 +628,12 @@ defmodule Orchard.InferenceTest do
   end
 
   defp read_runtime_controller_inference!(overrides) do
-    support_root = Path.join(System.tmp_dir!(), "orchard-prefix-cache-scoring-runtime-test")
+    read_runtime_controller_config!(overrides)
+    |> Keyword.fetch!(:inference)
+  end
+
+  defp read_runtime_controller_config!(overrides) do
+    support_root = Path.join(System.tmp_dir!(), "orchard-runtime-config-test")
 
     base = %{
       "DATABASE_URL" => "ecto://postgres:postgres@localhost/orchard_config_eval",
@@ -541,7 +646,6 @@ defmodule Orchard.InferenceTest do
 
     read_config!(runtime_config_path(), :prod, Map.merge(base, overrides))
     |> Keyword.fetch!(:orchard_controller)
-    |> Keyword.fetch!(:inference)
   end
 
   defp read_dev_controller_inference!(overrides) do

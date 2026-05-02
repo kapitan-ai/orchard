@@ -40,6 +40,59 @@ defmodule Orchard.Tokenizer.CompatibilityCacheTest do
     assert {:incompatible, ^reason} = CompatibilityCache.get("bundle-a", "catalog-a")
   end
 
+  test "put_compatible_if_safe/3 seeds only unknown or compatible-positive verdicts" do
+    assert :ok =
+             CompatibilityCache.put_compatible_if_safe("bundle-a", "catalog-a", %{
+               template_compatible: true,
+               sentinel_preflight_validated: true
+             })
+
+    assert {:compatible, %{template_compatible: true, sentinel_preflight_validated: true}} =
+             CompatibilityCache.get("bundle-a", "catalog-a")
+
+    assert :ok =
+             CompatibilityCache.put_compatible("bundle-b", "catalog-b", %{
+               template_compatible: true
+             })
+
+    assert :ok =
+             CompatibilityCache.put_compatible_if_safe("bundle-b", "catalog-b", %{
+               template_compatible: true,
+               sentinel_preflight_validated: true
+             })
+
+    assert {:compatible, %{template_compatible: true, sentinel_preflight_validated: true}} =
+             CompatibilityCache.get("bundle-b", "catalog-b")
+  end
+
+  test "put_compatible_if_safe/3 preserves incompatible and template-incompatible verdicts" do
+    reason = %{"category" => "dual_render_mismatch"}
+
+    assert :ok = CompatibilityCache.put_incompatible("bundle-a", "catalog-a", reason)
+
+    assert :ok =
+             CompatibilityCache.put_compatible_if_safe("bundle-a", "catalog-a", %{
+               template_compatible: true,
+               sentinel_preflight_validated: true
+             })
+
+    assert {:incompatible, ^reason} = CompatibilityCache.get("bundle-a", "catalog-a")
+
+    assert :ok =
+             CompatibilityCache.put_compatible("bundle-b", "catalog-b", %{
+               template_compatible: false
+             })
+
+    assert :ok =
+             CompatibilityCache.put_compatible_if_safe("bundle-b", "catalog-b", %{
+               template_compatible: true,
+               sentinel_preflight_validated: true
+             })
+
+    assert {:compatible, %{template_compatible: false}} =
+             CompatibilityCache.get("bundle-b", "catalog-b")
+  end
+
   test "clear/0 removes all entries" do
     assert :ok =
              CompatibilityCache.put_compatible("bundle-a", "catalog-a", %{

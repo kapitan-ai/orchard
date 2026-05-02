@@ -18,12 +18,15 @@ defmodule Orchard.Models.BundleBuilder do
 
   alias Orchard.Models.ManifestParser
   alias Orchard.Models.MemoryEstimator
+  alias Orchard.Models.SafeTokenizationPreflight
+  alias Orchard.Tokenizer.{HelperOutputCollector, HelperRequestTransport}
 
   @template_candidates ["chat_template.jinja", "chat_template.jinja2"]
   @generated_template_name "chat_template.jinja"
   @tokenizer_config_name "tokenizer_config.json"
   @catalog_contract_version 3
   @default_catalog_timeout_ms 30_000
+  @default_catalog_max_stdout_bytes 1_048_576
   @config_singleton_token_keys ~w(bos_token eos_token pad_token unk_token cls_token sep_token mask_token)
 
   @spec prepare_bundle(String.t(), String.t(), map()) ::
@@ -61,6 +64,13 @@ defmodule Orchard.Models.BundleBuilder do
              tokenizer_json,
              tokenizer_config_asset,
              template_asset
+           ),
+         safe_tokenization =
+           maybe_run_eager_preflight(
+             download_dir,
+             tokenizer_config_asset,
+             template_asset,
+             safe_tokenization
            ),
          {:ok, size_bytes} <- compute_bundle_size(download_dir),
          resident_memory_bytes = estimate_resident_memory_bytes(download_dir),
@@ -482,7 +492,12 @@ defmodule Orchard.Models.BundleBuilder do
            resolve_catalog_executable(Orchard.Inference.tokenizer_executable()),
          payload = build_catalog_payload(download_dir, tokenizer_config_asset, template_asset),
          {:ok, response_json, exit_status} <-
-           run_catalog_helper(executable_path, Jason.encode!(payload), catalog_timeout_ms()),
+           run_catalog_helper(
+             executable_path,
+             Jason.encode!(payload),
+             catalog_timeout_ms(),
+             catalog_max_stdout_bytes()
+           ),
          {:ok, response} <- decode_json_response(response_json),
          {:ok, catalog} <- normalize_catalog_response(response, exit_status) do
       {:ok, catalog}
@@ -556,6 +571,13 @@ defmodule Orchard.Models.BundleBuilder do
     )
   end
 
+  defp catalog_max_stdout_bytes do
+    case Application.get_env(:orchard_controller, :bundle_build_catalog_max_stdout_bytes) do
+      value when is_integer(value) and value > 0 -> value
+      _other -> @default_catalog_max_stdout_bytes
+    end
+  end
+
   defp resolve_catalog_executable(path) when is_binary(path) and path != "" do
     case Path.type(path) do
       :absolute ->
@@ -576,63 +598,43 @@ defmodule Orchard.Models.BundleBuilder do
 
   defp resolve_catalog_executable(_path), do: {:error, :unavailable}
 
-  defp run_catalog_helper(executable_path, request_json, timeout_ms)
+  defp run_catalog_helper(executable_path, request_json, timeout_ms, max_stdout_bytes)
        when is_binary(executable_path) and is_binary(request_json) and is_integer(timeout_ms) and
-              timeout_ms > 0 do
-    request_path = write_catalog_request_file!(request_json)
-
-    try do
-      port =
-        Port.open(
-          {:spawn_executable, ~c"/bin/sh"},
-          [
-            :binary,
-            :exit_status,
-            :use_stdio,
-            {:args,
-             [
-               "-c",
-               ~s(exec "$1" < "$2"),
-               "orchard-tokenizer-catalog",
-               executable_path,
-               request_path
-             ]}
-          ]
-        )
-
-      collect_catalog_output(port, [], timeout_ms)
-    after
-      File.rm(request_path)
-    end
-  rescue
-    ArgumentError -> {:error, :unavailable}
+              timeout_ms > 0 and is_integer(max_stdout_bytes) and max_stdout_bytes > 0 do
+    HelperRequestTransport.with_secure_request_file(
+      "orchard-tokenizer-catalog",
+      request_json,
+      fn request_path ->
+        run_catalog_port(executable_path, request_path, timeout_ms, max_stdout_bytes)
+      end
+    )
   end
 
-  defp run_catalog_helper(_executable_path, _request_json, _timeout_ms), do: {:error, :timeout}
+  defp run_catalog_helper(_executable_path, _request_json, _timeout_ms, _max_stdout_bytes),
+    do: {:error, :timeout}
 
-  defp write_catalog_request_file!(request_json) do
-    request_path =
-      Path.join(
-        System.tmp_dir!(),
-        "orchard-tokenizer-catalog-request-#{System.unique_integer([:positive])}.json"
+  defp run_catalog_port(executable_path, request_path, timeout_ms, max_stdout_bytes) do
+    port =
+      Port.open(
+        {:spawn_executable, ~c"/bin/sh"},
+        [
+          :binary,
+          :exit_status,
+          :use_stdio,
+          {:args,
+           [
+             "-c",
+             ~s(exec "$1" < "$2"),
+             "orchard-tokenizer-catalog",
+             executable_path,
+             request_path
+           ]}
+        ]
       )
 
-    File.write!(request_path, request_json)
-    request_path
-  end
-
-  defp collect_catalog_output(port, chunks, timeout_ms) do
-    receive do
-      {^port, {:data, data}} ->
-        collect_catalog_output(port, [data | chunks], timeout_ms)
-
-      {^port, {:exit_status, exit_status}} ->
-        {:ok, chunks |> Enum.reverse() |> IO.iodata_to_binary(), exit_status}
-    after
-      timeout_ms ->
-        Port.close(port)
-        {:error, :timeout}
-    end
+    HelperOutputCollector.collect(port, timeout_ms, max_stdout_bytes)
+  rescue
+    ArgumentError -> {:error, :unavailable}
   end
 
   defp decode_json_response(response_json) when is_binary(response_json) do
@@ -716,6 +718,35 @@ defmodule Orchard.Models.BundleBuilder do
   defp normalize_catalog_error_category("invalid_input"), do: :invalid_input
   defp normalize_catalog_error_category("missing_assets"), do: :missing_assets
   defp normalize_catalog_error_category(_category), do: :internal_error
+
+  # -- Eager Safe Tokenization Preflight --------------------------------------
+
+  defp maybe_run_eager_preflight(
+         download_dir,
+         tokenizer_config_asset,
+         template_asset,
+         safe_tokenization
+       ) do
+    input = %{
+      bundle_dir: download_dir,
+      tokenizer_kind: "huggingface_tokenizer_json",
+      tokenizer_path: Path.join(download_dir, "tokenizer.json"),
+      tokenizer_config_path: tokenizer_config_path(tokenizer_config_asset),
+      chat_template_path: chat_template_path(download_dir, template_asset),
+      control_tokens: Map.get(safe_tokenization, "control_tokens"),
+      catalog_sha256: Map.get(safe_tokenization, "catalog_sha256")
+    }
+
+    input
+    |> SafeTokenizationPreflight.run()
+    |> then(&SafeTokenizationPreflight.merge_into_safe_tokenization_map(safe_tokenization, &1))
+  end
+
+  defp tokenizer_config_path(%{absolute_path: absolute_path}), do: absolute_path
+  defp tokenizer_config_path(_tokenizer_config_asset), do: nil
+
+  defp chat_template_path(download_dir, %{path: path}), do: Path.expand(path, download_dir)
+  defp chat_template_path(_download_dir, _template_asset), do: nil
 
   # -- Bundle Size Calculation -----------------------------------------------
 

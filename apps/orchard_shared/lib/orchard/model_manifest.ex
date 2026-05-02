@@ -80,7 +80,10 @@ defmodule Orchard.ModelManifest do
               catalog_source: nil,
               compatible: true,
               template_compatible: nil,
-              incompatibility_reason: nil
+              incompatibility_reason: nil,
+              compatible_declared?: false,
+              template_compatible_declared?: false,
+              preflight_compatible_declared?: false
 
     @type t :: %__MODULE__{
             control_tokens: [String.t()],
@@ -89,7 +92,10 @@ defmodule Orchard.ModelManifest do
             catalog_source: CatalogSource.t(),
             compatible: boolean(),
             template_compatible: boolean() | nil,
-            incompatibility_reason: IncompatibilityReason.t() | nil
+            incompatibility_reason: IncompatibilityReason.t() | nil,
+            compatible_declared?: boolean(),
+            template_compatible_declared?: boolean(),
+            preflight_compatible_declared?: boolean()
           }
   end
 

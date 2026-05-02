@@ -305,6 +305,540 @@ defmodule Orchard.Models.ImporterTest do
       persisted_model = Models.get_model!(model.id)
       assert persisted_model.resident_memory_bytes == 0
     end
+
+    test "eager preflight writes compatibility fields on import", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = create_safe_bundle(artifacts_root)
+      write_tokenizer_config!(source_dir)
+      helper = write_preflight_helper!(artifacts_root, compatible_preflight_response())
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+        imported_manifest = read_imported_manifest!(model)
+        assert imported_manifest["safe_tokenization"]["compatible"] == true
+        assert imported_manifest["safe_tokenization"]["template_compatible"] == true
+        refute Map.has_key?(imported_manifest["safe_tokenization"], "incompatibility_reason")
+      end)
+    end
+
+    test "eager preflight uses sibling tokenizer_config fallback during import", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = create_safe_bundle(artifacts_root)
+      write_tokenizer_config!(source_dir)
+
+      invocation_marker = Path.join(artifacts_root, "sibling-fallback-helper-invoked")
+
+      helper =
+        write_tokenizer_config_required_preflight_helper!(
+          artifacts_root,
+          compatible_preflight_response(),
+          invocation_marker
+        )
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+        imported_manifest = read_imported_manifest!(model)
+        assert imported_manifest["safe_tokenization"]["compatible"] == true
+        assert imported_manifest["safe_tokenization"]["template_compatible"] == true
+        assert File.exists?(invocation_marker)
+      end)
+    end
+
+    test "eager preflight merge rollback emits bundle_preflight error telemetry", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = create_safe_bundle(artifacts_root)
+      write_tokenizer_config!(source_dir)
+
+      helper =
+        write_readonly_manifest_preflight_helper!(artifacts_root, compatible_preflight_response())
+
+      event_ref = attach_telemetry([:orchard, :tokenizer, :bundle_preflight, :error])
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:error,
+                {:safe_tokenization_preflight_rollback_failed, {:manifest_write, message}}} =
+                 Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+        assert message =~ "failed to write"
+
+        assert_receive {^event_ref, [:orchard, :tokenizer, :bundle_preflight, :error],
+                        measurements, metadata}
+
+        assert measurements.count == 1
+        assert measurements.duration_ms == 0
+        assert is_integer(measurements.manifest_json_bytes)
+        assert metadata.reason == :merge_validation_failed
+        assert metadata.stage == :write_or_reparse
+        assert metadata.tokenizer_kind == "huggingface_tokenizer_json"
+        assert metadata.details.kind == :manifest_write
+        assert is_binary(metadata.details.detail)
+      end)
+    end
+
+    test "eager preflight aborts when trust disabled authored positive helper verdict cannot be persisted",
+         %{artifacts_root: artifacts_root} do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" => authored_positive_safe_tokenization_map()
+        })
+
+      write_tokenizer_config!(source_dir)
+
+      helper =
+        write_readonly_manifest_preflight_helper!(artifacts_root, compatible_preflight_response())
+
+      with_app_env(:trust_manifest_compatibility_declarations, false, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:error,
+                  {:safe_tokenization_untrusted_verdict_strip_failed,
+                   {:write_or_reparse, {:error, {:manifest_write, message}}}}} =
+                   Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+          assert message =~ "failed to write"
+          assert staging_dirs_under(artifacts_root) == []
+        end)
+      end)
+    end
+
+    test "eager preflight restore rollback failure cleans staging directory", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = create_safe_bundle(artifacts_root)
+      write_tokenizer_config!(source_dir)
+
+      helper = write_mutating_readonly_manifest_preflight_helper!(artifacts_root)
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:error,
+                {:safe_tokenization_preflight_rollback_failed, {:manifest_write, message}}} =
+                 Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+        assert message =~ "failed to write"
+        assert staging_dirs_under(artifacts_root) == []
+      end)
+    end
+
+    test "eager preflight preserves declared compatible false", %{artifacts_root: artifacts_root} do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" =>
+            Map.merge(safe_tokenization_map(), %{
+              "compatible" => false,
+              "template_compatible" => true,
+              "incompatibility_reason" => %{
+                "category" => "reserved_id_persists",
+                "literal" => "<reserved>"
+              }
+            })
+        })
+
+      with_inference_overrides(
+        [tokenizer_executable: Path.join(artifacts_root, "missing-helper")],
+        fn ->
+          assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+          imported_manifest = read_imported_manifest!(model)
+          assert imported_manifest["safe_tokenization"]["compatible"] == false
+          assert imported_manifest["safe_tokenization"]["template_compatible"] == true
+
+          assert imported_manifest["safe_tokenization"]["incompatibility_reason"] == %{
+                   "category" => "reserved_id_persists",
+                   "literal" => "<reserved>"
+                 }
+        end
+      )
+    end
+
+    test "eager preflight skips explicit positive verdict", %{artifacts_root: artifacts_root} do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" =>
+            Map.merge(safe_tokenization_map(), %{
+              "compatible" => true,
+              "template_compatible" => true
+            })
+        })
+
+      with_inference_overrides(
+        [tokenizer_executable: Path.join(artifacts_root, "missing-helper")],
+        fn ->
+          assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+          imported_manifest = read_imported_manifest!(model)
+          assert imported_manifest["safe_tokenization"]["compatible"] == true
+          assert imported_manifest["safe_tokenization"]["template_compatible"] == true
+        end
+      )
+    end
+
+    test "eager preflight revalidates explicit positive verdict when trust is disabled", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" =>
+            Map.merge(safe_tokenization_map(), %{
+              "compatible" => true,
+              "template_compatible" => true
+            })
+        })
+
+      write_tokenizer_config!(source_dir)
+      helper = write_preflight_helper!(artifacts_root, incompatible_preflight_response())
+
+      with_app_env(:trust_manifest_compatibility_declarations, false, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+          imported_manifest = read_imported_manifest!(model)
+          assert imported_manifest["safe_tokenization"]["compatible"] == false
+          assert imported_manifest["safe_tokenization"]["template_compatible"] == true
+
+          assert imported_manifest["safe_tokenization"]["incompatibility_reason"] == %{
+                   "category" => "reserved_id_persists",
+                   "literal" => "<reserved>"
+                 }
+        end)
+      end)
+    end
+
+    test "eager preflight strips authored positive verdict when trust is disabled and helper is missing",
+         %{artifacts_root: artifacts_root} do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" => authored_positive_safe_tokenization_map()
+        })
+
+      write_tokenizer_config!(source_dir)
+
+      with_app_env(:trust_manifest_compatibility_declarations, false, fn ->
+        with_inference_overrides(
+          [tokenizer_executable: Path.join(artifacts_root, "missing-helper")],
+          fn ->
+            assert {:ok, model} =
+                     Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+            assert_safe_tokenization_verdict_fields_omitted!(model)
+          end
+        )
+      end)
+    end
+
+    test "eager preflight strips compatible-only positive verdict when trust is disabled and helper is missing",
+         %{artifacts_root: artifacts_root} do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" => Map.put(safe_tokenization_map(), "compatible", true)
+        })
+
+      write_tokenizer_config!(source_dir)
+
+      with_app_env(:trust_manifest_compatibility_declarations, false, fn ->
+        with_inference_overrides(
+          [tokenizer_executable: Path.join(artifacts_root, "missing-helper")],
+          fn ->
+            assert {:ok, model} =
+                     Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+            assert_safe_tokenization_verdict_fields_omitted!(model)
+          end
+        )
+      end)
+    end
+
+    test "eager preflight strips template-only positive verdict when trust is disabled and helper success is invalid",
+         %{artifacts_root: artifacts_root} do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" => Map.put(safe_tokenization_map(), "template_compatible", true)
+        })
+
+      write_tokenizer_config!(source_dir)
+      helper = write_preflight_helper!(artifacts_root, invalid_preflight_response())
+
+      with_app_env(:trust_manifest_compatibility_declarations, false, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+          assert_safe_tokenization_verdict_fields_omitted!(model)
+        end)
+      end)
+    end
+
+    test "eager preflight preserves helper-confirmed compatible verdict when trust is disabled",
+         %{artifacts_root: artifacts_root} do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" => Map.put(safe_tokenization_map(), "compatible", true)
+        })
+
+      write_tokenizer_config!(source_dir)
+      helper = write_preflight_helper!(artifacts_root, compatible_preflight_response())
+
+      with_app_env(:trust_manifest_compatibility_declarations, false, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+          imported_manifest = read_imported_manifest!(model)
+          assert imported_manifest["safe_tokenization"]["compatible"] == true
+          assert imported_manifest["safe_tokenization"]["template_compatible"] == true
+          refute Map.has_key?(imported_manifest["safe_tokenization"], "incompatibility_reason")
+        end)
+      end)
+    end
+
+    test "eager preflight strips authored positive verdict when trust is disabled and tokenizer config is missing",
+         %{artifacts_root: artifacts_root} do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" => authored_positive_safe_tokenization_map()
+        })
+
+      helper = write_preflight_helper!(artifacts_root, compatible_preflight_response())
+
+      with_app_env(:trust_manifest_compatibility_declarations, false, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+          assert_safe_tokenization_verdict_fields_omitted!(model)
+        end)
+      end)
+    end
+
+    test "eager preflight strips authored positive verdict when trust is disabled and helper success is invalid",
+         %{artifacts_root: artifacts_root} do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" => authored_positive_safe_tokenization_map()
+        })
+
+      write_tokenizer_config!(source_dir)
+      helper = write_preflight_helper!(artifacts_root, invalid_preflight_response())
+
+      with_app_env(:trust_manifest_compatibility_declarations, false, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+          assert_safe_tokenization_verdict_fields_omitted!(model)
+        end)
+      end)
+    end
+
+    test "eager preflight strips authored positive verdict when trust is disabled and helper returns error",
+         %{artifacts_root: artifacts_root} do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" => authored_positive_safe_tokenization_map()
+        })
+
+      write_tokenizer_config!(source_dir)
+      helper = write_preflight_helper!(artifacts_root, helper_error_preflight_response())
+
+      with_app_env(:trust_manifest_compatibility_declarations, false, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+          assert_safe_tokenization_verdict_fields_omitted!(model)
+        end)
+      end)
+    end
+
+    test "eager preflight strips authored positive verdict when trust is disabled and helper times out",
+         %{artifacts_root: artifacts_root} do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "safe_tokenization" => authored_positive_safe_tokenization_map()
+        })
+
+      write_tokenizer_config!(source_dir)
+      helper = write_sleeping_preflight_helper!(artifacts_root)
+
+      with_app_env(:trust_manifest_compatibility_declarations, false, fn ->
+        with_app_env(:bundle_build_preflight_timeout_ms, 100, fn ->
+          with_inference_overrides([tokenizer_executable: helper], fn ->
+            assert {:ok, model} =
+                     Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+            assert_safe_tokenization_verdict_fields_omitted!(model)
+          end)
+        end)
+      end)
+    end
+
+    test "eager preflight helper failure during import does not abort", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = create_safe_bundle(artifacts_root)
+      write_tokenizer_config!(source_dir)
+
+      with_inference_overrides(
+        [tokenizer_executable: Path.join(artifacts_root, "missing-helper")],
+        fn ->
+          assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+          imported_manifest = read_imported_manifest!(model)
+          refute Map.has_key?(imported_manifest["safe_tokenization"], "compatible")
+          refute Map.has_key?(imported_manifest["safe_tokenization"], "template_compatible")
+          refute Map.has_key?(imported_manifest["safe_tokenization"], "incompatibility_reason")
+        end
+      )
+    end
+
+    test "eager preflight skips when tokenizer_config cannot resolve", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = create_safe_bundle(artifacts_root)
+      helper = write_preflight_helper!(artifacts_root, compatible_preflight_response())
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+        imported_manifest = read_imported_manifest!(model)
+        refute Map.has_key?(imported_manifest["safe_tokenization"], "compatible")
+        refute Map.has_key?(imported_manifest["safe_tokenization"], "template_compatible")
+        refute Map.has_key?(imported_manifest["safe_tokenization"], "incompatibility_reason")
+      end)
+    end
+
+    test "eager preflight skips explicit missing tokenizer_config path", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "tokenizer" => %{
+            "kind" => "huggingface_tokenizer_json",
+            "path" => "tokenizer.json",
+            "config_path" => "missing-tokenizer_config.json"
+          }
+        })
+
+      write_tokenizer_config!(source_dir)
+      invocation_marker = Path.join(artifacts_root, "explicit-missing-helper-invoked")
+
+      helper =
+        write_marker_preflight_helper!(
+          artifacts_root,
+          compatible_preflight_response(),
+          invocation_marker
+        )
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+        imported_manifest = read_imported_manifest!(model)
+        refute Map.has_key?(imported_manifest["safe_tokenization"], "compatible")
+        refute Map.has_key?(imported_manifest["safe_tokenization"], "template_compatible")
+        refute Map.has_key?(imported_manifest["safe_tokenization"], "incompatibility_reason")
+        refute File.exists?(invocation_marker)
+      end)
+    end
+
+    test "eager preflight rejects explicit blank tokenizer_config path before fallback", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir =
+        create_safe_bundle(artifacts_root, %{
+          "tokenizer" => %{
+            "kind" => "huggingface_tokenizer_json",
+            "path" => "tokenizer.json",
+            "config_path" => ""
+          }
+        })
+
+      write_tokenizer_config!(source_dir)
+      invocation_marker = Path.join(artifacts_root, "explicit-blank-helper-invoked")
+
+      helper =
+        write_marker_preflight_helper!(
+          artifacts_root,
+          compatible_preflight_response(),
+          invocation_marker
+        )
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:error, {:validation, message}} =
+                 Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+        assert message =~ "optional non-empty config_path"
+        refute File.exists?(invocation_marker)
+      end)
+    end
+
+    test "eager preflight invalid helper success leaves imported manifest unchanged", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = create_safe_bundle(artifacts_root)
+      write_tokenizer_config!(source_dir)
+
+      helper =
+        write_preflight_helper!(artifacts_root, %{
+          "contract_version" => 3,
+          "ok" => true,
+          "result" => %{
+            "compatible" => false,
+            "template_compatible" => true,
+            "incompatibility_reason" => %{"category" => "not_an_allowed_category"}
+          }
+        })
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+        imported_manifest = read_imported_manifest!(model)
+        refute Map.has_key?(imported_manifest["safe_tokenization"], "compatible")
+        refute Map.has_key?(imported_manifest["safe_tokenization"], "template_compatible")
+        refute Map.has_key?(imported_manifest["safe_tokenization"], "incompatibility_reason")
+
+        assert {:ok, _manifest} = ManifestParser.parse_from_bundle(artifact_path(model))
+      end)
+    end
+
+    test "eager preflight skips valid legacy manifests", %{artifacts_root: artifacts_root} do
+      source_dir = create_bundle(artifacts_root, %{})
+
+      with_inference_overrides(
+        [tokenizer_executable: Path.join(artifacts_root, "missing-helper")],
+        fn ->
+          assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+          imported_manifest = read_imported_manifest!(model)
+          refute Map.has_key?(imported_manifest, "safe_tokenization")
+        end
+      )
+    end
+
+    test "eager preflight disabled keeps Phase 1 import behavior unchanged", %{
+      artifacts_root: artifacts_root
+    } do
+      source_dir = create_safe_bundle(artifacts_root)
+      helper = write_preflight_helper!(artifacts_root, compatible_preflight_response())
+
+      with_app_env(:bundle_build_eager_preflight_enabled, false, fn ->
+        with_inference_overrides([tokenizer_executable: helper], fn ->
+          assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+
+          imported_manifest = read_imported_manifest!(model)
+          refute Map.has_key?(imported_manifest["safe_tokenization"], "compatible")
+          refute Map.has_key?(imported_manifest["safe_tokenization"], "template_compatible")
+          refute Map.has_key?(imported_manifest["safe_tokenization"], "incompatibility_reason")
+        end)
+      end)
+    end
+
+    test "eager preflight runs before SHA computation", %{artifacts_root: artifacts_root} do
+      source_dir = create_safe_bundle(artifacts_root)
+      write_tokenizer_config!(source_dir)
+      {:ok, pre_rewrite_sha} = Orchard.ArtifactBundle.tree_sha256(source_dir)
+      helper = write_preflight_helper!(artifacts_root, compatible_preflight_response())
+
+      with_inference_overrides([tokenizer_executable: helper], fn ->
+        assert {:ok, model} = Importer.import_bundle(source_dir, artifacts_root: artifacts_root)
+        {:ok, imported_sha} = Orchard.ArtifactBundle.tree_sha256(artifact_path(model))
+
+        assert model.artifact_sha256 == imported_sha
+        refute model.artifact_sha256 == pre_rewrite_sha
+      end)
+    end
   end
 
   describe "import_bundle/2 security" do
@@ -388,6 +922,63 @@ defmodule Orchard.Models.ImporterTest do
     bundle_dir
   end
 
+  defp create_safe_bundle(root, manifest_overrides \\ %{}) do
+    bundle_dir = Path.join(root, "safe_test_bundle_#{:rand.uniform(1_000_000)}")
+    File.mkdir_p!(bundle_dir)
+    File.write!(Path.join(bundle_dir, "tokenizer.json"), ~s({"version":"1.0"}))
+    File.write!(Path.join(bundle_dir, "chat_template.jinja"), "{{ messages[0].content }}")
+    File.write!(Path.join(bundle_dir, "model.safetensors"), "fake-weights")
+
+    manifest =
+      base_safe_manifest()
+      |> Map.merge(manifest_overrides)
+
+    File.write!(Path.join(bundle_dir, "manifest.json"), Jason.encode!(manifest))
+    bundle_dir
+  end
+
+  defp write_tokenizer_config!(bundle_dir) do
+    File.write!(
+      Path.join(bundle_dir, "tokenizer_config.json"),
+      Jason.encode!(%{"bos_token" => "<s>"})
+    )
+  end
+
+  defp base_safe_manifest do
+    base_manifest_without_resident()
+    |> Map.merge(%{
+      "resident_memory_bytes" => 2048,
+      "tokenizer" => %{"kind" => "huggingface_tokenizer_json", "path" => "tokenizer.json"},
+      "chat_template" => %{
+        "path" => "chat_template.jinja",
+        "sha256" => hash_string("{{ messages[0].content }}")
+      },
+      "safe_tokenization" => safe_tokenization_map()
+    })
+  end
+
+  defp safe_tokenization_map do
+    %{
+      "control_tokens" => ["<reserved>"],
+      "catalog_sha256" => hash_catalog(["<reserved>"]),
+      "catalog_source" => %{
+        "added_tokens_count" => 0,
+        "config_singletons_count" => 0,
+        "additional_special_tokens_count" => 0,
+        "chat_template_literals_count" => 1,
+        "wrapper_tool_markers_count" => 0,
+        "extra_count" => 0
+      }
+    }
+  end
+
+  defp authored_positive_safe_tokenization_map do
+    Map.merge(safe_tokenization_map(), %{
+      "compatible" => true,
+      "template_compatible" => true
+    })
+  end
+
   defp base_manifest_without_resident do
     %{
       "model_id" => "test-org/tiny-llm",
@@ -408,6 +999,266 @@ defmodule Orchard.Models.ImporterTest do
 
   defp artifact_path(model) do
     String.replace_prefix(model.artifact_uri, "file://", "")
+  end
+
+  defp read_imported_manifest!(model) do
+    model
+    |> artifact_path()
+    |> Path.join("manifest.json")
+    |> File.read!()
+    |> Jason.decode!()
+  end
+
+  defp assert_safe_tokenization_verdict_fields_omitted!(model) do
+    safe_tokenization = read_imported_manifest!(model)["safe_tokenization"]
+
+    assert is_map(safe_tokenization)
+    refute Map.has_key?(safe_tokenization, "compatible")
+    refute Map.has_key?(safe_tokenization, "template_compatible")
+    refute Map.has_key?(safe_tokenization, "incompatibility_reason")
+  end
+
+  defp staging_dirs_under(root) do
+    root
+    |> File.ls!()
+    |> Enum.filter(&String.starts_with?(&1, ".staging-"))
+  end
+
+  defp write_preflight_helper!(dir, response) do
+    path = Path.join(dir, "import-preflight-helper-#{System.unique_integer([:positive])}.sh")
+
+    File.write!(path, """
+    #!/bin/sh
+    cat >/dev/null
+    cat <<'JSON'
+    #{Jason.encode!(response)}
+    JSON
+    """)
+
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  defp write_marker_preflight_helper!(dir, response, marker_path) do
+    path = Path.join(dir, "marker-preflight-helper-#{System.unique_integer([:positive])}.sh")
+
+    File.write!(path, """
+    #!/bin/sh
+    cat >/dev/null
+    #{marker_write_command(marker_path)}
+    cat <<'JSON'
+    #{Jason.encode!(response)}
+    JSON
+    """)
+
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  defp write_sleeping_preflight_helper!(dir) do
+    path = Path.join(dir, "sleeping-preflight-helper-#{System.unique_integer([:positive])}.sh")
+
+    File.write!(path, """
+    #!/bin/sh
+    cat >/dev/null
+    sleep 1
+    cat <<'JSON'
+    #{Jason.encode!(compatible_preflight_response())}
+    JSON
+    """)
+
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  defp write_tokenizer_config_required_preflight_helper!(dir, response, marker_path) do
+    path =
+      Path.join(dir, "tokenizer-config-required-helper-#{System.unique_integer([:positive])}.sh")
+
+    File.write!(path, """
+    #!/bin/sh
+    payload=$(cat)
+    case "$payload" in
+      *'"tokenizer_config_path":null'*) exit 42 ;;
+    esac
+    case "$payload" in
+      *'"tokenizer_config_path":"'*tokenizer_config.json'"'*) ;;
+      *) exit 42 ;;
+    esac
+    #{marker_write_command(marker_path)}
+    cat <<'JSON'
+    #{Jason.encode!(response)}
+    JSON
+    """)
+
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  defp marker_write_command(nil), do: ""
+  defp marker_write_command(path), do: "printf invoked > #{shell_quote(path)}"
+
+  defp shell_quote(path) do
+    "'" <> String.replace(path, "'", "'\"'\"'") <> "'"
+  end
+
+  defp write_readonly_manifest_preflight_helper!(dir, response) do
+    path =
+      Path.join(
+        dir,
+        "readonly-manifest-preflight-helper-#{System.unique_integer([:positive])}.sh"
+      )
+
+    File.write!(path, """
+    #!/bin/sh
+    payload=$(cat)
+    tokenizer_path=$(printf '%s' "$payload" | sed -E 's/.*"tokenizer_path":"([^"]+)".*/\\1/')
+    if [ "$tokenizer_path" != "$payload" ]; then
+      chmod 0400 "$(dirname "$tokenizer_path")/manifest.json"
+    fi
+    cat <<'JSON'
+    #{Jason.encode!(response)}
+    JSON
+    """)
+
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  defp write_mutating_readonly_manifest_preflight_helper!(dir) do
+    path =
+      Path.join(
+        dir,
+        "mutating-readonly-manifest-helper-#{System.unique_integer([:positive])}.sh"
+      )
+
+    File.write!(path, """
+    #!/bin/sh
+    payload=$(cat)
+    tokenizer_path=$(printf '%s' "$payload" | sed -E 's/.*"tokenizer_path":"([^"]+)".*/\\1/')
+    if [ "$tokenizer_path" != "$payload" ]; then
+      manifest_path="$(dirname "$tokenizer_path")/manifest.json"
+      printf '{}' > "$manifest_path"
+      chmod 0400 "$manifest_path"
+    fi
+    cat <<'JSON'
+    #{Jason.encode!(invalid_preflight_response())}
+    JSON
+    """)
+
+    File.chmod!(path, 0o755)
+    path
+  end
+
+  defp compatible_preflight_response do
+    %{
+      "contract_version" => 3,
+      "ok" => true,
+      "result" => %{
+        "compatible" => true,
+        "template_compatible" => true,
+        "incompatibility_reason" => nil
+      }
+    }
+  end
+
+  defp incompatible_preflight_response do
+    %{
+      "contract_version" => 3,
+      "ok" => true,
+      "result" => %{
+        "compatible" => false,
+        "template_compatible" => true,
+        "incompatibility_reason" => %{
+          "category" => "reserved_id_persists",
+          "literal" => "<reserved>"
+        }
+      }
+    }
+  end
+
+  defp invalid_preflight_response do
+    %{
+      "contract_version" => 3,
+      "ok" => true,
+      "result" => %{
+        "compatible" => false,
+        "template_compatible" => true,
+        "incompatibility_reason" => %{"category" => "not_an_allowed_category"}
+      }
+    }
+  end
+
+  defp helper_error_preflight_response do
+    %{
+      "contract_version" => 3,
+      "ok" => false,
+      "error" => %{
+        "category" => "preflight_unavailable",
+        "message" => "helper could not validate"
+      }
+    }
+  end
+
+  defp attach_telemetry(event) do
+    owner = self()
+    ref = make_ref()
+    handler_id = "importer-test-#{inspect(ref)}"
+
+    :telemetry.attach(
+      handler_id,
+      event,
+      fn emitted_event, measurements, metadata, _config ->
+        send(owner, {ref, emitted_event, measurements, metadata})
+      end,
+      nil
+    )
+
+    on_exit(fn -> :telemetry.detach(handler_id) end)
+    ref
+  end
+
+  defp with_inference_overrides(overrides, fun) when is_function(fun, 0) do
+    previous_inference = Application.fetch_env!(:orchard_controller, :inference)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.merge(previous_inference, overrides)
+    )
+
+    try do
+      fun.()
+    after
+      Application.put_env(:orchard_controller, :inference, previous_inference)
+    end
+  end
+
+  defp with_app_env(key, value, fun) when is_function(fun, 0) do
+    previous = Application.get_env(:orchard_controller, key, :orchard_missing_env)
+    Application.put_env(:orchard_controller, key, value)
+
+    try do
+      fun.()
+    after
+      case previous do
+        :orchard_missing_env -> Application.delete_env(:orchard_controller, key)
+        previous_value -> Application.put_env(:orchard_controller, key, previous_value)
+      end
+    end
+  end
+
+  defp hash_string(content) do
+    :crypto.hash(:sha256, content)
+    |> Base.encode16(case: :lower)
+  end
+
+  defp hash_catalog(control_tokens) do
+    control_tokens
+    |> Enum.intersperse(<<0>>)
+    |> IO.iodata_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 
   defp write_manifest(bundle_dir, overrides) do

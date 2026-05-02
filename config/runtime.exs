@@ -426,6 +426,24 @@ if sentry_dsn = env_optional_string.("ORCHARD_SENTRY_DSN") do
     tags: %{build_sha: Orchard.BuildInfo.git_sha(), build_date: Orchard.BuildInfo.build_date()}
 end
 
+bundle_build_preflight_timeout_ms =
+  (fn ->
+     timeout_ms = env_int.("ORCHARD_BUNDLE_BUILD_PREFLIGHT_TIMEOUT_MS", "60000")
+
+     if timeout_ms <= 0 do
+       raise "ORCHARD_BUNDLE_BUILD_PREFLIGHT_TIMEOUT_MS must be > 0, got: #{timeout_ms}"
+     end
+
+     timeout_ms
+   end).()
+
+config :orchard_controller,
+  bundle_build_eager_preflight_enabled:
+    env_bool.("ORCHARD_BUNDLE_BUILD_EAGER_PREFLIGHT_ENABLED", true),
+  bundle_build_preflight_timeout_ms: bundle_build_preflight_timeout_ms,
+  trust_manifest_compatibility_declarations:
+    env_bool.("ORCHARD_TRUST_MANIFEST_COMPATIBILITY_DECLARATIONS", true)
+
 if config_env() == :prod do
   orchard_support_root =
     System.get_env("ORCHARD_SUPPORT_ROOT") || "/Library/Application Support/Orchard"
