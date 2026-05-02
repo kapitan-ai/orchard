@@ -25,6 +25,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
   alias Orchard.SentryContext
+  alias Orchard.Tokenizer.Telemetry
 
   require Logger
 
@@ -101,6 +102,25 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   @status_probe_timeout_ms 1_000
+
+  if Mix.env() == :test do
+    # Test-only seam for terminal-source gating. This avoids sleeping through
+    # timeout/cancel paths just to exercise :stream vs. :synthesized telemetry behavior.
+    @spec __test_metrics__(map()) :: Metrics.t()
+    def __test_metrics__(attrs \\ %{}) when is_map(attrs) do
+      struct!(Metrics, attrs)
+    end
+
+    @spec __test_update_metrics_for_terminal__(Metrics.t(), InferenceEvent.t(), atom()) ::
+            Metrics.t()
+    def __test_update_metrics_for_terminal__(
+          %Metrics{} = metrics,
+          %InferenceEvent{} = event,
+          source
+        ) do
+      update_metrics_for_terminal(metrics, event, source)
+    end
+  end
 
   @type dispatch_result ::
           {:ok, [InferenceEvent.t()]}
@@ -402,7 +422,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         {:ok, %{request | prompt_token_ids: []}}
 
       mode in [:on, :reject] and prompt_token_ids != [] and supports_prompt_token_ids? ->
-        Orchard.Tokenizer.Telemetry.prompt_token_ids_dispatched(
+        Telemetry.prompt_token_ids_dispatched(
           metadata,
           length(prompt_token_ids)
         )
@@ -410,9 +430,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         {:ok, request}
 
       mode == :on and prompt_token_ids != [] ->
-        Orchard.Tokenizer.Telemetry.unsafe_mode_active(
-          Map.put(metadata, :reason, :legacy_worker_no_capability)
-        )
+        Telemetry.unsafe_mode_active(Map.put(metadata, :reason, :legacy_worker_no_capability))
 
         {:ok, %{request | prompt_token_ids: []}}
 
@@ -850,6 +868,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
           metrics
       end
 
+    maybe_emit_parity_drift(metrics, event, source)
+
     # Compute accepted_to_terminal_ms if we have accepted timestamp
     case metrics.accepted_monotonic_ms do
       nil ->
@@ -861,6 +881,30 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         %{metrics | accepted_to_terminal_ms: now_ms - accepted_ms}
     end
   end
+
+  defp maybe_emit_parity_drift(
+         %Metrics{} = metrics,
+         %InferenceEvent{
+           event: %InferenceEvent.Failed{
+             code: "prompt_token_ids_length_mismatch",
+             message: message
+           }
+         },
+         :stream
+       ) do
+    Telemetry.parity_drift(%{
+      request_id: metrics.request_id,
+      model_id: metrics.model_id,
+      version: metrics.version,
+      node_id: metrics.node_id,
+      scheduler_strategy: metrics.scheduler_strategy,
+      input_tokens: metrics.input_tokens,
+      code: "prompt_token_ids_length_mismatch",
+      worker_message: message
+    })
+  end
+
+  defp maybe_emit_parity_drift(_metrics, _event, _source), do: :ok
 
   defp emit_timing_log(%Metrics{} = metrics, result) do
     # Finalize metrics based on result

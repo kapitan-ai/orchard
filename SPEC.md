@@ -351,6 +351,8 @@ Tokenizer contract v2 requirements:
 
 Tokenizer contract v3 adds controller-authoritative prompt token IDs for safe-tokenization-capable workers. When controller safe tokenization produces `prompt_token_ids`, capable workers must use those IDs directly rather than re-encoding rendered prompt text. Manifest compatibility trust remains governed by §6.4 and the runtime manifest-trust configuration; worker capability is advertised by the worker, not by the manifest.
 
+Tokenizer observability includes `[:orchard, :tokenizer, :prompt_token_ids_dispatched]` when capable workers receive controller-supplied IDs, `[:orchard, :tokenizer, :unsafe_mode_active]` when safe-mode falls back to legacy rendered-prompt dispatch, and `[:orchard, :tokenizer, :parity_drift]` when a capable worker rejects controller-supplied `prompt_token_ids` with `prompt_token_ids_length_mismatch`. The parity-drift event is an operator-visible invariant breach counter; it is emitted only for worker stream failures, not controller-synthesized timeout or cancellation failures.
+
 The controller SHALL reject requests when:
 
 * `input_tokens + max_output_tokens > model.max_context_tokens`
@@ -2341,6 +2343,7 @@ Admin creates bootstrap token or provisions node
 * stop emitting additional events after the terminal event
 * preserve tool-call argument bytes exactly once tool-call emission has begun; stop-sequence handling SHALL NOT truncate tool-call JSON fragments
 * when `prompt_token_ids` is non-empty, validate that `len(prompt_token_ids) == input_tokens` before any model invocation; on mismatch, return a structured `prompt_token_ids_length_mismatch` failure; on match, use the supplied IDs directly; when the field is empty, legacy workers and legacy dispatch paths continue to re-encode `rendered_prompt_utf8`
+* a controller that receives a worker stream failure with code `prompt_token_ids_length_mismatch` SHALL emit `[:orchard, :tokenizer, :parity_drift]` with structured request/model/node metadata and a bounded worker message; the controller SHALL NOT parse length values from the message text
 * be cancelled by request id
 
 #### 7.5.6 Orphan request handling

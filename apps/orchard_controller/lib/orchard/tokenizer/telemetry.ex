@@ -10,6 +10,7 @@ defmodule Orchard.Tokenizer.Telemetry do
   @detector_error_event [:orchard, :tokenizer, :detector_error]
   @prompt_token_ids_dispatched_event [:orchard, :tokenizer, :prompt_token_ids_dispatched]
   @unsafe_mode_active_event [:orchard, :tokenizer, :unsafe_mode_active]
+  @parity_drift_event [:orchard, :tokenizer, :parity_drift]
   @degraded_no_manifest_catalog_event [
     :orchard,
     :tokenizer,
@@ -19,6 +20,7 @@ defmodule Orchard.Tokenizer.Telemetry do
   @missing_partial_catalog_sources [:chat_template_literals, :wrapper_tool_markers]
   @metadata_limit 16
   @literal_metadata_bytes 64
+  @worker_message_metadata_bytes 256
 
   @type detector_hit :: {String.t(), String.t(), non_neg_integer()}
   @type detector_error :: %{category: atom(), detail: atom()}
@@ -90,6 +92,26 @@ defmodule Orchard.Tokenizer.Telemetry do
     :ok
   end
 
+  @spec parity_drift(map()) :: :ok
+  def parity_drift(metadata) when is_map(metadata) do
+    metadata =
+      case Map.fetch(metadata, :worker_message) do
+        {:ok, message} when is_binary(message) ->
+          Map.put(metadata, :worker_message, bounded_worker_message(message))
+
+        _other ->
+          metadata
+      end
+
+    :telemetry.execute(
+      @parity_drift_event,
+      %{count: 1},
+      metadata
+    )
+
+    :ok
+  end
+
   @spec emit_detector_error(term(), CanonicalRequest.t(), ModelManifest.t() | nil) :: :ok
   def emit_detector_error(reason, %CanonicalRequest{} = request, manifest) do
     %{category: category, detail: detail} = normalize_detector_error(reason)
@@ -133,6 +155,13 @@ defmodule Orchard.Tokenizer.Telemetry do
         {:cont, next}
       end
     end)
+  end
+
+  defp bounded_worker_message(message) when byte_size(message) <= @worker_message_metadata_bytes,
+    do: message
+
+  defp bounded_worker_message(message) do
+    literal_prefix(message, @worker_message_metadata_bytes)
   end
 
   defp literal_family("<|" <> _rest), do: :angle_pipe
