@@ -388,7 +388,7 @@ defmodule OrchardConsole.NodesLive do
         summary: empty_cluster_summary(),
         message: nil
       },
-      safe_tokenization_counters: zero_safe_tokenization_counters(),
+      safe_tokenization_counters: fetch_safe_tokenization_counters(),
       last_refreshed_at: nil,
       refresh_timer: nil
     )

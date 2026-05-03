@@ -839,6 +839,30 @@ defmodule OrchardConsole.NodesLiveTest do
       end
     end
 
+    test "HTTP dead mount renders non-zero safe tokenization counters", %{conn: conn} do
+      put_telemetry_counters_stub(OrchardConsole.NodesLiveTest.TelemetryCountersNonZeroStub)
+
+      conn = get(conn, "/console/nodes")
+      body = html_response(conn, 200)
+
+      assert body =~ ~s(id="nodes-safe-tokenization-telemetry-card")
+
+      assert counter_text(body, "nodes-safe-tokenization-counter-prompt-token-ids-dispatched") =~
+               "7 events · 42 tokens"
+
+      assert counter_text(body, "nodes-safe-tokenization-counter-unsafe-mode-active") =~
+               ~r/Unsafe Fallback\s+1\b/
+
+      assert counter_text(body, "nodes-safe-tokenization-counter-parity-drift") =~
+               ~r/Parity Drift\s+2\b/
+
+      assert counter_text(body, "nodes-safe-tokenization-counter-catalog-drift") =~
+               ~r/Catalog Drift\s+3\b/
+
+      assert counter_text(body, "nodes-safe-tokenization-counter-control-token-in-user-content") =~
+               ~r/Control Token Hits\s+4\b/
+    end
+
     test "partial prompt-token counter preserves valid count and defaults token count", %{
       conn: conn
     } do
@@ -1288,6 +1312,24 @@ defmodule OrchardConsole.NodesLiveTest do
       :console,
       Keyword.put(previous, :telemetry_counters_impl, stub_module)
     )
+  end
+
+  defp counter_text(html, id) do
+    # The summary_tile currently renders each counter as a flat tile; this helper
+    # intentionally scopes assertions to that tile's HTML for the HTTP dead mount.
+    escaped_id = Regex.escape(id)
+    pattern = ~r/<div id="#{escaped_id}"[^>]*>(?<content>.*?)<\/div>/s
+
+    case Regex.named_captures(pattern, html) do
+      %{"content" => content} ->
+        content
+        |> String.replace(~r/<[^>]+>/, " ")
+        |> String.replace(~r/\s+/, " ")
+        |> String.trim()
+
+      nil ->
+        ""
+    end
   end
 
   defp assert_no_memory_policy_terms(html) do
