@@ -37,6 +37,8 @@ command -v mix >/dev/null 2>&1 || die "mix is not on PATH"
 test -f "$REPO_ROOT/mix.exs" || die "could not find Orchard umbrella mix.exs at $REPO_ROOT"
 test -f "$REPO_ROOT/apps/orchard_controller/test/orchard/dispatch/safe_tokenization_smoke_test.exs" || \
   die "safe tokenization smoke test file is missing"
+test -f "$REPO_ROOT/apps/orchard_controller/test/orchard/api/safe_tokenization_lifecycle_test.exs" || \
+  die "safe tokenization lifecycle smoke test file is missing"
 
 # Document packaged/prod parity. Tests still set app env directly, so a missing
 # source-dev parser for ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE does not mask
@@ -56,6 +58,7 @@ set +e
   cd "$REPO_ROOT" && \
     mix test \
       apps/orchard_controller/test/orchard/dispatch/safe_tokenization_smoke_test.exs \
+      apps/orchard_controller/test/orchard/api/safe_tokenization_lifecycle_test.exs \
       --only safe_tokenization_smoke
 )
 ELIXIR_EXIT=$?
