@@ -390,6 +390,60 @@ defmodule OrchardConsole.RequestLiveTest do
       assert html =~ "Not captured for this request"
       refute html =~ "request-canonical-request"
     end
+
+    # Slice 5c rendering-boundary watchdog: Slice 5b's lifecycle assertion at
+    # apps/orchard_controller/test/orchard/api/safe_tokenization_lifecycle_test.exs:518
+    # guarantees persisted :on-mode canonical_request maps omit "prompt_token_ids".
+    # The Console request detail renders @request.canonical_request through the JSON block,
+    # so this locks the same no-leakage invariant at the rendered HTML boundary.
+    test "omits prompt_token_ids from rendered canonical JSON view", %{conn: conn} do
+      canonical_payload = %{
+        "internal_id" => "req_internal_console_safe_tokenization",
+        "public_id" => "req_console_safe_tokenization",
+        "endpoint" => "chat_completions",
+        "tenant_id" => "tenant_console_safe_tokenization",
+        "principal_id" => nil,
+        "api_key_id" => "api_key_console_safe_tokenization",
+        "model_ref" => %{"model_id" => "safe-tokenization-model", "version" => "v1"},
+        "input_items" => [
+          %{"role" => "user", "content" => [%{"type" => "input_text", "text" => "hello"}]}
+        ],
+        "rendered_prompt" => "user hello\nassistant",
+        "input_token_count" => 3,
+        "stream" => false,
+        "stream_include_usage" => false,
+        "sampling" => %{"temperature" => 1.0, "top_p" => 1.0},
+        "response_format" => %{"type" => "text"},
+        "tooling" => %{"tools" => [], "tool_choice" => nil},
+        "metadata" => %{},
+        "admission" => %{"queue_wait_ms" => nil},
+        "resolved_policy" => %{"safe_tokenization" => "on"}
+      }
+
+      refute Map.has_key?(canonical_payload, "prompt_token_ids")
+
+      assert MapSet.new(Map.keys(canonical_payload)) ==
+               MapSet.new(~w(
+                 internal_id public_id endpoint tenant_id principal_id api_key_id
+                 model_ref input_items rendered_prompt input_token_count stream
+                 stream_include_usage sampling response_format tooling metadata
+                 admission resolved_policy
+               ))
+
+      request =
+        create_request!(%{
+          state: :completed,
+          canonical_request: canonical_payload
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      canonical_html = element(view, "#request-canonical-request") |> render()
+
+      assert canonical_html =~ "rendered_prompt"
+      assert canonical_html =~ "input_token_count"
+      refute canonical_html =~ "prompt_token_ids"
+    end
   end
 
   # ===========================================================================
