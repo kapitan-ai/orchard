@@ -322,6 +322,8 @@ config :orchard_controller,
         System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
       tokenizer_safe_mode: env_tokenizer_safe_mode.("ORCHARD_TOKENIZER_SAFE_MODE", :off),
+      tokenizer_safe_mode_prefer_capable:
+        env_bool.("ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE", false),
       cache_affinity: cache_affinity_config,
       cache_introspection: cache_introspection_config,
       prefix_cache_scoring: prefix_cache_scoring_config,

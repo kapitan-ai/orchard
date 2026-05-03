@@ -32,6 +32,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       tokenizer_mode: :port,
       tokenizer_executable: "orchard-tokenizer",
       tokenizer_safe_mode: :off,
+      tokenizer_safe_mode_prefer_capable: false,
       artifacts_root: Path.join(root, "bundles"),
       runtime_client_target: [host: @default_runtime_host, port: @default_runtime_port],
       runtime_client_targets: [],

@@ -276,6 +276,66 @@ defmodule Orchard.InferenceTest do
     end
   end
 
+  describe "tokenizer_safe_mode_prefer_capable_workers?/0" do
+    test "defaults to false when key is absent" do
+      config = Application.fetch_env!(:orchard_controller, :inference)
+
+      Application.put_env(
+        :orchard_controller,
+        :inference,
+        Keyword.delete(config, :tokenizer_safe_mode_prefer_capable)
+      )
+
+      refute Inference.tokenizer_safe_mode_prefer_capable_workers?()
+    end
+
+    test "returns false when key is explicitly false" do
+      put_inference(tokenizer_safe_mode_prefer_capable: false)
+      refute Inference.tokenizer_safe_mode_prefer_capable_workers?()
+    end
+
+    test "returns true when key is explicitly true" do
+      put_inference(tokenizer_safe_mode_prefer_capable: true)
+      assert Inference.tokenizer_safe_mode_prefer_capable_workers?()
+    end
+
+    test "runtime.exs parses ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE=true" do
+      inference =
+        read_runtime_controller_inference!(%{
+          "ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE" => "true"
+        })
+
+      assert Keyword.fetch!(inference, :tokenizer_safe_mode_prefer_capable) == true
+    end
+
+    test "runtime.exs defaults ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE to false when unset" do
+      inference =
+        read_runtime_controller_inference!(%{
+          "ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE" => nil
+        })
+
+      assert Keyword.fetch!(inference, :tokenizer_safe_mode_prefer_capable) == false
+    end
+
+    test "dev.exs parses ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE=true" do
+      inference =
+        read_dev_controller_inference!(%{
+          "ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE" => "true"
+        })
+
+      assert Keyword.fetch!(inference, :tokenizer_safe_mode_prefer_capable) == true
+    end
+
+    test "dev.exs defaults ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE to false when unset" do
+      inference =
+        read_dev_controller_inference!(%{
+          "ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE" => nil
+        })
+
+      assert Keyword.fetch!(inference, :tokenizer_safe_mode_prefer_capable) == false
+    end
+  end
+
   describe "cache_affinity_config/0" do
     test "defaults disabled with bounded lookup settings" do
       config = Inference.cache_affinity_config()

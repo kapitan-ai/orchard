@@ -40,10 +40,12 @@ test -f "$REPO_ROOT/apps/orchard_controller/test/orchard/dispatch/safe_tokenizat
 test -f "$REPO_ROOT/apps/orchard_controller/test/orchard/api/safe_tokenization_lifecycle_test.exs" || \
   die "safe tokenization lifecycle smoke test file is missing"
 
-# Document packaged/prod parity. Tests still set app env directly, so a missing
-# source-dev parser for ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE does not mask
-# assertions; the prefer-capable export is documentation-only until the
-# source-dev parser adds parity.
+# Document packaged/prod and source-dev parity. Both runtime.exs and dev.exs
+# parse ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE; the deterministic ExUnit
+# cells still set app env directly via Application.put_env/3 because they run
+# under :test (where neither config layer is re-evaluated), so the export
+# below is intentionally redundant for the cells but useful for any future
+# smoke that boots the controller via mix run / bin/dev / a release.
 export ORCHARD_TOKENIZER_SAFE_MODE="${ORCHARD_TOKENIZER_SAFE_MODE:-on}"
 export ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE="${ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE:-true}"
 
