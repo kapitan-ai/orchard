@@ -357,6 +357,8 @@ When `tokenizer_safe_mode_prefer_capable` is enabled and `tokenizer_safe_mode` i
 
 Console Live Cluster diagnostics SHALL surface the latest observed live `StatusResponse.supports_prompt_token_ids` value per reachable runtime target so operators can assess mixed-version safe-tokenization risk; absence or `false` is rendered as legacy capability, not as a probe failure.
 
+Console diagnostics SHALL surface observe-only, process-local safe-tokenization counters aggregated since counter process start (`control_token_in_user_content`, `detector_error`, `prompt_token_ids_dispatched` event count and accumulated token count, `unsafe_mode_active`, `parity_drift`, `catalog_drift`, and `safe_tokenization.degraded_no_manifest_catalog`). Counter values reset on counter process restart and MUST NOT influence scheduling, dispatch, admission, or readiness.
+
 The controller SHALL also emit `[:orchard, :tokenizer, :catalog_drift]` when the live request-time partial control-token catalog derived from `tokenizer.json.added_tokens` entries with `special=true`, tokenizer-config named singleton tokens, and `tokenizer_config.json.additional_special_tokens` contains entries absent from `manifest.safe_tokenization.control_tokens`. This signal is one-directional (`added` drift only) and partial: it MUST NOT emit `removed` entries, and it does not detect manifest entries removed from the live artifacts, non-special `added_tokens`, chat-template-literal drift, or wrapper-tool-marker drift.
 
 The controller SHALL reject requests when:

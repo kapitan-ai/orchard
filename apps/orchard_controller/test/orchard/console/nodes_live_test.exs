@@ -466,6 +466,72 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeClusterRaiseStub do
   end
 end
 
+defmodule OrchardConsole.NodesLiveTest.TelemetryCountersZeroStub do
+  @moduledoc false
+
+  def snapshot do
+    %{
+      started_at: DateTime.utc_now() |> DateTime.truncate(:second),
+      control_token_in_user_content: %{count: 0, last_seen_at: nil},
+      detector_error: %{count: 0, last_seen_at: nil},
+      prompt_token_ids_dispatched: %{count: 0, token_count: 0, last_seen_at: nil},
+      unsafe_mode_active: %{count: 0, last_seen_at: nil},
+      parity_drift: %{count: 0, last_seen_at: nil},
+      catalog_drift: %{count: 0, last_seen_at: nil},
+      degraded_no_manifest_catalog: %{count: 0, last_seen_at: nil}
+    }
+  end
+end
+
+defmodule OrchardConsole.NodesLiveTest.TelemetryCountersNonZeroStub do
+  @moduledoc false
+
+  def snapshot do
+    %{
+      started_at: DateTime.utc_now() |> DateTime.truncate(:second),
+      control_token_in_user_content: %{count: 4, last_seen_at: DateTime.utc_now()},
+      detector_error: %{count: 5, last_seen_at: DateTime.utc_now()},
+      prompt_token_ids_dispatched: %{count: 7, token_count: 42, last_seen_at: DateTime.utc_now()},
+      unsafe_mode_active: %{count: 1, last_seen_at: DateTime.utc_now()},
+      parity_drift: %{count: 2, last_seen_at: DateTime.utc_now()},
+      catalog_drift: %{count: 3, last_seen_at: DateTime.utc_now()},
+      degraded_no_manifest_catalog: %{count: 6, last_seen_at: DateTime.utc_now()}
+    }
+  end
+end
+
+defmodule OrchardConsole.NodesLiveTest.TelemetryCountersPartialPromptStub do
+  @moduledoc false
+
+  def snapshot do
+    %{
+      started_at: DateTime.utc_now() |> DateTime.truncate(:second),
+      prompt_token_ids_dispatched: %{count: 3}
+    }
+  end
+end
+
+defmodule OrchardConsole.NodesLiveTest.TelemetryCountersMalformedStub do
+  @moduledoc false
+
+  def snapshot do
+    %{
+      started_at: "not a datetime",
+      prompt_token_ids_dispatched: %{count: "many", token_count: :unknown},
+      unsafe_mode_active: "bad",
+      unknown_counter: %{count: 99}
+    }
+  end
+end
+
+defmodule OrchardConsole.NodesLiveTest.TelemetryCountersRaiseStub do
+  @moduledoc false
+
+  def snapshot do
+    raise RuntimeError, "counter provider crashed"
+  end
+end
+
 defmodule OrchardConsole.NodesLiveTest do
   use Orchard.ConnCase, async: false
 
@@ -487,6 +553,7 @@ defmodule OrchardConsole.NodesLiveTest do
       :console,
       Keyword.merge(previous,
         runtime_impl: OrchardConsole.NodesLiveTest.RuntimeFullStub,
+        telemetry_counters_impl: OrchardConsole.NodesLiveTest.TelemetryCountersZeroStub,
         refresh_interval_ms: 60_000
       )
     )
@@ -725,6 +792,111 @@ defmodule OrchardConsole.NodesLiveTest do
       assert telemetry =~ "prefill reported"
       assert telemetry =~ "1 additional row(s) omitted"
       assert_no_memory_policy_terms(telemetry)
+    end
+  end
+
+  describe "safe tokenization telemetry counters" do
+    test "renders process-local observe-only zero counters", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      card = element(view, "#nodes-safe-tokenization-telemetry-card") |> render()
+
+      assert card =~ "Safe Tokenization Counters"
+      assert card =~ "Process-local observe-only counters since counter process start."
+      assert card =~ "Prompt IDs Dispatched"
+      assert card =~ "Unsafe Fallback"
+      assert card =~ "Parity Drift"
+      assert card =~ "Catalog Drift"
+      assert card =~ "Control Token Hits"
+      assert card =~ "Detector Errors"
+      assert card =~ "No Manifest Catalog"
+      assert card =~ "0 events · 0 tokens"
+      assert card =~ "0"
+    end
+
+    test "renders non-zero unsafe signals with warning and error tones", %{conn: conn} do
+      put_telemetry_counters_stub(OrchardConsole.NodesLiveTest.TelemetryCountersNonZeroStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      assert element(view, "#nodes-safe-tokenization-counter-prompt-token-ids-dispatched")
+             |> render() =~ "7 events · 42 tokens"
+
+      assert element(view, "#nodes-safe-tokenization-counter-unsafe-mode-active")
+             |> render() =~ "bg-amber-50/50"
+
+      assert element(view, "#nodes-safe-tokenization-counter-parity-drift")
+             |> render() =~ "bg-red-50/50"
+
+      for id <- [
+            "catalog-drift",
+            "control-token-in-user-content",
+            "detector-error",
+            "degraded-no-manifest-catalog"
+          ] do
+        assert element(view, "#nodes-safe-tokenization-counter-#{id}")
+               |> render() =~ "bg-amber-50/50"
+      end
+    end
+
+    test "partial prompt-token counter preserves valid count and defaults token count", %{
+      conn: conn
+    } do
+      put_telemetry_counters_stub(OrchardConsole.NodesLiveTest.TelemetryCountersPartialPromptStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      assert element(view, "#nodes-safe-tokenization-counter-prompt-token-ids-dispatched")
+             |> render() =~ "3 events · 0 tokens"
+    end
+
+    test "malformed counter provider fails open without changing cluster diagnostics", %{
+      conn: conn
+    } do
+      put_telemetry_counters_stub(OrchardConsole.NodesLiveTest.TelemetryCountersMalformedStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      card = element(view, "#nodes-safe-tokenization-telemetry-card") |> render()
+      cluster = element(view, "#nodes-live-cluster-card") |> render()
+      capable_tile = element(view, "#cluster-prompt-token-capable") |> render()
+
+      assert card =~ "0 events · 0 tokens"
+      assert cluster =~ "1 target(s) configured"
+      assert cluster =~ "1 reachable"
+      assert capable_tile =~ "1/1"
+      assert capable_tile =~ "bg-forest-50/50"
+    end
+
+    test "raising counter provider fails open and keeps Live Cluster rendering", %{conn: conn} do
+      put_telemetry_counters_stub(OrchardConsole.NodesLiveTest.TelemetryCountersRaiseStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      card = element(view, "#nodes-safe-tokenization-telemetry-card") |> render()
+      cluster = element(view, "#nodes-live-cluster-card") |> render()
+
+      assert card =~ "0 events · 0 tokens"
+      assert cluster =~ "Live Cluster"
+      assert cluster =~ "1 reachable"
+    end
+
+    test "counters do not affect health, compatibility, or prompt-token summaries", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeMixedCompatibilityStub)
+      put_telemetry_counters_stub(OrchardConsole.NodesLiveTest.TelemetryCountersNonZeroStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      cluster = element(view, "#nodes-live-cluster-card") |> render()
+      capable_tile = element(view, "#cluster-prompt-token-capable") |> render()
+
+      assert cluster =~ "2 target(s) configured"
+      assert cluster =~ "2 reachable"
+      assert capable_tile =~ "1/2"
+      assert capable_tile =~ "bg-slate-50"
+
+      assert element(view, "#nodes-runtime-compat-10-0-0-5-50061")
+             |> render() =~ "does not report metadata or health"
     end
   end
 
@@ -1105,6 +1277,16 @@ defmodule OrchardConsole.NodesLiveTest do
       :orchard_controller,
       :console,
       Keyword.put(previous, :runtime_impl, stub_module)
+    )
+  end
+
+  defp put_telemetry_counters_stub(stub_module) do
+    previous = Application.get_env(:orchard_controller, :console, [])
+
+    Application.put_env(
+      :orchard_controller,
+      :console,
+      Keyword.put(previous, :telemetry_counters_impl, stub_module)
     )
   end
 

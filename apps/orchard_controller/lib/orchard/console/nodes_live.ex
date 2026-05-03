@@ -14,6 +14,15 @@ defmodule OrchardConsole.NodesLive do
   alias Orchard.Nodes
 
   @default_refresh_interval_ms 5_000
+  @safe_tokenization_counter_keys [
+    :control_token_in_user_content,
+    :detector_error,
+    :prompt_token_ids_dispatched,
+    :unsafe_mode_active,
+    :parity_drift,
+    :catalog_drift,
+    :degraded_no_manifest_catalog
+  ]
 
   # ===========================================================================
   # Lifecycle
@@ -149,6 +158,58 @@ defmodule OrchardConsole.NodesLive do
                   <.summary_tile id="cluster-unavailable" label="Unavailable" value={format_count(@cluster.summary.unavailable)} tone={:error} />
                 </div>
             <% end %>
+          </.card>
+          </div>
+
+          <div id="nodes-safe-tokenization-telemetry-card">
+          <.card>
+            <:title>Safe Tokenization Counters</:title>
+            <:subtitle>Process-local observe-only counters since counter process start.</:subtitle>
+
+            <div id="nodes-safe-tokenization-counters" class="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-2">
+              <.summary_tile
+                id="nodes-safe-tokenization-counter-prompt-token-ids-dispatched"
+                label="Prompt IDs Dispatched"
+                value={format_prompt_token_ids_dispatched(@safe_tokenization_counters.prompt_token_ids_dispatched)}
+                tone={prompt_token_ids_dispatched_tone(@safe_tokenization_counters.prompt_token_ids_dispatched)}
+              />
+              <.summary_tile
+                id="nodes-safe-tokenization-counter-unsafe-mode-active"
+                label="Unsafe Fallback"
+                value={format_count(@safe_tokenization_counters.unsafe_mode_active.count)}
+                tone={counter_warning_tone(@safe_tokenization_counters.unsafe_mode_active)}
+              />
+              <.summary_tile
+                id="nodes-safe-tokenization-counter-parity-drift"
+                label="Parity Drift"
+                value={format_count(@safe_tokenization_counters.parity_drift.count)}
+                tone={counter_error_tone(@safe_tokenization_counters.parity_drift)}
+              />
+              <.summary_tile
+                id="nodes-safe-tokenization-counter-catalog-drift"
+                label="Catalog Drift"
+                value={format_count(@safe_tokenization_counters.catalog_drift.count)}
+                tone={counter_warning_tone(@safe_tokenization_counters.catalog_drift)}
+              />
+              <.summary_tile
+                id="nodes-safe-tokenization-counter-control-token-in-user-content"
+                label="Control Token Hits"
+                value={format_count(@safe_tokenization_counters.control_token_in_user_content.count)}
+                tone={counter_warning_tone(@safe_tokenization_counters.control_token_in_user_content)}
+              />
+              <.summary_tile
+                id="nodes-safe-tokenization-counter-detector-error"
+                label="Detector Errors"
+                value={format_count(@safe_tokenization_counters.detector_error.count)}
+                tone={counter_warning_tone(@safe_tokenization_counters.detector_error)}
+              />
+              <.summary_tile
+                id="nodes-safe-tokenization-counter-degraded-no-manifest-catalog"
+                label="No Manifest Catalog"
+                value={format_count(@safe_tokenization_counters.degraded_no_manifest_catalog.count)}
+                tone={counter_warning_tone(@safe_tokenization_counters.degraded_no_manifest_catalog)}
+              />
+            </div>
           </.card>
           </div>
 
@@ -300,10 +361,12 @@ defmodule OrchardConsole.NodesLive do
     # so inventory queried second can show it in the same cycle.
     cluster = fetch_runtime_cluster(observed_at)
     inventory = fetch_inventory()
+    safe_tokenization_counters = fetch_safe_tokenization_counters()
 
     assign(socket,
       cluster: cluster,
       inventory: inventory,
+      safe_tokenization_counters: safe_tokenization_counters,
       last_refreshed_at: observed_at
     )
   end
@@ -325,6 +388,7 @@ defmodule OrchardConsole.NodesLive do
         summary: empty_cluster_summary(),
         message: nil
       },
+      safe_tokenization_counters: zero_safe_tokenization_counters(),
       last_refreshed_at: nil,
       refresh_timer: nil
     )
@@ -559,6 +623,92 @@ defmodule OrchardConsole.NodesLive do
       }
   end
 
+  defp fetch_safe_tokenization_counters do
+    telemetry_counters_impl().snapshot()
+    |> normalize_safe_tokenization_counters()
+  rescue
+    error ->
+      Logger.warning("Safe tokenization counter fetch failed: #{inspect(error)}")
+      zero_safe_tokenization_counters()
+  catch
+    kind, reason ->
+      Logger.warning("Safe tokenization counter fetch #{kind}: #{inspect(reason)}")
+      zero_safe_tokenization_counters()
+  end
+
+  defp normalize_safe_tokenization_counters(snapshot) when is_map(snapshot) do
+    counters =
+      @safe_tokenization_counter_keys
+      |> Map.new(fn key ->
+        {key, normalize_safe_tokenization_counter(key, Map.get(snapshot, key))}
+      end)
+
+    Map.put(counters, :started_at, normalize_started_at(snapshot[:started_at]))
+  end
+
+  defp normalize_safe_tokenization_counters(_snapshot), do: zero_safe_tokenization_counters()
+
+  defp normalize_safe_tokenization_counter(:prompt_token_ids_dispatched, counter)
+       when is_map(counter) do
+    case counter[:count] do
+      count when is_integer(count) and count >= 0 ->
+        %{
+          count: count,
+          token_count: normalize_token_count(counter[:token_count]),
+          last_seen_at: normalize_last_seen_at(counter[:last_seen_at])
+        }
+
+      _other ->
+        zero_prompt_token_ids_dispatched_counter()
+    end
+  end
+
+  defp normalize_safe_tokenization_counter(:prompt_token_ids_dispatched, _counter) do
+    zero_prompt_token_ids_dispatched_counter()
+  end
+
+  defp normalize_safe_tokenization_counter(_key, counter) when is_map(counter) do
+    case counter[:count] do
+      count when is_integer(count) and count >= 0 ->
+        %{count: count, last_seen_at: normalize_last_seen_at(counter[:last_seen_at])}
+
+      _other ->
+        zero_safe_tokenization_counter()
+    end
+  end
+
+  defp normalize_safe_tokenization_counter(_key, _counter), do: zero_safe_tokenization_counter()
+
+  defp zero_safe_tokenization_counters do
+    %{
+      started_at: nil,
+      control_token_in_user_content: zero_safe_tokenization_counter(),
+      detector_error: zero_safe_tokenization_counter(),
+      prompt_token_ids_dispatched: zero_prompt_token_ids_dispatched_counter(),
+      unsafe_mode_active: zero_safe_tokenization_counter(),
+      parity_drift: zero_safe_tokenization_counter(),
+      catalog_drift: zero_safe_tokenization_counter(),
+      degraded_no_manifest_catalog: zero_safe_tokenization_counter()
+    }
+  end
+
+  defp zero_safe_tokenization_counter do
+    %{count: 0, last_seen_at: nil}
+  end
+
+  defp zero_prompt_token_ids_dispatched_counter do
+    Map.put(zero_safe_tokenization_counter(), :token_count, 0)
+  end
+
+  defp normalize_token_count(count) when is_integer(count) and count >= 0, do: count
+  defp normalize_token_count(_count), do: 0
+
+  defp normalize_started_at(%DateTime{} = started_at), do: started_at
+  defp normalize_started_at(_started_at), do: nil
+
+  defp normalize_last_seen_at(%DateTime{} = last_seen_at), do: last_seen_at
+  defp normalize_last_seen_at(_last_seen_at), do: nil
+
   # ===========================================================================
   # Cluster display helpers
   # ===========================================================================
@@ -698,6 +848,19 @@ defmodule OrchardConsole.NodesLive do
     |> Enum.join(" · ")
   end
 
+  defp format_prompt_token_ids_dispatched(%{count: count, token_count: token_count}) do
+    "#{count} events · #{token_count} tokens"
+  end
+
+  defp prompt_token_ids_dispatched_tone(%{count: count}) when count > 0, do: :success
+  defp prompt_token_ids_dispatched_tone(_counter), do: :neutral
+
+  defp counter_warning_tone(%{count: count}) when count > 0, do: :warning
+  defp counter_warning_tone(_counter), do: :neutral
+
+  defp counter_error_tone(%{count: count}) when count > 0, do: :error
+  defp counter_error_tone(_counter), do: :neutral
+
   # Phase 2 observe-only contract: zero-valued resident/KV/prefill fields still
   # mean the underlying estimate is missing or incomplete for operator purposes,
   # so the UI keeps them in the neutral "unreported" bucket rather than
@@ -765,6 +928,10 @@ defmodule OrchardConsole.NodesLive do
 
   defp runtime_impl do
     console_config()[:runtime_impl] || OrchardConsole.Runtime
+  end
+
+  defp telemetry_counters_impl do
+    console_config()[:telemetry_counters_impl] || Orchard.Tokenizer.TelemetryCounters
   end
 
   defp console_config do
