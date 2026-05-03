@@ -355,6 +355,8 @@ Tokenizer observability includes `[:orchard, :tokenizer, :prompt_token_ids_dispa
 
 When `tokenizer_safe_mode_prefer_capable` is enabled and `tokenizer_safe_mode` is not `:off`, the multi-node scheduler MAY prefer workers whose live `StatusResponse.supports_prompt_token_ids` is `true`. This preference is a scheduler tie-breaker only; it is not dispatch authority and MUST NOT replace the per-request `EnsureModelLoadedResponse.worker_supports_prompt_token_ids` gate.
 
+Console Live Cluster diagnostics SHALL surface the latest observed live `StatusResponse.supports_prompt_token_ids` value per reachable runtime target so operators can assess mixed-version safe-tokenization risk; absence or `false` is rendered as legacy capability, not as a probe failure.
+
 The controller SHALL also emit `[:orchard, :tokenizer, :catalog_drift]` when the live request-time partial control-token catalog derived from `tokenizer.json.added_tokens` entries with `special=true`, tokenizer-config named singleton tokens, and `tokenizer_config.json.additional_special_tokens` contains entries absent from `manifest.safe_tokenization.control_tokens`. This signal is one-directional (`added` drift only) and partial: it MUST NOT emit `removed` entries, and it does not detect manifest entries removed from the live artifacts, non-special `added_tokens`, chat-template-literal drift, or wrapper-tool-marker drift.
 
 The controller SHALL reject requests when:

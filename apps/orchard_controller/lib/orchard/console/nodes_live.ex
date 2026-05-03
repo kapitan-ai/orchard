@@ -140,9 +140,10 @@ defmodule OrchardConsole.NodesLive do
               <% @cluster.targets == [] -> %>
                 <.state_message id="nodes-cluster-empty" kind={:empty} layout={:compact} title="No runtime targets configured." />
               <% true -> %>
-                <div id="nodes-cluster-summary" class="grid gap-2 grid-cols-2 sm:grid-cols-3">
+                <div id="nodes-cluster-summary" class="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-6">
                   <.summary_tile id="cluster-configured" label="Configured" value={format_count(@cluster.summary.configured)} tone={:neutral} />
                   <.summary_tile id="cluster-reachable" label="Reachable" value={format_count(@cluster.summary.reachable)} tone={:success} />
+                  <.summary_tile id="cluster-prompt-token-capable" label="Prompt-ID Capable" value={prompt_token_capable_summary(@cluster.summary)} tone={prompt_token_capable_summary_tone(@cluster.summary)} />
                   <.summary_tile id="cluster-degraded" label="Degraded" value={format_count(@cluster.summary.degraded)} tone={:warning} />
                   <.summary_tile id="cluster-unhealthy" label="Unhealthy" value={format_count(@cluster.summary.unhealthy)} tone={:error} />
                   <.summary_tile id="cluster-unavailable" label="Unavailable" value={format_count(@cluster.summary.unavailable)} tone={:error} />
@@ -185,6 +186,11 @@ defmodule OrchardConsole.NodesLive do
                       <.badge tone={runtime_health_tone(t.runtime_health)}>
                         {runtime_health_label(t.runtime_health)}
                       </.badge>
+                      <span id={"nodes-tokenizer-capability-#{t.target_dom_id}"}>
+                        <.badge tone={tokenizer_capability_tone(t)}>
+                          {tokenizer_capability_label(t)}
+                        </.badge>
+                      </span>
                       <span class="text-xs font-mono text-slate-400 dark:text-slate-500">
                         {t.active_request_count} active
                       </span>
@@ -373,6 +379,7 @@ defmodule OrchardConsole.NodesLive do
       active_request_count: entry[:active_request_count] || 0,
       node_metadata: entry[:node_metadata],
       runtime_health: entry[:runtime_health],
+      supports_prompt_token_ids: entry[:supports_prompt_token_ids] == true,
       runtime_memory_budgets: target_memory_budgets(entry),
       runtime_memory_budgets_truncated_count: target_memory_budgets_truncated_count(entry),
       compatibility: target_compatibility(entry)
@@ -494,6 +501,7 @@ defmodule OrchardConsole.NodesLive do
     %{
       configured: length(targets),
       reachable: length(ok_targets),
+      prompt_token_capable: Enum.count(ok_targets, &(&1.supports_prompt_token_ids == true)),
       unavailable: length(targets) - length(ok_targets),
       unhealthy:
         Enum.count(ok_targets, fn t ->
@@ -510,7 +518,14 @@ defmodule OrchardConsole.NodesLive do
   end
 
   defp empty_cluster_summary do
-    %{configured: 0, reachable: 0, unavailable: 0, unhealthy: 0, degraded: 0}
+    %{
+      configured: 0,
+      reachable: 0,
+      prompt_token_capable: 0,
+      unavailable: 0,
+      unhealthy: 0,
+      degraded: 0
+    }
   end
 
   defp target_label(target) do
@@ -556,6 +571,19 @@ defmodule OrchardConsole.NodesLive do
   end
 
   defp cluster_subtitle(_), do: ""
+
+  defp prompt_token_capable_summary(%{prompt_token_capable: capable, reachable: reachable})
+       when is_integer(capable) and is_integer(reachable) and reachable >= 0,
+       do: "#{capable}/#{reachable}"
+
+  defp prompt_token_capable_summary(_), do: "—"
+
+  defp prompt_token_capable_summary_tone(%{prompt_token_capable: capable, reachable: reachable})
+       when is_integer(capable) and is_integer(reachable) and reachable > 0 and
+              capable == reachable,
+       do: :success
+
+  defp prompt_token_capable_summary_tone(_), do: :neutral
 
   defp target_card_title(%{node_metadata: %{display_name: name}})
        when is_binary(name) and name != "",
@@ -622,6 +650,12 @@ defmodule OrchardConsole.NodesLive do
 
   defp runtime_health_label(%{ready: true}), do: "Healthy"
   defp runtime_health_label(_), do: "Unknown"
+
+  defp tokenizer_capability_tone(%{supports_prompt_token_ids: true}), do: :success
+  defp tokenizer_capability_tone(_), do: :neutral
+
+  defp tokenizer_capability_label(%{supports_prompt_token_ids: true}), do: "Prompt IDs: capable"
+  defp tokenizer_capability_label(_), do: "Prompt IDs: legacy"
 
   defp has_health_detail?(%{health_code: c, health_message: m, affected_model: a}) do
     c != nil or m != nil or a != nil

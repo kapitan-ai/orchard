@@ -54,6 +54,7 @@ defmodule OrchardConsole.Runtime do
           active_request_count: non_neg_integer(),
           node_metadata: node_metadata() | nil,
           runtime_health: runtime_health() | nil,
+          supports_prompt_token_ids: boolean(),
           runtime_memory_budgets: [runtime_memory_budget()],
           runtime_memory_budgets_truncated_count: non_neg_integer(),
           runtime_prefix_cache_statuses: [PrefixCacheStatus.t()]
@@ -68,6 +69,7 @@ defmodule OrchardConsole.Runtime do
           active_request_count: 0,
           node_metadata: nil,
           runtime_health: nil,
+          supports_prompt_token_ids: false,
           runtime_memory_budgets: [],
           runtime_memory_budgets_truncated_count: 0,
           runtime_prefix_cache_statuses: []
@@ -96,6 +98,7 @@ defmodule OrchardConsole.Runtime do
           active_request_count: non_neg_integer(),
           node_metadata: node_metadata() | nil,
           runtime_health: runtime_health() | nil,
+          supports_prompt_token_ids: boolean(),
           runtime_memory_budgets: [runtime_memory_budget()],
           runtime_memory_budgets_truncated_count: non_neg_integer(),
           runtime_prefix_cache_statuses: [PrefixCacheStatus.t()]
@@ -165,6 +168,7 @@ defmodule OrchardConsole.Runtime do
       active_request_count: 0,
       node_metadata: nil,
       runtime_health: nil,
+      supports_prompt_token_ids: false,
       runtime_memory_budgets: [],
       runtime_memory_budgets_truncated_count: 0,
       runtime_prefix_cache_statuses: []
@@ -275,6 +279,7 @@ defmodule OrchardConsole.Runtime do
       active_request_count: normalize_count(response.active_request_count),
       node_metadata: normalize_node_metadata(response),
       runtime_health: normalize_runtime_health(response),
+      supports_prompt_token_ids: supports_prompt_token_ids?(response),
       runtime_memory_budgets: normalize_runtime_memory_budgets(response),
       runtime_memory_budgets_truncated_count: runtime_memory_budgets_truncated_count(response),
       runtime_prefix_cache_statuses: normalize_runtime_prefix_cache_statuses(response)
@@ -312,6 +317,10 @@ defmodule OrchardConsole.Runtime do
 
   defp normalize_count(n) when is_integer(n) and n >= 0, do: n
   defp normalize_count(_), do: 0
+
+  defp supports_prompt_token_ids?(%{supports_prompt_token_ids: true}), do: true
+  defp supports_prompt_token_ids?(%{"supports_prompt_token_ids" => true}), do: true
+  defp supports_prompt_token_ids?(_), do: false
 
   # ---------------------------------------------------------------------------
   # Node metadata / runtime health normalization
@@ -511,6 +520,7 @@ defmodule OrchardConsole.Runtime do
       active_request_count: 0,
       node_metadata: nil,
       runtime_health: nil,
+      supports_prompt_token_ids: false,
       runtime_memory_budgets: [],
       runtime_memory_budgets_truncated_count: 0,
       runtime_prefix_cache_statuses: []

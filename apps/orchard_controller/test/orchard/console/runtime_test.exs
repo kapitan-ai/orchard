@@ -185,6 +185,39 @@ defmodule OrchardConsole.RuntimeTest do
       assert snapshot.runtime_health == nil
     end
 
+    test "normalizes prompt-token-id capability when status advertises support" do
+      stub_client(
+        connect: {:ok, :ch},
+        status: {:ok, status_response(%{supports_prompt_token_ids: true})},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.supports_prompt_token_ids == true
+    end
+
+    test "defaults prompt-token-id capability to false when status omits support" do
+      stub_client(
+        connect: {:ok, :ch},
+        status: {:ok, status_response()},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.supports_prompt_token_ids == false
+    end
+
+    test "keeps prompt-token-id capability false when status reports legacy support" do
+      stub_client(
+        connect: {:ok, :ch},
+        status: {:ok, status_response(%{supports_prompt_token_ids: false})},
+        disconnect: :ok
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.supports_prompt_token_ids == false
+    end
+
     test "error snapshots include nil node_metadata and runtime_health" do
       stub_client(
         connect: {:error, {:connect_failed, :econnrefused}},
@@ -195,6 +228,17 @@ defmodule OrchardConsole.RuntimeTest do
       assert {:error, error} = Runtime.snapshot()
       assert error.node_metadata == nil
       assert error.runtime_health == nil
+    end
+
+    test "error snapshots default prompt-token-id capability to false" do
+      stub_client(
+        connect: {:error, {:connect_failed, :econnrefused}},
+        status: nil,
+        disconnect: nil
+      )
+
+      assert {:error, error} = Runtime.snapshot()
+      assert error.supports_prompt_token_ids == false
     end
 
     test "normalizes affected_model from ModelRef to display string" do
@@ -940,6 +984,39 @@ defmodule OrchardConsole.RuntimeTest do
       assert fail_entry.status == :unavailable
       assert fail_entry.message == "node runtime is unavailable"
       assert fail_entry.worker_state == :unknown
+    end
+
+    test "cluster_snapshot carries prompt-token-id capability per successful target" do
+      target_capable = [host: "127.0.0.1", port: 50_071]
+      target_legacy = [host: "10.0.0.2", port: 50_061]
+      target_fail = [host: "10.0.0.99", port: 50_061]
+
+      stub_client(
+        target_responses: %{
+          {"127.0.0.1", 50_071} => [
+            connect: {:ok, :ch_a},
+            status: {:ok, status_response(%{supports_prompt_token_ids: true})},
+            disconnect: :ok
+          ],
+          {"10.0.0.2", 50_061} => [
+            connect: {:ok, :ch_b},
+            status: {:ok, status_response(%{supports_prompt_token_ids: false})},
+            disconnect: :ok
+          ],
+          {"10.0.0.99", 50_061} => [
+            connect: {:error, {:connect_failed, :econnrefused}},
+            status: nil,
+            disconnect: nil
+          ]
+        }
+      )
+
+      [capable, legacy, failed] =
+        Runtime.cluster_snapshot(targets: [target_capable, target_legacy, target_fail])
+
+      assert capable.supports_prompt_token_ids == true
+      assert legacy.supports_prompt_token_ids == false
+      assert failed.supports_prompt_token_ids == false
     end
 
     test "successful entries trigger observe_status, failed entries do not" do

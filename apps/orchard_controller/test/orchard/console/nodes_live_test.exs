@@ -27,7 +27,8 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeFullStub do
           health_code: nil,
           health_message: nil,
           affected_model: nil
-        }
+        },
+        supports_prompt_token_ids: true
       }
     ]
   end
@@ -353,7 +354,8 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeMultiTargetStub do
           agent_version: "0.1.0",
           worker_backend: "mlx"
         },
-        runtime_health: %{ready: true, health_code: nil, health_message: nil, affected_model: nil}
+        runtime_health: %{ready: true, health_code: nil, health_message: nil, affected_model: nil},
+        supports_prompt_token_ids: true
       },
       %{
         target: [host: "10.0.0.2", port: 50_061],
@@ -431,7 +433,8 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeMixedCompatibilityStub do
           health_code: nil,
           health_message: nil,
           affected_model: nil
-        }
+        },
+        supports_prompt_token_ids: true
       },
       %{
         target: [host: "10.0.0.5", port: 50_061],
@@ -469,6 +472,7 @@ defmodule OrchardConsole.NodesLiveTest do
   import Phoenix.LiveViewTest
   import Orchard.TestSupport.LicenseGateHelpers
 
+  alias __MODULE__.RuntimeOversizedMemoryBudgetRowsStub
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Repo
 
@@ -640,8 +644,13 @@ defmodule OrchardConsole.NodesLiveTest do
       {:ok, view, _html} = live(conn, "/console/nodes")
 
       summary = element(view, "#nodes-live-cluster-card") |> render()
+      capable_tile = element(view, "#cluster-prompt-token-capable") |> render()
+
       assert summary =~ "1 target(s) configured"
       assert summary =~ "1 reachable"
+      assert capable_tile =~ "Prompt-ID Capable"
+      assert capable_tile =~ "1/1"
+      assert capable_tile =~ "bg-forest-50/50"
     end
 
     test "per-target card renders with stable DOM id", %{conn: conn} do
@@ -649,6 +658,41 @@ defmodule OrchardConsole.NodesLiveTest do
 
       # DOM id based on target host:port
       assert html =~ ~s(id="nodes-runtime-card-127-0-0-1-50071")
+    end
+
+    test "renders prompt-token capability badge for capable target", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      card = element(view, "#nodes-runtime-card-127-0-0-1-50071") |> render()
+
+      assert card =~ ~s(id="nodes-tokenizer-capability-127-0-0-1-50071")
+      assert card =~ "Prompt IDs: capable"
+      refute card =~ "Prompt IDs: legacy"
+    end
+
+    test "renders prompt-token legacy badge for reachable target without capability", %{
+      conn: conn
+    } do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeLegacyStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      card = element(view, "#nodes-runtime-card-127-0-0-1-50071") |> render()
+
+      assert card =~ ~s(id="nodes-tokenizer-capability-127-0-0-1-50071")
+      assert card =~ "Prompt IDs: legacy"
+      refute card =~ "Prompt IDs: capable"
+    end
+
+    test "does not render prompt-token capability badge for unavailable target", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeUnavailableStub)
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      assert html =~ "nodes-runtime-unavailable-127-0-0-1-50071"
+      refute html =~ "nodes-tokenizer-capability-127-0-0-1-50071"
+      refute html =~ "Prompt IDs: capable"
+      refute html =~ "Prompt IDs: legacy"
     end
 
     test "renders observe-only memory telemetry empty state when budgets are absent", %{
@@ -714,6 +758,15 @@ defmodule OrchardConsole.NodesLiveTest do
       summary = element(view, "#nodes-live-cluster-card") |> render()
       assert summary =~ "2 target(s) configured"
       assert summary =~ "1 reachable"
+    end
+
+    test "prompt-token summary denominator excludes unavailable targets", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeMultiTargetStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      capable_tile = element(view, "#cluster-prompt-token-capable") |> render()
+      assert capable_tile =~ "1/1"
     end
   end
 
@@ -820,11 +873,8 @@ defmodule OrchardConsole.NodesLiveTest do
       assert telemetry =~ "model-20@main"
       refute telemetry =~ "model-21@main"
 
-      refute telemetry =~
-               OrchardConsole.NodesLiveTest.RuntimeOversizedMemoryBudgetRowsStub.trimmed_model_suffix()
-
-      refute telemetry =~
-               OrchardConsole.NodesLiveTest.RuntimeOversizedMemoryBudgetRowsStub.trimmed_message_suffix()
+      refute telemetry =~ RuntimeOversizedMemoryBudgetRowsStub.trimmed_model_suffix()
+      refute telemetry =~ RuntimeOversizedMemoryBudgetRowsStub.trimmed_message_suffix()
 
       assert_no_memory_policy_terms(telemetry)
     end
@@ -865,6 +915,22 @@ defmodule OrchardConsole.NodesLiveTest do
       # Both targets are reachable (status: :ok), even the legacy one
       assert summary =~ "2 target(s) configured"
       assert summary =~ "2 reachable"
+    end
+
+    test "cluster summary counts prompt-token-capable reachable workers", %{conn: conn} do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeMixedCompatibilityStub)
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      summary = element(view, "#nodes-live-cluster-card") |> render()
+      capable_tile = element(view, "#cluster-prompt-token-capable") |> render()
+
+      assert summary =~ "2 target(s) configured"
+      assert summary =~ "2 reachable"
+      assert capable_tile =~ "Prompt-ID Capable"
+      assert capable_tile =~ "1/2"
+      assert capable_tile =~ "bg-slate-50"
+      refute capable_tile =~ "bg-forest-50/50"
     end
   end
 
