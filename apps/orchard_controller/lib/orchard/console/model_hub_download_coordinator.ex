@@ -26,6 +26,8 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
 
   require Logger
 
+  alias OrchardConsole.Redaction
+
   @topic "console:model_hub:downloads"
 
   # ===========================================================================
@@ -192,7 +194,8 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
         if terminal?(job.snapshot.status) do
           {:noreply, state}
         else
-          error_map = if is_map(error), do: error, else: default_error()
+          error_map =
+            if is_map(error), do: Redaction.sanitize_error_map(error), else: default_error()
 
           snapshot = %{
             job.snapshot
@@ -213,7 +216,7 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
     end
   end
 
-  def handle_info({:DOWN, monitor_ref, :process, _pid, _reason}, state) do
+  def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
     case Map.get(state.monitor_ref_to_job_ref, monitor_ref) do
       nil ->
         {:noreply, state}
@@ -236,6 +239,14 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
                  | monitor_ref_to_job_ref: Map.delete(state.monitor_ref_to_job_ref, monitor_ref)
                }}
             else
+              Logger.error(
+                "ModelHubDownloadCoordinator: download task " <>
+                  Redaction.safe_inspect(pid) <>
+                  " for ref " <>
+                  Redaction.safe_inspect(job_ref) <>
+                  " crashed: " <> Redaction.safe_inspect(reason)
+              )
+
               snapshot = %{
                 job.snapshot
                 | status: :error,
@@ -312,8 +323,8 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
         do: Keyword.put(seam_opts, :revision, requested_revision),
         else: seam_opts
 
-    case model_hub_impl().start_download_import(self(), ref, repo_id, seam_opts) do
-      {:ok, pid} ->
+    case start_download_import(ref, repo_id, seam_opts) do
+      {:ok, pid} when is_pid(pid) ->
         monitor_ref = Process.monitor(pid)
 
         job = %{job | task_pid: pid, monitor_ref: monitor_ref}
@@ -329,22 +340,72 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
         broadcast(snapshot)
         {:reply, {:ok, snapshot}, state}
 
-      _other ->
-        error = default_error()
-        snapshot = %{snapshot | status: :error, error: error}
-        job = %{job | snapshot: snapshot}
+      {:error, reason} ->
+        Logger.warning(
+          "ModelHubDownloadCoordinator: seam start_download_import returned " <>
+            "{:error, reason} for repo " <>
+            Redaction.safe_inspect(repo_id) <>
+            ": " <> Redaction.safe_inspect(reason)
+        )
 
-        state =
-          state
-          |> put_in([:jobs_by_ref, ref], job)
-          |> put_in([:latest_ref], ref)
-          |> put_in([:latest_ref_by_repo, repo_id], ref)
+        reply_with_immediate_start_failure(state, ref, repo_id, snapshot, job)
 
-        # Don't mark as active — it failed immediately
+      other ->
+        Logger.error(
+          "ModelHubDownloadCoordinator: seam start_download_import returned " <>
+            "invalid value for repo " <>
+            Redaction.safe_inspect(repo_id) <>
+            ": " <> Redaction.safe_inspect(other)
+        )
 
-        broadcast(snapshot)
-        {:reply, {:error, snapshot}, state}
+        reply_with_immediate_start_failure(state, ref, repo_id, snapshot, job)
     end
+  end
+
+  defp start_download_import(ref, repo_id, seam_opts) do
+    model_hub_impl().start_download_import(self(), ref, repo_id, seam_opts)
+  rescue
+    exception ->
+      Logger.error(
+        "ModelHubDownloadCoordinator: seam start_download_import raised for repo " <>
+          Redaction.safe_inspect(repo_id) <>
+          ": " <> Redaction.format_exception(:error, exception, __STACKTRACE__)
+      )
+
+      {:error, :seam_start_failed}
+  catch
+    :throw, value ->
+      Logger.error(
+        "ModelHubDownloadCoordinator: seam start_download_import threw for repo " <>
+          Redaction.safe_inspect(repo_id) <>
+          ": " <> Redaction.safe_inspect(value)
+      )
+
+      {:error, :seam_start_failed}
+
+    :exit, reason ->
+      Logger.error(
+        "ModelHubDownloadCoordinator: seam start_download_import exited for repo " <>
+          Redaction.safe_inspect(repo_id) <>
+          ": " <> Redaction.safe_inspect(reason)
+      )
+
+      {:error, :seam_start_failed}
+  end
+
+  defp reply_with_immediate_start_failure(state, ref, repo_id, snapshot, job) do
+    error = default_error()
+    snapshot = %{snapshot | status: :error, error: error}
+    job = %{job | snapshot: snapshot}
+
+    state =
+      state
+      |> put_in([:jobs_by_ref, ref], job)
+      |> put_in([:latest_ref], ref)
+      |> put_in([:latest_ref_by_repo, repo_id], ref)
+
+    broadcast(snapshot)
+    {:reply, {:error, snapshot}, state}
   end
 
   # ===========================================================================

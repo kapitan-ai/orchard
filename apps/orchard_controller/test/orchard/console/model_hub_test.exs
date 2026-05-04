@@ -1,6 +1,8 @@
 defmodule OrchardConsole.ModelHubTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias Ecto.Adapters.SQL.Sandbox
   alias OrchardConsole.ModelHub
   alias OrchardConsole.ModelHubTest.{StubClient, StubDownloader}
@@ -28,10 +30,12 @@ defmodule OrchardConsole.ModelHubTest do
 
   describe "start_search/3" do
     test "returns {:ok, pid} immediately" do
+      ref = make_ref()
       stub_client(search: {:ok, []})
 
-      assert {:ok, pid} = ModelHub.start_search(self(), make_ref(), "Qwen")
+      assert {:ok, pid} = ModelHub.start_search(self(), ref, "Qwen")
       assert is_pid(pid)
+      assert_receive {:model_hub, ^ref, :search_finished, {:ok, _}}, 1000
     end
 
     test "task is not linked to the caller" do
@@ -75,46 +79,141 @@ defmodule OrchardConsole.ModelHubTest do
       assert_receive {:model_hub, ^ref, :search_finished, {:error, ^error}}, 1000
     end
 
+    test "redacts secret-bearing search error messages before sending results" do
+      secrets = bearer_secret_samples()
+      hf_token = "hf_1234567890abcdef"
+
+      error = %{
+        status: :rate_limited,
+        code: "hf_rate_limited",
+        message:
+          "search failed with Bearer #{secrets.slash} and #{hf_token}; jwt Bearer #{secrets.jwt}; " <>
+            "opaque Bearer #{secrets.opaque}; sk Bearer #{secrets.sk}"
+      }
+
+      stub_client(search: {:error, error})
+
+      ref = make_ref()
+      assert {:ok, _pid} = ModelHub.start_search(self(), ref, nil)
+
+      assert_receive {:model_hub, ^ref, :search_finished, {:error, redacted}}, 1000
+      assert redacted.status == :rate_limited
+      assert redacted.code == "hf_rate_limited"
+      assert redacted.message =~ "Bearer [REDACTED]"
+      assert redacted.message =~ "[REDACTED-HF-TOKEN]"
+      refute_bearer_secrets(redacted.message, secrets)
+      refute redacted.message =~ hf_token
+    end
+
+    test "preserves benign bearer prose in search error messages" do
+      message = "Bearer authentication is required"
+      error = %{status: :rate_limited, code: "hf_rate_limited", message: message}
+
+      stub_client(search: {:error, error})
+
+      ref = make_ref()
+      assert {:ok, _pid} = ModelHub.start_search(self(), ref, nil)
+      assert_receive {:model_hub, ^ref, :search_finished, {:error, ^error}}, 1000
+    end
+
     test "normalizes raised exceptions to a generic error result" do
       ref = make_ref()
       stub_client(search: :raise)
 
-      assert {:ok, _pid} = ModelHub.start_search(self(), ref, nil)
+      log =
+        capture_log(fn ->
+          assert {:ok, _pid} = ModelHub.start_search(self(), ref, nil)
 
-      assert_receive {:model_hub, ^ref, :search_finished, {:error, error}}, 1000
-      assert error == %{status: :error, code: "hf_error", message: "Hugging Face request failed."}
-      refute_receive {:model_hub, ^ref, :search_finished, _}, 50
+          assert_receive {:model_hub, ^ref, :search_finished, {:error, error}}, 1000
+
+          assert error == %{
+                   status: :error,
+                   code: "hf_error",
+                   message: "Hugging Face request failed."
+                 }
+
+          refute_receive {:model_hub, ^ref, :search_finished, _}, 50
+        end)
+
+      assert log =~ "ModelHub: pipeline rescued exception"
+    end
+
+    test "redacts auth tokens from rescued exception logs" do
+      secrets = bearer_secret_samples()
+      hf_token = "hf_1234567890abcdef"
+      ref = make_ref()
+
+      stub_client(
+        search:
+          {:raise,
+           "boom Authorization: Bearer #{hf_token} and retry with Bearer #{secrets.slash} " <>
+             "jwt Bearer #{secrets.jwt} opaque Bearer #{secrets.opaque} sk Bearer #{secrets.sk}"}
+      )
+
+      log =
+        capture_log(fn ->
+          assert {:ok, _pid} = ModelHub.start_search(self(), ref, nil)
+          assert_receive {:model_hub, ^ref, :search_finished, {:error, %{code: "hf_error"}}}, 1000
+        end)
+
+      assert log =~ "ModelHub: pipeline rescued exception"
+      assert log =~ "Authorization: Bearer [REDACTED]"
+      assert log =~ "retry with Bearer [REDACTED]"
+      assert log =~ "jwt Bearer [REDACTED]"
+      assert log =~ "opaque Bearer [REDACTED]"
+      assert log =~ "sk Bearer [REDACTED]"
+      refute_bearer_secrets(log, secrets)
+      refute log =~ hf_token
     end
 
     test "normalizes thrown values to a generic error result" do
       ref = make_ref()
       stub_client(search: :throw)
 
-      assert {:ok, _pid} = ModelHub.start_search(self(), ref, nil)
+      capture_log(fn ->
+        assert {:ok, _pid} = ModelHub.start_search(self(), ref, nil)
 
-      assert_receive {:model_hub, ^ref, :search_finished, {:error, error}}, 1000
-      assert error == %{status: :error, code: "hf_error", message: "Hugging Face request failed."}
-      refute_receive {:model_hub, ^ref, :search_finished, _}, 50
+        assert_receive {:model_hub, ^ref, :search_finished, {:error, error}}, 1000
+
+        assert error == %{
+                 status: :error,
+                 code: "hf_error",
+                 message: "Hugging Face request failed."
+               }
+
+        refute_receive {:model_hub, ^ref, :search_finished, _}, 50
+      end)
     end
 
     test "normalizes exits to a generic error result" do
       ref = make_ref()
       stub_client(search: :exit)
 
-      assert {:ok, _pid} = ModelHub.start_search(self(), ref, nil)
+      capture_log(fn ->
+        assert {:ok, _pid} = ModelHub.start_search(self(), ref, nil)
 
-      assert_receive {:model_hub, ^ref, :search_finished, {:error, error}}, 1000
-      assert error == %{status: :error, code: "hf_error", message: "Hugging Face request failed."}
-      refute_receive {:model_hub, ^ref, :search_finished, _}, 50
+        assert_receive {:model_hub, ^ref, :search_finished, {:error, error}}, 1000
+
+        assert error == %{
+                 status: :error,
+                 code: "hf_error",
+                 message: "Hugging Face request failed."
+               }
+
+        refute_receive {:model_hub, ^ref, :search_finished, _}, 50
+      end)
     end
   end
 
   describe "start_detail/3" do
     test "returns {:ok, pid} immediately" do
-      stub_client(detail: {:ok, %{repo_id: "mlx-community/Qwen"}})
+      ref = make_ref()
+      detail = %{repo_id: "mlx-community/Qwen"}
+      stub_client(detail: {:ok, detail})
 
-      assert {:ok, pid} = ModelHub.start_detail(self(), make_ref(), "mlx-community/Qwen")
+      assert {:ok, pid} = ModelHub.start_detail(self(), ref, "mlx-community/Qwen")
       assert is_pid(pid)
+      assert_receive {:model_hub, ^ref, :detail_finished, {:ok, ^detail}}, 1000
     end
 
     test "forwards repo_id to the client and sends success message" do
@@ -143,37 +242,98 @@ defmodule OrchardConsole.ModelHubTest do
       assert_receive {:model_hub, ^ref, :detail_finished, {:error, ^error}}, 1000
     end
 
+    test "redacts secret-bearing detail error messages before sending results" do
+      secrets = bearer_secret_samples()
+      hf_token = "hf_1234567890abcdef"
+
+      error = %{
+        status: :not_found,
+        code: "hf_not_found",
+        message:
+          "detail failed with Bearer #{secrets.slash} and #{hf_token}; jwt Bearer #{secrets.jwt}; " <>
+            "opaque Bearer #{secrets.opaque}; sk Bearer #{secrets.sk}"
+      }
+
+      stub_client(detail: {:error, error})
+
+      ref = make_ref()
+      assert {:ok, _pid} = ModelHub.start_detail(self(), ref, "mlx-community/missing")
+
+      assert_receive {:model_hub, ^ref, :detail_finished, {:error, redacted}}, 1000
+      assert redacted.status == :not_found
+      assert redacted.code == "hf_not_found"
+      assert redacted.message =~ "Bearer [REDACTED]"
+      assert redacted.message =~ "[REDACTED-HF-TOKEN]"
+      refute_bearer_secrets(redacted.message, secrets)
+      refute redacted.message =~ hf_token
+    end
+
+    test "preserves benign bearer prose in detail error messages" do
+      message = "Bearer authentication is required"
+      error = %{status: :not_found, code: "hf_not_found", message: message}
+
+      stub_client(detail: {:error, error})
+
+      ref = make_ref()
+      assert {:ok, _pid} = ModelHub.start_detail(self(), ref, "mlx-community/missing")
+      assert_receive {:model_hub, ^ref, :detail_finished, {:error, ^error}}, 1000
+    end
+
     test "normalizes raised exceptions to a generic error result" do
       ref = make_ref()
       stub_client(detail: :raise)
 
-      assert {:ok, _pid} = ModelHub.start_detail(self(), ref, "mlx-community/exploded")
+      capture_log(fn ->
+        assert {:ok, _pid} = ModelHub.start_detail(self(), ref, "mlx-community/exploded")
 
-      assert_receive {:model_hub, ^ref, :detail_finished, {:error, error}}, 1000
-      assert error == %{status: :error, code: "hf_error", message: "Hugging Face request failed."}
-      refute_receive {:model_hub, ^ref, :detail_finished, _}, 50
+        assert_receive {:model_hub, ^ref, :detail_finished, {:error, error}}, 1000
+
+        assert error == %{
+                 status: :error,
+                 code: "hf_error",
+                 message: "Hugging Face request failed."
+               }
+
+        refute_receive {:model_hub, ^ref, :detail_finished, _}, 50
+      end)
     end
 
     test "normalizes thrown values to a generic error result" do
       ref = make_ref()
       stub_client(detail: :throw)
 
-      assert {:ok, _pid} = ModelHub.start_detail(self(), ref, "mlx-community/exploded")
+      capture_log(fn ->
+        assert {:ok, _pid} = ModelHub.start_detail(self(), ref, "mlx-community/exploded")
 
-      assert_receive {:model_hub, ^ref, :detail_finished, {:error, error}}, 1000
-      assert error == %{status: :error, code: "hf_error", message: "Hugging Face request failed."}
-      refute_receive {:model_hub, ^ref, :detail_finished, _}, 50
+        assert_receive {:model_hub, ^ref, :detail_finished, {:error, error}}, 1000
+
+        assert error == %{
+                 status: :error,
+                 code: "hf_error",
+                 message: "Hugging Face request failed."
+               }
+
+        refute_receive {:model_hub, ^ref, :detail_finished, _}, 50
+      end)
     end
 
     test "normalizes exits to a generic error result" do
       ref = make_ref()
       stub_client(detail: :exit)
 
-      assert {:ok, _pid} = ModelHub.start_detail(self(), ref, "mlx-community/exploded")
+      capture_log(fn ->
+        assert {:ok, _pid} = ModelHub.start_detail(self(), ref, "mlx-community/exploded")
 
-      assert_receive {:model_hub, ^ref, :detail_finished, {:error, error}}, 1000
-      assert error == %{status: :error, code: "hf_error", message: "Hugging Face request failed."}
-      refute_receive {:model_hub, ^ref, :detail_finished, _}, 50
+        assert_receive {:model_hub, ^ref, :detail_finished, {:error, error}}, 1000
+
+        assert error == %{
+                 status: :error,
+                 code: "hf_error",
+                 message: "Hugging Face request failed."
+               }
+
+        refute_receive {:model_hub, ^ref, :detail_finished, _}, 50
+      end)
     end
   end
 
@@ -516,6 +676,45 @@ defmodule OrchardConsole.ModelHubTest do
       assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
       assert error.status == :unauthorized
       assert error.code == "hf_unauthorized"
+      assert error.message == "Hugging Face access denied."
+    end
+
+    test "redacts secret-bearing downloader error messages before sending results" do
+      secrets = bearer_secret_samples()
+      hf_token = "hf_1234567890abcdef"
+
+      message =
+        "upstream failed with Bearer #{secrets.slash} and #{hf_token}; " <>
+          "jwt Bearer #{secrets.jwt}; opaque Bearer #{secrets.opaque}; sk Bearer #{secrets.sk}"
+
+      stub_client(detail: {:ok, stub_detail()})
+      stub_downloader(download: {:error, {:unauthorized, message}})
+
+      ref = make_ref()
+      {:ok, _pid} = ModelHub.start_download_import(self(), ref, "mlx-community/test")
+
+      assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+      assert error.status == :unauthorized
+      assert error.code == "hf_unauthorized"
+      assert error.message =~ "Bearer [REDACTED]"
+      assert error.message =~ "[REDACTED-HF-TOKEN]"
+      refute_bearer_secrets(error.message, secrets)
+      refute error.message =~ hf_token
+    end
+
+    test "preserves non-secret bearer wording in downloader error messages" do
+      message = "Bearer authentication is required"
+
+      stub_client(detail: {:ok, stub_detail()})
+      stub_downloader(download: {:error, {:unauthorized, message}})
+
+      ref = make_ref()
+      {:ok, _pid} = ModelHub.start_download_import(self(), ref, "mlx-community/test")
+
+      assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+      assert error.status == :unauthorized
+      assert error.code == "hf_unauthorized"
+      assert error.message == message
     end
 
     test "missing revision produces specific error" do
@@ -534,11 +733,35 @@ defmodule OrchardConsole.ModelHubTest do
       stub_downloader(download: :raise)
 
       ref = make_ref()
-      {:ok, _pid} = ModelHub.start_download_import(self(), ref, "mlx-community/test")
 
-      assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
-      assert error.code == "download_import_failed"
-      refute_receive {:model_hub, ^ref, :download_finished, _}, 100
+      log =
+        capture_log(fn ->
+          {:ok, _pid} = ModelHub.start_download_import(self(), ref, "mlx-community/test")
+
+          assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+          assert error.code == "download_import_failed"
+          refute_receive {:model_hub, ^ref, :download_finished, _}, 100
+        end)
+
+      assert log =~ "ModelHub: pipeline rescued exception"
+    end
+
+    test "normalizes thrown values to download_import_failed" do
+      stub_client(detail: {:ok, stub_detail()})
+      stub_downloader(download: :throw)
+
+      ref = make_ref()
+
+      log =
+        capture_log(fn ->
+          {:ok, _pid} = ModelHub.start_download_import(self(), ref, "mlx-community/test")
+
+          assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+          assert error.code == "download_import_failed"
+          refute_receive {:model_hub, ^ref, :download_finished, _}, 100
+        end)
+
+      assert log =~ "ModelHub: pipeline caught throw"
     end
 
     test "normalizes exits to download_import_failed" do
@@ -546,11 +769,73 @@ defmodule OrchardConsole.ModelHubTest do
       stub_downloader(download: :exit)
 
       ref = make_ref()
-      {:ok, _pid} = ModelHub.start_download_import(self(), ref, "mlx-community/test")
 
-      assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
-      assert error.code == "download_import_failed"
-      refute_receive {:model_hub, ^ref, :download_finished, _}, 100
+      log =
+        capture_log(fn ->
+          {:ok, _pid} = ModelHub.start_download_import(self(), ref, "mlx-community/test")
+
+          assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+          assert error.code == "download_import_failed"
+          refute_receive {:model_hub, ^ref, :download_finished, _}, 100
+        end)
+
+      assert log =~ "ModelHub: pipeline caught exit"
+    end
+
+    test "logs unrecognized downloader errors while preserving generic result" do
+      secrets = bearer_secret_samples()
+      hf_token = "hf_1234567890abcdef"
+      stub_client(detail: {:ok, stub_detail()})
+
+      stub_downloader(
+        download:
+          {:error,
+           {:weird_shape,
+            %{
+              hf_token: hf_token,
+              slash: "Bearer #{secrets.slash}",
+              jwt: "Bearer #{secrets.jwt}",
+              opaque: "Bearer #{secrets.opaque}",
+              sk: "Bearer #{secrets.sk}"
+            }}}
+      )
+
+      ref = make_ref()
+
+      log =
+        capture_log(fn ->
+          {:ok, _pid} = ModelHub.start_download_import(self(), ref, "mlx-community/test")
+
+          assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+          assert error.code == "download_import_failed"
+          refute_receive {:model_hub, ^ref, :download_finished, _}, 100
+        end)
+
+      assert log =~ "ModelHub: unrecognized download error"
+      assert log =~ "weird_shape"
+      assert log =~ ~s(hf_token: "[REDACTED]")
+      assert log =~ "Bearer [REDACTED]"
+      refute log =~ hf_token
+      refute_bearer_secrets(log, secrets)
+    end
+
+    test "preserves non-secret bearer prose in unrecognized downloader logs" do
+      message = "Bearer authentication is required"
+      stub_client(detail: {:ok, stub_detail()})
+      stub_downloader(download: {:error, {:weird_shape, %{message: message}}})
+
+      ref = make_ref()
+
+      log =
+        capture_log(fn ->
+          {:ok, _pid} = ModelHub.start_download_import(self(), ref, "mlx-community/test")
+
+          assert_receive {:model_hub, ^ref, :download_finished, {:error, error}}, 2000
+          assert error.code == "download_import_failed"
+        end)
+
+      assert log =~ message
+      refute log =~ "Bearer [REDACTED]"
     end
 
     test "cleans up temp directory on success" do
@@ -619,6 +904,7 @@ defmodule OrchardConsole.ModelHubTest do
       end
 
       case config[:search] do
+        {:raise, message} -> raise message
         :raise -> raise "search exploded"
         :throw -> throw(:search_exploded)
         :exit -> exit(:search_exploded)
@@ -749,6 +1035,21 @@ defmodule OrchardConsole.ModelHubTest do
   # ===========================================================================
   # Helpers
   # ===========================================================================
+
+  defp bearer_secret_samples do
+    %{
+      jwt: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.sig_nature-test",
+      opaque: "abcdef1234567890",
+      sk: "sk-test-abcdef1234567890",
+      slash: "abc/def+ghi="
+    }
+  end
+
+  defp refute_bearer_secrets(text, samples) do
+    samples
+    |> Map.values()
+    |> Enum.each(fn secret -> refute text =~ secret end)
+  end
 
   defp stub_client(config) do
     ensure_registry()

@@ -365,6 +365,44 @@ defmodule OrchardConsole.ModelHubLiveTest do
       refute_receive {:stub_detail_ref, _, _}, 50
     end
 
+    test "search error sanitizes raw token-bearing messages before render", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      search_ref = assert_search_started(nil)
+      hf_token = "hf_1234567890abcdef"
+      bearer = "abcdef1234567890"
+
+      send_search_error(view, search_ref, %{
+        message: "Search failed Bearer #{bearer}; #{hf_token}"
+      })
+
+      html = render(view)
+
+      assert html =~ "model-hub-results-error"
+      assert html =~ "Bearer [REDACTED]"
+      assert html =~ "[REDACTED-HF-TOKEN]"
+      refute html =~ bearer
+      refute html =~ hf_token
+    end
+
+    test "search error title reads sanitized string-keyed messages", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      search_ref = assert_search_started(nil)
+
+      send(view.pid, {
+        :model_hub,
+        search_ref,
+        :search_finished,
+        {:error,
+         %{"status" => "error", "code" => "hf_error", "message" => "String keyed search failed."}}
+      })
+
+      html = render(view)
+
+      assert html =~ "model-hub-results-error"
+      assert html =~ "String keyed search failed."
+      refute html =~ "Model Hub unavailable."
+    end
+
     test "detail error keeps results visible for the selected repo", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/model-hub")
       results = search_results_fixture()
@@ -381,6 +419,54 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert html =~ Enum.at(results, 1).repo_id
       assert html =~ "model-hub-detail-error"
       assert html =~ "Hugging Face access denied."
+    end
+
+    test "detail error sanitizes raw token-bearing messages before render", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = search_results_fixture()
+      repo_id = hd(results).repo_id
+      search_ref = assert_search_started(nil)
+      hf_token = "hf_1234567890abcdef"
+      bearer = "abcdef1234567890"
+
+      send_search_success(view, search_ref, nil, results)
+      detail_ref = assert_detail_started(repo_id)
+
+      send_detail_error(view, detail_ref, %{
+        message: "Detail failed Bearer #{bearer}; #{hf_token}"
+      })
+
+      html = render(view)
+
+      assert html =~ "model-hub-detail-error"
+      assert html =~ "Bearer [REDACTED]"
+      assert html =~ "[REDACTED-HF-TOKEN]"
+      refute html =~ bearer
+      refute html =~ hf_token
+    end
+
+    test "detail error title reads sanitized string-keyed messages", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = search_results_fixture()
+      repo_id = hd(results).repo_id
+      search_ref = assert_search_started(nil)
+
+      send_search_success(view, search_ref, nil, results)
+      detail_ref = assert_detail_started(repo_id)
+
+      send(view.pid, {
+        :model_hub,
+        detail_ref,
+        :detail_finished,
+        {:error,
+         %{"status" => "error", "code" => "hf_error", "message" => "String keyed detail failed."}}
+      })
+
+      html = render(view)
+
+      assert html =~ "model-hub-detail-error"
+      assert html =~ "String keyed detail failed."
+      refute html =~ "Model details unavailable."
     end
 
     test "sparse detail payloads render with fallbacks instead of crashing", %{conn: conn} do
@@ -1098,6 +1184,94 @@ defmodule OrchardConsole.ModelHubLiveTest do
       assert has_element?(view, "#model-hub-download-retry")
       # Button should be re-enabled
       refute has_element?(view, "#model-hub-download-button[disabled]")
+    end
+
+    test "download error snapshot sanitizes token-bearing message before render", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = load_initial_results_and_detail(view)
+      first = hd(results)
+      bearer = "abcdef1234567890"
+      hf_token = "hf_1234567890abcdef"
+
+      send(view.pid, {
+        :model_hub_download,
+        %{
+          key: {first.repo_id, nil},
+          repo_id: first.repo_id,
+          status: :error,
+          progress: %{repo_id: first.repo_id},
+          result: nil,
+          error: %{
+            status: :error,
+            code: "download_import_failed",
+            message: "Download failed Bearer #{bearer}; #{hf_token}"
+          }
+        }
+      })
+
+      html = render(view)
+
+      assert html =~ "model-hub-download-error"
+      assert html =~ "Bearer [REDACTED]"
+      assert html =~ "[REDACTED-HF-TOKEN]"
+      refute html =~ bearer
+      refute html =~ hf_token
+    end
+
+    test "download error title reads sanitized string-keyed messages", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = load_initial_results_and_detail(view)
+      first = hd(results)
+
+      send(view.pid, {
+        :model_hub_download,
+        %{
+          key: {first.repo_id, nil},
+          repo_id: first.repo_id,
+          status: :error,
+          progress: %{repo_id: first.repo_id},
+          result: nil,
+          error: %{
+            "status" => "error",
+            "code" => "download_import_failed",
+            "message" => "String keyed download failed."
+          }
+        }
+      })
+
+      html = render(view)
+
+      assert html =~ "model-hub-download-error"
+      assert html =~ "String keyed download failed."
+      refute html =~ "Model download and import failed."
+    end
+
+    test "download error snapshot sanitizes struct errors before render", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/model-hub")
+      results = load_initial_results_and_detail(view)
+      first = hd(results)
+      bearer = "abcdef1234567890"
+      hf_token = "hf_1234567890abcdef"
+
+      send(view.pid, {
+        :model_hub_download,
+        %{
+          key: {first.repo_id, nil},
+          repo_id: first.repo_id,
+          status: :error,
+          progress: %{repo_id: first.repo_id},
+          result: nil,
+          error: %RuntimeError{message: "Download failed Bearer #{bearer}; #{hf_token}"}
+        }
+      })
+
+      html = render(view)
+
+      assert html =~ "model-hub-download-error"
+      assert html =~ "Bearer [REDACTED]"
+      assert html =~ "[REDACTED-HF-TOKEN]"
+      refute html =~ bearer
+      refute html =~ hf_token
     end
 
     test "duplicate model error shows friendly message", %{conn: conn} do

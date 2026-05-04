@@ -1,6 +1,8 @@
 defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
   alias OrchardConsole.ModelHubDownloadCoordinator, as: Coordinator
 
   setup do
@@ -106,12 +108,106 @@ defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
       assert_receive {:stub_download, _, _, "owner/model", _}, 200
     end
 
-    test "immediate start failure returns error snapshot" do
-      :persistent_term.put({__MODULE__, :start_download_result}, :error)
+    test "immediate seam error returns error snapshot and logs reason" do
+      secrets = bearer_secret_samples()
 
-      assert {:error, snapshot} = Coordinator.start_download("owner/model")
-      assert snapshot.status == :error
-      assert snapshot.error.code == "download_import_failed"
+      reason =
+        {:seam_unavailable,
+         "retry with Bearer #{secrets.slash}; jwt Bearer #{secrets.jwt}; " <>
+           "opaque Bearer #{secrets.opaque}; sk Bearer #{secrets.sk}"}
+
+      :persistent_term.put({__MODULE__, :start_download_result}, {:error, reason})
+      Coordinator.subscribe()
+
+      log =
+        capture_log(fn ->
+          assert {:error, snapshot} = Coordinator.start_download("owner/model")
+          assert snapshot.status == :error
+          assert snapshot.error.code == "download_import_failed"
+          assert_receive {:model_hub_download, %{status: :error}}, 200
+        end)
+
+      assert log =~
+               "ModelHubDownloadCoordinator: seam start_download_import returned {:error, reason}"
+
+      assert log =~ "seam_unavailable"
+      assert log =~ "Bearer [REDACTED]"
+      refute_bearer_secrets(log, secrets)
+    end
+
+    test "immediate seam error preserves non-secret bearer prose in logs" do
+      message = "Bearer authentication is required"
+      reason = {:seam_unavailable, message}
+      :persistent_term.put({__MODULE__, :start_download_result}, {:error, reason})
+      Coordinator.subscribe()
+
+      log =
+        capture_log(fn ->
+          assert {:error, snapshot} = Coordinator.start_download("owner/model")
+          assert snapshot.status == :error
+          assert snapshot.error.code == "download_import_failed"
+          assert_receive {:model_hub_download, %{status: :error}}, 200
+        end)
+
+      assert log =~ message
+      refute log =~ "Bearer [REDACTED]"
+    end
+
+    test "invalid immediate seam return produces error snapshot and logs invalid value" do
+      :persistent_term.put({__MODULE__, :start_download_result}, :wat)
+      Coordinator.subscribe()
+
+      log =
+        capture_log(fn ->
+          assert {:error, snapshot} = Coordinator.start_download("owner/model")
+          assert snapshot.status == :error
+          assert snapshot.error.code == "download_import_failed"
+          assert_receive {:model_hub_download, %{status: :error}}, 200
+        end)
+
+      assert log =~
+               "ModelHubDownloadCoordinator: seam start_download_import returned invalid value"
+
+      assert log =~ ":wat"
+    end
+
+    test "invalid {:ok, non_pid} seam return produces error snapshot and logs invalid value" do
+      :persistent_term.put({__MODULE__, :start_download_result}, {:ok, :wat})
+      Coordinator.subscribe()
+
+      log =
+        capture_log(fn ->
+          assert {:error, snapshot} = Coordinator.start_download("owner/model")
+          assert snapshot.status == :error
+          assert snapshot.error.code == "download_import_failed"
+          assert_receive {:model_hub_download, %{status: :error}}, 200
+        end)
+
+      assert log =~
+               "ModelHubDownloadCoordinator: seam start_download_import returned invalid value"
+
+      assert log =~ "{:ok, :wat}"
+    end
+
+    test "raised seam failure returns error snapshot without crashing coordinator" do
+      assert_seam_exception_returns_error_snapshot(
+        {:raise, "boom api_key=plain-api-secret"},
+        "raised"
+      )
+    end
+
+    test "thrown seam failure returns error snapshot without crashing coordinator" do
+      assert_seam_exception_returns_error_snapshot(
+        {:throw, {:api_key, "plain-api-secret"}},
+        "threw"
+      )
+    end
+
+    test "exited seam failure returns error snapshot without crashing coordinator" do
+      assert_seam_exception_returns_error_snapshot(
+        {:exit, {:client_secret, "plain-client-secret"}},
+        "exited"
+      )
     end
 
     test "rejects nil repo_id" do
@@ -136,13 +232,15 @@ defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
     end
 
     test "broadcasts error snapshot on immediate start failure" do
-      :persistent_term.put({__MODULE__, :start_download_result}, :error)
+      :persistent_term.put({__MODULE__, :start_download_result}, {:error, :seam_unavailable})
       Coordinator.subscribe()
 
-      assert {:error, _} = Coordinator.start_download("owner/model")
+      capture_log(fn ->
+        assert {:error, _} = Coordinator.start_download("owner/model")
 
-      assert_receive {:model_hub_download, snapshot}, 200
-      assert snapshot.status == :error
+        assert_receive {:model_hub_download, snapshot}, 200
+        assert snapshot.status == :error
+      end)
     end
   end
 
@@ -251,6 +349,73 @@ defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
       assert snapshot.result == nil
     end
 
+    test ":download_finished redacts secret-bearing error messages before broadcast" do
+      Coordinator.subscribe()
+      {:ok, _} = Coordinator.start_download("owner/model")
+      assert_receive {:stub_download, _, ref, _, _}, 200
+      assert_receive {:model_hub_download, _}, 200
+
+      secrets = bearer_secret_samples()
+      hf_token = "hf_1234567890abcdef"
+
+      error = %{
+        status: :error,
+        code: "hf_error",
+        message:
+          "failed with Bearer #{secrets.slash} and #{hf_token}; jwt Bearer #{secrets.jwt}; " <>
+            "opaque Bearer #{secrets.opaque}; sk Bearer #{secrets.sk}"
+      }
+
+      send_to_coordinator({:model_hub, ref, :download_finished, {:error, error}})
+
+      assert_receive {:model_hub_download, snapshot}, 200
+      assert snapshot.status == :error
+      assert snapshot.error.code == "hf_error"
+      assert snapshot.error.message =~ "Bearer [REDACTED]"
+      assert snapshot.error.message =~ "[REDACTED-HF-TOKEN]"
+      refute_bearer_secrets(snapshot.error.message, secrets)
+      refute snapshot.error.message =~ hf_token
+    end
+
+    test ":download_finished sanitizes struct errors before broadcast" do
+      Coordinator.subscribe()
+      {:ok, _} = Coordinator.start_download("owner/model")
+      assert_receive {:stub_download, _, ref, _, _}, 200
+      assert_receive {:model_hub_download, _}, 200
+
+      secret = "abcdef1234567890"
+      hf_token = "hf_1234567890abcdef"
+      error = %RuntimeError{message: "failed Bearer #{secret}; #{hf_token}"}
+
+      send_to_coordinator({:model_hub, ref, :download_finished, {:error, error}})
+
+      assert_receive {:model_hub_download, snapshot}, 200
+      assert snapshot.status == :error
+      assert snapshot.error.message =~ "Bearer [REDACTED]"
+      assert snapshot.error.message =~ "[REDACTED-HF-TOKEN]"
+      refute snapshot.error.message =~ secret
+      refute snapshot.error.message =~ hf_token
+    end
+
+    test ":download_finished preserves non-secret bearer wording before broadcast" do
+      Coordinator.subscribe()
+      {:ok, _} = Coordinator.start_download("owner/model")
+      assert_receive {:stub_download, _, ref, _, _}, 200
+      assert_receive {:model_hub_download, _}, 200
+
+      error = %{
+        status: :error,
+        code: "hf_error",
+        message: "Bearer authentication is required"
+      }
+
+      send_to_coordinator({:model_hub, ref, :download_finished, {:error, error}})
+
+      assert_receive {:model_hub_download, snapshot}, 200
+      assert snapshot.status == :error
+      assert snapshot.error.message == "Bearer authentication is required"
+    end
+
     test "ignores messages for unknown refs" do
       Coordinator.subscribe()
       stale_ref = make_ref()
@@ -278,34 +443,42 @@ defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
 
   describe "crash handling" do
     test "task crash produces error snapshot" do
-      Coordinator.subscribe()
-      {:ok, _} = Coordinator.start_download("owner/model")
-      assert_receive {:stub_download, _, _ref, _, _}, 200
-      assert_receive {:stub_download_pid, pid}, 200
-      assert_receive {:model_hub_download, %{status: :starting}}, 200
+      log =
+        capture_log(fn ->
+          Coordinator.subscribe()
+          {:ok, _} = Coordinator.start_download("owner/model")
+          assert_receive {:stub_download, _, _ref, _, _}, 200
+          assert_receive {:stub_download_pid, pid}, 200
+          assert_receive {:model_hub_download, %{status: :starting}}, 200
 
-      # Kill the task
-      Process.exit(pid, :kill)
+          Process.exit(pid, :kill)
 
-      assert_receive {:model_hub_download, snapshot}, 500
-      assert snapshot.status == :error
-      assert snapshot.error.code == "download_import_failed"
+          assert_receive {:model_hub_download, snapshot}, 500
+          assert snapshot.status == :error
+          assert snapshot.error.code == "download_import_failed"
+        end)
+
+      assert log =~ "ModelHubDownloadCoordinator: download task"
+      assert log =~ "killed"
     end
 
     test "crash after terminal completion is ignored" do
-      Coordinator.subscribe()
-      {:ok, _} = Coordinator.start_download("owner/model")
-      assert_receive {:stub_download, _, ref, _, _}, 200
-      assert_receive {:stub_download_pid, pid}, 200
-      assert_receive {:model_hub_download, _}, 200
+      log =
+        capture_log(fn ->
+          Coordinator.subscribe()
+          {:ok, _} = Coordinator.start_download("owner/model")
+          assert_receive {:stub_download, _, ref, _, _}, 200
+          assert_receive {:stub_download_pid, pid}, 200
+          assert_receive {:model_hub_download, _}, 200
 
-      # Complete first
-      send_to_coordinator({:model_hub, ref, :download_finished, {:ok, %{model_id: "m1"}}})
-      assert_receive {:model_hub_download, %{status: :completed}}, 200
+          send_to_coordinator({:model_hub, ref, :download_finished, {:ok, %{model_id: "m1"}}})
+          assert_receive {:model_hub_download, %{status: :completed}}, 200
 
-      # Then kill task — should not produce error
-      Process.exit(pid, :kill)
-      refute_receive {:model_hub_download, %{status: :error}}, 200
+          Process.exit(pid, :kill)
+          refute_receive {:model_hub_download, %{status: :error}}, 200
+        end)
+
+      refute log =~ "ModelHubDownloadCoordinator: download task"
     end
   end
 
@@ -373,6 +546,44 @@ defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
   # Test stub
   # ===========================================================================
 
+  defp bearer_secret_samples do
+    %{
+      jwt: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.sig_nature-test",
+      opaque: "abcdef1234567890",
+      sk: "sk-test-abcdef1234567890",
+      slash: "abc/def+ghi="
+    }
+  end
+
+  defp refute_bearer_secrets(text, samples) do
+    samples
+    |> Map.values()
+    |> Enum.each(fn secret -> refute text =~ secret end)
+  end
+
+  defp assert_seam_exception_returns_error_snapshot(start_result, expected_log_fragment) do
+    :persistent_term.put({__MODULE__, :start_download_result}, start_result)
+    Coordinator.subscribe()
+
+    log =
+      capture_log(fn ->
+        assert {:error, snapshot} = Coordinator.start_download("owner/model")
+        assert snapshot.status == :error
+        assert snapshot.error.code == "download_import_failed"
+        assert_receive {:model_hub_download, %{status: :error}}, 200
+      end)
+
+    assert Process.alive?(Process.whereis(Coordinator))
+
+    assert log =~
+             "ModelHubDownloadCoordinator: seam start_download_import " <>
+               expected_log_fragment
+
+    assert log =~ "[REDACTED]"
+    refute log =~ "plain-api-secret"
+    refute log =~ "plain-client-secret"
+  end
+
   defp send_to_coordinator(msg) do
     send(Process.whereis(Coordinator), msg)
     # Synchronous drain to ensure coordinator processes message
@@ -400,6 +611,15 @@ defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
           end
 
           {:ok, pid}
+
+        {:raise, message} ->
+          raise message
+
+        {:throw, value} ->
+          throw(value)
+
+        {:exit, reason} ->
+          exit(reason)
 
         other ->
           other

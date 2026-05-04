@@ -5,6 +5,7 @@ defmodule OrchardConsole.ModelHubLive do
 
   use OrchardConsole, :live_view
 
+  alias OrchardConsole.Redaction
   alias Phoenix.LiveView.JS
 
   @empty_form %{"query" => ""}
@@ -105,7 +106,7 @@ defmodule OrchardConsole.ModelHubLive do
          |> assign(
            search_status: :error,
            search_results: [],
-           search_error: error,
+           search_error: sanitize_error(error),
            active_search_ref: nil,
            active_search_pid: nil,
            pending_selected_repo_id: nil
@@ -145,7 +146,7 @@ defmodule OrchardConsole.ModelHubLive do
          assign(socket,
            detail_status: :error,
            model_detail: nil,
-           detail_error: error,
+           detail_error: sanitize_error(error),
            active_detail_ref: nil,
            active_detail_pid: nil
          )}
@@ -723,7 +724,7 @@ defmodule OrchardConsole.ModelHubLive do
         visible_download_key: key,
         download_progress: snapshot[:progress],
         download_result: snapshot[:result],
-        download_error: snapshot[:error]
+        download_error: sanitize_error(snapshot[:error])
       )
     else
       socket
@@ -994,6 +995,9 @@ defmodule OrchardConsole.ModelHubLive do
     }
   end
 
+  defp sanitize_error(%{} = error), do: Redaction.sanitize_error_map(error)
+  defp sanitize_error(_error), do: nil
+
   defp search_loading_body(""), do: "Loading the most-downloaded MLX text-generation models."
   defp search_loading_body(query), do: "Searching Hugging Face for \"#{query}\"."
 
@@ -1010,6 +1014,9 @@ defmodule OrchardConsole.ModelHubLive do
   defp detail_error_body(repo_id), do: "The detail lookup for #{repo_id} did not complete."
 
   defp error_title(%{message: message}, _fallback) when is_binary(message) and message != "",
+    do: message
+
+  defp error_title(%{"message" => message}, _fallback) when is_binary(message) and message != "",
     do: message
 
   defp error_title(_error, fallback), do: fallback

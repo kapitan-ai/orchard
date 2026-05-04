@@ -32,6 +32,7 @@ defmodule OrchardConsole.ModelHub do
   require Logger
 
   alias Orchard.Models.{BundleBuilder, HubClient, HubDownloader, Importer}
+  alias OrchardConsole.Redaction
 
   @type error_map :: %{
           status: atom(),
@@ -108,7 +109,7 @@ defmodule OrchardConsole.ModelHub do
         hf_error()
       )
 
-    send(owner, {:model_hub, ref, :search_finished, result})
+    send(owner, {:model_hub, ref, :search_finished, Redaction.sanitize_result(result)})
   end
 
   # ---------------------------------------------------------------------------
@@ -238,7 +239,7 @@ defmodule OrchardConsole.ModelHub do
         hf_error()
       )
 
-    send(owner, {:model_hub, ref, :detail_finished, result})
+    send(owner, {:model_hub, ref, :detail_finished, Redaction.sanitize_result(result)})
   end
 
   # ===========================================================================
@@ -254,7 +255,7 @@ defmodule OrchardConsole.ModelHub do
         download_import_error()
       )
 
-    send(owner, {:model_hub, ref, :download_finished, result})
+    send(owner, {:model_hub, ref, :download_finished, Redaction.sanitize_result(result)})
   end
 
   defp do_download_import(client, downloader, owner, ref, repo_id, opts) do
@@ -440,11 +441,22 @@ defmodule OrchardConsole.ModelHub do
   defp protect_result(fun, fallback_error) do
     fun.()
   rescue
-    _exception -> {:error, fallback_error}
+    exception ->
+      formatted = Redaction.format_exception(:error, exception, __STACKTRACE__)
+
+      Logger.error("ModelHub: pipeline rescued exception:\n" <> formatted)
+      {:error, fallback_error}
   catch
-    :throw, {:pipeline_error, result} -> result
-    :throw, _value -> {:error, fallback_error}
-    :exit, _reason -> {:error, fallback_error}
+    :throw, {:pipeline_error, result} ->
+      result
+
+    :throw, value ->
+      Logger.error("ModelHub: pipeline caught throw: " <> Redaction.safe_inspect(value))
+      {:error, fallback_error}
+
+    :exit, reason ->
+      Logger.error("ModelHub: pipeline caught exit: " <> Redaction.safe_inspect(reason))
+      {:error, fallback_error}
   end
 
   defp hf_error do
@@ -497,7 +509,10 @@ defmodule OrchardConsole.ModelHub do
   defp normalize_download_error({_tag, msg}) when is_binary(msg),
     do: %{status: :error, code: "hf_download_failed", message: msg}
 
-  defp normalize_download_error(_), do: download_import_error()
+  defp normalize_download_error(other) do
+    Logger.warning("ModelHub: unrecognized download error: " <> Redaction.safe_inspect(other))
+    download_import_error()
+  end
 
   defp normalize_bundle_error(reason) when is_tuple(reason) do
     case reason do
@@ -505,11 +520,13 @@ defmodule OrchardConsole.ModelHub do
         %{status: :error, code: "bundle_#{tag}", message: msg}
 
       _ ->
+        Logger.warning("ModelHub: unrecognized bundle error: " <> Redaction.safe_inspect(reason))
         %{status: :error, code: "bundle_prepare_failed", message: "Bundle preparation failed."}
     end
   end
 
-  defp normalize_bundle_error(_) do
+  defp normalize_bundle_error(reason) do
+    Logger.warning("ModelHub: unrecognized bundle error: " <> Redaction.safe_inspect(reason))
     %{status: :error, code: "bundle_prepare_failed", message: "Bundle preparation failed."}
   end
 
@@ -521,7 +538,15 @@ defmodule OrchardConsole.ModelHub do
     }
   end
 
-  defp normalize_import_error(%Ecto.Changeset{} = _changeset) do
+  defp normalize_import_error(%Ecto.Changeset{} = changeset) do
+    fields = Enum.map(changeset.errors, fn {field, _} -> field end)
+
+    Logger.warning(
+      "ModelHub: changeset import error fields=" <>
+        Redaction.safe_inspect(fields) <>
+        " change_count=" <> Integer.to_string(map_size(changeset.changes))
+    )
+
     %{status: :error, code: "model_import_failed", message: "Model import failed."}
   end
 
@@ -531,11 +556,13 @@ defmodule OrchardConsole.ModelHub do
         %{status: :error, code: "model_import_failed", message: msg}
 
       _ ->
+        Logger.warning("ModelHub: unrecognized import error: " <> Redaction.safe_inspect(reason))
         %{status: :error, code: "model_import_failed", message: "Model import failed."}
     end
   end
 
-  defp normalize_import_error(_) do
+  defp normalize_import_error(reason) do
+    Logger.warning("ModelHub: unrecognized import error: " <> Redaction.safe_inspect(reason))
     %{status: :error, code: "model_import_failed", message: "Model import failed."}
   end
 
