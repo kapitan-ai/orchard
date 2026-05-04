@@ -9,7 +9,14 @@ defmodule Orchard.Models.SafeTokenizationPreflight do
   @default_timeout_ms 60_000
   @default_max_stdout_bytes 1_048_576
   @event_prefix [:orchard, :tokenizer, :bundle_preflight]
-  @reason_keys ~w(category literal leaf_class sentinel_index first_diff_offset)
+  @reason_key_atoms %{
+    "category" => :category,
+    "literal" => :literal,
+    "leaf_class" => :leaf_class,
+    "sentinel_index" => :sentinel_index,
+    "first_diff_offset" => :first_diff_offset
+  }
+  @reason_keys Map.keys(@reason_key_atoms)
   @segmented_tokenizer_kinds ~w(huggingface_tokenizer_json tokenizer_json)
   @tokenizer_incompatibility_categories ~w(per_codepoint_decode_mismatch reserved_id_persists reserved_id_set_overlap empty_literal)
   @all_incompatibility_categories @tokenizer_incompatibility_categories ++
@@ -350,10 +357,14 @@ defmodule Orchard.Models.SafeTokenizationPreflight do
   defp maybe_put_details(error, _details), do: error
 
   defp atomize_reason(reason) do
-    reason
-    |> Map.take(@reason_keys)
-    |> Enum.map(fn {key, value} -> {String.to_existing_atom(key), value} end)
-    |> Map.new()
+    Enum.reduce(@reason_keys, %{}, fn string_key, acc ->
+      atom_key = Map.fetch!(@reason_key_atoms, string_key)
+
+      case Map.fetch(reason, string_key) do
+        {:ok, value} -> Map.put(acc, atom_key, value)
+        :error -> acc
+      end
+    end)
   end
 
   defp stringify_reason(reason) do

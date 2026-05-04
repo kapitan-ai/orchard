@@ -24,6 +24,35 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
     end)
   end
 
+  test "product module load creates atoms for all helper reason keys in a fresh child BEAM" do
+    code_paths =
+      :code.get_path()
+      |> Enum.map(&List.to_string/1)
+      |> Enum.flat_map(&["-pa", &1])
+
+    script = """
+    Code.ensure_loaded!(Orchard.Models.SafeTokenizationPreflight)
+
+    for binary_key <- ~w(category literal leaf_class sentinel_index first_diff_offset) do
+      _ = :erlang.binary_to_existing_atom(binary_key, :utf8)
+    end
+
+    IO.write("OK")
+    """
+
+    {output, status} =
+      System.cmd("elixir", code_paths ++ ["-e", script], stderr_to_stdout: true)
+
+    assert status == 0 and String.contains?(output, "OK"),
+           """
+           child BEAM failed to resolve a whitelisted reason atom. This means
+           Orchard.Models.SafeTokenizationPreflight is no longer creating one
+           of the expected helper reason atoms at compile time. Child output:
+
+           #{output}
+           """
+  end
+
   test "helper request transport uses a private temp directory and cleans it up", %{
     tmp_dir: tmp_dir
   } do
@@ -149,6 +178,51 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
                   first_diff_offset: 7
                 }
               }} = SafeTokenizationPreflight.run(preflight_input(tmp_dir))
+    end)
+  end
+
+  test "dual_render_mismatch helper output with first_diff_offset is normalized without raising",
+       %{tmp_dir: tmp_dir} do
+    helper =
+      write_response_helper!(tmp_dir, %{
+        "contract_version" => 3,
+        "ok" => true,
+        "result" => %{
+          "compatible" => false,
+          "template_compatible" => false,
+          "incompatibility_reason" => %{
+            "category" => "dual_render_mismatch",
+            "leaf_class" => "message_content",
+            "sentinel_index" => 4,
+            "first_diff_offset" => 11
+          }
+        }
+      })
+
+    with_inference_overrides([tokenizer_executable: helper], fn ->
+      assert {:incompatible,
+              %{
+                compatible: false,
+                template_compatible: false,
+                incompatibility_reason: reason
+              }} = SafeTokenizationPreflight.run(preflight_input(tmp_dir))
+
+      assert reason
+             |> Map.keys()
+             |> Enum.map(&Atom.to_string/1)
+             |> Enum.sort() ==
+               ~w(category first_diff_offset leaf_class sentinel_index)
+
+      assert Map.fetch!(reason, :erlang.binary_to_existing_atom("category", :utf8)) ==
+               "dual_render_mismatch"
+
+      assert Map.fetch!(reason, :erlang.binary_to_existing_atom("leaf_class", :utf8)) ==
+               "message_content"
+
+      assert Map.fetch!(reason, :erlang.binary_to_existing_atom("sentinel_index", :utf8)) == 4
+
+      assert Map.fetch!(reason, :erlang.binary_to_existing_atom("first_diff_offset", :utf8)) ==
+               11
     end)
   end
 
