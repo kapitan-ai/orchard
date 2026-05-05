@@ -920,9 +920,12 @@ def _tag_tools(tools: Any, wrap: Callable[[str, str], str]) -> Any:
             function_base = f"{base}.function"
             _tag_string_field(function_map, "name", function_base, wrap)
             _tag_string_field(function_map, "description", function_base, wrap)
-            function_map["parameters"] = _tag_schema(
-                function_map.get("parameters"), f"{function_base}.parameters", wrap
-            )
+            if "parameters" in function_map:
+                function_map["parameters"] = _tag_schema(
+                    function_map["parameters"],
+                    f"{function_base}.parameters",
+                    wrap,
+                )
             tool_map["function"] = _tag_extra_string_values(
                 function_map,
                 function_base,

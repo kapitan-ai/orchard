@@ -1,0 +1,9 @@
+{%- if tools %}
+{%- for t in tools %}
+{{ t | tojson(indent=4) }}
+
+{%- endfor %}
+{%- endif %}
+{%- for message in messages %}
+{{ message['role'] }} {{ message['content'] }}
+{%- endfor %}

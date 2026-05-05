@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import copy
+import json
+import re
 from pathlib import Path
 from typing import Any, cast
 
@@ -12,6 +15,7 @@ from tokenizers.trainers import BpeTrainer
 
 from orchard_tokenizer.safe_segmented import (
     SafeSegmentedError,
+    _TaggedKeyDict,
     caller_strings,
     catalog_sha256,
     choose_marker_nonce,
@@ -391,6 +395,148 @@ def test_precompute_safe_ids_returns_structured_incompatible_tokenizer() -> None
 
 def test_catalog_hash_uses_nul_join() -> None:
     assert catalog_sha256(["a", "bc"]) != catalog_sha256(["ab", "c"])
+
+
+def _strip_marker(text: str, nonce: str) -> str:
+    escaped_nonce = re.escape(nonce)
+    pattern = re.compile(rf"^__{escaped_nonce}_0_\d+__(.*)__{escaped_nonce}_1_\d+__$", re.S)
+    match = pattern.match(text)
+    return match.group(1) if match else text
+
+
+def _canonical_key(key: object, nonce: str) -> object:
+    if isinstance(key, str):
+        return _strip_marker(key, nonce)
+    return key
+
+
+def _canonical_keys(node: object, nonce: str) -> object:
+    if isinstance(node, dict):
+        if isinstance(node, _TaggedKeyDict):
+            originals = set(node._key_aliases.keys())  # noqa: SLF001
+            other_canonical = {
+                _canonical_key(key, nonce)
+                for key in node.keys()
+                if key not in node._key_aliases.values()  # noqa: SLF001
+            }
+            return {
+                "__keys__": originals | other_canonical,
+                "__children__": {
+                    _canonical_key(key, nonce): _canonical_keys(value, nonce)
+                    for key, value in node.items()
+                },
+            }
+        return {
+            "__keys__": {_canonical_key(key, nonce) for key in node.keys()},
+            "__children__": {
+                _canonical_key(key, nonce): _canonical_keys(value, nonce)
+                for key, value in node.items()
+            },
+        }
+    if isinstance(node, list):
+        return [_canonical_keys(item, nonce) for item in node]
+    return None
+
+
+def test_tag_caller_strings_preserves_dict_key_sets() -> None:
+    nonce = "2" * 39
+    input_items = [
+        {
+            "role": "user",
+            "name": "alice",
+            "content": "hello",
+            "metadata": {"display_name": "Alice", "labels": ["one", "two"]},
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "lookup", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "content": "result", "tool_call_id": "call_1"},
+    ]
+    tools = [
+        {"type": "function", "function": {"name": "lookup", "description": ""}},
+        {
+            "type": "function",
+            "function": {
+                "name": "weather",
+                "description": "city weather",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "city": {
+                            "type": "string",
+                            "description": "city name",
+                            "enum": ["sf", "nyc"],
+                        }
+                    },
+                    "required": ["city"],
+                },
+            },
+        },
+        {"type": "function", "function": {"name": "noop", "parameters": None}},
+        {
+            "type": "function",
+            "function": {
+                "name": "empty_params",
+                "description": "",
+                "parameters": {},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "desc_only",
+                "parameters": {"description": "a desc"},
+            },
+        },
+    ]
+    tool_choice = {"type": "function", "function": {"name": "lookup"}}
+
+    original = {
+        "input_items": copy.deepcopy(input_items),
+        "tools": copy.deepcopy(tools),
+        "tool_choice": copy.deepcopy(tool_choice),
+    }
+    tagged_payload, markers = tag_caller_strings(input_items, tools, tool_choice, nonce)
+
+    assert _canonical_keys(original, nonce) == _canonical_keys(
+        {
+            "input_items": tagged_payload["input_items"],
+            "tools": tagged_payload["tools"],
+            "tool_choice": tagged_payload["tool_choice"],
+        },
+        nonce,
+    )
+
+    tool_a_function = tagged_payload["tools"][0]["function"]
+    assert set(tool_a_function.keys()) == {"name", "description"}
+
+    tool_d_function = tagged_payload["tools"][3]["function"]
+    assert "parameters" in tool_d_function
+    assert tool_d_function["parameters"] == {}
+
+    description_paths = {
+        marker.provenance_path
+        for marker in markers
+        if marker.provenance_path == "tools[4].function.parameters.description"
+    }
+    assert description_paths == {"tools[4].function.parameters.description"}
+
+
+def test_dual_render_guard_sentinel_matrix_passes_for_tools_tojson_template() -> None:
+    def render_payload(payload: dict[str, Any]) -> str:
+        first_user = payload["input_items"][0]["content"]
+        tool_blocks = "\n\n".join(json.dumps(tool, indent=4) for tool in payload["tools"])
+        return f"<user>{first_user}</user>\n\n{tool_blocks}\n\n"
+
+    dual_render_guard_sentinel_matrix(
+        ["<|begin_of_text|>"],
+        render_payload,
+        nonce_factory=lambda: "3" * 39,
+    )
 
 
 def build_bytelevel_tokenizer(tmp_path: Path) -> Path:

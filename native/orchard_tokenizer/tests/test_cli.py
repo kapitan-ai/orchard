@@ -652,6 +652,30 @@ def test_segmented_render_and_count_returns_safe_prompt_ids(tmp_path: Path, caps
     assert 1 not in rendered_ids[1:-1]
 
 
+def test_segmented_render_and_count_tools_tojson_omitted_parameters_has_no_null(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        (fixture_root() / "chat_template_tools_tojson.jinja").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    payload = render_payload(
+        bundle,
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[{"type": "function", "function": {"name": "lookup", "description": ""}}],
+        control_tokens=["<|im_end|>"],
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    rendered = result["rendered_prompt"]
+    assert '"parameters": null' not in rendered
+    assert "__" not in rendered
+
+
 def test_segmented_render_and_count_preserves_message_tool_fields(tmp_path: Path, capsys) -> None:
     bundle = _make_segmented_bundle(tmp_path)
     bundle["chat_template_path"].write_text(
@@ -918,6 +942,25 @@ def test_preflight_safe_tokenization_compatible_returns_compatible_true(
     }
 
 
+def test_preflight_safe_tokenization_tools_tojson_template_returns_compatible_true(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        (fixture_root() / "chat_template_tools_tojson.jinja").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    payload = preflight_payload(bundle, ["<|im_end|>"])
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    assert result["compatible"] is True
+    assert result["template_compatible"] is True
+    assert result["incompatibility_reason"] is None
+
+
 def test_preflight_safe_tokenization_dual_render_mismatch_returns_compatible_false_template_false(
     tmp_path: Path, capsys
 ) -> None:
@@ -1156,6 +1199,23 @@ def preflight_payload(bundle: dict[str, Path], control_tokens: list[str]) -> dic
     payload = segmented_payload(bundle, control_tokens)
     payload["command"] = "preflight_safe_tokenization"
     del payload["request"]
+    return payload
+
+
+def render_payload(
+    bundle: dict[str, Path],
+    *,
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+    control_tokens: list[str],
+    tool_choice: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = segmented_payload(bundle, control_tokens)
+    payload["request"] = {
+        "input_items": messages,
+        "tools": tools,
+        "tool_choice": tool_choice,
+    }
     return payload
 
 
