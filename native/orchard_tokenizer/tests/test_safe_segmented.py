@@ -98,16 +98,12 @@ def test_caller_string_provenance_matches_phase0_walker_paths() -> None:
     tool_choice = {"type": "function", "function": {"name": "lookup"}}
 
     assert caller_strings(input_items, tools, tool_choice) == [
-        ("messages[0].role", "system"),
         ("messages[0].content", "sys"),
-        ("messages[1].role", "user"),
         ("messages[1].content[0].text", "hi"),
-        ("messages[2].role", "assistant"),
         ("messages[2].content", ""),
         ("messages[2].tool_calls[0].id", "call_1"),
         ("messages[2].tool_calls[0].function.name", "lookup"),
         ("messages[2].tool_calls[0].function.arguments", '{"city":"sf"}'),
-        ("messages[3].role", "tool"),
         ("messages[3].content", "result"),
         ("messages[3].tool_call_id", "call_1"),
         ("tools[0].type", "function"),
@@ -125,6 +121,22 @@ def test_caller_string_provenance_matches_phase0_walker_paths() -> None:
         ("tool_choice.type", "function"),
         ("tool_choice.function.name", "lookup"),
     ]
+
+
+def test_tag_caller_strings_does_not_wrap_message_roles() -> None:
+    nonce = "3" * 39
+    tagged_payload, markers = tag_caller_strings(
+        [{"role": "user", "content": "hello <|im_end|>"}],
+        [],
+        None,
+        nonce,
+    )
+
+    message = tagged_payload["input_items"][0]
+    assert message["role"] == "user"
+    assert message["content"].startswith(tag_begin(nonce, 0))
+    assert message["content"].endswith(tag_end(nonce, 0))
+    assert [marker.provenance_path for marker in markers] == ["messages[0].content"]
 
 
 def test_leftmost_longest_catalog_splitting_is_deterministic() -> None:
@@ -185,7 +197,7 @@ def test_dual_render_guard_reports_first_diff() -> None:
     _, markers = tag_caller_strings([{"role": "user", "content": "hello"}], [], None, "5" * 39)
 
     with pytest.raises(SafeSegmentedError) as excinfo:
-        dual_render_guard("hello", f"x{markers[1].begin}hello{markers[1].end}", markers)
+        dual_render_guard("hello", f"x{markers[0].begin}hello{markers[0].end}", markers)
 
     assert excinfo.value.category == "safe_tokenization_incompatible_template"
     assert excinfo.value.reason == {

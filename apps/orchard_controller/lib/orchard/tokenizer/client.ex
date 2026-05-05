@@ -23,6 +23,7 @@ defmodule Orchard.Tokenizer.Client do
   @default_runtime_max_stdout_bytes 16_777_216
   @control_token_catalog_kinds ~w(huggingface_tokenizer_json tokenizer_json)
   @segmented_tokenizer_kinds ~w(huggingface_tokenizer_json tokenizer_json)
+  @supported_message_roles MapSet.new(~w(system developer user assistant tool))
   @tokenizer_incompatibility_categories ~w(
     per_codepoint_decode_mismatch
     reserved_id_persists
@@ -57,9 +58,11 @@ defmodule Orchard.Tokenizer.Client do
               {:ok, tokenization_result()} | {:error, error_reason()}
 
   def tokenize(%CanonicalRequest{} = request, opts \\ []) do
-    case Orchard.Inference.tokenizer_client() do
-      __MODULE__ -> default_tokenize(request, opts)
-      module -> module.tokenize(request, opts)
+    with :ok <- validate_input_item_roles(request.input_items) do
+      case Orchard.Inference.tokenizer_client() do
+        __MODULE__ -> default_tokenize(request, opts)
+        module -> module.tokenize(request, opts)
+      end
     end
   end
 
@@ -1005,6 +1008,32 @@ defmodule Orchard.Tokenizer.Client do
     do: :safe_tokenization_incompatible_template
 
   defp normalize_error_category(_category), do: :internal_error
+
+  defp validate_input_item_roles(input_items) when is_list(input_items) do
+    input_items
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {item, index}, :ok ->
+      case fetch_string_field(item, [:role, "role"], "role", index) do
+        {:ok, role} ->
+          if MapSet.member?(@supported_message_roles, role) do
+            {:cont, :ok}
+          else
+            {:halt,
+             {:error,
+              {:invalid_input, "input_items[#{index}].role is unsupported: #{inspect(role)}"}}}
+          end
+
+        {:error, _reason} = error ->
+          {:halt, error}
+      end
+    end)
+  end
+
+  defp validate_input_item_roles(input_items) do
+    {:error,
+     {:invalid_input,
+      "canonical request input_items must be a list of role/content maps, got: #{inspect(input_items)}"}}
+  end
 
   defp build_prompt_lines(input_items) when is_list(input_items) do
     input_items

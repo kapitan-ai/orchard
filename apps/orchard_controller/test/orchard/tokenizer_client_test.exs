@@ -25,6 +25,11 @@ defmodule Orchard.Tokenizer.ClientTest do
     end
   end
 
+  defmodule BypassingTokenizerClient do
+    def tokenize(_request, _opts),
+      do: {:ok, %{rendered_prompt: "unexpected", input_token_count: 0}}
+  end
+
   setup do
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
     CompatibilityCache.clear()
@@ -45,6 +50,20 @@ defmodule Orchard.Tokenizer.ClientTest do
               rendered_prompt: "system orchard\nuser hello orchard\nassistant",
               input_token_count: 6
             }} = Client.tokenize(request)
+  end
+
+  test "tokenize rejects unsupported roles before configured tokenizer client dispatch" do
+    request =
+      canonical_request(%{
+        input_items: [
+          %{role: "<|im_start|>", content: "hello orchard"}
+        ]
+      })
+
+    with_inference_overrides([tokenizer_client_impl: BypassingTokenizerClient], fn ->
+      assert {:error, {:invalid_input, message}} = Client.tokenize(request)
+      assert message =~ "input_items[0].role is unsupported"
+    end)
   end
 
   test "fake mode returns invalid_input for malformed content parts" do
@@ -1453,7 +1472,39 @@ defmodule Orchard.Tokenizer.ClientTest do
     )
   end
 
-  test "port mode emits control-token telemetry for message role hits" do
+  test "port mode does not emit control-token telemetry for valid message roles" do
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: tokenizer_executable()
+      ],
+      fn ->
+        event_ref = attach_telemetry([:orchard, :tokenizer, :control_token_in_user_content])
+
+        request =
+          canonical_request(%{
+            input_items: [
+              %{role: "system", content: "orchard"},
+              %{role: "user", content: "hello orchard"}
+            ]
+          })
+
+        assert {:ok, %{rendered_prompt: rendered_prompt, input_token_count: input_token_count}} =
+                 Client.tokenize(request,
+                   manifest: huggingface_manifest(),
+                   bundle_root: huggingface_fixture_root(),
+                   bundle_sha256: trusted_bundle_sha256()
+                 )
+
+        assert rendered_prompt =~ "user hello orchard"
+        assert input_token_count > 0
+
+        refute_receive {^event_ref, _event, _measurements, _metadata}, 100
+      end
+    )
+  end
+
+  test "port mode rejects unsupported message roles before telemetry or helper dispatch" do
     with_inference_overrides(
       [
         tokenizer_mode: :port,
@@ -1470,6 +1521,36 @@ defmodule Orchard.Tokenizer.ClientTest do
             ]
           })
 
+        assert {:error, {:invalid_input, message}} =
+                 Client.tokenize(request,
+                   manifest: huggingface_manifest(),
+                   bundle_root: huggingface_fixture_root(),
+                   bundle_sha256: trusted_bundle_sha256()
+                 )
+
+        assert message =~ "input_items[1].role is unsupported"
+        refute_receive {^event_ref, _event, _measurements, _metadata}, 100
+      end
+    )
+  end
+
+  test "port mode emits control-token telemetry for message name hits" do
+    with_inference_overrides(
+      [
+        tokenizer_mode: :port,
+        tokenizer_executable: tokenizer_executable()
+      ],
+      fn ->
+        event_ref = attach_telemetry([:orchard, :tokenizer, :control_token_in_user_content])
+
+        request =
+          canonical_request(%{
+            input_items: [
+              %{role: "system", content: "orchard"},
+              %{role: "user", name: "caller_<|im_start|>", content: "hello orchard"}
+            ]
+          })
+
         assert {:ok, %{rendered_prompt: rendered_prompt, input_token_count: input_token_count}} =
                  Client.tokenize(request,
                    manifest: huggingface_manifest(),
@@ -1477,11 +1558,11 @@ defmodule Orchard.Tokenizer.ClientTest do
                    bundle_sha256: trusted_bundle_sha256()
                  )
 
-        assert rendered_prompt =~ "<|im_start|> hello orchard"
+        assert rendered_prompt =~ "user hello orchard"
         assert input_token_count > 0
 
         assert_receive {^event_ref, _event, %{count: 1}, metadata}
-        assert metadata.provenance_paths == ["messages[1].role"]
+        assert metadata.provenance_paths == ["messages[1].name"]
         assert metadata.literals == ["<|im_start|>"]
       end
     )

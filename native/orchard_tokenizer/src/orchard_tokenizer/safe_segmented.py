@@ -594,10 +594,6 @@ def _message_strings(input_items: Any) -> list[tuple[str, str]]:
 
 def _message_item_strings(item: Mapping[str, Any], index: int) -> list[tuple[str, str]]:
     strings: list[tuple[str, str]] = []
-    role = item.get("role")
-    if isinstance(role, str):
-        strings.append((f"messages[{index}].role", role))
-
     name = item.get("name")
     if isinstance(name, str):
         strings.append((f"messages[{index}].name", name))
@@ -840,7 +836,6 @@ def _tag_messages(input_items: Any, wrap: Callable[[str, str], str]) -> Any:
     for index, item in enumerate(input_items):
         if isinstance(item, dict):
             item_map = cast(dict[str, Any], item)
-            _tag_string_field(item_map, "role", f"messages[{index}]", wrap)
             _tag_string_field(item_map, "name", f"messages[{index}]", wrap)
             _tag_content(item_map, index, wrap)
             _tag_message_tool_calls(item_map, index, wrap)

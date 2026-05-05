@@ -7,6 +7,7 @@ defmodule Orchard.Tokenizer.CallerStringsTest do
     input_items = [
       %{
         "role" => "assistant",
+        "name" => "assistant_<|im_start|>",
         "content" => [%{"type" => "text", "text" => "multimodal text"}],
         "tool_calls" => [
           %{
@@ -42,10 +43,14 @@ defmodule Orchard.Tokenizer.CallerStringsTest do
 
     tool_choice = %{"type" => "function", "function" => %{"name" => "lookup_weather"}}
 
-    assert CallerStrings.walk_caller_strings(input_items, tools, tool_choice)
+    caller_strings = CallerStrings.walk_caller_strings(input_items, tools, tool_choice)
+
+    refute {"messages[0].role", "assistant"} in caller_strings
+
+    assert caller_strings
            |> MapSet.new() ==
              MapSet.new([
-               {"messages[0].role", "assistant"},
+               {"messages[0].name", "assistant_<|im_start|>"},
                {"messages[0].content[0].text", "multimodal text"},
                {"messages[0].tool_calls[0].id", "call_nested_123"},
                {"messages[0].tool_calls[0].function.name", "lookup_weather"},

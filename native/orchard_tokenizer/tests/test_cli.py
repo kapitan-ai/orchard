@@ -108,6 +108,51 @@ def test_main_supports_sentencepiece_tokenizer_models(tmp_path: Path, capsys) ->
     assert response["result"]["input_token_count"] == expected_count
 
 
+def test_main_supports_hf_strftime_now_global(tmp_path: Path, capsys) -> None:
+    chat_template_path = tmp_path / "chat_template.jinja"
+    chat_template_path.write_text(
+        "{{ strftime_now('%Y') }}:{{ messages[1]['content'] }}",
+        encoding="utf-8",
+    )
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        chat_template_path=chat_template_path,
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    rendered = response["result"]["rendered_prompt"]
+    year, suffix = rendered.split(":", 1)
+    assert year.isdigit()
+    assert len(year) == 4
+    assert suffix == "hello orchard"
+
+
+def test_main_reports_hf_raise_exception_as_invalid_input(tmp_path: Path, capsys) -> None:
+    chat_template_path = tmp_path / "chat_template.jinja"
+    chat_template_path.write_text(
+        "{{ raise_exception('Only user and assistant roles are supported!') }}",
+        encoding="utf-8",
+    )
+    payload = tokenization_payload(
+        tokenizer_kind="huggingface_tokenizer_json",
+        tokenizer_path=fixture_root() / "tokenizer.json",
+        chat_template_path=chat_template_path,
+    )
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "invalid_input"
+    assert "chat template rejected request" in response["error"]["message"]
+    assert "Only user and assistant roles are supported!" in response["error"]["message"]
+    assert "undefined" not in response["error"]["message"]
+
+
 def test_main_returns_missing_assets_for_missing_tokenizer_file(capsys) -> None:
     payload = tokenization_payload(
         tokenizer_kind="huggingface_tokenizer_json",
@@ -638,7 +683,7 @@ def test_segmented_render_and_count_returns_safe_prompt_ids(tmp_path: Path, caps
     assert result["safe_encoding_events"] == [
         {
             "literal": "<|im_end|>",
-            "segment_index": 3,
+            "segment_index": 1,
             "safe_ids_len": 10,
             "provenance_path": "messages[0].content",
         }
@@ -650,6 +695,173 @@ def test_segmented_render_and_count_returns_safe_prompt_ids(tmp_path: Path, caps
     assert rendered_ids[0] == 2
     assert rendered_ids[-1] == 1
     assert 1 not in rendered_ids[1:-1]
+
+
+def test_segmented_render_and_count_defines_hf_raise_exception_global(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{{ 'defined' if raise_exception is defined else 'missing' }}:{{ messages[0]['content'] }}",
+        encoding="utf-8",
+    )
+    payload = segmented_payload(bundle, ["<|im_end|>"])
+    payload["request"]["input_items"] = [{"role": "user", "content": "hello orchard"}]
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    assert response["result"]["rendered_prompt"] == "defined:hello orchard"
+
+
+def test_segmented_render_and_count_reports_hf_raise_exception_as_invalid_input(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{{ raise_exception('Only user and assistant roles are supported!') }}",
+        encoding="utf-8",
+    )
+    payload = segmented_payload(bundle, ["<|im_end|>"])
+    payload["request"]["input_items"] = [{"role": "user", "content": "hello orchard"}]
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "invalid_input"
+    assert "chat template rejected request" in response["error"]["message"]
+    assert "Only user and assistant roles are supported!" in response["error"]["message"]
+    assert "undefined" not in response["error"]["message"]
+
+
+def test_segmented_render_and_count_rejects_unsupported_message_role(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    payload = segmented_payload(bundle, ["<|im_end|>"])
+    payload["request"]["input_items"] = [{"role": "<|im_start|>", "content": "hello orchard"}]
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "invalid_input"
+    assert "request.input_items[0].role is unsupported" in response["error"]["message"]
+
+
+def test_segmented_render_and_count_supports_hf_strftime_now_global(tmp_path: Path, capsys) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{{ strftime_now('%Y') }}:{{ messages[0]['content'] }}",
+        encoding="utf-8",
+    )
+    payload = segmented_payload(bundle, ["<|im_end|>"])
+    payload["request"]["input_items"] = [{"role": "user", "content": "hello orchard"}]
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is True
+    rendered = response["result"]["rendered_prompt"]
+    year, suffix = rendered.split(":", 1)
+    assert year.isdigit()
+    assert len(year) == 4
+    assert suffix == "hello orchard"
+
+
+def test_segmented_render_and_count_accepts_mistral_style_role_gate(tmp_path: Path, capsys) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{{ bos_token }}"
+        "{% for message in messages %}"
+        "{% if (message['role'] == 'user') != (loop.index0 % 2 == 0) %}"
+        "{{ raise_exception('Conversation roles must alternate "
+        "user/assistant/user/assistant/...') }}"
+        "{% endif %}"
+        "{% if message['role'] == 'user' %}"
+        "{{ '[INST] ' + message['content'] + ' [/INST]' }}"
+        "{% elif message['role'] == 'assistant' %}"
+        "{{ message['content'] + eos_token }}"
+        "{% else %}"
+        "{{ raise_exception('Only user and assistant roles are supported!') }}"
+        "{% endif %}"
+        "{% endfor %}",
+        encoding="utf-8",
+    )
+    bundle["tokenizer_config_path"].write_text(
+        json.dumps({"bos_token": "<|im_start|>", "eos_token": "<|im_end|>"}),
+        encoding="utf-8",
+    )
+    payload = segmented_payload(bundle, ["<|im_end|>", "<|im_start|>"])
+    payload["request"]["input_items"] = [{"role": "user", "content": "hello <|im_end|> orchard"}]
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = response["result"]
+    assert response["ok"] is True
+    assert result["compatible"] is True
+    assert result["template_compatible"] is True
+    assert result["rendered_prompt"] == "<|im_start|>[INST] hello <|im_end|> orchard [/INST]"
+    assert result["safe_encoding_events"] == [
+        {
+            "literal": "<|im_end|>",
+            "segment_index": 1,
+            "safe_ids_len": 10,
+            "provenance_path": "messages[0].content",
+        }
+    ]
+
+
+def test_segmented_render_and_count_mistral_style_role_gate_reports_template_error(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{% for message in messages %}"
+        "{% if (message['role'] == 'user') != (loop.index0 % 2 == 0) %}"
+        "{{ raise_exception('Conversation roles must alternate "
+        "user/assistant/user/assistant/...') }}"
+        "{% endif %}"
+        "{{ message['content'] }}"
+        "{% endfor %}",
+        encoding="utf-8",
+    )
+    payload = segmented_payload(bundle, ["<|im_end|>"])
+    payload["request"]["input_items"] = [{"role": "assistant", "content": "hello orchard"}]
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "invalid_input"
+    assert "chat template rejected request" in response["error"]["message"]
+    assert "Conversation roles must alternate" in response["error"]["message"]
+    assert "undefined" not in response["error"]["message"]
+
+
+def test_segmented_render_and_count_still_rejects_trimmed_caller_content(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{{ messages[0]['content'] | trim }}",
+        encoding="utf-8",
+    )
+    payload = segmented_payload(bundle, ["<|im_end|>"])
+    payload["request"]["input_items"] = [{"role": "user", "content": "hello orchard"}]
+
+    assert main(["--request-json", json.dumps(payload)]) == 2
+
+    response = json.loads(capsys.readouterr().out)
+    assert response["ok"] is False
+    assert response["error"]["category"] == "safe_tokenization_incompatible_template"
+    reason = response["error"]["details"]["reason"]
+    assert reason["category"] == "dual_render_mismatch"
+    assert reason["leaf_class"] == "messages[0].content"
+    assert reason["sentinel_index"] == 5
 
 
 def test_segmented_render_and_count_tools_tojson_omitted_parameters_has_no_null(
@@ -959,6 +1171,41 @@ def test_preflight_safe_tokenization_tools_tojson_template_returns_compatible_tr
     assert result["compatible"] is True
     assert result["template_compatible"] is True
     assert result["incompatibility_reason"] is None
+
+
+def test_preflight_safe_tokenization_accepts_mistral_style_role_gate(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{{ bos_token }}"
+        "{% for message in messages %}"
+        "{% if (message['role'] == 'user') != (loop.index0 % 2 == 0) %}"
+        "{{ raise_exception('Conversation roles must alternate "
+        "user/assistant/user/assistant/...') }}"
+        "{% endif %}"
+        "{% if message['role'] == 'user' %}{{ '[INST] ' + message['content'] + ' [/INST]' }}"
+        "{% elif message['role'] == 'assistant' %}{{ message['content'] + eos_token }}"
+        "{% else %}{{ raise_exception('Only user and assistant roles are supported!') }}"
+        "{% endif %}"
+        "{% endfor %}",
+        encoding="utf-8",
+    )
+    bundle["tokenizer_config_path"].write_text(
+        json.dumps({"bos_token": "<|im_start|>", "eos_token": "<|im_end|>"}),
+        encoding="utf-8",
+    )
+    payload = preflight_payload(bundle, ["<|im_end|>", "<|im_start|>"])
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    assert result == {
+        "compatible": True,
+        "template_compatible": True,
+        "incompatibility_reason": None,
+    }
 
 
 def test_preflight_safe_tokenization_dual_render_mismatch_returns_compatible_false_template_false(

@@ -30,15 +30,15 @@ defmodule Orchard.Tokenizer.CallerStrings do
   defp message_strings(_input_items), do: []
 
   defp message_item_strings(item, index) when is_map(item) do
-    message_role_string(item, index) ++
+    message_name_string(item, index) ++
       content_strings(item, index) ++
       message_tool_call_strings(item, index) ++ tool_call_id_string(item, index)
   end
 
   defp message_item_strings(_item, _index), do: []
 
-  defp message_role_string(item, index) do
-    case string_field(item, :role, "messages[#{index}]") do
+  defp message_name_string(item, index) do
+    case string_field(item, :name, "messages[#{index}]") do
       nil -> []
       caller_string -> [caller_string]
     end

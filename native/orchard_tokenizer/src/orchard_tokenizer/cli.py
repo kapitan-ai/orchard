@@ -6,12 +6,14 @@ import os
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final, cast
 
 import sentencepiece as sentencepiece
 from jinja2 import Environment, TemplateError, Undefined
 from jinja2 import meta as jinja_meta
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 from tokenizers import Tokenizer
 
 from orchard_tokenizer import __version__
@@ -35,6 +37,9 @@ from orchard_tokenizer.safe_segmented import (
 # If a template uses {{ bos_token }} or {{ eos_token }}, the value MUST come
 # from tokenizer_config.json; silent empty-string fallback corrupts the prompt.
 _REQUIRED_SPECIAL_TOKENS: Final[frozenset[str]] = frozenset({"bos_token", "eos_token"})
+_SUPPORTED_MESSAGE_ROLES: Final[frozenset[str]] = frozenset(
+    {"system", "developer", "user", "assistant", "tool"}
+)
 
 # All special-token keys we attempt to extract from tokenizer_config.json.
 _EXTRACTABLE_SPECIAL_TOKENS: Final[frozenset[str]] = frozenset(
@@ -74,6 +79,10 @@ class TokenizerCliError(Exception):
 
     def __str__(self) -> str:
         return self.message
+
+
+class TemplateRequestError(TemplateError):
+    """Raised when a chat template intentionally rejects a request."""
 
 
 def build_success_response(
@@ -455,6 +464,7 @@ def _execute_render_and_count_segmented(payload: dict[str, Any]) -> dict[str, An
     input_items = request.get("input_items")
 
     prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
+    paired_render_time = datetime.now()
     baseline_render = render_prompt(
         messages,
         prompt_lines,
@@ -462,6 +472,7 @@ def _execute_render_and_count_segmented(payload: dict[str, Any]) -> dict[str, An
         tokenizer_config_path,
         tools=tools,
         tool_choice=tool_choice,
+        render_time=paired_render_time,
     )
 
     nonce = choose_marker_nonce(input_items, tools, tool_choice)
@@ -478,6 +489,7 @@ def _execute_render_and_count_segmented(payload: dict[str, Any]) -> dict[str, An
         tokenizer_config_path,
         tools=tagged_tools,
         tool_choice=tagged_tool_choice,
+        render_time=paired_render_time,
     )
     dual_render_guard(baseline_render, tagged_render, marker_pairs)
 
@@ -527,6 +539,8 @@ def _run_template_sentinel_preflight(
     chat_template_path: Path,
     tokenizer_config_path: Path,
 ) -> None:
+    preflight_render_time = datetime.now()
+
     def render_payload(payload: dict[str, Any]) -> str:
         request = {"input_items": payload["input_items"]}
         messages = normalize_messages_preserving_message_fields(request)
@@ -540,6 +554,7 @@ def _run_template_sentinel_preflight(
             tokenizer_config_path,
             tools=tools,
             tool_choice=tool_choice,
+            render_time=preflight_render_time,
         )
 
     dual_render_guard_sentinel_matrix(control_tokens, render_payload)
@@ -602,6 +617,24 @@ def require_non_empty_string(payload: dict[str, Any], field_name: str, *, catego
     )
 
 
+def _validate_message_role(role: Any, index: int) -> str:
+    if not isinstance(role, str) or role == "":
+        raise TokenizerCliError(
+            "invalid_input",
+            f"request.input_items[{index}].role must be a non-empty string",
+            2,
+        )
+
+    if role not in _SUPPORTED_MESSAGE_ROLES:
+        raise TokenizerCliError(
+            "invalid_input",
+            f"request.input_items[{index}].role is unsupported: {role!r}",
+            2,
+        )
+
+    return role
+
+
 def normalize_messages(request: dict[str, Any]) -> list[dict[str, str]]:
     input_items = request.get("input_items")
 
@@ -623,13 +656,7 @@ def normalize_messages(request: dict[str, Any]) -> list[dict[str, str]]:
             )
 
         item_map = cast(dict[str, Any], item)
-        role = item_map.get("role")
-        if not isinstance(role, str) or role == "":
-            raise TokenizerCliError(
-                "invalid_input",
-                f"request.input_items[{index}].role must be a non-empty string",
-                2,
-            )
+        role = _validate_message_role(item_map.get("role"), index)
 
         messages.append(
             {"role": role, "content": normalize_content(item_map.get("content"), index)}
@@ -658,13 +685,7 @@ def normalize_messages_preserving_message_fields(request: dict[str, Any]) -> lis
             )
 
         item_map = cast(dict[str, Any], item)
-        role = item_map.get("role")
-        if not isinstance(role, str) or role == "":
-            raise TokenizerCliError(
-                "invalid_input",
-                f"request.input_items[{index}].role must be a non-empty string",
-                2,
-            )
+        role = _validate_message_role(item_map.get("role"), index)
 
         message = item_map.copy()
         message["role"] = role
@@ -730,6 +751,25 @@ def normalize_content(content: Any, item_index: int) -> str:
     )
 
 
+def _raise_exception(message: str) -> None:
+    raise TemplateRequestError(message)
+
+
+def _chat_template_environment(render_time: datetime | None = None) -> Environment:
+    render_time = render_time or datetime.now()
+
+    def strftime_now(format_string: str) -> str:
+        return render_time.strftime(format_string)
+
+    environment = ImmutableSandboxedEnvironment(
+        autoescape=False, lstrip_blocks=True, trim_blocks=True, undefined=Undefined
+    )
+    globals_map = cast(dict[str, Any], environment.globals)
+    globals_map["raise_exception"] = _raise_exception
+    globals_map["strftime_now"] = strftime_now
+    return environment
+
+
 def render_prompt(
     messages: list[dict[str, Any]],
     prompt_lines: list[str],
@@ -738,6 +778,7 @@ def render_prompt(
     *,
     tools: list[dict[str, Any]] | None = None,
     tool_choice: Any = None,
+    render_time: datetime | None = None,
 ) -> str:
     if not chat_template_path.is_file():
         raise TokenizerCliError(
@@ -755,9 +796,7 @@ def render_prompt(
             3,
         ) from exc
 
-    environment = Environment(
-        autoescape=False, lstrip_blocks=True, trim_blocks=True, undefined=Undefined
-    )
+    environment = _chat_template_environment(render_time)
 
     # Discover which variables the template references via AST introspection.
     referenced_vars = _discover_template_variables(template_text, environment)
@@ -782,6 +821,12 @@ def render_prompt(
             tool_choice=tool_choice,
             **special_tokens,
         )
+    except TemplateRequestError as exc:
+        raise TokenizerCliError(
+            "invalid_input",
+            f"chat template rejected request: {exc}",
+            2,
+        ) from exc
     except TemplateError as exc:
         raise TokenizerCliError(
             "missing_assets",
