@@ -205,7 +205,12 @@ def tag_caller_strings(
         begin = tag_begin(nonce, index)
         end = tag_end(nonce, index)
         marker_pairs.append(MarkerPair(index, begin, end, path))
-        return f"{begin}{value}{end}"
+        stripped = value.strip()
+        if not stripped:
+            return f"{value}{begin}{end}"
+        leading = value[: len(value) - len(value.lstrip())]
+        trailing = value[len(value.rstrip()) :]
+        return f"{leading}{begin}{stripped}{end}{trailing}"
 
     tagged_input_items = _tag_messages(copy.deepcopy(input_items), wrap)
     tagged_tools = _tag_tools(copy.deepcopy(tools), wrap)

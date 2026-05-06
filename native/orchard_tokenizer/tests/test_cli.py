@@ -842,9 +842,7 @@ def test_segmented_render_and_count_mistral_style_role_gate_reports_template_err
     assert "undefined" not in response["error"]["message"]
 
 
-def test_segmented_render_and_count_still_rejects_trimmed_caller_content(
-    tmp_path: Path, capsys
-) -> None:
+def test_segmented_render_and_count_accepts_trimmed_caller_content(tmp_path: Path, capsys) -> None:
     bundle = _make_segmented_bundle(tmp_path)
     bundle["chat_template_path"].write_text(
         "{{ messages[0]['content'] | trim }}",
@@ -853,15 +851,14 @@ def test_segmented_render_and_count_still_rejects_trimmed_caller_content(
     payload = segmented_payload(bundle, ["<|im_end|>"])
     payload["request"]["input_items"] = [{"role": "user", "content": "hello orchard"}]
 
-    assert main(["--request-json", json.dumps(payload)]) == 2
+    assert main(["--request-json", json.dumps(payload)]) == 0
 
     response = json.loads(capsys.readouterr().out)
-    assert response["ok"] is False
-    assert response["error"]["category"] == "safe_tokenization_incompatible_template"
-    reason = response["error"]["details"]["reason"]
-    assert reason["category"] == "dual_render_mismatch"
-    assert reason["leaf_class"] == "messages[0].content"
-    assert reason["sentinel_index"] == 5
+    result = assert_single_success_result(response)
+    assert result["compatible"] is True
+    assert result["template_compatible"] is True
+    assert result["incompatibility_reason"] is None
+    assert result["rendered_prompt"] == "hello orchard"
 
 
 def test_segmented_render_and_count_tools_tojson_omitted_parameters_has_no_null(
@@ -1160,6 +1157,25 @@ def test_preflight_safe_tokenization_tools_tojson_template_returns_compatible_tr
     bundle = _make_segmented_bundle(tmp_path)
     bundle["chat_template_path"].write_text(
         (fixture_root() / "chat_template_tools_tojson.jinja").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    payload = preflight_payload(bundle, ["<|im_end|>"])
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    assert result["compatible"] is True
+    assert result["template_compatible"] is True
+    assert result["incompatibility_reason"] is None
+
+
+def test_preflight_safe_tokenization_trim_template_returns_compatible_true(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{{ messages[0]['content'] | trim }}",
         encoding="utf-8",
     )
     payload = preflight_payload(bundle, ["<|im_end|>"])

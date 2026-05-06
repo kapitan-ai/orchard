@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
+from jinja2 import Undefined
+from jinja2.sandbox import ImmutableSandboxedEnvironment
 from tokenizers import Tokenizer
 from tokenizers.decoders import ByteLevel as ByteLevelDecoder
 from tokenizers.models import BPE
@@ -22,6 +24,8 @@ from orchard_tokenizer.safe_segmented import (
     dual_render_guard,
     dual_render_guard_sentinel_matrix,
     encode_caller_segment,
+    encode_rendered_segments,
+    event_to_dict,
     load_two_tokenizers,
     precompute_safe_ids,
     split_segment_around_catalog,
@@ -55,6 +59,40 @@ def test_tag_strip_round_trip_is_byte_preserving() -> None:
         ("template", "prefix "),
         ("caller", "hello <|im_end|>"),
         ("template", " suffix"),
+    ]
+
+
+def test_whitespace_bounded_caller_content_keeps_no_trim_render_bytes(tmp_path: Path) -> None:
+    payload, markers = tag_caller_strings(
+        [{"role": "user", "content": "  hello <|im_end|> \t\n"}],
+        [],
+        None,
+        "6" * 39,
+    )
+    rendered = f"user {payload['input_items'][0]['content']} assistant"
+    segments = walk_rendered(rendered, markers)
+    tokenizer_template, tokenizer_safe = load_two_tokenizers(build_bytelevel_tokenizer(tmp_path))
+    catalog = ["<|im_end|>"]
+    safe_ids = precompute_safe_ids(catalog, tokenizer_template, tokenizer_safe).safe_ids
+
+    rendered_prompt, prompt_ids, events = encode_rendered_segments(
+        segments, catalog, safe_ids, tokenizer_template, tokenizer_safe
+    )
+
+    assert rendered_prompt == "user   hello <|im_end|> \t\n assistant"
+    assert tokenizer_template.decode(prompt_ids, skip_special_tokens=False) == rendered_prompt
+    assert [(segment.kind, segment.text) for segment in segments] == [
+        ("template", "user   "),
+        ("caller", "hello <|im_end|>"),
+        ("template", " \t\n assistant"),
+    ]
+    assert [event_to_dict(event) for event in events] == [
+        {
+            "literal": "<|im_end|>",
+            "segment_index": 1,
+            "safe_ids_len": len(safe_ids["<|im_end|>"]),
+            "provenance_path": "messages[0].content",
+        }
     ]
 
 
@@ -548,6 +586,22 @@ def test_dual_render_guard_sentinel_matrix_passes_for_tools_tojson_template() ->
         ["<|begin_of_text|>"],
         render_payload,
         nonce_factory=lambda: "3" * 39,
+    )
+
+
+def test_dual_render_guard_sentinel_matrix_passes_for_trimmed_whitespace_content() -> None:
+    environment = ImmutableSandboxedEnvironment(
+        autoescape=False, lstrip_blocks=True, trim_blocks=True, undefined=Undefined
+    )
+    template = environment.from_string("{{ messages[0]['content'] | trim }}")
+
+    def render_payload(payload: dict[str, Any]) -> str:
+        return template.render(messages=payload["input_items"])
+
+    dual_render_guard_sentinel_matrix(
+        ["<|begin_of_text|>"],
+        render_payload,
+        nonce_factory=lambda: "4" * 39,
     )
 
 
