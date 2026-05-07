@@ -28,6 +28,7 @@ from orchard_tokenizer.safe_segmented import (
     event_to_dict,
     load_two_tokenizers,
     precompute_safe_ids,
+    sentinel_payloads,
     split_segment_around_catalog,
     strip_markers,
     tag_begin,
@@ -211,6 +212,26 @@ def test_marker_collision_retry_is_bounded_and_deterministic() -> None:
         )
 
     assert excinfo.value.category == "safe_tokenization_marker_collision"
+
+
+def test_sentinel_payloads_model_no_tools_as_none_and_keep_tool_path_coverage() -> None:
+    payloads = sentinel_payloads(["<|im_end|>"])
+
+    message_payload = next(
+        payload
+        for leaf_class, sentinel_index, payload in payloads
+        if leaf_class == "messages[0].content" and sentinel_index == 0
+    )
+    tool_payload = next(
+        payload
+        for leaf_class, sentinel_index, payload in payloads
+        if leaf_class == "tools[0].function.description" and sentinel_index == 0
+    )
+
+    assert message_payload["tools"] is None
+    assert tool_payload["tools"] == [
+        {"type": "function", "function": {"name": "lookup", "description": ""}}
+    ]
 
 
 def test_dual_render_guard_sentinel_matrix_uses_structured_mismatch() -> None:
@@ -579,7 +600,8 @@ def test_tag_caller_strings_preserves_dict_key_sets() -> None:
 def test_dual_render_guard_sentinel_matrix_passes_for_tools_tojson_template() -> None:
     def render_payload(payload: dict[str, Any]) -> str:
         first_user = payload["input_items"][0]["content"]
-        tool_blocks = "\n\n".join(json.dumps(tool, indent=4) for tool in payload["tools"])
+        tools = payload["tools"] or []
+        tool_blocks = "\n\n".join(json.dumps(tool, indent=4) for tool in tools)
         return f"<user>{first_user}</user>\n\n{tool_blocks}\n\n"
 
     dual_render_guard_sentinel_matrix(

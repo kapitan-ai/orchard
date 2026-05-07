@@ -541,7 +541,7 @@ def sentinel_payloads(catalog: Sequence[str]) -> list[tuple[str, int, dict[str, 
                 index,
                 {
                     "input_items": [{"role": "user", "content": value}],
-                    "tools": [],
+                    "tools": None,
                     "tool_choice": None,
                 },
             )

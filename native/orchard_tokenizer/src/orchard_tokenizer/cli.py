@@ -324,7 +324,7 @@ def _execute_render_and_count(payload: dict[str, Any], contract_version: int) ->
     )
 
     messages = normalize_messages(request)
-    tools = normalize_tools(request.get("tools", []))
+    tools = normalize_optional_tools(request.get("tools"))
     tool_choice = request.get("tool_choice", None)
     prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
     tokenizer_config_path = tokenizer_path.parent / "tokenizer_config.json"
@@ -459,7 +459,7 @@ def _execute_render_and_count_segmented(payload: dict[str, Any]) -> dict[str, An
         )
 
     messages = normalize_messages_preserving_message_fields(request)
-    tools = normalize_tools(request.get("tools", []))
+    tools = normalize_optional_tools(request.get("tools"))
     tool_choice = request.get("tool_choice", None)
     input_items = request.get("input_items")
 
@@ -479,7 +479,7 @@ def _execute_render_and_count_segmented(payload: dict[str, Any]) -> dict[str, An
     tagged_payload, marker_pairs = tag_caller_strings(input_items, tools, tool_choice, nonce)
     tagged_request = {"input_items": tagged_payload["input_items"]}
     tagged_messages = normalize_messages_preserving_message_fields(tagged_request)
-    tagged_tools = normalize_tools(tagged_payload["tools"])
+    tagged_tools = normalize_optional_tools(tagged_payload["tools"])
     tagged_tool_choice = tagged_payload["tool_choice"]
     tagged_prompt_lines = [f"{message['role']} {message['content']}" for message in tagged_messages]
     tagged_render = render_prompt(
@@ -544,7 +544,7 @@ def _run_template_sentinel_preflight(
     def render_payload(payload: dict[str, Any]) -> str:
         request = {"input_items": payload["input_items"]}
         messages = normalize_messages_preserving_message_fields(request)
-        tools = normalize_tools(payload.get("tools", []))
+        tools = normalize_optional_tools(payload.get("tools"))
         tool_choice = payload.get("tool_choice", None)
         prompt_lines = [f"{message['role']} {message['content']}" for message in messages]
         return render_prompt(
@@ -695,6 +695,17 @@ def normalize_messages_preserving_message_fields(request: dict[str, Any]) -> lis
     return messages
 
 
+def normalize_optional_tools(tools: Any) -> list[dict[str, Any]] | None:
+    if tools is None:
+        return None
+
+    normalized_tools = normalize_tools(tools)
+    if normalized_tools == []:
+        return None
+
+    return normalized_tools
+
+
 def normalize_tools(tools: Any) -> list[dict[str, Any]]:
     if not isinstance(tools, list):
         raise TokenizerCliError(
@@ -764,10 +775,20 @@ def _chat_template_environment(render_time: datetime | None = None) -> Environme
     environment = ImmutableSandboxedEnvironment(
         autoescape=False, lstrip_blocks=True, trim_blocks=True, undefined=Undefined
     )
+    filters_map = cast(dict[str, Any], environment.filters)
+    filters_map["length"] = _length_filter
+    filters_map["count"] = _length_filter
     globals_map = cast(dict[str, Any], environment.globals)
     globals_map["raise_exception"] = _raise_exception
     globals_map["strftime_now"] = strftime_now
     return environment
+
+
+def _length_filter(value: Any) -> int:
+    if value is None:
+        return 0
+
+    return len(value)
 
 
 def render_prompt(
@@ -817,7 +838,7 @@ def render_prompt(
             messages=messages,
             prompt_lines=prompt_lines,
             add_generation_prompt=True,
-            tools=[] if tools is None else tools,
+            tools=tools,
             tool_choice=tool_choice,
             **special_tokens,
         )

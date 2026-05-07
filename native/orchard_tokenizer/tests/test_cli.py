@@ -353,6 +353,33 @@ def test_optional_undefined_variables_tolerated(tmp_path: Path, capsys) -> None:
     assert "orchard" in response["result"]["rendered_prompt"]
 
 
+def test_main_treats_empty_null_and_omitted_tools_as_no_tools_for_llama_style_templates(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_bundle(
+        tmp_path,
+        template="{% if tools is not none %}TOOL-MODE{% endif %}{{ messages[0]['content'] }}",
+        tokenizer_config=None,
+    )
+
+    for tools_variant in ("omitted", "null", "empty"):
+        payload = tokenization_payload(
+            tokenizer_kind="huggingface_tokenizer_json",
+            tokenizer_path=bundle["tokenizer_path"],
+            chat_template_path=bundle["chat_template_path"],
+        )
+        if tools_variant == "null":
+            payload["request"]["tools"] = None
+        elif tools_variant == "empty":
+            payload["request"]["tools"] = []
+
+        assert main(["--request-json", json.dumps(payload)]) == 0
+
+        response = json.loads(capsys.readouterr().out)
+        assert response["ok"] is True
+        assert response["result"]["rendered_prompt"] == "orchard"
+
+
 def test_main_renders_template_with_tools_and_tool_choice_fixture(capsys) -> None:
     payload = tokenization_payload(
         tokenizer_kind="huggingface_tokenizer_json",
@@ -861,6 +888,32 @@ def test_segmented_render_and_count_accepts_trimmed_caller_content(tmp_path: Pat
     assert result["rendered_prompt"] == "hello orchard"
 
 
+def test_segmented_treats_empty_null_and_omitted_tools_as_no_tools_for_llama_style_templates(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{% if tools is not none %}TOOL-MODE{% endif %}{{ messages[0]['content'] }}",
+        encoding="utf-8",
+    )
+
+    for tools_variant in ("omitted", "null", "empty"):
+        payload = segmented_payload(bundle, ["<|im_end|>"])
+        payload["request"]["input_items"] = [{"role": "user", "content": "hello orchard"}]
+        if tools_variant == "omitted":
+            del payload["request"]["tools"]
+        elif tools_variant == "null":
+            payload["request"]["tools"] = None
+        elif tools_variant == "empty":
+            payload["request"]["tools"] = []
+
+        assert main(["--request-json", json.dumps(payload)]) == 0
+
+        response = json.loads(capsys.readouterr().out)
+        result = assert_single_success_result(response)
+        assert result["rendered_prompt"] == "hello orchard"
+
+
 def test_segmented_render_and_count_tools_tojson_omitted_parameters_has_no_null(
     tmp_path: Path, capsys
 ) -> None:
@@ -1149,6 +1202,28 @@ def test_preflight_safe_tokenization_compatible_returns_compatible_true(
         "template_compatible": True,
         "incompatibility_reason": None,
     }
+
+
+def test_preflight_safe_tokenization_llama_style_tools_branch_returns_compatible_true(
+    tmp_path: Path, capsys
+) -> None:
+    bundle = _make_segmented_bundle(tmp_path)
+    bundle["chat_template_path"].write_text(
+        "{% if tools is not none %}"
+        "{% for t in tools %}{{ t | tojson(indent=4) }}\n{% endfor %}"
+        "{% endif %}"
+        "{{ messages[0]['content'] | trim }}",
+        encoding="utf-8",
+    )
+    payload = preflight_payload(bundle, ["<|im_end|>"])
+
+    assert main(["--request-json", json.dumps(payload)]) == 0
+
+    response = json.loads(capsys.readouterr().out)
+    result = assert_single_success_result(response)
+    assert result["compatible"] is True
+    assert result["template_compatible"] is True
+    assert result["incompatibility_reason"] is None
 
 
 def test_preflight_safe_tokenization_tools_tojson_template_returns_compatible_true(
