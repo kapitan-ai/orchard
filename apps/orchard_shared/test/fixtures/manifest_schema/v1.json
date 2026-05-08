@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "top_level_keys": [
+    "artifact_layout",
+    "capabilities",
+    "chat_template",
+    "entrypoint",
+    "format",
+    "kv_cache_bytes_per_token",
+    "max_context_tokens",
+    "model_id",
+    "prefill_workspace_bytes_per_token",
+    "resident_memory_bytes",
+    "runtime_requirements",
+    "safe_tokenization",
+    "sha256",
+    "size_bytes",
+    "tokenizer",
+    "version"
+  ],
+  "nested_keys": {
+    "chat_template": [
+      "path",
+      "sha256"
+    ],
+    "runtime_requirements": [
+      "adapter",
+      "min_agent_capability"
+    ],
+    "safe_tokenization": [
+      "catalog_sha256",
+      "catalog_source",
+      "compatible",
+      "control_tokens",
+      "extra_control_token_strings",
+      "incompatibility_reason",
+      "template_compatible"
+    ],
+    "safe_tokenization.catalog_source": [
+      "added_tokens_count",
+      "additional_special_tokens_count",
+      "chat_template_literals_count",
+      "config_singletons_count",
+      "extra_count",
+      "wrapper_tool_markers_count"
+    ],
+    "safe_tokenization.incompatibility_reason": [
+      "category",
+      "first_diff_offset",
+      "leaf_class",
+      "literal",
+      "sentinel_index"
+    ],
+    "tokenizer": [
+      "config_path",
+      "kind",
+      "path"
+    ]
+  },
+  "worker_validates_top_level_keys": true,
+  "worker_validates_nested_keys": [
+    "chat_template",
+    "runtime_requirements",
+    "tokenizer"
+  ]
+}

@@ -121,6 +121,23 @@ defmodule Orchard.Models.ManifestParser do
     end
   end
 
+  @doc false
+  @spec schema_keys() :: map()
+  def schema_keys do
+    %{
+      top_level_keys: Map.keys(@top_level_key_map) |> Enum.sort(),
+      nested_keys: %{
+        tokenizer: Map.keys(@tokenizer_key_map) |> Enum.sort(),
+        chat_template: Map.keys(@chat_template_key_map) |> Enum.sort(),
+        runtime_requirements: Map.keys(@runtime_requirements_key_map) |> Enum.sort(),
+        safe_tokenization: Map.keys(@safe_tokenization_key_map) |> Enum.sort(),
+        safe_tokenization_catalog_source: Map.keys(@catalog_source_key_map) |> Enum.sort(),
+        safe_tokenization_incompatibility_reason:
+          Map.keys(@incompatibility_reason_key_map) |> Enum.sort()
+      }
+    }
+  end
+
   defp atomize_and_build(string_map) do
     with {:ok, atom_map} <- atomize_top_level(string_map),
          {:ok, atom_map} <- atomize_nested(atom_map, :tokenizer, @tokenizer_key_map),
