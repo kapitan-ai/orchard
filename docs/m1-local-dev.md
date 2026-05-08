@@ -154,7 +154,7 @@ ELIXIR
 | `ORCHARD_WORKER_BACKEND` | `mlx` | Inference backend |
 | `ORCHARD_FAKE_RUNTIME` | `false` | Use fake runtime (for testing without GPU) |
 | `ORCHARD_NODE_DISPLAY_NAME` | hostname | Human-readable node name shown in console |
-| `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev) / `warn` (packaged prod) | Startup-only licensing mode: `off`, `warn`, or `hard` |
+| `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev) / `hard` (distributed packaged channels) | Licensing mode for startup and packaged useful-work admission: `off`, `warn`, or `hard` |
 
 #### Controller Multi-Node (Source Dev)
 
@@ -581,7 +581,7 @@ When present, tracking metadata appears in:
 
 | Variable | Default | Notes |
 |----------|---------|-------|
-| `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev/test) / `warn` (packaged prod) | Startup-only node-agent mode: `off`, `warn`, `hard` |
+| `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev/test) / `hard` (distributed packaged channels) | Node-agent startup and packaged useful-work admission mode: `off`, `warn`, `hard` |
 | `ORCHARD_LICENSE_BUNDLE_PATH` | `<support_root>/config/licensing/current.json` | Rare override for Orchard-directed alternate layouts/debugging |
 | `ORCHARD_NODE_IDENTITY_PATH` | `<support_root>/data/node-id` | Override only when Orchard support-root layout is intentionally changed |
 | `ORCHARD_KEYGEN_API_BASE_URL` | `https://api.keygen.sh` | Optional override for Orchard-directed alternate environments |
@@ -590,8 +590,8 @@ When present, tracking metadata appears in:
 
 ### Rollout and rollback posture
 
-- Packaged prod defaults to `warn` for a warn-first rollout to design partners.
-- Enforcement remains **startup-only** on the node-agent in v0.
+- Source dev/test defaults to `off`; distributed packaged channels default to `hard`. Use an explicit `warn` override only for a deliberately waived rollout/rehearsal.
+- Node-agent licensing is checked at startup and at packaged useful-work admission points; source dev/test defaults keep it off unless explicitly enabled.
 - To remove runtime licensing impact quickly, set
   `ORCHARD_LICENSE_ENFORCEMENT=off` and restart the node-agent (or the dev app
   process when validating from source).

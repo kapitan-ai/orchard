@@ -322,11 +322,13 @@ defmodule OrchardCLI.Commands.License do
     |> normalize_license_key()
   end
 
-  defp license_key_from_source({:file, path}, _runtime) do
+  defp license_key_from_source({:file, path}, runtime) do
     with {:ok, stat} <- key_file_stat(path),
          :ok <- require_regular_key_file(path, stat),
          :ok <- require_private_key_file_mode(path, stat),
-         {:ok, contents} <- File.read(path) do
+         :ok <- after_key_file_stat_impl(runtime).(path, stat),
+         {:ok, io_device} <- open_key_file(path),
+         {:ok, contents} <- read_validated_key_file(path, stat, io_device) do
       normalize_license_key(contents)
     else
       {:error, {:file_error, message}} -> {:error, message}
@@ -353,16 +355,116 @@ defmodule OrchardCLI.Commands.License do
 
   defp require_regular_key_file(_path, %{type: :regular}), do: :ok
 
+  defp require_regular_key_file(
+         _path,
+         {:file_info, _size, :regular, _access, _atime, _mtime, _ctime, _mode, _links,
+          _major_device, _minor_device, _inode, _uid, _gid}
+       ),
+       do: :ok
+
   defp require_regular_key_file(path, _stat),
     do: {:error, {:file_error, "License key file #{path} must be a regular file."}}
 
   defp require_private_key_file_mode(path, %{mode: mode}) do
+    require_private_key_file_mode_value(path, mode)
+  end
+
+  defp require_private_key_file_mode(
+         path,
+         {:file_info, _size, _type, _access, _atime, _mtime, _ctime, mode, _links, _major_device,
+          _minor_device, _inode, _uid, _gid}
+       ) do
+    require_private_key_file_mode_value(path, mode)
+  end
+
+  defp require_private_key_file_mode_value(path, mode) do
     if Bitwise.band(mode, 0o777) == 0o600 do
       :ok
     else
       {:error, {:file_error, "License key file #{path} must have 0600 permissions."}}
     end
   end
+
+  defp open_key_file(path) do
+    case :file.open(String.to_charlist(path), [:read, :raw, :binary]) do
+      {:ok, io_device} ->
+        {:ok, io_device}
+
+      {:error, reason} ->
+        {:error, {:file_error, "Cannot open license key file #{path}: #{inspect(reason)}."}}
+    end
+  end
+
+  defp read_validated_key_file(path, stat, io_device) do
+    try do
+      with {:ok, opened_stat} <- opened_key_file_stat(path, io_device),
+           :ok <- require_same_opened_key_file(path, stat, opened_stat),
+           :ok <- require_regular_key_file(path, opened_stat),
+           :ok <- require_private_key_file_mode(path, opened_stat),
+           {:ok, contents} <- read_opened_key_file(path, opened_stat, io_device) do
+        {:ok, contents}
+      end
+    after
+      :file.close(io_device)
+    end
+  end
+
+  defp opened_key_file_stat(path, io_device) do
+    case :file.read_file_info(io_device) do
+      {:ok, stat} ->
+        {:ok, stat}
+
+      {:error, reason} ->
+        {:error,
+         {:file_error, "Cannot inspect opened license key file #{path}: #{inspect(reason)}."}}
+    end
+  end
+
+  defp require_same_opened_key_file(path, expected, opened) do
+    if opened_key_file_identity(expected) == opened_key_file_identity(opened) do
+      :ok
+    else
+      {:error,
+       {:file_error,
+        "License key file #{path} changed while it was being opened; refusing to read it."}}
+    end
+  end
+
+  defp opened_key_file_identity(%{
+         major_device: major_device,
+         minor_device: minor_device,
+         inode: inode
+       }) do
+    {major_device, minor_device, inode}
+  end
+
+  defp opened_key_file_identity(
+         {:file_info, _size, _type, _access, _atime, _mtime, _ctime, _mode, _links, major_device,
+          minor_device, inode, _uid, _gid}
+       ) do
+    {major_device, minor_device, inode}
+  end
+
+  defp read_opened_key_file(path, opened_stat, io_device) do
+    case :file.read(io_device, opened_key_file_size(opened_stat)) do
+      {:ok, contents} ->
+        {:ok, contents}
+
+      :eof ->
+        {:ok, ""}
+
+      {:error, reason} ->
+        {:error, {:file_error, "Cannot read license key file #{path}: #{inspect(reason)}."}}
+    end
+  end
+
+  defp opened_key_file_size(%{size: size}), do: size
+
+  defp opened_key_file_size(
+         {:file_info, size, _type, _access, _atime, _mtime, _ctime, _mode, _links, _major_device,
+          _minor_device, _inode, _uid, _gid}
+       ),
+       do: size
 
   defp create_license_live(payload, runtime) do
     with {:ok, config} <- create_config(runtime),
@@ -1059,6 +1161,9 @@ defmodule OrchardCLI.Commands.License do
   defp shared_licensing_config(runtime), do: shared_config_impl(runtime).()
   defp request_impl(runtime), do: Map.get(runtime, :request, &default_request/1)
   defp read_stdin_impl(runtime), do: Map.get(runtime, :read_stdin, &default_read_stdin/0).()
+
+  defp after_key_file_stat_impl(runtime),
+    do: Map.get(runtime, :after_key_file_stat, fn _path, _stat -> :ok end)
 
   defp default_read_stdin do
     case IO.read(:stdio, :line) do

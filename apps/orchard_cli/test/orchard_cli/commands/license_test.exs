@@ -233,6 +233,43 @@ defmodule OrchardCLI.Commands.LicenseTest do
     end
   end
 
+  test "activate rejects key files swapped between stat and open without reading the key" do
+    path =
+      Path.join(System.tmp_dir!(), "orchard-license-key-#{System.unique_integer([:positive])}")
+
+    target_path =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-license-key-target-#{System.unique_integer([:positive])}"
+      )
+
+    File.write!(path, @license_key <> "\n")
+    File.chmod!(path, 0o600)
+    File.write!(target_path, @license_key <> "\n")
+    File.chmod!(target_path, 0o600)
+
+    swap_path = fn _path, _stat ->
+      File.rm!(path)
+      File.ln_s!(target_path, path)
+      :ok
+    end
+
+    try do
+      assert {:error, message, 1} =
+               License.run(
+                 ["activate", "--key-file", path, "--support-root", @support_root],
+                 runtime(after_key_file_stat: swap_path, request: &unexpected_request/1)
+               )
+
+      assert message =~ "changed while it was being opened"
+      refute message =~ @license_key
+      assert recorded_requests() == []
+    after
+      File.rm(path)
+      File.rm(target_path)
+    end
+  end
+
   test "activate rejects key files that are not 0600 without reading the key" do
     path =
       Path.join(System.tmp_dir!(), "orchard-license-key-#{System.unique_integer([:positive])}")
@@ -1073,6 +1110,8 @@ defmodule OrchardCLI.Commands.LicenseTest do
     runtime = %{
       request: request,
       read_stdin: Keyword.get(overrides, :stdin, fn -> "" end),
+      after_key_file_stat:
+        Keyword.get(overrides, :after_key_file_stat, fn _path, _stat -> :ok end),
       licensing_impl: OrchardCLI.Commands.LicenseTest.LicensingSpy,
       node_identity_impl: OrchardCLI.Commands.LicenseTest.NodeIdentitySpy
     }
