@@ -209,6 +209,22 @@ def test_parse_manifest_from_fixture(fixture_bundle: Path) -> None:
     assert manifest.resident_memory_bytes == 2048000
 
 
+def test_parse_manifest_accepts_current_schema_metadata(
+    fixture_bundle: Path,
+) -> None:
+    """Regression: parser accepts safe_tokenization and tokenizer.config_path metadata."""
+    data = _read_fixture_manifest_dict()
+
+    assert "safe_tokenization" in data
+    assert data["tokenizer"]["config_path"] == "tokenizer_config.json"
+    assert (fixture_bundle / data["tokenizer"]["config_path"]).is_file()
+
+    manifest = parse_manifest_json(json.dumps(data))
+
+    assert manifest.tokenizer.kind == "huggingface_tokenizer_json"
+    assert manifest.tokenizer.path == "tokenizer.json"
+
+
 def test_parse_manifest_json_without_optional_fields() -> None:
     data = _read_fixture_manifest_dict()
     # Remove optional fields.

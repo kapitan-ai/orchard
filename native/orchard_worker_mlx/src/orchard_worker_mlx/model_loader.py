@@ -312,10 +312,11 @@ _KNOWN_TOP_LEVEL_KEYS = frozenset(
         "tokenizer",
         "chat_template",
         "runtime_requirements",
+        "safe_tokenization",
     }
 )
 
-_KNOWN_TOKENIZER_KEYS = frozenset({"kind", "path"})
+_KNOWN_TOKENIZER_KEYS = frozenset({"kind", "path", "config_path"})
 _KNOWN_CHAT_TEMPLATE_KEYS = frozenset({"path", "sha256"})
 _KNOWN_RUNTIME_REQUIREMENTS_KEYS = frozenset({"adapter", "min_agent_capability"})
 

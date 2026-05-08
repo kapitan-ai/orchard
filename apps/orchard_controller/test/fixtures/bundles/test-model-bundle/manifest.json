@@ -13,7 +13,8 @@
   "capabilities": ["chat"],
   "tokenizer": {
     "kind": "huggingface_tokenizer_json",
-    "path": "tokenizer.json"
+    "path": "tokenizer.json",
+    "config_path": "tokenizer_config.json"
   },
   "chat_template": {
     "path": "chat_template.jinja",
@@ -22,5 +23,17 @@
   "runtime_requirements": {
     "adapter": "mlx_lm",
     "min_agent_capability": "mlx"
+  },
+  "safe_tokenization": {
+    "control_tokens": [],
+    "catalog_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "catalog_source": {
+      "added_tokens_count": 0,
+      "config_singletons_count": 0,
+      "additional_special_tokens_count": 0,
+      "chat_template_literals_count": 0,
+      "wrapper_tool_markers_count": 0,
+      "extra_count": 0
+    }
   }
 }

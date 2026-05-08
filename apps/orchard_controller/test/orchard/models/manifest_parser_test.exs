@@ -24,8 +24,18 @@ defmodule Orchard.Models.ManifestParserTest do
       assert manifest.max_context_tokens == 4_096
       assert manifest.capabilities == ["chat"]
 
-      assert %ModelManifest.Tokenizer{kind: "huggingface_tokenizer_json", path: "tokenizer.json"} =
-               manifest.tokenizer
+      assert %ModelManifest.Tokenizer{
+               kind: "huggingface_tokenizer_json",
+               path: "tokenizer.json",
+               config_path: "tokenizer_config.json"
+             } = manifest.tokenizer
+
+      assert manifest.safe_tokenization.control_tokens == []
+
+      assert manifest.safe_tokenization.catalog_sha256 ==
+               "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+      refute manifest.safe_tokenization.preflight_compatible_declared?
 
       assert %ModelManifest.ChatTemplate{path: "chat_template.jinja"} = manifest.chat_template
 

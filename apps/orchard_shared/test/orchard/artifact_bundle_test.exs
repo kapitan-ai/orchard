@@ -10,7 +10,7 @@ defmodule Orchard.ArtifactBundleTest do
                     "../../../../apps/orchard_controller/test/fixtures/bundles/test-model-bundle",
                     __DIR__
                   )
-  @fixture_hash "41691cf32524c1837cee1ec7409916090ec3a3645a81761fcc048edddaba3c10"
+  @fixture_hash "b001bcbf58ca977328bfc27db38b91a9732ae28f6c562fa1005df5fece13ba17"
 
   setup do
     tmp_dir =
