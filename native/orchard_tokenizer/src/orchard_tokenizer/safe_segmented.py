@@ -6,12 +6,25 @@ import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, TypeAlias, cast
+from typing import Any, Final, Literal, TypeAlias, cast
 
 from tokenizers import Tokenizer
 
 SegmentKind: TypeAlias = Literal["template", "caller"]
 CatalogPartKind: TypeAlias = Literal["between", "literal"]
+
+_TOKENIZER_INCOMPATIBILITY_CATEGORIES: Final[frozenset[str]] = frozenset(
+    {
+        "empty_literal",
+        "per_codepoint_decode_mismatch",
+        "reserved_id_persists",
+        "reserved_id_set_overlap",
+    }
+)
+_TEMPLATE_INCOMPATIBILITY_CATEGORIES: Final[frozenset[str]] = frozenset({"dual_render_mismatch"})
+_CONTRACT_INCOMPATIBILITY_CATEGORIES: Final[frozenset[str]] = (
+    _TOKENIZER_INCOMPATIBILITY_CATEGORIES | _TEMPLATE_INCOMPATIBILITY_CATEGORIES
+)
 
 _SCHEMA_NAMED_COLLECTIONS = frozenset(
     {"$defs", "definitions", "dependentSchemas", "patternProperties", "properties"}

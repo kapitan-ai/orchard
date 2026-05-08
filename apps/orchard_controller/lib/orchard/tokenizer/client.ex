@@ -30,6 +30,9 @@ defmodule Orchard.Tokenizer.Client do
     reserved_id_set_overlap
     empty_literal
   )
+  @template_incompatibility_categories ~w(dual_render_mismatch)
+  @all_incompatibility_categories @tokenizer_incompatibility_categories ++
+                                    @template_incompatibility_categories
   @skip_sentinel_preflight_env "ORCHARD_TOKENIZER_SKIP_SENTINEL_PREFLIGHT"
   @sha256_hex ~r/\A[0-9a-f]{64}\z/
 
@@ -56,6 +59,22 @@ defmodule Orchard.Tokenizer.Client do
 
   @callback tokenize(CanonicalRequest.t(), keyword()) ::
               {:ok, tokenization_result()} | {:error, error_reason()}
+
+  @doc false
+  @spec incompatibility_reason_category_sets() :: %{
+          all: [String.t()],
+          tokenizer: [String.t()],
+          template: [String.t()]
+        }
+  # Contract tests inspect tokenizer-owned enum strings without promoting this to product API.
+  # credo:disable-for-next-line ExSlop.Check.Readability.DocFalseOnPublicFunction
+  def incompatibility_reason_category_sets do
+    %{
+      all: Enum.sort(@all_incompatibility_categories),
+      tokenizer: Enum.sort(@tokenizer_incompatibility_categories),
+      template: Enum.sort(@template_incompatibility_categories)
+    }
+  end
 
   def tokenize(%CanonicalRequest{} = request, opts \\ []) do
     with :ok <- validate_input_item_roles(request.input_items) do

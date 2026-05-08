@@ -2,7 +2,8 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
   use ExUnit.Case, async: true
 
   alias Orchard.ModelManifest
-  alias Orchard.Models.ManifestParser
+  alias Orchard.Models.{ManifestParser, SafeTokenizationPreflight}
+  alias Orchard.Tokenizer.Client, as: TokenizerClient
 
   @contract_path Path.expand(
                    "../../../../orchard_shared/test/fixtures/manifest_schema/v1.json",
@@ -35,6 +36,74 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
              "runtime_requirements",
              "tokenizer"
            ]
+  end
+
+  test "SPEC 6.4 safe-tokenization incompatibility category enum contract is sorted and partitioned" do
+    contract = load_contract!()
+    category_sets = contract_category_sets(contract)
+
+    assert contract["version"] == 1
+
+    assert contract["category_enums"] |> Map.keys() |> Enum.sort() == [
+             "safe_tokenization.incompatibility_reason.category",
+             "safe_tokenization.incompatibility_reason.template_categories",
+             "safe_tokenization.incompatibility_reason.tokenizer_categories"
+           ]
+
+    Enum.each(category_sets, fn {_name, categories} ->
+      assert categories == Enum.sort(categories)
+    end)
+
+    assert category_sets.all ==
+             category_sets.tokenizer
+             |> MapSet.new()
+             |> MapSet.union(MapSet.new(category_sets.template))
+             |> MapSet.to_list()
+             |> Enum.sort()
+
+    assert MapSet.disjoint?(
+             MapSet.new(category_sets.tokenizer),
+             MapSet.new(category_sets.template)
+           )
+  end
+
+  test "SPEC 6.4 Elixir safe-tokenization incompatibility category owners match the shared contract" do
+    contract_sets = load_contract!() |> contract_category_sets()
+
+    assert ManifestParser.incompatibility_reason_category_sets() == contract_sets
+    assert SafeTokenizationPreflight.incompatibility_reason_category_sets() == contract_sets
+    assert TokenizerClient.incompatibility_reason_category_sets() == contract_sets
+  end
+
+  test "SPEC 6.4 diagnostic and error-envelope categories are not manifest verdict categories" do
+    contract_sets = load_contract!() |> contract_category_sets()
+
+    helper_diagnostics = ~w(
+      marker_collision
+      marker_walk_mismatch
+      catalog_hash_mismatch
+    )
+
+    error_envelope_categories = ~w(
+      safe_tokenization_incompatible_tokenizer
+      safe_tokenization_incompatible_template
+      safe_tokenization_marker_collision
+      safe_tokenization_catalog_hash_mismatch
+    )
+
+    rejected_categories = helper_diagnostics ++ error_envelope_categories
+
+    assert Enum.all?(rejected_categories, &(&1 not in contract_sets.all))
+
+    Enum.each(helper_diagnostics, fn category ->
+      json =
+        category
+        |> incompatible_manifest_with_category()
+        |> Jason.encode!()
+
+      assert {:error, {:validation, "incompatibility_reason.category is invalid"}} =
+               ManifestParser.parse_json(json)
+    end)
   end
 
   test "SPEC 6.4 parser schema keys match the shared contract" do
@@ -150,6 +219,47 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
     @contract_path
     |> File.read!()
     |> Jason.decode!()
+  end
+
+  defp contract_category_sets(contract) do
+    category_enums = Map.fetch!(contract, "category_enums")
+
+    %{
+      all: Map.fetch!(category_enums, "safe_tokenization.incompatibility_reason.category"),
+      tokenizer:
+        Map.fetch!(
+          category_enums,
+          "safe_tokenization.incompatibility_reason.tokenizer_categories"
+        ),
+      template:
+        Map.fetch!(
+          category_enums,
+          "safe_tokenization.incompatibility_reason.template_categories"
+        )
+    }
+  end
+
+  defp incompatible_manifest_with_category(category) do
+    control_tokens = ["</s>", "<s>"]
+
+    Map.put(base_manifest_map(), "safe_tokenization", %{
+      "control_tokens" => control_tokens,
+      "catalog_sha256" => hash_catalog(control_tokens),
+      "catalog_source" => %{
+        "added_tokens_count" => 2,
+        "additional_special_tokens_count" => 0,
+        "chat_template_literals_count" => 0,
+        "config_singletons_count" => 0,
+        "extra_count" => 0,
+        "wrapper_tool_markers_count" => 0
+      },
+      "compatible" => false,
+      "template_compatible" => true,
+      "incompatibility_reason" => %{
+        "category" => category,
+        "literal" => "<s>"
+      }
+    })
   end
 
   defp base_manifest_map do

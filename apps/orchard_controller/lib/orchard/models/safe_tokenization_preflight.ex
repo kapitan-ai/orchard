@@ -22,6 +22,23 @@ defmodule Orchard.Models.SafeTokenizationPreflight do
   @all_incompatibility_categories @tokenizer_incompatibility_categories ++
                                     ["dual_render_mismatch"]
 
+  @doc false
+  @spec incompatibility_reason_category_sets() :: %{
+          all: [String.t()],
+          tokenizer: [String.t()],
+          template: [String.t()]
+        }
+  # Contract tests inspect preflight-owned enum strings without promoting this to product API.
+  # credo:disable-for-next-line ExSlop.Check.Readability.DocFalseOnPublicFunction
+  def incompatibility_reason_category_sets do
+    %{
+      all: Enum.sort(@all_incompatibility_categories),
+      tokenizer: Enum.sort(@tokenizer_incompatibility_categories),
+      template:
+        Enum.sort(@all_incompatibility_categories -- @tokenizer_incompatibility_categories)
+    }
+  end
+
   @type preflight_input :: %{
           required(:bundle_dir) => Path.t(),
           required(:tokenizer_kind) => String.t(),

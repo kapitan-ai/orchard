@@ -79,6 +79,23 @@ defmodule Orchard.Models.ManifestParser do
   @all_incompatibility_categories @tokenizer_incompatibility_categories ++
                                     ["dual_render_mismatch"]
 
+  @doc false
+  @spec incompatibility_reason_category_sets() :: %{
+          all: [String.t()],
+          tokenizer: [String.t()],
+          template: [String.t()]
+        }
+  # Contract tests inspect parser-owned enum strings without promoting this to product API.
+  # credo:disable-for-next-line ExSlop.Check.Readability.DocFalseOnPublicFunction
+  def incompatibility_reason_category_sets do
+    %{
+      all: Enum.sort(@all_incompatibility_categories),
+      tokenizer: Enum.sort(@tokenizer_incompatibility_categories),
+      template:
+        Enum.sort(@all_incompatibility_categories -- @tokenizer_incompatibility_categories)
+    }
+  end
+
   @doc """
   Reads and parses `manifest.json` from a bundle directory.
 
@@ -123,6 +140,8 @@ defmodule Orchard.Models.ManifestParser do
 
   @doc false
   @spec schema_keys() :: map()
+  # Contract tests inspect parser-owned schema keys without promoting this to product API.
+  # credo:disable-for-next-line ExSlop.Check.Readability.DocFalseOnPublicFunction
   def schema_keys do
     %{
       top_level_keys: Map.keys(@top_level_key_map) |> Enum.sort(),

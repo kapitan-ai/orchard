@@ -57,6 +57,24 @@
       "path"
     ]
   },
+  "category_enums": {
+    "safe_tokenization.incompatibility_reason.category": [
+      "dual_render_mismatch",
+      "empty_literal",
+      "per_codepoint_decode_mismatch",
+      "reserved_id_persists",
+      "reserved_id_set_overlap"
+    ],
+    "safe_tokenization.incompatibility_reason.tokenizer_categories": [
+      "empty_literal",
+      "per_codepoint_decode_mismatch",
+      "reserved_id_persists",
+      "reserved_id_set_overlap"
+    ],
+    "safe_tokenization.incompatibility_reason.template_categories": [
+      "dual_render_mismatch"
+    ]
+  },
   "worker_validates_top_level_keys": true,
   "worker_validates_nested_keys": [
     "chat_template",
