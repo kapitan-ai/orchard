@@ -76,6 +76,50 @@ defmodule Orchard.Tokenizer.Client do
     }
   end
 
+  @doc false
+  @spec incompatibility_reason_rules() :: %{
+          path: :runtime_success_verdict,
+          reason_key_encoding: :string,
+          categories: %{String.t() => map()}
+        }
+  # Contract tests inspect tokenizer-owned semantic verdict rules without promoting this to product API.
+  # credo:disable-for-next-line ExSlop.Check.Readability.DocFalseOnPublicFunction
+  def incompatibility_reason_rules do
+    %{
+      path: :runtime_success_verdict,
+      reason_key_encoding: :string,
+      categories: %{
+        "dual_render_mismatch" => %{
+          required: ["category", "first_diff_offset", "leaf_class", "sentinel_index"],
+          template_compatible: :equals_false,
+          leaf_class: :non_empty_binary,
+          sentinel_index: :non_negative_integer,
+          first_diff_offset: :non_negative_integer
+        },
+        "empty_literal" => %{
+          required: ["category", "literal"],
+          literal: :equals_empty_string,
+          template_compatible: :equals_true
+        },
+        "per_codepoint_decode_mismatch" => %{
+          required: ["category", "literal"],
+          literal: :non_empty_binary,
+          template_compatible: :equals_true
+        },
+        "reserved_id_persists" => %{
+          required: ["category", "literal"],
+          literal: :non_empty_binary,
+          template_compatible: :equals_true
+        },
+        "reserved_id_set_overlap" => %{
+          required: ["category", "literal"],
+          literal: :non_empty_binary,
+          template_compatible: :equals_true
+        }
+      }
+    }
+  end
+
   def tokenize(%CanonicalRequest{} = request, opts \\ []) do
     with :ok <- validate_input_item_roles(request.input_items) do
       case Orchard.Inference.tokenizer_client() do

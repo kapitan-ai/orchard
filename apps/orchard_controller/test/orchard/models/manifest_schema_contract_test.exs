@@ -67,12 +67,136 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
            )
   end
 
+  test "SPEC 6.4 safe-tokenization incompatibility required-field contract is sorted and complete" do
+    contract = load_contract!()
+    category_sets = contract_category_sets(contract)
+    required_fields = contract_required_fields(contract)
+
+    assert required_fields |> Map.keys() |> Enum.sort() == category_sets.all
+    assert Map.keys(required_fields) == required_fields |> Map.keys() |> Enum.sort()
+
+    Enum.each(required_fields, fn {_category, fields} ->
+      assert fields == Enum.sort(fields)
+    end)
+
+    assert required_fields == %{
+             "dual_render_mismatch" => [
+               "category",
+               "first_diff_offset",
+               "leaf_class",
+               "sentinel_index"
+             ],
+             "empty_literal" => ["category", "literal"],
+             "per_codepoint_decode_mismatch" => ["category", "literal"],
+             "reserved_id_persists" => ["category", "literal"],
+             "reserved_id_set_overlap" => ["category", "literal"]
+           }
+  end
+
   test "SPEC 6.4 Elixir safe-tokenization incompatibility category owners match the shared contract" do
     contract_sets = load_contract!() |> contract_category_sets()
 
     assert ManifestParser.incompatibility_reason_category_sets() == contract_sets
     assert SafeTokenizationPreflight.incompatibility_reason_category_sets() == contract_sets
     assert TokenizerClient.incompatibility_reason_category_sets() == contract_sets
+  end
+
+  test "SPEC 6.4 Elixir safe-tokenization incompatibility semantic rules preserve verdict parity" do
+    contract = load_contract!()
+    category_sets = contract_category_sets(contract)
+    required_fields = contract_required_fields(contract)
+    rule_maps = verdict_rule_maps()
+
+    assert Keyword.keys(rule_maps) == [:manifest, :helper_preflight, :runtime_success]
+
+    assert Enum.map(rule_maps, fn {_owner, rules} ->
+             Map.take(rules, [:path, :reason_key_encoding])
+           end) == [
+             %{path: :manifest_verdict, reason_key_encoding: :atom},
+             %{path: :helper_preflight_verdict, reason_key_encoding: :string},
+             %{path: :runtime_success_verdict, reason_key_encoding: :string}
+           ]
+
+    Enum.each(rule_maps, fn {_owner, rules} ->
+      categories = Map.fetch!(rules, :categories)
+      assert categories |> Map.keys() |> Enum.sort() == category_sets.all
+
+      Enum.each(categories, fn {category, rule} ->
+        assert Map.fetch!(rule, :required) == Map.fetch!(required_fields, category)
+        assert Map.fetch!(rule, :required) == rule |> Map.fetch!(:required) |> Enum.sort()
+      end)
+    end)
+
+    Enum.each(category_sets.all, fn category ->
+      required_field_sets =
+        Enum.map(rule_maps, fn {_owner, rules} ->
+          rules
+          |> Map.fetch!(:categories)
+          |> Map.fetch!(category)
+          |> Map.fetch!(:required)
+        end)
+
+      assert Enum.uniq(required_field_sets) == [Map.fetch!(required_fields, category)]
+
+      predicate_sets =
+        Enum.map(rule_maps, fn {_owner, rules} ->
+          rules
+          |> Map.fetch!(:categories)
+          |> Map.fetch!(category)
+          |> Map.drop([:required, :template_compatible])
+        end)
+
+      assert Enum.uniq(predicate_sets) == [List.first(predicate_sets)]
+    end)
+
+    rule_maps_by_owner = Map.new(rule_maps)
+
+    manifest_categories = rule_maps_by_owner |> Map.fetch!(:manifest) |> Map.fetch!(:categories)
+
+    helper_categories =
+      rule_maps_by_owner |> Map.fetch!(:helper_preflight) |> Map.fetch!(:categories)
+
+    runtime_categories =
+      rule_maps_by_owner |> Map.fetch!(:runtime_success) |> Map.fetch!(:categories)
+
+    Enum.each([manifest_categories, helper_categories, runtime_categories], fn categories ->
+      assert get_in(categories, ["empty_literal", :literal]) == :equals_empty_string
+
+      Enum.each(category_sets.tokenizer -- ["empty_literal"], fn category ->
+        assert get_in(categories, [category, :literal]) == :non_empty_binary
+      end)
+
+      assert Map.take(Map.fetch!(categories, "dual_render_mismatch"), [
+               :template_compatible,
+               :leaf_class,
+               :sentinel_index,
+               :first_diff_offset
+             ]) == %{
+               template_compatible: :equals_false,
+               leaf_class: :non_empty_binary,
+               sentinel_index: :non_negative_integer,
+               first_diff_offset: :non_negative_integer
+             }
+    end)
+
+    Enum.each(category_sets.tokenizer, fn category ->
+      assert get_in(manifest_categories, [category, :template_compatible]) == :not_false
+      assert get_in(helper_categories, [category, :template_compatible]) == :equals_true
+      assert get_in(runtime_categories, [category, :template_compatible]) == :equals_true
+    end)
+
+    assert Map.fetch!(manifest_categories, "dual_render_mismatch") ==
+             Map.fetch!(helper_categories, "dual_render_mismatch")
+
+    assert Map.fetch!(helper_categories, "dual_render_mismatch") ==
+             Map.fetch!(runtime_categories, "dual_render_mismatch")
+
+    rejected_categories = helper_diagnostics() ++ error_envelope_categories()
+
+    Enum.each(rule_maps, fn {_owner, rules} ->
+      categories = Map.fetch!(rules, :categories)
+      assert Enum.all?(rejected_categories, &(&1 not in Map.keys(categories)))
+    end)
   end
 
   test "SPEC 6.4 diagnostic and error-envelope categories are not manifest verdict categories" do
@@ -237,6 +361,33 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
           "safe_tokenization.incompatibility_reason.template_categories"
         )
     }
+  end
+
+  defp contract_required_fields(contract), do: Map.fetch!(contract, "category_required_fields")
+
+  defp verdict_rule_maps do
+    [
+      manifest: apply(ManifestParser, :incompatibility_reason_rules, []),
+      helper_preflight: apply(SafeTokenizationPreflight, :incompatibility_reason_rules, []),
+      runtime_success: apply(TokenizerClient, :incompatibility_reason_rules, [])
+    ]
+  end
+
+  defp helper_diagnostics do
+    ~w(
+      marker_collision
+      marker_walk_mismatch
+      catalog_hash_mismatch
+    )
+  end
+
+  defp error_envelope_categories do
+    ~w(
+      safe_tokenization_incompatible_tokenizer
+      safe_tokenization_incompatible_template
+      safe_tokenization_marker_collision
+      safe_tokenization_catalog_hash_mismatch
+    )
   end
 
   defp incompatible_manifest_with_category(category) do

@@ -39,6 +39,51 @@ defmodule Orchard.Models.SafeTokenizationPreflight do
     }
   end
 
+  @doc false
+  @spec incompatibility_reason_rules() :: %{
+          path: :helper_preflight_verdict,
+          reason_key_encoding: :string,
+          categories: %{String.t() => map()}
+        }
+  # Contract tests inspect preflight-owned semantic verdict rules without promoting this to product API.
+  # The success-result boolean guard makes tokenizer-category template compatibility effectively true.
+  # credo:disable-for-next-line ExSlop.Check.Readability.DocFalseOnPublicFunction
+  def incompatibility_reason_rules do
+    %{
+      path: :helper_preflight_verdict,
+      reason_key_encoding: :string,
+      categories: %{
+        "dual_render_mismatch" => %{
+          required: ["category", "first_diff_offset", "leaf_class", "sentinel_index"],
+          template_compatible: :equals_false,
+          leaf_class: :non_empty_binary,
+          sentinel_index: :non_negative_integer,
+          first_diff_offset: :non_negative_integer
+        },
+        "empty_literal" => %{
+          required: ["category", "literal"],
+          literal: :equals_empty_string,
+          template_compatible: :equals_true
+        },
+        "per_codepoint_decode_mismatch" => %{
+          required: ["category", "literal"],
+          literal: :non_empty_binary,
+          template_compatible: :equals_true
+        },
+        "reserved_id_persists" => %{
+          required: ["category", "literal"],
+          literal: :non_empty_binary,
+          template_compatible: :equals_true
+        },
+        "reserved_id_set_overlap" => %{
+          required: ["category", "literal"],
+          literal: :non_empty_binary,
+          template_compatible: :equals_true
+        }
+      }
+    }
+  end
+
   @type preflight_input :: %{
           required(:bundle_dir) => Path.t(),
           required(:tokenizer_kind) => String.t(),

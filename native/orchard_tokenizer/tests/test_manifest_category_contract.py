@@ -44,9 +44,19 @@ def test_manifest_category_fixture_matches_python_tokenizer_contracts() -> None:
     assert all_categories.isdisjoint(_OUTER_ERROR_ENVELOPE_CATEGORIES)
 
 
+def test_manifest_required_fields_fixture_matches_manifest_categories() -> None:
+    category_sets = manifest_category_sets()
+    required_fields = manifest_category_required_fields()
+
+    assert list(required_fields) == sorted(required_fields)
+    assert list(required_fields) == category_sets["all"]
+
+    for fields in required_fields.values():
+        assert fields == sorted(fields)
+
+
 def manifest_category_sets() -> dict[str, list[str]]:
-    fixture = cast(dict[str, Any], json.loads(manifest_schema_fixture_path().read_text()))
-    assert fixture["version"] == 1
+    fixture = load_manifest_schema_fixture()
     category_enums = cast(dict[str, list[str]], fixture["category_enums"])
 
     return {
@@ -54,6 +64,17 @@ def manifest_category_sets() -> dict[str, list[str]]:
         "tokenizer": category_enums[_TOKENIZER_CATEGORY_ENUM_KEY],
         "template": category_enums[_TEMPLATE_CATEGORY_ENUM_KEY],
     }
+
+
+def manifest_category_required_fields() -> dict[str, list[str]]:
+    fixture = load_manifest_schema_fixture()
+    return cast(dict[str, list[str]], fixture["category_required_fields"])
+
+
+def load_manifest_schema_fixture() -> dict[str, Any]:
+    fixture = cast(dict[str, Any], json.loads(manifest_schema_fixture_path().read_text()))
+    assert fixture["version"] == 1
+    return fixture
 
 
 def manifest_schema_fixture_path() -> Path:

@@ -1026,6 +1026,120 @@ defmodule Orchard.Tokenizer.ClientTest do
     )
   end
 
+  describe "runtime error-envelope diagnostics" do
+    test "caches per-codepoint decode mismatch details without requiring verdict literal" do
+      fixture_root = fixture_root_with_tokenizer_config!()
+      manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+
+      response_executable =
+        write_response_executable!(%{
+          contract_version: 3,
+          ok: false,
+          error: %{
+            category: "safe_tokenization_incompatible_tokenizer",
+            message: "segmented token IDs do not decode to the rendered prompt",
+            details: %{
+              # cli.py:515-523 emits this runtime envelope without the verdict literal field.
+              "reason" => %{
+                "category" => "per_codepoint_decode_mismatch",
+                "first_diff_offset" => 4
+              }
+            }
+          }
+        })
+
+      on_exit(fn ->
+        File.rm(response_executable)
+        File.rm_rf!(fixture_root)
+      end)
+
+      with_inference_overrides(
+        [
+          tokenizer_mode: :port,
+          tokenizer_safe_mode: :on,
+          tokenizer_executable: response_executable
+        ],
+        fn ->
+          assert {:error,
+                  {:safe_tokenization_incompatible_tokenizer,
+                   "segmented token IDs do not decode to the rendered prompt"}} =
+                   Client.tokenize(canonical_request(),
+                     manifest: manifest,
+                     bundle_root: fixture_root,
+                     bundle_sha256: trusted_bundle_sha256()
+                   )
+
+          assert {:incompatible,
+                  %{
+                    "category" => "per_codepoint_decode_mismatch",
+                    "outer_category" => "safe_tokenization_incompatible_tokenizer",
+                    "first_diff_offset" => 4
+                  }} =
+                   CompatibilityCache.get(
+                     trusted_bundle_sha256(),
+                     manifest.safe_tokenization.catalog_sha256
+                   )
+        end
+      )
+    end
+
+    test "caches dual-render guard details without requiring verdict leaf metadata" do
+      fixture_root = fixture_root_with_tokenizer_config!()
+      manifest = safe_huggingface_manifest(config_path: "tokenizer_config.json")
+
+      response_executable =
+        write_response_executable!(%{
+          contract_version: 3,
+          ok: false,
+          error: %{
+            category: "safe_tokenization_incompatible_template",
+            message: "tagged render diverged from baseline render",
+            details: %{
+              # cli.py:494 can raise a request-local runtime envelope before verdict metadata exists.
+              "reason" => %{
+                "category" => "dual_render_mismatch",
+                "first_diff_offset" => 9
+              }
+            }
+          }
+        })
+
+      on_exit(fn ->
+        File.rm(response_executable)
+        File.rm_rf!(fixture_root)
+      end)
+
+      with_inference_overrides(
+        [
+          tokenizer_mode: :port,
+          tokenizer_safe_mode: :on,
+          tokenizer_executable: response_executable
+        ],
+        fn ->
+          assert {:error,
+                  {:safe_tokenization_incompatible_template,
+                   "tagged render diverged from baseline render"}} =
+                   Client.tokenize(canonical_request(),
+                     manifest: manifest,
+                     bundle_root: fixture_root,
+                     bundle_sha256: trusted_bundle_sha256()
+                   )
+
+          assert {:incompatible,
+                  %{
+                    "category" => "dual_render_mismatch",
+                    "outer_category" => "safe_tokenization_incompatible_template",
+                    "first_diff_offset" => 9
+                  }} =
+                   CompatibilityCache.get(
+                     trusted_bundle_sha256(),
+                     manifest.safe_tokenization.catalog_sha256
+                   )
+        end
+      )
+    end
+  end
+
   test "safe mode maps cached direct dual_render_mismatch to template incompatibility" do
     fixture_root = fixture_root_with_tokenizer_config!()
     manifest = safe_huggingface_manifest()

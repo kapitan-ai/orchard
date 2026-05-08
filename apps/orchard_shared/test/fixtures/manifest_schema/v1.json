@@ -75,6 +75,30 @@
       "dual_render_mismatch"
     ]
   },
+  "category_required_fields": {
+    "dual_render_mismatch": [
+      "category",
+      "first_diff_offset",
+      "leaf_class",
+      "sentinel_index"
+    ],
+    "empty_literal": [
+      "category",
+      "literal"
+    ],
+    "per_codepoint_decode_mismatch": [
+      "category",
+      "literal"
+    ],
+    "reserved_id_persists": [
+      "category",
+      "literal"
+    ],
+    "reserved_id_set_overlap": [
+      "category",
+      "literal"
+    ]
+  },
   "worker_validates_top_level_keys": true,
   "worker_validates_nested_keys": [
     "chat_template",
