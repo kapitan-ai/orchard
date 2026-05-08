@@ -3,7 +3,7 @@ defmodule OrchardCLI.Commands.License do
   CLI handler for `orchardctl license` commands.
 
   Supports:
-    orchardctl license activate <key> [--support-root PATH]
+    orchardctl license activate --key-stdin|--key-file PATH|<key> [--support-root PATH]
     orchardctl license status [--support-root PATH]
     orchardctl license create --policy-id POLICY_ID --name NAME [options]
     orchardctl license help
@@ -58,8 +58,11 @@ defmodule OrchardCLI.Commands.License do
       {:error, _, _} = error ->
         error
 
-      {:ok, opts, license_key} ->
-        do_activate(opts, license_key, runtime)
+      {:ok, opts, key_source} ->
+        case license_key_from_source(key_source, runtime) do
+          {:ok, license_key} -> do_activate(opts, license_key, runtime)
+          {:error, message} -> {:error, "Error: #{message}", 1}
+        end
     end
   end
 
@@ -90,33 +93,49 @@ defmodule OrchardCLI.Commands.License do
   end
 
   defp parse_activate_opts(args) do
-    switches = [support_root: :string, help: :boolean]
+    switches = [support_root: :string, key_stdin: :boolean, key_file: :string, help: :boolean]
 
     case OptionParser.parse(args, strict: switches) do
-      {parsed, [], []} ->
-        if Keyword.get(parsed, :help, false) do
-          {:help}
-        else
-          {:error, "Error: missing required argument: <key>\n\n#{activate_usage()}", 1}
-        end
-
-      {parsed, [license_key], []} ->
-        if Keyword.get(parsed, :help, false) do
-          {:help}
-        else
-          {:ok, parsed, license_key}
-        end
-
-      {_parsed, positional, []} ->
-        {:error,
-         "Error: expected exactly one license key, got: #{Enum.join(positional, ", ")}\n\n#{activate_usage()}",
-         1}
+      {parsed, positional, []} ->
+        validate_activate_key_source(parsed, positional)
 
       {_parsed, _positional, invalid} ->
         invalid_str = Enum.map_join(invalid, ", ", fn {flag, _value} -> flag end)
         {:error, "Error: unknown option(s): #{invalid_str}\n\n#{activate_usage()}", 1}
     end
   end
+
+  defp validate_activate_key_source(parsed, positional) do
+    if Keyword.get(parsed, :help, false) do
+      {:help}
+    else
+      parsed
+      |> activate_key_sources(positional)
+      |> validate_activate_key_source_count(parsed)
+    end
+  end
+
+  defp validate_activate_key_source_count([source], parsed), do: {:ok, parsed, source}
+
+  defp validate_activate_key_source_count([], _parsed),
+    do: {:error, "Error: missing license key source\n\n#{activate_usage()}", 1}
+
+  defp validate_activate_key_source_count(_sources, _parsed),
+    do: {:error, "Error: expected exactly one license key source\n\n#{activate_usage()}", 1}
+
+  defp activate_key_sources(parsed, positional) do
+    positional_sources = Enum.map(positional, &{:argv, &1})
+
+    []
+    |> maybe_add_key_source(Keyword.get(parsed, :key_stdin, false), :stdin)
+    |> maybe_add_key_source(non_empty_string(Keyword.get(parsed, :key_file)), :file)
+    |> Enum.concat(positional_sources)
+  end
+
+  defp maybe_add_key_source(sources, false, _kind), do: sources
+  defp maybe_add_key_source(sources, nil, _kind), do: sources
+  defp maybe_add_key_source(sources, true, :stdin), do: [:stdin | sources]
+  defp maybe_add_key_source(sources, path, :file), do: [{:file, path} | sources]
 
   defp parse_status_opts(args) do
     switches = [support_root: :string, json: :boolean, help: :boolean]
@@ -208,14 +227,12 @@ defmodule OrchardCLI.Commands.License do
          {:ok, status} <- install_pair(runtime, config, license_certificate, machine_certificate) do
       {:ok, activation_success_message(status, node_id)}
     else
-      {:error, {:config, message}} -> {:error, "Error: #{message}", 1}
-      {:error, {:identity, message}} -> {:error, "Error: #{message}", 1}
-      {:error, {:validation, message}} -> {:error, "Error: #{message}", 1}
-      {:error, {:activation, message}} -> {:error, "Error: #{message}", 1}
-      {:error, {:checkout, message}} -> {:error, "Error: #{message}", 1}
-      {:error, {:install, message}} -> {:error, "Error: #{message}", 1}
+      {:error, {_kind, message}} -> activation_error(message, license_key)
     end
   end
+
+  defp activation_error(message, license_key),
+    do: {:error, "Error: #{redact_token(message, license_key)}", 1}
 
   defp do_status(opts, runtime) do
     config = status_config(resolve_licensing_paths(opts, runtime), runtime)
@@ -293,6 +310,57 @@ defmodule OrchardCLI.Commands.License do
       {:error, {:create, "Keygen account ID is not configured."}}
     else
       {:ok, config}
+    end
+  end
+
+  defp license_key_from_source({:argv, license_key}, _runtime),
+    do: normalize_license_key(license_key)
+
+  defp license_key_from_source(:stdin, runtime) do
+    runtime
+    |> read_stdin_impl()
+    |> normalize_license_key()
+  end
+
+  defp license_key_from_source({:file, path}, _runtime) do
+    with {:ok, stat} <- key_file_stat(path),
+         :ok <- require_regular_key_file(path, stat),
+         :ok <- require_private_key_file_mode(path, stat),
+         {:ok, contents} <- File.read(path) do
+      normalize_license_key(contents)
+    else
+      {:error, {:file_error, message}} -> {:error, message}
+      {:error, reason} -> {:error, "Cannot read license key file #{path}: #{inspect(reason)}."}
+    end
+  end
+
+  defp normalize_license_key(value) do
+    case non_empty_string(value) do
+      nil -> {:error, "License key source was empty."}
+      license_key -> {:ok, license_key}
+    end
+  end
+
+  defp key_file_stat(path) do
+    case File.lstat(path) do
+      {:ok, stat} ->
+        {:ok, stat}
+
+      {:error, reason} ->
+        {:error, {:file_error, "Cannot stat license key file #{path}: #{inspect(reason)}."}}
+    end
+  end
+
+  defp require_regular_key_file(_path, %{type: :regular}), do: :ok
+
+  defp require_regular_key_file(path, _stat),
+    do: {:error, {:file_error, "License key file #{path} must be a regular file."}}
+
+  defp require_private_key_file_mode(path, %{mode: mode}) do
+    if Bitwise.band(mode, 0o777) == 0o600 do
+      :ok
+    else
+      {:error, {:file_error, "License key file #{path} must have 0600 permissions."}}
     end
   end
 
@@ -990,6 +1058,15 @@ defmodule OrchardCLI.Commands.License do
 
   defp shared_licensing_config(runtime), do: shared_config_impl(runtime).()
   defp request_impl(runtime), do: Map.get(runtime, :request, &default_request/1)
+  defp read_stdin_impl(runtime), do: Map.get(runtime, :read_stdin, &default_read_stdin/0).()
+
+  defp default_read_stdin do
+    case IO.read(:stdio, :line) do
+      data when is_binary(data) -> data
+      data when is_list(data) -> IO.iodata_to_binary(data)
+      :eof -> ""
+    end
+  end
 
   defp resolve_licensing_paths(opts, runtime) do
     case support_root_override(opts) do
@@ -1095,8 +1172,10 @@ defmodule OrchardCLI.Commands.License do
     Manage Orchard's local dual-certificate license bundle.
 
     Commands:
-      activate <key> [--support-root PATH]  Activate a license and install the local bundle
-      status [--support-root PATH]          Inspect the local license bundle offline
+      activate --key-stdin|--key-file PATH
+        Activate a license and install the local bundle
+      status [--support-root PATH]
+        Inspect the local license bundle offline
       create --policy-id ID --name NAME     Internal/admin: create a Keygen license
       help                                  Show this help
     """
@@ -1105,13 +1184,19 @@ defmodule OrchardCLI.Commands.License do
 
   defp activate_usage do
     """
-    Usage: orchardctl license activate <key> [--support-root PATH]
+    Usage: orchardctl license activate (--key-stdin|--key-file PATH|<key>) [--support-root PATH]
 
     Activate a license using a customer-safe Keygen flow, check out the Orchard
     license + machine certificates, validate them offline, and atomically install
     the local bundle at <support_root>/config/licensing/current.json.
 
+    Prefer --key-stdin or --key-file for operator and release-gate activation so
+    license keys do not appear in process arguments. Legacy/debug only:
+    `orchardctl license activate <key>`.
+
     Options:
+      --key-stdin           Read the activation key from standard input
+      --key-file PATH       Read the activation key from a regular file with 0600 permissions
       --support-root PATH   Support root directory
                             (default precedence: --support-root, then
                              $ORCHARD_SUPPORT_ROOT, else current environment licensing config)

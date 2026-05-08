@@ -26,7 +26,7 @@ defmodule Orchard.Licensing.Gate do
           required(:activation_guidance) => String.t()
         }
 
-  @activation_guidance "Run `orchardctl license activate <key>` or inspect `orchardctl license status`."
+  @activation_guidance "Run `orchardctl license activate --key-stdin` or `orchardctl license activate --key-file PATH`; inspect `orchardctl license status`."
 
   @doc """
   Require a valid local license when shared enforcement is `:hard`.
@@ -130,7 +130,7 @@ defmodule Orchard.Licensing.Gate do
   end
 
   defp activation_guidance(:expired) do
-    "Activate a current license with `orchardctl license activate <key>` or inspect `orchardctl license status`."
+    "Activate a current license with `orchardctl license activate --key-stdin` or `orchardctl license activate --key-file PATH`; inspect `orchardctl license status`."
   end
 
   defp activation_guidance(_reason), do: @activation_guidance

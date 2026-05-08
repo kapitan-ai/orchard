@@ -533,9 +533,11 @@ bundle-path validation rejects symlinks that resolve outside the bundle root.
 - The bundle stores only the extracted certificate pair:
   - `license_certificate`
   - `machine_certificate`
-- `orchardctl license activate <key>` uses the stable Orchard node ID as the
-  machine fingerprint, checks out both certificates, verifies them offline, and
-  installs the pair atomically.
+- `orchardctl license activate --key-stdin` and
+  `orchardctl license activate --key-file PATH` use the stable Orchard node ID
+  as the machine fingerprint, check out both certificates, verify them offline,
+  and install the pair atomically without putting the activation key in process
+  arguments.
 - Failed activation keeps the previous local bundle untouched.
 - Orchard does **not** persist Keygen JSON envelopes as runtime state and does
   **not** ship a Keygen admin token dependency.

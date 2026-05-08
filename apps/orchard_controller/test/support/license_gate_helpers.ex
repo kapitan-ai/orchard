@@ -6,8 +6,8 @@ defmodule Orchard.TestSupport.LicenseGateHelpers do
   alias Orchard.Licensing.Gate
 
   @license_required_message "Orchard requires an activated license before product use."
-  @activation_guidance "Run `orchardctl license activate <key>` or inspect `orchardctl license status`."
-  @activation_guidance_html "Run `orchardctl license activate &lt;key&gt;` or inspect `orchardctl license status`."
+  @activation_guidance "Run `orchardctl license activate --key-stdin` or `orchardctl license activate --key-file PATH`; inspect `orchardctl license status`."
+  @activation_guidance_html "Run `orchardctl license activate --key-stdin` or `orchardctl license activate --key-file PATH`; inspect `orchardctl license status`."
 
   def set_license_enforcement(mode) when mode in [:off, :warn, :hard] do
     previous = Application.get_env(:orchard_shared, :licensing, [])

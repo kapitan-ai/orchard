@@ -361,7 +361,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       badge = view |> element("#console-license-badge") |> render()
       assert badge =~ "Missing bundle"
-      assert badge =~ "orchardctl license activate &lt;key&gt;"
+      assert badge =~ "orchardctl license activate --key-stdin"
     end
 
     test "sidebar toggle button has JS toggle_class command wired", %{conn: conn} do
@@ -419,7 +419,7 @@ defmodule OrchardConsole.OverviewLiveTest do
 
       activation = view |> element("#overview-license-activation") |> render()
       assert activation =~ "Activation required"
-      assert activation =~ "orchardctl license activate &lt;key&gt;"
+      assert activation =~ "orchardctl license activate --key-stdin"
     end
 
     test "overview license card renders activation guidance for an expired license", %{conn: conn} do
@@ -431,7 +431,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert card =~ "Expired"
       assert card =~ "Expired Orchard Lab"
       assert card =~ "2026-04-15T00:00:00Z"
-      assert card =~ "orchardctl license activate &lt;key&gt;"
+      assert card =~ "orchardctl license activate --key-stdin"
     end
   end
 

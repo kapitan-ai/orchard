@@ -86,7 +86,7 @@ defmodule OrchardCLI.Commands.LicenseTest do
   test "group help returns usage" do
     assert {:ok, message} = License.run(["help"], runtime())
     assert message =~ "orchardctl license"
-    assert message =~ "activate <key>"
+    assert message =~ "activate --key-stdin"
     assert message =~ "status"
     assert message =~ "create"
   end
@@ -95,6 +95,8 @@ defmodule OrchardCLI.Commands.LicenseTest do
     assert {:ok, message} = License.run(["activate", "--help"], runtime())
     assert message =~ "orchardctl license activate"
     assert message =~ "customer-safe Keygen flow"
+    assert message =~ "Prefer --key-stdin or --key-file"
+    assert message =~ "Legacy/debug only"
     assert message =~ "current environment licensing config"
     refute message =~ "/Library/Application Support/Orchard"
   end
@@ -156,6 +158,109 @@ defmodule OrchardCLI.Commands.LicenseTest do
            )
 
     refute Enum.any?(requests, &(request_header(&1, "authorization") == "Bearer #{@license_key}"))
+  end
+
+  test "activate reads a non-argv key from stdin without echoing the key" do
+    runtime =
+      runtime(request: &successful_activate_request/1, stdin: fn -> @license_key <> "\n" end)
+
+    assert {:ok, message} =
+             License.run(["activate", "--key-stdin", "--support-root", @support_root], runtime)
+
+    assert message =~ "License activated"
+    refute message =~ @license_key
+
+    assert Enum.any?(recorded_requests(), fn req ->
+             request_header(req, "authorization") == "License #{@license_key}"
+           end)
+  end
+
+  test "activate reads a non-argv key from a 0600 file" do
+    path =
+      Path.join(System.tmp_dir!(), "orchard-license-key-#{System.unique_integer([:positive])}")
+
+    File.write!(path, @license_key <> "\n")
+    File.chmod!(path, 0o600)
+
+    try do
+      assert {:ok, message} =
+               License.run(
+                 ["activate", "--key-file", path, "--support-root", @support_root],
+                 runtime()
+               )
+
+      assert message =~ "License activated"
+      refute message =~ @license_key
+
+      assert Enum.any?(recorded_requests(), fn req ->
+               request_header(req, "authorization") == "License #{@license_key}"
+             end)
+    after
+      File.rm(path)
+    end
+  end
+
+  test "activate rejects symlink key files without reading the key" do
+    target_path =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-license-key-target-#{System.unique_integer([:positive])}"
+      )
+
+    link_path =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-license-key-link-#{System.unique_integer([:positive])}"
+      )
+
+    File.write!(target_path, @license_key <> "\n")
+    File.chmod!(target_path, 0o600)
+    File.ln_s!(target_path, link_path)
+
+    try do
+      assert {:error, message, 1} =
+               License.run(
+                 ["activate", "--key-file", link_path, "--support-root", @support_root],
+                 runtime(request: &unexpected_request/1)
+               )
+
+      assert message =~ "must be a regular file"
+      refute message =~ @license_key
+      assert recorded_requests() == []
+    after
+      File.rm(link_path)
+      File.rm(target_path)
+    end
+  end
+
+  test "activate rejects key files that are not 0600 without reading the key" do
+    path =
+      Path.join(System.tmp_dir!(), "orchard-license-key-#{System.unique_integer([:positive])}")
+
+    File.write!(path, @license_key <> "\n")
+    File.chmod!(path, 0o644)
+
+    try do
+      assert {:error, message, 1} =
+               License.run(
+                 ["activate", "--key-file", path, "--support-root", @support_root],
+                 runtime(request: &unexpected_request/1)
+               )
+
+      assert message =~ "must have 0600 permissions"
+      refute message =~ @license_key
+      assert recorded_requests() == []
+    after
+      File.rm(path)
+    end
+  end
+
+  test "activate requires exactly one key source" do
+    assert {:error, message, 1} =
+             License.run(["activate", @license_key, "--key-stdin"], runtime())
+
+    assert message =~ "expected exactly one license key source"
+    refute message =~ @license_key
   end
 
   test "activate success output renders tracking metadata without echoing the key" do
@@ -357,6 +462,33 @@ defmodule OrchardCLI.Commands.LicenseTest do
     assert Enum.map(recorded_requests(), &request_signature/1) == [
              {:post, validation_url()}
            ]
+  end
+
+  test "activate redacts the key from provider error details" do
+    runtime =
+      runtime(
+        request: fn req ->
+          record_request(req)
+
+          {:ok,
+           %{
+             status: 404,
+             body: %{
+               "errors" => [
+                 %{
+                   "title" => "Not found",
+                   "detail" => "license key #{@license_key} is invalid",
+                   "code" => "KEY_NOT_FOUND"
+                 }
+               ]
+             }
+           }}
+        end
+      )
+
+    assert {:error, message, 1} = License.run(["activate", @license_key], runtime)
+    assert message =~ "[REDACTED]"
+    refute message =~ @license_key
   end
 
   test "activate returns actionable invalid-key error without echoing the key" do
@@ -940,6 +1072,7 @@ defmodule OrchardCLI.Commands.LicenseTest do
 
     runtime = %{
       request: request,
+      read_stdin: Keyword.get(overrides, :stdin, fn -> "" end),
       licensing_impl: OrchardCLI.Commands.LicenseTest.LicensingSpy,
       node_identity_impl: OrchardCLI.Commands.LicenseTest.NodeIdentitySpy
     }

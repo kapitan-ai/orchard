@@ -215,7 +215,7 @@ defmodule OrchardCLITest do
   test "license help dispatches through main without network activity" do
     output = capture_io(fn -> OrchardCLI.main(["license", "help"], &no_halt/1) end)
     assert output =~ "orchardctl license"
-    assert output =~ "activate <key>"
+    assert output =~ "activate --key-stdin"
   end
 
   test "license with missing subcommand exits non-zero" do

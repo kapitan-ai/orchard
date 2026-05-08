@@ -418,10 +418,21 @@ hosts do **not** require or support a shipped Keygen admin token.
 
 ### Activation workflow
 
-Activate a license with the packaged CLI:
+Activate a license with the packaged CLI using a non-argv key source:
 
 ```bash
-sudo orchardctl license activate <key>
+sudo orchardctl license activate --key-file /path/to/orchard-license-key
+```
+
+The key file must be a regular file with `0600` permissions. For an interactive
+handoff, warm sudo first so it cannot consume stdin, then read the key without
+echoing it:
+
+```bash
+sudo -v
+read -rs ORCHARD_TRIAL_LICENSE_KEY
+sudo orchardctl license activate --key-stdin <<<"$ORCHARD_TRIAL_LICENSE_KEY"
+unset ORCHARD_TRIAL_LICENSE_KEY
 ```
 
 Activation uses the stable Orchard node ID as the machine fingerprint, performs
@@ -1055,7 +1066,7 @@ out-of-band:
 
 ```bash
 brew install --cask <private-tap>/orchard/orchard
-sudo orchardctl license activate <key>
+sudo orchardctl license activate --key-file /path/to/orchard-license-key
 ```
 
 Activation remains a separate operator step because evaluator/customer identity
@@ -1072,10 +1083,9 @@ install role request file, database configuration, and service start workflow.
 Customer specificity should live in activation, not in a repackaged Orchard
 installer. Common patterns are:
 
-- a scoped post-install script that runs
-  `orchardctl license activate "$ORCHARD_LICENSE_KEY"` after the PKG is
-  installed, with `ORCHARD_LICENSE_KEY` loaded from a protected Jamf parameter
-  or secret store;
+- a scoped post-install script that writes a protected Jamf parameter or secret
+  store value to a temporary root-readable `0600` file, runs
+  `orchardctl license activate --key-file "$key_file"`, then deletes the file;
 - an MDM-managed secret/profile that the activation script reads at runtime;
 - a signed license seed package or profile only when interactive or online
   activation is not available.
