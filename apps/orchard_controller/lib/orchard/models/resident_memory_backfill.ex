@@ -5,6 +5,10 @@ defmodule Orchard.Models.ResidentMemoryBackfill do
   This is an observe-only metadata repair: it rewrites `manifest.json` and the
   catalog hash together, but does not change placement, readiness, admission, or
   scheduler policy.
+
+  Bundles whose manifests do not satisfy `Orchard.Models.ManifestParser` are
+  intentionally failed before rewrite so schema-invalid artifacts can be repaired
+  explicitly instead of being partially metadata-backfilled.
   """
 
   import Ecto.Query
@@ -13,7 +17,9 @@ defmodule Orchard.Models.ResidentMemoryBackfill do
 
   alias Orchard.ArtifactBundle
   alias Orchard.FS
+  alias Orchard.ModelManifest
   alias Orchard.Models
+  alias Orchard.Models.ManifestParser
   alias Orchard.Models.MemoryEstimator
   alias Orchard.Models.Model
   alias Orchard.Repo
@@ -126,41 +132,21 @@ defmodule Orchard.Models.ResidentMemoryBackfill do
 
     case read_manifest_map(manifest_path) do
       {:ok, original_json, manifest_map} ->
-        updated_json = encode_manifest(manifest_map, resident_memory_bytes)
-
-        case write_manifest(env, manifest_path, updated_json) do
+        case validate_original_manifest(original_json) do
           :ok ->
-            # Manifest is now written. Any subsequent failure must rollback to
-            # keep disk/DB aligned.
-            with {:ok, new_sha} <- current_tree_sha(bundle_path),
-                 result <-
-                   update_catalog_after_write(
-                     %{
-                       model: model,
-                       bundle_path: bundle_path,
-                       manifest_path: manifest_path,
-                       original_json: original_json,
-                       pre_repair_sha: pre_repair_sha,
-                       new_sha: new_sha,
-                       resident_memory_bytes: resident_memory_bytes
-                     },
-                     summary,
-                     env
-                   ) do
-              result
-            else
-              error_result ->
-                rollback_or_fail(
-                  model,
-                  bundle_path,
-                  manifest_path,
-                  original_json,
-                  pre_repair_sha,
-                  error_result,
-                  summary,
-                  env
-                )
-            end
+            apply_manifest_rewrite(
+              %{
+                model: model,
+                bundle_path: bundle_path,
+                manifest_path: manifest_path,
+                pre_repair_sha: pre_repair_sha,
+                original_json: original_json,
+                manifest_map: manifest_map,
+                resident_memory_bytes: resident_memory_bytes
+              },
+              summary,
+              env
+            )
 
           {:error, reason} ->
             env.log.("Failed #{model_label(model)}: #{inspect(reason)}")
@@ -170,6 +156,104 @@ defmodule Orchard.Models.ResidentMemoryBackfill do
       {:error, reason} ->
         env.log.("Failed #{model_label(model)}: #{inspect(reason)}")
         {:ok, count(summary, :failed)}
+    end
+  end
+
+  defp apply_manifest_rewrite(write, summary, env) do
+    updated_json = encode_manifest(write.manifest_map, write.resident_memory_bytes)
+
+    case write_manifest(env, write.manifest_path, updated_json) do
+      :ok ->
+        verify_rewrite_and_update_catalog(write, summary, env)
+
+      {:error, reason} ->
+        env.log.("Failed #{model_label(write.model)}: #{inspect(reason)}")
+        {:ok, count(summary, :failed)}
+    end
+  end
+
+  defp verify_rewrite_and_update_catalog(write, summary, env) do
+    case reparse_rewritten_manifest(write.bundle_path, write.resident_memory_bytes) do
+      :ok ->
+        update_catalog_with_current_tree_hash(write, summary, env)
+
+      {:manifest_reparse_failed, reason} ->
+        rollback_invalid_rewrite(
+          write.model,
+          write.bundle_path,
+          write.manifest_path,
+          write.original_json,
+          write.pre_repair_sha,
+          reason,
+          summary,
+          env
+        )
+    end
+  end
+
+  defp update_catalog_with_current_tree_hash(write, summary, env) do
+    case current_tree_sha(write.bundle_path) do
+      {:ok, new_sha} ->
+        update_catalog_after_write(Map.put(write, :new_sha, new_sha), summary, env)
+
+      {:fail, _message} = error_result ->
+        rollback_or_fail(
+          write.model,
+          write.bundle_path,
+          write.manifest_path,
+          write.original_json,
+          write.pre_repair_sha,
+          error_result,
+          summary,
+          env
+        )
+    end
+  end
+
+  defp validate_original_manifest(original_json) do
+    case ManifestParser.parse_json(original_json) do
+      {:ok, %ModelManifest{}} -> :ok
+      {:error, reason} -> {:error, {:manifest_validation, reason}}
+    end
+  end
+
+  defp reparse_rewritten_manifest(bundle_path, expected_resident_memory_bytes) do
+    case ManifestParser.parse_from_bundle(bundle_path) do
+      {:ok, %ModelManifest{resident_memory_bytes: ^expected_resident_memory_bytes}} ->
+        :ok
+
+      {:ok, %ModelManifest{resident_memory_bytes: resident_memory_bytes}} ->
+        {:manifest_reparse_failed,
+         {:resident_memory_mismatch,
+          expected: expected_resident_memory_bytes, actual: resident_memory_bytes}}
+
+      {:error, reason} ->
+        {:manifest_reparse_failed, reason}
+    end
+  end
+
+  defp rollback_invalid_rewrite(
+         model,
+         bundle_path,
+         manifest_path,
+         original_json,
+         pre_repair_sha,
+         reason,
+         summary,
+         env
+       ) do
+    env.log.(
+      "Rolling back #{model_label(model)} after manifest reparse failure: #{inspect(reason)}"
+    )
+
+    with :ok <- write_manifest(env, manifest_path, original_json),
+         {:ok, ^pre_repair_sha} <- current_tree_sha(bundle_path) do
+      env.log.("Failed #{model_label(model)}: rewritten manifest failed parser validation")
+      {:ok, count(summary, :failed)}
+    else
+      rollback_reason ->
+        env.log.("Critical #{model_label(model)}: rollback failed #{inspect(rollback_reason)}")
+        {:error, count(summary, :failed)}
     end
   end
 
@@ -187,23 +271,18 @@ defmodule Orchard.Models.ResidentMemoryBackfill do
       "Rolling back #{model_label(model)} after post-write failure: #{format_failure(error_result)}"
     )
 
-    case rollback_manifest(
-           model,
-           bundle_path,
-           manifest_path,
-           original_json,
-           pre_repair_sha,
-           summary,
-           env
-         ) do
-      {:ok, rolled_summary} -> {:ok, rolled_summary}
-      {:error, fail_summary} -> {:error, fail_summary}
-    end
+    rollback_manifest(
+      model,
+      bundle_path,
+      manifest_path,
+      original_json,
+      pre_repair_sha,
+      summary,
+      env
+    )
   end
 
-  defp format_failure({:error, reason}), do: inspect(reason)
   defp format_failure({:fail, message}), do: message
-  defp format_failure(other), do: inspect(other)
 
   defp update_catalog_after_write(write, summary, env) do
     update_result =

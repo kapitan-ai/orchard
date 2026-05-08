@@ -5,6 +5,8 @@ defmodule Orchard.Models.ResidentMemoryBackfillTest do
 
   alias Orchard.ArtifactBundle
   alias Orchard.FS
+  alias Orchard.ModelManifest
+  alias Orchard.Models.ManifestParser
   alias Orchard.Models.ResidentMemoryBackfill
   alias Orchard.Repo
 
@@ -31,9 +33,19 @@ defmodule Orchard.Models.ResidentMemoryBackfillTest do
     %{artifacts_root: artifacts_root}
   end
 
-  test "applies resident_memory_bytes and keeps DB hash aligned with disk", ctx do
+  test "rewritten manifest reparses with ManifestParser and preserves top-level fields", ctx do
     %{model: model, bundle_path: bundle_path, expected_resident: expected_resident} =
-      create_estimable_model!(ctx)
+      create_estimable_model!(ctx,
+        manifest_overrides: %{
+          "chat_template" => %{
+            "path" => "tokenizer_config.json",
+            "sha256" => String.duplicate("b", 64)
+          },
+          "safe_tokenization" => safe_tokenization_map(["<|eot_id|>"])
+        }
+      )
+
+    before_write = read_manifest!(bundle_path)
 
     assert {:ok, result} = ResidentMemoryBackfill.run(apply: true, log: quiet_log())
     assert result.processed == 1
@@ -44,16 +56,58 @@ defmodule Orchard.Models.ResidentMemoryBackfillTest do
     assert updated_model.resident_memory_bytes == expected_resident
     assert {:ok, updated_model.artifact_sha256} == ArtifactBundle.tree_sha256(bundle_path)
 
-    assert %{"resident_memory_bytes" => ^expected_resident} = read_manifest!(bundle_path)
+    after_write = read_manifest!(bundle_path)
+    assert Map.keys(after_write) |> Enum.sort() == Map.keys(before_write) |> Enum.sort()
+
+    assert Map.drop(after_write, ["resident_memory_bytes"]) ==
+             Map.drop(before_write, ["resident_memory_bytes"])
+
+    assert %{"resident_memory_bytes" => ^expected_resident} = after_write
+
+    assert {:ok, %ModelManifest{resident_memory_bytes: ^expected_resident}} =
+             ManifestParser.parse_from_bundle(bundle_path)
   end
 
-  test "skips models that already have resident memory", ctx do
-    %{model: model} = create_estimable_model!(ctx, resident_memory_bytes: 123)
+  test "rewritten manifest inserts omitted resident_memory_bytes deterministically and reparses",
+       ctx do
+    %{model: model, bundle_path: bundle_path, expected_resident: expected_resident} =
+      create_estimable_model!(ctx, manifest_resident_memory_bytes: :omit)
+
+    before_write = read_manifest!(bundle_path)
+    refute Map.has_key?(before_write, "resident_memory_bytes")
+
+    assert {:ok, result} = ResidentMemoryBackfill.run(apply: true, log: quiet_log())
+    assert result.updated == 1
+    assert result.failed == 0
+
+    updated_model = Repo.get!(Orchard.Models.Model, model.id)
+    after_write = read_manifest!(bundle_path)
+
+    assert Map.drop(after_write, ["resident_memory_bytes"]) == before_write
+    assert after_write["resident_memory_bytes"] == expected_resident
+    assert updated_model.resident_memory_bytes == expected_resident
+
+    assert {:ok, %ModelManifest{resident_memory_bytes: ^expected_resident}} =
+             ManifestParser.parse_from_bundle(bundle_path)
+  end
+
+  test "already-present resident memory leaves manifest byte-identical and parser-valid", ctx do
+    %{model: model, bundle_path: bundle_path} =
+      create_estimable_model!(ctx,
+        resident_memory_bytes: 123,
+        manifest_resident_memory_bytes: 123
+      )
+
+    original_manifest = File.read!(Path.join(bundle_path, "manifest.json"))
 
     assert {:ok, result} = ResidentMemoryBackfill.run(apply: true, log: quiet_log())
     assert result.skipped_already_present == 1
     assert result.updated == 0
+    assert File.read!(Path.join(bundle_path, "manifest.json")) == original_manifest
     assert Repo.get!(Orchard.Models.Model, model.id).resident_memory_bytes == 123
+
+    assert {:ok, %ModelManifest{resident_memory_bytes: 123}} =
+             ManifestParser.parse_from_bundle(bundle_path)
   end
 
   test "missing artifact path is failed and logged", ctx do
@@ -77,6 +131,107 @@ defmodule Orchard.Models.ResidentMemoryBackfillTest do
     assert {:ok, result} = ResidentMemoryBackfill.run(apply: true, log: quiet_log())
     assert result.skipped_unknown == 1
     assert result.updated == 0
+  end
+
+  test "malformed manifest JSON fails without disk or catalog mutation", ctx do
+    %{bundle_path: bundle_path} = create_bundle!(ctx, manifest_json: "{bad json")
+    original_sha = tree_sha!(bundle_path)
+    original_manifest = File.read!(Path.join(bundle_path, "manifest.json"))
+
+    model =
+      create_catalog_model!(ctx,
+        artifact_uri: "file://#{bundle_path}",
+        artifact_sha256: original_sha
+      )
+
+    assert {:ok, result} = ResidentMemoryBackfill.run(apply: true, log: quiet_log())
+    assert result.failed == 1
+    assert result.updated == 0
+    assert File.read!(Path.join(bundle_path, "manifest.json")) == original_manifest
+
+    updated_model = Repo.get!(Orchard.Models.Model, model.id)
+    assert updated_model.resident_memory_bytes == 0
+    assert updated_model.artifact_sha256 == original_sha
+  end
+
+  test "parser-invalid manifest object fails before rewrite and leaves disk and DB unchanged",
+       ctx do
+    %{bundle_path: bundle_path} =
+      create_bundle!(ctx,
+        manifest_overrides: %{"unexpected" => "field"},
+        manifest_resident_memory_bytes: 0
+      )
+
+    original_sha = tree_sha!(bundle_path)
+    original_manifest = File.read!(Path.join(bundle_path, "manifest.json"))
+
+    model =
+      create_catalog_model!(ctx,
+        artifact_uri: "file://#{bundle_path}",
+        artifact_sha256: original_sha
+      )
+
+    assert {:error, _reason} = ManifestParser.parse_from_bundle(bundle_path)
+    assert {:ok, result} = ResidentMemoryBackfill.run(apply: true, log: quiet_log())
+    assert result.failed == 1
+    assert result.updated == 0
+    assert File.read!(Path.join(bundle_path, "manifest.json")) == original_manifest
+
+    updated_model = Repo.get!(Orchard.Models.Model, model.id)
+    assert updated_model.resident_memory_bytes == 0
+    assert updated_model.artifact_sha256 == original_sha
+  end
+
+  test "post-write parser reparse failure rolls back manifest and leaves catalog unchanged",
+       ctx do
+    %{model: model, bundle_path: bundle_path, sha: sha} = create_estimable_model!(ctx)
+    original_manifest = File.read!(Path.join(bundle_path, "manifest.json"))
+
+    assert {:ok, result} =
+             ResidentMemoryBackfill.run(
+               apply: true,
+               log: quiet_log(),
+               write_manifest: corrupt_first_write()
+             )
+
+    assert result.failed == 1
+    assert result.updated == 0
+    assert File.read!(Path.join(bundle_path, "manifest.json")) == original_manifest
+    assert tree_sha!(bundle_path) == sha
+
+    updated_model = Repo.get!(Orchard.Models.Model, model.id)
+    assert updated_model.resident_memory_bytes == 0
+    assert updated_model.artifact_sha256 == sha
+
+    assert {:ok, %ModelManifest{resident_memory_bytes: 0}} =
+             ManifestParser.parse_from_bundle(bundle_path)
+  end
+
+  test "post-write resident-memory mismatch rolls back manifest and leaves catalog unchanged",
+       ctx do
+    %{model: model, bundle_path: bundle_path, sha: sha, expected_resident: expected_resident} =
+      create_estimable_model!(ctx)
+
+    original_manifest = File.read!(Path.join(bundle_path, "manifest.json"))
+
+    assert {:ok, result} =
+             ResidentMemoryBackfill.run(
+               apply: true,
+               log: quiet_log(),
+               write_manifest: mismatch_resident_memory_first_write(expected_resident + 1)
+             )
+
+    assert result.failed == 1
+    assert result.updated == 0
+    assert File.read!(Path.join(bundle_path, "manifest.json")) == original_manifest
+    assert tree_sha!(bundle_path) == sha
+
+    updated_model = Repo.get!(Orchard.Models.Model, model.id)
+    assert updated_model.resident_memory_bytes == 0
+    assert updated_model.artifact_sha256 == sha
+
+    assert {:ok, %ModelManifest{resident_memory_bytes: 0}} =
+             ManifestParser.parse_from_bundle(bundle_path)
   end
 
   test "hash drift skips without mutating the manifest", ctx do
@@ -203,9 +358,17 @@ defmodule Orchard.Models.ResidentMemoryBackfillTest do
     bundle_path = Path.join([ctx.artifacts_root, model_id, version])
     weights? = Map.get(opts, :weights?, true)
     manifest_resident = Map.get(opts, :manifest_resident_memory_bytes, 0)
+    manifest_overrides = Map.get(opts, :manifest_overrides, %{})
 
     File.mkdir_p!(Path.join(bundle_path, "weights"))
-    write_manifest!(bundle_path, model_id, version, manifest_resident)
+
+    case Map.fetch(opts, :manifest_json) do
+      {:ok, json} ->
+        File.write!(Path.join(bundle_path, "manifest.json"), json)
+
+      :error ->
+        write_manifest!(bundle_path, model_id, version, manifest_resident, manifest_overrides)
+    end
 
     expected_resident =
       if weights? do
@@ -225,15 +388,74 @@ defmodule Orchard.Models.ResidentMemoryBackfillTest do
     }
   end
 
-  defp write_manifest!(bundle_path, model_id, version, resident_memory_bytes) do
-    manifest = %{
+  defp write_manifest!(bundle_path, model_id, version, resident_memory_bytes, overrides) do
+    manifest = parser_valid_manifest_map(model_id, version, resident_memory_bytes, overrides)
+
+    File.write!(Path.join(bundle_path, "manifest.json"), Jason.encode!(manifest))
+  end
+
+  defp parser_valid_manifest_map(model_id, version, resident_memory_bytes, overrides) do
+    model_id
+    |> base_manifest_map(version)
+    |> maybe_put_resident_memory(resident_memory_bytes)
+    |> Map.merge(overrides)
+  end
+
+  defp base_manifest_map(model_id, version) do
+    %{
       "model_id" => model_id,
       "version" => version,
       "format" => "mlx",
-      "resident_memory_bytes" => resident_memory_bytes
+      "artifact_layout" => "directory",
+      "entrypoint" => "weights/",
+      "sha256" => String.duplicate("a", 64),
+      "size_bytes" => 1024,
+      "kv_cache_bytes_per_token" => 16,
+      "prefill_workspace_bytes_per_token" => 8,
+      "max_context_tokens" => 4096,
+      "capabilities" => ["chat"],
+      "tokenizer" => %{
+        "kind" => "huggingface_tokenizer_json",
+        "path" => "tokenizer.json"
+      },
+      "runtime_requirements" => %{
+        "adapter" => "mlx_lm",
+        "min_agent_capability" => "mlx"
+      }
     }
+  end
 
-    File.write!(Path.join(bundle_path, "manifest.json"), Jason.encode!(manifest))
+  defp maybe_put_resident_memory(manifest, :omit), do: manifest
+
+  defp maybe_put_resident_memory(manifest, resident_memory_bytes) do
+    Map.put(manifest, "resident_memory_bytes", resident_memory_bytes)
+  end
+
+  defp safe_tokenization_map(control_tokens) do
+    control_tokens = control_tokens |> Enum.uniq() |> Enum.sort()
+
+    %{
+      "control_tokens" => control_tokens,
+      "catalog_sha256" => catalog_sha256(control_tokens),
+      "catalog_source" => %{
+        "added_tokens_count" => 0,
+        "config_singletons_count" => 0,
+        "additional_special_tokens_count" => 0,
+        "chat_template_literals_count" => 0,
+        "wrapper_tool_markers_count" => 0,
+        "extra_count" => 0
+      },
+      "compatible" => true,
+      "template_compatible" => true
+    }
+  end
+
+  defp catalog_sha256(control_tokens) do
+    control_tokens
+    |> Enum.intersperse(<<0>>)
+    |> IO.iodata_to_binary()
+    |> then(&:crypto.hash(:sha256, &1))
+    |> Base.encode16(case: :lower)
   end
 
   defp create_catalog_model!(ctx, overrides) do
@@ -272,6 +494,46 @@ defmodule Orchard.Models.ResidentMemoryBackfillTest do
       case :counters.get(counter, 1) do
         1 -> FS.atomic_write!(path, content)
         _other -> {:error, :rollback_failed}
+      end
+    end
+  end
+
+  defp corrupt_first_write do
+    counter = :counters.new(1, [])
+
+    fn path, content ->
+      :counters.add(counter, 1, 1)
+
+      case :counters.get(counter, 1) do
+        1 ->
+          content
+          |> Jason.decode!()
+          |> Map.put("unexpected", "field")
+          |> Jason.encode!()
+          |> then(&FS.atomic_write!(path, &1))
+
+        _other ->
+          FS.atomic_write!(path, content)
+      end
+    end
+  end
+
+  defp mismatch_resident_memory_first_write(actual_resident_memory_bytes) do
+    counter = :counters.new(1, [])
+
+    fn path, content ->
+      :counters.add(counter, 1, 1)
+
+      case :counters.get(counter, 1) do
+        1 ->
+          content
+          |> Jason.decode!()
+          |> Map.put("resident_memory_bytes", actual_resident_memory_bytes)
+          |> Jason.encode!()
+          |> then(&FS.atomic_write!(path, &1))
+
+        _other ->
+          FS.atomic_write!(path, content)
       end
     end
   end
