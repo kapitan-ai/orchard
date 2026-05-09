@@ -26,13 +26,14 @@ defmodule OrchardConsole.Redaction do
                                            "(?i)((?:#{@candidate_key})\\s*(?:[:]|=(?!>))\\s*)\\[[\\s\\S]{0,4096}?\\]"
                                          )
   @candidate_key_open_bracketed_value_pattern Regex.compile!(
-                                                "(?i)((?:#{@candidate_key})\\s*(?:[:]|=(?!>))\\s*)\\[(?!REDACTED\\])[\\s\\S]*"
+                                                "(?i)((?:#{@candidate_key})" <>
+                                                  ~S'\s*(?:[:]|=(?!>))\s*)\[(?!REDACTED\])[\s\S]*'
                                               )
   @candidate_key_bare_value_pattern Regex.compile!(
                                       "(?i)((?:#{@candidate_key})\\s*(?:[:]|=(?!>))\\s*)(?![\"\\[])[^\\s;,}\\]]+"
                                     )
   @candidate_tuple_quoted_value_pattern Regex.compile!(
-                                          "(?i)((?:\\{|,\\s*)\\:?(?:\"[^\"]+\"|[a-z0-9_. -]+)\\s*,\\s*)\"[^\"]*\""
+                                          ~S'(?i)((?:\{|,\s*)\:?(?:"[^"]+"|[a-z0-9_. -]+)\s*,\s*)"[^"]*"'
                                         )
   @hf_token_pattern ~r/\bhf_[A-Za-z0-9]{10,}\b/
   @inspect_opts [limit: 20, printable_limit: 1024]
