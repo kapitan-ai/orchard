@@ -172,42 +172,40 @@ defmodule Orchard.Models.Importer do
     case MemoryEstimator.resident_memory_bytes_from_bundle(staged_path) do
       {:ok, resident_memory_bytes}
       when is_integer(resident_memory_bytes) and resident_memory_bytes > 0 ->
-        with {:ok, manifest_map} <- read_manifest_map(staged_path),
-             :ok <-
-               write_manifest_map(
-                 staged_path,
-                 Map.put(manifest_map, "resident_memory_bytes", resident_memory_bytes)
-               ),
-             {:ok, reparsed} <- ManifestParser.parse_from_bundle(staged_path) do
-          {:ok, reparsed}
-        else
-          _error ->
-            # Fail-open: if manifest read/write/re-parse fails, use original manifest.
-            # This also prevents staged-directory cleanup leaks: the function never
-            # returns an error, so the outer with/else in import_bundle/2 does not
-            # need to handle top-up failures separately.
-            {:ok, manifest}
-        end
+        write_resident_memory_or_original(staged_path, manifest, resident_memory_bytes)
 
       :unknown ->
-        # Estimator returned :unknown. Normalize missing/nil resident_memory_bytes
-        # to 0 on disk so the DB row (which uses manifest.resident_memory_bytes || 0)
-        # stays aligned with the persisted manifest file.
-        if is_nil(manifest.resident_memory_bytes) do
-          with {:ok, manifest_map} <- read_manifest_map(staged_path),
-               :ok <-
-                 write_manifest_map(
-                   staged_path,
-                   Map.put(manifest_map, "resident_memory_bytes", 0)
-                 ),
-               {:ok, reparsed} <- ManifestParser.parse_from_bundle(staged_path) do
-            {:ok, reparsed}
-          else
-            _error -> {:ok, manifest}
-          end
-        else
-          {:ok, manifest}
-        end
+        maybe_write_unknown_resident_memory(staged_path, manifest)
+    end
+  end
+
+  defp maybe_write_unknown_resident_memory(staged_path, manifest) do
+    # Estimator returned :unknown. Normalize missing/nil resident_memory_bytes
+    # to 0 on disk so the DB row (which uses manifest.resident_memory_bytes || 0)
+    # stays aligned with the persisted manifest file.
+    if is_nil(manifest.resident_memory_bytes) do
+      write_resident_memory_or_original(staged_path, manifest, 0)
+    else
+      {:ok, manifest}
+    end
+  end
+
+  defp write_resident_memory_or_original(staged_path, manifest, resident_memory_bytes) do
+    with {:ok, manifest_map} <- read_manifest_map(staged_path),
+         :ok <-
+           write_manifest_map(
+             staged_path,
+             Map.put(manifest_map, "resident_memory_bytes", resident_memory_bytes)
+           ),
+         {:ok, reparsed} <- ManifestParser.parse_from_bundle(staged_path) do
+      {:ok, reparsed}
+    else
+      _error ->
+        # Fail-open: if manifest read/write/re-parse fails, use original manifest.
+        # This also prevents staged-directory cleanup leaks: the function never
+        # returns an error, so the outer with/else in import_bundle/2 does not
+        # need to handle top-up failures separately.
+        {:ok, manifest}
     end
   end
 
