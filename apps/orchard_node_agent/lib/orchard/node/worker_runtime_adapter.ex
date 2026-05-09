@@ -827,15 +827,13 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   end
 
   defp safe_stream_generation(channel, owner, generation_ref, request) do
-    try do
-      stream_generation(channel, owner, generation_ref, request)
-    catch
-      kind, reason ->
-        send(
-          owner,
-          {:runtime_adapter_done, generation_ref, {:generation_task_failed, kind, reason}}
-        )
-    end
+    stream_generation(channel, owner, generation_ref, request)
+  catch
+    kind, reason ->
+      send(
+        owner,
+        {:runtime_adapter_done, generation_ref, {:generation_task_failed, kind, reason}}
+      )
   end
 
   defp stream_generation(channel, owner, generation_ref, request) do
