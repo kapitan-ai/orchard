@@ -209,7 +209,7 @@ defmodule Orchard.SentryContext do
     context_module = Module.concat([Sentry, Context])
 
     if Code.ensure_loaded?(context_module) do
-      apply(context_module, :clear_all, [])
+      context_module.clear_all()
     end
 
     :ok
@@ -224,7 +224,7 @@ defmodule Orchard.SentryContext do
     context_module = Module.concat([Sentry, Context])
 
     if master_enabled?() and Code.ensure_loaded?(context_module) do
-      context = apply(context_module, :get_all, [])
+      context = context_module.get_all()
       present?(Map.get(context.extra, :orchard_request_id))
     else
       false
@@ -289,6 +289,8 @@ defmodule Orchard.SentryContext do
 
   defp build_ref do
     if function_exported?(Orchard.BuildInfo, :build_ref, 0) do
+      # `build_ref/0` is optional in older compiled BuildInfo modules.
+      # credo:disable-for-next-line Credo.Check.Refactor.Apply
       apply(Orchard.BuildInfo, :build_ref, [])
     else
       Orchard.BuildInfo.git_sha()
