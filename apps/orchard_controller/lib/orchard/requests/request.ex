@@ -41,6 +41,8 @@ defmodule Orchard.Requests.Request do
   @terminal_states [:completed, :failed, :cancelled, :timed_out, :interrupted]
   @payload_capture_modes [none: "none", metadata: "metadata", full: "full"]
 
+  @type t :: %__MODULE__{}
+
   schema "requests" do
     field(:public_id, :string)
     field(:endpoint, Ecto.Enum, values: @endpoints)

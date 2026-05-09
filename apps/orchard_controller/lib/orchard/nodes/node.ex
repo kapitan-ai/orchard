@@ -28,6 +28,8 @@ defmodule Orchard.Nodes.Node do
 
   @health_values [:healthy, :degraded, :unhealthy, :unreachable]
 
+  @type t :: %__MODULE__{}
+
   schema "nodes" do
     field(:hostname, :string)
     field(:display_name, :string)
@@ -116,7 +118,7 @@ defmodule Orchard.Nodes.Node do
 
   defp validate_tool_readiness_contract(changeset) do
     tool_readiness = get_field(changeset, :tool_readiness)
-    hosted_tool_refs = hosted_tool_refs(get_field(changeset, :capabilities))
+    hosted_tool_refs = hosted_tool_ref_list(get_field(changeset, :capabilities))
 
     cond do
       is_nil(tool_readiness) ->
@@ -137,30 +139,30 @@ defmodule Orchard.Nodes.Node do
     end
   end
 
-  defp hosted_tool_refs(capabilities) when is_map(capabilities) do
+  defp hosted_tool_ref_list(capabilities) when is_map(capabilities) do
     capabilities
     |> map_value(:hosted_tools)
-    |> case do
-      entries when is_list(entries) ->
-        entries
-        |> Enum.flat_map(fn entry ->
-          case map_value(entry, :ref) do
-            ref when is_binary(ref) and ref != "" -> [ref]
-            _other -> []
-          end
-        end)
-        |> MapSet.new()
+    |> hosted_tool_ref_list_from_entries()
+  end
 
-      _other ->
-        MapSet.new()
+  defp hosted_tool_ref_list(_capabilities), do: []
+
+  defp hosted_tool_ref_list_from_entries(entries) when is_list(entries) do
+    Enum.flat_map(entries, &hosted_tool_ref/1)
+  end
+
+  defp hosted_tool_ref_list_from_entries(_entries), do: []
+
+  defp hosted_tool_ref(entry) do
+    case map_value(entry, :ref) do
+      ref when is_binary(ref) and ref != "" -> [ref]
+      _other -> []
     end
   end
 
-  defp hosted_tool_refs(_capabilities), do: MapSet.new()
-
   defp valid_tool_readiness_entry?({ref, payload}, hosted_tool_refs)
        when is_binary(ref) and is_map(payload) do
-    MapSet.member?(hosted_tool_refs, ref) and
+    ref in hosted_tool_refs and
       is_boolean(map_value(payload, :ready)) and
       is_binary(map_value(payload, :status_code)) and
       is_binary(map_value(payload, :status_message))

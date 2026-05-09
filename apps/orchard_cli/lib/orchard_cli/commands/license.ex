@@ -397,13 +397,14 @@ defmodule OrchardCLI.Commands.License do
   end
 
   defp read_validated_key_file(path, stat, io_device) do
+    # The opened descriptor must close even if validation/read raises or exits.
+    # credo:disable-for-next-line Credo.Check.Readability.PreferImplicitTry
     try do
       with {:ok, opened_stat} <- opened_key_file_stat(path, io_device),
            :ok <- require_same_opened_key_file(path, stat, opened_stat),
            :ok <- require_regular_key_file(path, opened_stat),
-           :ok <- require_private_key_file_mode(path, opened_stat),
-           {:ok, contents} <- read_opened_key_file(path, opened_stat, io_device) do
-        {:ok, contents}
+           :ok <- require_private_key_file_mode(path, opened_stat) do
+        read_opened_key_file(path, opened_stat, io_device)
       end
     after
       :file.close(io_device)

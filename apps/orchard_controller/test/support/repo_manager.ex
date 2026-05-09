@@ -1,4 +1,6 @@
 defmodule Orchard.TestSupport.RepoManager do
+  @moduledoc false
+
   use GenServer
 
   alias Ecto.Adapters.SQL.Sandbox
