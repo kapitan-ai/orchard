@@ -144,17 +144,15 @@ defmodule Orchard.Inference.ToolExecutionOutcome do
          {:ok, remote_execution_ref} <-
            fetch_result_optional_string(normalized_result, "remote_execution_ref"),
          {:ok, side_effect_anchor} <-
-           fetch_result_optional_string(normalized_result, "side_effect_anchor"),
-         {:ok, outcome} <-
-           new(%{
-             status: status,
-             error_code: Map.get(normalized_result, "error_code"),
-             error_message: Map.get(normalized_result, "error_message"),
-             indeterminate_reason: Map.get(normalized_result, "indeterminate_reason"),
-             remote_execution_ref: remote_execution_ref,
-             side_effect_anchor: side_effect_anchor
-           }) do
-      {:ok, outcome}
+           fetch_result_optional_string(normalized_result, "side_effect_anchor") do
+      new(%{
+        status: status,
+        error_code: Map.get(normalized_result, "error_code"),
+        error_message: Map.get(normalized_result, "error_message"),
+        indeterminate_reason: Map.get(normalized_result, "indeterminate_reason"),
+        remote_execution_ref: remote_execution_ref,
+        side_effect_anchor: side_effect_anchor
+      })
     end
   end
 

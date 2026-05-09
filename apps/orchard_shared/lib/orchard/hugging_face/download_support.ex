@@ -321,22 +321,26 @@ defmodule Orchard.HuggingFace.DownloadSupport do
     fn {:data, chunk}, {req, resp} ->
       case :file.write(file_pid, chunk) do
         :ok ->
-          :counters.add(bytes_counter, 1, byte_size(chunk))
-
-          case maybe_emit_streaming_progress(stream_ctx, bytes_counter, resp) do
-            :ok ->
-              {:cont, {req, resp}}
-
-            {:error, reason} ->
-              :atomics.put(stream_ctx.callback_error, 1, 1)
-              Process.put(stream_ctx.callback_error_key, reason)
-              {:halt, {req, resp}}
-          end
+          handle_written_chunk(chunk, bytes_counter, stream_ctx, req, resp)
 
         {:error, _reason} ->
           :atomics.put(write_error, 1, 1)
           {:halt, {req, resp}}
       end
+    end
+  end
+
+  defp handle_written_chunk(chunk, bytes_counter, stream_ctx, req, resp) do
+    :counters.add(bytes_counter, 1, byte_size(chunk))
+
+    case maybe_emit_streaming_progress(stream_ctx, bytes_counter, resp) do
+      :ok ->
+        {:cont, {req, resp}}
+
+      {:error, reason} ->
+        :atomics.put(stream_ctx.callback_error, 1, 1)
+        Process.put(stream_ctx.callback_error_key, reason)
+        {:halt, {req, resp}}
     end
   end
 
