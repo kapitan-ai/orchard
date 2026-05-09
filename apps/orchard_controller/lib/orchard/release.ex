@@ -129,11 +129,9 @@ defmodule Orchard.Release do
   end
 
   defp run_backfill_callback(opts) do
-    try do
-      {:backfill_result, ResidentMemoryBackfill.run(opts)}
-    rescue
-      error -> {:backfill_exception, error, __STACKTRACE__}
-    end
+    {:backfill_result, ResidentMemoryBackfill.run(opts)}
+  rescue
+    error -> {:backfill_exception, error, __STACKTRACE__}
   end
 
   defp with_repo_result(repo, opts) do
