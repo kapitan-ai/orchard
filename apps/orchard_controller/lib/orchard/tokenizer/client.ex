@@ -1078,13 +1078,7 @@ defmodule Orchard.Tokenizer.Client do
     |> Enum.reduce_while(:ok, fn {item, index}, :ok ->
       case fetch_string_field(item, [:role, "role"], "role", index) do
         {:ok, role} ->
-          if MapSet.member?(@supported_message_roles, role) do
-            {:cont, :ok}
-          else
-            {:halt,
-             {:error,
-              {:invalid_input, "input_items[#{index}].role is unsupported: #{inspect(role)}"}}}
-          end
+          role_validation_step(role, index)
 
         {:error, _reason} = error ->
           {:halt, error}
@@ -1096,6 +1090,15 @@ defmodule Orchard.Tokenizer.Client do
     {:error,
      {:invalid_input,
       "canonical request input_items must be a list of role/content maps, got: #{inspect(input_items)}"}}
+  end
+
+  defp role_validation_step(role, index) do
+    if MapSet.member?(@supported_message_roles, role) do
+      {:cont, :ok}
+    else
+      {:halt,
+       {:error, {:invalid_input, "input_items[#{index}].role is unsupported: #{inspect(role)}"}}}
+    end
   end
 
   defp build_prompt_lines(input_items) when is_list(input_items) do
