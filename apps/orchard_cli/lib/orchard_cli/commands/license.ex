@@ -458,8 +458,6 @@ defmodule OrchardCLI.Commands.License do
     end
   end
 
-  defp opened_key_file_size(%{size: size}), do: size
-
   defp opened_key_file_size(
          {:file_info, size, _type, _access, _atime, _mtime, _ctime, _mode, _links, _major_device,
           _minor_device, _inode, _uid, _gid}
