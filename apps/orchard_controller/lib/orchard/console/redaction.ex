@@ -576,21 +576,27 @@ defmodule OrchardConsole.Redaction do
   defp bounded_printable_charlist_to_string(list, limit) do
     case take_proper_list(list, limit + 1, []) do
       {:ok, items} ->
-        if Enum.all?(items, &printable_ascii?/1) do
-          {bounded_items, truncated?} =
-            if length(items) > limit do
-              {Enum.take(items, limit), true}
-            else
-              {items, false}
-            end
-
-          {:ok, List.to_string(bounded_items), truncated?}
-        else
-          :error
-        end
+        printable_items_to_string(items, limit)
 
       :improper ->
         :error
+    end
+  end
+
+  defp printable_items_to_string(items, limit) do
+    if Enum.all?(items, &printable_ascii?/1) do
+      {bounded_items, truncated?} = bounded_items(items, limit)
+      {:ok, List.to_string(bounded_items), truncated?}
+    else
+      :error
+    end
+  end
+
+  defp bounded_items(items, limit) do
+    if length(items) > limit do
+      {Enum.take(items, limit), true}
+    else
+      {items, false}
     end
   end
 
