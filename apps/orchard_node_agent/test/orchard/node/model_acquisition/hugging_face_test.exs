@@ -468,7 +468,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
       staging_path = request.staging_path
       File.mkdir_p!(staging_path)
       content = ctx.file_contents["config.json"]
-      real_etag = Orchard.TestSupport.HuggingFaceReqStub.hash_content(content)
+      real_etag = HuggingFaceReqStub.hash_content(content)
 
       File.write!(
         Path.join(staging_path, "config.json.partial"),

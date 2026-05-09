@@ -679,7 +679,7 @@ defmodule Orchard.Models.HubDownloaderTest do
       config_partial = Path.join(ctx.dest_dir, "config.json.partial")
       config_etag = Path.join(ctx.dest_dir, "config.json.partial.etag")
       content = ctx.file_contents["config.json"]
-      real_etag = Orchard.TestSupport.HuggingFaceReqStub.hash_content(content)
+      real_etag = HuggingFaceReqStub.hash_content(content)
       File.write!(config_partial, String.duplicate("x", byte_size(content) + 500))
       File.write!(config_etag, real_etag)
 
