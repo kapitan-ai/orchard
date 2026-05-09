@@ -338,6 +338,30 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       assert html =~ "/console/requests/req_deep"
     end
 
+    test "failure preserves partial assistant content", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+      ref = submit_prompt(view)
+
+      send(view.pid, {:playground, ref, :started, %{request_id: "req_partial_fail"}})
+      send(view.pid, {:playground, ref, :event, InferenceEvent.output_text_delta("Partial")})
+
+      error = %{
+        phase: :execute,
+        type: "server_error",
+        code: "internal_error",
+        message: "Backend stream failed.",
+        param: nil
+      }
+
+      send(view.pid, {:playground, ref, :finished, {:error, error}})
+      html = render(view)
+      assistant = view |> element("#playground-message-msg-1") |> render()
+
+      assert html =~ "Backend stream failed."
+      assert assistant =~ "Partial"
+      assert assistant =~ "Response interrupted."
+    end
+
     test "CTA appears after failure when request_id was set", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/playground")
       ref = submit_prompt(view)

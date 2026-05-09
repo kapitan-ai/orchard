@@ -422,21 +422,16 @@ defmodule OrchardConsole.PlaygroundLive do
     aid = socket.assigns.active_run.assistant_id
 
     transcript =
-      Enum.map(socket.assigns.transcript, fn entry ->
-        if entry.id == aid do
-          if entry.content == "" do
-            nil
-          else
-            %{entry | status: :error}
-          end
-        else
-          entry
-        end
-      end)
+      socket.assigns.transcript
+      |> Enum.map(&failed_assistant_entry(&1, aid))
       |> Enum.reject(&is_nil/1)
 
     assign(socket, transcript: transcript)
   end
+
+  defp failed_assistant_entry(%{id: id, content: ""}, id), do: nil
+  defp failed_assistant_entry(%{id: id} = entry, id), do: %{entry | status: :error}
+  defp failed_assistant_entry(entry, _assistant_id), do: entry
 
   defp remove_entry(transcript, id) do
     Enum.reject(transcript, &(&1.id == id))
