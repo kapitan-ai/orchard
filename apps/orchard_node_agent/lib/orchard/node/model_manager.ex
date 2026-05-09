@@ -1513,12 +1513,10 @@ defmodule Orchard.Node.ModelManager do
   defp budget_uint64(_value), do: 0
 
   defp valid_budget_float?(value) when is_integer(value) and value >= 0 do
-    try do
-      float = value / 1
-      finite_float?(float) and float >= 0.0
-    rescue
-      ArithmeticError -> false
-    end
+    float = value / 1
+    finite_float?(float) and float >= 0.0
+  rescue
+    ArithmeticError -> false
   end
 
   defp valid_budget_float?(value) when is_float(value) do
@@ -1528,13 +1526,11 @@ defmodule Orchard.Node.ModelManager do
   defp valid_budget_float?(_value), do: false
 
   defp budget_float(value) when is_integer(value) and value >= 0 do
-    try do
-      float = value / 1
+    float = value / 1
 
-      if finite_float?(float), do: float, else: 0.0
-    rescue
-      ArithmeticError -> 0.0
-    end
+    if finite_float?(float), do: float, else: 0.0
+  rescue
+    ArithmeticError -> 0.0
   end
 
   defp budget_float(value) when is_float(value) do
