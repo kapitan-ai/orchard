@@ -357,6 +357,35 @@ defmodule OrchardCLI.Commands.LicenseTest do
            end)
   end
 
+  test "activate rejects machine lookup pagination loops without creating a machine" do
+    runtime = runtime(request: &looping_machine_lookup_request/1)
+
+    assert {:error, message, 1} = License.run(["activate", @license_key], runtime)
+
+    assert message =~ "Malformed response from machine lookup."
+    refute message =~ @license_key
+
+    assert Enum.map(recorded_requests(), &request_signature/1) == [
+             {:post, validation_url()},
+             {:get, machines_url() <> "?limit=100"},
+             {:get, machines_page_url(2)}
+           ]
+  end
+
+  test "activate treats malformed machine lookup next links as pagination end" do
+    runtime = runtime(request: &malformed_next_link_machine_lookup_request/1)
+
+    assert {:ok, _message} = License.run(["activate", @license_key], runtime)
+
+    assert Enum.map(recorded_requests(), &request_signature/1) == [
+             {:post, validation_url()},
+             {:get, machines_url() <> "?limit=100"},
+             {:post, machines_url()},
+             {:post, license_checkout_url("lic_123")},
+             {:post, machine_checkout_url("mach_123")}
+           ]
+  end
+
   test "activate continues to machine creation for allowlisted NO_MACHINES validate-key responses" do
     runtime = runtime(request: &activation_required_new_machine_request/1)
 
@@ -1252,6 +1281,19 @@ defmodule OrchardCLI.Commands.LicenseTest do
     ])
   end
 
+  defp looping_machine_lookup_request(req) do
+    machine_lookup_request(req, [
+      machine_lookup_page(machines_url() <> "?limit=100", [], machines_page_url(2)),
+      machine_lookup_page(machines_page_url(2), [], machines_page_url(2))
+    ])
+  end
+
+  defp malformed_next_link_machine_lookup_request(req) do
+    machine_lookup_request(req, [
+      machine_lookup_page(machines_url() <> "?limit=100", [], %{"href" => machines_page_url(2)})
+    ])
+  end
+
   defp machine_lookup_request(req, pages, validation_body \\ valid_validation_body()) do
     record_request(req)
 
@@ -1277,6 +1319,18 @@ defmodule OrchardCLI.Commands.LicenseTest do
          }}
 
       url == machine_checkout_url("mach_existing") ->
+        {:ok,
+         %{
+           status: 200,
+           body: %{"data" => %{"attributes" => %{"certificate" => "MACHINE_CERTIFICATE"}}}
+         }}
+
+      url == machines_url() ->
+        assert request_header(req, "authorization") == "License #{@license_key}"
+        assert get_in(req, [:body, "data", "attributes", "fingerprint"]) == @node_id
+        {:ok, %{status: 201, body: %{"data" => %{"id" => "mach_123"}}}}
+
+      url == machine_checkout_url("mach_123") ->
         {:ok,
          %{
            status: 200,

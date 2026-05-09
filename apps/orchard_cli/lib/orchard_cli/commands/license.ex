@@ -659,7 +659,7 @@ defmodule OrchardCLI.Commands.License do
       machines_list_request(config, license_key),
       license_key,
       fingerprint,
-      MapSet.new()
+      %{}
     )
   end
 
@@ -720,10 +720,10 @@ defmodule OrchardCLI.Commands.License do
   end
 
   defp track_machine_lookup_url(seen_urls, url) do
-    if MapSet.member?(seen_urls, url) do
+    if Map.has_key?(seen_urls, url) do
       {:error, {:activation, "Malformed response from machine lookup."}}
     else
-      {:ok, MapSet.put(seen_urls, url)}
+      {:ok, Map.put(seen_urls, url, true)}
     end
   end
 
@@ -766,10 +766,6 @@ defmodule OrchardCLI.Commands.License do
   defp next_machine_page_url(%{"links" => %{"next" => nil}}), do: {:ok, nil}
   defp next_machine_page_url(%{"links" => links}) when is_map(links), do: {:ok, nil}
   defp next_machine_page_url(%{}), do: {:ok, nil}
-
-  defp next_machine_page_url(_body) do
-    {:error, {:activation, "Malformed response from machine lookup."}}
-  end
 
   defp extract_license_id(%{"meta" => %{"valid" => true}, "data" => %{"id" => license_id}})
        when is_binary(license_id) and license_id != "" do
