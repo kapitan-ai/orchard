@@ -223,10 +223,8 @@ defmodule OrchardConsole.RequestsLiveTest do
 
       assert html =~ "requests-empty-state"
 
-      # Insert a request after mount
       create_request!(%{public_id: "req_refresh_1", state: :completed})
 
-      # Trigger manual refresh
       html = render_click(view, "refresh_now")
 
       assert html =~ "req_refresh_1"

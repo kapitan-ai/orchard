@@ -82,7 +82,7 @@ defmodule Orchard.Tokenizer.Client do
           reason_key_encoding: :string,
           categories: %{String.t() => map()}
         }
-  # Contract tests inspect tokenizer-owned semantic verdict rules without promoting this to product API.
+  # Contract tests inspect tokenizer-owned verdict rules without making product API.
   # credo:disable-for-next-line ExSlop.Check.Readability.DocFalseOnPublicFunction
   def incompatibility_reason_rules do
     %{

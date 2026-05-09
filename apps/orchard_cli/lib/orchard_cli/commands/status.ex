@@ -21,6 +21,7 @@ defmodule OrchardCLI.Commands.Status do
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(args), do: run(args, default_runtime())
 
+  # Public only so tests can inject status-probe runtime without exposing CLI API docs.
   # credo:disable-for-lines:3 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
   @spec run([String.t()], map()) :: OrchardCLI.command_result()

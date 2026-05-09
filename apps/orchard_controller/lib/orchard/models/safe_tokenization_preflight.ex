@@ -45,8 +45,8 @@ defmodule Orchard.Models.SafeTokenizationPreflight do
           reason_key_encoding: :string,
           categories: %{String.t() => map()}
         }
-  # Contract tests inspect preflight-owned semantic verdict rules without promoting this to product API.
-  # The success-result boolean guard makes tokenizer-category template compatibility effectively true.
+  # Contract tests inspect preflight-owned verdict rules without making product API.
+  # Success-result boolean guard keeps tokenizer-category template compatibility true.
   # credo:disable-for-next-line ExSlop.Check.Readability.DocFalseOnPublicFunction
   def incompatibility_reason_rules do
     %{

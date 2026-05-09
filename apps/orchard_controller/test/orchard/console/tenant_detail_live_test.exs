@@ -211,7 +211,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       |> form("#tenant-api-key-create-form", api_key: %{name: "copy-event-test"})
       |> render_submit()
 
-      # Extract the api_key_id from the secret card
+      # Use the rendered ID so the event matches the copy hook payload.
       secret_html = view |> element("#tenant-api-key-secret-copy") |> render()
       [_, api_key_id] = Regex.run(~r/data-api-key-id="([^"]+)"/, secret_html)
 

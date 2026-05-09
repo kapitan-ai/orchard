@@ -16,9 +16,13 @@
         {Credo.Check.Design.DuplicatedCode, false},
 
         # ex_dna — AST-level code duplication detection
-        {ExDNA.Credo, min_mass: 80, excluded_macros: [:@, :schema, :pipe_through, :plug]},
+        {ExDNA.Credo,
+         min_mass: 80,
+         excluded_macros: [:@, :schema, :pipe_through, :plug],
+         paths: ["apps/", "config/"]},
 
-        # ex_slop — AI-generated code pattern checks (20 checks, 2 Ecto + 1 GenServer skipped)
+        # ex_slop — Orchard-owned explicit AI-generated code policy.
+        # Keep this list explicit so upstream bundle changes do not silently shift the quality gate.
         # Warnings
         {ExSlop.Check.Warning.BlanketRescue, []},
         {ExSlop.Check.Warning.RescueWithoutReraise, []},

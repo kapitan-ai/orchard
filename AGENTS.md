@@ -82,7 +82,7 @@ Rules:
 
 Two Credo plugins enforce code quality standards specific to AI-assisted development. Both run as part of `mix credo --strict`.
 
-- **ex_slop** — detects AI-generated code patterns (blanket rescues, narrator docs, obvious comments, identity passthroughs, step comments, etc.). 20 checks enabled; 3 skipped (2 Ecto-specific, 1 GenServer).
+- **ex_slop** — detects AI-generated code patterns (blanket rescues, narrator docs, obvious comments, identity passthroughs, step comments, etc.). Orchard uses an explicit 20-check policy in `.credo.exs` rather than the upstream recommended bundle, so dependency upgrades cannot silently shift the quality gate.
 - **ex_dna** — AST-level code duplication detection. Finds exact, renamed-variable, and near-miss structural clones. Configured at `min_mass: 80`.
 
 Rules:

@@ -499,7 +499,6 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
 
       install_hf_stub(ctx, redirect_files: redirect_files, on_request: on_request)
 
-      # Set a token for this test
       current_runtime = Application.get_env(:orchard_node_agent, :runtime, [])
       current_hf = Keyword.get(current_runtime, :hf, [])
       updated_hf = Keyword.put(current_hf, :token, "hf_node_secret")

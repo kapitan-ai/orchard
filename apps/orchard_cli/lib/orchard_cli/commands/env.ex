@@ -14,6 +14,7 @@ defmodule OrchardCLI.Commands.Env do
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(args), do: run(args, default_runtime())
 
+  # Public only so tests can inject filesystem/process runtime without exposing CLI API docs.
   # credo:disable-for-lines:3 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
   @spec run([String.t()], map()) :: OrchardCLI.command_result()
@@ -116,6 +117,7 @@ defmodule OrchardCLI.Commands.Env do
 
   # ── Executable Resolution ───────────────────────────────────────────
 
+  # Installer tests inspect binary resolution without promoting this to public CLI API.
   # credo:disable-for-lines:2 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
   def resolve_executable(:tokenizer, support_root) do
@@ -440,6 +442,7 @@ defmodule OrchardCLI.Commands.Env do
 
   # ── Shell Quoting ────────────────────────────────────────────────────
 
+  # Env-file tests inspect quoting without promoting this helper to public CLI API.
   # credo:disable-for-lines:2 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
   def shell_quote(value) when is_binary(value) do

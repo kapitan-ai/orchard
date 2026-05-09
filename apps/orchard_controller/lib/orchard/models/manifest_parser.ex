@@ -102,7 +102,7 @@ defmodule Orchard.Models.ManifestParser do
           reason_key_encoding: :atom,
           categories: %{String.t() => map()}
         }
-  # Contract tests inspect parser-owned semantic verdict rules without promoting this to product API.
+  # Contract tests inspect parser-owned verdict rules without making product API.
   # credo:disable-for-next-line ExSlop.Check.Readability.DocFalseOnPublicFunction
   def incompatibility_reason_rules do
     %{

@@ -17,9 +17,9 @@ Built-in Credo and Dialyzer don't catch these patterns. ex_slop and ex_dna fill 
 
 ## ex_slop — AI Code Pattern Detection
 
-ex_slop provides 23 checks for code patterns commonly introduced by LLMs. Orchard enables 20 of them.
+ex_slop 0.4 provides an upstream recommended bundle plus additional opt-in checks. Orchard intentionally uses an explicit 20-check list in `.credo.exs` instead of `{ExSlop, :recommended}` so upstream bundle changes cannot silently shift the quality gate.
 
-### Enabled Checks (20)
+### Orchard-Enabled Checks (20)
 
 **Warnings** — likely bugs or bad practices:
 - `BlanketRescue` — `rescue _ ->` without meaningful handling
@@ -45,13 +45,11 @@ ex_slop provides 23 checks for code patterns commonly introduced by LLMs. Orchar
 - `StepComment` — `# Step N:` comments (extract into named functions)
 - `NarratorComment` — inline comments that narrate rather than explain
 
-### Skipped Checks (3)
+### Checks Available but Not Enabled
 
-| Check | Why Skipped |
-|-------|-------------|
-| `RepoAllThenFilter` | Ecto-specific query optimization — not the focus of this rollout |
-| `QueryInEnumMap` | Ecto-specific N+1 detection — same rationale |
-| `GenserverAsKvStore` | High false-positive risk in OTP-heavy codebase; reconsider later |
+The upstream recommended bundle currently includes additional checks that Orchard has not adopted, including `RepoAllThenFilter`, `QueryInEnumMap`, `GenserverAsKvStore`, `PathExpandPriv`, `DualKeyAccess`, `ReduceMapPut`, `RedundantBooleanIf`, `FlatMapFilter`, `RedundantEnumJoinSeparator`, `GraphemesLength`, `ManualStringReverse`, `SortThenAt`, `SortForTopK`, and `ExplicitSumReduce`. Orchard also keeps enforcing `CaseTrueFalse`, `DocFalseOnPublicFunction`, `ObviousComment`, and `StepComment`, which are not in the upstream recommended bundle.
+
+Treat any ExSlop policy expansion as a deliberate change: enable the check explicitly, run `mix credo --strict`, fix or narrowly suppress resulting findings, then update this document.
 
 ## ex_dna — AST-Level Duplication Detection
 
@@ -69,13 +67,17 @@ ex_dna detects code clones at the AST level, finding duplicates that text-based 
 
 ```elixir
 # .credo.exs
-{ExDNA.Credo, min_mass: 80, excluded_macros: [:@, :schema, :pipe_through, :plug]}
+{ExDNA.Credo,
+ min_mass: 80,
+ excluded_macros: [:@, :schema, :pipe_through, :plug],
+ paths: ["apps/", "config/"]}
 ```
 
 | Parameter | Value | Rationale |
 |-----------|-------|-----------|
 | `min_mass` | 80 | Filters out small utility patterns and test scaffolding. Default (30) produces too much noise in a codebase with repetitive test setup and CLI command patterns. |
 | `excluded_macros` | `[:@, :schema, :pipe_through, :plug]` | Module attributes, Ecto schemas, router pipelines, and plug declarations are intentionally repetitive. |
+| `paths` | `["apps/", "config/"]` | Matches the umbrella source paths from `.ex_dna.exs`; the upstream Credo default scans `lib/`, which is empty at the umbrella root. |
 | `min_similarity` | 1.0 (default) | Only exact and renamed-variable clones. Type III (near-miss) is not enabled yet. |
 
 ### Standalone Usage
@@ -144,14 +146,16 @@ end
 
 ## Evolving the Configuration
 
-### Adding ex_slop Checks
+### Changing the ex_slop Policy
 
-The 3 skipped checks can be enabled when the codebase is ready:
+Orchard owns the explicit check list in `.credo.exs`; do not replace it with `{ExSlop, :recommended}` unless the resulting bundle findings are triaged in the same change.
 
-1. Enable the check in `.credo.exs`
+To add or remove a check:
+
+1. Edit the explicit check list in `.credo.exs`
 2. Run `mix credo --strict` and assess findings
 3. Fix genuine issues, suppress false positives with rationale
-4. Update this doc's "Skipped Checks" table
+4. Update this document's enabled/available-check guidance
 
 ### Lowering ex_dna min_mass
 
@@ -171,6 +175,8 @@ Set `min_similarity: 0.85` in `.credo.exs` to also find structurally similar (no
 ### Credo Integration Notes
 
 As of `ex_dna` `1.3.1`, `ExDNA.Credo` compiles cleanly without the old consumer-side `requires` workaround. Orchard now relies on the package's built-in Credo integration directly from `.credo.exs`.
+
+`ExDNA.Credo` must include `paths: ["apps/", "config/"]` so the Credo-integrated scan covers the same umbrella paths as standalone `.ex_dna.exs`.
 
 If you see a warning about **redefining `ExDNA.Credo`**, the old runtime `requires` workaround has likely been reintroduced and should be removed. If you instead see `Ignoring an undefined check: ExDNA.Credo`, confirm the project is actually on `ex_dna` `1.3.1+` and that deps were recompiled after the upgrade.
 

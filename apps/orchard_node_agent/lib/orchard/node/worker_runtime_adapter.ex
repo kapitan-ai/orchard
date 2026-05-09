@@ -529,6 +529,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     end
   end
 
+  # Public only so tests can validate worker process launch args without starting a port.
+  # credo:disable-for-lines:3 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
   @spec worker_cli_args(keyword()) :: [String.t()]
   def worker_cli_args(opts \\ []) do
@@ -726,6 +728,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   # Build the UDS channel directly instead of GRPC.Stub.connect/1 so grpc-elixir
   # does not register it with the connection supervisor refresh path. Gun's
   # open_unix/2 success typing expects the local socket path as a charlist.
+  # Public only so tests can assert direct UDS channel behavior without worker startup.
+  # credo:disable-for-lines:3 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
   @spec connect_worker_socket(String.t()) :: {:ok, Channel.t()} | {:error, term()}
   def connect_worker_socket(socket_path) when is_binary(socket_path) do
