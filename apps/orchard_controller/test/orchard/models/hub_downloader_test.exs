@@ -572,9 +572,7 @@ defmodule Orchard.Models.HubDownloaderTest do
             u.files_completed < u.total_files
         end)
 
-      assert length(mid_file_updates) >= 1
-
-      streaming = hd(mid_file_updates)
+      assert [streaming | _] = mid_file_updates
       assert streaming.bytes_downloaded >= threshold
       assert streaming.total_bytes >= large_size
 
@@ -670,7 +668,7 @@ defmodule Orchard.Models.HubDownloaderTest do
 
       # CDN requests should NOT have auth
       cdn_requests = Enum.filter(messages, fn {host, _, _} -> host == "cdn.test" end)
-      assert length(cdn_requests) > 0
+      assert cdn_requests != []
       assert Enum.all?(cdn_requests, fn {_, _, auth} -> auth == nil end)
     end
 

@@ -180,7 +180,7 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
           method == :head and String.contains?(url, "huggingface.co/test/model/resolve/")
         end)
 
-      assert length(origin_heads) > 0
+      assert origin_heads != []
       Enum.each(origin_heads, fn {_, _, opts} -> assert Keyword.get(opts, :auth?) == true end)
 
       # CDN requests should have auth? false
@@ -189,7 +189,7 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
           String.contains?(url, "cdn.example.com")
         end)
 
-      assert length(cdn_requests) > 0
+      assert cdn_requests != []
       Enum.each(cdn_requests, fn {_, _, opts} -> assert Keyword.get(opts, :auth?) == false end)
     end
 
@@ -207,7 +207,7 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
           String.contains?(url, ":8443")
         end)
 
-      assert length(cdn_requests) > 0
+      assert cdn_requests != []
       Enum.each(cdn_requests, fn {_, _, opts} -> assert Keyword.get(opts, :auth?) == false end)
     end
   end
@@ -353,7 +353,7 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
       all_updates = collect_progress_updates()
 
       # At least: initial preflight, 1 in-stream, 1 completion
-      assert length(all_updates) >= 3
+      assert [_preflight_update, _stream_update, _completion_update | _] = all_updates
 
       # First is the initial preflight (zero bytes, nil file)
       [{preflight, nil_file} | rest] = all_updates
@@ -367,8 +367,7 @@ defmodule Orchard.HuggingFace.DownloadSupportTest do
           p.files_completed == 0 and p.bytes_downloaded > 0
         end)
 
-      assert length(streaming_updates) >= 1
-      {stream_p, stream_file} = hd(streaming_updates)
+      assert [{stream_p, stream_file} | _] = streaming_updates
       assert stream_p.bytes_downloaded >= @threshold
       assert stream_file == "model.safetensors"
 

@@ -521,7 +521,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.HuggingFaceTest do
 
       messages = collect_request_messages()
       cdn_requests = Enum.filter(messages, fn {host, _, _} -> host == "cdn.test" end)
-      assert length(cdn_requests) > 0
+      assert cdn_requests != []
       assert Enum.all?(cdn_requests, fn {_, _, auth} -> auth == nil end)
     end
   end
