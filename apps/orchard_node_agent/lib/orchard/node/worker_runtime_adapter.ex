@@ -7,6 +7,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
   @behaviour Orchard.Node.RuntimeAdapter
 
   alias GRPC.{Channel, RPCError}
+  alias GRPC.Client.Adapters.Gun
+  alias GRPC.Codec.Proto
 
   alias Orchard.Cluster.V1.{
     CancelInferenceRequest,
@@ -739,14 +741,14 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       scheme: "unix",
       cred: nil,
       ref: make_ref(),
-      adapter: GRPC.Client.Adapters.Gun,
-      codec: GRPC.Codec.Proto,
+      adapter: Gun,
+      codec: Proto,
       interceptors: [],
       compressor: nil,
       accepted_compressors: [],
       headers: []
     }
-    |> GRPC.Client.Adapters.Gun.connect([])
+    |> Gun.connect([])
   end
 
   # Classify worker health from GetStatus response.

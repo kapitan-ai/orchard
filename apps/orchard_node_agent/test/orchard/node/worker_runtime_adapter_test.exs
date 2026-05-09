@@ -1,6 +1,7 @@
 defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   use ExUnit.Case, async: false
 
+  alias GRPC.Client.Connection
   alias GRPC.RPCError
 
   alias Orchard.Cluster.V1.{
@@ -366,7 +367,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
       assert host_path == String.to_charlist(socket_path)
       assert is_pid(conn_pid)
-      assert {:error, :no_connection} = GRPC.Client.Connection.pick_channel(channel)
+      assert {:error, :no_connection} = Connection.pick_channel(channel)
 
       assert {:ok, status} = WorkerRuntimeAdapter.get_status(%{channel: channel}, timeout_ms: 500)
       assert status.ready == true
