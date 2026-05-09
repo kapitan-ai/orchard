@@ -464,7 +464,7 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
   # State Helpers
   # ===========================================================================
 
-  # TODO: All jobs (active + terminal) are retained in memory until BEAM restart.
+  # Lifecycle note: all jobs (active + terminal) are retained in memory until BEAM restart.
   # Expected cardinality is tiny for demo, but production use should add eviction
   # of terminal jobs after a TTL (e.g., 1 hour) or cap total retained count.
   defp initial_state do
