@@ -367,9 +367,9 @@ defmodule Orchard.Models.ManifestSchemaContractTest do
 
   defp verdict_rule_maps do
     [
-      manifest: apply(ManifestParser, :incompatibility_reason_rules, []),
-      helper_preflight: apply(SafeTokenizationPreflight, :incompatibility_reason_rules, []),
-      runtime_success: apply(TokenizerClient, :incompatibility_reason_rules, [])
+      manifest: ManifestParser.incompatibility_reason_rules(),
+      helper_preflight: SafeTokenizationPreflight.incompatibility_reason_rules(),
+      runtime_success: TokenizerClient.incompatibility_reason_rules()
     ]
   end
 
