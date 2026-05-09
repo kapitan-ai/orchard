@@ -540,32 +540,30 @@ defmodule OrchardCLI.Commands.StartTest do
             ]
           end,
           request: fn url, _opts ->
-            cond do
-              String.starts_with?(url, "https://") ->
-                {:ok, %{status: 200, body: "<html>oops</html>"}}
+            if String.starts_with?(url, "https://") do
+              {:ok, %{status: 200, body: "<html>oops</html>"}}
+            else
+              current = Process.get(http_calls_key, 0)
+              Process.put(http_calls_key, current + 1)
 
-              true ->
-                current = Process.get(http_calls_key, 0)
-                Process.put(http_calls_key, current + 1)
-
-                if current == 0 do
-                  {:error, :econnrefused}
-                else
-                  {:ok,
-                   %{
-                     status: 200,
-                     body: %{
+              if current == 0 do
+                {:error, :econnrefused}
+              else
+                {:ok,
+                 %{
+                   status: 200,
+                   body: %{
+                     "status" => "ok",
+                     "runtime" => %{
                        "status" => "ok",
-                       "runtime" => %{
-                         "status" => "ok",
-                         "node_id" => "n1",
-                         "worker_state" => "idle",
-                         "counts" => %{"loaded_models" => 0},
-                         "health" => "healthy"
-                       }
+                       "node_id" => "n1",
+                       "worker_state" => "idle",
+                       "counts" => %{"loaded_models" => 0},
+                       "health" => "healthy"
                      }
-                   }}
-                end
+                   }
+                 }}
+              end
             end
           end
         }
@@ -663,9 +661,10 @@ defmodule OrchardCLI.Commands.StartTest do
               {"Could not find service\n", 113}
 
             {"launchctl", ["bootstrap", "system", plist]} ->
-              cond do
-                plist =~ "controller" -> {"Bootstrap failed\n", 5}
-                true -> {"\n", 0}
+              if plist =~ "controller" do
+                {"Bootstrap failed\n", 5}
+              else
+                {"\n", 0}
               end
 
             _ ->
