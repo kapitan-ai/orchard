@@ -358,12 +358,13 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
   test "connect_worker_socket uses a direct UDS channel without connection supervisor refresh" do
     with_worker_runtime_unix_server(MemoryBudgetEndpoint, fn channel, socket_path ->
       assert %GRPC.Channel{
-               host: {:local, ^socket_path},
+               host: {:local, host_path},
                port: 0,
                scheme: "unix",
                adapter_payload: %{conn_pid: conn_pid}
              } = channel
 
+      assert host_path == String.to_charlist(socket_path)
       assert is_pid(conn_pid)
       assert {:error, :no_connection} = GRPC.Client.Connection.pick_channel(channel)
 

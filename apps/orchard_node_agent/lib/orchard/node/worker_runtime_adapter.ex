@@ -723,11 +723,14 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     do_wait_for_worker_ready(socket_path, port, deadline)
   end
 
+  # Build the UDS channel directly instead of GRPC.Stub.connect/1 so grpc-elixir
+  # does not register it with the connection supervisor refresh path. Gun's
+  # open_unix/2 success typing expects the local socket path as a charlist.
   @doc false
   @spec connect_worker_socket(String.t()) :: {:ok, Channel.t()} | {:error, term()}
   def connect_worker_socket(socket_path) when is_binary(socket_path) do
     %Channel{
-      host: {:local, socket_path},
+      host: {:local, String.to_charlist(socket_path)},
       port: 0,
       scheme: "unix",
       cred: nil,
