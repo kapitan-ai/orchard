@@ -308,16 +308,7 @@ defmodule Orchard.Models.ResidentMemoryBackfill do
         {:ok, count(summary, :updated)}
 
       0 ->
-        handle_concurrent_update(
-          write.model,
-          write.bundle_path,
-          write.manifest_path,
-          write.original_json,
-          write.pre_repair_sha,
-          write.new_sha,
-          summary,
-          env
-        )
+        handle_concurrent_update(write, summary, env)
 
       other when is_integer(other) ->
         env.log.(
@@ -366,82 +357,192 @@ defmodule Orchard.Models.ResidentMemoryBackfill do
     end
   end
 
-  defp handle_concurrent_update(
-         model,
-         bundle_path,
-         manifest_path,
-         original_json,
+  defp handle_concurrent_update(write, summary, env) do
+    context = %{
+      model: write.model,
+      bundle_path: write.bundle_path,
+      manifest_path: write.manifest_path,
+      original_json: write.original_json,
+      pre_repair_sha: write.pre_repair_sha,
+      new_sha: write.new_sha,
+      summary: summary,
+      env: env
+    }
+
+    write.model.id
+    |> concurrent_update_action(write.pre_repair_sha, write.new_sha, write.resident_memory_bytes)
+    |> handle_concurrent_update_action(context)
+  end
+
+  defp concurrent_update_action(model_id, pre_repair_sha, new_sha, expected_resident_memory_bytes) do
+    Repo.get(Model, model_id)
+    |> classify_concurrent_update(pre_repair_sha, new_sha, expected_resident_memory_bytes)
+  end
+
+  defp classify_concurrent_update(nil, _pre_repair_sha, _new_sha, _expected),
+    do: :critical_deleted
+
+  defp classify_concurrent_update(
+         %Model{resident_memory_bytes: value, artifact_sha256: sha},
          pre_repair_sha,
          new_sha,
-         summary,
-         env
+         expected
+       )
+       when is_integer(value) and value > 0 do
+    classify_positive_memory_update(value, sha, pre_repair_sha, new_sha, expected)
+  end
+
+  defp classify_concurrent_update(
+         %Model{resident_memory_bytes: 0, artifact_sha256: sha},
+         pre_repair_sha,
+         _new_sha,
+         _expected
        ) do
-    case Repo.get(Model, model.id) do
-      %Model{resident_memory_bytes: value, artifact_sha256: sha}
-      when is_integer(value) and value > 0 and sha == new_sha ->
-        # Someone else backfilled to the exact same content. Disk already matches.
-        env.log.(
-          "Skipping #{model_label(model)}: resident memory was backfilled concurrently (matching hash)"
+    classify_zero_memory_update(sha, pre_repair_sha)
+  end
+
+  defp classify_concurrent_update(%Model{artifact_sha256: sha}, sha, _new_sha, _expected),
+    do: :rollback_invalid_original
+
+  defp classify_concurrent_update(%Model{}, _pre_repair_sha, _new_sha, _expected),
+    do: :critical_invalid_row
+
+  defp classify_positive_memory_update(value, sha, _pre_repair_sha, sha, value),
+    do: :matching_backfill
+
+  defp classify_positive_memory_update(value, sha, _pre_repair_sha, sha, expected),
+    do: {:critical_memory_mismatch, sha, value, expected}
+
+  defp classify_positive_memory_update(value, sha, sha, _new_sha, value),
+    do: {:rollback_inconsistent_backfill, sha}
+
+  defp classify_positive_memory_update(value, sha, sha, _new_sha, expected),
+    do: {:rollback_memory_mismatch_original, sha, value, expected}
+
+  defp classify_positive_memory_update(_value, sha, _pre_repair_sha, _new_sha, _expected),
+    do: {:critical_hash_mismatch, sha}
+
+  defp classify_zero_memory_update(sha, sha), do: :rollback_original_zero
+
+  defp classify_zero_memory_update(sha, _pre_repair_sha),
+    do: {:critical_zero_hash_mismatch, sha}
+
+  defp handle_concurrent_update_action(:matching_backfill, context) do
+    # Someone else backfilled to the exact same content. Disk already matches.
+    context.env.log.(
+      "Skipping #{model_label(context.model)}: resident memory was backfilled concurrently (matching hash and resident_memory_bytes)"
+    )
+
+    {:ok, count(context.summary, :skipped_already_present)}
+  end
+
+  defp handle_concurrent_update_action({:rollback_inconsistent_backfill, sha}, context) do
+    # DB claims backfilled but still shows old hash — safe to rollback to DB state.
+    context.env.log.(
+      "Rolling back #{model_label(context.model)}: DB backfill state inconsistent (db_sha=#{sha}, pre_repair_sha=#{context.pre_repair_sha})"
+    )
+
+    rollback_manifest(context)
+  end
+
+  defp handle_concurrent_update_action({:critical_memory_mismatch, sha, value, expected}, context) do
+    context.env.log.(
+      "Critical #{model_label(context.model)}: DB hash=#{sha} matches rewritten manifest but resident_memory_bytes=#{value} does not match expected=#{expected}; manual repair required"
+    )
+
+    {:error, count(context.summary, :failed)}
+  end
+
+  defp handle_concurrent_update_action({:critical_hash_mismatch, sha}, context) do
+    # DB has a third hash that matches neither pre_repair_sha nor new_sha.
+    # Rolling back to pre_repair_sha would create a mismatch. Hard-fail.
+    context.env.log.(
+      "Critical #{model_label(context.model)}: DB hash=#{sha} does not match pre_repair=#{context.pre_repair_sha} nor new=#{context.new_sha}; manual repair required"
+    )
+
+    {:error, count(context.summary, :failed)}
+  end
+
+  defp handle_concurrent_update_action(:rollback_original_zero, context) do
+    # Pure race: DB still shows original hash. Safe to rollback.
+    rollback_manifest(context)
+  end
+
+  defp handle_concurrent_update_action({:critical_zero_hash_mismatch, sha}, context) do
+    # DB shows zero resident_memory_bytes but a non-original hash.
+    # Rolling back to pre_repair_sha would create a mismatch. Hard-fail.
+    context.env.log.(
+      "Critical #{model_label(context.model)}: DB hash=#{sha} does not match pre_repair=#{context.pre_repair_sha} while resident_memory_bytes=0; manual repair required"
+    )
+
+    {:error, count(context.summary, :failed)}
+  end
+
+  defp handle_concurrent_update_action(
+         {:rollback_memory_mismatch_original, sha, value, expected},
+         context
+       ) do
+    context.env.log.(
+      "Critical #{model_label(context.model)}: DB hash=#{sha} still matches pre-repair manifest but resident_memory_bytes=#{value} does not match expected=#{expected}; manifest rolled back and manual repair required"
+    )
+
+    rollback_invalid_manifest(context)
+  end
+
+  defp handle_concurrent_update_action(:rollback_invalid_original, context) do
+    context.env.log.(
+      "Rolling back #{model_label(context.model)}: DB resident_memory_bytes state is invalid but hash still matches pre-repair manifest"
+    )
+
+    rollback_invalid_manifest(context)
+  end
+
+  defp handle_concurrent_update_action(:critical_invalid_row, context) do
+    context.env.log.(
+      "Critical #{model_label(context.model)}: DB resident_memory_bytes state is invalid after manifest rewrite; manual repair required"
+    )
+
+    {:error, count(context.summary, :failed)}
+  end
+
+  defp handle_concurrent_update_action(:critical_deleted, context) do
+    # Model was deleted concurrently after manifest rewrite.
+    context.env.log.(
+      "Critical #{model_label(context.model)}: model deleted concurrently after manifest rewrite; manual repair required"
+    )
+
+    {:error, count(context.summary, :failed)}
+  end
+
+  defp rollback_invalid_manifest(context) do
+    with :ok <- write_manifest(context.env, context.manifest_path, context.original_json),
+         {:ok, sha} <- current_tree_sha(context.bundle_path),
+         true <- sha == context.pre_repair_sha do
+      context.env.log.(
+        "Critical #{model_label(context.model)}: invalid DB resident_memory_bytes state requires manual repair; manifest rolled back"
+      )
+
+      {:error, count(context.summary, :failed)}
+    else
+      reason ->
+        context.env.log.(
+          "Critical #{model_label(context.model)}: rollback failed #{inspect(reason)}"
         )
 
-        {:ok, count(summary, :skipped_already_present)}
-
-      %Model{resident_memory_bytes: value, artifact_sha256: sha}
-      when is_integer(value) and value > 0 and sha == pre_repair_sha ->
-        # DB claims backfilled but still shows old hash — safe to rollback to DB state.
-        env.log.(
-          "Rolling back #{model_label(model)}: DB backfill state inconsistent (db_sha=#{sha}, pre_repair_sha=#{pre_repair_sha})"
-        )
-
-        rollback_manifest(
-          model,
-          bundle_path,
-          manifest_path,
-          original_json,
-          pre_repair_sha,
-          summary,
-          env
-        )
-
-      %Model{resident_memory_bytes: value, artifact_sha256: sha}
-      when is_integer(value) and value > 0 ->
-        # DB has a third hash that matches neither pre_repair_sha nor new_sha.
-        # Rolling back to pre_repair_sha would create a mismatch. Hard-fail.
-        env.log.(
-          "Critical #{model_label(model)}: DB hash=#{sha} does not match pre_repair=#{pre_repair_sha} nor new=#{new_sha}; manual repair required"
-        )
-
-        {:error, count(summary, :failed)}
-
-      %Model{resident_memory_bytes: 0, artifact_sha256: sha} when sha == pre_repair_sha ->
-        # Pure race: DB still shows original hash. Safe to rollback.
-        rollback_manifest(
-          model,
-          bundle_path,
-          manifest_path,
-          original_json,
-          pre_repair_sha,
-          summary,
-          env
-        )
-
-      %Model{resident_memory_bytes: 0, artifact_sha256: sha} ->
-        # DB shows zero resident_memory_bytes but a non-original hash.
-        # Rolling back to pre_repair_sha would create a mismatch. Hard-fail.
-        env.log.(
-          "Critical #{model_label(model)}: DB hash=#{sha} does not match pre_repair=#{pre_repair_sha} while resident_memory_bytes=0; manual repair required"
-        )
-
-        {:error, count(summary, :failed)}
-
-      nil ->
-        # Model was deleted concurrently after manifest rewrite.
-        env.log.(
-          "Critical #{model_label(model)}: model deleted concurrently after manifest rewrite; manual repair required"
-        )
-
-        {:error, count(summary, :failed)}
+        {:error, count(context.summary, :failed)}
     end
+  end
+
+  defp rollback_manifest(%{} = context) do
+    rollback_manifest(
+      context.model,
+      context.bundle_path,
+      context.manifest_path,
+      context.original_json,
+      context.pre_repair_sha,
+      context.summary,
+      context.env
+    )
   end
 
   defp rollback_manifest(

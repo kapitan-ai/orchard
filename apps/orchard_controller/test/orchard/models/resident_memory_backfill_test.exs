@@ -279,6 +279,189 @@ defmodule Orchard.Models.ResidentMemoryBackfillTest do
     assert tree_sha!(bundle_path) == sha
   end
 
+  test "catalog update race with matching backfill skips as already present", ctx do
+    %{model: model, bundle_path: bundle_path, expected_resident: expected_resident} =
+      create_estimable_model!(ctx)
+
+    assert {:ok, result} =
+             ResidentMemoryBackfill.run(
+               apply: true,
+               log: quiet_log(),
+               update_catalog: fn _model, resident_memory_bytes, _pre_sha, new_sha ->
+                 assert resident_memory_bytes == expected_resident
+
+                 model
+                 |> Ecto.Changeset.change(
+                   resident_memory_bytes: resident_memory_bytes,
+                   artifact_sha256: new_sha
+                 )
+                 |> Repo.update!()
+
+                 0
+               end
+             )
+
+    assert result.skipped_already_present == 1
+    assert result.updated == 0
+    assert result.failed == 0
+    assert %{"resident_memory_bytes" => ^expected_resident} = read_manifest!(bundle_path)
+
+    updated_model = Repo.get!(Orchard.Models.Model, model.id)
+    assert updated_model.resident_memory_bytes == expected_resident
+    assert updated_model.artifact_sha256 == tree_sha!(bundle_path)
+  end
+
+  test "catalog update race with new hash but wrong memory fails without rollback", ctx do
+    %{model: model, bundle_path: bundle_path, expected_resident: expected_resident} =
+      create_estimable_model!(ctx)
+
+    wrong_resident = expected_resident + 1
+
+    assert {:error, result} =
+             ResidentMemoryBackfill.run(
+               apply: true,
+               log: quiet_log(),
+               update_catalog: fn _model, _resident_memory_bytes, _pre_sha, new_sha ->
+                 model
+                 |> Ecto.Changeset.change(
+                   resident_memory_bytes: wrong_resident,
+                   artifact_sha256: new_sha
+                 )
+                 |> Repo.update!()
+
+                 0
+               end
+             )
+
+    assert result.failed == 1
+    assert result.updated == 0
+    assert result.skipped_concurrent == 0
+    assert %{"resident_memory_bytes" => ^expected_resident} = read_manifest!(bundle_path)
+
+    updated_model = Repo.get!(Orchard.Models.Model, model.id)
+    assert updated_model.resident_memory_bytes == wrong_resident
+    assert updated_model.artifact_sha256 == tree_sha!(bundle_path)
+  end
+
+  test "catalog update race with pre-repair hash but wrong memory rolls back and reports failed",
+       ctx do
+    %{
+      model: model,
+      bundle_path: bundle_path,
+      sha: original_sha,
+      expected_resident: expected_resident
+    } =
+      create_estimable_model!(ctx)
+
+    wrong_resident = expected_resident + 1
+
+    assert {:error, result} =
+             ResidentMemoryBackfill.run(
+               apply: true,
+               log: quiet_log(),
+               update_catalog: fn _model, _resident_memory_bytes, _pre_sha, _new_sha ->
+                 model
+                 |> Ecto.Changeset.change(
+                   resident_memory_bytes: wrong_resident,
+                   artifact_sha256: original_sha
+                 )
+                 |> Repo.update!()
+
+                 0
+               end
+             )
+
+    assert result.failed == 1
+    assert result.updated == 0
+    assert result.skipped_concurrent == 0
+    assert %{"resident_memory_bytes" => 0} = read_manifest!(bundle_path)
+    assert tree_sha!(bundle_path) == original_sha
+
+    updated_model = Repo.get!(Orchard.Models.Model, model.id)
+    assert updated_model.resident_memory_bytes == wrong_resident
+    assert updated_model.artifact_sha256 == original_sha
+  end
+
+  test "catalog update race with positive memory and third hash fails without rollback", ctx do
+    %{model: model, bundle_path: bundle_path, expected_resident: expected_resident} =
+      create_estimable_model!(ctx)
+
+    third_sha = String.duplicate("b", 64)
+
+    assert {:error, result} =
+             ResidentMemoryBackfill.run(
+               apply: true,
+               log: quiet_log(),
+               update_catalog: fn _model, resident_memory_bytes, _pre_sha, _new_sha ->
+                 assert resident_memory_bytes == expected_resident
+
+                 model
+                 |> Ecto.Changeset.change(
+                   resident_memory_bytes: resident_memory_bytes,
+                   artifact_sha256: third_sha
+                 )
+                 |> Repo.update!()
+
+                 0
+               end
+             )
+
+    assert result.failed == 1
+    assert result.updated == 0
+    assert result.skipped_concurrent == 0
+    assert %{"resident_memory_bytes" => ^expected_resident} = read_manifest!(bundle_path)
+    assert Repo.get!(Orchard.Models.Model, model.id).artifact_sha256 == third_sha
+    assert tree_sha!(bundle_path) != third_sha
+  end
+
+  test "catalog update race with zero memory and third hash fails without rollback", ctx do
+    %{model: model, bundle_path: bundle_path, expected_resident: expected_resident} =
+      create_estimable_model!(ctx)
+
+    third_sha = String.duplicate("c", 64)
+
+    assert {:error, result} =
+             ResidentMemoryBackfill.run(
+               apply: true,
+               log: quiet_log(),
+               update_catalog: fn _model, _resident_memory_bytes, _pre_sha, _new_sha ->
+                 model
+                 |> Ecto.Changeset.change(artifact_sha256: third_sha, resident_memory_bytes: 0)
+                 |> Repo.update!()
+
+                 0
+               end
+             )
+
+    assert result.failed == 1
+    assert result.updated == 0
+    assert result.skipped_concurrent == 0
+    assert %{"resident_memory_bytes" => ^expected_resident} = read_manifest!(bundle_path)
+    assert Repo.get!(Orchard.Models.Model, model.id).artifact_sha256 == third_sha
+    assert tree_sha!(bundle_path) != third_sha
+  end
+
+  test "catalog update race with deleted model fails without rollback", ctx do
+    %{model: model, bundle_path: bundle_path, expected_resident: expected_resident} =
+      create_estimable_model!(ctx)
+
+    assert {:error, result} =
+             ResidentMemoryBackfill.run(
+               apply: true,
+               log: quiet_log(),
+               update_catalog: fn _model, _resident_memory_bytes, _pre_sha, _new_sha ->
+                 Repo.delete!(model)
+                 0
+               end
+             )
+
+    assert result.failed == 1
+    assert result.updated == 0
+    assert result.skipped_concurrent == 0
+    assert %{"resident_memory_bytes" => ^expected_resident} = read_manifest!(bundle_path)
+    assert Repo.get(Orchard.Models.Model, model.id) == nil
+  end
+
   test "rollback write failure aborts and reports failed", ctx do
     %{bundle_path: bundle_path} = create_estimable_model!(ctx)
     writer = fail_second_write()
