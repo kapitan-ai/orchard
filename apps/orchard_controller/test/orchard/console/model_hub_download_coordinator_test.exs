@@ -439,6 +439,65 @@ defmodule OrchardConsole.ModelHubDownloadCoordinatorTest do
       send_to_coordinator({:model_hub, ref, :download_progress, %{phase: :downloading}})
       refute_receive {:model_hub_download, _}, 100
     end
+
+    test "ignores duplicate terminal download_finished messages after success" do
+      Coordinator.subscribe()
+      {:ok, _} = Coordinator.start_download("owner/model")
+      assert_receive {:stub_download, _, ref, _, _}, 200
+      assert_receive {:model_hub_download, _}, 200
+
+      send_to_coordinator({:model_hub, ref, :download_finished, {:ok, %{model_id: "m1"}}})
+      assert_receive {:model_hub_download, completed}, 200
+      assert completed.status == :completed
+      assert completed.result == %{model_id: "m1"}
+
+      duplicate_error = %{
+        status: :error,
+        code: "duplicate",
+        message: "should not replace terminal snapshot"
+      }
+
+      # Duplicate terminal payloads must remain true no-ops: no broadcast
+      # and no state mutation after the first terminal snapshot.
+      send_to_coordinator({:model_hub, ref, :download_finished, {:error, duplicate_error}})
+      refute_receive {:model_hub_download, _}, 100
+
+      snapshot = Coordinator.latest_snapshot_for_repo("owner/model")
+      assert snapshot.status == :completed
+      assert snapshot.result == %{model_id: "m1"}
+      assert snapshot.error == nil
+    end
+
+    test "ignores duplicate terminal download_finished messages after error" do
+      Coordinator.subscribe()
+      {:ok, _} = Coordinator.start_download("owner/model")
+      assert_receive {:stub_download, _, ref, _, _}, 200
+      assert_receive {:model_hub_download, _}, 200
+
+      error = %{
+        status: :error,
+        code: "hf_error",
+        message: "Bearer hf_secret_1234567890 should be redacted"
+      }
+
+      send_to_coordinator({:model_hub, ref, :download_finished, {:error, error}})
+      assert_receive {:model_hub_download, failed}, 200
+      assert failed.status == :error
+      assert failed.result == nil
+      assert failed.error.message =~ "Bearer [REDACTED]"
+      refute failed.error.message =~ "hf_secret_1234567890"
+
+      duplicate_result = %{model_id: "should-not-replace-terminal-snapshot"}
+
+      # Symmetric terminal no-op check for error-first jobs.
+      send_to_coordinator({:model_hub, ref, :download_finished, {:ok, duplicate_result}})
+      refute_receive {:model_hub_download, _}, 100
+
+      snapshot = Coordinator.latest_snapshot_for_repo("owner/model")
+      assert snapshot.status == :error
+      assert snapshot.result == nil
+      assert snapshot.error.message == failed.error.message
+    end
   end
 
   describe "crash handling" do

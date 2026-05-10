@@ -156,64 +156,17 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
   end
 
   def handle_info({:model_hub, ref, :download_finished, {:ok, result}}, state) do
-    case Map.get(state.jobs_by_ref, ref) do
-      nil ->
-        {:noreply, state}
-
-      job ->
-        if terminal?(job.snapshot.status) do
-          {:noreply, state}
-        else
-          result_map = if is_map(result), do: result, else: %{}
-
-          snapshot = %{
-            job.snapshot
-            | status: :completed,
-              result: result_map,
-              error: nil
-          }
-
-          state =
-            state
-            |> update_job_snapshot(ref, snapshot)
-            |> deactivate_job(ref, job)
-            |> cleanup_monitor(job)
-
-          broadcast(snapshot)
-          {:noreply, state}
-        end
-    end
+    finalize_download(ref, state, fn job ->
+      result_map = if is_map(result), do: result, else: %{}
+      %{job.snapshot | status: :completed, result: result_map, error: nil}
+    end)
   end
 
   def handle_info({:model_hub, ref, :download_finished, {:error, error}}, state) do
-    case Map.get(state.jobs_by_ref, ref) do
-      nil ->
-        {:noreply, state}
-
-      job ->
-        if terminal?(job.snapshot.status) do
-          {:noreply, state}
-        else
-          error_map =
-            if is_map(error), do: Redaction.sanitize_error_map(error), else: default_error()
-
-          snapshot = %{
-            job.snapshot
-            | status: :error,
-              result: nil,
-              error: error_map
-          }
-
-          state =
-            state
-            |> update_job_snapshot(ref, snapshot)
-            |> deactivate_job(ref, job)
-            |> cleanup_monitor(job)
-
-          broadcast(snapshot)
-          {:noreply, state}
-        end
-    end
+    finalize_download(ref, state, fn job ->
+      error_map = if is_map(error), do: Redaction.sanitize_error_map(error), else: default_error()
+      %{job.snapshot | status: :error, result: nil, error: error_map}
+    end)
   end
 
   def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
@@ -271,6 +224,37 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  defp finalize_download(ref, state, build_snapshot) do
+    case Map.get(state.jobs_by_ref, ref) do
+      nil ->
+        {:noreply, state}
+
+      job ->
+        finalize_download_job(ref, state, job, build_snapshot)
+    end
+  end
+
+  defp finalize_download_job(ref, state, job, build_snapshot) do
+    if terminal?(job.snapshot.status) do
+      {:noreply, state}
+    else
+      complete_download_job(ref, state, job, build_snapshot)
+    end
+  end
+
+  defp complete_download_job(ref, state, job, build_snapshot) do
+    snapshot = build_snapshot.(job)
+
+    state =
+      state
+      |> update_job_snapshot(ref, snapshot)
+      |> deactivate_job(ref, job)
+      |> cleanup_monitor(job)
+
+    broadcast(snapshot)
+    {:noreply, state}
+  end
 
   # ===========================================================================
   # Start Download Internals
