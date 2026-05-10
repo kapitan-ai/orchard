@@ -171,59 +171,56 @@ defmodule OrchardConsole.ModelHubDownloadCoordinator do
 
   def handle_info({:DOWN, monitor_ref, :process, pid, reason}, state) do
     case Map.get(state.monitor_ref_to_job_ref, monitor_ref) do
-      nil ->
-        {:noreply, state}
-
-      job_ref ->
-        case Map.get(state.jobs_by_ref, job_ref) do
-          nil ->
-            {:noreply,
-             %{
-               state
-               | monitor_ref_to_job_ref: Map.delete(state.monitor_ref_to_job_ref, monitor_ref)
-             }}
-
-          job ->
-            if terminal?(job.snapshot.status) do
-              # Already terminal — just clean up monitor mapping
-              {:noreply,
-               %{
-                 state
-                 | monitor_ref_to_job_ref: Map.delete(state.monitor_ref_to_job_ref, monitor_ref)
-               }}
-            else
-              Logger.error(
-                "ModelHubDownloadCoordinator: download task " <>
-                  Redaction.safe_inspect(pid) <>
-                  " for ref " <>
-                  Redaction.safe_inspect(job_ref) <>
-                  " crashed: " <> Redaction.safe_inspect(reason)
-              )
-
-              snapshot = %{
-                job.snapshot
-                | status: :error,
-                  result: nil,
-                  error: default_error()
-              }
-
-              state =
-                state
-                |> update_job_snapshot(job_ref, snapshot)
-                |> deactivate_job(job_ref, job)
-                |> Map.put(
-                  :monitor_ref_to_job_ref,
-                  Map.delete(state.monitor_ref_to_job_ref, monitor_ref)
-                )
-
-              broadcast(snapshot)
-              {:noreply, state}
-            end
-        end
+      nil -> {:noreply, state}
+      job_ref -> handle_download_down(job_ref, monitor_ref, pid, reason, state)
     end
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  defp handle_download_down(job_ref, monitor_ref, pid, reason, state) do
+    case Map.get(state.jobs_by_ref, job_ref) do
+      nil ->
+        {:noreply, remove_monitor_ref(state, monitor_ref)}
+
+      job ->
+        handle_download_job_down(job_ref, monitor_ref, pid, reason, state, job)
+    end
+  end
+
+  defp handle_download_job_down(job_ref, monitor_ref, pid, reason, state, job) do
+    if terminal?(job.snapshot.status) do
+      # Already terminal — just clean up monitor mapping
+      {:noreply, remove_monitor_ref(state, monitor_ref)}
+    else
+      handle_download_crash(job_ref, monitor_ref, pid, reason, state, job)
+    end
+  end
+
+  defp handle_download_crash(job_ref, monitor_ref, pid, reason, state, job) do
+    Logger.error(
+      "ModelHubDownloadCoordinator: download task " <>
+        Redaction.safe_inspect(pid) <>
+        " for ref " <>
+        Redaction.safe_inspect(job_ref) <>
+        " crashed: " <> Redaction.safe_inspect(reason)
+    )
+
+    snapshot = %{job.snapshot | status: :error, result: nil, error: default_error()}
+
+    state =
+      state
+      |> update_job_snapshot(job_ref, snapshot)
+      |> deactivate_job(job_ref, job)
+      |> remove_monitor_ref(monitor_ref)
+
+    broadcast(snapshot)
+    {:noreply, state}
+  end
+
+  defp remove_monitor_ref(state, monitor_ref) do
+    %{state | monitor_ref_to_job_ref: Map.delete(state.monitor_ref_to_job_ref, monitor_ref)}
+  end
 
   defp finalize_download(ref, state, build_snapshot) do
     case Map.get(state.jobs_by_ref, ref) do
