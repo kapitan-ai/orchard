@@ -866,23 +866,27 @@ defmodule OrchardConsole.ModelHubLive do
     |> Enum.filter(fn {sibling, _idx} -> safetensors_shard?(sibling.path) end)
     |> Enum.group_by(fn {sibling, _idx} -> safetensors_shard_pattern(sibling.path) end)
     |> Enum.reject(fn {_pattern, members} -> length(members) < 2 end)
-    |> Enum.map(fn {pattern, members} ->
-      first_index = members |> Enum.map(fn {_s, idx} -> idx end) |> Enum.min()
-      shard_count = length(members)
-
-      {known_bytes, unknown_count} =
-        Enum.reduce(members, {0, 0}, fn {sibling, _idx}, {bytes, unknown} ->
-          case sibling.size_bytes do
-            n when is_integer(n) and n > 0 -> {bytes + n, unknown}
-            _ -> {bytes, unknown + 1}
-          end
-        end)
-
-      {first_index, format_shard_group_line(pattern, shard_count, known_bytes, unknown_count)}
-    end)
+    |> Enum.map(fn {pattern, members} -> shard_group_label(pattern, members) end)
     |> Enum.sort_by(fn {idx, _} -> idx end)
     |> Enum.map(fn {_idx, label} -> label end)
   end
+
+  defp shard_group_label(pattern, members) do
+    first_index = members |> Enum.map(fn {_sibling, idx} -> idx end) |> Enum.min()
+    shard_count = length(members)
+    {known_bytes, unknown_count} = shard_group_size(members)
+
+    {first_index, format_shard_group_line(pattern, shard_count, known_bytes, unknown_count)}
+  end
+
+  defp shard_group_size(members) do
+    Enum.reduce(members, {0, 0}, fn {sibling, _idx}, acc ->
+      add_shard_size(acc, sibling.size_bytes)
+    end)
+  end
+
+  defp add_shard_size({bytes, unknown}, n) when is_integer(n) and n > 0, do: {bytes + n, unknown}
+  defp add_shard_size({bytes, unknown}, _size), do: {bytes, unknown + 1}
 
   @safetensors_shard_regex ~r/-\d+-of-\d+\.safetensors$/
 
