@@ -228,38 +228,7 @@ defmodule Orchard.Node.WorkerProcess do
 
   def handle_call({:score_prefix_cache, %ScorePrefixCacheRequest{} = request, opts}, _from, state) do
     timeout_ms = Keyword.get(opts, :timeout_ms, @score_prefix_cache_default_timeout_ms)
-
-    response =
-      cond do
-        not state.loaded? or state.adapter_state == nil ->
-          score_prefix_cache_response("model_not_loaded", "model is not loaded")
-
-        timeout_ms <= 0 ->
-          score_prefix_cache_response("timeout", "score request timed out")
-
-        request.model_ref != state.model_ref ->
-          score_prefix_cache_response("model_not_loaded", "model is not loaded")
-
-        function_exported?(state.adapter, :score_prefix_cache, 3) ->
-          case state.adapter.score_prefix_cache(state.adapter_state, request,
-                 timeout_ms: timeout_ms
-               ) do
-            {:ok, response} ->
-              normalize_score_prefix_cache_response(response)
-
-            {:error, :timeout} ->
-              score_prefix_cache_response("timeout", "score request timed out")
-
-            {:error, reason} ->
-              score_prefix_cache_response("error", "score request failed: #{inspect(reason)}")
-          end
-
-        true ->
-          score_prefix_cache_response(
-            "unsupported_version",
-            "runtime adapter does not support score_prefix_cache"
-          )
-      end
+    response = score_prefix_cache_for_state(state, request, timeout_ms)
 
     {:reply, response, state}
   end
@@ -500,6 +469,49 @@ defmodule Orchard.Node.WorkerProcess do
 
   defp flush_port_log_buffer(%{port_log_buffer: buffer} = state) do
     log_worker_line(buffer, state)
+  end
+
+  defp score_prefix_cache_for_state(state, request, timeout_ms) do
+    case score_prefix_cache_preflight(state, request, timeout_ms) do
+      :ok -> call_score_prefix_cache_adapter(state, request, timeout_ms)
+      {:response, response} -> response
+    end
+  end
+
+  defp score_prefix_cache_preflight(state, request, timeout_ms) do
+    cond do
+      not state.loaded? or state.adapter_state == nil ->
+        {:response, score_prefix_cache_response("model_not_loaded", "model is not loaded")}
+
+      timeout_ms <= 0 ->
+        {:response, score_prefix_cache_response("timeout", "score request timed out")}
+
+      request.model_ref != state.model_ref ->
+        {:response, score_prefix_cache_response("model_not_loaded", "model is not loaded")}
+
+      not function_exported?(state.adapter, :score_prefix_cache, 3) ->
+        {:response,
+         score_prefix_cache_response(
+           "unsupported_version",
+           "runtime adapter does not support score_prefix_cache"
+         )}
+
+      true ->
+        :ok
+    end
+  end
+
+  defp call_score_prefix_cache_adapter(state, request, timeout_ms) do
+    case state.adapter.score_prefix_cache(state.adapter_state, request, timeout_ms: timeout_ms) do
+      {:ok, response} ->
+        normalize_score_prefix_cache_response(response)
+
+      {:error, :timeout} ->
+        score_prefix_cache_response("timeout", "score request timed out")
+
+      {:error, reason} ->
+        score_prefix_cache_response("error", "score request failed: #{inspect(reason)}")
+    end
   end
 
   defp score_prefix_cache_timeout_ms(%ScorePrefixCacheRequest{deadline_unix_ms: deadline})
