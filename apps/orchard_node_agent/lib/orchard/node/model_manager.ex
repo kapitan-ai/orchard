@@ -317,31 +317,8 @@ defmodule Orchard.Node.ModelManager do
   end
 
   def handle_call({:score_prefix_cache, %ScorePrefixCacheRequest{} = request}, _from, state) do
-    case request.model_ref do
-      %ModelRef{} = model_ref ->
-        key = model_key(model_ref.model_id, model_ref.version)
-
-        case Map.get(state.workers, key) do
-          %{placement_state: :PLACEMENT_STATE_LOADED, pid: pid} ->
-            timeout_ms = score_prefix_cache_timeout_ms(request)
-
-            response =
-              if timeout_ms <= 0 do
-                score_prefix_cache_response("timeout", "score request timed out")
-              else
-                safe_score_prefix_cache(pid, request, timeout_ms)
-              end
-
-            {:reply, normalize_score_prefix_cache_response(response), state}
-
-          _other ->
-            {:reply, score_prefix_cache_response("model_not_loaded", "model is not loaded"),
-             state}
-        end
-
-      _other ->
-        {:reply, score_prefix_cache_response("invalid_request", "model_ref is required"), state}
-    end
+    response = score_prefix_cache_for_state(request, state)
+    {:reply, response, state}
   end
 
   defp handle_prepare_request(%ExecuteInferenceRequest{} = request, subscriber, state) do
@@ -1183,6 +1160,38 @@ defmodule Orchard.Node.ModelManager do
 
   defp safe_unload(pid, opts) do
     safe_worker_call(fn -> WorkerProcess.unload(pid, opts) end)
+  end
+
+  defp score_prefix_cache_for_state(
+         %ScorePrefixCacheRequest{model_ref: %ModelRef{} = model_ref} = request,
+         state
+       ) do
+    key = model_key(model_ref.model_id, model_ref.version)
+
+    case Map.get(state.workers, key) do
+      %{placement_state: :PLACEMENT_STATE_LOADED, pid: pid} ->
+        score_prefix_cache_for_worker(pid, request)
+
+      _other ->
+        score_prefix_cache_response("model_not_loaded", "model is not loaded")
+    end
+  end
+
+  defp score_prefix_cache_for_state(_request, _state) do
+    score_prefix_cache_response("invalid_request", "model_ref is required")
+  end
+
+  defp score_prefix_cache_for_worker(pid, request) do
+    timeout_ms = score_prefix_cache_timeout_ms(request)
+
+    response =
+      if timeout_ms <= 0 do
+        score_prefix_cache_response("timeout", "score request timed out")
+      else
+        safe_score_prefix_cache(pid, request, timeout_ms)
+      end
+
+    normalize_score_prefix_cache_response(response)
   end
 
   defp safe_score_prefix_cache(pid, request, timeout_ms) do
