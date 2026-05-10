@@ -417,34 +417,44 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     supports_prompt_token_ids? = Map.get(ensure_result, :worker_supports_prompt_token_ids, false)
     metadata = prompt_token_id_gate_metadata(request, ensure_result, schedule, model_load_request)
 
-    cond do
-      mode == :off ->
-        {:ok, %{request | prompt_token_ids: []}}
+    apply_prompt_token_ids_gate(
+      mode,
+      request,
+      prompt_token_ids,
+      supports_prompt_token_ids?,
+      metadata
+    )
+  end
 
-      mode in [:on, :reject] and prompt_token_ids != [] and supports_prompt_token_ids? ->
-        Telemetry.prompt_token_ids_dispatched(
-          metadata,
-          length(prompt_token_ids)
-        )
+  defp apply_prompt_token_ids_gate(:off, request, _prompt_token_ids, _supports?, _metadata) do
+    {:ok, %{request | prompt_token_ids: []}}
+  end
 
-        {:ok, request}
+  defp apply_prompt_token_ids_gate(mode, request, prompt_token_ids, true, metadata)
+       when mode in [:on, :reject] and prompt_token_ids != [] do
+    Telemetry.prompt_token_ids_dispatched(metadata, length(prompt_token_ids))
+    {:ok, request}
+  end
 
-      mode == :on and prompt_token_ids != [] ->
-        Telemetry.unsafe_mode_active(Map.put(metadata, :reason, :legacy_worker_no_capability))
-
-        {:ok, %{request | prompt_token_ids: []}}
-
-      mode == :on ->
-        {:ok, %{request | prompt_token_ids: []}}
-
-      mode == :reject and prompt_token_ids == [] ->
-        {:error,
-         {:missing_prompt_token_ids, Map.put(metadata, :reason, :missing_prompt_token_ids)}}
-
-      mode == :reject ->
-        {:error,
-         {:legacy_worker_no_capability, Map.put(metadata, :reason, :legacy_worker_no_capability)}}
+  defp apply_prompt_token_ids_gate(:on, request, prompt_token_ids, false, metadata) do
+    if prompt_token_ids != [] do
+      Telemetry.unsafe_mode_active(Map.put(metadata, :reason, :legacy_worker_no_capability))
     end
+
+    {:ok, %{request | prompt_token_ids: []}}
+  end
+
+  defp apply_prompt_token_ids_gate(:on, request, [], _supports?, _metadata) do
+    {:ok, %{request | prompt_token_ids: []}}
+  end
+
+  defp apply_prompt_token_ids_gate(:reject, _request, [], _supports?, metadata) do
+    {:error, {:missing_prompt_token_ids, Map.put(metadata, :reason, :missing_prompt_token_ids)}}
+  end
+
+  defp apply_prompt_token_ids_gate(:reject, _request, _prompt_token_ids, false, metadata) do
+    {:error,
+     {:legacy_worker_no_capability, Map.put(metadata, :reason, :legacy_worker_no_capability)}}
   end
 
   defp prompt_token_id_gate_metadata(request, ensure_result, schedule, model_load_request) do

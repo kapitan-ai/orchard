@@ -95,6 +95,20 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
                     %ExecuteInferenceRequest{prompt_token_ids: @prompt_ids}}
   end
 
+  test "safe-mode on with capable worker strips empty prompt_token_ids silently" do
+    dispatched_ref = attach_telemetry([:orchard, :tokenizer, :prompt_token_ids_dispatched])
+    unsafe_ref = attach_telemetry([:orchard, :tokenizer, :unsafe_mode_active])
+    configure_stub(worker_supports_prompt_token_ids: true)
+
+    with_tokenizer_safe_mode(:on, fn ->
+      assert {:ok, _events} = dispatch_without_prompt_token_ids("req-token-ids-on-empty-capable")
+    end)
+
+    refute_receive {^dispatched_ref, [:orchard, :tokenizer, :prompt_token_ids_dispatched], _, _}
+    refute_receive {^unsafe_ref, [:orchard, :tokenizer, :unsafe_mode_active], _, _}
+    assert_receive {:captured_execute_request, %ExecuteInferenceRequest{prompt_token_ids: []}}
+  end
+
   test "safe-mode on strips prompt_token_ids for legacy workers and emits unsafe fallback telemetry" do
     attach_ref = attach_telemetry([:orchard, :tokenizer, :unsafe_mode_active])
     configure_stub(worker_supports_prompt_token_ids: false)
