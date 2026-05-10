@@ -192,30 +192,41 @@ defmodule Orchard.Requests do
   def mark_terminal_with_step_events(request_id, attrs, step_events) when is_list(step_events) do
     with {:ok, normalized_step_events} <- normalize_request_step_events(step_events) do
       Repo.transaction(fn ->
-        case lock_request(request_id) do
-          {:ok, current_request} ->
-            case terminal_step_insert_mode(current_request, attrs) do
-              :append ->
-                {:ok, _step_events} =
-                  insert_request_step_events(request_id, normalized_step_events)
-
-                case apply_terminal_update(current_request, attrs) do
-                  {:ok, updated_request} -> {:ok, updated_request}
-                  {:error, changeset} -> Repo.rollback({:request_changeset, changeset})
-                end
-
-              :skip ->
-                apply_terminal_update(current_request, attrs)
-
-              :already_terminal ->
-                Repo.rollback(:already_terminal)
-            end
-
-          {:error, :request_not_found} ->
-            Repo.rollback(:request_not_found)
-        end
+        mark_terminal_transaction(request_id, attrs, normalized_step_events)
       end)
       |> unwrap_transaction_result()
+    end
+  end
+
+  defp mark_terminal_transaction(request_id, attrs, normalized_step_events) do
+    case lock_request(request_id) do
+      {:ok, current_request} ->
+        mark_locked_terminal_request(current_request, attrs, normalized_step_events)
+
+      {:error, :request_not_found} ->
+        Repo.rollback(:request_not_found)
+    end
+  end
+
+  defp mark_locked_terminal_request(current_request, attrs, normalized_step_events) do
+    case terminal_step_insert_mode(current_request, attrs) do
+      :append ->
+        append_steps_and_apply_terminal_update(current_request, attrs, normalized_step_events)
+
+      :skip ->
+        apply_terminal_update(current_request, attrs)
+
+      :already_terminal ->
+        Repo.rollback(:already_terminal)
+    end
+  end
+
+  defp append_steps_and_apply_terminal_update(current_request, attrs, normalized_step_events) do
+    {:ok, _step_events} = insert_request_step_events(current_request.id, normalized_step_events)
+
+    case apply_terminal_update(current_request, attrs) do
+      {:ok, updated_request} -> {:ok, updated_request}
+      {:error, changeset} -> Repo.rollback({:request_changeset, changeset})
     end
   end
 
