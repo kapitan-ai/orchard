@@ -675,11 +675,9 @@ defmodule OrchardConsole.PlaygroundLive do
                 type="select"
                 label="Model"
                 options={Enum.map(@models, &{&1.label, &1.value})}
+                errors={List.wrap(@form_errors[:model])}
                 disabled={@active_run != nil}
               />
-              <p :if={@form_errors[:model]} id="playground-model-error" class="-mt-2 text-sm text-red-600 dark:text-red-400">
-                {@form_errors[:model]}
-              </p>
               <.input
                 id="playground-system"
                 field={@form[:system]}
@@ -709,11 +707,9 @@ defmodule OrchardConsole.PlaygroundLive do
                 type="textarea"
                 label="Message"
                 rows={3}
+                errors={List.wrap(@form_errors[:prompt])}
                 phx-hook="SubmitOnModEnter"
               />
-              <p :if={@form_errors[:prompt]} id="playground-prompt-error" class="-mt-2 text-sm text-red-600 dark:text-red-400">
-                {@form_errors[:prompt]}
-              </p>
               <p id="playground-submit-hint" class="-mt-2 text-xs text-slate-500 dark:text-slate-400">
                 Press Cmd/Ctrl + Enter to send.
               </p>

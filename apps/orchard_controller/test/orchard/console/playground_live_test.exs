@@ -123,6 +123,9 @@ defmodule OrchardConsole.PlaygroundLiveTest do
         |> render_submit()
 
       assert html =~ "Please enter a prompt"
+      assert html =~ ~s(id="playground-prompt")
+      assert html =~ "border-red-500"
+      refute html =~ ~s(id="playground-prompt-error")
     end
 
     test "valid submission appends user message to transcript", %{conn: conn} do

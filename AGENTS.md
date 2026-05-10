@@ -43,6 +43,19 @@ This repository must remain self-contained product source. Do not add references
 
 ## LiveView Console Conventions
 
+### Console UI Design Guidance
+
+For Orchard Console UI/UX changes, read `docs/DESIGN.md` before editing LiveView templates, `OrchardConsole.CoreComponents`, Console CSS, or Console tests.
+
+Authority order:
+1. `SPEC.md` and this `AGENTS.md` govern product behavior, architecture, repo boundaries, and validation workflow.
+2. `docs/brand-identity.md` governs palette, typography, logo, and brand semantics.
+3. `docs/DESIGN.md` governs tactical UI execution: surfaces, input wells, sidebar/control rail, focus/error states, density, motion, accessibility semantics, and browser verification.
+
+When changing Console UI, keep `docs/DESIGN.md` and the implementation in sync. Do not reference workbench plans, RP sessions, Oracle reviews, prompt exports, or local planning artifacts from product docs/code.
+
+### Console Implementation Conventions
+
 - **Forms**: Use `to_form(map, as: atom)` with plain maps, NOT `Ecto.Changeset`. Phoenix HTML 4.x `FormData` protocol does not implement for `Ecto.Changeset` in this project. For error rendering after a failed `Repo.insert`, convert the changeset manually:
   ```elixir
   defp changeset_to_form(%Ecto.Changeset{} = cs, as, defaults) do

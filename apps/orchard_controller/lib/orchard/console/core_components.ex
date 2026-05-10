@@ -750,6 +750,43 @@ defmodule OrchardConsole.CoreComponents do
     """
   end
 
+  @input_well_classes Enum.join(
+                        [
+                          "mt-1 block w-full rounded-md text-sm",
+                          "border bg-slate-50 text-slate-900 shadow-inner",
+                          "placeholder:text-slate-400",
+                          "focus-visible:outline-none",
+                          "focus-visible:ring-2",
+                          "focus-visible:ring-offset-2 focus-visible:ring-offset-white",
+                          "disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400",
+                          "read-only:bg-slate-100 read-only:text-slate-500",
+                          "dark:bg-slate-900/60 dark:text-slate-100",
+                          "dark:placeholder:text-slate-500",
+                          "dark:focus-visible:ring-offset-slate-900",
+                          "dark:disabled:bg-slate-800/40 dark:disabled:text-slate-500",
+                          "dark:read-only:bg-slate-800/40 dark:read-only:text-slate-400"
+                        ],
+                        " "
+                      )
+
+  @input_neutral_state_classes Enum.join(
+                                 [
+                                   "border-slate-300 hover:border-slate-400 focus-visible:border-navy focus-visible:ring-navy/40",
+                                   "dark:border-slate-700 dark:hover:border-slate-600 dark:focus-visible:border-sky-400 dark:focus-visible:ring-sky-400/40"
+                                 ],
+                                 " "
+                               )
+
+  @input_error_classes Enum.join(
+                         [
+                           "border-red-500 ring-1 ring-red-500/30",
+                           "focus-visible:border-red-500 focus-visible:ring-red-500/40",
+                           "dark:border-red-400 dark:ring-red-400/30",
+                           "dark:focus-visible:border-red-400 dark:focus-visible:ring-red-400/40"
+                         ],
+                         " "
+                       )
+
   @doc """
   Renders a form input with label and error messages.
 
@@ -796,11 +833,16 @@ defmodule OrchardConsole.CoreComponents do
   slot(:inner_block)
 
   def input(%{field: %Phoenix.HTML.FormField{} = field} = assigns) do
-    errors = if Phoenix.Component.used_input?(field), do: field.errors, else: []
+    field_errors = if Phoenix.Component.used_input?(field), do: field.errors, else: []
+
+    errors =
+      field_errors
+      |> Enum.concat(assigns.errors || [])
+      |> Enum.map(&normalize_input_error/1)
 
     assigns
     |> assign(field: nil, id: assigns.id || field.id)
-    |> assign(:errors, Enum.map(errors, &translate_error(&1)))
+    |> assign(:errors, errors)
     |> assign_new(:name, fn ->
       if assigns.multiple, do: field.name <> "[]", else: field.name
     end)
@@ -810,9 +852,11 @@ defmodule OrchardConsole.CoreComponents do
 
   def input(%{type: "checkbox"} = assigns) do
     assigns =
-      assign_new(assigns, :checked, fn ->
+      assigns
+      |> assign_new(:checked, fn ->
         HtmlForm.normalize_value("checkbox", assigns[:value])
       end)
+      |> assign_input_aria()
 
     ~H"""
     <label class="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300 cursor-pointer">
@@ -823,16 +867,20 @@ defmodule OrchardConsole.CoreComponents do
         name={@name}
         value="true"
         checked={@checked}
+        aria-invalid={@aria_invalid}
+        aria-describedby={@aria_describedby}
         class="h-4 w-4 rounded border-slate-300 text-navy focus-visible:ring-navy dark:border-slate-600 dark:bg-slate-800 dark:checked:bg-sky-500 dark:focus-visible:ring-sky-400"
         {@rest}
       />
       {render_slot(@inner_block) || @label}
     </label>
-    <.field_errors errors={@errors} />
+    <.field_errors id={input_error_id(@id)} errors={@errors} />
     """
   end
 
   def input(%{type: "select"} = assigns) do
+    assigns = assign_input_aria(assigns)
+
     ~H"""
     <div>
       <.label :if={@label} for={@id}>{@label}</.label>
@@ -840,12 +888,12 @@ defmodule OrchardConsole.CoreComponents do
         id={@id}
         name={@name}
         multiple={@multiple}
+        aria-invalid={@aria_invalid}
+        aria-describedby={@aria_describedby}
         class={[
-          "mt-1 block w-full rounded-md border-slate-400 bg-white text-slate-900 text-sm shadow-sm",
-          "focus-visible:border-navy focus-visible:ring-navy",
-          "dark:border-slate-500 dark:bg-slate-800 dark:text-slate-100",
-          "dark:focus-visible:border-sky-400 dark:focus-visible:ring-sky-400",
-          @errors != [] && "border-red-300 dark:border-red-500",
+          input_well_classes(),
+          @errors == [] && input_neutral_state_classes(),
+          @errors != [] && input_error_classes(),
           @class
         ]}
         {@rest}
@@ -853,29 +901,31 @@ defmodule OrchardConsole.CoreComponents do
         <option :if={@prompt} value="">{@prompt}</option>
         {HtmlForm.options_for_select(@options, @value)}
       </select>
-      <.field_errors errors={@errors} />
+      <.field_errors id={input_error_id(@id)} errors={@errors} />
     </div>
     """
   end
 
   def input(%{type: "textarea"} = assigns) do
+    assigns = assign_input_aria(assigns)
+
     ~H"""
     <div>
       <.label :if={@label} for={@id}>{@label}</.label>
       <textarea
         id={@id}
         name={@name}
+        aria-invalid={@aria_invalid}
+        aria-describedby={@aria_describedby}
         class={[
-          "mt-1 block w-full rounded-md border-slate-400 bg-white text-slate-900 text-sm shadow-sm",
-          "focus-visible:border-navy focus-visible:ring-navy",
-          "dark:border-slate-500 dark:bg-slate-800 dark:text-slate-100",
-          "dark:focus-visible:border-sky-400 dark:focus-visible:ring-sky-400",
-          @errors != [] && "border-red-300 dark:border-red-500",
+          input_well_classes(),
+          @errors == [] && input_neutral_state_classes(),
+          @errors != [] && input_error_classes(),
           @class
         ]}
         {@rest}
       ><%= HtmlForm.normalize_value("textarea", @value) %></textarea>
-      <.field_errors errors={@errors} />
+      <.field_errors id={input_error_id(@id)} errors={@errors} />
     </div>
     """
   end
@@ -888,6 +938,8 @@ defmodule OrchardConsole.CoreComponents do
 
   # Default: text-like inputs (text, email, password, number, search, etc.)
   def input(assigns) do
+    assigns = assign_input_aria(assigns)
+
     ~H"""
     <div>
       <.label :if={@label} for={@id}>{@label}</.label>
@@ -896,20 +948,63 @@ defmodule OrchardConsole.CoreComponents do
         id={@id}
         name={@name}
         value={HtmlForm.normalize_value(@type, @value)}
+        aria-invalid={@aria_invalid}
+        aria-describedby={@aria_describedby}
         class={[
-          "mt-1 block w-full rounded-md border-slate-400 bg-white text-slate-900 text-sm shadow-sm",
-          "focus-visible:border-navy focus-visible:ring-navy",
-          "dark:border-slate-500 dark:bg-slate-800 dark:text-slate-100",
-          "dark:focus-visible:border-sky-400 dark:focus-visible:ring-sky-400",
-          @errors != [] && "border-red-300 dark:border-red-500",
+          input_well_classes(),
+          @errors == [] && input_neutral_state_classes(),
+          @errors != [] && input_error_classes(),
           @class
         ]}
         {@rest}
       />
-      <.field_errors errors={@errors} />
+      <.field_errors id={input_error_id(@id)} errors={@errors} />
     </div>
     """
   end
+
+  defp input_well_classes, do: @input_well_classes
+
+  defp input_neutral_state_classes, do: @input_neutral_state_classes
+
+  defp input_error_classes, do: @input_error_classes
+
+  defp normalize_input_error(error) when is_binary(error), do: error
+
+  defp normalize_input_error({message, options}), do: translate_error({message, options})
+
+  defp normalize_input_error(error), do: to_string(error)
+
+  defp assign_input_aria(assigns) do
+    rest = assigns[:rest] || %{}
+    errors = assigns[:errors] || []
+    existing_aria_invalid = rest[:"aria-invalid"] || rest["aria-invalid"]
+
+    assigns
+    |> assign(:aria_invalid, if(errors != [], do: "true", else: existing_aria_invalid))
+    |> assign(:aria_describedby, input_describedby(rest, errors, assigns[:id]))
+    |> assign(
+      :rest,
+      Map.drop(rest, [:"aria-describedby", "aria-describedby", :"aria-invalid", "aria-invalid"])
+    )
+  end
+
+  defp input_describedby(rest, errors, id) do
+    existing = rest[:"aria-describedby"] || rest["aria-describedby"]
+    error_id = if errors == [], do: nil, else: input_error_id(id)
+
+    [existing, error_id]
+    |> Enum.reject(&(&1 in [nil, ""]))
+    |> Enum.join(" ")
+    |> case do
+      "" -> nil
+      describedby -> describedby
+    end
+  end
+
+  defp input_error_id(nil), do: nil
+  defp input_error_id(""), do: nil
+  defp input_error_id(id), do: "#{id}-errors"
 
   @doc """
   Renders a label.
@@ -929,7 +1024,7 @@ defmodule OrchardConsole.CoreComponents do
 
   defp field_errors(assigns) do
     ~H"""
-    <div class="mt-1 space-y-1">
+    <div id={@id} class="mt-1 space-y-1">
       <p :for={error <- @errors} class="text-xs text-red-600 dark:text-red-400">
         {error}
       </p>
@@ -940,6 +1035,21 @@ defmodule OrchardConsole.CoreComponents do
   # ===========================================================================
   # Sidebar Navigation
   # ===========================================================================
+
+  @sidebar_nav_item_classes Enum.join(
+                              [
+                                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium",
+                                "transition-colors",
+                                "focus-visible:outline-none",
+                                "focus-visible:ring-2 focus-visible:ring-navy/40",
+                                "focus-visible:ring-offset-2 focus-visible:ring-offset-slate-100",
+                                "dark:focus-visible:ring-sky-400/40",
+                                "dark:focus-visible:ring-offset-slate-800"
+                              ],
+                              " "
+                            )
+
+  defp sidebar_nav_item_classes, do: @sidebar_nav_item_classes
 
   @nav_items [
     %{
@@ -1017,7 +1127,7 @@ defmodule OrchardConsole.CoreComponents do
           title={item.label}
           aria-current={item.key == @active && "page"}
           class={[
-            "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+            sidebar_nav_item_classes(),
             nav_item_classes(item.key, @active, true)
           ]}
         >
@@ -1030,7 +1140,7 @@ defmodule OrchardConsole.CoreComponents do
           aria-current={item.key == @active && "page"}
           title={if(item.key != @active, do: "#{item.label} \u2014 coming soon")}
           class={[
-            "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium cursor-default",
+            sidebar_nav_item_classes(),
             nav_item_classes(item.key, @active, false)
           ]}
         >
@@ -1043,15 +1153,15 @@ defmodule OrchardConsole.CoreComponents do
   end
 
   defp nav_item_classes(key, active, _interactive?) when key == active do
-    "bg-navy/10 text-navy dark:bg-sky-500/10 dark:text-sky-400"
+    "bg-navy/10 text-navy ring-1 ring-inset ring-navy/15 dark:bg-sky-400/10 dark:text-sky-400 dark:ring-sky-400/20"
   end
 
   defp nav_item_classes(_key, _active, true = _interactive?) do
-    "text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-slate-100"
+    "text-slate-600 hover:bg-white hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700/60 dark:hover:text-slate-100"
   end
 
   defp nav_item_classes(_key, _active, false = _interactive?) do
-    "text-slate-400 dark:text-slate-600"
+    "text-slate-400 cursor-default dark:text-slate-600"
   end
 
   # ===========================================================================

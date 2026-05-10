@@ -13,6 +13,50 @@ defmodule OrchardConsole.CoreComponentsTest do
     |> IO.iodata_to_binary()
   end
 
+  defp assert_has_tokens(html, tokens) do
+    for token <- tokens do
+      assert html =~ token
+    end
+  end
+
+  defp assert_input_error_tokens(html, type) do
+    assert_has_tokens(html, [
+      "border-red-500",
+      "ring-1",
+      "ring-red-500/30",
+      "focus-visible:border-red-500",
+      "focus-visible:ring-red-500/40",
+      "dark:border-red-400",
+      "dark:ring-red-400/30",
+      "dark:focus-visible:border-red-400",
+      "dark:focus-visible:ring-red-400/40"
+    ])
+
+    refute html =~ "border-slate-300",
+           "#{type} error state must not emit neutral light border"
+
+    refute html =~ "hover:border-slate-400",
+           "#{type} error state must not emit neutral light hover border"
+
+    refute html =~ "focus-visible:border-navy",
+           "#{type} error state must not emit neutral light focus border"
+
+    refute html =~ "focus-visible:ring-navy/40",
+           "#{type} error state must not emit neutral light focus ring"
+
+    refute html =~ "dark:border-slate-700",
+           "#{type} error state must not emit neutral dark border"
+
+    refute html =~ "dark:hover:border-slate-600",
+           "#{type} error state must not emit neutral dark hover border"
+
+    refute html =~ "dark:focus-visible:border-sky-400",
+           "#{type} error state must not emit neutral dark focus border"
+
+    refute html =~ "dark:focus-visible:ring-sky-400/40",
+           "#{type} error state must not emit neutral dark focus ring"
+  end
+
   # ===========================================================================
   # Flash
   # ===========================================================================
@@ -747,18 +791,40 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ ~s(name="user[name]")
     end
 
-    test "text input has visible borders, shadow, and focus-visible ring" do
+    test "text input has tactile well rest, hover, focus, disabled, and readonly tokens" do
       assigns = %{}
 
       html =
-        render_heex(~H|<.input type="text" name="user[name]" label="Name" value="" id="name" />|)
+        render_heex(
+          ~H|<.input type="text" name="user[name]" label="Name" value="" id="name" placeholder="Name" />|
+        )
 
-      assert html =~ "border-slate-400"
-      assert html =~ "shadow-sm"
-      assert html =~ "dark:border-slate-500"
-      assert html =~ "focus-visible:border-navy"
-      assert html =~ "focus-visible:ring-navy"
-      refute html =~ "border-slate-300"
+      assert_has_tokens(html, [
+        "border",
+        "border-slate-300",
+        "bg-slate-50",
+        "shadow-inner",
+        "placeholder:text-slate-400",
+        "hover:border-slate-400",
+        "focus-visible:outline-none",
+        "focus-visible:border-navy",
+        "focus-visible:ring-2",
+        "focus-visible:ring-navy/40",
+        "focus-visible:ring-offset-2",
+        "focus-visible:ring-offset-white",
+        "disabled:cursor-not-allowed",
+        "disabled:bg-slate-100",
+        "read-only:bg-slate-100",
+        "dark:border-slate-700",
+        "dark:bg-slate-900/60",
+        "dark:hover:border-slate-600",
+        "dark:focus-visible:border-sky-400",
+        "dark:focus-visible:ring-sky-400/40",
+        "dark:focus-visible:ring-offset-slate-900"
+      ])
+
+      refute html =~ "shadow-sm"
+      refute html =~ "dark:border-slate-500"
       refute html =~ "focus:border-navy"
     end
 
@@ -776,7 +842,7 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "User"
     end
 
-    test "select input has visible borders, shadow, and focus-visible ring" do
+    test "select input shares tactile well tokens" do
       assigns = %{}
 
       html =
@@ -784,12 +850,22 @@ defmodule OrchardConsole.CoreComponentsTest do
           ~H|<.input type="select" name="role" label="Role" options={["Admin", "User"]} value="" id="role" />|
         )
 
-      assert html =~ "border-slate-400"
-      assert html =~ "shadow-sm"
-      assert html =~ "dark:border-slate-500"
-      assert html =~ "focus-visible:border-navy"
-      assert html =~ "focus-visible:ring-navy"
-      refute html =~ "border-slate-300"
+      assert_has_tokens(html, [
+        "border",
+        "border-slate-300",
+        "bg-slate-50",
+        "shadow-inner",
+        "hover:border-slate-400",
+        "focus-visible:ring-2",
+        "focus-visible:ring-navy/40",
+        "focus-visible:ring-offset-white",
+        "dark:bg-slate-900/60",
+        "dark:focus-visible:ring-sky-400/40",
+        "dark:focus-visible:ring-offset-slate-900"
+      ])
+
+      refute html =~ "shadow-sm"
+      refute html =~ "dark:border-slate-500"
       refute html =~ "focus:border-navy"
     end
 
@@ -803,19 +879,110 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "<textarea"
     end
 
-    test "textarea has visible borders, shadow, and focus-visible ring" do
+    test "textarea shares tactile well tokens" do
       assigns = %{}
 
       html =
         render_heex(~H|<.input type="textarea" name="bio" label="Bio" value="" id="bio" />|)
 
-      assert html =~ "border-slate-400"
-      assert html =~ "shadow-sm"
-      assert html =~ "dark:border-slate-500"
-      assert html =~ "focus-visible:border-navy"
-      assert html =~ "focus-visible:ring-navy"
-      refute html =~ "border-slate-300"
+      assert_has_tokens(html, [
+        "border",
+        "border-slate-300",
+        "bg-slate-50",
+        "shadow-inner",
+        "hover:border-slate-400",
+        "focus-visible:ring-2",
+        "focus-visible:ring-navy/40",
+        "focus-visible:ring-offset-white",
+        "dark:bg-slate-900/60",
+        "dark:focus-visible:ring-sky-400/40",
+        "dark:focus-visible:ring-offset-slate-900"
+      ])
+
+      refute html =~ "shadow-sm"
+      refute html =~ "dark:border-slate-500"
       refute html =~ "focus:border-navy"
+    end
+
+    test "input error state uses red border tokens without neutral border conflicts" do
+      assigns = %{}
+
+      for {type, template} <- [
+            text:
+              ~H|<.input type="text" name="user[name]" label="Name" value="" id="name" errors={["can't be blank"]} />|,
+            select:
+              ~H|<.input type="select" name="role" label="Role" options={["Admin", "User"]} value="" id="role" errors={["can't be blank"]} />|,
+            textarea:
+              ~H|<.input type="textarea" name="bio" label="Bio" value="" id="bio" errors={["can't be blank"]} />|
+          ] do
+        html = render_heex(template)
+
+        assert_input_error_tokens(html, type)
+      end
+    end
+
+    test "field input merges explicit errors into tactile red well state" do
+      assigns = %{form: to_form(%{"prompt" => ""}, as: :playground)}
+
+      html =
+        render_heex(
+          ~H|<.input field={@form[:prompt]} type="textarea" label="Message" errors={["Please enter a prompt"]} />|
+        )
+
+      assert html =~ "Please enter a prompt"
+      assert html =~ ~s(aria-invalid="true")
+      assert html =~ ~s(aria-describedby="playground_prompt-errors")
+      assert html =~ ~s(id="playground_prompt-errors")
+      assert_input_error_tokens(html, :textarea)
+    end
+
+    test "input merges existing aria-describedby with error id without duplicate attributes" do
+      assigns = %{}
+
+      html =
+        render_heex(
+          ~H|<.input type="text" name="user[name]" label="Name" value="" id="name" aria-describedby="name-hint" errors={["can't be blank"]} />|
+        )
+
+      assert html =~ ~s(aria-invalid="true")
+      assert html =~ ~s(aria-describedby="name-hint name-errors")
+      assert html =~ ~s(id="name-errors")
+      assert html |> String.split(~s(aria-describedby=)) |> length() == 2
+    end
+
+    test "errored input overrides caller aria-invalid without duplicate attributes" do
+      assigns = %{}
+
+      html =
+        render_heex(
+          ~H|<.input type="text" name="user[name]" label="Name" value="" id="name" aria-invalid="false" errors={["can't be blank"]} />|
+        )
+
+      assert html =~ ~s(aria-invalid="true")
+      assert html |> String.split(~s(aria-invalid=)) |> length() == 2
+    end
+
+    test "valid input preserves caller-managed aria-invalid" do
+      assigns = %{}
+
+      html =
+        render_heex(
+          ~H|<.input type="text" name="user[name]" label="Name" value="" id="name" aria-invalid="grammar" />|
+        )
+
+      assert html =~ ~s(aria-invalid="grammar")
+      assert html |> String.split(~s(aria-invalid=)) |> length() == 2
+    end
+
+    test "valid input omits generated error aria attributes and error wrapper" do
+      assigns = %{}
+
+      html =
+        render_heex(~H|<.input type="text" name="user[name]" label="Name" value="" id="name" />|)
+
+      refute html =~ "aria-invalid"
+      refute html =~ "aria-describedby"
+      refute html =~ ~s(id="name-errors")
     end
 
     test "renders checkbox" do
@@ -858,7 +1025,7 @@ defmodule OrchardConsole.CoreComponentsTest do
   # ===========================================================================
 
   describe "sidebar_nav/1" do
-    test "renders all six nav items" do
+    test "renders all nav items" do
       assigns = %{}
       html = render_heex(~H|<.sidebar_nav active={:overview} />|)
 
@@ -897,11 +1064,35 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "/console/tenants"
     end
 
-    test "active item uses navy accent" do
+    test "nav items include tactile focus-visible ring tokens" do
       assigns = %{}
       html = render_heex(~H|<.sidebar_nav active={:overview} />|)
 
-      assert html =~ "text-navy"
+      assert_has_tokens(html, [
+        "focus-visible:outline-none",
+        "focus-visible:ring-2",
+        "focus-visible:ring-navy/40",
+        "focus-visible:ring-offset-2",
+        "focus-visible:ring-offset-slate-100",
+        "dark:focus-visible:ring-sky-400/40",
+        "dark:focus-visible:ring-offset-slate-800"
+      ])
+    end
+
+    test "active item uses contained navy accent" do
+      assigns = %{}
+      html = render_heex(~H|<.sidebar_nav active={:overview} />|)
+
+      assert_has_tokens(html, [
+        "bg-navy/10",
+        "text-navy",
+        "ring-1",
+        "ring-inset",
+        "ring-navy/15",
+        "dark:bg-sky-400/10",
+        "dark:text-sky-400",
+        "dark:ring-sky-400/20"
+      ])
     end
 
     test "Playground shows active styling when active" do
@@ -910,6 +1101,7 @@ defmodule OrchardConsole.CoreComponentsTest do
 
       assert html =~ ~s(aria-current="page")
       assert html =~ "bg-navy/10"
+      assert html =~ "ring-inset"
     end
 
     test "Model Hub renders as enabled link and shows active styling when active" do
@@ -920,6 +1112,7 @@ defmodule OrchardConsole.CoreComponentsTest do
       refute html =~ "Model Hub \u2014 coming soon"
       assert html =~ ~s(aria-current="page")
       assert html =~ "bg-navy/10"
+      assert html =~ "dark:bg-sky-400/10"
     end
 
     test "Requests shows active styling when active" do
@@ -932,12 +1125,20 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "text-navy"
     end
 
-    test "enabled links have hover classes" do
+    test "enabled inactive links have lifted tile hover classes" do
       assigns = %{}
       html = render_heex(~H|<.sidebar_nav active={:playground} />|)
 
-      # Overview (inactive enabled) should have hover classes
-      assert html =~ "hover:bg-slate-100"
+      assert_has_tokens(html, [
+        "text-slate-600",
+        "hover:bg-white",
+        "hover:text-slate-900",
+        "dark:text-slate-400",
+        "dark:hover:bg-slate-700/60",
+        "dark:hover:text-slate-100"
+      ])
+
+      refute html =~ "hover:bg-slate-100"
     end
   end
 
