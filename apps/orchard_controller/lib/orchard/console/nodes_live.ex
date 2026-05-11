@@ -964,7 +964,7 @@ defmodule OrchardConsole.NodesLive do
   end
 
   defp summary_tile_classes(:success),
-    do: "bg-forest-50/50 ring-forest-200/60 dark:bg-emerald-900/20 dark:ring-emerald-700/30"
+    do: "bg-forest-50/50 ring-forest-300/60 dark:bg-emerald-900/20 dark:ring-emerald-700/30"
 
   defp summary_tile_classes(:warning),
     do: "bg-amber-50/50 ring-amber-200/60 dark:bg-amber-900/20 dark:ring-amber-700/30"

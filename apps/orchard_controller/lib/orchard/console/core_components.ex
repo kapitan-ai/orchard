@@ -702,7 +702,7 @@ defmodule OrchardConsole.CoreComponents do
 
   defp comfortable_metric_tone_class(:success),
     do:
-      "bg-forest-50/50 ring-1 ring-forest-200/60 dark:bg-emerald-900/20 dark:ring-emerald-700/30"
+      "bg-forest-50/50 ring-1 ring-forest-300/60 dark:bg-emerald-900/20 dark:ring-emerald-700/30"
 
   defp comfortable_metric_tone_class(:warning),
     do: "bg-amber-50/50 ring-1 ring-amber-200/60 dark:bg-amber-900/20 dark:ring-amber-700/30"
@@ -717,7 +717,7 @@ defmodule OrchardConsole.CoreComponents do
     do: "border-sky-200 dark:border-sky-800"
 
   defp compact_metric_tone_class(:success),
-    do: "border-forest-200 dark:border-emerald-800"
+    do: "border-forest-300 dark:border-emerald-800"
 
   defp compact_metric_tone_class(:warning),
     do: "border-amber-200 dark:border-amber-800"

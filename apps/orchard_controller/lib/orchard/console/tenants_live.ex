@@ -68,8 +68,22 @@ defmodule OrchardConsole.TenantsLive do
             id="tenant-create-form"
             phx-submit="create_tenant"
           >
-            <.input field={@tenant_form[:slug]} label="Slug" placeholder="my-tenant…" size={:lg} />
-            <.input field={@tenant_form[:name]} label="Name" placeholder="My Tenant…" size={:lg} />
+              <.input
+                field={@tenant_form[:slug]}
+                label="Slug"
+                placeholder="acme-production"
+                size={:lg}
+                aria-describedby="tenant-slug-hint"
+              />
+              <p id="tenant-slug-hint" class="-mt-3 text-xs text-slate-500 dark:text-slate-400">
+                Suggested format: short lowercase words separated by hyphens, e.g. acme-production.
+              </p>
+              <.input
+                field={@tenant_form[:name]}
+                label="Name"
+                placeholder="Acme Production"
+                size={:lg}
+              />
             <:actions>
               <.button type="submit" phx-disable-with="Creating…">Create Tenant</.button>
             </:actions>

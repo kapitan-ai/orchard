@@ -692,6 +692,7 @@ defmodule OrchardConsole.PlaygroundLive do
                 field={@form[:system]}
                 type="textarea"
                 label="System prompt (optional)"
+                size={:lg}
                 rows={2}
                 disabled={@active_run != nil}
               />

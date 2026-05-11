@@ -547,9 +547,14 @@ defmodule OrchardConsole.RequestLive do
   attr(:fallback_text, :string, default: "Not captured for this request.")
 
   defp json_block(assigns) do
+    assigns = assign(assigns, :json_render, json_render(assigns.data))
+
     ~H"""
     <div :if={present_map?(@data)} id={@content_id}>
-      <pre class="overflow-x-auto rounded-md bg-slate-50 p-4 text-xs font-mono text-slate-800 dark:bg-slate-900/60 dark:text-slate-200"><code>{format_json(@data)}</code></pre>
+      <pre class="overflow-x-auto rounded-md bg-slate-50 p-4 text-xs font-mono text-slate-800 dark:bg-slate-900/60 dark:text-slate-200"><code><%= case @json_render do %><% {:highlighted, tokens} -> %><span
+          :for={{class, token} <- tokens}
+          class={class}
+        >{token}</span><% {:plain, json} -> %>{json}<% end %></code></pre>
     </div>
     <p
       :if={!present_map?(@data)}
@@ -830,6 +835,48 @@ defmodule OrchardConsole.RequestLive do
   defp present_map?(m) when is_map(m) and map_size(m) == 0, do: false
   defp present_map?(m) when is_map(m), do: true
   defp present_map?(_), do: false
+
+  @json_highlight_max_bytes 20_000
+  @json_token_pattern ~r/("(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}\[\],:])/u
+
+  defp json_render(data) when is_map(data) do
+    json = format_json(data)
+
+    if byte_size(json) <= @json_highlight_max_bytes do
+      {:highlighted, tokenize_json(json)}
+    else
+      {:plain, json}
+    end
+  end
+
+  defp json_render(_), do: {:plain, "—"}
+
+  defp tokenize_json(json) do
+    @json_token_pattern
+    |> Regex.split(json, include_captures: true, trim: false)
+    |> Enum.map(&{json_token_class(&1), &1})
+  end
+
+  defp json_token_class(""), do: nil
+
+  defp json_token_class(token) when token in ["{", "}", "[", "]", ",", ":"],
+    do: "text-slate-400 dark:text-slate-500"
+
+  defp json_token_class(token) when token in ["true", "false"],
+    do: "text-amber-700 dark:text-amber-300"
+
+  defp json_token_class("null"), do: "text-slate-500 italic dark:text-slate-400"
+
+  defp json_token_class(<<"\"", _::binary>>),
+    do: "text-forest-700 dark:text-emerald-300"
+
+  defp json_token_class(token) do
+    if Regex.match?(~r/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/, token) do
+      "text-sky-700 dark:text-sky-300"
+    else
+      nil
+    end
+  end
 
   defp format_json(nil), do: "—"
 

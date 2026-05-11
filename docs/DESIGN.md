@@ -413,7 +413,7 @@ Comfortable tone contracts:
 |------|----------------|
 | `:neutral` | `bg-slate-50 dark:bg-slate-900/60` |
 | `:info` | `bg-sky-50/50 ring-1 ring-sky-200/60 dark:bg-sky-900/20 dark:ring-sky-700/30` |
-| `:success` | `bg-forest-50/50 ring-1 ring-forest-200/60 dark:bg-emerald-900/20 dark:ring-emerald-700/30` |
+| `:success` | `bg-forest-50/50 ring-1 ring-forest-300/60 dark:bg-emerald-900/20 dark:ring-emerald-700/30` |
 | `:warning` | `bg-amber-50/50 ring-1 ring-amber-200/60 dark:bg-amber-900/20 dark:ring-amber-700/30` |
 | `:error` | `bg-red-50/50 ring-1 ring-red-200/60 dark:bg-red-900/20 dark:ring-red-700/30` |
 
@@ -423,7 +423,7 @@ Compact tone contracts:
 |------|----------------|
 | `:neutral` | `border-slate-200 dark:border-slate-700` |
 | `:info` | `border-sky-200 dark:border-sky-800` |
-| `:success` | `border-forest-200 dark:border-emerald-800` |
+| `:success` | `border-forest-300 dark:border-emerald-800` |
 | `:warning` | `border-amber-200 dark:border-amber-800` |
 | `:error` | `border-red-200 dark:border-red-800` |
 

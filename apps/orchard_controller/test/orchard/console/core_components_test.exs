@@ -31,7 +31,7 @@ defmodule OrchardConsole.CoreComponentsTest do
     success: [
       "bg-forest-50/50",
       "ring-1",
-      "ring-forest-200/60",
+      "ring-forest-300/60",
       "dark:bg-emerald-900/20",
       "dark:ring-emerald-700/30"
     ],
@@ -54,7 +54,7 @@ defmodule OrchardConsole.CoreComponentsTest do
   @compact_metric_tone_contracts %{
     neutral: ["border-slate-200", "dark:border-slate-700"],
     info: ["border-sky-200", "dark:border-sky-800"],
-    success: ["border-forest-200", "dark:border-emerald-800"],
+    success: ["border-forest-300", "dark:border-emerald-800"],
     warning: ["border-amber-200", "dark:border-amber-800"],
     error: ["border-red-200", "dark:border-red-800"]
   }
@@ -427,7 +427,7 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert_has_tokens(html, [
         "bg-forest-50/50",
         "ring-1",
-        "ring-forest-200/60",
+        "ring-forest-300/60",
         "dark:bg-emerald-900/20",
         "dark:ring-emerald-700/30"
       ])
