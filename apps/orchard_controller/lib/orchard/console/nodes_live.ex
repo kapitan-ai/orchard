@@ -32,7 +32,7 @@ defmodule OrchardConsole.NodesLive do
   def mount(_params, _session, socket) do
     socket =
       socket
-      |> assign(page_title: "Nodes", active_nav: :nodes)
+      |> assign(page_title: "Nodes", active_nav: :nodes, page_mode: :workspace)
 
     if connected?(socket) do
       {:ok, socket |> load_nodes_page() |> schedule_refresh()}
@@ -92,9 +92,9 @@ defmodule OrchardConsole.NodesLive do
       </div>
 
       <%!-- Main Grid --%>
-      <div class="grid gap-6 xl:grid-cols-3">
+      <div class="grid gap-6 xl:grid-cols-12">
         <%!-- Persisted Inventory Table --%>
-        <div class="xl:col-span-2">
+        <div class="xl:col-span-8">
           <div id="nodes-inventory-card">
           <.card>
             <:title>Registered Nodes</:title>
@@ -134,10 +134,10 @@ defmodule OrchardConsole.NodesLive do
         </div>
 
         <%!-- Live Cluster Column --%>
-        <div class="xl:col-span-1 space-y-4">
+        <div class="xl:col-span-4 space-y-6">
           <%!-- Cluster Summary Card --%>
           <div id="nodes-live-cluster-card">
-          <.card>
+          <.card variant={:rail} padding={:sm}>
             <:title>Live Cluster</:title>
             <:subtitle><%= cluster_subtitle(@cluster) %></:subtitle>
 
@@ -149,7 +149,7 @@ defmodule OrchardConsole.NodesLive do
               <% @cluster.targets == [] -> %>
                 <.state_message id="nodes-cluster-empty" kind={:empty} layout={:compact} title="No runtime targets configured." />
               <% true -> %>
-                <div id="nodes-cluster-summary" class="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-6">
+                <div id="nodes-cluster-summary" class="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-2">
                   <.summary_tile id="cluster-configured" label="Configured" value={format_count(@cluster.summary.configured)} tone={:neutral} />
                   <.summary_tile id="cluster-reachable" label="Reachable" value={format_count(@cluster.summary.reachable)} tone={:success} />
                   <.summary_tile id="cluster-prompt-token-capable" label="Prompt-ID Capable" value={prompt_token_capable_summary(@cluster.summary)} tone={prompt_token_capable_summary_tone(@cluster.summary)} />
@@ -161,62 +161,10 @@ defmodule OrchardConsole.NodesLive do
           </.card>
           </div>
 
-          <div id="nodes-safe-tokenization-telemetry-card">
-          <.card>
-            <:title>Safe Tokenization Counters</:title>
-            <:subtitle>Process-local observe-only counters since counter process start.</:subtitle>
-
-            <div id="nodes-safe-tokenization-counters" class="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-2">
-              <.summary_tile
-                id="nodes-safe-tokenization-counter-prompt-token-ids-dispatched"
-                label="Prompt IDs Dispatched"
-                value={format_prompt_token_ids_dispatched(@safe_tokenization_counters.prompt_token_ids_dispatched)}
-                tone={prompt_token_ids_dispatched_tone(@safe_tokenization_counters.prompt_token_ids_dispatched)}
-              />
-              <.summary_tile
-                id="nodes-safe-tokenization-counter-unsafe-mode-active"
-                label="Unsafe Fallback"
-                value={format_count(@safe_tokenization_counters.unsafe_mode_active.count)}
-                tone={counter_warning_tone(@safe_tokenization_counters.unsafe_mode_active)}
-              />
-              <.summary_tile
-                id="nodes-safe-tokenization-counter-parity-drift"
-                label="Parity Drift"
-                value={format_count(@safe_tokenization_counters.parity_drift.count)}
-                tone={counter_error_tone(@safe_tokenization_counters.parity_drift)}
-              />
-              <.summary_tile
-                id="nodes-safe-tokenization-counter-catalog-drift"
-                label="Catalog Drift"
-                value={format_count(@safe_tokenization_counters.catalog_drift.count)}
-                tone={counter_warning_tone(@safe_tokenization_counters.catalog_drift)}
-              />
-              <.summary_tile
-                id="nodes-safe-tokenization-counter-control-token-in-user-content"
-                label="Control Token Hits"
-                value={format_count(@safe_tokenization_counters.control_token_in_user_content.count)}
-                tone={counter_warning_tone(@safe_tokenization_counters.control_token_in_user_content)}
-              />
-              <.summary_tile
-                id="nodes-safe-tokenization-counter-detector-error"
-                label="Detector Errors"
-                value={format_count(@safe_tokenization_counters.detector_error.count)}
-                tone={counter_warning_tone(@safe_tokenization_counters.detector_error)}
-              />
-              <.summary_tile
-                id="nodes-safe-tokenization-counter-degraded-no-manifest-catalog"
-                label="No Manifest Catalog"
-                value={format_count(@safe_tokenization_counters.degraded_no_manifest_catalog.count)}
-                tone={counter_warning_tone(@safe_tokenization_counters.degraded_no_manifest_catalog)}
-              />
-            </div>
-          </.card>
-          </div>
-
           <%!-- Per-Target Runtime Cards --%>
           <div id="nodes-runtime-targets" class="space-y-4">
             <div :for={t <- @cluster.targets} id={"nodes-runtime-card-#{t.target_dom_id}"}>
-              <.card>
+              <.card variant={:rail} padding={:sm}>
                 <:title><%= target_card_title(t) %></:title>
                 <:subtitle><%= t.target_label %></:subtitle>
 
@@ -345,6 +293,58 @@ defmodule OrchardConsole.NodesLive do
             </div>
           </div>
         </div>
+      </div>
+
+      <div id="nodes-safe-tokenization-telemetry-card">
+      <.card variant={:secondary}>
+        <:title>Safe Tokenization Counters</:title>
+        <:subtitle>Process-local observe-only counters since counter process start.</:subtitle>
+
+        <div id="nodes-safe-tokenization-counters" class="grid gap-2 grid-cols-2 sm:grid-cols-3 xl:grid-cols-4">
+          <.summary_tile
+            id="nodes-safe-tokenization-counter-prompt-token-ids-dispatched"
+            label="Prompt IDs Dispatched"
+            value={format_prompt_token_ids_dispatched(@safe_tokenization_counters.prompt_token_ids_dispatched)}
+            tone={prompt_token_ids_dispatched_tone(@safe_tokenization_counters.prompt_token_ids_dispatched)}
+          />
+          <.summary_tile
+            id="nodes-safe-tokenization-counter-unsafe-mode-active"
+            label="Unsafe Fallback"
+            value={format_count(@safe_tokenization_counters.unsafe_mode_active.count)}
+            tone={counter_warning_tone(@safe_tokenization_counters.unsafe_mode_active)}
+          />
+          <.summary_tile
+            id="nodes-safe-tokenization-counter-parity-drift"
+            label="Parity Drift"
+            value={format_count(@safe_tokenization_counters.parity_drift.count)}
+            tone={counter_error_tone(@safe_tokenization_counters.parity_drift)}
+          />
+          <.summary_tile
+            id="nodes-safe-tokenization-counter-catalog-drift"
+            label="Catalog Drift"
+            value={format_count(@safe_tokenization_counters.catalog_drift.count)}
+            tone={counter_warning_tone(@safe_tokenization_counters.catalog_drift)}
+          />
+          <.summary_tile
+            id="nodes-safe-tokenization-counter-control-token-in-user-content"
+            label="Control Token Hits"
+            value={format_count(@safe_tokenization_counters.control_token_in_user_content.count)}
+            tone={counter_warning_tone(@safe_tokenization_counters.control_token_in_user_content)}
+          />
+          <.summary_tile
+            id="nodes-safe-tokenization-counter-detector-error"
+            label="Detector Errors"
+            value={format_count(@safe_tokenization_counters.detector_error.count)}
+            tone={counter_warning_tone(@safe_tokenization_counters.detector_error)}
+          />
+          <.summary_tile
+            id="nodes-safe-tokenization-counter-degraded-no-manifest-catalog"
+            label="No Manifest Catalog"
+            value={format_count(@safe_tokenization_counters.degraded_no_manifest_catalog.count)}
+            tone={counter_warning_tone(@safe_tokenization_counters.degraded_no_manifest_catalog)}
+          />
+        </div>
+      </.card>
       </div>
     </div>
     """

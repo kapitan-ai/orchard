@@ -350,18 +350,43 @@ implementation. Do not add hover styling to the disabled span.
 
 ### 6.1 Page Width Modes
 
-Console pages may opt into one of these layout width modes. PR1 documents the
-contract only; implementation belongs in a later PR and must keep the default
-mode token-equivalent to the current layout wrapper.
+Console pages may opt into one of these layout width modes by assigning
+`page_mode` in their LiveView mount, for example
+`assign(socket, :page_mode, :workspace)`. If no mode is assigned, the app shell
+uses `:standard` and keeps the default wrapper token-equivalent to the
+pre-v2 layout.
 
 | Mode | Width/alignment contract | Intended use |
 |------|--------------------------|--------------|
 | `:standard` | Centered, `mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6`. Default. | Most Console pages. |
 | `:wide` | Centered, `mx-auto max-w-[96rem] px-4 sm:px-6 lg:px-8 py-6`. | Pages that need more horizontal room but still read as documents. |
 | `:workspace` | Full canvas after the sidebar, `max-w-none px-6 sm:px-8 lg:px-10 py-6`, left-aligned. | IDE-like operational workspaces. |
-| `:detail` | Centered, `mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 py-6`. | Dense detail pages when narrower line length improves scanning. |
+| `:detail` | Reserved. Currently falls back to `:standard` in `OrchardConsole.Layouts.page_content_class/1` until a detail-page rollout updates this contract. | Future dense detail pages when narrower line length improves scanning. |
 
-> **Note (PR1 scope):** This document defines page modes for the v2 contract, but PR1 does not implement page-mode helpers or change any page wrapper. Implement those only when a follow-up PR scopes that rollout explicitly.
+Page title typography is mode-aware through
+`OrchardConsole.Layouts.page_title_class/1`:
+
+| Mode | Title class contract |
+|------|----------------------|
+| `:standard` | `text-lg font-semibold text-slate-900 dark:text-slate-100`. Default; token-equivalent to the pre-v2 title. |
+| `:wide` | `text-xl font-semibold text-slate-900 dark:text-slate-100`. |
+| `:workspace` | `text-xl font-semibold text-slate-900 dark:text-slate-100`. |
+| `:detail` | Reserved. Currently falls back to `:standard`. |
+
+### 6.2 Card Variants
+
+`<.card>` accepts `variant={:default | :primary | :secondary | :rail}`.
+The default variant is token-equivalent to the pre-v2 card root, title, and
+subtitle classes. Variants compose root/title/subtitle classes inside
+`OrchardConsole.CoreComponents.card/1`; callers must not recreate these tokens
+with ad-hoc `@class` overrides.
+
+| Variant | Root class contract | Title class contract | Subtitle class contract | Intended use |
+|---------|---------------------|----------------------|-------------------------|--------------|
+| `:default` | `rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800` | `text-base font-semibold text-slate-900 dark:text-slate-100` | `mt-1 text-sm text-slate-500 dark:text-slate-400` | Standard content cards and current default behavior. |
+| `:primary` | `rounded-lg border border-slate-200 bg-white shadow-sm ring-1 ring-navy/10 dark:border-slate-700 dark:bg-slate-800 dark:ring-sky-400/20` | `text-base font-semibold text-navy dark:text-sky-400` | `mt-1 text-sm text-slate-500 dark:text-slate-400` | High-signal panels that need subtle brand emphasis without changing surface vocabulary. |
+| `:secondary` | `rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/40` | `text-base font-semibold text-slate-900 dark:text-slate-100` | `mt-1 text-sm text-slate-500 dark:text-slate-400` | Softer full-width strips or supporting panels against the page canvas. |
+| `:rail` | `rounded-lg border border-slate-200 bg-slate-100/70 dark:border-slate-700 dark:bg-slate-900/50` | `text-sm font-semibold text-slate-900 dark:text-slate-100` | `mt-1 text-xs text-slate-500 dark:text-slate-400` | Cards embedded in a control/diagnostic rail where denser hierarchy is needed. |
 
 ---
 
@@ -532,10 +557,7 @@ contract first.
   outside a narrowly scoped token/documentation correction.
 - A second design escape hatch beyond `.console-input-well` (and that one
   is reserved, not yet used).
-- Page-mode helpers or route rollout; §6.1 only permits the modes for a later
-  implementation PR.
-- Card variants, shared metric/detail primitives, table density variants,
-  Nodes layout changes, or app shell wrapper changes.
+- Shared metric/detail primitives and table density variants.
 - Page-header, breadcrumb, status pill, modal, toast/flash, badge, or button
   restyling beyond what already exists.
 - Mobile sidebar / responsive collapse below `lg`. The rail is desktop-only

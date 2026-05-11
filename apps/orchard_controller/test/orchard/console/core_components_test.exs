@@ -193,6 +193,60 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "border-slate-200"
     end
 
+    test "default variant preserves the existing card surface tokens" do
+      assigns = %{}
+      html = render_heex(~H|<.card>Default card</.card>|)
+
+      assert_has_tokens(html, [
+        "rounded-lg",
+        "border border-slate-200",
+        "bg-white",
+        "dark:border-slate-700",
+        "dark:bg-slate-800"
+      ])
+
+      refute html =~ "ring-navy/10"
+      refute html =~ "bg-slate-50"
+      refute html =~ "bg-slate-100/70"
+    end
+
+    test "primary variant emits distinctive brand emphasis tokens" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.card variant={:primary}>
+          <:title>Primary</:title>
+          Body
+        </.card>
+        """)
+
+      assert_has_tokens(html, ["ring-navy/10", "dark:ring-sky-400/20", "text-navy"])
+    end
+
+    test "secondary variant emits distinctive softened surface tokens" do
+      assigns = %{}
+      html = render_heex(~H|<.card variant={:secondary}>Secondary card</.card>|)
+
+      assert_has_tokens(html, ["bg-slate-50", "dark:bg-slate-900/40"])
+      refute html =~ "bg-white"
+    end
+
+    test "rail variant emits distinctive recessed rail tokens" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.card variant={:rail}>
+          <:title>Rail</:title>
+          <:subtitle>Dense diagnostics</:subtitle>
+          Body
+        </.card>
+        """)
+
+      assert_has_tokens(html, ["bg-slate-100/70", "dark:bg-slate-900/50", "text-sm"])
+    end
+
     test "renders header with title and subtitle" do
       assigns = %{}
 

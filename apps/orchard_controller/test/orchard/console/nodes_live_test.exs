@@ -587,6 +587,28 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "Live Cluster"
     end
 
+    test "opts into workspace shell while keeping registered nodes primary", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/console/nodes")
+
+      assert html =~ ~s(class="text-xl font-semibold text-slate-900 dark:text-slate-100")
+      assert html =~ ~s(class="max-w-none px-6 sm:px-8 lg:px-10 py-6")
+      assert html =~ ~s(class="grid gap-6 xl:grid-cols-12")
+      assert html =~ ~s(class="xl:col-span-8")
+      assert html =~ ~s(class="xl:col-span-4 space-y-6")
+
+      cluster = element(view, "#nodes-live-cluster-card") |> render()
+      assert cluster =~ "bg-slate-100/70"
+      assert cluster =~ ~s(id="nodes-cluster-summary")
+      assert cluster =~ "xl:grid-cols-2"
+      refute cluster =~ "xl:grid-cols-6"
+
+      counters = element(view, "#nodes-safe-tokenization-telemetry-card") |> render()
+      assert counters =~ "bg-slate-50"
+      assert counters =~ ~s(id="nodes-safe-tokenization-counters")
+      assert counters =~ "xl:grid-cols-4"
+      refute counters =~ "xl:grid-cols-2"
+    end
+
     test "has correct page title", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/nodes")
 

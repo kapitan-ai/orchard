@@ -220,6 +220,7 @@ defmodule OrchardConsole.CoreComponents do
         <p>Content here</p>
       </.card>
   """
+  attr(:variant, :atom, default: :default, values: [:default, :primary, :secondary, :rail])
   attr(:class, :string, default: "")
   attr(:padding, :atom, default: :md, values: [:none, :sm, :md, :lg])
 
@@ -246,11 +247,17 @@ defmodule OrchardConsole.CoreComponents do
 
   def card(assigns) do
     constrained? = is_binary(assigns.max_height) and String.trim(assigns.max_height) != ""
-    assigns = assign(assigns, :constrained?, constrained?)
+
+    assigns =
+      assigns
+      |> assign(:constrained?, constrained?)
+      |> assign(:root_class, card_root_class(assigns.variant))
+      |> assign(:title_class, card_title_class(assigns.variant))
+      |> assign(:subtitle_class, card_subtitle_class(assigns.variant))
 
     ~H"""
     <div class={[
-      "rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800",
+      @root_class,
       @constrained? && "flex flex-col overflow-hidden",
       @constrained? && @max_height,
       @class
@@ -268,13 +275,13 @@ defmodule OrchardConsole.CoreComponents do
           <div>
             <h3
               :if={@title != []}
-              class="text-base font-semibold text-slate-900 dark:text-slate-100"
+              class={@title_class}
             >
               {render_slot(@title)}
             </h3>
             <p
               :if={@subtitle != []}
-              class="mt-1 text-sm text-slate-500 dark:text-slate-400"
+              class={@subtitle_class}
             >
               {render_slot(@subtitle)}
             </p>
@@ -293,6 +300,30 @@ defmodule OrchardConsole.CoreComponents do
     </div>
     """
   end
+
+  defp card_root_class(:default),
+    do: "rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800"
+
+  defp card_root_class(:primary),
+    do:
+      "rounded-lg border border-slate-200 bg-white shadow-sm ring-1 ring-navy/10 dark:border-slate-700 dark:bg-slate-800 dark:ring-sky-400/20"
+
+  defp card_root_class(:secondary),
+    do:
+      "rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/40"
+
+  defp card_root_class(:rail),
+    do:
+      "rounded-lg border border-slate-200 bg-slate-100/70 dark:border-slate-700 dark:bg-slate-900/50"
+
+  defp card_title_class(:primary), do: "text-base font-semibold text-navy dark:text-sky-400"
+  defp card_title_class(:rail), do: "text-sm font-semibold text-slate-900 dark:text-slate-100"
+
+  defp card_title_class(_variant),
+    do: "text-base font-semibold text-slate-900 dark:text-slate-100"
+
+  defp card_subtitle_class(:rail), do: "mt-1 text-xs text-slate-500 dark:text-slate-400"
+  defp card_subtitle_class(_variant), do: "mt-1 text-sm text-slate-500 dark:text-slate-400"
 
   defp card_padding(:none), do: ""
   defp card_padding(:sm), do: "px-4 py-3"
