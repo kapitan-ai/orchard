@@ -264,7 +264,10 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>Token Usage & Performance</:title>
 
-        <.metric_grid class="grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+        <.metric_grid
+          gap_class="gap-4"
+          class="grid-cols-2 sm:grid-cols-3 xl:grid-cols-4"
+        >
           <.metric_tile
             id="request-input-tokens"
             label="Input Tokens"
@@ -317,7 +320,10 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>Error Details</:title>
 
-        <.detail_grid class="grid-cols-1 gap-4 sm:grid-cols-2">
+        <.detail_grid
+          gap_class="gap-4"
+          class="grid-cols-1 sm:grid-cols-2"
+        >
           <.detail_field id="request-error-code" label="Error Code" mono>
             {format_text(@request.error_code)}
           </.detail_field>

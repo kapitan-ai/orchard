@@ -19,6 +19,46 @@ defmodule OrchardConsole.CoreComponentsTest do
     end
   end
 
+  @comfortable_metric_tone_contracts %{
+    neutral: ["bg-slate-50", "dark:bg-slate-900/60"],
+    info: [
+      "bg-sky-50/50",
+      "ring-1",
+      "ring-sky-200/60",
+      "dark:bg-sky-900/20",
+      "dark:ring-sky-700/30"
+    ],
+    success: [
+      "bg-forest-50/50",
+      "ring-1",
+      "ring-forest-200/60",
+      "dark:bg-emerald-900/20",
+      "dark:ring-emerald-700/30"
+    ],
+    warning: [
+      "bg-amber-50/50",
+      "ring-1",
+      "ring-amber-200/60",
+      "dark:bg-amber-900/20",
+      "dark:ring-amber-700/30"
+    ],
+    error: [
+      "bg-red-50/50",
+      "ring-1",
+      "ring-red-200/60",
+      "dark:bg-red-900/20",
+      "dark:ring-red-700/30"
+    ]
+  }
+
+  @compact_metric_tone_contracts %{
+    neutral: ["border-slate-200", "dark:border-slate-700"],
+    info: ["border-sky-200", "dark:border-sky-800"],
+    success: ["border-forest-200", "dark:border-emerald-800"],
+    warning: ["border-amber-200", "dark:border-amber-800"],
+    error: ["border-red-200", "dark:border-red-800"]
+  }
+
   defp assert_medium_input_well_tokens(html) do
     assert_has_tokens(html, [
       "text-sm",
@@ -419,6 +459,57 @@ defmodule OrchardConsole.CoreComponentsTest do
 
       refute html =~ "bg-red-50/50"
     end
+
+    for {tone, tone_tokens} <- @comfortable_metric_tone_contracts do
+      test "comfortable #{tone} renders documented tone and density tokens" do
+        assigns = %{tone: unquote(tone)}
+
+        html =
+          render_heex(
+            ~H|<.metric_tile label="Metric" value="1" tone={@tone} density={:comfortable} />|
+          )
+
+        assert_has_tokens(html, [
+          "rounded-lg",
+          "px-4",
+          "py-3",
+          "text-xs",
+          "font-medium",
+          "uppercase",
+          "tracking-wide",
+          "mt-1",
+          "text-2xl",
+          "font-mono"
+          | unquote(Macro.escape(tone_tokens))
+        ])
+      end
+    end
+
+    for {tone, tone_tokens} <- @compact_metric_tone_contracts do
+      test "compact #{tone} renders documented tone and density tokens" do
+        assigns = %{tone: unquote(tone)}
+
+        html =
+          render_heex(
+            ~H|<.metric_tile label="Metric" value="1" tone={@tone} density={:compact} />|
+          )
+
+        assert_has_tokens(html, [
+          "rounded-lg",
+          "border",
+          "px-3",
+          "py-2",
+          "text-center",
+          "text-lg",
+          "font-semibold",
+          "font-mono",
+          "text-xs",
+          "text-slate-500",
+          "dark:text-slate-400"
+          | unquote(Macro.escape(tone_tokens))
+        ])
+      end
+    end
   end
 
   describe "metric_grid/1" do
@@ -434,6 +525,24 @@ defmodule OrchardConsole.CoreComponentsTest do
 
       assert html =~ ~s(<div id="metrics")
       assert_has_tokens(html, ["grid", "gap-3", "sm:grid-cols-2", "xl:grid-cols-4", "mb-4"])
+    end
+
+    test "uses explicit gap_class instead of the default gap" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.metric_grid
+          id="metrics"
+          gap_class="gap-4"
+          class="sm:grid-cols-2 xl:grid-cols-4"
+        >
+          <.metric_tile label="Total" value="1" />
+        </.metric_grid>
+        """)
+
+      assert_has_tokens(html, ["grid", "gap-4", "sm:grid-cols-2", "xl:grid-cols-4"])
+      refute html =~ "gap-3"
     end
   end
 
@@ -480,6 +589,21 @@ defmodule OrchardConsole.CoreComponentsTest do
 
       assert_has_tokens(html, ["font-mono", "break-all"])
     end
+
+    test "optionally applies value_class to the dd only" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.detail_field id="tenant-detail-name" label="Name" value_class="font-medium">
+          Default
+        </.detail_field>
+        """)
+
+      assert html =~ ~s(<div id="tenant-detail-name" class="">)
+      refute html =~ ~s(<div id="tenant-detail-name" class="font-medium">)
+      assert html =~ ~s(<dd class="mt-1 text-sm text-slate-900 dark:text-slate-100 font-medium">)
+    end
   end
 
   describe "detail_grid/1" do
@@ -495,6 +619,25 @@ defmodule OrchardConsole.CoreComponentsTest do
 
       assert html =~ ~s(<dl id="details")
       assert_has_tokens(html, ["grid", "gap-x-6", "gap-y-4", "sm:grid-cols-2", "lg:grid-cols-4"])
+    end
+
+    test "uses explicit gap_class instead of the default gaps" do
+      assigns = %{}
+
+      html =
+        render_heex(~H"""
+        <.detail_grid
+          id="details"
+          gap_class="gap-4"
+          class="sm:grid-cols-2 lg:grid-cols-4"
+        >
+          <.detail_field id="detail-name" label="Name">Default</.detail_field>
+        </.detail_grid>
+        """)
+
+      assert_has_tokens(html, ["grid", "gap-4", "sm:grid-cols-2", "lg:grid-cols-4"])
+      refute html =~ "gap-x-6"
+      refute html =~ "gap-y-4"
     end
   end
 

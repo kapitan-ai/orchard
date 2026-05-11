@@ -265,10 +265,26 @@ defmodule OrchardConsole.OverviewLive do
           </div>
 
           <.metric_grid class="sm:grid-cols-2 xl:grid-cols-3">
-            <.metric_tile label="Checks passing" value={readiness_metric(@readiness)} />
-            <.metric_tile label="Loaded models" value={format_count(runtime_loaded_count(@runtime))} />
-            <.metric_tile label="Catalog models" value={format_count(@model_catalog.total)} />
-            <.metric_tile label="Total requests" value={format_count(@request_summary.total)} />
+            <.metric_tile
+              id="overview-metric-checks-passing"
+              label="Checks passing"
+              value={readiness_metric(@readiness)}
+            />
+            <.metric_tile
+              id="overview-metric-loaded-models"
+              label="Loaded models"
+              value={format_count(runtime_loaded_count(@runtime))}
+            />
+            <.metric_tile
+              id="overview-metric-catalog-models"
+              label="Catalog models"
+              value={format_count(@model_catalog.total)}
+            />
+            <.metric_tile
+              id="overview-metric-total-requests"
+              label="Total requests"
+              value={format_count(@request_summary.total)}
+            />
             <.metric_tile id="overview-metric-avg-ttft" label="Avg TTFT" value={format_duration(@request_performance.avg_ttft_ms)} />
             <.metric_tile id="overview-metric-avg-tokens-per-second" label="Avg tok/s" value={format_rate(@request_performance.avg_tokens_per_second)} />
           </.metric_grid>

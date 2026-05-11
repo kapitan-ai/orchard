@@ -591,7 +591,7 @@ defmodule OrchardConsole.CoreComponents do
   )
 
   attr(:density, :atom, default: :comfortable, values: [:compact, :comfortable])
-  attr(:class, :string, default: "")
+  attr(:class, :string, default: nil)
 
   def metric_tile(%{density: :comfortable} = assigns) do
     ~H"""
@@ -637,12 +637,13 @@ defmodule OrchardConsole.CoreComponents do
   Renders a thin metric grid wrapper.
   """
   attr(:id, :string, default: nil)
+  attr(:gap_class, :string, default: "gap-3")
   attr(:class, :string, default: nil)
   slot(:inner_block, required: true)
 
   def metric_grid(assigns) do
     ~H"""
-    <div id={@id} class={["grid gap-3", @class]}>
+    <div id={@id} class={["grid", @gap_class, @class]}>
       {render_slot(@inner_block)}
     </div>
     """
@@ -655,7 +656,8 @@ defmodule OrchardConsole.CoreComponents do
   attr(:label, :string, required: true)
   attr(:mono, :boolean, default: false)
   attr(:break_all, :boolean, default: false)
-  attr(:class, :string, default: "")
+  attr(:class, :string, default: nil)
+  attr(:value_class, :string, default: nil)
   slot(:inner_block, required: true)
 
   def detail_field(assigns) do
@@ -667,7 +669,8 @@ defmodule OrchardConsole.CoreComponents do
       <dd class={[
         "mt-1 text-sm text-slate-900 dark:text-slate-100",
         @mono && "font-mono",
-        @break_all && "break-all"
+        @break_all && "break-all",
+        @value_class
       ]}>
         {render_slot(@inner_block)}
       </dd>
@@ -679,12 +682,13 @@ defmodule OrchardConsole.CoreComponents do
   Renders a thin detail grid wrapper as a `<dl>`.
   """
   attr(:id, :string, default: nil)
+  attr(:gap_class, :string, default: "gap-x-6 gap-y-4")
   attr(:class, :string, default: nil)
   slot(:inner_block, required: true)
 
   def detail_grid(assigns) do
     ~H"""
-    <dl id={@id} class={["grid gap-x-6 gap-y-4", @class]}>
+    <dl id={@id} class={["grid", @gap_class, @class]}>
       {render_slot(@inner_block)}
     </dl>
     """

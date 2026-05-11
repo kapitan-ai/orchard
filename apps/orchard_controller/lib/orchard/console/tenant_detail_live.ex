@@ -142,8 +142,11 @@ defmodule OrchardConsole.TenantDetailLive do
           <:title>{@tenant.name}</:title>
           <:subtitle>Tenant details</:subtitle>
 
-          <.detail_grid class="grid-cols-2 gap-y-3">
-            <.detail_field id="tenant-detail-name" label="Name" class="font-medium">
+          <.detail_grid
+            gap_class="gap-x-6 gap-y-3"
+            class="grid-cols-2"
+          >
+            <.detail_field id="tenant-detail-name" label="Name" value_class="font-medium">
               {@tenant.name}
             </.detail_field>
             <.detail_field id="tenant-detail-slug" label="Slug" mono>

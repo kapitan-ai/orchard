@@ -438,24 +438,27 @@ over-extraction for v2.
 `<.metric_grid>` is only a thin grid wrapper:
 
 ```
-grid gap-3
+grid + gap_class
 ```
 
-Callers pass column, margin, or density-specific layout tokens through `class`
-(for example `sm:grid-cols-2 xl:grid-cols-3`). The component must not bake in
-column counts.
+Its default `gap_class` is `gap-3`. Callers that need a local gap override pass
+it through `gap_class` (for example `gap_class="gap-4"`). Callers pass non-gap
+layout tokens such as columns, margins, or density-specific placement through
+`class` (for example `sm:grid-cols-2 xl:grid-cols-3`). The component must not
+bake in column counts, and callers must not pass gap utilities through `class`.
 
 #### `detail_field/1`
 
 `<.detail_field>` renders a wrapper `<div id={...}>` containing a `<dt>` and
-`<dd>`. It accepts `id`, `label`, optional `mono`, optional `break_all`, and
-additive wrapper `class`.
+`<dd>`. It accepts `id`, `label`, optional `mono`, optional `break_all`, additive
+wrapper `class`, and additive value `value_class` for the `<dd>`.
 
 - Label / `<dt>`: `text-xs font-medium uppercase tracking-wide text-slate-500
   dark:text-slate-400`.
 - Value / `<dd>`: `mt-1 text-sm text-slate-900 dark:text-slate-100`.
 - `mono={true}` adds `font-mono` to the value only.
 - `break_all={true}` adds `break-all` to the value only for long IDs or hashes.
+- `value_class` adds caller-provided tokens to the value only.
 
 The canonical value typography is intentionally `text-sm`. Some planned copy
 mentioned bumping Model Hub detail values to `text-base`, but PR3 keeps the
@@ -468,12 +471,15 @@ information density. Model Hub long IDs stay legible through `font-mono` plus
 `<.detail_grid>` renders the semantic wrapper for fields:
 
 ```
-<dl class="grid gap-x-6 gap-y-4 ...">
+<dl class="grid ...">
 ```
 
-Callers pass column tokens or local gap overrides through `class`; the component
-must not bake in page-specific column counts. Use it only with children that
-render `<dt>` / `<dd>` pairs, normally `<.detail_field>`.
+Its default `gap_class` is `gap-x-6 gap-y-4`. Callers that need local gap
+overrides pass them through `gap_class` (for example `gap_class="gap-4"` or
+`gap_class="gap-x-6 gap-y-3"`). Callers pass non-gap layout tokens such as
+columns or margins through `class`. The component must not bake in page-specific
+column counts. Use it only with children that render `<dt>` / `<dd>` pairs,
+normally `<.detail_field>`.
 
 ### 6.4 Table Density Policy
 

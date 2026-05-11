@@ -104,8 +104,8 @@ defmodule OrchardConsole.ModelsLive do
           row_id={&"model-#{&1.id}"}
           row_class={&table_row_class/1}
         >
-          <:col :let={model} label="Model" mono>{model.model_id}</:col>
-          <:col :let={model} label="Version" mono>{model.version}</:col>
+          <:col :let={model} label="Model" mono class="break-all">{model.model_id}</:col>
+          <:col :let={model} label="Version" mono class="break-all">{model.version}</:col>
           <:col :let={model} label="State">
             <.badge tone={state_tone(model.state)}>{model.state}</.badge>
           </:col>
