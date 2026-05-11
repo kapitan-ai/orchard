@@ -73,12 +73,12 @@ defmodule OrchardConsole.RequestsLive do
     <div class="space-y-6">
       <.requests_tools_row last_checked_at={@last_checked_at} />
 
-      <div id="requests-summary" class="grid grid-cols-4 gap-3">
-        <.summary_tile id="requests-summary-total" label="Total" value={@requests_summary.total} tone={:neutral} />
-        <.summary_tile id="requests-summary-active" label="Active" value={@requests_summary.active} tone={:info} />
-        <.summary_tile id="requests-summary-terminal" label="Terminal" value={@requests_summary.terminal} tone={:neutral} />
-        <.summary_tile id="requests-summary-failed" label="Failed" value={@requests_summary.failed} tone={:error} />
-      </div>
+      <.metric_grid id="requests-summary" class="grid-cols-4">
+        <.metric_tile id="requests-summary-total" label="Total" value={format_integer(@requests_summary.total)} tone={:neutral} density={:compact} />
+        <.metric_tile id="requests-summary-active" label="Active" value={format_integer(@requests_summary.active)} tone={:info} density={:compact} />
+        <.metric_tile id="requests-summary-terminal" label="Terminal" value={format_integer(@requests_summary.terminal)} tone={:neutral} density={:compact} />
+        <.metric_tile id="requests-summary-failed" label="Failed" value={format_integer(@requests_summary.failed)} tone={:error} density={:compact} />
+      </.metric_grid>
 
       <div id="requests-list-card">
         <.card>
@@ -145,26 +145,6 @@ defmodule OrchardConsole.RequestsLive do
       <.button id="requests-refresh-now" variant={:secondary} size={:sm} phx-click="refresh_now">
         Refresh
       </.button>
-    </div>
-    """
-  end
-
-  attr(:id, :string, required: true)
-  attr(:label, :string, required: true)
-  attr(:value, :integer, required: true)
-  attr(:tone, :atom, values: [:neutral, :info, :success, :warning, :error])
-
-  defp summary_tile(assigns) do
-    ~H"""
-    <div
-      id={@id}
-      class={[
-        "rounded-lg border px-3 py-2 text-center",
-        tile_tone_classes(@tone)
-      ]}
-    >
-      <p class="text-lg font-semibold font-mono">{format_integer(@value)}</p>
-      <p class="text-xs text-slate-500 dark:text-slate-400">{@label}</p>
     </div>
     """
   end
@@ -245,12 +225,6 @@ defmodule OrchardConsole.RequestsLive do
   defp state_tone(:streaming), do: :processing
   defp state_tone(:dispatching), do: :processing
   defp state_tone(_), do: :info
-
-  defp tile_tone_classes(:neutral), do: "border-slate-200 dark:border-slate-700"
-  defp tile_tone_classes(:info), do: "border-sky-200 dark:border-sky-800"
-  defp tile_tone_classes(:success), do: "border-forest-200 dark:border-emerald-800"
-  defp tile_tone_classes(:warning), do: "border-amber-200 dark:border-amber-800"
-  defp tile_tone_classes(:error), do: "border-red-200 dark:border-red-800"
 
   defp format_integer(nil), do: "\u2014"
   defp format_integer(n) when is_integer(n), do: Integer.to_string(n)

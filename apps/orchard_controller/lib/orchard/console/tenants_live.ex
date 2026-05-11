@@ -68,8 +68,8 @@ defmodule OrchardConsole.TenantsLive do
             id="tenant-create-form"
             phx-submit="create_tenant"
           >
-            <.input field={@tenant_form[:slug]} label="Slug" placeholder="my-tenant…" />
-            <.input field={@tenant_form[:name]} label="Name" placeholder="My Tenant…" />
+            <.input field={@tenant_form[:slug]} label="Slug" placeholder="my-tenant…" size={:lg} />
+            <.input field={@tenant_form[:name]} label="Name" placeholder="My Tenant…" size={:lg} />
             <:actions>
               <.button type="submit" phx-disable-with="Creating…">Create Tenant</.button>
             </:actions>

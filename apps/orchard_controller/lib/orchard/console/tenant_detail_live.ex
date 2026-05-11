@@ -142,24 +142,20 @@ defmodule OrchardConsole.TenantDetailLive do
           <:title>{@tenant.name}</:title>
           <:subtitle>Tenant details</:subtitle>
 
-          <dl class="grid grid-cols-2 gap-x-6 gap-y-3 text-sm">
-            <div>
-              <dt class="text-slate-500 dark:text-slate-400">Name</dt>
-              <dd id="tenant-detail-name" class="font-medium">{@tenant.name}</dd>
-            </div>
-            <div>
-              <dt class="text-slate-500 dark:text-slate-400">Slug</dt>
-              <dd id="tenant-detail-slug" class="font-mono">{@tenant.slug}</dd>
-            </div>
-            <div>
-              <dt class="text-slate-500 dark:text-slate-400">Tenant ID</dt>
-              <dd id="tenant-detail-id" class="font-mono text-xs">{@tenant.id}</dd>
-            </div>
-            <div>
-              <dt class="text-slate-500 dark:text-slate-400">Created</dt>
-                <dd id="tenant-detail-created-at" class="font-mono"><.local_time value={@tenant.inserted_at} format={:datetime_minute} /></dd>
-            </div>
-          </dl>
+          <.detail_grid class="grid-cols-2 gap-y-3">
+            <.detail_field id="tenant-detail-name" label="Name" class="font-medium">
+              {@tenant.name}
+            </.detail_field>
+            <.detail_field id="tenant-detail-slug" label="Slug" mono>
+              {@tenant.slug}
+            </.detail_field>
+            <.detail_field id="tenant-detail-id" label="Tenant ID" mono break_all>
+              {@tenant.id}
+            </.detail_field>
+            <.detail_field id="tenant-detail-created-at" label="Created" mono>
+              <.local_time value={@tenant.inserted_at} format={:datetime_minute} />
+            </.detail_field>
+          </.detail_grid>
         </.card>
       </div>
 
@@ -234,7 +230,7 @@ defmodule OrchardConsole.TenantDetailLive do
             id="tenant-api-key-create-form"
             phx-submit="create_api_key"
           >
-            <.input field={@api_key_form[:name]} label="Key Name" placeholder="production-key…" />
+            <.input field={@api_key_form[:name]} label="Key Name" placeholder="production-key…" size={:lg} />
             <:actions>
               <.button type="submit" phx-disable-with="Creating…">Create API Key</.button>
             </:actions>

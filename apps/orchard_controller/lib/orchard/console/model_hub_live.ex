@@ -336,29 +336,23 @@ defmodule OrchardConsole.ModelHubLive do
                   </div>
 
                   <div id="model-hub-detail-body" class="space-y-5 pt-5">
-                  <div id="model-hub-detail-metadata" class="grid gap-3 sm:grid-cols-2">
-                    <div
-                      :for={field <- detail_fields(@model_detail)}
-                      id={"model-hub-detail-#{field.id}"}
-                      class="rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-900/40"
-                    >
-                      <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                        {field.label}
-                      </p>
-                      <p class={[
-                        "mt-1 text-sm text-slate-900 dark:text-slate-100",
-                        field.mono && "font-mono text-xs break-all"
-                      ]}>
+                    <.detail_grid id="model-hub-detail-metadata" class="sm:grid-cols-2">
+                      <.detail_field
+                        :for={field <- metadata_fields(@model_detail)}
+                        id={"model-hub-detail-#{field.id}"}
+                        label={field.label}
+                        mono={field.mono}
+                        break_all={field.mono}
+                      >
                         <%= if Map.get(field, :kind) == :local_time do %>
                           <.local_time value={field.value} format={field.format} />
                         <% else %>
                           {field.value}
                         <% end %>
-                      </p>
-                    </div>
-                  </div>
+                      </.detail_field>
+                    </.detail_grid>
 
-                  <.repository_files_section siblings={@model_detail.siblings} />
+                    <.repository_files_section siblings={@model_detail.siblings} />
                   </div>
                 </div>
             <% end %>
@@ -1123,7 +1117,7 @@ defmodule OrchardConsole.ModelHubLive do
 
   defp detail_get(_detail, _key), do: nil
 
-  defp detail_fields(detail) do
+  defp metadata_fields(detail) do
     [
       %{id: "author", label: "Author", value: display_value(detail.author), mono: false},
       %{

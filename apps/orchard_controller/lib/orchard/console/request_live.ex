@@ -167,7 +167,7 @@ defmodule OrchardConsole.RequestLive do
           </span>
         </:title>
 
-        <dl class="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-4">
+        <.detail_grid class="grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
           <.detail_field id="request-public-id" label="Public ID" mono>
             {@request.public_id}
           </.detail_field>
@@ -192,7 +192,7 @@ defmodule OrchardConsole.RequestLive do
           <.detail_field id="request-state" label="State">
             {format_state(@request.state)}
           </.detail_field>
-        </dl>
+        </.detail_grid>
       </.card>
     </div>
     """
@@ -209,7 +209,7 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>Execution Metadata</:title>
 
-        <dl class="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-5">
+        <.detail_grid class="grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
           <.detail_field id="request-model-id" label="Model ID" mono>
             {format_text(@request.model_id)}
           </.detail_field>
@@ -237,7 +237,7 @@ defmodule OrchardConsole.RequestLive do
           <.detail_field id="request-schedule-tier" label="Tier" mono>
             {format_text(@schedule.selected_tier)}
           </.detail_field>
-        </dl>
+        </.detail_grid>
       </.card>
     </div>
     """
@@ -264,7 +264,7 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>Token Usage & Performance</:title>
 
-        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+        <.metric_grid class="grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
           <.metric_tile
             id="request-input-tokens"
             label="Input Tokens"
@@ -300,7 +300,7 @@ defmodule OrchardConsole.RequestLive do
             label="Tok/s"
             value={format_rate(@tokens_per_second)}
           />
-        </div>
+        </.metric_grid>
       </.card>
     </div>
     """
@@ -317,14 +317,14 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>Error Details</:title>
 
-        <dl class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <.detail_grid class="grid-cols-1 gap-4 sm:grid-cols-2">
           <.detail_field id="request-error-code" label="Error Code" mono>
             {format_text(@request.error_code)}
           </.detail_field>
           <.detail_field id="request-error-message" label="Error Message">
             {format_text(@request.error_message)}
           </.detail_field>
-        </dl>
+        </.detail_grid>
       </.card>
     </div>
     """
@@ -413,7 +413,7 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>Request Provenance</:title>
 
-        <dl class="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <.detail_grid class="grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           <.detail_field id="request-tenant" label="Tenant">
             <.tenant_display request={@request} />
           </.detail_field>
@@ -443,7 +443,7 @@ defmodule OrchardConsole.RequestLive do
           <.detail_field id="request-reserved-output-tokens" label="Reserved Output Tokens" mono>
             {format_integer(@request.reserved_output_tokens)}
           </.detail_field>
-        </dl>
+        </.detail_grid>
       </.card>
     </div>
     """
@@ -552,44 +552,6 @@ defmodule OrchardConsole.RequestLive do
     >
       {@fallback_text}
     </p>
-    """
-  end
-
-  attr(:id, :string, required: true)
-  attr(:label, :string, required: true)
-  attr(:mono, :boolean, default: false)
-  slot(:inner_block, required: true)
-
-  defp detail_field(assigns) do
-    ~H"""
-    <div id={@id}>
-      <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        {@label}
-      </dt>
-      <dd class={[
-        "mt-1 text-sm text-slate-900 dark:text-slate-100",
-        @mono && "font-mono"
-      ]}>
-        {render_slot(@inner_block)}
-      </dd>
-    </div>
-    """
-  end
-
-  attr(:id, :string, required: true)
-  attr(:label, :string, required: true)
-  attr(:value, :string, required: true)
-
-  defp metric_tile(assigns) do
-    ~H"""
-    <div id={@id} class="rounded-lg bg-slate-50 px-4 py-3 dark:bg-slate-900/60">
-      <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        {@label}
-      </p>
-      <p class="mt-1 text-2xl font-mono text-slate-900 dark:text-slate-100">
-        {@value}
-      </p>
-    </div>
     """
   end
 
