@@ -674,6 +674,7 @@ defmodule OrchardConsole.PlaygroundLive do
                 field={@form[:model]}
                 type="select"
                 label="Model"
+                size={:lg}
                 options={Enum.map(@models, &{&1.label, &1.value})}
                 errors={List.wrap(@form_errors[:model])}
                 disabled={@active_run != nil}
@@ -706,6 +707,7 @@ defmodule OrchardConsole.PlaygroundLive do
                 field={@form[:prompt]}
                 type="textarea"
                 label="Message"
+                size={:lg}
                 rows={3}
                 errors={List.wrap(@form_errors[:prompt])}
                 phx-hook="SubmitOnModEnter"

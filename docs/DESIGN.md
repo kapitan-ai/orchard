@@ -1,7 +1,7 @@
 # DESIGN.md — Orchard Console Tactical UI Contract
 
-**Status:** Active (v1)
-**Last Updated:** 2026-05-10
+**Status:** Active (v2)
+**Last Updated:** 2026-05-11
 **Audience:** AI coding agents and contributors generating or modifying Console UI.
 
 This document is the tactical, component-level design contract for the Orchard
@@ -52,7 +52,7 @@ to one of these surfaces. Do not introduce intermediate shades.
 | Page canvas      | `bg-slate-50`          | `bg-slate-900`                    | `<main>` content area. |
 | Control rail     | `bg-slate-100`         | `bg-slate-800`                    | Sidebar (`<aside id="console-sidebar">`). Distinct panel against the canvas. |
 | Card / panel     | `bg-white`             | `bg-slate-800`                    | Page header, content cards, dialogs. |
-| Elevated card    | `bg-white shadow-sm`   | `bg-slate-700`                    | Modals, popovers, hover-elevated rows. (v1 has no popover system; this row reserves the slot.) |
+| Elevated card    | `bg-white shadow-sm`   | `bg-slate-700`                    | Modals, popovers, hover-elevated rows. (v2 has no popover system; this row reserves the slot.) |
 | Recessed well    | `bg-slate-50` + inner shadow | `bg-slate-900/60` + inner shadow | Form inputs, code/log embeds. See *§4 Form Inputs*. |
 
 **Hierarchy (light):** canvas (slate-50) **→** card (white) is one step *up*;
@@ -67,7 +67,7 @@ card (white) **→** input well (slate-50) is one step *down within the card*.
 `border-slate-700` (dark). Do not introduce alternative border shades.
 
 **Shadows:** surface elevation never uses Tailwind's `shadow-md` or larger in
-v1. `shadow-sm` is the only outward elevation token. `shadow-inner` is
+v2. `shadow-sm` is the only outward elevation token. `shadow-inner` is
 reserved for the recessed well surface (inputs).
 
 ---
@@ -124,10 +124,9 @@ Every well has these states. Each state has an exact set of class tokens.
 ### 4.2 Authoritative Class Strings — Text-like / Select / Textarea
 
 The default `input/1` clause, the `select` clause, and the `textarea` clause
-compose the well from three class groups: an always-on base, a neutral visual
-state used only when `@errors == []`, and the error state used only when
-`@errors != []`. Sizing matches the prior baseline; tactility comes from
-border/surface/shadow/ring.
+compose the well from three class groups: a size-aware always-on base, a
+neutral visual state used only when `@errors == []`, and the error state used
+only when `@errors != []`. Tactility comes from border/surface/shadow/ring.
 
 Do **not** emit the neutral visual state group when `@errors != []`.
 Tailwind v4 CSS ordering is not guaranteed to follow HTML class order, so
@@ -136,10 +135,28 @@ border or ring color rules can still win. The component must avoid conflicting
 neutral border, hover, focus-border, and focus-ring color utilities in the
 error state.
 
-**Always-on well base:**
+**Always-on well base (`size={:md}`, default):**
 
 ```
 mt-1 block w-full rounded-md text-sm
+border bg-slate-50 text-slate-900 shadow-inner
+placeholder:text-slate-400
+focus-visible:outline-none
+focus-visible:ring-2
+focus-visible:ring-offset-2 focus-visible:ring-offset-white
+disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400
+read-only:bg-slate-100 read-only:text-slate-500
+dark:bg-slate-900/60 dark:text-slate-100
+dark:placeholder:text-slate-500
+dark:focus-visible:ring-offset-slate-900
+dark:disabled:bg-slate-800/40 dark:disabled:text-slate-500
+dark:read-only:bg-slate-800/40 dark:read-only:text-slate-400
+```
+
+**Always-on well base (`size={:lg}`):**
+
+```
+mt-1 block w-full rounded-md text-base px-3 py-2
 border bg-slate-50 text-slate-900 shadow-inner
 placeholder:text-slate-400
 focus-visible:outline-none
@@ -196,28 +213,35 @@ text-xs text-red-600 dark:text-red-400
 ```
 
 These match the existing `core_components.ex` definitions and stay unchanged
-in v1 unless a parity adjustment is required to remain legible against the
+in v2 unless a parity adjustment is required to remain legible against the
 new well surface. Any such change must keep error text at `red-600`/`red-400`.
 
-### 4.5 Checkbox (Reference Only — Visuals Not Refreshed in v1)
+### 4.5 Checkbox (Reference Only — Visuals Not Refreshed in v2)
 
-The checkbox variant uses its own visual class set (`h-4 w-4 rounded …`). v1 does not modify its visual styling. Shared form accessibility behavior still applies: errored checkbox inputs should expose `aria-invalid`, associate visible errors through `aria-describedby`, and render the same field-error text treatment. If a future revision adds tactile visual parity, it must be added here as a new subsection.
+The checkbox variant uses its own visual class set (`h-4 w-4 rounded …`). v2 does not modify its visual styling. Shared form accessibility behavior still applies: errored checkbox inputs should expose `aria-invalid`, associate visible errors through `aria-describedby`, and render the same field-error text treatment. If a future revision adds tactile visual parity, it must be added here as a new subsection.
 
-### 4.6 Sizing and Density
+### 4.6 Input Sizing and Density
 
-- Default vertical rhythm above the field is `mt-1` (matches the label).
-- Default text size is `text-sm`.
-- Default radius is `rounded-md` (Tailwind's 6px).
-- Do not introduce `py-*`, `px-*`, `text-base`, or `text-xs` overrides on the
-  input itself. Browser-default padding is the v1 baseline; any density
-  change is a v2 conversation.
+`<.input>` accepts `size={:md | :lg}` for text-like inputs, selects, and
+textareas. Checkbox and hidden inputs do not use this visual sizing contract.
+
+- `:md` is the default and preserves the prior baseline: `mt-1 block w-full
+  rounded-md text-sm` plus the shared well surface/state tokens above. It does
+  not add explicit `px-*` or `py-*` utilities.
+- `:lg` is for high-signal composer/search controls and emits
+  `text-base px-3 py-2` instead of `text-sm`. It must not emit both `text-sm`
+  and `text-base`.
+- Native HTML `size` is intentionally shadowed by the component-level atom
+  attribute and is not passed through by `<.input>`. If a future callsite needs
+  the native HTML width/count behavior, introduce an explicit `native_size`
+  attribute rather than reusing `size`.
 - `<input type="search">` keeps the same well treatment as text inputs.
   Do not use the bare `appearance-none` Tailwind reset unless explicitly
   required by a UA glitch — `core_components.ex` does not currently use it.
 
 ### 4.7 Optional CSS Escape Hatch
 
-A single Tailwind-utility-equivalent class name is reserved for a future escape hatch *only* if the combination above cannot be expressed cleanly in pure utilities for some input variant: `.console-input-well`. v1 does not define or use this class in `apps/orchard_controller/assets/css/app.css`; it remains a reserved name, not an implemented selector. Any custom CSS for input wells beyond this reserved escape hatch is out of scope.
+A single Tailwind-utility-equivalent class name is reserved for a future escape hatch *only* if the combination above cannot be expressed cleanly in pure utilities for some input variant: `.console-input-well`. v2 does not define or use this class in `apps/orchard_controller/assets/css/app.css`; it remains a reserved name, not an implemented selector. Any custom CSS for input wells beyond this reserved escape hatch is out of scope.
 
 ---
 
@@ -227,7 +251,7 @@ The sidebar (`<aside id="console-sidebar">` in
 `apps/orchard_controller/lib/orchard/console/layouts/app.html.heex`) reads
 as a **distinct slate control panel** against the page canvas. The collapse
 mechanism (`JS.toggle_class("sidebar-collapsed", to: "#console-shell")`,
-widths `16rem` ↔ `4.5rem`, transitions in `app.css`) is unchanged in v1.
+widths `16rem` ↔ `4.5rem`, transitions in `app.css`) is unchanged in v2.
 
 ### 5.1 Authoritative Class String — Rail Container
 
@@ -244,10 +268,10 @@ Notes:
 - Rail is `slate-100` in light (one step *down* from `slate-50` canvas) and
   `slate-800` in dark (one step *up* from `slate-900` canvas). This delivers
   the tactile-panel reading in both modes.
-- `<main>` retains `bg-slate-50 dark:bg-slate-900` in v1 — do not change it.
+- `<main>` retains `bg-slate-50 dark:bg-slate-900` in v2 — do not change it.
 - The `border-r border-slate-200 dark:border-slate-700` divider remains the
   single source of the rail/canvas boundary. Do not add a second
-  `shadow-*` or `ring-*` divider in v1.
+  `shadow-*` or `ring-*` divider in v2.
 - Footer chrome inside the rail (license badge, version, collapse button)
   keeps its existing classes, including the badge wrapper's `bg-slate-50
   dark:bg-slate-900/60`. The badge now reads as a tinted chip *inside* the
@@ -306,7 +330,7 @@ implementation. Do not add hover styling to the disabled span.
 - The `sidebar-label`, `console-sidebar-version`, and `sidebar-toggle-icon`
   rules in `app.css` (`#console-sidebar { width / min-width }`,
   `.sidebar-collapsed` overrides, reduced-motion media query) are not
-  modified in v1.
+  modified in v2.
 - The icon column at `h-5 w-5 flex-shrink-0` is kept on every nav item so
   collapsed-state alignment continues to work.
 - Active `aria-current="page"` is set by `sidebar_nav/1` and must remain.
@@ -321,21 +345,34 @@ implementation. Do not add hover styling to the disabled span.
   margin-bottom themselves.
 - Form group radius is `rounded-md` (6px). Cards/panels keep their
   existing radii (`rounded-lg` where already set). Do not introduce
-  `rounded-xl` or `rounded-2xl` in v1.
-- Sidebar nav row padding is `px-3 py-2`. Do not change in v1.
-- Page content max width is `max-w-7xl` per the layout's content wrapper.
-  Do not change in v1.
+  `rounded-xl` or `rounded-2xl` in v2.
+- Sidebar nav row padding is `px-3 py-2`. Do not change in v2.
+
+### 6.1 Page Width Modes
+
+Console pages may opt into one of these layout width modes. PR1 documents the
+contract only; implementation belongs in a later PR and must keep the default
+mode token-equivalent to the current layout wrapper.
+
+| Mode | Width/alignment contract | Intended use |
+|------|--------------------------|--------------|
+| `:standard` | Centered, `mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-6`. Default. | Most Console pages. |
+| `:wide` | Centered, `mx-auto max-w-[96rem] px-4 sm:px-6 lg:px-8 py-6`. | Pages that need more horizontal room but still read as documents. |
+| `:workspace` | Full canvas after the sidebar, `max-w-none px-6 sm:px-8 lg:px-10 py-6`, left-aligned. | IDE-like operational workspaces. |
+| `:detail` | Centered, `mx-auto max-w-5xl px-4 sm:px-6 lg:px-8 py-6`. | Dense detail pages when narrower line length improves scanning. |
+
+> **Note (PR1 scope):** This document defines page modes for the v2 contract, but PR1 does not implement page-mode helpers or change any page wrapper. Implement those only when a follow-up PR scopes that rollout explicitly.
 
 ---
 
 ## 7. Motion
 
-- New or changed tactile-refresh surfaces use `transition-colors` (or scoped `transition` rules in `app.css` for the sidebar collapse). Do not add new `duration-*` or `ease-*` overrides for the v1 input/rail refresh; existing transitions elsewhere, such as flash hide/show helpers, are grandfathered.
+- New or changed tactile-refresh surfaces use `transition-colors` (or scoped `transition` rules in `app.css` for the sidebar collapse). Do not add new `duration-*` or `ease-*` overrides for the v2 input/rail refresh; existing transitions elsewhere, such as flash hide/show helpers, are grandfathered.
 - The reduced-motion media query in `app.css` (`@media
   (prefers-reduced-motion: reduce)`) is the floor: any new transition must
   either inherit it or add an entry there. Do not add a Tailwind motion
   utility that bypasses reduced-motion.
-- No fade-in/scale-in entrance animations in v1 (no `motion-safe:animate-*`
+- No fade-in/scale-in entrance animations in v2 (no `motion-safe:animate-*`
   introductions).
 
 ---
@@ -390,9 +427,9 @@ spec, remove it.
 
 ---
 
-## 10. v1 Validation Checklist
+## 10. v2 Validation Checklist
 
-Use this checklist for Console UI changes governed by this document. UI tactility is observable, not unit-testable; v1 verification combines class-token render smoke and a structured browser walk.
+Use this checklist for Console UI changes governed by this document. UI tactility is observable, not unit-testable; v2 verification combines class-token render smoke and a structured browser walk.
 
 ### 10.1 Component Smoke (must pass before browser walk)
 
@@ -479,25 +516,30 @@ For each pair of `{light, dark} × {sidebar-expanded, sidebar-collapsed}`:
 ### 10.4 Stop Conditions
 
 - Any compile warning, format failure, or render-test failure → stop, fix.
-- Any browser checklist regression in a state not explicitly covered by v1
+- Any browser checklist regression in a state not explicitly covered by v2
   → stop and scope the regression into a follow-up rather than silently
-  expanding v1.
+  expanding v2.
 
 ---
 
-## 11. Out of Scope (v1)
+## 11. Out of Scope (v2)
 
-The following are intentionally *not* defined here. An agent must not
-generate v1 code that depends on them.
+The following are intentionally *not* defined here or not implemented in PR1. An
+agent must not generate code that depends on them unless a later PR updates this
+contract first.
 
-- New Tailwind color tokens, font extensions, or `tailwind.config.js`
-  changes.
+- New Tailwind color tokens, font extensions, or `app.css` `@theme` changes
+  outside a narrowly scoped token/documentation correction.
 - A second design escape hatch beyond `.console-input-well` (and that one
   is reserved, not yet used).
-- Page-header, breadcrumb, status pill, table, modal, toast/flash, badge,
-  or button restyling beyond what already exists.
+- Page-mode helpers or route rollout; §6.1 only permits the modes for a later
+  implementation PR.
+- Card variants, shared metric/detail primitives, table density variants,
+  Nodes layout changes, or app shell wrapper changes.
+- Page-header, breadcrumb, status pill, modal, toast/flash, badge, or button
+  restyling beyond what already exists.
 - Mobile sidebar / responsive collapse below `lg`. The rail is desktop-only
-  in v1.
+  in v2.
 - Animated entrance/exit transitions for inputs, nav items, or rail.
 - Component library swap (Headless UI, Radix, etc.).
 - A LiveView component split (`Orchard.Console.UI.Input` etc.).
@@ -510,14 +552,14 @@ If a future revision needs any of these, it must update this document
 
 ## 12. Change Discipline
 
-- This document is the **frozen tactical spec** for the v1 refresh. The
+- This document is the **active tactical spec** for the v2 refresh. The
   render-class smoke tests in
   `apps/orchard_controller/test/orchard/console/core_components_test.exs`
   read tokens from §4 and §5.
-- Adding a new state, surface, or token requires editing this document
-  *first*, then updating the component, then updating the render smoke.
-- Drift between `core_components.ex` / `app.html.heex` and this document
-  is a defect. Either the code is wrong or this document is wrong; resolve
-  before commit.
+- Adding a new state, surface, size, page mode, or token requires editing this
+  document first, then updating the component, then updating the render smoke.
+- Drift between `core_components.ex`, `app.html.heex`, `app.css` `@theme` /
+  `@source`, and this document is a defect. Either the code is wrong or this
+  document is wrong; resolve before commit.
 - This document never references planning artifacts, agent harnesses, or
   external context tools. It is a self-contained product document.

@@ -1,7 +1,7 @@
 # Brand Identity
 
 **Status:** Active  
-**Last Updated:** 2026-03-14  
+**Last Updated:** 2026-05-11
 **Adapted from:** `kapitan-orchard/docs/designs/brand-identity.md` (v1 Jinja2/Tauri app)  
 **Product name:** Orchard Console
 
@@ -225,58 +225,50 @@ end
 
 ## Tailwind Integration
 
-Configure in `apps/orchard_controller/assets/tailwind.config.js`:
+Tailwind v4 is bound in `apps/orchard_controller/assets/css/app.css` via
+`@import "tailwindcss"`, the `@theme` block, and `@source` declarations for
+Console `.ex` / `.heex` files. The `@theme` block is the implementation source
+of truth for custom Orchard brand tokens.
 
-```javascript
-module.exports = {
-  theme: {
-    extend: {
-      colors: {
-        // Brand colors (accent/semantic roles)
-        navy: {
-          DEFAULT: '#1565C0',
-          50: '#E3F2FD',
-          100: '#BBDEFB',
-          400: '#42A5F5',
-          600: '#1565C0',
-          700: '#0D47A1',
-          800: '#0A3A8A',
-        },
-        forest: {
-          DEFAULT: '#1B5E20',
-          50: '#E8F5E9',
-          100: '#C8E6C9',
-          400: '#66BB6A',
-          600: '#1B5E20',
-          700: '#145A19',
-        },
-        sage: {
-          DEFAULT: '#81C784',
-          50: '#F1F8E9',
-          100: '#DCEDC8',
-          200: '#A5D6A7',
-          300: '#81C784',
-          400: '#66BB6A',
-        },
-        gold: {
-          DEFAULT: '#FDD835',
-          50: '#FFFDE7',
-          100: '#FFF9C4',
-          300: '#FDE047',
-          400: '#FDD835',
-          500: '#FBC02D',
-        },
-      },
-      fontFamily: {
-        mono: ['"SF Mono"', '"JetBrains Mono"', 'ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
-      },
-    },
-  },
-}
-```
+| Token | Hex | Source | Usage |
+|-------|-----|--------|-------|
+| `navy` / `navy-600` | `#1565C0` | `@theme` | Primary brand, active nav, primary buttons, links |
+| `navy-50` | `#E3F2FD` | `@theme` | Low-emphasis primary tint |
+| `navy-100` | `#BBDEFB` | `@theme` | Primary tint |
+| `navy-400` | `#42A5F5` | `@theme` | Light primary accent |
+| `navy-700` | `#0D47A1` | `@theme` | Darker primary emphasis |
+| `navy-800` | `#0A3A8A` | `@theme` | Deep primary emphasis |
+| `forest` / `forest-600` | `#1B5E20` | `@theme` | Secondary brand, success/healthy states |
+| `forest-50` | `#E8F5E9` | `@theme` | Success tint |
+| `forest-100` | `#C8E6C9` | `@theme` | Success tint |
+| `forest-300` | `#81C784` | `@theme` | Mid success accent |
+| `forest-400` | `#66BB6A` | `@theme` | Success accent |
+| `forest-700` | `#145A19` | `@theme` | Dark success emphasis |
+| `forest-900` | `#0A290B` | `@theme` | Deep success emphasis |
+| `sage` / `sage-300` | `#81C784` | `@theme` | Tertiary brand, subtle highlights |
+| `sage-50` | `#F1F8E9` | `@theme` | Highlight tint |
+| `sage-100` | `#DCEDC8` | `@theme` | Highlight tint |
+| `sage-200` | `#A5D6A7` | `@theme` | Highlight tint |
+| `sage-400` | `#66BB6A` | `@theme` | Highlight accent |
+| `gold` / `gold-400` | `#FDD835` | `@theme` | CTA accent, important badges |
+| `gold-50` | `#FFFDE7` | `@theme` | Accent tint |
+| `gold-100` | `#FFF9C4` | `@theme` | Accent tint |
+| `gold-300` | `#FDE047` | `@theme` | Light accent |
+| `gold-500` | `#FBC02D` | `@theme` | Strong accent |
+| `slate-50` | `#F8FAFC` | Tailwind built-in | Page background, primary dark text inverse |
+| `slate-100` | `#F1F5F9` | Tailwind built-in | Control rail and disabled light surfaces |
+| `slate-200` | `#E2E8F0` | Tailwind built-in | Light borders |
+| `slate-300` | `#CBD5E1` | Tailwind built-in | Disabled light text |
+| `slate-400` | `#94A3B8` | Tailwind built-in | Secondary dark text |
+| `slate-500` | `#64748B` | Tailwind built-in | Secondary light text |
+| `slate-600` | `#475569` | Tailwind built-in | Disabled dark text |
+| `slate-700` | `#334155` | Tailwind built-in | Dark borders, elevated dark surfaces |
+| `slate-800` | `#1E293B` | Tailwind built-in | Dark card/surface |
+| `slate-900` | `#0F172A` | Tailwind built-in | Dark page background, primary light text |
 
 > **Note:** Structural slate colors and semantic colors (red, amber, sky, violet) are
-> built into Tailwind and don't need to be extended.
+> built into Tailwind and don't need to be extended. The mono font stack is also
+> declared in `app.css` under `--font-mono`.
 
 ---
 

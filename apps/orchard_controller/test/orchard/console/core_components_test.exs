@@ -19,6 +19,27 @@ defmodule OrchardConsole.CoreComponentsTest do
     end
   end
 
+  defp assert_medium_input_well_tokens(html) do
+    assert_has_tokens(html, [
+      "text-sm",
+      "border-slate-300",
+      "bg-slate-50",
+      "shadow-inner",
+      "focus-visible:ring-navy/40",
+      "dark:bg-slate-900/60"
+    ])
+
+    refute html =~ "shadow-sm"
+    refute html =~ "dark:border-slate-500"
+    refute html =~ "focus:border-navy"
+  end
+
+  defp assert_large_input_well_tokens(html) do
+    assert_has_tokens(html, ["text-base", "px-3", "py-2"])
+
+    refute html =~ "text-sm"
+  end
+
   defp assert_input_error_tokens(html, type) do
     assert_has_tokens(html, [
       "border-red-500",
@@ -801,31 +822,49 @@ defmodule OrchardConsole.CoreComponentsTest do
 
       assert_has_tokens(html, [
         "border",
-        "border-slate-300",
-        "bg-slate-50",
-        "shadow-inner",
         "placeholder:text-slate-400",
         "hover:border-slate-400",
         "focus-visible:outline-none",
         "focus-visible:border-navy",
         "focus-visible:ring-2",
-        "focus-visible:ring-navy/40",
         "focus-visible:ring-offset-2",
         "focus-visible:ring-offset-white",
         "disabled:cursor-not-allowed",
         "disabled:bg-slate-100",
         "read-only:bg-slate-100",
         "dark:border-slate-700",
-        "dark:bg-slate-900/60",
         "dark:hover:border-slate-600",
         "dark:focus-visible:border-sky-400",
         "dark:focus-visible:ring-sky-400/40",
         "dark:focus-visible:ring-offset-slate-900"
       ])
 
-      refute html =~ "shadow-sm"
-      refute html =~ "dark:border-slate-500"
-      refute html =~ "focus:border-navy"
+      assert_medium_input_well_tokens(html)
+    end
+
+    test "medium text and search inputs keep medium tactile well tokens" do
+      assigns = %{}
+
+      text_html = render_heex(~H|<.input type="text" name="name" value="" id="name" />|)
+      search_html = render_heex(~H|<.input type="search" name="query" value="" id="query" />|)
+
+      assert_medium_input_well_tokens(text_html)
+      assert_medium_input_well_tokens(search_html)
+    end
+
+    test "large text and search inputs emit large sizing without medium text conflict" do
+      assigns = %{}
+
+      text_html =
+        render_heex(~H|<.input size={:lg} type="text" name="name" value="" id="name" />|)
+
+      search_html =
+        render_heex(~H|<.input size={:lg} type="search" name="query" value="" id="query" />|)
+
+      assert_large_input_well_tokens(text_html)
+      assert_large_input_well_tokens(search_html)
+      refute text_html =~ ~s(size="lg")
+      refute search_html =~ ~s(size="lg")
     end
 
     test "renders select input with options" do
@@ -852,21 +891,26 @@ defmodule OrchardConsole.CoreComponentsTest do
 
       assert_has_tokens(html, [
         "border",
-        "border-slate-300",
-        "bg-slate-50",
-        "shadow-inner",
         "hover:border-slate-400",
         "focus-visible:ring-2",
-        "focus-visible:ring-navy/40",
         "focus-visible:ring-offset-white",
-        "dark:bg-slate-900/60",
         "dark:focus-visible:ring-sky-400/40",
         "dark:focus-visible:ring-offset-slate-900"
       ])
 
-      refute html =~ "shadow-sm"
-      refute html =~ "dark:border-slate-500"
-      refute html =~ "focus:border-navy"
+      assert_medium_input_well_tokens(html)
+    end
+
+    test "large select emits large sizing without native size passthrough" do
+      assigns = %{}
+
+      html =
+        render_heex(
+          ~H|<.input size={:lg} type="select" name="role" options={["Admin", "User"]} value="" id="role" />|
+        )
+
+      assert_large_input_well_tokens(html)
+      refute html =~ ~s(size="lg")
     end
 
     test "renders textarea" do
@@ -882,26 +926,46 @@ defmodule OrchardConsole.CoreComponentsTest do
     test "textarea shares tactile well tokens" do
       assigns = %{}
 
-      html =
-        render_heex(~H|<.input type="textarea" name="bio" label="Bio" value="" id="bio" />|)
+      html = render_heex(~H|<.input type="textarea" name="bio" label="Bio" value="" id="bio" />|)
 
       assert_has_tokens(html, [
         "border",
-        "border-slate-300",
-        "bg-slate-50",
-        "shadow-inner",
         "hover:border-slate-400",
         "focus-visible:ring-2",
-        "focus-visible:ring-navy/40",
         "focus-visible:ring-offset-white",
-        "dark:bg-slate-900/60",
         "dark:focus-visible:ring-sky-400/40",
         "dark:focus-visible:ring-offset-slate-900"
       ])
 
-      refute html =~ "shadow-sm"
-      refute html =~ "dark:border-slate-500"
-      refute html =~ "focus:border-navy"
+      assert_medium_input_well_tokens(html)
+    end
+
+    test "large inputs keep large sizing in error state without neutral border conflicts" do
+      assigns = %{}
+
+      for {type, template} <- [
+            text:
+              ~H|<.input size={:lg} type="text" name="user[name]" value="" id="name" errors={["can't be blank"]} />|,
+            search:
+              ~H|<.input size={:lg} type="search" name="query" value="" id="query" errors={["Required"]} />|,
+            select:
+              ~H|<.input size={:lg} type="select" name="role" options={["Admin", "User"]} value="" id="role" errors={["can't be blank"]} />|,
+            textarea:
+              ~H|<.input size={:lg} type="textarea" name="bio" value="" id="bio" errors={["Required"]} />|
+          ] do
+        html = render_heex(template)
+
+        assert_large_input_well_tokens(html)
+        assert_input_error_tokens(html, type)
+      end
+    end
+
+    test "large textarea emits large sizing without medium text conflict" do
+      assigns = %{}
+
+      html = render_heex(~H|<.input size={:lg} type="textarea" name="bio" value="" id="bio" />|)
+
+      assert_large_input_well_tokens(html)
     end
 
     test "input error state uses red border tokens without neutral border conflicts" do

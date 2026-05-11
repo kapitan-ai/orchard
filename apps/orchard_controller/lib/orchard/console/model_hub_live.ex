@@ -185,6 +185,7 @@ defmodule OrchardConsole.ModelHubLive do
                   id="model-hub-search-input"
                   type="search"
                   label="Search"
+                  size={:lg}
                   placeholder="Filter by repo name or author…"
                   phx-debounce="300"
                 />

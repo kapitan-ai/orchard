@@ -750,24 +750,37 @@ defmodule OrchardConsole.CoreComponents do
     """
   end
 
+  @input_well_shared_classes Enum.join(
+                               [
+                                 "border bg-slate-50 text-slate-900 shadow-inner",
+                                 "placeholder:text-slate-400",
+                                 "focus-visible:outline-none",
+                                 "focus-visible:ring-2",
+                                 "focus-visible:ring-offset-2 focus-visible:ring-offset-white",
+                                 "disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400",
+                                 "read-only:bg-slate-100 read-only:text-slate-500",
+                                 "dark:bg-slate-900/60 dark:text-slate-100",
+                                 "dark:placeholder:text-slate-500",
+                                 "dark:focus-visible:ring-offset-slate-900",
+                                 "dark:disabled:bg-slate-800/40 dark:disabled:text-slate-500",
+                                 "dark:read-only:bg-slate-800/40 dark:read-only:text-slate-400"
+                               ],
+                               " "
+                             )
+
   @input_well_classes Enum.join(
-                        [
-                          "mt-1 block w-full rounded-md text-sm",
-                          "border bg-slate-50 text-slate-900 shadow-inner",
-                          "placeholder:text-slate-400",
-                          "focus-visible:outline-none",
-                          "focus-visible:ring-2",
-                          "focus-visible:ring-offset-2 focus-visible:ring-offset-white",
-                          "disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400",
-                          "read-only:bg-slate-100 read-only:text-slate-500",
-                          "dark:bg-slate-900/60 dark:text-slate-100",
-                          "dark:placeholder:text-slate-500",
-                          "dark:focus-visible:ring-offset-slate-900",
-                          "dark:disabled:bg-slate-800/40 dark:disabled:text-slate-500",
-                          "dark:read-only:bg-slate-800/40 dark:read-only:text-slate-400"
-                        ],
+                        ["mt-1 block w-full rounded-md text-sm", @input_well_shared_classes],
                         " "
                       )
+
+  @input_well_lg_classes Enum.join(
+                           [
+                             "mt-1 block w-full rounded-md",
+                             "text-base px-3 py-2",
+                             @input_well_shared_classes
+                           ],
+                           " "
+                         )
 
   @input_neutral_state_classes Enum.join(
                                  [
@@ -824,10 +837,11 @@ defmodule OrchardConsole.CoreComponents do
   attr(:options, :list, doc: "the options to pass to HtmlForm.options_for_select/2")
   attr(:multiple, :boolean, default: false, doc: "the multiple flag for select inputs")
   attr(:class, :string, default: "")
+  attr(:size, :atom, default: :md, values: [:md, :lg])
 
   attr(:rest, :global,
     include: ~w(accept autocomplete capture cols disabled form list max maxlength min minlength
-         multiple pattern placeholder readonly required rows size step phx-debounce)
+         multiple pattern placeholder readonly required rows step phx-debounce)
   )
 
   slot(:inner_block)
@@ -891,7 +905,7 @@ defmodule OrchardConsole.CoreComponents do
         aria-invalid={@aria_invalid}
         aria-describedby={@aria_describedby}
         class={[
-          input_well_classes(),
+          input_well_classes(@size),
           @errors == [] && input_neutral_state_classes(),
           @errors != [] && input_error_classes(),
           @class
@@ -918,7 +932,7 @@ defmodule OrchardConsole.CoreComponents do
         aria-invalid={@aria_invalid}
         aria-describedby={@aria_describedby}
         class={[
-          input_well_classes(),
+          input_well_classes(@size),
           @errors == [] && input_neutral_state_classes(),
           @errors != [] && input_error_classes(),
           @class
@@ -951,7 +965,7 @@ defmodule OrchardConsole.CoreComponents do
         aria-invalid={@aria_invalid}
         aria-describedby={@aria_describedby}
         class={[
-          input_well_classes(),
+          input_well_classes(@size),
           @errors == [] && input_neutral_state_classes(),
           @errors != [] && input_error_classes(),
           @class
@@ -963,7 +977,8 @@ defmodule OrchardConsole.CoreComponents do
     """
   end
 
-  defp input_well_classes, do: @input_well_classes
+  defp input_well_classes(:md), do: @input_well_classes
+  defp input_well_classes(:lg), do: @input_well_lg_classes
 
   defp input_neutral_state_classes, do: @input_neutral_state_classes
 
