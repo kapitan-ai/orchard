@@ -606,7 +606,7 @@ defmodule OrchardConsole.PlaygroundLive do
   def render(assigns) do
     ~H"""
     <div class="space-y-6">
-      <div class="grid gap-6 lg:grid-cols-2">
+      <div class="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <%!-- Control Panel --%>
         <.card>
           <:title>
@@ -679,11 +679,20 @@ defmodule OrchardConsole.PlaygroundLive do
                 errors={List.wrap(@form_errors[:model])}
                 disabled={@active_run != nil}
               />
+              <p
+                :if={present_text?(@form[:model].value)}
+                id="playground-model-selected"
+                aria-live="polite"
+                class="-mt-3 font-mono text-xs text-slate-500 dark:text-slate-400 break-all"
+              >
+                Selected: {@form[:model].value}
+              </p>
               <.input
                 id="playground-system"
                 field={@form[:system]}
                 type="textarea"
                 label="System prompt (optional)"
+                size={:lg}
                 rows={2}
                 disabled={@active_run != nil}
               />
@@ -748,7 +757,7 @@ defmodule OrchardConsole.PlaygroundLive do
             />
 
             <div :for={entry <- @transcript} id={"playground-message-#{entry.id}"} class={[
-              "rounded-lg p-3 text-sm",
+              "rounded-lg p-3 text-base",
               entry.role == :user && "bg-slate-50 dark:bg-slate-900/60",
               entry.role == :assistant && "bg-navy/5 dark:bg-sky-500/5"
             ]}>
@@ -857,4 +866,7 @@ defmodule OrchardConsole.PlaygroundLive do
   defp status_label(:streaming), do: "Streaming"
   defp status_label(:completed), do: "Completed"
   defp status_label(:error), do: "Error"
+
+  defp present_text?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present_text?(_value), do: false
 end

@@ -13,7 +13,7 @@ defmodule OrchardConsole.ModelsLive do
   def mount(_params, _session, socket) do
     socket =
       socket
-      |> assign(page_title: "Models", active_nav: :models)
+      |> assign(page_title: "Models", active_nav: :models, page_mode: :wide)
       |> assign_loading_state()
 
     if connected?(socket) do
@@ -80,21 +80,23 @@ defmodule OrchardConsole.ModelsLive do
         <:title>Model Catalog</:title>
         <:subtitle>Manage model visibility and lifecycle state.</:subtitle>
 
-        <div id="models-summary" class="grid grid-cols-5 gap-3 mb-4">
-          <.summary_tile
+        <.metric_grid id="models-summary" class="grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 mb-4">
+          <.metric_tile
             id="models-summary-total"
             label="Total"
-            value={@models_summary.total}
+            value={format_integer(@models_summary.total)}
             tone={:neutral}
+            density={:compact}
           />
-          <.summary_tile
+          <.metric_tile
             :for={{state, tone} <- summary_state_tiles()}
             id={"models-summary-#{state}"}
             label={Phoenix.Naming.humanize(state)}
-            value={@models_summary.by_state[state] || 0}
+            value={format_integer(@models_summary.by_state[state] || 0)}
             tone={tone}
+            density={:compact}
           />
-        </div>
+        </.metric_grid>
 
         <.table
           id="models-catalog"
@@ -102,8 +104,8 @@ defmodule OrchardConsole.ModelsLive do
           row_id={&"model-#{&1.id}"}
           row_class={&table_row_class/1}
         >
-          <:col :let={model} label="Model" mono>{model.model_id}</:col>
-          <:col :let={model} label="Version" mono>{model.version}</:col>
+          <:col :let={model} label="Model" mono class="break-all">{model.model_id}</:col>
+          <:col :let={model} label="Version" mono class="break-all">{model.version}</:col>
           <:col :let={model} label="State">
             <.badge tone={state_tone(model.state)}>{model.state}</.badge>
           </:col>
@@ -143,40 +145,6 @@ defmodule OrchardConsole.ModelsLive do
     </div>
     """
   end
-
-  # -- Private components --
-
-  attr(:id, :string, required: true)
-  attr(:label, :string, required: true)
-  attr(:value, :integer, required: true)
-  attr(:tone, :atom, values: [:neutral, :info, :success, :warning])
-
-  defp summary_tile(assigns) do
-    ~H"""
-    <div
-      id={@id}
-      class={[
-        "rounded-lg border px-3 py-2 text-center",
-        tile_tone_classes(@tone)
-      ]}
-    >
-      <p class="text-lg font-semibold font-mono">{format_integer(@value)}</p>
-      <p class="text-xs text-slate-500 dark:text-slate-400">{@label}</p>
-    </div>
-    """
-  end
-
-  defp tile_tone_classes(:neutral),
-    do: "border-slate-200 dark:border-slate-700"
-
-  defp tile_tone_classes(:info),
-    do: "border-sky-200 dark:border-sky-800"
-
-  defp tile_tone_classes(:success),
-    do: "border-forest-200 dark:border-emerald-800"
-
-  defp tile_tone_classes(:warning),
-    do: "border-amber-200 dark:border-amber-800"
 
   # -- Private helpers --
 

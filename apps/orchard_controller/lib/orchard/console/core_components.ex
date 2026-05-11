@@ -572,6 +572,160 @@ defmodule OrchardConsole.CoreComponents do
   end
 
   # ===========================================================================
+  # Metric and Detail Primitives
+  # ===========================================================================
+
+  @doc """
+  Renders a metric tile for summary counts and performance indicators.
+
+  Use `density={:comfortable}` for dashboard/detail-page metrics and
+  `density={:compact}` for summary strips above dense tables.
+  """
+  attr(:id, :string, default: nil)
+  attr(:label, :string, required: true)
+  attr(:value, :any, required: true)
+
+  attr(:tone, :atom,
+    default: :neutral,
+    values: [:neutral, :info, :success, :warning, :error]
+  )
+
+  attr(:density, :atom, default: :comfortable, values: [:compact, :comfortable])
+  attr(:class, :string, default: nil)
+
+  def metric_tile(%{density: :comfortable} = assigns) do
+    ~H"""
+    <div
+      id={@id}
+      class={[
+        "rounded-lg px-4 py-3",
+        comfortable_metric_tone_class(@tone),
+        @class
+      ]}
+    >
+      <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        {@label}
+      </p>
+      <p class="mt-1 text-2xl font-mono text-slate-900 dark:text-slate-100">
+        {@value}
+      </p>
+    </div>
+    """
+  end
+
+  def metric_tile(%{density: :compact} = assigns) do
+    ~H"""
+    <div
+      id={@id}
+      class={[
+        "rounded-lg border px-3 py-2 text-center",
+        compact_metric_tone_class(@tone),
+        @class
+      ]}
+    >
+      <p class="text-lg font-semibold font-mono text-slate-900 dark:text-slate-100">
+        {@value}
+      </p>
+      <p class="text-xs text-slate-500 dark:text-slate-400">
+        {@label}
+      </p>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders a thin metric grid wrapper.
+  """
+  attr(:id, :string, default: nil)
+  attr(:gap_class, :string, default: "gap-3")
+  attr(:class, :string, default: nil)
+  slot(:inner_block, required: true)
+
+  def metric_grid(assigns) do
+    ~H"""
+    <div id={@id} class={["grid", @gap_class, @class]}>
+      {render_slot(@inner_block)}
+    </div>
+    """
+  end
+
+  @doc """
+  Renders one detail field as a `<dt>` / `<dd>` pair wrapped for grid placement.
+  """
+  attr(:id, :string, required: true)
+  attr(:label, :string, required: true)
+  attr(:mono, :boolean, default: false)
+  attr(:break_all, :boolean, default: false)
+  attr(:class, :string, default: nil)
+  attr(:value_class, :string, default: nil)
+  slot(:inner_block, required: true)
+
+  def detail_field(assigns) do
+    ~H"""
+    <div id={@id} class={@class}>
+      <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+        {@label}
+      </dt>
+      <dd class={[
+        "mt-1 text-sm text-slate-900 dark:text-slate-100",
+        @mono && "font-mono",
+        @break_all && "break-all",
+        @value_class
+      ]}>
+        {render_slot(@inner_block)}
+      </dd>
+    </div>
+    """
+  end
+
+  @doc """
+  Renders a thin detail grid wrapper as a `<dl>`.
+  """
+  attr(:id, :string, default: nil)
+  attr(:gap_class, :string, default: "gap-x-6 gap-y-4")
+  attr(:class, :string, default: nil)
+  slot(:inner_block, required: true)
+
+  def detail_grid(assigns) do
+    ~H"""
+    <dl id={@id} class={["grid", @gap_class, @class]}>
+      {render_slot(@inner_block)}
+    </dl>
+    """
+  end
+
+  defp comfortable_metric_tone_class(:neutral),
+    do: "bg-slate-50 dark:bg-slate-900/60"
+
+  defp comfortable_metric_tone_class(:info),
+    do: "bg-sky-50/50 ring-1 ring-sky-200/60 dark:bg-sky-900/20 dark:ring-sky-700/30"
+
+  defp comfortable_metric_tone_class(:success),
+    do:
+      "bg-forest-50/50 ring-1 ring-forest-300/60 dark:bg-emerald-900/20 dark:ring-emerald-700/30"
+
+  defp comfortable_metric_tone_class(:warning),
+    do: "bg-amber-50/50 ring-1 ring-amber-200/60 dark:bg-amber-900/20 dark:ring-amber-700/30"
+
+  defp comfortable_metric_tone_class(:error),
+    do: "bg-red-50/50 ring-1 ring-red-200/60 dark:bg-red-900/20 dark:ring-red-700/30"
+
+  defp compact_metric_tone_class(:neutral),
+    do: "border-slate-200 dark:border-slate-700"
+
+  defp compact_metric_tone_class(:info),
+    do: "border-sky-200 dark:border-sky-800"
+
+  defp compact_metric_tone_class(:success),
+    do: "border-forest-300 dark:border-emerald-800"
+
+  defp compact_metric_tone_class(:warning),
+    do: "border-amber-200 dark:border-amber-800"
+
+  defp compact_metric_tone_class(:error),
+    do: "border-red-200 dark:border-red-800"
+
+  # ===========================================================================
   # State Message
   # ===========================================================================
 

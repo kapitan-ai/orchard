@@ -388,6 +388,107 @@ with ad-hoc `@class` overrides.
 | `:secondary` | `rounded-lg border border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/40` | `text-base font-semibold text-slate-900 dark:text-slate-100` | `mt-1 text-sm text-slate-500 dark:text-slate-400` | Softer full-width strips or supporting panels against the page canvas. |
 | `:rail` | `rounded-lg border border-slate-200 bg-slate-100/70 dark:border-slate-700 dark:bg-slate-900/50` | `text-sm font-semibold text-slate-900 dark:text-slate-100` | `mt-1 text-xs text-slate-500 dark:text-slate-400` | Cards embedded in a control/diagnostic rail where denser hierarchy is needed. |
 
+### 6.3 Shared Metric and Detail Primitives
+
+Console pages use four shared primitives from
+`OrchardConsole.CoreComponents` for summary metrics and labeled detail values.
+Callers own the surrounding layout and any product-specific composition; these
+primitives own the visual contract below.
+
+#### `metric_tile/1`
+
+`<.metric_tile>` accepts `label`, `value`, `tone`, `density`, optional `id`,
+and additive `class`. Callers must pass a display-ready value string or value
+that renders as display-ready text (for example, already run through
+`format_integer/1` or `format_duration/1`).
+
+| Density | Wrapper contract | Label contract | Value contract | Intended use |
+|---------|------------------|----------------|----------------|--------------|
+| `:comfortable` (default) | `rounded-lg px-4 py-3` + tone surface | `text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400` | `mt-1 text-2xl font-mono text-slate-900 dark:text-slate-100` | Dashboard/detail-page metric cards such as Overview and Request Detail. |
+| `:compact` | `rounded-lg border px-3 py-2 text-center` + tone border | `text-xs text-slate-500 dark:text-slate-400` | `text-lg font-semibold font-mono text-slate-900 dark:text-slate-100` | Dense table-summary strips such as Models and Requests. |
+
+Comfortable tone contracts:
+
+| Tone | Class contract |
+|------|----------------|
+| `:neutral` | `bg-slate-50 dark:bg-slate-900/60` |
+| `:info` | `bg-sky-50/50 ring-1 ring-sky-200/60 dark:bg-sky-900/20 dark:ring-sky-700/30` |
+| `:success` | `bg-forest-50/50 ring-1 ring-forest-300/60 dark:bg-emerald-900/20 dark:ring-emerald-700/30` |
+| `:warning` | `bg-amber-50/50 ring-1 ring-amber-200/60 dark:bg-amber-900/20 dark:ring-amber-700/30` |
+| `:error` | `bg-red-50/50 ring-1 ring-red-200/60 dark:bg-red-900/20 dark:ring-red-700/30` |
+
+Compact tone contracts:
+
+| Tone | Class contract |
+|------|----------------|
+| `:neutral` | `border-slate-200 dark:border-slate-700` |
+| `:info` | `border-sky-200 dark:border-sky-800` |
+| `:success` | `border-forest-300 dark:border-emerald-800` |
+| `:warning` | `border-amber-200 dark:border-amber-800` |
+| `:error` | `border-red-200 dark:border-red-800` |
+
+Nodes intentionally retains its local `summary_tile/1` after PR3 because its
+rail-aware surface carries `ring-1` on every tone, including neutral. The shared
+comfortable `:neutral` metric tile deliberately has no ring to preserve Overview
+and Request Detail parity; adding a third metric surface variant would be an
+over-extraction for v2.
+
+#### `metric_grid/1`
+
+`<.metric_grid>` is only a thin grid wrapper:
+
+```
+grid + gap_class
+```
+
+Its default `gap_class` is `gap-3`. Callers that need a local gap override pass
+it through `gap_class` (for example `gap_class="gap-4"`). Callers pass non-gap
+layout tokens such as columns, margins, or density-specific placement through
+`class` (for example `sm:grid-cols-2 xl:grid-cols-3`). The component must not
+bake in column counts, and callers must not pass gap utilities through `class`.
+
+#### `detail_field/1`
+
+`<.detail_field>` renders a wrapper `<div id={...}>` containing a `<dt>` and
+`<dd>`. It accepts `id`, `label`, optional `mono`, optional `break_all`, additive
+wrapper `class`, and additive value `value_class` for the `<dd>`.
+
+- Label / `<dt>`: `text-xs font-medium uppercase tracking-wide text-slate-500
+  dark:text-slate-400`.
+- Value / `<dd>`: `mt-1 text-sm text-slate-900 dark:text-slate-100`.
+- `mono={true}` adds `font-mono` to the value only.
+- `break_all={true}` adds `break-all` to the value only for long IDs or hashes.
+- `value_class` adds caller-provided tokens to the value only.
+
+The canonical value typography is intentionally `text-sm`. Some planned copy
+mentioned bumping Model Hub detail values to `text-base`, but PR3 keeps the
+Request Detail parity contract so migrating ~30 fields does not silently change
+information density. Model Hub long IDs stay legible through `font-mono` plus
+`break-all` rather than a larger detail value size.
+
+#### `detail_grid/1`
+
+`<.detail_grid>` renders the semantic wrapper for fields:
+
+```
+<dl class="grid ...">
+```
+
+Its default `gap_class` is `gap-x-6 gap-y-4`. Callers that need local gap
+overrides pass them through `gap_class` (for example `gap_class="gap-4"` or
+`gap_class="gap-x-6 gap-y-3"`). Callers pass non-gap layout tokens such as
+columns or margins through `class`. The component must not bake in page-specific
+column counts. Use it only with children that render `<dt>` / `<dd>` pairs,
+normally `<.detail_field>`.
+
+### 6.4 Table Density Policy
+
+`<.table>` remains the standard Console table density in v2. PR3 does **not**
+introduce a `density` attribute, does not bump table-cell typography, and does
+not add a parallel comfortable table variant. A future PR may add table density
+only after a browser walk demonstrates a concrete table-crush regression caused
+by other typography or layout changes.
+
 ---
 
 ## 7. Motion
@@ -557,7 +658,6 @@ contract first.
   outside a narrowly scoped token/documentation correction.
 - A second design escape hatch beyond `.console-input-well` (and that one
   is reserved, not yet used).
-- Shared metric/detail primitives and table density variants.
 - Page-header, breadcrumb, status pill, modal, toast/flash, badge, or button
   restyling beyond what already exists.
 - Mobile sidebar / responsive collapse below `lg`. The rail is desktop-only

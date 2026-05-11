@@ -264,14 +264,30 @@ defmodule OrchardConsole.OverviewLive do
             </span>
           </div>
 
-          <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <.metric_tile label="Checks passing" value={readiness_metric(@readiness)} />
-            <.metric_tile label="Loaded models" value={format_count(runtime_loaded_count(@runtime))} />
-            <.metric_tile label="Catalog models" value={format_count(@model_catalog.total)} />
-            <.metric_tile label="Total requests" value={format_count(@request_summary.total)} />
+          <.metric_grid class="sm:grid-cols-2 xl:grid-cols-3">
+            <.metric_tile
+              id="overview-metric-checks-passing"
+              label="Checks passing"
+              value={readiness_metric(@readiness)}
+            />
+            <.metric_tile
+              id="overview-metric-loaded-models"
+              label="Loaded models"
+              value={format_count(runtime_loaded_count(@runtime))}
+            />
+            <.metric_tile
+              id="overview-metric-catalog-models"
+              label="Catalog models"
+              value={format_count(@model_catalog.total)}
+            />
+            <.metric_tile
+              id="overview-metric-total-requests"
+              label="Total requests"
+              value={format_count(@request_summary.total)}
+            />
             <.metric_tile id="overview-metric-avg-ttft" label="Avg TTFT" value={format_duration(@request_performance.avg_ttft_ms)} />
             <.metric_tile id="overview-metric-avg-tokens-per-second" label="Avg tok/s" value={format_rate(@request_performance.avg_tokens_per_second)} />
-          </div>
+          </.metric_grid>
 
           <p id="overview-hero-status-copy" class={["text-sm", hero_status_copy_class(@readiness, @runtime)]}>
             {hero_status_copy(@readiness, @runtime)}
@@ -1372,26 +1388,5 @@ defmodule OrchardConsole.OverviewLive do
 
   defp console_config do
     Application.get_env(:orchard_controller, :console, [])
-  end
-
-  # ===========================================================================
-  # Local function component
-  # ===========================================================================
-
-  attr(:id, :string, default: nil)
-  attr(:label, :string, required: true)
-  attr(:value, :string, required: true)
-
-  defp metric_tile(assigns) do
-    ~H"""
-    <div id={@id} class="rounded-lg bg-slate-50 px-4 py-3 dark:bg-slate-900/60">
-      <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        {@label}
-      </p>
-      <p class="mt-1 text-2xl font-mono text-slate-900 dark:text-slate-100">
-        {@value}
-      </p>
-    </div>
-    """
   end
 end

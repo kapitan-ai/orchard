@@ -167,7 +167,7 @@ defmodule OrchardConsole.RequestLive do
           </span>
         </:title>
 
-        <dl class="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-4">
+        <.detail_grid class="grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
           <.detail_field id="request-public-id" label="Public ID" mono>
             {@request.public_id}
           </.detail_field>
@@ -192,7 +192,7 @@ defmodule OrchardConsole.RequestLive do
           <.detail_field id="request-state" label="State">
             {format_state(@request.state)}
           </.detail_field>
-        </dl>
+        </.detail_grid>
       </.card>
     </div>
     """
@@ -209,7 +209,7 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>Execution Metadata</:title>
 
-        <dl class="grid grid-cols-2 gap-x-6 gap-y-4 sm:grid-cols-3 lg:grid-cols-5">
+        <.detail_grid class="grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
           <.detail_field id="request-model-id" label="Model ID" mono>
             {format_text(@request.model_id)}
           </.detail_field>
@@ -237,7 +237,7 @@ defmodule OrchardConsole.RequestLive do
           <.detail_field id="request-schedule-tier" label="Tier" mono>
             {format_text(@schedule.selected_tier)}
           </.detail_field>
-        </dl>
+        </.detail_grid>
       </.card>
     </div>
     """
@@ -264,7 +264,10 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>Token Usage & Performance</:title>
 
-        <div class="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
+        <.metric_grid
+          gap_class="gap-4"
+          class="grid-cols-2 sm:grid-cols-3 xl:grid-cols-4"
+        >
           <.metric_tile
             id="request-input-tokens"
             label="Input Tokens"
@@ -300,7 +303,7 @@ defmodule OrchardConsole.RequestLive do
             label="Tok/s"
             value={format_rate(@tokens_per_second)}
           />
-        </div>
+        </.metric_grid>
       </.card>
     </div>
     """
@@ -317,14 +320,17 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>Error Details</:title>
 
-        <dl class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <.detail_grid
+          gap_class="gap-4"
+          class="grid-cols-1 sm:grid-cols-2"
+        >
           <.detail_field id="request-error-code" label="Error Code" mono>
             {format_text(@request.error_code)}
           </.detail_field>
           <.detail_field id="request-error-message" label="Error Message">
             {format_text(@request.error_message)}
           </.detail_field>
-        </dl>
+        </.detail_grid>
       </.card>
     </div>
     """
@@ -413,7 +419,7 @@ defmodule OrchardConsole.RequestLive do
       <.card>
         <:title>Request Provenance</:title>
 
-        <dl class="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+        <.detail_grid class="grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           <.detail_field id="request-tenant" label="Tenant">
             <.tenant_display request={@request} />
           </.detail_field>
@@ -443,7 +449,7 @@ defmodule OrchardConsole.RequestLive do
           <.detail_field id="request-reserved-output-tokens" label="Reserved Output Tokens" mono>
             {format_integer(@request.reserved_output_tokens)}
           </.detail_field>
-        </dl>
+        </.detail_grid>
       </.card>
     </div>
     """
@@ -541,9 +547,14 @@ defmodule OrchardConsole.RequestLive do
   attr(:fallback_text, :string, default: "Not captured for this request.")
 
   defp json_block(assigns) do
+    assigns = assign(assigns, :json_render, json_render(assigns.data))
+
     ~H"""
     <div :if={present_map?(@data)} id={@content_id}>
-      <pre class="overflow-x-auto rounded-md bg-slate-50 p-4 text-xs font-mono text-slate-800 dark:bg-slate-900/60 dark:text-slate-200"><code>{format_json(@data)}</code></pre>
+      <pre class="overflow-x-auto rounded-md bg-slate-50 p-4 text-xs font-mono text-slate-800 dark:bg-slate-900/60 dark:text-slate-200"><code><%= case @json_render do %><% {:highlighted, tokens} -> %><span
+          :for={{class, token} <- tokens}
+          class={class}
+        >{token}</span><% {:plain, json} -> %>{json}<% end %></code></pre>
     </div>
     <p
       :if={!present_map?(@data)}
@@ -552,44 +563,6 @@ defmodule OrchardConsole.RequestLive do
     >
       {@fallback_text}
     </p>
-    """
-  end
-
-  attr(:id, :string, required: true)
-  attr(:label, :string, required: true)
-  attr(:mono, :boolean, default: false)
-  slot(:inner_block, required: true)
-
-  defp detail_field(assigns) do
-    ~H"""
-    <div id={@id}>
-      <dt class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        {@label}
-      </dt>
-      <dd class={[
-        "mt-1 text-sm text-slate-900 dark:text-slate-100",
-        @mono && "font-mono"
-      ]}>
-        {render_slot(@inner_block)}
-      </dd>
-    </div>
-    """
-  end
-
-  attr(:id, :string, required: true)
-  attr(:label, :string, required: true)
-  attr(:value, :string, required: true)
-
-  defp metric_tile(assigns) do
-    ~H"""
-    <div id={@id} class="rounded-lg bg-slate-50 px-4 py-3 dark:bg-slate-900/60">
-      <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
-        {@label}
-      </p>
-      <p class="mt-1 text-2xl font-mono text-slate-900 dark:text-slate-100">
-        {@value}
-      </p>
-    </div>
     """
   end
 
@@ -862,6 +835,48 @@ defmodule OrchardConsole.RequestLive do
   defp present_map?(m) when is_map(m) and map_size(m) == 0, do: false
   defp present_map?(m) when is_map(m), do: true
   defp present_map?(_), do: false
+
+  @json_highlight_max_bytes 20_000
+  @json_token_pattern ~r/("(?:\\.|[^"\\])*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}\[\],:])/u
+
+  defp json_render(data) when is_map(data) do
+    json = format_json(data)
+
+    if byte_size(json) <= @json_highlight_max_bytes do
+      {:highlighted, tokenize_json(json)}
+    else
+      {:plain, json}
+    end
+  end
+
+  defp json_render(_), do: {:plain, "—"}
+
+  defp tokenize_json(json) do
+    @json_token_pattern
+    |> Regex.split(json, include_captures: true, trim: false)
+    |> Enum.map(&{json_token_class(&1), &1})
+  end
+
+  defp json_token_class(""), do: nil
+
+  defp json_token_class(token) when token in ["{", "}", "[", "]", ",", ":"],
+    do: "text-slate-400 dark:text-slate-500"
+
+  defp json_token_class(token) when token in ["true", "false"],
+    do: "text-amber-700 dark:text-amber-300"
+
+  defp json_token_class("null"), do: "text-slate-500 italic dark:text-slate-400"
+
+  defp json_token_class(<<"\"", _::binary>>),
+    do: "text-forest-700 dark:text-emerald-300"
+
+  defp json_token_class(token) do
+    if Regex.match?(~r/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?$/, token) do
+      "text-sky-700 dark:text-sky-300"
+    else
+      nil
+    end
+  end
 
   defp format_json(nil), do: "—"
 
