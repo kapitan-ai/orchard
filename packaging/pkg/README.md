@@ -902,6 +902,7 @@ The script exports `ORCHARD_BUILD_CHANNEL=trial` when the variable is unset. If 
 |------|---------|
 | `--clean` | Deep clean: removes `_build/` and `deps/` before building (slow, but maximally reproducible) |
 | `--allow-dirty` | Supported dev-build escape hatch when your tree is not clean (adds `-dirty` to the git SHA segment) |
+| `--stage-only` | Stage the payload, verify Python venv closure, optionally payload-sign Mach-O files, print `STAGING_BASE=<path>`, and skip `pkgbuild` |
 | `output_dir` | Custom output directory (default: `./artifacts/pkg-builds/YYYY-MM-DD/`) |
 
 ### Dev PKG path (no signing/notarization/stapling)
@@ -954,35 +955,85 @@ staging/payload layout and writes checksums.
 
 ## Signing and notarization
 
-`scripts/build-pkg.sh` produces a generic **unsigned** PKG artifact. Distribution
-signing and notarization are an explicit second step performed with
-`scripts/sign-pkg.sh`; the build script never signs silently and never selects a
-local signing identity by default.
+`scripts/build-pkg.sh` produces a PKG whose installer envelope is unsigned.
+Distribution envelope signing and notarization are an explicit second step
+performed with `scripts/sign-pkg.sh`; neither script selects a local signing
+identity by default.
+
+### Payload signing
+
+Notarizable distribution builds require two different Apple Developer ID
+certificate types:
+
+- **Developer ID Application** signs nested Mach-O payload files with
+  `ORCHARD_PAYLOAD_SIGNING_IDENTITY` during `scripts/build-pkg.sh`.
+- **Developer ID Installer** signs the outer PKG envelope with
+  `ORCHARD_PKG_SIGNING_IDENTITY` during `scripts/sign-pkg.sh`.
+
+Set `ORCHARD_PAYLOAD_SIGNING_IDENTITY` before building to run
+`scripts/sign-payload.sh` over the staged payload. The signer walks the staging
+tree without following symlinks, signs libraries before executables, enables the
+hardened runtime, requests a secure timestamp, and writes an optional signing
+manifest next to the unsigned PKG when `pkgbuild` succeeds. If the payload
+identity is unset, the build continues for development/internal testing but logs
+that the resulting PKG cannot be notarized.
+
+Payload entitlements live in `packaging/pkg/entitlements/`:
+
+| File | Applies to | Exceptions |
+|------|------------|------------|
+| `beam.entitlements` | `beam.smp` in bundled ERTS releases | `com.apple.security.cs.allow-jit` |
+| `python.entitlements` | Python venv interpreters and executable venv tools | `com.apple.security.cs.allow-unsigned-executable-memory`, `com.apple.security.cs.disable-library-validation` |
+| `default.entitlements` | Other Mach-O libraries and executables | Empty entitlement dictionary; hardened runtime still comes from `codesign --options runtime` |
+
+`scripts/sign-pkg.sh` expands the input PKG and runs
+`scripts/verify-payload-signing.sh` before `productsign`. It refuses to
+envelope-sign a PKG whose nested Mach-O files are unsigned, missing hardened
+runtime, missing secure timestamps, or signed by a different Developer ID
+Application identity.
 
 Prerequisites:
 
-1. Apple Xcode Command Line Tools or Xcode are installed so `productsign`,
-   `xcrun notarytool`, and `xcrun stapler` are available.
-2. A **Developer ID Installer** certificate for the Orchard developer account is
-   installed in the signing keychain.
+1. Apple Xcode Command Line Tools or Xcode are installed so `codesign`,
+   `productsign`, `xcrun notarytool`, and `xcrun stapler` are available.
+2. Developer ID certificates for the Orchard developer account are installed in
+   the signing keychain:
+   - 2a. **Developer ID Installer** for the outer PKG envelope.
+   - 2b. **Developer ID Application** for nested Mach-O payload files.
 3. A notarytool keychain profile has been created, for example:
    ```bash
    xcrun notarytool store-credentials orchard-notary
    ```
 
-Sign, notarize, staple, and write the final SHA-256 plus notary evidence:
+End-to-end distribution flow:
 
 ```bash
-ORCHARD_PKG_SIGNING_IDENTITY='Developer ID Installer: Example, Inc. (TEAMID)' \
-ORCHARD_NOTARYTOOL_PROFILE=orchard-notary \
-  scripts/sign-pkg.sh \
-    --input artifacts/pkg-builds/YYYY-MM-DD/Orchard-<version>-<date>-<sha>.pkg \
-    --output artifacts/pkg-builds/YYYY-MM-DD/Orchard-<version>-<date>-<sha>-signed.pkg
+export ORCHARD_PAYLOAD_SIGNING_IDENTITY='Developer ID Application: Example, Inc. (TEAMID)'
+export ORCHARD_PKG_SIGNING_IDENTITY='Developer ID Installer: Example, Inc. (TEAMID)'
+export ORCHARD_NOTARYTOOL_PROFILE=orchard-notary
+
+scripts/build-pkg.sh
+
+UNSIGNED_PKG="$(ls -t artifacts/pkg-builds/*/Orchard-*.pkg | grep -v -- '-signed\.pkg$' | head -1)"
+SIGNED_PKG="${UNSIGNED_PKG%.pkg}-signed.pkg"
+
+scripts/sign-pkg.sh \
+  --input "$UNSIGNED_PKG" \
+  --output "$SIGNED_PKG"
 ```
 
-The same values can be supplied as flags instead of environment variables:
+`sign-pkg.sh` signs the installer envelope, submits the signed PKG to Apple
+notarization, waits for an `Accepted` result, staples the ticket, and writes the
+final SHA-256 plus notary evidence.
+
+The same signing and notarization values can be supplied as flags instead of
+environment variables:
 
 ```bash
+export ORCHARD_PAYLOAD_SIGNING_IDENTITY='Developer ID Application: Example, Inc. (TEAMID)'
+
+scripts/build-pkg.sh
+
 scripts/sign-pkg.sh \
   --identity 'Developer ID Installer: Example, Inc. (TEAMID)' \
   --notary-profile orchard-notary \
@@ -993,6 +1044,7 @@ scripts/sign-pkg.sh \
 For release rehearsals or CI wiring checks without contacting Apple services:
 
 ```bash
+ORCHARD_PAYLOAD_SIGNING_IDENTITY='Developer ID Application: Example, Inc. (TEAMID)' \
 scripts/sign-pkg.sh --dry-run \
   --identity 'Developer ID Installer: Example, Inc. (TEAMID)' \
   --notary-profile orchard-notary \
@@ -1011,6 +1063,13 @@ Copy the SHA-256 and notary submission ID/status into the release manifest.
 Verify the signed package before distribution:
 
 ```bash
+TMP="$(mktemp -d)"
+pkgutil --expand-full Orchard-<version>-<date>-<sha>-signed.pkg "$TMP/expanded"
+scripts/verify-payload-signing.sh \
+  --identity "$ORCHARD_PAYLOAD_SIGNING_IDENTITY" \
+  "$TMP/expanded"
+rm -rf "$TMP"
+
 pkgutil --check-signature Orchard-<version>-<date>-<sha>-signed.pkg
 spctl -a -t install -vv Orchard-<version>-<date>-<sha>-signed.pkg
 xcrun stapler validate Orchard-<version>-<date>-<sha>-signed.pkg

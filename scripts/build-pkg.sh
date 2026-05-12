@@ -1,21 +1,25 @@
 #!/bin/bash
 #
 # Build Orchard PKG installer
-# Usage: ./scripts/build-pkg.sh [--allow-dirty] [--clean] [output_dir]
+# Usage: ./scripts/build-pkg.sh [--allow-dirty] [--clean] [--stage-only] [output_dir]
 #
 # Options:
 #   --allow-dirty    Allow building with uncommitted changes (marks PKG as -dirty)
 #   --clean          Deep clean: removes _build/ and deps/ before building
+#   --stage-only     Stop after staging, venv closure verification, and optional payload signing
 #   output_dir       Destination directory (default: ./artifacts/pkg-builds/YYYY-MM-DD)
 #
 # Outputs: unsigned generic Orchard-<app_version>-<YYYYMMDD>-<git_sha7>.pkg
 #
-# Signing and notarization are intentionally separate. Use scripts/sign-pkg.sh
-# with an explicit Developer ID Installer identity and notarytool profile.
+# Signing and notarization are intentionally separate. Set
+# ORCHARD_PAYLOAD_SIGNING_IDENTITY before this build to sign nested Mach-O
+# payloads, then use scripts/sign-pkg.sh with an explicit Developer ID Installer
+# identity and notarytool profile.
 #
 # Examples:
 #   ./scripts/build-pkg.sh                                    # Standard build
 #   ./scripts/build-pkg.sh --clean                          # Clean build
+#   ./scripts/build-pkg.sh --stage-only /tmp/stage-output   # Stage and preserve payload tree
 #   ./scripts/build-pkg.sh --allow-dirty /tmp               # Build with uncommitted changes
 #   ./scripts/build-pkg.sh /path/to/output                  # Custom output directory
 #
@@ -35,6 +39,7 @@ log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
 # Parse arguments
 ALLOW_DIRTY=false
 DO_CLEAN=false
+STAGE_ONLY=false
 OUTPUT_DIR=""
 
 while [[ $# -gt 0 ]]; do
@@ -47,9 +52,13 @@ while [[ $# -gt 0 ]]; do
             DO_CLEAN=true
             shift
             ;;
+        --stage-only)
+            STAGE_ONLY=true
+            shift
+            ;;
         -*)
             log_error "Unknown option: $1"
-            echo "Usage: $0 [--allow-dirty] [--clean] [output_dir]"
+            echo "Usage: $0 [--allow-dirty] [--clean] [--stage-only] [output_dir]"
             exit 1
             ;;
         *)
@@ -64,16 +73,28 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 if [[ -z "$OUTPUT_DIR" ]]; then
     OUTPUT_DIR="$REPO_ROOT/artifacts/pkg-builds/$(date +%Y-%m-%d)"
 fi
-STAGING_BASE="/tmp/orchard-pkg-build-$$"
+if [[ -n "${ORCHARD_PKG_STAGING_BASE:-}" ]]; then
+    case "$ORCHARD_PKG_STAGING_BASE" in
+        /*) STAGING_BASE="$ORCHARD_PKG_STAGING_BASE" ;;
+        *) STAGING_BASE="$REPO_ROOT/$ORCHARD_PKG_STAGING_BASE" ;;
+    esac
+else
+    STAGING_BASE="/tmp/orchard-pkg-build-$$"
+fi
 PAYLOAD_ROOT_REL="Library/Application Support/Orchard"
 EXPECTED_STAGING_ROOT="$STAGING_BASE/$PAYLOAD_ROOT_REL"
 KNOWN_BAD_ROOT="$STAGING_BASE/Library Application Support"
+STAGING_CREATED=false
 
 # Enhanced error trap
 trap 'log_error "Build failed at line $LINENO"' ERR
 
 cleanup() {
-    if [[ -d "$STAGING_BASE" ]]; then
+    if [[ "$STAGE_ONLY" == "true" ]]; then
+        return
+    fi
+
+    if [[ "$STAGING_CREATED" == "true" && -d "$STAGING_BASE" ]]; then
         log_info "Cleaning up staging directory..."
         rm -rf "$STAGING_BASE"
     fi
@@ -202,6 +223,15 @@ log_info "  Git SHA: $GIT_SHA"
 log_info "  Build date: $BUILD_DATE"
 log_info "  Build channel: $ORCHARD_BUILD_CHANNEL"
 log_info "  Output: $OUTPUT_DIR/$PKG_NAME"
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    log_info "  Stage only: true"
+fi
+
+if [[ -e "$STAGING_BASE" || -L "$STAGING_BASE" ]]; then
+    log_error "Selected staging path already exists: $STAGING_BASE"
+    log_error "Remove it or choose a different ORCHARD_PKG_STAGING_BASE."
+    exit 1
+fi
 
 # Ensure output directory exists early (fail fast)
 if ! mkdir -p "$OUTPUT_DIR"; then
@@ -285,6 +315,7 @@ mix release orchard_cli
 log_info "Creating PKG staging..."
 STAGING="$EXPECTED_STAGING_ROOT"
 mkdir -p "$STAGING"/{releases,native,share/{bin,launchd},config,logs,support}
+STAGING_CREATED=true
 
 # Copy releases
 log_info "Copying releases to staging..."
@@ -344,6 +375,29 @@ done
 log_info "Validating staging layout..."
 validate_staging_layout
 
+SIGNING_MANIFEST_TMP=""
+PAYLOAD_SIGNING_IDENTITY="$(printf '%s' "${ORCHARD_PAYLOAD_SIGNING_IDENTITY:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+if [[ -n "$PAYLOAD_SIGNING_IDENTITY" ]]; then
+    log_info "Signing nested Mach-O payload binaries..."
+    if [[ "$STAGE_ONLY" != "true" ]]; then
+        SIGNING_MANIFEST_TMP="$OUTPUT_DIR/.${PKG_NAME}.signing-manifest.tmp"
+        rm -f "$SIGNING_MANIFEST_TMP"
+        ORCHARD_PAYLOAD_SIGNING_IDENTITY="$PAYLOAD_SIGNING_IDENTITY" \
+            "$REPO_ROOT/scripts/sign-payload.sh" --manifest-output "$SIGNING_MANIFEST_TMP" "$STAGING_BASE"
+    else
+        ORCHARD_PAYLOAD_SIGNING_IDENTITY="$PAYLOAD_SIGNING_IDENTITY" \
+            "$REPO_ROOT/scripts/sign-payload.sh" "$STAGING_BASE"
+    fi
+else
+    log_warn "ORCHARD_PAYLOAD_SIGNING_IDENTITY not set — payload Mach-O binaries will be unsigned. The resulting PKG cannot be notarized."
+fi
+
+if [[ "$STAGE_ONLY" == "true" ]]; then
+    printf 'STAGING_BASE=%s\n' "$STAGING_BASE"
+    log_info "Stage-only build complete; preserved staging directory: $STAGING_BASE"
+    exit 0
+fi
+
 # Set permissions in staging
 log_info "Setting staging permissions..."
 find "$STAGING_BASE" -type d -exec chmod 755 {} \;
@@ -379,6 +433,11 @@ if [[ -f "$OUTPUT_DIR/$PKG_NAME" ]]; then
     PKG_SHA256="$(shasum -a 256 "$OUTPUT_DIR/$PKG_NAME" | awk '{print $1}')"
     printf '%s  %s\n' "$PKG_SHA256" "$PKG_NAME" > "$OUTPUT_DIR/$PKG_NAME.sha256"
     log_info "   Unsigned checksum: $OUTPUT_DIR/$PKG_NAME.sha256"
+    if [[ -n "$SIGNING_MANIFEST_TMP" && -f "$SIGNING_MANIFEST_TMP" ]]; then
+        SIGNING_MANIFEST="$OUTPUT_DIR/$PKG_NAME.signing-manifest.txt"
+        mv "$SIGNING_MANIFEST_TMP" "$SIGNING_MANIFEST"
+        log_info "   Payload signing manifest: $SIGNING_MANIFEST"
+    fi
 else
     log_error "PKG build failed!"
     exit 1
@@ -392,4 +451,6 @@ echo "  sudo orchardctl env init"
 echo "  sudo orchardctl start"
 echo ""
 echo "To sign and notarize for distribution:"
+echo "  export ORCHARD_PAYLOAD_SIGNING_IDENTITY='<Developer ID Application identity>'"
+echo "  ./scripts/build-pkg.sh [options]"
 echo "  scripts/sign-pkg.sh --identity '<Developer ID Installer identity>' --notary-profile '<profile>' --input \"$OUTPUT_DIR/$PKG_NAME\" --output \"$OUTPUT_DIR/${PKG_NAME%.pkg}-signed.pkg\""

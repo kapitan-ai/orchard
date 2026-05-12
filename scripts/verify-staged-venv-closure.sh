@@ -1,13 +1,19 @@
 #!/bin/bash
 #
 # Verify staged Python virtualenvs are self-contained enough for PKG payload signing.
-# Usage: scripts/verify-staged-venv-closure.sh <staging-root>
+# Usage: scripts/verify-staged-venv-closure.sh [--no-smoke] <staging-root>
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 <staging-root>" >&2
+    echo "Usage: $0 [--no-smoke] <staging-root>" >&2
 }
+
+RUN_SMOKE=true
+if [[ $# -gt 0 && "$1" == "--no-smoke" ]]; then
+    RUN_SMOKE=false
+    shift
+fi
 
 if [[ $# -ne 1 ]]; then
     usage
@@ -20,7 +26,7 @@ if [[ ! -d "$ROOT" ]]; then
     exit 66
 fi
 
-python3 - "$ROOT" <<'PY'
+python3 - "$ROOT" "$RUN_SMOKE" <<'PY'
 import os
 import pathlib
 import subprocess
@@ -28,6 +34,7 @@ import sys
 from typing import Optional
 
 root = pathlib.Path(sys.argv[1]).resolve()
+run_smoke = sys.argv[2] == "true"
 payload_rel = pathlib.Path("Library/Application Support/Orchard")
 install_prefix = pathlib.Path("/Library/Application Support/Orchard")
 allowed_system_prefixes = ("/usr/lib/", "/System/Library/")
@@ -104,10 +111,15 @@ def map_install_prefix(path: pathlib.Path) -> Optional[pathlib.Path]:
     except ValueError:
         return None
 
-    payload_root = root / payload_rel
-    if payload_root.exists():
-        return payload_root / install_relative
-    return root / install_relative
+    candidates = [
+        root / payload_rel / install_relative,
+        root / "Payload" / payload_rel / install_relative,
+        root / install_relative,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
 
 
 def is_allowed_resolved_path(path: pathlib.Path) -> bool:
@@ -253,7 +265,7 @@ for venv in venvs:
             if dep.startswith("/") and not is_allowed_raw_absolute_dep(pathlib.Path(dep)):
                 errors.append(f"outbound Mach-O dependency: {rel(entry)} -> {dep}")
 
-    if python.exists() and not python.is_symlink():
+    if run_smoke and python.exists() and not python.is_symlink():
         smoke = subprocess.run(
             [str(python), "-c", "import sys; print(sys.executable)"],
             text=True,

@@ -9,6 +9,8 @@
 
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -31,8 +33,9 @@ Required inputs:
   --notary-profile <profile>   notarytool keychain profile name
 
 Environment alternatives:
-  ORCHARD_PKG_SIGNING_IDENTITY     Developer ID Installer identity
-  ORCHARD_NOTARYTOOL_PROFILE       notarytool keychain profile name
+  ORCHARD_PKG_SIGNING_IDENTITY         Developer ID Installer identity
+  ORCHARD_PAYLOAD_SIGNING_IDENTITY     Developer ID Application identity used for payload audit
+  ORCHARD_NOTARYTOOL_PROFILE           notarytool keychain profile name
 
 Options:
   --dry-run                    Print commands without executing them
@@ -58,6 +61,7 @@ EOF
 
 IDENTITY="${ORCHARD_PKG_SIGNING_IDENTITY:-}"
 NOTARY_PROFILE="${ORCHARD_NOTARYTOOL_PROFILE:-}"
+PAYLOAD_SIGNING_IDENTITY="${ORCHARD_PAYLOAD_SIGNING_IDENTITY:-}"
 INPUT_PKG=""
 OUTPUT_PKG=""
 DRY_RUN=false
@@ -124,6 +128,7 @@ trim() {
 
 IDENTITY="$(trim "$IDENTITY")"
 NOTARY_PROFILE="$(trim "$NOTARY_PROFILE")"
+PAYLOAD_SIGNING_IDENTITY="$(trim "$PAYLOAD_SIGNING_IDENTITY")"
 INPUT_PKG="$(trim "$INPUT_PKG")"
 OUTPUT_PKG="$(trim "$OUTPUT_PKG")"
 
@@ -143,6 +148,23 @@ require_value "$IDENTITY" "Signing identity" "Set --identity or ORCHARD_PKG_SIGN
 require_value "$NOTARY_PROFILE" "notarytool profile" "Set --notary-profile or ORCHARD_NOTARYTOOL_PROFILE."
 require_value "$INPUT_PKG" "Input PKG" "Set --input <unsigned.pkg>."
 require_value "$OUTPUT_PKG" "Output PKG" "Set --output <signed.pkg>."
+require_value "$PAYLOAD_SIGNING_IDENTITY" "ORCHARD_PAYLOAD_SIGNING_IDENTITY" "Set it to the Developer ID Application identity used by scripts/build-pkg.sh."
+
+case "$IDENTITY" in
+    "Developer ID Installer:"*) ;;
+    *)
+        log_error "PKG signing requires a Developer ID Installer identity."
+        exit 2
+        ;;
+esac
+
+case "$PAYLOAD_SIGNING_IDENTITY" in
+    "Developer ID Application:"*) ;;
+    *)
+        log_error "Payload audit requires a Developer ID Application identity in ORCHARD_PAYLOAD_SIGNING_IDENTITY."
+        exit 2
+        ;;
+esac
 
 PRODUCTSIGN_CMD=(productsign --sign "$IDENTITY" "$INPUT_PKG" "$OUTPUT_PKG")
 NOTARY_CMD=(xcrun notarytool submit "$OUTPUT_PKG" --keychain-profile "$NOTARY_PROFILE" --wait)
@@ -157,6 +179,9 @@ print_command() {
 
 if [[ "$DRY_RUN" == "true" ]]; then
     log_warn "Dry run: no files will be modified and no Apple services will be contacted."
+    log_info "Would audit payload before productsign with:"
+    print_command pkgutil --expand-full "$INPUT_PKG" '<temporary-expanded-pkg>'
+    print_command "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity '${ORCHARD_PAYLOAD_SIGNING_IDENTITY}' '<temporary-expanded-pkg>'
     log_info "Would run:"
     print_command "${PRODUCTSIGN_CMD[@]}"
     print_command "${NOTARY_CMD[@]}"
@@ -172,6 +197,11 @@ fi
 
 if ! command -v xcrun >/dev/null 2>&1; then
     log_error "xcrun is required but was not found on PATH. Install Xcode Command Line Tools."
+    exit 1
+fi
+
+if ! command -v pkgutil >/dev/null 2>&1; then
+    log_error "pkgutil is required but was not found on PATH."
     exit 1
 fi
 
@@ -227,6 +257,14 @@ PRODUCTSIGN_CMD=(productsign --sign "$IDENTITY" "$INPUT_PKG" "$TMP_SIGNED_PKG")
 NOTARY_CMD=(xcrun notarytool submit "$TMP_SIGNED_PKG" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json)
 STAPLER_CMD=(xcrun stapler staple "$TMP_SIGNED_PKG")
 CHECKSUM_CMD=(shasum -a 256 "$TMP_SIGNED_PKG")
+
+log_info "Auditing nested Mach-O payload signatures before productsign..."
+EXPANDED_PKG="$WORK_DIR/expanded"
+pkgutil --expand-full "$INPUT_PKG" "$EXPANDED_PKG"
+if ! "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$PAYLOAD_SIGNING_IDENTITY" "$EXPANDED_PKG"; then
+    log_error "Refusing to envelope-sign a PKG with unsigned payload Mach-O binaries (run scripts/build-pkg.sh with ORCHARD_PAYLOAD_SIGNING_IDENTITY)."
+    exit 1
+fi
 
 extract_notary_field() {
     local field="$1"
