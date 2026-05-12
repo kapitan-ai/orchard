@@ -141,6 +141,7 @@ validate_pkg_payload() {
     done
 }
 
+
 cd "$REPO_ROOT"
 
 export MIX_ENV=prod
@@ -295,6 +296,16 @@ cp -R "$REPO_ROOT/_build/prod/rel/orchard_cli" "$STAGING/releases/"
 log_info "Copying native components..."
 cp -R "$REPO_ROOT/native/orchard_tokenizer" "$STAGING/native/"
 cp -R "$REPO_ROOT/native/orchard_worker_mlx" "$STAGING/native/"
+
+log_info "Materializing staged Python venv interpreters..."
+if ! "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$STAGING/native"; then
+    log_error "Failed to materialize staged Python venv interpreters"
+    exit 1
+fi
+if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" "$STAGING_BASE"; then
+    log_error "Staged Python venv closure verification failed"
+    exit 1
+fi
 
 # Copy wrapper scripts (explicit whitelist - exclude managed-postgres until ready)
 log_info "Copying wrapper scripts..."
