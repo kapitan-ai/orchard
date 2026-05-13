@@ -94,12 +94,37 @@ cleanup() {
         return
     fi
 
+    if [[ -n "${SIGNING_MANIFEST_TMP:-}" ]]; then
+        rm -f "$SIGNING_MANIFEST_TMP"
+    fi
+
     if [[ "$STAGING_CREATED" == "true" && -d "$STAGING_BASE" ]]; then
         log_info "Cleaning up staging directory..."
         rm -rf "$STAGING_BASE"
     fi
 }
 trap cleanup EXIT
+
+find_metadata_sidecars() {
+    local root="$1"
+    find "$root" \( -name '._*' -o -name '.DS_Store' \) -print
+}
+
+remove_metadata_sidecars() {
+    local root="$1"
+    local sidecars
+
+    sidecars="$(find_metadata_sidecars "$root")"
+    if [[ -z "$sidecars" ]]; then
+        return 0
+    fi
+
+    log_warn "Removing macOS metadata sidecar files from staging payload"
+    printf '%s\n' "$sidecars" >&2
+    while IFS= read -r sidecar; do
+        [[ -n "$sidecar" ]] && rm -f "$sidecar"
+    done <<<"$sidecars"
+}
 
 validate_staging_layout() {
     local required_paths=(
@@ -121,6 +146,14 @@ validate_staging_layout() {
 
     if [[ -e "$KNOWN_BAD_ROOT" ]]; then
         log_error "Malformed staging root detected: $KNOWN_BAD_ROOT"
+        return 1
+    fi
+
+    local metadata_sidecars
+    metadata_sidecars="$(find_metadata_sidecars "$STAGING_BASE")"
+    if [[ -n "$metadata_sidecars" ]]; then
+        log_error "macOS metadata sidecar files detected in staging payload:"
+        printf '%s\n' "$metadata_sidecars" >&2
         return 1
     fi
 
@@ -151,6 +184,12 @@ validate_pkg_payload() {
 
     if grep -Fq "Library Application Support/" <<<"$payload_files"; then
         log_error "Malformed payload root detected in PKG: Library Application Support/"
+        return 1
+    fi
+
+    if grep -Eq '(^|/)\._[^/]*$|(^|/)\.DS_Store$' <<<"$payload_files"; then
+        log_error "macOS metadata sidecar files detected in PKG payload"
+        grep -E '(^|/)\._[^/]*$|(^|/)\.DS_Store$' <<<"$payload_files" >&2
         return 1
     fi
 
@@ -371,6 +410,9 @@ for plist in "${PLIST_FILES[@]}"; do
     fi
 done
 # Note: com.orchard.postgres.plist is excluded (managed postgres not yet supported)
+
+log_info "Removing macOS metadata sidecars from staging payload..."
+remove_metadata_sidecars "$STAGING_BASE"
 
 log_info "Validating staging layout..."
 validate_staging_layout

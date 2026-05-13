@@ -158,7 +158,7 @@ verify_macho() {
         return 1
     fi
 
-    flags_line="$(grep -E '(^|[[:space:]])flags=' <<< "$display" | tail -1 || true)"
+    flags_line="$(grep -E '^[[:space:]]*CodeDirectory[[:space:]].*[[:space:]]flags=' <<< "$display" | head -1 || true)"
     if [[ -z "$flags_line" || "$flags_line" != *runtime* ]]; then
         emit "$rel_path" "fail" "missing hardened runtime"
         return 1

@@ -107,38 +107,46 @@ if [ "${1:-}" = "--display" ]; then
   case "$last" in
     *adhoc*)
       echo "Signature=adhoc" >&2
-      echo "flags=0x10000(runtime)" >&2
+      echo "CodeDirectory v=20500 size=475 flags=0x10000(runtime) hashes=10+7 location=embedded" >&2
       echo "Timestamp=May 12, 2026" >&2
       echo "Authority=Developer ID Application: Example, Inc. (TEAMID)" >&2
       ;;
     *no-runtime*)
       echo "Signature size=9000" >&2
-      echo "flags=0x0(none)" >&2
+      echo "CodeDirectory v=20500 size=475 flags=0x0(none) hashes=10+7 location=embedded" >&2
+      echo "Executable Segment flags=0x1" >&2
+      echo "Timestamp=May 12, 2026" >&2
+      echo "Authority=Developer ID Application: Example, Inc. (TEAMID)" >&2
+      ;;
+    *runtime-with-executable-segment*)
+      echo "Signature size=9000" >&2
+      echo "CodeDirectory v=20500 size=475 flags=0x10000(runtime) hashes=10+7 location=embedded" >&2
+      echo "Executable Segment flags=0x1" >&2
       echo "Timestamp=May 12, 2026" >&2
       echo "Authority=Developer ID Application: Example, Inc. (TEAMID)" >&2
       ;;
     *no-timestamp*)
       echo "Signature size=9000" >&2
-      echo "flags=0x10000(runtime)" >&2
+      echo "CodeDirectory v=20500 size=475 flags=0x10000(runtime) hashes=10+7 location=embedded" >&2
       echo "Timestamp=none" >&2
       echo "Authority=Developer ID Application: Example, Inc. (TEAMID)" >&2
       ;;
     *wrong-identity*)
       echo "Signature size=9000" >&2
-      echo "flags=0x10000(runtime)" >&2
+      echo "CodeDirectory v=20500 size=475 flags=0x10000(runtime) hashes=10+7 location=embedded" >&2
       echo "Timestamp=May 12, 2026" >&2
       echo "Authority=Developer ID Application: Wrong, Inc. (TEAMID)" >&2
       ;;
     *intermediate-match*)
       echo "Signature size=9000" >&2
-      echo "flags=0x10000(runtime)" >&2
+      echo "CodeDirectory v=20500 size=475 flags=0x10000(runtime) hashes=10+7 location=embedded" >&2
       echo "Timestamp=May 12, 2026" >&2
       echo "Authority=Developer ID Application: Wrong, Inc. (TEAMID)" >&2
       echo "Authority=Developer ID Application: Example, Inc. (TEAMID)" >&2
       ;;
     *)
       echo "Signature size=9000" >&2
-      echo "flags=0x10000(runtime)" >&2
+      echo "CodeDirectory v=20500 size=475 flags=0x10000(runtime) hashes=10+7 location=embedded" >&2
       echo "Timestamp=May 12, 2026" >&2
       echo "Authority=Developer ID Application: Example, Inc. (TEAMID)" >&2
       ;;
@@ -222,6 +230,9 @@ if [ "${1:-}" = "-R" ]; then
     */native/orchard_tokenizer|*/native/orchard_worker_mlx)
       target="$dest/$base"
       mkdir -p "$target/bin" "$target/.venv/bin" "$target/.venv/lib"
+      if [ "${ORCHARD_FAKE_METADATA_SIDECAR:-}" = "1" ]; then
+        : > "$target/._$base"
+      fi
       case "$base" in
         orchard_tokenizer) bin_name=orchard-tokenizer ;;
         orchard_worker_mlx) bin_name=orchard-worker-mlx ;;
@@ -331,10 +342,52 @@ SH
     cat > "$tools/pkgbuild" <<'SH'
 #!/bin/sh
 echo "pkgbuild invoked" >&2
+if [ "${ORCHARD_FAKE_PKGBUILD_SUCCESS:-}" = "1" ]; then
+  last=""
+  for arg in "$@"; do
+    last="$arg"
+  done
+  : > "$last"
+  exit 0
+fi
 exit 88
 SH
 
-    chmod +x "$tools/git" "$tools/uv" "$tools/cp" "$tools/mix" "$tools/file" "$tools/otool" "$tools/xcrun" "$tools/codesign" "$tools/pkgbuild"
+    cat > "$tools/pkgutil" <<'SH'
+#!/bin/sh
+if [ "${1:-}" = "--payload-files" ]; then
+  if [ "${ORCHARD_FAKE_PKGUTIL_SIDECARS:-}" = "1" ]; then
+    cat <<'OUT'
+./Library/Application Support/Orchard/share/bin/orchardctl
+./Library/Application Support/Orchard/share/bin/orchard-controller
+./Library/Application Support/Orchard/share/bin/orchard-node-agent
+./Library/Application Support/Orchard/share/launchd/com.orchard.controller.plist
+./Library/Application Support/Orchard/share/launchd/com.orchard.node-agent.plist
+./Library/Application Support/Orchard/releases/orchard_cli/bin/orchard_cli
+./Library/Application Support/Orchard/releases/orchard_controller/bin/orchard_controller
+./Library/Application Support/Orchard/releases/orchard_node_agent/bin/orchard_node_agent
+./Library/Application Support/Orchard/.DS_Store
+./Library/Application Support/Orchard/share/bin/._orchardctl
+OUT
+    exit 0
+  fi
+  cat <<'OUT'
+./Library/Application Support/Orchard/share/bin/orchardctl
+./Library/Application Support/Orchard/share/bin/orchard-controller
+./Library/Application Support/Orchard/share/bin/orchard-node-agent
+./Library/Application Support/Orchard/share/launchd/com.orchard.controller.plist
+./Library/Application Support/Orchard/share/launchd/com.orchard.node-agent.plist
+./Library/Application Support/Orchard/releases/orchard_cli/bin/orchard_cli
+./Library/Application Support/Orchard/releases/orchard_controller/bin/orchard_controller
+./Library/Application Support/Orchard/releases/orchard_node_agent/bin/orchard_node_agent
+OUT
+  exit 0
+fi
+echo "unexpected pkgutil invocation: $*" >&2
+exit 1
+SH
+
+    chmod +x "$tools/git" "$tools/uv" "$tools/cp" "$tools/mix" "$tools/file" "$tools/otool" "$tools/xcrun" "$tools/codesign" "$tools/pkgbuild" "$tools/pkgutil"
 }
 
 write_sign_pkg_fakes() {
@@ -393,7 +446,7 @@ if [ "${1:-}" = "--verify" ]; then
 fi
 if [ "${1:-}" = "--display" ]; then
   echo "Signature size=9000" >&2
-  echo "flags=0x10000(runtime)" >&2
+  echo "CodeDirectory v=20500 size=475 flags=0x10000(runtime) hashes=10+7 location=embedded" >&2
   echo "Timestamp=May 12, 2026" >&2
   echo "Authority=Developer ID Application: Example, Inc. (TEAMID)" >&2
   exit 0
@@ -502,6 +555,12 @@ make_root "$root"
 run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root" >"$case_dir/ok.out" 2>&1
 assert_grep $'ok	ok' "$case_dir/ok.out"
 assert_no_grep $'	fail	' "$case_dir/ok.out"
+root="$case_dir/runtime-with-executable-segment/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/runtime-with-executable-segment"
+run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root" >"$case_dir/runtime-with-executable-segment.out" 2>&1
+assert_grep $'runtime-with-executable-segment	ok	ok' "$case_dir/runtime-with-executable-segment.out"
+assert_no_grep $'	fail	' "$case_dir/runtime-with-executable-segment.out"
 assert_fails_with 'Developer ID Application identity' "$case_dir/verify-installer.out" run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$INSTALLER_IDENTITY" "$root"
 assert_fails_with 'Developer ID Application identity' "$case_dir/verify-non-app.out" run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity 'Apple Development: Example, Inc. (TEAMID)' "$root"
 empty_root="$case_dir/empty/root"
@@ -596,6 +655,17 @@ printf 'keep me\n' > "$preexisting/sentinel"
 assert_fails_with 'Selected staging path already exists' "$case_dir/preexisting.out" env ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$preexisting" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
 test -f "$preexisting/sentinel"
 
+staging_sidecar="$case_dir/staging-sidecar"
+ORCHARD_FAKE_METADATA_SIDECAR=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_sidecar" PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir" >"$case_dir/sidecar.out" 2>&1
+assert_grep 'Removing macOS metadata sidecar files from staging payload' "$case_dir/sidecar.out"
+assert_grep '._orchard_tokenizer' "$case_dir/sidecar.out"
+if find "$staging_sidecar" \( -name '._*' -o -name '.DS_Store' \) -print -quit | grep -q .; then
+    echo "staging metadata sidecars should be removed before validation" >&2
+    find "$staging_sidecar" \( -name '._*' -o -name '.DS_Store' \) >&2
+    exit 1
+fi
+
 staging_signed="$case_dir/staging-signed"
 CODESIGN_LOG="$case_dir/codesign.log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging_signed" PATH="$tools:/usr/bin:/bin" \
     "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir" >"$case_dir/build-signed.out" 2>&1
@@ -606,6 +676,23 @@ assert_grep "$IDENTITY" "$case_dir/codesign.log"
 staging_fail="$case_dir/staging-fail"
 assert_fails_with 'codesign fail' "$case_dir/sign-fail.out" env CODESIGN_FAIL=1 CODESIGN_LOG="$case_dir/codesign-fail.log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging_fail" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
 assert_no_grep 'pkgbuild invoked' "$case_dir/sign-fail.out"
+
+staging_pkgbuild_fail="$case_dir/staging-pkgbuild-fail"
+assert_fails_with 'pkgbuild invoked' "$case_dir/pkgbuild-fail.out" env CODESIGN_LOG="$case_dir/codesign-pkgbuild-fail.log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging_pkgbuild_fail" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+if find "$out_dir" -name '.*.signing-manifest.tmp' -print -quit | grep -q .; then
+    echo "temporary payload signing manifest should be removed on pkgbuild failure" >&2
+    find "$out_dir" -name '.*.signing-manifest.tmp' >&2
+    exit 1
+fi
+
+staging_pkg_sidecar="$case_dir/staging-pkg-sidecar"
+assert_fails_with 'macOS metadata sidecar files detected in PKG payload' "$case_dir/pkg-sidecar.out" env ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_FAKE_PKGUTIL_SIDECARS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_pkg_sidecar" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_grep 'Removed malformed PKG' "$case_dir/pkg-sidecar.out"
+if find "$out_dir" -name '*.pkg' -print -quit | grep -q .; then
+    echo "malformed PKG should be removed after payload sidecar validation failure" >&2
+    find "$out_dir" -name '*.pkg' >&2
+    exit 1
+fi
 
 # RED/GREEN: sign-pkg refuses missing, Installer, and unsigned payload identities before productsign.
 case_dir="$TMP_ROOT/sign-pkg-audit"
