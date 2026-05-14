@@ -21,8 +21,21 @@ assert_grep() {
 assert_no_grep() {
     local pattern="$1"
     local file="$2"
+    if [[ ! -f "$file" ]]; then
+        return 0
+    fi
     if grep -F "$pattern" "$file" >/dev/null; then
         echo "unexpected match for $pattern" >&2
+        cat "$file" >&2
+        exit 1
+    fi
+}
+
+assert_no_exact_line() {
+    local pattern="$1"
+    local file="$2"
+    if grep -Fx "$pattern" "$file" >/dev/null; then
+        echo "unexpected exact line: $pattern" >&2
         cat "$file" >&2
         exit 1
     fi
@@ -216,12 +229,65 @@ SH
 
     cat > "$tools/uv" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+  printf 'uv %s\n' "$*" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+fi
 exit 0
+SH
+
+    cat > "$tools/find" <<'SH'
+#!/bin/sh
+pattern="${ORCHARD_FAKE_FIND_FAIL_PATTERN:-}"
+kind="${ORCHARD_FAKE_FIND_FAIL_KIND:-any}"
+if [ -n "$pattern" ]; then
+  matched=0
+  for arg in "$@"; do
+    case "$arg" in
+      *"$pattern"*) matched=1 ;;
+    esac
+  done
+  if [ "$matched" = "1" ]; then
+    fail=0
+    case "$kind" in
+      any) fail=1 ;;
+      print0)
+        for arg in "$@"; do
+          [ "$arg" = "-print0" ] && fail=1
+        done
+        ;;
+      sidecars)
+        for arg in "$@"; do
+          case "$arg" in
+            '._*'|'.DS_Store') fail=1 ;;
+          esac
+        done
+        ;;
+      *) echo "unknown fake find failure kind: $kind" >&2; exit 98 ;;
+    esac
+    if [ "$fail" = "1" ]; then
+      echo "simulated find traversal failure for $pattern" >&2
+      exit 96
+    fi
+  fi
+fi
+exec /usr/bin/find "$@"
 SH
 
     cat > "$tools/cp" <<'SH'
 #!/bin/sh
 set -eu
+if [ -n "${CP_LOG:-}" ]; then
+  printf 'COPYFILE_DISABLE=%s cp %s\n' "${COPYFILE_DISABLE:-}" "$*" >> "$CP_LOG"
+fi
+if [ "${ORCHARD_REQUIRE_CP_X:-}" = "1" ]; then
+  case " $* " in
+    *" -X "*) ;;
+    *) echo "cp missing -X: $*" >&2; exit 94 ;;
+  esac
+fi
+if [ "${1:-}" = "-X" ]; then
+  shift
+fi
 if [ "${1:-}" = "-R" ]; then
   src="$2"
   dest="$3"
@@ -243,6 +309,12 @@ if [ "${1:-}" = "-R" ]; then
 exit 0
 BIN
       chmod +x "$target/bin/$bin_name"
+      if [ -n "${ORCHARD_FAKE_SYMLINK_XATTR_PATTERN:-}" ]; then
+        ln -s "bin/$bin_name" "$target/xattr-symlink"
+      fi
+      if [ -n "${ORCHARD_FAKE_EXTERNAL_SYMLINK_TARGET:-}" ]; then
+        ln -s "$ORCHARD_FAKE_EXTERNAL_SYMLINK_TARGET" "$target/external-target-symlink"
+      fi
       cat > "$target/.venv/bin/python" <<'PY'
 #!/bin/sh
 exit 0
@@ -259,6 +331,9 @@ SH
     cat > "$tools/mix" <<'SH'
 #!/bin/sh
 set -eu
+if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+  printf 'mix %s\n' "$*" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+fi
 if [ "${1:-}" = "run" ]; then
   echo 9.9.9-test
   exit 0
@@ -312,18 +387,42 @@ SH
     cat > "$tools/codesign" <<'SH'
 #!/bin/sh
 set -eu
+last=""
+for arg in "$@"; do
+  last="$arg"
+done
+
+case "${1:-}" in
+  --verify)
+    if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+      printf 'codesign verify %s\n' "$last" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+    fi
+    if [ "${CODESIGN_VERIFY_FAIL:-}" = "1" ]; then
+      echo "codesign verify fail" >&2
+      exit 92
+    fi
+    exit 0
+    ;;
+  --display)
+    if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+      printf 'codesign display %s\n' "$last" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+    fi
+    echo "Signature size=9000" >&2
+    echo "CodeDirectory v=20500 size=475 flags=0x10000(runtime) hashes=10+7 location=embedded" >&2
+    echo "Timestamp=May 12, 2026" >&2
+    echo "Authority=${ORCHARD_PAYLOAD_SIGNING_IDENTITY:-Developer ID Application: Example, Inc. (TEAMID)}" >&2
+    exit 0
+    ;;
+esac
+
 if [ "${CODESIGN_FAIL:-}" = "1" ]; then
   echo "codesign fail" >&2
   exit 91
 fi
-last=""
 entitlements=""
 identity=""
 timestamp=no
 runtime=no
-for arg in "$@"; do
-  last="$arg"
-done
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --entitlements) entitlements="$2"; shift 2 ;;
@@ -336,17 +435,143 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
+if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+  printf 'codesign sign %s\n' "$last" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+fi
 printf '%s\t%s\t%s\t%s\n' "$last" "$entitlements" "$identity" "$timestamp/$runtime" >> "${CODESIGN_LOG:?}"
+SH
+
+    cat > "$tools/xattr" <<'SH'
+#!/bin/sh
+set -eu
+scrub_state="${ORCHARD_FAKE_XATTR_SCRUB_STATE:-}"
+if [ -z "$scrub_state" ]; then
+  if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+    scrub_state="$ORCHARD_FAKE_TOOL_ORDER_LOG.xattr-scrubbed"
+  else
+    scrub_state="${TMPDIR:-/tmp}/orchard-fake-xattr-scrubbed"
+  fi
+fi
+symlink_scrub_state="${ORCHARD_FAKE_SYMLINK_XATTR_CLEARED_STATE:-}"
+if [ -z "$symlink_scrub_state" ]; then
+  if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+    symlink_scrub_state="$ORCHARD_FAKE_TOOL_ORDER_LOG.symlink-xattr-scrubbed"
+  else
+    symlink_scrub_state="${TMPDIR:-/tmp}/orchard-fake-symlink-xattr-scrubbed"
+  fi
+fi
+if [ "${1:-}" = "-c" ] && [ "${2:-}" = "-s" ] && [ "$#" -eq 3 ]; then
+  if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+    printf 'xattr -c -s %s\n' "$3" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+  fi
+  if [ -n "${XATTR_LOG:-}" ]; then
+    printf 'xattr -c -s %s\n' "$3" >> "$XATTR_LOG"
+  fi
+  printf '%s\n' "$3" >> "$symlink_scrub_state"
+  exit 0
+fi
+if [ "${1:-}" = "-s" ] && [ "$#" -eq 2 ]; then
+  path="$2"
+  dirty_pattern="${ORCHARD_FAKE_SYMLINK_XATTR_PATTERN:-}"
+  if [ -n "$dirty_pattern" ]; then
+    case "$path" in
+      *"$dirty_pattern"*)
+        if [ -f "$symlink_scrub_state" ]; then
+          while IFS= read -r scrubbed_path; do
+            [ "$path" = "$scrubbed_path" ] && exit 0
+          done < "$symlink_scrub_state"
+        fi
+        echo com.apple.quarantine
+        ;;
+    esac
+  fi
+  exit 0
+fi
+if [ "${1:-}" = "-cr" ] && [ "$#" -eq 2 ]; then
+  if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+    printf 'xattr -cr %s\n' "$2" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+  fi
+  if [ -n "${XATTR_LOG:-}" ]; then
+    printf 'xattr -cr %s\n' "$2" >> "$XATTR_LOG"
+  fi
+  if [ -n "${ORCHARD_FAKE_EXTERNAL_SYMLINK_TARGET:-}" ] && [ -n "${XATTR_LOG:-}" ]; then
+    printf 'external-target-scrubbed %s\n' "$ORCHARD_FAKE_EXTERNAL_SYMLINK_TARGET" >> "$XATTR_LOG"
+  fi
+  if [ "${XATTR_FAIL:-}" = "1" ]; then
+    echo "xattr fail" >&2
+    exit 93
+  fi
+  if [ "${ORCHARD_FAKE_XATTR_DIRTY_UNTIL_SCRUB:-}" = "1" ]; then
+    printf '%s\n' "$2" >> "$scrub_state"
+  fi
+  exit 0
+fi
+if [ "${1:-}" = "-c" ] && [ "$#" -eq 2 ]; then
+  if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+    printf 'xattr -c %s\n' "$2" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+  fi
+  if [ -n "${XATTR_LOG:-}" ]; then
+    printf 'xattr -c %s\n' "$2" >> "$XATTR_LOG"
+  fi
+  if [ "${XATTR_FAIL:-}" = "1" ]; then
+    echo "xattr fail" >&2
+    exit 93
+  fi
+  if [ "${ORCHARD_FAKE_XATTR_DIRTY_UNTIL_SCRUB:-}" = "1" ]; then
+    printf '%s\n' "$2" >> "$scrub_state"
+  fi
+  exit 0
+fi
+if [ "$#" -eq 1 ]; then
+  path="$1"
+  dirty_pattern="${ORCHARD_FAKE_XATTR_DIRTY_PATTERN:-}"
+  if [ -n "$dirty_pattern" ]; then
+    case "$path" in
+      *"$dirty_pattern"*)
+        if [ "${ORCHARD_FAKE_XATTR_DIRTY_UNTIL_SCRUB:-}" = "1" ] && [ -f "$scrub_state" ]; then
+          while IFS= read -r scrubbed_root; do
+            case "$path" in "$scrubbed_root"|"$scrubbed_root"/*) exit 0 ;; esac
+          done < "$scrub_state"
+        fi
+        echo com.apple.quarantine
+        ;;
+    esac
+  fi
+  exit 0
+fi
+echo "unexpected xattr invocation: $*" >&2
+exit 1
 SH
 
     cat > "$tools/pkgbuild" <<'SH'
 #!/bin/sh
-echo "pkgbuild invoked" >&2
-if [ "${ORCHARD_FAKE_PKGBUILD_SUCCESS:-}" = "1" ]; then
-  last=""
-  for arg in "$@"; do
-    last="$arg"
-  done
+identifier=""
+last=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --identifier) identifier="$2"; shift 2 ;;
+    *) last="$1"; shift ;;
+  esac
+done
+case "$identifier" in
+  com.orchard.pkg.preflight) is_preflight=1 ;;
+  *) is_preflight=0 ;;
+esac
+if [ "$is_preflight" = "0" ]; then
+  echo "pkgbuild invoked" >&2
+fi
+if [ "${ORCHARD_REQUIRE_COPYFILE_DISABLE:-}" = "1" ] && [ "${COPYFILE_DISABLE:-}" != "1" ]; then
+  echo "pkgbuild missing COPYFILE_DISABLE=1" >&2
+  exit 95
+fi
+if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+  if [ "$is_preflight" = "1" ]; then
+    echo "scratch-preflight" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+  else
+    echo "pkgbuild" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+  fi
+fi
+if [ "$is_preflight" = "1" ] || [ "${ORCHARD_FAKE_PKGBUILD_SUCCESS:-}" = "1" ]; then
   : > "$last"
   exit 0
 fi
@@ -383,11 +608,35 @@ OUT
 OUT
   exit 0
 fi
+if [ "${1:-}" = "--expand-full" ]; then
+  pkg="$2"
+  dest="$3"
+  if [ -e "$dest" ]; then
+    echo "pkgutil expand destination already exists: $dest" >&2
+    exit 97
+  fi
+  mkdir -p "$dest/Scripts" "$dest/Payload/Library/Application Support/Orchard/share/bin"
+  : > "$dest/Scripts/postinstall"
+  : > "$dest/Payload/Library/Application Support/Orchard/share/bin/orchardctl"
+  case "$pkg" in
+    *scratch*.pkg)
+      if [ "${ORCHARD_FAKE_SCRATCH_PKGBUILD_DIRTY:-}" = "1" ]; then
+        : > "$dest/Scripts/._postinstall"
+      fi
+      ;;
+    *)
+      if [ "${ORCHARD_FAKE_EXPANDED_PKG_SIDECAR:-}" = "1" ]; then
+        : > "$dest/Scripts/._postinstall"
+      fi
+      ;;
+  esac
+  exit 0
+fi
 echo "unexpected pkgutil invocation: $*" >&2
 exit 1
 SH
 
-    chmod +x "$tools/git" "$tools/uv" "$tools/cp" "$tools/mix" "$tools/file" "$tools/otool" "$tools/xcrun" "$tools/codesign" "$tools/pkgbuild" "$tools/pkgutil"
+    chmod +x "$tools/git" "$tools/uv" "$tools/find" "$tools/cp" "$tools/mix" "$tools/file" "$tools/otool" "$tools/xcrun" "$tools/codesign" "$tools/xattr" "$tools/pkgbuild" "$tools/pkgutil"
 }
 
 write_sign_pkg_fakes() {
@@ -656,7 +905,8 @@ assert_fails_with 'Selected staging path already exists' "$case_dir/preexisting.
 test -f "$preexisting/sentinel"
 
 staging_sidecar="$case_dir/staging-sidecar"
-ORCHARD_FAKE_METADATA_SIDECAR=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_sidecar" PATH="$tools:/usr/bin:/bin" \
+xattr_log="$case_dir/xattr.log"
+ORCHARD_FAKE_METADATA_SIDECAR=1 XATTR_LOG="$xattr_log" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_sidecar" PATH="$tools:/usr/bin:/bin" \
     "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir" >"$case_dir/sidecar.out" 2>&1
 assert_grep 'Removing macOS metadata sidecar files from staging payload' "$case_dir/sidecar.out"
 assert_grep '._orchard_tokenizer' "$case_dir/sidecar.out"
@@ -665,13 +915,127 @@ if find "$staging_sidecar" \( -name '._*' -o -name '.DS_Store' \) -print -quit |
     find "$staging_sidecar" \( -name '._*' -o -name '.DS_Store' \) >&2
     exit 1
 fi
+assert_no_grep "xattr -cr $staging_sidecar" "$xattr_log"
+
+staging_symlink_xattr="$case_dir/staging-symlink-xattr"
+symlink_xattr_log="$case_dir/symlink-xattr.log"
+ORCHARD_FAKE_SYMLINK_XATTR_PATTERN='xattr-symlink' XATTR_LOG="$symlink_xattr_log" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_symlink_xattr" PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir" >"$case_dir/symlink-xattr.out" 2>&1
+stage_line_count="$(grep -c '^STAGING_BASE=' "$case_dir/symlink-xattr.out")"
+test "$stage_line_count" -eq 1
+assert_grep "STAGING_BASE=$staging_symlink_xattr" "$case_dir/symlink-xattr.out"
+assert_grep "xattr -c -s $staging_symlink_xattr/Library/Application Support/Orchard/native/orchard_tokenizer/xattr-symlink" "$symlink_xattr_log"
+assert_no_grep "xattr -cr $staging_symlink_xattr" "$symlink_xattr_log"
+if find "$staging_symlink_xattr" \( -name '._*' -o -name '.DS_Store' \) -print -quit | grep -q .; then
+    echo "staging metadata sidecars should be absent after symlink xattr scrub" >&2
+    find "$staging_symlink_xattr" \( -name '._*' -o -name '.DS_Store' \) >&2
+    exit 1
+fi
+
+staging_external_symlink="$case_dir/staging-external-symlink"
+external_target="$case_dir/external-target"
+external_symlink_log="$case_dir/external-symlink-xattr.log"
+printf 'external target\n' > "$external_target"
+ORCHARD_FAKE_EXTERNAL_SYMLINK_TARGET="$external_target" ORCHARD_FAKE_SYMLINK_XATTR_PATTERN='external-target-symlink' XATTR_LOG="$external_symlink_log" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_external_symlink" PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir" >"$case_dir/external-symlink.out" 2>&1
+staged_external_symlink="$staging_external_symlink/Library/Application Support/Orchard/native/orchard_tokenizer/external-target-symlink"
+assert_grep "xattr -c -s $staged_external_symlink" "$external_symlink_log"
+assert_no_grep "xattr -cr $staging_external_symlink" "$external_symlink_log"
+assert_no_grep "external-target-scrubbed $external_target" "$external_symlink_log"
+
+staging_traversal="$case_dir/staging-traversal"
+staging_traversal_order="$case_dir/staging-traversal-order.log"
+assert_fails_with 'Failed to traverse macOS metadata sidecars under' "$case_dir/staging-traversal.out" env ORCHARD_FAKE_FIND_FAIL_PATTERN="$staging_traversal" ORCHARD_FAKE_FIND_FAIL_KIND=sidecars CODESIGN_LOG="$case_dir/staging-traversal-codesign.log" ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_FAKE_TOOL_ORDER_LOG="$staging_traversal_order" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging_traversal" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_no_grep 'codesign sign ' "$staging_traversal_order"
+assert_no_exact_line 'pkgbuild' "$staging_traversal_order"
+
+source_scripts_order="$case_dir/source-scripts-order.log"
+assert_fails_with 'Provenance gate failed for package scripts' "$case_dir/source-scripts.out" env ORCHARD_FAKE_XATTR_DIRTY_PATTERN='packaging/pkg/scripts/postinstall' ORCHARD_FAKE_TOOL_ORDER_LOG="$source_scripts_order" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$case_dir/source-scripts-staging" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_grep 'xattr_node_count=' "$case_dir/source-scripts.out"
+assert_grep 'packaging/pkg/scripts/postinstall' "$case_dir/source-scripts.out"
+assert_no_grep 'uv ' "$source_scripts_order"
+assert_no_grep 'mix release' "$source_scripts_order"
+assert_no_exact_line 'pkgbuild' "$source_scripts_order"
+
+source_wrappers_order="$case_dir/source-wrappers-order.log"
+assert_fails_with 'Provenance gate failed for packaging wrappers' "$case_dir/source-wrappers.out" env ORCHARD_FAKE_XATTR_DIRTY_PATTERN='packaging/pkg/bin/orchardctl' ORCHARD_FAKE_TOOL_ORDER_LOG="$source_wrappers_order" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$case_dir/source-wrappers-staging" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_grep 'xattr_node_count=' "$case_dir/source-wrappers.out"
+assert_grep 'packaging/pkg/bin/orchardctl' "$case_dir/source-wrappers.out"
+assert_no_grep 'uv ' "$source_wrappers_order"
+assert_no_grep 'mix release' "$source_wrappers_order"
+assert_no_exact_line 'pkgbuild' "$source_wrappers_order"
+
+source_launchd_order="$case_dir/source-launchd-order.log"
+assert_fails_with 'Provenance gate failed for launchd plists' "$case_dir/source-launchd.out" env ORCHARD_FAKE_XATTR_DIRTY_PATTERN='packaging/launchd/com.orchard.controller.plist' ORCHARD_FAKE_TOOL_ORDER_LOG="$source_launchd_order" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$case_dir/source-launchd-staging" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_grep 'xattr_node_count=' "$case_dir/source-launchd.out"
+assert_grep 'packaging/launchd/com.orchard.controller.plist' "$case_dir/source-launchd.out"
+assert_no_grep 'uv ' "$source_launchd_order"
+assert_no_grep 'mix release' "$source_launchd_order"
+assert_no_exact_line 'pkgbuild' "$source_launchd_order"
+
+source_entitlements_order="$case_dir/source-entitlements-order.log"
+assert_fails_with 'Provenance gate failed for payload entitlements' "$case_dir/source-entitlements.out" env ORCHARD_FAKE_XATTR_DIRTY_PATTERN='packaging/pkg/entitlements' ORCHARD_FAKE_TOOL_ORDER_LOG="$source_entitlements_order" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$case_dir/source-entitlements-staging" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_grep 'xattr_node_count=' "$case_dir/source-entitlements.out"
+assert_grep 'packaging/pkg/entitlements' "$case_dir/source-entitlements.out"
+assert_no_grep 'uv ' "$source_entitlements_order"
+assert_no_grep 'mix release' "$source_entitlements_order"
+assert_no_exact_line 'pkgbuild' "$source_entitlements_order"
+
+source_traversal_order="$case_dir/source-traversal-order.log"
+assert_fails_with 'Failed to traverse provenance root' "$case_dir/source-traversal.out" env ORCHARD_FAKE_FIND_FAIL_PATTERN='packaging/pkg/bin' ORCHARD_FAKE_FIND_FAIL_KIND=print0 ORCHARD_FAKE_TOOL_ORDER_LOG="$source_traversal_order" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$case_dir/source-traversal-staging" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_grep 'packaging/pkg/bin' "$case_dir/source-traversal.out"
+assert_no_grep 'uv ' "$source_traversal_order"
+assert_no_grep 'mix release' "$source_traversal_order"
+assert_no_exact_line 'pkgbuild' "$source_traversal_order"
+
+scratch_order="$case_dir/scratch-order.log"
+assert_fails_with 'Scratch pkgbuild provenance preflight failed' "$case_dir/scratch-preflight.out" env ORCHARD_FAKE_SCRATCH_PKGBUILD_DIRTY=1 ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_FAKE_TOOL_ORDER_LOG="$scratch_order" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$case_dir/scratch-staging" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_grep 'payload_sidecar_count=' "$case_dir/scratch-preflight.out"
+assert_grep 'Scripts/._postinstall' "$case_dir/scratch-preflight.out"
+assert_no_grep 'uv ' "$scratch_order"
+assert_no_grep 'mix release' "$scratch_order"
+assert_no_exact_line 'pkgbuild' "$scratch_order"
+
+staging_persistent_xattr="$case_dir/staging-persistent-xattr"
+persistent_order="$case_dir/persistent-xattr-order.log"
+persistent_dirty_path="$staging_persistent_xattr/Library/Application Support/Orchard/share/bin/orchardctl"
+assert_fails_with 'Provenance gate failed for post-scrub staging' "$case_dir/persistent-xattr.out" env ORCHARD_FAKE_XATTR_DIRTY_PATTERN="$persistent_dirty_path" ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_FAKE_TOOL_ORDER_LOG="$persistent_order" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_persistent_xattr" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_grep 'xattr_node_count=' "$case_dir/persistent-xattr.out"
+assert_grep "$persistent_dirty_path" "$case_dir/persistent-xattr.out"
+assert_no_exact_line 'pkgbuild' "$persistent_order"
 
 staging_signed="$case_dir/staging-signed"
-CODESIGN_LOG="$case_dir/codesign.log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging_signed" PATH="$tools:/usr/bin:/bin" \
-    "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir" >"$case_dir/build-signed.out" 2>&1
-assert_grep "STAGING_BASE=$staging_signed" "$case_dir/build-signed.out"
+order_log="$case_dir/build-order.log"
+signed_dirty_path="$staging_signed/Library/Application Support/Orchard/share/bin/orchardctl"
+CODESIGN_LOG="$case_dir/codesign.log" ORCHARD_FAKE_XATTR_DIRTY_PATTERN="$signed_dirty_path" ORCHARD_FAKE_XATTR_DIRTY_UNTIL_SCRUB=1 ORCHARD_FAKE_TOOL_ORDER_LOG="$order_log" ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging_signed" PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir" >"$case_dir/build-signed.out" 2>&1
 assert_grep "$staging_signed" "$case_dir/codesign.log"
 assert_grep "$IDENTITY" "$case_dir/codesign.log"
+first_xattr_line="$(grep -n "xattr -c $signed_dirty_path" "$order_log" | sed -n '1s/:.*//p')"
+first_sign_line="$(grep -n 'codesign sign ' "$order_log" | sed -n '1s/:.*//p')"
+first_verify_line="$(grep -n 'codesign verify ' "$order_log" | sed -n '1s/:.*//p')"
+pkgbuild_line="$(grep -n '^pkgbuild$' "$order_log" | sed -n '1s/:.*//p')"
+test "$first_xattr_line" -lt "$first_sign_line"
+test "$first_sign_line" -lt "$first_verify_line"
+test "$first_verify_line" -lt "$pkgbuild_line"
+assert_no_grep "xattr -cr $staging_signed" "$order_log"
+
+staging_verify_fail="$case_dir/staging-verify-fail"
+assert_fails_with 'Payload signature verification failed after metadata scrub' "$case_dir/verify-fail.out" env CODESIGN_VERIFY_FAIL=1 CODESIGN_LOG="$case_dir/codesign-verify-fail.log" ORCHARD_FAKE_TOOL_ORDER_LOG="$case_dir/verify-fail-order.log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging_verify_fail" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_no_grep 'pkgbuild invoked' "$case_dir/verify-fail.out"
+assert_no_grep 'pkgbuild' "$case_dir/verify-fail-order.log"
+
+staging_xattr_fail="$case_dir/staging-xattr-fail"
+assert_fails_with 'xattr fail' "$case_dir/xattr-fail.out" env XATTR_FAIL=1 ORCHARD_FAKE_XATTR_DIRTY_PATTERN="$staging_xattr_fail/Library/Application Support/Orchard/share/bin/orchardctl" CODESIGN_LOG="$case_dir/codesign-xattr-fail.log" ORCHARD_FAKE_TOOL_ORDER_LOG="$case_dir/xattr-fail-order.log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging_xattr_fail" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_no_grep 'codesign sign ' "$case_dir/xattr-fail-order.log"
+assert_no_grep 'pkgbuild' "$case_dir/xattr-fail-order.log"
+
+staging_stage_signed="$case_dir/staging-stage-signed"
+CODESIGN_LOG="$case_dir/codesign-stage.log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging_stage_signed" PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir" >"$case_dir/build-stage-signed.out" 2>&1
+assert_grep "STAGING_BASE=$staging_stage_signed" "$case_dir/build-stage-signed.out"
+assert_grep "$staging_stage_signed" "$case_dir/codesign-stage.log"
+assert_grep "$IDENTITY" "$case_dir/codesign-stage.log"
 
 staging_fail="$case_dir/staging-fail"
 assert_fails_with 'codesign fail' "$case_dir/sign-fail.out" env CODESIGN_FAIL=1 CODESIGN_LOG="$case_dir/codesign-fail.log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging_fail" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
@@ -685,11 +1049,29 @@ if find "$out_dir" -name '.*.signing-manifest.tmp' -print -quit | grep -q .; the
     exit 1
 fi
 
+staging_metadata_copy="$case_dir/staging-metadata-copy"
+cp_log="$case_dir/cp.log"
+ORCHARD_REQUIRE_CP_X=1 CP_LOG="$cp_log" ORCHARD_REQUIRE_COPYFILE_DISABLE=1 ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_metadata_copy" PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir" >"$case_dir/metadata-copy.out" 2>&1
+assert_grep 'COPYFILE_DISABLE=1 cp -X -R' "$cp_log"
+assert_grep 'COPYFILE_DISABLE=1 cp -X ' "$cp_log"
+assert_no_grep 'pkgbuild missing COPYFILE_DISABLE=1' "$case_dir/metadata-copy.out"
+
 staging_pkg_sidecar="$case_dir/staging-pkg-sidecar"
 assert_fails_with 'macOS metadata sidecar files detected in PKG payload' "$case_dir/pkg-sidecar.out" env ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_FAKE_PKGUTIL_SIDECARS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_pkg_sidecar" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
 assert_grep 'Removed malformed PKG' "$case_dir/pkg-sidecar.out"
 if find "$out_dir" -name '*.pkg' -print -quit | grep -q .; then
     echo "malformed PKG should be removed after payload sidecar validation failure" >&2
+    find "$out_dir" -name '*.pkg' >&2
+    exit 1
+fi
+
+staging_expanded_sidecar="$case_dir/staging-expanded-sidecar"
+assert_fails_with 'Provenance gate failed for unsigned PKG expanded package' "$case_dir/expanded-sidecar.out" env ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_FAKE_EXPANDED_PKG_SIDECAR=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_expanded_sidecar" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_grep 'Scripts/._postinstall' "$case_dir/expanded-sidecar.out"
+assert_grep 'Removed malformed PKG' "$case_dir/expanded-sidecar.out"
+if find "$out_dir" -name '*.pkg' -print -quit | grep -q .; then
+    echo "malformed PKG should be removed after expanded package sidecar validation failure" >&2
     find "$out_dir" -name '*.pkg' >&2
     exit 1
 fi

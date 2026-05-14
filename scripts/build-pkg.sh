@@ -107,14 +107,165 @@ trap cleanup EXIT
 
 find_metadata_sidecars() {
     local root="$1"
-    find "$root" \( -name '._*' -o -name '.DS_Store' \) -print
+    local sidecars_file
+    local find_err_file
+
+    if [[ ! -d "$root" || -L "$root" ]]; then
+        log_error "Invalid macOS metadata sidecar root: $root" >&2
+        return 1
+    fi
+
+    sidecars_file="$(mktemp "${TMPDIR:-/tmp}/orchard-sidecars.XXXXXX")"
+    find_err_file="$(mktemp "${TMPDIR:-/tmp}/orchard-sidecar-find-errors.XXXXXX")"
+
+    if ! find -P "$root" \( -name '._*' -o -name '.DS_Store' \) -print >"$sidecars_file" 2>"$find_err_file"; then
+        log_error "Failed to traverse macOS metadata sidecars under: $root" >&2
+        cat "$find_err_file" >&2
+        rm -f "$sidecars_file" "$find_err_file"
+        return 1
+    fi
+
+    cat "$sidecars_file"
+    rm -f "$sidecars_file" "$find_err_file"
+}
+
+collect_xattr_nodes() {
+    local root="$1"
+    local output_file="$2"
+    local paths_file
+    local find_err_file
+    local path
+    local attrs
+    local status=0
+
+    : >"$output_file"
+
+    if ! command -v xattr >/dev/null 2>&1; then
+        log_error "xattr is required to inventory macOS provenance metadata"
+        return 1
+    fi
+
+    if [[ ! -d "$root" || -L "$root" ]]; then
+        log_error "Invalid provenance root: $root"
+        return 1
+    fi
+
+    paths_file="$(mktemp "${TMPDIR:-/tmp}/orchard-xattr-paths.XXXXXX")"
+    find_err_file="$(mktemp "${TMPDIR:-/tmp}/orchard-xattr-find-errors.XXXXXX")"
+
+    if ! find -P "$root" -print0 >"$paths_file" 2>"$find_err_file"; then
+        log_error "Failed to traverse provenance root: $root"
+        cat "$find_err_file" >&2
+        rm -f "$paths_file" "$find_err_file"
+        return 1
+    fi
+
+    while IFS= read -r -d '' path; do
+        if [[ -L "$path" ]]; then
+            if attrs="$(xattr -s "$path" 2>&1)"; then
+                if [[ -n "$attrs" ]]; then
+                    printf '%s\n' "$path" >>"$output_file"
+                fi
+            else
+                log_error "Failed to inspect symlink extended attributes for: $path"
+                printf '%s\n' "$attrs" >&2
+                status=1
+            fi
+            continue
+        fi
+
+        if attrs="$(xattr "$path" 2>&1)"; then
+            if [[ -n "$attrs" ]]; then
+                printf '%s\n' "$path" >>"$output_file"
+            fi
+        else
+            log_error "Failed to inspect extended attributes for: $path"
+            printf '%s\n' "$attrs" >&2
+            status=1
+        fi
+    done <"$paths_file"
+
+    rm -f "$paths_file" "$find_err_file"
+    return "$status"
+}
+
+log_provenance_inventory() {
+    local label="$1"
+    local root="$2"
+    local xattr_nodes_file
+    local sidecars_file
+    local xattr_count
+    local sidecar_count
+    local status=0
+
+    xattr_nodes_file="$(mktemp "${TMPDIR:-/tmp}/orchard-xattr-nodes.XXXXXX")"
+    sidecars_file="$(mktemp "${TMPDIR:-/tmp}/orchard-sidecars.XXXXXX")"
+
+    if ! collect_xattr_nodes "$root" "$xattr_nodes_file"; then
+        status=1
+    fi
+    if ! find_metadata_sidecars "$root" >"$sidecars_file"; then
+        status=1
+    fi
+
+    xattr_count="$(wc -l <"$xattr_nodes_file" | tr -d '[:space:]')"
+    sidecar_count="$(wc -l <"$sidecars_file" | tr -d '[:space:]')"
+    PROVENANCE_XATTR_NODE_COUNT="${xattr_count:-0}"
+    PROVENANCE_SIDECAR_COUNT="${sidecar_count:-0}"
+
+    log_info "Provenance inventory: $label xattr_node_count=$PROVENANCE_XATTR_NODE_COUNT payload_sidecar_count=$PROVENANCE_SIDECAR_COUNT root=$root"
+
+    if [[ "$PROVENANCE_XATTR_NODE_COUNT" -gt 0 ]]; then
+        log_error "Extended-attribute-bearing nodes for $label:"
+        cat "$xattr_nodes_file" >&2
+    fi
+
+    if [[ "$PROVENANCE_SIDECAR_COUNT" -gt 0 ]]; then
+        log_error "macOS metadata sidecar files for $label:"
+        cat "$sidecars_file" >&2
+    fi
+
+    rm -f "$xattr_nodes_file" "$sidecars_file"
+    return "$status"
+}
+
+assert_clean_provenance() {
+    local label="$1"
+    local root="$2"
+
+    if ! log_provenance_inventory "$label" "$root"; then
+        log_error "Provenance gate failed for $label"
+        return 1
+    fi
+
+    if [[ "$PROVENANCE_XATTR_NODE_COUNT" -ne 0 || "$PROVENANCE_SIDECAR_COUNT" -ne 0 ]]; then
+        log_error "Provenance gate failed for $label"
+        return 1
+    fi
+}
+
+validate_packaging_source_provenance() {
+    assert_clean_provenance "packaging wrappers" "$REPO_ROOT/packaging/pkg/bin"
+    assert_clean_provenance "launchd plists" "$REPO_ROOT/packaging/launchd"
+    assert_clean_provenance "package scripts" "$REPO_ROOT/packaging/pkg/scripts"
+    assert_clean_provenance "payload entitlements" "$REPO_ROOT/packaging/pkg/entitlements"
+}
+
+copy_file_without_metadata() {
+    COPYFILE_DISABLE=1 cp -X "$1" "$2"
+}
+
+copy_tree_without_metadata() {
+    COPYFILE_DISABLE=1 cp -X -R "$1" "$2"
 }
 
 remove_metadata_sidecars() {
     local root="$1"
     local sidecars
 
-    sidecars="$(find_metadata_sidecars "$root")"
+    if ! sidecars="$(find_metadata_sidecars "$root")"; then
+        return 1
+    fi
     if [[ -z "$sidecars" ]]; then
         return 0
     fi
@@ -124,6 +275,103 @@ remove_metadata_sidecars() {
     while IFS= read -r sidecar; do
         [[ -n "$sidecar" ]] && rm -f "$sidecar"
     done <<<"$sidecars"
+}
+
+scrub_xattrs_preserving_modes() {
+    local root="$1"
+    local restore_file
+    local paths_file
+    local find_err_file
+    local path
+    local mode
+    local attrs
+    local status=0
+
+    restore_file="$(mktemp "${TMPDIR:-/tmp}/orchard-xattr-modes.XXXXXX")"
+    paths_file="$(mktemp "${TMPDIR:-/tmp}/orchard-xattr-scrub-paths.XXXXXX")"
+    find_err_file="$(mktemp "${TMPDIR:-/tmp}/orchard-xattr-scrub-find-errors.XXXXXX")"
+
+    if ! find -P "$root" -print0 >"$paths_file" 2>"$find_err_file"; then
+        log_error "Failed to traverse provenance root: $root"
+        cat "$find_err_file" >&2
+        rm -f "$restore_file" "$paths_file" "$find_err_file"
+        return 1
+    fi
+
+    while IFS= read -r -d '' path; do
+        if [[ -L "$path" ]]; then
+            if ! attrs="$(xattr -s "$path" 2>&1)"; then
+                log_error "Failed to inspect symlink extended attributes for: $path"
+                printf '%s\n' "$attrs" >&2
+                status=1
+                continue
+            fi
+            [[ -z "$attrs" ]] && continue
+            if ! xattr -c -s "$path"; then
+                log_error "Failed to scrub symlink extended attributes for: $path"
+                status=1
+            fi
+            continue
+        fi
+
+        if ! attrs="$(xattr "$path" 2>&1)"; then
+            log_error "Failed to inspect extended attributes for: $path"
+            printf '%s\n' "$attrs" >&2
+            status=1
+            continue
+        fi
+        [[ -z "$attrs" ]] && continue
+
+        mode="$(stat -f '%Lp' "$path" 2>/dev/null || true)"
+        if [[ -n "$mode" && ! -w "$path" ]]; then
+            printf '%s\t%s\n' "$mode" "$path" >>"$restore_file"
+            if ! chmod u+w "$path"; then
+                log_error "Failed to make staged path temporarily writable for xattr scrub: $path"
+                status=1
+                continue
+            fi
+        fi
+
+        if ! xattr -c "$path"; then
+            log_error "Failed to scrub extended attributes for: $path"
+            status=1
+        fi
+    done <"$paths_file"
+
+    while IFS=$'\t' read -r mode path; do
+        if [[ -n "$mode" && -n "$path" ]] && ! chmod "$mode" "$path"; then
+            log_error "Failed to restore staged path mode after xattr scrub: $path"
+            status=1
+        fi
+    done <"$restore_file"
+    rm -f "$restore_file" "$paths_file" "$find_err_file"
+
+    return "$status"
+}
+
+scrub_macos_metadata() {
+    local root="$1"
+
+    if ! remove_metadata_sidecars "$root"; then
+        return 1
+    fi
+
+    if command -v xattr >/dev/null 2>&1; then
+        if ! scrub_xattrs_preserving_modes "$root"; then
+            log_error "Failed to scrub macOS extended attributes from staging payload"
+            return 1
+        fi
+    elif [[ "$(uname -s)" == "Darwin" ]]; then
+        log_error "xattr is required to scrub macOS metadata on Darwin"
+        return 1
+    else
+        log_warn "xattr not found; skipping extended-attribute scrub on non-Darwin host"
+    fi
+
+    if ! remove_metadata_sidecars "$root"; then
+        return 1
+    fi
+    assert_clean_provenance "post-scrub staging" "$root"
 }
 
 validate_staging_layout() {
@@ -149,13 +397,7 @@ validate_staging_layout() {
         return 1
     fi
 
-    local metadata_sidecars
-    metadata_sidecars="$(find_metadata_sidecars "$STAGING_BASE")"
-    if [[ -n "$metadata_sidecars" ]]; then
-        log_error "macOS metadata sidecar files detected in staging payload:"
-        printf '%s\n' "$metadata_sidecars" >&2
-        return 1
-    fi
+    assert_clean_provenance "staging layout" "$STAGING_BASE"
 
     for rel_path in "${required_paths[@]}"; do
         if [[ ! -e "$EXPECTED_STAGING_ROOT/$rel_path" ]]; then
@@ -163,6 +405,69 @@ validate_staging_layout() {
             return 1
         fi
     done
+}
+
+validate_expanded_pkg_provenance() {
+    local pkg_path="$1"
+    local label="$2"
+    local expanded_parent
+    local expanded_dir
+
+    expanded_parent="$(mktemp -d "${TMPDIR:-/tmp}/orchard-expanded-pkg.XXXXXX")"
+    expanded_dir="$expanded_parent/expanded"
+    if ! pkgutil --expand-full "$pkg_path" "$expanded_dir"; then
+        rm -rf "$expanded_parent"
+        log_error "Failed to expand PKG for provenance inspection: $pkg_path"
+        return 1
+    fi
+
+    if ! assert_clean_provenance "$label expanded package" "$expanded_dir"; then
+        rm -rf "$expanded_parent"
+        return 1
+    fi
+
+    rm -rf "$expanded_parent"
+}
+
+run_pkgbuild_scratch_preflight() {
+    local scratch_dir
+    local scratch_root
+    local scratch_pkg
+    local scratch_file
+
+    scratch_dir="$(mktemp -d "${TMPDIR:-/tmp}/orchard-pkgbuild-preflight.XXXXXX")"
+    scratch_root="$scratch_dir/root"
+    scratch_pkg="$scratch_dir/scratch.pkg"
+    scratch_file="$scratch_root/$PAYLOAD_ROOT_REL/support/.pkgbuild-provenance-preflight"
+
+    mkdir -p "$(dirname "$scratch_file")"
+    printf 'Orchard pkgbuild provenance preflight\n' >"$scratch_file"
+
+    if ! assert_clean_provenance "scratch pkgbuild input" "$scratch_root"; then
+        rm -rf "$scratch_dir"
+        log_error "Scratch pkgbuild provenance preflight failed"
+        return 1
+    fi
+
+    if ! COPYFILE_DISABLE=1 pkgbuild \
+        --root "$scratch_root" \
+        --scripts "$REPO_ROOT/packaging/pkg/scripts" \
+        --identifier com.orchard.pkg.preflight \
+        --version "$APP_VERSION" \
+        --install-location / \
+        "$scratch_pkg"; then
+        rm -rf "$scratch_dir"
+        log_error "Scratch pkgbuild provenance preflight failed"
+        return 1
+    fi
+
+    if ! validate_expanded_pkg_provenance "$scratch_pkg" "scratch pkgbuild preflight"; then
+        rm -rf "$scratch_dir"
+        log_error "Scratch pkgbuild provenance preflight failed"
+        return 1
+    fi
+
+    rm -rf "$scratch_dir"
 }
 
 validate_pkg_payload() {
@@ -199,6 +504,8 @@ validate_pkg_payload() {
             return 1
         fi
     done
+
+    validate_expanded_pkg_provenance "$pkg_path" "unsigned PKG"
 }
 
 
@@ -292,6 +599,12 @@ if ! git diff-index --quiet HEAD --; then
     fi
 fi
 
+log_info "Validating packaging source provenance..."
+validate_packaging_source_provenance
+
+log_info "Running scratch pkgbuild provenance preflight..."
+run_pkgbuild_scratch_preflight
+
 # Clean build artifacts if requested
 if [[ "$DO_CLEAN" == "true" ]]; then
     log_info "Deep clean requested — removing _build and deps..."
@@ -358,17 +671,17 @@ STAGING_CREATED=true
 
 # Copy releases
 log_info "Copying releases to staging..."
-cp -R "$REPO_ROOT/_build/prod/rel/orchard_controller" "$STAGING/releases/"
-cp -R "$REPO_ROOT/_build/prod/rel/orchard_node_agent" "$STAGING/releases/"
-cp -R "$REPO_ROOT/_build/prod/rel/orchard_cli" "$STAGING/releases/"
+copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_controller" "$STAGING/releases/"
+copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_node_agent" "$STAGING/releases/"
+copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_cli" "$STAGING/releases/"
 
 # Copy native components
 log_info "Copying native components..."
-cp -R "$REPO_ROOT/native/orchard_tokenizer" "$STAGING/native/"
-cp -R "$REPO_ROOT/native/orchard_worker_mlx" "$STAGING/native/"
+copy_tree_without_metadata "$REPO_ROOT/native/orchard_tokenizer" "$STAGING/native/"
+copy_tree_without_metadata "$REPO_ROOT/native/orchard_worker_mlx" "$STAGING/native/"
 
 log_info "Materializing staged Python venv interpreters..."
-if ! "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$STAGING/native"; then
+if ! COPYFILE_DISABLE=1 "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$STAGING/native"; then
     log_error "Failed to materialize staged Python venv interpreters"
     exit 1
 fi
@@ -387,7 +700,7 @@ WRAPPER_SCRIPTS=(
 for script in "${WRAPPER_SCRIPTS[@]}"; do
     script_path="$REPO_ROOT/packaging/pkg/bin/$script"
     if [[ -f "$script_path" ]]; then
-        cp "$script_path" "$STAGING/share/bin/"
+        copy_file_without_metadata "$script_path" "$STAGING/share/bin/"
     else
         log_error "Missing wrapper script: $script"
         exit 1
@@ -403,7 +716,7 @@ PLIST_FILES=(
 for plist in "${PLIST_FILES[@]}"; do
     plist_path="$REPO_ROOT/packaging/launchd/$plist"
     if [[ -f "$plist_path" ]]; then
-        cp "$plist_path" "$STAGING/share/launchd/"
+        copy_file_without_metadata "$plist_path" "$STAGING/share/launchd/"
     else
         log_error "Missing launchd plist: $plist"
         exit 1
@@ -411,8 +724,8 @@ for plist in "${PLIST_FILES[@]}"; do
 done
 # Note: com.orchard.postgres.plist is excluded (managed postgres not yet supported)
 
-log_info "Removing macOS metadata sidecars from staging payload..."
-remove_metadata_sidecars "$STAGING_BASE"
+log_info "Scrubbing macOS metadata from staging payload..."
+scrub_macos_metadata "$STAGING_BASE"
 
 log_info "Validating staging layout..."
 validate_staging_layout
@@ -434,6 +747,17 @@ else
     log_warn "ORCHARD_PAYLOAD_SIGNING_IDENTITY not set — payload Mach-O binaries will be unsigned. The resulting PKG cannot be notarized."
 fi
 
+log_info "Scrubbing macOS metadata after payload signing window..."
+scrub_macos_metadata "$STAGING_BASE"
+
+if [[ -n "$PAYLOAD_SIGNING_IDENTITY" ]]; then
+    log_info "Verifying payload signatures after metadata scrub..."
+    if ! "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$PAYLOAD_SIGNING_IDENTITY" "$STAGING_BASE"; then
+        log_error "Payload signature verification failed after metadata scrub"
+        exit 1
+    fi
+fi
+
 if [[ "$STAGE_ONLY" == "true" ]]; then
     printf 'STAGING_BASE=%s\n' "$STAGING_BASE"
     log_info "Stage-only build complete; preserved staging directory: $STAGING_BASE"
@@ -450,7 +774,7 @@ find "$STAGING/share/bin" -type f -exec chmod 755 {} \;
 log_info "Building PKG..."
 mkdir -p "$OUTPUT_DIR"
 
-pkgbuild \
+COPYFILE_DISABLE=1 pkgbuild \
     --root "$STAGING_BASE" \
     --scripts "$REPO_ROOT/packaging/pkg/scripts" \
     --identifier com.orchard.pkg \
