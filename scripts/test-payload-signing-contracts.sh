@@ -15,7 +15,7 @@ INSTALLER_IDENTITY='Developer ID Installer: Example, Inc. (TEAMID)'
 assert_grep() {
     local pattern="$1"
     local file="$2"
-    grep -F "$pattern" "$file" >/dev/null
+    grep -F -- "$pattern" "$file" >/dev/null
 }
 
 assert_no_grep() {
@@ -24,7 +24,7 @@ assert_no_grep() {
     if [[ ! -f "$file" ]]; then
         return 0
     fi
-    if grep -F "$pattern" "$file" >/dev/null; then
+    if grep -F -- "$pattern" "$file" >/dev/null; then
         echo "unexpected match for $pattern" >&2
         cat "$file" >&2
         exit 1
@@ -61,6 +61,11 @@ make_fake_tools() {
 #!/bin/sh
 case "$*" in
   *pyvenv.cfg*|*.txt) echo text/plain ;;
+  *universal-native.so)
+    printf 'application/x-mach-binary\n'
+    printf '%s (for architecture x86_64):\tapplication/x-mach-binary\n' "$*"
+    printf '%s (for architecture arm64):\tapplication/x-mach-binary\n' "$*"
+    ;;
   *) echo application/x-mach-binary ;;
 esac
 SH
@@ -647,7 +652,12 @@ write_sign_pkg_fakes() {
 
     cat > "$tools/productsign" <<SH
 #!/bin/sh
+last=""
+for arg in "\$@"; do
+  last="\$arg"
+done
 echo "productsign invoked" >> "$log"
+: > "\$last"
 exit 0
 SH
 
@@ -658,10 +668,16 @@ if [ "\$1" != "--expand-full" ]; then
   echo "unexpected pkgutil invocation: \$*" >&2
   exit 1
 fi
+case "$mode" in
+  fail_expand) echo "fake expand failure" >&2; exit 42 ;;
+  sleep_expand) if [ -n "\${ORCHARD_FAKE_EXPAND_CHILD_LOG:-}" ]; then (while :; do echo child >> "\$ORCHARD_FAKE_EXPAND_CHILD_LOG"; sleep 1; done) & fi; trap '' TERM; sleep 20 ;;
+  child_survives) if [ -n "\${ORCHARD_FAKE_EXPAND_CHILD_LOG:-}" ]; then (trap '' TERM; while :; do echo child >> "\$ORCHARD_FAKE_EXPAND_CHILD_LOG"; sleep 1; done) & fi; trap 'exit 0' TERM; sleep 20 ;;
+esac
 mkdir -p "\$3/Library/Application Support/Orchard/share/bin"
 case "$mode" in
   unsigned) : > "\$3/Library/Application Support/Orchard/share/bin/unsigned" ;;
   ok) : > "\$3/Library/Application Support/Orchard/share/bin/ok" ;;
+  fail_expand|sleep_expand) ;;
   *) echo "unknown fake pkgutil mode: $mode" >&2; exit 1 ;;
 esac
 SH
@@ -711,10 +727,16 @@ if [ "$1" = "-f" ]; then
   esac
 fi
 if [ "$1" = "notarytool" ]; then
+  if [ -n "${XCRUN_LOG:-}" ]; then
+    printf '%s\n' "$*" >> "$XCRUN_LOG"
+  fi
   printf '{"id":"fake-submission","status":"Accepted"}\n'
   exit 0
 fi
 if [ "$1" = "stapler" ]; then
+  if [ -n "${XCRUN_LOG:-}" ]; then
+    printf '%s\n' "$*" >> "$XCRUN_LOG"
+  fi
   exit 0
 fi
 echo "unexpected xcrun invocation: $*" >&2
@@ -761,14 +783,16 @@ mkdir -p \
 : > "$root/Library/Application Support/Orchard/native/foo/.venv/bin/python"
 : > "$root/Library/Application Support/Orchard/native/foo/.venv/bin/ruff"
 : > "$root/Library/Application Support/Orchard/native/foo/.venv/lib/libnative.so"
+: > "$root/Library/Application Support/Orchard/native/foo/.venv/lib/universal-native.so"
 : > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
 chmod +x "$root/Library/Application Support/Orchard/native/foo/.venv/bin/ruff"
 CODESIGN_LOG="$case_dir/codesign.log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     run_with_fakes "$tools" "$REPO_ROOT/scripts/sign-payload.sh" "$root" >"$case_dir/sign.out" 2>&1
 assert_grep $'libnative.so	' "$case_dir/codesign.log"
+assert_grep $'universal-native.so	' "$case_dir/codesign.log"
 first_signed="$(head -1 "$case_dir/codesign.log")"
 case "$first_signed" in
-  *libnative.so*) ;;
+  *.venv/lib/*.so*) ;;
   *) echo "expected library to be signed before executables" >&2; cat "$case_dir/codesign.log" >&2; exit 1 ;;
 esac
 assert_grep $'beam.smp	' "$case_dir/codesign.log"
@@ -1095,5 +1119,148 @@ assert_fails_with 'Developer ID Application identity' "$case_dir/installer-paylo
 test ! -e "$productsign_log"
 assert_fails_with 'Refusing to envelope-sign a PKG with unsigned payload Mach-O binaries' "$case_dir/unsigned-payload.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
 test ! -e "$productsign_log"
+
+
+# RED/GREEN: sign-pkg notary auth matrix and bounded expansion diagnostics.
+case_dir="$TMP_ROOT/sign-pkg-notary-auth"
+mkdir -p "$case_dir"
+input_pkg="$case_dir/Orchard.pkg"
+: > "$input_pkg"
+
+tools="$case_dir/tools-profile-default"
+productsign_log="$case_dir/productsign-profile-default.log"
+xcrun_log="$case_dir/xcrun-profile-default.log"
+output_pkg="$case_dir/profile-default-signed.pkg"
+write_sign_pkg_fakes "$tools" ok "$productsign_log"
+PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg" >"$case_dir/profile-default.out" 2>&1
+assert_grep 'notarytool submit' "$xcrun_log"
+assert_grep '--keychain-profile orchard-notary' "$xcrun_log"
+assert_grep '--output-format json' "$xcrun_log"
+assert_no_grep '--key ' "$xcrun_log"
+assert_no_grep '--key-id' "$xcrun_log"
+assert_no_grep '--issuer' "$xcrun_log"
+assert_grep 'productsign invoked' "$productsign_log"
+test -f "$output_pkg"
+test -f "$output_pkg.notary.json"
+test -f "$output_pkg.sha256"
+
+tools="$case_dir/tools-profile-explicit"
+productsign_log="$case_dir/productsign-profile-explicit.log"
+xcrun_log="$case_dir/xcrun-profile-explicit.log"
+output_pkg="$case_dir/profile-explicit-signed.pkg"
+write_sign_pkg_fakes "$tools" ok "$productsign_log"
+PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=profile ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg" >"$case_dir/profile-explicit.out" 2>&1
+assert_grep '--keychain-profile orchard-notary' "$xcrun_log"
+assert_no_grep '--key ' "$xcrun_log"
+assert_grep 'productsign invoked' "$productsign_log"
+
+tools="$case_dir/tools-api"
+productsign_log="$case_dir/productsign-api.log"
+xcrun_log="$case_dir/xcrun-api.log"
+api_key="$case_dir/AuthKey_TEST.p8"
+output_pkg="$case_dir/api-signed.pkg"
+: > "$api_key"
+write_sign_pkg_fakes "$tools" ok "$productsign_log"
+PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$output_pkg" >"$case_dir/api.out" 2>&1
+assert_grep "--key $api_key" "$xcrun_log"
+assert_grep '--key-id KEY123' "$xcrun_log"
+assert_grep '--issuer ISSUER123' "$xcrun_log"
+assert_grep '--output-format json' "$xcrun_log"
+assert_no_grep '--keychain-profile' "$xcrun_log"
+assert_grep 'productsign invoked' "$productsign_log"
+
+tools="$case_dir/tools-api-missing"
+productsign_log="$case_dir/productsign-api-missing.log"
+write_sign_pkg_fakes "$tools" ok "$productsign_log"
+assert_fails_with 'ORCHARD_NOTARY_API_KEY_PATH is required' "$case_dir/api-missing-path.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-path.pkg"
+test ! -e "$productsign_log"
+assert_fails_with 'ORCHARD_NOTARY_API_KEY_ID is required' "$case_dir/api-missing-id.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-id.pkg"
+test ! -e "$productsign_log"
+assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID is required' "$case_dir/api-missing-issuer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-issuer.pkg"
+test ! -e "$productsign_log"
+assert_fails_with 'Unsupported ORCHARD_NOTARY_AUTH' "$case_dir/auth-unsupported.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=bogus ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/auth-unsupported.pkg"
+test ! -e "$productsign_log"
+assert_fails_with 'App Store Connect API key does not exist' "$case_dir/api-missing-file.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$case_dir/missing.p8" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-file.pkg"
+test ! -e "$productsign_log"
+
+tools="$case_dir/tools-dry"
+productsign_log="$case_dir/productsign-dry.log"
+write_sign_pkg_fakes "$tools" ok "$productsign_log"
+PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    "$REPO_ROOT/scripts/sign-pkg.sh" --dry-run --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/dry.pkg" >"$case_dir/dry.out" 2>&1
+assert_grep '--key' "$case_dir/dry.out"
+assert_grep '--key-id' "$case_dir/dry.out"
+assert_grep '--issuer' "$case_dir/dry.out"
+assert_grep '--output-format' "$case_dir/dry.out"
+test ! -e "$productsign_log"
+
+tools="$case_dir/tools-expand-fail"
+productsign_log="$case_dir/productsign-expand-fail.log"
+diag_dir="$case_dir/expand-fail-diagnostics"
+write_sign_pkg_fakes "$tools" fail_expand "$productsign_log"
+assert_fails_with 'pkgutil --expand-full failed during payload audit' "$case_dir/expand-fail.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/expand-fail.pkg"
+test ! -e "$productsign_log"
+assert_grep 'status=42' "$diag_dir/expand-full.status"
+assert_grep 'fake expand failure' "$diag_dir/expand-full.stderr"
+
+assert_fails_with 'Diagnostics directory already exists' "$case_dir/diag-reuse.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/diag-reuse.pkg"
+
+tools="$case_dir/tools-expand-timeout"
+productsign_log="$case_dir/productsign-expand-timeout.log"
+diag_dir="$case_dir/expand-timeout-diagnostics"
+write_sign_pkg_fakes "$tools" sleep_expand "$productsign_log"
+child_log="$case_dir/expand-timeout-child.log"
+start_epoch="$(date +%s)"
+assert_fails_with 'Timed out expanding PKG for payload audit' "$case_dir/expand-timeout.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_FAKE_EXPAND_CHILD_LOG="$child_log" ORCHARD_PKG_EXPAND_TIMEOUT_SECONDS=1 ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/expand-timeout.pkg"
+elapsed=$(( $(date +%s) - start_epoch ))
+if [ "$elapsed" -ge 10 ]; then
+    echo "expand timeout test took too long: ${elapsed}s" >&2
+    exit 1
+fi
+test ! -e "$productsign_log"
+assert_grep 'status=124' "$diag_dir/expand-full.status"
+assert_grep 'timeout_after_seconds=1' "$diag_dir/expand-full.timeout"
+if [ -f "$child_log" ]; then
+    before_count="$(wc -l < "$child_log")"
+    sleep 2
+    after_count="$(wc -l < "$child_log")"
+    if [ "$before_count" != "$after_count" ]; then
+        echo "expand timeout left child writer running" >&2
+        exit 1
+    fi
+fi
+
+
+tools="$case_dir/tools-expand-child-survives"
+productsign_log="$case_dir/productsign-expand-child-survives.log"
+diag_dir="$case_dir/expand-child-survives-diagnostics"
+child_log="$case_dir/expand-child-survives-child.log"
+write_sign_pkg_fakes "$tools" child_survives "$productsign_log"
+assert_fails_with 'Timed out expanding PKG for payload audit' "$case_dir/expand-child-survives.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_FAKE_EXPAND_CHILD_LOG="$child_log" ORCHARD_PKG_EXPAND_TIMEOUT_SECONDS=1 ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/expand-child-survives.pkg"
+test ! -e "$productsign_log"
+assert_grep 'status=124' "$diag_dir/expand-full.status"
+if [ ! -s "$child_log" ]; then
+    echo "child-survival fake did not write child log" >&2
+    exit 1
+fi
+before_count="$(wc -l < "$child_log")"
+sleep 2
+after_count="$(wc -l < "$child_log")"
+if [ "$before_count" != "$after_count" ]; then
+    echo "expand timeout left child writer running after leader exited" >&2
+    exit 1
+fi
+
+# Refuse to run the audit if no process-group-capable launcher is available.
+tools="$case_dir/tools-no-setsid"
+productsign_log="$case_dir/productsign-no-setsid.log"
+diag_dir="$case_dir/no-setsid-diagnostics"
+write_sign_pkg_fakes "$tools" ok "$productsign_log"
+assert_fails_with 'perl with POSIX::setsid is required' "$case_dir/no-setsid.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_DISABLE_PERL_SETSID_FOR_TEST=1 ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/no-setsid.pkg"
+test ! -e "$productsign_log"
+assert_grep 'status=125' "$diag_dir/expand-full.status"
 
 printf 'ok\tpayload signing contracts\n'

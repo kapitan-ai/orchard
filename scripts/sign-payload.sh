@@ -160,7 +160,9 @@ EXE_FILES="$TMP_DIR/exes.bin"
 find -P "$STAGING_BASE" -type f -print0 > "$ALL_FILES"
 
 is_macho() {
-    [[ "$(file -b --mime-type "$1" 2>/dev/null || true)" == "application/x-mach-binary" ]]
+    local mime
+    mime="$(file -b --mime-type "$1" 2>/dev/null || true)"
+    grep -Fq 'application/x-mach-binary' <<< "$mime"
 }
 
 relative_path() {

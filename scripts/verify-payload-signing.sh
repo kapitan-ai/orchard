@@ -108,7 +108,9 @@ relative_path() {
 }
 
 is_macho() {
-    [[ "$(file -b --mime-type "$1" 2>/dev/null || true)" == "application/x-mach-binary" ]]
+    local mime
+    mime="$(file -b --mime-type "$1" 2>/dev/null || true)"
+    grep -Fq 'application/x-mach-binary' <<< "$mime"
 }
 
 emit() {

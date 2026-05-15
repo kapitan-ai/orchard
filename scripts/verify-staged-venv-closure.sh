@@ -59,7 +59,7 @@ def is_macho(path: pathlib.Path) -> bool:
     if rc != 0:
         errors.append(f"file failed: {rel(path)}: {stderr.strip()}")
         return False
-    return stdout.strip() == "application/x-mach-binary"
+    return "application/x-mach-binary" in stdout
 
 
 def discover_venvs() -> list[pathlib.Path]:
