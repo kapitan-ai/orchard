@@ -631,8 +631,8 @@ Each origin is validated at controller boot. Invalid origins abort startup.
 
 ## LAN Client Trust and `/ca.crt`
 
-When using managed TLS (the default), the controller exposes its CA
-certificate for LAN client trust bootstrap:
+When using local generated TLS created with `orchardctl tls init`, the
+controller exposes its CA certificate for LAN client trust bootstrap:
 
 ```
 GET /ca.crt
@@ -651,21 +651,24 @@ missing metadata, and broken managed TLS state.
 
 ### Operator workflow
 
-1. **Install Orchard** — the PKG installer generates managed TLS material
-   (CA + controller certs) under `config/tls/`
-2. **Trust CA on the Orchard host** (optional):
+1. **Install Orchard** — the PKG installer does not generate TLS material
+2. **Create local generated TLS** when desired:
+   ```bash
+   sudo orchardctl tls init --no-trust
+   ```
+3. **Trust CA on the Orchard host** (optional):
    ```bash
    sudo orchardctl tls trust-ca
    ```
-3. **Distribute CA to LAN clients** — either download from the running
+4. **Distribute CA to LAN clients** — either download from the running
    controller:
    ```bash
    curl -k -o orchard-ca.crt https://<controller-host>:8443/ca.crt
    ```
    or copy `config/tls/ca.crt` out-of-band
-4. **Install the CA on each client** according to the client OS/browser trust
+5. **Install the CA on each client** according to the client OS/browser trust
    store procedures
-5. **Verify access:**
+6. **Verify access:**
    ```bash
    curl --cacert orchard-ca.crt https://<controller-host>:8443/health/ready
    ```
@@ -676,7 +679,7 @@ missing metadata, and broken managed TLS state.
 
 ### Certificate regeneration
 
-To regenerate managed certificates (e.g., after hostname change or expiry):
+To regenerate local generated certificates (e.g., after hostname change or expiry):
 
 ```bash
 sudo orchardctl tls init --force
@@ -710,7 +713,7 @@ window.liveSocket.getSocket().connectionState()  // "connecting" = stuck
 1. Set `ORCHARD_PUBLIC_HOST` in `controller.env` to the exact host used in the
    browser (e.g. `100.86.198.38` for Tailscale, `orchard.local` for mDNS).
 2. Restart the controller: `sudo launchctl kickstart -k system/com.orchard.controller`
-3. If using managed TLS and the hostname changed, regenerate certificates:
+3. If using local generated TLS and the hostname changed, regenerate certificates:
    `orchardctl tls init --force` then restart again.
 
 ### Basic Auth credentials persist in browser URL
@@ -760,24 +763,24 @@ are sourced by root-owned shell scripts, so untrusted files are not executed.
 
 ## TLS Certificate Management
 
-The installer integrates with `orchardctl tls init` (Task 4) to manage TLS
-certificates for the controller HTTPS listener.
+The installer does not run `orchardctl tls init` automatically. Use
+`orchardctl tls init` explicitly to create local generated TLS certificates for
+the controller HTTPS listener.
 
 ### Installer behavior
 
 ### Fresh install (no prior Orchard):
 1. `preinstall` creates `config/tls/` directory (mode `0750` root:admin - admin group accessible)
-2. `postinstall` detects empty TLS state and runs:
-   `orchardctl tls init --no-trust`
-3. Generates `ca.key`, `ca.crt`, `controller.key`, `controller.crt` under
-   `config/tls/`
-4. Does **not** auto-trust the CA in Keychain (operator must run
-   `sudo orchardctl tls trust-ca` manually)
-5. Does not bootstrap managed PostgreSQL; role-selected controller/node-agent services must be started manually via `sudo orchardctl start`
+2. `postinstall` detects empty TLS state, prints operator guidance, and
+   continues without running `orchardctl tls init`
+3. To create local generated TLS, run `sudo orchardctl tls init --no-trust`
+   after install
+4. Does not bootstrap managed PostgreSQL; role-selected controller/node-agent services must be started manually via `sudo orchardctl start`
 
 **Upgrade (existing install):**
 - Preserves existing managed TLS files (no overwrite, no regeneration)
-- If no TLS files exist (upgrading from pre-TLS version), generates them
+- If no TLS files exist (upgrading from pre-TLS version), prints operator
+  guidance and continues without generating them
 - Partial TLS state (some files missing) **aborts the install** with a
   clear error listing which files are present/missing
 - **Services are stopped during upgrade and NOT auto-restarted** — run
@@ -789,7 +792,7 @@ The installer and controller wrapper resolve TLS mode from `controller.env`:
 
 | Mode | Condition | Installer behavior |
 |------|-----------|--------------------|
-| `managed_default` | No cert/key overrides set | Auto-generate if empty; preserve if complete; fail if partial |
+| `managed_default` | No cert/key overrides set | Print guidance and continue if empty; preserve if complete; fail if partial |
 | `external_override` | Both `ORCHARD_TLS_CERTFILE` and `ORCHARD_TLS_KEYFILE` set | Skip generation; validate files exist |
 | `disabled` | `ORCHARD_TLS_DISABLED=true` | Skip generation; controller runs HTTP-only (loopback) |
 
@@ -864,10 +867,14 @@ installed role:
 2. Install PKG
 3. Run `sudo orchardctl env init` (auto-configures environment)
 4. Run `sudo orchard-controller eval 'Orchard.Release.migrate()'` (database, for controller/all roles)
-5. Run `sudo orchardctl start` (bootstraps role-selected services)
+5. Choose a currently supported controller TLS path before starting controller/all roles:
+   - run `sudo orchardctl tls init --no-trust` for explicit local generated TLS;
+   - set `ORCHARD_TLS_CERTFILE` and `ORCHARD_TLS_KEYFILE` for externally managed certificates;
+   - or set `ORCHARD_TLS_DISABLED=true` only for emergency/local HTTP operation.
+6. Run `sudo orchardctl start` (bootstraps role-selected services)
 
-This deferred bootstrap ensures services start with valid configuration
-rather than crash-looping with missing environment variables.
+This deferred bootstrap ensures services start with valid environment and TLS
+configuration rather than crash-looping with missing setup.
 
 ## Responsibilities
 
@@ -875,7 +882,7 @@ rather than crash-looping with missing environment variables.
 - Install wrapper commands into `/Library/Application Support/Orchard/bin/`
 - Expose `orchardctl` via `/usr/local/bin/orchardctl`
 - Install role-selected launchd plists under `/Library/LaunchDaemons/` and tray LaunchAgent under `/Library/LaunchAgents/`
-- Generate managed TLS certificates on fresh install
+- Leave TLS generation to explicit post-install `sudo orchardctl tls init --no-trust`
 - Validate TLS state before bootstrapping services
 - Detect fresh install vs upgrade and write diagnostic markers
 

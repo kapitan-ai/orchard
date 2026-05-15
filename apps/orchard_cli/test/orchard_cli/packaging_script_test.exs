@@ -26,6 +26,82 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
+  test "postinstall empty managed TLS state skips automatic generation and completes install" do
+    for role <- ["controller", "all"] do
+      with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+        controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
+        node_agent = Path.join(ctx.launch_daemons, "com.orchard.node-agent.plist")
+        marker_path = Path.join([ctx.root, "support", ".install-role"])
+        complete_path = Path.join([ctx.root, "support", ".pkg-install-complete"])
+        orchardctl_log = Path.join(ctx.root, "orchardctl.log")
+
+        remove_managed_tls_files!(ctx)
+        File.write!(request_path, role <> "\n")
+
+        File.write!(Path.join([ctx.root, "share/bin", "orchardctl"]), """
+        #!/bin/sh
+        printf '%s\n' "$*" >> "#{orchardctl_log}"
+        exit 42
+        """)
+
+        assert {output, 0} = run_script(script, ctx)
+
+        assert output =~ "postinstall: managed TLS state=empty"
+        assert output =~ "postinstall: managed TLS files are not installed"
+        refute output =~ "generating managed TLS certificates"
+        refute File.exists?(orchardctl_log)
+        assert File.exists?(controller)
+        assert File.exists?(node_agent) == (role == "all")
+        assert File.read!(marker_path) == role <> "\n"
+        assert File.exists?(complete_path)
+        refute File.exists?(request_path)
+      end)
+    end
+  end
+
+  test "postinstall disabled or external TLS modes do not print empty-managed start guidance" do
+    scenarios = [
+      {"disabled", [{"ORCHARD_TLS_DISABLED", "true"}]},
+      {"external", []}
+    ]
+
+    for {scenario, env} <- scenarios do
+      with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+        env =
+          case scenario do
+            "external" ->
+              external_tls_dir = Path.join(ctx.root, "external-tls")
+              File.mkdir_p!(external_tls_dir)
+              certfile = Path.join(external_tls_dir, "orchard.crt")
+              keyfile = Path.join(external_tls_dir, "orchard.key")
+              File.write!(certfile, "external cert\n")
+              File.write!(keyfile, "external key\n")
+
+              [
+                {"ORCHARD_TLS_CERTFILE", certfile},
+                {"ORCHARD_TLS_KEYFILE", keyfile}
+              ]
+
+            "disabled" ->
+              env
+          end
+
+        remove_managed_tls_files!(ctx)
+        File.write!(request_path, "controller\n")
+
+        assert {output, 0} = run_script(script, ctx, env)
+
+        if scenario == "external" do
+          assert output =~ "postinstall: tls_mode=external_override"
+          assert output =~ "postinstall: external TLS files validated"
+        end
+
+        refute output =~ "Configure TLS before starting controller services"
+        assert output =~ "Run next: sudo orchardctl start"
+      end)
+    end
+  end
+
   test "postinstall TLS failure for controller role does not mutate role or postgres plists" do
     with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
       stale_controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
@@ -285,6 +361,12 @@ defmodule OrchardCLI.PackagingScriptTest do
 
     for cmd <- ["chown", "launchctl", "stat"] do
       File.chmod!(Path.join(ctx.fake_bin, cmd), 0o755)
+    end
+  end
+
+  defp remove_managed_tls_files!(ctx) do
+    for file <- ["ca.key", "ca.crt", "controller.key", "controller.crt"] do
+      File.rm!(Path.join([ctx.root, "config/tls", file]))
     end
   end
 

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 # Orchard PKG postinstall — install wrappers/plists, resolve role-scoped TLS state,
-# generate managed controller TLS when needed, and finish install markers.
+# validate controller TLS when configured, and finish install markers.
 #
 # SPEC.md §11.4: postinstall creation of launchd plists,
 # optional controller-only or node-only modes.
@@ -387,6 +387,8 @@ done
 # ===========================================================================
 # 8. Resolve controller TLS mode and act for controller-bearing roles
 # ===========================================================================
+needs_tls_before_start=false
+
 if [ "$install_role" = "node-agent" ]; then
   printf 'postinstall: node-agent role selected; skipping controller TLS setup\n'
 else
@@ -419,23 +421,11 @@ else
 
       case "$tls_state" in
         empty)
-          printf 'postinstall: generating managed TLS certificates...\n'
-          if [ ! -x "$ORCHARD_ROOT/bin/orchardctl" ]; then
-            printf 'postinstall: ERROR: orchardctl not found at %s\n' \
-              "$ORCHARD_ROOT/bin/orchardctl" >&2
-            exit 1
-          fi
-          ORCHARD_SUPPORT_ROOT="$ORCHARD_ROOT" \
-            PATH="/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:$PATH" \
-            "$ORCHARD_ROOT/bin/orchardctl" tls init --no-trust || {
-              printf 'postinstall: ERROR: TLS certificate generation failed; aborting install\n' >&2
-              exit 1
-            }
-          printf '\n'
-          printf 'Orchard TLS certificates generated successfully.\n'
-          printf 'To trust the CA on this machine:  sudo orchardctl tls trust-ca\n'
-          printf 'To install CA on LAN clients:     distribute the CA certificate\n'
-          printf '\n'
+          printf 'postinstall: managed TLS files are not installed; continuing without automatic certificate generation.\n'
+          printf 'postinstall: To create local generated TLS after install, run: sudo orchardctl tls init --no-trust\n'
+          printf 'postinstall: To use operator-provided TLS, set ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE.\n'
+          printf 'postinstall: For emergency/local HTTP only, set ORCHARD_TLS_DISABLED=true.\n'
+          needs_tls_before_start=true
           ;;
         complete)
           printf 'postinstall: existing managed TLS certificates found; preserving\n'
@@ -526,5 +516,10 @@ esac
 printf 'Orchard installation complete.\n'
 printf 'Selected install role: %s.\n' "$install_role"
 printf '%s launchd service(s) were installed but not started.\n' "$installed_services"
-printf 'Run next: sudo orchardctl start\n'
+if [ "$needs_tls_before_start" = "true" ]; then
+  printf 'Configure TLS before starting controller services: run sudo orchardctl tls init --no-trust, set ORCHARD_TLS_CERTFILE/ORCHARD_TLS_KEYFILE, or set ORCHARD_TLS_DISABLED=true for emergency/local HTTP.\n'
+  printf 'Then run: sudo orchardctl start\n'
+else
+  printf 'Run next: sudo orchardctl start\n'
+fi
 exit 0
