@@ -192,7 +192,10 @@ The controller SHALL be a Phoenix/Plug HTTP service plus a gRPC server and gRPC 
 
 **Required listeners**
 
-* `:8443` HTTPS for public/admin/operator APIs
+* Public/admin/operator API listener according to the configured public transport mode (§10.7):
+  * `direct_https`: controller terminates HTTPS, default `:8443`.
+  * `reverse_proxy`: controller provides a local/private HTTP backend for an operator-managed TLS-terminating proxy.
+  * `plain_http_localhost`: controller provides loopback HTTP only for local development or break-glass recovery.
 * `:8444` gRPC/mTLS for node registration/heartbeat/event ingress
 * `:9464` Prometheus metrics endpoint
 
@@ -1463,19 +1466,22 @@ The platform SHALL expose four API surfaces:
 1. **Public Inference API**
 
    * OpenAI-compatible
-   * HTTPS JSON + SSE
+   * HTTPS JSON + SSE for public/client traffic in `reverse_proxy` and `direct_https` transport modes
+   * loopback HTTP only in degraded `plain_http_localhost` mode for local development or break-glass recovery
    * bearer API keys
 
 2. **Operator API**
 
    * runtime operations
-   * HTTPS JSON
+   * HTTPS JSON for public/operator traffic in `reverse_proxy` and `direct_https` transport modes
+   * loopback HTTP only in degraded `plain_http_localhost` mode for local development or break-glass recovery
    * operator/admin auth
 
 3. **Admin API**
 
    * governance/configuration
-   * HTTPS JSON
+   * HTTPS JSON for public/admin traffic in `reverse_proxy` and `direct_https` transport modes
+   * loopback HTTP only in degraded `plain_http_localhost` mode for local development or break-glass recovery
    * admin/tenant-admin auth
 
 4. **Internal Node/Worker API**
@@ -3037,11 +3043,36 @@ Renewal threshold:
 
 ### 10.7 Public transport
 
-Public APIs SHALL use HTTPS.
-Certificates may be:
+Public API transport SHALL be configured by a first-class transport mode. Valid values are:
 
-* operator-provided
-* product-generated for local/test use only
+* `reverse_proxy` — the controller listens on a local HTTP backend and an operator-managed reverse proxy terminates public HTTPS.
+* `direct_https` — the controller terminates HTTPS with operator-provided certificate material or explicit local-CA helper output.
+* `plain_http_localhost` — the controller listens on loopback HTTP only for local development or break-glass recovery; this mode is degraded and MUST NOT be treated as production public transport.
+
+Public client traffic SHALL use HTTPS in `reverse_proxy` and `direct_https` modes. Orchard SHALL NOT assume a public certificate provider. Paid CAs, proprietary CAs, internal PKI, and air-gapped certificate distribution all map to `direct_https` with operator-provided certificate material.
+
+Certificate provenance SHALL be modeled separately from transport mode as `cert_source`. Valid values are `operator_provided`, `generated_local_ca`, and `unknown`. Runtime classification SHALL resolve `transport_mode` first, apply `ORCHARD_TRANSPORT_MODE` precedence, and discard legacy TLS environment variables that are inconsistent with the selected mode before resolving `cert_source`. For `reverse_proxy` and `plain_http_localhost`, `cert_source` SHALL be `unknown`. For `direct_https`, runtime SHALL resolve `cert_source` in this order:
+
+1. If both mode-consistent `ORCHARD_TLS_CERTFILE` and `ORCHARD_TLS_KEYFILE` are set, `cert_source` is `operator_provided`. Explicit cert/key overrides win over any local metadata file.
+2. Otherwise, if Orchard TLS metadata records `generated_local_ca` and the referenced generated cert/key files exist, `cert_source` is `generated_local_ca`.
+3. Otherwise, `cert_source` is `unknown`.
+
+The mapping from operator deployment patterns to runtime state SHALL be:
+
+| Operator deployment pattern | `transport_mode` | `cert_source` |
+| --- | --- | --- |
+| Reverse proxy TLS termination | `reverse_proxy` | `unknown` |
+| Direct HTTPS with operator certificate | `direct_https` | `operator_provided` |
+| Paid or proprietary CA | `direct_https` | `operator_provided` |
+| Internal PKI or air-gapped HTTPS | `direct_https` | `operator_provided` |
+| Explicit Orchard local-CA helper output | `direct_https` | `generated_local_ca` |
+| Break-glass local HTTP | `plain_http_localhost` | `unknown` |
+
+`ORCHARD_TRANSPORT_MODE` is authoritative when set. Legacy `ORCHARD_TLS_DISABLED`, `ORCHARD_TLS_CERTFILE`, `ORCHARD_TLS_KEYFILE`, and `ORCHARD_TLS_CACERTFILE` environment variables SHALL remain compatibility shims for one release. When `ORCHARD_TRANSPORT_MODE` is set, legacy variables SHALL be accepted only when consistent with the selected mode; conflicting legacy values SHALL emit a deprecation warning and the new mode SHALL win unless the combination is structurally invalid. When `ORCHARD_TRANSPORT_MODE` is unset, runtime SHALL derive the mode from legacy variables: `ORCHARD_TLS_DISABLED=true` maps to `plain_http_localhost`, cert/key overrides map to `direct_https`, and a fresh install with no TLS envs maps to `plain_http_localhost`. Invalid mode values, partial cert/key overrides, malformed CIDRs, and other structurally invalid combinations SHALL fail closed at wrapper preflight or boot.
+
+`/ca.crt` SHALL publish a CA certificate only when `cert_source` is `generated_local_ca`. It SHALL return not found for `operator_provided` and `unknown`. Orchard SHALL NOT publish an operator CA, internal PKI root, proprietary CA, or public CA bundle unless a future explicit operator-CA publication feature is designed and specified.
+
+Forwarded headers SHALL be trusted only in `reverse_proxy` mode and only from configured trusted proxies. The default trusted proxy set SHALL be loopback only: `127.0.0.1/32` and `::1/128`. Operators MAY configure non-loopback trusted proxy CIDRs with `ORCHARD_TRUSTED_PROXIES`. If reverse-proxy mode binds the backend listener to a non-loopback address without explicit trusted proxies, Orchard SHALL fail closed at preflight or boot. Spoofed `x-forwarded-*` headers from untrusted clients SHALL be ignored or rejected and MUST NOT affect public URL, scheme, host, port, or client IP derivation.
 
 ### 10.8 Secrets at rest
 
@@ -3159,6 +3190,8 @@ PKG SHALL support:
 * postinstall creation of launchd plists
 * optional managed DB enablement
 * optional controller-only or node-only install modes
+
+PKG `postinstall` SHALL NOT generate, procure, or trust production TLS certificate material by default. On a controller/all-role install with no TLS material, `postinstall` SHALL continue launchd plist installation and print supported post-install actions: configure `ORCHARD_TRANSPORT_MODE=direct_https` with operator-provided certificate/key material, run the explicit `orchardctl tls init --no-trust` local-CA helper for local/dev-lab bootstrap, or configure `ORCHARD_TRANSPORT_MODE=plain_http_localhost` for local/emergency HTTP behavior. During the one-release legacy compatibility window, `ORCHARD_TLS_CERTFILE`/`ORCHARD_TLS_KEYFILE` and `ORCHARD_TLS_DISABLED=true` MAY be accepted as shims for those modes. `postinstall` SHALL NOT mutate system trust stores.
 
 Apple’s enterprise deployment guidance supports package distribution to managed Macs. ([Apple Support][9])
 
