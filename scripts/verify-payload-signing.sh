@@ -16,8 +16,8 @@ Usage: scripts/verify-payload-signing.sh --identity <Developer ID Application id
 Audits every Mach-O file under a staging or expanded PKG root. The verifier
 fails when a Mach-O is unsigned, lacks hardened runtime, lacks a secure
 timestamp, or is not signed by the expected Developer ID Application identity.
-It also enforces staged Python virtualenv closure checks when .venv directories
-are present.
+It also enforces whole-payload Mach-O dependency closure and staged Python
+virtualenv closure checks before accepting signing metadata.
 EOF
 }
 
@@ -81,7 +81,7 @@ if [[ -z "$ROOT" || ! -d "$ROOT" ]]; then
     exit 66
 fi
 
-for required in codesign xcrun file; do
+for required in codesign xcrun file otool; do
     if ! command -v "$required" >/dev/null 2>&1; then
         log_error "$required is required but was not found on PATH."
         exit 69
@@ -117,22 +117,15 @@ emit() {
     printf '%s\t%s\t%s\n' "$1" "$2" "$3"
 }
 
-has_venv=false
-if find -P "$ROOT" -type d -name .venv -print -quit | grep -q .; then
-    has_venv=true
-fi
-
 FAILURES=0
 MACHO_COUNT=0
-if [[ "$has_venv" == "true" ]]; then
-    VENV_OUT="$TMP_DIR/venv.out"
-    if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" --no-smoke "$ROOT" > "$VENV_OUT" 2>&1; then
-        FAILURES=$((FAILURES + 1))
-        while IFS= read -r line; do
-            [[ -n "$line" ]] || continue
-            emit "venv" "fail" "$line"
-        done < "$VENV_OUT"
-    fi
+CLOSURE_OUT="$TMP_DIR/closure.out"
+if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" --no-smoke "$ROOT" > "$CLOSURE_OUT" 2>&1; then
+    FAILURES=$((FAILURES + 1))
+    while IFS= read -r line; do
+        [[ -n "$line" ]] || continue
+        emit "closure" "fail" "$line"
+    done < "$CLOSURE_OUT"
 fi
 
 verify_macho() {

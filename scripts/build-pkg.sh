@@ -426,6 +426,12 @@ validate_expanded_pkg_provenance() {
         return 1
     fi
 
+    if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" --no-smoke "$expanded_dir"; then
+        rm -rf "$expanded_parent"
+        log_error "Mach-O dependency closure failed for $label expanded package"
+        return 1
+    fi
+
     rm -rf "$expanded_parent"
 }
 
@@ -675,6 +681,16 @@ copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_controller" "$STA
 copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_node_agent" "$STAGING/releases/"
 copy_tree_without_metadata "$REPO_ROOT/_build/prod/rel/orchard_cli" "$STAGING/releases/"
 
+log_info "Remediating OTP OpenSSL Mach-O closure..."
+OPENSSL_PROVENANCE="$OUTPUT_DIR/$PKG_NAME.openssl-provenance.txt"
+if ! "$REPO_ROOT/scripts/remediate-otp-openssl-closure.sh" --provenance-output "$OPENSSL_PROVENANCE" "$STAGING"; then
+    log_error "OTP OpenSSL closure remediation failed"
+    exit 1
+fi
+if [[ -f "$OPENSSL_PROVENANCE" ]]; then
+    log_info "   OpenSSL provenance: $OPENSSL_PROVENANCE"
+fi
+
 # Copy native components
 log_info "Copying native components..."
 copy_tree_without_metadata "$REPO_ROOT/native/orchard_tokenizer" "$STAGING/native/"
@@ -686,7 +702,7 @@ if ! COPYFILE_DISABLE=1 "$REPO_ROOT/scripts/materialize-staged-venv-interpreters
     exit 1
 fi
 if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" "$STAGING_BASE"; then
-    log_error "Staged Python venv closure verification failed"
+    log_error "Staged native payload closure verification failed"
     exit 1
 fi
 
@@ -749,6 +765,12 @@ fi
 
 log_info "Scrubbing macOS metadata after payload signing window..."
 scrub_macos_metadata "$STAGING_BASE"
+
+log_info "Verifying whole-payload Mach-O dependency closure..."
+if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" --no-smoke "$STAGING_BASE"; then
+    log_error "Whole-payload Mach-O dependency closure verification failed"
+    exit 1
+fi
 
 if [[ -n "$PAYLOAD_SIGNING_IDENTITY" ]]; then
     log_info "Verifying payload signatures after metadata scrub..."

@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# Verify staged Python virtualenvs are self-contained enough for PKG payload signing.
-# Usage: scripts/verify-staged-venv-closure.sh [--no-smoke] <staging-root>
+# Verify Orchard staged or expanded PKG payload Mach-O dependency closure.
+# Usage: scripts/verify-staged-venv-closure.sh [--no-smoke] <staging-or-expanded-root>
 
 set -euo pipefail
 
 usage() {
-    echo "Usage: $0 [--no-smoke] <staging-root>" >&2
+    echo "Usage: $0 [--no-smoke] <staging-or-expanded-root>" >&2
 }
 
 RUN_SMOKE=true
@@ -22,9 +22,16 @@ fi
 
 ROOT="$1"
 if [[ ! -d "$ROOT" ]]; then
-    echo "error: staging root does not exist: $ROOT" >&2
+    echo "error: payload root does not exist: $ROOT" >&2
     exit 66
 fi
+
+for required in python3 file otool; do
+    if ! command -v "$required" >/dev/null 2>&1; then
+        echo "error: $required is required but was not found on PATH" >&2
+        exit 69
+    fi
+done
 
 python3 - "$ROOT" "$RUN_SMOKE" <<'PY'
 import os
@@ -38,7 +45,15 @@ run_smoke = sys.argv[2] == "true"
 payload_rel = pathlib.Path("Library/Application Support/Orchard")
 install_prefix = pathlib.Path("/Library/Application Support/Orchard")
 allowed_system_prefixes = ("/usr/lib/", "/System/Library/")
-forbidden_cfg_fragments = ("/Users/", "/private/var", "/var/folders/", ".local/share/uv")
+forbidden_path_fragments = (
+    "/opt/homebrew/",
+    "/usr/local/opt/",
+    "/Cellar/",
+    "/Users/",
+    "/private/var/",
+    "/var/folders/",
+)
+forbidden_cfg_fragments = forbidden_path_fragments + (".local/share/uv",)
 errors: list[str] = []
 
 
@@ -72,10 +87,102 @@ def discover_venvs() -> list[pathlib.Path]:
     return sorted(found)
 
 
+def discover_machos() -> list[pathlib.Path]:
+    machos: list[pathlib.Path] = []
+    for entry in root.rglob("*"):
+        if entry.is_symlink() or not entry.is_file():
+            continue
+        if is_macho(entry):
+            machos.append(entry)
+    return sorted(machos)
+
+
+def strip_otool_path(value: str, field: str) -> str:
+    return value.removeprefix(field + " ").rsplit(" (", 1)[0]
+
+
+def has_forbidden_fragment(value: str) -> Optional[str]:
+    normalized = value.replace("//", "/")
+    for fragment in forbidden_path_fragments:
+        if fragment in normalized:
+            return fragment
+    if normalized.startswith("/opt/homebrew/"):
+        return "/opt/homebrew/"
+    if normalized.startswith("/usr/local/opt/"):
+        return "/usr/local/opt/"
+    return None
+
+
+def is_system_path(path: pathlib.Path) -> bool:
+    return str(path).startswith(allowed_system_prefixes)
+
+
+def is_in_root(path: pathlib.Path) -> bool:
+    resolved = path.resolve(strict=False)
+    return str(resolved) == str(root) or str(resolved).startswith(str(root) + os.sep)
+
+
+def is_within(path: pathlib.Path, base: pathlib.Path) -> bool:
+    resolved = path.resolve(strict=False)
+    base_resolved = base.resolve(strict=False)
+    return str(resolved) == str(base_resolved) or str(resolved).startswith(str(base_resolved) + os.sep)
+
+
+def product_roots() -> list[pathlib.Path]:
+    roots: list[pathlib.Path] = []
+    for candidate in [root / payload_rel, root / "Payload" / payload_rel]:
+        if candidate.exists():
+            roots.append(candidate)
+    if root.name == "Orchard" and root.parent.name == "Application Support" and root.parent.parent.name == "Library":
+        roots.append(root)
+    return roots
+
+
+orchard_product_roots = product_roots()
+
+
+def payload_candidates(install_relative: pathlib.Path) -> list[pathlib.Path]:
+    return [product_root / install_relative for product_root in orchard_product_roots]
+
+
+def map_install_prefix(path: pathlib.Path) -> Optional[pathlib.Path]:
+    try:
+        install_relative = path.relative_to(install_prefix)
+    except ValueError:
+        return None
+
+    if ".." in install_relative.parts:
+        return None
+
+    candidates = payload_candidates(install_relative)
+    for candidate in candidates:
+        if candidate.exists() and is_in_root(candidate):
+            return candidate
+    return candidates[0]
+
+
+def is_payload_path(path: pathlib.Path) -> bool:
+    if any(is_within(path, product_root) for product_root in orchard_product_roots):
+        return True
+    mapped = map_install_prefix(path) if path.is_absolute() else None
+    return mapped is not None and mapped.exists() and any(is_within(mapped, product_root) for product_root in orchard_product_roots)
+
+
+def allowed_existing_path(path: pathlib.Path) -> bool:
+    return is_system_path(path) or is_payload_path(path)
+
+
+def raw_absolute_rpath_allowed(token: str) -> bool:
+    if not token.startswith("/"):
+        return True
+    token_path = pathlib.Path(token)
+    return is_system_path(token_path) or map_install_prefix(token_path) is not None
+
+
 def expand_macho_path(
     token: str,
     macho: pathlib.Path,
-    executable_dir: pathlib.Path,
+    executable_dir: Optional[pathlib.Path],
     rpath: Optional[pathlib.Path] = None,
 ) -> Optional[pathlib.Path]:
     if token == "@loader_path":
@@ -85,6 +192,8 @@ def expand_macho_path(
     if token == "@executable_path":
         return executable_dir
     if token.startswith("@executable_path/"):
+        if executable_dir is None:
+            return None
         return executable_dir / token.removeprefix("@executable_path/")
     if token.startswith("@rpath/") and rpath is not None:
         return rpath / token.removeprefix("@rpath/")
@@ -93,54 +202,31 @@ def expand_macho_path(
     return None
 
 
-def strip_otool_path(value: str, field: str) -> str:
-    return value.removeprefix(field + " ").rsplit(" (", 1)[0]
+def normalize_expanded_path(path: pathlib.Path) -> pathlib.Path:
+    mapped = map_install_prefix(path) if path.is_absolute() else None
+    return (mapped if mapped is not None else path).resolve(strict=False)
 
 
-def is_system_path(path: pathlib.Path) -> bool:
-    return str(path).startswith(allowed_system_prefixes)
+def otool_sections(lines: list[str]) -> list[list[str]]:
+    sections: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        if ("(for architecture " in line or "(architecture " in line) and current:
+            sections.append(current)
+            current = []
+        current.append(line)
+    if current:
+        sections.append(current)
+    return sections
 
 
-def is_in_staging_root(path: pathlib.Path) -> bool:
-    return str(path).startswith(str(root) + os.sep)
-
-
-def map_install_prefix(path: pathlib.Path) -> Optional[pathlib.Path]:
-    try:
-        install_relative = path.relative_to(install_prefix)
-    except ValueError:
-        return None
-
-    candidates = [
-        root / payload_rel / install_relative,
-        root / "Payload" / payload_rel / install_relative,
-        root / install_relative,
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[0]
-
-
-def is_allowed_resolved_path(path: pathlib.Path) -> bool:
-    return is_system_path(path) or is_in_staging_root(path)
-
-
-def is_allowed_raw_absolute_dep(path: pathlib.Path) -> bool:
-    if is_system_path(path):
-        return True
-    mapped = map_install_prefix(path)
-    return mapped is not None and mapped.exists()
-
-
-def parse_macho_loads(macho: pathlib.Path, executable_dir: pathlib.Path) -> tuple[list[pathlib.Path], list[str]]:
-    rc, stdout, stderr = command_stdout(["otool", "-l", str(macho)])
+def parse_macho_loads(macho: pathlib.Path, executable_dir: Optional[pathlib.Path]) -> list[tuple[list[pathlib.Path], list[str]]]:
+    rc, stdout, stderr = command_stdout(["otool", "-arch", "all", "-l", str(macho)])
     if rc != 0:
         errors.append(f"otool -l failed: {rel(macho)}: {stderr.strip()}")
-        return [], []
+        return []
 
-    rpaths: list[pathlib.Path] = []
-    deps: list[str] = []
+    parsed: list[tuple[list[pathlib.Path], list[str]]] = []
     load_commands = {
         "LC_LOAD_DYLIB",
         "LC_LOAD_WEAK_DYLIB",
@@ -148,10 +234,13 @@ def parse_macho_loads(macho: pathlib.Path, executable_dir: pathlib.Path) -> tupl
         "LC_LOAD_UPWARD_DYLIB",
         "LC_LAZY_LOAD_DYLIB",
     }
-    lines = stdout.splitlines()
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped == "cmd LC_RPATH":
+    for lines in otool_sections(stdout.splitlines()):
+        rpaths: list[pathlib.Path] = []
+        deps: list[str] = []
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped != "cmd LC_RPATH":
+                continue
             for candidate in lines[index + 1:index + 6]:
                 candidate = candidate.strip()
                 if not candidate.startswith("path "):
@@ -161,32 +250,72 @@ def parse_macho_loads(macho: pathlib.Path, executable_dir: pathlib.Path) -> tupl
                 if expanded is None:
                     errors.append(f"unresolved LC_RPATH: {rel(macho)} -> {rpath_token}")
                     continue
-                mapped = map_install_prefix(expanded) if expanded.is_absolute() else None
-                expanded = (mapped if mapped is not None else expanded).resolve(strict=False)
-                if rpath_token in ("@loader_path", "@executable_path") or rpath_token.startswith(("@loader_path/", "@executable_path/")):
-                    allowed = is_allowed_resolved_path(expanded)
-                else:
-                    allowed = is_system_path(expanded) or (mapped is not None and mapped.exists())
-                if expanded.is_absolute() and not allowed:
-                    errors.append(f"outbound LC_RPATH: {rel(macho)} -> {expanded}")
+                forbidden = has_forbidden_fragment(rpath_token)
+                if forbidden is not None:
+                    errors.append(f"forbidden LC_RPATH: {rel(macho)} -> {rpath_token} ({forbidden})")
                     continue
-                rpaths.append(expanded)
-                break
-        elif stripped.startswith("cmd ") and stripped.split(" ", 1)[1] in load_commands:
-            for candidate in lines[index + 1:index + 8]:
-                candidate = candidate.strip()
-                if not candidate.startswith("name "):
+                if not raw_absolute_rpath_allowed(rpath_token):
+                    errors.append(f"outbound LC_RPATH: {rel(macho)} -> {rpath_token}")
                     continue
-                deps.append(strip_otool_path(candidate, "name"))
+                normalized = normalize_expanded_path(expanded)
+                if normalized.is_absolute() and not allowed_existing_path(normalized):
+                    errors.append(f"outbound LC_RPATH: {rel(macho)} -> {rpath_token} -> {normalized}")
+                    continue
+                rpaths.append(normalized)
                 break
-    return rpaths, deps
+        for index, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("cmd ") and stripped.split(" ", 1)[1] in load_commands:
+                for candidate in lines[index + 1:index + 8]:
+                    candidate = candidate.strip()
+                    if not candidate.startswith("name "):
+                        continue
+                    deps.append(strip_otool_path(candidate, "name"))
+                    break
+        parsed.append((rpaths, deps))
+    return parsed
 
 
-venvs = discover_venvs()
-if not venvs:
-    errors.append(f"no .venv directories found under {root}")
+def verify_dependency(macho: pathlib.Path, executable_dir: Optional[pathlib.Path], rpaths: list[pathlib.Path], dep: str) -> None:
+    forbidden = has_forbidden_fragment(dep)
+    if forbidden is not None:
+        errors.append(f"forbidden Mach-O dependency: {rel(macho)} -> {dep} ({forbidden})")
+        return
 
-for venv in venvs:
+    if dep.startswith(allowed_system_prefixes):
+        return
+
+    if dep.startswith(("@loader_path/", "@executable_path/")):
+        resolved = expand_macho_path(dep, macho, executable_dir)
+        resolved = normalize_expanded_path(resolved) if resolved is not None else None
+        if resolved is None or not resolved.exists():
+            errors.append(f"unresolved Mach-O dependency: {rel(macho)} -> {dep}")
+        elif not allowed_existing_path(resolved):
+            errors.append(f"outbound Mach-O dependency: {rel(macho)} -> {dep} -> {resolved}")
+        return
+
+    if dep.startswith("@rpath/"):
+        candidates = [expand_macho_path(dep, macho, executable_dir, rpath) for rpath in rpaths]
+        resolved_candidates = [normalize_expanded_path(candidate) for candidate in candidates if candidate is not None]
+        if not any(candidate.exists() and allowed_existing_path(candidate) for candidate in resolved_candidates):
+            detail = ", ".join(str(candidate) for candidate in resolved_candidates) or "no LC_RPATH"
+            errors.append(f"unresolved @rpath dependency: {rel(macho)} -> {dep} ({detail})")
+        return
+
+    if dep.startswith("/"):
+        dep_path = pathlib.Path(dep)
+        mapped = map_install_prefix(dep_path)
+        if is_system_path(dep_path):
+            return
+        if mapped is not None and mapped.exists() and allowed_existing_path(mapped):
+            return
+        errors.append(f"outbound Mach-O dependency: {rel(macho)} -> {dep}")
+        return
+
+    errors.append(f"unresolved Mach-O dependency: {rel(macho)} -> {dep}")
+
+
+def verify_venv(venv: pathlib.Path) -> None:
     venv_real = venv.resolve(strict=False)
     python = venv / "bin" / "python"
 
@@ -221,49 +350,21 @@ for venv in venvs:
             continue
         errors.append(f"outbound symlink: {rel(entry)} -> {resolved_s}")
 
-    for script in (venv / "bin").glob("*"):
-        if script.is_symlink() or not script.is_file() or is_macho(script):
-            continue
-        try:
-            first_line = script.read_text(errors="replace").splitlines()[0]
-        except IndexError:
-            continue
-        if not first_line.startswith("#!"):
-            continue
-        for fragment in forbidden_cfg_fragments:
-            if fragment in first_line:
-                errors.append(f"script shebang has build-host path fragment {fragment!r}: {rel(script)}")
-                break
-
-    executable_dir = python.parent
-
-    for entry in venv.rglob("*"):
-        if not entry.is_file() or entry.is_symlink():
-            continue
-        if not is_macho(entry):
-            continue
-
-        rpaths, deps = parse_macho_loads(entry, executable_dir)
-        for dep in deps:
-            if dep.startswith(("/usr/lib/", "/System/Library/")):
+    bin_dir = venv / "bin"
+    if bin_dir.is_dir():
+        for script in bin_dir.glob("*"):
+            if script.is_symlink() or not script.is_file() or is_macho(script):
                 continue
-            if dep.startswith(("@loader_path/", "@executable_path/")):
-                resolved = expand_macho_path(dep, entry, executable_dir)
-                resolved = resolved.resolve(strict=False) if resolved is not None else None
-                if resolved is None or not resolved.exists():
-                    errors.append(f"unresolved Mach-O dependency: {rel(entry)} -> {dep}")
-                elif not is_allowed_resolved_path(resolved):
-                    errors.append(f"outbound Mach-O dependency: {rel(entry)} -> {dep} -> {resolved}")
+            try:
+                first_line = script.read_text(errors="replace").splitlines()[0]
+            except IndexError:
                 continue
-            if dep.startswith("@rpath/"):
-                candidates = [expand_macho_path(dep, entry, executable_dir, rpath) for rpath in rpaths]
-                resolved_candidates = [candidate.resolve(strict=False) for candidate in candidates if candidate is not None]
-                if not any(candidate.exists() and is_allowed_resolved_path(candidate) for candidate in resolved_candidates):
-                    detail = ", ".join(str(candidate) for candidate in resolved_candidates) or "no LC_RPATH"
-                    errors.append(f"unresolved @rpath dependency: {rel(entry)} -> {dep} ({detail})")
+            if not first_line.startswith("#!"):
                 continue
-            if dep.startswith("/") and not is_allowed_raw_absolute_dep(pathlib.Path(dep)):
-                errors.append(f"outbound Mach-O dependency: {rel(entry)} -> {dep}")
+            for fragment in forbidden_cfg_fragments:
+                if fragment in first_line:
+                    errors.append(f"script shebang has build-host path fragment {fragment!r}: {rel(script)}")
+                    break
 
     if run_smoke and python.exists() and not python.is_symlink():
         smoke = subprocess.run(
@@ -277,10 +378,33 @@ for venv in venvs:
             detail = (smoke.stderr or smoke.stdout).strip()
             errors.append(f"sanitized interpreter smoke failed: {rel(python)}: {detail}")
 
+
+venv_roots = discover_venvs()
+for venv in venv_roots:
+    verify_venv(venv)
+
+
+def executable_dir_for(macho: pathlib.Path) -> Optional[pathlib.Path]:
+    for venv in venv_roots:
+        try:
+            macho.relative_to(venv)
+        except ValueError:
+            continue
+        return venv / "bin"
+    return None
+
+
+machos = discover_machos()
+for macho in machos:
+    executable_dir = executable_dir_for(macho)
+    for rpaths, deps in parse_macho_loads(macho, executable_dir):
+        for dep in deps:
+            verify_dependency(macho, executable_dir, rpaths, dep)
+
 if errors:
     print("\n".join(errors))
     sys.exit(1)
 
-for venv in venvs:
-    print(f"ok\t{rel(venv)}")
+for macho in machos:
+    print(f"ok\t{rel(macho)}")
 PY

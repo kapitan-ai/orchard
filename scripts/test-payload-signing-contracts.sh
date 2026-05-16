@@ -82,6 +82,16 @@ SH
 
     cat > "$tools/otool" <<'SH'
 #!/bin/sh
+if [ -n "${OTOOL_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$OTOOL_LOG"
+fi
+target=""
+for arg in "$@"; do
+  target="$arg"
+done
+case "$target" in
+  *libcrypto*.dylib|*libssl*.dylib) exit 0 ;;
+esac
 case "${OTOOL_CASE:-ok}" in
   outbound_dep)
     cat <<'OUT'
@@ -91,12 +101,134 @@ Load command 0
          name /opt/outside/libbad.dylib (offset 24)
 OUT
     ;;
+  homebrew_dep)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 104
+         name /opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib (offset 24)
+OUT
+    ;;
+  cellar_dep)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 104
+         name /opt/homebrew/Cellar/openssl@3/3.3.0/lib/libssl.3.dylib (offset 24)
+OUT
+    ;;
+  buildhost_dep)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 104
+         name /Users/buildhost/orchard/tmp/libcrypto.3.dylib (offset 24)
+OUT
+    ;;
+  buildhost_cellar_dep)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 104
+         name /Users/buildhost/Cellar/openssl@3/3.3.0/lib/libcrypto.3.dylib (offset 24)
+OUT
+    ;;
+  install_prefix_escape_dep)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 104
+         name /Library/Application Support/Orchard/../Outside/libbad.dylib (offset 24)
+OUT
+    ;;
   install_prefix_dep)
     cat <<'OUT'
 Load command 0
           cmd LC_LOAD_DYLIB
       cmdsize 104
          name /Library/Application Support/Orchard/native/foo/.venv/lib/native.so (offset 24)
+OUT
+    ;;
+  in_payload_dep)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 104
+         name /Library/Application Support/Orchard/share/lib/libcrypto.3.dylib (offset 24)
+OUT
+    ;;
+  rpath_payload)
+    cat <<'OUT'
+Load command 0
+          cmd LC_RPATH
+      cmdsize 48
+         path @loader_path/../lib (offset 12)
+Load command 1
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @rpath/libcrypto.3.dylib (offset 24)
+OUT
+    ;;
+  executable_path_venv)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @executable_path/python (offset 24)
+OUT
+    ;;
+  executable_path_nonvenv)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @executable_path/libhelper.dylib (offset 24)
+OUT
+    ;;
+  loader_path_escape)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @loader_path/../../../outside/libbad.dylib (offset 24)
+OUT
+    ;;
+  rpath_unresolved)
+    cat <<'OUT'
+Load command 0
+          cmd LC_RPATH
+      cmdsize 48
+         path @loader_path/../missing (offset 12)
+Load command 1
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @rpath/libmissing.dylib (offset 24)
+OUT
+    ;;
+  rpath_staging_absolute)
+    cat <<OUT
+Load command 0
+          cmd LC_RPATH
+      cmdsize 48
+         path ${OTOOL_STAGING_RPATH:?} (offset 12)
+Load command 1
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @rpath/libcrypto.3.dylib (offset 24)
+OUT
+    ;;
+  universal_cross_slice_rpath)
+    cat <<'OUT'
+/unused (for architecture x86_64):
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @rpath/libcrypto.3.dylib (offset 24)
+/unused (for architecture arm64):
+Load command 0
+          cmd LC_RPATH
+      cmdsize 48
+         path @loader_path/../lib (offset 12)
 OUT
     ;;
   *)
@@ -375,8 +507,30 @@ SH
 
     cat > "$tools/otool" <<'SH'
 #!/bin/sh
-cat <<'OUT'
+if [ -n "${OTOOL_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$OTOOL_LOG"
+fi
+target=""
+for arg in "$@"; do
+  target="$arg"
+done
+case "$target" in
+  *libcrypto*.dylib|*libssl*.dylib) exit 0 ;;
+esac
+case "${OTOOL_CASE:-ok}" in
+  homebrew_dep)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 104
+         name /opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib (offset 24)
 OUT
+    ;;
+  *)
+    cat <<'OUT'
+OUT
+    ;;
+esac
 SH
 
     cat > "$tools/xcrun" <<'SH'
@@ -692,8 +846,30 @@ SH
 
     cat > "$tools/otool" <<'SH'
 #!/bin/sh
-cat <<'OUT'
+if [ -n "${OTOOL_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$OTOOL_LOG"
+fi
+target=""
+for arg in "$@"; do
+  target="$arg"
+done
+case "$target" in
+  *libcrypto*.dylib|*libssl*.dylib) exit 0 ;;
+esac
+case "${OTOOL_CASE:-ok}" in
+  homebrew_dep)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 104
+         name /opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib (offset 24)
 OUT
+    ;;
+  *)
+    cat <<'OUT'
+OUT
+    ;;
+esac
 SH
 
     cat > "$tools/codesign" <<'SH'
@@ -901,6 +1077,254 @@ make_root "$root"
 venv="$(make_valid_venv "$root")"
 : > "$venv/lib/native.so"
 assert_fails_with 'outbound Mach-O dependency' "$case_dir/otool.out" env OTOOL_CASE=outbound_dep PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+
+root="$case_dir/executable-path/root"
+make_root "$root"
+venv="$(make_valid_venv "$root")"
+: > "$venv/lib/native.so"
+OTOOL_CASE=executable_path_venv run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root" >"$case_dir/executable-path.out" 2>&1
+assert_grep $'native.so	ok	ok' "$case_dir/executable-path.out"
+assert_no_grep $'	fail	' "$case_dir/executable-path.out"
+
+# RED/GREEN: verifier enforces whole-payload Mach-O closure beyond Python venvs.
+case_dir="$TMP_ROOT/verify-whole-payload-closure"
+tools="$case_dir/tools"
+mkdir -p "$case_dir"
+make_fake_tools "$tools"
+
+root="$case_dir/homebrew/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+assert_fails_with 'forbidden Mach-O dependency' "$case_dir/homebrew.out" env OTOOL_CASE=homebrew_dep PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+
+root="$case_dir/cellar/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+assert_fails_with 'forbidden Mach-O dependency' "$case_dir/cellar.out" env OTOOL_CASE=cellar_dep PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+
+root="$case_dir/buildhost/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+assert_fails_with 'forbidden Mach-O dependency' "$case_dir/buildhost.out" env OTOOL_CASE=buildhost_dep PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+
+root="$case_dir/install-prefix-escape/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+assert_fails_with 'outbound Mach-O dependency' "$case_dir/install-prefix-escape.out" env OTOOL_CASE=install_prefix_escape_dep PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+
+root="$case_dir/executable-path-nonvenv/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+: > "$root/Library/Application Support/Orchard/share/bin/libhelper.dylib"
+assert_fails_with 'unresolved Mach-O dependency' "$case_dir/executable-path-nonvenv.out" env OTOOL_CASE=executable_path_nonvenv PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+
+root="$case_dir/loader-path-escape/root"
+make_root "$root"
+mkdir -p "$root/Library/Application Support/outside"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+: > "$root/Library/Application Support/outside/libbad.dylib"
+assert_fails_with 'outbound Mach-O dependency' "$case_dir/loader-path-escape.out" env OTOOL_CASE=loader_path_escape PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+
+root="$case_dir/loader-path-escape-expanded/root"
+make_root "$root/Payload"
+mkdir -p "$root/Payload/Library/Application Support/outside"
+: > "$root/Payload/Library/Application Support/Orchard/share/bin/orchardctl"
+: > "$root/Payload/Library/Application Support/outside/libbad.dylib"
+assert_fails_with 'outbound Mach-O dependency' "$case_dir/loader-path-escape-expanded.out" env OTOOL_CASE=loader_path_escape PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+
+root="$case_dir/rpath-unresolved/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+assert_fails_with 'unresolved @rpath dependency' "$case_dir/rpath-unresolved.out" env OTOOL_CASE=rpath_unresolved PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+
+root="$case_dir/rpath-payload/root"
+make_root "$root"
+mkdir -p "$root/Library/Application Support/Orchard/share/lib"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+: > "$root/Library/Application Support/Orchard/share/lib/libcrypto.3.dylib"
+OTOOL_CASE=rpath_payload run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root" >"$case_dir/rpath-payload.out" 2>&1
+assert_grep $'share/bin/orchardctl	ok	ok' "$case_dir/rpath-payload.out"
+assert_no_grep $'	fail	' "$case_dir/rpath-payload.out"
+
+root="$case_dir/universal-cross-slice/root"
+make_root "$root"
+mkdir -p "$root/Library/Application Support/Orchard/share/lib"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+: > "$root/Library/Application Support/Orchard/share/lib/libcrypto.3.dylib"
+assert_fails_with 'unresolved @rpath dependency' "$case_dir/universal-cross-slice.out" env OTOOL_CASE=universal_cross_slice_rpath OTOOL_LOG="$case_dir/universal-otool.log" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+assert_grep '-arch all -l' "$case_dir/universal-otool.log"
+
+root="$case_dir/rpath-staging-absolute/root"
+make_root "$root"
+mkdir -p "$root/Library/Application Support/Orchard/support/openssl/lib"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+: > "$root/Library/Application Support/Orchard/support/openssl/lib/libcrypto.3.dylib"
+assert_fails_with 'LC_RPATH' "$case_dir/rpath-staging-absolute.out" env OTOOL_CASE=rpath_staging_absolute OTOOL_STAGING_RPATH="$root/Library/Application Support/Orchard/support/openssl/lib" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+
+root="$case_dir/install-prefix-payload/root"
+make_root "$root"
+mkdir -p "$root/Library/Application Support/Orchard/share/lib"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+: > "$root/Library/Application Support/Orchard/share/lib/libcrypto.3.dylib"
+OTOOL_CASE=in_payload_dep run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root" >"$case_dir/install-prefix-payload.out" 2>&1
+assert_grep $'share/bin/orchardctl	ok	ok' "$case_dir/install-prefix-payload.out"
+assert_no_grep $'	fail	' "$case_dir/install-prefix-payload.out"
+
+# RED/GREEN: OTP OpenSSL remediation bundles dylibs and rewrites load commands to payload-relative refs.
+case_dir="$TMP_ROOT/remediate-otp-openssl"
+tools="$case_dir/tools"
+root="$case_dir/root/Library/Application Support/Orchard"
+fake_cellar="$case_dir/fake/Cellar/openssl@3/3.3.0/lib"
+install_name_log="$case_dir/install-name-tool.log"
+provenance="$case_dir/openssl-provenance.txt"
+mkdir -p "$tools" "$root/releases/orchard_controller/lib/crypto-5.5.3/priv/lib" "$fake_cellar"
+: > "$root/releases/orchard_controller/lib/crypto-5.5.3/priv/lib/crypto.so"
+printf 'fake libcrypto\n' > "$fake_cellar/libcrypto.3.dylib"
+cat > "$tools/file" <<'SH'
+#!/bin/sh
+echo application/x-mach-binary
+SH
+cat > "$tools/otool" <<'SH'
+#!/bin/sh
+if [ -n "${OTOOL_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$OTOOL_LOG"
+fi
+target=""
+for arg in "$@"; do
+  target="$arg"
+done
+case "$target" in
+  *libcrypto*.dylib)
+    cat <<OUT
+Load command 0
+          cmd LC_ID_DYLIB
+      cmdsize 104
+         name ${ORCHARD_FAKE_CELLAR_LIBCRYPTO:-/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib} (offset 24)
+OUT
+    exit 0
+    ;;
+esac
+case "${OTOOL_CASE:-ok}" in
+  rpath_homebrew_openssl)
+    cat <<OUT
+Load command 0
+          cmd LC_RPATH
+      cmdsize 48
+         path ${ORCHARD_FAKE_CELLAR_DIR:?} (offset 12)
+Load command 1
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @rpath/libcrypto.3.dylib (offset 24)
+OUT
+    ;;
+  rpath_homebrew_load_first)
+    cat <<OUT
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @rpath/libcrypto.3.dylib (offset 24)
+Load command 1
+          cmd LC_RPATH
+      cmdsize 48
+         path ${ORCHARD_FAKE_CELLAR_DIR:?} (offset 12)
+OUT
+    ;;
+  absolute_homebrew_with_rpath)
+    cat <<OUT
+Load command 0
+          cmd LC_RPATH
+      cmdsize 48
+         path ${ORCHARD_FAKE_CELLAR_DIR:?} (offset 12)
+Load command 1
+          cmd LC_LOAD_DYLIB
+      cmdsize 104
+         name ${ORCHARD_FAKE_CELLAR_LIBCRYPTO:?} (offset 24)
+OUT
+    ;;
+  buildhost_cellar_dep)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 104
+         name /Users/buildhost/Cellar/openssl@3/3.3.0/lib/libcrypto.3.dylib (offset 24)
+OUT
+    ;;
+  *)
+    if [ -n "${ORCHARD_FAKE_CELLAR_LIBCRYPTO:-}" ]; then
+      cat <<OUT
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 104
+         name ${ORCHARD_FAKE_CELLAR_LIBCRYPTO} (offset 24)
+OUT
+    fi
+    ;;
+esac
+SH
+cat > "$tools/install_name_tool" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "${INSTALL_NAME_TOOL_LOG:?}"
+if [ "${1:-}" = "-change" ]; then
+  last=""
+  for arg in "$@"; do
+    last="$arg"
+  done
+  case "$last" in
+    *support/openssl/lib/libcrypto.3.dylib)
+      echo "unexpected self-ID rewrite with -change: $*" >&2
+      exit 1
+      ;;
+  esac
+fi
+exit 0
+SH
+chmod +x "$tools/file" "$tools/otool" "$tools/install_name_tool"
+ORCHARD_ALLOW_TEST_HOMEBREW_PREFIX=1 ORCHARD_TEST_HOMEBREW_PREFIX="$case_dir/fake" ORCHARD_FAKE_CELLAR_LIBCRYPTO="$fake_cellar/libcrypto.3.dylib" INSTALL_NAME_TOOL_LOG="$install_name_log" PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/remediate-otp-openssl-closure.sh" --provenance-output "$provenance" "$case_dir/root/Library/Application Support/Orchard" >"$case_dir/remediate.out" 2>&1
+test -f "$root/support/openssl/lib/libcrypto.3.dylib"
+assert_grep "bundled 1 OpenSSL dylib" "$case_dir/remediate.out"
+assert_grep "-change $fake_cellar/libcrypto.3.dylib @loader_path/" "$install_name_log"
+assert_grep "support/openssl/lib/libcrypto.3.dylib" "$install_name_log"
+assert_grep "source=$fake_cellar/libcrypto.3.dylib" "$provenance"
+assert_grep "bundled=support/openssl/lib/libcrypto.3.dylib" "$provenance"
+
+rpath_root="$case_dir/rpath-root/Library/Application Support/Orchard"
+rpath_log="$case_dir/rpath-install-name-tool.log"
+mkdir -p "$rpath_root/releases/orchard_controller/lib/crypto-5.5.3/priv/lib"
+: > "$rpath_root/releases/orchard_controller/lib/crypto-5.5.3/priv/lib/crypto.so"
+ORCHARD_ALLOW_TEST_HOMEBREW_PREFIX=1 ORCHARD_TEST_HOMEBREW_PREFIX="$case_dir/fake" ORCHARD_FAKE_CELLAR_DIR="$fake_cellar" ORCHARD_FAKE_CELLAR_LIBCRYPTO="$fake_cellar/libcrypto.3.dylib" INSTALL_NAME_TOOL_LOG="$rpath_log" OTOOL_CASE=rpath_homebrew_openssl OTOOL_LOG="$case_dir/remediate-otool.log" PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/remediate-otp-openssl-closure.sh" --provenance-output "$case_dir/rpath-provenance.txt" "$rpath_root" >"$case_dir/rpath-remediate.out" 2>&1
+assert_grep '-arch all -l' "$case_dir/remediate-otool.log"
+assert_grep "-change @rpath/libcrypto.3.dylib @loader_path/" "$rpath_log"
+assert_grep "-delete_rpath $fake_cellar" "$rpath_log"
+assert_grep "source=$fake_cellar/libcrypto.3.dylib" "$case_dir/rpath-provenance.txt"
+
+rpath_load_first_log="$case_dir/rpath-load-first-install-name-tool.log"
+ORCHARD_ALLOW_TEST_HOMEBREW_PREFIX=1 ORCHARD_TEST_HOMEBREW_PREFIX="$case_dir/fake" ORCHARD_FAKE_CELLAR_DIR="$fake_cellar" ORCHARD_FAKE_CELLAR_LIBCRYPTO="$fake_cellar/libcrypto.3.dylib" INSTALL_NAME_TOOL_LOG="$rpath_load_first_log" OTOOL_CASE=rpath_homebrew_load_first PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/remediate-otp-openssl-closure.sh" --provenance-output "$case_dir/rpath-load-first-provenance.txt" "$rpath_root" >"$case_dir/rpath-load-first-remediate.out" 2>&1
+assert_grep "-change @rpath/libcrypto.3.dylib @loader_path/" "$rpath_load_first_log"
+assert_grep "-delete_rpath $fake_cellar" "$rpath_load_first_log"
+
+absolute_rpath_log="$case_dir/absolute-rpath-install-name-tool.log"
+ORCHARD_ALLOW_TEST_HOMEBREW_PREFIX=1 ORCHARD_TEST_HOMEBREW_PREFIX="$case_dir/fake" ORCHARD_FAKE_CELLAR_DIR="$fake_cellar" ORCHARD_FAKE_CELLAR_LIBCRYPTO="$fake_cellar/libcrypto.3.dylib" INSTALL_NAME_TOOL_LOG="$absolute_rpath_log" OTOOL_CASE=absolute_homebrew_with_rpath PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/remediate-otp-openssl-closure.sh" --provenance-output "$case_dir/absolute-rpath-provenance.txt" "$rpath_root" >"$case_dir/absolute-rpath-remediate.out" 2>&1
+assert_grep "-change $fake_cellar/libcrypto.3.dylib @loader_path/" "$absolute_rpath_log"
+assert_grep "-delete_rpath $fake_cellar" "$absolute_rpath_log"
+
+assert_fails_with 'must be outside the staging root' "$case_dir/provenance-in-staging.out" env ORCHARD_ALLOW_TEST_HOMEBREW_PREFIX=1 ORCHARD_TEST_HOMEBREW_PREFIX="$case_dir/fake" ORCHARD_FAKE_CELLAR_LIBCRYPTO="$fake_cellar/libcrypto.3.dylib" INSTALL_NAME_TOOL_LOG="$install_name_log" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/remediate-otp-openssl-closure.sh" --provenance-output "$root/provenance.txt" "$case_dir/root/Library/Application Support/Orchard"
+
+buildhost_cellar_root="$case_dir/buildhost-cellar/Library/Application Support/Orchard"
+mkdir -p "$buildhost_cellar_root/releases/orchard_controller/lib/crypto-5.5.3/priv/lib"
+: > "$buildhost_cellar_root/releases/orchard_controller/lib/crypto-5.5.3/priv/lib/crypto.so"
+OTOOL_CASE=buildhost_cellar_dep PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/remediate-otp-openssl-closure.sh" --provenance-output "$case_dir/buildhost-cellar-provenance.txt" "$buildhost_cellar_root" >"$case_dir/buildhost-cellar-remediate.out" 2>&1
+assert_grep 'no Homebrew OpenSSL load commands found' "$case_dir/buildhost-cellar-remediate.out"
+assert_no_grep 'source=/Users/buildhost/Cellar' "$case_dir/buildhost-cellar-provenance.txt"
+
+stale_provenance="$case_dir/stale-provenance.txt"
+printf 'source=/stale/libcrypto.3.dylib\n' > "$stale_provenance"
+PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/remediate-otp-openssl-closure.sh" --provenance-output "$stale_provenance" "$case_dir/root/Library/Application Support/Orchard" >"$case_dir/noop-provenance.out" 2>&1
+assert_grep 'result=no_homebrew_openssl_load_commands_found' "$stale_provenance"
+assert_no_grep 'source=/stale/libcrypto.3.dylib' "$stale_provenance"
 
 # RED/GREEN: build-pkg stage-only preserves staging, prints one machine-readable path, and skips pkgbuild.
 case_dir="$TMP_ROOT/build-stage-only"
@@ -1120,6 +1544,12 @@ test ! -e "$productsign_log"
 assert_fails_with 'Refusing to envelope-sign a PKG with unsigned payload Mach-O binaries' "$case_dir/unsigned-payload.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
 test ! -e "$productsign_log"
 
+tools="$case_dir/tools-closure"
+closure_productsign_log="$case_dir/productsign-closure.log"
+closure_output_pkg="$case_dir/Orchard-closure-signed.pkg"
+write_sign_pkg_fakes "$tools" ok "$closure_productsign_log"
+assert_fails_with 'forbidden Mach-O dependency' "$case_dir/closure.out" env OTOOL_CASE=homebrew_dep PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$closure_output_pkg"
+test ! -e "$closure_productsign_log"
 
 # RED/GREEN: sign-pkg notary auth matrix and bounded expansion diagnostics.
 case_dir="$TMP_ROOT/sign-pkg-notary-auth"
