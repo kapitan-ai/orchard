@@ -176,6 +176,9 @@ defmodule OrchardCLI.Commands.EnvTest do
       assert controller_content =~ "SECRET_KEY_BASE=\"#{expected_secret_key_base()}\""
       refute controller_content =~ ~r/^# DATABASE_URL=/m
       refute controller_content =~ ~r/^# SECRET_KEY_BASE=/m
+      assert controller_content =~ "ORCHARD_TRANSPORT_MODE=\"plain_http_localhost\""
+      assert controller_content =~ "ORCHARD_TRUSTED_PROXIES=\"127.0.0.1/32,::1/128\""
+      assert controller_content =~ "ORCHARD_TLS_CERTFILE=\"/path/to/server.crt\""
       assert controller_content =~ "ORCHARD_RUNTIME_CLIENT_TARGETS"
       assert controller_content =~ "ORCHARD_PUBLIC_HOST=\"replace-with-lan-or-tailscale-host\""
       assert controller_content =~ "ORCHARD_TOKENIZER_EXECUTABLE="

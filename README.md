@@ -63,12 +63,19 @@ Clients (SDKs / curl / apps)
   (`ORCHARD_TRANSPORT_MODE=plain_http_localhost`) until an operator selects
   `direct_https` or `reverse_proxy`; legacy `ORCHARD_TLS_*` variables are
   one-release compatibility shims
+- **Provider-neutral TLS:** the PKG installer does not generate or procure
+  production certificates by default. Operators can use reverse-proxy TLS
+  termination, direct HTTPS with operator cert/key paths, proprietary/paid CAs,
+  internal PKI or air-gapped HTTPS, or explicit local-CA helper output from
+  `orchardctl tls init` for dev-lab bootstrap.
+- **Forwarded headers:** reverse-proxy mode trusts `x-forwarded-*` only from
+  loopback by default; non-loopback proxy binds require `ORCHARD_TRUSTED_PROXIES`.
 - **CORS:** explicit origin allowlist via `ORCHARD_CORS_ORIGINS` (empty =
   disabled)
 
 See [docs/m1-local-dev.md](docs/m1-local-dev.md) for dev setup and
 [packaging/pkg/README.md](packaging/pkg/README.md) for operator transport
-configuration.
+configuration, including nginx/Caddy/Traefik snippets.
 
 ### Building releases
 

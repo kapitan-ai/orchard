@@ -527,13 +527,31 @@ The packaged controller is certificate-provider-neutral. The PKG does not genera
 
 ### Mode resolution
 
-| Mode | Condition | Listener |
+| Runtime mode | Condition | Listener |
 |------|-----------|----------|
 | `plain_http_localhost` | Default when `ORCHARD_TRANSPORT_MODE` is unset and no legacy TLS env selects HTTPS; also explicit `ORCHARD_TRANSPORT_MODE=plain_http_localhost` | HTTP on `127.0.0.1`:`PORT` (degraded local/emergency mode) |
 | `direct_https` | `ORCHARD_TRANSPORT_MODE=direct_https`; uses operator-provided `ORCHARD_TLS_CERTFILE`/`ORCHARD_TLS_KEYFILE` or explicit local-CA helper output | HTTPS on `ORCHARD_API_BIND_IP`:`ORCHARD_API_HTTPS_PORT` |
-| `reverse_proxy` | `ORCHARD_TRANSPORT_MODE=reverse_proxy`; public HTTPS is terminated by an operator-managed proxy | local/private HTTP backend on `PORT` |
+| `reverse_proxy` | `ORCHARD_TRANSPORT_MODE=reverse_proxy`; public HTTPS is terminated by an operator-managed proxy | local/private HTTP backend on `ORCHARD_API_BIND_IP`:`PORT`, default `127.0.0.1:4000` |
 
 Legacy `ORCHARD_TLS_DISABLED`, `ORCHARD_TLS_CERTFILE`, `ORCHARD_TLS_KEYFILE`, and `ORCHARD_TLS_CACERTFILE` are one-release compatibility shims. `ORCHARD_TRANSPORT_MODE` is authoritative when set; inconsistent legacy values emit warnings and are ignored unless structurally invalid.
+
+### Operator deployment modes
+
+Orchard is certificate-provider-neutral. Operators choose how public HTTPS is
+terminated; Orchard maps those choices to three runtime modes:
+
+| Operator deployment mode | Runtime mode | Certificate source |
+|--------------------------|--------------|--------------------|
+| Reverse proxy TLS termination | `reverse_proxy` | Proxy-owned; Orchard reports `unknown` |
+| Direct HTTPS with operator cert/key | `direct_https` | `operator_provided` |
+| Proprietary or paid CA | `direct_https` | `operator_provided` |
+| Internal PKI / air-gapped HTTPS | `direct_https` | `operator_provided` |
+| Explicit local CA helper output from `orchardctl tls init` | `direct_https` | `generated_local_ca` |
+
+The PKG installer does **not** procure, generate, or trust production TLS
+certificates by default. `orchardctl tls init` remains available as an explicit
+local CA / dev-lab bootstrap helper only; it is not a production certificate
+provider.
 
 **Invalid configurations that prevent startup:**
 
@@ -558,10 +576,12 @@ All variables are set via `controller.env` or the process environment:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORCHARD_TRANSPORT_MODE` | `plain_http_localhost` | Primary transport mode: `plain_http_localhost`, `direct_https`, or `reverse_proxy` |
-| `PORT` | `4000` | HTTP backend port for `plain_http_localhost` and `reverse_proxy` |
+| `PORT` | `4000` | HTTP listen port for `plain_http_localhost`; HTTP backend port for `reverse_proxy` |
 | `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port for `direct_https` |
-| `ORCHARD_API_BIND_IP` | `0.0.0.0` | HTTPS bind IP address for `direct_https` |
+| `ORCHARD_API_BIND_IP` | `0.0.0.0` for `direct_https`; `127.0.0.1` for `reverse_proxy`; ignored for `plain_http_localhost` | Bind IP for the active listener. Non-loopback `reverse_proxy` binds require `ORCHARD_TRUSTED_PROXIES`. |
 | `ORCHARD_PUBLIC_HOST` | `localhost` | Browser-visible hostname or IP. **Required when accessing the console from a non-`localhost` host** (e.g. Tailscale IP, domain name). Must match the browser origin exactly. |
+| `ORCHARD_PUBLIC_PORT` | `443` | Browser-visible HTTPS port for `reverse_proxy` display URLs and origin checks |
+| `ORCHARD_TRUSTED_PROXIES` | loopback only (`127.0.0.1/32`, `::1/128`) | Comma-separated CIDRs allowed to supply `x-forwarded-*` headers in `reverse_proxy` mode |
 | `ORCHARD_TLS_CERTFILE` | _(unset)_ | Legacy shim / `direct_https` operator certificate path |
 | `ORCHARD_TLS_KEYFILE` | _(unset)_ | Legacy shim / `direct_https` operator private key path |
 | `ORCHARD_TLS_CACERTFILE` | _(unset)_ | Optional CA certificate path for generated local CA or operator validation |
@@ -585,10 +605,97 @@ Default TLS file paths are relative to `ORCHARD_SUPPORT_ROOT` (default
 > **Variable roles:**
 > - `ORCHARD_PUBLIC_HOST` — the browser-visible hostname (used for URL
 >   generation and LiveView websocket origin checks)
-> - `ORCHARD_API_BIND_IP` — the network interface the server listens on
->   (default `0.0.0.0` = all interfaces)
-> - `ORCHARD_API_HTTPS_PORT` — the HTTPS port (default `8443`)
-> - `PORT` — HTTP port, only used in emergency TLS-disabled mode
+> - `ORCHARD_API_BIND_IP` — the network interface the active listener binds
+>   (`direct_https` default `0.0.0.0`; `reverse_proxy` default `127.0.0.1`)
+> - `ORCHARD_API_HTTPS_PORT` — the direct-HTTPS port (default `8443`)
+> - `ORCHARD_PUBLIC_PORT` — the reverse-proxy public HTTPS port (default `443`)
+> - `PORT` — HTTP port for `plain_http_localhost` or the `reverse_proxy` backend
+> - `ORCHARD_TRUSTED_PROXIES` — trusted proxy CIDRs for non-loopback
+>   reverse-proxy deployments
+
+## Reverse Proxy TLS Termination
+
+Use `reverse_proxy` when nginx, Caddy, Traefik, a load balancer, or an MDM-managed edge proxy owns public HTTPS. Orchard listens on HTTP behind that proxy and trusts forwarded headers only from configured proxy CIDRs.
+
+Minimal `controller.env` for a loopback proxy on the same Mac:
+
+```bash
+ORCHARD_TRANSPORT_MODE=reverse_proxy
+ORCHARD_API_BIND_IP=127.0.0.1
+PORT=4000
+ORCHARD_PUBLIC_HOST=orchard.example.com
+ORCHARD_PUBLIC_PORT=443
+```
+
+If the proxy reaches Orchard over a non-loopback network interface, set both the backend bind and trusted proxy CIDRs:
+
+```bash
+ORCHARD_TRANSPORT_MODE=reverse_proxy
+ORCHARD_API_BIND_IP=10.0.0.10
+PORT=4000
+ORCHARD_PUBLIC_HOST=orchard.example.com
+ORCHARD_TRUSTED_PROXIES=10.0.0.20/32
+```
+
+Without `ORCHARD_TRUSTED_PROXIES`, non-loopback reverse-proxy backend binds fail closed. Spoofed `x-forwarded-*` headers from untrusted clients are stripped and do not affect scheme, host, port, or client IP handling.
+
+### nginx example
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name orchard.example.com;
+
+    ssl_certificate     /etc/ssl/orchard/fullchain.pem;
+    ssl_certificate_key /etc/ssl/orchard/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:4000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-Port 443;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+### Caddy example
+
+```caddyfile
+orchard.example.com {
+    reverse_proxy 127.0.0.1:4000 {
+        header_up Host {host}
+        header_up X-Forwarded-Host {host}
+        header_up X-Forwarded-Proto https
+        header_up X-Forwarded-Port 443
+    }
+}
+```
+
+Caddy can manage public ACME certificates or use operator-provided certificates with `tls /path/to/fullchain.pem /path/to/privkey.pem`.
+
+### Traefik example
+
+```yaml
+http:
+  routers:
+    orchard:
+      rule: Host(`orchard.example.com`)
+      entryPoints: [websecure]
+      tls: {}
+      service: orchard
+  services:
+    orchard:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:4000
+```
+
+Configure Traefik certificate resolvers, file certificates, or internal PKI outside Orchard. Orchard does not inspect or publish proxy-owned certificate material.
 
 ## CORS Allowlist Configuration
 
@@ -819,11 +926,11 @@ The `orchard-controller` wrapper validates TLS file presence **before**
 exec'ing the BEAM release. This catches file drift (e.g., deleted certs)
 during launchd restarts without waiting for the BEAM boot to fail.
 
-- Managed mode: requires `controller.crt`, `controller.key`; warns if
-  `ca.crt` is missing
-- External mode: requires configured cert/key files; requires CA cert if
-  `ORCHARD_TLS_CACERTFILE` is set
-- Disabled mode: skips all checks
+- `direct_https` with local-CA helper output: requires `controller.crt`,
+  `controller.key`; warns if `ca.crt` is missing
+- `direct_https` with operator cert/key paths: requires configured cert/key
+  files; requires CA cert if `ORCHARD_TLS_CACERTFILE` is set
+- `reverse_proxy` and `plain_http_localhost`: skip TLS file checks
 - Exit code `78` (`EX_CONFIG`) on configuration errors
 
 ### TLS env vars
@@ -832,17 +939,26 @@ See the consolidated [Controller transport environment](#controller-transport-en
 table above for all TLS, transport, and CORS variables with defaults and
 truthy/falsy value lists.
 
-### External certificate setup
+### Direct HTTPS with operator certificates
+
+Use this for direct controller HTTPS with public, paid/proprietary, or internal
+PKI certificates. Orchard validates the configured files but does not procure,
+renew, publish, or distribute operator CA/cert material.
 
 ```bash
-# Configure external certificates in controller.env
 sudo tee '/Library/Application Support/Orchard/config/controller.env' <<'EOF'
+ORCHARD_TRANSPORT_MODE=direct_https
+ORCHARD_PUBLIC_HOST=orchard.example.com
 ORCHARD_TLS_CERTFILE=/path/to/server.crt
 ORCHARD_TLS_KEYFILE=/path/to/server.key
 ORCHARD_TLS_CACERTFILE=/path/to/ca.crt
 EOF
 sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
 ```
+
+For internal PKI or air-gapped environments, distribute the issuing CA through
+operator-owned device management, browser, OS trust-store, or application trust
+configuration. `/ca.crt` remains disabled for these deployments.
 
 ### Recovery from partial TLS state
 
@@ -897,7 +1013,7 @@ configuration rather than crash-looping with missing setup.
 - Expose `orchardctl` via `/usr/local/bin/orchardctl`
 - Install role-selected launchd plists under `/Library/LaunchDaemons/` and tray LaunchAgent under `/Library/LaunchAgents/`
 - Leave TLS generation to explicit post-install `sudo orchardctl tls init --no-trust`
-- Validate TLS state before bootstrapping services
+- Validate TLS state before bootstrapping `direct_https` services
 - Detect fresh install vs upgrade and write diagnostic markers
 
 ## Building the PKG

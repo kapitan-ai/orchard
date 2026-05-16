@@ -62,12 +62,16 @@ When installed via the macOS PKG:
 
 - Controller defaults to degraded **loopback HTTP** (`plain_http_localhost`) until an operator chooses a transport mode
 - Supports first-class transport modes: `reverse_proxy`, `direct_https`, and `plain_http_localhost`
-- `direct_https` consumes operator-provided cert/key material or explicit local-CA helper output; the PKG does not generate or procure TLS certificates by default
+- `reverse_proxy` uses an operator-managed HTTPS proxy in front of Orchard's HTTP backend; forwarded headers are trusted from loopback only unless `ORCHARD_TRUSTED_PROXIES` is set
+- `direct_https` consumes operator-provided cert/key material from public, proprietary/paid, or internal PKI CAs, or explicit local-CA helper output for dev-lab bootstrap
+- The PKG does not generate, procure, or trust production TLS certificates by default; `orchardctl tls init` is an explicit local CA helper only
+- `/ca.crt` publishes only generated-local CA metadata output and returns `404` for operator-provided CA/cert material
 - CORS is configurable via `ORCHARD_CORS_ORIGINS`
 
 See [packaging/pkg/README.md](../packaging/pkg/README.md) for full operator
-documentation on transport modes, TLS management, CORS configuration, and the
-packaged licensing rollout posture.
+documentation on transport modes, TLS management, CORS configuration,
+nginx/Caddy/Traefik reverse-proxy snippets, and the packaged licensing rollout
+posture.
 
 ## Configuration
 
@@ -169,10 +173,12 @@ These variables apply to packaged/release controller installs, not source dev:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORCHARD_TRANSPORT_MODE` | `plain_http_localhost` | Primary transport mode: `plain_http_localhost`, `direct_https`, or `reverse_proxy` |
-| `PORT` | `4000` | HTTP backend port for `plain_http_localhost` and `reverse_proxy` |
+| `PORT` | `4000` | HTTP listen port for `plain_http_localhost`; HTTP backend port for `reverse_proxy` |
 | `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port for `direct_https` |
-| `ORCHARD_API_BIND_IP` | `0.0.0.0` | HTTPS bind IP address for `direct_https` |
+| `ORCHARD_API_BIND_IP` | `0.0.0.0` for `direct_https`; `127.0.0.1` for `reverse_proxy`; ignored for `plain_http_localhost` | Bind IP for the active listener. Non-loopback `reverse_proxy` binds require `ORCHARD_TRUSTED_PROXIES`. |
 | `ORCHARD_PUBLIC_HOST` | `localhost` | Browser-visible hostname or IP. **Required for console access** when not using `localhost`. See [packaging README](../packaging/pkg/README.md#console-troubleshooting). |
+| `ORCHARD_PUBLIC_PORT` | `443` | Browser-visible HTTPS port for `reverse_proxy` display URLs and origin checks |
+| `ORCHARD_TRUSTED_PROXIES` | loopback only (`127.0.0.1/32`, `::1/128`) | Comma-separated CIDRs allowed to supply `x-forwarded-*` headers in `reverse_proxy` mode |
 | `ORCHARD_TLS_CERTFILE` | _(unset)_ | Legacy shim / `direct_https` operator certificate path |
 | `ORCHARD_TLS_KEYFILE` | _(unset)_ | Legacy shim / `direct_https` operator private key path |
 | `ORCHARD_TLS_CACERTFILE` | _(unset)_ | Optional CA certificate path for generated local CA or operator validation |

@@ -244,6 +244,32 @@ defmodule OrchardCLI.Commands.Env do
 
     # ── Optional ──────────────────────────────────────────────────────
 
+    # Public API transport mode for packaged controller releases.
+    # plain_http_localhost: degraded loopback HTTP for local/recovery use.
+    # direct_https: controller terminates HTTPS with operator cert/key paths
+    # or explicit local-CA helper output from `orchardctl tls init`.
+    # reverse_proxy: controller listens on a local HTTP backend; an operator
+    # proxy terminates public HTTPS. The PKG installer does not generate or
+    # procure production TLS certificates by default.
+    # ORCHARD_TRANSPORT_MODE="plain_http_localhost"
+
+    # Reverse-proxy backend/public URL settings.
+    # Default backend bind is loopback. If ORCHARD_API_BIND_IP is non-loopback
+    # in reverse_proxy mode, ORCHARD_TRUSTED_PROXIES must be set to CIDRs for
+    # the proxy hops allowed to supply x-forwarded-* headers.
+    # ORCHARD_API_BIND_IP="127.0.0.1"
+    # PORT="4000"
+    # ORCHARD_PUBLIC_PORT="443"
+    # ORCHARD_TRUSTED_PROXIES="127.0.0.1/32,::1/128"
+
+    # Direct HTTPS certificate paths. Use operator-owned certs from a public,
+    # paid/proprietary, or internal PKI CA; or use explicit local-CA helper
+    # output for dev-lab bootstrap. /ca.crt publishes only generated-local CA
+    # metadata output, never operator CA/cert material.
+    # ORCHARD_TLS_CERTFILE="/path/to/server.crt"
+    # ORCHARD_TLS_KEYFILE="/path/to/server.key"
+    # ORCHARD_TLS_CACERTFILE="/path/to/ca.crt"
+
     # Controller gRPC runtime targets for worker placement.
     # Comma-separated host:port entries (example: "10.0.0.21:50061,10.0.0.22:50061").
     # Leave unset for single-node/all-in-one installs.
@@ -251,6 +277,7 @@ defmodule OrchardCLI.Commands.Env do
 
     # Browser-facing host for LiveView websocket origin checks.
     # Set to the LAN/Tailscale hostname or IP operators use in the browser URL.
+    # In reverse_proxy mode this is the public HTTPS host exposed by the proxy.
     # ORCHARD_PUBLIC_HOST="replace-with-lan-or-tailscale-host"
 
     # ── Packaged Paths (auto-detected) ────────────────────────────────
