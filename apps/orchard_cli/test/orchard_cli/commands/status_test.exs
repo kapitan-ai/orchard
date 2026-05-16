@@ -1,5 +1,5 @@
 defmodule OrchardCLI.Commands.StatusTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias OrchardCLI.Commands.Status
 
@@ -92,6 +92,9 @@ defmodule OrchardCLI.Commands.StatusTest do
       }
     }
   end
+
+  defp restore_env(key, nil), do: System.delete_env(key)
+  defp restore_env(key, value), do: System.put_env(key, value)
 
   # ── Usage / Help ─────────────────────────────────────────────────────
 
@@ -441,6 +444,195 @@ defmodule OrchardCLI.Commands.StatusTest do
     Status.run([], runtime)
     assert_received {^ref, url}
     assert url == "http://localhost:4000/health/ready"
+  end
+
+  test "packaged fallback uses direct HTTPS when ORCHARD_TRANSPORT_MODE selects it" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_port = System.get_env("ORCHARD_API_HTTPS_PORT")
+    original_public_host = System.get_env("ORCHARD_PUBLIC_HOST")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_API_HTTPS_PORT", original_port)
+      restore_env("ORCHARD_PUBLIC_HOST", original_public_host)
+    end)
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+    System.put_env("ORCHARD_API_HTTPS_PORT", "9443")
+    System.put_env("ORCHARD_PUBLIC_HOST", "orchard.example.internal")
+
+    ref = make_ref()
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn url, _opts ->
+        send(self(), {ref, url})
+        {:ok, ready_response()}
+      end
+    }
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert_received {^ref, "https://orchard.example.internal:9443/health/ready"}
+    assert banner =~ "Console: https://orchard.example.internal:9443/console"
+  end
+
+  test "packaged fallback uses HTTPS for legacy shims when transport mode is unset" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_disabled = System.get_env("ORCHARD_TLS_DISABLED")
+    original_cert = System.get_env("ORCHARD_TLS_CERTFILE")
+    original_key = System.get_env("ORCHARD_TLS_KEYFILE")
+    original_port = System.get_env("ORCHARD_API_HTTPS_PORT")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_TLS_DISABLED", original_disabled)
+      restore_env("ORCHARD_TLS_CERTFILE", original_cert)
+      restore_env("ORCHARD_TLS_KEYFILE", original_key)
+      restore_env("ORCHARD_API_HTTPS_PORT", original_port)
+    end)
+
+    for env <- [
+          %{"ORCHARD_TLS_DISABLED" => "false"},
+          %{
+            "ORCHARD_TLS_CERTFILE" => "/tmp/operator.crt",
+            "ORCHARD_TLS_KEYFILE" => "/tmp/operator.key"
+          }
+        ] do
+      System.delete_env("ORCHARD_TRANSPORT_MODE")
+      System.delete_env("ORCHARD_TLS_DISABLED")
+      System.delete_env("ORCHARD_TLS_CERTFILE")
+      System.delete_env("ORCHARD_TLS_KEYFILE")
+      System.put_env("ORCHARD_API_HTTPS_PORT", "9444")
+      Enum.each(env, fn {key, value} -> System.put_env(key, value) end)
+
+      ref = make_ref()
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        request: fn url, _opts ->
+          send(self(), {ref, url})
+          {:ok, ready_response()}
+        end
+      }
+
+      assert {:ok, banner} = Status.run([], runtime)
+      assert_received {^ref, "https://localhost:9444/health/ready"}
+      assert banner =~ "Console: https://localhost:9444/console"
+    end
+  end
+
+  test "packaged fallback uses proxy display URL for reverse_proxy" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_port = System.get_env("PORT")
+    original_public_host = System.get_env("ORCHARD_PUBLIC_HOST")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("PORT", original_port)
+      restore_env("ORCHARD_PUBLIC_HOST", original_public_host)
+    end)
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "reverse_proxy")
+    System.put_env("PORT", "4101")
+    System.put_env("ORCHARD_PUBLIC_HOST", "orchard.example.internal")
+
+    ref = make_ref()
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn url, _opts ->
+        send(self(), {ref, url})
+        {:ok, ready_response()}
+      end
+    }
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert_received {^ref, "http://localhost:4101/health/ready"}
+    assert banner =~ "Console: https://orchard.example.internal/console"
+  end
+
+  test "packaged fallback uses PORT for plain local HTTP transport" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_port = System.get_env("PORT")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("PORT", original_port)
+    end)
+
+    for mode <- ["plain_http_localhost"] do
+      System.put_env("ORCHARD_TRANSPORT_MODE", mode)
+      System.put_env("PORT", "4100")
+
+      ref = make_ref()
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        request: fn url, _opts ->
+          send(self(), {ref, mode, url})
+          {:ok, ready_response()}
+        end
+      }
+
+      assert {:ok, banner} = Status.run([], runtime)
+      assert_received {^ref, ^mode, "http://localhost:4100/health/ready"}
+      assert banner =~ "Console: http://localhost:4100/console"
+    end
+  end
+
+  test "packaged fallback rejects malformed legacy transport envs" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_disabled = System.get_env("ORCHARD_TLS_DISABLED")
+    original_cert = System.get_env("ORCHARD_TLS_CERTFILE")
+    original_key = System.get_env("ORCHARD_TLS_KEYFILE")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_TLS_DISABLED", original_disabled)
+      restore_env("ORCHARD_TLS_CERTFILE", original_cert)
+      restore_env("ORCHARD_TLS_KEYFILE", original_key)
+    end)
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, _opts -> flunk("invalid legacy transport env should not probe") end
+    }
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "plain_http_localhost")
+    System.put_env("ORCHARD_TLS_DISABLED", "maybe")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid ORCHARD_TLS_DISABLED: maybe"
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+    System.delete_env("ORCHARD_TLS_DISABLED")
+    System.put_env("ORCHARD_TLS_CERTFILE", "/tmp/controller.crt")
+    System.delete_env("ORCHARD_TLS_KEYFILE")
+    assert {:error, message, 1} = Status.run([], runtime)
+
+    assert message =~
+             "ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set or both unset"
+  end
+
+  test "packaged fallback rejects invalid ORCHARD_TRANSPORT_MODE" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+
+    on_exit(fn -> restore_env("ORCHARD_TRANSPORT_MODE", original_mode) end)
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "https")
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, _opts -> flunk("invalid transport mode should not probe") end
+    }
+
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid ORCHARD_TRANSPORT_MODE: https"
   end
 
   test "request function receives ca_certfile from candidate" do

@@ -26,6 +26,9 @@ defmodule Orchard.API.LicensePlugTest do
     previous_licensing = Application.get_env(:orchard_shared, :licensing, [])
     previous_endpoint = Application.get_env(:orchard_controller, Endpoint, [])
 
+    previous_transport_cert_source =
+      Application.get_env(:orchard_controller, :transport_cert_source)
+
     Application.put_env(
       :orchard_shared,
       :licensing,
@@ -44,6 +47,13 @@ defmodule Orchard.API.LicensePlugTest do
       Gate.refresh()
       Application.put_env(:orchard_shared, :licensing, previous_licensing)
       Application.put_env(:orchard_controller, Endpoint, previous_endpoint)
+
+      Application.put_env(
+        :orchard_controller,
+        :transport_cert_source,
+        previous_transport_cert_source
+      )
+
       File.rm_rf!(tmp_dir)
     end)
 
@@ -145,6 +155,7 @@ defmodule Orchard.API.LicensePlugTest do
 
     File.write!(ca_path, "-----BEGIN CERTIFICATE-----\nMIIBfake...\n-----END CERTIFICATE-----\n")
     File.write!(metadata_path, Jason.encode!(%{"source" => "generated_local_ca"}))
+    Application.put_env(:orchard_controller, :transport_cert_source, :generated_local_ca)
     put_ca_config(ca_path, metadata_path)
 
     conn = get_without_auth("/ca.crt", [{"accept", "text/html"}])

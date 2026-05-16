@@ -18,7 +18,8 @@ defmodule Orchard.API.CACertController do
 
   @spec show(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def show(conn, _params) do
-    with {:ok, ca_path, meta_path} <- resolve_paths(),
+    with :ok <- validate_transport_cert_source(),
+         {:ok, ca_path, meta_path} <- resolve_paths(),
          {:ok, meta} <- read_metadata(meta_path),
          :ok <- validate_source(meta),
          {:ok, pem_data} <- File.read(ca_path) do
@@ -28,6 +29,14 @@ defmodule Orchard.API.CACertController do
       |> send_resp(200, pem_data)
     else
       _ -> send_resp(conn, 404, "")
+    end
+  end
+
+  defp validate_transport_cert_source do
+    if Application.get_env(:orchard_controller, :transport_cert_source) == :generated_local_ca do
+      :ok
+    else
+      :error
     end
   end
 

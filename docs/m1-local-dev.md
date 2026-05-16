@@ -60,10 +60,9 @@ source dev controller.
 
 When installed via the macOS PKG:
 
-- Controller defaults to **HTTPS** on `0.0.0.0:8443` with managed TLS
-  certificates
-- Supports managed TLS, external certificate override, or emergency disabled
-  (loopback HTTP) mode
+- Controller defaults to degraded **loopback HTTP** (`plain_http_localhost`) until an operator chooses a transport mode
+- Supports first-class transport modes: `reverse_proxy`, `direct_https`, and `plain_http_localhost`
+- `direct_https` consumes operator-provided cert/key material or explicit local-CA helper output; the PKG does not generate or procure TLS certificates by default
 - CORS is configurable via `ORCHARD_CORS_ORIGINS`
 
 See [packaging/pkg/README.md](../packaging/pkg/README.md) for full operator
@@ -169,13 +168,15 @@ These variables apply to packaged/release controller installs, not source dev:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port |
-| `ORCHARD_API_BIND_IP` | `0.0.0.0` | HTTPS bind IP address |
+| `ORCHARD_TRANSPORT_MODE` | `plain_http_localhost` | Primary transport mode: `plain_http_localhost`, `direct_https`, or `reverse_proxy` |
+| `PORT` | `4000` | HTTP backend port for `plain_http_localhost` and `reverse_proxy` |
+| `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port for `direct_https` |
+| `ORCHARD_API_BIND_IP` | `0.0.0.0` | HTTPS bind IP address for `direct_https` |
 | `ORCHARD_PUBLIC_HOST` | `localhost` | Browser-visible hostname or IP. **Required for console access** when not using `localhost`. See [packaging README](../packaging/pkg/README.md#console-troubleshooting). |
-| `ORCHARD_TLS_CERTFILE` | `config/tls/controller.crt` | Server certificate path |
-| `ORCHARD_TLS_KEYFILE` | `config/tls/controller.key` | Server private key path |
-| `ORCHARD_TLS_CACERTFILE` | `config/tls/ca.crt` | CA certificate path |
-| `ORCHARD_TLS_DISABLED` | `false` | Emergency loopback HTTP mode |
+| `ORCHARD_TLS_CERTFILE` | _(unset)_ | Legacy shim / `direct_https` operator certificate path |
+| `ORCHARD_TLS_KEYFILE` | _(unset)_ | Legacy shim / `direct_https` operator private key path |
+| `ORCHARD_TLS_CACERTFILE` | _(unset)_ | Optional CA certificate path for generated local CA or operator validation |
+| `ORCHARD_TLS_DISABLED` | _(unset)_ | Legacy shim: truthy maps to `plain_http_localhost`; explicit false maps to `direct_https` during compatibility window |
 | `ORCHARD_CORS_ORIGINS` | _(empty)_ | Comma-separated CORS origin allowlist |
 
 See [packaging/pkg/README.md](../packaging/pkg/README.md) for full details
@@ -260,11 +261,11 @@ on localhost only.
 
 ## LAN Client Trust Workflow
 
-Packaged installs using managed TLS can bootstrap LAN client trust:
+Packaged installs can bootstrap LAN client trust only when the operator explicitly chooses local generated TLS:
 
-1. **Generate certificates** — the PKG installer runs `orchardctl tls init`
-   automatically on fresh install
-2. **Trust CA locally** (optional):
+1. **Generate certificates** — after install, run `sudo orchardctl tls init --no-trust`; the PKG installer does not generate certificates automatically
+2. **Select direct HTTPS** — configure `ORCHARD_TRANSPORT_MODE=direct_https` for the controller before restart
+3. **Trust CA locally** (optional):
    ```bash
    sudo orchardctl tls trust-ca
    ```
@@ -722,7 +723,8 @@ iex -S mix phx.server
 ## M1 Limitations
 
 - Source dev controller uses loopback HTTP (`127.0.0.1:4000`); packaged
-  installs default to HTTPS (see [Transport Modes](#transport-modes))
+  installs default to degraded loopback HTTP until an operator selects
+  `reverse_proxy` or `direct_https` (see [Transport Modes](#transport-modes))
 - Source dev gRPC on port 50071; packaged installs on 50061
 - Node-agent gRPC remains loopback and non-TLS in M1
 - Single implicit tenant (no auth/RBAC — deferred to M2)

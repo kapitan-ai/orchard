@@ -514,8 +514,6 @@ if config_env() == :prod do
       config :orchard_controller, :console, console_config
 
       # --- TLS / HTTPS configuration ---
-      tls_disabled? = env_bool.("ORCHARD_TLS_DISABLED", false)
-
       public_host =
         System.get_env("ORCHARD_PUBLIC_HOST") || System.get_env("PHX_HOST") || "localhost"
 
@@ -532,6 +530,108 @@ if config_env() == :prod do
       keyfile = System.get_env("ORCHARD_TLS_KEYFILE") || Path.join(tls_dir, "controller.key")
       cacertfile = System.get_env("ORCHARD_TLS_CACERTFILE") || Path.join(tls_dir, "ca.crt")
       ca_meta_path = Path.join(Path.dirname(cacertfile), ".orchard-tls-meta.json")
+
+      default_certfile = Path.join(tls_dir, "controller.crt")
+      default_keyfile = Path.join(tls_dir, "controller.key")
+      cert_override? = not is_nil(System.get_env("ORCHARD_TLS_CERTFILE"))
+      key_override? = not is_nil(System.get_env("ORCHARD_TLS_KEYFILE"))
+
+      if cert_override? != key_override? do
+        raise "ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set or both unset"
+      end
+
+      if cert_override? and (certfile == "" or keyfile == "") do
+        raise "ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must not be empty"
+      end
+
+      legacy_tls_disabled? =
+        if is_nil(System.get_env("ORCHARD_TLS_DISABLED")) do
+          nil
+        else
+          env_bool.("ORCHARD_TLS_DISABLED", false)
+        end
+
+      transport_mode =
+        case System.get_env("ORCHARD_TRANSPORT_MODE") do
+          nil ->
+            cond do
+              legacy_tls_disabled? == true ->
+                IO.puts(
+                  :stderr,
+                  "ORCHARD_TLS_DISABLED is deprecated; use ORCHARD_TRANSPORT_MODE=plain_http_localhost"
+                )
+
+                :plain_http_localhost
+
+              legacy_tls_disabled? == false ->
+                IO.puts(
+                  :stderr,
+                  "ORCHARD_TLS_DISABLED=false is deprecated; use ORCHARD_TRANSPORT_MODE=direct_https"
+                )
+
+                :direct_https
+
+              cert_override? ->
+                IO.puts(
+                  :stderr,
+                  "ORCHARD_TLS_CERTFILE/ORCHARD_TLS_KEYFILE are deprecated transport shims; use ORCHARD_TRANSPORT_MODE=direct_https"
+                )
+
+                :direct_https
+
+              true ->
+                :plain_http_localhost
+            end
+
+          "reverse_proxy" ->
+            :reverse_proxy
+
+          "direct_https" ->
+            :direct_https
+
+          "plain_http_localhost" ->
+            :plain_http_localhost
+
+          value ->
+            raise "ORCHARD_TRANSPORT_MODE must be reverse_proxy|direct_https|plain_http_localhost, got: #{inspect(value)}"
+        end
+
+      conflicting_legacy_transport? =
+        System.get_env("ORCHARD_TRANSPORT_MODE") &&
+          ((legacy_tls_disabled? == true and transport_mode != :plain_http_localhost) or
+             (legacy_tls_disabled? == false and transport_mode == :plain_http_localhost) or
+             (cert_override? and transport_mode != :direct_https))
+
+      if conflicting_legacy_transport? do
+        IO.puts(
+          :stderr,
+          "ORCHARD_TRANSPORT_MODE=#{transport_mode} is authoritative; conflicting legacy TLS envs are deprecated and ignored when inconsistent; new transport mode wins"
+        )
+      end
+
+      using_default_tls_paths? = certfile == default_certfile and keyfile == default_keyfile
+
+      generated_local_ca? =
+        with {:ok, meta_json} <- File.read(ca_meta_path),
+             {:ok, %{"source" => "generated_local_ca"}} <- Jason.decode(meta_json) do
+          File.regular?(certfile) and File.regular?(keyfile)
+        else
+          _ -> false
+        end
+
+      transport_cert_source =
+        case transport_mode do
+          :direct_https when cert_override? ->
+            :operator_provided
+
+          :direct_https ->
+            if generated_local_ca? and using_default_tls_paths?,
+              do: :generated_local_ca,
+              else: :unknown
+
+          _other ->
+            :unknown
+        end
 
       config :orchard_controller, Orchard.Repo,
         url: database_url,
@@ -655,42 +755,57 @@ if config_env() == :prod do
 
       # --- Transport listener configuration ---
       {transport_config, url_config, transport_degraded?} =
-        if tls_disabled? do
-          # Emergency recovery mode — loopback-only HTTP
-          http_port = env_int.("PORT", "4000")
+        case transport_mode do
+          :plain_http_localhost ->
+            http_port = env_int.("PORT", "4000")
 
-          IO.puts(:stderr, """
+            IO.puts(:stderr, """
 
-          ╔══════════════════════════════════════════════════════════════╗
-          ║  ⚠️  TLS DISABLED — EMERGENCY RECOVERY MODE               ║
-          ║                                                            ║
-          ║  ORCHARD_TLS_DISABLED=true                                 ║
-          ║  Controller listening on HTTP 127.0.0.1:#{String.pad_trailing(to_string(http_port), 5)}             ║
-          ║  This is NOT secure for production use.                    ║
-          ║  Generate certificates: orchardctl tls init                ║
-          ╚══════════════════════════════════════════════════════════════╝
-          """)
+            ╔══════════════════════════════════════════════════════════════╗
+            ║  ⚠️  PLAIN HTTP LOCALHOST MODE                            ║
+            ║                                                            ║
+            ║  ORCHARD_TRANSPORT_MODE=plain_http_localhost               ║
+            ║  Controller listening on HTTP 127.0.0.1:#{String.pad_trailing(to_string(http_port), 5)}             ║
+            ║  This is NOT secure for production use.                    ║
+            ╚══════════════════════════════════════════════════════════════╝
+            """)
 
-          {[http: [ip: {127, 0, 0, 1}, port: http_port]],
-           [host: "localhost", port: http_port, scheme: "http"], true}
-        else
-          # Normal HTTPS mode — validate TLS material before starting
-          https_port = env_int.("ORCHARD_API_HTTPS_PORT", "8443")
-          bind_ip = env_ip.("ORCHARD_API_BIND_IP", "0.0.0.0")
-          validate_tls_material!.(certfile, keyfile)
+            {[http: [ip: {127, 0, 0, 1}, port: http_port]],
+             [host: "localhost", port: http_port, scheme: "http"], true}
 
-          {[
-             https: [
-               ip: bind_ip,
-               port: https_port,
-               certfile: certfile,
-               keyfile: keyfile,
-               cipher_suite: :strong
-             ]
-           ], [host: public_host, port: https_port, scheme: "https"], false}
+          :reverse_proxy ->
+            http_port = env_int.("PORT", "4000")
+
+            {[http: [ip: {127, 0, 0, 1}, port: http_port]],
+             [host: public_host, port: 443, scheme: "https"], false}
+
+          :direct_https ->
+            https_port = env_int.("ORCHARD_API_HTTPS_PORT", "8443")
+            bind_ip = env_ip.("ORCHARD_API_BIND_IP", "0.0.0.0")
+            validate_tls_material!.(certfile, keyfile)
+
+            {[
+               https: [
+                 ip: bind_ip,
+                 port: https_port,
+                 certfile: certfile,
+                 keyfile: keyfile,
+                 cipher_suite: :strong
+               ]
+             ], [host: public_host, port: https_port, scheme: "https"], false}
         end
 
-      config :orchard_controller, transport_degraded: transport_degraded?
+      config :orchard_controller,
+        transport_mode: transport_mode,
+        transport_cert_source: transport_cert_source,
+        transport_degraded: transport_degraded?
+
+      ca_endpoint_config =
+        if transport_cert_source == :generated_local_ca do
+          [ca_certfile: cacertfile, ca_cert_metadata_path: ca_meta_path]
+        else
+          [ca_certfile: nil, ca_cert_metadata_path: nil]
+        end
 
       config :orchard_controller,
              Orchard.API.Endpoint,
@@ -699,10 +814,8 @@ if config_env() == :prod do
                  server: true,
                  url: url_config,
                  secret_key_base: secret_key_base,
-                 cors_origins: cors_origins,
-                 ca_certfile: cacertfile,
-                 ca_cert_metadata_path: ca_meta_path
-               ]
+                 cors_origins: cors_origins
+               ] ++ ca_endpoint_config
 
     "orchard_cli" ->
       database_url = System.get_env("DATABASE_URL")

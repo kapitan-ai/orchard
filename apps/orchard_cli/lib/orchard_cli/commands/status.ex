@@ -81,6 +81,20 @@ defmodule OrchardCLI.Commands.Status do
   end
 
   defp snapshot_for_role(runtime, version, role) do
+    if message = invalid_transport_mode_message() do
+      %{
+        version: version,
+        display_version: format_display_version(version, nil),
+        state: :install_error,
+        role: role,
+        error: message
+      }
+    else
+      snapshot_controller_role(runtime, version, role)
+    end
+  end
+
+  defp snapshot_controller_role(runtime, version, role) do
     candidates = Map.get(runtime, :endpoint_candidates, &default_endpoint_candidates/0).()
     request_fn = Map.get(runtime, :request, &default_request/2)
 
@@ -175,7 +189,7 @@ defmodule OrchardCLI.Commands.Status do
   defp probe_candidates([], _request_fn), do: {:error, :unreachable, "http://localhost:4000"}
 
   defp probe_candidates(candidates, request_fn) do
-    display_url = hd(candidates) |> Map.fetch!(:base_url)
+    display_url = hd(candidates) |> candidate_display_url()
 
     candidates
     |> Enum.reduce_while(
@@ -206,11 +220,11 @@ defmodule OrchardCLI.Commands.Status do
   end
 
   defp reduce_probe_candidate({:ok, parsed}, candidate, _acc) do
-    {:halt, {:ok, candidate.base_url, parsed}}
+    {:halt, {:ok, candidate_display_url(candidate), parsed}}
   end
 
   defp reduce_probe_candidate({:invalid_response, reason}, candidate, acc) do
-    invalid_response = acc.invalid_response || {candidate.base_url, reason}
+    invalid_response = acc.invalid_response || {candidate_display_url(candidate), reason}
     {:cont, %{acc | invalid_response: invalid_response}}
   end
 
@@ -231,6 +245,8 @@ defmodule OrchardCLI.Commands.Status do
   defp finalize_probe_result(%{invalid_response: {display_url, message}}) do
     {:error, :invalid_response, display_url, message, :all_invalid}
   end
+
+  defp candidate_display_url(candidate), do: Map.get(candidate, :display_url, candidate.base_url)
 
   defp build_request_opts(candidate) do
     base = [connect_timeout: @connect_timeout_ms, receive_timeout: @receive_timeout_ms]
@@ -472,22 +488,165 @@ defmodule OrchardCLI.Commands.Status do
   # ── Endpoint Candidate Resolution ───────────────────────────────────
 
   defp default_endpoint_candidates do
+    cond do
+      System.get_env("ORCHARD_TRANSPORT_MODE") in [
+        "direct_https",
+        "reverse_proxy",
+        "plain_http_localhost"
+      ] ->
+        fallback_endpoint_candidates_from_env()
+
+      legacy_transport_env_set?() ->
+        fallback_endpoint_candidates_from_env()
+
+      true ->
+        endpoint_candidates_from_config_or_fallback()
+    end
+  end
+
+  defp endpoint_candidates_from_config_or_fallback do
     case endpoint_from_config() do
       {:ok, candidate} ->
         [candidate]
 
       :fallback ->
-        # Packaged install defaults: try HTTPS first, then HTTP
-        support_root = support_root()
-        ca_path = Path.join([support_root, "config", "tls", "ca.crt"])
-        ca_certfile = if File.regular?(ca_path), do: ca_path, else: nil
-
-        [
-          %{base_url: "https://localhost:8443", ca_certfile: ca_certfile},
-          %{base_url: "http://localhost:4000", ca_certfile: nil}
-        ]
+        fallback_endpoint_candidates_from_env()
     end
   end
+
+  defp invalid_transport_mode_message do
+    cond do
+      invalid_bool = invalid_legacy_tls_disabled() ->
+        "invalid ORCHARD_TLS_DISABLED: #{invalid_bool}"
+
+      partial_legacy_cert_key?() ->
+        "ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set or both unset"
+
+      empty_legacy_cert_key?() ->
+        "ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must not be empty"
+
+      mode = System.get_env("ORCHARD_TRANSPORT_MODE") ->
+        if mode in ["direct_https", "reverse_proxy", "plain_http_localhost"] do
+          nil
+        else
+          "invalid ORCHARD_TRANSPORT_MODE: #{mode} (expected reverse_proxy, direct_https, or plain_http_localhost)"
+        end
+
+      true ->
+        nil
+    end
+  end
+
+  defp invalid_legacy_tls_disabled do
+    case System.get_env("ORCHARD_TLS_DISABLED") do
+      nil ->
+        nil
+
+      value
+      when value in [
+             "1",
+             "true",
+             "TRUE",
+             "yes",
+             "YES",
+             "on",
+             "ON",
+             "0",
+             "false",
+             "FALSE",
+             "no",
+             "NO",
+             "off",
+             "OFF"
+           ] ->
+        nil
+
+      value ->
+        value
+    end
+  end
+
+  defp partial_legacy_cert_key? do
+    System.get_env("ORCHARD_TLS_CERTFILE") == nil !=
+      (System.get_env("ORCHARD_TLS_KEYFILE") == nil)
+  end
+
+  defp empty_legacy_cert_key? do
+    cert = System.get_env("ORCHARD_TLS_CERTFILE")
+    key = System.get_env("ORCHARD_TLS_KEYFILE")
+    (cert != nil and cert == "") or (key != nil and key == "")
+  end
+
+  defp fallback_endpoint_candidates_from_env do
+    case resolved_transport_mode_from_env() do
+      :direct_https ->
+        support_root = support_root()
+
+        ca_path =
+          System.get_env("ORCHARD_TLS_CACERTFILE") ||
+            Path.join([support_root, "config", "tls", "ca.crt"])
+
+        ca_certfile = if File.regular?(ca_path), do: ca_path, else: nil
+        host = System.get_env("ORCHARD_PUBLIC_HOST") || System.get_env("PHX_HOST") || "localhost"
+        port = System.get_env("ORCHARD_API_HTTPS_PORT") || "8443"
+        base_url = if port == "443", do: "https://#{host}", else: "https://#{host}:#{port}"
+        [%{base_url: base_url, ca_certfile: ca_certfile}]
+
+      :reverse_proxy ->
+        port = System.get_env("PORT") || "4000"
+
+        public_host =
+          System.get_env("ORCHARD_PUBLIC_HOST") || System.get_env("PHX_HOST") || "localhost"
+
+        public_port = System.get_env("ORCHARD_PUBLIC_PORT")
+
+        display_url =
+          if public_port in [nil, "", "443"],
+            do: "https://#{public_host}",
+            else: "https://#{public_host}:#{public_port}"
+
+        [%{base_url: "http://localhost:#{port}", display_url: display_url, ca_certfile: nil}]
+
+      :plain_http_localhost ->
+        port = System.get_env("PORT") || "4000"
+        [%{base_url: "http://localhost:#{port}", ca_certfile: nil}]
+    end
+  end
+
+  defp resolved_transport_mode_from_env do
+    case System.get_env("ORCHARD_TRANSPORT_MODE") do
+      "direct_https" -> :direct_https
+      "reverse_proxy" -> :reverse_proxy
+      "plain_http_localhost" -> :plain_http_localhost
+      _ -> legacy_transport_mode_from_env()
+    end
+  end
+
+  defp legacy_transport_env_set? do
+    System.get_env("ORCHARD_TLS_DISABLED") != nil or
+      System.get_env("ORCHARD_TLS_CERTFILE") != nil or
+      System.get_env("ORCHARD_TLS_KEYFILE") != nil
+  end
+
+  defp legacy_transport_mode_from_env do
+    cond do
+      truthy_env?(System.get_env("ORCHARD_TLS_DISABLED")) ->
+        :plain_http_localhost
+
+      System.get_env("ORCHARD_TLS_DISABLED") != nil ->
+        :direct_https
+
+      System.get_env("ORCHARD_TLS_CERTFILE") != nil and
+          System.get_env("ORCHARD_TLS_KEYFILE") != nil ->
+        :direct_https
+
+      true ->
+        :plain_http_localhost
+    end
+  end
+
+  defp truthy_env?(value) when value in ["1", "true", "TRUE", "yes", "YES", "on", "ON"], do: true
+  defp truthy_env?(_), do: false
 
   defp endpoint_from_config do
     config = Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])

@@ -40,6 +40,7 @@ defmodule Orchard.InferenceTest do
     "ORCHARD_PREFIX_CACHE_SCORING_RANKING_MODE",
     "ORCHARD_SUPPORT_ROOT",
     "ORCHARD_TLS_DISABLED",
+    "ORCHARD_TRANSPORT_MODE",
     "RELEASE_NAME",
     "SECRET_KEY_BASE"
   ]
@@ -699,7 +700,7 @@ defmodule Orchard.InferenceTest do
       "DATABASE_URL" => "ecto://postgres:postgres@localhost/orchard_config_eval",
       "MIX_RELEASE_NAME" => nil,
       "ORCHARD_SUPPORT_ROOT" => support_root,
-      "ORCHARD_TLS_DISABLED" => "true",
+      "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
       "RELEASE_NAME" => "orchard_controller",
       "SECRET_KEY_BASE" => String.duplicate("runtime-secret", 8)
     }

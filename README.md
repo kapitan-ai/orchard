@@ -59,9 +59,10 @@ Clients (SDKs / curl / apps)
 
 - **Source dev:** controller runs on loopback HTTP (`127.0.0.1:4000`); CORS
   disabled unless explicitly configured
-- **Packaged installs:** controller defaults to HTTPS with managed or
-  operator-supplied TLS certificates; `ORCHARD_TLS_DISABLED=true` forces
-  emergency loopback HTTP mode
+- **Packaged installs:** controller defaults to degraded loopback HTTP
+  (`ORCHARD_TRANSPORT_MODE=plain_http_localhost`) until an operator selects
+  `direct_https` or `reverse_proxy`; legacy `ORCHARD_TLS_*` variables are
+  one-release compatibility shims
 - **CORS:** explicit origin allowlist via `ORCHARD_CORS_ORIGINS` (empty =
   disabled)
 

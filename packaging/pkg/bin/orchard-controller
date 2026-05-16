@@ -4,9 +4,8 @@ set -eu
 # Loads optional env overrides from config dir before starting the release.
 # Env files must be root-owned with no group/world permissions (e.g. 0600).
 #
-# TLS boot gate (Task 4): validates TLS file presence before exec'ing the
-# release. Uses the same TLS mode classification as postinstall. Does NOT
-# perform X.509 parsing — that remains in config/runtime.exs.
+# Transport boot gate: validates mode and TLS file presence before exec'ing
+# the release. Does NOT perform X.509 parsing — that remains in config/runtime.exs.
 
 ORCHARD_ROOT="/Library/Application Support/Orchard"
 ENV_FILE="$ORCHARD_ROOT/config/controller.env"
@@ -45,9 +44,9 @@ case "$_env_provenance" in
         ;;
 esac
 
-# --- TLS boot gate --------------------------------------------------------
+# --- Transport boot gate --------------------------------------------------
 # Matches config/runtime.exs env_bool semantics exactly.
-# Callers must pass raw value; empty string is invalid (runtime.exs raises).
+# Callers must pass raw value; empty string is invalid.
 _tls_is_truthy() {
   case "$1" in
     1|true|TRUE|yes|YES|on|ON)      return 0 ;;
@@ -56,10 +55,15 @@ _tls_is_truthy() {
   esac
 }
 
-# Distinguish unset (default false) from set-to-empty (invalid per runtime.exs).
+_cert_set=false
+_key_set=false
+if [ -n "${ORCHARD_TLS_CERTFILE+x}" ]; then _cert_set=true; fi
+if [ -n "${ORCHARD_TLS_KEYFILE+x}" ]; then _key_set=true; fi
+
+_tls_disabled_set=false
 _tls_disabled=false
 if [ -n "${ORCHARD_TLS_DISABLED+x}" ]; then
-    # Variable is set — validate its value
+    _tls_disabled_set=true
     if _tls_is_truthy "$ORCHARD_TLS_DISABLED"; then
         _tls_disabled=true
     else
@@ -68,49 +72,80 @@ if [ -n "${ORCHARD_TLS_DISABLED+x}" ]; then
             printf 'orchard-controller: ERROR: ORCHARD_TLS_DISABLED has invalid value: %s\n' \
                 "$ORCHARD_TLS_DISABLED" >&2
             printf 'orchard-controller: Accepted values: 1,true,TRUE,yes,YES,on,ON,0,false,FALSE,no,NO,off,OFF\n' >&2
-            exit 78  # EX_CONFIG
+            exit 78
         fi
     fi
 fi
 
-if [ "$_tls_disabled" = false ]; then
-    # Determine TLS mode: managed_default vs external_override vs invalid
-    _cert_set=false
-    _key_set=false
-    if [ -n "${ORCHARD_TLS_CERTFILE+x}" ]; then _cert_set=true; fi
-    if [ -n "${ORCHARD_TLS_KEYFILE+x}" ]; then _key_set=true; fi
+if [ "$_cert_set" != "$_key_set" ]; then
+    printf 'orchard-controller: ERROR: ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set or both unset\n' >&2
+    printf 'orchard-controller:   ORCHARD_TLS_CERTFILE=%s\n' "${ORCHARD_TLS_CERTFILE:-<unset>}" >&2
+    printf 'orchard-controller:   ORCHARD_TLS_KEYFILE=%s\n' "${ORCHARD_TLS_KEYFILE:-<unset>}" >&2
+    exit 78
+fi
 
-    # Invalid: exactly one override set
-    if [ "$_cert_set" != "$_key_set" ]; then
-        printf 'orchard-controller: ERROR: ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set or both unset\n' >&2
-        printf 'orchard-controller:   ORCHARD_TLS_CERTFILE=%s\n' "${ORCHARD_TLS_CERTFILE:-<unset>}" >&2
-        printf 'orchard-controller:   ORCHARD_TLS_KEYFILE=%s\n' "${ORCHARD_TLS_KEYFILE:-<unset>}" >&2
+if [ "$_cert_set" = true ]; then
+    if [ -z "$ORCHARD_TLS_CERTFILE" ] || [ -z "$ORCHARD_TLS_KEYFILE" ]; then
+        printf 'orchard-controller: ERROR: ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must not be empty\n' >&2
         exit 78
     fi
+fi
 
-    # Reject set-to-empty cert/key (runtime.exs would fail on empty path)
-    if [ "$_cert_set" = true ]; then
-        if [ -z "$ORCHARD_TLS_CERTFILE" ] || [ -z "$ORCHARD_TLS_KEYFILE" ]; then
-            printf 'orchard-controller: ERROR: ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must not be empty\n' >&2
+if [ -n "${ORCHARD_TRANSPORT_MODE+x}" ]; then
+    case "$ORCHARD_TRANSPORT_MODE" in
+        reverse_proxy|direct_https|plain_http_localhost)
+            _transport_mode="$ORCHARD_TRANSPORT_MODE"
+            ;;
+        *)
+            printf 'orchard-controller: ERROR: ORCHARD_TRANSPORT_MODE has invalid value: %s\n' \
+                "$ORCHARD_TRANSPORT_MODE" >&2
+            printf 'orchard-controller: Accepted values: reverse_proxy,direct_https,plain_http_localhost\n' >&2
             exit 78
+            ;;
+    esac
+
+    _legacy_conflict=false
+    if [ "$_tls_disabled_set" = true ]; then
+        if [ "$_tls_disabled" = true ] && [ "$_transport_mode" != "plain_http_localhost" ]; then
+            _legacy_conflict=true
+        elif [ "$_tls_disabled" = false ] && [ "$_transport_mode" = "plain_http_localhost" ]; then
+            _legacy_conflict=true
         fi
     fi
 
-    # Resolve effective paths (only use defaults for truly unset vars)
+    if [ "$_cert_set" = true ] && [ "$_transport_mode" != "direct_https" ]; then
+        _legacy_conflict=true
+    fi
+
+    if [ "$_legacy_conflict" = true ]; then
+        printf 'orchard-controller: WARNING: ORCHARD_TRANSPORT_MODE=%s is authoritative; conflicting legacy TLS envs are deprecated and ignored when inconsistent; new transport mode wins\n' \
+            "$_transport_mode" >&2
+    fi
+else
+    if [ "$_tls_disabled" = true ]; then
+        _transport_mode="plain_http_localhost"
+        printf 'orchard-controller: WARNING: ORCHARD_TLS_DISABLED is deprecated; use ORCHARD_TRANSPORT_MODE=plain_http_localhost\n' >&2
+    elif [ "$_tls_disabled_set" = true ]; then
+        _transport_mode="direct_https"
+        printf 'orchard-controller: WARNING: ORCHARD_TLS_DISABLED=false is deprecated; use ORCHARD_TRANSPORT_MODE=direct_https\n' >&2
+    elif [ "$_cert_set" = true ]; then
+        _transport_mode="direct_https"
+        printf 'orchard-controller: WARNING: ORCHARD_TLS_CERTFILE/ORCHARD_TLS_KEYFILE are deprecated transport shims; use ORCHARD_TRANSPORT_MODE=direct_https\n' >&2
+    else
+        _transport_mode="plain_http_localhost"
+    fi
+fi
+
+if [ "$_transport_mode" = "direct_https" ]; then
     _eff_cert="${ORCHARD_TLS_CERTFILE:-$TLS_DIR/controller.crt}"
     _eff_key="${ORCHARD_TLS_KEYFILE:-$TLS_DIR/controller.key}"
     _eff_ca="${ORCHARD_TLS_CACERTFILE:-$TLS_DIR/ca.crt}"
 
-    # Determine if we're in managed or external mode
     _is_managed=true
     if [ "$_cert_set" = true ]; then
-        if [ "$ORCHARD_TLS_CERTFILE" != "$TLS_DIR/controller.crt" ] || \
-           [ "$ORCHARD_TLS_KEYFILE" != "$TLS_DIR/controller.key" ]; then
-            _is_managed=false
-        fi
+        _is_managed=false
     fi
 
-    # Validate cert file
     if [ ! -f "$_eff_cert" ]; then
         printf 'orchard-controller: ERROR: TLS certificate not found: %s\n' "$_eff_cert" >&2
         if [ "$_is_managed" = true ]; then
@@ -119,7 +154,6 @@ if [ "$_tls_disabled" = false ]; then
         exit 78
     fi
 
-    # Validate key file
     if [ ! -f "$_eff_key" ]; then
         printf 'orchard-controller: ERROR: TLS private key not found: %s\n' "$_eff_key" >&2
         if [ "$_is_managed" = true ]; then
@@ -128,7 +162,6 @@ if [ "$_tls_disabled" = false ]; then
         exit 78
     fi
 
-    # Validate CA cert (managed: required; external: only if explicitly set)
     if [ "$_is_managed" = true ]; then
         if [ ! -f "$_eff_ca" ]; then
             printf 'orchard-controller: WARNING: CA certificate not found: %s (/ca.crt endpoint may be unavailable)\n' "$_eff_ca" >&2

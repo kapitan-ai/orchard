@@ -2,6 +2,7 @@ defmodule OrchardCLI.PackagingScriptTest do
   use ExUnit.Case, async: true
 
   @repo_root Path.expand("../../../..", __DIR__)
+  @controller_wrapper Path.join(@repo_root, "packaging/pkg/bin/orchard-controller")
   @postinstall Path.join(@repo_root, "packaging/pkg/scripts/postinstall")
 
   test "postinstall filters launchd plists for requested node-agent role" do
@@ -26,7 +27,7 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
-  test "postinstall empty managed TLS state skips automatic generation and completes install" do
+  test "postinstall fresh default maps to local HTTP and skips managed TLS inspection" do
     for role <- ["controller", "all"] do
       with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
         controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
@@ -46,8 +47,11 @@ defmodule OrchardCLI.PackagingScriptTest do
 
         assert {output, 0} = run_script(script, ctx)
 
-        assert output =~ "postinstall: managed TLS state=empty"
-        assert output =~ "postinstall: managed TLS files are not installed"
+        assert output =~ "postinstall: tls_mode=transport_plain_http_localhost"
+        assert output =~ "ORCHARD_TRANSPORT_MODE=plain_http_localhost"
+        assert output =~ "skipping managed TLS inspection"
+        refute output =~ "postinstall: managed TLS state=empty"
+        refute output =~ "postinstall: managed TLS files are not installed"
         refute output =~ "generating managed TLS certificates"
         refute File.exists?(orchardctl_log)
         assert File.exists?(controller)
@@ -57,6 +61,133 @@ defmodule OrchardCLI.PackagingScriptTest do
         refute File.exists?(request_path)
       end)
     end
+  end
+
+  test "postinstall default local HTTP warns when managed TLS exists" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      File.write!(request_path, "controller\n")
+
+      assert {output, 0} = run_script(script, ctx)
+
+      assert output =~ "ORCHARD_TRANSPORT_MODE=plain_http_localhost"
+      assert output =~ "managed TLS files exist but default transport is plain_http_localhost"
+      assert output =~ "set ORCHARD_TRANSPORT_MODE=direct_https to use them"
+    end)
+  end
+
+  test "postinstall explicit transport warns about conflicting legacy TLS envs" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      File.write!(request_path, "controller\n")
+
+      assert {output, 0} =
+               run_script(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "plain_http_localhost"},
+                 {"ORCHARD_TLS_DISABLED", "false"},
+                 {"ORCHARD_TLS_CERTFILE", "/missing/conflicting.crt"},
+                 {"ORCHARD_TLS_KEYFILE", "/missing/conflicting.key"}
+               ])
+
+      assert output =~ "ORCHARD_TRANSPORT_MODE=plain_http_localhost is authoritative"
+      assert output =~ "conflicting legacy TLS envs are deprecated and ignored"
+    end)
+  end
+
+  test "postinstall transport mode skips managed TLS inspection for proxy and local HTTP modes" do
+    for {mode, expected} <- [
+          {"reverse_proxy", "ORCHARD_TRANSPORT_MODE=reverse_proxy"},
+          {"plain_http_localhost", "ORCHARD_TRANSPORT_MODE=plain_http_localhost"}
+        ] do
+      with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+        tls_controller_crt = Path.join([ctx.root, "config", "tls", "controller.crt"])
+
+        File.rm!(tls_controller_crt)
+        File.write!(request_path, "controller\n")
+
+        assert {output, 0} = run_script(script, ctx, [{"ORCHARD_TRANSPORT_MODE", mode}])
+
+        assert output =~ expected
+        assert output =~ "skipping managed TLS inspection"
+        refute output =~ "partial managed TLS state"
+        refute output =~ "Configure transport before starting controller services"
+        assert output =~ "Run next: sudo orchardctl start"
+      end)
+    end
+  end
+
+  test "postinstall legacy TLS disabled false maps to managed default" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      File.write!(request_path, "controller\n")
+
+      assert {output, 0} = run_script(script, ctx, [{"ORCHARD_TLS_DISABLED", "false"}])
+
+      assert output =~ "postinstall: tls_mode=managed_default"
+      assert output =~ "existing managed TLS certificates found; preserving"
+    end)
+  end
+
+  test "postinstall legacy TLS disabled false fails on partial managed TLS" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      tls_controller_crt = Path.join([ctx.root, "config", "tls", "controller.crt"])
+
+      File.rm!(tls_controller_crt)
+      File.write!(request_path, "controller\n")
+
+      assert {output, 1} = run_script(script, ctx, [{"ORCHARD_TLS_DISABLED", "false"}])
+
+      assert output =~ "postinstall: tls_mode=managed_default"
+      assert output =~ "partial managed TLS state"
+    end)
+  end
+
+  test "postinstall direct_https transport wins over legacy disabled" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      File.write!(request_path, "controller\n")
+
+      assert {output, 0} =
+               run_script(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "direct_https"},
+                 {"ORCHARD_TLS_DISABLED", "true"}
+               ])
+
+      assert output =~ "postinstall: tls_mode=managed_default"
+      assert output =~ "existing managed TLS certificates found; preserving"
+      refute output =~ "TLS is disabled"
+    end)
+  end
+
+  test "postinstall explicit default cert paths are external overrides" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      certfile = Path.join([ctx.root, "config", "tls", "controller.crt"])
+      keyfile = Path.join([ctx.root, "config", "tls", "controller.key"])
+      ca_key = Path.join([ctx.root, "config", "tls", "ca.key"])
+      ca_crt = Path.join([ctx.root, "config", "tls", "ca.crt"])
+
+      File.rm!(ca_key)
+      File.rm!(ca_crt)
+      File.write!(request_path, "controller\n")
+
+      assert {output, 0} =
+               run_script(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "direct_https"},
+                 {"ORCHARD_TLS_CERTFILE", certfile},
+                 {"ORCHARD_TLS_KEYFILE", keyfile}
+               ])
+
+      assert output =~ "postinstall: tls_mode=external_override"
+      assert output =~ "postinstall: external TLS files validated"
+      refute output =~ "partial managed TLS state"
+    end)
+  end
+
+  test "postinstall rejects invalid transport mode" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      File.write!(request_path, "controller\n")
+
+      assert {output, 1} = run_script(script, ctx, [{"ORCHARD_TRANSPORT_MODE", "https"}])
+
+      assert output =~
+               "ORCHARD_TRANSPORT_MODE must be reverse_proxy, direct_https, or plain_http_localhost"
+    end)
   end
 
   test "postinstall disabled or external TLS modes do not print empty-managed start guidance" do
@@ -96,7 +227,7 @@ defmodule OrchardCLI.PackagingScriptTest do
           assert output =~ "postinstall: external TLS files validated"
         end
 
-        refute output =~ "Configure TLS before starting controller services"
+        refute output =~ "Configure transport before starting controller services"
         assert output =~ "Run next: sudo orchardctl start"
       end)
     end
@@ -115,7 +246,7 @@ defmodule OrchardCLI.PackagingScriptTest do
       File.write!(stale_postgres, "stale postgres plist\n")
       File.rm!(tls_controller_crt)
 
-      assert {output, 1} = run_script(script, ctx)
+      assert {output, 1} = run_script(script, ctx, [{"ORCHARD_TRANSPORT_MODE", "direct_https"}])
       assert output =~ "partial managed TLS state"
       assert File.exists?(stale_controller)
       assert File.exists?(stale_postgres)
@@ -211,6 +342,54 @@ defmodule OrchardCLI.PackagingScriptTest do
     end
   end
 
+  test "controller wrapper rejects invalid ORCHARD_TRANSPORT_MODE with EX_CONFIG" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [{"ORCHARD_TRANSPORT_MODE", "https"}])
+
+      assert output =~ "ORCHARD_TRANSPORT_MODE has invalid value: https"
+    end)
+  end
+
+  test "controller wrapper rejects partial cert/key overrides in direct_https" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "direct_https"},
+                 {"ORCHARD_TLS_CERTFILE", "/tmp/controller.crt"}
+               ])
+
+      assert output =~
+               "ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set or both unset"
+    end)
+  end
+
+  test "controller wrapper maps legacy ORCHARD_TLS_DISABLED=false to direct_https preflight" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [{"ORCHARD_TLS_DISABLED", "false"}])
+
+      assert output =~ "ORCHARD_TLS_DISABLED=false is deprecated"
+      assert output =~ "TLS certificate not found"
+      assert output =~ "Run: sudo orchardctl tls init --no-trust"
+    end)
+  end
+
+  test "controller wrapper lets explicit plain_http_localhost win over legacy TLS envs" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "plain_http_localhost"},
+                 {"ORCHARD_TLS_DISABLED", "false"},
+                 {"ORCHARD_TLS_CERTFILE", "/missing/conflicting.crt"},
+                 {"ORCHARD_TLS_KEYFILE", "/missing/conflicting.key"}
+               ])
+
+      assert output =~ "new transport mode wins"
+      assert output =~ "fake orchard_controller start"
+    end)
+  end
+
   test "postinstall rejects group/world-writable request file" do
     with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
       stale_controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
@@ -243,6 +422,57 @@ defmodule OrchardCLI.PackagingScriptTest do
       assert File.exists?(stale_controller)
       refute File.exists?(node_agent)
     end)
+  end
+
+  defp with_temp_controller_wrapper(fun) do
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-controller-wrapper-test-#{System.unique_integer([:positive])}"
+      )
+
+    root = Path.join(tmp_dir, "Application Support/Orchard")
+    script = Path.join(tmp_dir, "orchard-controller")
+    release_bin = Path.join([root, "releases", "orchard_controller", "bin"])
+
+    ctx = %{root: root, script: script}
+
+    try do
+      File.mkdir_p!(Path.join(root, "config"))
+      File.mkdir_p!(Path.join(root, "config/tls"))
+      File.mkdir_p!(release_bin)
+
+      release = Path.join(release_bin, "orchard_controller")
+
+      File.write!(release, """
+      #!/bin/sh
+      printf 'fake orchard_controller %s\\n' "$*"
+      exit 0
+      """)
+
+      File.chmod!(release, 0o755)
+      write_test_controller_wrapper!(ctx)
+      fun.(ctx)
+    after
+      File.rm_rf(tmp_dir)
+    end
+  end
+
+  defp write_test_controller_wrapper!(ctx) do
+    content =
+      @controller_wrapper
+      |> File.read!()
+      |> String.replace(
+        ~s(ORCHARD_ROOT="/Library/Application Support/Orchard"),
+        ~s(ORCHARD_ROOT="#{ctx.root}")
+      )
+
+    File.write!(ctx.script, content)
+    File.chmod!(ctx.script, 0o755)
+  end
+
+  defp run_controller_wrapper(script, _ctx, extra_env) do
+    System.cmd("sh", [script, "start"], env: extra_env, stderr_to_stdout: true)
   end
 
   defp with_temp_postinstall(fun) do

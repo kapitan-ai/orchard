@@ -51,16 +51,16 @@ secure_source_env() {
   _uid=${_meta%%:*}
   _mode=${_meta#*:}
   if [ -z "$_meta" ]; then
-    printf 'postinstall: WARNING: could not inspect env file %s; skipping overrides\n' "$_ssf" >&2
-    return 0
+    printf 'postinstall: ERROR: could not inspect env file %s; refusing to normalize an untrusted env file\n' "$_ssf" >&2
+    return 2
   fi
   if [ "$_uid" != "0" ]; then
-    printf 'postinstall: WARNING: ignoring env file %s (owner uid=%s, expected 0)\n' "$_ssf" "$_uid" >&2
-    return 0
+    printf 'postinstall: ERROR: env file %s must be root-owned before postinstall will trust or normalize it (owner uid=%s)\n' "$_ssf" "$_uid" >&2
+    return 2
   fi
   if [ "${_mode#?}" != "00" ]; then
-    printf 'postinstall: WARNING: ignoring env file %s (mode=%s, group/world bits set)\n' "$_ssf" "$_mode" >&2
-    return 0
+    printf 'postinstall: ERROR: env file %s must not have group/world permission bits before postinstall will trust or normalize it (mode=%s)\n' "$_ssf" "$_mode" >&2
+    return 2
   fi
   set -a
   # shellcheck source=/dev/null
@@ -70,61 +70,84 @@ secure_source_env() {
 
 # resolve_tls_mode — prints one of:
 #   disabled  managed_default  external_override  invalid_override  invalid_boolean
-# Uses ORCHARD_TLS_DISABLED, ORCHARD_TLS_CERTFILE, ORCHARD_TLS_KEYFILE.
+#   invalid_transport  transport_reverse_proxy  transport_plain_http_localhost
+# Uses ORCHARD_TRANSPORT_MODE, ORCHARD_TLS_DISABLED, ORCHARD_TLS_CERTFILE, ORCHARD_TLS_KEYFILE.
 resolve_tls_mode() {
-  # 1. Check ORCHARD_TLS_DISABLED
-  # Distinguish unset (default false) from set-to-empty (invalid per runtime.exs).
+  # Validate legacy booleans first, but do not let them override an explicit
+  # ORCHARD_TRANSPORT_MODE. Invalid booleans remain structurally invalid.
+  _legacy_disabled_set=false
+  _legacy_disabled=false
   if [ -n "${ORCHARD_TLS_DISABLED+x}" ]; then
-    # Variable is set — validate its value (empty string -> invalid)
+    _legacy_disabled_set=true
     _is_rc=0
     is_truthy "$ORCHARD_TLS_DISABLED" || _is_rc=$?
     if [ "$_is_rc" -eq 0 ]; then
-      printf 'disabled'
-      return 0
-    fi
-    if [ "$_is_rc" -eq 2 ]; then
+      _legacy_disabled=true
+    elif [ "$_is_rc" -eq 2 ]; then
       printf 'invalid_boolean'
       return 0
     fi
-    # _is_rc == 1: explicitly set to false, continue
   fi
-  # If unset, default is false (TLS enabled) — continue
 
-  # 2. Check cert/key overrides
-  # Use ${VAR+x} to detect set-ness. Fail on set-to-empty.
+  # Validate legacy cert/key structure before applying transport precedence.
   _cert_set=false
   _key_set=false
   if [ -n "${ORCHARD_TLS_CERTFILE+x}" ]; then _cert_set=true; fi
   if [ -n "${ORCHARD_TLS_KEYFILE+x}" ]; then _key_set=true; fi
 
-  # 3. Exactly one set -> invalid
   if [ "$_cert_set" != "$_key_set" ]; then
     printf 'invalid_override'
     return 0
   fi
 
-  # 4. Neither set -> managed
-  if [ "$_cert_set" = false ]; then
-    printf 'managed_default'
-    return 0
-  fi
-
-  # 5. Both set — reject empty values (runtime.exs would fail on empty path)
-  if [ -z "$ORCHARD_TLS_CERTFILE" ] || [ -z "$ORCHARD_TLS_KEYFILE" ]; then
+  if [ "$_cert_set" = true ] && { [ -z "$ORCHARD_TLS_CERTFILE" ] || [ -z "$ORCHARD_TLS_KEYFILE" ]; }; then
     printf 'invalid_override'
     return 0
   fi
 
-  # 6. Both set non-empty — check if they match managed defaults
-  _default_cert="$TLS_DIR/controller.crt"
-  _default_key="$TLS_DIR/controller.key"
-  if [ "$ORCHARD_TLS_CERTFILE" = "$_default_cert" ] && \
-     [ "$ORCHARD_TLS_KEYFILE" = "$_default_key" ]; then
+  # ORCHARD_TRANSPORT_MODE is authoritative when present.
+  if [ -n "${ORCHARD_TRANSPORT_MODE+x}" ]; then
+    case "$ORCHARD_TRANSPORT_MODE" in
+      reverse_proxy)
+        printf 'transport_reverse_proxy'
+        return 0
+        ;;
+      plain_http_localhost)
+        printf 'transport_plain_http_localhost'
+        return 0
+        ;;
+      direct_https)
+        if [ "$_cert_set" = true ]; then
+          printf 'external_override'
+        else
+          printf 'managed_default'
+        fi
+        return 0
+        ;;
+      *)
+        printf 'invalid_transport'
+        return 0
+        ;;
+    esac
+  fi
+
+  # Legacy compatibility when the new transport mode is unset.
+  if [ "$_legacy_disabled" = true ]; then
+    printf 'disabled'
+    return 0
+  fi
+
+  if [ "$_legacy_disabled_set" = true ]; then
     printf 'managed_default'
     return 0
   fi
 
-  printf 'external_override'
+  if [ "$_cert_set" = true ]; then
+    printf 'external_override'
+    return 0
+  fi
+
+  printf 'transport_plain_http_localhost'
 }
 
 # inspect_managed_tls_state — prints: empty | complete | partial
@@ -372,7 +395,7 @@ printf 'postinstall: install_mode=%s reason=%s\n' "$install_mode" "$install_reas
 if [ "$install_role" = "node-agent" ]; then
   printf 'postinstall: node-agent role selected; skipping controller.env load\n'
 else
-  secure_source_env "$ORCHARD_ROOT/config/controller.env"
+  secure_source_env "$ORCHARD_ROOT/config/controller.env" || exit 1
 fi
 
 # Keep env files owner-only (0600) for security - secrets inside.
@@ -395,6 +418,24 @@ else
   tls_mode=$(resolve_tls_mode)
   printf 'postinstall: tls_mode=%s\n' "$tls_mode"
 
+  if [ -n "${ORCHARD_TRANSPORT_MODE+x}" ]; then
+    legacy_conflict=false
+    if [ -n "${ORCHARD_TLS_DISABLED+x}" ]; then
+      _lt_rc=0
+      is_truthy "$ORCHARD_TLS_DISABLED" || _lt_rc=$?
+      if { [ "$_lt_rc" -eq 0 ] && [ "$ORCHARD_TRANSPORT_MODE" != "plain_http_localhost" ]; } || \
+         { [ "$_lt_rc" -eq 1 ] && [ "$ORCHARD_TRANSPORT_MODE" = "plain_http_localhost" ]; }; then
+        legacy_conflict=true
+      fi
+    fi
+    if [ -n "${ORCHARD_TLS_CERTFILE+x}" ] && [ "$ORCHARD_TRANSPORT_MODE" != "direct_https" ]; then
+      legacy_conflict=true
+    fi
+    if [ "$legacy_conflict" = "true" ]; then
+      printf 'postinstall: WARNING: ORCHARD_TRANSPORT_MODE=%s is authoritative; conflicting legacy TLS envs are deprecated and ignored when inconsistent; new transport mode wins\n' "$ORCHARD_TRANSPORT_MODE" >&2
+    fi
+  fi
+
   case "$tls_mode" in
     invalid_boolean)
       printf 'postinstall: ERROR: ORCHARD_TLS_DISABLED has invalid value: %s\n' \
@@ -410,6 +451,27 @@ else
       exit 1
       ;;
 
+    invalid_transport)
+      printf 'postinstall: ERROR: ORCHARD_TRANSPORT_MODE must be reverse_proxy, direct_https, or plain_http_localhost (got: %s)\n' "${ORCHARD_TRANSPORT_MODE:-}" >&2
+      exit 1
+      ;;
+
+    transport_reverse_proxy)
+      printf 'postinstall: ORCHARD_TRANSPORT_MODE=reverse_proxy; skipping managed TLS inspection for proxy-terminated public HTTPS\n'
+      ;;
+
+    transport_plain_http_localhost)
+      printf 'postinstall: ORCHARD_TRANSPORT_MODE=plain_http_localhost; skipping managed TLS inspection for local/emergency HTTP\n'
+      if [ -z "${ORCHARD_TRANSPORT_MODE+x}" ]; then
+        tls_state=$(inspect_managed_tls_state)
+        if [ "$tls_state" = "complete" ]; then
+          printf 'postinstall: managed TLS files exist but default transport is plain_http_localhost; set ORCHARD_TRANSPORT_MODE=direct_https to use them.\n'
+        elif [ "$tls_state" = "partial" ]; then
+          printf 'postinstall: WARNING: partial managed TLS files exist but default transport is plain_http_localhost; direct_https will fail until TLS files are repaired.\n' >&2
+        fi
+      fi
+      ;;
+
     disabled)
       printf 'postinstall: TLS is disabled (ORCHARD_TLS_DISABLED=%s); skipping TLS setup\n' \
         "${ORCHARD_TLS_DISABLED:-}" >&2
@@ -422,9 +484,9 @@ else
       case "$tls_state" in
         empty)
           printf 'postinstall: managed TLS files are not installed; continuing without automatic certificate generation.\n'
-          printf 'postinstall: To create local generated TLS after install, run: sudo orchardctl tls init --no-trust\n'
-          printf 'postinstall: To use operator-provided TLS, set ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE.\n'
-          printf 'postinstall: For emergency/local HTTP only, set ORCHARD_TLS_DISABLED=true.\n'
+          printf 'postinstall: To use operator-provided HTTPS, set ORCHARD_TRANSPORT_MODE=direct_https with ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE.\n'
+          printf 'postinstall: To create local generated TLS, run sudo orchardctl tls init --no-trust, then set ORCHARD_TRANSPORT_MODE=direct_https.\n'
+          printf 'postinstall: For degraded local/emergency HTTP only, set ORCHARD_TRANSPORT_MODE=plain_http_localhost.\n'
           needs_tls_before_start=true
           ;;
         complete)
@@ -517,7 +579,7 @@ printf 'Orchard installation complete.\n'
 printf 'Selected install role: %s.\n' "$install_role"
 printf '%s launchd service(s) were installed but not started.\n' "$installed_services"
 if [ "$needs_tls_before_start" = "true" ]; then
-  printf 'Configure TLS before starting controller services: run sudo orchardctl tls init --no-trust, set ORCHARD_TLS_CERTFILE/ORCHARD_TLS_KEYFILE, or set ORCHARD_TLS_DISABLED=true for emergency/local HTTP.\n'
+  printf 'Configure transport before starting controller services: set ORCHARD_TRANSPORT_MODE=direct_https with operator cert/key files, run sudo orchardctl tls init --no-trust then set ORCHARD_TRANSPORT_MODE=direct_https, or set ORCHARD_TRANSPORT_MODE=plain_http_localhost for degraded local/emergency HTTP.\n'
   printf 'Then run: sudo orchardctl start\n'
 else
   printf 'Run next: sudo orchardctl start\n'

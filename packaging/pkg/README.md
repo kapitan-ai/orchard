@@ -523,20 +523,21 @@ Packaged-host lifecycle smoke completed on 2026-04-18 against an actual PKG + la
 
 ## Controller Transport Behavior
 
-The packaged controller defaults to **HTTPS**. Transport mode is resolved
-at both install time (`postinstall`) and each service start (wrapper boot gate
-and `config/runtime.exs`).
+The packaged controller is certificate-provider-neutral. The PKG does not generate, procure, or trust TLS certificate material by default. Transport mode is resolved at install time (`postinstall`) for diagnostics and at each service start (wrapper boot gate and `config/runtime.exs`) for runtime behavior.
 
 ### Mode resolution
 
 | Mode | Condition | Listener |
 |------|-----------|----------|
-| `managed_default` | No cert/key overrides, or overrides match managed defaults | HTTPS on `ORCHARD_API_BIND_IP`:`ORCHARD_API_HTTPS_PORT` |
-| `external_override` | Both `ORCHARD_TLS_CERTFILE` and `ORCHARD_TLS_KEYFILE` set to non-default paths | HTTPS on `ORCHARD_API_BIND_IP`:`ORCHARD_API_HTTPS_PORT` |
-| `disabled` | `ORCHARD_TLS_DISABLED` set to a truthy value | HTTP on `127.0.0.1`:`PORT` (loopback only) |
+| `plain_http_localhost` | Default when `ORCHARD_TRANSPORT_MODE` is unset and no legacy TLS env selects HTTPS; also explicit `ORCHARD_TRANSPORT_MODE=plain_http_localhost` | HTTP on `127.0.0.1`:`PORT` (degraded local/emergency mode) |
+| `direct_https` | `ORCHARD_TRANSPORT_MODE=direct_https`; uses operator-provided `ORCHARD_TLS_CERTFILE`/`ORCHARD_TLS_KEYFILE` or explicit local-CA helper output | HTTPS on `ORCHARD_API_BIND_IP`:`ORCHARD_API_HTTPS_PORT` |
+| `reverse_proxy` | `ORCHARD_TRANSPORT_MODE=reverse_proxy`; public HTTPS is terminated by an operator-managed proxy | local/private HTTP backend on `PORT` |
+
+Legacy `ORCHARD_TLS_DISABLED`, `ORCHARD_TLS_CERTFILE`, `ORCHARD_TLS_KEYFILE`, and `ORCHARD_TLS_CACERTFILE` are one-release compatibility shims. `ORCHARD_TRANSPORT_MODE` is authoritative when set; inconsistent legacy values emit warnings and are ignored unless structurally invalid.
 
 **Invalid configurations that prevent startup:**
 
+- `ORCHARD_TRANSPORT_MODE` set to an unrecognized value
 - `ORCHARD_TLS_DISABLED` set to an unrecognized value (not truthy or falsy)
 - Only one of `ORCHARD_TLS_CERTFILE` / `ORCHARD_TLS_KEYFILE` set
 - Either cert or key override set to an empty string
@@ -556,14 +557,15 @@ All variables are set via `controller.env` or the process environment:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port |
-| `ORCHARD_API_BIND_IP` | `0.0.0.0` | HTTPS bind IP address |
+| `ORCHARD_TRANSPORT_MODE` | `plain_http_localhost` | Primary transport mode: `plain_http_localhost`, `direct_https`, or `reverse_proxy` |
+| `PORT` | `4000` | HTTP backend port for `plain_http_localhost` and `reverse_proxy` |
+| `ORCHARD_API_HTTPS_PORT` | `8443` | HTTPS listen port for `direct_https` |
+| `ORCHARD_API_BIND_IP` | `0.0.0.0` | HTTPS bind IP address for `direct_https` |
 | `ORCHARD_PUBLIC_HOST` | `localhost` | Browser-visible hostname or IP. **Required when accessing the console from a non-`localhost` host** (e.g. Tailscale IP, domain name). Must match the browser origin exactly. |
-| `PORT` | `4000` | HTTP port (only used when TLS is disabled) |
-| `ORCHARD_TLS_CERTFILE` | `config/tls/controller.crt` | Server certificate path |
-| `ORCHARD_TLS_KEYFILE` | `config/tls/controller.key` | Server private key path |
-| `ORCHARD_TLS_CACERTFILE` | `config/tls/ca.crt` | CA certificate path (for `/ca.crt` endpoint and validation) |
-| `ORCHARD_TLS_DISABLED` | `false` | Set to a truthy value for emergency loopback HTTP mode |
+| `ORCHARD_TLS_CERTFILE` | _(unset)_ | Legacy shim / `direct_https` operator certificate path |
+| `ORCHARD_TLS_KEYFILE` | _(unset)_ | Legacy shim / `direct_https` operator private key path |
+| `ORCHARD_TLS_CACERTFILE` | _(unset)_ | Optional CA certificate path for generated local CA or operator validation |
+| `ORCHARD_TLS_DISABLED` | _(unset)_ | Legacy shim: truthy maps to `plain_http_localhost`; explicit false maps to `direct_https` during compatibility window |
 | `ORCHARD_CORS_ORIGINS` | _(empty)_ | Comma-separated CORS origin allowlist (see below) |
 
 Truthy values for `ORCHARD_TLS_DISABLED`: `1`, `true`, `TRUE`, `yes`, `YES`, `on`, `ON`
@@ -786,17 +788,23 @@ the controller HTTPS listener.
 - **Services are stopped during upgrade and NOT auto-restarted** — run
   `sudo orchardctl start` after upgrade to restore services
 
-### TLS modes
+### Transport modes
 
-The installer and controller wrapper resolve TLS mode from `controller.env`:
+The installer and controller wrapper resolve transport from `ORCHARD_TRANSPORT_MODE`, with legacy TLS variables accepted only as one-release compatibility shims:
 
 | Mode | Condition | Installer behavior |
 |------|-----------|--------------------|
-| `managed_default` | No cert/key overrides set | Print guidance and continue if empty; preserve if complete; fail if partial |
-| `external_override` | Both `ORCHARD_TLS_CERTFILE` and `ORCHARD_TLS_KEYFILE` set | Skip generation; validate files exist |
-| `disabled` | `ORCHARD_TLS_DISABLED=true` | Skip generation; controller runs HTTP-only (loopback) |
+| `plain_http_localhost` | Default with no transport/TLS env, or explicit `ORCHARD_TRANSPORT_MODE=plain_http_localhost` | Skip managed TLS inspection; controller runs degraded HTTP on loopback |
+| `direct_https` | `ORCHARD_TRANSPORT_MODE=direct_https` | Use operator cert/key env vars or explicit local generated TLS; validate configured files |
+| `reverse_proxy` | `ORCHARD_TRANSPORT_MODE=reverse_proxy` | Skip managed TLS inspection; public HTTPS terminates at the operator-managed proxy |
 
-**Invalid configurations that abort install:**
+Legacy shims:
+- `ORCHARD_TLS_DISABLED=true` maps to `plain_http_localhost` when `ORCHARD_TRANSPORT_MODE` is unset.
+- `ORCHARD_TLS_DISABLED=false` maps to `direct_https` managed-default behavior when `ORCHARD_TRANSPORT_MODE` is unset.
+- `ORCHARD_TLS_CERTFILE` / `ORCHARD_TLS_KEYFILE` map to `direct_https` operator-provided certs when `ORCHARD_TRANSPORT_MODE` is unset.
+
+**Invalid configurations that abort install/startup:**
+- `ORCHARD_TRANSPORT_MODE` set to an unrecognized value
 - Only one of `ORCHARD_TLS_CERTFILE` / `ORCHARD_TLS_KEYFILE` set
 - `ORCHARD_TLS_DISABLED` set to unrecognized value
 
@@ -867,10 +875,11 @@ installed role:
 2. Install PKG
 3. Run `sudo orchardctl env init` (auto-configures environment)
 4. Run `sudo orchard-controller eval 'Orchard.Release.migrate()'` (database, for controller/all roles)
-5. Choose a currently supported controller TLS path before starting controller/all roles:
-   - run `sudo orchardctl tls init --no-trust` for explicit local generated TLS;
-   - set `ORCHARD_TLS_CERTFILE` and `ORCHARD_TLS_KEYFILE` for externally managed certificates;
-   - or set `ORCHARD_TLS_DISABLED=true` only for emergency/local HTTP operation.
+5. Choose a controller transport before starting controller/all roles:
+   - set `ORCHARD_TRANSPORT_MODE=direct_https` with `ORCHARD_TLS_CERTFILE` and `ORCHARD_TLS_KEYFILE` for externally managed certificates;
+   - run `sudo orchardctl tls init --no-trust`, then set `ORCHARD_TRANSPORT_MODE=direct_https` for explicit local generated TLS;
+   - set `ORCHARD_TRANSPORT_MODE=reverse_proxy` when an operator-managed proxy terminates public HTTPS;
+   - or set `ORCHARD_TRANSPORT_MODE=plain_http_localhost` only for degraded local/emergency HTTP operation.
 6. Run `sudo orchardctl start` (bootstraps role-selected services)
 
 This deferred bootstrap ensures services start with valid environment and TLS

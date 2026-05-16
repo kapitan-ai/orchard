@@ -68,8 +68,10 @@ defmodule OrchardApplicationTest do
     # CORS explicitly empty
     assert endpoint_config[:cors_origins] == []
 
-    # Transport not degraded
-    assert Application.get_env(:orchard_controller, :transport_degraded, false) == false
+    # Loopback HTTP is the degraded local/default transport.
+    assert Application.get_env(:orchard_controller, :transport_mode) == :plain_http_localhost
+    assert Application.get_env(:orchard_controller, :transport_cert_source) == :unknown
+    assert Application.get_env(:orchard_controller, :transport_degraded, false) == true
   end
 
   test "test environment has deterministic console config defaults" do

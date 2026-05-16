@@ -1007,8 +1007,9 @@ defmodule OrchardCLI.Commands.TLS do
     #{trust_line}
 
       Next steps:
-        1. Restart the controller to use the new certificates
-        2. Install the CA on LAN clients via: https://<host>:8443/ca.crt
+        1. Set ORCHARD_TRANSPORT_MODE=direct_https for the controller
+        2. Restart the controller to use the new certificates
+        3. Install the CA on LAN clients via: https://<host>:8443/ca.crt
     """
     |> String.trim()
   end

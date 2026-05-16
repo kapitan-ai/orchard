@@ -5,8 +5,13 @@ defmodule Orchard.API.CACertControllerTest do
 
   # Save and restore endpoint config around each test
   setup do
-    original = Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
-    on_exit(fn -> Application.put_env(:orchard_controller, Orchard.API.Endpoint, original) end)
+    original_endpoint = Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
+    original_cert_source = Application.get_env(:orchard_controller, :transport_cert_source)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, Orchard.API.Endpoint, original_endpoint)
+      Application.put_env(:orchard_controller, :transport_cert_source, original_cert_source)
+    end)
 
     tmp_dir =
       Path.join(System.tmp_dir!(), "orchard_ca_test_#{System.unique_integer([:positive])}")
@@ -14,7 +19,9 @@ defmodule Orchard.API.CACertControllerTest do
     File.mkdir_p!(tmp_dir)
     on_exit(fn -> File.rm_rf!(tmp_dir) end)
 
-    {:ok, tmp_dir: tmp_dir, original_config: original}
+    Application.put_env(:orchard_controller, :transport_cert_source, :generated_local_ca)
+
+    {:ok, tmp_dir: tmp_dir, original_config: original_endpoint}
   end
 
   defp put_ca_config(ca_certfile, meta_path) do
@@ -67,6 +74,26 @@ defmodule Orchard.API.CACertControllerTest do
         |> call_router()
 
       assert conn.status == 404
+    end
+
+    test "returns 404 when transport cert source is not generated_local_ca", %{tmp_dir: tmp_dir} do
+      ca_path = Path.join(tmp_dir, "ca.crt")
+      meta_path = Path.join(tmp_dir, "meta.json")
+
+      pem_content = "-----BEGIN CERTIFICATE-----\nMIIBfake...\n-----END CERTIFICATE-----\n"
+      File.write!(ca_path, pem_content)
+      File.write!(meta_path, Jason.encode!(%{"source" => "generated_local_ca"}))
+      put_ca_config(ca_path, meta_path)
+
+      for source <- [:operator_provided, :unknown] do
+        Application.put_env(:orchard_controller, :transport_cert_source, source)
+
+        conn =
+          Plug.Test.conn(:get, "/ca.crt")
+          |> call_router()
+
+        assert conn.status == 404
+      end
     end
 
     test "returns 404 when CA cert file does not exist but metadata is valid", %{tmp_dir: tmp_dir} do
