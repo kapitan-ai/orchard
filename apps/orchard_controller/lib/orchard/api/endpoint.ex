@@ -38,6 +38,8 @@ defmodule Orchard.API.Endpoint do
 
   plug(Plug.RequestId)
   plug(Plug.Telemetry, event_prefix: [:orchard, :api])
+  plug(Orchard.API.TrustedForwardedHeaders)
+  plug(Plug.RewriteOn, [:x_forwarded_proto, :x_forwarded_host, :x_forwarded_port])
   plug(Plug.Head)
   plug(Orchard.API.CORS)
   plug(Orchard.API.SentryContextBoundary)

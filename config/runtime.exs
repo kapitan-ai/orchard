@@ -111,6 +111,52 @@ env_ip = fn env_name, default_string ->
   end
 end
 
+loopback_ip? = fn
+  {127, _b, _c, _d} -> true
+  {0, 0, 0, 0, 0, 0, 0, 1} -> true
+  _other -> false
+end
+
+parse_trusted_proxy_cidr! = fn cidr ->
+  with [ip_string, prefix_string] <- String.split(cidr, "/", parts: 2),
+       {:ok, ip_tuple} <- :inet.parse_address(String.to_charlist(ip_string)),
+       {prefix, ""} <- Integer.parse(prefix_string) do
+    max_prefix = if tuple_size(ip_tuple) == 4, do: 32, else: 128
+
+    if prefix >= 0 and prefix <= max_prefix do
+      {ip_tuple, prefix}
+    else
+      raise "ORCHARD_TRUSTED_PROXIES contains invalid CIDR #{inspect(cidr)}"
+    end
+  else
+    _other ->
+      raise "ORCHARD_TRUSTED_PROXIES contains invalid CIDR #{inspect(cidr)}"
+  end
+end
+
+trusted_proxy_cidrs = fn ->
+  case System.get_env("ORCHARD_TRUSTED_PROXIES") do
+    nil ->
+      [{{127, 0, 0, 1}, 32}, {{0, 0, 0, 0, 0, 0, 0, 1}, 128}]
+
+    _raw ->
+      values = env_csv.("ORCHARD_TRUSTED_PROXIES", [])
+
+      if values == [] do
+        raise "ORCHARD_TRUSTED_PROXIES must contain at least one CIDR when set"
+      end
+
+      Enum.map(values, parse_trusted_proxy_cidr!)
+  end
+end
+
+trusted_proxies_set? = fn ->
+  case System.get_env("ORCHARD_TRUSTED_PROXIES") do
+    nil -> false
+    value -> String.trim(value) != ""
+  end
+end
+
 validate_cors_origin! = fn origin ->
   cond do
     origin == "*" ->
@@ -754,7 +800,7 @@ if config_env() == :prod do
              )
 
       # --- Transport listener configuration ---
-      {transport_config, url_config, transport_degraded?} =
+      {transport_config, url_config, transport_degraded?, trusted_proxies} =
         case transport_mode do
           :plain_http_localhost ->
             http_port = env_int.("PORT", "4000")
@@ -771,13 +817,21 @@ if config_env() == :prod do
             """)
 
             {[http: [ip: {127, 0, 0, 1}, port: http_port]],
-             [host: "localhost", port: http_port, scheme: "http"], true}
+             [host: "localhost", port: http_port, scheme: "http"], true, []}
 
           :reverse_proxy ->
             http_port = env_int.("PORT", "4000")
+            bind_ip = env_ip.("ORCHARD_API_BIND_IP", "127.0.0.1")
+            trusted_proxies = trusted_proxy_cidrs.()
 
-            {[http: [ip: {127, 0, 0, 1}, port: http_port]],
-             [host: public_host, port: 443, scheme: "https"], false}
+            if not loopback_ip?.(bind_ip) and not trusted_proxies_set?.() do
+              raise "ORCHARD_TRUSTED_PROXIES must be set when reverse_proxy binds to a non-loopback address"
+            end
+
+            public_port = env_int.("ORCHARD_PUBLIC_PORT", "443")
+
+            {[http: [ip: bind_ip, port: http_port]],
+             [host: public_host, port: public_port, scheme: "https"], false, trusted_proxies}
 
           :direct_https ->
             https_port = env_int.("ORCHARD_API_HTTPS_PORT", "8443")
@@ -792,7 +846,7 @@ if config_env() == :prod do
                  keyfile: keyfile,
                  cipher_suite: :strong
                ]
-             ], [host: public_host, port: https_port, scheme: "https"], false}
+             ], [host: public_host, port: https_port, scheme: "https"], false, []}
         end
 
       config :orchard_controller,
@@ -807,6 +861,20 @@ if config_env() == :prod do
           [ca_certfile: nil, ca_cert_metadata_path: nil]
         end
 
+      check_origin_config =
+        if transport_mode == :reverse_proxy do
+          public_port = Keyword.fetch!(url_config, :port)
+
+          public_origin =
+            if public_port == 443,
+              do: "https://#{public_host}",
+              else: "https://#{public_host}:#{public_port}"
+
+          [check_origin: [public_origin], trusted_proxies: trusted_proxies]
+        else
+          [trusted_proxies: trusted_proxies]
+        end
+
       config :orchard_controller,
              Orchard.API.Endpoint,
              transport_config ++
@@ -815,7 +883,7 @@ if config_env() == :prod do
                  url: url_config,
                  secret_key_base: secret_key_base,
                  cors_origins: cors_origins
-               ] ++ ca_endpoint_config
+               ] ++ check_origin_config ++ ca_endpoint_config
 
     "orchard_cli" ->
       database_url = System.get_env("DATABASE_URL")

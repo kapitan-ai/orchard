@@ -52,7 +52,7 @@ defmodule Orchard.RuntimeTransportTest do
     assert output =~ "new transport mode wins"
   end
 
-  test "SPEC 10.7: reverse_proxy uses an HTTP backend with unknown cert source", %{
+  test "SPEC 10.7: reverse_proxy uses an HTTP backend with public URL config", %{
     support_root: support_root
   } do
     install_generated_local_ca!(support_root)
@@ -60,6 +60,7 @@ defmodule Orchard.RuntimeTransportTest do
     config =
       read_controller_config!(support_root, %{
         "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_PUBLIC_HOST" => "orchard.example.test",
         "PORT" => "4010"
       })
 
@@ -70,6 +71,92 @@ defmodule Orchard.RuntimeTransportTest do
     assert config[:transport_degraded] == false
     assert endpoint[:http] == [ip: {127, 0, 0, 1}, port: 4010]
     assert endpoint[:https] == nil
+    assert endpoint[:url] == [host: "orchard.example.test", port: 443, scheme: "https"]
+    assert endpoint[:check_origin] == ["https://orchard.example.test"]
+    assert endpoint[:trusted_proxies] == [{{127, 0, 0, 1}, 32}, {{0, 0, 0, 0, 0, 0, 0, 1}, 128}]
+  end
+
+  test "SPEC 10.7: reverse_proxy uses ORCHARD_PUBLIC_PORT in public URL config", %{
+    support_root: support_root
+  } do
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_PUBLIC_HOST" => "orchard.example.test",
+        "ORCHARD_PUBLIC_PORT" => "9443"
+      })
+
+    endpoint = Keyword.fetch!(config, Orchard.API.Endpoint)
+
+    assert endpoint[:url] == [host: "orchard.example.test", port: 9443, scheme: "https"]
+    assert endpoint[:check_origin] == ["https://orchard.example.test:9443"]
+  end
+
+  test "SPEC 10.7: reverse_proxy accepts explicit trusted proxy CIDRs", %{
+    support_root: support_root
+  } do
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_TRUSTED_PROXIES" => "10.0.0.0/24, 2001:db8::/32"
+      })
+
+    endpoint = Keyword.fetch!(config, Orchard.API.Endpoint)
+
+    assert endpoint[:trusted_proxies] == [
+             {{10, 0, 0, 0}, 24},
+             {{8193, 3512, 0, 0, 0, 0, 0, 0}, 32}
+           ]
+  end
+
+  test "SPEC 10.7: reverse_proxy explicit empty trusted proxy list fails closed", %{
+    support_root: support_root
+  } do
+    assert_raise RuntimeError, ~r/ORCHARD_TRUSTED_PROXIES must contain at least one CIDR/, fn ->
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_API_BIND_IP" => "0.0.0.0",
+        "ORCHARD_TRUSTED_PROXIES" => ", ,"
+      })
+    end
+  end
+
+  test "SPEC 10.7: reverse_proxy malformed trusted proxy CIDR fails closed", %{
+    support_root: support_root
+  } do
+    assert_raise RuntimeError, ~r/ORCHARD_TRUSTED_PROXIES contains invalid CIDR/, fn ->
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_TRUSTED_PROXIES" => "10.0.0.0/not-a-prefix"
+      })
+    end
+  end
+
+  test "SPEC 10.7: reverse_proxy non-loopback bind requires explicit trusted proxies", %{
+    support_root: support_root
+  } do
+    assert_raise RuntimeError, ~r/ORCHARD_TRUSTED_PROXIES must be set/, fn ->
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_API_BIND_IP" => "0.0.0.0"
+      })
+    end
+  end
+
+  test "SPEC 10.7: reverse_proxy allows non-loopback bind with explicit trusted proxies", %{
+    support_root: support_root
+  } do
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_API_BIND_IP" => "0.0.0.0",
+        "ORCHARD_TRUSTED_PROXIES" => "10.0.0.0/24"
+      })
+
+    endpoint = Keyword.fetch!(config, Orchard.API.Endpoint)
+
+    assert endpoint[:http] == [ip: {0, 0, 0, 0}, port: 4000]
+    assert endpoint[:trusted_proxies] == [{{10, 0, 0, 0}, 24}]
   end
 
   test "SPEC 10.7: direct_https cert/key overrides set transport_cert_source operator_provided",
