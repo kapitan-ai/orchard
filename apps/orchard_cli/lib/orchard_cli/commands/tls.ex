@@ -3,7 +3,7 @@ defmodule OrchardCLI.Commands.TLS do
   CLI handler for `orchardctl tls` commands.
 
   Supports:
-    orchardctl tls init [options]     — Generate local CA + server certificates
+    orchardctl tls init [options]     — Local CA / dev-lab bootstrap helper
     orchardctl tls trust-ca [options] — Trust the CA in macOS System Keychain
   """
 
@@ -989,8 +989,9 @@ defmodule OrchardCLI.Commands.TLS do
     ca_label = if data.reused_ca?, do: "(reused existing CA)", else: "(newly generated)"
 
     """
-    ✅ TLS certificates generated successfully
+    ✅ Local CA bootstrap certificates generated successfully
 
+      Intended use:  dev-lab or local evaluation direct HTTPS
       Output:        #{data.output_dir}
 
       CA Certificate #{ca_label}:
@@ -1035,7 +1036,7 @@ defmodule OrchardCLI.Commands.TLS do
     Usage: orchardctl tls <command>
 
     Commands:
-      init       Generate local CA + server certificates
+      init       local CA / dev-lab bootstrap helper
       trust-ca   Trust the CA in macOS System Keychain
 
     Run 'orchardctl tls <command> --help' for details.
@@ -1047,8 +1048,9 @@ defmodule OrchardCLI.Commands.TLS do
     """
     Usage: orchardctl tls init [options]
 
-    Generate a local CA and CA-signed server certificate for the
-    Orchard controller's HTTPS listener.
+    Use this local CA / dev-lab bootstrap helper for explicit direct HTTPS.
+    This is not the default production TLS path; use operator-managed
+    certificates or reverse-proxy termination for production deployments.
 
     Options:
       --output-dir PATH    Output directory (default: <support_root>/config/tls)

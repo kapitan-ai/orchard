@@ -76,6 +76,7 @@ defmodule OrchardCLI.Commands.TLSTest do
     assert {:error, message, 1} = TLS.run([])
     assert message =~ "orchardctl tls <command>"
     assert message =~ "init"
+    assert message =~ "local CA / dev-lab bootstrap helper"
     assert message =~ "trust-ca"
   end
 
@@ -99,6 +100,8 @@ defmodule OrchardCLI.Commands.TLSTest do
   test "init --help returns init usage" do
     assert {:ok, message} = TLS.run(["init", "--help"])
     assert message =~ "orchardctl tls init"
+    assert message =~ "local CA / dev-lab bootstrap helper"
+    assert message =~ "not the default production TLS path"
     assert message =~ "--output-dir"
     assert message =~ "--force"
   end
@@ -253,7 +256,8 @@ defmodule OrchardCLI.Commands.TLSTest do
       )
 
     assert {:ok, message} = result
-    assert message =~ "TLS certificates generated successfully"
+    assert message =~ "Local CA bootstrap certificates generated successfully"
+    assert message =~ "dev-lab or local evaluation"
     assert message =~ "test.local"
     assert message =~ "Skipped (--no-trust)"
 
@@ -358,7 +362,7 @@ defmodule OrchardCLI.Commands.TLSTest do
                real_runtime()
              )
 
-    assert message =~ "TLS certificates generated successfully"
+    assert message =~ "Local CA bootstrap certificates generated successfully"
 
     new_ca = File.read!(Path.join(dir, "ca.crt"))
     assert new_ca != original_ca
