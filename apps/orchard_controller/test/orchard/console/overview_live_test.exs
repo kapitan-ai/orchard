@@ -232,7 +232,16 @@ defmodule OrchardConsole.OverviewLiveTest do
       )
     )
 
-    on_exit(fn -> Application.put_env(:orchard_controller, :console, previous) end)
+    previous_mode = Application.get_env(:orchard_controller, :transport_mode)
+    previous_cert_source = Application.get_env(:orchard_controller, :transport_cert_source)
+    previous_degraded = Application.get_env(:orchard_controller, :transport_degraded)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :console, previous)
+      Application.put_env(:orchard_controller, :transport_mode, previous_mode)
+      Application.put_env(:orchard_controller, :transport_cert_source, previous_cert_source)
+      Application.put_env(:orchard_controller, :transport_degraded, previous_degraded)
+    end)
 
     # LiveView runs in a separate process; share the DB sandbox
     Sandbox.mode(Orchard.Repo, {:shared, self()})
@@ -502,6 +511,32 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "migrations_current"
       assert html =~ "public_api_https_enabled"
     end
+
+    test "renders mode-aware public API transport copy for reverse proxy", %{conn: conn} do
+      Application.put_env(:orchard_controller, :transport_mode, :reverse_proxy)
+      Application.put_env(:orchard_controller, :transport_cert_source, :unknown)
+      Application.put_env(:orchard_controller, :transport_degraded, true)
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      readiness = view |> element("#overview-readiness") |> render()
+      assert readiness =~ "Public API transport"
+      assert readiness =~ "Reverse proxy HTTPS"
+      assert readiness =~ "cert source: unknown"
+    end
+
+    test "renders degraded local HTTP copy for plain localhost mode", %{conn: conn} do
+      Application.put_env(:orchard_controller, :transport_mode, :plain_http_localhost)
+      Application.put_env(:orchard_controller, :transport_cert_source, :unknown)
+      Application.put_env(:orchard_controller, :transport_degraded, false)
+
+      {:ok, view, _html} = live(conn, "/console")
+
+      readiness = view |> element("#overview-readiness") |> render()
+      assert readiness =~ "Plain HTTP localhost"
+      assert readiness =~ "local development or break-glass"
+      assert readiness =~ "Blocked"
+    end
   end
 
   describe "model and request data" do
@@ -665,15 +700,18 @@ defmodule OrchardConsole.OverviewLiveTest do
 
   describe "quickstart state with passing readiness" do
     setup do
+      prev_mode = Application.get_env(:orchard_controller, :transport_mode)
       prev_transport = Application.get_env(:orchard_controller, :transport_degraded)
       prev_db = Application.get_env(:orchard_controller, :enable_db_checks)
       prev_repo = Application.get_env(:orchard_controller, :start_repo)
 
+      Application.put_env(:orchard_controller, :transport_mode, :direct_https)
       Application.put_env(:orchard_controller, :transport_degraded, false)
       Application.put_env(:orchard_controller, :enable_db_checks, true)
       Application.put_env(:orchard_controller, :start_repo, true)
 
       on_exit(fn ->
+        Application.put_env(:orchard_controller, :transport_mode, prev_mode)
         Application.put_env(:orchard_controller, :transport_degraded, prev_transport)
         Application.put_env(:orchard_controller, :enable_db_checks, prev_db)
         Application.put_env(:orchard_controller, :start_repo, prev_repo)
@@ -1154,19 +1192,22 @@ defmodule OrchardConsole.OverviewLiveTest do
   end
 
   describe "ready+health hero status copy" do
-    # Force readiness to :ok by disabling transport_degraded.
+    # Force readiness to :ok with an HTTPS-capable transport mode.
     # This exercises the hero_health_copy/2 and hero_worker_state_copy/2 branches.
     setup do
       # Force all readiness checks to pass so readiness.status == :ok
+      prev_mode = Application.get_env(:orchard_controller, :transport_mode)
       prev_transport = Application.get_env(:orchard_controller, :transport_degraded)
       prev_db = Application.get_env(:orchard_controller, :enable_db_checks)
       prev_repo = Application.get_env(:orchard_controller, :start_repo)
 
+      Application.put_env(:orchard_controller, :transport_mode, :direct_https)
       Application.put_env(:orchard_controller, :transport_degraded, false)
       Application.put_env(:orchard_controller, :enable_db_checks, true)
       Application.put_env(:orchard_controller, :start_repo, true)
 
       on_exit(fn ->
+        Application.put_env(:orchard_controller, :transport_mode, prev_mode)
         Application.put_env(:orchard_controller, :transport_degraded, prev_transport)
         Application.put_env(:orchard_controller, :enable_db_checks, prev_db)
         Application.put_env(:orchard_controller, :start_repo, prev_repo)

@@ -3,7 +3,7 @@ defmodule Orchard.API.HealthController do
 
   use Phoenix.Controller, formats: [:json]
 
-  alias Orchard.API.Readiness
+  alias Orchard.API.{Readiness, Transport}
 
   @runtime_probe_timeout_ms 1_000
 
@@ -53,7 +53,8 @@ defmodule Orchard.API.HealthController do
       version: Orchard.version(),
       build_ref: Orchard.BuildInfo.git_sha(),
       build_date: Orchard.BuildInfo.build_date(),
-      build_channel: Orchard.BuildInfo.build_channel()
+      build_channel: Orchard.BuildInfo.build_channel(),
+      transport: Transport.metadata()
     }
   end
 

@@ -6,7 +6,7 @@ defmodule OrchardConsole.OverviewLive do
 
   use OrchardConsole, :live_view
 
-  alias Orchard.API.{Endpoint, Readiness}
+  alias Orchard.API.{Endpoint, Readiness, Transport}
   alias Orchard.Governance
   alias Orchard.Models
   alias Orchard.Models.Model
@@ -423,7 +423,15 @@ defmodule OrchardConsole.OverviewLive do
 
           <.table id="overview-readiness" rows={@readiness.rows}>
             <:col :let={row} label="Check">
-              <span class="font-mono text-xs">{row.key}</span>
+              <div class="space-y-1">
+                <span class="font-mono text-xs">{row.key}</span>
+                <p :if={row.label} class="text-sm font-medium text-slate-900 dark:text-slate-100">
+                  {row.label}
+                </p>
+                <p :if={row.description} class="text-xs text-slate-500 dark:text-slate-400">
+                  {row.description}
+                </p>
+              </div>
             </:col>
             <:col :let={row} label="Status" class="text-right" header_class="text-right">
               <div class="flex justify-end">
@@ -599,7 +607,10 @@ defmodule OrchardConsole.OverviewLive do
   end
 
   defp assign_loading_state(socket) do
-    loading_rows = Enum.map(@readiness_check_order, &%{key: &1, status: :unknown})
+    loading_rows =
+      %{}
+      |> build_readiness_rows(Transport.metadata())
+      |> Enum.map(&%{&1 | status: :unknown})
 
     readiness = %{
       status: :loading,
@@ -662,9 +673,11 @@ defmodule OrchardConsole.OverviewLive do
   end
 
   defp fetch_readiness do
+    transport = Transport.metadata()
+
     case Readiness.status() do
       {:ok, checks} ->
-        rows = build_readiness_rows(checks)
+        rows = build_readiness_rows(checks, transport)
 
         %{
           status: :ok,
@@ -675,7 +688,7 @@ defmodule OrchardConsole.OverviewLive do
         }
 
       {:error, _reason, checks} ->
-        rows = build_readiness_rows(checks)
+        rows = build_readiness_rows(checks, transport)
 
         %{
           status: :error,
@@ -687,7 +700,10 @@ defmodule OrchardConsole.OverviewLive do
     end
   rescue
     _ ->
-      rows = Enum.map(@readiness_check_order, &%{key: &1, status: :unknown})
+      rows =
+        %{}
+        |> build_readiness_rows(Transport.metadata())
+        |> Enum.map(&%{&1 | status: :unknown})
 
       %{
         status: :unavailable,
@@ -994,10 +1010,38 @@ defmodule OrchardConsole.OverviewLive do
   # Readiness helpers
   # ===========================================================================
 
-  defp build_readiness_rows(checks) do
+  defp build_readiness_rows(checks, transport) do
     Enum.map(@readiness_check_order, fn key ->
-      %{key: key, status: if(Map.get(checks, key, false), do: :ok, else: :error)}
+      Map.merge(readiness_row_metadata(key, transport), %{
+        key: key,
+        status: if(Map.get(checks, key, false), do: :ok, else: :error)
+      })
     end)
+  end
+
+  defp readiness_row_metadata(:public_api_https_enabled, transport) do
+    %{
+      label: "Public API transport",
+      description: transport_mode_description(transport)
+    }
+  end
+
+  defp readiness_row_metadata(_key, _transport), do: %{label: nil, description: nil}
+
+  defp transport_mode_description(%{mode: "direct_https", cert_source: source}) do
+    "Direct HTTPS · cert source: #{source}"
+  end
+
+  defp transport_mode_description(%{mode: "reverse_proxy", cert_source: source}) do
+    "Reverse proxy HTTPS · cert source: #{source}"
+  end
+
+  defp transport_mode_description(%{mode: "plain_http_localhost", cert_source: source}) do
+    "Plain HTTP localhost · local development or break-glass mode · cert source: #{source}"
+  end
+
+  defp transport_mode_description(%{mode: mode, cert_source: source}) do
+    "#{mode} · cert source: #{source}"
   end
 
   # ===========================================================================

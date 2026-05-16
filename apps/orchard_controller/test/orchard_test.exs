@@ -27,37 +27,51 @@ defmodule OrchardTest do
     refute Release.migrations_current?()
   end
 
-  test "readiness reason priority: postgres_reachable before transport_degraded" do
-    # When both DB and transport are degraded, reason must be postgres_reachable
-    previous = Application.get_env(:orchard_controller, :transport_degraded, false)
-    Application.put_env(:orchard_controller, :transport_degraded, true)
+  test "readiness derives public API HTTPS from transport mode, not legacy degraded shim" do
+    previous_mode = Application.get_env(:orchard_controller, :transport_mode)
+    previous_degraded = Application.get_env(:orchard_controller, :transport_degraded, false)
 
     on_exit(fn ->
-      Application.put_env(:orchard_controller, :transport_degraded, previous)
+      Application.put_env(:orchard_controller, :transport_mode, previous_mode)
+      Application.put_env(:orchard_controller, :transport_degraded, previous_degraded)
     end)
 
-    assert {:error, :postgres_reachable, checks} = Readiness.status()
-    assert checks.postgres_reachable == false
-    assert checks.migrations_current == false
-    assert checks.public_api_https_enabled == false
+    Application.put_env(:orchard_controller, :transport_mode, :direct_https)
+    Application.put_env(:orchard_controller, :transport_degraded, true)
+
+    assert {:error, :postgres_reachable, direct_checks} = Readiness.status()
+    assert direct_checks.public_api_https_enabled == true
+
+    Application.put_env(:orchard_controller, :transport_mode, :reverse_proxy)
+    assert {:error, :postgres_reachable, proxy_checks} = Readiness.status()
+    assert proxy_checks.public_api_https_enabled == true
+
+    Application.put_env(:orchard_controller, :transport_mode, :plain_http_localhost)
+    Application.put_env(:orchard_controller, :transport_degraded, false)
+
+    assert {:error, :postgres_reachable, local_checks} = Readiness.status()
+    assert local_checks.public_api_https_enabled == false
   end
 
-  test "readiness reason: public_api_https_enabled is primary when only transport is degraded" do
+  test "readiness reason: public_api_https_enabled is primary when only transport mode is degraded" do
     # Exercise the scenario where DB checks pass but transport is degraded.
     # The Repo is already started by test_helper.exs; enable DB checks and
     # check out a sandbox connection so postgres_reachable returns true,
     # isolating public_api_https_enabled as the sole failure.
+    previous_mode = Application.get_env(:orchard_controller, :transport_mode)
     previous_degraded = Application.get_env(:orchard_controller, :transport_degraded, false)
     previous_db_checks = Application.get_env(:orchard_controller, :enable_db_checks, true)
     previous_start_repo = Application.get_env(:orchard_controller, :start_repo, true)
 
-    Application.put_env(:orchard_controller, :transport_degraded, true)
+    Application.put_env(:orchard_controller, :transport_mode, :plain_http_localhost)
+    Application.put_env(:orchard_controller, :transport_degraded, false)
     Application.put_env(:orchard_controller, :enable_db_checks, true)
     Application.put_env(:orchard_controller, :start_repo, true)
 
     :ok = Sandbox.checkout(Orchard.Repo)
 
     on_exit(fn ->
+      Application.put_env(:orchard_controller, :transport_mode, previous_mode)
       Application.put_env(:orchard_controller, :transport_degraded, previous_degraded)
       Application.put_env(:orchard_controller, :enable_db_checks, previous_db_checks)
       Application.put_env(:orchard_controller, :start_repo, previous_start_repo)

@@ -80,7 +80,17 @@ defmodule Orchard.API.HealthControllerTest do
       )
     )
 
-    on_exit(fn -> Application.put_env(:orchard_controller, :console, previous) end)
+    previous_mode = Application.get_env(:orchard_controller, :transport_mode)
+    previous_cert_source = Application.get_env(:orchard_controller, :transport_cert_source)
+    previous_degraded = Application.get_env(:orchard_controller, :transport_degraded)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :console, previous)
+      Application.put_env(:orchard_controller, :transport_mode, previous_mode)
+      Application.put_env(:orchard_controller, :transport_cert_source, previous_cert_source)
+      Application.put_env(:orchard_controller, :transport_degraded, previous_degraded)
+    end)
+
     :ok
   end
 
@@ -112,7 +122,14 @@ defmodule Orchard.API.HealthControllerTest do
     assert body["checks"]["controller_boot_completed"] == true
     assert body["checks"]["postgres_reachable"] == false
     assert body["checks"]["migrations_current"] == false
-    assert body["checks"]["public_api_https_enabled"] == true
+    assert body["checks"]["public_api_https_enabled"] == false
+
+    assert body["transport"] == %{
+             "mode" => "plain_http_localhost",
+             "degraded" => true,
+             "cert_source" => "unknown"
+           }
+
     # Runtime summary is additive and does not affect HTTP status
     assert is_map(body["runtime"])
 
@@ -124,13 +141,10 @@ defmodule Orchard.API.HealthControllerTest do
            }
   end
 
-  test "health ready endpoint reflects transport degraded state", %{conn: _conn} do
-    previous = Application.get_env(:orchard_controller, :transport_degraded, false)
+  test "health ready reports mode-aware transport metadata", %{conn: _conn} do
+    Application.put_env(:orchard_controller, :transport_mode, :direct_https)
+    Application.put_env(:orchard_controller, :transport_cert_source, :operator_provided)
     Application.put_env(:orchard_controller, :transport_degraded, true)
-
-    on_exit(fn ->
-      Application.put_env(:orchard_controller, :transport_degraded, previous)
-    end)
 
     conn =
       build_conn(:get, "/health/ready")
@@ -139,12 +153,79 @@ defmodule Orchard.API.HealthControllerTest do
 
     body = Jason.decode!(conn.resp_body)
 
+    assert body["transport"] == %{
+             "mode" => "direct_https",
+             "degraded" => false,
+             "cert_source" => "operator_provided"
+           }
+
+    assert body["checks"]["public_api_https_enabled"] == true
+  end
+
+  test "health ready marks plain localhost HTTP as degraded regardless of legacy shim", %{
+    conn: _conn
+  } do
+    Application.put_env(:orchard_controller, :transport_mode, :plain_http_localhost)
+    Application.put_env(:orchard_controller, :transport_cert_source, :unknown)
+    Application.put_env(:orchard_controller, :transport_degraded, false)
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    body = Jason.decode!(conn.resp_body)
+
+    assert body["transport"] == %{
+             "mode" => "plain_http_localhost",
+             "degraded" => true,
+             "cert_source" => "unknown"
+           }
+
     assert conn.status == 503
     assert body["status"] == "error"
     # Causal priority: postgres_reachable fails before public_api_https_enabled
     assert body["reason"] == "postgres_reachable"
     assert body["checks"]["postgres_reachable"] == false
     assert body["checks"]["migrations_current"] == false
+    assert body["checks"]["public_api_https_enabled"] == false
+  end
+
+  test "health ready constrains cert source to direct HTTPS mode", %{conn: _conn} do
+    Application.put_env(:orchard_controller, :transport_mode, :reverse_proxy)
+    Application.put_env(:orchard_controller, :transport_cert_source, :operator_provided)
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    body = Jason.decode!(conn.resp_body)
+
+    assert body["transport"] == %{
+             "mode" => "reverse_proxy",
+             "degraded" => false,
+             "cert_source" => "unknown"
+           }
+  end
+
+  test "health ready treats unknown transport mode as degraded", %{conn: _conn} do
+    Application.put_env(:orchard_controller, :transport_mode, :bogus)
+    Application.put_env(:orchard_controller, :transport_cert_source, :operator_provided)
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    body = Jason.decode!(conn.resp_body)
+
+    assert body["transport"] == %{
+             "mode" => "unknown",
+             "degraded" => true,
+             "cert_source" => "unknown"
+           }
+
     assert body["checks"]["public_api_https_enabled"] == false
   end
 

@@ -1,6 +1,7 @@
 defmodule Orchard.API.Readiness do
   @moduledoc false
 
+  alias Orchard.API.Transport
   alias Orchard.Release
 
   # Causal priority for failure-reason selection.
@@ -50,9 +51,7 @@ defmodule Orchard.API.Readiness do
     Release.migrations_current?()
   end
 
-  defp public_api_https_enabled? do
-    not Application.get_env(:orchard_controller, :transport_degraded, false)
-  end
+  defp public_api_https_enabled?, do: Transport.public_api_https_enabled?()
 
   defp first_failure(checks) do
     Enum.find_value(@check_priority, :unknown, fn key ->
