@@ -105,6 +105,11 @@ resolve_tls_mode() {
     return 0
   fi
 
+  if [ -n "${ORCHARD_TLS_CACERTFILE+x}" ] && [ -z "$ORCHARD_TLS_CACERTFILE" ]; then
+    printf 'invalid_ca_override'
+    return 0
+  fi
+
   # ORCHARD_TRANSPORT_MODE is authoritative when present.
   if [ -n "${ORCHARD_TRANSPORT_MODE+x}" ]; then
     case "$ORCHARD_TRANSPORT_MODE" in
@@ -448,6 +453,11 @@ else
       printf 'postinstall: ERROR: ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set (non-empty) or both unset\n' >&2
       printf 'postinstall:   ORCHARD_TLS_CERTFILE=%s\n' "${ORCHARD_TLS_CERTFILE:-<unset>}" >&2
       printf 'postinstall:   ORCHARD_TLS_KEYFILE=%s\n' "${ORCHARD_TLS_KEYFILE:-<unset>}" >&2
+      exit 1
+      ;;
+
+    invalid_ca_override)
+      printf 'postinstall: ERROR: ORCHARD_TLS_CACERTFILE must not be empty\n' >&2
       exit 1
       ;;
 

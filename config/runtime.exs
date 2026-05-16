@@ -237,17 +237,9 @@ parse_cert_time = fn
     )
 end
 
-validate_tls_material! = fn certfile, keyfile ->
-  # --- Validate certificate file ---
-  unless File.exists?(certfile) do
-    raise "TLS certificate file not found: #{certfile}\nGenerate with: orchardctl tls init"
-  end
-
-  unless File.regular?(certfile) do
-    raise "TLS certificate path is not a regular file: #{certfile}"
-  end
-
-  cert_pem = File.read!(certfile)
+decode_certificate_pem! = fn pem_path, material_name ->
+  material_label = if material_name == "", do: "", else: material_name <> " "
+  cert_pem = File.read!(pem_path)
   cert_entries = :public_key.pem_decode(cert_pem)
 
   cert_entry =
@@ -257,11 +249,92 @@ validate_tls_material! = fn certfile, keyfile ->
     end)
 
   unless cert_entry do
-    raise "TLS certificate file contains no certificate PEM entry: #{certfile}"
+    raise "TLS #{material_label}certificate file contains no certificate PEM entry: #{pem_path}"
   end
 
   {:Certificate, cert_der, :not_encrypted} = cert_entry
-  otp_cert = :public_key.pkix_decode_cert(cert_der, :otp)
+
+  otp_cert =
+    try do
+      :public_key.pkix_decode_cert(cert_der, :otp)
+    rescue
+      _ ->
+        reraise RuntimeError,
+                [message: "TLS #{material_label}certificate PEM is malformed: #{pem_path}"],
+                __STACKTRACE__
+    end
+
+  {cert_der, otp_cert}
+end
+
+certificate_public_key! = fn otp_cert, certfile ->
+  public_key_info = otp_cert |> elem(1) |> elem(7)
+
+  case public_key_info do
+    {:OTPSubjectPublicKeyInfo, {:PublicKeyAlgorithm, {1, 2, 840, 113_549, 1, 1, 1}, _},
+     {:RSAPublicKey, _, _} = public_key} ->
+      {:rsa, public_key}
+
+    {:OTPSubjectPublicKeyInfo, {:PublicKeyAlgorithm, {1, 2, 840, 10_045, 2, 1}, parameters},
+     {:ECPoint, _} = public_key} ->
+      {:ec, parameters, public_key}
+
+    _other ->
+      raise "TLS certificate contains an unsupported public key algorithm: #{certfile}"
+  end
+end
+
+private_key_public_key! = fn key_entry, keyfile ->
+  decoded_key =
+    try do
+      :public_key.pem_entry_decode(key_entry)
+    rescue
+      _ ->
+        reraise RuntimeError,
+                [
+                  message:
+                    "TLS private key file contains no supported private key PEM entry: #{keyfile}"
+                ],
+                __STACKTRACE__
+    end
+
+  case decoded_key do
+    {:RSAPrivateKey, _version, modulus, public_exponent, _private_exponent, _prime1, _prime2,
+     _exponent1, _exponent2, _coefficient, _other_prime_infos} ->
+      {:rsa, {:RSAPublicKey, modulus, public_exponent}}
+
+    {:ECPrivateKey, _version, _private_key, parameters, public_key, _attributes} ->
+      {:ec, parameters, {:ECPoint, public_key}}
+
+    _other ->
+      raise "TLS private key file contains no supported private key PEM entry: #{keyfile}"
+  end
+end
+
+validate_ca_material! = fn cacertfile ->
+  unless File.exists?(cacertfile) do
+    raise "TLS CA certificate file not found: #{cacertfile}"
+  end
+
+  unless File.regular?(cacertfile) do
+    raise "TLS CA certificate path is not a regular file: #{cacertfile}"
+  end
+
+  decode_certificate_pem!.(cacertfile, "CA")
+  :ok
+end
+
+validate_tls_material! = fn certfile, keyfile, cacertfile ->
+  # --- Validate certificate file ---
+  unless File.exists?(certfile) do
+    raise "TLS certificate file not found: #{certfile}\nGenerate with: orchardctl tls init"
+  end
+
+  unless File.regular?(certfile) do
+    raise "TLS certificate path is not a regular file: #{certfile}"
+  end
+
+  {_cert_der, otp_cert} = decode_certificate_pem!.(certfile, "")
 
   # Navigate OTP record structure (positions are ASN.1-standardized, stable across OTP versions):
   #   OTPCertificate{tbsCertificate, ...}  -> elem 1
@@ -325,6 +398,17 @@ validate_tls_material! = fn certfile, keyfile ->
     else
       raise "TLS private key file contains no supported private key PEM entry: #{keyfile}"
     end
+  end
+
+  cert_public_key = certificate_public_key!.(otp_cert, certfile)
+  key_public_key = private_key_public_key!.(key_entry, keyfile)
+
+  unless cert_public_key == key_public_key do
+    raise "TLS certificate and private key do not match: #{certfile} / #{keyfile}"
+  end
+
+  if is_binary(cacertfile) do
+    validate_ca_material!.(cacertfile)
   end
 
   :ok
@@ -572,13 +656,19 @@ if config_env() == :prod do
 
       # TLS file paths
       tls_dir = Path.join([orchard_support_root, "config", "tls"])
-      certfile = System.get_env("ORCHARD_TLS_CERTFILE") || Path.join(tls_dir, "controller.crt")
-      keyfile = System.get_env("ORCHARD_TLS_KEYFILE") || Path.join(tls_dir, "controller.key")
-      cacertfile = System.get_env("ORCHARD_TLS_CACERTFILE") || Path.join(tls_dir, "ca.crt")
-      ca_meta_path = Path.join(Path.dirname(cacertfile), ".orchard-tls-meta.json")
-
       default_certfile = Path.join(tls_dir, "controller.crt")
       default_keyfile = Path.join(tls_dir, "controller.key")
+      default_cacertfile = Path.join(tls_dir, "ca.crt")
+
+      if System.get_env("ORCHARD_TLS_CACERTFILE") == "" do
+        raise "ORCHARD_TLS_CACERTFILE must not be empty"
+      end
+
+      certfile = System.get_env("ORCHARD_TLS_CERTFILE") || default_certfile
+      keyfile = System.get_env("ORCHARD_TLS_KEYFILE") || default_keyfile
+      cacertfile = System.get_env("ORCHARD_TLS_CACERTFILE") || default_cacertfile
+      ca_meta_path = Path.join(tls_dir, ".orchard-tls-meta.json")
+
       cert_override? = not is_nil(System.get_env("ORCHARD_TLS_CERTFILE"))
       key_override? = not is_nil(System.get_env("ORCHARD_TLS_KEYFILE"))
 
@@ -799,6 +889,18 @@ if config_env() == :prod do
                )
              )
 
+      if (transport_cert_source == :generated_local_ca and
+            System.get_env("ORCHARD_TLS_CACERTFILE")) &&
+           Path.expand(cacertfile) != Path.expand(default_cacertfile) do
+        raise "ORCHARD_TLS_CACERTFILE cannot override generated-local CA publication; unset it or use direct HTTPS operator-provided certificates"
+      end
+
+      cacertfile_for_validation =
+        if System.get_env("ORCHARD_TLS_CACERTFILE") ||
+             transport_cert_source == :generated_local_ca,
+           do: cacertfile,
+           else: nil
+
       # --- Transport listener configuration ---
       {transport_config, url_config, transport_degraded?, trusted_proxies} =
         case transport_mode do
@@ -836,7 +938,7 @@ if config_env() == :prod do
           :direct_https ->
             https_port = env_int.("ORCHARD_API_HTTPS_PORT", "8443")
             bind_ip = env_ip.("ORCHARD_API_BIND_IP", "0.0.0.0")
-            validate_tls_material!.(certfile, keyfile)
+            validate_tls_material!.(certfile, keyfile, cacertfile_for_validation)
 
             {[
                https: [

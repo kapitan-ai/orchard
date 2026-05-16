@@ -184,6 +184,83 @@ defmodule Orchard.RuntimeTransportTest do
     assert endpoint[:https][:keyfile] == keyfile
   end
 
+  test "SPEC 10.7: direct_https rejects mismatched certificate and private key", %{
+    support_root: support_root
+  } do
+    tls_dir = Path.join(support_root, "external-tls")
+    certfile = Path.join(tls_dir, "operator.crt")
+    matching_keyfile = Path.join(tls_dir, "operator.key")
+    mismatched_certfile = Path.join(tls_dir, "other.crt")
+    mismatched_keyfile = Path.join(tls_dir, "other.key")
+
+    generate_self_signed_cert!(certfile, matching_keyfile)
+    generate_self_signed_cert!(mismatched_certfile, mismatched_keyfile)
+
+    assert_raise RuntimeError, ~r/TLS certificate and private key do not match/, fn ->
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "direct_https",
+        "ORCHARD_TLS_CERTFILE" => certfile,
+        "ORCHARD_TLS_KEYFILE" => mismatched_keyfile
+      })
+    end
+  end
+
+  test "SPEC 10.7: direct_https rejects expired certificate", %{support_root: support_root} do
+    tls_dir = Path.join(support_root, "external-tls")
+    certfile = Path.join(tls_dir, "operator.crt")
+    keyfile = Path.join(tls_dir, "operator.key")
+
+    generate_self_signed_cert!(certfile, keyfile)
+    rewrite_certificate_not_after!(certfile, "200101000000Z")
+
+    assert_raise RuntimeError, ~r/TLS certificate has expired/, fn ->
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "direct_https",
+        "ORCHARD_TLS_CERTFILE" => certfile,
+        "ORCHARD_TLS_KEYFILE" => keyfile
+      })
+    end
+  end
+
+  test "SPEC 10.7: direct_https rejects encrypted private key", %{support_root: support_root} do
+    tls_dir = Path.join(support_root, "external-tls")
+    certfile = Path.join(tls_dir, "operator.crt")
+    keyfile = Path.join(tls_dir, "operator-encrypted.key")
+
+    generate_self_signed_cert_with_encrypted_key!(certfile, keyfile)
+
+    assert_raise RuntimeError, ~r/TLS private key is encrypted/, fn ->
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "direct_https",
+        "ORCHARD_TLS_CERTFILE" => certfile,
+        "ORCHARD_TLS_KEYFILE" => keyfile
+      })
+    end
+  end
+
+  test "SPEC 10.7: direct_https rejects malformed configured CA certificate", %{
+    support_root: support_root
+  } do
+    tls_dir = Path.join(support_root, "external-tls")
+    certfile = Path.join(tls_dir, "operator.crt")
+    keyfile = Path.join(tls_dir, "operator.key")
+    cacertfile = Path.join(tls_dir, "ca.crt")
+
+    generate_self_signed_cert!(certfile, keyfile)
+    File.write!(cacertfile, "not a PEM certificate\n")
+
+    assert_raise RuntimeError,
+                 ~r/TLS CA certificate file contains no certificate PEM entry/,
+                 fn ->
+                   read_controller_config!(support_root, %{
+                     "ORCHARD_TRANSPORT_MODE" => "direct_https",
+                     "ORCHARD_TLS_CERTFILE" => certfile,
+                     "ORCHARD_TLS_KEYFILE" => keyfile,
+                     "ORCHARD_TLS_CACERTFILE" => cacertfile
+                   })
+                 end
+  end
+
   test "SPEC 10.7: direct_https explicit default paths with generated-local metadata sets operator_provided",
        %{
          support_root: support_root
@@ -203,6 +280,105 @@ defmodule Orchard.RuntimeTransportTest do
 
     assert config[:transport_mode] == :direct_https
     assert config[:transport_cert_source] == :operator_provided
+  end
+
+  test "SPEC 10.7: direct_https ignores malformed or nested generated-local metadata",
+       %{
+         support_root: support_root
+       } do
+    tls_dir = Path.join([support_root, "config", "tls"])
+    certfile = Path.join(tls_dir, "controller.crt")
+    keyfile = Path.join(tls_dir, "controller.key")
+    cacertfile = Path.join(tls_dir, "ca.crt")
+    meta_path = Path.join(tls_dir, ".orchard-tls-meta.json")
+
+    for metadata <- [
+          "not-json",
+          ~s({"source":"generated_local_ca",}),
+          Jason.encode!(%{"nested" => %{"source" => "generated_local_ca"}})
+        ] do
+      generate_self_signed_cert!(certfile, keyfile)
+      File.cp!(certfile, cacertfile)
+      File.write!(meta_path, metadata)
+
+      config =
+        read_controller_config!(support_root, %{
+          "ORCHARD_TRANSPORT_MODE" => "direct_https"
+        })
+
+      assert config[:transport_mode] == :direct_https
+      assert config[:transport_cert_source] == :unknown
+    end
+  end
+
+  test "SPEC 10.7: direct_https rejects empty configured CA certificate path", %{
+    support_root: support_root
+  } do
+    tls_dir = Path.join(support_root, "external-tls")
+    certfile = Path.join(tls_dir, "operator.crt")
+    keyfile = Path.join(tls_dir, "operator.key")
+
+    generate_self_signed_cert!(certfile, keyfile)
+
+    assert_raise RuntimeError, ~r/ORCHARD_TLS_CACERTFILE must not be empty/, fn ->
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "direct_https",
+        "ORCHARD_TLS_CERTFILE" => certfile,
+        "ORCHARD_TLS_KEYFILE" => keyfile,
+        "ORCHARD_TLS_CACERTFILE" => ""
+      })
+    end
+  end
+
+  test "SPEC 10.7: direct_https rejects generated-local CA override",
+       %{
+         support_root: support_root
+       } do
+    tls_dir = Path.join([support_root, "config", "tls"])
+    external_dir = Path.join(support_root, "external-tls")
+    certfile = Path.join(tls_dir, "controller.crt")
+    keyfile = Path.join(tls_dir, "controller.key")
+    cacertfile = Path.join(tls_dir, "ca.crt")
+    operator_ca = Path.join(external_dir, "operator-ca.crt")
+    meta_path = Path.join(tls_dir, ".orchard-tls-meta.json")
+
+    generate_self_signed_cert!(certfile, keyfile)
+    File.cp!(certfile, cacertfile)
+    File.mkdir_p!(external_dir)
+    File.cp!(certfile, operator_ca)
+    File.write!(meta_path, Jason.encode!(%{"source" => "generated_local_ca"}))
+
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_TLS_CACERTFILE cannot override generated-local CA publication/,
+                 fn ->
+                   read_controller_config!(support_root, %{
+                     "ORCHARD_TRANSPORT_MODE" => "direct_https",
+                     "ORCHARD_TLS_CACERTFILE" => operator_ca
+                   })
+                 end
+  end
+
+  test "SPEC 10.7: direct_https allows generated-local default CA path override",
+       %{
+         support_root: support_root
+       } do
+    tls_dir = Path.join([support_root, "config", "tls"])
+    certfile = Path.join(tls_dir, "controller.crt")
+    keyfile = Path.join(tls_dir, "controller.key")
+    cacertfile = Path.join(tls_dir, "ca.crt")
+    meta_path = Path.join(tls_dir, ".orchard-tls-meta.json")
+
+    generate_self_signed_cert!(certfile, keyfile)
+    File.cp!(certfile, cacertfile)
+    File.write!(meta_path, Jason.encode!(%{"source" => "generated_local_ca"}))
+
+    config =
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "direct_https",
+        "ORCHARD_TLS_CACERTFILE" => Path.join([tls_dir, "..", "tls", "ca.crt"])
+      })
+
+    assert config[:transport_cert_source] == :generated_local_ca
   end
 
   test "SPEC 10.7: direct_https generated-local metadata sets transport_cert_source generated_local_ca",
@@ -359,6 +535,53 @@ defmodule Orchard.RuntimeTransportTest do
       )
 
     assert status == 0, output
+  end
+
+  defp generate_self_signed_cert_with_encrypted_key!(certfile, keyfile) do
+    openssl =
+      System.find_executable("openssl") || flunk("openssl is required for TLS config tests")
+
+    File.mkdir_p!(Path.dirname(certfile))
+    File.mkdir_p!(Path.dirname(keyfile))
+
+    {output, status} =
+      System.cmd(
+        openssl,
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-keyout",
+          keyfile,
+          "-passout",
+          "pass:orchard-test",
+          "-out",
+          certfile,
+          "-days",
+          "365",
+          "-subj",
+          "/CN=localhost"
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
+  end
+
+  defp rewrite_certificate_not_after!(certfile, replacement_utc_time) do
+    [{:Certificate, cert_der, :not_encrypted}] =
+      certfile
+      |> File.read!()
+      |> :public_key.pem_decode()
+
+    otp_cert = :public_key.pkix_decode_cert(cert_der, :otp)
+    validity = otp_cert |> elem(1) |> elem(5)
+    {:utcTime, not_after_chars} = elem(validity, 2)
+    not_after = List.to_string(not_after_chars)
+
+    rewritten_der = :binary.replace(cert_der, not_after, replacement_utc_time, [:global])
+    File.write!(certfile, :public_key.pem_encode([{:Certificate, rewritten_der, :not_encrypted}]))
   end
 
   defp clear_config_env! do

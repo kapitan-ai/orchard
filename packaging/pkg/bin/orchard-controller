@@ -4,12 +4,13 @@ set -eu
 # Loads optional env overrides from config dir before starting the release.
 # Env files must be root-owned with no group/world permissions (e.g. 0600).
 #
-# Transport boot gate: validates mode and TLS file presence before exec'ing
-# the release. Does NOT perform X.509 parsing — that remains in config/runtime.exs.
+# Transport boot gate: validates mode and TLS material before exec'ing
+# the release. Keep this preflight contract aligned with config/runtime.exs.
 
 ORCHARD_ROOT="/Library/Application Support/Orchard"
 ENV_FILE="$ORCHARD_ROOT/config/controller.env"
 TLS_DIR="$ORCHARD_ROOT/config/tls"
+TLS_META="$TLS_DIR/.orchard-tls-meta.json"
 
 # --- Secure env-file sourcing ---------------------------------------------
 _env_provenance="missing"
@@ -55,6 +56,104 @@ _tls_is_truthy() {
   esac
 }
 
+_tls_openssl() {
+    command -v openssl 2>/dev/null || true
+}
+
+_tls_cleanup_tmp() {
+    if [ -n "${_tls_tmp_dir:-}" ]; then
+        rm -rf "$_tls_tmp_dir"
+    fi
+}
+
+_tls_fail() {
+    _tls_cleanup_tmp
+    printf 'orchard-controller: ERROR: %s\n' "$1" >&2
+    exit 78
+}
+
+_tls_meta_is_generated_local_ca() {
+    [ -f "$TLS_META" ] || return 1
+    command -v plutil >/dev/null 2>&1 || return 1
+    _tls_meta_compact=$(tr -d '[:space:]' <"$TLS_META" 2>/dev/null || true)
+    case "$_tls_meta_compact" in
+        *,\}) return 1 ;;
+    esac
+    _tls_meta_source=$(plutil -extract source raw -o - "$TLS_META" 2>/dev/null || true)
+    [ "$_tls_meta_source" = "generated_local_ca" ]
+}
+
+_tls_abs_path() {
+    _path=$1
+    _dir=$(dirname "$_path")
+    _base=$(basename "$_path")
+    if [ -d "$_dir" ]; then
+        (cd "$_dir" && printf '%s/%s\n' "$(pwd -P)" "$_base")
+    else
+        case "$_path" in
+            /*) printf '%s\n' "$_path" ;;
+            *) printf '%s/%s\n' "$(pwd -P)" "$_path" ;;
+        esac
+    fi
+}
+
+_validate_tls_pem_contract() {
+    _certfile=$1
+    _keyfile=$2
+    _cacertfile=${3:-}
+
+    _openssl=$(_tls_openssl)
+    if [ -z "$_openssl" ]; then
+        _tls_fail "openssl is required to validate TLS certificate material before startup"
+    fi
+
+    if ! "$_openssl" x509 -in "$_certfile" -noout >/dev/null 2>&1; then
+        _tls_fail "TLS certificate file is malformed or contains no certificate PEM entry: $_certfile"
+    fi
+
+    if ! "$_openssl" x509 -in "$_certfile" -checkend 0 -noout >/dev/null 2>&1; then
+        _tls_fail "TLS certificate has expired or is not currently valid: $_certfile"
+    fi
+
+    _tls_not_before=$("$_openssl" x509 -in "$_certfile" -noout -startdate 2>/dev/null | sed 's/^notBefore=//') || \
+        _tls_fail "could not read TLS certificate validity window: $_certfile"
+    _tls_not_before_epoch=$(LC_ALL=C TZ=UTC date -j -f '%b %e %T %Y %Z' "$_tls_not_before" '+%s' 2>/dev/null) || \
+        _tls_fail "could not parse TLS certificate validity window: $_certfile"
+    _tls_now_epoch=$(date -u '+%s') || _tls_fail "could not determine current time for TLS certificate validation"
+    if [ "$_tls_not_before_epoch" -gt "$_tls_now_epoch" ]; then
+        _tls_fail "TLS certificate is not valid yet: $_certfile"
+    fi
+
+    _tls_tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/orchard-tls-preflight.XXXXXX") || \
+        _tls_fail "could not create temporary directory for TLS preflight"
+    trap _tls_cleanup_tmp EXIT HUP INT TERM
+
+    if ! "$_openssl" x509 -in "$_certfile" -pubkey -noout >"$_tls_tmp_dir/cert.pub" 2>/dev/null; then
+        _tls_fail "could not read TLS certificate public key: $_certfile"
+    fi
+
+    if grep -Eq 'ENCRYPTED|Proc-Type: 4,ENCRYPTED' "$_keyfile" 2>/dev/null; then
+        _tls_fail "TLS private key is encrypted (passphrase-protected keys are not supported): $_keyfile"
+    fi
+
+    if ! "$_openssl" pkey -in "$_keyfile" -pubout -passin pass: >"$_tls_tmp_dir/key.pub" 2>/dev/null; then
+        _tls_fail "TLS private key file contains no supported private key PEM entry: $_keyfile"
+    fi
+
+    if ! cmp -s "$_tls_tmp_dir/cert.pub" "$_tls_tmp_dir/key.pub"; then
+        _tls_fail "TLS certificate and private key do not match: $_certfile / $_keyfile"
+    fi
+
+    _tls_cleanup_tmp
+    trap - EXIT HUP INT TERM
+
+    if [ -n "$_cacertfile" ]; then
+        if ! "$_openssl" x509 -in "$_cacertfile" -noout >/dev/null 2>&1; then
+            _tls_fail "TLS CA certificate file is malformed or contains no certificate PEM entry: $_cacertfile"
+        fi
+    fi
+}
+
 _cert_set=false
 _key_set=false
 if [ -n "${ORCHARD_TLS_CERTFILE+x}" ]; then _cert_set=true; fi
@@ -89,6 +188,11 @@ if [ "$_cert_set" = true ]; then
         printf 'orchard-controller: ERROR: ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must not be empty\n' >&2
         exit 78
     fi
+fi
+
+if [ -n "${ORCHARD_TLS_CACERTFILE+x}" ] && [ -z "$ORCHARD_TLS_CACERTFILE" ]; then
+    printf 'orchard-controller: ERROR: ORCHARD_TLS_CACERTFILE must not be empty\n' >&2
+    exit 78
 fi
 
 if [ -n "${ORCHARD_TRANSPORT_MODE+x}" ]; then
@@ -146,6 +250,11 @@ if [ "$_transport_mode" = "direct_https" ]; then
         _is_managed=false
     fi
 
+    _generated_local_ca=false
+    if [ "$_is_managed" = true ] && _tls_meta_is_generated_local_ca; then
+        _generated_local_ca=true
+    fi
+
     if [ ! -f "$_eff_cert" ]; then
         printf 'orchard-controller: ERROR: TLS certificate not found: %s\n' "$_eff_cert" >&2
         if [ "$_is_managed" = true ]; then
@@ -162,16 +271,32 @@ if [ "$_transport_mode" = "direct_https" ]; then
         exit 78
     fi
 
-    if [ "$_is_managed" = true ]; then
-        if [ ! -f "$_eff_ca" ]; then
-            printf 'orchard-controller: WARNING: CA certificate not found: %s (/ca.crt endpoint may be unavailable)\n' "$_eff_ca" >&2
+    if [ "$_generated_local_ca" = true ] && [ -n "${ORCHARD_TLS_CACERTFILE+x}" ] && [ -n "${ORCHARD_TLS_CACERTFILE}" ]; then
+        _eff_ca_abs=$(_tls_abs_path "$_eff_ca")
+        _default_ca_abs=$(_tls_abs_path "$TLS_DIR/ca.crt")
+        if [ "$_eff_ca_abs" != "$_default_ca_abs" ]; then
+            printf 'orchard-controller: ERROR: ORCHARD_TLS_CACERTFILE cannot override generated-local CA publication; unset it or use direct HTTPS operator-provided certificates\n' >&2
+            exit 78
         fi
+    fi
+
+    _ca_for_validation=""
+    if [ "$_is_managed" = true ] && [ "$_generated_local_ca" = true ]; then
+        if [ ! -f "$_eff_ca" ]; then
+            printf 'orchard-controller: ERROR: CA certificate not found: %s\n' "$_eff_ca" >&2
+            printf 'orchard-controller: Run: sudo orchardctl tls init --no-trust\n' >&2
+            exit 78
+        fi
+        _ca_for_validation="$_eff_ca"
     elif [ -n "${ORCHARD_TLS_CACERTFILE+x}" ] && [ -n "${ORCHARD_TLS_CACERTFILE}" ]; then
         if [ ! -f "$_eff_ca" ]; then
             printf 'orchard-controller: ERROR: CA certificate not found: %s\n' "$_eff_ca" >&2
             exit 78
         fi
+        _ca_for_validation="$_eff_ca"
     fi
+
+    _validate_tls_pem_contract "$_eff_cert" "$_eff_key" "$_ca_for_validation"
 fi
 
 exec "$ORCHARD_ROOT/releases/orchard_controller/bin/orchard_controller" "$@"

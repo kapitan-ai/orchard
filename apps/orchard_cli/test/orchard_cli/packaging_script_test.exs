@@ -179,6 +179,15 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
+  test "postinstall rejects empty CA certificate override" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      File.write!(request_path, "controller\n")
+
+      assert {output, 1} = run_script_with_empty_ca(script, ctx)
+      assert output =~ "ORCHARD_TLS_CACERTFILE must not be empty"
+    end)
+  end
+
   test "postinstall rejects invalid transport mode" do
     with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
       File.write!(request_path, "controller\n")
@@ -364,6 +373,238 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
+  test "controller wrapper rejects encrypted private keys in direct_https" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      tls_dir = Path.join(ctx.root, "external-tls")
+      certfile = Path.join(tls_dir, "operator.crt")
+      keyfile = Path.join(tls_dir, "operator-encrypted.key")
+
+      generate_self_signed_cert_with_encrypted_key!(certfile, keyfile)
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "direct_https"},
+                 {"ORCHARD_TLS_CERTFILE", certfile},
+                 {"ORCHARD_TLS_KEYFILE", keyfile}
+               ])
+
+      assert output =~ "TLS private key is encrypted"
+      refute output =~ "BEGIN ENCRYPTED PRIVATE KEY"
+    end)
+  end
+
+  test "controller wrapper rejects mismatched cert/key overrides in direct_https" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      tls_dir = Path.join(ctx.root, "external-tls")
+      certfile = Path.join(tls_dir, "operator.crt")
+      matching_keyfile = Path.join(tls_dir, "operator.key")
+      mismatched_certfile = Path.join(tls_dir, "other.crt")
+      mismatched_keyfile = Path.join(tls_dir, "other.key")
+
+      generate_self_signed_cert!(certfile, matching_keyfile)
+      generate_self_signed_cert!(mismatched_certfile, mismatched_keyfile)
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "direct_https"},
+                 {"ORCHARD_TLS_CERTFILE", certfile},
+                 {"ORCHARD_TLS_KEYFILE", mismatched_keyfile}
+               ])
+
+      assert output =~ "TLS certificate and private key do not match"
+      refute output =~ "BEGIN PRIVATE KEY"
+    end)
+  end
+
+  test "controller wrapper allows default-path direct_https without generated-local metadata CA" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      tls_dir = Path.join([ctx.root, "config", "tls"])
+      certfile = Path.join(tls_dir, "controller.crt")
+      keyfile = Path.join(tls_dir, "controller.key")
+      cacertfile = Path.join(tls_dir, "ca.crt")
+
+      generate_self_signed_cert!(certfile, keyfile)
+      File.rm(cacertfile)
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [{"ORCHARD_TRANSPORT_MODE", "direct_https"}])
+
+      assert output =~ "fake orchard_controller start"
+    end)
+  end
+
+  test "controller wrapper ignores malformed or nested generated-local metadata" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      tls_dir = Path.join([ctx.root, "config", "tls"])
+      certfile = Path.join(tls_dir, "controller.crt")
+      keyfile = Path.join(tls_dir, "controller.key")
+      cacertfile = Path.join(tls_dir, "ca.crt")
+      meta_path = Path.join(tls_dir, ".orchard-tls-meta.json")
+
+      for metadata <- [
+            "not-json",
+            ~s({"source":"generated_local_ca",}),
+            ~s({"nested":{"source":"generated_local_ca"}})
+          ] do
+        generate_self_signed_cert!(certfile, keyfile)
+        File.rm(cacertfile)
+        File.write!(meta_path, metadata)
+
+        assert {output, 0} =
+                 run_controller_wrapper(script, ctx, [{"ORCHARD_TRANSPORT_MODE", "direct_https"}])
+
+        assert output =~ "fake orchard_controller start"
+      end
+    end)
+  end
+
+  test "controller wrapper rejects empty configured CA certificate path" do
+    with_temp_controller_wrapper(fn %{script: script} ->
+      assert {output, 78} =
+               run_controller_wrapper_shell(
+                 script,
+                 "ORCHARD_TRANSPORT_MODE=direct_https ORCHARD_TLS_CACERTFILE= exec \"$1\" start"
+               )
+
+      assert output =~ "ORCHARD_TLS_CACERTFILE must not be empty"
+    end)
+  end
+
+  test "controller wrapper allows generated-local default CA path override in direct_https" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      tls_dir = Path.join([ctx.root, "config", "tls"])
+      certfile = Path.join(tls_dir, "controller.crt")
+      keyfile = Path.join(tls_dir, "controller.key")
+      cacertfile = Path.join(tls_dir, "ca.crt")
+
+      generate_self_signed_cert!(certfile, keyfile)
+      File.cp!(certfile, cacertfile)
+
+      File.write!(
+        Path.join(tls_dir, ".orchard-tls-meta.json"),
+        ~s({"source":"generated_local_ca"})
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "direct_https"},
+                 {"ORCHARD_TLS_CACERTFILE", Path.join([tls_dir, "..", "tls", "ca.crt"])}
+               ])
+
+      assert output =~ "fake orchard_controller start"
+    end)
+  end
+
+  test "controller wrapper rejects generated-local CA override in direct_https" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      tls_dir = Path.join([ctx.root, "config", "tls"])
+      external_tls_dir = Path.join(ctx.root, "external-tls")
+      certfile = Path.join(tls_dir, "controller.crt")
+      keyfile = Path.join(tls_dir, "controller.key")
+      cacertfile = Path.join(tls_dir, "ca.crt")
+      operator_ca = Path.join(external_tls_dir, "operator-ca.crt")
+
+      generate_self_signed_cert!(certfile, keyfile)
+      File.cp!(certfile, cacertfile)
+      File.mkdir_p!(external_tls_dir)
+      File.cp!(certfile, operator_ca)
+
+      File.write!(
+        Path.join(tls_dir, ".orchard-tls-meta.json"),
+        ~s({"source":"generated_local_ca"})
+      )
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "direct_https"},
+                 {"ORCHARD_TLS_CACERTFILE", operator_ca}
+               ])
+
+      assert output =~ "ORCHARD_TLS_CACERTFILE cannot override generated-local CA publication"
+    end)
+  end
+
+  test "controller wrapper rejects malformed generated-local CA in direct_https" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      tls_dir = Path.join([ctx.root, "config", "tls"])
+      certfile = Path.join(tls_dir, "controller.crt")
+      keyfile = Path.join(tls_dir, "controller.key")
+      cacertfile = Path.join(tls_dir, "ca.crt")
+
+      generate_self_signed_cert!(certfile, keyfile)
+
+      File.write!(
+        Path.join(tls_dir, ".orchard-tls-meta.json"),
+        ~s({"source":"generated_local_ca"})
+      )
+
+      File.write!(cacertfile, "not a certificate\n")
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [{"ORCHARD_TRANSPORT_MODE", "direct_https"}])
+
+      assert output =~ "TLS CA certificate file is malformed"
+    end)
+  end
+
+  test "controller wrapper rejects missing generated-local CA in direct_https" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      tls_dir = Path.join([ctx.root, "config", "tls"])
+      certfile = Path.join(tls_dir, "controller.crt")
+      keyfile = Path.join(tls_dir, "controller.key")
+      cacertfile = Path.join(tls_dir, "ca.crt")
+
+      generate_self_signed_cert!(certfile, keyfile)
+
+      File.write!(
+        Path.join(tls_dir, ".orchard-tls-meta.json"),
+        ~s({"source":"generated_local_ca"})
+      )
+
+      File.rm(cacertfile)
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [{"ORCHARD_TRANSPORT_MODE", "direct_https"}])
+
+      assert output =~ "CA certificate not found"
+      assert output =~ "Run: sudo orchardctl tls init --no-trust"
+    end)
+  end
+
+  test "controller wrapper rejects certs that are not valid yet" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      tls_dir = Path.join(ctx.root, "external-tls")
+      certfile = Path.join(tls_dir, "operator.crt")
+      keyfile = Path.join(tls_dir, "operator.key")
+      fake_bin = Path.join(ctx.root, "fake-bin")
+
+      generate_self_signed_cert!(certfile, keyfile)
+      File.mkdir_p!(fake_bin)
+      fake_date = Path.join(fake_bin, "date")
+
+      File.write!(fake_date, """
+      #!/bin/sh
+      if [ \"$1\" = \"-u\" ] && [ \"$2\" = \"+%s\" ]; then
+        printf '0\\n'
+        exit 0
+      fi
+      exec /bin/date \"$@\"
+      """)
+
+      File.chmod!(fake_date, 0o755)
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "direct_https"},
+                 {"ORCHARD_TLS_CERTFILE", certfile},
+                 {"ORCHARD_TLS_KEYFILE", keyfile},
+                 {"PATH", fake_bin <> ":" <> System.get_env("PATH", "")}
+               ])
+
+      assert output =~ "TLS certificate is not valid yet"
+    end)
+  end
+
   test "controller wrapper maps legacy ORCHARD_TLS_DISABLED=false to direct_https preflight" do
     with_temp_controller_wrapper(fn %{script: script} = ctx ->
       assert {output, 78} =
@@ -424,6 +665,71 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
+  defp generate_self_signed_cert_with_encrypted_key!(certfile, keyfile) do
+    openssl = openssl!()
+
+    File.mkdir_p!(Path.dirname(certfile))
+    File.mkdir_p!(Path.dirname(keyfile))
+
+    {output, status} =
+      System.cmd(
+        openssl,
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-keyout",
+          keyfile,
+          "-out",
+          certfile,
+          "-days",
+          "365",
+          "-subj",
+          "/CN=localhost",
+          "-passout",
+          "pass:secret"
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
+  end
+
+  defp generate_self_signed_cert!(certfile, keyfile) do
+    openssl = openssl!()
+
+    File.mkdir_p!(Path.dirname(certfile))
+    File.mkdir_p!(Path.dirname(keyfile))
+
+    {output, status} =
+      System.cmd(
+        openssl,
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-nodes",
+          "-keyout",
+          keyfile,
+          "-out",
+          certfile,
+          "-days",
+          "365",
+          "-subj",
+          "/CN=localhost"
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
+  end
+
+  defp openssl! do
+    System.find_executable("openssl") || flunk("openssl is required for packaging script tests")
+  end
+
   defp with_temp_controller_wrapper(fun) do
     tmp_dir =
       Path.join(
@@ -473,6 +779,10 @@ defmodule OrchardCLI.PackagingScriptTest do
 
   defp run_controller_wrapper(script, _ctx, extra_env) do
     System.cmd("sh", [script, "start"], env: extra_env, stderr_to_stdout: true)
+  end
+
+  defp run_controller_wrapper_shell(script, command) do
+    System.cmd("sh", ["-c", command, "sh", script], stderr_to_stdout: true)
   end
 
   defp with_temp_postinstall(fun) do
@@ -607,6 +917,17 @@ defmodule OrchardCLI.PackagingScriptTest do
     File.write!(managed_postgres, "#!/bin/sh\nexit 0\n")
     File.chmod!(managed_postgres, 0o755)
     File.write!(postgres_plist, "com.orchard.postgres\n")
+  end
+
+  defp run_script_with_empty_ca(script, ctx) do
+    path = ctx.fake_bin <> ":" <> System.get_env("PATH", "")
+
+    command =
+      "LAUNCHCTL_LOG=\"$1\" PATH=\"$2\" REQUEST_STAT_PATH=\"$3\" ORCHARD_TLS_CACERTFILE= exec \"$4\""
+
+    System.cmd("sh", ["-c", command, "sh", ctx.launchctl_log, path, ctx.request_path, script],
+      stderr_to_stdout: true
+    )
   end
 
   defp run_script(script, ctx, extra_env \\ []) do
