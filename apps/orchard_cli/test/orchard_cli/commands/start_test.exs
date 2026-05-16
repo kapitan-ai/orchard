@@ -1,5 +1,5 @@
 defmodule OrchardCLI.Commands.StartTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias OrchardCLI.Commands.{LifecycleSupport, Start}
 
@@ -300,6 +300,51 @@ defmodule OrchardCLI.Commands.StartTest do
     assert ctrl_plist =~ "controller"
   end
 
+  test "start inherits status probe/display split through snapshot" do
+    parent = self()
+    ref = make_ref()
+
+    runtime =
+      base_runtime(%{
+        cmd: not_loaded_cmd(parent),
+        status_runtime: %{
+          version: fn -> "0.1.0" end,
+          endpoint_candidates: fn ->
+            [
+              %{
+                probe_url: "http://127.0.0.1:4101",
+                display_url: "https://orchard.example.internal",
+                ca_certfile: nil
+              }
+            ]
+          end,
+          request: fn url, _opts ->
+            send(self(), {ref, url})
+
+            {:ok,
+             %{
+               status: 200,
+               body: %{
+                 "status" => "ok",
+                 "runtime" => %{
+                   "status" => "ok",
+                   "node_id" => "n1",
+                   "worker_state" => "idle",
+                   "counts" => %{"loaded_models" => 0},
+                   "health" => "healthy"
+                 }
+               }
+             }}
+          end
+        }
+      })
+
+    assert {:ok, banner} = Start.run([], runtime)
+    assert_received {^ref, "http://127.0.0.1:4101/health/ready"}
+    assert banner =~ "Console: https://orchard.example.internal/console"
+    refute banner =~ "127.0.0.1:4101/console"
+  end
+
   test "both already loaded shows informative message and banner" do
     parent = self()
     runtime = base_runtime(%{cmd: already_loaded_cmd(parent)})
@@ -491,6 +536,43 @@ defmodule OrchardCLI.Commands.StartTest do
     assert msg =~ "did not become ready"
     assert msg =~ "offline"
     assert msg =~ "orchardctl status"
+  end
+
+  test "status install errors for active-mode ports stop polling and surface config error" do
+    parent = self()
+    request_count = :counters.new(1, [:atomics])
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_public_port = System.get_env("ORCHARD_PUBLIC_PORT")
+    original_port = System.get_env("PORT")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_PUBLIC_PORT", original_public_port)
+      restore_env("PORT", original_port)
+    end)
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "plain_http_localhost")
+    System.put_env("PORT", "abc")
+
+    runtime =
+      base_runtime(%{
+        cmd: not_loaded_cmd(parent),
+        ready_timeout_ms: 50,
+        poll_interval_ms: 10,
+        monotonic_ms: fn -> 0 end,
+        status_runtime: %{
+          version: fn -> "0.1.0" end,
+          request: fn _url, _opts ->
+            :counters.add(request_count, 1, 1)
+            {:ok, %{status: 200, body: %{"status" => "ok"}}}
+          end
+        }
+      })
+
+    assert {:error, msg, 1} = Start.run([], runtime)
+    assert msg =~ "invalid PORT: abc"
+    refute msg =~ "did not become ready"
+    assert :counters.get(request_count, 1) == 0
   end
 
   test "invalid health response stops polling and surfaces the URL immediately" do
@@ -688,6 +770,9 @@ defmodule OrchardCLI.Commands.StartTest do
   end
 
   # ── Helper ───────────────────────────────────────────────────────────
+
+  defp restore_env(key, nil), do: System.delete_env(key)
+  defp restore_env(key, value), do: System.put_env(key, value)
 
   defp collect_cmds do
     collect_cmds([])

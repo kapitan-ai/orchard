@@ -3,6 +3,27 @@ defmodule OrchardCLI.Commands.StatusTest do
 
   alias OrchardCLI.Commands.Status
 
+  setup do
+    original_support_root = System.get_env("ORCHARD_SUPPORT_ROOT")
+
+    support_root =
+      Path.join(System.tmp_dir!(), "orchard status support #{System.unique_integer([:positive])}")
+
+    tls_dir = Path.join([support_root, "config", "tls"])
+    certfile = Path.join(tls_dir, "controller.crt")
+    keyfile = Path.join(tls_dir, "controller.key")
+
+    generate_self_signed_cert!(certfile, keyfile)
+    System.put_env("ORCHARD_SUPPORT_ROOT", support_root)
+
+    on_exit(fn ->
+      restore_env("ORCHARD_SUPPORT_ROOT", original_support_root)
+      File.rm_rf(support_root)
+    end)
+
+    :ok
+  end
+
   # ── Helpers ──────────────────────────────────────────────────────────
 
   defp test_runtime(overrides \\ %{}) do
@@ -15,6 +36,35 @@ defmodule OrchardCLI.Commands.StatusTest do
       },
       overrides
     )
+  end
+
+  defp generate_self_signed_cert!(certfile, keyfile) do
+    openssl = System.find_executable("openssl") || flunk("openssl is required for status tests")
+    File.mkdir_p!(Path.dirname(certfile))
+    File.mkdir_p!(Path.dirname(keyfile))
+
+    {output, status} =
+      System.cmd(
+        openssl,
+        [
+          "req",
+          "-x509",
+          "-newkey",
+          "rsa:2048",
+          "-nodes",
+          "-keyout",
+          keyfile,
+          "-out",
+          certfile,
+          "-days",
+          "365",
+          "-subj",
+          "/CN=localhost"
+        ],
+        stderr_to_stdout: true
+      )
+
+    assert status == 0, output
   end
 
   defp ready_response do
@@ -446,6 +496,32 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert url == "http://localhost:4000/health/ready"
   end
 
+  test "candidate probes probe_url and renders display_url" do
+    ref = make_ref()
+
+    runtime =
+      test_runtime(%{
+        endpoint_candidates: fn ->
+          [
+            %{
+              probe_url: "http://127.0.0.1:4101",
+              display_url: "https://orchard.example.internal",
+              ca_certfile: nil
+            }
+          ]
+        end,
+        request: fn url, _opts ->
+          send(self(), {ref, url})
+          {:ok, ready_response()}
+        end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert_received {^ref, "http://127.0.0.1:4101/health/ready"}
+    assert banner =~ "Console: https://orchard.example.internal/console"
+    refute banner =~ "127.0.0.1:4101/console"
+  end
+
   test "packaged fallback uses direct HTTPS when ORCHARD_TRANSPORT_MODE selects it" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_port = System.get_env("ORCHARD_API_HTTPS_PORT")
@@ -477,6 +553,41 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert banner =~ "Console: https://orchard.example.internal:9443/console"
   end
 
+  test "direct HTTPS packaged fallback passes configured external CA to request" do
+    ca_path =
+      Path.join(System.tmp_dir!(), "orchard-status-ca-#{System.unique_integer([:positive])}.crt")
+
+    generate_self_signed_cert!(ca_path, ca_path <> ".key")
+
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_ca = System.get_env("ORCHARD_TLS_CACERTFILE")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_TLS_CACERTFILE", original_ca)
+      File.rm(ca_path)
+      File.rm(ca_path <> ".key")
+    end)
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+    System.put_env("ORCHARD_TLS_CACERTFILE", ca_path)
+
+    ref = make_ref()
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, opts ->
+        send(self(), {ref, opts})
+        {:ok, ready_response()}
+      end
+    }
+
+    assert {:ok, _banner} = Status.run([], runtime)
+    assert_received {^ref, opts}
+    assert Keyword.get(opts, :ca_certfile) == ca_path
+  end
+
   test "packaged fallback uses HTTPS for legacy shims when transport mode is unset" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_disabled = System.get_env("ORCHARD_TLS_DISABLED")
@@ -492,11 +603,25 @@ defmodule OrchardCLI.Commands.StatusTest do
       restore_env("ORCHARD_API_HTTPS_PORT", original_port)
     end)
 
+    operator_cert =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-status-operator-#{System.unique_integer([:positive])}.crt"
+      )
+
+    operator_key = operator_cert <> ".key"
+    generate_self_signed_cert!(operator_cert, operator_key)
+
+    on_exit(fn ->
+      File.rm(operator_cert)
+      File.rm(operator_key)
+    end)
+
     for env <- [
           %{"ORCHARD_TLS_DISABLED" => "false"},
           %{
-            "ORCHARD_TLS_CERTFILE" => "/tmp/operator.crt",
-            "ORCHARD_TLS_KEYFILE" => "/tmp/operator.key"
+            "ORCHARD_TLS_CERTFILE" => operator_cert,
+            "ORCHARD_TLS_KEYFILE" => operator_key
           }
         ] do
       System.delete_env("ORCHARD_TRANSPORT_MODE")
@@ -523,7 +648,415 @@ defmodule OrchardCLI.Commands.StatusTest do
     end
   end
 
-  test "packaged fallback uses proxy display URL for reverse_proxy" do
+  test "packaged fallback uses reverse proxy bind IP as probe host" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_bind_ip = System.get_env("ORCHARD_API_BIND_IP")
+    original_trusted_proxies = System.get_env("ORCHARD_TRUSTED_PROXIES")
+    original_port = System.get_env("PORT")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_API_BIND_IP", original_bind_ip)
+      restore_env("ORCHARD_TRUSTED_PROXIES", original_trusted_proxies)
+      restore_env("PORT", original_port)
+    end)
+
+    for {bind_ip, expected_host} <- [
+          {"::1", "[::1]"},
+          {"::", "[::1]"},
+          {"0.0.0.0", "127.0.0.1"},
+          {"10.0.0.5", "10.0.0.5"}
+        ] do
+      System.put_env("ORCHARD_TRANSPORT_MODE", "reverse_proxy")
+      System.put_env("ORCHARD_API_BIND_IP", bind_ip)
+      System.put_env("PORT", "4102")
+      System.put_env("ORCHARD_TRUSTED_PROXIES", "10.0.0.0/24")
+
+      ref = make_ref()
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        request: fn url, _opts ->
+          send(self(), {ref, bind_ip, url})
+          {:ok, ready_response()}
+        end
+      }
+
+      expected_url = "http://#{expected_host}:4102/health/ready"
+      assert {:ok, _banner} = Status.run([], runtime)
+      assert_received {^ref, ^bind_ip, ^expected_url}
+    end
+  end
+
+  test "packaged fallback rejects reverse proxy bind and trusted proxy config that runtime rejects" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_bind_ip = System.get_env("ORCHARD_API_BIND_IP")
+    original_trusted_proxies = System.get_env("ORCHARD_TRUSTED_PROXIES")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_API_BIND_IP", original_bind_ip)
+      restore_env("ORCHARD_TRUSTED_PROXIES", original_trusted_proxies)
+    end)
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, _opts -> flunk("invalid reverse proxy config should not probe") end
+    }
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "reverse_proxy")
+    System.put_env("ORCHARD_API_BIND_IP", "")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "ORCHARD_API_BIND_IP must not be empty"
+
+    System.put_env("ORCHARD_API_BIND_IP", "not-an-ip")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid ORCHARD_API_BIND_IP: not-an-ip"
+
+    System.put_env("ORCHARD_API_BIND_IP", "10.0.0.5")
+    System.delete_env("ORCHARD_TRUSTED_PROXIES")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "ORCHARD_TRUSTED_PROXIES must be set"
+
+    System.put_env("ORCHARD_TRUSTED_PROXIES", ", ,")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "ORCHARD_TRUSTED_PROXIES must contain at least one CIDR"
+
+    System.put_env("ORCHARD_TRUSTED_PROXIES", "10.0.0.0/not-a-prefix")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "ORCHARD_TRUSTED_PROXIES contains invalid CIDR"
+  end
+
+  test "packaged fallback brackets IPv6 public display host" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_host = System.get_env("ORCHARD_PUBLIC_HOST")
+    original_port = System.get_env("ORCHARD_API_HTTPS_PORT")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_PUBLIC_HOST", original_host)
+      restore_env("ORCHARD_API_HTTPS_PORT", original_port)
+    end)
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+    System.put_env("ORCHARD_PUBLIC_HOST", "::1")
+    System.put_env("ORCHARD_API_HTTPS_PORT", "9443")
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, _opts -> {:ok, ready_response()} end
+    }
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Console: https://[::1]:9443/console"
+  end
+
+  test "packaged fallback rejects direct HTTPS bind IP that runtime rejects" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_bind_ip = System.get_env("ORCHARD_API_BIND_IP")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_API_BIND_IP", original_bind_ip)
+    end)
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, _opts -> flunk("invalid direct HTTPS bind IP should not probe") end
+    }
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+    System.put_env("ORCHARD_API_BIND_IP", "")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "ORCHARD_API_BIND_IP must not be empty"
+
+    System.put_env("ORCHARD_API_BIND_IP", "not-an-ip")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid ORCHARD_API_BIND_IP: not-an-ip"
+  end
+
+  test "packaged fallback does not auto-use generated-local CA with explicit operator certs" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_cert = System.get_env("ORCHARD_TLS_CERTFILE")
+    original_key = System.get_env("ORCHARD_TLS_KEYFILE")
+    original_ca = System.get_env("ORCHARD_TLS_CACERTFILE")
+    support_root = System.get_env("ORCHARD_SUPPORT_ROOT")
+    tls_dir = Path.join([support_root, "config", "tls"])
+    default_ca = Path.join(tls_dir, "ca.crt")
+
+    operator_cert =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-status-operator-no-ca-#{System.unique_integer([:positive])}.crt"
+      )
+
+    operator_key = operator_cert <> ".key"
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_TLS_CERTFILE", original_cert)
+      restore_env("ORCHARD_TLS_KEYFILE", original_key)
+      restore_env("ORCHARD_TLS_CACERTFILE", original_ca)
+      File.rm(operator_cert)
+      File.rm(operator_key)
+      File.rm(Path.join(tls_dir, ".orchard-tls-meta.json"))
+      File.rm(default_ca)
+    end)
+
+    File.cp!(Path.join(tls_dir, "controller.crt"), default_ca)
+
+    File.write!(
+      Path.join(tls_dir, ".orchard-tls-meta.json"),
+      Jason.encode!(%{"source" => "generated_local_ca"})
+    )
+
+    generate_self_signed_cert!(operator_cert, operator_key)
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+    System.put_env("ORCHARD_TLS_CERTFILE", operator_cert)
+    System.put_env("ORCHARD_TLS_KEYFILE", operator_key)
+    System.delete_env("ORCHARD_TLS_CACERTFILE")
+
+    ref = make_ref()
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, opts ->
+        send(self(), {ref, opts})
+        {:ok, ready_response()}
+      end
+    }
+
+    assert {:ok, _banner} = Status.run([], runtime)
+    assert_received {^ref, opts}
+    assert Keyword.get(opts, :ca_certfile) == nil
+  end
+
+  test "packaged fallback allows explicit default cert paths with external CA despite generated-local metadata" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_cert = System.get_env("ORCHARD_TLS_CERTFILE")
+    original_key = System.get_env("ORCHARD_TLS_KEYFILE")
+    original_ca = System.get_env("ORCHARD_TLS_CACERTFILE")
+    support_root = System.get_env("ORCHARD_SUPPORT_ROOT")
+    tls_dir = Path.join([support_root, "config", "tls"])
+    default_cert = Path.join(tls_dir, "controller.crt")
+    default_key = Path.join(tls_dir, "controller.key")
+
+    operator_ca =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-status-explicit-default-ca-#{System.unique_integer([:positive])}.crt"
+      )
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_TLS_CERTFILE", original_cert)
+      restore_env("ORCHARD_TLS_KEYFILE", original_key)
+      restore_env("ORCHARD_TLS_CACERTFILE", original_ca)
+      File.rm(operator_ca)
+      File.rm(operator_ca <> ".key")
+      File.rm(Path.join(tls_dir, ".orchard-tls-meta.json"))
+    end)
+
+    File.write!(
+      Path.join(tls_dir, ".orchard-tls-meta.json"),
+      Jason.encode!(%{"source" => "generated_local_ca"})
+    )
+
+    generate_self_signed_cert!(operator_ca, operator_ca <> ".key")
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+    System.put_env("ORCHARD_TLS_CERTFILE", default_cert)
+    System.put_env("ORCHARD_TLS_KEYFILE", default_key)
+    System.put_env("ORCHARD_TLS_CACERTFILE", operator_ca)
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, _opts -> {:ok, ready_response()} end
+    }
+
+    assert {:ok, _banner} = Status.run([], runtime)
+  end
+
+  test "packaged fallback allows explicit cert CA override despite generated-local metadata" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_cert = System.get_env("ORCHARD_TLS_CERTFILE")
+    original_key = System.get_env("ORCHARD_TLS_KEYFILE")
+    original_ca = System.get_env("ORCHARD_TLS_CACERTFILE")
+    support_root = System.get_env("ORCHARD_SUPPORT_ROOT")
+    tls_dir = Path.join([support_root, "config", "tls"])
+
+    operator_cert =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-status-explicit-#{System.unique_integer([:positive])}.crt"
+      )
+
+    operator_key = operator_cert <> ".key"
+    operator_ca = operator_cert <> ".ca"
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_TLS_CERTFILE", original_cert)
+      restore_env("ORCHARD_TLS_KEYFILE", original_key)
+      restore_env("ORCHARD_TLS_CACERTFILE", original_ca)
+      File.rm(operator_cert)
+      File.rm(operator_key)
+      File.rm(operator_ca)
+      File.rm(Path.join(tls_dir, ".orchard-tls-meta.json"))
+    end)
+
+    File.write!(
+      Path.join(tls_dir, ".orchard-tls-meta.json"),
+      Jason.encode!(%{"source" => "generated_local_ca"})
+    )
+
+    generate_self_signed_cert!(operator_cert, operator_key)
+    File.cp!(operator_cert, operator_ca)
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+    System.put_env("ORCHARD_TLS_CERTFILE", operator_cert)
+    System.put_env("ORCHARD_TLS_KEYFILE", operator_key)
+    System.put_env("ORCHARD_TLS_CACERTFILE", operator_ca)
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, _opts -> {:ok, ready_response()} end
+    }
+
+    assert {:ok, _banner} = Status.run([], runtime)
+  end
+
+  test "packaged fallback rejects missing generated-local default CA in direct_https" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    support_root = System.get_env("ORCHARD_SUPPORT_ROOT")
+    tls_dir = Path.join([support_root, "config", "tls"])
+    default_ca = Path.join(tls_dir, "ca.crt")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      File.rm(Path.join(tls_dir, ".orchard-tls-meta.json"))
+      File.rm(default_ca)
+    end)
+
+    File.write!(
+      Path.join(tls_dir, ".orchard-tls-meta.json"),
+      Jason.encode!(%{"source" => "generated_local_ca"})
+    )
+
+    File.rm(default_ca)
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, _opts -> flunk("missing generated-local CA should not probe") end
+    }
+
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "CA certificate not found"
+  end
+
+  test "packaged fallback rejects generated-local CA override in direct_https" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_ca = System.get_env("ORCHARD_TLS_CACERTFILE")
+    support_root = System.get_env("ORCHARD_SUPPORT_ROOT")
+    tls_dir = Path.join([support_root, "config", "tls"])
+    default_ca = Path.join(tls_dir, "ca.crt")
+
+    override_ca =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-status-operator-ca-#{System.unique_integer([:positive])}.crt"
+      )
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_TLS_CACERTFILE", original_ca)
+      File.rm(override_ca)
+      File.rm(override_ca <> ".key")
+      File.rm(Path.join(tls_dir, ".orchard-tls-meta.json"))
+      File.rm(default_ca)
+    end)
+
+    File.cp!(Path.join(tls_dir, "controller.crt"), default_ca)
+
+    File.write!(
+      Path.join(tls_dir, ".orchard-tls-meta.json"),
+      Jason.encode!(%{"source" => "generated_local_ca"})
+    )
+
+    generate_self_signed_cert!(override_ca, override_ca <> ".key")
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+    System.put_env("ORCHARD_TLS_CACERTFILE", override_ca)
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, _opts -> flunk("generated-local CA override should not probe") end
+    }
+
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "ORCHARD_TLS_CACERTFILE cannot override generated-local CA publication"
+  end
+
+  test "packaged fallback rejects malformed explicit CA in direct_https" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_ca = System.get_env("ORCHARD_TLS_CACERTFILE")
+
+    ca_path =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-status-malformed-ca-#{System.unique_integer([:positive])}.crt"
+      )
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_TLS_CACERTFILE", original_ca)
+      File.rm(ca_path)
+    end)
+
+    File.write!(ca_path, "not a certificate\n")
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+    System.put_env("ORCHARD_TLS_CACERTFILE", ca_path)
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, _opts -> flunk("malformed explicit CA should not probe") end
+    }
+
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "TLS CA certificate file is malformed"
+  end
+
+  test "packaged fallback rejects missing explicit CA in direct_https" do
+    original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
+    original_ca = System.get_env("ORCHARD_TLS_CACERTFILE")
+
+    on_exit(fn ->
+      restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
+      restore_env("ORCHARD_TLS_CACERTFILE", original_ca)
+    end)
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "direct_https")
+    System.put_env("ORCHARD_TLS_CACERTFILE", "/tmp/orchard-missing-ca.crt")
+
+    runtime = %{
+      version: fn -> "0.1.0" end,
+      read_install_role: fn -> {:ok, "controller"} end,
+      request: fn _url, _opts -> flunk("missing explicit CA should not probe") end
+    }
+
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "CA certificate not found: /tmp/orchard-missing-ca.crt"
+  end
+
+  test "packaged fallback probes loopback and displays proxy URL for reverse_proxy" do
     original_mode = System.get_env("ORCHARD_TRANSPORT_MODE")
     original_port = System.get_env("PORT")
     original_public_host = System.get_env("ORCHARD_PUBLIC_HOST")
@@ -550,7 +1083,7 @@ defmodule OrchardCLI.Commands.StatusTest do
     }
 
     assert {:ok, banner} = Status.run([], runtime)
-    assert_received {^ref, "http://localhost:4101/health/ready"}
+    assert_received {^ref, "http://127.0.0.1:4101/health/ready"}
     assert banner =~ "Console: https://orchard.example.internal/console"
   end
 
@@ -589,12 +1122,22 @@ defmodule OrchardCLI.Commands.StatusTest do
     original_disabled = System.get_env("ORCHARD_TLS_DISABLED")
     original_cert = System.get_env("ORCHARD_TLS_CERTFILE")
     original_key = System.get_env("ORCHARD_TLS_KEYFILE")
+    original_ca = System.get_env("ORCHARD_TLS_CACERTFILE")
+    original_public_port = System.get_env("ORCHARD_PUBLIC_PORT")
+    original_port = System.get_env("PORT")
+    original_https_port = System.get_env("ORCHARD_API_HTTPS_PORT")
+    original_bind_ip = System.get_env("ORCHARD_API_BIND_IP")
 
     on_exit(fn ->
       restore_env("ORCHARD_TRANSPORT_MODE", original_mode)
       restore_env("ORCHARD_TLS_DISABLED", original_disabled)
       restore_env("ORCHARD_TLS_CERTFILE", original_cert)
       restore_env("ORCHARD_TLS_KEYFILE", original_key)
+      restore_env("ORCHARD_TLS_CACERTFILE", original_ca)
+      restore_env("ORCHARD_PUBLIC_PORT", original_public_port)
+      restore_env("PORT", original_port)
+      restore_env("ORCHARD_API_HTTPS_PORT", original_https_port)
+      restore_env("ORCHARD_API_BIND_IP", original_bind_ip)
     end)
 
     runtime = %{
@@ -616,6 +1159,63 @@ defmodule OrchardCLI.Commands.StatusTest do
 
     assert message =~
              "ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set or both unset"
+
+    System.put_env("ORCHARD_TLS_KEYFILE", "/tmp/controller.key")
+
+    for empty_ca <- ["", "   "] do
+      System.put_env("ORCHARD_TLS_CACERTFILE", empty_ca)
+      assert {:error, message, 1} = Status.run([], runtime)
+      assert message =~ "ORCHARD_TLS_CACERTFILE must not be empty"
+    end
+
+    System.delete_env("ORCHARD_TLS_CERTFILE")
+    System.delete_env("ORCHARD_TLS_KEYFILE")
+    System.put_env("ORCHARD_TLS_CACERTFILE", "unknown")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "CA certificate not found: unknown"
+
+    System.delete_env("ORCHARD_TLS_CACERTFILE")
+
+    System.delete_env("ORCHARD_TLS_CERTFILE")
+    System.delete_env("ORCHARD_TLS_KEYFILE")
+
+    for mode <- ["direct_https", "plain_http_localhost"] do
+      System.put_env("ORCHARD_TRANSPORT_MODE", mode)
+      System.put_env("ORCHARD_PUBLIC_PORT", "")
+
+      assert {:ok, _banner} =
+               Status.run([], %{runtime | request: fn _url, _opts -> {:ok, ready_response()} end})
+    end
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "reverse_proxy")
+    System.put_env("ORCHARD_PUBLIC_PORT", "")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "ORCHARD_PUBLIC_PORT must not be empty"
+
+    System.put_env("ORCHARD_PUBLIC_PORT", "abc")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid ORCHARD_PUBLIC_PORT: abc"
+
+    System.put_env("ORCHARD_TRANSPORT_MODE", "https")
+    System.put_env("PORT", "abc")
+    assert {:error, message, 1} = Status.run([], runtime)
+    assert message =~ "invalid ORCHARD_TRANSPORT_MODE: https"
+
+    for {mode, env_name, value, expected} <- [
+          {"plain_http_localhost", "PORT", "abc", "invalid PORT: abc"},
+          {"reverse_proxy", "PORT", "0", "invalid PORT: 0"},
+          {"direct_https", "ORCHARD_API_HTTPS_PORT", "65536",
+           "invalid ORCHARD_API_HTTPS_PORT: 65536"}
+        ] do
+      System.put_env("ORCHARD_TRANSPORT_MODE", mode)
+      System.delete_env("PORT")
+      System.delete_env("ORCHARD_PUBLIC_PORT")
+      System.delete_env("ORCHARD_API_HTTPS_PORT")
+      System.put_env(env_name, value)
+
+      assert {:error, message, 1} = Status.run([], runtime)
+      assert message =~ expected
+    end
   end
 
   test "packaged fallback rejects invalid ORCHARD_TRANSPORT_MODE" do

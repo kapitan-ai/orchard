@@ -18,6 +18,16 @@ env_int = fn env_name, default ->
   end
 end
 
+env_port = fn env_name, default ->
+  port = env_int.(env_name, default)
+
+  unless port in 1..65_535 do
+    raise "environment variable #{env_name} must be a TCP port in 1..65535, got: #{inspect(port)}"
+  end
+
+  port
+end
+
 env_non_neg_int = fn env_name, default ->
   value = env_int.(env_name, default)
 
@@ -660,7 +670,8 @@ if config_env() == :prod do
       default_keyfile = Path.join(tls_dir, "controller.key")
       default_cacertfile = Path.join(tls_dir, "ca.crt")
 
-      if System.get_env("ORCHARD_TLS_CACERTFILE") == "" do
+      if is_binary(System.get_env("ORCHARD_TLS_CACERTFILE")) and
+           String.trim(System.get_env("ORCHARD_TLS_CACERTFILE")) == "" do
         raise "ORCHARD_TLS_CACERTFILE must not be empty"
       end
 
@@ -905,7 +916,7 @@ if config_env() == :prod do
       {transport_config, url_config, transport_degraded?, trusted_proxies} =
         case transport_mode do
           :plain_http_localhost ->
-            http_port = env_int.("PORT", "4000")
+            http_port = env_port.("PORT", "4000")
 
             IO.puts(:stderr, """
 
@@ -922,7 +933,7 @@ if config_env() == :prod do
              [host: "localhost", port: http_port, scheme: "http"], true, []}
 
           :reverse_proxy ->
-            http_port = env_int.("PORT", "4000")
+            http_port = env_port.("PORT", "4000")
             bind_ip = env_ip.("ORCHARD_API_BIND_IP", "127.0.0.1")
             trusted_proxies = trusted_proxy_cidrs.()
 
@@ -930,13 +941,13 @@ if config_env() == :prod do
               raise "ORCHARD_TRUSTED_PROXIES must be set when reverse_proxy binds to a non-loopback address"
             end
 
-            public_port = env_int.("ORCHARD_PUBLIC_PORT", "443")
+            public_port = env_port.("ORCHARD_PUBLIC_PORT", "443")
 
             {[http: [ip: bind_ip, port: http_port]],
              [host: public_host, port: public_port, scheme: "https"], false, trusted_proxies}
 
           :direct_https ->
-            https_port = env_int.("ORCHARD_API_HTTPS_PORT", "8443")
+            https_port = env_port.("ORCHARD_API_HTTPS_PORT", "8443")
             bind_ip = env_ip.("ORCHARD_API_BIND_IP", "0.0.0.0")
             validate_tls_material!.(certfile, keyfile, cacertfile_for_validation)
 

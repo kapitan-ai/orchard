@@ -76,6 +76,17 @@ defmodule Orchard.RuntimeTransportTest do
     assert endpoint[:trusted_proxies] == [{{127, 0, 0, 1}, 32}, {{0, 0, 0, 0, 0, 0, 0, 1}, 128}]
   end
 
+  test "SPEC 10.7: reverse_proxy rejects invalid public port", %{
+    support_root: support_root
+  } do
+    assert_raise RuntimeError, ~r/ORCHARD_PUBLIC_PORT must be a TCP port/, fn ->
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
+        "ORCHARD_PUBLIC_PORT" => "65536"
+      })
+    end
+  end
+
   test "SPEC 10.7: reverse_proxy uses ORCHARD_PUBLIC_PORT in public URL config", %{
     support_root: support_root
   } do
@@ -308,6 +319,25 @@ defmodule Orchard.RuntimeTransportTest do
 
       assert config[:transport_mode] == :direct_https
       assert config[:transport_cert_source] == :unknown
+    end
+  end
+
+  test "SPEC 10.7: direct_https rejects whitespace-only configured CA certificate path", %{
+    support_root: support_root
+  } do
+    tls_dir = Path.join(support_root, "external-tls")
+    certfile = Path.join(tls_dir, "operator.crt")
+    keyfile = Path.join(tls_dir, "operator.key")
+
+    generate_self_signed_cert!(certfile, keyfile)
+
+    assert_raise RuntimeError, ~r/ORCHARD_TLS_CACERTFILE must not be empty/, fn ->
+      read_controller_config!(support_root, %{
+        "ORCHARD_TRANSPORT_MODE" => "direct_https",
+        "ORCHARD_TLS_CERTFILE" => certfile,
+        "ORCHARD_TLS_KEYFILE" => keyfile,
+        "ORCHARD_TLS_CACERTFILE" => "   "
+      })
     end
   end
 

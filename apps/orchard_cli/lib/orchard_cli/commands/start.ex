@@ -123,6 +123,14 @@ defmodule OrchardCLI.Commands.Start do
            "\nRun: orchardctl status\n" <>
            "Logs: /Library/Application Support/Orchard/logs/", 1}
 
+      :install_error ->
+        {:error,
+         preface <>
+           "\n\n" <>
+           "Error: #{snap.error}\n" <>
+           "Run: orchardctl status\n" <>
+           "Logs: /Library/Application Support/Orchard/logs/", 1}
+
       _other ->
         timeout_secs = div(timeout_ms, 1000)
         last_state = format_last_state(snap)
@@ -220,6 +228,7 @@ defmodule OrchardCLI.Commands.Start do
   defp join_display_names(names), do: Enum.join(names, ", ")
 
   defp terminal_poll_state?(%{state: :ready}), do: true
+  defp terminal_poll_state?(%{state: :install_error}), do: true
   defp terminal_poll_state?(%{state: :invalid_response, probe_failure: :all_invalid}), do: true
   defp terminal_poll_state?(_snap), do: false
 
