@@ -683,6 +683,14 @@ if [ "${1:-}" = "-c" ] && [ "$#" -eq 2 ]; then
 fi
 if [ "$#" -eq 1 ]; then
   path="$1"
+  provenance_pattern="${ORCHARD_FAKE_XATTR_PROVENANCE_PATTERN:-}"
+  if [ -n "$provenance_pattern" ]; then
+    case "$path" in
+      *"$provenance_pattern"*)
+        echo com.apple.provenance
+        ;;
+    esac
+  fi
   dirty_pattern="${ORCHARD_FAKE_XATTR_DIRTY_PATTERN:-}"
   if [ -n "$dirty_pattern" ]; then
     case "$path" in
@@ -1365,6 +1373,16 @@ if find "$staging_sidecar" \( -name '._*' -o -name '.DS_Store' \) -print -quit |
 fi
 assert_no_grep "xattr -cr $staging_sidecar" "$xattr_log"
 
+staging_provenance_only="$case_dir/staging-provenance-only"
+provenance_only_xattr_log="$case_dir/provenance-only-xattr.log"
+ORCHARD_FAKE_XATTR_PROVENANCE_PATTERN='native/orchard_tokenizer' XATTR_FAIL=1 XATTR_LOG="$provenance_only_xattr_log" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_provenance_only" PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir" >"$case_dir/provenance-only.out" 2>&1
+assert_grep 'STAGING_BASE=' "$case_dir/provenance-only.out"
+assert_no_grep 'xattr -c ' "$provenance_only_xattr_log"
+
+staging_mixed_xattr="$case_dir/staging-mixed-xattr"
+assert_fails_with 'Failed to scrub extended attributes' "$case_dir/mixed-xattr.out" env ORCHARD_FAKE_XATTR_PROVENANCE_PATTERN='native/orchard_tokenizer' ORCHARD_FAKE_XATTR_DIRTY_PATTERN='native/orchard_tokenizer' XATTR_FAIL=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_mixed_xattr" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir"
+
 staging_symlink_xattr="$case_dir/staging-symlink-xattr"
 symlink_xattr_log="$case_dir/symlink-xattr.log"
 ORCHARD_FAKE_SYMLINK_XATTR_PATTERN='xattr-symlink' XATTR_LOG="$symlink_xattr_log" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_symlink_xattr" PATH="$tools:/usr/bin:/bin" \
@@ -1412,6 +1430,12 @@ assert_grep 'packaging/pkg/bin/orchardctl' "$case_dir/source-wrappers.out"
 assert_no_grep 'uv ' "$source_wrappers_order"
 assert_no_grep 'mix release' "$source_wrappers_order"
 assert_no_exact_line 'pkgbuild' "$source_wrappers_order"
+
+source_wrappers_provenance_only_order="$case_dir/source-wrappers-provenance-only-order.log"
+ORCHARD_FAKE_XATTR_PROVENANCE_PATTERN='packaging/pkg/bin/orchard-controller' ORCHARD_FAKE_TOOL_ORDER_LOG="$source_wrappers_provenance_only_order" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$case_dir/source-wrappers-provenance-only-staging" PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/build-pkg.sh" --stage-only --allow-dirty "$out_dir" >"$case_dir/source-wrappers-provenance-only.out" 2>&1
+assert_grep 'Provenance inventory: packaging wrappers xattr_node_count=0' "$case_dir/source-wrappers-provenance-only.out"
+assert_grep 'STAGING_BASE=' "$case_dir/source-wrappers-provenance-only.out"
 
 source_launchd_order="$case_dir/source-launchd-order.log"
 assert_fails_with 'Provenance gate failed for launchd plists' "$case_dir/source-launchd.out" env ORCHARD_FAKE_XATTR_DIRTY_PATTERN='packaging/launchd/com.orchard.controller.plist' ORCHARD_FAKE_TOOL_ORDER_LOG="$source_launchd_order" ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$case_dir/source-launchd-staging" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"

@@ -129,6 +129,21 @@ find_metadata_sidecars() {
     rm -f "$sidecars_file" "$find_err_file"
 }
 
+has_blocking_xattrs() {
+    local attrs="$1"
+    local attr
+
+    while IFS= read -r attr; do
+        [[ -n "$attr" ]] || continue
+        # macOS may synthesize com.apple.provenance for locally created executables;
+        # it cannot always be removed with xattr -d/-c and is not a payload sidecar.
+        [[ "$attr" == "com.apple.provenance" ]] && continue
+        return 0
+    done <<<"$attrs"
+
+    return 1
+}
+
 collect_xattr_nodes() {
     local root="$1"
     local output_file="$2"
@@ -163,7 +178,7 @@ collect_xattr_nodes() {
     while IFS= read -r -d '' path; do
         if [[ -L "$path" ]]; then
             if attrs="$(xattr -s "$path" 2>&1)"; then
-                if [[ -n "$attrs" ]]; then
+                if has_blocking_xattrs "$attrs"; then
                     printf '%s\n' "$path" >>"$output_file"
                 fi
             else
@@ -175,7 +190,7 @@ collect_xattr_nodes() {
         fi
 
         if attrs="$(xattr "$path" 2>&1)"; then
-            if [[ -n "$attrs" ]]; then
+            if has_blocking_xattrs "$attrs"; then
                 printf '%s\n' "$path" >>"$output_file"
             fi
         else
@@ -306,7 +321,9 @@ scrub_xattrs_preserving_modes() {
                 status=1
                 continue
             fi
-            [[ -z "$attrs" ]] && continue
+            if ! has_blocking_xattrs "$attrs"; then
+                continue
+            fi
             if ! xattr -c -s "$path"; then
                 log_error "Failed to scrub symlink extended attributes for: $path"
                 status=1
@@ -320,7 +337,9 @@ scrub_xattrs_preserving_modes() {
             status=1
             continue
         fi
-        [[ -z "$attrs" ]] && continue
+        if ! has_blocking_xattrs "$attrs"; then
+            continue
+        fi
 
         mode="$(stat -f '%Lp' "$path" 2>/dev/null || true)"
         if [[ -n "$mode" && ! -w "$path" ]]; then
