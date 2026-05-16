@@ -117,6 +117,11 @@ if [[ ! -d "$ENTITLEMENTS_DIR" ]]; then
     exit 66
 fi
 
+if grep -R -F -q 'com.apple.security.cs.disable-library-validation' "$ENTITLEMENTS_DIR"; then
+    log_error "Refusing payload signing with com.apple.security.cs.disable-library-validation entitlement. Bundle and sign dependencies instead."
+    exit 65
+fi
+
 for required in codesign xcrun file shasum; do
     if ! command -v "$required" >/dev/null 2>&1; then
         log_error "$required is required but was not found on PATH."

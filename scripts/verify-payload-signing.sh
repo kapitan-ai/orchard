@@ -130,7 +130,7 @@ fi
 
 verify_macho() {
     local path="$1"
-    local rel_path display verify_out flags_line timestamp_line leaf_authority
+    local rel_path display verify_out flags_line timestamp_line leaf_authority entitlements
 
     rel_path="$(relative_path "$path")"
 
@@ -168,6 +168,12 @@ verify_macho() {
     leaf_authority="$(grep -E '(^|[[:space:]])Authority=' <<< "$display" | head -1 | sed 's/^[[:space:]]*//' || true)"
     if [[ "$leaf_authority" != "Authority=$IDENTITY" ]]; then
         emit "$rel_path" "fail" "wrong identity"
+        return 1
+    fi
+
+    entitlements="$(codesign --display --entitlements :- "$path" 2>&1 || true)"
+    if grep -Fq 'com.apple.security.cs.disable-library-validation' <<< "$entitlements"; then
+        emit "$rel_path" "fail" "forbidden entitlement: com.apple.security.cs.disable-library-validation"
         return 1
     fi
 

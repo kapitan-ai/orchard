@@ -72,6 +72,9 @@ venv="$case_dir/native/foo/.venv"
 runtime="$case_dir/runtime"
 mkdir -p "$venv/bin" "$venv/lib" "$runtime/bin" "$runtime/lib"
 cp /bin/ls "$runtime/bin/python3.13"
+if command -v xattr >/dev/null 2>&1; then
+    xattr -w com.apple.quarantine 'test-quarantine' "$runtime/bin/python3.13" 2>/dev/null || true
+fi
 ln -s "$runtime/bin/python3.13" "$venv/bin/python"
 ln -s "$runtime/bin/python3.13" "$venv/bin/python3"
 cat > "$venv/bin/tool" <<'SH'
@@ -82,6 +85,9 @@ chmod +x "$venv/bin/tool"
 "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$case_dir/native" >/dev/null
 test ! -L "$venv/bin/python"
 test ! -L "$venv/bin/python3"
+if command -v xattr >/dev/null 2>&1; then
+    ! xattr "$venv/bin/python3" 2>/dev/null | grep -F 'com.apple.quarantine'
+fi
 head -3 "$venv/bin/tool" | grep -F '#!/bin/sh' >/dev/null
 assert_no_grep '/Users/buildhost' "$venv/bin/tool"
 
@@ -164,7 +170,7 @@ Load command 0
       cmdsize 104
          name $root/Library/Application Support/Orchard/native/foo/.venv/lib/libfoo.dylib (offset 24)
 OUT"
-assert_verifier_fails_with 'outbound Mach-O dependency' "$tools" "$root" "$case_dir/out"
+assert_verifier_fails_with "forbidden Mach-O dependency" "$tools" "$root" "$case_dir/out"
 
 # verifier: unsafe absolute LC_RPATH is rejected.
 case_dir="$TMP_ROOT/rpath"
@@ -182,7 +188,7 @@ Load command 1
       cmdsize 56
          name @rpath/libfoo.dylib (offset 24)
 OUT'
-assert_verifier_fails_with 'outbound LC_RPATH' "$tools" "$root" "$case_dir/out"
+assert_verifier_fails_with 'forbidden LC_RPATH' "$tools" "$root" "$case_dir/out"
 
 printf 'ok	staged venv closure regressions
 '

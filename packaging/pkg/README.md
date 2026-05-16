@@ -1120,7 +1120,7 @@ Payload entitlements live in `packaging/pkg/entitlements/`:
 | File | Applies to | Exceptions |
 |------|------------|------------|
 | `beam.entitlements` | `beam.smp` in bundled ERTS releases | `com.apple.security.cs.allow-jit` |
-| `python.entitlements` | Python venv interpreters and executable venv tools | `com.apple.security.cs.allow-unsigned-executable-memory`, `com.apple.security.cs.disable-library-validation` |
+| `python.entitlements` | Python venv interpreters and executable venv tools | `com.apple.security.cs.allow-unsigned-executable-memory` |
 | `default.entitlements` | Other Mach-O libraries and executables | Empty entitlement dictionary; hardened runtime still comes from `codesign --options runtime` |
 
 `scripts/sign-pkg.sh` expands the input PKG and runs

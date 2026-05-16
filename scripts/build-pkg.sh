@@ -267,11 +267,15 @@ validate_packaging_source_provenance() {
 }
 
 copy_file_without_metadata() {
-    COPYFILE_DISABLE=1 cp -X "$1" "$2"
+    COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 cp -X "$1" "$2"
 }
 
 copy_tree_without_metadata() {
-    COPYFILE_DISABLE=1 cp -X -R "$1" "$2"
+    COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 cp -X -R "$1" "$2"
+}
+
+pkgbuild_without_metadata() {
+    COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 pkgbuild "$@"
 }
 
 remove_metadata_sidecars() {
@@ -474,7 +478,7 @@ run_pkgbuild_scratch_preflight() {
         return 1
     fi
 
-    if ! COPYFILE_DISABLE=1 pkgbuild \
+    if ! pkgbuild_without_metadata \
         --root "$scratch_root" \
         --scripts "$REPO_ROOT/packaging/pkg/scripts" \
         --identifier com.orchard.pkg.preflight \
@@ -716,7 +720,7 @@ copy_tree_without_metadata "$REPO_ROOT/native/orchard_tokenizer" "$STAGING/nativ
 copy_tree_without_metadata "$REPO_ROOT/native/orchard_worker_mlx" "$STAGING/native/"
 
 log_info "Materializing staged Python venv interpreters..."
-if ! COPYFILE_DISABLE=1 "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$STAGING/native"; then
+if ! COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$STAGING/native"; then
     log_error "Failed to materialize staged Python venv interpreters"
     exit 1
 fi
@@ -815,7 +819,7 @@ find "$STAGING/share/bin" -type f -exec chmod 755 {} \;
 log_info "Building PKG..."
 mkdir -p "$OUTPUT_DIR"
 
-COPYFILE_DISABLE=1 pkgbuild \
+pkgbuild_without_metadata \
     --root "$STAGING_BASE" \
     --scripts "$REPO_ROOT/packaging/pkg/scripts" \
     --identifier com.orchard.pkg \

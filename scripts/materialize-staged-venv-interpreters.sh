@@ -29,6 +29,12 @@ import subprocess
 import sys
 
 native_root = pathlib.Path(sys.argv[1])
+def copy_without_metadata(src: pathlib.Path, dst: pathlib.Path) -> pathlib.Path:
+    shutil.copyfile(src, dst)
+    shutil.copymode(src, dst, follow_symlinks=False)
+    return dst
+
+
 venvs = sorted(path for path in native_root.glob("*/.venv") if path.is_dir())
 if not venvs:
     raise SystemExit(f"no staged native virtualenvs found under {native_root}")
@@ -46,7 +52,7 @@ for venv in venvs:
 
     if python.is_symlink():
         python.unlink()
-        shutil.copy2(resolved_python, python)
+        copy_without_metadata(resolved_python, python)
         python.chmod(python.stat().st_mode | 0o755)
 
     venv_real = venv.resolve(strict=False)
@@ -57,13 +63,13 @@ for venv in venvs:
         if str(resolved).startswith(str(venv_real) + os.sep):
             continue
         interpreter_link.unlink()
-        shutil.copy2(resolved, interpreter_link)
+        copy_without_metadata(resolved, interpreter_link)
         interpreter_link.chmod(interpreter_link.stat().st_mode | 0o755)
 
     staged_lib = venv / "lib"
     staged_lib.mkdir(parents=True, exist_ok=True)
     if runtime_lib.resolve(strict=True) != staged_lib.resolve(strict=False):
-        shutil.copytree(runtime_lib, staged_lib, dirs_exist_ok=True)
+        shutil.copytree(runtime_lib, staged_lib, dirs_exist_ok=True, copy_function=copy_without_metadata)
 
     for libpython in staged_lib.glob("libpython*.dylib"):
         subprocess.run(

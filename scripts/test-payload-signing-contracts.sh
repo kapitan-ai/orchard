@@ -254,6 +254,14 @@ if [ "${1:-}" = "--verify" ]; then
 fi
 
 if [ "${1:-}" = "--display" ]; then
+  for arg in "$@"; do
+    if [ "$arg" = "--entitlements" ]; then
+      if [ "${CODESIGN_FORBIDDEN_ENTITLEMENT:-}" = "1" ]; then
+        echo '<key>com.apple.security.cs.disable-library-validation</key>'
+      fi
+      exit 0
+    fi
+  done
   case "$last" in
     *adhoc*)
       echo "Signature=adhoc" >&2
@@ -566,6 +574,14 @@ case "${1:-}" in
     if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
       printf 'codesign display %s\n' "$last" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
     fi
+    for arg in "$@"; do
+      if [ "$arg" = "--entitlements" ]; then
+        if [ "${CODESIGN_FORBIDDEN_ENTITLEMENT:-}" = "1" ]; then
+          echo '<key>com.apple.security.cs.disable-library-validation</key>'
+        fi
+        exit 0
+      fi
+    done
     echo "Signature size=9000" >&2
     echo "CodeDirectory v=20500 size=475 flags=0x10000(runtime) hashes=10+7 location=embedded" >&2
     echo "Timestamp=May 12, 2026" >&2
@@ -731,6 +747,10 @@ if [ "${ORCHARD_REQUIRE_COPYFILE_DISABLE:-}" = "1" ] && [ "${COPYFILE_DISABLE:-}
   echo "pkgbuild missing COPYFILE_DISABLE=1" >&2
   exit 95
 fi
+if [ "${ORCHARD_REQUIRE_COPY_EXTENDED_ATTRIBUTES_DISABLE:-}" = "1" ] && [ "${COPY_EXTENDED_ATTRIBUTES_DISABLE:-}" != "1" ]; then
+  echo "pkgbuild missing COPY_EXTENDED_ATTRIBUTES_DISABLE=1" >&2
+  exit 95
+fi
 if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
   if [ "$is_preflight" = "1" ]; then
     echo "scratch-preflight" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
@@ -894,6 +914,14 @@ if [ "${1:-}" = "--verify" ]; then
   esac
 fi
 if [ "${1:-}" = "--display" ]; then
+  for arg in "$@"; do
+    if [ "$arg" = "--entitlements" ]; then
+      if [ "${CODESIGN_FORBIDDEN_ENTITLEMENT:-}" = "1" ]; then
+        echo '<key>com.apple.security.cs.disable-library-validation</key>'
+      fi
+      exit 0
+    fi
+  done
   echo "Signature size=9000" >&2
   echo "CodeDirectory v=20500 size=475 flags=0x10000(runtime) hashes=10+7 location=embedded" >&2
   echo "Timestamp=May 12, 2026" >&2
@@ -951,6 +979,10 @@ make_root "$root"
 assert_fails_with 'ORCHARD_PAYLOAD_SIGNING_IDENTITY is required' "$case_dir/missing.out" env -i PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/sign-payload.sh" "$root"
 assert_fails_with 'Developer ID Application identity' "$case_dir/installer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$INSTALLER_IDENTITY" "$REPO_ROOT/scripts/sign-payload.sh" "$root"
 assert_fails_with 'Developer ID Application identity' "$case_dir/non-app.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY='Apple Development: Example, Inc. (TEAMID)' "$REPO_ROOT/scripts/sign-payload.sh" "$root"
+forbidden_entitlements="$case_dir/forbidden-entitlements"
+mkdir -p "$forbidden_entitlements"
+printf '<key>com.apple.security.cs.disable-library-validation</key>\n' > "$forbidden_entitlements/python.entitlements"
+assert_fails_with 'Refusing payload signing with com.apple.security.cs.disable-library-validation entitlement' "$case_dir/forbidden-entitlements.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-payload.sh" --entitlements-dir "$forbidden_entitlements" "$root"
 
 # RED/GREEN: sign-payload discovers Mach-O files, signs libraries before executables, and chooses per-class entitlements.
 case_dir="$TMP_ROOT/sign"
@@ -1020,6 +1052,10 @@ assert_grep $'runtime-with-executable-segment	ok	ok' "$case_dir/runtime-with-exe
 assert_no_grep $'	fail	' "$case_dir/runtime-with-executable-segment.out"
 assert_fails_with 'Developer ID Application identity' "$case_dir/verify-installer.out" run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$INSTALLER_IDENTITY" "$root"
 assert_fails_with 'Developer ID Application identity' "$case_dir/verify-non-app.out" run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity 'Apple Development: Example, Inc. (TEAMID)' "$root"
+forbidden_root="$case_dir/forbidden-entitlement/root"
+make_root "$forbidden_root"
+: > "$forbidden_root/Library/Application Support/Orchard/share/bin/forbidden-entitlement"
+assert_fails_with 'forbidden entitlement: com.apple.security.cs.disable-library-validation' "$case_dir/forbidden-entitlement.out" env CODESIGN_FORBIDDEN_ENTITLEMENT=1 PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$forbidden_root"
 empty_root="$case_dir/empty/root"
 mkdir -p "$empty_root"
 assert_fails_with 'no Mach-O files found' "$case_dir/empty.out" run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$empty_root"
@@ -1523,7 +1559,7 @@ fi
 
 staging_metadata_copy="$case_dir/staging-metadata-copy"
 cp_log="$case_dir/cp.log"
-ORCHARD_REQUIRE_CP_X=1 CP_LOG="$cp_log" ORCHARD_REQUIRE_COPYFILE_DISABLE=1 ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_metadata_copy" PATH="$tools:/usr/bin:/bin" \
+ORCHARD_REQUIRE_CP_X=1 CP_LOG="$cp_log" ORCHARD_REQUIRE_COPYFILE_DISABLE=1 ORCHARD_REQUIRE_COPY_EXTENDED_ATTRIBUTES_DISABLE=1 ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY= ORCHARD_PKG_STAGING_BASE="$staging_metadata_copy" PATH="$tools:/usr/bin:/bin" \
     "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir" >"$case_dir/metadata-copy.out" 2>&1
 assert_grep 'COPYFILE_DISABLE=1 cp -X -R' "$cp_log"
 assert_grep 'COPYFILE_DISABLE=1 cp -X ' "$cp_log"
@@ -1574,6 +1610,13 @@ closure_output_pkg="$case_dir/Orchard-closure-signed.pkg"
 write_sign_pkg_fakes "$tools" ok "$closure_productsign_log"
 assert_fails_with 'forbidden Mach-O dependency' "$case_dir/closure.out" env OTOOL_CASE=homebrew_dep PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$closure_output_pkg"
 test ! -e "$closure_productsign_log"
+
+tools="$case_dir/tools-forbidden-entitlement"
+forbidden_productsign_log="$case_dir/productsign-forbidden-entitlement.log"
+forbidden_output_pkg="$case_dir/Orchard-forbidden-entitlement-signed.pkg"
+write_sign_pkg_fakes "$tools" ok "$forbidden_productsign_log"
+assert_fails_with 'forbidden entitlement: com.apple.security.cs.disable-library-validation' "$case_dir/forbidden-entitlement.out" env CODESIGN_FORBIDDEN_ENTITLEMENT=1 PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$forbidden_output_pkg"
+test ! -e "$forbidden_productsign_log"
 
 # RED/GREEN: sign-pkg notary auth matrix and bounded expansion diagnostics.
 case_dir="$TMP_ROOT/sign-pkg-notary-auth"
