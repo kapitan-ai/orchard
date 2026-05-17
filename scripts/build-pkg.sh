@@ -105,6 +105,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+cleanup_pkg_outputs() {
+    local pkg_path="$1"
+    local manifest_path="${pkg_path}.signing-manifest.txt"
+    local tmp_manifest_path="$(dirname "$pkg_path")/.${pkg_path##*/}.signing-manifest.tmp"
+
+    rm -f "$pkg_path" "${pkg_path}.sha256" "$manifest_path" "$tmp_manifest_path"
+}
+
 find_metadata_sidecars() {
     local root="$1"
     local sidecars_file
@@ -129,19 +137,21 @@ find_metadata_sidecars() {
     rm -f "$sidecars_file" "$find_err_file"
 }
 
-has_blocking_xattrs() {
+blocking_xattrs() {
     local attrs="$1"
     local attr
 
     while IFS= read -r attr; do
         [[ -n "$attr" ]] || continue
-        # macOS may synthesize com.apple.provenance for locally created executables;
-        # it cannot always be removed with xattr -d/-c and is not a payload sidecar.
         [[ "$attr" == "com.apple.provenance" ]] && continue
-        return 0
+        printf '%s\n' "$attr"
     done <<<"$attrs"
+}
 
-    return 1
+has_blocking_xattrs() {
+    local attrs="$1"
+
+    [[ -n "$(blocking_xattrs "$attrs")" ]]
 }
 
 collect_xattr_nodes() {
@@ -259,11 +269,42 @@ assert_clean_provenance() {
     fi
 }
 
+assert_no_source_sidecars() {
+    local label="$1"
+    local root="$2"
+    local sidecars_file
+    local sidecar_count
+
+    sidecars_file="$(mktemp "${TMPDIR:-/tmp}/orchard-source-sidecars.XXXXXX")"
+
+    if ! find_metadata_sidecars "$root" >"$sidecars_file"; then
+        rm -f "$sidecars_file"
+        log_error "Source metadata gate failed for $label"
+        return 1
+    fi
+
+    sidecar_count="$(wc -l <"$sidecars_file" | tr -d '[:space:]')"
+    log_info "Source metadata inventory: $label payload_sidecar_count=${sidecar_count:-0} root=$root"
+
+    if [[ "${sidecar_count:-0}" -gt 0 ]]; then
+        log_error "macOS metadata sidecar files for $label:"
+        cat "$sidecars_file" >&2
+        rm -f "$sidecars_file"
+        log_error "Source metadata gate failed for $label"
+        return 1
+    fi
+
+    rm -f "$sidecars_file"
+}
+
 validate_packaging_source_provenance() {
-    assert_clean_provenance "packaging wrappers" "$REPO_ROOT/packaging/pkg/bin"
-    assert_clean_provenance "launchd plists" "$REPO_ROOT/packaging/launchd"
-    assert_clean_provenance "package scripts" "$REPO_ROOT/packaging/pkg/scripts"
-    assert_clean_provenance "payload entitlements" "$REPO_ROOT/packaging/pkg/entitlements"
+    # Source xattrs such as com.apple.provenance can be immutable on some hosts;
+    # payload safety is enforced after metadata-suppressed copy into staging.
+    # Source trees must still be free of visible AppleDouble/.DS_Store files.
+    assert_no_source_sidecars "packaging wrappers" "$REPO_ROOT/packaging/pkg/bin" || return 1
+    assert_no_source_sidecars "launchd plists" "$REPO_ROOT/packaging/launchd" || return 1
+    assert_no_source_sidecars "package scripts" "$REPO_ROOT/packaging/pkg/scripts" || return 1
+    assert_no_source_sidecars "payload entitlements" "$REPO_ROOT/packaging/pkg/entitlements" || return 1
 }
 
 copy_file_without_metadata() {
@@ -275,7 +316,7 @@ copy_tree_without_metadata() {
 }
 
 pkgbuild_without_metadata() {
-    COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 pkgbuild "$@"
+    COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 pkgbuild --ownership recommended "$@"
 }
 
 remove_metadata_sidecars() {
@@ -304,6 +345,8 @@ scrub_xattrs_preserving_modes() {
     local path
     local mode
     local attrs
+    local blocking_attrs
+    local attr
     local status=0
 
     restore_file="$(mktemp "${TMPDIR:-/tmp}/orchard-xattr-modes.XXXXXX")"
@@ -325,13 +368,17 @@ scrub_xattrs_preserving_modes() {
                 status=1
                 continue
             fi
-            if ! has_blocking_xattrs "$attrs"; then
+            blocking_attrs="$(blocking_xattrs "$attrs")"
+            if [[ -z "$blocking_attrs" ]]; then
                 continue
             fi
-            if ! xattr -c -s "$path"; then
-                log_error "Failed to scrub symlink extended attributes for: $path"
-                status=1
-            fi
+            while IFS= read -r attr; do
+                [[ -n "$attr" ]] || continue
+                if ! xattr -d -s "$attr" "$path"; then
+                    log_error "Failed to scrub symlink extended attribute $attr for: $path"
+                    status=1
+                fi
+            done <<<"$blocking_attrs"
             continue
         fi
 
@@ -341,7 +388,8 @@ scrub_xattrs_preserving_modes() {
             status=1
             continue
         fi
-        if ! has_blocking_xattrs "$attrs"; then
+        blocking_attrs="$(blocking_xattrs "$attrs")"
+        if [[ -z "$blocking_attrs" ]]; then
             continue
         fi
 
@@ -355,10 +403,13 @@ scrub_xattrs_preserving_modes() {
             fi
         fi
 
-        if ! xattr -c "$path"; then
-            log_error "Failed to scrub extended attributes for: $path"
-            status=1
-        fi
+        while IFS= read -r attr; do
+            [[ -n "$attr" ]] || continue
+            if ! xattr -d "$attr" "$path"; then
+                log_error "Failed to scrub extended attribute $attr for: $path"
+                status=1
+            fi
+        done <<<"$blocking_attrs"
     done <"$paths_file"
 
     while IFS=$'\t' read -r mode path; do
@@ -472,6 +523,12 @@ run_pkgbuild_scratch_preflight() {
     mkdir -p "$(dirname "$scratch_file")"
     printf 'Orchard pkgbuild provenance preflight\n' >"$scratch_file"
 
+    if ! scrub_macos_metadata "$scratch_root"; then
+        rm -rf "$scratch_dir"
+        log_error "Scratch pkgbuild provenance preflight failed"
+        return 1
+    fi
+
     if ! assert_clean_provenance "scratch pkgbuild input" "$scratch_root"; then
         rm -rf "$scratch_dir"
         log_error "Scratch pkgbuild provenance preflight failed"
@@ -497,6 +554,660 @@ run_pkgbuild_scratch_preflight() {
     fi
 
     rm -rf "$scratch_dir"
+}
+
+pkg_payload_metadata_sidecar() {
+    local entry="$1"
+    local normalized
+    local basename
+
+    normalized="${entry#./}"
+    normalized="${normalized%/}"
+    basename="${normalized##*/}"
+
+    [[ "$basename" == ".DS_Store" || "$basename" == ._* ]]
+}
+
+collect_pkg_payload_metadata_sidecars() {
+    local pkg_path="$1"
+    local output_file="$2"
+    local entries_file
+    local entry
+
+    entries_file="$(mktemp "${TMPDIR:-/tmp}/orchard-payload-entries.XXXXXX")"
+    if ! pkgutil --payload-files "$pkg_path" >"$entries_file"; then
+        rm -f "$entries_file"
+        return 1
+    fi
+
+    : >"$output_file"
+    while IFS= read -r entry; do
+        [[ -n "$entry" ]] || continue
+        if pkg_payload_metadata_sidecar "$entry"; then
+            printf '%s\n' "$entry" >>"$output_file"
+        fi
+    done <"$entries_file"
+    rm -f "$entries_file"
+}
+
+filter_payload_archive_preserving_headers() {
+    local source_payload="$1"
+    local skip_file="$2"
+    local repaired_payload="$3"
+    local repaired_raw
+
+    repaired_raw="$(mktemp "${TMPDIR:-/tmp}/orchard-payload-repaired.XXXXXX")"
+
+    if ! perl - "$skip_file" "$source_payload" "$repaired_raw" <<'PERL'
+use strict;
+use warnings;
+
+my ($skip_file, $payload, $out_path) = @ARGV;
+my %skip;
+open my $skip_fh, '<', $skip_file or die "open skip list: $!\n";
+while (my $entry = <$skip_fh>) {
+    chomp $entry;
+    next if $entry eq '';
+    $entry =~ s{^\./}{};
+    $entry =~ s{/\z}{};
+    $skip{$entry} = 1;
+    $skip{"./$entry"} = 1;
+}
+close $skip_fh or die "close skip list: $!\n";
+
+sub read_exact {
+    my ($fh, $length) = @_;
+    return '' if $length == 0;
+    my $buffer = '';
+    while (length($buffer) < $length) {
+        my $chunk = '';
+        my $read = sysread($fh, $chunk, $length - length($buffer));
+        die "read payload: $!\n" unless defined $read;
+        return undef if $read == 0 && length($buffer) == 0;
+        die "truncated cpio payload\n" if $read == 0;
+        $buffer .= $chunk;
+    }
+    return $buffer;
+}
+
+sub should_skip {
+    my ($name) = @_;
+    my $normalized = $name;
+    $normalized =~ s{^\./}{};
+    $normalized =~ s{/\z}{};
+    return 1 if $skip{$name} || $skip{$normalized} || $skip{"./$normalized"};
+    my ($base) = $normalized =~ m{([^/]+)\z};
+    return 0 unless defined $base;
+    return $base eq '.DS_Store' || $base =~ /^\._/;
+}
+
+sub octal_value {
+    my ($value) = @_;
+    $value =~ s/\0//g;
+    $value =~ s/\s+//g;
+    die "invalid odc numeric field\n" unless $value =~ /^[0-7]+\z/;
+    return oct($value);
+}
+
+sub hex_value {
+    my ($value) = @_;
+    die "invalid newc numeric field\n" unless $value =~ /^[0-9A-Fa-f]{8}\z/;
+    return hex($value);
+}
+
+open my $in, '-|', 'gzip', '-dc', $payload or die "gzip -dc $payload: $!\n";
+open my $out, '>', $out_path or die "open repaired payload: $!\n";
+my $removed = 0;
+my $records = 0;
+my $saw_trailer = 0;
+
+while (1) {
+    my $magic = read_exact($in, 6);
+    last unless defined $magic;
+    my ($record, $name);
+
+    if ($magic eq '070707') {
+        my $rest = read_exact($in, 70);
+        die "truncated odc header\n" unless defined $rest;
+        my $header = $magic . $rest;
+        my $name_size = octal_value(substr($header, 59, 6));
+        my $file_size = octal_value(substr($header, 65, 11));
+        my $name_block = read_exact($in, $name_size);
+        die "truncated odc name\n" unless defined $name_block;
+        $name = $name_block;
+        $name =~ s/\0\z//;
+        my $data = read_exact($in, $file_size);
+        die "truncated odc data\n" unless defined $data;
+        $record = $header . $name_block . $data;
+    } elsif ($magic eq '070701' || $magic eq '070702') {
+        my $rest = read_exact($in, 104);
+        die "truncated newc header\n" unless defined $rest;
+        my $header = $magic . $rest;
+        my $file_size = hex_value(substr($header, 54, 8));
+        my $name_size = hex_value(substr($header, 94, 8));
+        my $name_block = read_exact($in, $name_size);
+        die "truncated newc name\n" unless defined $name_block;
+        $name = $name_block;
+        $name =~ s/\0\z//;
+        my $name_pad_size = (4 - ((110 + $name_size) % 4)) % 4;
+        my $name_pad = read_exact($in, $name_pad_size);
+        die "truncated newc name padding\n" unless defined $name_pad;
+        my $data = read_exact($in, $file_size);
+        die "truncated newc data\n" unless defined $data;
+        my $data_pad_size = (4 - ($file_size % 4)) % 4;
+        my $data_pad = read_exact($in, $data_pad_size);
+        die "truncated newc data padding\n" unless defined $data_pad;
+        $record = $header . $name_block . $name_pad . $data . $data_pad;
+    } else {
+        die "unsupported cpio payload format magic: $magic\n";
+    }
+
+    $records++;
+    if (should_skip($name)) {
+        $removed++;
+    } else {
+        print {$out} $record or die "write repaired payload: $!\n";
+    }
+    if ($name eq 'TRAILER!!!') {
+        $saw_trailer = 1;
+        last;
+    }
+}
+
+close $out or die "close repaired payload: $!\n";
+close $in or die "close gzip reader failed\n";
+die "cpio payload contained no records\n" if $records == 0;
+die "cpio payload missing TRAILER!!! record\n" unless $saw_trailer;
+die "no metadata sidecar records were removed from payload\n" if keys(%skip) && $removed == 0;
+PERL
+    then
+        rm -f "$repaired_raw"
+        log_error "Failed to filter PKG Payload while preserving archive metadata"
+        return 1
+    fi
+
+    if ! gzip -n -c "$repaired_raw" >"$repaired_payload"; then
+        rm -f "$repaired_raw"
+        log_error "Failed to recompress repaired PKG Payload"
+        return 1
+    fi
+    rm -f "$repaired_raw"
+}
+
+filter_bom_preserving_metadata() {
+    local source_bom="$1"
+    local skip_file="$2"
+    local repaired_bom="$3"
+    local bom_listing
+    local filtered_listing
+
+    bom_listing="$(mktemp "${TMPDIR:-/tmp}/orchard-bom-listing.XXXXXX")"
+    filtered_listing="$(mktemp "${TMPDIR:-/tmp}/orchard-bom-filtered.XXXXXX")"
+
+    if ! lsbom "$source_bom" >"$bom_listing"; then
+        rm -f "$bom_listing" "$filtered_listing"
+        log_error "Failed to list original PKG Bom metadata"
+        return 1
+    fi
+
+    if ! perl - "$skip_file" "$bom_listing" "$filtered_listing" <<'PERL'
+use strict;
+use warnings;
+my ($skip_file, $listing, $out_path) = @ARGV;
+my %skip;
+open my $skip_fh, '<', $skip_file or die "open skip list: $!\n";
+while (my $entry = <$skip_fh>) {
+    chomp $entry;
+    next if $entry eq '';
+    $entry =~ s{^\./}{};
+    $entry =~ s{/\z}{};
+    $skip{$entry} = 1;
+    $skip{"./$entry"} = 1;
+}
+close $skip_fh or die "close skip list: $!\n";
+open my $in, '<', $listing or die "open bom listing: $!\n";
+open my $out, '>', $out_path or die "open filtered bom listing: $!\n";
+my $removed = 0;
+while (my $line = <$in>) {
+    my ($path) = split /\t/, $line, 2;
+    chomp $path if defined $path;
+    my $normalized = defined($path) ? $path : '';
+    $normalized =~ s{^\./}{};
+    $normalized =~ s{/\z}{};
+    my ($base) = $normalized =~ m{([^/]+)\z};
+    if ($skip{$path // ''} || $skip{$normalized} || $skip{"./$normalized"} ||
+        (defined($base) && ($base eq '.DS_Store' || $base =~ /^\._/))) {
+        $removed++;
+        next;
+    }
+    print {$out} $line or die "write filtered bom listing: $!\n";
+}
+close $out or die "close filtered bom listing: $!\n";
+close $in or die "close bom listing: $!\n";
+die "no metadata sidecar records were removed from Bom\n" if keys(%skip) && $removed == 0;
+PERL
+    then
+        rm -f "$bom_listing" "$filtered_listing"
+        log_error "Failed to filter original PKG Bom metadata"
+        return 1
+    fi
+
+    if ! mkbom -i "$filtered_listing" "$repaired_bom"; then
+        rm -f "$bom_listing" "$filtered_listing"
+        log_error "Failed to rebuild PKG Bom from filtered original metadata"
+        return 1
+    fi
+
+    rm -f "$bom_listing" "$filtered_listing"
+}
+
+package_info_payload_values() {
+    local package_info="$1"
+
+    perl -0ne '
+        if (/<payload\b([^>]*)>/s) {
+            my $attrs = $1;
+            my ($files) = $attrs =~ /\bnumberOfFiles="([^"]*)"/;
+            my ($kb) = $attrs =~ /\binstallKBytes="([^"]*)"/;
+            exit 3 unless defined $files && defined $kb;
+            print "$files\t$kb\n";
+            exit 0;
+        }
+        exit 2;
+    ' "$package_info"
+}
+
+rewrite_package_info_payload_attrs() {
+    local package_info="$1"
+    local number_of_files="$2"
+    local install_kbytes="$3"
+
+    if ! perl -0pi -e '
+        BEGIN { ($files, $kb) = @ARGV; @ARGV = @ARGV[2..$#ARGV]; }
+        die "PackageInfo has no payload element\n" unless /<payload\b[^>]*>/s;
+        die "PackageInfo payload has no numberOfFiles\n" unless /<payload\b[^>]*\bnumberOfFiles="[^"]*"/s;
+        die "PackageInfo payload has no installKBytes\n" unless /<payload\b[^>]*\binstallKBytes="[^"]*"/s;
+        s/(<payload\b[^>]*\bnumberOfFiles=")[^"]*(")/$1$files$2/s;
+        s/(<payload\b[^>]*\binstallKBytes=")[^"]*(")/$1$kb$2/s;
+    ' "$number_of_files" "$install_kbytes" "$package_info"; then
+        log_error "Failed to rewrite PackageInfo payload metadata"
+        return 1
+    fi
+}
+
+compute_expanded_payload_install_kbytes() {
+    local pkg_path="$1"
+    local expanded_parent
+    local expanded_dir
+    local install_kbytes
+
+    expanded_parent="$(mktemp -d "${TMPDIR:-/tmp}/orchard-pkg-size.XXXXXX")"
+    expanded_dir="$expanded_parent/expanded-full"
+
+    if ! pkgutil --expand-full "$pkg_path" "$expanded_dir"; then
+        rm -rf "$expanded_parent"
+        log_error "Failed to expand PKG while computing PackageInfo installKBytes"
+        return 1
+    fi
+    if [[ ! -d "$expanded_dir/Payload" ]]; then
+        rm -rf "$expanded_parent"
+        log_error "Expanded PKG is missing Payload directory for installKBytes validation"
+        return 1
+    fi
+
+    install_kbytes="$(du -sk "$expanded_dir/Payload" | awk '{print $1}')"
+    rm -rf "$expanded_parent"
+    printf '%s\n' "$install_kbytes"
+}
+
+update_package_info_from_pkg_payload() {
+    local expanded_dir="$1"
+    local candidate_pkg="$2"
+    local number_of_files
+    local install_kbytes
+
+    number_of_files="$(pkgutil --payload-files "$candidate_pkg" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')"
+    if ! install_kbytes="$(compute_expanded_payload_install_kbytes "$candidate_pkg")"; then
+        return 1
+    fi
+    rewrite_package_info_payload_attrs "$expanded_dir/PackageInfo" "$number_of_files" "$install_kbytes"
+}
+
+repair_pkg_payload_metadata() {
+    local pkg_path="$1"
+    local repair_parent
+    local expanded_dir
+    local repaired_pkg
+    local candidate_pkg
+    local sidecars_file
+    local sidecar_count
+    local repaired_bom
+    local repaired_payload
+
+    repair_parent="$(mktemp -d "${TMPDIR:-/tmp}/orchard-pkg-repair.XXXXXX")"
+    expanded_dir="$repair_parent/expanded"
+    repaired_pkg="$repair_parent/repaired.pkg"
+    candidate_pkg="$repair_parent/candidate.pkg"
+    sidecars_file="$repair_parent/payload-sidecars.txt"
+    repaired_bom="$expanded_dir/Bom.repaired"
+    repaired_payload="$expanded_dir/Payload.repaired"
+
+    if ! collect_pkg_payload_metadata_sidecars "$pkg_path" "$sidecars_file"; then
+        rm -rf "$repair_parent"
+        log_error "Failed to inspect PKG payload entries for metadata sidecars: $pkg_path"
+        return 1
+    fi
+    sidecar_count="$(wc -l <"$sidecars_file" | tr -d '[:space:]')"
+    if [[ "${sidecar_count:-0}" -eq 0 ]]; then
+        rm -rf "$repair_parent"
+        log_info "PKG payload metadata repair not needed"
+        return 0
+    fi
+
+    log_warn "Repairing PKG by filtering $sidecar_count macOS metadata sidecar payload entries"
+    if ! pkgutil --expand "$pkg_path" "$expanded_dir"; then
+        rm -rf "$repair_parent"
+        log_error "Failed to expand PKG for payload metadata repair: $pkg_path"
+        return 1
+    fi
+
+    if [[ ! -f "$expanded_dir/Bom" || ! -f "$expanded_dir/Payload" || ! -f "$expanded_dir/PackageInfo" ]]; then
+        rm -rf "$repair_parent"
+        log_error "Expanded PKG is missing Bom, Payload, or PackageInfo for metadata repair"
+        return 1
+    fi
+
+    if ! filter_bom_preserving_metadata "$expanded_dir/Bom" "$sidecars_file" "$repaired_bom"; then
+        rm -rf "$repair_parent"
+        return 1
+    fi
+    if ! mv "$repaired_bom" "$expanded_dir/Bom"; then
+        rm -rf "$repair_parent"
+        log_error "Failed to replace repaired PKG Bom: $pkg_path"
+        return 1
+    fi
+
+    if ! filter_payload_archive_preserving_headers "$expanded_dir/Payload" "$sidecars_file" "$repaired_payload"; then
+        rm -rf "$repair_parent"
+        return 1
+    fi
+    if ! mv "$repaired_payload" "$expanded_dir/Payload"; then
+        rm -rf "$repair_parent"
+        log_error "Failed to replace repaired PKG Payload: $pkg_path"
+        return 1
+    fi
+
+    if ! pkgutil --flatten "$expanded_dir" "$candidate_pkg"; then
+        rm -rf "$repair_parent"
+        log_error "Failed to flatten candidate repaired PKG: $pkg_path"
+        return 1
+    fi
+
+    if ! update_package_info_from_pkg_payload "$expanded_dir" "$candidate_pkg"; then
+        rm -rf "$repair_parent"
+        return 1
+    fi
+
+    if ! pkgutil --flatten "$expanded_dir" "$repaired_pkg"; then
+        rm -rf "$repair_parent"
+        log_error "Failed to flatten repaired PKG: $pkg_path"
+        return 1
+    fi
+
+    if ! mv "$repaired_pkg" "$pkg_path"; then
+        rm -rf "$repair_parent"
+        log_error "Failed to replace repaired PKG: $pkg_path"
+        return 1
+    fi
+    rm -rf "$repair_parent"
+}
+
+validate_pkg_bom_metadata_invariants() {
+    local expanded_dir="$1"
+    local bom_listing
+    local bad_owner_listing
+
+    if [[ ! -f "$expanded_dir/Bom" ]]; then
+        log_error "Expanded PKG is missing Bom for metadata validation"
+        return 1
+    fi
+
+    bom_listing="$(mktemp "${TMPDIR:-/tmp}/orchard-bom-validate.XXXXXX")"
+    bad_owner_listing="$(mktemp "${TMPDIR:-/tmp}/orchard-bom-owners.XXXXXX")"
+
+    if ! lsbom "$expanded_dir/Bom" >"$bom_listing"; then
+        rm -f "$bom_listing" "$bad_owner_listing"
+        log_error "Failed to list PKG Bom for metadata validation"
+        return 1
+    fi
+
+    if grep -Eq '(^|/)\._[^/]*([[:space:]]|$)|(^|/)\.DS_Store([[:space:]]|$)' "$bom_listing"; then
+        log_error "macOS metadata sidecar files detected in PKG Bom"
+        grep -E '(^|/)\._[^/]*([[:space:]]|$)|(^|/)\.DS_Store([[:space:]]|$)' "$bom_listing" >&2
+        rm -f "$bom_listing" "$bad_owner_listing"
+        return 1
+    fi
+
+    if ! awk -F '\t' '
+        $1 ~ /^\.\/Library\/Application Support\/Orchard(\/|$)/ {
+            split($3, owner, "/")
+            if (!((owner[1] == "0" && owner[2] == "0") || ($3 == "root/wheel"))) {
+                print
+            }
+        }
+    ' "$bom_listing" >"$bad_owner_listing"; then
+        rm -f "$bom_listing" "$bad_owner_listing"
+        log_error "Failed to inspect PKG Bom ownership metadata"
+        return 1
+    fi
+
+    if [[ -s "$bad_owner_listing" ]]; then
+        log_error "PKG Bom ownership invariant failed; Orchard payload entries must be root:wheel"
+        cat "$bad_owner_listing" >&2
+        rm -f "$bom_listing" "$bad_owner_listing"
+        return 1
+    fi
+
+    rm -f "$bom_listing" "$bad_owner_listing"
+}
+
+validate_pkg_payload_archive_ownership() {
+    local expanded_dir="$1"
+    local bad_owner_listing
+
+    if [[ ! -f "$expanded_dir/Payload" ]]; then
+        log_error "Expanded PKG is missing Payload archive for metadata validation"
+        return 1
+    fi
+
+    bad_owner_listing="$(mktemp "${TMPDIR:-/tmp}/orchard-payload-owners.XXXXXX")"
+    if ! perl - "$expanded_dir/Payload" >"$bad_owner_listing" <<'PERL'
+use strict;
+use warnings;
+
+my ($payload) = @ARGV;
+
+sub read_exact {
+    my ($fh, $length) = @_;
+    return '' if $length == 0;
+    my $buffer = '';
+    while (length($buffer) < $length) {
+        my $chunk = '';
+        my $read = sysread($fh, $chunk, $length - length($buffer));
+        die "read payload: $!\n" unless defined $read;
+        return undef if $read == 0 && length($buffer) == 0;
+        die "truncated cpio payload\n" if $read == 0;
+        $buffer .= $chunk;
+    }
+    return $buffer;
+}
+
+sub octal_value {
+    my ($value) = @_;
+    $value =~ s/\0//g;
+    $value =~ s/\s+//g;
+    die "invalid odc numeric field\n" unless $value =~ /^[0-7]+\z/;
+    return oct($value);
+}
+
+sub hex_value {
+    my ($value) = @_;
+    die "invalid newc numeric field\n" unless $value =~ /^[0-9A-Fa-f]{8}\z/;
+    return hex($value);
+}
+
+sub orchard_payload_entry {
+    my ($name) = @_;
+    my $normalized = $name;
+    $normalized =~ s{^\./}{};
+    $normalized =~ s{/\z}{};
+    return $normalized =~ m{\ALibrary/Application Support/Orchard(?:/|\z)};
+}
+
+open my $in, '-|', 'gzip', '-dc', $payload or die "gzip -dc $payload: $!\n";
+my $records = 0;
+my $saw_trailer = 0;
+
+while (1) {
+    my $magic = read_exact($in, 6);
+    last unless defined $magic;
+    my ($name, $uid, $gid, $file_size);
+
+    if ($magic eq '070707') {
+        my $rest = read_exact($in, 70);
+        die "truncated odc header\n" unless defined $rest;
+        my $header = $magic . $rest;
+        $uid = octal_value(substr($header, 24, 6));
+        $gid = octal_value(substr($header, 30, 6));
+        my $name_size = octal_value(substr($header, 59, 6));
+        $file_size = octal_value(substr($header, 65, 11));
+        my $name_block = read_exact($in, $name_size);
+        die "truncated odc name\n" unless defined $name_block;
+        $name = $name_block;
+        $name =~ s/\0\z//;
+        my $data = read_exact($in, $file_size);
+        die "truncated odc data\n" unless defined $data;
+    } elsif ($magic eq '070701' || $magic eq '070702') {
+        my $rest = read_exact($in, 104);
+        die "truncated newc header\n" unless defined $rest;
+        my $header = $magic . $rest;
+        $uid = hex_value(substr($header, 22, 8));
+        $gid = hex_value(substr($header, 30, 8));
+        $file_size = hex_value(substr($header, 54, 8));
+        my $name_size = hex_value(substr($header, 94, 8));
+        my $name_block = read_exact($in, $name_size);
+        die "truncated newc name\n" unless defined $name_block;
+        $name = $name_block;
+        $name =~ s/\0\z//;
+        my $name_pad_size = (4 - ((110 + $name_size) % 4)) % 4;
+        my $name_pad = read_exact($in, $name_pad_size);
+        die "truncated newc name padding\n" unless defined $name_pad;
+        my $data = read_exact($in, $file_size);
+        die "truncated newc data\n" unless defined $data;
+        my $data_pad_size = (4 - ($file_size % 4)) % 4;
+        my $data_pad = read_exact($in, $data_pad_size);
+        die "truncated newc data padding\n" unless defined $data_pad;
+    } else {
+        die "unsupported cpio payload format magic: $magic\n";
+    }
+
+    $records++;
+    if ($name eq 'TRAILER!!!') {
+        $saw_trailer = 1;
+        last;
+    }
+    if (orchard_payload_entry($name) && !($uid == 0 && $gid == 0)) {
+        print "$name\t$uid/$gid\n";
+    }
+}
+
+close $in or die "close gzip reader failed\n";
+die "cpio payload contained no records\n" if $records == 0;
+die "cpio payload missing TRAILER!!! record\n" unless $saw_trailer;
+PERL
+    then
+        rm -f "$bad_owner_listing"
+        log_error "Failed to inspect PKG Payload archive ownership metadata"
+        return 1
+    fi
+
+    if [[ -s "$bad_owner_listing" ]]; then
+        log_error "PKG Payload ownership invariant failed; Orchard payload archive entries must be root:wheel"
+        cat "$bad_owner_listing" >&2
+        rm -f "$bad_owner_listing"
+        return 1
+    fi
+
+    rm -f "$bad_owner_listing"
+}
+
+validate_package_info_payload_consistency() {
+    local pkg_path="$1"
+    local expanded_dir="$2"
+    local actual_number_of_files
+    local actual_install_kbytes
+    local package_info_values
+    local package_info_number_of_files
+    local package_info_install_kbytes
+
+    if [[ ! -f "$expanded_dir/PackageInfo" ]]; then
+        log_error "Expanded PKG is missing PackageInfo for metadata validation"
+        return 1
+    fi
+
+    actual_number_of_files="$(pkgutil --payload-files "$pkg_path" | sed '/^[[:space:]]*$/d' | wc -l | tr -d '[:space:]')"
+    if ! actual_install_kbytes="$(compute_expanded_payload_install_kbytes "$pkg_path")"; then
+        return 1
+    fi
+    if ! package_info_values="$(package_info_payload_values "$expanded_dir/PackageInfo")"; then
+        log_error "PackageInfo payload metadata is missing numberOfFiles or installKBytes"
+        return 1
+    fi
+    IFS=$'\t' read -r package_info_number_of_files package_info_install_kbytes <<<"$package_info_values"
+
+    if [[ "$package_info_number_of_files" != "$actual_number_of_files" ]]; then
+        log_error "PackageInfo payload numberOfFiles is stale: PackageInfo=$package_info_number_of_files actual=$actual_number_of_files"
+        return 1
+    fi
+
+    if [[ "$package_info_install_kbytes" != "$actual_install_kbytes" ]]; then
+        log_error "PackageInfo payload installKBytes is stale: PackageInfo=$package_info_install_kbytes actual=$actual_install_kbytes"
+        return 1
+    fi
+}
+
+validate_pkg_metadata_invariants() {
+    local pkg_path="$1"
+    local label="$2"
+    local expanded_parent
+    local expanded_dir
+
+    expanded_parent="$(mktemp -d "${TMPDIR:-/tmp}/orchard-pkg-metadata.XXXXXX")"
+    expanded_dir="$expanded_parent/expanded"
+
+    if ! pkgutil --expand "$pkg_path" "$expanded_dir"; then
+        rm -rf "$expanded_parent"
+        log_error "Failed to expand PKG for metadata validation: $pkg_path"
+        return 1
+    fi
+
+    if ! validate_pkg_bom_metadata_invariants "$expanded_dir"; then
+        rm -rf "$expanded_parent"
+        return 1
+    fi
+
+    if ! validate_pkg_payload_archive_ownership "$expanded_dir"; then
+        rm -rf "$expanded_parent"
+        return 1
+    fi
+
+    if ! validate_package_info_payload_consistency "$pkg_path" "$expanded_dir"; then
+        rm -rf "$expanded_parent"
+        return 1
+    fi
+
+    rm -rf "$expanded_parent"
+    log_info "PKG metadata invariants validated for $label"
 }
 
 validate_pkg_payload() {
@@ -533,6 +1244,10 @@ validate_pkg_payload() {
             return 1
         fi
     done
+
+    if ! validate_pkg_metadata_invariants "$pkg_path" "unsigned PKG"; then
+        return 1
+    fi
 
     validate_expanded_pkg_provenance "$pkg_path" "unsigned PKG"
 }
@@ -769,6 +1484,11 @@ scrub_macos_metadata "$STAGING_BASE"
 log_info "Validating staging layout..."
 validate_staging_layout
 
+if [[ "$STAGE_ONLY" != "true" ]]; then
+    mkdir -p "$OUTPUT_DIR"
+    cleanup_pkg_outputs "$OUTPUT_DIR/$PKG_NAME"
+fi
+
 SIGNING_MANIFEST_TMP=""
 PAYLOAD_SIGNING_IDENTITY="$(printf '%s' "${ORCHARD_PAYLOAD_SIGNING_IDENTITY:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 if [[ -n "$PAYLOAD_SIGNING_IDENTITY" ]]; then
@@ -815,24 +1535,38 @@ find "$STAGING_BASE" -type d -exec chmod 755 {} \;
 find "$STAGING/share/launchd" -type f -exec chmod 644 {} \;
 find "$STAGING/share/bin" -type f -exec chmod 755 {} \;
 
+log_info "Validating pre-pkgbuild metadata state..."
+assert_clean_provenance "pre-pkgbuild" "$STAGING_BASE"
+
 # Build the PKG
 log_info "Building PKG..."
 mkdir -p "$OUTPUT_DIR"
 
-pkgbuild_without_metadata \
+if ! pkgbuild_without_metadata \
     --root "$STAGING_BASE" \
     --scripts "$REPO_ROOT/packaging/pkg/scripts" \
     --identifier com.orchard.pkg \
     --version "$APP_VERSION" \
     --install-location / \
-    "$OUTPUT_DIR/$PKG_NAME"
+    "$OUTPUT_DIR/$PKG_NAME"; then
+    cleanup_pkg_outputs "$OUTPUT_DIR/$PKG_NAME"
+    log_error "PKG build failed!"
+    exit 1
+fi
 
 # Verify PKG
 if [[ -f "$OUTPUT_DIR/$PKG_NAME" ]]; then
+    log_info "Repairing PKG payload metadata..."
+    if ! repair_pkg_payload_metadata "$OUTPUT_DIR/$PKG_NAME"; then
+        cleanup_pkg_outputs "$OUTPUT_DIR/$PKG_NAME"
+        log_error "Removed unrepaired PKG outputs: $OUTPUT_DIR/$PKG_NAME"
+        exit 1
+    fi
+
     log_info "Validating PKG payload layout..."
     if ! validate_pkg_payload "$OUTPUT_DIR/$PKG_NAME"; then
-        rm -f "$OUTPUT_DIR/$PKG_NAME"
-        log_error "Removed malformed PKG: $OUTPUT_DIR/$PKG_NAME"
+        cleanup_pkg_outputs "$OUTPUT_DIR/$PKG_NAME"
+        log_error "Removed malformed PKG outputs: $OUTPUT_DIR/$PKG_NAME"
         exit 1
     fi
 
