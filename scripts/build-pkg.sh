@@ -85,11 +85,22 @@ PAYLOAD_ROOT_REL="Library/Application Support/Orchard"
 EXPECTED_STAGING_ROOT="$STAGING_BASE/$PAYLOAD_ROOT_REL"
 KNOWN_BAD_ROOT="$STAGING_BASE/Library Application Support"
 STAGING_CREATED=false
+BUILD_SUCCEEDED=false
 
 # Enhanced error trap
 trap 'log_error "Build failed at line $LINENO"' ERR
 
+cleanup_packaging_venvs() {
+    rm -rf \
+        "$REPO_ROOT/native/orchard_tokenizer/.venv-pkg" \
+        "$REPO_ROOT/native/orchard_worker_mlx/.venv-pkg"
+}
+
 cleanup() {
+    if [[ "$BUILD_SUCCEEDED" == "true" ]]; then
+        cleanup_packaging_venvs
+    fi
+
     if [[ "$STAGE_ONLY" == "true" ]]; then
         return
     fi
@@ -313,6 +324,24 @@ copy_file_without_metadata() {
 
 copy_tree_without_metadata() {
     COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 cp -X -R "$1" "$2"
+}
+
+copy_native_helper_without_source_venv() {
+    local src="$1"
+    local dest_parent="$2"
+    local helper_name
+    helper_name="$(basename "$src")"
+    local dest="$dest_parent/$helper_name"
+
+    rm -rf "$dest"
+    mkdir -p "$dest"
+    (
+        cd "$src"
+        COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 tar --exclude './.venv' -cf - .
+    ) | (
+        cd "$dest"
+        COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 tar -xf -
+    )
 }
 
 pkgbuild_without_metadata() {
@@ -1355,24 +1384,35 @@ if [[ "$DO_CLEAN" == "true" ]]; then
     rm -rf "$REPO_ROOT/_build" "$REPO_ROOT/deps"
 fi
 
-# Pre-build: Setup Python venvs
-log_info "Setting up Python venvs..."
-cd "$REPO_ROOT/native/orchard_tokenizer"
-uv sync
+sync_packaging_venv() {
+    local helper_dir="$1"
+    shift
 
-cd "$REPO_ROOT/native/orchard_worker_mlx"
-uv sync --extra mlx
+    cd "$REPO_ROOT/native/$helper_dir"
+    rm -rf .venv-pkg
+    if ! UV_PROJECT_ENVIRONMENT=".venv-pkg" uv sync --locked --no-editable "$@"; then
+        log_error "uv sync --locked failed for native/$helper_dir; refresh uv.lock with 'cd native/$helper_dir && uv lock' if your branch touched dependencies, then rerun."
+        exit 1
+    fi
+}
+
+# Pre-build: Setup Python venvs
+log_info "Setting up packaging Python venvs..."
+sync_packaging_venv "orchard_tokenizer"
+sync_packaging_venv "orchard_worker_mlx" --extra mlx
 
 # Verify native executables exist and are executable (fail if missing)
 log_info "Verifying native executables..."
 NATIVE_BINS=(
     "$REPO_ROOT/native/orchard_tokenizer/bin/orchard-tokenizer"
     "$REPO_ROOT/native/orchard_worker_mlx/bin/orchard-worker-mlx"
+    "$REPO_ROOT/native/orchard_tokenizer/.venv-pkg/bin/orchard-tokenizer"
+    "$REPO_ROOT/native/orchard_worker_mlx/.venv-pkg/bin/orchard-worker-mlx"
 )
 for native_bin in "${NATIVE_BINS[@]}"; do
     if [[ ! -f "$native_bin" ]]; then
         log_error "Missing native executable: $native_bin"
-        log_error "Ensure 'uv sync' completed successfully in native directories"
+        log_error "Ensure packaging uv sync completed successfully in native directories"
         exit 1
     fi
     if [[ ! -x "$native_bin" ]]; then
@@ -1429,10 +1469,24 @@ if [[ -f "$OPENSSL_PROVENANCE" ]]; then
     log_info "   OpenSSL provenance: $OPENSSL_PROVENANCE"
 fi
 
+stage_packaging_venv() {
+    local helper_dir="$1"
+    local staged_helper="$STAGING/native/$helper_dir"
+
+    rm -rf "$staged_helper/.venv"
+    if [[ ! -d "$staged_helper/.venv-pkg" ]]; then
+        log_error "Missing staged packaging venv: $staged_helper/.venv-pkg"
+        exit 1
+    fi
+    mv "$staged_helper/.venv-pkg" "$staged_helper/.venv"
+}
+
 # Copy native components
 log_info "Copying native components..."
-copy_tree_without_metadata "$REPO_ROOT/native/orchard_tokenizer" "$STAGING/native/"
-copy_tree_without_metadata "$REPO_ROOT/native/orchard_worker_mlx" "$STAGING/native/"
+copy_native_helper_without_source_venv "$REPO_ROOT/native/orchard_tokenizer" "$STAGING/native"
+stage_packaging_venv "orchard_tokenizer"
+copy_native_helper_without_source_venv "$REPO_ROOT/native/orchard_worker_mlx" "$STAGING/native"
+stage_packaging_venv "orchard_worker_mlx"
 
 log_info "Materializing staged Python venv interpreters..."
 if ! COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$STAGING/native"; then
@@ -1526,6 +1580,7 @@ fi
 if [[ "$STAGE_ONLY" == "true" ]]; then
     printf 'STAGING_BASE=%s\n' "$STAGING_BASE"
     log_info "Stage-only build complete; preserved staging directory: $STAGING_BASE"
+    BUILD_SUCCEEDED=true
     exit 0
 fi
 
@@ -1588,6 +1643,7 @@ else
     exit 1
 fi
 
+BUILD_SUCCEEDED=true
 log_info "Build complete!"
 echo ""
 echo "To test the unsigned PKG locally:"

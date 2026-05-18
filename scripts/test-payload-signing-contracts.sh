@@ -6,7 +6,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP_ROOT="$(mktemp -d)"
-trap 'rm -rf "$TMP_ROOT"' EXIT
+cleanup() {
+    rm -rf "$TMP_ROOT" "$REPO_ROOT/native/orchard_tokenizer/.venv-pkg" "$REPO_ROOT/native/orchard_worker_mlx/.venv-pkg"
+}
+trap cleanup EXIT
 
 IDENTITY='Developer ID Application: Example, Inc. (TEAMID)'
 WRONG_IDENTITY='Developer ID Application: Wrong, Inc. (TEAMID)'
@@ -374,9 +377,58 @@ SH
 
     cat > "$tools/uv" <<'SH'
 #!/bin/sh
+set -eu
 if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
   printf 'uv %s\n' "$*" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
 fi
+base="$(basename "$(pwd)")"
+case "$base" in
+  orchard_tokenizer) bin_name=orchard-tokenizer; pkg_name=orchard_tokenizer; require_extra_mlx=0 ;;
+  orchard_worker_mlx) bin_name=orchard-worker-mlx; pkg_name=orchard_worker_mlx; require_extra_mlx=1 ;;
+  *) exit 0 ;;
+esac
+if [ "${UV_PROJECT_ENVIRONMENT:-}" != ".venv-pkg" ]; then
+  echo "uv must build packaging venv with UV_PROJECT_ENVIRONMENT=.venv-pkg" >&2
+  exit 90
+fi
+saw_sync=0
+saw_locked=0
+saw_no_editable=0
+saw_extra_mlx=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    sync) saw_sync=1 ;;
+    --locked) saw_locked=1 ;;
+    --no-editable) saw_no_editable=1 ;;
+    --extra)
+      shift
+      [ "${1:-}" = "mlx" ] && saw_extra_mlx=1
+      ;;
+  esac
+  shift
+done
+if [ "$saw_sync" != "1" ] || [ "$saw_locked" != "1" ] || [ "$saw_no_editable" != "1" ]; then
+  echo "uv sync must use --locked --no-editable for packaging venvs" >&2
+  exit 91
+fi
+if [ "$require_extra_mlx" = "1" ] && [ "$saw_extra_mlx" != "1" ]; then
+  echo "orchard_worker_mlx packaging sync must include --extra mlx" >&2
+  exit 92
+fi
+venv=".venv-pkg"
+mkdir -p "$venv/bin" "$venv/lib/python3.13/site-packages/$pkg_name"
+cat > "$venv/bin/python" <<'PY'
+#!/bin/sh
+exit 0
+PY
+cat > "$venv/bin/$bin_name" <<'BIN'
+#!/bin/sh
+exit 0
+BIN
+chmod +x "$venv/bin/python" "$venv/bin/$bin_name"
+printf 'include-system-site-packages = false\nversion = 3.13.5\n' > "$venv/pyvenv.cfg"
+: > "$venv/lib/python3.13/site-packages/$pkg_name/__init__.py"
+: > "$venv/lib/python3.13/site-packages/$pkg_name/cli.py"
 exit 0
 SH
 
@@ -456,7 +508,7 @@ if [ "${1:-}" = "-R" ]; then
   case "$src" in
     */native/orchard_tokenizer|*/native/orchard_worker_mlx)
       target="$dest/$base"
-      mkdir -p "$target/bin" "$target/.venv/bin" "$target/.venv/lib"
+      mkdir -p "$target/bin" "$target/.venv-pkg/bin" "$target/.venv-pkg/lib/python3.13/site-packages"
       if [ "${ORCHARD_FAKE_METADATA_SIDECAR:-}" = "1" ]; then
         : > "$target/._$base"
       fi
@@ -476,12 +528,24 @@ BIN
       if [ -n "${ORCHARD_FAKE_EXTERNAL_SYMLINK_TARGET:-}" ]; then
         ln -s "$ORCHARD_FAKE_EXTERNAL_SYMLINK_TARGET" "$target/external-target-symlink"
       fi
-      cat > "$target/.venv/bin/python" <<'PY'
+      case "$base" in
+        orchard_tokenizer) pkg_name=orchard_tokenizer ;;
+        orchard_worker_mlx) pkg_name=orchard_worker_mlx ;;
+        *) pkg_name=orchard_native ;;
+      esac
+      mkdir -p "$target/.venv-pkg/lib/python3.13/site-packages/$pkg_name"
+      cat > "$target/.venv-pkg/bin/python" <<'PY'
 #!/bin/sh
 exit 0
 PY
-      chmod +x "$target/.venv/bin/python"
-      printf 'include-system-site-packages = false\nversion = 3.13.5\n' > "$target/.venv/pyvenv.cfg"
+      cat > "$target/.venv-pkg/bin/$bin_name" <<'BIN'
+#!/bin/sh
+exit 0
+BIN
+      chmod +x "$target/.venv-pkg/bin/python" "$target/.venv-pkg/bin/$bin_name"
+      printf 'include-system-site-packages = false\nversion = 3.13.5\n' > "$target/.venv-pkg/pyvenv.cfg"
+      : > "$target/.venv-pkg/lib/python3.13/site-packages/$pkg_name/__init__.py"
+      : > "$target/.venv-pkg/lib/python3.13/site-packages/$pkg_name/cli.py"
       exit 0
       ;;
   esac
@@ -1036,6 +1100,94 @@ echo "repair must not regenerate Payload with cpio from staging" >&2
 exit 86
 SH
 
+    cat > "$tools/tar" <<'SH'
+#!/bin/sh
+set -eu
+mode=""
+for arg in "$@"; do
+  case "$arg" in
+    -cf) mode=create ;;
+    -xf) mode=extract ;;
+  esac
+done
+case "$mode" in
+  create)
+    base="$(basename "$(pwd)")"
+    case "$base" in
+      orchard_tokenizer|orchard_worker_mlx)
+        if [ "${COPYFILE_DISABLE:-}" != "1" ] || [ "${COPY_EXTENDED_ATTRIBUTES_DISABLE:-}" != "1" ]; then
+          echo "native helper tar create must suppress macOS copyfile metadata" >&2
+          exit 94
+        fi
+        saw_venv_exclude=0
+        for arg in "$@"; do
+          [ "$arg" = "--exclude" ] && continue
+          [ "$arg" = "./.venv" ] && saw_venv_exclude=1
+          [ "$arg" = "--exclude=./.venv" ] && saw_venv_exclude=1
+        done
+        if [ "$saw_venv_exclude" != "1" ]; then
+          echo "native helper tar create must exclude source .venv" >&2
+          exit 95
+        fi
+        if [ ! -x ".venv-pkg/bin/python" ]; then
+          echo "fake native tar requires .venv-pkg from uv packaging sync" >&2
+          exit 93
+        fi
+        printf 'ORCHARD_FAKE_NATIVE_HELPER=%s\n' "$base"
+        exit 0
+        ;;
+    esac
+    exec /usr/bin/tar "$@"
+    ;;
+  extract)
+    if [ "${COPYFILE_DISABLE:-}" != "1" ] || [ "${COPY_EXTENDED_ATTRIBUTES_DISABLE:-}" != "1" ]; then
+      echo "native helper tar extract must suppress macOS copyfile metadata" >&2
+      exit 96
+    fi
+    marker=""
+    IFS= read -r marker || true
+    case "$marker" in
+      ORCHARD_FAKE_NATIVE_HELPER=*) base="${marker#ORCHARD_FAKE_NATIVE_HELPER=}" ;;
+      *) exec /usr/bin/tar "$@" ;;
+    esac
+    case "$base" in
+      orchard_tokenizer) bin_name=orchard-tokenizer; pkg_name=orchard_tokenizer ;;
+      orchard_worker_mlx) bin_name=orchard-worker-mlx; pkg_name=orchard_worker_mlx ;;
+      *) exec /usr/bin/tar "$@" ;;
+    esac
+    mkdir -p "bin" ".venv-pkg/bin" ".venv-pkg/lib/python3.13/site-packages/$pkg_name"
+    if [ "${ORCHARD_FAKE_METADATA_SIDECAR:-}" = "1" ]; then
+      : > "._$base"
+    fi
+    cat > "bin/$bin_name" <<'BIN'
+#!/bin/sh
+exit 0
+BIN
+    chmod +x "bin/$bin_name"
+    if [ -n "${ORCHARD_FAKE_SYMLINK_XATTR_PATTERN:-}" ]; then
+      ln -s "bin/$bin_name" "xattr-symlink"
+    fi
+    if [ -n "${ORCHARD_FAKE_EXTERNAL_SYMLINK_TARGET:-}" ]; then
+      ln -s "$ORCHARD_FAKE_EXTERNAL_SYMLINK_TARGET" "external-target-symlink"
+    fi
+    cat > ".venv-pkg/bin/python" <<'PY'
+#!/bin/sh
+exit 0
+PY
+    cat > ".venv-pkg/bin/$bin_name" <<'BIN'
+#!/bin/sh
+exit 0
+BIN
+    chmod +x ".venv-pkg/bin/python" ".venv-pkg/bin/$bin_name"
+    printf 'include-system-site-packages = false\nversion = 3.13.5\n' > ".venv-pkg/pyvenv.cfg"
+    : > ".venv-pkg/lib/python3.13/site-packages/$pkg_name/__init__.py"
+    : > ".venv-pkg/lib/python3.13/site-packages/$pkg_name/cli.py"
+    exit 0
+    ;;
+esac
+exec /usr/bin/tar "$@"
+SH
+
     cat > "$tools/gzip" <<'SH'
 #!/bin/sh
 set -eu
@@ -1115,7 +1267,7 @@ else
 fi
 SH
 
-    chmod +x "$tools/git" "$tools/uv" "$tools/find" "$tools/cp" "$tools/mix" "$tools/file" "$tools/otool" "$tools/xcrun" "$tools/codesign" "$tools/chmod" "$tools/xattr" "$tools/pkgbuild" "$tools/pkgutil" "$tools/lsbom" "$tools/mkbom" "$tools/cpio" "$tools/gzip"
+    chmod +x "$tools/git" "$tools/uv" "$tools/find" "$tools/cp" "$tools/mix" "$tools/file" "$tools/otool" "$tools/xcrun" "$tools/codesign" "$tools/chmod" "$tools/xattr" "$tools/pkgbuild" "$tools/pkgutil" "$tools/lsbom" "$tools/mkbom" "$tools/cpio" "$tools/tar" "$tools/gzip"
 }
 
 write_sign_pkg_fakes() {
@@ -1269,12 +1421,12 @@ make_fake_tools "$tools"
 make_root "$root"
 : > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
 assert_fails_with 'ORCHARD_PAYLOAD_SIGNING_IDENTITY is required' "$case_dir/missing.out" env -i PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/sign-payload.sh" "$root"
-assert_fails_with 'Developer ID Application identity' "$case_dir/installer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$INSTALLER_IDENTITY" "$REPO_ROOT/scripts/sign-payload.sh" "$root"
-assert_fails_with 'Developer ID Application identity' "$case_dir/non-app.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY='Apple Development: Example, Inc. (TEAMID)' "$REPO_ROOT/scripts/sign-payload.sh" "$root"
+assert_fails_with 'Developer ID Application identity' "$case_dir/installer.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$INSTALLER_IDENTITY" "$REPO_ROOT/scripts/sign-payload.sh" "$root"
+assert_fails_with 'Developer ID Application identity' "$case_dir/non-app.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY='Apple Development: Example, Inc. (TEAMID)' "$REPO_ROOT/scripts/sign-payload.sh" "$root"
 forbidden_entitlements="$case_dir/forbidden-entitlements"
 mkdir -p "$forbidden_entitlements"
 printf '<key>com.apple.security.cs.disable-library-validation</key>\n' > "$forbidden_entitlements/python.entitlements"
-assert_fails_with 'Refusing payload signing with com.apple.security.cs.disable-library-validation entitlement' "$case_dir/forbidden-entitlements.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-payload.sh" --entitlements-dir "$forbidden_entitlements" "$root"
+assert_fails_with 'Refusing payload signing with com.apple.security.cs.disable-library-validation entitlement' "$case_dir/forbidden-entitlements.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-payload.sh" --entitlements-dir "$forbidden_entitlements" "$root"
 
 # RED/GREEN: sign-payload discovers Mach-O files, signs libraries before executables, and chooses per-class entitlements.
 case_dir="$TMP_ROOT/sign"
@@ -1310,7 +1462,7 @@ assert_grep 'python.entitlements' "$case_dir/codesign.log"
 assert_grep $'share/bin/orchardctl	' "$case_dir/codesign.log"
 assert_grep 'default.entitlements' "$case_dir/codesign.log"
 assert_grep $'	yes/yes' "$case_dir/codesign.log"
-assert_fails_with 'manifest output must be outside the staging root' "$case_dir/manifest.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-payload.sh" --manifest-output "$root/manifest.txt" "$root"
+assert_fails_with 'manifest output must be outside the staging root' "$case_dir/manifest.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-payload.sh" --manifest-output "$root/manifest.txt" "$root"
 
 # RED/GREEN: verifier rejects signature failure classes and accepts valid signatures.
 case_dir="$TMP_ROOT/verify-signatures"
@@ -1452,7 +1604,7 @@ root="$case_dir/executable-path-nonvenv/root"
 make_root "$root"
 : > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
 : > "$root/Library/Application Support/Orchard/share/bin/libhelper.dylib"
-assert_fails_with 'unresolved Mach-O dependency' "$case_dir/executable-path-nonvenv.out" env OTOOL_CASE=executable_path_nonvenv PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+assert_fails_with 'unresolved Mach-O dependency' "$case_dir/executable-path-nonvenv.out" env -i OTOOL_CASE=executable_path_nonvenv PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
 
 root="$case_dir/loader-path-escape/root"
 make_root "$root"
@@ -1666,6 +1818,7 @@ assert_no_grep 'source=/stale/libcrypto.3.dylib' "$stale_provenance"
 case_dir="$TMP_ROOT/build-stage-only"
 tools="$case_dir/tools"
 out_dir="$case_dir/out"
+build_date="$(date +%Y%m%d)"
 staging="$case_dir/staging"
 mkdir -p "$case_dir"
 write_build_pkg_fakes "$tools"
@@ -1675,6 +1828,12 @@ stage_line_count="$(grep -c '^STAGING_BASE=' "$case_dir/build.out")"
 test "$stage_line_count" -eq 1
 assert_grep "STAGING_BASE=$staging" "$case_dir/build.out"
 test -d "$staging/Library/Application Support/Orchard"
+test -d "$staging/Library/Application Support/Orchard/native/orchard_tokenizer/.venv"
+test -d "$staging/Library/Application Support/Orchard/native/orchard_worker_mlx/.venv"
+test ! -e "$staging/Library/Application Support/Orchard/native/orchard_tokenizer/.venv-pkg"
+test ! -e "$staging/Library/Application Support/Orchard/native/orchard_worker_mlx/.venv-pkg"
+test ! -e "$REPO_ROOT/native/orchard_tokenizer/.venv-pkg"
+test ! -e "$REPO_ROOT/native/orchard_worker_mlx/.venv-pkg"
 if find "$out_dir" -name '*.pkg' -print -quit | grep -q .; then
     echo "stage-only must not create PKG artifacts" >&2
     find "$out_dir" -name '*.pkg' >&2
@@ -1846,7 +2005,7 @@ if ! find "$out_dir" -name '*.pkg.signing-manifest.txt' -print -quit | grep -q .
 fi
 
 staging_verify_fail="$case_dir/staging-verify-fail"
-stale_verify_pkg="$out_dir/Orchard-9.9.9-test-20260517-abcdef0.pkg"
+stale_verify_pkg="$out_dir/Orchard-9.9.9-test-${build_date}-abcdef0.pkg"
 printf 'stale pkg\n' > "$stale_verify_pkg"
 printf 'stale checksum\n' > "$stale_verify_pkg.sha256"
 printf 'stale manifest\n' > "$stale_verify_pkg.signing-manifest.txt"
@@ -1883,7 +2042,7 @@ assert_fails_with 'codesign fail' "$case_dir/sign-fail.out" env CODESIGN_FAIL=1 
 assert_no_grep 'pkgbuild invoked' "$case_dir/sign-fail.out"
 
 staging_pkgbuild_fail="$case_dir/staging-pkgbuild-fail"
-stale_pkgbuild_pkg="$out_dir/Orchard-9.9.9-test-20260517-abcdef0.pkg"
+stale_pkgbuild_pkg="$out_dir/Orchard-9.9.9-test-${build_date}-abcdef0.pkg"
 printf 'stale pkg\n' > "$stale_pkgbuild_pkg"
 printf 'stale checksum\n' > "$stale_pkgbuild_pkg.sha256"
 printf 'stale manifest\n' > "$stale_pkgbuild_pkg.signing-manifest.txt"
@@ -1923,7 +2082,7 @@ fi
 
 staging_pkg_builduser_owner="$case_dir/staging-pkg-builduser-owner"
 pkg_builduser_owner_out="$case_dir/pkg-builduser-owner-out"
-stale_builduser_pkg="$pkg_builduser_owner_out/Orchard-9.9.9-test-20260517-abcdef0.pkg"
+stale_builduser_pkg="$pkg_builduser_owner_out/Orchard-9.9.9-test-${build_date}-abcdef0.pkg"
 mkdir -p "$pkg_builduser_owner_out"
 printf 'stale pkg\n' > "$stale_builduser_pkg"
 printf 'stale checksum\n' > "$stale_builduser_pkg.sha256"
@@ -1988,29 +2147,29 @@ productsign_log="$case_dir/productsign.log"
 mkdir -p "$case_dir"
 : > "$input_pkg"
 write_sign_pkg_fakes "$tools" unsigned "$productsign_log"
-assert_fails_with 'Developer ID Installer identity' "$case_dir/application-envelope.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
+assert_fails_with 'Developer ID Installer identity' "$case_dir/application-envelope.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'ORCHARD_PAYLOAD_SIGNING_IDENTITY is required' "$case_dir/missing-payload-dry-run.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY= "$REPO_ROOT/scripts/sign-pkg.sh" --dry-run --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
+assert_fails_with 'ORCHARD_PAYLOAD_SIGNING_IDENTITY is required' "$case_dir/missing-payload-dry-run.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY= "$REPO_ROOT/scripts/sign-pkg.sh" --dry-run --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'ORCHARD_PAYLOAD_SIGNING_IDENTITY is required' "$case_dir/missing-payload.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY= "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
+assert_fails_with 'ORCHARD_PAYLOAD_SIGNING_IDENTITY is required' "$case_dir/missing-payload.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY= "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'Developer ID Application identity' "$case_dir/installer-payload.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$INSTALLER_IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
+assert_fails_with 'Developer ID Application identity' "$case_dir/installer-payload.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$INSTALLER_IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'Refusing to envelope-sign a PKG with unsigned payload Mach-O binaries' "$case_dir/unsigned-payload.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
+assert_fails_with 'Refusing to envelope-sign a PKG with unsigned payload Mach-O binaries' "$case_dir/unsigned-payload.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg"
 test ! -e "$productsign_log"
 
 tools="$case_dir/tools-closure"
 closure_productsign_log="$case_dir/productsign-closure.log"
 closure_output_pkg="$case_dir/Orchard-closure-signed.pkg"
 write_sign_pkg_fakes "$tools" ok "$closure_productsign_log"
-assert_fails_with 'forbidden Mach-O dependency' "$case_dir/closure.out" env OTOOL_CASE=homebrew_dep PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$closure_output_pkg"
+assert_fails_with 'forbidden Mach-O dependency' "$case_dir/closure.out" env -i OTOOL_CASE=homebrew_dep PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$closure_output_pkg"
 test ! -e "$closure_productsign_log"
 
 tools="$case_dir/tools-forbidden-entitlement"
 forbidden_productsign_log="$case_dir/productsign-forbidden-entitlement.log"
 forbidden_output_pkg="$case_dir/Orchard-forbidden-entitlement-signed.pkg"
 write_sign_pkg_fakes "$tools" ok "$forbidden_productsign_log"
-assert_fails_with 'forbidden entitlement: com.apple.security.cs.disable-library-validation' "$case_dir/forbidden-entitlement.out" env CODESIGN_FORBIDDEN_ENTITLEMENT=1 PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$forbidden_output_pkg"
+assert_fails_with 'forbidden entitlement: com.apple.security.cs.disable-library-validation' "$case_dir/forbidden-entitlement.out" env -i CODESIGN_FORBIDDEN_ENTITLEMENT=1 PATH="$tools:/usr/bin:/bin" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$forbidden_output_pkg"
 test ! -e "$forbidden_productsign_log"
 
 # RED/GREEN: sign-pkg notary auth matrix and bounded expansion diagnostics.
@@ -2026,7 +2185,7 @@ productsign_log="$case_dir/productsign-profile-default.log"
 xcrun_log="$case_dir/xcrun-profile-default.log"
 output_pkg="$case_dir/profile-default-signed.pkg"
 write_sign_pkg_fakes "$tools" ok "$productsign_log"
-PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+env -i PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg" >"$case_dir/profile-default.out" 2>&1
 assert_grep 'notarytool submit' "$xcrun_log"
 assert_grep '--keychain-profile orchard-notary' "$xcrun_log"
@@ -2044,7 +2203,7 @@ productsign_log="$case_dir/productsign-profile-explicit.log"
 xcrun_log="$case_dir/xcrun-profile-explicit.log"
 output_pkg="$case_dir/profile-explicit-signed.pkg"
 write_sign_pkg_fakes "$tools" ok "$productsign_log"
-PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=profile ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+env -i PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=profile ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg" >"$case_dir/profile-explicit.out" 2>&1
 assert_grep '--keychain-profile orchard-notary' "$xcrun_log"
 assert_no_grep '--key ' "$xcrun_log"
@@ -2057,7 +2216,7 @@ api_key="$case_dir/AuthKey_TEST.p8"
 output_pkg="$case_dir/api-signed.pkg"
 : > "$api_key"
 write_sign_pkg_fakes "$tools" ok "$productsign_log"
-PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=12345678-1234-1234-1234-123456789abc ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+env -i PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=12345678-1234-1234-1234-123456789abc ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$output_pkg" >"$case_dir/api.out" 2>&1
 assert_grep "--key $api_key" "$xcrun_log"
 assert_grep '--key-id KEY123' "$xcrun_log"
@@ -2071,7 +2230,7 @@ productsign_log="$case_dir/productsign-api-individual.log"
 xcrun_log="$case_dir/xcrun-api-individual.log"
 output_pkg="$case_dir/api-individual-signed.pkg"
 write_sign_pkg_fakes "$tools" ok "$productsign_log"
-PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=stale-non-uuid ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+env -i PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=stale-non-uuid ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$output_pkg" >"$case_dir/api-individual.out" 2>&1
 assert_grep "--key $api_key" "$xcrun_log"
 assert_grep '--key-id KEY123' "$xcrun_log"
@@ -2083,29 +2242,29 @@ assert_grep 'productsign invoked' "$productsign_log"
 tools="$case_dir/tools-api-missing"
 productsign_log="$case_dir/productsign-api-missing.log"
 write_sign_pkg_fakes "$tools" ok "$productsign_log"
-assert_fails_with 'ORCHARD_NOTARY_API_KEY_PATH is required' "$case_dir/api-missing-path.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-path.pkg"
+assert_fails_with 'ORCHARD_NOTARY_API_KEY_PATH is required' "$case_dir/api-missing-path.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-path.pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'ORCHARD_NOTARY_API_KEY_ID is required' "$case_dir/api-missing-id.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-id.pkg"
+assert_fails_with 'ORCHARD_NOTARY_API_KEY_ID is required' "$case_dir/api-missing-id.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-id.pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID must be a UUID' "$case_dir/api-invalid-issuer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=auto ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=not-a-uuid ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-invalid-issuer.pkg"
+assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID must be a UUID' "$case_dir/api-invalid-issuer.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=auto ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=not-a-uuid ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-invalid-issuer.pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID must be a UUID' "$case_dir/api-auto-nonhex-issuer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=auto ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-auto-nonhex-issuer.pkg"
+assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID must be a UUID' "$case_dir/api-auto-nonhex-issuer.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=auto ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-auto-nonhex-issuer.pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID must be a UUID' "$case_dir/api-team-nonhex-issuer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-team-nonhex-issuer.pkg"
+assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID must be a UUID' "$case_dir/api-team-nonhex-issuer.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-team-nonhex-issuer.pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID is required' "$case_dir/api-team-missing-issuer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-team-missing-issuer.pkg"
+assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID is required' "$case_dir/api-team-missing-issuer.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-team-missing-issuer.pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'Unsupported ORCHARD_NOTARY_API_KEY_TYPE' "$case_dir/api-unsupported-key-type.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=enterprise ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-unsupported-key-type.pkg"
+assert_fails_with 'Unsupported ORCHARD_NOTARY_API_KEY_TYPE' "$case_dir/api-unsupported-key-type.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=enterprise ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-unsupported-key-type.pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'Unsupported ORCHARD_NOTARY_AUTH' "$case_dir/auth-unsupported.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=bogus ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/auth-unsupported.pkg"
+assert_fails_with 'Unsupported ORCHARD_NOTARY_AUTH' "$case_dir/auth-unsupported.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=bogus ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/auth-unsupported.pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'App Store Connect API key does not exist' "$case_dir/api-missing-file.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$case_dir/missing.p8" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-file.pkg"
+assert_fails_with 'App Store Connect API key does not exist' "$case_dir/api-missing-file.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$case_dir/missing.p8" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-file.pkg"
 test ! -e "$productsign_log"
 
 tools="$case_dir/tools-dry"
 productsign_log="$case_dir/productsign-dry.log"
 write_sign_pkg_fakes "$tools" ok "$productsign_log"
-PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=12345678-1234-1234-1234-123456789abc ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=12345678-1234-1234-1234-123456789abc ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     "$REPO_ROOT/scripts/sign-pkg.sh" --dry-run --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/dry.pkg" >"$case_dir/dry.out" 2>&1
 assert_grep '--key' "$case_dir/dry.out"
 assert_grep '--key-id' "$case_dir/dry.out"
@@ -2113,7 +2272,7 @@ assert_grep '--issuer' "$case_dir/dry.out"
 assert_grep '--output-format' "$case_dir/dry.out"
 test ! -e "$productsign_log"
 
-PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=stale-non-uuid ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=stale-non-uuid ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     "$REPO_ROOT/scripts/sign-pkg.sh" --dry-run --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/dry-individual.pkg" >"$case_dir/dry-individual.out" 2>&1
 assert_grep '--key' "$case_dir/dry-individual.out"
 assert_grep '--key-id' "$case_dir/dry-individual.out"
@@ -2125,12 +2284,12 @@ tools="$case_dir/tools-expand-fail"
 productsign_log="$case_dir/productsign-expand-fail.log"
 diag_dir="$case_dir/expand-fail-diagnostics"
 write_sign_pkg_fakes "$tools" fail_expand "$productsign_log"
-assert_fails_with 'pkgutil --expand-full failed during payload audit' "$case_dir/expand-fail.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/expand-fail.pkg"
+assert_fails_with 'pkgutil --expand-full failed during payload audit' "$case_dir/expand-fail.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/expand-fail.pkg"
 test ! -e "$productsign_log"
 assert_grep 'status=42' "$diag_dir/expand-full.status"
 assert_grep 'fake expand failure' "$diag_dir/expand-full.stderr"
 
-assert_fails_with 'Diagnostics directory already exists' "$case_dir/diag-reuse.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/diag-reuse.pkg"
+assert_fails_with 'Diagnostics directory already exists' "$case_dir/diag-reuse.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/diag-reuse.pkg"
 
 tools="$case_dir/tools-expand-timeout"
 productsign_log="$case_dir/productsign-expand-timeout.log"
@@ -2138,7 +2297,7 @@ diag_dir="$case_dir/expand-timeout-diagnostics"
 write_sign_pkg_fakes "$tools" sleep_expand "$productsign_log"
 child_log="$case_dir/expand-timeout-child.log"
 start_epoch="$(date +%s)"
-assert_fails_with 'Timed out expanding PKG for payload audit' "$case_dir/expand-timeout.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_FAKE_EXPAND_CHILD_LOG="$child_log" ORCHARD_PKG_EXPAND_TIMEOUT_SECONDS=1 ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/expand-timeout.pkg"
+assert_fails_with 'Timed out expanding PKG for payload audit' "$case_dir/expand-timeout.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_FAKE_EXPAND_CHILD_LOG="$child_log" ORCHARD_PKG_EXPAND_TIMEOUT_SECONDS=1 ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/expand-timeout.pkg"
 elapsed=$(( $(date +%s) - start_epoch ))
 if [ "$elapsed" -ge 10 ]; then
     echo "expand timeout test took too long: ${elapsed}s" >&2
@@ -2163,7 +2322,7 @@ productsign_log="$case_dir/productsign-expand-child-survives.log"
 diag_dir="$case_dir/expand-child-survives-diagnostics"
 child_log="$case_dir/expand-child-survives-child.log"
 write_sign_pkg_fakes "$tools" child_survives "$productsign_log"
-assert_fails_with 'Timed out expanding PKG for payload audit' "$case_dir/expand-child-survives.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_FAKE_EXPAND_CHILD_LOG="$child_log" ORCHARD_PKG_EXPAND_TIMEOUT_SECONDS=1 ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/expand-child-survives.pkg"
+assert_fails_with 'Timed out expanding PKG for payload audit' "$case_dir/expand-child-survives.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_FAKE_EXPAND_CHILD_LOG="$child_log" ORCHARD_PKG_EXPAND_TIMEOUT_SECONDS=1 ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/expand-child-survives.pkg"
 test ! -e "$productsign_log"
 assert_grep 'status=124' "$diag_dir/expand-full.status"
 if [ ! -s "$child_log" ]; then
@@ -2183,7 +2342,7 @@ tools="$case_dir/tools-no-setsid"
 productsign_log="$case_dir/productsign-no-setsid.log"
 diag_dir="$case_dir/no-setsid-diagnostics"
 write_sign_pkg_fakes "$tools" ok "$productsign_log"
-assert_fails_with 'perl with POSIX::setsid is required' "$case_dir/no-setsid.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_DISABLE_PERL_SETSID_FOR_TEST=1 ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/no-setsid.pkg"
+assert_fails_with 'perl with POSIX::setsid is required' "$case_dir/no-setsid.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_DISABLE_PERL_SETSID_FOR_TEST=1 ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$diag_dir" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/no-setsid.pkg"
 test ! -e "$productsign_log"
 assert_grep 'status=125' "$diag_dir/expand-full.status"
 

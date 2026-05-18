@@ -315,9 +315,100 @@ def verify_dependency(macho: pathlib.Path, executable_dir: Optional[pathlib.Path
     errors.append(f"unresolved Mach-O dependency: {rel(macho)} -> {dep}")
 
 
+known_native_helpers = {
+    "orchard_tokenizer": {"pkg": "orchard_tokenizer", "entry": "orchard-tokenizer"},
+    "orchard_worker_mlx": {"pkg": "orchard_worker_mlx", "entry": "orchard-worker-mlx"},
+}
+
+
+def detail_from(completed: subprocess.CompletedProcess[str]) -> str:
+    return (completed.stderr or completed.stdout).strip()
+
+
+def site_packages_dirs(venv: pathlib.Path) -> list[pathlib.Path]:
+    return sorted(path for path in (venv / "lib").glob("python*/site-packages") if path.is_dir())
+
+
+def orchard_editable_pth(pth: pathlib.Path, pkg: str) -> bool:
+    if pth.name.startswith("_editable_impl_orchard_"):
+        return True
+    text = pth.read_text(errors="replace")
+    if "_editable_impl_orchard_" in text or (pkg in text and "editable" in text.lower()):
+        return True
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if f"native/{pkg}/src" in stripped or f"native/{pkg.replace('_', '-')}/src" in stripped:
+            return True
+        if stripped.endswith(f"/{pkg}/src") or stripped.endswith(f"/{pkg.replace('_', '-')}/src"):
+            return True
+    return False
+
+
+def run_smoke_command(args: list[str], env: dict[str, str], timeout_label: str) -> Optional[subprocess.CompletedProcess[str]]:
+    try:
+        return subprocess.run(
+            args,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=env,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        errors.append(f"{timeout_label} timed out after 10s")
+        return None
+
+
+def verify_known_helper_static(venv: pathlib.Path, helper: dict[str, str]) -> pathlib.Path:
+    entry = venv / "bin" / helper["entry"]
+    if not entry.is_file() or not os.access(entry, os.X_OK):
+        errors.append(f"expected entrypoint missing or not executable: {rel(entry)}")
+
+    pkg = helper["pkg"]
+    site_packages_roots = site_packages_dirs(venv)
+    if not site_packages_roots:
+        errors.append(f"site-packages directory missing from staged venv: {rel(venv)}")
+    elif not any((site_packages / pkg / "__init__.py").is_file() for site_packages in site_packages_roots):
+        errors.append(f"{pkg} package __init__.py missing from staged venv site-packages: {rel(venv)}")
+
+    for site_packages in site_packages_roots:
+        for pth in sorted(site_packages.glob("*.pth")):
+            if orchard_editable_pth(pth, helper["pkg"]):
+                errors.append(
+                    "Orchard editable .pth present in staged venv "
+                    f"(packaging must be non-editable): {rel(pth)}"
+                )
+    return entry
+
+
+def verify_known_helper_smoke(venv: pathlib.Path, python: pathlib.Path, entry: pathlib.Path, helper: dict[str, str]) -> None:
+    env = {"PATH": "/usr/bin:/bin", "HOME": "/tmp"}
+    pkg = helper["pkg"]
+    import_smoke = run_smoke_command(
+        [str(python), "-c", f"import {pkg}, {pkg}.cli; print({pkg}.__file__)"],
+        env,
+        f"{pkg} package import smoke failed: {rel(python)}",
+    )
+    if import_smoke is not None and import_smoke.returncode != 0:
+        errors.append(f"{pkg} package not importable: {rel(python)}: {detail_from(import_smoke)}")
+
+    if entry.is_file() and os.access(entry, os.X_OK):
+        entry_smoke = run_smoke_command(
+            [str(entry), "--help"],
+            env,
+            f"{helper['entry']} entrypoint smoke failed: {rel(entry)}",
+        )
+        if entry_smoke is not None and entry_smoke.returncode != 0:
+            errors.append(f"{helper['entry']} entrypoint smoke failed: {rel(entry)}: {detail_from(entry_smoke)}")
+
+
 def verify_venv(venv: pathlib.Path) -> None:
     venv_real = venv.resolve(strict=False)
     python = venv / "bin" / "python"
+    known_helper = known_native_helpers.get(venv.parent.name)
+    known_entry = verify_known_helper_static(venv, known_helper) if known_helper is not None else None
 
     if python.is_symlink():
         errors.append(f"interpreter is symlink: {rel(python)} -> {os.readlink(python)}")
@@ -367,16 +458,15 @@ def verify_venv(venv: pathlib.Path) -> None:
                     break
 
     if run_smoke and python.exists() and not python.is_symlink():
-        smoke = subprocess.run(
+        smoke = run_smoke_command(
             [str(python), "-c", "import sys; print(sys.executable)"],
-            text=True,
-            capture_output=True,
-            check=False,
-            env={"PATH": "/usr/bin:/bin", "HOME": "/tmp"},
+            {"PATH": "/usr/bin:/bin", "HOME": "/tmp"},
+            f"sanitized interpreter smoke failed: {rel(python)}",
         )
-        if smoke.returncode != 0:
-            detail = (smoke.stderr or smoke.stdout).strip()
-            errors.append(f"sanitized interpreter smoke failed: {rel(python)}: {detail}")
+        if smoke is not None and smoke.returncode != 0:
+            errors.append(f"sanitized interpreter smoke failed: {rel(python)}: {detail_from(smoke)}")
+        if known_helper is not None and known_entry is not None:
+            verify_known_helper_smoke(venv, python, known_entry, known_helper)
 
 
 venv_roots = discover_venvs()

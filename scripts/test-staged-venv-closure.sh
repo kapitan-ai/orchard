@@ -14,7 +14,7 @@ make_fake_tools() {
     cat > "$tools/file" <<'SH'
 #!/bin/sh
 case "$*" in
-  *pyvenv.cfg*|*bin/tool*) echo text/plain ;;
+  *pyvenv.cfg*|*bin/tool*|*bin/orchard-tokenizer|*.py|*.pth) echo text/plain ;;
   *) echo application/x-mach-binary ;;
 esac
 SH
@@ -58,12 +58,96 @@ assert_verifier_fails_with() {
     local tools="$2"
     local root="$3"
     local out="$4"
-    if PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" "$root" >"$out" 2>&1; then
+    shift 4
+    if PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" "$@" "$root" >"$out" 2>&1; then
         echo "expected verifier to fail with: $pattern" >&2
         cat "$out" >&2
         exit 1
     fi
     assert_grep "$pattern" "$out"
+}
+
+assert_verifier_succeeds() {
+    local tools="$1"
+    local root="$2"
+    local out="$3"
+    shift 3
+    PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" "$@" "$root" >"$out" 2>&1
+}
+
+site_packages_dir() {
+    local venv="$1"
+    find "$venv/lib" -type d -path '*/site-packages' -print -quit
+}
+
+make_known_helper_venv_fixture() {
+    local root="$1"
+    local package_state="${2:-present}"
+    local entry_state="${3:-ok}"
+    local helper="${4:-orchard_tokenizer}"
+    local entry_name="orchard-tokenizer"
+    if [[ "$helper" == "orchard_worker_mlx" ]]; then
+        entry_name="orchard-worker-mlx"
+    fi
+    local venv="$root/Library/Application Support/Orchard/native/$helper/.venv"
+    python3 -m venv --copies "$venv"
+    if [[ -L "$venv/bin/python" ]]; then
+        echo "fixture setup failed: expected non-symlink venv/bin/python" >&2
+        exit 1
+    fi
+    grep -Ev '^(home|executable|command) = |/Users/|/opt/homebrew/|/tmp/' "$venv/pyvenv.cfg" > "$venv/pyvenv.cfg.tmp"
+    mv "$venv/pyvenv.cfg.tmp" "$venv/pyvenv.cfg"
+
+    local site_packages
+    site_packages="$(site_packages_dir "$venv")"
+    find "$site_packages" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+    if [[ "$package_state" == "present" ]]; then
+        mkdir -p "$site_packages/$helper"
+        printf '' > "$site_packages/$helper/__init__.py"
+        cat > "$site_packages/$helper/cli.py" <<'PY'
+def main():
+    return 0
+PY
+    fi
+
+    case "$entry_state" in
+      ok)
+        cat > "$venv/bin/$entry_name" <<'SH'
+#!/bin/sh
+case "${1:-}" in
+  --help) exit 0 ;;
+esac
+exit 0
+SH
+        chmod +x "$venv/bin/$entry_name"
+        ;;
+      fail)
+        cat > "$venv/bin/$entry_name" <<'SH'
+#!/bin/sh
+exit 7
+SH
+        chmod +x "$venv/bin/$entry_name"
+        ;;
+      sleep)
+        cat > "$venv/bin/$entry_name" <<'SH'
+#!/bin/sh
+sleep 30
+SH
+        chmod +x "$venv/bin/$entry_name"
+        ;;
+      nonexec)
+        printf '#!/bin/sh\nexit 0\n' > "$venv/bin/$entry_name"
+        chmod 644 "$venv/bin/$entry_name"
+        ;;
+      missing)
+        ;;
+      *)
+        echo "unknown entry fixture state: $entry_state" >&2
+        exit 1
+        ;;
+    esac
+
+    echo "$venv"
 }
 
 # materializer: same-path runtime lib skip, outbound python* symlink copy, and absolute Python shebang rewrite.
@@ -189,6 +273,98 @@ Load command 1
          name @rpath/libfoo.dylib (offset 24)
 OUT'
 assert_verifier_fails_with 'forbidden LC_RPATH' "$tools" "$root" "$case_dir/out"
+
+# verifier: known native helper package imports must work under sanitized env.
+case_dir="$TMP_ROOT/known-helper-missing-package"
+tools="$case_dir/tools"
+root="$case_dir/root"
+make_known_helper_venv_fixture "$root" missing ok >/dev/null
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'orchard_tokenizer package not importable' "$tools" "$root" "$case_dir/out"
+assert_verifier_fails_with 'orchard_tokenizer package __init__.py missing from staged venv site-packages' "$tools" "$root" "$case_dir/no-smoke.out" --no-smoke
+
+# verifier: Orchard editable .pth hooks are never allowed in staged helper venvs.
+case_dir="$TMP_ROOT/known-helper-editable-pth"
+tools="$case_dir/tools"
+root="$case_dir/root"
+venv="$(make_known_helper_venv_fixture "$root" present ok)"
+printf '/Users/buildhost/orchard/native/orchard_tokenizer/src
+' > "$(site_packages_dir "$venv")/_editable_impl_orchard_tokenizer.pth"
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'Orchard editable .pth present in staged venv' "$tools" "$root" "$case_dir/out"
+assert_verifier_fails_with 'Orchard editable .pth present in staged venv' "$tools" "$root" "$case_dir/no-smoke.out" --no-smoke
+
+# verifier: plain build-host source-path .pth hooks are rejected even without editable naming.
+case_dir="$TMP_ROOT/known-helper-source-path-pth"
+tools="$case_dir/tools"
+root="$case_dir/root"
+venv="$(make_known_helper_venv_fixture "$root" present ok)"
+printf '/Users/buildhost/orchard/native/orchard_tokenizer/src
+' > "$(site_packages_dir "$venv")/orchard_tokenizer_source.pth"
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'Orchard editable .pth present in staged venv' "$tools" "$root" "$case_dir/out"
+assert_verifier_fails_with 'Orchard editable .pth present in staged venv' "$tools" "$root" "$case_dir/no-smoke.out" --no-smoke
+
+# verifier: worker helper package import and entrypoint smokes are covered.
+case_dir="$TMP_ROOT/known-worker-helper-ok"
+tools="$case_dir/tools"
+root="$case_dir/root"
+make_known_helper_venv_fixture "$root" present ok orchard_worker_mlx >/dev/null
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_succeeds "$tools" "$root" "$case_dir/out"
+
+# verifier: known helper console entrypoints must smoke under sanitized env.
+case_dir="$TMP_ROOT/known-helper-entrypoint-smoke"
+tools="$case_dir/tools"
+root="$case_dir/root"
+make_known_helper_venv_fixture "$root" present fail >/dev/null
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'orchard-tokenizer entrypoint smoke failed' "$tools" "$root" "$case_dir/out"
+assert_verifier_succeeds "$tools" "$root" "$case_dir/no-smoke.out" --no-smoke
+assert_no_grep 'orchard-tokenizer entrypoint smoke failed' "$case_dir/no-smoke.out"
+
+# verifier: known helper console entrypoint smokes time out quickly.
+case_dir="$TMP_ROOT/known-helper-entrypoint-timeout"
+tools="$case_dir/tools"
+root="$case_dir/root"
+make_known_helper_venv_fixture "$root" present sleep >/dev/null
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'orchard-tokenizer entrypoint smoke failed' "$tools" "$root" "$case_dir/out"
+assert_verifier_succeeds "$tools" "$root" "$case_dir/no-smoke.out" --no-smoke
+assert_no_grep 'timed out' "$case_dir/no-smoke.out"
+
+# verifier: known helper console entrypoints must exist and be executable.
+case_dir="$TMP_ROOT/known-helper-entrypoint-missing"
+tools="$case_dir/tools"
+root="$case_dir/root"
+make_known_helper_venv_fixture "$root" present missing >/dev/null
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'expected entrypoint missing or not executable' "$tools" "$root" "$case_dir/out"
+assert_verifier_fails_with 'expected entrypoint missing or not executable' "$tools" "$root" "$case_dir/no-smoke.out" --no-smoke
+
+case_dir="$TMP_ROOT/known-helper-entrypoint-nonexec"
+tools="$case_dir/tools"
+root="$case_dir/root"
+make_known_helper_venv_fixture "$root" present nonexec >/dev/null
+make_fake_tools "$tools" '#!/bin/sh
+cat <<'"'"'OUT'"'"'
+OUT'
+assert_verifier_fails_with 'expected entrypoint missing or not executable' "$tools" "$root" "$case_dir/out"
+assert_verifier_fails_with 'expected entrypoint missing or not executable' "$tools" "$root" "$case_dir/no-smoke.out" --no-smoke
 
 printf 'ok	staged venv closure regressions
 '

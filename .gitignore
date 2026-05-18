@@ -39,6 +39,7 @@ erl_crash.dump
 # Python/native
 **/__pycache__/
 **/.venv/
+native/*/.venv-pkg/
 **/.pytest_cache/
 **/.ruff_cache/
 **/.coverage*
