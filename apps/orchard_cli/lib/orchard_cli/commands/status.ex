@@ -11,6 +11,7 @@ defmodule OrchardCLI.Commands.Status do
   """
 
   alias OrchardCLI.Commands.LifecycleSupport
+  alias OrchardCLI.EndpointMetadata
 
   @default_support_root "/Library/Application Support/Orchard"
   @connect_timeout_ms 2_000
@@ -95,7 +96,7 @@ defmodule OrchardCLI.Commands.Status do
   end
 
   defp snapshot_controller_role(runtime, version, role) do
-    candidates = Map.get(runtime, :endpoint_candidates, &default_endpoint_candidates/0).()
+    {candidates, warnings} = endpoint_candidates(runtime)
     request_fn = Map.get(runtime, :request, &default_request/2)
 
     case probe_candidates(candidates, request_fn) do
@@ -112,11 +113,13 @@ defmodule OrchardCLI.Commands.Status do
           role: role,
           base_url: display_url,
           display_url: display_url,
-          body: body
+          body: body,
+          warnings: warnings
         }
 
-      {:error, :unreachable, display_url} ->
+      {:error, :unreachable, display_url, source} ->
         display_version = format_display_version(version, nil)
+        warnings = configured_endpoint_warnings(source, display_url) ++ warnings
 
         %{
           version: version,
@@ -125,7 +128,8 @@ defmodule OrchardCLI.Commands.Status do
           role: role,
           base_url: nil,
           display_url: display_url,
-          body: nil
+          body: nil,
+          warnings: warnings
         }
 
       {:error, :invalid_response, display_url, message, probe_failure} ->
@@ -138,7 +142,8 @@ defmodule OrchardCLI.Commands.Status do
           display_url: display_url,
           body: nil,
           error: message,
-          probe_failure: probe_failure
+          probe_failure: probe_failure,
+          warnings: warnings
         }
     end
   end
@@ -154,12 +159,16 @@ defmodule OrchardCLI.Commands.Status do
   end
 
   def render_snapshot(%{state: :offline} = snap) do
-    render_offline_banner(snap.display_version, snap.display_url, snap.role)
+    snap.warnings
+    |> prepend_warnings(render_offline_banner(snap.display_version, snap.display_url, snap.role))
   end
 
   def render_snapshot(snap) do
     display_url = Map.get(snap, :display_url) || Map.fetch!(snap, :base_url)
-    render_banner(snap.display_version, display_url, snap.body, snap.role)
+
+    snap
+    |> Map.get(:warnings, [])
+    |> prepend_warnings(render_banner(snap.display_version, display_url, snap.body, snap.role))
   end
 
   # ── Node-Agent Local Status ─────────────────────────────────────────
@@ -187,7 +196,8 @@ defmodule OrchardCLI.Commands.Status do
 
   # ── Candidate Probing ───────────────────────────────────────────────
 
-  defp probe_candidates([], _request_fn), do: {:error, :unreachable, "http://localhost:4000"}
+  defp probe_candidates([], _request_fn),
+    do: {:error, :unreachable, "http://localhost:4000", :fallback}
 
   defp probe_candidates(candidates, request_fn) do
     candidates = Enum.map(candidates, &normalize_candidate/1)
@@ -195,7 +205,12 @@ defmodule OrchardCLI.Commands.Status do
 
     candidates
     |> Enum.reduce_while(
-      %{display_url: display_url, invalid_response: nil, saw_unreachable?: false},
+      %{
+        display_url: display_url,
+        invalid_response: nil,
+        saw_unreachable?: false,
+        source: hd(candidates).source
+      },
       fn candidate, acc ->
         candidate
         |> probe_candidate(request_fn)
@@ -236,8 +251,8 @@ defmodule OrchardCLI.Commands.Status do
 
   defp finalize_probe_result({:ok, _base_url, _body} = success), do: success
 
-  defp finalize_probe_result(%{invalid_response: nil, display_url: display_url}) do
-    {:error, :unreachable, display_url}
+  defp finalize_probe_result(%{invalid_response: nil, display_url: display_url, source: source}) do
+    {:error, :unreachable, display_url, source}
   end
 
   defp finalize_probe_result(%{invalid_response: {display_url, message}, saw_unreachable?: true}) do
@@ -252,7 +267,8 @@ defmodule OrchardCLI.Commands.Status do
     %{
       probe_url: probe_url,
       display_url: display_url,
-      ca_certfile: Map.get(candidate, :ca_certfile)
+      ca_certfile: Map.get(candidate, :ca_certfile),
+      source: Map.get(candidate, :source, :runtime)
     }
   end
 
@@ -260,11 +276,20 @@ defmodule OrchardCLI.Commands.Status do
     %{
       probe_url: base_url,
       display_url: Map.get(candidate, :display_url, base_url),
-      ca_certfile: Map.get(candidate, :ca_certfile)
+      ca_certfile: Map.get(candidate, :ca_certfile),
+      source: Map.get(candidate, :source, :runtime)
     }
   end
 
   defp candidate_display_url(candidate), do: candidate.display_url
+
+  defp configured_endpoint_warnings(:endpoint_metadata, display_url) do
+    [
+      "Warning: configured endpoint unreachable from endpoint metadata sidecar: #{display_url}"
+    ]
+  end
+
+  defp configured_endpoint_warnings(_source, _display_url), do: []
 
   defp build_request_opts(candidate) do
     base = [connect_timeout: @connect_timeout_ms, receive_timeout: @receive_timeout_ms]
@@ -334,6 +359,13 @@ defmodule OrchardCLI.Commands.Status do
        Status:  offline (controller unreachable)
     """
     |> String.trim()
+  end
+
+  defp prepend_warnings([], banner), do: banner
+
+  defp prepend_warnings(warnings, banner) do
+    (warnings ++ [banner])
+    |> Enum.join("\n")
   end
 
   defp render_node_agent_banner(snap) do
@@ -505,62 +537,132 @@ defmodule OrchardCLI.Commands.Status do
 
   # ── Endpoint Candidate Resolution ───────────────────────────────────
 
-  defp default_endpoint_candidates do
+  defp endpoint_candidates(runtime) do
+    case Map.fetch(runtime, :endpoint_candidates) do
+      {:ok, endpoint_candidates_fn} -> {endpoint_candidates_fn.(), []}
+      :error -> default_endpoint_candidates(runtime)
+    end
+  end
+
+  defp default_endpoint_candidates(runtime) do
     cond do
       System.get_env("ORCHARD_TRANSPORT_MODE") in [
         "direct_https",
         "reverse_proxy",
         "plain_http_localhost"
       ] ->
-        fallback_endpoint_candidates_from_env()
+        {fallback_endpoint_candidates_from_env(), []}
 
       legacy_transport_env_set?() ->
-        fallback_endpoint_candidates_from_env()
+        {fallback_endpoint_candidates_from_env(), []}
 
       true ->
-        endpoint_candidates_from_config_or_fallback()
+        endpoint_candidates_from_config_or_sidecar_or_fallback(runtime)
     end
   end
 
-  defp endpoint_candidates_from_config_or_fallback do
-    case endpoint_from_config() do
-      {:ok, candidate} ->
-        [candidate]
+  defp endpoint_candidates_from_config_or_sidecar_or_fallback(runtime) do
+    endpoint_candidates_from_sidecar_or_config_or_fallback(runtime)
+  end
 
-      :fallback ->
-        fallback_endpoint_candidates_from_env()
+  defp endpoint_candidates_from_sidecar_or_config_or_fallback(runtime) do
+    path = Map.get(runtime, :endpoint_metadata_path, EndpointMetadata.default_path())
+
+    case EndpointMetadata.read(path: path) do
+      {:ok, metadata} ->
+        case endpoint_candidate_from_metadata(metadata) do
+          {:ok, candidate} ->
+            {[Map.put(candidate, :source, :endpoint_metadata)], []}
+
+          {:error, message} ->
+            endpoint_candidates_from_config_or_fallback(runtime, [sidecar_warning(message)])
+        end
+
+      {:error, :not_found} ->
+        endpoint_candidates_from_config_or_fallback(runtime, [])
+
+      {:error, {:malformed, message}} ->
+        endpoint_candidates_from_config_or_fallback(runtime, [sidecar_warning(message)])
+    end
+  end
+
+  defp endpoint_candidates_from_config_or_fallback(runtime, warnings) do
+    case endpoint_from_config(runtime) do
+      {:ok, candidate} -> {[candidate], warnings}
+      :fallback -> {fallback_endpoint_candidates_from_env(), warnings}
+    end
+  end
+
+  defp sidecar_warning(message) do
+    "Warning: ignored endpoint metadata sidecar: #{message}"
+  end
+
+  defp endpoint_candidate_from_metadata(%{transport_mode: "direct_https"} = metadata) do
+    with {:ok, host} <- metadata_host(metadata),
+         {:ok, port} <- metadata_port(metadata, :api_https_port, 8443) do
+      url = format_url("https", host, port)
+      {:ok, %{probe_url: url, display_url: url, ca_certfile: metadata.ca_certfile}}
+    end
+  end
+
+  defp endpoint_candidate_from_metadata(%{transport_mode: "reverse_proxy"} = metadata) do
+    with {:ok, host} <- metadata_host(metadata),
+         {:ok, port} <- metadata_port(metadata, :api_https_port, 443) do
+      url = format_url("https", host, port)
+      {:ok, %{probe_url: url, display_url: url, ca_certfile: metadata.ca_certfile}}
+    end
+  end
+
+  defp endpoint_candidate_from_metadata(%{transport_mode: "plain_http_localhost"} = metadata) do
+    with {:ok, host} <- metadata_host(metadata, "localhost"),
+         {:ok, port} <- metadata_port(metadata, :plain_http_port, 4000) do
+      url = format_url("http", host, port)
+      {:ok, %{probe_url: url, display_url: url, ca_certfile: nil}}
+    end
+  end
+
+  defp metadata_host(metadata, default \\ nil) do
+    case metadata.public_host || default do
+      host when is_binary(host) -> {:ok, host}
+      _other -> {:error, "endpoint metadata missing public_host"}
+    end
+  end
+
+  defp metadata_port(metadata, field, default) do
+    case Map.get(metadata, field) || default do
+      port when is_integer(port) and port in 1..65_535 -> {:ok, port}
+      _other -> {:error, "endpoint metadata has invalid #{field}"}
     end
   end
 
   defp invalid_transport_mode_message do
-    cond do
-      invalid_bool = invalid_legacy_tls_disabled() ->
-        "invalid ORCHARD_TLS_DISABLED: #{invalid_bool}"
-
-      partial_legacy_cert_key?() ->
-        "ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set or both unset"
-
-      empty_legacy_cert_key?() ->
-        "ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must not be empty"
-
-      empty_path_env?("ORCHARD_TLS_CACERTFILE") ->
-        "ORCHARD_TLS_CACERTFILE must not be empty"
-
-      mode = invalid_explicit_transport_mode() ->
-        mode
-
-      invalid_port = invalid_active_transport_port() ->
-        invalid_port
-
-      invalid_bind = invalid_active_bind_or_proxy_config() ->
-        invalid_bind
-
-      invalid_tls = invalid_active_tls_material() ->
-        invalid_tls
-
-      true ->
-        nil
-    end
+    [
+      fn ->
+        if invalid_bool = invalid_legacy_tls_disabled() do
+          "invalid ORCHARD_TLS_DISABLED: #{invalid_bool}"
+        end
+      end,
+      fn ->
+        if partial_legacy_cert_key?() do
+          "ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must both be set or both unset"
+        end
+      end,
+      fn ->
+        if empty_legacy_cert_key?() do
+          "ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE must not be empty"
+        end
+      end,
+      fn ->
+        if empty_path_env?("ORCHARD_TLS_CACERTFILE") do
+          "ORCHARD_TLS_CACERTFILE must not be empty"
+        end
+      end,
+      &invalid_explicit_transport_mode/0,
+      &invalid_active_transport_port/0,
+      &invalid_active_bind_or_proxy_config/0,
+      &invalid_active_tls_material/0
+    ]
+    |> Enum.find_value(fn check -> check.() end)
   end
 
   defp empty_path_env?(env_name) do
@@ -570,12 +672,7 @@ defmodule OrchardCLI.Commands.Status do
     end
   end
 
-  defp path_env(env_name) do
-    case System.get_env(env_name) do
-      nil -> nil
-      value -> value
-    end
-  end
+  defp path_env(env_name), do: System.get_env(env_name)
 
   defp invalid_explicit_transport_mode do
     case System.get_env("ORCHARD_TRANSPORT_MODE") do
@@ -677,9 +774,8 @@ defmodule OrchardCLI.Commands.Status do
            nil <- require_regular("TLS certificate", certfile),
            nil <- require_regular("TLS private key", keyfile),
            nil <- validate_cert_key_pair(certfile, keyfile),
-           nil <- validate_generated_local_default_ca(support_root, generated_local?),
-           nil <- validate_optional_ca(cacertfile) do
-        nil
+           nil <- validate_generated_local_default_ca(support_root, generated_local?) do
+        validate_optional_ca(cacertfile)
       end
     end
   end
@@ -726,34 +822,28 @@ defmodule OrchardCLI.Commands.Status do
   defp ca_pem_file?(path), do: openssl_ok?(["x509", "-in", path, "-noout"])
 
   defp validate_cert_key_pair(certfile, keyfile) do
-    cond do
-      not openssl_available?() ->
-        "openssl is required to validate TLS certificate material before probing direct HTTPS status"
-
-      encrypted_key?(keyfile) ->
-        "TLS private key is encrypted: #{keyfile}"
-
-      not openssl_ok?(["x509", "-in", certfile, "-noout"]) ->
-        "TLS certificate file is malformed or contains no certificate PEM entry: #{certfile}"
-
-      not openssl_ok?(["x509", "-in", certfile, "-checkend", "0", "-noout"]) ->
-        "TLS certificate has expired or is not currently valid: #{certfile}"
-
-      not_before_parse_error?(certfile) ->
-        "could not parse TLS certificate validity window: #{certfile}"
-
-      cert_not_before_epoch!(certfile) > current_epoch() ->
-        "TLS certificate is not valid yet: #{certfile}"
-
-      not openssl_ok?(["pkey", "-in", keyfile, "-pubout", "-passin", "pass:"]) ->
-        "TLS private key file contains no supported private key PEM entry: #{keyfile}"
-
-      cert_public_key(certfile) != key_public_key(keyfile) ->
-        "TLS certificate and private key do not match: #{certfile} / #{keyfile}"
-
-      true ->
-        nil
-    end
+    [
+      {fn -> not openssl_available?() end,
+       fn ->
+         "openssl is required to validate TLS certificate material before probing direct HTTPS status"
+       end},
+      {fn -> encrypted_key?(keyfile) end, fn -> "TLS private key is encrypted: #{keyfile}" end},
+      {fn -> not openssl_ok?(["x509", "-in", certfile, "-noout"]) end,
+       fn ->
+         "TLS certificate file is malformed or contains no certificate PEM entry: #{certfile}"
+       end},
+      {fn -> not openssl_ok?(["x509", "-in", certfile, "-checkend", "0", "-noout"]) end,
+       fn -> "TLS certificate has expired or is not currently valid: #{certfile}" end},
+      {fn -> not_before_parse_error?(certfile) end,
+       fn -> "could not parse TLS certificate validity window: #{certfile}" end},
+      {fn -> cert_not_before_epoch!(certfile) > current_epoch() end,
+       fn -> "TLS certificate is not valid yet: #{certfile}" end},
+      {fn -> not openssl_ok?(["pkey", "-in", keyfile, "-pubout", "-passin", "pass:"]) end,
+       fn -> "TLS private key file contains no supported private key PEM entry: #{keyfile}" end},
+      {fn -> cert_public_key(certfile) != key_public_key(keyfile) end,
+       fn -> "TLS certificate and private key do not match: #{certfile} / #{keyfile}" end}
+    ]
+    |> Enum.find_value(fn {invalid?, message} -> if invalid?.(), do: message.() end)
   end
 
   defp encrypted_key?(path) do
@@ -995,8 +1085,12 @@ defmodule OrchardCLI.Commands.Status do
   defp truthy_env?(value) when value in ["1", "true", "TRUE", "yes", "YES", "on", "ON"], do: true
   defp truthy_env?(_), do: false
 
-  defp endpoint_from_config do
-    config = Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
+  defp endpoint_from_config(runtime) do
+    config =
+      case Map.get(runtime, :endpoint_config) do
+        config_fn when is_function(config_fn, 0) -> config_fn.()
+        _other -> Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
+      end
 
     cond do
       http = Keyword.get(config, :http) ->
@@ -1138,7 +1232,6 @@ defmodule OrchardCLI.Commands.Status do
   defp default_runtime do
     %{
       version: fn -> Orchard.version() end,
-      endpoint_candidates: &default_endpoint_candidates/0,
       request: &default_request/2
     }
   end

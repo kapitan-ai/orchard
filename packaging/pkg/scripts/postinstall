@@ -22,6 +22,8 @@ set -eu
 ORCHARD_ROOT="/Library/Application Support/Orchard"
 LAUNCHD_SRC="$ORCHARD_ROOT/share/launchd"
 TLS_DIR="$ORCHARD_ROOT/config/tls"
+PUBLIC_DIR="$ORCHARD_ROOT/public"
+ENDPOINT_METADATA_FILE="$PUBLIC_DIR/endpoint.json"
 INSTALL_ROLE_REQUEST_FILE="$ORCHARD_ROOT/support/.install-role.request"
 INSTALL_ROLE_FILE="$ORCHARD_ROOT/support/.install-role"
 
@@ -186,6 +188,212 @@ require_regular_file() {
     printf 'postinstall: ERROR: %s=%s is not a regular file or does not exist\n' "$_var" "$_path" >&2
     return 1
   fi
+}
+
+json_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+json_safe_string() {
+  _value="$1"
+  _newline='
+'
+  case "$_value" in
+    *"$_newline"*) return 1 ;;
+    *[![:print:]]*) return 1 ;;
+    *) json_escape "$_value" ;;
+  esac
+}
+
+json_string_or_null() {
+  _value="$1"
+  if [ -z "$_value" ]; then
+    printf 'null'
+  else
+    printf '"%s"' "$(json_safe_string "$_value")"
+  fi
+}
+
+valid_port_value() {
+  case "$1" in
+    ''|*[!0-9]*) return 1 ;;
+    *) [ "$1" -ge 1 ] && [ "$1" -le 65535 ] ;;
+  esac
+}
+
+json_integer_or_null() {
+  _value="$1"
+  if [ -z "$_value" ]; then
+    printf 'null'
+  else
+    valid_port_value "$_value"
+    printf '%s' "$_value"
+  fi
+}
+
+valid_json_string_or_empty() {
+  _value="$1"
+  [ -z "$_value" ] && return 0
+  json_safe_string "$_value" >/dev/null
+}
+
+valid_endpoint_host() {
+  _value="$1"
+  [ -z "$_value" ] && return 1
+  valid_json_string_or_empty "$_value" || return 1
+  case "$_value" in
+    *://*|*' '*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+validate_endpoint_metadata_fields() {
+  valid_json_string_or_empty "$_transport_mode" || return 1
+  valid_endpoint_host "$_public_host" || return 1
+  valid_json_string_or_empty "$_api_bind_ip" || return 1
+  valid_json_string_or_empty "$_ca_certfile" || return 1
+  case "$_transport_mode" in
+    direct_https)
+      valid_port_value "$_api_https_port" || return 1
+      [ -z "$_plain_http_port" ] || valid_port_value "$_plain_http_port" || return 1
+      ;;
+    reverse_proxy)
+      valid_port_value "$_api_https_port" || return 1
+      valid_port_value "$_plain_http_port" || return 1
+      ;;
+    plain_http_localhost)
+      [ -z "$_api_https_port" ] || valid_port_value "$_api_https_port" || return 1
+      valid_port_value "$_plain_http_port" || return 1
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+write_endpoint_metadata() {
+  _transport_mode="$1"
+  _ca_certfile="$2"
+  if [ -n "${ORCHARD_PUBLIC_HOST+x}" ]; then
+    _public_host="$ORCHARD_PUBLIC_HOST"
+  elif [ -n "${PHX_HOST+x}" ]; then
+    _public_host="$PHX_HOST"
+  else
+    _public_host="localhost"
+  fi
+  _api_bind_ip="${ORCHARD_API_BIND_IP:-}"
+  _api_https_port=""
+  _plain_http_port=""
+
+  case "$_transport_mode" in
+    direct_https)
+      if [ -n "${ORCHARD_API_HTTPS_PORT+x}" ]; then
+        _api_https_port="$ORCHARD_API_HTTPS_PORT"
+      else
+        _api_https_port="8443"
+      fi
+      ;;
+    reverse_proxy)
+      if [ -n "${ORCHARD_PUBLIC_PORT+x}" ]; then
+        _api_https_port="$ORCHARD_PUBLIC_PORT"
+      else
+        _api_https_port="443"
+      fi
+      if [ -n "${PORT+x}" ]; then
+        _plain_http_port="$PORT"
+      else
+        _plain_http_port="4000"
+      fi
+      ;;
+    plain_http_localhost)
+      if [ -n "${PORT+x}" ]; then
+        _plain_http_port="$PORT"
+      else
+        _plain_http_port="4000"
+      fi
+      ;;
+    *)
+      return 0
+      ;;
+  esac
+
+  if ! validate_endpoint_metadata_fields; then
+    printf 'postinstall: warning: skipping endpoint metadata sidecar; invalid non-secret endpoint metadata\n' >&2
+    return 0
+  fi
+
+  mkdir -p "$ORCHARD_ROOT" "$PUBLIC_DIR"
+  chmod 0755 "$ORCHARD_ROOT" "$PUBLIC_DIR"
+  chown root:wheel "$ORCHARD_ROOT" "$PUBLIC_DIR" 2>/dev/null || true
+
+  _tmp="$ENDPOINT_METADATA_FILE.$$.$RANDOM.tmp"
+  {
+    printf '{\n'
+    printf '  "schema_version": 1,\n'
+    printf '  "transport_mode": %s,\n' "$(json_string_or_null "$_transport_mode")"
+    printf '  "public_host": %s,\n' "$(json_string_or_null "$_public_host")"
+    printf '  "api_https_port": %s,\n' "$(json_integer_or_null "$_api_https_port")"
+    printf '  "plain_http_port": %s,\n' "$(json_integer_or_null "$_plain_http_port")"
+    printf '  "api_bind_ip": %s,\n' "$(json_string_or_null "$_api_bind_ip")"
+    printf '  "ca_certfile": %s,\n' "$(json_string_or_null "$_ca_certfile")"
+    printf '  "updated_at": "%s",\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    printf '  "generated_by": "postinstall"\n'
+    printf '}\n'
+  } > "$_tmp"
+  chown root:wheel "$_tmp" 2>/dev/null || true
+  chmod 0644 "$_tmp"
+  mv -f "$_tmp" "$ENDPOINT_METADATA_FILE"
+  printf 'postinstall: wrote endpoint metadata sidecar %s\n' "$ENDPOINT_METADATA_FILE"
+}
+
+generated_local_ca_metadata_present() {
+  [ -f "$TLS_DIR/.orchard-tls-meta.json" ] || return 1
+  _source=$(plutil -extract source raw -o - "$TLS_DIR/.orchard-tls-meta.json" 2>/dev/null) || return 1
+  [ "$_source" = "generated_local_ca" ]
+}
+
+publish_generated_ca_if_available() {
+  if [ -n "${ORCHARD_TLS_CERTFILE+x}" ] || [ -n "${ORCHARD_TLS_KEYFILE+x}" ]; then
+    printf ''
+    return 0
+  fi
+
+  if [ ! -f "$TLS_DIR/ca.crt" ] || ! generated_local_ca_metadata_present; then
+    printf ''
+    return 0
+  fi
+
+  mkdir -p "$PUBLIC_DIR"
+  chmod 0755 "$PUBLIC_DIR"
+  chown root:wheel "$PUBLIC_DIR" 2>/dev/null || true
+  cp "$TLS_DIR/ca.crt" "$PUBLIC_DIR/ca.crt"
+  chown root:wheel "$PUBLIC_DIR/ca.crt" 2>/dev/null || true
+  chmod 0644 "$PUBLIC_DIR/ca.crt"
+  printf '%s' "$PUBLIC_DIR/ca.crt"
+}
+
+write_endpoint_metadata_for_tls_mode() {
+  _tls_mode="$1"
+
+  case "$_tls_mode" in
+    transport_plain_http_localhost|disabled)
+      write_endpoint_metadata "plain_http_localhost" ""
+      ;;
+    transport_reverse_proxy)
+      write_endpoint_metadata "reverse_proxy" ""
+      ;;
+    managed_default)
+      _tls_state=$(inspect_managed_tls_state)
+      if [ "$_tls_state" = "complete" ]; then
+        _public_ca=$(publish_generated_ca_if_available)
+        write_endpoint_metadata "direct_https" "$_public_ca"
+      fi
+      ;;
+    external_override)
+      write_endpoint_metadata "direct_https" ""
+      ;;
+    *)
+      return 0
+      ;;
+  esac
 }
 
 validate_install_role() {
@@ -367,6 +575,7 @@ done
 # Targeted hardening — do NOT recursive-chown before env inspection, as that
 # would mask insecure controller.env ownership.
 chown root:wheel "$ORCHARD_ROOT"
+chmod 0755 "$ORCHARD_ROOT"
 chown root:wheel "$ORCHARD_ROOT/bin" "$ORCHARD_ROOT/support"
 chown root:admin "$ORCHARD_ROOT/config" "$ORCHARD_ROOT/config/tls"
 chown root:wheel "$ORCHARD_ROOT/logs"
@@ -529,6 +738,8 @@ else
       printf 'postinstall: external TLS files validated\n'
       ;;
   esac
+
+  write_endpoint_metadata_for_tls_mode "$tls_mode"
 fi
 
 # ===========================================================================

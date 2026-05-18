@@ -188,6 +188,7 @@ defmodule OrchardCLI.Commands.EnvTest do
                ~r/ORCHARD_TOKENIZER_EXECUTABLE="[^"]*Application Support[^"]*"/
 
       refute controller_content =~ "ORCHARD_NODE_AGENT_LISTEN_HOST"
+      refute File.exists?(Path.join([support_root, "public", "endpoint.json"]))
 
       node_agent_content = File.read!(node_agent_env)
       assert node_agent_content =~ "ORCHARD_NODE_AGENT_LISTEN_HOST"

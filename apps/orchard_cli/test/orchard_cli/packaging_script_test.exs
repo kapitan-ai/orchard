@@ -63,6 +63,162 @@ defmodule OrchardCLI.PackagingScriptTest do
     end
   end
 
+  test "postinstall writes local HTTP endpoint sidecar with schema v1 and public permissions" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      File.write!(request_path, "controller\n")
+      remove_managed_tls_files!(ctx)
+      File.chmod!(ctx.root, 0o700)
+
+      assert {output, 0} = run_script(script, ctx)
+      assert output =~ "postinstall: wrote endpoint metadata sidecar"
+
+      endpoint_path = Path.join([ctx.root, "public", "endpoint.json"])
+      assert File.regular?(endpoint_path)
+      assert Bitwise.band(File.stat!(ctx.root).mode, 0o777) == 0o755
+      assert Bitwise.band(File.stat!(Path.dirname(endpoint_path)).mode, 0o777) == 0o755
+      assert Bitwise.band(File.stat!(endpoint_path).mode, 0o777) == 0o644
+
+      decoded = Jason.decode!(File.read!(endpoint_path))
+
+      assert Map.keys(decoded) |> Enum.sort() ==
+               ~w(api_bind_ip api_https_port ca_certfile generated_by plain_http_port public_host schema_version transport_mode updated_at)
+
+      assert decoded["schema_version"] == 1
+      assert decoded["transport_mode"] == "plain_http_localhost"
+      assert decoded["public_host"] == "localhost"
+      assert decoded["plain_http_port"] == 4000
+      assert decoded["api_https_port"] == nil
+      assert decoded["ca_certfile"] == nil
+      assert decoded["generated_by"] == "postinstall"
+      refute File.read!(endpoint_path) =~ "controller.key"
+      refute File.read!(endpoint_path) =~ "DATABASE_URL"
+    end)
+  end
+
+  test "postinstall skips endpoint sidecar for explicitly empty endpoint metadata env fields" do
+    for assignment <- [
+          "ORCHARD_TRANSPORT_MODE=plain_http_localhost PORT=",
+          "ORCHARD_TRANSPORT_MODE=direct_https ORCHARD_API_HTTPS_PORT=",
+          "ORCHARD_TRANSPORT_MODE=reverse_proxy ORCHARD_PUBLIC_PORT=",
+          "ORCHARD_TRANSPORT_MODE=plain_http_localhost ORCHARD_PUBLIC_HOST=",
+          "ORCHARD_TRANSPORT_MODE=plain_http_localhost PHX_HOST="
+        ] do
+      with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+        File.write!(request_path, "controller\n")
+        remove_managed_tls_files!(ctx)
+
+        assert {_output, 0} = run_script_with_endpoint_assignment(script, ctx, assignment)
+
+        refute File.exists?(Path.join([ctx.root, "public", "endpoint.json"]))
+      end)
+    end
+  end
+
+  test "postinstall skips endpoint sidecar for invalid endpoint metadata fields" do
+    for env <- [
+          [{"ORCHARD_TRANSPORT_MODE", "plain_http_localhost"}, {"PORT", "not-a-port"}]
+        ] do
+      with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+        File.write!(request_path, "controller\n")
+        remove_managed_tls_files!(ctx)
+
+        assert {output, 0} = run_script(script, ctx, env)
+
+        assert output =~ "skipping endpoint metadata sidecar"
+        refute File.exists?(Path.join([ctx.root, "public", "endpoint.json"]))
+      end)
+    end
+  end
+
+  test "postinstall writes direct HTTPS endpoint sidecar from non-secret env metadata" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "tls", ".orchard-tls-meta.json"]),
+        ~s({"source":"generated_local_ca"})
+      )
+
+      File.write!(request_path, "controller\n")
+
+      assert {output, 0} =
+               run_script(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "direct_https"},
+                 {"ORCHARD_PUBLIC_HOST", "orchard.example.internal"},
+                 {"ORCHARD_API_HTTPS_PORT", "9443"},
+                 {"ORCHARD_API_BIND_IP", "0.0.0.0"}
+               ])
+
+      assert output =~ "postinstall: wrote endpoint metadata sidecar"
+
+      endpoint_path = Path.join([ctx.root, "public", "endpoint.json"])
+      decoded = Jason.decode!(File.read!(endpoint_path))
+
+      assert decoded["transport_mode"] == "direct_https"
+      assert decoded["public_host"] == "orchard.example.internal"
+      assert decoded["api_https_port"] == 9443
+      assert decoded["plain_http_port"] == nil
+      assert decoded["api_bind_ip"] == "0.0.0.0"
+      assert decoded["ca_certfile"] == Path.join([ctx.root, "public", "ca.crt"])
+      refute File.read!(endpoint_path) =~ "controller.key"
+      assert File.regular?(decoded["ca_certfile"])
+      assert Bitwise.band(File.stat!(decoded["ca_certfile"]).mode, 0o777) == 0o644
+    end)
+  end
+
+  test "postinstall does not publish generated CA for malformed or nested TLS metadata" do
+    for metadata <- ["not json", ~s({"nested":{"source":"generated_local_ca"}})] do
+      with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+        File.write!(Path.join([ctx.root, "config", "tls", ".orchard-tls-meta.json"]), metadata)
+        File.write!(request_path, "controller\n")
+
+        assert {output, 0} =
+                 run_script(script, ctx, [
+                   {"ORCHARD_TRANSPORT_MODE", "direct_https"},
+                   {"ORCHARD_PUBLIC_HOST", "orchard.example.internal"}
+                 ])
+
+        assert output =~ "postinstall: wrote endpoint metadata sidecar"
+        endpoint_path = Path.join([ctx.root, "public", "endpoint.json"])
+        decoded = Jason.decode!(File.read!(endpoint_path))
+        assert decoded["transport_mode"] == "direct_https"
+        assert decoded["ca_certfile"] == nil
+        refute File.exists?(Path.join([ctx.root, "public", "ca.crt"]))
+      end)
+    end
+  end
+
+  test "postinstall external TLS sidecar omits operator PKI CA path" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      external_tls_dir = Path.join(ctx.root, "external-tls")
+      File.mkdir_p!(external_tls_dir)
+      certfile = Path.join(external_tls_dir, "orchard.crt")
+      keyfile = Path.join(external_tls_dir, "orchard.key")
+      cafile = Path.join(external_tls_dir, "operator-ca.crt")
+      File.write!(certfile, "external cert\n")
+      File.write!(keyfile, "external key\n")
+      File.write!(cafile, "operator ca\n")
+      File.write!(request_path, "controller\n")
+
+      assert {output, 0} =
+               run_script(script, ctx, [
+                 {"ORCHARD_TRANSPORT_MODE", "direct_https"},
+                 {"ORCHARD_PUBLIC_HOST", "orchard.example.internal"},
+                 {"ORCHARD_TLS_CERTFILE", certfile},
+                 {"ORCHARD_TLS_KEYFILE", keyfile},
+                 {"ORCHARD_TLS_CACERTFILE", cafile}
+               ])
+
+      assert output =~ "postinstall: wrote endpoint metadata sidecar"
+
+      endpoint_path = Path.join([ctx.root, "public", "endpoint.json"])
+      decoded = Jason.decode!(File.read!(endpoint_path))
+
+      assert decoded["transport_mode"] == "direct_https"
+      assert decoded["ca_certfile"] == nil
+      refute File.read!(endpoint_path) =~ cafile
+      refute File.read!(endpoint_path) =~ keyfile
+    end)
+  end
+
   test "postinstall default local HTTP warns when managed TLS exists" do
     with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
       File.write!(request_path, "controller\n")
@@ -920,10 +1076,14 @@ defmodule OrchardCLI.PackagingScriptTest do
   end
 
   defp run_script_with_empty_ca(script, ctx) do
+    run_script_with_endpoint_assignment(script, ctx, "ORCHARD_TLS_CACERTFILE=")
+  end
+
+  defp run_script_with_endpoint_assignment(script, ctx, assignment) do
     path = ctx.fake_bin <> ":" <> System.get_env("PATH", "")
 
     command =
-      "LAUNCHCTL_LOG=\"$1\" PATH=\"$2\" REQUEST_STAT_PATH=\"$3\" ORCHARD_TLS_CACERTFILE= exec \"$4\""
+      "env LAUNCHCTL_LOG=\"$1\" PATH=\"$2\" REQUEST_STAT_PATH=\"$3\" #{assignment} \"$4\""
 
     System.cmd("sh", ["-c", command, "sh", ctx.launchctl_log, path, ctx.request_path, script],
       stderr_to_stdout: true

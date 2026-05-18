@@ -146,6 +146,31 @@ defmodule OrchardCLI.Commands.StatusTest do
   defp restore_env(key, nil), do: System.delete_env(key)
   defp restore_env(key, value), do: System.put_env(key, value)
 
+  defp without_transport_env(fun) do
+    keys = [
+      "ORCHARD_TRANSPORT_MODE",
+      "ORCHARD_TLS_DISABLED",
+      "ORCHARD_TLS_CERTFILE",
+      "ORCHARD_TLS_KEYFILE",
+      "ORCHARD_TLS_CACERTFILE",
+      "ORCHARD_PUBLIC_HOST",
+      "ORCHARD_PUBLIC_PORT",
+      "ORCHARD_API_HTTPS_PORT",
+      "ORCHARD_API_BIND_IP",
+      "PHX_HOST",
+      "PORT"
+    ]
+
+    originals = Map.new(keys, &{&1, System.get_env(&1)})
+    Enum.each(keys, &System.delete_env/1)
+
+    try do
+      fun.()
+    after
+      Enum.each(originals, fn {key, value} -> restore_env(key, value) end)
+    end
+  end
+
   # ── Usage / Help ─────────────────────────────────────────────────────
 
   test "help returns usage" do
@@ -1233,6 +1258,156 @@ defmodule OrchardCLI.Commands.StatusTest do
 
     assert {:error, message, 1} = Status.run([], runtime)
     assert message =~ "invalid ORCHARD_TRANSPORT_MODE: https"
+  end
+
+  test "status prefers valid endpoint sidecar over default endpoint config when env is unavailable" do
+    without_transport_env(fn ->
+      support_root = System.fetch_env!("ORCHARD_SUPPORT_ROOT")
+      sidecar_path = Path.join([support_root, "public", "endpoint.json"])
+      ca_path = Path.join([support_root, "public", "ca.crt"])
+      File.mkdir_p!(Path.dirname(sidecar_path))
+      File.write!(ca_path, "public ca placeholder\n")
+
+      File.write!(
+        sidecar_path,
+        Jason.encode!(%{
+          "schema_version" => 1,
+          "transport_mode" => "direct_https",
+          "public_host" => "orchard.example.internal",
+          "api_https_port" => 9443,
+          "plain_http_port" => nil,
+          "api_bind_ip" => "10.99.0.12",
+          "ca_certfile" => ca_path,
+          "updated_at" => "2026-05-18T01:02:03Z",
+          "generated_by" => "postinstall"
+        })
+      )
+
+      ref = make_ref()
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        endpoint_metadata_path: sidecar_path,
+        endpoint_config: fn -> [url: [host: "localhost"], http: [port: 4000]] end,
+        request: fn url, opts ->
+          send(self(), {ref, url, opts})
+          {:ok, ready_response()}
+        end
+      }
+
+      assert {:ok, banner} = Status.run([], runtime)
+      assert_received {^ref, "https://orchard.example.internal:9443/health/ready", opts}
+      assert Keyword.get(opts, :ca_certfile) == ca_path
+      assert banner =~ "Console: https://orchard.example.internal:9443/console"
+      refute banner =~ "10.99.0.12"
+    end)
+  end
+
+  test "status uses reverse-proxy endpoint sidecar from public host and public HTTPS port" do
+    without_transport_env(fn ->
+      support_root = System.fetch_env!("ORCHARD_SUPPORT_ROOT")
+      sidecar_path = Path.join([support_root, "public", "endpoint.json"])
+      File.mkdir_p!(Path.dirname(sidecar_path))
+
+      File.write!(
+        sidecar_path,
+        Jason.encode!(%{
+          "schema_version" => 1,
+          "transport_mode" => "reverse_proxy",
+          "public_host" => "orchard-proxy.example.internal",
+          "api_https_port" => 443,
+          "plain_http_port" => 4000,
+          "api_bind_ip" => "127.0.0.1",
+          "ca_certfile" => nil,
+          "updated_at" => "2026-05-18T01:02:03Z",
+          "generated_by" => "postinstall"
+        })
+      )
+
+      ref = make_ref()
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        endpoint_metadata_path: sidecar_path,
+        endpoint_config: fn -> [] end,
+        request: fn url, opts ->
+          send(self(), {ref, url, opts})
+          {:ok, ready_response()}
+        end
+      }
+
+      assert {:ok, banner} = Status.run([], runtime)
+      assert_received {^ref, "https://orchard-proxy.example.internal/health/ready", opts}
+      assert Keyword.get(opts, :ca_certfile) == nil
+      assert banner =~ "Console: https://orchard-proxy.example.internal/console"
+      refute banner =~ "127.0.0.1"
+    end)
+  end
+
+  test "valid but unreachable endpoint sidecar renders targeted configured endpoint warning" do
+    without_transport_env(fn ->
+      support_root = System.fetch_env!("ORCHARD_SUPPORT_ROOT")
+      sidecar_path = Path.join([support_root, "public", "endpoint.json"])
+      File.mkdir_p!(Path.dirname(sidecar_path))
+
+      File.write!(
+        sidecar_path,
+        Jason.encode!(%{
+          "schema_version" => 1,
+          "transport_mode" => "direct_https",
+          "public_host" => "orchard.example.internal",
+          "api_https_port" => 9443,
+          "plain_http_port" => nil,
+          "api_bind_ip" => "10.99.0.12",
+          "ca_certfile" => nil,
+          "updated_at" => "2026-05-18T01:02:03Z",
+          "generated_by" => "postinstall"
+        })
+      )
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        endpoint_metadata_path: sidecar_path,
+        endpoint_config: fn -> [] end,
+        request: fn _url, _opts -> {:error, :econnrefused} end
+      }
+
+      assert {:ok, banner} = Status.run([], runtime)
+      assert banner =~ "configured endpoint unreachable"
+      assert banner =~ "https://orchard.example.internal:9443"
+      refute banner =~ "10.99.0.12"
+    end)
+  end
+
+  test "malformed endpoint sidecar is ignored with targeted warning and status still probes fallback" do
+    without_transport_env(fn ->
+      support_root = System.fetch_env!("ORCHARD_SUPPORT_ROOT")
+      sidecar_path = Path.join([support_root, "public", "endpoint.json"])
+      File.mkdir_p!(Path.dirname(sidecar_path))
+      File.write!(sidecar_path, "not json")
+
+      ref = make_ref()
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        endpoint_metadata_path: sidecar_path,
+        endpoint_config: fn -> [] end,
+        request: fn url, _opts ->
+          send(self(), {ref, url})
+          {:ok, ready_response()}
+        end
+      }
+
+      assert {:ok, banner} = Status.run([], runtime)
+      assert_received {^ref, "http://localhost:4000/health/ready"}
+      assert banner =~ "Warning: ignored endpoint metadata sidecar"
+      assert banner =~ "malformed JSON"
+      assert banner =~ "Status:  ready"
+    end)
   end
 
   test "request function receives ca_certfile from candidate" do
