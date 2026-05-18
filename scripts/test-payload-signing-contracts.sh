@@ -2014,6 +2014,8 @@ assert_fails_with 'forbidden entitlement: com.apple.security.cs.disable-library-
 test ! -e "$forbidden_productsign_log"
 
 # RED/GREEN: sign-pkg notary auth matrix and bounded expansion diagnostics.
+# For the focused, always-runnable dry-run API-key Team/Individual contract,
+# run scripts/test-sign-pkg-notary-auth.sh.
 case_dir="$TMP_ROOT/sign-pkg-notary-auth"
 mkdir -p "$case_dir"
 input_pkg="$case_dir/Orchard.pkg"
@@ -2055,11 +2057,25 @@ api_key="$case_dir/AuthKey_TEST.p8"
 output_pkg="$case_dir/api-signed.pkg"
 : > "$api_key"
 write_sign_pkg_fakes "$tools" ok "$productsign_log"
-PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=12345678-1234-1234-1234-123456789abc ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$output_pkg" >"$case_dir/api.out" 2>&1
 assert_grep "--key $api_key" "$xcrun_log"
 assert_grep '--key-id KEY123' "$xcrun_log"
-assert_grep '--issuer ISSUER123' "$xcrun_log"
+assert_grep '--issuer 12345678-1234-1234-1234-123456789abc' "$xcrun_log"
+assert_grep '--output-format json' "$xcrun_log"
+assert_no_grep '--keychain-profile' "$xcrun_log"
+assert_grep 'productsign invoked' "$productsign_log"
+
+tools="$case_dir/tools-api-individual"
+productsign_log="$case_dir/productsign-api-individual.log"
+xcrun_log="$case_dir/xcrun-api-individual.log"
+output_pkg="$case_dir/api-individual-signed.pkg"
+write_sign_pkg_fakes "$tools" ok "$productsign_log"
+PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=stale-non-uuid ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$output_pkg" >"$case_dir/api-individual.out" 2>&1
+assert_grep "--key $api_key" "$xcrun_log"
+assert_grep '--key-id KEY123' "$xcrun_log"
+assert_no_grep '--issuer' "$xcrun_log"
 assert_grep '--output-format json' "$xcrun_log"
 assert_no_grep '--keychain-profile' "$xcrun_log"
 assert_grep 'productsign invoked' "$productsign_log"
@@ -2071,22 +2087,38 @@ assert_fails_with 'ORCHARD_NOTARY_API_KEY_PATH is required' "$case_dir/api-missi
 test ! -e "$productsign_log"
 assert_fails_with 'ORCHARD_NOTARY_API_KEY_ID is required' "$case_dir/api-missing-id.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-id.pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID is required' "$case_dir/api-missing-issuer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-issuer.pkg"
+assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID must be a UUID' "$case_dir/api-invalid-issuer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=auto ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=not-a-uuid ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-invalid-issuer.pkg"
+test ! -e "$productsign_log"
+assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID must be a UUID' "$case_dir/api-auto-nonhex-issuer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=auto ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-auto-nonhex-issuer.pkg"
+test ! -e "$productsign_log"
+assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID must be a UUID' "$case_dir/api-team-nonhex-issuer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-team-nonhex-issuer.pkg"
+test ! -e "$productsign_log"
+assert_fails_with 'ORCHARD_NOTARY_API_ISSUER_ID is required' "$case_dir/api-team-missing-issuer.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-team-missing-issuer.pkg"
+test ! -e "$productsign_log"
+assert_fails_with 'Unsupported ORCHARD_NOTARY_API_KEY_TYPE' "$case_dir/api-unsupported-key-type.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=enterprise ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-unsupported-key-type.pkg"
 test ! -e "$productsign_log"
 assert_fails_with 'Unsupported ORCHARD_NOTARY_AUTH' "$case_dir/auth-unsupported.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=bogus ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/auth-unsupported.pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'App Store Connect API key does not exist' "$case_dir/api-missing-file.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$case_dir/missing.p8" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-file.pkg"
+assert_fails_with 'App Store Connect API key does not exist' "$case_dir/api-missing-file.out" env PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$case_dir/missing.p8" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-file.pkg"
 test ! -e "$productsign_log"
 
 tools="$case_dir/tools-dry"
 productsign_log="$case_dir/productsign-dry.log"
 write_sign_pkg_fakes "$tools" ok "$productsign_log"
-PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=ISSUER123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=12345678-1234-1234-1234-123456789abc ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     "$REPO_ROOT/scripts/sign-pkg.sh" --dry-run --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/dry.pkg" >"$case_dir/dry.out" 2>&1
 assert_grep '--key' "$case_dir/dry.out"
 assert_grep '--key-id' "$case_dir/dry.out"
 assert_grep '--issuer' "$case_dir/dry.out"
 assert_grep '--output-format' "$case_dir/dry.out"
+test ! -e "$productsign_log"
+
+PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=stale-non-uuid ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    "$REPO_ROOT/scripts/sign-pkg.sh" --dry-run --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/dry-individual.pkg" >"$case_dir/dry-individual.out" 2>&1
+assert_grep '--key' "$case_dir/dry-individual.out"
+assert_grep '--key-id' "$case_dir/dry-individual.out"
+assert_no_grep '--issuer' "$case_dir/dry-individual.out"
+assert_grep '--output-format' "$case_dir/dry-individual.out"
 test ! -e "$productsign_log"
 
 tools="$case_dir/tools-expand-fail"

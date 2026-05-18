@@ -41,7 +41,8 @@ Environment alternatives:
   ORCHARD_NOTARYTOOL_PROFILE           notarytool keychain profile name for profile auth
   ORCHARD_NOTARY_API_KEY_PATH          App Store Connect API key .p8 path for api-key auth
   ORCHARD_NOTARY_API_KEY_ID            App Store Connect API key ID for api-key auth
-  ORCHARD_NOTARY_API_ISSUER_ID         App Store Connect issuer ID for api-key auth
+  ORCHARD_NOTARY_API_KEY_TYPE          auto (default), team, or individual
+  ORCHARD_NOTARY_API_ISSUER_ID         App Store Connect issuer UUID for Team API Keys; omitted for Individual API Keys
   ORCHARD_PKG_EXPAND_TIMEOUT_SECONDS    Timeout for pkgutil --expand-full audit (default: 600)
   ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR      Durable diagnostics dir for package audit metadata (success or failure)
 
@@ -65,7 +66,10 @@ Examples:
 Before first profile-auth use, create the notary profile with:
   xcrun notarytool store-credentials <profile>
 
-For API-key auth, set ORCHARD_NOTARY_AUTH=api-key and the ORCHARD_NOTARY_API_* variables.
+For API-key auth, set ORCHARD_NOTARY_AUTH=api-key, ORCHARD_NOTARY_API_KEY_PATH, and ORCHARD_NOTARY_API_KEY_ID. Set ORCHARD_NOTARY_API_KEY_TYPE=team with ORCHARD_NOTARY_API_ISSUER_ID for Team API Keys. Set ORCHARD_NOTARY_API_KEY_TYPE=individual to omit --issuer, even if a stale issuer env var is present. The default ORCHARD_NOTARY_API_KEY_TYPE=auto omits absent issuer, includes valid issuer UUID, and rejects malformed non-empty issuer values.
+
+Validate API-key argument construction with:
+  bash scripts/test-sign-pkg-notary-auth.sh
 EOF
 }
 
@@ -74,6 +78,7 @@ NOTARY_AUTH="${ORCHARD_NOTARY_AUTH:-profile}"
 NOTARY_PROFILE="${ORCHARD_NOTARYTOOL_PROFILE:-}"
 NOTARY_API_KEY_PATH="${ORCHARD_NOTARY_API_KEY_PATH:-}"
 NOTARY_API_KEY_ID="${ORCHARD_NOTARY_API_KEY_ID:-}"
+NOTARY_API_KEY_TYPE="${ORCHARD_NOTARY_API_KEY_TYPE:-auto}"
 NOTARY_API_ISSUER_ID="${ORCHARD_NOTARY_API_ISSUER_ID:-}"
 PAYLOAD_SIGNING_IDENTITY="${ORCHARD_PAYLOAD_SIGNING_IDENTITY:-}"
 INPUT_PKG=""
@@ -145,6 +150,7 @@ NOTARY_AUTH="$(trim "$NOTARY_AUTH")"
 NOTARY_PROFILE="$(trim "$NOTARY_PROFILE")"
 NOTARY_API_KEY_PATH="$(trim "$NOTARY_API_KEY_PATH")"
 NOTARY_API_KEY_ID="$(trim "$NOTARY_API_KEY_ID")"
+NOTARY_API_KEY_TYPE="$(trim "$NOTARY_API_KEY_TYPE")"
 NOTARY_API_ISSUER_ID="$(trim "$NOTARY_API_ISSUER_ID")"
 PAYLOAD_SIGNING_IDENTITY="$(trim "$PAYLOAD_SIGNING_IDENTITY")"
 INPUT_PKG="$(trim "$INPUT_PKG")"
@@ -162,6 +168,11 @@ require_value() {
     fi
 }
 
+is_uuid() {
+    local value="$1"
+    [[ "$value" =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]
+}
+
 require_value "$IDENTITY" "Signing identity" "Set --identity or ORCHARD_PKG_SIGNING_IDENTITY."
 require_value "$INPUT_PKG" "Input PKG" "Set --input <unsigned.pkg>."
 require_value "$OUTPUT_PKG" "Output PKG" "Set --output <signed.pkg>."
@@ -175,8 +186,35 @@ case "$NOTARY_AUTH" in
     api-key)
         require_value "$NOTARY_API_KEY_PATH" "ORCHARD_NOTARY_API_KEY_PATH" "Set it to the App Store Connect API key .p8 path."
         require_value "$NOTARY_API_KEY_ID" "ORCHARD_NOTARY_API_KEY_ID" "Set it to the App Store Connect API key ID."
-        require_value "$NOTARY_API_ISSUER_ID" "ORCHARD_NOTARY_API_ISSUER_ID" "Set it to the App Store Connect issuer ID."
-        NOTARY_AUTH_ARGS=(--key "$NOTARY_API_KEY_PATH" --key-id "$NOTARY_API_KEY_ID" --issuer "$NOTARY_API_ISSUER_ID")
+        NOTARY_AUTH_ARGS=(--key "$NOTARY_API_KEY_PATH" --key-id "$NOTARY_API_KEY_ID")
+        case "$NOTARY_API_KEY_TYPE" in
+            individual)
+                ;;
+            team)
+                require_value "$NOTARY_API_ISSUER_ID" "ORCHARD_NOTARY_API_ISSUER_ID" "Set it to the App Store Connect issuer UUID for Team API Keys."
+                if is_uuid "$NOTARY_API_ISSUER_ID"; then
+                    NOTARY_AUTH_ARGS+=(--issuer "$NOTARY_API_ISSUER_ID")
+                else
+                    log_error "ORCHARD_NOTARY_API_ISSUER_ID must be a UUID for Team API Keys."
+                    exit 2
+                fi
+                ;;
+            auto)
+                if [[ -n "$NOTARY_API_ISSUER_ID" ]]; then
+                    if is_uuid "$NOTARY_API_ISSUER_ID"; then
+                        NOTARY_AUTH_ARGS+=(--issuer "$NOTARY_API_ISSUER_ID")
+                    else
+                        log_error "ORCHARD_NOTARY_API_ISSUER_ID must be a UUID for Team API Keys; set ORCHARD_NOTARY_API_KEY_TYPE=individual to omit --issuer for Individual API Keys."
+                        exit 2
+                    fi
+                fi
+                ;;
+            *)
+                log_error "Unsupported ORCHARD_NOTARY_API_KEY_TYPE: $NOTARY_API_KEY_TYPE"
+                log_error "Use 'auto', 'team', or 'individual'."
+                exit 2
+                ;;
+        esac
         ;;
     *)
         log_error "Unsupported ORCHARD_NOTARY_AUTH: $NOTARY_AUTH"
