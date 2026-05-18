@@ -278,7 +278,7 @@ defmodule OrchardCLI.EndpointMetadata do
     support_root = Path.dirname(dir)
 
     with :ok <- File.mkdir_p(dir),
-         :ok <- File.chmod(support_root, 0o755) do
+         :ok <- File.chmod(support_root, 0o711) do
       File.chmod(dir, 0o755)
     end
   end

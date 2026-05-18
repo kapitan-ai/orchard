@@ -80,7 +80,7 @@ defmodule OrchardCLI.EndpointMetadataTest do
       assert :ok = EndpointMetadata.write(metadata(), path: path)
 
       public_dir = Path.dirname(path)
-      assert Bitwise.band(File.stat!(root).mode, 0o777) == 0o755
+      assert Bitwise.band(File.stat!(root).mode, 0o777) == 0o711
       assert Bitwise.band(File.stat!(public_dir).mode, 0o777) == 0o755
       assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o644
     after

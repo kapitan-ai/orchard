@@ -76,7 +76,7 @@ defmodule OrchardCLITest do
     assert output =~ "orchardctl (M0 scaffold)"
 
     assert output =~
-             "status, start, stop, migrate, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
+             "status, start, stop, migrate, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
   end
 
   test "dispatches each placeholder command module" do
@@ -216,6 +216,12 @@ defmodule OrchardCLITest do
     output = capture_io(fn -> OrchardCLI.main(["license", "help"], &no_halt/1) end)
     assert output =~ "orchardctl license"
     assert output =~ "activate --key-stdin"
+  end
+
+  test "transport help dispatches through main without side effects" do
+    output = capture_io(fn -> OrchardCLI.main(["transport", "help"], &no_halt/1) end)
+    assert output =~ "orchardctl transport <command>"
+    assert output =~ "enable-local-https"
   end
 
   test "license with missing subcommand exits non-zero" do

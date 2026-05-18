@@ -6,6 +6,8 @@ defmodule OrchardCLI.Commands.Env do
     orchardctl env init [options]     — Generate env files for packaged services
   """
 
+  alias OrchardCLI.ShellEnv
+
   @default_support_root "/Library/Application Support/Orchard"
   @default_db_name "orchard_controller"
 
@@ -210,7 +212,7 @@ defmodule OrchardCLI.Commands.Env do
     controller_settings = build_controller_settings(runtime)
 
     content = render_env(:controller, support_root, controller_settings)
-    write_env_file(target_path, content)
+    ShellEnv.write_file(target_path, content)
 
     notes = controller_settings.notes ++ maybe_create_database(runtime, controller_settings)
 
@@ -219,7 +221,7 @@ defmodule OrchardCLI.Commands.Env do
 
   defp write_rendered_env(:node_agent, target_path, support_root, hostname, _runtime, status) do
     content = render_env(:node_agent, support_root, hostname)
-    write_env_file(target_path, content)
+    ShellEnv.write_file(target_path, content)
 
     %{status: status, notes: []}
   end
@@ -472,21 +474,7 @@ defmodule OrchardCLI.Commands.Env do
   # Env-file tests inspect quoting without promoting this helper to public CLI API.
   # credo:disable-for-lines:2 ExSlop.Check.Readability.DocFalseOnPublicFunction
   @doc false
-  def shell_quote(value) when is_binary(value) do
-    if String.contains?(value, ["\n", "\0"]) do
-      raise ArgumentError, "env value contains newline or NUL: #{inspect(value)}"
-    end
-
-    escaped =
-      value
-      |> String.replace("\\", "\\\\")
-      |> String.replace("\"", "\\\"")
-      |> String.replace("$", "\\$")
-      |> String.replace("`", "\\`")
-      |> String.replace("#", "\\#")
-
-    "\"#{escaped}\""
-  end
+  def shell_quote(value) when is_binary(value), do: ShellEnv.shell_quote(value)
 
   # ── File I/O ────────────────────────────────────────────────────────
 
@@ -494,21 +482,6 @@ defmodule OrchardCLI.Commands.Env do
     unless File.dir?(config_dir) do
       File.mkdir_p!(config_dir)
       File.chmod!(config_dir, 0o700)
-    end
-  end
-
-  defp write_env_file(target_path, content) do
-    dir = Path.dirname(target_path)
-    tmp_path = Path.join(dir, ".#{Path.basename(target_path)}.tmp")
-
-    try do
-      File.write!(tmp_path, content)
-      File.chmod!(tmp_path, 0o600)
-      File.rename!(tmp_path, target_path)
-    rescue
-      e ->
-        File.rm(tmp_path)
-        reraise e, __STACKTRACE__
     end
   end
 

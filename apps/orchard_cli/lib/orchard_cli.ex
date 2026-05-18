@@ -18,6 +18,7 @@ defmodule OrchardCLI do
     Support,
     Tenants,
     TLS,
+    Transport,
     Upgrade
   }
 
@@ -48,6 +49,7 @@ defmodule OrchardCLI do
   defp dispatch_command(["tenants" | rest]), do: Tenants.run(rest)
   defp dispatch_command(["api-keys" | rest]), do: ApiKeys.run(rest)
   defp dispatch_command(["tls" | rest]), do: TLS.run(rest)
+  defp dispatch_command(["transport" | rest]), do: Transport.run(rest)
   defp dispatch_command(["upgrade" | rest]), do: Upgrade.run(rest)
   defp dispatch_command(_args), do: print_usage()
 
@@ -68,7 +70,7 @@ defmodule OrchardCLI do
     IO.puts("orchardctl (M0 scaffold)")
 
     IO.puts(
-      "Available commands: status, start, stop, migrate, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, upgrade"
+      "Available commands: status, start, stop, migrate, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
     )
   end
 end
