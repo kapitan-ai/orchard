@@ -3,7 +3,7 @@ defmodule OrchardCLITest do
 
   import ExUnit.CaptureIO
 
-  alias OrchardCLI.Commands.{ApiKeys, Migrate, Models, Nodes, Tenants}
+  alias OrchardCLI.Commands.{ApiKeys, Console, Migrate, Models, Nodes, Tenants}
 
   # A no-op halt function for tests that just need to suppress halt
   defp no_halt(_code), do: :ok
@@ -76,7 +76,7 @@ defmodule OrchardCLITest do
     assert output =~ "orchardctl (M0 scaffold)"
 
     assert output =~
-             "status, start, stop, migrate, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
+             "status, start, stop, migrate, console, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
   end
 
   test "dispatches each placeholder command module" do
@@ -224,6 +224,12 @@ defmodule OrchardCLITest do
     assert output =~ "enable-local-https"
   end
 
+  test "console help dispatches through main without side effects" do
+    output = capture_io(fn -> OrchardCLI.main(["console", "help"], &no_halt/1) end)
+    assert output =~ "orchardctl console <command>"
+    assert output =~ "enable|disable|rotate"
+  end
+
   test "license with missing subcommand exits non-zero" do
     parent = self()
 
@@ -332,6 +338,11 @@ defmodule OrchardCLITest do
   test "Migrate.run/1 returns error tuple for extra args" do
     assert {:error, message, 1} = Migrate.run(["extra"])
     assert message =~ "orchardctl migrate"
+  end
+
+  test "Console.run/1 returns error tuple for missing subcommand" do
+    assert {:error, message, 1} = Console.run([])
+    assert message =~ "orchardctl console"
   end
 
   test "cli application supervisor is running" do

@@ -30,6 +30,21 @@ defmodule OrchardCLI.ShellEnv do
     |> raise_on_file_error(target_path)
   end
 
+  @spec write_assignments(String.t(), [assignment()]) :: :ok | {:error, String.t()}
+  def write_assignments(target_path, assignments)
+      when is_binary(target_path) and is_list(assignments) do
+    with {:ok, rendered} <- render_assignments(assignments),
+         content <- Enum.map_join(rendered, "\n", fn {_key, line} -> line end),
+         content <- ensure_trailing_newline(content),
+         :ok <- atomic_write(target_path, content, 0o600) do
+      :ok
+    else
+      {:error, %File.Error{} = error} -> {:error, Exception.message(error)}
+      {:error, reason} when is_atom(reason) -> {:error, :file.format_error(reason)}
+      {:error, message} when is_binary(message) -> {:error, message}
+    end
+  end
+
   @spec upsert(String.t(), [assignment()]) :: :ok | {:error, String.t()}
   def upsert(target_path, assignments) when is_binary(target_path) and is_list(assignments) do
     with {:ok, rendered} <- render_assignments(assignments),
@@ -155,17 +170,39 @@ defmodule OrchardCLI.ShellEnv do
   defp atomic_write(target_path, content, mode) do
     dir = Path.dirname(target_path)
 
-    tmp_path =
-      Path.join(dir, ".#{Path.basename(target_path)}.#{System.unique_integer([:positive])}.tmp")
-
     with :ok <- File.mkdir_p(dir),
-         :ok <- File.write(tmp_path, content),
-         :ok <- File.chmod(tmp_path, mode),
+         {:ok, tmp_path, file} <- open_unique_tmp(dir, Path.basename(target_path), 8) do
+      write_and_rename_tmp(tmp_path, file, target_path, content, mode)
+    end
+  end
+
+  defp open_unique_tmp(_dir, _basename, 0), do: {:error, :eexist}
+
+  defp open_unique_tmp(dir, basename, attempts_left) do
+    tmp_path = Path.join(dir, tmp_basename(basename))
+
+    case File.open(tmp_path, [:write, :exclusive]) do
+      {:ok, file} -> {:ok, tmp_path, file}
+      {:error, :eexist} -> open_unique_tmp(dir, basename, attempts_left - 1)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp tmp_basename(basename) do
+    random = :crypto.strong_rand_bytes(8) |> Base.url_encode64(padding: false)
+    ".#{basename}.#{System.os_time(:nanosecond)}.#{random}.tmp"
+  end
+
+  defp write_and_rename_tmp(tmp_path, file, target_path, content, mode) do
+    with :ok <- File.chmod(tmp_path, mode),
+         :ok <- IO.binwrite(file, content),
+         :ok <- File.close(file),
          :ok <- File.rename(tmp_path, target_path),
          :ok <- File.chmod(target_path, mode) do
       :ok
     else
       {:error, reason} = error ->
+        File.close(file)
         File.rm(tmp_path)
         if reason in [:enoent, :eacces], do: error, else: {:error, reason}
     end

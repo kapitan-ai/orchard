@@ -6,6 +6,7 @@ defmodule OrchardCLI do
   alias OrchardCLI.Commands.{
     ApiKeys,
     Cluster,
+    Console,
     Env,
     License,
     Migrate,
@@ -39,6 +40,7 @@ defmodule OrchardCLI do
   defp dispatch_command(["start" | rest]), do: Start.run(rest)
   defp dispatch_command(["stop" | rest]), do: Stop.run(rest)
   defp dispatch_command(["migrate" | rest]), do: Migrate.run(rest)
+  defp dispatch_command(["console" | rest]), do: Console.run(rest)
   defp dispatch_command(["cluster" | rest]), do: Cluster.run(rest)
   defp dispatch_command(["env" | rest]), do: Env.run(rest)
   defp dispatch_command(["license" | rest]), do: License.run(rest)
@@ -70,7 +72,7 @@ defmodule OrchardCLI do
     IO.puts("orchardctl (M0 scaffold)")
 
     IO.puts(
-      "Available commands: status, start, stop, migrate, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
+      "Available commands: status, start, stop, migrate, console, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
     )
   end
 end

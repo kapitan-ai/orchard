@@ -583,8 +583,8 @@ defmodule OrchardCLI.Commands.EnvTest do
     assert Env.shell_quote("a`b") == ~s("a\\`b")
   end
 
-  test "shell_quote escapes hash to prevent interpolation" do
-    assert Env.shell_quote("a#{"#"}b") == ~s("a\\#b")
+  test "shell_quote leaves hash literal so sourced values round-trip" do
+    assert Env.shell_quote("a#{"#"}b") == ~s("a#b")
   end
 
   test "shell_quote handles path with spaces" do
