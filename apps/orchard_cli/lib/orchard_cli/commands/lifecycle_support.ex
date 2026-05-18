@@ -2,6 +2,7 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
   @moduledoc false
 
   @type install_role :: :all | :controller | :node_agent
+  @type restart_target :: :controller | :node_agent
   @type install_role_error_reason ::
           :legacy_not_found | :invalid_marker | :marker_read_error | :invalid_runtime_role
   @type service :: %{
@@ -185,6 +186,17 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
     end
   end
 
+  @doc "Restarts one loaded launchd service without touching other Orchard services."
+  @spec restart_loaded(install_role(), restart_target(), map()) ::
+          {:restarted | :not_loaded, service()} | {:error, String.t(), 1}
+  def restart_loaded(role, target, runtime) do
+    with :ok <- require_restart_root(runtime),
+         {:ok, normalized_role} <- normalize_restart_role(role),
+         {:ok, svc} <- restart_target_service(normalized_role, target, runtime) do
+      restart_service_if_loaded(svc, runtime)
+    end
+  end
+
   defp read_marker_role(runtime) do
     reader = Map.get(runtime, :read_install_role, &default_read_install_role/0)
 
@@ -252,6 +264,89 @@ defmodule OrchardCLI.Commands.LifecycleSupport do
     |> Map.get(:services, @required_services)
     |> Enum.find(&(&1.id == service_id))
   end
+
+  defp require_restart_root(runtime) do
+    uid_fn = Map.get(runtime, :uid, &default_uid/0)
+
+    if uid_fn.() == 0 do
+      :ok
+    else
+      {:error,
+       "Error: root privileges required to restart loaded Orchard services.\n" <>
+         "Run the calling orchardctl command with sudo.", 1}
+    end
+  end
+
+  defp normalize_restart_role(role) do
+    case normalize_role(role) do
+      {:ok, normalized} -> {:ok, normalized}
+      :error -> {:error, invalid_runtime_role_error_message(role), 1}
+    end
+  end
+
+  defp restart_target_service(role, target, runtime) do
+    with {:ok, normalized_target} <- normalize_restart_target(target),
+         {:ok, svc} <- find_restart_service(normalized_target, runtime) do
+      if service_applicable_to_role?(svc, role) do
+        {:ok, svc}
+      else
+        {:error, unavailable_restart_target_message(role, svc), 1}
+      end
+    end
+  end
+
+  defp normalize_restart_target(:controller), do: {:ok, :controller}
+  defp normalize_restart_target(:node_agent), do: {:ok, :node_agent}
+  defp normalize_restart_target(_target), do: {:error, invalid_restart_target_message(), 1}
+
+  defp find_restart_service(target, runtime) do
+    case required_service(target, runtime) do
+      nil -> {:error, invalid_restart_target_message(), 1}
+      svc -> {:ok, svc}
+    end
+  end
+
+  defp restart_service_if_loaded(svc, runtime) do
+    if service_loaded?(svc, runtime) do
+      kickstart_service(svc, runtime)
+    else
+      {:not_loaded, svc}
+    end
+  end
+
+  defp kickstart_service(svc, runtime) do
+    case run_launchctl(runtime, ["kickstart", "-k", "system/#{svc.label}"]) do
+      {_output, 0} ->
+        {:restarted, svc}
+
+      {output, code} ->
+        if service_loaded?(svc, runtime) do
+          {:error,
+           lifecycle_error_message(
+             "restart",
+             svc,
+             output,
+             code,
+             "Check: /Library/Application Support/Orchard/logs/"
+           ), 1}
+        else
+          {:not_loaded, svc}
+        end
+    end
+  end
+
+  defp invalid_restart_target_message do
+    "Error: invalid restart target.\n" <>
+      "Expected one of: controller, node-agent."
+  end
+
+  defp unavailable_restart_target_message(role, svc) do
+    "Error: #{display_service_id(svc.id)} service is not available for role #{display_role(role)}."
+  end
+
+  defp display_service_id(:node_agent), do: "node-agent"
+  defp display_service_id(:controller), do: "controller"
+  defp display_service_id(other), do: to_string(other)
 
   defp install_role_error_message do
     "Error: Orchard packaged install not found.\n" <>
