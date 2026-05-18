@@ -430,6 +430,110 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
+  test "postinstall normalizes root-owned console.env mode without printing credentials" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      console_env = Path.join([ctx.root, "config", "console.env"])
+
+      File.write!(request_path, "controller\n")
+
+      File.write!(
+        console_env,
+        "ORCHARD_CONSOLE_ENABLED=true\nORCHARD_CONSOLE_USERNAME=operator\nORCHARD_CONSOLE_PASSWORD=super-secret-console-password\n"
+      )
+
+      File.chmod!(console_env, 0o400)
+
+      assert {output, 0} =
+               run_script(script, ctx, [
+                 {"CONSOLE_ENV_STAT_UID", "0"},
+                 {"CONSOLE_ENV_STAT_MODE", "400"}
+               ])
+
+      assert Bitwise.band(File.stat!(console_env).mode, 0o777) == 0o600
+      refute output =~ "operator"
+      refute output =~ "super-secret-console-password"
+    end)
+  end
+
+  test "postinstall leaves root-owned insecure console.env untouched with non-secret warning" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      console_env = Path.join([ctx.root, "config", "console.env"])
+
+      File.write!(request_path, "controller\n")
+
+      File.write!(
+        console_env,
+        "ORCHARD_CONSOLE_ENABLED=true\nORCHARD_CONSOLE_USERNAME=operator\nORCHARD_CONSOLE_PASSWORD=super-secret-console-password\n"
+      )
+
+      File.chmod!(console_env, 0o644)
+
+      assert {output, 0} =
+               run_script(script, ctx, [
+                 {"CONSOLE_ENV_STAT_UID", "0"},
+                 {"CONSOLE_ENV_STAT_MODE", "644"}
+               ])
+
+      assert output =~ "WARNING: leaving untrusted console env file unchanged"
+      assert output =~ "must not have group/world permission bits"
+      assert Bitwise.band(File.stat!(console_env).mode, 0o777) == 0o644
+      refute output =~ "operator"
+      refute output =~ "super-secret-console-password"
+    end)
+  end
+
+  test "postinstall leaves console.env untouched when stat inspection fails" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      console_env = Path.join([ctx.root, "config", "console.env"])
+
+      File.write!(request_path, "controller\n")
+
+      File.write!(
+        console_env,
+        "ORCHARD_CONSOLE_ENABLED=true\nORCHARD_CONSOLE_USERNAME=operator\nORCHARD_CONSOLE_PASSWORD=super-secret-console-password\n"
+      )
+
+      File.chmod!(console_env, 0o640)
+
+      assert {output, 0} =
+               run_script(script, ctx, [
+                 {"CONSOLE_ENV_STAT_FAIL", "true"}
+               ])
+
+      assert output =~ "could not inspect"
+      assert Bitwise.band(File.stat!(console_env).mode, 0o777) == 0o640
+      refute output =~ "operator"
+      refute output =~ "super-secret-console-password"
+    end)
+  end
+
+  test "postinstall leaves non-root-owned console.env untouched with non-secret warning" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      console_env = Path.join([ctx.root, "config", "console.env"])
+
+      File.write!(request_path, "controller\n")
+
+      File.write!(
+        console_env,
+        "ORCHARD_CONSOLE_ENABLED=true\nORCHARD_CONSOLE_USERNAME=operator\nORCHARD_CONSOLE_PASSWORD=super-secret-console-password\n"
+      )
+
+      File.chmod!(console_env, 0o640)
+
+      assert {output, 0} =
+               run_script(script, ctx, [
+                 {"CONSOLE_ENV_STAT_UID", "501"},
+                 {"CONSOLE_ENV_STAT_MODE", "600"}
+               ])
+
+      assert output =~ "WARNING: leaving untrusted console env file unchanged"
+      assert output =~ "must be root-owned"
+      assert Bitwise.band(File.stat!(console_env).mode, 0o777) == 0o640
+      refute output =~ "operator"
+      refute output =~ "super-secret-console-password"
+    end)
+  end
+
   test "postinstall node-agent role skips partial controller TLS state" do
     with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
       stale_controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
@@ -505,6 +609,140 @@ defmodule OrchardCLI.PackagingScriptTest do
         assert File.read!(marker_path) == role <> "\n"
       end)
     end
+  end
+
+  test "controller wrapper sources valid console.env after controller.env without printing credentials" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        "ORCHARD_CONSOLE_ENABLED=false\n"
+      )
+
+      File.write!(
+        Path.join([ctx.root, "config", "console.env"]),
+        "ORCHARD_CONSOLE_ENABLED=true\nORCHARD_CONSOLE_USERNAME=operator\nORCHARD_CONSOLE_PASSWORD=super-secret-console-password\n"
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"CONSOLE_ENV_STAT_UID", "0"},
+                 {"CONSOLE_ENV_STAT_MODE", "600"}
+               ])
+
+      assert output =~
+               "orchard-controller: sourced #{Path.join([ctx.root, "config", "controller.env"])}"
+
+      assert output =~
+               "orchard-controller: sourced #{Path.join([ctx.root, "config", "console.env"])}"
+
+      assert output =~ "fake console enabled=true"
+      refute output =~ "operator"
+      refute output =~ "super-secret-console-password"
+    end)
+  end
+
+  test "controller wrapper tolerates missing console.env" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        "ORCHARD_CONSOLE_ENABLED=false\n"
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"}
+               ])
+
+      assert output =~ "fake orchard_controller start"
+      assert output =~ "fake console enabled=false"
+      refute output =~ "console.env missing"
+    end)
+  end
+
+  test "controller wrapper warns and skips non-root-owned console.env without printing credentials" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        "ORCHARD_CONSOLE_ENABLED=false\n"
+      )
+
+      File.write!(
+        Path.join([ctx.root, "config", "console.env"]),
+        "ORCHARD_CONSOLE_ENABLED=true\nORCHARD_CONSOLE_USERNAME=operator\nORCHARD_CONSOLE_PASSWORD=super-secret-console-password\n"
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"CONSOLE_ENV_STAT_UID", "501"},
+                 {"CONSOLE_ENV_STAT_MODE", "600"}
+               ])
+
+      assert output =~ "expected 0"
+      assert output =~ "fake console enabled=false"
+      refute output =~ "operator"
+      refute output =~ "super-secret-console-password"
+    end)
+  end
+
+  test "controller wrapper warns and skips console.env when stat inspection fails" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        "ORCHARD_CONSOLE_ENABLED=false\n"
+      )
+
+      File.write!(
+        Path.join([ctx.root, "config", "console.env"]),
+        "ORCHARD_CONSOLE_ENABLED=true\nORCHARD_CONSOLE_USERNAME=operator\nORCHARD_CONSOLE_PASSWORD=super-secret-console-password\n"
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"CONSOLE_ENV_STAT_FAIL", "true"}
+               ])
+
+      assert output =~ "could not inspect env file"
+      assert output =~ "fake console enabled=false"
+      refute output =~ "operator"
+      refute output =~ "super-secret-console-password"
+    end)
+  end
+
+  test "controller wrapper warns and skips insecure console.env without printing credentials" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        "ORCHARD_CONSOLE_ENABLED=false\n"
+      )
+
+      File.write!(
+        Path.join([ctx.root, "config", "console.env"]),
+        "ORCHARD_CONSOLE_ENABLED=true\nORCHARD_CONSOLE_USERNAME=operator\nORCHARD_CONSOLE_PASSWORD=super-secret-console-password\n"
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"CONSOLE_ENV_STAT_UID", "0"},
+                 {"CONSOLE_ENV_STAT_MODE", "644"}
+               ])
+
+      assert output =~
+               "WARNING: ignoring env file #{Path.join([ctx.root, "config", "console.env"])}"
+
+      assert output =~ "group/world bits set"
+      assert output =~ "fake console enabled=false"
+      refute output =~ "operator"
+      refute output =~ "super-secret-console-password"
+    end)
   end
 
   test "controller wrapper rejects invalid ORCHARD_TRANSPORT_MODE with EX_CONFIG" do
@@ -895,13 +1133,15 @@ defmodule OrchardCLI.PackagingScriptTest do
 
     root = Path.join(tmp_dir, "Application Support/Orchard")
     script = Path.join(tmp_dir, "orchard-controller")
+    fake_bin = Path.join(tmp_dir, "fake-bin")
     release_bin = Path.join([root, "releases", "orchard_controller", "bin"])
 
-    ctx = %{root: root, script: script}
+    ctx = %{fake_bin: fake_bin, root: root, script: script}
 
     try do
       File.mkdir_p!(Path.join(root, "config"))
       File.mkdir_p!(Path.join(root, "config/tls"))
+      File.mkdir_p!(fake_bin)
       File.mkdir_p!(release_bin)
 
       release = Path.join(release_bin, "orchard_controller")
@@ -909,10 +1149,12 @@ defmodule OrchardCLI.PackagingScriptTest do
       File.write!(release, """
       #!/bin/sh
       printf 'fake orchard_controller %s\\n' "$*"
+      printf 'fake console enabled=%s\\n' "${ORCHARD_CONSOLE_ENABLED:-}"
       exit 0
       """)
 
       File.chmod!(release, 0o755)
+      write_fake_controller_stat!(ctx)
       write_test_controller_wrapper!(ctx)
       fun.(ctx)
     after
@@ -933,8 +1175,34 @@ defmodule OrchardCLI.PackagingScriptTest do
     File.chmod!(ctx.script, 0o755)
   end
 
-  defp run_controller_wrapper(script, _ctx, extra_env) do
-    System.cmd("sh", [script, "start"], env: extra_env, stderr_to_stdout: true)
+  defp write_fake_controller_stat!(ctx) do
+    controller_env = Path.join([ctx.root, "config", "controller.env"])
+    console_env = Path.join([ctx.root, "config", "console.env"])
+
+    File.write!(Path.join(ctx.fake_bin, "stat"), """
+    #!/bin/sh
+    if [ "$1" = "-f" ] && [ "$2" = "%u:%Lp" ] && [ "$3" = "#{controller_env}" ]; then
+      printf '%s:%s\n' "${CONTROLLER_ENV_STAT_UID:-0}" "${CONTROLLER_ENV_STAT_MODE:-600}"
+      exit 0
+    fi
+
+    if [ "$1" = "-f" ] && [ "$2" = "%u:%Lp" ] && [ "$3" = "#{console_env}" ]; then
+      if [ "${CONSOLE_ENV_STAT_FAIL:-false}" = "true" ]; then
+        exit 1
+      fi
+      printf '%s:%s\n' "${CONSOLE_ENV_STAT_UID:-0}" "${CONSOLE_ENV_STAT_MODE:-600}"
+      exit 0
+    fi
+
+    /usr/bin/stat "$@"
+    """)
+
+    File.chmod!(Path.join(ctx.fake_bin, "stat"), 0o755)
+  end
+
+  defp run_controller_wrapper(script, ctx, extra_env) do
+    env = [{"PATH", ctx.fake_bin <> ":" <> System.get_env("PATH", "")}] ++ extra_env
+    System.cmd("sh", [script, "start"], env: env, stderr_to_stdout: true)
   end
 
   defp run_controller_wrapper_shell(script, command) do
@@ -1050,6 +1318,18 @@ defmodule OrchardCLI.PackagingScriptTest do
     if [ "$1" = "-f" ] && [ "$2" = "%u:%Lp" ] && [ "$3" = "$REQUEST_STAT_PATH" ]; then
       printf '%s:%s\n' "${REQUEST_STAT_UID:-0}" "${REQUEST_STAT_MODE:-600}"
       exit 0
+    fi
+
+    if [ "$1" = "-f" ] && [ "$2" = "%u:%Lp" ]; then
+      case "$3" in
+        */config/console.env)
+          if [ "${CONSOLE_ENV_STAT_FAIL:-false}" = "true" ]; then
+            exit 1
+          fi
+          printf '%s:%s\n' "${CONSOLE_ENV_STAT_UID:-0}" "${CONSOLE_ENV_STAT_MODE:-600}"
+          exit 0
+          ;;
+      esac
     fi
 
     /usr/bin/stat "$@"

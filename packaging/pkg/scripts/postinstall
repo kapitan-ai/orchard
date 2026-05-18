@@ -70,6 +70,35 @@ secure_source_env() {
   set +a
 }
 
+normalize_console_env_if_trusted() {
+  _console_env="$ORCHARD_ROOT/config/console.env"
+  if [ ! -f "$_console_env" ]; then
+    return 0
+  fi
+
+  _meta=$(stat -f '%u:%Lp' "$_console_env" 2>/dev/null) || _meta=""
+  _uid=${_meta%%:*}
+  _mode=${_meta#*:}
+  if [ -z "$_meta" ]; then
+    printf 'postinstall: WARNING: leaving untrusted console env file unchanged; could not inspect %s\n' "$_console_env" >&2
+    printf 'postinstall: Move it aside and recreate with sudo orchardctl console enable.\n' >&2
+    return 0
+  fi
+  if [ "$_uid" != "0" ]; then
+    printf 'postinstall: WARNING: leaving untrusted console env file unchanged; %s must be root-owned before postinstall will trust or normalize it (owner uid=%s)\n' "$_console_env" "$_uid" >&2
+    printf 'postinstall: Move it aside and recreate with sudo orchardctl console enable.\n' >&2
+    return 0
+  fi
+  if [ "${_mode#?}" != "00" ]; then
+    printf 'postinstall: WARNING: leaving untrusted console env file unchanged; %s must not have group/world permission bits before postinstall will trust or normalize it (mode=%s)\n' "$_console_env" "$_mode" >&2
+    printf 'postinstall: Move it aside and recreate with sudo orchardctl console enable.\n' >&2
+    return 0
+  fi
+
+  chown root:wheel "$_console_env" 2>/dev/null || true
+  chmod 0600 "$_console_env"
+}
+
 # resolve_tls_mode — prints one of:
 #   disabled  managed_default  external_override  invalid_override  invalid_boolean
 #   invalid_transport  transport_reverse_proxy  transport_plain_http_localhost
@@ -620,6 +649,7 @@ for env_file in "$ORCHARD_ROOT/config/controller.env" "$ORCHARD_ROOT/config/node
     chmod 0600 "$env_file"
   fi
 done
+normalize_console_env_if_trusted
 
 # ===========================================================================
 # 8. Resolve controller TLS mode and act for controller-bearing roles
