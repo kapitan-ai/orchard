@@ -13,8 +13,10 @@
 #
 # Signing and notarization are intentionally separate. Set
 # ORCHARD_PAYLOAD_SIGNING_IDENTITY before this build to sign nested Mach-O
-# payloads, then use scripts/sign-pkg.sh with an explicit Developer ID Installer
-# identity and notarytool profile.
+# payloads. Optionally set ORCHARD_BUILD_KEYCHAIN and ORCHARD_KEYCHAIN_PASSWORD
+# to prepare a dedicated build keychain for unattended payload signing. Then use
+# scripts/sign-pkg.sh with an explicit Developer ID Installer identity and
+# notarytool profile.
 #
 # Examples:
 #   ./scripts/build-pkg.sh                                    # Standard build
@@ -25,6 +27,32 @@
 #
 
 set -euo pipefail
+
+PAYLOAD_BUILD_KEYCHAIN=""
+PAYLOAD_BUILD_KEYCHAIN_CONFIGURED=false
+PAYLOAD_KEYCHAIN_PASSWORD=""
+PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED=false
+_payload_keychain_restore_xtrace=0
+case "$-" in
+    *x*)
+        _payload_keychain_restore_xtrace=1
+        set +x
+        ;;
+esac
+if [[ -n "${ORCHARD_BUILD_KEYCHAIN:-}" ]]; then
+    PAYLOAD_BUILD_KEYCHAIN="$ORCHARD_BUILD_KEYCHAIN"
+    PAYLOAD_BUILD_KEYCHAIN_CONFIGURED=true
+    if [[ -n "${ORCHARD_KEYCHAIN_PASSWORD:-}" ]]; then
+        PAYLOAD_KEYCHAIN_PASSWORD="$ORCHARD_KEYCHAIN_PASSWORD"
+        PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED=true
+    fi
+fi
+unset ORCHARD_KEYCHAIN_PASSWORD
+unset ORCHARD_BUILD_KEYCHAIN
+if [[ "$_payload_keychain_restore_xtrace" -eq 1 ]]; then
+    set -x
+fi
+unset _payload_keychain_restore_xtrace
 
 # Logging utilities (must be defined before use in argument parsing)
 RED='\033[0;31m'
@@ -122,6 +150,82 @@ cleanup_pkg_outputs() {
     local tmp_manifest_path="$(dirname "$pkg_path")/.${pkg_path##*/}.signing-manifest.tmp"
 
     rm -f "$pkg_path" "${pkg_path}.sha256" "$manifest_path" "$tmp_manifest_path"
+}
+
+discard_payload_keychain_env() {
+    local restore_xtrace=0
+    case "$-" in
+        *x*)
+            restore_xtrace=1
+            set +x
+            ;;
+    esac
+
+    unset ORCHARD_KEYCHAIN_PASSWORD
+    unset ORCHARD_BUILD_KEYCHAIN
+
+    if [[ "$restore_xtrace" -eq 1 ]]; then
+        set -x
+    fi
+}
+
+run_payload_signer() {
+    local restore_xtrace=0
+    local status=0
+    case "$-" in
+        *x*)
+            restore_xtrace=1
+            set +x
+            ;;
+    esac
+
+    set +e
+    (
+        export ORCHARD_PAYLOAD_SIGNING_IDENTITY="$PAYLOAD_SIGNING_IDENTITY"
+        if [[ "$PAYLOAD_BUILD_KEYCHAIN_CONFIGURED" == "true" ]]; then
+            export ORCHARD_BUILD_KEYCHAIN="$PAYLOAD_BUILD_KEYCHAIN"
+            if [[ "$PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED" == "true" ]]; then
+                export ORCHARD_KEYCHAIN_PASSWORD="$PAYLOAD_KEYCHAIN_PASSWORD"
+            fi
+        fi
+        "$REPO_ROOT/scripts/sign-payload.sh" "$@"
+    )
+    status=$?
+    set -e
+
+    if [[ "$restore_xtrace" -eq 1 ]]; then
+        set -x
+    fi
+    return "$status"
+}
+
+run_payload_verifier() {
+    local restore_xtrace=0
+    local status=0
+    case "$-" in
+        *x*)
+            restore_xtrace=1
+            set +x
+            ;;
+    esac
+
+    set +e
+    (
+        if [[ "$PAYLOAD_BUILD_KEYCHAIN_CONFIGURED" == "true" ]]; then
+            export ORCHARD_BUILD_KEYCHAIN="$PAYLOAD_BUILD_KEYCHAIN"
+            if [[ "$PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED" == "true" ]]; then
+                export ORCHARD_KEYCHAIN_PASSWORD="$PAYLOAD_KEYCHAIN_PASSWORD"
+            fi
+        fi
+        "$REPO_ROOT/scripts/verify-payload-signing.sh" "$@"
+    )
+    status=$?
+    set -e
+
+    if [[ "$restore_xtrace" -eq 1 ]]; then
+        set -x
+    fi
+    return "$status"
 }
 
 find_metadata_sidecars() {
@@ -316,6 +420,17 @@ validate_packaging_source_provenance() {
     assert_no_source_sidecars "launchd plists" "$REPO_ROOT/packaging/launchd" || return 1
     assert_no_source_sidecars "package scripts" "$REPO_ROOT/packaging/pkg/scripts" || return 1
     assert_no_source_sidecars "payload entitlements" "$REPO_ROOT/packaging/pkg/entitlements" || return 1
+}
+
+require_packaging_runtime_tools() {
+    if ! command -v perl >/dev/null 2>&1; then
+        log_error "perl is required for PKG payload metadata repair and validation"
+        return 69
+    fi
+    if ! perl -e 'exit 0' >/dev/null 2>&1; then
+        log_error "perl failed a basic execution check"
+        return 69
+    fi
 }
 
 copy_file_without_metadata() {
@@ -1375,6 +1490,9 @@ fi
 log_info "Validating packaging source provenance..."
 validate_packaging_source_provenance
 
+log_info "Checking packaging runtime tools..."
+require_packaging_runtime_tools
+
 log_info "Running scratch pkgbuild provenance preflight..."
 run_pkgbuild_scratch_preflight
 
@@ -1547,14 +1665,13 @@ SIGNING_MANIFEST_TMP=""
 PAYLOAD_SIGNING_IDENTITY="$(printf '%s' "${ORCHARD_PAYLOAD_SIGNING_IDENTITY:-}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 if [[ -n "$PAYLOAD_SIGNING_IDENTITY" ]]; then
     log_info "Signing nested Mach-O payload binaries..."
+    discard_payload_keychain_env
     if [[ "$STAGE_ONLY" != "true" ]]; then
         SIGNING_MANIFEST_TMP="$OUTPUT_DIR/.${PKG_NAME}.signing-manifest.tmp"
         rm -f "$SIGNING_MANIFEST_TMP"
-        ORCHARD_PAYLOAD_SIGNING_IDENTITY="$PAYLOAD_SIGNING_IDENTITY" \
-            "$REPO_ROOT/scripts/sign-payload.sh" --manifest-output "$SIGNING_MANIFEST_TMP" "$STAGING_BASE"
+        run_payload_signer --manifest-output "$SIGNING_MANIFEST_TMP" "$STAGING_BASE"
     else
-        ORCHARD_PAYLOAD_SIGNING_IDENTITY="$PAYLOAD_SIGNING_IDENTITY" \
-            "$REPO_ROOT/scripts/sign-payload.sh" "$STAGING_BASE"
+        run_payload_signer "$STAGING_BASE"
     fi
 else
     log_warn "ORCHARD_PAYLOAD_SIGNING_IDENTITY not set — payload Mach-O binaries will be unsigned. The resulting PKG cannot be notarized."
@@ -1571,10 +1688,12 @@ fi
 
 if [[ -n "$PAYLOAD_SIGNING_IDENTITY" ]]; then
     log_info "Verifying payload signatures after metadata scrub..."
-    if ! "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$PAYLOAD_SIGNING_IDENTITY" "$STAGING_BASE"; then
+    if ! run_payload_verifier --identity "$PAYLOAD_SIGNING_IDENTITY" "$STAGING_BASE"; then
         log_error "Payload signature verification failed after metadata scrub"
         exit 1
     fi
+    PAYLOAD_KEYCHAIN_PASSWORD=""
+    PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED=false
 fi
 
 if [[ "$STAGE_ONLY" == "true" ]]; then

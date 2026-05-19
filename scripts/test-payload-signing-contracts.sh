@@ -15,6 +15,8 @@ IDENTITY='Developer ID Application: Example, Inc. (TEAMID)'
 WRONG_IDENTITY='Developer ID Application: Wrong, Inc. (TEAMID)'
 INSTALLER_IDENTITY='Developer ID Installer: Example, Inc. (TEAMID)'
 
+unset ORCHARD_BUILD_KEYCHAIN ORCHARD_KEYCHAIN_PASSWORD ORCHARD_BUILD_KEYCHAIN_PREPARED ORCHARD_BUILD_KEYCHAIN_DRY_RUN
+
 assert_grep() {
     local pattern="$1"
     local file="$2"
@@ -44,6 +46,15 @@ assert_no_exact_line() {
     fi
 }
 
+assert_file_empty() {
+    local file="$1"
+    if [[ -s "$file" ]]; then
+        echo "expected empty file: $file" >&2
+        cat "$file" >&2
+        exit 1
+    fi
+}
+
 assert_fails_with() {
     local pattern="$1"
     local out="$2"
@@ -62,6 +73,9 @@ make_fake_tools() {
 
     cat > "$tools/file" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'file\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 case "$*" in
   *pyvenv.cfg*|*.txt) echo text/plain ;;
   *universal-native.so)
@@ -75,6 +89,9 @@ SH
 
     cat > "$tools/xcrun" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'xcrun\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 if [ "$1" = "-f" ] && [ "$2" = "codesign" ]; then
   command -v codesign
   exit 0
@@ -83,8 +100,26 @@ echo "unexpected xcrun invocation: $*" >&2
 exit 1
 SH
 
+    cat > "$tools/security" <<'SH'
+#!/bin/sh
+if [ -n "${SECURITY_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$SECURITY_LOG"
+fi
+if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+  printf 'security %s\n' "${1:-}" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+fi
+case "${1:-}" in
+  unlock-keychain) exit "${SECURITY_UNLOCK_EXIT:-0}" ;;
+  set-key-partition-list) exit "${SECURITY_PARTITION_EXIT:-0}" ;;
+  *) echo "unexpected security invocation: $*" >&2; exit 99 ;;
+esac
+SH
+
     cat > "$tools/otool" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'otool\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 if [ -n "${OTOOL_LOG:-}" ]; then
   printf '%s\n' "$*" >> "$OTOOL_LOG"
 fi
@@ -250,6 +285,17 @@ for arg in "$@"; do
 done
 
 if [ "${1:-}" = "--verify" ]; then
+  if [ -n "${CODESIGN_LOG:-}" ]; then
+    printf 'argv\t%s\n' "$*" >> "$CODESIGN_LOG"
+  fi
+  if [ "${CODESIGN_VERIFY_FAIL:-}" = "1" ]; then
+    if [ "${CODESIGN_ECHO_ARGS_ON_FAIL:-}" = "1" ]; then
+      echo "codesign verify failed with args: $*" >&2
+    else
+      echo "codesign verify fail" >&2
+    fi
+    exit 92
+  fi
   case "$last" in
     *unsigned*) echo "code object is not signed at all" >&2; exit 1 ;;
     *) exit 0 ;;
@@ -257,6 +303,17 @@ if [ "${1:-}" = "--verify" ]; then
 fi
 
 if [ "${1:-}" = "--display" ]; then
+  if [ -n "${CODESIGN_LOG:-}" ]; then
+    printf 'argv\t%s\n' "$*" >> "$CODESIGN_LOG"
+  fi
+  if [ "${CODESIGN_DISPLAY_FAIL:-}" = "1" ]; then
+    if [ "${CODESIGN_ECHO_ARGS_ON_FAIL:-}" = "1" ]; then
+      echo "codesign display failed with args: $*" >&2
+    else
+      echo "codesign display fail" >&2
+    fi
+    exit 93
+  fi
   for arg in "$@"; do
     if [ "$arg" = "--entitlements" ]; then
       if [ "${CODESIGN_FORBIDDEN_ENTITLEMENT:-}" = "1" ]; then
@@ -319,6 +376,7 @@ entitlements=""
 identity=""
 timestamp=no
 runtime=no
+original_args="$*"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --entitlements) entitlements="$2"; shift 2 ;;
@@ -331,11 +389,34 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
+if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+  printf 'codesign sign %s\n' "$last" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+fi
+if [ "${CODESIGN_FAIL:-}" = "1" ]; then
+  if [ "${CODESIGN_ECHO_ARGS_ON_FAIL:-}" = "1" ]; then
+    echo "codesign sign failed with args: $original_args" >&2
+  else
+    echo "codesign fail" >&2
+  fi
+  exit 91
+fi
 printf '%s\t%s\t%s\t%s\n' "$last" "$entitlements" "$identity" "$timestamp/$runtime" >> "${CODESIGN_LOG:?}"
+printf 'argv\t%s\n' "$original_args" >> "${CODESIGN_LOG:?}"
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'codesign\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 exit 0
 SH
 
-    chmod +x "$tools/file" "$tools/xcrun" "$tools/otool" "$tools/codesign"
+    cat > "$tools/shasum" <<'SH'
+#!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'shasum\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
+exec /usr/bin/shasum "$@"
+SH
+
+    chmod +x "$tools/file" "$tools/xcrun" "$tools/security" "$tools/otool" "$tools/codesign" "$tools/shasum"
 }
 
 make_root() {
@@ -368,6 +449,9 @@ write_build_pkg_fakes() {
 
     cat > "$tools/git" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'git\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 case "$1" in
   rev-parse) echo abcdef0 ;;
   diff-index) exit 0 ;;
@@ -378,6 +462,9 @@ SH
     cat > "$tools/uv" <<'SH'
 #!/bin/sh
 set -eu
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'uv\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
   printf 'uv %s\n' "$*" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
 fi
@@ -556,6 +643,9 @@ SH
     cat > "$tools/mix" <<'SH'
 #!/bin/sh
 set -eu
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'mix\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
   printf 'mix %s\n' "$*" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
 fi
@@ -587,6 +677,9 @@ SH
 
     cat > "$tools/file" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'file\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 case "$*" in
   *pyvenv.cfg*) echo text/plain ;;
   *) echo application/x-mach-binary ;;
@@ -595,6 +688,9 @@ SH
 
     cat > "$tools/otool" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'otool\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 if [ -n "${OTOOL_LOG:-}" ]; then
   printf '%s\n' "$*" >> "$OTOOL_LOG"
 fi
@@ -623,12 +719,30 @@ SH
 
     cat > "$tools/xcrun" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'xcrun\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 if [ "$1" = "-f" ] && [ "$2" = "codesign" ]; then
   command -v codesign
   exit 0
 fi
 echo "unexpected xcrun invocation: $*" >&2
 exit 1
+SH
+
+    cat > "$tools/security" <<'SH'
+#!/bin/sh
+if [ -n "${SECURITY_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$SECURITY_LOG"
+fi
+if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
+  printf 'security %s\n' "${1:-}" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+fi
+case "${1:-}" in
+  unlock-keychain) exit "${SECURITY_UNLOCK_EXIT:-0}" ;;
+  set-key-partition-list) exit "${SECURITY_PARTITION_EXIT:-0}" ;;
+  *) echo "unexpected security invocation: $*" >&2; exit 99 ;;
+esac
 SH
 
     cat > "$tools/codesign" <<'SH'
@@ -641,18 +755,36 @@ done
 
 case "${1:-}" in
   --verify)
+    if [ -n "${CODESIGN_LOG:-}" ]; then
+      printf 'argv\t%s\n' "$*" >> "$CODESIGN_LOG"
+    fi
     if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
       printf 'codesign verify %s\n' "$last" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
     fi
     if [ "${CODESIGN_VERIFY_FAIL:-}" = "1" ]; then
-      echo "codesign verify fail" >&2
+      if [ "${CODESIGN_ECHO_ARGS_ON_FAIL:-}" = "1" ]; then
+        echo "codesign verify failed with args: $*" >&2
+      else
+        echo "codesign verify fail" >&2
+      fi
       exit 92
     fi
     exit 0
     ;;
   --display)
+    if [ -n "${CODESIGN_LOG:-}" ]; then
+      printf 'argv\t%s\n' "$*" >> "$CODESIGN_LOG"
+    fi
     if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
       printf 'codesign display %s\n' "$last" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
+    fi
+    if [ "${CODESIGN_DISPLAY_FAIL:-}" = "1" ]; then
+      if [ "${CODESIGN_ECHO_ARGS_ON_FAIL:-}" = "1" ]; then
+        echo "codesign display failed with args: $*" >&2
+      else
+        echo "codesign display fail" >&2
+      fi
+      exit 93
     fi
     for arg in "$@"; do
       if [ "$arg" = "--entitlements" ]; then
@@ -670,14 +802,11 @@ case "${1:-}" in
     ;;
 esac
 
-if [ "${CODESIGN_FAIL:-}" = "1" ]; then
-  echo "codesign fail" >&2
-  exit 91
-fi
 entitlements=""
 identity=""
 timestamp=no
 runtime=no
+original_args="$*"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --entitlements) entitlements="$2"; shift 2 ;;
@@ -693,7 +822,19 @@ done
 if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
   printf 'codesign sign %s\n' "$last" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
 fi
+if [ "${CODESIGN_FAIL:-}" = "1" ]; then
+  if [ "${CODESIGN_ECHO_ARGS_ON_FAIL:-}" = "1" ]; then
+    echo "codesign sign failed with args: $original_args" >&2
+  else
+    echo "codesign fail" >&2
+  fi
+  exit 91
+fi
 printf '%s\t%s\t%s\t%s\n' "$last" "$entitlements" "$identity" "$timestamp/$runtime" >> "${CODESIGN_LOG:?}"
+printf 'argv\t%s\n' "$original_args" >> "${CODESIGN_LOG:?}"
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'codesign\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 SH
 
     cat > "$tools/chmod" <<'SH'
@@ -858,6 +999,9 @@ SH
 
     cat > "$tools/pkgbuild" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'pkgbuild\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 identifier=""
 last=""
 while [ "$#" -gt 0 ]; do
@@ -898,6 +1042,9 @@ SH
     cat > "$tools/pkgutil" <<'SH'
 #!/bin/sh
 set -eu
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'pkgutil\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 
 emit_clean_payload_files() {
   cat <<'OUT'
@@ -1191,6 +1338,9 @@ SH
     cat > "$tools/gzip" <<'SH'
 #!/bin/sh
 set -eu
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'gzip\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 if [ -n "${ORCHARD_FAKE_TOOL_ORDER_LOG:-}" ]; then
   printf 'gzip %s\n' "$*" >> "$ORCHARD_FAKE_TOOL_ORDER_LOG"
 fi
@@ -1267,7 +1417,15 @@ else
 fi
 SH
 
-    chmod +x "$tools/git" "$tools/uv" "$tools/find" "$tools/cp" "$tools/mix" "$tools/file" "$tools/otool" "$tools/xcrun" "$tools/codesign" "$tools/chmod" "$tools/xattr" "$tools/pkgbuild" "$tools/pkgutil" "$tools/lsbom" "$tools/mkbom" "$tools/cpio" "$tools/tar" "$tools/gzip"
+    cat > "$tools/shasum" <<'SH'
+#!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'shasum\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
+exec /usr/bin/shasum "$@"
+SH
+
+    chmod +x "$tools/git" "$tools/uv" "$tools/find" "$tools/cp" "$tools/mix" "$tools/file" "$tools/otool" "$tools/xcrun" "$tools/security" "$tools/codesign" "$tools/chmod" "$tools/xattr" "$tools/pkgbuild" "$tools/pkgutil" "$tools/lsbom" "$tools/mkbom" "$tools/cpio" "$tools/tar" "$tools/gzip" "$tools/shasum"
 }
 
 write_sign_pkg_fakes() {
@@ -1278,11 +1436,23 @@ write_sign_pkg_fakes() {
 
     cat > "$tools/productsign" <<SH
 #!/bin/sh
+if [ -n "\${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'productsign\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "\${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "\$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
+if [ -n "\${ORCHARD_KEYCHAIN_PASSWORD+x}" ]; then
+  echo "productsign inherited ORCHARD_KEYCHAIN_PASSWORD" >&2
+  exit 97
+fi
 last=""
 for arg in "\$@"; do
+  if [ "\$arg" = "--keychain" ]; then
+    echo "productsign must not receive --keychain" >&2
+    exit 98
+  fi
   last="\$arg"
 done
 echo "productsign invoked" >> "$log"
+printf 'argv\t%s\n' "\$*" >> "$log"
 : > "\$last"
 exit 0
 SH
@@ -1290,6 +1460,9 @@ SH
     cat > "$tools/pkgutil" <<SH
 #!/bin/sh
 set -eu
+if [ -n "\${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'pkgutil\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "\${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "\$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 if [ "\$1" != "--expand-full" ]; then
   echo "unexpected pkgutil invocation: \$*" >&2
   exit 1
@@ -1310,6 +1483,9 @@ SH
 
     cat > "$tools/file" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'file\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 case "$*" in
   *.pkg) echo application/octet-stream ;;
   *) echo application/x-mach-binary ;;
@@ -1318,6 +1494,9 @@ SH
 
     cat > "$tools/otool" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'otool\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 if [ -n "${OTOOL_LOG:-}" ]; then
   printf '%s\n' "$*" >> "$OTOOL_LOG"
 fi
@@ -1347,6 +1526,9 @@ SH
     cat > "$tools/codesign" <<'SH'
 #!/bin/sh
 set -eu
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'codesign\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 last=""
 for arg in "$@"; do
   last="$arg"
@@ -1375,14 +1557,39 @@ fi
 exit 0
 SH
 
+    cat > "$tools/security" <<'SH'
+#!/bin/sh
+if [ -n "${SECURITY_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$SECURITY_LOG"
+fi
+case "${1:-}" in
+  unlock-keychain) exit "${SECURITY_UNLOCK_EXIT:-0}" ;;
+  set-key-partition-list) exit "${SECURITY_PARTITION_EXIT:-0}" ;;
+  *) echo "unexpected security invocation: $*" >&2; exit 99 ;;
+esac
+SH
+
     cat > "$tools/xcrun" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'xcrun\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 if [ "$1" = "-f" ]; then
   case "$2" in
     codesign|notarytool|stapler) command -v "$2" ; exit 0 ;;
   esac
 fi
 if [ "$1" = "notarytool" ]; then
+  if [ -n "${ORCHARD_KEYCHAIN_PASSWORD+x}" ]; then
+    echo "xcrun notarytool inherited ORCHARD_KEYCHAIN_PASSWORD" >&2
+    exit 97
+  fi
+  for arg in "$@"; do
+    if [ "$arg" = "--keychain" ]; then
+      echo "xcrun notarytool must not receive --keychain" >&2
+      exit 98
+    fi
+  done
   if [ -n "${XCRUN_LOG:-}" ]; then
     printf '%s\n' "$*" >> "$XCRUN_LOG"
   fi
@@ -1390,6 +1597,16 @@ if [ "$1" = "notarytool" ]; then
   exit 0
 fi
 if [ "$1" = "stapler" ]; then
+  if [ -n "${ORCHARD_KEYCHAIN_PASSWORD+x}" ]; then
+    echo "xcrun stapler inherited ORCHARD_KEYCHAIN_PASSWORD" >&2
+    exit 97
+  fi
+  for arg in "$@"; do
+    if [ "$arg" = "--keychain" ]; then
+      echo "xcrun stapler must not receive --keychain" >&2
+      exit 98
+    fi
+  done
   if [ -n "${XCRUN_LOG:-}" ]; then
     printf '%s\n' "$*" >> "$XCRUN_LOG"
   fi
@@ -1406,10 +1623,25 @@ SH
 
     cat > "$tools/stapler" <<'SH'
 #!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'stapler\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
 exit 0
 SH
 
-    chmod +x "$tools/productsign" "$tools/pkgutil" "$tools/file" "$tools/otool" "$tools/codesign" "$tools/xcrun" "$tools/notarytool" "$tools/stapler"
+    cat > "$tools/shasum" <<'SH'
+#!/bin/sh
+if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+  printf 'shasum\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
+if [ -n "${ORCHARD_KEYCHAIN_PASSWORD+x}" ]; then
+  echo "shasum inherited ORCHARD_KEYCHAIN_PASSWORD" >&2
+  exit 97
+fi
+exec /usr/bin/shasum "$@"
+SH
+
+    chmod +x "$tools/productsign" "$tools/pkgutil" "$tools/file" "$tools/otool" "$tools/codesign" "$tools/security" "$tools/xcrun" "$tools/notarytool" "$tools/stapler" "$tools/shasum"
 }
 
 # RED/GREEN: sign-payload refuses implicit or wrong identities.
@@ -1503,6 +1735,294 @@ assert_fails_with 'forbidden entitlement: com.apple.security.cs.disable-library-
 empty_root="$case_dir/empty/root"
 mkdir -p "$empty_root"
 assert_fails_with 'no Mach-O files found' "$case_dir/empty.out" run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$empty_root"
+
+# RED/GREEN: optional build keychain is forwarded to payload signing and verification.
+case_dir="$TMP_ROOT/payload-keychain"
+tools="$case_dir/tools"
+mkdir -p "$case_dir"
+make_fake_tools "$tools"
+payload_tools="$tools"
+kc_dir="$case_dir/Keychains"
+mkdir -p "$kc_dir"
+build_keychain="$kc_dir/orchard-build.keychain-db"
+: > "$build_keychain"
+build_keychain_base="$(basename "$build_keychain")"
+build_keychain_resolved="$(cd "$kc_dir" && pwd -P)/$build_keychain_base"
+missing_keychain="$kc_dir/missing-build.keychain-db"
+missing_keychain_base="$(basename "$missing_keychain")"
+fixture_password='fixture-build-keychain-password'
+
+# KC1: with no ORCHARD_BUILD_KEYCHAIN, codesign argv stays byte-compatible and has no --keychain.
+root="$case_dir/kc1-sign/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+CODESIGN_LOG="$case_dir/kc1-sign-codesign.log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    run_with_fakes "$tools" "$REPO_ROOT/scripts/sign-payload.sh" "$root" >"$case_dir/kc1-sign.out" 2>&1
+assert_no_grep '--keychain' "$case_dir/kc1-sign-codesign.log"
+
+root="$case_dir/kc1-verify/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+CODESIGN_LOG="$case_dir/kc1-verify-codesign.log" \
+    run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root" >"$case_dir/kc1-verify.out" 2>&1
+assert_no_grep '--keychain' "$case_dir/kc1-verify-codesign.log"
+
+# KC2: sign-payload passes the explicit keychain at the canonical codesign position.
+root="$case_dir/kc2-sign/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+CODESIGN_LOG="$case_dir/kc2-sign-codesign.log" ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    run_with_fakes "$tools" "$REPO_ROOT/scripts/sign-payload.sh" "$root" >"$case_dir/kc2-sign.out" 2>&1
+assert_grep "--timestamp --keychain $build_keychain_resolved --sign" "$case_dir/kc2-sign-codesign.log"
+
+# Dry-run prints the same shape with a basename placeholder and never the absolute keychain path.
+SECURITY_LOG="$case_dir/kc2-dry-security.log"
+: > "$SECURITY_LOG"
+ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" SECURITY_LOG="$SECURITY_LOG" \
+    run_with_fakes "$tools" "$REPO_ROOT/scripts/sign-payload.sh" --dry-run "$root" >"$case_dir/kc2-dry.out" 2>&1
+assert_grep "--timestamp --keychain \\<build-keychain:$build_keychain_base\\> --sign" "$case_dir/kc2-dry.out"
+assert_no_grep "$build_keychain_resolved" "$case_dir/kc2-dry.out"
+assert_no_grep "$build_keychain" "$case_dir/kc2-dry.out"
+assert_no_grep "$fixture_password" "$case_dir/kc2-dry.out"
+if [[ -s "$SECURITY_LOG" ]]; then
+    echo "dry-run must not invoke security" >&2
+    cat "$SECURITY_LOG" >&2
+    exit 1
+fi
+
+# KC3: verify-payload-signing passes the explicit keychain before each verified path.
+root="$case_dir/kc3-verify/root"
+make_root "$root"
+verify_target="$root/Library/Application Support/Orchard/share/bin/orchardctl"
+: > "$verify_target"
+CODESIGN_LOG="$case_dir/kc3-verify-codesign.log" ORCHARD_BUILD_KEYCHAIN="$build_keychain" \
+    run_with_fakes "$tools" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root" >"$case_dir/kc3-verify.out" 2>&1
+assert_grep "--verify --strict --verbose=4 --keychain $build_keychain_resolved $verify_target" "$case_dir/kc3-verify-codesign.log"
+assert_grep "--display --verbose=4 --keychain $build_keychain_resolved $verify_target" "$case_dir/kc3-verify-codesign.log"
+assert_grep "--display --entitlements :- --keychain $build_keychain_resolved $verify_target" "$case_dir/kc3-verify-codesign.log"
+
+# KC4: missing keychain fails before codesign and reports only the basename.
+root="$case_dir/kc4-missing/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+CODESIGN_LOG="$case_dir/kc4-codesign.log"
+: > "$CODESIGN_LOG"
+assert_fails_with "$missing_keychain_base" "$case_dir/kc4.out" env ORCHARD_BUILD_KEYCHAIN="$missing_keychain" CODESIGN_LOG="$CODESIGN_LOG" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/sign-payload.sh" "$root"
+assert_no_grep "$missing_keychain" "$case_dir/kc4.out"
+if [[ -s "$CODESIGN_LOG" ]]; then
+    echo "codesign must not run when build keychain validation fails" >&2
+    cat "$CODESIGN_LOG" >&2
+    exit 1
+fi
+
+# KC4a: invalid signer/verifier inputs fail before keychain preparation side effects.
+SECURITY_LOG="$case_dir/kc4a-security.log"
+: > "$SECURITY_LOG"
+assert_fails_with 'staging root does not exist' "$case_dir/kc4a-missing-root.out" env ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" SECURITY_LOG="$SECURITY_LOG" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/sign-payload.sh" "$case_dir/does-not-exist"
+assert_file_empty "$SECURITY_LOG"
+root="$case_dir/kc4a-missing-entitlements/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+assert_fails_with 'entitlements directory does not exist' "$case_dir/kc4a-missing-entitlements.out" env ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" SECURITY_LOG="$SECURITY_LOG" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/sign-payload.sh" --entitlements-dir "$case_dir/missing-entitlements" "$root"
+assert_file_empty "$SECURITY_LOG"
+assert_fails_with 'root does not exist' "$case_dir/kc4a-verify-missing-root.out" env ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" SECURITY_LOG="$SECURITY_LOG" PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$case_dir/verify-does-not-exist"
+assert_file_empty "$SECURITY_LOG"
+
+# KC4b: verifier keychain fingerprint failures stop before security and codesign.
+shasum_fail_tools="$case_dir/kc4b-tools"
+make_fake_tools "$shasum_fail_tools"
+cat > "$shasum_fail_tools/shasum" <<'SH'
+#!/bin/sh
+exit 42
+SH
+chmod +x "$shasum_fail_tools/shasum"
+root="$case_dir/kc4b-verify/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+SECURITY_LOG="$case_dir/kc4b-security.log"
+CODESIGN_LOG="$case_dir/kc4b-codesign.log"
+: > "$SECURITY_LOG"
+: > "$CODESIGN_LOG"
+assert_fails_with 'shasum failed while fingerprinting build keychain exit=42' "$case_dir/kc4b.out" env ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" SECURITY_LOG="$SECURITY_LOG" CODESIGN_LOG="$CODESIGN_LOG" PATH="$shasum_fail_tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+assert_file_empty "$SECURITY_LOG"
+assert_file_empty "$CODESIGN_LOG"
+
+# KC5: password-bearing preparation unlocks and partition-lists before the first codesign.
+root="$case_dir/kc5-sign/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+SECURITY_LOG="$case_dir/kc5-security.raw.log"
+order_log="$case_dir/kc5-order.log"
+env_presence_log="$case_dir/kc5-env-presence.log"
+: > "$SECURITY_LOG"
+: > "$env_presence_log"
+CODESIGN_LOG="$case_dir/kc5-codesign.log" SECURITY_LOG="$SECURITY_LOG" ORCHARD_FAKE_ENV_PRESENCE_LOG="$env_presence_log" ORCHARD_FAKE_TOOL_ORDER_LOG="$order_log" ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    run_with_fakes "$tools" "$REPO_ROOT/scripts/sign-payload.sh" "$root" >"$case_dir/kc5.out" 2>&1
+test "$(grep -c '^unlock-keychain ' "$SECURITY_LOG" || true)" -eq 1
+test "$(grep -c '^set-key-partition-list ' "$SECURITY_LOG" || true)" -eq 1
+assert_grep "unlock-keychain -p $fixture_password $build_keychain_resolved" "$SECURITY_LOG"
+assert_grep "set-key-partition-list -S apple-tool:,apple:,codesign: -s -k $fixture_password $build_keychain_resolved" "$SECURITY_LOG"
+first_security_line="$(grep -n '^security unlock-keychain$' "$order_log" | sed -n '1s/:.*//p')"
+first_codesign_line="$(grep -n '^codesign sign ' "$order_log" | sed -n '1s/:.*//p')"
+test "$first_security_line" -lt "$first_codesign_line"
+assert_grep $'file\tORCHARD_KEYCHAIN_PASSWORD_present=' "$env_presence_log"
+assert_grep $'xcrun\tORCHARD_KEYCHAIN_PASSWORD_present=' "$env_presence_log"
+assert_grep $'codesign\tORCHARD_KEYCHAIN_PASSWORD_present=' "$env_presence_log"
+assert_no_grep 'ORCHARD_KEYCHAIN_PASSWORD_present=x' "$env_presence_log"
+sed -e "s|$fixture_password|<redacted-password-token>|g" -e "s|$build_keychain_resolved|$build_keychain_base|g" "$SECURITY_LOG" > "$case_dir/kc5-security.sanitized.log"
+
+# KC6: operator-prepared keychain still forwards --keychain without security calls.
+root="$case_dir/kc6-sign/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+SECURITY_LOG="$case_dir/kc6-security.log"
+: > "$SECURITY_LOG"
+CODESIGN_LOG="$case_dir/kc6-codesign.log" SECURITY_LOG="$SECURITY_LOG" ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    run_with_fakes "$tools" "$REPO_ROOT/scripts/sign-payload.sh" "$root" >"$case_dir/kc6.out" 2>&1
+assert_grep "--timestamp --keychain $build_keychain_resolved --sign" "$case_dir/kc6-codesign.log"
+if [[ -s "$SECURITY_LOG" ]]; then
+    echo "operator-prepared keychain must not invoke security" >&2
+    cat "$SECURITY_LOG" >&2
+    exit 1
+fi
+
+# KC7: build-pkg forwards keychain env to payload signing and verification without xtrace leaks.
+tools="$case_dir/build-tools"
+write_build_pkg_fakes "$tools"
+staging="$case_dir/staging-signed"
+out_dir="$case_dir/out"
+SECURITY_LOG="$case_dir/build-security.raw.log"
+order_log="$case_dir/build-order.log"
+build_codesign_log="$case_dir/build-codesign.log"
+build_env_presence_log="$case_dir/build-env-presence-password.log"
+: > "$SECURITY_LOG"
+: > "$build_env_presence_log"
+env ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" SECURITY_LOG="$SECURITY_LOG" CODESIGN_LOG="$build_codesign_log" ORCHARD_FAKE_ENV_PRESENCE_LOG="$build_env_presence_log" ORCHARD_FAKE_TOOL_ORDER_LOG="$order_log" ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging" PATH="$tools:/usr/bin:/bin" \
+    bash -x "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir" >"$case_dir/build-xtrace.out" 2>&1
+test "$(grep -c '^unlock-keychain ' "$SECURITY_LOG" || true)" -eq 2
+test "$(grep -c '^set-key-partition-list ' "$SECURITY_LOG" || true)" -eq 2
+assert_grep "--timestamp --keychain $build_keychain_resolved --sign" "$build_codesign_log"
+assert_grep "--verify --strict --verbose=4 --keychain $build_keychain_resolved" "$build_codesign_log"
+assert_no_grep "$fixture_password" "$case_dir/build-xtrace.out"
+assert_no_grep "$build_keychain_resolved" "$case_dir/build-xtrace.out"
+assert_no_grep "$build_keychain" "$case_dir/build-xtrace.out"
+for tool_name in git uv mix pkgbuild pkgutil file xcrun codesign shasum; do
+    assert_grep "${tool_name}"$'\tORCHARD_KEYCHAIN_PASSWORD_present=' "$build_env_presence_log"
+done
+assert_no_grep 'ORCHARD_KEYCHAIN_PASSWORD_present=x' "$build_env_presence_log"
+sed -e "s|$fixture_password|<redacted-password-token>|g" -e "s|$build_keychain_resolved|$build_keychain_base|g" "$SECURITY_LOG" > "$case_dir/build-security.sanitized.log"
+
+# KC7a: build-pkg fails early when Perl cannot execute.
+perl_fail_tools="$case_dir/build-perl-fail-tools"
+write_build_pkg_fakes "$perl_fail_tools"
+cat > "$perl_fail_tools/perl" <<'SH'
+#!/bin/sh
+exit 86
+SH
+chmod +x "$perl_fail_tools/perl"
+staging="$case_dir/staging-perl-fail"
+out_dir="$case_dir/out-perl-fail"
+order_log="$case_dir/build-perl-fail-order.log"
+: > "$order_log"
+assert_fails_with 'perl failed a basic execution check' "$case_dir/build-perl-fail.out" env ORCHARD_FAKE_TOOL_ORDER_LOG="$order_log" ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging" PATH="$perl_fail_tools:/usr/bin:/bin" bash "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir"
+assert_no_grep 'uv ' "$order_log"
+assert_no_grep 'mix deps.' "$order_log"
+assert_no_grep 'mix compile' "$order_log"
+assert_no_grep 'mix release' "$order_log"
+assert_no_grep 'pkgbuild ' "$order_log"
+
+# KC8: direct bash -x signing and verification do not reveal keychain path or password.
+root="$case_dir/kc8-sign-xtrace/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+SECURITY_LOG="$case_dir/kc8-sign-security.raw.log"
+CODESIGN_LOG="$case_dir/kc8-sign-codesign.log"
+: > "$SECURITY_LOG"
+env ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" SECURITY_LOG="$SECURITY_LOG" CODESIGN_LOG="$CODESIGN_LOG" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" PATH="$payload_tools:/usr/bin:/bin" \
+    bash -x "$REPO_ROOT/scripts/sign-payload.sh" "$root" >"$case_dir/kc8-sign-xtrace.out" 2>&1
+assert_no_grep "$fixture_password" "$case_dir/kc8-sign-xtrace.out"
+assert_no_grep "$build_keychain_resolved" "$case_dir/kc8-sign-xtrace.out"
+assert_no_grep "$build_keychain" "$case_dir/kc8-sign-xtrace.out"
+
+root="$case_dir/kc8-verify-xtrace/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+SECURITY_LOG="$case_dir/kc8-verify-security.raw.log"
+CODESIGN_LOG="$case_dir/kc8-verify-codesign.log"
+: > "$SECURITY_LOG"
+env ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" SECURITY_LOG="$SECURITY_LOG" CODESIGN_LOG="$CODESIGN_LOG" PATH="$payload_tools:/usr/bin:/bin" \
+    bash -x "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root" >"$case_dir/kc8-verify-xtrace.out" 2>&1
+assert_no_grep "$fixture_password" "$case_dir/kc8-verify-xtrace.out"
+assert_no_grep "$build_keychain_resolved" "$case_dir/kc8-verify-xtrace.out"
+assert_no_grep "$build_keychain" "$case_dir/kc8-verify-xtrace.out"
+
+# KC9: codesign diagnostics redact the explicit keychain path before user-facing output.
+root="$case_dir/kc9-sign-fail/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+assert_fails_with '<build-keychain:' "$case_dir/kc9-sign-fail.out" env ORCHARD_BUILD_KEYCHAIN="$build_keychain" CODESIGN_FAIL=1 CODESIGN_ECHO_ARGS_ON_FAIL=1 CODESIGN_LOG="$case_dir/kc9-sign-codesign.log" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" PATH="$payload_tools:/usr/bin:/bin" "$REPO_ROOT/scripts/sign-payload.sh" "$root"
+assert_no_grep "$build_keychain_resolved" "$case_dir/kc9-sign-fail.out"
+assert_no_grep "$build_keychain" "$case_dir/kc9-sign-fail.out"
+
+root="$case_dir/kc9-verify-fail/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+assert_fails_with '<build-keychain:' "$case_dir/kc9-verify-fail.out" env ORCHARD_BUILD_KEYCHAIN="$build_keychain" CODESIGN_VERIFY_FAIL=1 CODESIGN_ECHO_ARGS_ON_FAIL=1 CODESIGN_LOG="$case_dir/kc9-verify-codesign.log" PATH="$payload_tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+assert_no_grep "$build_keychain_resolved" "$case_dir/kc9-verify-fail.out"
+assert_no_grep "$build_keychain" "$case_dir/kc9-verify-fail.out"
+
+# KC10: build-pkg preserves env presence semantics when password is unset.
+staging="$case_dir/staging-operator-prepared"
+out_dir="$case_dir/out-operator-prepared"
+SECURITY_LOG="$case_dir/build-operator-security.raw.log"
+env_presence_log="$case_dir/build-env-presence.log"
+operator_codesign_log="$case_dir/build-operator-codesign.log"
+: > "$SECURITY_LOG"
+: > "$env_presence_log"
+env -u ORCHARD_KEYCHAIN_PASSWORD ORCHARD_BUILD_KEYCHAIN="$build_keychain" SECURITY_LOG="$SECURITY_LOG" CODESIGN_LOG="$operator_codesign_log" ORCHARD_FAKE_ENV_PRESENCE_LOG="$env_presence_log" ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging" PATH="$tools:/usr/bin:/bin" \
+    bash -x "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir" >"$case_dir/build-operator-xtrace.out" 2>&1
+assert_grep 'ORCHARD_KEYCHAIN_PASSWORD_present=' "$env_presence_log"
+assert_no_grep 'ORCHARD_KEYCHAIN_PASSWORD_present=x' "$env_presence_log"
+assert_no_grep "$build_keychain_resolved" "$case_dir/build-operator-xtrace.out"
+assert_no_grep "$build_keychain" "$case_dir/build-operator-xtrace.out"
+
+# KC11: build-pkg treats set-but-empty password as absent while still forwarding a configured keychain.
+staging="$case_dir/staging-empty-password"
+out_dir="$case_dir/out-empty-password"
+SECURITY_LOG="$case_dir/build-empty-password-security.raw.log"
+empty_env_presence_log="$case_dir/build-empty-password-env-presence.log"
+empty_codesign_log="$case_dir/build-empty-password-codesign.log"
+: > "$SECURITY_LOG"
+: > "$empty_env_presence_log"
+env ORCHARD_BUILD_KEYCHAIN="$build_keychain" ORCHARD_KEYCHAIN_PASSWORD= SECURITY_LOG="$SECURITY_LOG" CODESIGN_LOG="$empty_codesign_log" ORCHARD_FAKE_ENV_PRESENCE_LOG="$empty_env_presence_log" ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging" PATH="$tools:/usr/bin:/bin" \
+    bash -x "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir" >"$case_dir/build-empty-password-xtrace.out" 2>&1
+assert_file_empty "$SECURITY_LOG"
+assert_grep "--timestamp --keychain $build_keychain_resolved --sign" "$empty_codesign_log"
+assert_grep 'ORCHARD_KEYCHAIN_PASSWORD_present=' "$empty_env_presence_log"
+assert_no_grep 'ORCHARD_KEYCHAIN_PASSWORD_present=x' "$empty_env_presence_log"
+assert_no_grep "$build_keychain_resolved" "$case_dir/build-empty-password-xtrace.out"
+assert_no_grep "$build_keychain" "$case_dir/build-empty-password-xtrace.out"
+
+# KC12: build-pkg discards an accidental password when no build keychain is configured.
+staging="$case_dir/staging-password-without-keychain"
+out_dir="$case_dir/out-password-without-keychain"
+SECURITY_LOG="$case_dir/build-no-keychain-security.raw.log"
+no_keychain_env_presence_log="$case_dir/build-no-keychain-env-presence.log"
+no_keychain_codesign_log="$case_dir/build-no-keychain-codesign.log"
+: > "$SECURITY_LOG"
+: > "$no_keychain_env_presence_log"
+env ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" SECURITY_LOG="$SECURITY_LOG" CODESIGN_LOG="$no_keychain_codesign_log" ORCHARD_FAKE_ENV_PRESENCE_LOG="$no_keychain_env_presence_log" ORCHARD_FAKE_PKGBUILD_SUCCESS=1 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" ORCHARD_PKG_STAGING_BASE="$staging" PATH="$tools:/usr/bin:/bin" \
+    bash -x "$REPO_ROOT/scripts/build-pkg.sh" --allow-dirty "$out_dir" >"$case_dir/build-no-keychain-xtrace.out" 2>&1
+assert_file_empty "$SECURITY_LOG"
+assert_no_grep '--keychain' "$no_keychain_codesign_log"
+assert_grep 'ORCHARD_KEYCHAIN_PASSWORD_present=' "$no_keychain_env_presence_log"
+assert_no_grep 'ORCHARD_KEYCHAIN_PASSWORD_present=x' "$no_keychain_env_presence_log"
+assert_no_grep "$fixture_password" "$case_dir/build-no-keychain-xtrace.out"
+
+cat "$case_dir/kc2-sign.out" "$case_dir/kc2-dry.out" "$case_dir/kc3-verify.out" "$case_dir/kc4.out" "$case_dir/kc5.out" "$case_dir/kc5-security.sanitized.log" "$case_dir/kc6.out" "$case_dir/build-xtrace.out" "$case_dir/build-security.sanitized.log" "$case_dir/kc8-sign-xtrace.out" "$case_dir/kc8-verify-xtrace.out" "$case_dir/kc9-sign-fail.out" "$case_dir/kc9-verify-fail.out" "$case_dir/build-operator-xtrace.out" "$case_dir/build-empty-password-xtrace.out" "$case_dir/build-no-keychain-xtrace.out" > "$case_dir/durable-keychain-scan.log"
+assert_no_grep "$fixture_password" "$case_dir/durable-keychain-scan.log"
+assert_no_grep "$build_keychain_resolved" "$case_dir/durable-keychain-scan.log"
+assert_no_grep "$build_keychain" "$case_dir/durable-keychain-scan.log"
 
 # RED/GREEN: payload verification does not execute staged package interpreters.
 case_dir="$TMP_ROOT/verify-no-smoke"
@@ -2194,6 +2714,38 @@ assert_no_grep '--key ' "$xcrun_log"
 assert_no_grep '--key-id' "$xcrun_log"
 assert_no_grep '--issuer' "$xcrun_log"
 assert_grep 'productsign invoked' "$productsign_log"
+test -f "$output_pkg"
+test -f "$output_pkg.notary.json"
+test -f "$output_pkg.sha256"
+
+tools="$case_dir/tools-profile-keychain"
+productsign_log="$case_dir/productsign-profile-keychain.log"
+xcrun_log="$case_dir/xcrun-profile-keychain.log"
+sign_pkg_env_presence_log="$case_dir/sign-pkg-keychain-env-presence.log"
+sign_pkg_security_log="$case_dir/sign-pkg-keychain-security.raw.log"
+sign_pkg_keychain_dir="$case_dir/Keychains"
+mkdir -p "$sign_pkg_keychain_dir"
+sign_pkg_keychain="$sign_pkg_keychain_dir/orchard-build.keychain-db"
+: > "$sign_pkg_keychain"
+output_pkg="$case_dir/profile-keychain-signed.pkg"
+: > "$sign_pkg_env_presence_log"
+: > "$sign_pkg_security_log"
+write_sign_pkg_fakes "$tools" ok "$productsign_log"
+env -i PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" SECURITY_LOG="$sign_pkg_security_log" ORCHARD_FAKE_ENV_PRESENCE_LOG="$sign_pkg_env_presence_log" ORCHARD_BUILD_KEYCHAIN="$sign_pkg_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg" >"$case_dir/profile-keychain.out" 2>&1
+test "$(grep -c '^unlock-keychain ' "$sign_pkg_security_log" || true)" -eq 1
+test "$(grep -c '^set-key-partition-list ' "$sign_pkg_security_log" || true)" -eq 1
+assert_no_grep 'list-keychains' "$sign_pkg_security_log"
+assert_no_grep 'default-keychain' "$sign_pkg_security_log"
+for tool_name in pkgutil file otool codesign xcrun productsign shasum; do
+    assert_grep "${tool_name}"$'\tORCHARD_KEYCHAIN_PASSWORD_present=' "$sign_pkg_env_presence_log"
+done
+assert_no_grep 'ORCHARD_KEYCHAIN_PASSWORD_present=x' "$sign_pkg_env_presence_log"
+assert_grep 'productsign invoked' "$productsign_log"
+assert_no_grep $'\t--keychain' "$productsign_log"
+assert_no_grep ' --keychain ' "$productsign_log"
+assert_grep '--keychain-profile orchard-notary' "$xcrun_log"
+assert_no_grep ' --keychain ' "$xcrun_log"
 test -f "$output_pkg"
 test -f "$output_pkg.notary.json"
 test -f "$output_pkg.sha256"

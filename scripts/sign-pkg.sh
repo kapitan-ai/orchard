@@ -9,6 +9,32 @@
 
 set -euo pipefail
 
+PAYLOAD_AUDIT_BUILD_KEYCHAIN=""
+PAYLOAD_AUDIT_BUILD_KEYCHAIN_CONFIGURED=false
+PAYLOAD_AUDIT_KEYCHAIN_PASSWORD=""
+PAYLOAD_AUDIT_KEYCHAIN_PASSWORD_CONFIGURED=false
+_payload_audit_keychain_restore_xtrace=0
+case "$-" in
+    *x*)
+        _payload_audit_keychain_restore_xtrace=1
+        set +x
+        ;;
+esac
+if [[ -n "${ORCHARD_BUILD_KEYCHAIN:-}" ]]; then
+    PAYLOAD_AUDIT_BUILD_KEYCHAIN="$ORCHARD_BUILD_KEYCHAIN"
+    PAYLOAD_AUDIT_BUILD_KEYCHAIN_CONFIGURED=true
+    if [[ -n "${ORCHARD_KEYCHAIN_PASSWORD:-}" ]]; then
+        PAYLOAD_AUDIT_KEYCHAIN_PASSWORD="$ORCHARD_KEYCHAIN_PASSWORD"
+        PAYLOAD_AUDIT_KEYCHAIN_PASSWORD_CONFIGURED=true
+    fi
+fi
+unset ORCHARD_KEYCHAIN_PASSWORD
+unset ORCHARD_BUILD_KEYCHAIN
+if [[ "$_payload_audit_keychain_restore_xtrace" -eq 1 ]]; then
+    set -x
+fi
+unset _payload_audit_keychain_restore_xtrace
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 RED='\033[0;31m'
@@ -250,6 +276,35 @@ print_command() {
     printf '\n'
 }
 
+run_payload_audit_verifier() {
+    local restore_xtrace=0
+    local status=0
+    case "$-" in
+        *x*)
+            restore_xtrace=1
+            set +x
+            ;;
+    esac
+
+    set +e
+    (
+        if [[ "$PAYLOAD_AUDIT_BUILD_KEYCHAIN_CONFIGURED" == "true" ]]; then
+            export ORCHARD_BUILD_KEYCHAIN="$PAYLOAD_AUDIT_BUILD_KEYCHAIN"
+            if [[ "$PAYLOAD_AUDIT_KEYCHAIN_PASSWORD_CONFIGURED" == "true" ]]; then
+                export ORCHARD_KEYCHAIN_PASSWORD="$PAYLOAD_AUDIT_KEYCHAIN_PASSWORD"
+            fi
+        fi
+        "$REPO_ROOT/scripts/verify-payload-signing.sh" "$@"
+    )
+    status=$?
+    set -e
+
+    if [[ "$restore_xtrace" -eq 1 ]]; then
+        set -x
+    fi
+    return "$status"
+}
+
 validate_positive_integer() {
     local value="$1"
     local label="$2"
@@ -487,10 +542,12 @@ CHECKSUM_CMD=(shasum -a 256 "$TMP_SIGNED_PKG")
 log_info "Auditing nested Mach-O payload signatures before productsign..."
 EXPANDED_PKG="$WORK_DIR/expanded"
 expand_pkg_for_audit "$INPUT_PKG" "$EXPANDED_PKG" "$DIAGNOSTICS_DIR" "$EXPAND_TIMEOUT_SECONDS"
-if ! "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$PAYLOAD_SIGNING_IDENTITY" "$EXPANDED_PKG"; then
+if ! run_payload_audit_verifier --identity "$PAYLOAD_SIGNING_IDENTITY" "$EXPANDED_PKG"; then
     log_error "Refusing to envelope-sign a PKG with unsigned payload Mach-O binaries (run scripts/build-pkg.sh with ORCHARD_PAYLOAD_SIGNING_IDENTITY)."
     exit 1
 fi
+PAYLOAD_AUDIT_KEYCHAIN_PASSWORD=""
+PAYLOAD_AUDIT_KEYCHAIN_PASSWORD_CONFIGURED=false
 
 extract_notary_field() {
     local field="$1"

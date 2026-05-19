@@ -5,11 +5,32 @@
 
 set -euo pipefail
 
+KEYCHAIN_PASSWORD=""
+_keychain_password_restore_xtrace=0
+case "$-" in
+    *x*)
+        _keychain_password_restore_xtrace=1
+        set +x
+        ;;
+esac
+if [[ -n "${ORCHARD_KEYCHAIN_PASSWORD:-}" ]]; then
+    KEYCHAIN_PASSWORD="$ORCHARD_KEYCHAIN_PASSWORD"
+fi
+unset ORCHARD_KEYCHAIN_PASSWORD
+if [[ "$_keychain_password_restore_xtrace" -eq 1 ]]; then
+    set -x
+fi
+unset _keychain_password_restore_xtrace
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$REPO_ROOT/scripts/lib/build-keychain.sh"
+
 DRY_RUN=false
 ENTITLEMENTS_DIR="$REPO_ROOT/packaging/pkg/entitlements"
 MANIFEST_OUTPUT=""
 STAGING_BASE=""
+KEYCHAIN_PATH=""
+HAS_KEYCHAIN=false
 
 usage() {
     cat <<'EOF'
@@ -42,6 +63,85 @@ print_command() {
     printf '  '
     printf '%q ' "$@"
     printf '\n'
+}
+
+xtrace_enabled() {
+    case "$-" in
+        *x*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+suppress_xtrace() {
+    if xtrace_enabled; then
+        set +x
+        return 0
+    fi
+    return 1
+}
+
+restore_xtrace() {
+    local restore="$1"
+    if [[ "$restore" -eq 1 ]]; then
+        set -x
+    fi
+    return 0
+}
+
+capture_build_keychain_path() {
+    local restore=0
+    local status=0
+    if suppress_xtrace; then
+        restore=1
+    fi
+
+    KEYCHAIN_PATH="$(orchard_assert_build_keychain)" || status=$?
+    if [[ "$status" -eq 0 && -n "$KEYCHAIN_PATH" ]]; then
+        HAS_KEYCHAIN=true
+    else
+        HAS_KEYCHAIN=false
+    fi
+
+    restore_xtrace "$restore"
+    return "$status"
+}
+
+prepare_build_keychain_if_needed() {
+    local restore=0
+    local status=0
+    if [[ "$HAS_KEYCHAIN" != "true" ]]; then
+        return 0
+    fi
+
+    if suppress_xtrace; then
+        restore=1
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        export ORCHARD_BUILD_KEYCHAIN_DRY_RUN=1
+    fi
+    orchard_prepare_build_keychain "$KEYCHAIN_PATH" "$KEYCHAIN_PASSWORD" || status=$?
+
+    restore_xtrace "$restore"
+    return "$status"
+}
+
+redact_keychain_diagnostics() {
+    local token
+    if [[ "$HAS_KEYCHAIN" == "true" ]]; then
+        token="<build-keychain:${KEYCHAIN_PATH##*/}>"
+        ORCHARD_REDACT_KEYCHAIN_PATH="$KEYCHAIN_PATH" ORCHARD_REDACT_KEYCHAIN_TOKEN="$token" \
+            perl -0pe 'BEGIN { $path = $ENV{"ORCHARD_REDACT_KEYCHAIN_PATH"}; $token = $ENV{"ORCHARD_REDACT_KEYCHAIN_TOKEN"}; } s/\Q$path\E/$token/g'
+    else
+        cat
+    fi
+}
+
+emit_redacted_diagnostics() {
+    local output="$1"
+    if [[ -n "$output" ]]; then
+        printf '%s\n' "$(printf '%s' "$output" | redact_keychain_diagnostics)" >&2
+    fi
 }
 
 while [[ $# -gt 0 ]]; do
@@ -150,6 +250,15 @@ if [[ -n "$MANIFEST_OUTPUT" ]]; then
     : > "$MANIFEST_OUTPUT"
 fi
 
+capture_build_keychain_path
+
+if [[ "$HAS_KEYCHAIN" == "true" ]] && ! command -v perl >/dev/null 2>&1; then
+    log_error "perl is required for keychain diagnostic redaction when ORCHARD_BUILD_KEYCHAIN is configured."
+    exit 69
+fi
+
+prepare_build_keychain_if_needed
+
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/orchard-payload-sign.XXXXXX")"
 cleanup() {
     rm -rf "$TMP_DIR"
@@ -222,6 +331,11 @@ done < "$ALL_FILES"
 sign_path() {
     local path="$1"
     local class ent_class entitlements sha rel_path
+    local codesign_keychain_arg
+    local codesign_args
+    local codesign_output
+    local codesign_status
+    local restore=0
 
     class="$(binary_class "$path")"
     ent_class="$(entitlements_class "$path")"
@@ -232,11 +346,37 @@ sign_path() {
         exit 66
     fi
 
-    if [[ "$DRY_RUN" == "true" ]]; then
-        print_command codesign --force --options runtime --timestamp --sign "$IDENTITY" --entitlements "$entitlements" "$path"
-    else
-        codesign --force --options runtime --timestamp --sign "$IDENTITY" --entitlements "$entitlements" "$path"
+    if [[ "$HAS_KEYCHAIN" == "true" && "$DRY_RUN" != "true" ]]; then
+        if suppress_xtrace; then
+            restore=1
+        fi
     fi
+
+    codesign_args=(codesign --force --options runtime --timestamp)
+    if [[ "$HAS_KEYCHAIN" == "true" ]]; then
+        if [[ "$DRY_RUN" == "true" ]]; then
+            codesign_keychain_arg="<build-keychain:${KEYCHAIN_PATH##*/}>"
+        else
+            codesign_keychain_arg="$KEYCHAIN_PATH"
+        fi
+        codesign_args+=(--keychain "$codesign_keychain_arg")
+    fi
+    codesign_args+=(--sign "$IDENTITY" --entitlements "$entitlements" "$path")
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        print_command "${codesign_args[@]}"
+    else
+        codesign_status=0
+        codesign_output="$("${codesign_args[@]}" 2>&1)" || codesign_status=$?
+        if [[ "$codesign_status" -ne 0 ]]; then
+            emit_redacted_diagnostics "$codesign_output"
+            restore_xtrace "$restore"
+            exit "$codesign_status"
+        fi
+        emit_redacted_diagnostics "$codesign_output"
+    fi
+
+    restore_xtrace "$restore"
 
     if [[ -n "$MANIFEST_OUTPUT" ]]; then
         rel_path="$(relative_path "$path")"
