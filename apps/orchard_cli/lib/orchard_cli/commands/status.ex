@@ -119,7 +119,7 @@ defmodule OrchardCLI.Commands.Status do
 
       {:error, :unreachable, display_url, source} ->
         display_version = format_display_version(version, nil)
-        warnings = configured_endpoint_warnings(source, display_url) ++ warnings
+        warnings = offline_warnings(runtime, source, display_url) ++ warnings
 
         %{
           version: version,
@@ -129,6 +129,7 @@ defmodule OrchardCLI.Commands.Status do
           base_url: nil,
           display_url: display_url,
           body: nil,
+          console_state: :unknown,
           warnings: warnings
         }
 
@@ -160,7 +161,14 @@ defmodule OrchardCLI.Commands.Status do
 
   def render_snapshot(%{state: :offline} = snap) do
     snap.warnings
-    |> prepend_warnings(render_offline_banner(snap.display_version, snap.display_url, snap.role))
+    |> prepend_warnings(
+      render_offline_banner(
+        snap.display_version,
+        snap.display_url,
+        snap.role,
+        Map.get(snap, :console_state, :unknown)
+      )
+    )
   end
 
   def render_snapshot(snap) do
@@ -283,6 +291,11 @@ defmodule OrchardCLI.Commands.Status do
 
   defp candidate_display_url(candidate), do: candidate.display_url
 
+  defp offline_warnings(runtime, source, display_url) do
+    configured_endpoint_warnings(source, display_url) ++
+      installed_not_bootstrapped_warnings(runtime)
+  end
+
   defp configured_endpoint_warnings(:endpoint_metadata, display_url) do
     [
       "Warning: configured endpoint unreachable from endpoint metadata sidecar: #{display_url}"
@@ -290,6 +303,24 @@ defmodule OrchardCLI.Commands.Status do
   end
 
   defp configured_endpoint_warnings(_source, _display_url), do: []
+
+  defp installed_not_bootstrapped_warnings(runtime) do
+    if LifecycleSupport.any_plist_exists?(runtime) and controller_not_loaded?(runtime) do
+      ["Warning: Orchard services are installed but not bootstrapped. Run: sudo orchardctl start"]
+    else
+      []
+    end
+  end
+
+  defp controller_not_loaded?(runtime) do
+    :start
+    |> LifecycleSupport.services(runtime)
+    |> Enum.find(&(&1.id == :controller))
+    |> case do
+      nil -> false
+      service -> not LifecycleSupport.service_loaded?(service, runtime)
+    end
+  end
 
   defp build_request_opts(candidate) do
     base = [connect_timeout: @connect_timeout_ms, receive_timeout: @receive_timeout_ms]
@@ -342,24 +373,136 @@ defmodule OrchardCLI.Commands.Status do
     ([
        "\u{1F333} Orchard #{display_version}",
        "   Role:    #{display_status_role(role)}",
-       "   Console: #{base_url}/console",
+       console_line(base_url, console_state_from_health(body["console"])),
        "   API:     #{base_url}/v1",
        "   Status:  #{status_label}#{details}"
-     ] ++ license_lines)
+     ] ++
+       render_transport_lines(body["transport"]) ++
+       render_remediation_lines(body) ++ license_lines)
     |> Enum.reject(&is_nil/1)
     |> Enum.join("\n")
   end
 
-  defp render_offline_banner(display_version, display_url, role) do
+  defp render_offline_banner(display_version, display_url, role, console_state) do
     """
     \u{1F333} Orchard #{display_version}
        Role:    #{display_status_role(role)}
-       Console: #{display_url}/console
+       Console: #{display_url}/console#{console_state_suffix(console_state)}
        API:     #{display_url}/v1
        Status:  offline (controller unreachable)
     """
     |> String.trim()
   end
+
+  defp console_line(base_url, state) do
+    "   Console: #{base_url}/console#{console_state_suffix(state)}"
+  end
+
+  defp console_state_from_health(%{"enabled" => true}), do: :enabled
+  defp console_state_from_health(%{"enabled" => false}), do: :disabled
+  defp console_state_from_health(_console), do: :unknown
+
+  defp console_state_suffix(:enabled), do: " (enabled)"
+  defp console_state_suffix(:disabled), do: " (disabled)"
+  defp console_state_suffix(_unknown), do: " (unknown)"
+
+  defp render_transport_lines(%{"mode" => mode} = transport) when is_binary(mode) do
+    degraded = Map.get(transport, "degraded", "unknown")
+    cert_source = non_empty_string(Map.get(transport, "cert_source")) || "unknown"
+
+    [
+      "   Transport: #{mode} (degraded: #{format_transport_value(degraded)}, cert: #{cert_source})"
+    ]
+  end
+
+  defp render_transport_lines(_transport), do: []
+
+  defp format_transport_value(value) when is_boolean(value), do: to_string(value)
+  defp format_transport_value(value) when is_binary(value), do: value
+  defp format_transport_value(_value), do: "unknown"
+
+  defp render_remediation_lines(%{"status" => "error"} = body) do
+    body
+    |> remediation_for_body()
+    |> case do
+      nil -> []
+      remediation -> format_remediation(remediation)
+    end
+  end
+
+  defp render_remediation_lines(_body), do: []
+
+  defp remediation_for_body(%{"remediation" => remediation} = body) do
+    normalize_remediation(remediation) || local_remediation_for_body(body)
+  end
+
+  defp remediation_for_body(%{"status" => "error", "reason" => reason}) when is_binary(reason) do
+    local_remediation(reason)
+  end
+
+  defp remediation_for_body(_body), do: nil
+
+  defp local_remediation_for_body(%{"status" => "error", "reason" => reason})
+       when is_binary(reason) do
+    local_remediation(reason)
+  end
+
+  defp local_remediation_for_body(_body), do: nil
+
+  defp normalize_remediation(%{"summary" => summary, "commands" => commands})
+       when is_binary(summary) and is_list(commands) do
+    summary = String.trim(summary)
+
+    commands =
+      commands
+      |> Enum.filter(&is_binary/1)
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+
+    if summary == "" do
+      nil
+    else
+      %{summary: summary, commands: commands}
+    end
+  end
+
+  defp normalize_remediation(_remediation), do: nil
+
+  defp format_remediation(%{summary: summary, commands: commands}) do
+    ["   Remediation: #{summary}" | Enum.map(commands, &"   Run: #{&1}")]
+  end
+
+  defp local_remediation("postgres_reachable") do
+    %{
+      summary:
+        "Postgres is not reachable. Check database configuration and initialize the Orchard environment if it has not been created.",
+      commands: ["sudo orchardctl env init"]
+    }
+  end
+
+  defp local_remediation("migrations_current") do
+    %{
+      summary: "Database migrations are not current.",
+      commands: ["sudo orchardctl migrate"]
+    }
+  end
+
+  defp local_remediation("public_api_https_enabled") do
+    %{
+      summary: "The public API is not configured for HTTPS.",
+      commands: ["sudo orchardctl transport enable-local-https --host <host> --port 8443"]
+    }
+  end
+
+  defp local_remediation("controller_boot_completed") do
+    %{
+      summary:
+        "Controller boot has not completed. Restart the controller and check service logs.",
+      commands: ["sudo orchardctl start"]
+    }
+  end
+
+  defp local_remediation(_reason), do: nil
 
   defp prepend_warnings([], banner), do: banner
 
@@ -562,35 +705,56 @@ defmodule OrchardCLI.Commands.Status do
   end
 
   defp endpoint_candidates_from_config_or_sidecar_or_fallback(runtime) do
-    endpoint_candidates_from_sidecar_or_config_or_fallback(runtime)
+    case endpoint_from_config(runtime) do
+      {:ok, candidate} ->
+        {[Map.put(candidate, :source, :config)], []}
+
+      :fallback ->
+        endpoint_candidates_from_sidecar_or_fallback(runtime, [])
+
+      {:error, message} ->
+        endpoint_candidates_from_sidecar_or_fallback(runtime, [config_warning(message)])
+    end
   end
 
-  defp endpoint_candidates_from_sidecar_or_config_or_fallback(runtime) do
+  defp endpoint_candidates_from_sidecar_or_fallback(runtime, warnings) do
     path = Map.get(runtime, :endpoint_metadata_path, EndpointMetadata.default_path())
 
     case EndpointMetadata.read(path: path) do
       {:ok, metadata} ->
         case endpoint_candidate_from_metadata(metadata) do
           {:ok, candidate} ->
-            {[Map.put(candidate, :source, :endpoint_metadata)], []}
+            {[Map.put(candidate, :source, :endpoint_metadata)], warnings}
 
           {:error, message} ->
-            endpoint_candidates_from_config_or_fallback(runtime, [sidecar_warning(message)])
+            endpoint_candidates_from_application_config_or_fallback(
+              warnings ++ [sidecar_warning(message)]
+            )
         end
 
       {:error, :not_found} ->
-        endpoint_candidates_from_config_or_fallback(runtime, [])
+        endpoint_candidates_from_application_config_or_fallback(warnings)
 
       {:error, {:malformed, message}} ->
-        endpoint_candidates_from_config_or_fallback(runtime, [sidecar_warning(message)])
+        endpoint_candidates_from_application_config_or_fallback(
+          warnings ++ [sidecar_warning(message)]
+        )
     end
   end
 
-  defp endpoint_candidates_from_config_or_fallback(runtime, warnings) do
-    case endpoint_from_config(runtime) do
-      {:ok, candidate} -> {[candidate], warnings}
+  defp endpoint_candidates_from_application_config_or_fallback(warnings) do
+    case endpoint_from_application_config() do
+      {:ok, candidate} -> {[Map.put(candidate, :source, :config)], warnings}
       :fallback -> {fallback_endpoint_candidates_from_env(), warnings}
     end
+  end
+
+  defp config_warning(message) do
+    "Warning: ignored endpoint config: #{message}. Run: sudo orchardctl status or check endpoint.json."
+  end
+
+  defp sidecar_warning("could not read" <> _rest = message) do
+    "Warning: ignored endpoint metadata sidecar: #{message}. Run: sudo orchardctl status or check endpoint.json."
   end
 
   defp sidecar_warning(message) do
@@ -1086,12 +1250,31 @@ defmodule OrchardCLI.Commands.Status do
   defp truthy_env?(_), do: false
 
   defp endpoint_from_config(runtime) do
-    config =
-      case Map.get(runtime, :endpoint_config) do
-        config_fn when is_function(config_fn, 0) -> config_fn.()
-        _other -> Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
-      end
+    case Map.fetch(runtime, :endpoint_config) do
+      {:ok, config_fn} when is_function(config_fn, 0) ->
+        config_fn.()
+        |> endpoint_candidate_from_config()
 
+      _other ->
+        :fallback
+    end
+  end
+
+  defp endpoint_from_application_config do
+    config = Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
+
+    if Keyword.get(config, :server) == false do
+      :fallback
+    else
+      endpoint_candidate_from_config(config)
+    end
+  end
+
+  defp endpoint_candidate_from_config({:error, reason}) do
+    {:error, "could not read endpoint config: #{inspect(reason)}"}
+  end
+
+  defp endpoint_candidate_from_config(config) when is_list(config) do
     cond do
       http = Keyword.get(config, :http) ->
         port = get_in(http, [:port]) || 4000
@@ -1109,6 +1292,8 @@ defmodule OrchardCLI.Commands.Status do
         :fallback
     end
   end
+
+  defp endpoint_candidate_from_config(_config), do: :fallback
 
   defp endpoint_display_url(config, default_scheme, default_host, default_port) do
     url_config = Keyword.get(config, :url, [])

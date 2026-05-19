@@ -401,6 +401,88 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert banner =~ "migrations_current"
   end
 
+  test "ready status ignores stale remediation if present" do
+    response = ready_response()
+
+    body =
+      Map.put(response.body, "remediation", %{
+        "reason" => "migrations_current",
+        "summary" => "Database migrations are not current.",
+        "commands" => ["sudo orchardctl migrate"],
+        "docs_anchor" => "readiness-migrations"
+      })
+
+    response = %{response | body: body}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Status:  ready"
+    refute banner =~ "Remediation:"
+    refute banner =~ "sudo orchardctl migrate"
+  end
+
+  test "degraded status renders health remediation when present" do
+    response = degraded_response("migrations_current")
+
+    body =
+      Map.put(response.body, "remediation", %{
+        "reason" => "migrations_current",
+        "summary" => "Database migrations are not current.",
+        "commands" => ["sudo orchardctl migrate"],
+        "docs_anchor" => "readiness-migrations"
+      })
+
+    response = %{response | body: body}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Remediation: Database migrations are not current."
+    assert banner =~ "Run: sudo orchardctl migrate"
+  end
+
+  test "degraded status trims remediation and ignores blank commands" do
+    response = degraded_response("migrations_current")
+
+    body =
+      Map.put(response.body, "remediation", %{
+        "reason" => "migrations_current",
+        "summary" => "  Database migrations are not current.  ",
+        "commands" => ["  sudo orchardctl migrate  ", "   ", 123],
+        "docs_anchor" => "readiness-migrations"
+      })
+
+    response = %{response | body: body}
+
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Remediation: Database migrations are not current."
+    assert banner =~ "Run: sudo orchardctl migrate"
+    refute banner =~ "Run:    "
+  end
+
+  test "older degraded controller falls back to local remediation mapping" do
+    runtime =
+      test_runtime(%{
+        request: fn _url, _opts -> {:ok, degraded_response("public_api_https_enabled")} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Remediation: The public API is not configured for HTTPS."
+    assert banner =~ "Run: sudo orchardctl transport enable-local-https --host <host> --port 8443"
+  end
+
   # ── Runtime Unavailable ──────────────────────────────────────────────
 
   test "runtime timeout shows runtime status in details" do
@@ -1260,7 +1342,79 @@ defmodule OrchardCLI.Commands.StatusTest do
     assert message =~ "invalid ORCHARD_TRANSPORT_MODE: https"
   end
 
-  test "status prefers valid endpoint sidecar over default endpoint config when env is unavailable" do
+  test "application default endpoint config does not mask valid endpoint sidecar" do
+    without_transport_env(fn ->
+      support_root = System.fetch_env!("ORCHARD_SUPPORT_ROOT")
+      sidecar_path = Path.join([support_root, "public", "endpoint.json"])
+      File.mkdir_p!(Path.dirname(sidecar_path))
+
+      File.write!(
+        sidecar_path,
+        Jason.encode!(%{
+          "schema_version" => 1,
+          "transport_mode" => "direct_https",
+          "public_host" => "orchard.example.internal",
+          "api_https_port" => 9443,
+          "plain_http_port" => nil,
+          "api_bind_ip" => nil,
+          "ca_certfile" => nil,
+          "updated_at" => "2026-05-18T01:02:03Z",
+          "generated_by" => "transport"
+        })
+      )
+
+      ref = make_ref()
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        endpoint_metadata_path: sidecar_path,
+        request: fn url, _opts ->
+          send(self(), {ref, url})
+          {:ok, ready_response()}
+        end
+      }
+
+      assert {:ok, banner} = Status.run([], runtime)
+      assert_received {^ref, "https://orchard.example.internal:9443/health/ready"}
+      assert banner =~ "Console: https://orchard.example.internal:9443/console"
+    end)
+  end
+
+  test "status uses non-default application endpoint config when endpoint sidecar is absent" do
+    without_transport_env(fn ->
+      original = Application.get_env(:orchard_controller, Orchard.API.Endpoint, [])
+
+      on_exit(fn ->
+        Application.put_env(:orchard_controller, Orchard.API.Endpoint, original)
+      end)
+
+      Application.put_env(:orchard_controller, Orchard.API.Endpoint,
+        url: [host: "127.0.0.1"],
+        http: [port: 4101]
+      )
+
+      ref = make_ref()
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        endpoint_metadata_path:
+          Path.join(System.fetch_env!("ORCHARD_SUPPORT_ROOT"), "public/missing-endpoint.json"),
+        request: fn url, opts ->
+          send(self(), {ref, url, opts})
+          {:ok, ready_response()}
+        end
+      }
+
+      assert {:ok, banner} = Status.run([], runtime)
+      assert_received {^ref, "http://localhost:4101/health/ready", opts}
+      assert Keyword.get(opts, :ca_certfile) == nil
+      assert banner =~ "Console: http://127.0.0.1:4101/console"
+    end)
+  end
+
+  test "status prefers endpoint config over valid endpoint sidecar when config is available" do
     without_transport_env(fn ->
       support_root = System.fetch_env!("ORCHARD_SUPPORT_ROOT")
       sidecar_path = Path.join([support_root, "public", "endpoint.json"])
@@ -1289,7 +1443,7 @@ defmodule OrchardCLI.Commands.StatusTest do
         version: fn -> "0.1.0" end,
         read_install_role: fn -> {:ok, "controller"} end,
         endpoint_metadata_path: sidecar_path,
-        endpoint_config: fn -> [url: [host: "localhost"], http: [port: 4000]] end,
+        endpoint_config: fn -> [url: [host: "localhost"], http: [port: 4100]] end,
         request: fn url, opts ->
           send(self(), {ref, url, opts})
           {:ok, ready_response()}
@@ -1297,9 +1451,10 @@ defmodule OrchardCLI.Commands.StatusTest do
       }
 
       assert {:ok, banner} = Status.run([], runtime)
-      assert_received {^ref, "https://orchard.example.internal:9443/health/ready", opts}
-      assert Keyword.get(opts, :ca_certfile) == ca_path
-      assert banner =~ "Console: https://orchard.example.internal:9443/console"
+      assert_received {^ref, "http://localhost:4100/health/ready", opts}
+      assert Keyword.get(opts, :ca_certfile) == nil
+      assert banner =~ "Console: http://localhost:4100/console"
+      refute banner =~ "orchard.example.internal"
       refute banner =~ "10.99.0.12"
     end)
   end
@@ -1343,6 +1498,115 @@ defmodule OrchardCLI.Commands.StatusTest do
       assert Keyword.get(opts, :ca_certfile) == nil
       assert banner =~ "Console: https://orchard-proxy.example.internal/console"
       refute banner =~ "127.0.0.1"
+    end)
+  end
+
+  test "direct HTTPS endpoint sidecar is used when endpoint config is unavailable" do
+    without_transport_env(fn ->
+      support_root = System.fetch_env!("ORCHARD_SUPPORT_ROOT")
+      sidecar_path = Path.join([support_root, "public", "endpoint.json"])
+      ca_path = Path.join([support_root, "public", "ca.crt"])
+      File.mkdir_p!(Path.dirname(sidecar_path))
+      File.write!(ca_path, "public ca placeholder\n")
+
+      File.write!(
+        sidecar_path,
+        Jason.encode!(%{
+          "schema_version" => 1,
+          "transport_mode" => "direct_https",
+          "public_host" => "orchard.example.internal",
+          "api_https_port" => 9443,
+          "plain_http_port" => nil,
+          "api_bind_ip" => "10.99.0.12",
+          "ca_certfile" => ca_path,
+          "updated_at" => "2026-05-18T01:02:03Z",
+          "generated_by" => "transport"
+        })
+      )
+
+      ref = make_ref()
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        endpoint_metadata_path: sidecar_path,
+        endpoint_config: fn -> [] end,
+        request: fn url, opts ->
+          send(self(), {ref, url, opts})
+          {:ok, ready_response()}
+        end
+      }
+
+      assert {:ok, banner} = Status.run([], runtime)
+      assert_received {^ref, "https://orchard.example.internal:9443/health/ready", opts}
+      assert Keyword.get(opts, :ca_certfile) == ca_path
+      assert banner =~ "Console: https://orchard.example.internal:9443/console"
+      refute banner =~ "10.99.0.12"
+    end)
+  end
+
+  test "unreadable endpoint config falls through to direct HTTPS sidecar with guidance" do
+    without_transport_env(fn ->
+      support_root = System.fetch_env!("ORCHARD_SUPPORT_ROOT")
+      sidecar_path = Path.join([support_root, "public", "endpoint.json"])
+      File.mkdir_p!(Path.dirname(sidecar_path))
+
+      File.write!(
+        sidecar_path,
+        Jason.encode!(%{
+          "schema_version" => 1,
+          "transport_mode" => "direct_https",
+          "public_host" => "orchard.example.internal",
+          "api_https_port" => 9443,
+          "plain_http_port" => nil,
+          "api_bind_ip" => nil,
+          "ca_certfile" => nil,
+          "updated_at" => "2026-05-18T01:02:03Z",
+          "generated_by" => "postinstall"
+        })
+      )
+
+      ref = make_ref()
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        endpoint_metadata_path: sidecar_path,
+        endpoint_config: fn -> {:error, :eacces} end,
+        request: fn url, _opts ->
+          send(self(), {ref, url})
+          {:ok, ready_response()}
+        end
+      }
+
+      assert {:ok, banner} = Status.run([], runtime)
+      assert_received {^ref, "https://orchard.example.internal:9443/health/ready"}
+      assert banner =~ "Warning: ignored endpoint config"
+      assert banner =~ "Run: sudo orchardctl status or check endpoint.json"
+      assert banner =~ "Status:  ready"
+    end)
+  end
+
+  test "unreadable endpoint config and malformed sidecar render guidance before fallback" do
+    without_transport_env(fn ->
+      support_root = System.fetch_env!("ORCHARD_SUPPORT_ROOT")
+      sidecar_path = Path.join([support_root, "public", "endpoint.json"])
+      File.mkdir_p!(Path.dirname(sidecar_path))
+      File.write!(sidecar_path, "not json")
+
+      runtime = %{
+        version: fn -> "0.1.0" end,
+        read_install_role: fn -> {:ok, "controller"} end,
+        endpoint_metadata_path: sidecar_path,
+        endpoint_config: fn -> {:error, :eacces} end,
+        request: fn _url, _opts -> {:error, :econnrefused} end
+      }
+
+      assert {:ok, banner} = Status.run([], runtime)
+      assert banner =~ "Warning: ignored endpoint config"
+      assert banner =~ "Warning: ignored endpoint metadata sidecar"
+      assert banner =~ "Run: sudo orchardctl status or check endpoint.json"
+      assert banner =~ "Status:  offline"
     end)
   end
 
@@ -1408,6 +1672,65 @@ defmodule OrchardCLI.Commands.StatusTest do
       assert banner =~ "malformed JSON"
       assert banner =~ "Status:  ready"
     end)
+  end
+
+  test "offline packaged install with unloaded services prints bootstrap guidance" do
+    services = [
+      %{
+        id: :controller,
+        label: "com.orchard.controller",
+        plist_path: "/Library/LaunchDaemons/com.orchard.controller.plist",
+        display_name: "Controller"
+      }
+    ]
+
+    runtime =
+      test_runtime(%{
+        services: services,
+        endpoint_candidates: fn -> [%{base_url: "http://localhost:4000", ca_certfile: nil}] end,
+        file_regular?: fn "/Library/LaunchDaemons/com.orchard.controller.plist" -> true end,
+        cmd: fn "launchctl", ["print", "system/com.orchard.controller"], _opts ->
+          {"Could not find service\n", 113}
+        end,
+        request: fn _url, _opts -> {:error, :econnrefused} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "services are installed but not bootstrapped"
+    assert banner =~ "Run: sudo orchardctl start"
+    assert banner =~ "Console: http://localhost:4000/console (unknown)"
+  end
+
+  test "reachable health payload renders transport and console state without credentials" do
+    response = ready_response()
+
+    body =
+      response.body
+      |> Map.put("transport", %{
+        "mode" => "direct_https",
+        "degraded" => false,
+        "cert_source" => "generated_local_ca"
+      })
+      |> Map.put("console", %{
+        "enabled" => false,
+        "auth_mode" => "disabled",
+        "username" => "console-admin",
+        "password" => "super-secret-password"
+      })
+
+    response = %{response | body: body}
+
+    runtime =
+      test_runtime(%{
+        endpoint_candidates: fn -> [%{base_url: "https://localhost:8443", ca_certfile: nil}] end,
+        request: fn _url, _opts -> {:ok, response} end
+      })
+
+    assert {:ok, banner} = Status.run([], runtime)
+    assert banner =~ "Console: https://localhost:8443/console (disabled)"
+    assert banner =~ "Transport: direct_https (degraded: false, cert: generated_local_ca)"
+    refute banner =~ "console-admin"
+    refute banner =~ "super-secret-password"
   end
 
   test "request function receives ca_certfile from candidate" do
