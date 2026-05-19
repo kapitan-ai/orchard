@@ -3,7 +3,7 @@ defmodule Orchard.API.HealthController do
 
   use Phoenix.Controller, formats: [:json]
 
-  alias Orchard.API.{Readiness, Transport}
+  alias Orchard.API.{Readiness, ReadinessRemediation, Transport}
 
   @runtime_probe_timeout_ms 1_000
 
@@ -36,6 +36,7 @@ defmodule Orchard.API.HealthController do
           Map.merge(build_metadata(), %{
             status: "error",
             reason: Atom.to_string(reason),
+            remediation: ReadinessRemediation.for_reason(reason),
             checks: checks,
             runtime: runtime,
             license: license
@@ -54,9 +55,23 @@ defmodule Orchard.API.HealthController do
       build_ref: Orchard.BuildInfo.git_sha(),
       build_date: Orchard.BuildInfo.build_date(),
       build_channel: Orchard.BuildInfo.build_channel(),
-      transport: Transport.metadata()
+      transport: Transport.metadata(),
+      console: console_metadata()
     }
   end
+
+  defp console_metadata do
+    config = Application.get_env(:orchard_controller, :console, [])
+    enabled = Keyword.get(config, :enabled, false) == true
+
+    %{
+      enabled: enabled,
+      auth_mode: console_auth_mode(enabled, Keyword.get(config, :auth))
+    }
+  end
+
+  defp console_auth_mode(true, :basic), do: "basic"
+  defp console_auth_mode(_enabled, _auth), do: "disabled"
 
   defp probe_runtime do
     case runtime_impl().snapshot(timeout: @runtime_probe_timeout_ms) do

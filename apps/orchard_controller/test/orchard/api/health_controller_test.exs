@@ -65,6 +65,7 @@ end
 defmodule Orchard.API.HealthControllerTest do
   use Orchard.ConnCase, async: false
 
+  alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.Router
 
   setup do
@@ -75,6 +76,9 @@ defmodule Orchard.API.HealthControllerTest do
       :orchard_controller,
       :console,
       Keyword.merge(previous,
+        enabled: false,
+        username: nil,
+        password: nil,
         runtime_impl: Orchard.API.HealthControllerTest.RuntimeOkStub,
         licensing_impl: Orchard.API.HealthControllerTest.LicensingValidStub
       )
@@ -114,6 +118,20 @@ defmodule Orchard.API.HealthControllerTest do
 
     assert conn.status == 503
     assert body["status"] == "error"
+
+    assert body["console"] == %{
+             "enabled" => false,
+             "auth_mode" => "disabled"
+           }
+
+    assert body["remediation"] == %{
+             "reason" => "postgres_reachable",
+             "summary" =>
+               "Postgres is not reachable. Check database configuration and initialize the Orchard environment if it has not been created.",
+             "commands" => ["sudo orchardctl env init"],
+             "docs_anchor" => "readiness-postgres"
+           }
+
     assert body["version"] == Orchard.version()
     assert body["build_ref"] == Orchard.BuildInfo.git_sha()
     assert body["build_date"] == Orchard.BuildInfo.build_date()
@@ -141,6 +159,66 @@ defmodule Orchard.API.HealthControllerTest do
            }
   end
 
+  test "health ready reports console enabled metadata without credentials", %{conn: _conn} do
+    previous = Application.get_env(:orchard_controller, :console, [])
+
+    Application.put_env(
+      :orchard_controller,
+      :console,
+      Keyword.merge(previous,
+        enabled: true,
+        auth: :basic,
+        username: "console-user",
+        password: "secret-password"
+      )
+    )
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    body = Jason.decode!(conn.resp_body)
+
+    assert body["console"] == %{
+             "enabled" => true,
+             "auth_mode" => "basic"
+           }
+
+    refute conn.resp_body =~ "console-user"
+    refute conn.resp_body =~ "secret-password"
+  end
+
+  test "health ready reports disabled auth mode when console auth is none", %{conn: _conn} do
+    previous = Application.get_env(:orchard_controller, :console, [])
+
+    Application.put_env(
+      :orchard_controller,
+      :console,
+      Keyword.merge(previous,
+        enabled: true,
+        auth: :none,
+        username: "console-user",
+        password: "secret-password"
+      )
+    )
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    body = Jason.decode!(conn.resp_body)
+
+    assert body["console"] == %{
+             "enabled" => true,
+             "auth_mode" => "disabled"
+           }
+
+    refute conn.resp_body =~ "console-user"
+    refute conn.resp_body =~ "secret-password"
+  end
+
   test "health ready reports mode-aware transport metadata", %{conn: _conn} do
     Application.put_env(:orchard_controller, :transport_mode, :direct_https)
     Application.put_env(:orchard_controller, :transport_cert_source, :operator_provided)
@@ -160,6 +238,38 @@ defmodule Orchard.API.HealthControllerTest do
            }
 
     assert body["checks"]["public_api_https_enabled"] == true
+  end
+
+  test "health ready omits remediation when all readiness checks pass", %{conn: _conn} do
+    previous_mode = Application.get_env(:orchard_controller, :transport_mode)
+    previous_degraded = Application.get_env(:orchard_controller, :transport_degraded, false)
+    previous_db_checks = Application.get_env(:orchard_controller, :enable_db_checks, true)
+    previous_start_repo = Application.get_env(:orchard_controller, :start_repo, true)
+
+    Application.put_env(:orchard_controller, :transport_mode, :direct_https)
+    Application.put_env(:orchard_controller, :transport_degraded, false)
+    Application.put_env(:orchard_controller, :enable_db_checks, true)
+    Application.put_env(:orchard_controller, :start_repo, true)
+
+    :ok = Sandbox.checkout(Orchard.Repo)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :transport_mode, previous_mode)
+      Application.put_env(:orchard_controller, :transport_degraded, previous_degraded)
+      Application.put_env(:orchard_controller, :enable_db_checks, previous_db_checks)
+      Application.put_env(:orchard_controller, :start_repo, previous_start_repo)
+    end)
+
+    conn =
+      build_conn(:get, "/health/ready")
+      |> put_req_header("accept", "application/json")
+      |> Router.call(Router.init([]))
+
+    body = Jason.decode!(conn.resp_body)
+
+    assert conn.status == 200
+    assert body["status"] == "ok"
+    refute Map.has_key?(body, "remediation")
   end
 
   test "health ready marks plain localhost HTTP as degraded regardless of legacy shim", %{

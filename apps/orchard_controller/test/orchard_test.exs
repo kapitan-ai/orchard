@@ -1,9 +1,10 @@
 defmodule OrchardTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.ErrorJSON
   alias Orchard.API.Readiness
+  alias Orchard.API.ReadinessRemediation
   alias Orchard.CanonicalRequest
   alias Orchard.CanonicalRequest.ModelRef
   alias Orchard.Cluster.V1.ModelRef, as: ProtoModelRef
@@ -51,6 +52,59 @@ defmodule OrchardTest do
 
     assert {:error, :postgres_reachable, local_checks} = Readiness.status()
     assert local_checks.public_api_https_enabled == false
+  end
+
+  test "readiness remediation covers known failure reasons without secrets" do
+    remediations = %{
+      postgres_reachable: {"readiness-postgres", ["sudo orchardctl env init"]},
+      migrations_current: {"readiness-migrations", ["sudo orchardctl migrate"]},
+      public_api_https_enabled:
+        {"readiness-transport",
+         [
+           "sudo orchardctl transport enable-local-https --host <host> --port 8443",
+           "configure a reverse proxy with HTTPS"
+         ]},
+      controller_boot_completed: {"readiness-controller", ["sudo orchardctl start"]}
+    }
+
+    for {reason, {docs_anchor, commands}} <- remediations do
+      remediation = ReadinessRemediation.for_reason(reason)
+
+      assert remediation.reason == Atom.to_string(reason)
+      assert remediation.docs_anchor == docs_anchor
+      assert remediation.commands == commands
+      assert is_binary(remediation.summary)
+
+      rendered = inspect(remediation)
+      refute rendered =~ "secret"
+      refute rendered =~ "localhost"
+
+      case System.get_env("USER") do
+        user when is_binary(user) and user != "" -> refute rendered =~ user
+        _other -> :ok
+      end
+    end
+  end
+
+  test "readiness reason priority is unchanged when all checks fail" do
+    previous_mode = Application.get_env(:orchard_controller, :transport_mode)
+    previous_db_checks = Application.get_env(:orchard_controller, :enable_db_checks, true)
+    previous_start_repo = Application.get_env(:orchard_controller, :start_repo, true)
+
+    Application.put_env(:orchard_controller, :transport_mode, :plain_http_localhost)
+    Application.put_env(:orchard_controller, :enable_db_checks, false)
+    Application.put_env(:orchard_controller, :start_repo, false)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :transport_mode, previous_mode)
+      Application.put_env(:orchard_controller, :enable_db_checks, previous_db_checks)
+      Application.put_env(:orchard_controller, :start_repo, previous_start_repo)
+    end)
+
+    assert {:error, :postgres_reachable, checks} = Readiness.status()
+    assert checks.postgres_reachable == false
+    assert checks.migrations_current == false
+    assert checks.public_api_https_enabled == false
   end
 
   test "readiness reason: public_api_https_enabled is primary when only transport mode is degraded" do
