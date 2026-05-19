@@ -248,6 +248,50 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
+  test "postinstall final guidance prints first-run sequence and confirms services are not started" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      File.write!(request_path, "controller\n")
+      remove_managed_tls_files!(ctx)
+
+      assert {output, 0} = run_script(script, ctx)
+
+      assert output =~ "controller launchd service(s) were installed but not started."
+      assert output =~ "Next steps for first-run setup:"
+
+      assert output =~
+               "1. Provide or verify the Orchard license using the supported license activation path."
+
+      assert output =~ "2. Run: sudo orchardctl env init"
+      assert output =~ "3. Run: sudo orchardctl migrate"
+
+      assert output =~
+               "4. Configure transport before start. For local generated HTTPS run: sudo orchardctl transport enable-local-https --host HOST; for reverse proxy or external certificates follow the package README."
+
+      assert output =~ "5. Optional Console: sudo orchardctl console enable"
+      assert output =~ "6. Run: sudo orchardctl start"
+      assert output =~ "7. Verify: orchardctl status"
+      refute output =~ "Run next: sudo orchardctl start"
+      refute output =~ "Then run: sudo orchardctl start"
+    end)
+  end
+
+  test "postinstall node-agent final guidance omits controller-only first-run steps" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      File.write!(request_path, "node-agent\n")
+
+      assert {output, 0} = run_script(script, ctx)
+
+      assert output =~ "node-agent launchd service(s) were installed but not started."
+      assert output =~ "Next steps for first-run setup:"
+      assert output =~ "2. Run: sudo orchardctl env init"
+      assert output =~ "3. Run: sudo orchardctl start"
+      assert output =~ "4. Verify: orchardctl status"
+      refute output =~ "orchardctl migrate"
+      refute output =~ "transport enable-local-https"
+      refute output =~ "console enable"
+    end)
+  end
+
   test "postinstall transport mode skips managed TLS inspection for proxy and local HTTP modes" do
     for {mode, expected} <- [
           {"reverse_proxy", "ORCHARD_TRANSPORT_MODE=reverse_proxy"},
@@ -265,7 +309,10 @@ defmodule OrchardCLI.PackagingScriptTest do
         assert output =~ "skipping managed TLS inspection"
         refute output =~ "partial managed TLS state"
         refute output =~ "Configure transport before starting controller services"
-        assert output =~ "Run next: sudo orchardctl start"
+        assert output =~ "Next steps for first-run setup:"
+        assert output =~ "Configure transport before start"
+        assert output =~ "for reverse proxy or external certificates follow the package README"
+        assert output =~ "6. Run: sudo orchardctl start"
       end)
     end
   end
@@ -393,7 +440,8 @@ defmodule OrchardCLI.PackagingScriptTest do
         end
 
         refute output =~ "Configure transport before starting controller services"
-        assert output =~ "Run next: sudo orchardctl start"
+        assert output =~ "Next steps for first-run setup:"
+        assert output =~ "6. Run: sudo orchardctl start"
       end)
     end
   end

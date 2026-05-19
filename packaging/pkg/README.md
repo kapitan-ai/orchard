@@ -204,10 +204,10 @@ sudo vi '/Library/Application Support/Orchard/config/controller.env'
 # Uncomment and set DATABASE_URL and SECRET_KEY_BASE
 ```
 
-Then run migrations:
+Then run migrations through the packaged CLI:
 
 ```bash
-sudo "/Library/Application Support/Orchard/bin/orchard-controller" eval 'Orchard.Release.migrate()'
+sudo orchardctl migrate
 ```
 
 **Manual alternative:** If you prefer to create the file manually:
@@ -250,7 +250,7 @@ not overwritten during package upgrades.
 |---------|-------------|-----|
 | Controller crash-loops with `DATABASE_URL is missing` | `controller.env` absent or ignored | Create the file with correct ownership/permissions |
 | Readiness reports `postgres_reachable: false` | Wrong DB URL, DB not running, or DB does not exist | Verify with `psql "$DATABASE_URL" -c 'select 1'` |
-| Readiness reports `migrations_current: false` (with DB reachable) | Migrations not run | Run `sudo "/Library/Application Support/Orchard/bin/orchard-controller" eval 'Orchard.Release.migrate()'` |
+| Readiness reports `migrations_current: false` (with DB reachable) | Migrations not run | Run `sudo orchardctl migrate` |
 | `WARNING: ignoring env file` in controller.log | File not root-owned or has group/world permission bits | `sudo chown root:wheel <file> && sudo chmod 600 <file>` |
 
 ## Upgrade Preflight
@@ -387,7 +387,7 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
 
 5. **Run migrations if the new release requires them:**
    ```bash
-   sudo "/Library/Application Support/Orchard/bin/orchard-controller" eval 'Orchard.Release.migrate()'
+   sudo orchardctl migrate
    ```
 
 6. **Start services:**
@@ -990,21 +990,42 @@ The installer writes role and diagnostic markers under `support/`:
 Postinstall does **not install or bootstrap managed PostgreSQL**. Controller and
 node-agent services are **not auto-started** during install to allow proper
 configuration first. `sudo orchardctl start` starts the services selected by the
-installed role:
+installed role.
 
-1. Optionally seed `.install-role.request` (omit for default `all`)
-2. Install PKG
-3. Run `sudo orchardctl env init` (auto-configures environment)
-4. Run `sudo orchard-controller eval 'Orchard.Release.migrate()'` (database, for controller/all roles)
-5. Choose a controller transport before starting controller/all roles:
-   - set `ORCHARD_TRANSPORT_MODE=direct_https` with `ORCHARD_TLS_CERTFILE` and `ORCHARD_TLS_KEYFILE` for externally managed certificates;
-   - run `sudo orchardctl tls init --no-trust`, then set `ORCHARD_TRANSPORT_MODE=direct_https` for explicit local generated TLS;
-   - set `ORCHARD_TRANSPORT_MODE=reverse_proxy` when an operator-managed proxy terminates public HTTPS;
-   - or set `ORCHARD_TRANSPORT_MODE=plain_http_localhost` only for degraded local/emergency HTTP operation.
-6. Run `sudo orchardctl start` (bootstraps role-selected services)
+Optionally seed `.install-role.request` before installing the PKG (omit for
+default `all`). After install, use this first-run sequence for
+controller-bearing installs (`all` or `controller`):
+
+1. Provide or verify the Orchard license through the supported licensing path;
+   do not place license keys in shell history, logs, package payloads, or MDM
+   command arguments.
+2. Run `sudo orchardctl env init` and fill in required database/runtime values.
+3. Run `sudo orchardctl migrate`.
+4. Run `sudo orchardctl transport enable-local-https --host HOST` for the local
+   generated-CA direct HTTPS path, or configure an operator-managed direct HTTPS
+   certificate/reverse-proxy transport before starting services.
+5. Optional, when browser Console access is desired: run
+   `sudo orchardctl console enable` and enter credentials only through the
+   interactive prompt.
+6. Run `sudo orchardctl start`.
+7. Verify with `orchardctl status`.
+
+For `node-agent` role installs, run `sudo orchardctl env init`, fill in the
+node-agent environment, then run `sudo orchardctl start` and verify with
+`orchardctl status`.
 
 This deferred bootstrap ensures services start with valid environment and TLS
 configuration rather than crash-looping with missing setup.
+
+### Advanced migration fallback
+
+Use `sudo orchardctl migrate` for normal installs and upgrades. If directed by
+Orchard support to bypass the CLI migration wrapper while troubleshooting, the
+underlying release command is:
+
+```bash
+sudo "/Library/Application Support/Orchard/bin/orchard-controller" eval 'Orchard.Release.migrate()'
+```
 
 ## Responsibilities
 

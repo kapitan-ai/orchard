@@ -654,8 +654,6 @@ normalize_console_env_if_trusted
 # ===========================================================================
 # 8. Resolve controller TLS mode and act for controller-bearing roles
 # ===========================================================================
-needs_tls_before_start=false
-
 if [ "$install_role" = "node-agent" ]; then
   printf 'postinstall: node-agent role selected; skipping controller TLS setup\n'
 else
@@ -736,7 +734,6 @@ else
           printf 'postinstall: To use operator-provided HTTPS, set ORCHARD_TRANSPORT_MODE=direct_https with ORCHARD_TLS_CERTFILE and ORCHARD_TLS_KEYFILE.\n'
           printf 'postinstall: To create local generated TLS, run sudo orchardctl tls init --no-trust, then set ORCHARD_TRANSPORT_MODE=direct_https.\n'
           printf 'postinstall: For degraded local/emergency HTTP only, set ORCHARD_TRANSPORT_MODE=plain_http_localhost.\n'
-          needs_tls_before_start=true
           ;;
         complete)
           printf 'postinstall: existing managed TLS certificates found; preserving\n'
@@ -829,10 +826,17 @@ esac
 printf 'Orchard installation complete.\n'
 printf 'Selected install role: %s.\n' "$install_role"
 printf '%s launchd service(s) were installed but not started.\n' "$installed_services"
-if [ "$needs_tls_before_start" = "true" ]; then
-  printf 'Configure transport before starting controller services: set ORCHARD_TRANSPORT_MODE=direct_https with operator cert/key files, run sudo orchardctl tls init --no-trust then set ORCHARD_TRANSPORT_MODE=direct_https, or set ORCHARD_TRANSPORT_MODE=plain_http_localhost for degraded local/emergency HTTP.\n'
-  printf 'Then run: sudo orchardctl start\n'
+printf 'Next steps for first-run setup:\n'
+printf '1. Provide or verify the Orchard license using the supported license activation path.\n'
+printf '2. Run: sudo orchardctl env init\n'
+if [ "$install_role" = "node-agent" ]; then
+  printf '3. Run: sudo orchardctl start\n'
+  printf '4. Verify: orchardctl status\n'
 else
-  printf 'Run next: sudo orchardctl start\n'
+  printf '3. Run: sudo orchardctl migrate\n'
+  printf '4. Configure transport before start. For local generated HTTPS run: sudo orchardctl transport enable-local-https --host HOST; for reverse proxy or external certificates follow the package README.\n'
+  printf '5. Optional Console: sudo orchardctl console enable\n'
+  printf '6. Run: sudo orchardctl start\n'
+  printf '7. Verify: orchardctl status\n'
 fi
 exit 0
