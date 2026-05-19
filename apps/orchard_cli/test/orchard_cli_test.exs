@@ -3,7 +3,7 @@ defmodule OrchardCLITest do
 
   import ExUnit.CaptureIO
 
-  alias OrchardCLI.Commands.{ApiKeys, Console, Migrate, Models, Nodes, Tenants}
+  alias OrchardCLI.Commands.{ApiKeys, Console, Init, Migrate, Models, Nodes, Tenants}
 
   # A no-op halt function for tests that just need to suppress halt
   defp no_halt(_code), do: :ok
@@ -76,7 +76,7 @@ defmodule OrchardCLITest do
     assert output =~ "orchardctl (M0 scaffold)"
 
     assert output =~
-             "status, start, stop, migrate, console, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
+             "status, start, stop, init, first-run, migrate, console, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
   end
 
   test "dispatches each placeholder command module" do
@@ -216,6 +216,31 @@ defmodule OrchardCLITest do
     output = capture_io(fn -> OrchardCLI.main(["license", "help"], &no_halt/1) end)
     assert output =~ "orchardctl license"
     assert output =~ "activate --key-stdin"
+  end
+
+  test "init help dispatches through main" do
+    output = capture_io(fn -> OrchardCLI.main(["init", "--help"], &no_halt/1) end)
+    assert output =~ "sudo orchardctl init --host HOST"
+    assert output =~ "license activate --key-stdin"
+  end
+
+  test "first-run is an alias for init" do
+    output = capture_io(fn -> OrchardCLI.main(["first-run", "--help"], &no_halt/1) end)
+    assert output =~ "sudo orchardctl init --host HOST"
+  end
+
+  test "Init.run/1 returns error tuple for missing controller host" do
+    assert {:error, message, 1} =
+             Init.run([], %{
+               read_install_role_request: fn -> {:error, :enoent} end,
+               read_install_role: fn -> {:ok, "controller"} end,
+               uid: fn -> 0 end,
+               command_runner: fn _command, _args, _runtime ->
+                 flunk("should not run commands")
+               end
+             })
+
+    assert message =~ "--host is required"
   end
 
   test "transport help dispatches through main without side effects" do
