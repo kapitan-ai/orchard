@@ -4,7 +4,9 @@
 # Security note: these helpers suppress shell xtrace around sensitive commands
 # and avoid durable logging of keychain paths/passwords. macOS security(1) and
 # codesign(1) still receive keychain/password values as argv while commands run,
-# so use this only on trusted build hosts.
+# so use this only on trusted build hosts. The helper unlocks/partition-lists a
+# specific keychain only; callers that rely on search-list discovery must verify
+# membership separately without mutating keychain defaults or search lists.
 
 unset ORCHARD_BUILD_KEYCHAIN_PREPARED
 __orchard_build_keychain_prepared_fingerprint=""

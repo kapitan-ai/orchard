@@ -1434,25 +1434,93 @@ write_sign_pkg_fakes() {
     local log="$3"
     mkdir -p "$tools"
 
+    cat > "$tools/orchard-fake-env-guard" <<'SH'
+#!/bin/sh
+set -eu
+tool_name="${1:-unknown}"
+for name in ORCHARD_NOTARY_API_KEY_PATH ORCHARD_NOTARY_API_KEY_ID ORCHARD_NOTARY_API_KEY_TYPE ORCHARD_NOTARY_API_ISSUER_ID; do
+  eval "present=\${$name+x}"
+  if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
+    printf '%s\t%s_present=%s\n' "$tool_name" "$name" "$present" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+  fi
+  if [ -n "$present" ]; then
+    echo "$tool_name inherited $name" >&2
+    exit 97
+  fi
+done
+SH
+
     cat > "$tools/productsign" <<SH
 #!/bin/sh
+exec </dev/null
+original_args="\$*"
+unexpected_productsign() {
+  echo "unexpected productsign invocation: \$original_args" >&2
+  exit 99
+}
 if [ -n "\${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
   printf 'productsign\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "\${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "\$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
+if [ -x "\${0%/*}/orchard-fake-env-guard" ]; then
+  "\${0%/*}/orchard-fake-env-guard" productsign
 fi
 if [ -n "\${ORCHARD_KEYCHAIN_PASSWORD+x}" ]; then
   echo "productsign inherited ORCHARD_KEYCHAIN_PASSWORD" >&2
   exit 97
 fi
+kind=real
 last=""
+saw_keychain=0
 for arg in "\$@"; do
-  if [ "\$arg" = "--keychain" ]; then
-    echo "productsign must not receive --keychain" >&2
-    exit 98
-  fi
+  case "\$arg" in
+    orchard-flag-probe-invalid-identity|/dev/null) kind=probe ;;
+    --keychain) saw_keychain=1 ;;
+  esac
   last="\$arg"
 done
+case "\$kind" in
+  probe)
+    if [ "\$#" -ne 6 ] || [ "\${1:-}" != "--sign" ] || [ "\${3:-}" != "--keychain" ] || [ "\${5:-}" != "/dev/null" ] || [ -z "\${6:-}" ]; then
+      unexpected_productsign
+    fi
+    ;;
+  real)
+    case "\$#" in
+      4)
+        if [ "\${1:-}" != "--sign" ] || [ -z "\${4:-}" ]; then
+          unexpected_productsign
+        fi
+        ;;
+      6)
+        if [ "\${1:-}" != "--sign" ] || [ "\${3:-}" != "--keychain" ] || [ -z "\${6:-}" ]; then
+          unexpected_productsign
+        fi
+        ;;
+      *) unexpected_productsign ;;
+    esac
+    ;;
+esac
+if [ "\$kind" = "probe" ]; then
+  printf 'probe\t%s\n' "\$*" >> "$log"
+  case "\${PRODUCTSIGN_PROBE_BUCKET:-reject}" in
+    accept|validation|keychain-validation) echo "productsign: invalid signing identity" >&2; exit 1 ;;
+    reject|unknown) echo "productsign: unknown option --keychain" >&2; exit 64 ;;
+    illegal) echo "productsign: illegal option -- keychain" >&2; exit 64 ;;
+    empty) exit 0 ;;
+    *) echo "productsign: unexpected probe response" >&2; exit 1 ;;
+  esac
+fi
+if [ "\$saw_keychain" = "1" ] && [ "\${ORCHARD_FAKE_PRODUCTSIGN_ALLOW_KEYCHAIN:-}" != "1" ]; then
+  echo "productsign must not receive --keychain" >&2
+  exit 98
+fi
 echo "productsign invoked" >> "$log"
+printf 'real\t%s\n' "\$*" >> "$log"
 printf 'argv\t%s\n' "\$*" >> "$log"
+if [ "\$last" = "-" ] || [ -p "\$last" ]; then
+  echo "unsafe productsign output target: \$last" >&2
+  exit 99
+fi
 : > "\$last"
 exit 0
 SH
@@ -1462,6 +1530,9 @@ SH
 set -eu
 if [ -n "\${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
   printf 'pkgutil\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "\${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "\$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
+if [ -x "\${0%/*}/orchard-fake-env-guard" ]; then
+  "\${0%/*}/orchard-fake-env-guard" pkgutil
 fi
 if [ "\$1" != "--expand-full" ]; then
   echo "unexpected pkgutil invocation: \$*" >&2
@@ -1486,6 +1557,9 @@ SH
 if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
   printf 'file\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
 fi
+if [ -x "${0%/*}/orchard-fake-env-guard" ]; then
+  "${0%/*}/orchard-fake-env-guard" file
+fi
 case "$*" in
   *.pkg) echo application/octet-stream ;;
   *) echo application/x-mach-binary ;;
@@ -1496,6 +1570,9 @@ SH
 #!/bin/sh
 if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
   printf 'otool\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
+if [ -x "${0%/*}/orchard-fake-env-guard" ]; then
+  "${0%/*}/orchard-fake-env-guard" otool
 fi
 if [ -n "${OTOOL_LOG:-}" ]; then
   printf '%s\n' "$*" >> "$OTOOL_LOG"
@@ -1528,6 +1605,9 @@ SH
 set -eu
 if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
   printf 'codesign\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
+if [ -x "${0%/*}/orchard-fake-env-guard" ]; then
+  "${0%/*}/orchard-fake-env-guard" codesign
 fi
 last=""
 for arg in "$@"; do
@@ -1565,6 +1645,20 @@ fi
 case "${1:-}" in
   unlock-keychain) exit "${SECURITY_UNLOCK_EXIT:-0}" ;;
   set-key-partition-list) exit "${SECURITY_PARTITION_EXIT:-0}" ;;
+  list-keychains)
+    if [ "$#" -ne 1 ]; then
+      echo "forbidden persistent keychain mutation: $*" >&2
+      exit 99
+    fi
+    case "${ORCHARD_FAKE_SECURITY_SEARCH_LIST_MODE:-quoted}" in
+      quoted) printf '    "%s"\n' "${ORCHARD_FAKE_SECURITY_SEARCH_LIST:-}" ;;
+      unquoted) printf '%s\n' "${ORCHARD_FAKE_SECURITY_SEARCH_LIST:-}" ;;
+      empty) exit 0 ;;
+      fail) echo "security list-keychains failed" >&2; exit 42 ;;
+      *) echo "unknown search list mode" >&2; exit 99 ;;
+    esac
+    ;;
+  default-keychain) echo "forbidden persistent keychain mutation: $*" >&2; exit 99 ;;
   *) echo "unexpected security invocation: $*" >&2; exit 99 ;;
 esac
 SH
@@ -1573,6 +1667,9 @@ SH
 #!/bin/sh
 if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
   printf 'xcrun\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
+fi
+if [ -x "${0%/*}/orchard-fake-env-guard" ]; then
+  "${0%/*}/orchard-fake-env-guard" xcrun
 fi
 if [ "$1" = "-f" ]; then
   case "$2" in
@@ -1593,7 +1690,32 @@ if [ "$1" = "notarytool" ]; then
   if [ -n "${XCRUN_LOG:-}" ]; then
     printf '%s\n' "$*" >> "$XCRUN_LOG"
   fi
-  printf '{"id":"fake-submission","status":"Accepted"}\n'
+  notary_key=""
+  notary_key_id=""
+  notary_issuer=""
+  notary_next=""
+  for arg in "$@"; do
+    if [ -n "$notary_next" ]; then
+      case "$notary_next" in
+        key) notary_key="$arg" ;;
+        key-id) notary_key_id="$arg" ;;
+        issuer) notary_issuer="$arg" ;;
+      esac
+      notary_next=""
+      continue
+    fi
+    case "$arg" in
+      --key) notary_next=key ;;
+      --key-id) notary_next=key-id ;;
+      --issuer) notary_next=issuer ;;
+    esac
+  done
+  if [ "${ORCHARD_FAKE_NOTARY_ECHO_AUTH:-}" = "1" ]; then
+    printf 'notarytool stderr key=%s key-id=%s issuer=%s\n' "$notary_key" "$notary_key_id" "$notary_issuer" >&2
+    printf '{"id":"fake-submission-%s","status":"Accepted","key":"%s","keyId":"%s","issuer":"%s"}\n' "$notary_key_id" "$notary_key" "$notary_key_id" "$notary_issuer"
+  else
+    printf '{"id":"fake-submission","status":"Accepted"}\n'
+  fi
   exit 0
 fi
 if [ "$1" = "stapler" ]; then
@@ -1626,6 +1748,9 @@ SH
 if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
   printf 'stapler\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
 fi
+if [ -x "${0%/*}/orchard-fake-env-guard" ]; then
+  "${0%/*}/orchard-fake-env-guard" stapler
+fi
 exit 0
 SH
 
@@ -1634,6 +1759,9 @@ SH
 if [ -n "${ORCHARD_FAKE_ENV_PRESENCE_LOG:-}" ]; then
   printf 'shasum\tORCHARD_KEYCHAIN_PASSWORD_present=%s\n' "${ORCHARD_KEYCHAIN_PASSWORD+x}" >> "$ORCHARD_FAKE_ENV_PRESENCE_LOG"
 fi
+if [ -x "${0%/*}/orchard-fake-env-guard" ]; then
+  "${0%/*}/orchard-fake-env-guard" shasum
+fi
 if [ -n "${ORCHARD_KEYCHAIN_PASSWORD+x}" ]; then
   echo "shasum inherited ORCHARD_KEYCHAIN_PASSWORD" >&2
   exit 97
@@ -1641,7 +1769,7 @@ fi
 exec /usr/bin/shasum "$@"
 SH
 
-    chmod +x "$tools/productsign" "$tools/pkgutil" "$tools/file" "$tools/otool" "$tools/codesign" "$tools/security" "$tools/xcrun" "$tools/notarytool" "$tools/stapler" "$tools/shasum"
+    chmod +x "$tools/orchard-fake-env-guard" "$tools/productsign" "$tools/pkgutil" "$tools/file" "$tools/otool" "$tools/codesign" "$tools/security" "$tools/xcrun" "$tools/notarytool" "$tools/stapler" "$tools/shasum"
 }
 
 # RED/GREEN: sign-payload refuses implicit or wrong identities.
@@ -2718,37 +2846,53 @@ test -f "$output_pkg"
 test -f "$output_pkg.notary.json"
 test -f "$output_pkg.sha256"
 
-tools="$case_dir/tools-profile-keychain"
-productsign_log="$case_dir/productsign-profile-keychain.log"
-xcrun_log="$case_dir/xcrun-profile-keychain.log"
-sign_pkg_env_presence_log="$case_dir/sign-pkg-keychain-env-presence.log"
-sign_pkg_security_log="$case_dir/sign-pkg-keychain-security.raw.log"
-sign_pkg_keychain_dir="$case_dir/Keychains"
-mkdir -p "$sign_pkg_keychain_dir"
-sign_pkg_keychain="$sign_pkg_keychain_dir/orchard-build.keychain-db"
-: > "$sign_pkg_keychain"
-output_pkg="$case_dir/profile-keychain-signed.pkg"
-: > "$sign_pkg_env_presence_log"
-: > "$sign_pkg_security_log"
-write_sign_pkg_fakes "$tools" ok "$productsign_log"
-env -i PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" SECURITY_LOG="$sign_pkg_security_log" ORCHARD_FAKE_ENV_PRESENCE_LOG="$sign_pkg_env_presence_log" ORCHARD_BUILD_KEYCHAIN="$sign_pkg_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
-    "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg" >"$case_dir/profile-keychain.out" 2>&1
-test "$(grep -c '^unlock-keychain ' "$sign_pkg_security_log" || true)" -eq 1
-test "$(grep -c '^set-key-partition-list ' "$sign_pkg_security_log" || true)" -eq 1
-assert_no_grep 'list-keychains' "$sign_pkg_security_log"
-assert_no_grep 'default-keychain' "$sign_pkg_security_log"
-for tool_name in pkgutil file otool codesign xcrun productsign shasum; do
-    assert_grep "${tool_name}"$'\tORCHARD_KEYCHAIN_PASSWORD_present=' "$sign_pkg_env_presence_log"
+for productsign_strategy in accept reject; do
+    tools="$case_dir/tools-profile-keychain-$productsign_strategy"
+    productsign_log="$case_dir/productsign-profile-keychain-$productsign_strategy.log"
+    xcrun_log="$case_dir/xcrun-profile-keychain-$productsign_strategy.log"
+    sign_pkg_env_presence_log="$case_dir/sign-pkg-keychain-$productsign_strategy-env-presence.log"
+    sign_pkg_security_log="$case_dir/sign-pkg-keychain-$productsign_strategy-security.raw.log"
+    sign_pkg_keychain_dir="$case_dir/Keychains-$productsign_strategy"
+    mkdir -p "$sign_pkg_keychain_dir"
+    sign_pkg_keychain="$sign_pkg_keychain_dir/orchard-build.keychain-db"
+    : > "$sign_pkg_keychain"
+    sign_pkg_keychain_resolved="$(cd "$sign_pkg_keychain_dir" && pwd -P)/orchard-build.keychain-db"
+    output_pkg="$case_dir/profile-keychain-$productsign_strategy-signed.pkg"
+    : > "$sign_pkg_env_presence_log"
+    : > "$sign_pkg_security_log"
+    write_sign_pkg_fakes "$tools" ok "$productsign_log"
+    env -i PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" SECURITY_LOG="$sign_pkg_security_log" ORCHARD_FAKE_ENV_PRESENCE_LOG="$sign_pkg_env_presence_log" ORCHARD_FAKE_PRODUCTSIGN_ALLOW_KEYCHAIN=1 ORCHARD_FAKE_SECURITY_SEARCH_LIST="$sign_pkg_keychain_resolved" PRODUCTSIGN_PROBE_BUCKET="$productsign_strategy" ORCHARD_BUILD_KEYCHAIN="$sign_pkg_keychain" ORCHARD_KEYCHAIN_PASSWORD="$fixture_password" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+        "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$output_pkg" >"$case_dir/profile-keychain-$productsign_strategy.out" 2>&1
+    test "$(grep -c '^unlock-keychain ' "$sign_pkg_security_log" || true)" -eq 2
+    test "$(grep -c '^set-key-partition-list ' "$sign_pkg_security_log" || true)" -eq 2
+    assert_no_grep 'list-keychains -' "$sign_pkg_security_log"
+    assert_no_grep 'default-keychain' "$sign_pkg_security_log"
+    for tool_name in pkgutil file otool codesign xcrun productsign shasum; do
+        assert_grep "${tool_name}"$'\tORCHARD_KEYCHAIN_PASSWORD_present=' "$sign_pkg_env_presence_log"
+    done
+    assert_no_grep 'ORCHARD_KEYCHAIN_PASSWORD_present=x' "$sign_pkg_env_presence_log"
+    assert_no_grep 'ORCHARD_NOTARY_API_KEY_PATH_present=x' "$sign_pkg_env_presence_log"
+    assert_no_grep 'ORCHARD_NOTARY_API_KEY_ID_present=x' "$sign_pkg_env_presence_log"
+    assert_no_grep 'ORCHARD_NOTARY_API_KEY_TYPE_present=x' "$sign_pkg_env_presence_log"
+    assert_no_grep 'ORCHARD_NOTARY_API_ISSUER_ID_present=x' "$sign_pkg_env_presence_log"
+    assert_grep 'productsign invoked' "$productsign_log"
+    if [[ "$productsign_strategy" == "accept" ]]; then
+        assert_no_grep 'list-keychains' "$sign_pkg_security_log"
+        assert_grep $'real\t'"--sign $INSTALLER_IDENTITY --keychain $sign_pkg_keychain_resolved" "$productsign_log"
+    else
+        test "$(grep -c '^list-keychains$' "$sign_pkg_security_log" || true)" -eq 1
+        if grep -F $'real\t' "$productsign_log" | grep -F ' --keychain ' >/dev/null; then
+            echo "Strategy D real productsign argv must omit --keychain" >&2
+            cat "$productsign_log" >&2
+            exit 1
+        fi
+    fi
+    assert_grep '--keychain-profile orchard-notary' "$xcrun_log"
+    assert_no_grep ' --keychain ' "$xcrun_log"
+    test -f "$output_pkg"
+    test -f "$output_pkg.notary.json"
+    test -f "$output_pkg.sha256"
 done
-assert_no_grep 'ORCHARD_KEYCHAIN_PASSWORD_present=x' "$sign_pkg_env_presence_log"
-assert_grep 'productsign invoked' "$productsign_log"
-assert_no_grep $'\t--keychain' "$productsign_log"
-assert_no_grep ' --keychain ' "$productsign_log"
-assert_grep '--keychain-profile orchard-notary' "$xcrun_log"
-assert_no_grep ' --keychain ' "$xcrun_log"
-test -f "$output_pkg"
-test -f "$output_pkg.notary.json"
-test -f "$output_pkg.sha256"
 
 tools="$case_dir/tools-profile-explicit"
 productsign_log="$case_dir/productsign-profile-explicit.log"
@@ -2765,17 +2909,52 @@ tools="$case_dir/tools-api"
 productsign_log="$case_dir/productsign-api.log"
 xcrun_log="$case_dir/xcrun-api.log"
 api_key="$case_dir/AuthKey_TEST.p8"
+api_key_id='KEY123'
+issuer_id='12345678-1234-1234-1234-123456789abc'
 output_pkg="$case_dir/api-signed.pkg"
+api_env_presence_log="$case_dir/api-env-presence.log"
+api_diag_dir="$case_dir/api-diagnostics"
 : > "$api_key"
+: > "$api_env_presence_log"
 write_sign_pkg_fakes "$tools" ok "$productsign_log"
-env -i PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=12345678-1234-1234-1234-123456789abc ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+env -i PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_FAKE_ENV_PRESENCE_LOG="$api_env_presence_log" ORCHARD_SIGN_PKG_DIAGNOSTICS_DIR="$api_diag_dir" ORCHARD_FAKE_NOTARY_ECHO_AUTH=1 ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID="$api_key_id" ORCHARD_NOTARY_API_ISSUER_ID="$issuer_id" ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$output_pkg" >"$case_dir/api.out" 2>&1
 assert_grep "--key $api_key" "$xcrun_log"
-assert_grep '--key-id KEY123' "$xcrun_log"
-assert_grep '--issuer 12345678-1234-1234-1234-123456789abc' "$xcrun_log"
+assert_grep "--key-id $api_key_id" "$xcrun_log"
+assert_grep "--issuer $issuer_id" "$xcrun_log"
 assert_grep '--output-format json' "$xcrun_log"
 assert_no_grep '--keychain-profile' "$xcrun_log"
 assert_grep 'productsign invoked' "$productsign_log"
+assert_grep '<notary-api-key>' "$case_dir/api.out"
+assert_grep '<notary-api-key-id>' "$case_dir/api.out"
+assert_grep '<notary-issuer-id>' "$case_dir/api.out"
+assert_grep '<notary-api-key>' "$output_pkg.notary.json"
+assert_grep '<notary-api-key-id>' "$output_pkg.notary.json"
+assert_grep '<notary-issuer-id>' "$output_pkg.notary.json"
+assert_grep 'fake-submission' "$output_pkg.notary.json"
+assert_grep 'Accepted' "$output_pkg.notary.json"
+cat "$case_dir/api.out" "$output_pkg.notary.json" "$output_pkg.sha256" "$api_diag_dir"/* > "$case_dir/api-product-durable-combined.log"
+assert_no_grep "$api_key" "$case_dir/api-product-durable-combined.log"
+assert_no_grep "$api_key_id" "$case_dir/api-product-durable-combined.log"
+assert_no_grep "$issuer_id" "$case_dir/api-product-durable-combined.log"
+assert_no_grep 'ORCHARD_NOTARY_API_KEY_PATH_present=x' "$api_env_presence_log"
+assert_no_grep 'ORCHARD_NOTARY_API_KEY_ID_present=x' "$api_env_presence_log"
+assert_no_grep 'ORCHARD_NOTARY_API_KEY_TYPE_present=x' "$api_env_presence_log"
+assert_no_grep 'ORCHARD_NOTARY_API_ISSUER_ID_present=x' "$api_env_presence_log"
+
+tools="$case_dir/tools-api-xtrace"
+productsign_log="$case_dir/productsign-api-xtrace.log"
+xcrun_log="$case_dir/xcrun-api-xtrace.log"
+output_pkg="$case_dir/api-xtrace-signed.pkg"
+write_sign_pkg_fakes "$tools" ok "$productsign_log"
+env -i PATH="$tools:/usr/bin:/bin" XCRUN_LOG="$xcrun_log" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=team ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=12345678-1234-1234-1234-123456789abc ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
+    bash -x "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$output_pkg" >"$case_dir/api-xtrace.out" 2>&1
+assert_grep "--key $api_key" "$xcrun_log"
+assert_grep '--key-id KEY123' "$xcrun_log"
+assert_grep '--issuer 12345678-1234-1234-1234-123456789abc' "$xcrun_log"
+assert_no_grep "$api_key" "$case_dir/api-xtrace.out"
+assert_no_grep 'KEY123' "$case_dir/api-xtrace.out"
+assert_no_grep '12345678-1234-1234-1234-123456789abc' "$case_dir/api-xtrace.out"
 
 tools="$case_dir/tools-api-individual"
 productsign_log="$case_dir/productsign-api-individual.log"
@@ -2810,7 +2989,9 @@ assert_fails_with 'Unsupported ORCHARD_NOTARY_API_KEY_TYPE' "$case_dir/api-unsup
 test ! -e "$productsign_log"
 assert_fails_with 'Unsupported ORCHARD_NOTARY_AUTH' "$case_dir/auth-unsupported.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=bogus ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --notary-profile orchard-notary --input "$input_pkg" --output "$case_dir/auth-unsupported.pkg"
 test ! -e "$productsign_log"
-assert_fails_with 'App Store Connect API key does not exist' "$case_dir/api-missing-file.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$case_dir/missing.p8" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-file.pkg"
+missing_api_key="$case_dir/missing.p8"
+assert_fails_with 'App Store Connect API key does not exist: <notary-api-key>' "$case_dir/api-missing-file.out" env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$missing_api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" "$REPO_ROOT/scripts/sign-pkg.sh" --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/api-missing-file.pkg"
+assert_no_grep "$missing_api_key" "$case_dir/api-missing-file.out"
 test ! -e "$productsign_log"
 
 tools="$case_dir/tools-dry"
@@ -2819,17 +3000,28 @@ write_sign_pkg_fakes "$tools" ok "$productsign_log"
 env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=12345678-1234-1234-1234-123456789abc ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     "$REPO_ROOT/scripts/sign-pkg.sh" --dry-run --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/dry.pkg" >"$case_dir/dry.out" 2>&1
 assert_grep '--key' "$case_dir/dry.out"
+assert_grep '\<notary-api-key\>' "$case_dir/dry.out"
 assert_grep '--key-id' "$case_dir/dry.out"
+assert_grep '\<notary-api-key-id\>' "$case_dir/dry.out"
 assert_grep '--issuer' "$case_dir/dry.out"
+assert_grep '\<notary-issuer-id\>' "$case_dir/dry.out"
 assert_grep '--output-format' "$case_dir/dry.out"
+assert_no_grep "$api_key" "$case_dir/dry.out"
+assert_no_grep 'KEY123' "$case_dir/dry.out"
+assert_no_grep '12345678-1234-1234-1234-123456789abc' "$case_dir/dry.out"
 test ! -e "$productsign_log"
 
 env -i PATH="$tools:/usr/bin:/bin" ORCHARD_NOTARY_AUTH=api-key ORCHARD_NOTARY_API_KEY_TYPE=individual ORCHARD_NOTARY_API_KEY_PATH="$api_key" ORCHARD_NOTARY_API_KEY_ID=KEY123 ORCHARD_NOTARY_API_ISSUER_ID=stale-non-uuid ORCHARD_PAYLOAD_SIGNING_IDENTITY="$IDENTITY" \
     "$REPO_ROOT/scripts/sign-pkg.sh" --dry-run --identity "$INSTALLER_IDENTITY" --input "$input_pkg" --output "$case_dir/dry-individual.pkg" >"$case_dir/dry-individual.out" 2>&1
 assert_grep '--key' "$case_dir/dry-individual.out"
+assert_grep '\<notary-api-key\>' "$case_dir/dry-individual.out"
 assert_grep '--key-id' "$case_dir/dry-individual.out"
+assert_grep '\<notary-api-key-id\>' "$case_dir/dry-individual.out"
 assert_no_grep '--issuer' "$case_dir/dry-individual.out"
 assert_grep '--output-format' "$case_dir/dry-individual.out"
+assert_no_grep "$api_key" "$case_dir/dry-individual.out"
+assert_no_grep 'KEY123' "$case_dir/dry-individual.out"
+assert_no_grep 'stale-non-uuid' "$case_dir/dry-individual.out"
 test ! -e "$productsign_log"
 
 tools="$case_dir/tools-expand-fail"
