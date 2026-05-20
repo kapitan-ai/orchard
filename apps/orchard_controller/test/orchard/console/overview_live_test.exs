@@ -287,6 +287,7 @@ defmodule OrchardConsole.OverviewLiveTest do
     test "includes favicon meta", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
+      assert html =~ "orchard-mark.svg"
       assert html =~ "favicon-32x32.png"
     end
   end
@@ -296,9 +297,10 @@ defmodule OrchardConsole.OverviewLiveTest do
       {:ok, _view, html} = live(conn, "/console")
 
       assert html =~ "console-sidebar"
-      assert html =~ "icon-192.png"
+      assert html =~ "orchard-logo"
+      assert html =~ "orchard-mark"
+      assert html =~ "orchard-dot--gold"
       assert html =~ "Orchard"
-      assert html =~ "font-mono"
     end
 
     test "renders sidebar navigation with all items", %{conn: conn} do

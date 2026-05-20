@@ -190,22 +190,47 @@ defmodule OrchardConsole.CoreComponentsTest do
   # ===========================================================================
 
   describe "logo/1" do
-    test "renders lockup variant with icon and wordmark" do
+    test "renders lockup variant with foreground Grove mark and wordmark" do
       assigns = %{}
       html = render_heex(~H|<.logo />|)
 
-      assert html =~ "icon-192.png"
+      assert html =~ ~s(role="img")
+      assert html =~ ~s(aria-label="Orchard")
+      assert html =~ "orchard-logo"
+      assert html =~ "orchard-mark"
+      assert html =~ ~s(aria-hidden="true")
+      assert html =~ ~s(focusable="false")
+      assert html =~ "orchard-wordmark"
+      assert html =~ "orchard-dot--gold"
       assert html =~ "Orchard"
-      assert html =~ "font-mono"
-      assert html =~ "font-bold"
+      refute html =~ "icon-192.png"
+      refute html =~ "<img"
     end
 
     test "renders icon-only variant without wordmark" do
       assigns = %{}
       html = render_heex(~H|<.logo variant={:icon} />|)
 
-      assert html =~ "icon-192.png"
+      assert html =~ "orchard-mark"
+      refute html =~ "orchard-wordmark"
       refute html =~ ">Orchard<"
+    end
+
+    test "renders login variant with brand bar" do
+      assigns = %{}
+      html = render_heex(~H|<.logo variant={:login} />|)
+
+      assert html =~ "orchard-brand-bar"
+      assert html =~ "orchard-wordmark"
+      assert html |> String.split("<span></span>") |> length() == 5
+    end
+
+    test "applies animation state to the SVG mark" do
+      for state <- [:idle, :heartbeat, :cascade, :harvest] do
+        assigns = %{state: state}
+        html = render_heex(~H|<.logo state={@state} />|)
+        assert html =~ ~s(data-state="#{state}")
+      end
     end
 
     test "applies size classes" do

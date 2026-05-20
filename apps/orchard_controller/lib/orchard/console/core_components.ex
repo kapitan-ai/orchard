@@ -152,41 +152,94 @@ defmodule OrchardConsole.CoreComponents do
   @doc """
   Renders the Orchard logo lockup.
 
-  Per `docs/brand-identity.md`: icon left + wordmark right when expanded,
-  icon only when collapsed. Wordmark in monospace bold, Navy color.
+  Per `docs/brand-identity.md`: foreground Grove Focal mark plus wordmark
+  when expanded, mark only when collapsed. The mark intentionally has no plate
+  or background so it reads on light and dark surfaces.
 
   ## Variants
-    - `:lockup` - icon + "Orchard" wordmark (sidebar expanded)
-    - `:icon` - icon only (sidebar collapsed)
+    - `:lockup` - mark + "Orchard" wordmark (sidebar expanded)
+    - `:icon` - mark only (sidebar collapsed)
+    - `:login` - stacked mark + wordmark + brand bar
+
+  ## States
+    - `:idle` - static
+    - `:heartbeat` - gold focal dot breathes
+    - `:cascade` - rows light bottom-to-top
+    - `:harvest` - one-shot success burst
 
   ## Examples
 
       <.logo />
       <.logo variant={:icon} size={:sm} />
+      <.logo state={:cascade} />
   """
-  attr(:variant, :atom, default: :lockup, values: [:lockup, :icon])
+  attr(:variant, :atom, default: :lockup, values: [:lockup, :icon, :login])
   attr(:size, :atom, default: :md, values: [:sm, :md, :lg])
+
+  attr(:state, :atom,
+    default: :idle,
+    values: [:idle, :heartbeat, :cascade, :harvest]
+  )
+
   attr(:class, :string, default: "")
 
   def logo(assigns) do
     ~H"""
-    <div class={["flex items-center gap-2.5 logo-lockup", @class]}>
-      <img
-        src="/images/icon-192.png"
-        alt="Orchard"
-        class={["rounded-lg flex-shrink-0", logo_icon_size(@size)]}
-      />
+    <div
+      class={[
+        "orchard-logo logo-lockup",
+        "orchard-logo--#{@variant}",
+        @class
+      ]}
+      role="img"
+      aria-label="Orchard"
+    >
+      <.orchard_mark size={@size} state={@state} />
       <span
-        :if={@variant == :lockup}
+        :if={@variant in [:lockup, :login]}
         class={[
-          "font-mono font-bold tracking-tight text-navy dark:text-sky-400",
-          "sidebar-label",
+          "orchard-wordmark sidebar-label",
           logo_text_size(@size)
         ]}
       >
         Orchard
       </span>
+      <div :if={@variant == :login} class="orchard-brand-bar" aria-hidden="true">
+        <span></span><span></span><span></span><span></span>
+      </div>
     </div>
+    """
+  end
+
+  attr(:size, :atom, required: true)
+  attr(:state, :atom, required: true)
+
+  defp orchard_mark(assigns) do
+    ~H"""
+    <svg
+      class={["orchard-mark flex-shrink-0", logo_icon_size(@size)]}
+      data-state={@state}
+      viewBox="0 0 64 64"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <g class="orchard-row orchard-row-top">
+        <circle cx="12" cy="12" r="3.6" class="orchard-dot" />
+        <circle cx="32" cy="12" r="6" class="orchard-dot orchard-dot--gold" />
+        <circle cx="52" cy="12" r="3.6" class="orchard-dot" />
+      </g>
+      <g class="orchard-row orchard-row-mid">
+        <circle cx="12" cy="32" r="3.6" class="orchard-dot" />
+        <circle cx="32" cy="32" r="3.6" class="orchard-dot" />
+        <circle cx="52" cy="32" r="3.6" class="orchard-dot" />
+      </g>
+      <g class="orchard-row orchard-row-bot">
+        <circle cx="12" cy="52" r="3.6" class="orchard-dot" />
+        <circle cx="32" cy="52" r="3.6" class="orchard-dot" />
+        <circle cx="52" cy="52" r="3.6" class="orchard-dot" />
+      </g>
+    </svg>
     """
   end
 

@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="csrf-token" content={get_csrf_token()} />
     <title><%= if assigns[:page_title], do: "#{assigns[:page_title]} — Orchard Console", else: "Orchard Console" %></title>
-    <link rel="icon" type="image/png" sizes="32x32" href={~p"/images/favicon-32x32.png"} />
+    <link rel="icon" type="image/svg+xml" href={~p"/images/orchard-mark.svg"} />
+    <link rel="alternate icon" type="image/png" sizes="32x32" href={~p"/images/favicon-32x32.png"} />
     <link rel="apple-touch-icon" sizes="180x180" href={~p"/images/apple-touch-icon.png"} />
     <link rel="icon" type="image/png" sizes="192x192" href={~p"/images/icon-192.png"} />
     <link rel="stylesheet" href={~p"/assets/app.css"} />

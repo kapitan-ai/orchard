@@ -1,7 +1,7 @@
 # Brand Identity
 
 **Status:** Active  
-**Last Updated:** 2026-05-11
+**Last Updated:** 2026-05-20
 **Adapted from:** `kapitan-orchard/docs/designs/brand-identity.md` (v1 Jinja2/Tauri app)  
 **Product name:** Orchard Console
 
@@ -14,7 +14,7 @@ including logo, color palette, dark mode guidance, and visual guidelines.
 
 Orchard uses a **4-color brand system** (Navy, Forest, Sage, Gold) designed to communicate
 both authority ("Kapitan" heritage — command, control plane) and growth ("Orchard" — cultivation,
-inference orchestration).
+LLM orchestration, governance, and future fine-tuning).
 
 In the v2 console, brand colors serve **semantic and accent roles** rather than structural ones.
 Structural elements (backgrounds, cards, borders) use a neutral gray/slate scale for data-dense
@@ -107,66 +107,71 @@ The product is **Orchard Console**. The parent brand "Kapitan" is not surfaced i
 - Color: Navy (`#1565C0` light / `#38BDF8` dark)
 - Letter-spacing: tight (`-0.02em`)
 
-### App Icon (Neural Tree)
+### Logo Mark (Grove Focal)
 
-**Style:** Apple Liquid Glass (updated 2026-03-25, previously flat vector)
+**Style:** foreground-only geometric SVG mark, no plate or background.
 
-A neural tree rendered in translucent glass materials on a navy glass background:
-- Forest green (#1B5E20) glass trunk branching upward from a glowing root node
-- Sage green (#81C784) frosted glass spherical nodes at branch junctions with soft inner glow
-- Three gold (#FDD835) glass spheres at the crown as "fruit" (inference outputs) with specular highlights and warm halos
-- Deep navy-to-dark-navy frosted glass background with subtle gradient depth
-- Rounded superellipse (squircle) corners
-- Bold simplified silhouette designed for legibility at small sizes (32px favicon)
+The canonical Orchard mark is a 3×3 grove/grid of circular nodes:
+- Eight small Forest nodes (`#1B5E20` light / `#4ADE80` dark) arranged at x/y positions 12, 32, and 52 in a 64×64 viewBox
+- One larger Gold focal node (`#FDD835` light / `#FDE047` dark) centered in the top row at `cx=32`, `cy=12`, `r=6`
+- No navy squircle, glass plate, drop shadow, or raster-only background
+- Designed to read as a clean foreground glyph on both light and dark UI surfaces, closer to the surface-independent behavior of the Claude and ChatGPT marks
 
-Represents: neural network (AI/inference) + tree (orchard/growth/cultivation)
+Represents: a cultivated model/governance/orchestration matrix with one ripe focal output. The warm orchard metaphor leads; orchestration and governance are reinforced by surrounding copy, UI context, and optional motion states rather than extra lines inside the mark.
 
-**Generation details:** FLUX Pro 1.1 via fal.ai, forest green variant, seed 42.
-Source prompt and iteration history preserved in project design notes.
+**Design source:** Claude Design handoff, `Kapitan Orchard Logo Design`, final user-selected direction: original Grove Focal. The user explicitly preferred it over the later Grove Lanes sharpening.
 
 ### Combined Lockup
 
 **Expanded sidebar / login page:**
-Icon on the left, wordmark on the right, vertically center-aligned.
+Foreground Grove mark on the left, wordmark on the right, vertically center-aligned.
 
 ```
-┌──────┐
-│ 🌳   │  Orchard
-└──────┘
+  ● ● ●  Orchard
+  ● ● ●
+  ● ● ●
 ```
+
+The top-center node is Gold and larger than the Forest nodes.
 
 **Collapsed sidebar:**
-Icon only (no text).
+Mark only (no text).
 
 ```
-┌──────┐
-│ 🌳   │
-└──────┘
+  ● ● ●
+  ● ● ●
+  ● ● ●
 ```
 
 **Login page (centered):**
-Icon above, wordmark below (exception to sidebar rule — login is a centered composition).
+Mark above, wordmark below (exception to sidebar rule — login is a centered composition).
 
 ```
-     ┌──────┐
-     │ 🌳   │
-     └──────┘
+     ● ● ●
+     ● ● ●
+     ● ● ●
      Orchard
   ████████████   ← brand bar (decorative, below lockup)
 ```
 
 ### Favicon
 
-Use the Liquid Glass neural tree icon at generated sizes. The bold silhouette and
-high-contrast gold-on-navy design remains legible at 32x32 and 16x16.
+Use the foreground Grove Focal SVG as the primary favicon:
 
-All favicon/PWA assets are regenerated from the 1024×1024 master using `sips`:
-
-```bash
-sips -z 32 32 assets/brand/orchard-app-icon-1024.png --out apps/orchard_controller/priv/static/images/favicon-32x32.png
-sips -z 180 180 assets/brand/orchard-app-icon-1024.png --out apps/orchard_controller/priv/static/images/apple-touch-icon.png
-sips -z 192 192 assets/brand/orchard-app-icon-1024.png --out apps/orchard_controller/priv/static/images/icon-192.png
+```html
+<link rel="icon" type="image/svg+xml" href="/images/orchard-mark.svg">
 ```
+
+The SVG includes light/dark color declarations for browsers that honor `prefers-color-scheme` inside SVG documents. PNG fallbacks remain available for legacy browser and platform surfaces:
+
+| Asset | Purpose | Notes |
+|-------|---------|-------|
+| `/images/orchard-mark.svg` | Primary favicon / reusable foreground mark | Canonical Grove Focal SVG; no background plate |
+| `/images/favicon-32x32.png` | Alternate 32px favicon fallback | Legacy raster fallback |
+| `/images/apple-touch-icon.png` | Apple touch icon | Legacy raster platform asset |
+| `/images/icon-192.png` | 192px PWA/manifest-style fallback | Legacy raster platform asset |
+
+Do not regenerate the canonical mark from a raster master. Update `orchard-mark.svg` and the Phoenix component SVG together when changing the mark geometry.
 
 ### Phoenix LiveView Component
 
@@ -190,7 +195,7 @@ defmodule OrchardWeb.Components.Logo do
 
   def logo(assigns) do
     ~H"""
-    <%# Implementation: inline SVG or <img> referencing /images/... %>
+    <%# Implementation: inline foreground Grove Focal SVG mark; no image plate. %>
     """
   end
 end
@@ -299,34 +304,30 @@ of truth for custom Orchard brand tokens.
 
 ### Source Files (in repo)
 
-```
-assets/brand/
-├── orchard-icon-neural-v5e.svg         # Legacy flat vector icon (v2)
-├── orchard-app-icon-1024.png           # Master PNG (1024×1024) — Liquid Glass
-├── orchard-logo-medium-transparent.png # Wordmark 200×66
-├── orchard-logo-large-transparent.png  # Wordmark 240×76
-└── orchard-logo-xlarge-transparent.png # Wordmark 360×112
-```
-
-### Web-Served (generated)
+The canonical web mark is stored with the served Console assets so Phoenix can serve it directly and tests can assert the exact browser path:
 
 ```
 apps/orchard_controller/priv/static/images/
-├── logo-transparent.png    # Wordmark for login/header
-├── favicon.png             # 32×32 icon
-├── favicon-32x32.png       # 32×32 icon
-├── apple-touch-icon.png    # 180×180 icon
-└── icon-192.png            # 192×192 PWA icon
+└── orchard-mark.svg        # Canonical foreground Grove Focal SVG
 ```
 
-### Regenerating Web Assets
+Legacy raster/vector assets may remain in the repository for historical reference and platform fallbacks, but they are not the canonical logo contract.
 
-```bash
-# From repo root
-sips -z 32 32 assets/brand/orchard-app-icon-1024.png --out apps/orchard_controller/priv/static/images/favicon-32x32.png
-sips -z 180 180 assets/brand/orchard-app-icon-1024.png --out apps/orchard_controller/priv/static/images/apple-touch-icon.png
-sips -z 192 192 assets/brand/orchard-app-icon-1024.png --out apps/orchard_controller/priv/static/images/icon-192.png
+### Web-Served Assets
+
 ```
+apps/orchard_controller/priv/static/images/
+├── orchard-mark.svg        # Primary SVG favicon and reusable foreground mark
+├── favicon.png             # Legacy 32×32 PNG fallback
+├── favicon-32x32.png       # Legacy 32×32 PNG fallback
+├── apple-touch-icon.png    # Legacy 180×180 platform fallback
+├── icon-192.png            # Legacy 192×192 platform fallback
+└── logo-transparent.png    # Legacy raster wordmark asset
+```
+
+### Updating Web Assets
+
+Update `orchard-mark.svg` directly for SVG/favicon changes. Keep the inline SVG in `OrchardConsole.CoreComponents.logo/1` geometrically identical to `orchard-mark.svg`. Regenerate PNG fallbacks only when a platform surface specifically requires updated raster assets.
 
 ---
 
@@ -342,8 +343,8 @@ sips -z 192 192 assets/brand/orchard-app-icon-1024.png --out apps/orchard_contro
 | Structure colors | Brand colors for structure | Neutral slate scale | Data readability in operator console |
 | Dark mode | Not defined | Full dark mode mapping | Console may be used in dim environments |
 | Template engine | Jinja2 macros | Phoenix function components | LiveView architecture |
-| Icon generation | `cargo tauri icon` | `sips` (macOS native) | No Tauri dependency |
-| Lockup layout | Text above, bar below | Icon left + text right (sidebar) | Vertical space efficiency |
+| Icon generation | `cargo tauri icon` | Foreground inline SVG + SVG favicon | Surface-independent mark; no raster master required |
+| Lockup layout | Text above, bar below | Mark left + text right (sidebar) | Vertical space efficiency |
 
 ### v1 Palette Decision (Preserved)
 
@@ -368,14 +369,15 @@ Refined from 5 to 4 colors by removing mid-green (#43A047) overlap.
 
 ### v3 Icon Refresh — Liquid Glass (2026-03-25)
 
-- Replaced flat vector neural tree icon (v5e SVG) with Apple Liquid Glass style
-- Generated via FLUX Pro 1.1 on fal.ai (forest green variant, seed 42)
-- Preserves neural tree motif: trunk → branches → 3 gold fruit spheres
-- Tree rendered in translucent forest green glass (brand-faithful #1B5E20)
-- Gold spheres with specular highlights and warm halos
-- Bold simplified silhouette optimized for favicon legibility at 32px
-- Navy frosted glass background with subtle gradient depth
-- Works on both light and dark dashboard backgrounds as self-contained squircle
-- Evaluated against: Recraft V3 (digital/realistic/vector), FLUX Pro cyan variant,
-  warm emerald variants, multiple seed explorations
-- Legacy SVG retained as `orchard-icon-neural-v5e.svg` for reference
+- Historical icon refresh that replaced the flat vector neural tree icon with a self-contained Liquid Glass squircle
+- Retained only as legacy design history after the 2026-05-20 foreground-mark refresh
+
+### v4 Logo Refresh — Grove Focal (2026-05-20)
+
+- Replaced the self-contained dark/glass icon plate with a foreground-only SVG mark
+- Selected the original Grove Focal direction from the Claude Design handoff after comparing Grove, Bloom, and Grove Lanes variants
+- Preserves the Orchard cultivation metaphor while broadening beyond inference into LLM orchestration, governance, and future fine-tuning
+- Uses a 3×3 dot grid: Forest nodes plus a single larger Gold focal node in the top center
+- Designed to work on light and dark UI surfaces without a background plate
+- Implemented as inline SVG in `OrchardConsole.CoreComponents.logo/1` plus primary SVG favicon at `/images/orchard-mark.svg`
+- Optional motion states (`heartbeat`, `cascade`, `harvest`) are CSS-only and disabled under reduced-motion preferences

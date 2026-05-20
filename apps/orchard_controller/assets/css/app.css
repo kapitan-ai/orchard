@@ -66,6 +66,140 @@
 }
 
 /* ==========================================================================
+   Orchard Logo — foreground Grove Focal mark
+   ========================================================================== */
+
+.orchard-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.625rem;
+}
+
+.orchard-logo--icon {
+  display: inline-flex;
+}
+
+.orchard-logo--login {
+  flex-direction: column;
+  align-items: center;
+  gap: 0.875rem;
+}
+
+.orchard-wordmark {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-navy);
+}
+
+@media (prefers-color-scheme: dark) {
+  .orchard-wordmark {
+    color: var(--color-sky-400);
+  }
+}
+
+.orchard-brand-bar {
+  display: flex;
+  height: 3px;
+  width: 120px;
+  overflow: hidden;
+  border-radius: 2px;
+}
+
+.orchard-brand-bar > span {
+  flex: 1;
+}
+
+.orchard-brand-bar > span:nth-child(1) { background: var(--color-navy); }
+.orchard-brand-bar > span:nth-child(2) { background: var(--color-forest); }
+.orchard-brand-bar > span:nth-child(3) { background: var(--color-sage); }
+.orchard-brand-bar > span:nth-child(4) { background: var(--color-gold); }
+@media (prefers-color-scheme: dark) {
+  .orchard-brand-bar > span:nth-child(1) { background: var(--color-sky-400); }
+  .orchard-brand-bar > span:nth-child(2) { background: var(--color-emerald-400); }
+  .orchard-brand-bar > span:nth-child(3) { background: var(--color-slate-800); }
+  .orchard-brand-bar > span:nth-child(4) { background: var(--color-yellow-300); }
+}
+
+.orchard-dot {
+  fill: var(--color-forest);
+}
+
+.orchard-dot--gold {
+  fill: var(--color-gold);
+}
+
+@media (prefers-color-scheme: dark) {
+  .orchard-dot {
+    fill: var(--color-emerald-400);
+  }
+
+  .orchard-dot--gold {
+    fill: var(--color-yellow-300);
+  }
+}
+
+@keyframes orchard-heartbeat {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.18); opacity: 0.85; }
+}
+
+.orchard-mark[data-state="heartbeat"] .orchard-dot--gold {
+  animation: orchard-heartbeat 2.4s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+@keyframes orchard-cascade-bot {
+  0%, 22%, 100% { opacity: 0.28; }
+  32%, 85% { opacity: 1; }
+}
+
+@keyframes orchard-cascade-mid {
+  0%, 36%, 100% { opacity: 0.28; }
+  46%, 85% { opacity: 1; }
+}
+
+@keyframes orchard-cascade-top {
+  0%, 50%, 100% { opacity: 0.28; }
+  60%, 85% { opacity: 1; }
+}
+
+.orchard-mark[data-state="cascade"] .orchard-row-bot {
+  animation: orchard-cascade-bot 2.4s ease-in-out infinite;
+}
+
+.orchard-mark[data-state="cascade"] .orchard-row-mid {
+  animation: orchard-cascade-mid 2.4s ease-in-out infinite;
+}
+
+.orchard-mark[data-state="cascade"] .orchard-row-top {
+  animation: orchard-cascade-top 2.4s ease-in-out infinite;
+}
+
+@keyframes orchard-harvest-burst {
+  0% { transform: scale(1); filter: drop-shadow(0 0 0 transparent); }
+  15% { transform: scale(1.45); filter: drop-shadow(0 0 6px rgba(253, 216, 53, 0.9)); }
+  45% { transform: scale(1.10); filter: drop-shadow(0 0 2px rgba(253, 216, 53, 0.4)); }
+  100% { transform: scale(1); filter: drop-shadow(0 0 0 transparent); }
+}
+
+@keyframes orchard-harvest-dim {
+  0%, 100% { opacity: 1; }
+  10%, 50% { opacity: 0.45; }
+}
+
+.orchard-mark[data-state="harvest"] .orchard-dot--gold {
+  animation: orchard-harvest-burst 1.4s ease-out 1 forwards;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+.orchard-mark[data-state="harvest"] .orchard-dot:not(.orchard-dot--gold) {
+  animation: orchard-harvest-dim 1.4s ease-out 1 forwards;
+}
+
+/* ==========================================================================
    Console Shell — sidebar transitions
    ========================================================================== */
 
@@ -127,6 +261,14 @@
     .console-sidebar-version,
     .console-connection-banner {
     transition: none;
+  }
+
+  .orchard-mark[data-state="heartbeat"] .orchard-dot--gold,
+  .orchard-mark[data-state="cascade"] .orchard-row-bot,
+  .orchard-mark[data-state="cascade"] .orchard-row-mid,
+  .orchard-mark[data-state="cascade"] .orchard-row-top,
+  .orchard-mark[data-state="harvest"] .orchard-dot {
+    animation: none;
   }
 }
 
