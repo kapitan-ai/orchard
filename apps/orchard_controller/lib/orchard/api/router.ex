@@ -18,6 +18,9 @@ defmodule Orchard.API.Router do
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
+    # ThemeInitial only assigns the validated theme cookie; it runs before Auth so
+    # the assign is present for any plug that renders, independent of auth outcome.
+    plug(OrchardConsole.Plug.ThemeInitial)
     plug(OrchardConsole.Auth)
     plug(:fetch_live_flash)
     plug(:put_root_layout, html: {OrchardConsole.Layouts, :root})

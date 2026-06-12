@@ -17,6 +17,17 @@ const QUICKSTART_COOKIE_OPTIONS = {
   maxAge: 31536000
 }
 
+// Keep this client contract aligned with docs/DESIGN.md §13.1 and ThemeInitial.
+const THEME_COOKIE_KEY = "orchard_console_theme"
+const THEME_MODES = ["system", "light", "dark"]
+const THEME_COOKIE_OPTIONS = {
+  path: "/console",
+  sameSite: "Lax",
+  maxAge: 31536000,
+  validValues: THEME_MODES
+}
+const THEME_MEDIA_QUERY = "(prefers-color-scheme: dark)"
+
 function readBooleanCookie(key) {
   let cookie = document.cookie
     .split(";")
@@ -40,6 +51,176 @@ function writeBooleanCookie(key, enabled, options = QUICKSTART_COOKIE_OPTIONS) {
   if (window.location.protocol === "https:") parts.push("Secure")
 
   document.cookie = parts.join("; ")
+}
+
+function writeStringCookie(key, value, options = THEME_COOKIE_OPTIONS) {
+  // Blank values delete the cookie for future reset/clear affordances.
+  let shouldDelete = value === null || value === undefined || value === ""
+  if (!shouldDelete && options.validValues && !options.validValues.includes(String(value))) return false
+
+  let cookieValue = shouldDelete ? "" : encodeURIComponent(String(value))
+  let parts = [
+    `${key}=${cookieValue}`,
+    `Path=${options.path}`,
+    `SameSite=${options.sameSite}`,
+    `Max-Age=${shouldDelete ? 0 : options.maxAge}`
+  ]
+
+  if (window.location.protocol === "https:") parts.push("Secure")
+
+  document.cookie = parts.join("; ")
+  return true
+}
+
+/**
+ * ThemeToggle — switches the Console between System, Light, and Dark modes.
+ */
+Hooks.ThemeToggle = {
+  mounted() {
+    this.mediaQuery = window.matchMedia ? window.matchMedia(THEME_MEDIA_QUERY) : null
+    this._refreshSegments()
+
+    this._onClick = (event) => {
+      let segment = event.target.closest("[data-theme-mode]")
+      if (!segment || !this.el.contains(segment)) return
+
+      event.preventDefault()
+      this._selectMode(segment.dataset.themeMode, {focus: true})
+    }
+
+    this._onKeydown = (event) => {
+      let segment = event.target.closest("[data-theme-mode]")
+      if (!segment || !this.el.contains(segment)) return
+
+      let currentIndex = this.segments.indexOf(segment)
+      if (currentIndex === -1) return
+
+      let nextIndex = null
+      switch (event.key) {
+        case "ArrowLeft":
+        case "ArrowUp":
+          nextIndex = (currentIndex - 1 + this.segments.length) % this.segments.length
+          break
+        case "ArrowRight":
+        case "ArrowDown":
+          nextIndex = (currentIndex + 1) % this.segments.length
+          break
+        case "Home":
+          nextIndex = 0
+          break
+        case "End":
+          nextIndex = this.segments.length - 1
+          break
+        case " ":
+        case "Spacebar":
+        case "Enter":
+          event.preventDefault()
+          this._selectMode(segment.dataset.themeMode, {focus: true})
+          return
+        default:
+          return
+      }
+
+      event.preventDefault()
+      this._selectMode(this.segments[nextIndex].dataset.themeMode, {focus: true})
+    }
+
+    this._onMediaChange = () => {
+      if (this._currentMode() === "system") this._applyMode("system", {persist: false})
+    }
+
+    this.el.addEventListener("click", this._onClick)
+    this.el.addEventListener("keydown", this._onKeydown)
+    this._addMediaListener()
+    this._applyMode(this._currentMode(), {persist: false})
+  },
+
+  updated() {
+    this._refreshSegments()
+    this._syncSegments(this._currentMode())
+  },
+
+  destroyed() {
+    this.el.removeEventListener("click", this._onClick)
+    this.el.removeEventListener("keydown", this._onKeydown)
+    this._removeMediaListener()
+  },
+
+  _refreshSegments() {
+    this.segments = Array.from(this.el.querySelectorAll("[data-theme-mode]"))
+      .filter((segment) => this._validMode(segment.dataset.themeMode))
+  },
+
+  _validMode(mode) {
+    return THEME_MODES.includes(mode)
+  },
+
+  _currentMode() {
+    let mode = document.documentElement.dataset.themeMode
+    return this._validMode(mode) ? mode : "system"
+  },
+
+  _selectMode(mode, {focus = false} = {}) {
+    if (!this._validMode(mode)) return
+
+    this._applyMode(mode)
+    if (focus) this._focusMode(mode)
+  },
+
+  _applyMode(mode, {persist = true} = {}) {
+    if (!this._validMode(mode)) return
+
+    if (persist) writeStringCookie(THEME_COOKIE_KEY, mode, THEME_COOKIE_OPTIONS)
+
+    document.documentElement.dataset.themeMode = mode
+    document.documentElement.dataset.theme = this._resolvedTheme(mode)
+    this._syncSegments(mode)
+  },
+
+  _resolvedTheme(mode) {
+    if (mode === "system") {
+      return this.mediaQuery && this.mediaQuery.matches ? "dark" : "light"
+    }
+
+    return mode
+  },
+
+  _syncSegments(activeMode) {
+    this._refreshSegments()
+
+    this.segments.forEach((segment) => {
+      let selected = segment.dataset.themeMode === activeMode
+      segment.setAttribute("aria-checked", selected ? "true" : "false")
+      // Marker class for browser smoke/devtools; styling is driven by aria-checked variants.
+      segment.classList.toggle("theme-toggle-active", selected)
+      segment.tabIndex = selected ? 0 : -1
+    })
+  },
+
+  _focusMode(mode) {
+    let segment = this.segments.find((item) => item.dataset.themeMode === mode)
+    if (segment) segment.focus()
+  },
+
+  _addMediaListener() {
+    if (!this.mediaQuery) return
+
+    if (this.mediaQuery.addEventListener) {
+      this.mediaQuery.addEventListener("change", this._onMediaChange)
+    } else if (this.mediaQuery.addListener) {
+      this.mediaQuery.addListener(this._onMediaChange)
+    }
+  },
+
+  _removeMediaListener() {
+    if (!this.mediaQuery) return
+
+    if (this.mediaQuery.removeEventListener) {
+      this.mediaQuery.removeEventListener("change", this._onMediaChange)
+    } else if (this.mediaQuery.removeListener) {
+      this.mediaQuery.removeListener(this._onMediaChange)
+    }
+  }
 }
 
 /**

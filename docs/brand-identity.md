@@ -119,6 +119,8 @@ The canonical Orchard mark is a 3×3 grove/grid of circular nodes:
 
 Represents: a cultivated model/governance/orchestration matrix with one ripe focal output. The warm orchard metaphor leads; orchestration and governance are reinforced by surrounding copy, UI context, and optional motion states rather than extra lines inside the mark.
 
+Per-circle SVG fills are written as direct `fill=` presentation attributes for portability across embeds and tooling that may strip style blocks. CSS in the Console stylesheet and inside the standalone SVG continues to drive theme and animation behavior; CSS `fill` rules win over presentation attributes by specificity. The standalone SVG intentionally retains its internal `<style>` and `@media (prefers-color-scheme: dark)` block so favicon and `<img>` usages can adapt to OS dark mode, even though app-level forced theme cannot control an external SVG document.
+
 **Design source:** Claude Design handoff, `Kapitan Orchard Logo Design`, final user-selected direction: original Grove Focal. The user explicitly preferred it over the later Grove Lanes sharpening.
 
 ### Combined Lockup
@@ -153,6 +155,10 @@ Mark above, wordmark below (exception to sidebar rule — login is a centered co
      Orchard
   ████████████   ← brand bar (decorative, below lockup)
 ```
+
+#### Login / marketing voltage variant
+
+`:voltage` enlarges the Gold focal dot to `r=7` for centered Login compositions, marketing hero blocks, and release-page surfaces. The canonical product mark (sidebar, favicon, lockups) stays at `r=6`.
 
 ### Favicon
 
@@ -225,6 +231,10 @@ end
 4. **Monospace for machine data** — Token counts, request IDs, latency always monospace
 5. **Restraint over variety** — Fewer colors, sharper hierarchy, cleaner borders
 6. **LiveView-native interactions** — No page reloads; use transitions for state changes
+
+### Theme Mode Preference
+
+Console users may choose System (default), Light, or Dark from the sidebar theme control. System follows the operating-system color scheme, while Light and Dark pin the Console independently. The brand-color luminosity mapping is unchanged: Navy, Forest, Sage, Gold, and structural slate tokens keep the same light/dark roles defined below.
 
 ---
 

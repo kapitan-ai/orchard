@@ -106,7 +106,13 @@ defmodule OrchardConsole.CoreComponents do
       "M5.25 14.25h13.5m-13.5 0a3 3 0 0 1-3-3m3 3a3 3 0 1 0 0 6h13.5a3 3 0 1 0 0-6m-16.5-3a3 3 0 0 1 3-3h13.5a3 3 0 0 1 3 3m-19.5 0a4.5 4.5 0 0 1 .9-2.7L5.737 5.1a3.375 3.375 0 0 1 2.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 0 1 .9 2.7m0 0a3 3 0 0 1-3 3m0 3h.008v.008h-.008v-.008Zm0-6h.008v.008h-.008v-.008ZM6.75 14.25h.008v.008H6.75v-.008Z",
     "hero-check" => "m4.5 12.75 6 6 9-13.5",
     "hero-key" =>
-      "M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z"
+      "M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1 1 21.75 8.25Z",
+    "hero-computer-desktop" =>
+      "M9 17.25v1.007a3 3 0 0 1-.879 2.122L7.5 21h9l-.621-.621A3 3 0 0 1 15 18.257V17.25m6-12V15a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 15V5.25m18 0A2.25 2.25 0 0 0 18.75 3H5.25A2.25 2.25 0 0 0 3 5.25m18 0V12a2.25 2.25 0 0 1-2.25 2.25H5.25A2.25 2.25 0 0 1 3 12V5.25",
+    "hero-sun" =>
+      "M12 3v2.25m6.364.386-1.591 1.591M21 12h-2.25m-.386 6.364-1.591-1.591M12 18.75V21m-4.773-4.227-1.591 1.591M5.25 12H3m4.227-4.773L5.636 5.636M15.75 12a3.75 3.75 0 1 1-7.5 0 3.75 3.75 0 0 1 7.5 0Z",
+    "hero-moon" =>
+      "M21.752 15.002A9.718 9.718 0 0 1 18 15.75c-5.385 0-9.75-4.365-9.75-9.75 0-1.33.266-2.597.748-3.752A9.753 9.753 0 0 0 3 11.25C3 16.635 7.365 21 12.75 21a9.753 9.753 0 0 0 9.002-5.998Z"
   }
 
   @doc """
@@ -160,6 +166,7 @@ defmodule OrchardConsole.CoreComponents do
     - `:lockup` - mark + "Orchard" wordmark (sidebar expanded)
     - `:icon` - mark only (sidebar collapsed)
     - `:login` - stacked mark + wordmark + brand bar
+    - `:voltage` - stacked login/marketing lockup with enlarged Gold focal dot
 
   ## States
     - `:idle` - static
@@ -173,7 +180,7 @@ defmodule OrchardConsole.CoreComponents do
       <.logo variant={:icon} size={:sm} />
       <.logo state={:cascade} />
   """
-  attr(:variant, :atom, default: :lockup, values: [:lockup, :icon, :login])
+  attr(:variant, :atom, default: :lockup, values: [:lockup, :icon, :login, :voltage])
   attr(:size, :atom, default: :md, values: [:sm, :md, :lg])
 
   attr(:state, :atom,
@@ -194,9 +201,13 @@ defmodule OrchardConsole.CoreComponents do
       role="img"
       aria-label="Orchard"
     >
-      <.orchard_mark size={@size} state={@state} />
+      <.orchard_mark
+        size={@size}
+        state={@state}
+        focal_radius={if @variant == :voltage, do: 7, else: 6}
+      />
       <span
-        :if={@variant in [:lockup, :login]}
+        :if={@variant in [:lockup, :login, :voltage]}
         class={[
           "orchard-wordmark sidebar-label",
           logo_text_size(@size)
@@ -204,7 +215,7 @@ defmodule OrchardConsole.CoreComponents do
       >
         Orchard
       </span>
-      <div :if={@variant == :login} class="orchard-brand-bar" aria-hidden="true">
+      <div :if={@variant in [:login, :voltage]} class="orchard-brand-bar" aria-hidden="true">
         <span></span><span></span><span></span><span></span>
       </div>
     </div>
@@ -213,6 +224,7 @@ defmodule OrchardConsole.CoreComponents do
 
   attr(:size, :atom, required: true)
   attr(:state, :atom, required: true)
+  attr(:focal_radius, :integer, default: 6)
 
   defp orchard_mark(assigns) do
     ~H"""
@@ -225,19 +237,19 @@ defmodule OrchardConsole.CoreComponents do
       focusable="false"
     >
       <g class="orchard-row orchard-row-top">
-        <circle cx="12" cy="12" r="3.6" class="orchard-dot" />
-        <circle cx="32" cy="12" r="6" class="orchard-dot orchard-dot--gold" />
-        <circle cx="52" cy="12" r="3.6" class="orchard-dot" />
+        <circle cx="12" cy="12" r="3.6" fill="#1B5E20" class="orchard-dot" />
+        <circle cx="32" cy="12" r={@focal_radius} fill="#FDD835" class="orchard-dot orchard-dot--gold" />
+        <circle cx="52" cy="12" r="3.6" fill="#1B5E20" class="orchard-dot" />
       </g>
       <g class="orchard-row orchard-row-mid">
-        <circle cx="12" cy="32" r="3.6" class="orchard-dot" />
-        <circle cx="32" cy="32" r="3.6" class="orchard-dot" />
-        <circle cx="52" cy="32" r="3.6" class="orchard-dot" />
+        <circle cx="12" cy="32" r="3.6" fill="#1B5E20" class="orchard-dot" />
+        <circle cx="32" cy="32" r="3.6" fill="#1B5E20" class="orchard-dot" />
+        <circle cx="52" cy="32" r="3.6" fill="#1B5E20" class="orchard-dot" />
       </g>
       <g class="orchard-row orchard-row-bot">
-        <circle cx="12" cy="52" r="3.6" class="orchard-dot" />
-        <circle cx="32" cy="52" r="3.6" class="orchard-dot" />
-        <circle cx="52" cy="52" r="3.6" class="orchard-dot" />
+        <circle cx="12" cy="52" r="3.6" fill="#1B5E20" class="orchard-dot" />
+        <circle cx="32" cy="52" r="3.6" fill="#1B5E20" class="orchard-dot" />
+        <circle cx="52" cy="52" r="3.6" fill="#1B5E20" class="orchard-dot" />
       </g>
     </svg>
     """
@@ -946,6 +958,91 @@ defmodule OrchardConsole.CoreComponents do
   defp button_variant(:danger),
     do:
       "bg-red-600 text-white hover:bg-red-700 focus-visible:ring-red-500 dark:bg-red-500 dark:hover:bg-red-400"
+
+  # ===========================================================================
+  # Theme Toggle
+  # ===========================================================================
+
+  @doc """
+  Renders the Console theme preference control.
+
+  The ThemeToggle JavaScript hook reads and writes the `data-theme-mode`
+  preference on `<html>`, persists it in a Console-scoped cookie, and updates
+  the resolved `data-theme` immediately without a server round-trip.
+
+  This is a single-instance sidebar-footer control; do not render multiple
+  copies on one page because the hook uses the stable `theme-toggle` DOM id.
+  """
+  attr(:class, :string, default: "")
+
+  def theme_toggle(assigns) do
+    ~H"""
+    <div
+      id="theme-toggle"
+      phx-hook="ThemeToggle"
+      role="radiogroup"
+      aria-label="Color theme"
+      class={[
+        "inline-flex rounded-md bg-slate-100 p-0.5 ring-1 ring-slate-200",
+        "dark:bg-slate-800 dark:ring-slate-700",
+        @class
+      ]}
+    >
+      <button
+        type="button"
+        role="radio"
+        aria-label="Use system theme"
+        aria-checked="false"
+        data-theme-mode="system"
+        tabindex="0"
+        class={theme_segment_class()}
+      >
+        <.icon name="hero-computer-desktop" class="h-4 w-4 flex-shrink-0" />
+        <span class="sidebar-label">System</span>
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-label="Use light theme"
+        aria-checked="false"
+        data-theme-mode="light"
+        tabindex="-1"
+        class={theme_segment_class()}
+      >
+        <.icon name="hero-sun" class="h-4 w-4 flex-shrink-0" />
+        <span class="sidebar-label">Light</span>
+      </button>
+      <button
+        type="button"
+        role="radio"
+        aria-label="Use dark theme"
+        aria-checked="false"
+        data-theme-mode="dark"
+        tabindex="-1"
+        class={theme_segment_class()}
+      >
+        <.icon name="hero-moon" class="h-4 w-4 flex-shrink-0" />
+        <span class="sidebar-label">Dark</span>
+      </button>
+    </div>
+    """
+  end
+
+  defp theme_segment_class do
+    Enum.join(
+      [
+        "inline-flex min-w-0 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium",
+        "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy/40",
+        "focus-visible:ring-offset-2 focus-visible:ring-offset-slate-100",
+        "text-slate-500 hover:bg-white/60 hover:text-slate-900",
+        "aria-checked:bg-white aria-checked:text-slate-900 aria-checked:shadow-sm",
+        "dark:text-slate-400 dark:hover:bg-slate-700/60 dark:hover:text-slate-100",
+        "dark:focus-visible:ring-sky-400/40 dark:focus-visible:ring-offset-slate-800",
+        "dark:aria-checked:bg-slate-700 dark:aria-checked:text-slate-50"
+      ],
+      " "
+    )
+  end
 
   # ===========================================================================
   # Form Primitives

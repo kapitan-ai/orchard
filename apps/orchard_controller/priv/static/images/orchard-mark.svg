@@ -10,18 +10,18 @@
     }
   </style>
   <g class="orchard-row orchard-row-top">
-    <circle cx="12" cy="12" r="3.6" class="orchard-dot" />
-    <circle cx="32" cy="12" r="6" class="orchard-dot orchard-dot--gold" />
-    <circle cx="52" cy="12" r="3.6" class="orchard-dot" />
+    <circle cx="12" cy="12" r="3.6" fill="#1B5E20" class="orchard-dot" />
+    <circle cx="32" cy="12" r="6" fill="#FDD835" class="orchard-dot orchard-dot--gold" />
+    <circle cx="52" cy="12" r="3.6" fill="#1B5E20" class="orchard-dot" />
   </g>
   <g class="orchard-row orchard-row-mid">
-    <circle cx="12" cy="32" r="3.6" class="orchard-dot" />
-    <circle cx="32" cy="32" r="3.6" class="orchard-dot" />
-    <circle cx="52" cy="32" r="3.6" class="orchard-dot" />
+    <circle cx="12" cy="32" r="3.6" fill="#1B5E20" class="orchard-dot" />
+    <circle cx="32" cy="32" r="3.6" fill="#1B5E20" class="orchard-dot" />
+    <circle cx="52" cy="32" r="3.6" fill="#1B5E20" class="orchard-dot" />
   </g>
   <g class="orchard-row orchard-row-bot">
-    <circle cx="12" cy="52" r="3.6" class="orchard-dot" />
-    <circle cx="32" cy="52" r="3.6" class="orchard-dot" />
-    <circle cx="52" cy="52" r="3.6" class="orchard-dot" />
+    <circle cx="12" cy="52" r="3.6" fill="#1B5E20" class="orchard-dot" />
+    <circle cx="32" cy="52" r="3.6" fill="#1B5E20" class="orchard-dot" />
+    <circle cx="52" cy="52" r="3.6" fill="#1B5E20" class="orchard-dot" />
   </g>
 </svg>

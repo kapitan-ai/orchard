@@ -1,3 +1,57 @@
+defmodule OrchardConsole.RootLayoutThemeTest do
+  use Orchard.ConnCase, async: false
+
+  @moduletag :live
+  @moduletag :db
+
+  describe "root layout data-theme attribute" do
+    test "defaults to system when no theme cookie", %{conn: conn} do
+      conn = get(conn, "/console")
+
+      conn
+      |> html_response(200)
+      |> assert_root_theme("system")
+    end
+
+    test "honors dark theme cookie", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_cookie("orchard_console_theme", "dark")
+        |> get("/console")
+
+      conn
+      |> html_response(200)
+      |> assert_root_theme("dark")
+    end
+
+    test "honors light theme cookie", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_cookie("orchard_console_theme", "light")
+        |> get("/console")
+
+      conn
+      |> html_response(200)
+      |> assert_root_theme("light")
+    end
+
+    test "falls back to system on tampered theme cookie", %{conn: conn} do
+      conn =
+        conn
+        |> put_req_cookie("orchard_console_theme", "rainbow")
+        |> get("/console")
+
+      conn
+      |> html_response(200)
+      |> assert_root_theme("system")
+    end
+  end
+
+  defp assert_root_theme(html, theme) do
+    assert html =~ ~r(<html[^>]*data-theme="#{theme}")
+  end
+end
+
 defmodule OrchardConsole.LayoutsTest do
   use Orchard.ConnCase, async: true
 

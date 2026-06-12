@@ -1,5 +1,6 @@
 /* Orchard Console — Tailwind v4 entry point */
 @import "tailwindcss";
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
 /* Brand palette — semantic/accent colors per docs/brand-identity.md */
 @theme {
@@ -79,7 +80,8 @@
   display: inline-flex;
 }
 
-.orchard-logo--login {
+.orchard-logo--login,
+.orchard-logo--voltage {
   flex-direction: column;
   align-items: center;
   gap: 0.875rem;
@@ -92,7 +94,7 @@
   color: var(--color-navy);
 }
 
-@media (prefers-color-scheme: dark) {
+@variant dark {
   .orchard-wordmark {
     color: var(--color-sky-400);
   }
@@ -114,7 +116,7 @@
 .orchard-brand-bar > span:nth-child(2) { background: var(--color-forest); }
 .orchard-brand-bar > span:nth-child(3) { background: var(--color-sage); }
 .orchard-brand-bar > span:nth-child(4) { background: var(--color-gold); }
-@media (prefers-color-scheme: dark) {
+@variant dark {
   .orchard-brand-bar > span:nth-child(1) { background: var(--color-sky-400); }
   .orchard-brand-bar > span:nth-child(2) { background: var(--color-emerald-400); }
   .orchard-brand-bar > span:nth-child(3) { background: var(--color-slate-800); }
@@ -129,7 +131,7 @@
   fill: var(--color-gold);
 }
 
-@media (prefers-color-scheme: dark) {
+@variant dark {
   .orchard-dot {
     fill: var(--color-emerald-400);
   }
@@ -239,6 +241,16 @@
   overflow: hidden;
 }
 
+.sidebar-collapsed #theme-toggle {
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.sidebar-collapsed #theme-toggle [data-theme-mode] {
+  width: 100%;
+  gap: 0;
+}
+
 /* Center logo icon when sidebar is collapsed */
 .sidebar-collapsed .logo-lockup {
   gap: 0;
@@ -293,7 +305,7 @@
 }
 
 /* Dark mode banner */
-@media (prefers-color-scheme: dark) {
+@variant dark {
   .console-connection-banner {
     color: #fde68a; /* amber-200 */
     background-color: rgba(120, 53, 15, 0.3); /* amber-900/30 */

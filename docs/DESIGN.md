@@ -685,3 +685,60 @@ If a future revision needs any of these, it must update this document
   document is wrong; resolve before commit.
 - This document never references planning artifacts, agent harnesses, or
   external context tools. It is a self-contained product document.
+
+---
+
+## 13. Theme Mode Control
+
+Theme mode is an explicit Console state with three valid preferences: `system`,
+`light`, and `dark`. `system` is the default and preserves the operator's OS
+appearance preference until the operator chooses a fixed mode.
+
+### 13.1 Cookie Contract
+
+- Preference is stored in the `orchard_console_theme` cookie.
+- Valid cookie values are exactly `system`, `light`, and `dark`; any missing or
+  invalid value falls back to `system`.
+- The Console reads the cookie during the browser pipeline after cookies are
+  explicitly fetched. The value is validation-only input, never trusted as a
+  broader preference object.
+- Client writes use the Console cookie convention: `Path=/console`,
+  `SameSite=Lax`, and a one-year max age.
+
+### 13.2 Root Attributes
+
+The root document carries two related attributes:
+
+- `data-theme` drives CSS. Server render emits the validated preference value;
+  a synchronous pre-paint script resolves `system` to concrete `light` or `dark`
+  before the stylesheet loads.
+- `data-theme-mode` records the operator preference for controls. It remains
+  `system` when the UI is following OS appearance.
+
+When `system` is selected, OS appearance is resolved before first paint and on
+subsequent page loads. Live OS-appearance changes require the client theme
+control to register a `matchMedia` change listener; without JavaScript,
+`system` cannot resolve and the Console uses the light selector state.
+
+Tailwind's `dark:` utilities and Console dark custom rules are keyed from
+`<html data-theme="dark">`. Do not mix media-query driven app CSS with this
+selector contract.
+
+### 13.3 Control Contract
+
+The theme control is a three-segment radiogroup mounted in the sidebar footer
+above the collapse button. Segments expose `data-theme-mode="system"`,
+`data-theme-mode="light"`, and `data-theme-mode="dark"`; active state updates
+`aria-checked`, focus, the cookie, `data-theme-mode`, and resolved
+`data-theme` without a server round trip.
+
+Collapsed-sidebar mode hides segment text through the existing `.sidebar-label`
+pattern while keeping the three icon targets visible and clickable. In the
+4.5rem collapsed rail, the icon-only segments stack vertically so each target
+fits inside the clipped sidebar without adding a second control style.
+
+### 13.4 Design Boundaries
+
+This state-model addition satisfies §12 Change Discipline. It does not relax
+§11: no new Tailwind color tokens, font extensions, palette values, or `@theme`
+changes are part of theme mode control.

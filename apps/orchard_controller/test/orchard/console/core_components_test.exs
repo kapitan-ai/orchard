@@ -225,6 +225,34 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html |> String.split("<span></span>") |> length() == 5
     end
 
+    test "inline mark emits direct fill fallbacks" do
+      assigns = %{}
+      html = render_heex(~H|<.logo variant={:icon} />|)
+
+      assert html =~ ~s(fill="#1B5E20")
+      assert html =~ ~s(fill="#FDD835")
+    end
+
+    test "renders voltage variant with enlarged Gold focal dot" do
+      assigns = %{}
+      html = render_heex(~H|<.logo variant={:voltage} />|)
+
+      assert html =~ "orchard-logo--voltage"
+      assert html =~ "orchard-mark"
+      assert html =~ "orchard-wordmark"
+      assert html =~ "orchard-brand-bar"
+      assert html =~ ~s(r="7")
+      refute html =~ ~r/cx="32"[^>]*cy="12"[^>]*r="6"/
+    end
+
+    test "canonical login variant keeps r=6 focal dot" do
+      assigns = %{}
+      html = render_heex(~H|<.logo variant={:login} />|)
+
+      assert html =~ ~r/cx="32"[^>]*cy="12"[^>]*r="6"/
+      refute html =~ ~s(r="7")
+    end
+
     test "applies animation state to the SVG mark" do
       for state <- [:idle, :heartbeat, :cascade, :harvest] do
         assigns = %{state: state}
@@ -1168,6 +1196,32 @@ defmodule OrchardConsole.CoreComponentsTest do
       html = render_heex(~H|<.button size={:sm}>Small</.button>|)
 
       assert html =~ "py-1.5"
+    end
+  end
+
+  # ===========================================================================
+  # Theme Toggle
+  # ===========================================================================
+
+  describe "theme_toggle/1" do
+    test "renders three radio segments with data-theme-mode" do
+      assigns = %{}
+      html = render_heex(~H|<.theme_toggle />|)
+
+      assert html =~ ~s(role="radiogroup")
+      assert html =~ ~s(aria-label="Color theme")
+      assert html =~ ~s(phx-hook="ThemeToggle")
+      assert html =~ ~s(data-theme-mode="system")
+      assert html =~ ~s(data-theme-mode="light")
+      assert html =~ ~s(data-theme-mode="dark")
+    end
+
+    test "all segments default aria-checked=false for hook activation" do
+      assigns = %{}
+      html = render_heex(~H|<.theme_toggle />|)
+
+      assert length(Regex.scan(~r/aria-checked="false"/, html)) == 3
+      assert html =~ ~s(class="sidebar-label")
     end
   end
 

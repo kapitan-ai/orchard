@@ -350,6 +350,16 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert version_html =~ "sidebar-label"
     end
 
+    test "sidebar mounts theme-toggle component", %{conn: conn} do
+      {:ok, _view, html} = live(conn, "/console")
+
+      assert html =~ ~s(id="theme-toggle")
+      assert html =~ ~s(phx-hook="ThemeToggle")
+      assert html =~ ~s(data-theme-mode="system")
+      assert html =~ ~s(data-theme-mode="light")
+      assert html =~ ~s(data-theme-mode="dark")
+    end
+
     test "renders page header with title", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console")
 
