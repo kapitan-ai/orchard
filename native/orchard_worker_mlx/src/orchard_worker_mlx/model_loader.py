@@ -594,6 +594,7 @@ def _default_mlx_deps() -> MLXDeps:
 
     def _load_model(model_path: str | Path, **kwargs: Any) -> tuple[Any, Any]:
         """Wrap mlx_lm.utils.load_model; returns (model, config)."""
+        _reject_model_file_config(model_path)
         return mlx_lm_load(Path(model_path), **kwargs)
 
     def _load_tokenizer(tokenizer_path: str | Path) -> Any:
@@ -800,6 +801,58 @@ def _collect_eos_ids(val: Any, out: list[int]) -> None:
             _collect_eos_ids(item, out)
     except TypeError:
         pass
+
+
+def _custom_architecture_policy_message(*, detail: str) -> str:
+    return (
+        "model load failed: custom model architecture requires remote code, "
+        "but Orchard loads bundled MLX models with trust_remote_code=False. "
+        "Use a registry-supported MLX architecture or convert the bundle before import; "
+        f"{detail}"
+    )
+
+
+def _model_load_failure_message(exc: Exception) -> str:
+    message = str(exc)
+    lowered = message.lower()
+    if isinstance(exc, ValueError) and (
+        "trust_remote_code" in lowered
+        or "model_file" in lowered
+        or "custom" in lowered
+        or "remote code" in lowered
+    ):
+        return _custom_architecture_policy_message(detail=f"upstream error: {message}")
+    return f"model load failed: {message}"
+
+
+def _model_config_path(model_path: str | Path) -> Path:
+    path = Path(model_path)
+    if path.is_dir():
+        return path / "config.json"
+    return path.parent / "config.json"
+
+
+def _reject_model_file_config(model_path: str | Path) -> None:
+    """Reject MLX/HF configs requiring custom remote-code model classes."""
+    config_path = _model_config_path(model_path)
+    if not config_path.is_file():
+        return
+
+    try:
+        config = json.loads(config_path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return
+
+    if isinstance(config, Mapping) and "model_file" in config:
+        raise ModelLoaderError(
+            "model_load_failed",
+            _custom_architecture_policy_message(
+                detail=(
+                    f"config {config_path} contains model_file; "
+                    "custom architecture loading is disabled."
+                )
+            ),
+        )
 
 
 def _resolve_bundle_subpath(bundle_root: Path, relative: str, label: str) -> Path:
@@ -1271,6 +1324,8 @@ def load_session(
             f"tokenizer does not exist: {tokenizer_path}",
         )
 
+    _reject_model_file_config(entrypoint_path)
+
     # --- load MLX model and tokenizer ---
     logger.info("load_session loading model and tokenizer")
     if deps is None:
@@ -1309,7 +1364,7 @@ def load_session(
         else:
             raise ModelLoaderError(
                 "model_load_failed",
-                f"model load failed: {exc}",
+                _model_load_failure_message(exc),
             ) from exc
 
     eos_token_ids = _normalize_eos_token_ids(tokenizer, model_config)

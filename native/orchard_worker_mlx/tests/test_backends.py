@@ -681,6 +681,25 @@ def test_mlx_backend_loader_error_surfaces_as_backend_error() -> None:
     assert backend.status()["loaded"] is False
 
 
+def test_mlx_backend_custom_architecture_loader_error_is_preserved() -> None:
+    from orchard_worker_mlx.model_loader import ModelLoaderError
+
+    message = (
+        "custom model architecture requires remote code; "
+        "trust_remote_code=False; convert the bundle before import"
+    )
+    backend = _make_mlx_backend(
+        loader_error=ModelLoaderError("model_load_failed", message),
+    )
+
+    with pytest.raises(BackendError) as exc_info:
+        backend.load_model(model_id="m", version="v", model_path="/fake/path")
+
+    assert exc_info.value.code == "model_load_failed"
+    assert exc_info.value.message == message
+    assert backend.status()["loaded"] is False
+
+
 def test_mlx_backend_unload_clears_state() -> None:
     unloader_calls: list = []
     backend = _make_mlx_backend(unloader_calls=unloader_calls)

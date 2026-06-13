@@ -51,6 +51,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import weakref
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
@@ -277,6 +278,7 @@ class _BatchRequestState:
     progress_callback: Callable[[int, int], None] | None
     events: deque[tuple[int, str | None]] = field(default_factory=deque)
     progress_events: deque[tuple[int, int]] = field(default_factory=deque)
+    last_prefill_progress: tuple[int, int] | None = None
     uid: int | None = None
     insert_set_id: int | None = None
     closed: bool = False
@@ -436,18 +438,14 @@ class BatchGeneratorRuntime:
         self._active_detokenizer_ids: set[int] = set()
         self._detokenizer_factory = self._build_detokenizer_factory(session.tokenizer)
         self._batch_generator_closed = False
-        self._wired_limit_stack = ExitStack()
-        self._wired_limit_closed = False
+        self._closed_batch_generator_refs: dict[int, weakref.ReferenceType[Any]] = {}
         self.stop_token_ids: frozenset[int] = frozenset(getattr(session, "eos_token_ids", ()))
 
         self._reset_requested: str | None = None
         try:
-            _enter_wired_limit_fail_open(
-                self._wired_limit_stack,
-                session,
-                self._generation_deps,
-                allow_shared_batch_runtime=True,
-            )
+            # mlx-lm 0.31.3 BatchGenerator owns the process wired-limit while it is
+            # alive and restores it on close(); the shared batch runtime must not
+            # enter Orchard's request-scoped wired-limit shim around the same path.
             self._batch_generator = self._build_batch_generator(session)
             self._pump = threading.Thread(
                 target=self._run_loop, name="mlx-batch-generator", daemon=True
@@ -513,7 +511,6 @@ class BatchGeneratorRuntime:
     def close(self) -> None:
         with self._cv:
             if self._closed and self._batch_generator_closed:
-                self._close_wired_limit()
                 return
 
             self._closed = True
@@ -540,8 +537,6 @@ class BatchGeneratorRuntime:
 
         with self._cv:
             self._batch_generator_closed = True
-
-        self._close_wired_limit()
 
     def wait_next(
         self,
@@ -698,22 +693,57 @@ class BatchGeneratorRuntime:
             )
 
     def _build_batch_generator(self, session: Any) -> Any:
+        stop_tokens = [[tid] for tid in getattr(session, "eos_token_ids", ())]
         return self._batch_deps.batch_generator_cls(
             session.model,
-            stop_tokens=set(getattr(session, "eos_token_ids", ())),
+            stop_tokens=stop_tokens or None,
             prefill_step_size=_prefill_step_size(session),
-            prompt_progress_callback=self._on_prompt_progress,
         )
 
-    def _on_prompt_progress(self, updates: list[tuple[int, int, int]]) -> None:
+    def _apply_prompt_responses(self, prompt_responses: Any) -> bool:
+        try:
+            response_iter = iter(prompt_responses)
+        except TypeError:
+            return False
+
         with self._cv:
-            for uid, processed, total in updates:
+            for response in response_iter:
+                uid = getattr(response, "uid", None)
+                progress = getattr(response, "progress", None)
+                if isinstance(uid, bool) or not isinstance(uid, int):
+                    return False
+                if not isinstance(progress, (tuple, list)) or len(progress) != 2:
+                    return False
+                processed, total = progress
+                if isinstance(processed, bool) or not isinstance(processed, int):
+                    return False
+                if isinstance(total, bool) or not isinstance(total, int):
+                    return False
+
                 state = self._active_by_uid.get(uid)
                 if state is None or state.closed:
                     continue
+                if total <= 0:
+                    continue
+
+                processed = max(0, min(processed, total))
+                if processed == 0:
+                    continue
+
+                if state.last_prefill_progress is not None:
+                    prev_processed, prev_total = state.last_prefill_progress
+                    if total < prev_total:
+                        continue
+                    if processed < prev_processed:
+                        continue
+                    if total == prev_total and processed <= prev_processed:
+                        continue
+
+                state.last_prefill_progress = (processed, total)
                 state.progress_events.append((processed, total))
                 self._accept_prefill_attribution_progress_locked(state, processed, total)
             self._cv.notify_all()
+        return True
 
     def _run_loop(self) -> None:
         while True:
@@ -864,9 +894,7 @@ class BatchGeneratorRuntime:
                 )
                 continue
 
-            try:
-                response_iter = iter(responses)
-            except TypeError:
+            if not isinstance(responses, (tuple, list)) or len(responses) != 2:
                 self._mark_all_failed(
                     BackendError(
                         "generation_failed",
@@ -876,16 +904,61 @@ class BatchGeneratorRuntime:
                 )
                 continue
 
-            for response in response_iter:
-                if not self._apply_batch_response(response):
-                    self._mark_all_failed(
-                        BackendError(
-                            "generation_failed",
-                            "batch generation failed: malformed response payload",
-                            False,
-                        )
+            prompt_responses, generation_responses = responses
+            try:
+                prompt_responses_ok = self._apply_prompt_responses(prompt_responses)
+            except Exception:
+                prompt_responses_ok = False
+            if not prompt_responses_ok:
+                self._mark_all_failed(
+                    BackendError(
+                        "generation_failed",
+                        "batch generation failed: malformed response payload",
+                        False,
                     )
-                    break
+                )
+                continue
+
+            try:
+                response_iter = iter(generation_responses)
+            except TypeError:
+                self._mark_all_failed(
+                    BackendError(
+                        "generation_failed",
+                        "batch generation failed: invalid response container",
+                        False,
+                    )
+                )
+                continue
+            except Exception:
+                self._mark_all_failed(
+                    BackendError(
+                        "generation_failed",
+                        "batch generation failed: malformed response payload",
+                        False,
+                    )
+                )
+                continue
+
+            try:
+                for response in response_iter:
+                    if not self._apply_batch_response(response):
+                        self._mark_all_failed(
+                            BackendError(
+                                "generation_failed",
+                                "batch generation failed: malformed response payload",
+                                False,
+                            )
+                        )
+                        break
+            except Exception:
+                self._mark_all_failed(
+                    BackendError(
+                        "generation_failed",
+                        "batch generation failed: malformed response payload",
+                        False,
+                    )
+                )
 
     def _finalize_request_locked(
         self,
@@ -1269,12 +1342,9 @@ class BatchGeneratorRuntime:
         ):
             watchdog.join(timeout=_BATCH_RUNTIME_CLOSE_TIMEOUT_S)
 
-        # Only restore wired-limit once the pump is confirmed dead/not started;
-        # a live pump may still be unwinding MLX work.
         if not isinstance(pump, threading.Thread) or not pump.is_alive():
             with self._cv:
                 self._batch_generator_closed = True
-            self._close_wired_limit()
 
     def _seconds_until_next_deadline_locked(self, now: float) -> float:
         deadlines = [
@@ -1325,11 +1395,16 @@ class BatchGeneratorRuntime:
         with self._cv:
             if self._closed or self._reset_requested is None:
                 return
+            old_batch_generator = self._batch_generator
             self._reset_requested = None
+
+        self._close_batch_generator_best_effort(old_batch_generator)
 
         try:
             new_batch_generator = self._build_batch_generator(self._session)
         except Exception:
+            with self._cv:
+                self._batch_generator = None
             self._mark_all_failed(
                 BackendError(
                     "generation_failed",
@@ -1345,12 +1420,29 @@ class BatchGeneratorRuntime:
         with self._cv:
             if self._closed:
                 self._cv.notify_all()
-                return
-            self._batch_generator = new_batch_generator
-            self._batch_generator_closed = False
-            self._cv.notify_all()
+                close_new_batch_generator = True
+            else:
+                self._batch_generator = new_batch_generator
+                self._batch_generator_closed = False
+                close_new_batch_generator = False
+                self._cv.notify_all()
+
+        if close_new_batch_generator:
+            self._close_batch_generator_best_effort(new_batch_generator)
 
     def _close_batch_generator_best_effort(self, batch_generator: Any | None) -> None:
+        if batch_generator is None:
+            return
+        marker = "_orchard_batch_generator_closed"
+        with self._cv:
+            try:
+                if getattr(batch_generator, marker, False) is True:
+                    return
+                setattr(batch_generator, marker, True)
+            except Exception:
+                if self._mark_batch_generator_closed_by_identity_locked(batch_generator):
+                    return
+
         close_fn = getattr(batch_generator, "close", None)
         if callable(close_fn):
             try:
@@ -1358,15 +1450,28 @@ class BatchGeneratorRuntime:
             except Exception:
                 pass
 
-    def _close_wired_limit(self) -> None:
-        if self._wired_limit_closed:
-            return
+    def _mark_batch_generator_closed_by_identity_locked(self, batch_generator: Any) -> bool:
+        stale_ids = [
+            object_id
+            for object_id, generator_ref in self._closed_batch_generator_refs.items()
+            if generator_ref() is None
+        ]
+        for object_id in stale_ids:
+            self._closed_batch_generator_refs.pop(object_id, None)
 
-        self._wired_limit_closed = True
+        object_id = id(batch_generator)
+        existing_ref = self._closed_batch_generator_refs.get(object_id)
+        if existing_ref is not None and existing_ref() is batch_generator:
+            return True
+
         try:
-            self._wired_limit_stack.close()
-        except Exception:
-            logger.debug("wired_limit close failed; continuing", exc_info=True)
+            self._closed_batch_generator_refs[object_id] = weakref.ref(batch_generator)
+        except TypeError:
+            # Some extension objects are neither weak-referenceable nor
+            # attribute-settable. Prefer not retaining MLX/cache state;
+            # best-effort close may be attempted more than once for them.
+            pass
+        return False
 
     def _finalize_request_cache(self, state: _BatchRequestState, response: Any) -> None:
         if state.prompt_cache is None:

@@ -90,6 +90,7 @@ def _make_fake_deps(
     load_tokenizer_side_effect: Any = None,
     model_config: Any = None,
     tokenizer_eos_token_id: Any = None,
+    tokenizer_eos_token_ids: Any = None,
     tokenizer_init_kwargs: dict[str, Any] | None = None,
     warmup_responses: int = 10,
     warmup_elapsed_s: float = 0.5,
@@ -110,6 +111,11 @@ def _make_fake_deps(
     else:
         # Remove the attribute so getattr returns None.
         del fake_tokenizer.eos_token_id
+    if tokenizer_eos_token_ids is not None:
+        fake_tokenizer.eos_token_ids = tokenizer_eos_token_ids
+    else:
+        # Remove the attribute so getattr returns None.
+        del fake_tokenizer.eos_token_ids
 
     fake_tokenizer.init_kwargs = tokenizer_init_kwargs or {}
 
@@ -594,6 +600,35 @@ def test_load_session_tool_calling_metadata_stable_across_reload_cycles(
     assert first_metadata == second.tool_calling
 
 
+def test_load_session_eos_from_tokenizer_plural_ids(writable_bundle: Path) -> None:
+    """Transformers/mlx-lm tokenizers may expose plural eos_token_ids."""
+    deps = _make_fake_deps(
+        tokenizer_eos_token_ids=[128001, 128008],
+        model_config={"eos_token_id": 2},
+    )
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.eos_token_ids == (128001, 128008, 2)
+
+
+def test_load_session_eos_none_values_are_ignored(writable_bundle: Path) -> None:
+    deps = _make_fake_deps(
+        tokenizer_eos_token_ids=[None, 7, False, "bad"],
+        model_config={"eos_token_id": None, "eos_token_ids": [None, 8]},
+    )
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+    )
+    assert session.eos_token_ids == (7, 8)
+
+
 def test_load_session_eos_from_config(writable_bundle: Path) -> None:
     """EOS from model config when tokenizer has none."""
     deps = _make_fake_deps(model_config={"eos_token_id": 128001})
@@ -674,6 +709,97 @@ def test_load_session_model_load_failure(writable_bundle: Path) -> None:
         )
     assert exc_info.value.code == "model_load_failed"
     assert "Metal OOM" in exc_info.value.message
+
+
+def test_load_session_custom_architecture_value_error_is_actionable(writable_bundle: Path) -> None:
+    deps = _make_fake_deps(
+        load_model_side_effect=ValueError(
+            "Model config has model_file and requires trust_remote_code=True"
+        )
+    )
+    with pytest.raises(ModelLoaderError) as exc_info:
+        load_session(
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=deps,
+        )
+    assert exc_info.value.code == "model_load_failed"
+    assert "trust_remote_code=False" in exc_info.value.message
+    assert "registry-supported MLX architecture" in exc_info.value.message
+    assert "requires trust_remote_code=True" in exc_info.value.message
+
+
+def test_load_session_rejects_model_file_config_before_load_model(
+    writable_bundle: Path,
+) -> None:
+    """Configs with model_file are rejected before custom model code can load."""
+    config_path = writable_bundle / "weights" / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "architectures": ["CustomForCausalLM"],
+                "hidden_size": 128,
+                "model_file": "modeling_custom.py",
+                "model_type": "custom_mlx_arch",
+                "num_attention_heads": 4,
+                "num_hidden_layers": 2,
+                "vocab_size": 32000,
+            }
+        )
+    )
+    load_model = MagicMock(name="load_model", return_value=(MagicMock(), {}))
+    deps = MLXDeps(
+        load_model=load_model,
+        load_tokenizer=MagicMock(name="load_tokenizer"),
+        stream_generate=MagicMock(name="stream_generate"),
+        eval_fn=MagicMock(name="eval_fn"),
+        clear_cache=MagicMock(name="clear_cache"),
+        monotonic=lambda: 0.0,
+    )
+
+    with pytest.raises(ModelLoaderError) as exc_info:
+        load_session(
+            model_id="test-org/tiny-llm",
+            version="mlx-q4-v1",
+            model_path=str(writable_bundle),
+            deps=deps,
+        )
+
+    assert exc_info.value.code == "model_load_failed"
+    assert "model_file" in exc_info.value.message
+    assert "trust_remote_code=False" in exc_info.value.message
+    assert "registry-supported MLX architecture" in exc_info.value.message
+    assert "convert the bundle before import" in exc_info.value.message
+    load_model.assert_not_called()
+
+
+def test_load_session_allows_registry_config_without_model_file(
+    writable_bundle: Path,
+) -> None:
+    """Bundled registry-supported configs remain loadable."""
+    config_path = writable_bundle / "weights" / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "architectures": ["LlamaForCausalLM"],
+                "hidden_size": 128,
+                "intermediate_size": 256,
+                "model_type": "llama",
+                "num_attention_heads": 4,
+                "num_hidden_layers": 2,
+                "vocab_size": 32000,
+            }
+        )
+    )
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=_make_fake_deps(),
+    )
+
+    assert isinstance(session, LoadedModelSession)
 
 
 def test_load_session_tokenizer_load_failure(writable_bundle: Path) -> None:
@@ -1924,6 +2050,86 @@ class TestDefaultMlxDepsSamplerWiring:
             # Cleanup sys.modules
             sys.modules.pop("mlx_lm.sample_utils", None)
             sys.modules.pop("mlx_lm", None)
+
+    def test_default_mlx_deps_tokenizer_disables_remote_code(self, monkeypatch):
+        """Default tokenizer loading keeps custom tokenizer code disabled."""
+        import orchard_worker_mlx.model_loader as ml
+
+        fake_mx = types.SimpleNamespace(
+            eval=lambda t: None,
+            clear_cache=lambda: None,
+        )
+        fake_stream_generate = MagicMock(name="stream_generate")
+        fake_load_model = MagicMock(name="load_model")
+        fake_load_tokenizer = MagicMock(name="load_tokenizer", return_value=MagicMock())
+
+        def _fake_import_required():
+            return (fake_mx, fake_stream_generate, fake_load_model, fake_load_tokenizer)
+
+        monkeypatch.setattr(ml, "_import_required_mlx_runtime_modules", _fake_import_required)
+        sys.modules["mlx_lm"] = types.SimpleNamespace()
+        sys.modules.pop("mlx_lm.sample_utils", None)
+
+        try:
+            deps = _default_mlx_deps()
+            deps.load_tokenizer("/bundle/tokenizer.json")
+        finally:
+            sys.modules.pop("mlx_lm", None)
+
+        fake_load_tokenizer.assert_called_once_with(
+            Path("/bundle"),
+            tokenizer_config_extra={"trust_remote_code": False},
+        )
+
+    def test_default_mlx_deps_rejects_model_file_config_before_upstream_load_model(
+        self,
+        monkeypatch,
+        tmp_path: Path,
+    ):
+        """Default model loading blocks model_file configs before mlx-lm load_model."""
+        import orchard_worker_mlx.model_loader as ml
+
+        fake_mx = types.SimpleNamespace(
+            eval=lambda t: None,
+            clear_cache=lambda: None,
+        )
+        fake_stream_generate = MagicMock(name="stream_generate")
+        fake_load_model = MagicMock(name="load_model")
+        fake_load_tokenizer = MagicMock(name="load_tokenizer", return_value=MagicMock())
+
+        def _fake_import_required():
+            return (fake_mx, fake_stream_generate, fake_load_model, fake_load_tokenizer)
+
+        monkeypatch.setattr(ml, "_import_required_mlx_runtime_modules", _fake_import_required)
+        sys.modules["mlx_lm"] = types.SimpleNamespace()
+        sys.modules.pop("mlx_lm.sample_utils", None)
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        (model_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "architectures": ["CustomForCausalLM"],
+                    "hidden_size": 128,
+                    "model_file": "modeling_custom.py",
+                    "model_type": "custom_mlx_arch",
+                    "num_attention_heads": 4,
+                    "num_hidden_layers": 2,
+                    "vocab_size": 32000,
+                }
+            )
+        )
+
+        try:
+            deps = _default_mlx_deps()
+            with pytest.raises(ModelLoaderError) as exc_info:
+                deps.load_model(model_dir, lazy=True, strict=False)
+        finally:
+            sys.modules.pop("mlx_lm", None)
+
+        assert exc_info.value.code == "model_load_failed"
+        assert "model_file" in exc_info.value.message
+        assert "trust_remote_code=False" in exc_info.value.message
+        fake_load_model.assert_not_called()
 
     def test_default_mlx_deps_sampler_import_failure_is_fail_open(self, monkeypatch):
         """Sampler import failure is non-fatal; make_sampler is None."""
