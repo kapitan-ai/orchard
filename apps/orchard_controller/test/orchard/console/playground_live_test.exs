@@ -5,6 +5,7 @@ defmodule OrchardConsole.PlaygroundLiveTest do
   import Orchard.TestSupport.LicenseGateHelpers
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.ConsoleSettings
   alias Orchard.InferenceEvent
 
   @moduletag :live
@@ -23,6 +24,7 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       Application.put_env(:orchard_controller, :console, previous)
       :persistent_term.erase({__MODULE__, :models})
       :persistent_term.erase({__MODULE__, :test_pid})
+      :persistent_term.erase({__MODULE__, :settings_failure_mode})
     end)
 
     Sandbox.mode(Orchard.Repo, {:shared, self()})
@@ -83,6 +85,107 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       {:ok, _view, html} = live(conn, "/console/playground")
 
       assert html =~ "Playground \u2014 Orchard Console"
+    end
+  end
+
+  describe "saved inference defaults" do
+    test "connected mount selects saved default model_id ignoring version", %{conn: conn} do
+      stub_models([
+        %{model_id: "other-model", version: "v1"},
+        %{model_id: "test-model", version: "v1"},
+        %{model_id: "test-model", version: "v2"}
+      ])
+
+      assert {:ok, %{default_model: "test-model"}} =
+               ConsoleSettings.save_playground_defaults(%{"default_model" => "test-model"})
+
+      {:ok, view, _html} = live(conn, "/console/playground")
+
+      assert view |> element("#playground-model-selected") |> render() =~ "test-model@v2"
+    end
+
+    test "falls back to first active model when saved default_model has no match", %{conn: conn} do
+      assert {:ok, %{default_model: "missing-model"}} =
+               ConsoleSettings.save_playground_defaults(%{"default_model" => "missing-model"})
+
+      {:ok, view, _html} = live(conn, "/console/playground")
+
+      assert view |> element("#playground-model-selected") |> render() =~ "test-model@v1"
+    end
+
+    test "leaves selected model blank when no active models exist despite saved default", %{
+      conn: conn
+    } do
+      stub_models([])
+
+      assert {:ok, %{default_model: "test-model"}} =
+               ConsoleSettings.save_playground_defaults(%{"default_model" => "test-model"})
+
+      {:ok, view, html} = live(conn, "/console/playground")
+
+      assert html =~ "No active models available."
+      refute has_element?(view, "#playground-model-selected")
+    end
+
+    test "includes saved sampling defaults in chat_params when set", %{conn: conn} do
+      assert {:ok, %{temperature: 0.7, top_p: 0.95, max_completion_tokens: 256}} =
+               ConsoleSettings.save_playground_defaults(%{
+                 "temperature" => "0.7",
+                 "top_p" => "0.95",
+                 "max_completion_tokens" => "256"
+               })
+
+      {:ok, view, _html} = live(conn, "/console/playground")
+      {_ref, chat_params} = submit_prompt_and_capture(view)
+
+      assert chat_params["temperature"] == 0.7
+      assert chat_params["top_p"] == 0.95
+      assert chat_params["max_completion_tokens"] == 256
+    end
+
+    test "falls back to empty defaults when saved defaults loading raises, exits, or throws", %{
+      conn: conn
+    } do
+      assert {:ok, %{temperature: 0.7, top_p: 0.95, max_completion_tokens: 256}} =
+               ConsoleSettings.save_playground_defaults(%{
+                 "temperature" => "0.7",
+                 "top_p" => "0.95",
+                 "max_completion_tokens" => "256"
+               })
+
+      current = Application.get_env(:orchard_controller, :console, [])
+
+      Application.put_env(
+        :orchard_controller,
+        :console,
+        Keyword.merge(current, settings_impl: __MODULE__.SettingsLoadFailureStub)
+      )
+
+      for failure_mode <- [:raise, :exit, :throw] do
+        :persistent_term.put({__MODULE__, :settings_failure_mode}, failure_mode)
+
+        {:ok, view, _html} = live(conn, "/console/playground")
+        {_ref, chat_params} = submit_prompt_and_capture(view)
+
+        assert chat_params == %{
+                 "model" => "test-model@v1",
+                 "messages" => [%{"role" => "user", "content" => "Test prompt"}],
+                 "stream" => true,
+                 "stream_options" => %{"include_usage" => true}
+               }
+      end
+    end
+
+    test "does not change chat_params when no playground defaults row exists", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
+      {_ref, chat_params} = submit_prompt_and_capture(view)
+
+      assert chat_params == %{
+               "model" => "test-model@v1",
+               "messages" => [%{"role" => "user", "content" => "Test prompt"}],
+               "stream" => true,
+               "stream_options" => %{"include_usage" => true}
+             }
     end
   end
 
@@ -545,6 +648,16 @@ defmodule OrchardConsole.PlaygroundLiveTest do
   # Stub module
   # ===========================================================================
 
+  defmodule SettingsLoadFailureStub do
+    def get_playground_defaults do
+      case :persistent_term.get({OrchardConsole.PlaygroundLiveTest, :settings_failure_mode}) do
+        :raise -> raise "settings defaults unavailable"
+        :exit -> exit(:settings_defaults_unavailable)
+        :throw -> throw(:settings_defaults_unavailable)
+      end
+    end
+  end
+
   defmodule PlaygroundStub do
     def list_models do
       case :persistent_term.get({OrchardConsole.PlaygroundLiveTest, :models}, []) do
@@ -561,10 +674,13 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       end
     end
 
-    def start_stream(_owner, run_ref, _params, _caller_context \\ []) do
-      # Notify the test process of the run_ref
+    def start_stream(_owner, run_ref, params, _caller_context \\ []) do
       test_pid = :persistent_term.get({OrchardConsole.PlaygroundLiveTest, :test_pid}, nil)
-      if test_pid, do: send(test_pid, {:stub_run_ref, run_ref})
+
+      if test_pid do
+        send(test_pid, {:stub_run_ref, run_ref})
+        send(test_pid, {:stub_start_stream, run_ref, params})
+      end
 
       # Return a dummy task pid — the test will drive messages manually
       {:ok, spawn(fn -> :timer.sleep(:infinity) end)}
@@ -654,12 +770,18 @@ defmodule OrchardConsole.PlaygroundLiveTest do
   end
 
   defp submit_prompt(view, prompt \\ "Test prompt") do
+    {ref, _params} = submit_prompt_and_capture(view, prompt)
+    ref
+  end
+
+  defp submit_prompt_and_capture(view, prompt \\ "Test prompt") do
     view
     |> form("#playground-form", playground: %{model: "test-model@v1", prompt: prompt})
     |> render_submit()
 
     assert_receive {:stub_run_ref, ref}, 1000
-    ref
+    assert_receive {:stub_start_stream, ^ref, params}, 1000
+    {ref, params}
   end
 
   defp complete_run(view, ref) do

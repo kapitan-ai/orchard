@@ -223,16 +223,58 @@ defmodule Orchard.Inference.ResponsesRequestValidatorTest do
              ResponsesRequestValidator.validate(params)
   end
 
-  test "rejects invalid scalar fields" do
-    assert {:error, :invalid_value, "temperature", _} =
+  test "accepts sampling boundary values" do
+    assert {:ok, _} = ResponsesRequestValidator.validate(Map.put(@valid_params, "temperature", 0))
+    assert {:ok, _} = ResponsesRequestValidator.validate(Map.put(@valid_params, "top_p", 1))
+
+    assert {:ok, _} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "max_output_tokens", 1))
+  end
+
+  test "rejects invalid temperature values with exact reason" do
+    assert {:error, :invalid_value, "temperature", "must be a non-negative number"} =
              ResponsesRequestValidator.validate(Map.put(@valid_params, "temperature", -1))
 
-    assert {:error, :invalid_value, "top_p", _} =
+    assert {:error, :invalid_value, "temperature", "must be a non-negative number"} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "temperature", "0.5"))
+
+    assert {:error, :invalid_value, "temperature", "must be a non-negative number"} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "temperature", nil))
+  end
+
+  test "rejects top_p out of range with exact reason" do
+    assert {:error, :invalid_value, "top_p", "must be between 0 (exclusive) and 1 (inclusive)"} =
              ResponsesRequestValidator.validate(Map.put(@valid_params, "top_p", 0))
 
-    assert {:error, :invalid_value, "max_output_tokens", _} =
+    assert {:error, :invalid_value, "top_p", "must be between 0 (exclusive) and 1 (inclusive)"} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "top_p", 1.1))
+
+    assert {:error, :invalid_value, "top_p", "must be between 0 (exclusive) and 1 (inclusive)"} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "top_p", nil))
+  end
+
+  test "rejects invalid max_output_tokens with exact reason" do
+    assert {:error, :invalid_value, "max_output_tokens", "must be a positive integer"} =
              ResponsesRequestValidator.validate(Map.put(@valid_params, "max_output_tokens", 0))
 
+    assert {:error, :invalid_value, "max_output_tokens", "must be a positive integer"} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "max_output_tokens", 1.5))
+
+    assert {:error, :invalid_value, "max_output_tokens", "must be a positive integer"} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "max_output_tokens", nil))
+  end
+
+  test "keeps chat token limit fields unsupported instead of adding chat mutual exclusion" do
+    assert {:error, :unsupported_parameter, "max_tokens"} =
+             ResponsesRequestValidator.validate(Map.put(@valid_params, "max_tokens", 100))
+
+    assert {:error, :unsupported_parameter, "max_completion_tokens"} =
+             ResponsesRequestValidator.validate(
+               Map.put(@valid_params, "max_completion_tokens", 100)
+             )
+  end
+
+  test "rejects invalid metadata and store fields" do
     assert {:error, :invalid_value, "metadata", _} =
              ResponsesRequestValidator.validate(Map.put(@valid_params, "metadata", "bad"))
 

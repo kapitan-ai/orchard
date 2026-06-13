@@ -166,6 +166,14 @@ defmodule Orchard.API.RouterTest do
       assert conn.resp_body =~ "model-hub-search-form"
     end
 
+    test "GET /console/settings is routed", %{conn: conn} do
+      conn = get(conn, "/console/settings")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "Settings"
+      assert conn.resp_body =~ "settings-appearance-card"
+    end
+
     test "GET /console/nodes is routed", %{conn: conn} do
       conn = get(conn, "/console/nodes")
 

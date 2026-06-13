@@ -3,7 +3,7 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
   Validates the bounded sync `/v1/responses` request subset for M2a.
   """
 
-  alias Orchard.Inference.{MessageValidation, ToolingValidation}
+  alias Orchard.Inference.{MessageValidation, SamplingValidation, ToolingValidation}
 
   @supported_fields MapSet.new([
                       "model",
@@ -87,28 +87,13 @@ defmodule Orchard.Inference.ResponsesRequestValidator do
 
   defp check_instructions(_), do: :ok
 
-  defp check_temperature(%{"temperature" => temperature})
-       when is_number(temperature) and temperature >= 0, do: :ok
+  defp check_temperature(params), do: SamplingValidation.validate_temperature(params)
 
-  defp check_temperature(%{"temperature" => _}),
-    do: {:error, :invalid_value, "temperature", "must be a non-negative number"}
+  defp check_top_p(params), do: SamplingValidation.validate_top_p(params)
 
-  defp check_temperature(_), do: :ok
-
-  defp check_top_p(%{"top_p" => top_p}) when is_number(top_p) and top_p > 0 and top_p <= 1,
-    do: :ok
-
-  defp check_top_p(%{"top_p" => _}),
-    do: {:error, :invalid_value, "top_p", "must be between 0 (exclusive) and 1 (inclusive)"}
-
-  defp check_top_p(_), do: :ok
-
-  defp check_max_output_tokens(%{"max_output_tokens" => max_output_tokens})
-       when is_integer(max_output_tokens) and max_output_tokens > 0,
-       do: :ok
-
-  defp check_max_output_tokens(%{"max_output_tokens" => _}),
-    do: {:error, :invalid_value, "max_output_tokens", "must be a positive integer"}
+  defp check_max_output_tokens(%{"max_output_tokens" => max_output_tokens}) do
+    SamplingValidation.validate_positive_integer(max_output_tokens, "max_output_tokens")
+  end
 
   defp check_max_output_tokens(_), do: :ok
 

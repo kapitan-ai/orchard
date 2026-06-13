@@ -1528,6 +1528,7 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "Model Hub"
       assert html =~ "Tenants"
       assert html =~ "Requests"
+      assert html =~ "Settings"
     end
 
     test "marks active item with aria-current" do
@@ -1555,6 +1556,7 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "/console/models"
       assert html =~ "/console/model-hub"
       assert html =~ "/console/tenants"
+      assert html =~ "/console/settings"
     end
 
     test "nav items include tactile focus-visible ring tokens" do
@@ -1616,6 +1618,17 @@ defmodule OrchardConsole.CoreComponentsTest do
       refute html =~ "coming soon"
       assert html =~ ~s(aria-current="page")
       assert html =~ "text-navy"
+    end
+
+    test "Settings renders as enabled link and shows active styling when active" do
+      assigns = %{}
+      html = render_heex(~H|<.sidebar_nav active={:settings} />|)
+
+      assert html =~ "/console/settings"
+      refute html =~ "Settings \u2014 coming soon"
+      assert html =~ ~s(aria-current="page")
+      assert html =~ "bg-navy/10"
+      assert html =~ "dark:bg-sky-400/10"
     end
 
     test "enabled inactive links have lifted tile hover classes" do

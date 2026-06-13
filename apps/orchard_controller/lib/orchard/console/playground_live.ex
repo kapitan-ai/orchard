@@ -5,6 +5,7 @@ defmodule OrchardConsole.PlaygroundLive do
 
   use OrchardConsole, :live_view
 
+  alias Orchard.ConsoleSettings
   alias Orchard.Inference.ChatError
   alias Orchard.InferenceEvent
 
@@ -37,7 +38,10 @@ defmodule OrchardConsole.PlaygroundLive do
       |> assign_defaults()
 
     if connected?(socket) do
-      {:ok, load_models(socket)}
+      {:ok,
+       socket
+       |> load_inference_defaults()
+       |> load_models()}
     else
       {:ok, socket}
     end
@@ -48,6 +52,7 @@ defmodule OrchardConsole.PlaygroundLive do
       models: [],
       models_status: :idle,
       models_error: nil,
+      inference_defaults: %{},
       form: to_form(%{"model" => "", "system" => "", "prompt" => ""}, as: :playground),
       form_errors: %{},
       transcript: [],
@@ -65,6 +70,15 @@ defmodule OrchardConsole.PlaygroundLive do
   # Model loading
   # ===========================================================================
 
+  defp load_inference_defaults(socket) do
+    assign(socket, inference_defaults: settings_impl().get_playground_defaults())
+  rescue
+    _ -> assign(socket, inference_defaults: %{})
+  catch
+    :exit, _reason -> assign(socket, inference_defaults: %{})
+    _kind, _reason -> assign(socket, inference_defaults: %{})
+  end
+
   defp load_models(socket) do
     case playground_impl().list_models() do
       {:ok, []} ->
@@ -76,8 +90,8 @@ defmodule OrchardConsole.PlaygroundLive do
 
       {:ok, models} ->
         options = Enum.map(models, &model_option/1)
-        first = hd(options).value
-        form_data = current_form_data(socket) |> Map.put("model", first)
+        selected = selected_model_value(options, socket.assigns.inference_defaults)
+        form_data = current_form_data(socket) |> Map.put("model", selected)
 
         socket
         |> assign(models: options, models_status: :ok, models_error: nil)
@@ -101,7 +115,23 @@ defmodule OrchardConsole.PlaygroundLive do
 
   defp model_option(%{model_id: model_id, version: version}) do
     label = "#{model_id}@#{version}"
-    %{label: label, value: label}
+    %{label: label, value: label, model_id: model_id}
+  end
+
+  defp selected_model_value(options, defaults) do
+    saved_model = Map.get(defaults, :default_model)
+
+    selected =
+      if is_binary(saved_model) and String.trim(saved_model) != "" do
+        # list_models/0 sorts ascending by {model_id, version}, so the last
+        # match is the newest active version of the saved model.
+        matches = Enum.filter(options, &(&1.model_id == saved_model))
+        List.last(matches) || List.first(options)
+      else
+        List.first(options)
+      end
+
+    if selected, do: selected.value, else: ""
   end
 
   # ===========================================================================
@@ -207,12 +237,14 @@ defmodule OrchardConsole.PlaygroundLive do
 
     messages = build_messages(socket.assigns.transcript, system, prompt)
 
-    chat_params = %{
-      "model" => model,
-      "messages" => messages,
-      "stream" => true,
-      "stream_options" => %{"include_usage" => true}
-    }
+    chat_params =
+      %{
+        "model" => model,
+        "messages" => messages,
+        "stream" => true,
+        "stream_options" => %{"include_usage" => true}
+      }
+      |> with_sampling_defaults(socket.assigns.inference_defaults)
 
     run_ref = make_ref()
 
@@ -258,6 +290,17 @@ defmodule OrchardConsole.PlaygroundLive do
         {:noreply, socket}
     end
   end
+
+  defp with_sampling_defaults(chat_params, defaults) when is_map(defaults) do
+    Enum.reduce([:temperature, :top_p, :max_completion_tokens], chat_params, fn field, acc ->
+      case Map.get(defaults, field) do
+        nil -> acc
+        value -> Map.put(acc, Atom.to_string(field), value)
+      end
+    end)
+  end
+
+  defp with_sampling_defaults(chat_params, _defaults), do: chat_params
 
   defp build_messages(transcript, system, prompt) do
     messages = if system != "", do: [%{"role" => "system", "content" => system}], else: []
@@ -513,6 +556,10 @@ defmodule OrchardConsole.PlaygroundLive do
 
   defp playground_impl do
     console_config()[:playground_impl] || OrchardConsole.Playground
+  end
+
+  defp settings_impl do
+    console_config()[:settings_impl] || ConsoleSettings
   end
 
   defp console_config do

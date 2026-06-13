@@ -1450,6 +1450,13 @@ defmodule OrchardConsole.CoreComponents do
       icon: "hero-document-text",
       path: "/console/requests",
       enabled: true
+    },
+    %{
+      key: :settings,
+      label: "Settings",
+      icon: "hero-computer-desktop",
+      path: "/console/settings",
+      enabled: true
     }
   ]
 

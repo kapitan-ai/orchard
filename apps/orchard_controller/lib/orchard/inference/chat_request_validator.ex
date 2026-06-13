@@ -1,5 +1,5 @@
 defmodule Orchard.Inference.ChatRequestValidator do
-  alias Orchard.Inference.{MessageValidation, ToolingValidation}
+  alias Orchard.Inference.{MessageValidation, SamplingValidation, ToolingValidation}
 
   @moduledoc """
   Validates incoming `/v1/chat/completions` request parameters.
@@ -125,19 +125,9 @@ defmodule Orchard.Inference.ChatRequestValidator do
   defp check_stream(%{"stream" => _}), do: {:error, :invalid_value, "stream", "must be a boolean"}
   defp check_stream(_), do: :ok
 
-  defp check_temperature(%{"temperature" => t}) when is_number(t) and t >= 0, do: :ok
+  defp check_temperature(params), do: SamplingValidation.validate_temperature(params)
 
-  defp check_temperature(%{"temperature" => _}),
-    do: {:error, :invalid_value, "temperature", "must be a non-negative number"}
-
-  defp check_temperature(_), do: :ok
-
-  defp check_top_p(%{"top_p" => p}) when is_number(p) and p > 0 and p <= 1, do: :ok
-
-  defp check_top_p(%{"top_p" => _}),
-    do: {:error, :invalid_value, "top_p", "must be between 0 (exclusive) and 1 (inclusive)"}
-
-  defp check_top_p(_), do: :ok
+  defp check_top_p(params), do: SamplingValidation.validate_top_p(params)
 
   defp check_max_tokens(params) do
     max_tokens = Map.get(params, "max_tokens")
@@ -157,11 +147,12 @@ defmodule Orchard.Inference.ChatRequestValidator do
       {:error, :invalid_value, "max_tokens",
        "cannot specify both max_tokens and max_completion_tokens"}
 
+  # Chat token limits historically treat explicit nil as omitted; Responses rejects nil
+  # max_output_tokens by matching only when the field is present.
   defp validate_positive_integer(nil, _field), do: :ok
-  defp validate_positive_integer(v, _field) when is_integer(v) and v > 0, do: :ok
 
-  defp validate_positive_integer(_, field),
-    do: {:error, :invalid_value, field, "must be a positive integer"}
+  defp validate_positive_integer(value, field),
+    do: SamplingValidation.validate_positive_integer(value, field)
 
   defp check_stop(%{"stop" => stop}) when is_binary(stop), do: :ok
 

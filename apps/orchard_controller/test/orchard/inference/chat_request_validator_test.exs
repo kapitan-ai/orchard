@@ -267,24 +267,62 @@ defmodule Orchard.Inference.ChatRequestValidatorTest do
       assert {:error, :invalid_value, "stream", _} = ChatRequestValidator.validate(params)
     end
 
-    test "rejects negative temperature" do
-      params = Map.put(@valid_params, "temperature", -0.5)
-      assert {:error, :invalid_value, "temperature", _} = ChatRequestValidator.validate(params)
+    test "accepts sampling boundary values" do
+      assert {:ok, _} = ChatRequestValidator.validate(Map.put(@valid_params, "temperature", 0))
+      assert {:ok, _} = ChatRequestValidator.validate(Map.put(@valid_params, "top_p", 1))
+
+      assert {:ok, _} =
+               ChatRequestValidator.validate(Map.put(@valid_params, "max_completion_tokens", 1))
     end
 
-    test "rejects top_p out of range" do
-      params = Map.put(@valid_params, "top_p", 0)
-      assert {:error, :invalid_value, "top_p", _} = ChatRequestValidator.validate(params)
+    test "rejects invalid temperature values with exact reason" do
+      assert {:error, :invalid_value, "temperature", "must be a non-negative number"} =
+               ChatRequestValidator.validate(Map.put(@valid_params, "temperature", -0.5))
+
+      assert {:error, :invalid_value, "temperature", "must be a non-negative number"} =
+               ChatRequestValidator.validate(Map.put(@valid_params, "temperature", "0.5"))
+
+      assert {:error, :invalid_value, "temperature", "must be a non-negative number"} =
+               ChatRequestValidator.validate(Map.put(@valid_params, "temperature", nil))
     end
 
-    test "rejects both max_tokens and max_completion_tokens" do
+    test "rejects top_p out of range with exact reason" do
+      assert {:error, :invalid_value, "top_p", "must be between 0 (exclusive) and 1 (inclusive)"} =
+               ChatRequestValidator.validate(Map.put(@valid_params, "top_p", 0))
+
+      assert {:error, :invalid_value, "top_p", "must be between 0 (exclusive) and 1 (inclusive)"} =
+               ChatRequestValidator.validate(Map.put(@valid_params, "top_p", 1.1))
+
+      assert {:error, :invalid_value, "top_p", "must be between 0 (exclusive) and 1 (inclusive)"} =
+               ChatRequestValidator.validate(Map.put(@valid_params, "top_p", nil))
+    end
+
+    test "rejects both max_tokens and max_completion_tokens with exact reason" do
       params = Map.merge(@valid_params, %{"max_tokens" => 100, "max_completion_tokens" => 200})
-      assert {:error, :invalid_value, "max_tokens", _} = ChatRequestValidator.validate(params)
+
+      assert {:error, :invalid_value, "max_tokens",
+              "cannot specify both max_tokens and max_completion_tokens"} =
+               ChatRequestValidator.validate(params)
     end
 
-    test "rejects non-positive max_tokens" do
-      params = Map.put(@valid_params, "max_tokens", 0)
-      assert {:error, :invalid_value, "max_tokens", _} = ChatRequestValidator.validate(params)
+    test "rejects non-positive max_tokens with exact reason" do
+      assert {:error, :invalid_value, "max_tokens", "must be a positive integer"} =
+               ChatRequestValidator.validate(Map.put(@valid_params, "max_tokens", 0))
+    end
+
+    test "continues to treat nil chat token limits as omitted" do
+      assert {:ok, _} = ChatRequestValidator.validate(Map.put(@valid_params, "max_tokens", nil))
+
+      assert {:ok, _} =
+               ChatRequestValidator.validate(Map.put(@valid_params, "max_completion_tokens", nil))
+    end
+
+    test "rejects invalid max_completion_tokens with exact reason" do
+      assert {:error, :invalid_value, "max_completion_tokens", "must be a positive integer"} =
+               ChatRequestValidator.validate(Map.put(@valid_params, "max_completion_tokens", 0))
+
+      assert {:error, :invalid_value, "max_completion_tokens", "must be a positive integer"} =
+               ChatRequestValidator.validate(Map.put(@valid_params, "max_completion_tokens", 1.5))
     end
 
     test "rejects non-integer seed" do
