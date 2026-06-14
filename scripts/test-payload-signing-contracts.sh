@@ -243,6 +243,14 @@ Load command 1
          name @rpath/libmissing.dylib (offset 24)
 OUT
     ;;
+  rpath_libjaccl_unresolved)
+    cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @rpath/libjaccl.dylib (offset 24)
+OUT
+    ;;
   rpath_staging_absolute)
     cat <<OUT
 Load command 0
@@ -2272,6 +2280,12 @@ root="$case_dir/rpath-unresolved/root"
 make_root "$root"
 : > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
 assert_fails_with 'unresolved @rpath dependency' "$case_dir/rpath-unresolved.out" env OTOOL_CASE=rpath_unresolved PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+
+root="$case_dir/rpath-libjaccl-unresolved/root"
+make_root "$root"
+: > "$root/Library/Application Support/Orchard/share/bin/orchardctl"
+assert_fails_with 'unresolved @rpath dependency' "$case_dir/rpath-libjaccl-unresolved.out" env OTOOL_CASE=rpath_libjaccl_unresolved PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-payload-signing.sh" --identity "$IDENTITY" "$root"
+assert_grep '@rpath/libjaccl.dylib' "$case_dir/rpath-libjaccl-unresolved.out"
 
 root="$case_dir/rpath-payload/root"
 make_root "$root"

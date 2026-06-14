@@ -23,6 +23,66 @@ SH
     chmod +x "$tools/file" "$tools/otool"
 }
 
+make_materializer_tools() {
+    local tools="$1"
+    mkdir -p "$tools"
+    cat > "$tools/file" <<'SH'
+#!/bin/sh
+case "$*" in
+  *pyvenv.cfg*|*bin/tool*|*.py|*.pth) echo text/plain ;;
+  *) echo application/x-mach-binary ;;
+esac
+SH
+    cat > "$tools/otool" <<'SH'
+#!/bin/sh
+target=""
+for arg in "$@"; do
+  target="$arg"
+done
+case "${MATERIALIZER_OTOOL_CASE:-empty}" in
+  mlx_unresolved)
+    case "$target" in
+      *libmlx.dylib)
+        cat <<'OUT'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @rpath/libjaccl.dylib (offset 24)
+OUT
+        ;;
+    esac
+    ;;
+  mlx_unresolved_universal)
+    case "$target" in
+      *libmlx.dylib)
+        cat <<'OUT'
+/unused (for architecture x86_64):
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @rpath/libjaccl.dylib (offset 24)
+/unused (for architecture arm64):
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @rpath/libjaccl.dylib (offset 24)
+OUT
+        ;;
+    esac
+    ;;
+esac
+SH
+    cat > "$tools/install_name_tool" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "${INSTALL_NAME_TOOL_LOG:?}"
+if [ "${1:-}" = "-add_rpath" ]; then
+  printf 'rpath\t%s\n' "${2:-}" >> "${INSTALL_NAME_TOOL_LOG:?}"
+fi
+exit 0
+SH
+    chmod +x "$tools/file" "$tools/otool" "$tools/install_name_tool"
+}
+
 make_venv_fixture() {
     local root="$1"
     local venv="$root/Library/Application Support/Orchard/native/foo/.venv"
@@ -41,7 +101,7 @@ version = 3.13.5
 assert_no_grep() {
     local pattern="$1"
     local file="$2"
-    if grep -F "$pattern" "$file"; then
+    if grep -F -- "$pattern" "$file"; then
         echo "unexpected match for $pattern" >&2
         exit 1
     fi
@@ -50,7 +110,7 @@ assert_no_grep() {
 assert_grep() {
     local pattern="$1"
     local file="$2"
-    grep -F "$pattern" "$file" >/dev/null
+    grep -F -- "$pattern" "$file" >/dev/null
 }
 
 assert_verifier_fails_with() {
@@ -175,6 +235,85 @@ fi
 head -3 "$venv/bin/tool" | grep -F '#!/bin/sh' >/dev/null
 assert_no_grep '/Users/buildhost' "$venv/bin/tool"
 
+# materializer: unresolved in-venv @rpath support dylibs get a relative rpath.
+case_dir="$TMP_ROOT/materialize-rpath-support-dylib"
+tools="$case_dir/tools"
+root="$case_dir/root"
+venv="$(make_venv_fixture "$root")"
+mlx_lib="$venv/lib/python3.13/site-packages/mlx/lib"
+mkdir -p "$mlx_lib"
+: > "$mlx_lib/libmlx.dylib"
+: > "$mlx_lib/libjaccl.dylib"
+make_materializer_tools "$tools"
+install_name_log="$case_dir/install-name-tool.log"
+INSTALL_NAME_TOOL_LOG="$install_name_log" MATERIALIZER_OTOOL_CASE=mlx_unresolved PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$root/Library/Application Support/Orchard/native" >"$case_dir/out"
+assert_grep "materialized" "$case_dir/out"
+assert_grep "-add_rpath @loader_path" "$install_name_log"
+assert_grep $'rpath\t@loader_path' "$install_name_log"
+assert_grep "libmlx.dylib" "$install_name_log"
+if grep -F $'rpath\t/' "$install_name_log" || grep -F $'rpath\t/Users/' "$install_name_log"; then
+    echo "unexpected absolute remediation rpath" >&2
+    cat "$install_name_log" >&2
+    exit 1
+fi
+
+# materializer: universal slices sharing the same unresolved dep add one rpath.
+case_dir="$TMP_ROOT/materialize-rpath-support-dylib-universal"
+tools="$case_dir/tools"
+root="$case_dir/root"
+venv="$(make_venv_fixture "$root")"
+mlx_lib="$venv/lib/python3.13/site-packages/mlx/lib"
+mkdir -p "$mlx_lib"
+: > "$mlx_lib/libmlx.dylib"
+: > "$mlx_lib/libjaccl.dylib"
+make_materializer_tools "$tools"
+install_name_log="$case_dir/install-name-tool.log"
+INSTALL_NAME_TOOL_LOG="$install_name_log" MATERIALIZER_OTOOL_CASE=mlx_unresolved_universal PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$root/Library/Application Support/Orchard/native" >"$case_dir/out"
+if [[ "$(grep -F $'rpath\t@loader_path' "$install_name_log" | wc -l | tr -d ' ')" != "1" ]]; then
+    echo "expected one rpath remediation for universal duplicate load commands" >&2
+    cat "$install_name_log" >&2
+    exit 1
+fi
+
+# materializer: unresolved @rpath deps fail when no in-venv candidate exists.
+case_dir="$TMP_ROOT/materialize-rpath-support-dylib-missing"
+tools="$case_dir/tools"
+root="$case_dir/root"
+venv="$(make_venv_fixture "$root")"
+mlx_lib="$venv/lib/python3.13/site-packages/mlx/lib"
+mkdir -p "$mlx_lib"
+: > "$mlx_lib/libmlx.dylib"
+make_materializer_tools "$tools"
+if INSTALL_NAME_TOOL_LOG="$case_dir/install-name-tool.log" MATERIALIZER_OTOOL_CASE=mlx_unresolved PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$root/Library/Application Support/Orchard/native" >"$case_dir/out" 2>&1; then
+    echo "expected materializer to fail without an in-venv libjaccl candidate" >&2
+    cat "$case_dir/out" >&2
+    exit 1
+fi
+assert_grep "no in-venv candidate" "$case_dir/out"
+
+# materializer: multiple in-venv candidate directories are ambiguous.
+case_dir="$TMP_ROOT/materialize-rpath-support-dylib-ambiguous"
+tools="$case_dir/tools"
+root="$case_dir/root"
+venv="$(make_venv_fixture "$root")"
+mlx_lib="$venv/lib/python3.13/site-packages/mlx/lib"
+other_lib="$venv/lib/python3.13/site-packages/mlx_metal/lib"
+mkdir -p "$mlx_lib" "$other_lib"
+: > "$mlx_lib/libmlx.dylib"
+: > "$mlx_lib/libjaccl.dylib"
+: > "$other_lib/libjaccl.dylib"
+make_materializer_tools "$tools"
+if INSTALL_NAME_TOOL_LOG="$case_dir/install-name-tool.log" MATERIALIZER_OTOOL_CASE=mlx_unresolved PATH="$tools:/usr/bin:/bin" \
+    "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$root/Library/Application Support/Orchard/native" >"$case_dir/out" 2>&1; then
+    echo "expected materializer to fail with ambiguous in-venv libjaccl candidates" >&2
+    cat "$case_dir/out" >&2
+    exit 1
+fi
+assert_grep "ambiguous in-venv candidates" "$case_dir/out"
+
 # verifier: LC_ID_DYLIB/self install name is ignored as a non-dependency.
 case_dir="$TMP_ROOT/lc-id"
 tools="$case_dir/tools"
@@ -226,6 +365,33 @@ OUT'
 PATH="$tools:/usr/bin:/bin" "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" "$root" >"$case_dir/out" 2>&1
 assert_no_grep 'outbound LC_RPATH' "$case_dir/out"
 assert_no_grep 'unresolved @rpath dependency' "$case_dir/out"
+
+# verifier: unresolved MLX-style @rpath support dylibs stay rejected without remediation.
+case_dir="$TMP_ROOT/rpath-libjaccl-unresolved"
+tools="$case_dir/tools"
+root="$case_dir/root"
+venv="$(make_venv_fixture "$root")"
+mlx_lib="$venv/lib/python3.13/site-packages/mlx/lib"
+mkdir -p "$mlx_lib"
+: > "$mlx_lib/libmlx.dylib"
+: > "$mlx_lib/libjaccl.dylib"
+make_fake_tools "$tools" '#!/bin/sh
+target=""
+for arg in "$@"; do
+  target="$arg"
+done
+case "$target" in
+  *libmlx.dylib)
+    cat <<'"'"'OUT'"'"'
+Load command 0
+          cmd LC_LOAD_DYLIB
+      cmdsize 96
+         name @rpath/libjaccl.dylib (offset 24)
+OUT
+    ;;
+esac'
+assert_verifier_fails_with 'unresolved @rpath dependency' "$tools" "$root" "$case_dir/out" --no-smoke
+assert_grep '@rpath/libjaccl.dylib' "$case_dir/out"
 
 # verifier: host-bound Python shebangs are rejected.
 case_dir="$TMP_ROOT/shebang"
