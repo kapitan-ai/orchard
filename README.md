@@ -124,6 +124,19 @@ Pre-release. Building from spec.
 
 [`SPEC.md`](SPEC.md) is the normative build contract — every implementation decision traces back to it.
 
+## Contributing And Workflow
+
+This repository is the collaborator-facing source of truth for Orchard.
+
+- [`SPEC.md`](SPEC.md) is the top-level normative build contract.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) explains human collaboration workflow.
+- [`AGENTS.md`](AGENTS.md) explains automation and agent workflow.
+- [`docs/process.md`](docs/process.md) explains artifact lifecycle and review gates.
+- [`openspec/README.md`](openspec/README.md) reserves a future structured-change workflow subordinate to `SPEC.md`.
+
+Active local `goals/<slug>/` packages are transient execution scaffolding and
+are ignored by default.
+
 ## Background
 
 Orchard is a ground-up rewrite of [Kapitan Orchard](https://github.com/najibninaba/kapitan-orchard) (v1: Rust + Kafka + Redis + Tauri). The rewrite replaces the distributed streaming architecture with Elixir/OTP + Postgres for simpler operations, better fault tolerance, and native macOS integration.

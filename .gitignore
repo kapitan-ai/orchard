@@ -47,7 +47,28 @@ native/*/.venv-pkg/
 
 # Pi
 .pi/
+
+# Prompt exports and private agent/tool artifacts
 /prompt-exports/
+**/prompt-exports/
+/.codex/
+/.repoprompt/
+/.plannotator/
+/.agent-scratch/
+/scratch/
+
+# Local execution evidence and release scratch
+/.local/
+/artifacts/
+/evidence/
+/release-artifacts/
+
+# Local/private goal execution packages.
+# Commit only goals/README.md and goals/_template/**.
+/goals/*
+!/goals/README.md
+!/goals/_template/
+!/goals/_template/**
 
 # ex_dna cache
 .ex_dna_cache

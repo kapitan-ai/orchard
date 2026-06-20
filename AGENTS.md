@@ -4,11 +4,53 @@ Orchard is a sovereign on-prem LLM orchestration platform for Apple Silicon macO
 
 ## Build Contract
 
-**SPEC.md** is the normative build contract. Every implementation decision must trace to a section in the spec. If the spec doesn't cover something, ask before improvising.
+**SPEC.md** is the top-level normative Orchard build contract. Every
+implementation decision must trace to `SPEC.md`, tests, product docs, a
+decision record, or an explicitly approved issue/PR decision.
+
+If `SPEC.md`, docs, future OpenSpec materials, tests, or implementation disagree
+about product behavior, treat the PR as blocked until the branch reconciles the
+conflict. `SPEC.md` wins until explicitly updated.
 
 ## Product Repo Boundary
 
 This repository must remain self-contained product source. Do not add references or dependencies to `orchard-workbench`, RepoPrompt chat/session IDs, prompt-export files, or local planning artifacts. If planning material becomes durable product documentation, rewrite it as standalone Orchard documentation before committing it here. Transient RP exports belong outside this repo; `/prompt-exports/` is ignored.
+
+Local tools may accelerate work, but they do not own product truth. Do not
+commit raw prompt exports, local execution evidence, active goal packages,
+interview JSON, annotation state, tool session identifiers, credentials, DSNs,
+or machine-specific paths.
+
+Durable conclusions belong in `SPEC.md`, `docs/**`, `docs/decisions/**`,
+tests, code, or future verified OpenSpec materials.
+
+## Planning And Local Goals
+
+Use the lightest process that protects the Orchard contract.
+
+Small changes may go directly through issue/PR review:
+
+- typo and documentation clarifications
+- small internal refactors with no behavior change
+- straightforward bug fixes with regression tests
+- tactical UI changes that follow `docs/DESIGN.md`
+
+For behavior-changing or architecture-significant work, state the `SPEC.md`
+impact before implementation. If a durable decision is needed and is not already
+fixed by `SPEC.md`, add or update a decision record under `docs/decisions/**`.
+
+`goals/<slug>/` packages are transient local execution scaffolding. They are not
+durable product truth.
+
+Keep only these on `main`:
+
+- `goals/README.md`
+- `goals/_template/**`
+
+Do not commit active `goals/<slug>/` packages, raw interview JSON, review JSON,
+metadata JSON, local evidence logs, local paths, or tool session identifiers.
+If goal material becomes durable, promote the conclusion into `SPEC.md`,
+product docs, decisions, tests, or code.
 
 ## Architecture (from SPEC.md)
 
@@ -209,5 +251,10 @@ See `packaging/pkg/README.md` for full PKG operator documentation and `packaging
 | SPEC.md | Normative build contract |
 | AGENTS.md | This file — agent operating guide |
 | README.md | High-level product and roadmap overview |
+| CONTRIBUTING.md | Human collaborator workflow |
+| docs/process.md | Artifact lifecycle and process guidance |
+| docs/decisions/ | ADR-style durable decisions |
+| goals/README.md | Local goal package policy |
+| openspec/README.md | Reserved structured-change workflow |
 | mix.exs | Umbrella project root |
 | docs/code-quality.md | ex_slop + ex_dna plugin reference and tuning guide |

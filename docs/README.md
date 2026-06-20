@@ -2,16 +2,20 @@
 
 ## Purpose
 
-This directory contains non-normative implementation guidance for Orchard.
+This directory contains subordinate implementation guidance, process docs, and
+durable decision records for Orchard.
 
 Use these docs to support execution, planning, and decision-making during implementation.
-Do not treat anything here as a replacement for `SPEC.md`.
+Do not treat anything here as a replacement for `SPEC.md`, which remains the
+top-level normative product/system contract.
 
 ## Source of truth
 
 - `../SPEC.md` — normative product/system contract
 - `../README.md` — high-level project overview
+- `../CONTRIBUTING.md` — human collaborator workflow
 - `../AGENTS.md` — contributor and agent workflow
+- `process.md` — artifact lifecycle and review gates
 
 ## What belongs here
 
@@ -25,6 +29,11 @@ Do not treat anything here as a replacement for `SPEC.md`.
 - duplicated API contracts from `SPEC.md`
 - duplicated schema/state-machine definitions from `SPEC.md`
 - contributor workflow rules already covered in `AGENTS.md`
+- private workbench/session history
+- raw prompt exports
+- active local goal packages
+- unsanitized local evidence
+- tool session identifiers
 - placeholder docs with no active use
 
 ## Writing rules
@@ -37,4 +46,5 @@ Do not treat anything here as a replacement for `SPEC.md`.
 ## Current structure
 
 - `milestones/` — milestone execution plans and active milestone status
-- `decisions/` — ADR-style records for real implementation choices (create only when needed)
+- `process.md` — artifact lifecycle and review gates
+- `decisions/` — ADR-style records for durable implementation decisions
