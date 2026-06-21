@@ -878,8 +878,6 @@ defmodule OrchardConsole.RequestLive do
     end
   end
 
-  defp format_json(nil), do: "—"
-
   defp format_json(map) when is_map(map) do
     case Jason.encode(map, pretty: true) do
       {:ok, json} -> json

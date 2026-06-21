@@ -245,10 +245,6 @@ defmodule OrchardCLI.Commands.Start do
     "Last observed status: degraded (#{reason})\n"
   end
 
-  defp format_last_state(%{state: :invalid_response, display_url: url, error: message}) do
-    "Last observed status: invalid health response from #{url} (#{message})\n"
-  end
-
   defp format_last_state(_snap) do
     "Last observed status: not ready\n"
   end

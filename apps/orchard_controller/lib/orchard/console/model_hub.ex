@@ -525,11 +525,6 @@ defmodule OrchardConsole.ModelHub do
     end
   end
 
-  defp normalize_bundle_error(reason) do
-    Logger.warning("ModelHub: unrecognized bundle error: " <> Redaction.safe_inspect(reason))
-    %{status: :error, code: "bundle_prepare_failed", message: "Bundle preparation failed."}
-  end
-
   defp normalize_import_error({:duplicate, _msg}) do
     %{
       status: :error,

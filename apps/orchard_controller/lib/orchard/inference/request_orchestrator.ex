@@ -884,8 +884,6 @@ defmodule Orchard.Inference.RequestOrchestrator do
     tooling.tools != [] or tooling.requested_tools != [] or not is_nil(tooling.tool_choice)
   end
 
-  defp tooling_enabled?(_tooling), do: false
-
   defp put_if_present(map, _key, nil), do: map
   defp put_if_present(map, key, value), do: Map.put(map, key, value)
 

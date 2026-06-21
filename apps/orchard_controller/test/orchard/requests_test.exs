@@ -641,7 +641,6 @@ defmodule Orchard.RequestsTest do
       assert fetched != nil
       assert fetched.retry_of_request.id == parent.id
       assert fetched.retry_of_request.public_id == parent.public_id
-      refute match?(%Ecto.Association.NotLoaded{}, fetched.retry_of_request)
     end
 
     test "returns nil retry_of_request when no retry source" do
@@ -673,8 +672,6 @@ defmodule Orchard.RequestsTest do
 
       assert fetched.tenant.id == tenant.id
       assert fetched.api_key.id == api_key.id
-      refute match?(%Ecto.Association.NotLoaded{}, fetched.tenant)
-      refute match?(%Ecto.Association.NotLoaded{}, fetched.api_key)
     end
 
     test "returns nil tenant and api_key associations when absent" do

@@ -15,8 +15,6 @@ defmodule Orchard.Node.WorkerProcessTest do
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.Node.WorkerProcess
 
-  require Logger
-
   defmodule ConcurrentRuntimeAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
 

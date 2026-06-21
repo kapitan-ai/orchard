@@ -657,7 +657,6 @@ defmodule Orchard.Models.Importer do
   defp value_kind(value) when is_integer(value), do: :integer
   defp value_kind(value) when is_float(value), do: :float
   defp value_kind(value) when is_list(value), do: :list
-  defp value_kind(value) when is_map(value), do: :map
   defp value_kind(_value), do: :other
 
   # -- SHA-256 computation --------------------------------------------------

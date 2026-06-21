@@ -36,9 +36,6 @@ defmodule Orchard.SentryLogger do
       {:ok, _config} ->
         :ok
 
-      {:error, :not_found} ->
-        add_handler()
-
       {:error, {:not_found, _handler}} ->
         add_handler()
     end

@@ -258,8 +258,6 @@ defmodule Orchard.SentryContext do
     end
   end
 
-  defp license_extra_from_health(_health), do: %{}
-
   defp license_tags_from_health(%{status: status} = health) do
     tags = %{orchard_license_state: status}
 
@@ -278,8 +276,6 @@ defmodule Orchard.SentryContext do
       tags
     end
   end
-
-  defp license_tags_from_health(_health), do: %{}
 
   defp license_identity_allowed?(%{reason: reason})
        when reason in [nil, "expired", "not_yet_valid", "fingerprint_mismatch"],

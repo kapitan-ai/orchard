@@ -142,7 +142,6 @@ defmodule Orchard.Cluster.V1.InferenceEventMapper do
   end
 
   defp usage_from_proto(nil, allow_nil?: true), do: {:ok, nil}
-  defp usage_from_proto(nil, allow_nil?: false), do: {:error, :missing_usage}
 
   defp usage_from_proto(%V1.TokenUsage{} = usage, _opts) do
     if is_integer(usage.input_tokens) and usage.input_tokens >= 0 and

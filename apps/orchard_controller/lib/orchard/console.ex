@@ -30,7 +30,7 @@ defmodule OrchardConsole do
 
     sha = Orchard.BuildInfo.git_sha()
 
-    if sha in ["unknown", ""] do
+    if sha == "unknown" do
       base
     else
       base <> " (" <> sha <> ")"

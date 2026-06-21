@@ -982,10 +982,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     %{metrics | outcome: :dispatch_failed, terminal_kind: :none, terminal_source: :none}
   end
 
-  defp finalize_metrics(%Metrics{} = metrics, {:error, _}) do
-    %{metrics | outcome: :dispatch_failed, terminal_kind: :none, terminal_source: :none}
-  end
-
   defp serialize_bool(true), do: "true"
   defp serialize_bool(false), do: "false"
   defp serialize_bool(:unknown), do: "unknown"

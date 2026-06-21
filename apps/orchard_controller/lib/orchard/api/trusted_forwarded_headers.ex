@@ -62,13 +62,11 @@ defmodule Orchard.API.TrustedForwardedHeaders do
   end
 
   defp reject_forwarded_headers(conn) do
-    forwarded_headers = MapSet.new(@forwarded_headers)
-
     %{
       conn
       | req_headers:
           Enum.reject(conn.req_headers, fn {header, _value} ->
-            MapSet.member?(forwarded_headers, header)
+            header in @forwarded_headers
           end)
     }
   end

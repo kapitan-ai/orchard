@@ -85,7 +85,7 @@ defmodule Orchard.Node.SentryTelemetryBridge do
                         ])
   @known_cancel_reason_strings MapSet.new(Enum.map(@known_cancel_reasons, &Atom.to_string/1))
 
-  @spec attach() :: :ok | {:error, term()}
+  @spec attach() :: :ok
   def attach do
     case :telemetry.attach_many(@handler_id, @events, &__MODULE__.handle_event/4, nil) do
       :ok ->
@@ -93,10 +93,6 @@ defmodule Orchard.Node.SentryTelemetryBridge do
 
       {:error, :already_exists} ->
         :ok
-
-      {:error, reason} = error ->
-        Logger.warning("Sentry telemetry bridge attach failed: #{inspect(reason)}")
-        error
     end
   end
 
@@ -199,6 +195,8 @@ defmodule Orchard.Node.SentryTelemetryBridge do
     end
   end
 
+  defp sanitized_reason(nil), do: nil
+
   defp sanitized_reason(reason) when is_atom(reason) do
     if MapSet.member?(@known_reasons, reason) do
       Atom.to_string(reason)
@@ -220,7 +218,6 @@ defmodule Orchard.Node.SentryTelemetryBridge do
     end)
   end
 
-  defp sanitized_reason(nil), do: nil
   defp sanitized_reason(_reason), do: "unexpected_error"
 
   defp normalize_value(key, value) do
@@ -250,6 +247,8 @@ defmodule Orchard.Node.SentryTelemetryBridge do
 
   defp normalize_result(_value), do: @redacted
 
+  defp normalize_cancel_reason(nil), do: nil
+
   defp normalize_cancel_reason(reason) when is_atom(reason) do
     if MapSet.member?(@known_cancel_reasons, reason) do
       Atom.to_string(reason)
@@ -266,7 +265,6 @@ defmodule Orchard.Node.SentryTelemetryBridge do
         "unexpected_cancel"
       )
 
-  defp normalize_cancel_reason(nil), do: nil
   defp normalize_cancel_reason(_reason), do: "unexpected_cancel"
 
   defp normalize_string_enum(value, allowed, fallback \\ @redacted) do

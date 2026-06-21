@@ -636,6 +636,4 @@ defmodule OrchardConsole.Redaction do
     |> redact_secrets()
     |> String.slice(0, @max_redacted_chars)
   end
-
-  defp sanitize_visible_message(message), do: message
 end

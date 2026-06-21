@@ -11,8 +11,6 @@ defmodule Orchard.Node.ModelManager do
 
   import Bitwise, only: [band: 2, bsr: 2]
 
-  require Logger
-
   alias Orchard.Cluster.V1.Ack
   alias Orchard.Cluster.V1.EnsureModelLoadedRequest
   alias Orchard.Cluster.V1.EnsureModelLoadedResponse
@@ -1264,13 +1262,13 @@ defmodule Orchard.Node.ModelManager do
 
   defp build_node_metadata do
     %RuntimeNodeMetadata{
-      node_id: Node.node_id() || "",
-      display_name: Node.display_name() || "",
-      hostname: Node.hostname() || "",
-      agent_version: Node.agent_version() || "",
-      listen_host: Node.listen_host_string() || "",
+      node_id: Node.node_id(),
+      display_name: Node.display_name(),
+      hostname: Node.hostname(),
+      agent_version: Node.agent_version(),
+      listen_host: Node.listen_host_string(),
       listen_port: Node.listen_port() || 0,
-      worker_backend: Node.worker_backend() || ""
+      worker_backend: Node.worker_backend()
     }
   end
 

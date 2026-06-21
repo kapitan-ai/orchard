@@ -382,7 +382,6 @@ defmodule Orchard.Tokenizer.Client do
   defp maybe_emit_catalog_drift(_catalog, _manifest, _request, _opts), do: :ok
 
   defp value_kind(value) when is_nil(value), do: nil
-  defp value_kind(value) when is_binary(value), do: :binary
   defp value_kind(value) when is_atom(value), do: :atom
   defp value_kind(value) when is_integer(value), do: :integer
   defp value_kind(value) when is_float(value), do: :float

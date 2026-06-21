@@ -407,10 +407,7 @@ defmodule OrchardCLI.Commands.TLS do
         File.cp!(Path.join(output_dir, "ca.key"), ca_key)
         File.cp!(Path.join(output_dir, "ca.crt"), ca_crt)
       else
-        case generate_ca(staging_dir, ca_days, runtime) do
-          :ok -> :ok
-          {:error, _, _} = err -> throw(err)
-        end
+        generate_ca(staging_dir, ca_days, runtime)
       end
 
       :ok = generate_server_cert(staging_dir, common_name, san_dns, san_ip, server_days, runtime)

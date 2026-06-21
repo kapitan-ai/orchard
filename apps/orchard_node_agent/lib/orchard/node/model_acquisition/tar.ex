@@ -14,8 +14,6 @@ defmodule Orchard.Node.ModelAcquisition.Tar do
   internal temp names (e.g. an archive entry named `.extract`).
   """
 
-  require Logger
-
   @type archive_format :: :tar | :tar_gz
 
   @doc """

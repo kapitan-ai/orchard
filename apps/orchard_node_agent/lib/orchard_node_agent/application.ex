@@ -38,17 +38,7 @@ defmodule Orchard.NodeAgent.Application do
   end
 
   defp attach_sentry_telemetry_bridge do
-    case SentryTelemetryBridge.attach() do
-      :ok ->
-        :ok
-
-      {:error, reason} ->
-        require Logger
-
-        Logger.warning(
-          "Sentry telemetry bridge attach failed, continuing without: #{inspect(reason)}"
-        )
-    end
+    SentryTelemetryBridge.attach()
   end
 
   @impl true

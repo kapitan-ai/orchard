@@ -1075,7 +1075,6 @@ defmodule OrchardConsole.OverviewLive do
 
   defp runtime_health_level(%{status: :ok, runtime_health: %{}}), do: :healthy
   defp runtime_health_level(%{status: :ok}), do: :unsupported
-  defp runtime_health_level(_), do: :unsupported
 
   defp runtime_badge_tone(%{status: :loading}), do: :neutral
   defp runtime_badge_tone(%{status: status}) when status != :ok, do: :error

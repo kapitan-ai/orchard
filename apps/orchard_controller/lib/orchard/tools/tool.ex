@@ -136,6 +136,4 @@ defmodule Orchard.Tools.Tool do
   defp map_value(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, Atom.to_string(key))
   end
-
-  defp map_value(_map, _key), do: nil
 end

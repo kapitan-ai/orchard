@@ -48,7 +48,6 @@ defmodule Orchard.Node do
   def hostname do
     case :net_adm.localhost() do
       name when is_list(name) -> List.to_string(name)
-      _ -> listen_host_string()
     end
   end
 

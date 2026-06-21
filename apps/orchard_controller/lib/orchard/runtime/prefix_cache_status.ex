@@ -264,8 +264,6 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
     |> normalize_prefix_cache_fingerprint_list()
   end
 
-  defp normalize_prefix_cache_fingerprints(_status), do: []
-
   defp normalize_prefix_cache_fingerprint_list(fingerprints) when is_list(fingerprints) do
     {_seen, ordered, _count} =
       Enum.reduce_while(fingerprints, {MapSet.new(), [], 0}, fn fingerprint, {seen, acc, count} ->

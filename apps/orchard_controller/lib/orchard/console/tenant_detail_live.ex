@@ -392,12 +392,6 @@ defmodule OrchardConsole.TenantDetailLive do
     else
       {:error, :tenant_not_found} ->
         assign(socket, detail_status: :not_found)
-
-      _ ->
-        assign(socket,
-          detail_status: :error,
-          load_error: "Tenant details unavailable."
-        )
     end
   rescue
     _ ->
