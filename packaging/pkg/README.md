@@ -1044,7 +1044,7 @@ Orchard includes a build script at `scripts/build-pkg.sh` that automates the com
 ### Quick Build
 
 ```bash
-./scripts/build-pkg.sh
+mise exec -- ./scripts/build-pkg.sh
 ```
 
 This produces a PKG file following the [naming convention below](#filename-format) in:
@@ -1068,7 +1068,7 @@ The script exports `ORCHARD_BUILD_CHANNEL=trial` when the variable is unset. If 
 Use the same scripted packaging path, with `--allow-dirty` when needed:
 
 ```bash
-./scripts/build-pkg.sh --allow-dirty
+mise exec -- ./scripts/build-pkg.sh --allow-dirty
 ```
 
 This is the supported development PKG lane: same staging, payload checks,
@@ -1082,8 +1082,9 @@ rather than environment-variable installer overrides.
 ### Build Requirements
 
 Before building:
-1. **Elixir/Mix**: Available on PATH (`mix --version`)
-2. **uv**: For Python venv setup (`uv --version`)
+1. **mise toolchain**: Run `mise install` from the repo root. This provides
+   pinned Erlang/OTP, Elixir, Python, and uv versions from `mise.toml`.
+2. **Build shell**: Run builds through `mise exec -- ./scripts/build-pkg.sh`.
 3. **Git**: Clean working tree recommended (use `--allow-dirty` if needed)
 4. **macOS**: PKG build only works on macOS (uses `pkgbuild`)
 5. **No dev server running**: Ports 4000/50071 should be free (warns if in use)
@@ -1096,7 +1097,7 @@ If scripted behavior drifts or you need operator-level debugging, use a direct
 ```bash
 pkgbuild \
   --root /tmp/orchard-pkg-build-<pid> \
-  --scripts /Users/<you>/Hacks/orchard/packaging/pkg/scripts \
+  --scripts "$PWD/packaging/pkg/scripts" \
   --identifier com.orchard.pkg \
   --version <app_version> \
   --install-location / \
@@ -1108,8 +1109,8 @@ launchd plists `0644`, wrappers `0755`) and use the same role request-file
 contract in [Install Role Selection](#install-role-selection) before installing
 the fallback PKG.
 
-**Note:** Prefer `scripts/build-pkg.sh` for normal operation; it also validates
-staging/payload layout and writes checksums.
+**Note:** Prefer `mise exec -- ./scripts/build-pkg.sh` for normal operation; it
+also validates staging/payload layout and writes checksums.
 
 ## Signing and notarization
 
@@ -1170,7 +1171,7 @@ export ORCHARD_PAYLOAD_SIGNING_IDENTITY='Developer ID Application: Example, Inc.
 export ORCHARD_PKG_SIGNING_IDENTITY='Developer ID Installer: Example, Inc. (TEAMID)'
 export ORCHARD_NOTARYTOOL_PROFILE=orchard-notary
 
-scripts/build-pkg.sh
+mise exec -- ./scripts/build-pkg.sh
 
 UNSIGNED_PKG="$(ls -t artifacts/pkg-builds/*/Orchard-*.pkg | grep -v -- '-signed\.pkg$' | head -1)"
 SIGNED_PKG="${UNSIGNED_PKG%.pkg}-signed.pkg"
@@ -1190,7 +1191,7 @@ environment variables:
 ```bash
 export ORCHARD_PAYLOAD_SIGNING_IDENTITY='Developer ID Application: Example, Inc. (TEAMID)'
 
-scripts/build-pkg.sh
+mise exec -- ./scripts/build-pkg.sh
 
 scripts/sign-pkg.sh \
   --identity 'Developer ID Installer: Example, Inc. (TEAMID)' \

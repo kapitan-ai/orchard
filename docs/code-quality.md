@@ -1,6 +1,6 @@
 # Code Quality Plugins
 
-Orchard uses two Credo plugins to maintain code quality in an AI-assisted development workflow. Both integrate into `mix credo --strict` and run automatically as part of the standard quality gate.
+Orchard uses two Credo plugins to maintain code quality in an AI-assisted development workflow. Both integrate into `mise exec -- mix credo --strict` and run automatically as part of the standard quality gate.
 
 ## Why These Tools
 
@@ -49,7 +49,7 @@ ex_slop 0.4 provides an upstream recommended bundle plus additional opt-in check
 
 The upstream recommended bundle currently includes additional checks that Orchard has not adopted, including `RepoAllThenFilter`, `QueryInEnumMap`, `GenserverAsKvStore`, `PathExpandPriv`, `DualKeyAccess`, `ReduceMapPut`, `RedundantBooleanIf`, `FlatMapFilter`, `RedundantEnumJoinSeparator`, `GraphemesLength`, `ManualStringReverse`, `SortThenAt`, `SortForTopK`, and `ExplicitSumReduce`. Orchard also keeps enforcing `CaseTrueFalse`, `DocFalseOnPublicFunction`, `ObviousComment`, and `StepComment`, which are not in the upstream recommended bundle.
 
-Treat any ExSlop policy expansion as a deliberate change: enable the check explicitly, run `mix credo --strict`, fix or narrowly suppress resulting findings, then update this document.
+Treat any ExSlop policy expansion as a deliberate change: enable the check explicitly, run `mise exec -- mix credo --strict`, fix or narrowly suppress resulting findings, then update this document.
 
 ## ex_dna — AST-Level Duplication Detection
 
@@ -83,11 +83,11 @@ ex_dna detects code clones at the AST level, finding duplicates that text-based 
 ### Standalone Usage
 
 ```bash
-mix ex_dna --paths "apps/"     # scan all umbrella apps
-mix ex_dna.explain N            # detailed breakdown of clone N
+mise exec -- mix ex_dna --paths "apps/"     # scan all umbrella apps
+mise exec -- mix ex_dna.explain N            # detailed breakdown of clone N
 ```
 
-The Credo-integrated check runs automatically via `mix credo --strict`. Standalone `mix ex_dna` is useful for exploratory analysis before adjusting thresholds.
+The Credo-integrated check runs automatically via `mise exec -- mix credo --strict`. Standalone `mise exec -- mix ex_dna` is useful for exploratory analysis before adjusting thresholds.
 
 ## Fix vs Suppress
 
@@ -153,7 +153,7 @@ Orchard owns the explicit check list in `.credo.exs`; do not replace it with `{E
 To add or remove a check:
 
 1. Edit the explicit check list in `.credo.exs`
-2. Run `mix credo --strict` and assess findings
+2. Run `mise exec -- mix credo --strict` and assess findings
 3. Fix genuine issues, suppress false positives with rationale
 4. Update this document's enabled/available-check guidance
 
@@ -161,7 +161,7 @@ To add or remove a check:
 
 Reducing `min_mass` surfaces smaller clones. Before lowering:
 
-1. Run `mix ex_dna --paths "apps/" --min-mass <new_value>` to preview
+1. Run `mise exec -- mix ex_dna --paths "apps/" --min-mass <new_value>` to preview
 2. Assess signal-to-noise ratio — are the new clones genuine shared logic or just similar test setup?
 3. Fix the genuine ones, then update both `.credo.exs` and `.ex_dna.exs`
 4. Update the tuning rationale table above
@@ -185,5 +185,5 @@ If you see a warning about **redefining `ExDNA.Credo`**, the old runtime `requir
 | File | Purpose |
 |------|---------|
 | `.credo.exs` | Credo config — all ex_slop checks + ExDNA.Credo integration |
-| `.ex_dna.exs` | Standalone ex_dna tuning for `mix ex_dna` |
+| `.ex_dna.exs` | Standalone ex_dna tuning for `mise exec -- mix ex_dna` |
 | `.gitignore` | Includes `.ex_dna_cache` |

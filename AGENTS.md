@@ -12,17 +12,23 @@ If `SPEC.md`, docs, future OpenSpec materials, tests, or implementation disagree
 about product behavior, treat the PR as blocked until the branch reconciles the
 conflict. `SPEC.md` wins until explicitly updated.
 
-## Product Repo Boundary
+## Single-Repo Source Of Truth
 
-This repository must remain self-contained product source. Do not add references or dependencies to `orchard-workbench`, RepoPrompt chat/session IDs, prompt-export files, or local planning artifacts. If planning material becomes durable product documentation, rewrite it as standalone Orchard documentation before committing it here. Transient RP exports belong outside this repo; `/prompt-exports/` is ignored.
+This repository is the active source of truth for Orchard product code, docs,
+plans, decisions, tests, and agent workflow. The deprecated/frozen
+`orchard-workbench` may be useful historical context, but active Orchard work
+must not require it. If old planning material becomes durable product guidance,
+rewrite it as standalone Orchard documentation before committing it here.
+Transient RP exports may live in ignored local paths such as `/prompt-exports/`,
+but must not be committed.
 
 Local tools may accelerate work, but they do not own product truth. Do not
 commit raw prompt exports, local execution evidence, active goal packages,
 interview JSON, annotation state, tool session identifiers, credentials, DSNs,
 or machine-specific paths.
 
-Durable conclusions belong in `SPEC.md`, `docs/**`, `docs/decisions/**`,
-tests, code, or future verified OpenSpec materials.
+Durable conclusions belong in this repo: `SPEC.md`, `docs/**`,
+`docs/decisions/**`, tests, code, or future verified OpenSpec materials.
 
 ## Planning And Local Goals
 
@@ -40,7 +46,8 @@ impact before implementation. If a durable decision is needed and is not already
 fixed by `SPEC.md`, add or update a decision record under `docs/decisions/**`.
 
 `goals/<slug>/` packages are transient local execution scaffolding. They are not
-durable product truth.
+durable product truth unless their conclusions are promoted into standalone
+repo docs, decisions, tests, or code.
 
 Keep only these on `main`:
 
@@ -82,6 +89,19 @@ product docs, decisions, tests, or code.
 - Tests should trace back to milestone and spec behavior where possible
 - Commits: conventional commits (`feat:`, `fix:`, `docs:`, `chore:`)
 - Config: `config/` for compile-time, `config/runtime.exs` for runtime
+- Toolchain: use the pinned `mise.toml` contract; see `docs/tooling.md`
+
+## Tooling Guidance
+
+Required product toolchain setup lives in `docs/tooling.md`. Keep `AGENTS.md`
+focused on contribution workflow and link out for pinned runtime versions,
+`mise exec --` command forms, Python/uv policy, Node policy, and local agent
+accelerator guidance.
+
+Agent accelerators such as RepoPrompt, codemap, ast-grep, Refero, Superpowers,
+and Exa may help with discovery, review, design, and research. Discover their
+available roles/workflows live before assuming a stale tool surface. They do not
+own product truth and must not become required human collaborator dependencies.
 
 ## LiveView Console Conventions
 
@@ -94,7 +114,7 @@ Authority order:
 2. `docs/brand-identity.md` governs palette, typography, logo, and brand semantics.
 3. `docs/DESIGN.md` governs tactical UI execution: surfaces, input wells, sidebar/control rail, focus/error states, density, motion, accessibility semantics, and browser verification.
 
-When changing Console UI, keep `docs/DESIGN.md` and the implementation in sync. Do not reference workbench plans, RP sessions, Oracle reviews, prompt exports, or local planning artifacts from product docs/code.
+When changing Console UI, keep `docs/DESIGN.md` and the implementation in sync. Do not reference historical external plans, RP sessions, Oracle reviews, prompt exports, or local planning artifacts from product docs/code.
 
 ### Console Implementation Conventions
 
@@ -116,14 +136,14 @@ When contributing code, agents MUST run the applicable quality workflow from the
 
 ### Elixir workflow
 
-Run these in order for Elixir/OTP changes:
+Run these in order for Elixir/OTP changes from the umbrella root:
 
-1. `mix format`
-2. `mix compile --warnings-as-errors`
-3. `mix credo --strict`
-4. `mix dialyzer`
-5. `mix test`
-6. `mix test --cover`
+1. `mise exec -- mix format`
+2. `mise exec -- mix compile --warnings-as-errors`
+3. `mise exec -- mix credo --strict`
+4. `mise exec -- mix dialyzer`
+5. `mise exec -- mix test`
+6. `mise exec -- mix test --cover`
 
 Rules:
 
@@ -135,7 +155,7 @@ Rules:
 
 ### Code quality plugins (ex_slop + ex_dna)
 
-Two Credo plugins enforce code quality standards specific to AI-assisted development. Both run as part of `mix credo --strict`.
+Two Credo plugins enforce code quality standards specific to AI-assisted development. Both run as part of `mise exec -- mix credo --strict`.
 
 - **ex_slop** — detects AI-generated code patterns (blanket rescues, narrator docs, obvious comments, identity passthroughs, step comments, etc.). Orchard uses an explicit 20-check policy in `.credo.exs` rather than the upstream recommended bundle, so dependency upgrades cannot silently shift the quality gate.
 - **ex_dna** — AST-level code duplication detection. Finds exact, renamed-variable, and near-miss structural clones. Configured at `min_mass: 80`.
@@ -151,25 +171,30 @@ Rules:
   # Delete partial and restart from scratch.
   ```
 - Do NOT suppress findings to avoid refactoring. If ex_dna flags genuine duplication, extract a shared module.
-- When adding new modules, run `mix credo --strict` before committing — the plugins catch patterns that are invisible during normal development.
+- When adding new modules, run `mise exec -- mix credo --strict` before committing — the plugins catch patterns that are invisible during normal development.
 
 See `docs/code-quality.md` for detailed tuning rationale, suppression patterns, and guidance on evolving the check configuration.
 
 ### Python/native workflow
 
-For code under `native/`, use `uv`-managed tooling only. Prefer **Ruff** for formatting/linting and **ty** for static typing. Run these in order once the package is configured:
+For code under `native/`, use the mise-pinned Python plus `uv`-managed package
+environments only. Prefer **Ruff** for formatting/linting and **ty** for static
+typing. Run these in order for each changed native package:
 
-1. `uv run ruff format`
-2. `uv run ruff check`
-3. `uvx ty check`
-4. `uv run pytest`
-5. `uv run pytest --cov`
+1. `mise exec -- uv run --directory native/<package> ruff format`
+2. `mise exec -- uv run --directory native/<package> ruff check`
+3. `mise exec -- uv run --directory native/<package> pytest`
+4. `mise exec -- uv run --directory native/<package> pytest --cov`
 
 Rules:
 
 - Never use `python`, `python3`, `pip`, or `pip3` directly.
+- Do not use unpinned `uvx` tools as required quality gates. When `ty` is added
+  as a native package dev dependency, run it as
+  `mise exec -- uv run --directory native/<package> ty check`.
 - Keep tooling configuration in each package’s `pyproject.toml` where supported, plus any minimal tool-specific config files when required.
-- Do not introduce an alternate Python toolchain without updating this guide and the relevant project config.
+- Do not introduce an alternate Python toolchain without updating `mise.toml`,
+  `docs/tooling.md`, this guide, and the relevant project config.
 - Native helper changes SHOULD include tests for both protocol correctness and failure handling.
 
 ### Coverage expectations
@@ -187,28 +212,30 @@ Rules:
 
 ## Dev Environment
 
-**Start with:** `bin/dev`
+**Start with:** `mise exec -- bin/dev`
 
 This single command creates the dev database if needed, runs migrations, sets
 the dev gRPC port to 50071 (avoiding conflict with the packaged BEAM on 50061),
 and starts `iex -S mix phx.server`.
 
-For source-dev cluster roles, use `bin/dev-controller` for the Phoenix/controller
-host and `bin/dev-node-agent` for a node-agent-only worker host. The current
-validated two-Mac smoke pattern is: start `bin/dev-node-agent` on the worker host
-with `ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0`, then start `bin/dev-controller`
-on the controller host with `ORCHARD_RUNTIME_CLIENT_TARGETS=<worker-ip>:50071`.
+For source-dev cluster roles, use `mise exec -- bin/dev-controller` for the
+Phoenix/controller host and `mise exec -- bin/dev-node-agent` for a
+node-agent-only worker host. The current validated two-Mac smoke pattern is:
+start `mise exec -- bin/dev-node-agent` on the worker host with
+`ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0`, then start
+`mise exec -- bin/dev-controller` on the controller host with
+`ORCHARD_RUNTIME_CLIENT_TARGETS=<worker-ip>:50071`.
 
 When to bypass `bin/dev`:
-- `iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
-- `iex -S mix phx.server` — manual server start with custom env vars
-- `mix test` — test suite (uses its own DB and port 50071 via `test.exs`)
+- `mise exec -- iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
+- `mise exec -- iex -S mix phx.server` — manual server start with custom env vars
+- `mise exec -- mix test` — test suite (uses its own DB and port 50071 via `test.exs`)
 
 See `docs/m1-local-dev.md` for full environment setup and configuration.
 
 ## Packaging (PKG)
 
-**Build installer with:** `./scripts/build-pkg.sh`
+**Build installer with:** `mise exec -- ./scripts/build-pkg.sh`
 
 This script automates the complete PKG build process:
 - Python venv setup (tokenizer + MLX worker)
@@ -219,10 +246,10 @@ This script automates the complete PKG build process:
 
 **Build options:**
 ```bash
-./scripts/build-pkg.sh                    # Standard build
-./scripts/build-pkg.sh --clean          # Deep clean (slow, reproducible)
-./scripts/build-pkg.sh --allow-dirty    # Build with uncommitted changes
-./scripts/build-pkg.sh /custom/output   # Custom output directory
+mise exec -- ./scripts/build-pkg.sh                    # Standard build
+mise exec -- ./scripts/build-pkg.sh --clean            # Deep clean (slow, reproducible)
+mise exec -- ./scripts/build-pkg.sh --allow-dirty      # Build with uncommitted changes
+mise exec -- ./scripts/build-pkg.sh /custom/output     # Custom output directory
 ```
 
 **When to build:**
@@ -231,8 +258,8 @@ This script automates the complete PKG build process:
 - Validating the full installer workflow
 
 **When NOT to build:**
-- During normal development (use `bin/dev`)
-- Quick CLI testing (use `mix compile` + `iex -S mix`)
+- During normal development (use `mise exec -- bin/dev`)
+- Quick CLI testing (use `mise exec -- mix compile` + `mise exec -- iex -S mix`)
 
 The PKG is role-aware through a universal payload. Seed
 `/Library/Application Support/Orchard/support/.install-role.request` with
@@ -252,6 +279,8 @@ See `packaging/pkg/README.md` for full PKG operator documentation and `packaging
 | AGENTS.md | This file — agent operating guide |
 | README.md | High-level product and roadmap overview |
 | CONTRIBUTING.md | Human collaborator workflow |
+| mise.toml | Pinned local toolchain contract |
+| docs/tooling.md | mise, validation command, and local tool guidance |
 | docs/process.md | Artifact lifecycle and process guidance |
 | docs/decisions/ | ADR-style durable decisions |
 | goals/README.md | Local goal package policy |

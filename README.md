@@ -54,6 +54,7 @@ Clients (SDKs / curl / apps)
 | APIs | Phoenix/Plug (loopback HTTP in source dev; HTTPS + SSE in packaged installs) |
 | Packaging | DMG, PKG, launchd |
 | CLI | `orchardctl` |
+| Toolchain | mise-pinned Erlang/OTP, Elixir, Python, and uv |
 
 ### Current transport behavior
 
@@ -73,7 +74,8 @@ Clients (SDKs / curl / apps)
 - **CORS:** explicit origin allowlist via `ORCHARD_CORS_ORIGINS` (empty =
   disabled)
 
-See [docs/m1-local-dev.md](docs/m1-local-dev.md) for dev setup and
+See [docs/tooling.md](docs/tooling.md) for required local toolchain setup,
+[docs/m1-local-dev.md](docs/m1-local-dev.md) for dev setup, and
 [packaging/pkg/README.md](packaging/pkg/README.md) for operator transport
 configuration, including nginx/Caddy/Traefik snippets.
 
@@ -82,15 +84,16 @@ configuration, including nginx/Caddy/Traefik snippets.
 For distribution or testing the packaged installer:
 
 ```bash
-./scripts/build-pkg.sh
+mise exec -- ./scripts/build-pkg.sh
 ```
 
 This creates a native macOS PKG installer following the naming convention
 `Orchard-<version>-<date>-<git-sha>.pkg`. Use `--clean` for reproducible
 builds from scratch, or `--allow-dirty` for development builds.
 
-**Prerequisites:** Elixir, `uv`, and macOS. The script validates dependencies
-and provides helpful errors if anything is missing.
+**Prerequisites:** `mise install` from the repo root, plus macOS packaging
+tools. The script validates dependencies and provides helpful errors if
+anything is missing.
 
 See [packaging/pkg/README.md](packaging/pkg/README.md#building-the-pkg) for
 full build documentation.
@@ -127,10 +130,13 @@ Pre-release. Building from spec.
 ## Contributing And Workflow
 
 This repository is the collaborator-facing source of truth for Orchard.
+Historical coordination/workbench notes may inform work, but active guidance
+must be rewritten into this repo before it counts as Orchard truth.
 
 - [`SPEC.md`](SPEC.md) is the top-level normative build contract.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) explains human collaboration workflow.
 - [`AGENTS.md`](AGENTS.md) explains automation and agent workflow.
+- [`docs/tooling.md`](docs/tooling.md) explains the required mise toolchain and local accelerator tools.
 - [`docs/process.md`](docs/process.md) explains artifact lifecycle and review gates.
 - [`openspec/README.md`](openspec/README.md) reserves a future structured-change workflow subordinate to `SPEC.md`.
 

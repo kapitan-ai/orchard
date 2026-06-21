@@ -15,12 +15,14 @@ top-level normative product/system contract.
 - `../README.md` — high-level project overview
 - `../CONTRIBUTING.md` — human collaborator workflow
 - `../AGENTS.md` — contributor and agent workflow
+- `tooling.md` — required local toolchain and agent accelerator guidance
 - `process.md` — artifact lifecycle and review gates
 
 ## What belongs here
 
 - active milestone plans
 - implementation notes that reference the spec
+- local tooling and validation guidance
 - design decisions not already fixed by the spec
 - real runbooks once code and packaging exist
 
@@ -29,7 +31,7 @@ top-level normative product/system contract.
 - duplicated API contracts from `SPEC.md`
 - duplicated schema/state-machine definitions from `SPEC.md`
 - contributor workflow rules already covered in `AGENTS.md`
-- private workbench/session history
+- private or historical coordination workspace notes
 - raw prompt exports
 - active local goal packages
 - unsanitized local evidence
@@ -46,5 +48,6 @@ top-level normative product/system contract.
 ## Current structure
 
 - `milestones/` — milestone execution plans and active milestone status
+- `tooling.md` — mise, validation command, and local tool guidance
 - `process.md` — artifact lifecycle and review gates
 - `decisions/` — ADR-style records for durable implementation decisions

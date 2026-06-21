@@ -11,5 +11,5 @@ Decision records must be standalone:
 - avoid local paths and tool session identifiers
 - avoid duplicating full normative contracts from `SPEC.md`
 
-Do not migrate historical workbench notes wholesale. Rewrite durable conclusions
-as concise product-facing decision records.
+Do not migrate historical coordination notes wholesale. Rewrite durable
+conclusions as concise product-facing decision records.

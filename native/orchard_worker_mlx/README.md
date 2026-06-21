@@ -5,8 +5,10 @@ inference generation, and health probing for Apple Silicon (MLX) backends.
 
 ## Entrypoints
 
-- project script (run from `native/orchard_worker_mlx/`): `uv run orchard-worker-mlx`
-- dev-only repo wrapper from the repo root: `native/orchard_worker_mlx/bin/orchard-worker-mlx`
+- project script (run from `native/orchard_worker_mlx/`): `mise exec -- uv run orchard-worker-mlx`
+- dev-only repo wrapper from the repo root: `mise exec -- native/orchard_worker_mlx/bin/orchard-worker-mlx`
+
+See `../../docs/tooling.md` for the required mise and uv workflow.
 
 ## Proto contract
 
@@ -23,8 +25,8 @@ It imports shared cluster types from `proto/cluster/v1/`.
 
 | Surface | Location | Generation |
 |---------|----------|------------|
-| Python messages | `src/orchard_worker_mlx/generated/orchard/worker/v1/worker_runtime_pb2.py` | `mix proto.gen.worker` |
-| Python gRPC stubs | `src/orchard_worker_mlx/generated/orchard/worker/v1/worker_runtime_pb2_grpc.py` | `mix proto.gen.worker` |
+| Python messages | `src/orchard_worker_mlx/generated/orchard/worker/v1/worker_runtime_pb2.py` | `mise exec -- mix proto.gen.worker` |
+| Python gRPC stubs | `src/orchard_worker_mlx/generated/orchard/worker/v1/worker_runtime_pb2_grpc.py` | `mise exec -- mix proto.gen.worker` |
 | Elixir modules | `apps/orchard_node_agent/lib/orchard/node/worker_runtime.pb.ex` | Manual (see below) |
 
 ### Regenerate Python bindings
@@ -32,7 +34,7 @@ It imports shared cluster types from `proto/cluster/v1/`.
 From the repo root:
 
 ```bash
-mix proto.gen.worker
+mise exec -- mix proto.gen.worker
 ```
 
 This runs `grpc_tools.protoc` under `uv` with the correct include paths.
@@ -47,7 +49,7 @@ package prefix). **Update it by hand** when the proto changes.
 ### Workflow rules
 
 1. Edit the `.proto` source first.
-2. Run `mix proto.gen.worker` to regenerate Python bindings.
+2. Run `mise exec -- mix proto.gen.worker` to regenerate Python bindings.
 3. Manually update the Elixir binding to match.
 4. Commit proto source and all generated outputs together.
 

@@ -59,12 +59,16 @@ fi
 # ---------------------------------------------------------------------------
 # Preflight: tooling
 # ---------------------------------------------------------------------------
-if ! command -v uv >/dev/null 2>&1; then
-  die "'uv' is not installed or not on PATH"
+if ! command -v mise >/dev/null 2>&1; then
+  die "'mise' is not installed or not on PATH"
 fi
 
-if ! command -v mix >/dev/null 2>&1; then
-  die "'mix' is not installed or not on PATH"
+if ! (cd "$REPO_ROOT" && mise exec -- uv --version >/dev/null 2>&1); then
+  die "'uv' is not available through mise; run 'mise install' from the repo root"
+fi
+
+if ! (cd "$REPO_ROOT" && mise exec -- mix --version >/dev/null 2>&1); then
+  die "'mix' is not available through mise; run 'mise install' from the repo root"
 fi
 
 # ---------------------------------------------------------------------------
@@ -117,14 +121,14 @@ echo ""
 # Step 1: Python worker smoke tests
 # ---------------------------------------------------------------------------
 echo "==> [1/2] Python worker MLX smoke tests"
-echo "    cd native/orchard_worker_mlx"
+echo "    mise exec -- uv run ... in native/orchard_worker_mlx"
 echo ""
 
 set +e
 (
   cd "$REPO_ROOT/native/orchard_worker_mlx" && \
-  uv sync --extra mlx && \
-  uv run pytest tests/test_cli.py -k mlx_backend_real -v
+  mise exec -- uv sync --extra mlx && \
+  mise exec -- uv run pytest tests/test_cli.py -k mlx_backend_real -v
 )
 PYTHON_EXIT=$?
 set -e
@@ -143,13 +147,13 @@ echo ""
 # Step 2: Elixir node-agent smoke tests
 # ---------------------------------------------------------------------------
 echo "==> [2/2] Elixir node-agent MLX smoke tests"
-echo "    mix test --only mlx_smoke"
+echo "    mise exec -- mix test --only mlx_smoke"
 echo ""
 
 set +e
 (
   cd "$REPO_ROOT" && \
-  mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke
+  mise exec -- mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke
 )
 ELIXIR_EXIT=$?
 set -e

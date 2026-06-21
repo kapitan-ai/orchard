@@ -22,9 +22,10 @@ documents may not contradict lower-numbered ones.
 
 1. **`SPEC.md`** — normative product/build contract. Architecture, milestones,
    API surface, persistence, runtime adapters. Governs *what* exists.
-2. **`AGENTS.md`** — agent contribution rules: repo boundary, LiveView
-   conventions, quality workflow (`mix format` / `compile` / `credo` /
-   `dialyzer` / `test` / `test --cover`), commit style, secret handling.
+2. **`AGENTS.md`** — agent contribution rules: single-repo source-of-truth,
+   LiveView conventions, mise-backed quality workflow (`mix format` /
+   `compile` / `credo` / `dialyzer` / `test` / `test --cover`), commit style,
+   secret handling.
    Governs *how* changes are introduced.
 3. **`docs/brand-identity.md`** — palette (Navy / Forest / Sage / Gold + slate
    structural scale + semantic red/amber/sky/violet), dark/light luminosity
@@ -562,9 +563,9 @@ Use this checklist for Console UI changes governed by this document. UI tactilit
 From the umbrella root:
 
 ```sh
-mix format --check-formatted
-mix compile --warnings-as-errors
-mix test apps/orchard_controller/test/orchard/console/core_components_test.exs
+mise exec -- mix format --check-formatted
+mise exec -- mix compile --warnings-as-errors
+mise exec -- mix test apps/orchard_controller/test/orchard/console/core_components_test.exs
 ```
 
 Render-class assertions check *required token presence*, not full
@@ -573,13 +574,13 @@ class-string equality and not class order.
 ### 10.2 Final Validation (before commit)
 
 ```sh
-mix format --check-formatted
-mix compile --warnings-as-errors
-mix credo --strict
-mix dialyzer
-mix test apps/orchard_controller/test/orchard/console/core_components_test.exs
-mix test
-mix test --cover
+mise exec -- mix format --check-formatted
+mise exec -- mix compile --warnings-as-errors
+mise exec -- mix credo --strict
+mise exec -- mix dialyzer
+mise exec -- mix test apps/orchard_controller/test/orchard/console/core_components_test.exs
+mise exec -- mix test
+mise exec -- mix test --cover
 git diff --check
 ```
 

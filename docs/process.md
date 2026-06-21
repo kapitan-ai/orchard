@@ -5,7 +5,9 @@ Use the lightest process that protects Orchard's product contract.
 ## Required Collaboration Surface
 
 Contributors need GitHub and this repository. Local tools may help, but they do
-not own product truth.
+not own product truth. Historical coordination workspaces can inform work, but
+active guidance must be promoted into this repo before it becomes Orchard
+truth.
 
 ## Workflow Selection
 
@@ -47,3 +49,5 @@ rewrite the durable conclusion instead of copying the stale plan.
 Local agent tools, review tools, skills, notebooks, and execution harnesses may
 accelerate work. Their raw outputs are not product truth. Commit only standalone
 docs, tests, code, or decisions that are understandable from this repository.
+For substantial agentic changes, RepoPrompt review or planning second opinions
+are encouraged when available; record only the resulting standalone conclusions.

@@ -8,25 +8,27 @@ single-node; multi-node source-dev testing is supported via env vars
 
 | Dependency | Version | Notes |
 |------------|---------|-------|
-| Elixir | ≥ 1.17 | Tested on 1.19.5 |
-| Erlang/OTP | ≥ 27 | Tested on OTP 28 |
+| mise | see `../mise.toml` | Required for Erlang/OTP, Elixir, Python, and uv |
 | PostgreSQL | ≥ 15 | Local instance |
-| Python | ≥ 3.10 | Via `uv` for native packages |
-| uv | latest | Python package manager |
+
+See [Tooling](tooling.md) for the pinned runtime versions and standard
+`mise exec --` command forms.
 
 ## Quick Start
 
 ```bash
 # 1. Clone and install dependencies
 cd orchard
-mix deps.get
+mise trust
+mise install
+mise exec -- mix deps.get
 
 # 2. Install native Python packages (dev mode)
-cd native/orchard_tokenizer && uv sync && cd ../..
-cd native/orchard_worker_mlx && uv sync && cd ../..
+mise exec -- uv sync --directory native/orchard_tokenizer
+mise exec -- uv sync --directory native/orchard_worker_mlx
 
 # 3. Start the dev server (creates DB, migrates, starts Phoenix + node-agent)
-bin/dev
+mise exec -- bin/dev
 
 # 4. Import a model bundle (in the running IEx session)
 OrchardCLI.main(["models", "import", "/path/to/model-bundle", "--activate"])
@@ -46,7 +48,8 @@ Orchard has two transport profiles:
 
 ### Source dev (this page)
 
-When running from a source checkout (`bin/dev` or `iex -S mix phx.server`):
+When running from a source checkout (`mise exec -- bin/dev` or
+`mise exec -- iex -S mix phx.server`):
 
 - Controller listens on **HTTP** at `http://127.0.0.1:4000`
 - Node-agent gRPC listens on `127.0.0.1:50071` (avoids packaged BEAM on 50061)
@@ -102,8 +105,9 @@ posture.
 | `PORT` | `4000` | HTTP listen port |
 
 Cache-affinity, cache-introspection, and memory-admission env vars are read
-when `config/dev.exs` is evaluated at BEAM startup. Restart `bin/dev` or
-`iex -S mix phx.server` after changing them.
+when `config/dev.exs` is evaluated at BEAM startup. Restart
+`mise exec -- bin/dev` or `mise exec -- iex -S mix phx.server` after changing
+them.
 
 Source-dev defaults remain disabled unless explicitly enabled via env vars:
 `ORCHARD_CACHE_AFFINITY_ENABLED=false`,
@@ -121,7 +125,7 @@ into `:orchard_controller, :inference`.
 ```bash
 # 1) Unset -> default-off remains in controller inference config
 MIX_ENV=dev \
-mix run --no-start -e "$(cat <<'ELIXIR'
+mise exec -- mix run --no-start -e "$(cat <<'ELIXIR'
 inference = Application.get_env(:orchard_controller, :inference)
 IO.inspect(inference[:cache_affinity], label: "cache_affinity")
 ELIXIR
@@ -135,7 +139,7 @@ ORCHARD_CACHE_AFFINITY_MAX_RECENT_REQUESTS=7 \
 ORCHARD_CACHE_INTROSPECTION_ENABLED=true \
 ORCHARD_MEMORY_ADMISSION_ENABLED=true \
 MIX_ENV=dev \
-mix run --no-start -e "$(cat <<'ELIXIR'
+mise exec -- mix run --no-start -e "$(cat <<'ELIXIR'
 inference = Application.get_env(:orchard_controller, :inference)
 IO.inspect(inference[:cache_affinity], label: "cache_affinity")
 IO.inspect(inference[:cache_introspection], label: "cache_introspection")
@@ -308,7 +312,7 @@ controller):
 ```bash
 ORCHARD_RUNTIME_CLIENT_TARGETS="127.0.0.1:50071,<remote-tailscale-ip>:50071" \
   ORCHARD_NODE_DISPLAY_NAME=mawarduri \
-  bin/dev
+  mise exec -- bin/dev
 ```
 
 The local node-agent still binds to `127.0.0.1:50071`. The controller targets
@@ -319,19 +323,16 @@ are not supported in the target list.
 ### Remote node-agent host (Tamingsari)
 
 ```bash
-cd apps/orchard_node_agent
-
-MIX_ENV=dev \
-  ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0 \
+ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0 \
   ORCHARD_NODE_AGENT_LISTEN_PORT=50071 \
   ORCHARD_WORKER_BACKEND=stub \
   ORCHARD_NODE_DISPLAY_NAME=tamingsari \
-  mix run --no-halt
+  mise exec -- bin/dev-node-agent
 ```
 
-The node-agent boots standalone from the sub-app directory — no Postgres,
-controller, or asset watchers needed. Use `stub` backend for cluster mechanics
-testing; switch to `mlx` when real inference is required.
+The node-agent boots standalone — no Postgres, controller, or asset watchers
+needed. Use `stub` backend for cluster mechanics testing; switch to `mlx` when
+real inference is required.
 
 ### Verification
 
@@ -347,7 +348,7 @@ testing; switch to `mlx` when real inference is required.
 |---------|-------|-----|
 | Controller shows 1 target | `ORCHARD_RUNTIME_CLIENT_TARGETS` unset or malformed | Check env var, use `host:port,host:port` format |
 | Remote node-agent unreachable | Listen host still `127.0.0.1` | Set `ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0` |
-| Remote node fails on MLX | Python <3.11 or no `uv sync` | Use `ORCHARD_WORKER_BACKEND=stub` or run `cd native/orchard_worker_mlx && uv sync --extra mlx` |
+| Remote node fails on MLX | mise toolchain not installed or no `uv sync` | Use `ORCHARD_WORKER_BACKEND=stub` or run `mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx` |
 | Port conflict on remote | Another BEAM on same port | Change `ORCHARD_NODE_AGENT_LISTEN_PORT` |
 
 > **Security note:** Binding to `0.0.0.0` exposes the gRPC server on all
@@ -358,14 +359,14 @@ testing; switch to `mlx` when real inference is required.
 
 ```bash
 # Full test suite (uses fake runtime, no GPU needed)
-mix test
+mise exec -- mix test
 
 # With coverage
-mix test --cover
+mise exec -- mix test --cover
 
 # Strict checks
-mix credo --strict
-mix dialyzer
+mise exec -- mix credo --strict
+mise exec -- mix dialyzer
 ```
 
 ## Apple Silicon MLX Smoke Tests
@@ -377,8 +378,8 @@ separate from `mix test`, which uses the fake/stub runtime and requires no GPU.
 
 - Apple Silicon Mac (M1/M2/M3/M4)
 - A local Orchard model bundle directory (not downloaded by the script)
-- `uv` installed
-- `mix deps.get` already run in the repo
+- `mise install` already run in the repo
+- `mise exec -- mix deps.get` already run in the repo
 
 ### Required Environment Variable
 
@@ -393,7 +394,7 @@ tests are skipped (Python) or not compiled (Elixir).
 
 ```bash
 export ORCHARD_MLX_SMOKE_MODEL_PATH=/path/to/your/orchard-bundle
-./scripts/smoke-mlx.sh
+mise exec -- ./scripts/smoke-mlx.sh
 ```
 
 The script can be invoked from any directory — it resolves the repo root from
@@ -401,13 +402,14 @@ its own location.
 
 ### What the Script Does
 
-1. **Validates** platform (macOS arm64), tooling (`uv`, `mix`), repo layout,
-   and the bundle path (exists, is a directory, contains `manifest.json`)
+1. **Validates** platform (macOS arm64), tooling (`uv`, `mix` through the
+   mise-pinned toolchain), repo layout, and the bundle path (exists, is a
+   directory, contains `manifest.json`)
 2. **Python smoke** (step 1/2): installs MLX extras (`uv sync --extra mlx`)
    then runs `pytest tests/test_cli.py -k mlx_backend_real -v` in the worker
    package — exercises real model load/unload and streaming generation via gRPC
 3. **Elixir smoke** (step 2/2): runs
-   `mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke`
+   `mise exec -- mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke`
    from the repo root — exercises the full node-agent stack including acquisition,
    worker lifecycle, and gRPC inference
 
@@ -451,11 +453,12 @@ export ORCHARD_MLX_SMOKE_MODEL_PATH=/path/to/your/orchard-bundle
 
 # Python only
 cd native/orchard_worker_mlx
-uv sync --extra mlx
-uv run pytest tests/test_cli.py -k mlx_backend_real -v
+mise exec -- uv sync --extra mlx
+mise exec -- uv run pytest tests/test_cli.py -k mlx_backend_real -v
 
-# Elixir only
-mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke
+# Elixir only, from the repo root
+cd ../..
+mise exec -- mix test apps/orchard_node_agent/test/orchard_node_agent_test.exs --only mlx_smoke
 ```
 
 ## Preparing a Smoke Test Bundle from HuggingFace
@@ -467,9 +470,10 @@ manifest, so you must create a wrapper bundle.
 ### Quick Setup
 
 ```bash
-# 1. Download a small MLX model (if not already cached)
-pip install huggingface-hub
-huggingface-cli download mlx-community/Llama-3.2-1B-Instruct-4bit
+# 1. Download a small MLX model (if not already cached).
+# This helper is convenience-only, not a build or validation gate.
+mise exec -- uvx --from huggingface-hub \
+  huggingface-cli download mlx-community/Llama-3.2-1B-Instruct-4bit
 
 # 2. Create a bundle directory with copies of the model files
 BUNDLE_DIR="$HOME/Models/orchard-smoke/llama-3.2-1b-instruct-4bit"
@@ -619,7 +623,7 @@ Orchard supports a binary backend switch: `mlx` (real inference) or `stub`
 export ORCHARD_WORKER_BACKEND=stub
 
 # Restart the app
-iex -S mix phx.server
+mise exec -- iex -S mix phx.server
 ```
 
 Verify: the node-agent log will show `worker starting backend=stub`.
@@ -666,12 +670,12 @@ sudo launchctl kickstart -k system/com.orchard.node-agent
 |---------|-------------|---------------|
 | `Bundle is missing manifest.json` | Bundle not prepared correctly | Re-run bundle prep steps above |
 | `bundle_path_escape` | Symlinks in bundle dir | Use `cp -L` instead of `ln -s` |
-| `model_load_failed` | MLX/mlx-lm version mismatch | Check `uv sync --extra mlx` ran, inspect worker logs |
+| `model_load_failed` | MLX/mlx-lm version mismatch | Check `mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx` ran, inspect worker logs |
 | `unsupported_runtime_adapter` | Wrong `adapter` in manifest | Must be `"mlx_lm"` |
 | `tokenizer_missing` | Wrong `tokenizer.path` | Check `tokenizer.json` exists in bundle |
 | Python smoke timeout | Model too large for hardware | Use smaller model (1B recommended) |
 | Elixir smoke failure | Node-agent/worker lifecycle issue | Check worker stdout/stderr |
-| `mlx_backend_unavailable` | MLX extras not installed | Run `uv sync --extra mlx` |
+| `mlx_backend_unavailable` | MLX extras not installed | Run `mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx` |
 
 ## Releases (Production)
 
@@ -685,7 +689,7 @@ Three release targets are defined:
 
 ```bash
 # Build a release
-MIX_ENV=prod mix release orchard_controller
+MIX_ENV=prod mise exec -- mix release orchard_controller
 
 # Run migrations
 _build/prod/rel/orchard_controller/bin/orchard_controller eval 'Orchard.Release.migrate()'
@@ -705,7 +709,7 @@ Required production env vars:
 All-in-one local boot (dev):
 
 1. PostgreSQL must be running
-2. Run `bin/dev` — this handles DB bootstrap and server start:
+2. Run `mise exec -- bin/dev` — this handles DB bootstrap and server start:
    - Creates `orchard_dev` database if missing
    - Runs pending migrations
    - Exports dev gRPC port (50071)
@@ -722,8 +726,9 @@ HTTP server, you can run the steps manually:
 export MIX_ENV=dev
 export ORCHARD_NODE_AGENT_LISTEN_PORT=50071
 export ORCHARD_RUNTIME_CLIENT_PORT=50071
-mix ecto.create && mix ecto.migrate
-iex -S mix phx.server
+mise exec -- mix ecto.create
+mise exec -- mix ecto.migrate
+mise exec -- iex -S mix phx.server
 ```
 
 ## M1 Limitations
