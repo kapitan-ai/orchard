@@ -272,21 +272,32 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
     end
   end
 
-  defp header_values(%{headers: headers}, name), do: header_values(headers, name)
+  defp header_values(resp, name) do
+    resp
+    |> response_headers()
+    |> __MODULE__.Headers.values(name)
+  end
 
-  defp header_values(headers, name) when is_map(headers) do
-    case Map.get(headers, name, []) do
-      values when is_list(values) -> values
-      value when is_binary(value) -> [value]
-      _other -> []
+  defp response_headers(%{headers: headers}), do: headers
+
+  defmodule Headers do
+    @moduledoc false
+
+    @spec values(term(), binary()) :: [binary()]
+    def values(headers, name) when is_map(headers) do
+      case Map.get(headers, name, []) do
+        values when is_list(values) -> values
+        value when is_binary(value) -> [value]
+        _other -> []
+      end
     end
-  end
 
-  defp header_values(headers, name) when is_list(headers) do
-    for {header_name, value} <- headers, header_name == name, is_binary(value), do: value
-  end
+    def values(headers, name) when is_list(headers) do
+      for {header_name, value} <- headers, header_name == name, is_binary(value), do: value
+    end
 
-  defp header_values(_headers, _name), do: []
+    def values(_headers, _name), do: []
+  end
 
   # -- GET Object (Streaming Download) ---------------------------------------
 
@@ -433,6 +444,14 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3 do
 
   # -- HTTP Helpers ----------------------------------------------------------
 
+  @typep s3_response :: %{
+           required(:status) => non_neg_integer(),
+           required(:headers) => term(),
+           optional(atom()) => term()
+         }
+
+  @spec s3_request(:head | :get, binary(), map(), keyword()) ::
+          {:ok, s3_response()} | {:error, term()}
   defp s3_request(method, url, config, extra_opts \\ []) do
     merged_opts =
       method

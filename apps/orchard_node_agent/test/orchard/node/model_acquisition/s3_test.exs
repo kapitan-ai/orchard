@@ -436,6 +436,15 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
       assert msg =~ "no content-length"
     end
 
+    test "HEAD accepts list-shaped response headers", ctx do
+      override_s3_config(ctx.stub_name, adapter: list_header_s3_adapter(ctx.tar_gz_bytes))
+
+      request = build_s3_request(ctx, artifact_source_uri: "s3://#{@bucket}/#{@object_key}")
+
+      assert {:ok, final_path, :materialized} = ModelAcquisition.ensure_cached(request)
+      assert File.exists?(Path.join(final_path, "config.json"))
+    end
+
     test "short download returns download_incomplete", ctx do
       tar_gz = ctx.tar_gz_bytes
       # Report full size but return partial data
@@ -633,8 +642,45 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
     {archive_path, staging}
   end
 
-  defp override_s3_config(stub_name) do
+  defp list_header_s3_adapter(archive_bytes) do
+    fn request ->
+      case request.method do
+        :head ->
+          response = %Req.Response{
+            status: 200,
+            headers: [
+              {"content-length", to_string(byte_size(archive_bytes))},
+              {"etag", "\"test-etag-123\""}
+            ]
+          }
+
+          {request, response}
+
+        :get ->
+          response = %Req.Response{
+            status: 200,
+            headers: [{"content-length", to_string(byte_size(archive_bytes))}]
+          }
+
+          stream_adapter_body(request, response, archive_bytes)
+      end
+    end
+  end
+
+  defp stream_adapter_body(%{into: into} = request, response, body) when is_function(into, 2) do
+    case into.({:data, body}, {request, response}) do
+      {:cont, acc} -> acc
+      {:halt, acc} -> acc
+    end
+  end
+
+  defp stream_adapter_body(request, response, body) do
+    {request, %{response | body: body}}
+  end
+
+  defp override_s3_config(stub_name, req_options \\ nil) do
     current_runtime = Application.get_env(:orchard_node_agent, :runtime, [])
+    req_options = req_options || [plug: {Req.Test, stub_name}]
 
     s3_config = [
       endpoint: "http://localhost:9000",
@@ -645,7 +691,7 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
       force_path_style?: true,
       connect_timeout_ms: 5_000,
       receive_timeout_ms: 5_000,
-      req_options: [plug: {Req.Test, stub_name}]
+      req_options: req_options
     ]
 
     updated_runtime = Keyword.put(current_runtime, :s3, s3_config)

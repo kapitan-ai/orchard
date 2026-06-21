@@ -221,6 +221,27 @@ defmodule Orchard.UpgradeTest do
     assert check(plan, "request_activity").status == "config_error"
   end
 
+  test "SPEC 13.7 JSON-safe preflight data preserves nil, boolean, and atom primitives" do
+    cases = [
+      {nil, nil},
+      {false, false},
+      {true, true},
+      {:missing_manifest, "missing_manifest"}
+    ]
+
+    for {input, expected} <- cases do
+      plan = Upgrade.plan(backup_manifest_path: input)
+
+      assert plan.status == "config_error"
+      assert check(plan, "backup_manifest").status == "config_error"
+      assert check(plan, "backup_manifest").data.path == expected
+
+      decoded = plan |> Jason.encode!() |> Jason.decode!()
+
+      assert get_in(decoded, ["checks", Access.at(0), "data", "path"]) == expected
+    end
+  end
+
   test "SPEC 13.7 status precedence prefers config_error over unreachable", %{
     manifest_path: manifest_path
   } do

@@ -780,8 +780,8 @@ defmodule Orchard.Upgrade do
   defp format_reason(%{__exception__: true} = error), do: Exception.message(error)
   defp format_reason(reason), do: inspect(reason)
 
-  defp json_value(value) when is_atom(value), do: Atom.to_string(value)
-  defp json_value(value) when is_binary(value) or is_number(value) or is_boolean(value), do: value
   defp json_value(nil), do: nil
+  defp json_value(value) when is_binary(value) or is_number(value) or is_boolean(value), do: value
+  defp json_value(value) when is_atom(value), do: Atom.to_string(value)
   defp json_value(value), do: inspect(value)
 end
