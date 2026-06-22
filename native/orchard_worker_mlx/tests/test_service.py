@@ -199,6 +199,7 @@ class ConcurrentGenerateBackend(HappyBackend):
         self._peak_count = 0
         self._lock = threading.Lock()
         self._entered = threading.Event()
+        self._release = threading.Event()
 
     @property
     def peak_count(self) -> int:
@@ -218,8 +219,13 @@ class ConcurrentGenerateBackend(HappyBackend):
             self._active_count = max(0, self._active_count - 1)
             self._active = self._active_count > 0
 
+    def status(self) -> BackendStatus:
+        with self._lock:
+            return BackendStatus(loaded=self._loaded, active_request_count=self._active_count)
+
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         self._entered.wait(timeout=2.0)
+        self._release.wait(timeout=2.0)
         if cancel_event.is_set():
             yield {
                 "kind": "failed",
@@ -979,6 +985,12 @@ def test_generate_supports_two_concurrent_servicer_calls() -> None:
     t2 = threading.Thread(target=run, args=("req-2",))
     t1.start()
     t2.start()
+
+    assert backend._entered.wait(timeout=2.0)
+    status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), context)
+    assert status.active_request_count == 2
+
+    backend._release.set()
     t1.join(timeout=3.0)
     t2.join(timeout=3.0)
 
