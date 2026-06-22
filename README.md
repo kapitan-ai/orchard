@@ -139,8 +139,10 @@ The macOS PKG uses a universal payload with role selection at install time. Seed
 
 ## Status
 
-Pre-release. Building from spec. The roadmap and target behavior are governed by
-`SPEC.md` §14.
+Pre-release. Building from spec. The current source tree includes authenticated
+`/v1/models`, `/v1/chat/completions`, and a bounded `/v1/responses` slice; full
+M2 governance, RBAC, and quota behavior remain in progress. The roadmap and
+target behavior are governed by `SPEC.md` §14.
 
 ## Spec
 

@@ -9,7 +9,7 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
   - `model` string → `ModelRef` parsing (`model_id@version` or bare `model_id`)
   - Default value population
   - ID generation (internal_id, public_id)
-  - M1 single-tenant defaults (tenant_id: seeded legacy tenant UUID)
+  - Caller context propagation from authenticated public routes or internal callers
   """
 
   alias Orchard.CanonicalRequest
@@ -21,9 +21,9 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
 
   ## Options (caller context)
 
-    * `:tenant_id` — resolved tenant (default: legacy tenant UUID for M1)
-    * `:principal_id` — resolved principal (default: `nil` for M1)
-    * `:api_key_id` — resolved API key (default: `nil` for M1)
+    * `:tenant_id` — resolved tenant (default: seeded legacy tenant UUID)
+    * `:principal_id` — resolved principal when available
+    * `:api_key_id` — resolved API key when available
 
   ## Options (test overrides)
 

@@ -2,7 +2,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   @moduledoc """
   Orchestrates the dispatch of an inference request to a node-agent.
 
-  Implements the M1 single-node dispatch flow:
+  Implements the current node-agent dispatch flow:
 
     schedule → connect → ensure_model_loaded → execute_inference → stream events
 

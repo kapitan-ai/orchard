@@ -1,6 +1,6 @@
 defmodule OrchardCLI do
   @moduledoc """
-  Placeholder `orchardctl` entrypoint for Milestone 0.
+  Dispatches `orchardctl` commands for source and packaged Orchard operators.
   """
 
   alias OrchardCLI.Commands.{

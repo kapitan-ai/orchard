@@ -29,10 +29,11 @@ Install the local compiler and Elixir plugin:
 
 ```bash
 brew install protobuf
-mix escript.install hex protobuf 0.16.0
+mise exec -- mix escript.install hex protobuf 0.16.0
 ```
 
-`mix proto.gen` validates that the installed Elixir generator version matches Orchard’s pinned `protoc-gen-elixir` version.
+`mise exec -- mix proto.gen` validates that the installed Elixir generator
+version matches Orchard’s pinned `protoc-gen-elixir` version.
 
 `orchard_shared` relies on `grpc`'s compatible protobuf runtime dependency at build/runtime; the pinned escript above is specifically for deterministic Elixir code generation.
 

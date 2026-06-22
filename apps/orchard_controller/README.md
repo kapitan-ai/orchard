@@ -11,6 +11,8 @@ This README is orientation only. Normative behavior lives in
 ## Owns
 
 - Phoenix/Plug API endpoints and LiveView Console surfaces.
+- Authenticated public `/v1` routes for models, chat completions, and the
+  bounded Responses API subset.
 - `Orchard.Repo` migrations and Postgres-backed controller state.
 - Request canonicalization, tokenization orchestration, admission, scheduling,
   dispatch, lifecycle persistence, and public response serialization.

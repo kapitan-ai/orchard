@@ -1,6 +1,7 @@
 defmodule Orchard.Node.RuntimeServer do
   @moduledoc """
-  Minimal node-runtime gRPC boundary for the M1 single-node runtime.
+  Node-agent gRPC service boundary for status, model lifecycle, inference,
+  cancellation, and scheduler cache probes.
   """
 
   use GRPC.Server, service: Orchard.Cluster.V1.NodeRuntimeService.Service

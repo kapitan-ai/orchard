@@ -19,6 +19,17 @@ this service directly.
 
 See `../../docs/architecture.md` for the broader runtime map.
 
+## Backend modes
+
+The standalone CLI supports `--backend stub` and `--backend mlx`. The CLI
+defaults to `stub` for hermetic local checks; the node-agent source and packaged
+runtime defaults `ORCHARD_WORKER_BACKEND` to `mlx`. Install MLX extras before
+using the real backend:
+
+```bash
+mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx
+```
+
 ## Proto contract
 
 The worker runtime proto lives at:

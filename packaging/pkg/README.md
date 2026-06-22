@@ -1005,14 +1005,20 @@ controller-bearing installs (`all` or `controller`):
    command arguments.
 2. Run `sudo orchardctl env init` and fill in required database/runtime values.
 3. Run `sudo orchardctl migrate`.
-4. Run `sudo orchardctl transport enable-local-https --host HOST` for the local
+4. Create a tenant and API key before making public `/v1` API calls. The API key
+   token is printed once:
+   ```bash
+   sudo orchardctl tenants create --slug default --name "Default"
+   sudo orchardctl api-keys create --tenant-id <tenant-id> --name "Primary"
+   ```
+5. Run `sudo orchardctl transport enable-local-https --host HOST` for the local
    generated-CA direct HTTPS path, or configure an operator-managed direct HTTPS
    certificate/reverse-proxy transport before starting services.
-5. Optional, when browser Console access is desired: run
+6. Optional, when browser Console access is desired: run
    `sudo orchardctl console enable` and enter credentials only through the
    interactive prompt.
-6. Run `sudo orchardctl start`.
-7. Verify with `orchardctl status`.
+7. Run `sudo orchardctl start`.
+8. Verify with `orchardctl status`.
 
 For `node-agent` role installs, run `sudo orchardctl env init`, fill in the
 node-agent environment, then run `sudo orchardctl start` and verify with

@@ -35,6 +35,10 @@ mise exec -- bin/dev
 
 # 4. Import a model bundle (in the running IEx session)
 OrchardCLI.main(["models", "import", "/path/to/model-bundle", "--activate"])
+
+# 5. Create a tenant and API key for /v1 API calls (in the running IEx session)
+OrchardCLI.main(["tenants", "create", "--slug", "dev", "--name", "Dev"])
+OrchardCLI.main(["api-keys", "create", "--tenant-id", "<tenant-id>", "--name", "dev"])
 ```
 
 `bin/dev` is the single entrypoint for source development. It creates the dev
@@ -44,6 +48,8 @@ on 50061).
 
 The controller listens on `http://localhost:4000` and the node-agent
 gRPC server on `127.0.0.1:50071`.
+Copy the API key token printed by `api-keys create` into
+`ORCHARD_API_KEY` for the `curl` examples below.
 
 ## Transport Modes
 
@@ -56,11 +62,13 @@ When running from a source checkout (`mise exec -- bin/dev` or
 
 - Controller listens on **HTTP** at `http://127.0.0.1:4000`
 - Node-agent gRPC listens on `127.0.0.1:50071` (avoids packaged BEAM on 50061)
+- Public `/v1/*` API routes require `Authorization: Bearer <api_key>`
 - CORS is disabled (empty allowlist in `config/dev.exs`)
 - No TLS setup is required
 
 All `curl` examples in this document use plain HTTP because they target the
-source dev controller.
+source dev controller. API examples assume `ORCHARD_API_KEY` contains a
+tenant-scoped API key token.
 
 ### Packaged install
 
@@ -224,14 +232,16 @@ tmp/dev/
 |--------|------|-------------|
 | GET | `/health/live` | Liveness probe |
 | GET | `/health/ready` | Readiness probe (DB check) |
-| GET | `/v1/models` | List active models |
-| POST | `/v1/chat/completions` | Chat completion (stream + non-stream) |
+| GET | `/v1/models` | List active models; Bearer token required |
+| POST | `/v1/chat/completions` | Chat completion; stream + non-stream; Bearer token required |
+| POST | `/v1/responses` | Bounded Responses API subset; stream + non-stream; Bearer token required |
 
 ### Example: Non-streaming
 
 ```bash
 curl -X POST http://localhost:4000/v1/chat/completions \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $ORCHARD_API_KEY" \
   -d '{
     "model": "your-model@v1",
     "messages": [{"role": "user", "content": "Hello!"}]
@@ -243,10 +253,23 @@ curl -X POST http://localhost:4000/v1/chat/completions \
 ```bash
 curl -N -X POST http://localhost:4000/v1/chat/completions \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $ORCHARD_API_KEY" \
   -d '{
     "model": "your-model@v1",
     "messages": [{"role": "user", "content": "Hello!"}],
     "stream": true
+  }'
+```
+
+### Example: Responses
+
+```bash
+curl -X POST http://localhost:4000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $ORCHARD_API_KEY" \
+  -d '{
+    "model": "your-model@v1",
+    "input": "Hello!"
   }'
 ```
 
@@ -719,8 +742,10 @@ All-in-one local boot (dev):
    - Starts `iex -S mix phx.server`
    - Controller boots: Endpoint, Repo, Inference supervisor, gRPC client
    - Node-agent boots: ModelManager, WorkerSupervisor, gRPC server
-3. Import at least one model bundle (`orchardctl models import <path> --activate`)
-4. API is ready for requests
+3. Import at least one model bundle with `OrchardCLI.main(["models", "import", "<path>", "--activate"])`
+4. Create a tenant and API key with `OrchardCLI.main(["tenants", ...])` and
+   `OrchardCLI.main(["api-keys", ...])`
+5. API is ready for authenticated requests
 
 Alternatively, for advanced debugging or when you need a BEAM without the
 HTTP server, you can run the steps manually:
@@ -741,7 +766,8 @@ mise exec -- iex -S mix phx.server
   `reverse_proxy` or `direct_https` (see [Transport Modes](#transport-modes))
 - Source dev gRPC on port 50071; packaged installs on 50061
 - Source-dev node-agent gRPC remains loopback and non-TLS
-- Single implicit tenant (no auth/RBAC — deferred to M2)
+- Public `/v1/*` API routes require tenant-scoped Bearer API keys; full RBAC and
+  quota policy remain incomplete
 - Multi-node is supported for source-dev testing only (production/packaged multi-node — M4)
 - No distributed Erlang across machines
 - Model import from local filesystem only (no remote download)

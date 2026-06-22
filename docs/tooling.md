@@ -102,6 +102,9 @@ mise exec -- mix proto.gen
 mise exec -- mix proto.gen.worker
 ```
 
+- `mix proto.gen` additionally requires a host `protoc` binary and Orchard's
+  pinned `protoc-gen-elixir` escript. Install the escript through the pinned
+  Mix toolchain with `mise exec -- mix escript.install hex protobuf 0.16.0`.
 - `mix proto.gen` generates Elixir controller ↔ node-agent cluster modules from
   `proto/cluster/v1/{common,events,runtime}.proto` into
   `apps/orchard_shared/lib/cluster/v1/`.
@@ -127,6 +130,8 @@ Some dependencies are host services or Apple platform tools and are not managed
 by mise:
 
 - PostgreSQL local or external service
+- Protobuf compiler (`protoc`) and the pinned `protoc-gen-elixir` escript for
+  Elixir proto generation
 - Xcode Command Line Tools and macOS packaging tools such as `pkgbuild`,
   `pkgutil`, `codesign`, `xcrun`, and `notarytool`
 - model bundles and local MLX smoke-test data
