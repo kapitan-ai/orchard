@@ -147,7 +147,8 @@ trap cleanup EXIT
 cleanup_pkg_outputs() {
     local pkg_path="$1"
     local manifest_path="${pkg_path}.signing-manifest.txt"
-    local tmp_manifest_path="$(dirname "$pkg_path")/.${pkg_path##*/}.signing-manifest.tmp"
+    local tmp_manifest_path
+    tmp_manifest_path="$(dirname "$pkg_path")/.${pkg_path##*/}.signing-manifest.tmp"
 
     rm -f "$pkg_path" "${pkg_path}.sha256" "$manifest_path" "$tmp_manifest_path"
 }
@@ -170,6 +171,7 @@ discard_payload_keychain_env() {
 }
 
 run_payload_signer() {
+    local env_args=()
     local restore_xtrace=0
     local status=0
     case "$-" in
@@ -180,16 +182,14 @@ run_payload_signer() {
     esac
 
     set +e
-    (
-        export ORCHARD_PAYLOAD_SIGNING_IDENTITY="$PAYLOAD_SIGNING_IDENTITY"
-        if [[ "$PAYLOAD_BUILD_KEYCHAIN_CONFIGURED" == "true" ]]; then
-            export ORCHARD_BUILD_KEYCHAIN="$PAYLOAD_BUILD_KEYCHAIN"
-            if [[ "$PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED" == "true" ]]; then
-                export ORCHARD_KEYCHAIN_PASSWORD="$PAYLOAD_KEYCHAIN_PASSWORD"
-            fi
+    env_args+=("ORCHARD_PAYLOAD_SIGNING_IDENTITY=$PAYLOAD_SIGNING_IDENTITY")
+    if [[ "$PAYLOAD_BUILD_KEYCHAIN_CONFIGURED" == "true" ]]; then
+        env_args+=("ORCHARD_BUILD_KEYCHAIN=$PAYLOAD_BUILD_KEYCHAIN")
+        if [[ "$PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED" == "true" ]]; then
+            env_args+=("ORCHARD_KEYCHAIN_PASSWORD=$PAYLOAD_KEYCHAIN_PASSWORD")
         fi
-        "$REPO_ROOT/scripts/sign-payload.sh" "$@"
-    )
+    fi
+    env "${env_args[@]}" "$REPO_ROOT/scripts/sign-payload.sh" "$@"
     status=$?
     set -e
 
@@ -200,6 +200,7 @@ run_payload_signer() {
 }
 
 run_payload_verifier() {
+    local env_args=()
     local restore_xtrace=0
     local status=0
     case "$-" in
@@ -210,15 +211,13 @@ run_payload_verifier() {
     esac
 
     set +e
-    (
-        if [[ "$PAYLOAD_BUILD_KEYCHAIN_CONFIGURED" == "true" ]]; then
-            export ORCHARD_BUILD_KEYCHAIN="$PAYLOAD_BUILD_KEYCHAIN"
-            if [[ "$PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED" == "true" ]]; then
-                export ORCHARD_KEYCHAIN_PASSWORD="$PAYLOAD_KEYCHAIN_PASSWORD"
-            fi
+    if [[ "$PAYLOAD_BUILD_KEYCHAIN_CONFIGURED" == "true" ]]; then
+        env_args+=("ORCHARD_BUILD_KEYCHAIN=$PAYLOAD_BUILD_KEYCHAIN")
+        if [[ "$PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED" == "true" ]]; then
+            env_args+=("ORCHARD_KEYCHAIN_PASSWORD=$PAYLOAD_KEYCHAIN_PASSWORD")
         fi
-        "$REPO_ROOT/scripts/verify-payload-signing.sh" "$@"
-    )
+    fi
+    env "${env_args[@]}" "$REPO_ROOT/scripts/verify-payload-signing.sh" "$@"
     status=$?
     set -e
 

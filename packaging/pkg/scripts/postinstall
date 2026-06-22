@@ -353,7 +353,7 @@ write_endpoint_metadata() {
   chmod 0755 "$ORCHARD_ROOT" "$PUBLIC_DIR"
   chown root:wheel "$ORCHARD_ROOT" "$PUBLIC_DIR" 2>/dev/null || true
 
-  _tmp="$ENDPOINT_METADATA_FILE.$$.$RANDOM.tmp"
+  _tmp="$(mktemp "${ENDPOINT_METADATA_FILE}.XXXXXX")"
   {
     printf '{\n'
     printf '  "schema_version": 1,\n'
