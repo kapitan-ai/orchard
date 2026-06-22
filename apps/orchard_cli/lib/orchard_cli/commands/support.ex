@@ -38,8 +38,9 @@ defmodule OrchardCLI.Commands.Support do
     ~s("prompt"),
     "prompt="
   ]
-  @assignment_key_regex ~r/(?:^|[\s,{;])["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*(?:=>|:|=)/
+  @assignment_key_regex ~r/(?:^|[\s,{;?&])["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*(?:=>|:|=)/
   @bearer_value_regex ~r/\bbearer\s+[^\s,;]+/i
+  @credential_url_userinfo_regex ~r/\b[a-z][a-z0-9+.-]*:\/\/[^\s\/?#@]*:[^\s\/?#@]*@[^\s\/?#]+/i
   @credential_token_assignment_regex ~r/\b(?:api|access|auth|bearer|id|refresh|session|license)[-_\s]+tokens?\s*(?:=>|:|=)/i
   @license_secret_assignment_regex ~r/\blicense[-_\s]+(?:activation|key|secret|token)\s*(?:=>|:|=)/i
   @private_key_begin_regex ~r/-----BEGIN [A-Z ]*PRIVATE KEY-----/i
@@ -365,20 +366,14 @@ defmodule OrchardCLI.Commands.Support do
   end
 
   defp collect_config!(stage_dir, support_root) do
-    copied =
-      support_root
-      |> Path.join("config")
-      |> config_paths()
-      |> Enum.reduce(0, fn {source_path, dest_name}, count ->
-        case read_regular_file(source_path) do
-          {:ok, contents} ->
-            write_text!(stage_dir, Path.join("config", dest_name), contents)
-            count + 1
+    config_dir = Path.join(support_root, "config")
 
-          :error ->
-            count
-        end
-      end)
+    copied =
+      if real_directory?(config_dir) do
+        collect_config_files!(stage_dir, config_dir)
+      else
+        0
+      end
 
     if copied == 0 do
       write_text!(stage_dir, "config/README.txt", "No Orchard env config files were found.\n")
@@ -387,6 +382,25 @@ defmodule OrchardCLI.Commands.Support do
 
   defp config_paths(config_dir) do
     Enum.map(@config_files, fn file -> {Path.join(config_dir, file), file} end)
+  end
+
+  defp collect_config_files!(stage_dir, config_dir) do
+    config_dir
+    |> config_paths()
+    |> Enum.reduce(0, fn config_path, count ->
+      copy_config_file!(stage_dir, config_path, count)
+    end)
+  end
+
+  defp copy_config_file!(stage_dir, {source_path, dest_name}, count) do
+    case read_regular_file(source_path) do
+      {:ok, contents} ->
+        write_text!(stage_dir, Path.join("config", dest_name), contents)
+        count + 1
+
+      :error ->
+        count
+    end
   end
 
   defp redact_env_file(contents) do
@@ -565,9 +579,13 @@ defmodule OrchardCLI.Commands.Support do
     do: Path.join(output_dir, ".#{basename}-#{path_nonce}.tmp")
 
   defp regular_files(root) do
-    case File.lstat(root) do
-      {:ok, %{type: :directory}} -> regular_files_in_dir(root)
-      _other -> []
+    if real_directory?(root), do: regular_files_in_dir(root), else: []
+  end
+
+  defp real_directory?(path) do
+    case File.lstat(path) do
+      {:ok, %{type: :directory}} -> true
+      _other -> false
     end
   end
 
@@ -725,6 +743,7 @@ defmodule OrchardCLI.Commands.Support do
   defp redact_log_line?(line) do
     sensitive_log_literal?(line) or
       Regex.match?(@bearer_value_regex, line) or
+      Regex.match?(@credential_url_userinfo_regex, line) or
       Regex.match?(@credential_token_assignment_regex, line) or
       Regex.match?(@license_secret_assignment_regex, line) or
       Regex.match?(@private_key_regex, line) or

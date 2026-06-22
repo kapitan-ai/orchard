@@ -184,6 +184,47 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute truncated_log =~ "orch_partial_secret"
   end
 
+  test "log collection redacts credential URLs and query secrets", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    File.write!(
+      Path.join([support_root, "logs", "controller.log"]),
+      """
+      booted
+      postgresql://orchard:db-secret@db.local/orchard
+      callback=/health?api_key=query-api-secret&token=query-token-secret
+      redirect=https://user:http-secret@example.test/path
+      license=/status?license_key=query-license-secret
+      stats=/status?token_count=7&license_mode=offline
+      ready
+      """
+    )
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime(support_root)
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "credential-url-redaction")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    log = File.read!(Path.join([extract_dir, "logs", "controller.log"]))
+    assert log =~ "booted"
+    assert log =~ "ready"
+    assert log =~ "stats=/status?token_count=7&license_mode=offline"
+    assert log =~ "[redacted log line]"
+    refute log =~ "db-secret"
+    refute log =~ "query-api-secret"
+    refute log =~ "query-token-secret"
+    refute log =~ "http-secret"
+    refute log =~ "query-license-secret"
+  end
+
   test "redaction preserves tokenizer and license diagnostics while redacting credentials", %{
     support_root: support_root,
     output_dir: output_dir,
@@ -463,6 +504,39 @@ defmodule OrchardCLI.Commands.SupportTest do
 
     archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
     extract_dir = Path.join(tmp_dir, "symlink-config")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    refute File.exists?(Path.join([extract_dir, "config", "controller.env"]))
+
+    assert File.read!(Path.join([extract_dir, "config", "README.txt"])) =~
+             "No Orchard env config files were found."
+  end
+
+  test "config collection skips symlinked config directories", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    outside_config_dir = Path.join(tmp_dir, "outside-config")
+    File.mkdir_p!(outside_config_dir)
+
+    File.write!(
+      Path.join(outside_config_dir, "controller.env"),
+      "ORCHARD_PUBLIC_HOST=leaked.example\n"
+    )
+
+    File.rm_rf!(Path.join(support_root, "config"))
+    File.ln_s!(outside_config_dir, Path.join(support_root, "config"))
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime(support_root)
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "symlink-config-dir")
     File.mkdir_p!(extract_dir)
     assert_tar_extract!(archive_path, extract_dir)
 
