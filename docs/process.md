@@ -9,6 +9,10 @@ not own product truth. Historical coordination workspaces can inform work, but
 active guidance must be promoted into this repo before it becomes Orchard
 truth.
 
+For repo/runtime orientation, start with [`architecture.md`](architecture.md).
+For transient goal-package policy, see [`../goals/README.md`](../goals/README.md).
+For durable decisions, see [`decisions/README.md`](decisions/README.md).
+
 ## Workflow Selection
 
 | Work | Process |

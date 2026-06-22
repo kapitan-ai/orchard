@@ -1,6 +1,6 @@
 defmodule Orchard.Scheduler.SingleNode do
   @moduledoc """
-  Injectable single-node scheduling seam for M1.
+  Injectable single-node scheduler and fallback for source-dev runtime targets.
   """
 
   alias Orchard.CanonicalRequest

@@ -8,7 +8,7 @@ This document is the tactical, component-level design contract for the Orchard
 Console v2 LiveView UI. It covers visual rules an agent must follow before
 emitting Tailwind classes, HEEx markup, or component changes.
 
-**It is downstream of `docs/brand-identity.md`.** The brand document is the
+**It is downstream of [`docs/brand-identity.md`](brand-identity.md).** The brand document is the
 authority for palette, typography, dark/light mapping, wordmark, and brand-bar.
 Anything in this document that appears to conflict with `docs/brand-identity.md`
 is wrong and must be revised — brand identity wins.

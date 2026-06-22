@@ -1,14 +1,19 @@
 # cluster/v1 proto workflow
 
-This directory is the source of truth for the internal Orchard controller ↔ node-agent RPC contract described in `SPEC.md`.
+This directory contains the checked-in proto sources used to generate Orchard's
+controller ↔ node-agent RPC bindings. `SPEC.md` remains the normative contract;
+if proto files, docs, tests, or implementation disagree with it, treat the
+branch as blocked until reconciled.
 
-## Milestone scope
+## Scope and current status
 
-- **S1** wires the gRPC/protobuf toolchain and documents generation.
-- **S2** fills the real M1 runtime contract.
-- `membership.proto` remains deferred until the cluster-join lifecycle work in later milestones.
+This directory owns the controller ↔ node-agent cluster RPC contract. It does
+not own the node-agent ↔ worker runtime contract; that lives under
+`../../../native/orchard_worker_mlx/proto/`.
 
-The seed definitions in `common.proto`, `events.proto`, and `runtime.proto` are intentionally minimal. They exist so Orchard can standardize the code generation workflow and compile against shared generated modules before the full M1 runtime surface lands.
+`common.proto`, `events.proto`, and `runtime.proto` are active generated inputs.
+`membership.proto` is present for the future cluster-join lifecycle slice but is
+excluded from the current generation aliases until that contract is implemented.
 
 ## Elixir toolchain
 
@@ -24,10 +29,11 @@ Install the local compiler and Elixir plugin:
 
 ```bash
 brew install protobuf
-mix escript.install hex protobuf 0.16.0
+mise exec -- mix escript.install hex protobuf 0.16.0
 ```
 
-`mix proto.gen` validates that the installed Elixir generator version matches Orchard’s pinned `protoc-gen-elixir` version.
+`mise exec -- mix proto.gen` validates that the installed Elixir generator
+version matches Orchard’s pinned `protoc-gen-elixir` version.
 
 `orchard_shared` relies on `grpc`'s compatible protobuf runtime dependency at build/runtime; the pinned escript above is specifically for deterministic Elixir code generation.
 
@@ -46,7 +52,7 @@ apps/orchard_shared/lib/cluster/v1/
 Use the repo-approved alias from the repository root:
 
 ```bash
-mix proto.gen
+mise exec -- mix proto.gen
 ```
 
 The alias wraps this underlying `protoc` invocation:
@@ -65,51 +71,36 @@ Notes:
 
 - `package_prefix=Orchard` keeps generated modules under the Orchard namespace (`Orchard.Cluster.V1.*`).
 - `membership.proto` is intentionally excluded until its contract is defined.
-- Re-run `mix proto.gen` whenever the checked-in proto files change.
+- Re-run `mise exec -- mix proto.gen` whenever the checked-in proto files change.
 
-## Python toolchain
+## Python worker codegen
 
-Python code generation is documented now so the later native packages can adopt the same checked-in proto source of truth. This section is **forward-looking in S1**: the repository does not yet contain the package skeletons needed to run these commands successfully.
+The worker package consumes generated Python bindings for both this cluster RPC
+surface and its own worker runtime RPC surface.
 
-### When this becomes actionable
-
-Start using this workflow once the native package scaffolds exist in S6 (or earlier if a package is added specifically for shared RPC generation).
-
-### Intended Python output locations
-
-The future native package layout should generate checked-in Python modules under package-owned source trees, for example:
+Generated Python modules live under:
 
 ```text
-native/orchard_worker_mlx/src/orchard_worker_mlx/generated/cluster/v1/
+native/orchard_worker_mlx/src/orchard_worker_mlx/generated/
 ```
 
-### Future package prerequisites
-
-Inside the owning Python package, use `uv`-managed tooling only and add the codegen dependency there:
+Run the repo-approved alias from the repository root:
 
 ```bash
-uv add --dev grpcio-tools
+mise exec -- mix proto.gen.worker
 ```
 
-### Future Python generation command
+The alias runs `grpc_tools.protoc` through the worker package's uv environment,
+with include paths for both `proto/` and `native/orchard_worker_mlx/proto/`.
+It generates:
 
-Once the package skeleton exists, run the generation step from the repository root or from the package environment that owns the output path:
+- `cluster/v1/*_pb2.py` and `cluster/v1/*_pb2_grpc.py` from this directory's
+  active cluster protos;
+- `orchard/worker/v1/*_pb2.py` and `orchard/worker/v1/*_pb2_grpc.py` from the
+  worker runtime proto.
 
-```bash
-uv run python -m grpc_tools.protoc \
-  -I proto \
-  --python_out=native/orchard_worker_mlx/src/orchard_worker_mlx/generated \
-  --grpc_python_out=native/orchard_worker_mlx/src/orchard_worker_mlx/generated \
-  proto/cluster/v1/common.proto \
-  proto/cluster/v1/events.proto \
-  proto/cluster/v1/runtime.proto
-```
-
-Notes:
-
-- The exact package destination becomes active once the native packages are created.
-- `membership.proto` remains deferred and is not part of the Python generation set yet.
-- Until the package skeleton exists, treat this as a documented target workflow rather than a runnable S1 command.
+`membership.proto` remains deferred and is not part of the current Python
+cluster generation set.
 
 ## Workflow rules
 

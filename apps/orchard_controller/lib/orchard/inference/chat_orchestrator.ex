@@ -46,10 +46,11 @@ defmodule Orchard.Inference.ChatOrchestrator do
   Returns `{:ok, canonical_request, model}` if all pre-dispatch checks pass.
   This step does not persist anything or start dispatch — use `execute/3` for that.
 
-  `caller_context` is a keyword list from the request context plug:
-    * `:tenant_id` — resolved tenant (default: `"default"` in M1)
-    * `:principal_id` — resolved principal (nil in M1)
-    * `:api_key_id` — resolved API key (nil in M1)
+  `caller_context` is a keyword list from the request context plug or internal
+  caller:
+    * `:tenant_id` — resolved tenant
+    * `:principal_id` — resolved principal when available
+    * `:api_key_id` — resolved API key when available
 
   Returns `{:error, {:validation, errors}}` for request validation failures,
   `{:error, {:model_not_found, model_ref}}` when the requested model doesn't

@@ -1,21 +1,29 @@
-# OrchardNodeAgent
+# orchard_node_agent
 
-**TODO: Add description**
+Node-agent release for Orchard's worker-node boundary. It exposes the internal
+node runtime endpoint, reports node/runtime status, manages model acquisition and
+cache state, and supervises local worker subprocesses.
 
-## Installation
+This README is orientation only. Normative behavior lives in
+[`../../SPEC.md`](../../SPEC.md); repo/runtime boundaries are mapped in
+[`../../docs/architecture.md`](../../docs/architecture.md).
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `orchard_node_agent` to your list of dependencies in `mix.exs`:
+## Owns
 
-```elixir
-def deps do
-  [
-    {:orchard_node_agent, "~> 0.1.0"}
-  ]
-end
-```
+- Node-local runtime service behavior used by the controller.
+- Model acquisition/cache/load coordination on a node.
+- Worker process supervision and node-local diagnostics/status reporting.
+- Manual Elixir binding for the node-agent ↔ worker proto.
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/orchard_node_agent>.
+## Does not own
 
+- Public API traffic or tenant/governance decisions; those terminate at the
+  controller.
+- Worker model-generation internals; see `../../native/orchard_worker_mlx/`.
+- Shared cluster proto source; see `../../proto/cluster/v1/`.
+
+## Local work
+
+Use `mise exec -- bin/dev-node-agent` for source-dev worker hosts. For split-role
+setup and validation commands, see [`../../docs/local-dev.md`](../../docs/local-dev.md)
+and [`../../docs/tooling.md`](../../docs/tooling.md).

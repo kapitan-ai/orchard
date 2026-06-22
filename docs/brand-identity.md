@@ -8,6 +8,9 @@
 This document defines the Orchard brand identity for the v2 Phoenix LiveView console,
 including logo, color palette, dark mode guidance, and visual guidelines.
 
+See [`DESIGN.md`](DESIGN.md) for tactical Console implementation rules downstream
+of this brand identity.
+
 ---
 
 ## Overview

@@ -4,13 +4,27 @@
 
 Orchard is a sovereign on-prem LLM orchestration platform for 1–4 Apple Silicon macOS machines. It runs inference on your own hardware, behind your own firewall, with no cloud dependency.
 
-## What it does
+## Where to start
 
-- Orchestrates LLM inference across 1–4 Mac nodes using [MLX](https://github.com/ml-explore/mlx)
-- Exposes OpenAI-compatible APIs with `/v1/responses` as the canonical abstraction and `/v1/chat/completions` as a compatibility facade
-- Multi-tenant with full RBAC, API key scoping, quotas, and audit logs
-- Ships as a native macOS DMG/PKG — no Docker or Kubernetes required for operators; managed Postgres uses local macOS containerization when enabled, and no cloud account is required
-- Runs as launchd services with a menu bar app for local status
+- [`SPEC.md`](SPEC.md) is the normative build contract.
+- [`docs/README.md`](docs/README.md) is the collaborator docs hub.
+- [`docs/architecture.md`](docs/architecture.md) maps the repo and runtime boundaries.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) covers human collaboration workflow.
+- [`docs/local-dev.md`](docs/local-dev.md) covers source-dev setup.
+- [`packaging/pkg/README.md`](packaging/pkg/README.md) covers the current PKG runbook.
+
+## Target product capabilities
+
+Defined by `SPEC.md`, Orchard is being built to:
+
+- orchestrate LLM inference across 1–4 Mac nodes using [MLX](https://github.com/ml-explore/mlx);
+- expose OpenAI-compatible APIs with `/v1/responses` as the canonical abstraction and `/v1/chat/completions` as a compatibility facade;
+- support multi-tenant RBAC, API key scoping, quotas, and audit logs;
+- ship as native macOS PKG/DMG media with launchd services and no Kubernetes requirement;
+- support managed Postgres in a future local-container mode while also supporting external Postgres.
+
+Current packaged controller-bearing installs require external Postgres; managed
+Postgres and DMG media remain reserved/not implemented.
 
 ## Architecture
 
@@ -125,7 +139,10 @@ The macOS PKG uses a universal payload with role selection at install time. Seed
 
 ## Status
 
-Pre-release. Building from spec.
+Pre-release. Building from spec. The current source tree includes authenticated
+`/v1/models`, `/v1/chat/completions`, and a bounded `/v1/responses` slice; full
+M2 governance, RBAC, and quota behavior remain in progress. The roadmap and
+target behavior are governed by `SPEC.md` §14.
 
 ## Spec
 
@@ -141,6 +158,8 @@ must be rewritten into this repo before it counts as Orchard truth.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) explains human collaboration workflow.
 - [`AGENTS.md`](AGENTS.md) explains automation and agent workflow.
 - [`docs/glossary/CONTEXT.md`](docs/glossary/CONTEXT.md) defines Orchard's shared product language.
+- [`docs/README.md`](docs/README.md) is the collaborator docs hub.
+- [`docs/architecture.md`](docs/architecture.md) explains repo and runtime boundaries.
 - [`docs/tooling.md`](docs/tooling.md) explains the required mise toolchain and local accelerator tools.
 - [`docs/local-dev.md`](docs/local-dev.md) explains source development setup and smoke checks.
 - [`docs/process.md`](docs/process.md) explains artifact lifecycle and review gates.

@@ -1,4 +1,7 @@
-# DMG skeleton
+# DMG packaging
 
-Milestone 0 placeholder for Orchard interactive installer media.
-Expected contents later include `Orchard.pkg`, release notes, and checksums/signature metadata.
+Reserved for future interactive installer media. The current actionable
+packaging path is the PKG runbook in `../pkg/README.md`.
+
+Expected future DMG contents include `Orchard.pkg`, release notes, and
+checksums/signature metadata.

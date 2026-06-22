@@ -19,9 +19,11 @@ branch reconciles the conflict. `SPEC.md` wins until explicitly updated.
 
 ## Getting Started
 
-- Read `README.md`.
+- Read `README.md` for product overview and status.
 - Read `SPEC.md` for normative behavior.
+- Use `docs/architecture.md` for repo and runtime orientation.
 - Use `docs/local-dev.md` for source development setup.
+- Use `docs/tooling.md` for pinned toolchain and validation commands.
 - Use `packaging/pkg/README.md` for packaged installer behavior.
 
 ## Change Workflow

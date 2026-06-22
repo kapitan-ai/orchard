@@ -1,6 +1,6 @@
 defmodule Orchard.Node.FakeRuntimeAdapter do
   @moduledoc """
-  Deterministic fake runtime adapter used by tests and early M1 runtime wiring.
+  Deterministic fake runtime adapter used by tests and local runtime wiring.
   """
 
   @behaviour Orchard.Node.RuntimeAdapter

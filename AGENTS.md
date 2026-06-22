@@ -285,6 +285,7 @@ See `packaging/pkg/README.md` for full PKG operator documentation and `packaging
 | docs/tooling.md | mise, validation command, and local tool guidance |
 | docs/local-dev.md | Source development setup and smoke-test guidance |
 | docs/process.md | Artifact lifecycle and process guidance |
+| docs/architecture.md | Contributor architecture and repo-boundary orientation |
 | docs/decisions/ | ADR-style durable decisions |
 | goals/README.md | Local goal package policy |
 | openspec/README.md | Reserved structured-change workflow |

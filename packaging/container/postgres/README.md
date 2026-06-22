@@ -1,7 +1,7 @@
 # Managed Postgres (not yet implemented)
 
-> **Status:** Scaffold only. The `orchard-managed-postgres` wrapper exits with
-> a "not implemented" error. The packaged controller currently requires an
+> **Status:** Not implemented. The `orchard-managed-postgres` wrapper exits
+> with a "not implemented" error. The packaged controller currently requires an
 > **external PostgreSQL** server.
 
 ## Intended future responsibilities

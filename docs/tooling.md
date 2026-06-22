@@ -92,6 +92,28 @@ Package builds should run through the same toolchain:
 mise exec -- ./scripts/build-pkg.sh
 ```
 
+## Generated Contracts
+
+Cluster and worker proto bindings are generated through Mix aliases from the
+repo root:
+
+```bash
+mise exec -- mix proto.gen
+mise exec -- mix proto.gen.worker
+```
+
+- `mix proto.gen` additionally requires a host `protoc` binary and Orchard's
+  pinned `protoc-gen-elixir` escript. Install the escript through the pinned
+  Mix toolchain with `mise exec -- mix escript.install hex protobuf 0.16.0`.
+- `mix proto.gen` generates Elixir controller ↔ node-agent cluster modules from
+  `proto/cluster/v1/{common,events,runtime}.proto` into
+  `apps/orchard_shared/lib/cluster/v1/`.
+- `mix proto.gen.worker` generates Python bindings for the shared cluster protos
+  and `native/orchard_worker_mlx/proto/orchard/worker/v1/worker_runtime.proto`
+  into `native/orchard_worker_mlx/src/orchard_worker_mlx/generated/`.
+- The node-agent Elixir worker binding is maintained manually; see
+  `native/orchard_worker_mlx/README.md`.
+
 ## Node Policy
 
 Orchard currently has JavaScript assets, but no first-party `package.json`,
@@ -108,6 +130,8 @@ Some dependencies are host services or Apple platform tools and are not managed
 by mise:
 
 - PostgreSQL local or external service
+- Protobuf compiler (`protoc`) and the pinned `protoc-gen-elixir` escript for
+  Elixir proto generation
 - Xcode Command Line Tools and macOS packaging tools such as `pkgbuild`,
   `pkgutil`, `codesign`, `xcrun`, and `notarytool`
 - model bundles and local MLX smoke-test data
