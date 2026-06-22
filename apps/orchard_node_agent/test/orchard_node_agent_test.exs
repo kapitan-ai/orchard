@@ -2941,6 +2941,64 @@ defmodule OrchardNodeAgentTest do
     end
   end
 
+  test "SPEC.md §5.5 cancellation frees aggregate node concurrency for another model", %{
+    bundle: bundle
+  } do
+    other_bundle = stage_test_bundle!("mlx-community/phi-3-cancel-slot-alt", "main")
+
+    try do
+      with_runtime_config(
+        [
+          runtime_adapter_impl: BlockingRuntimeAdapter,
+          worker_generation_mode: "batch",
+          worker_max_concurrent_requests_per_model: 2,
+          test_only_allow_batch_admission_for_non_worker_adapters?: true
+        ],
+        fn ->
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(other_bundle))
+
+          request1 = execute_inference_request("req-node-cap-cancel-first", bundle)
+          request2 = execute_inference_request("req-node-cap-cancel-second", bundle)
+          request3 = execute_inference_request("req-node-cap-cancel-third", other_bundle)
+
+          assert :ok = NodeStatus.prepare_request(request1, self())
+          assert :ok = NodeStatus.start_request(request1)
+          assert :ok = NodeStatus.prepare_request(request2, self())
+          assert :ok = NodeStatus.start_request(request2)
+
+          wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+          assert {:error, :model_busy} = NodeStatus.prepare_request(request3, self())
+
+          assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
+
+          assert_receive {:node_runtime_event, "req-node-cap-cancel-first",
+                          %OrchardInferenceEvent{
+                            event: %OrchardInferenceEvent.Failed{code: "cancelled"}
+                          }},
+                         1_000
+
+          wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+
+          assert :ok = NodeStatus.prepare_request(request3, self())
+          assert :ok = NodeStatus.start_request(request3)
+
+          wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+
+          assert %{ok: true} = NodeStatus.cancel_request(request2.request_id)
+          assert %{ok: true} = NodeStatus.cancel_request(request3.request_id)
+          wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+        end
+      )
+    after
+      File.rm_rf(other_bundle.cache_path)
+      File.rm_rf(other_bundle.source_path)
+    end
+  end
+
   test "SPEC.md §5.5 aggregate node concurrency maps cross-model gRPC request to model_busy",
        %{bundle: bundle} do
     other_bundle = stage_test_bundle!("mlx-community/phi-3-grpc-alt", "main")
