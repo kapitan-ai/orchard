@@ -859,6 +859,78 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(grant)
     end
 
+    test "SPEC.md §5.5 ineligible heartbeat clears stale cold queue capacity" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      node =
+        insert_node!(%{
+          id: node_id,
+          state: :active,
+          health: :healthy,
+          advertise_addr: "10.0.0.63",
+          rpc_port: 9444
+        })
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-stale-cold-capacity-a", "stale-cold-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-stale-cold-capacity-b", "stale-cold-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_stale_cold_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.63", 9444)
+
+      healthy_status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.63",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _active_node} =
+               Nodes.observe_status(target, healthy_status, DateTime.utc_now())
+
+      assert_receive {:first_stale_cold_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      node
+      |> Ecto.Changeset.change(state: :cordoned)
+      |> Repo.update!()
+
+      later = DateTime.add(DateTime.utc_now(), 1, :second)
+
+      assert {:ok, cordoned_node} = Nodes.observe_status(target, healthy_status, later)
+      assert cordoned_node.state == :cordoned
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      cordoned_node
+      |> Ecto.Changeset.change(state: :active)
+      |> Repo.update!()
+
+      newest = DateTime.add(later, 1, :second)
+
+      assert {:ok, _active_node} = Nodes.observe_status(target, healthy_status, newest)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "stale-cold-model@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
     test "SPEC.md §5.5 invalid placement max concurrency does not wake queued admission" do
       QueueManager.reset()
 
