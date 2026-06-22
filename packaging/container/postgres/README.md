@@ -1,8 +1,10 @@
-# Managed Postgres (not yet implemented)
+# Managed Postgres (unavailable in current builds)
 
-> **Status:** Not implemented. The `orchard-managed-postgres` wrapper exits
-> with a "not implemented" error. The packaged controller currently requires an
-> **external PostgreSQL** server.
+> **Status:** Managed Postgres is not available in this build. The
+> `orchard-managed-postgres` wrapper is an operator-safe placeholder: help
+> invocations print the current external PostgreSQL setup path, while
+> operational invocations exit non-zero without starting or mutating anything.
+> The packaged controller currently requires an **external PostgreSQL** server.
 
 ## Intended future responsibilities
 
@@ -13,6 +15,8 @@
 
 ## Current state
 
-The `com.orchard.postgres.plist` launchd service definition exists but should
-**not** be bootstrapped until a functional `orchard-managed-postgres` binary is
-available. The installer does not bootstrap it by default.
+The `com.orchard.postgres.plist` launchd service definition remains a future-mode
+source artifact. Current PKG builds exclude it, and `postinstall` removes any
+stale installed copy early, before role/TLS validation, so unsupported managed
+Postgres state does not survive a failed install. The shipped
+`orchard-managed-postgres` wrapper is only the guard described above.

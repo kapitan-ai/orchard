@@ -1,6 +1,35 @@
 #!/bin/sh
 set -eu
-# Placeholder managed Postgres wrapper.
-# Packaging will eventually dispatch to the managed Postgres container helper.
-echo "orchard-managed-postgres is not implemented yet (M0 scaffold)." >&2
-exit 1
+
+print_guidance() {
+  cat <<'EOF'
+orchard-managed-postgres: managed Postgres is not available in this build.
+
+Current supported path:
+  Packaged controller-bearing installs require an operator-managed external PostgreSQL server.
+  Orchard does not install, bootstrap, or manage a local Postgres runtime by default.
+
+First-run setup:
+  1. Run: sudo orchardctl env init
+  2. Set DATABASE_URL in /Library/Application Support/Orchard/config/controller.env
+  3. Run: sudo orchardctl migrate
+  4. Run: sudo orchardctl start
+
+See the source repo docs:
+  packaging/pkg/README.md
+  packaging/container/postgres/README.md
+EOF
+}
+
+case "${1:-}" in
+  help|--help|-h)
+    print_guidance
+    exit 0
+    ;;
+  *)
+    printf '%s\n\n' \
+      "orchard-managed-postgres: ERROR: managed Postgres is unavailable in this build." >&2
+    print_guidance >&2
+    exit 69
+    ;;
+esac

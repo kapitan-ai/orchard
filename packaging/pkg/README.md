@@ -2,8 +2,10 @@
 
 Current packaged installs use a universal PKG payload with role selection for
 `all`, `controller`, and `node-agent` hosts. Controller-bearing installs require
-an **external PostgreSQL** server today; managed Postgres is not implemented and
-`orchard-managed-postgres` remains a placeholder that exits with an error.
+an **external PostgreSQL** server today; managed Postgres is not available in
+this build. The `orchard-managed-postgres` helper remains an operator-safe
+placeholder for future Managed Database Mode and exits non-zero for operational
+invocations with the current external database setup path.
 Services are installed by role and must be configured before start.
 
 ## Naming strategy
@@ -19,8 +21,9 @@ Services are installed by role and must be configured before start.
 ## Prerequisites
 
 The packaged controller requires an **external PostgreSQL** server. Orchard does
-not currently ship a managed Postgres runtime — the `orchard-managed-postgres`
-wrapper is a placeholder that exits with an error.
+not currently ship a managed Postgres runtime. The `orchard-managed-postgres`
+wrapper is a placeholder that exits non-zero for operational invocations and
+points operators back to the external PostgreSQL setup path.
 
 Before starting the controller for the first time:
 
@@ -63,6 +66,10 @@ controller/node-agent plist from a prior role, atomically writes `.install-role`
 and deletes `.install-role.request` after success. On upgrade, if no request file
 is present, the installer preserves the existing `.install-role`; if neither file
 exists, it defaults to `all`.
+
+The installer also always boots out and removes stale
+`com.orchard.postgres.plist` before role validation, because managed Postgres
+LaunchDaemon service mode is unsupported in this build.
 
 MDM/Jamf automation should create the same root-owned request file before
 installing the universal PKG. Recommended request-file permissions are
@@ -898,7 +905,7 @@ for direct HTTPS. It is not the default production TLS path.
    continues without running `orchardctl tls init`
 3. To create local CA helper TLS, run `sudo orchardctl tls init --no-trust`
    after install
-4. Does not bootstrap managed PostgreSQL; role-selected controller/node-agent services must be started manually via `sudo orchardctl start`
+4. Removes any stale unsupported managed PostgreSQL LaunchDaemon early and does not bootstrap managed PostgreSQL; role-selected controller/node-agent services must be started manually via `sudo orchardctl start`
 
 **Upgrade (existing install):**
 - Preserves existing managed TLS files (no overwrite, no regeneration)
@@ -996,10 +1003,13 @@ The installer writes role and diagnostic markers under `support/`:
 
 ## Service Bootstrap
 
-Postinstall does **not install or bootstrap managed PostgreSQL**. Controller and
-node-agent services are **not auto-started** during install to allow proper
-configuration first. `sudo orchardctl start` starts the services selected by the
-installed role.
+Postinstall installs the `orchard-managed-postgres` guard into the support root,
+but does **not** expose it on PATH, install its LaunchDaemon, or bootstrap
+managed PostgreSQL. It removes any stale `com.orchard.postgres.plist` before
+later validation so unsupported managed PostgreSQL state is cleaned up even if
+the install aborts. Controller and node-agent services are **not auto-started**
+during install to allow proper configuration first. `sudo orchardctl start`
+starts the services selected by the installed role.
 
 Optionally seed `.install-role.request` before installing the PKG (omit for
 default `all`). After install, use this first-run sequence for
@@ -1055,9 +1065,11 @@ sudo "/Library/Application Support/Orchard/bin/orchard-controller" eval 'Orchard
 ## Responsibilities
 
 - Package Orchard releases into install paths under `/Library/Application Support/Orchard/`
-- Install wrapper commands into `/Library/Application Support/Orchard/bin/`
+- Install wrapper commands into `/Library/Application Support/Orchard/bin/`,
+  including the operator-safe managed Postgres guard
 - Expose `orchardctl` via `/usr/local/bin/orchardctl`
 - Install role-selected launchd plists under `/Library/LaunchDaemons/` and tray LaunchAgent under `/Library/LaunchAgents/`
+- Exclude the managed Postgres LaunchDaemon and remove stale unsupported copies during postinstall
 - Leave TLS generation to explicit post-install `sudo orchardctl tls init --no-trust`
 - Validate TLS state before bootstrapping `direct_https` services
 - Detect fresh install vs upgrade and write diagnostic markers
@@ -1296,6 +1308,7 @@ cask "orchard" do
               "/Library/Application Support/Orchard/bin/orchardctl",
               "/Library/Application Support/Orchard/bin/orchard-controller",
               "/Library/Application Support/Orchard/bin/orchard-node-agent",
+              "/Library/Application Support/Orchard/bin/orchard-managed-postgres",
               "/Library/LaunchDaemons/com.orchard.controller.plist",
               "/Library/LaunchDaemons/com.orchard.node-agent.plist",
             ]

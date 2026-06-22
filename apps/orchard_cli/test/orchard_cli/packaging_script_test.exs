@@ -3,7 +3,29 @@ defmodule OrchardCLI.PackagingScriptTest do
 
   @repo_root Path.expand("../../../..", __DIR__)
   @controller_wrapper Path.join(@repo_root, "packaging/pkg/bin/orchard-controller")
+  @managed_postgres_wrapper Path.join(@repo_root, "packaging/pkg/bin/orchard-managed-postgres")
   @postinstall Path.join(@repo_root, "packaging/pkg/scripts/postinstall")
+
+  test "managed postgres wrapper fails operational invocations with external database guidance" do
+    assert {output, 69} = run_managed_postgres_wrapper(["start"])
+
+    assert output =~ "ERROR: managed Postgres is unavailable in this build"
+    assert_managed_postgres_guidance(output)
+  end
+
+  test "managed postgres wrapper fails no-arg invocation with external database guidance" do
+    assert {output, 69} = run_managed_postgres_wrapper()
+
+    assert output =~ "ERROR: managed Postgres is unavailable in this build"
+    assert_managed_postgres_guidance(output)
+  end
+
+  test "managed postgres wrapper help prints current supported path" do
+    assert {output, 0} = run_managed_postgres_wrapper(["--help"])
+
+    refute output =~ "ERROR:"
+    assert_managed_postgres_guidance(output)
+  end
 
   test "postinstall filters launchd plists for requested node-agent role" do
     with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
@@ -446,7 +468,7 @@ defmodule OrchardCLI.PackagingScriptTest do
     end
   end
 
-  test "postinstall TLS failure for controller role does not mutate role or postgres plists" do
+  test "postinstall TLS failure removes unsupported postgres without mutating role plists" do
     with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
       stale_controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
       node_agent = Path.join(ctx.launch_daemons, "com.orchard.node-agent.plist")
@@ -461,8 +483,9 @@ defmodule OrchardCLI.PackagingScriptTest do
 
       assert {output, 1} = run_script(script, ctx, [{"ORCHARD_TRANSPORT_MODE", "direct_https"}])
       assert output =~ "partial managed TLS state"
+      assert output =~ "removing unsupported managed Postgres LaunchDaemon"
       assert File.exists?(stale_controller)
-      assert File.exists?(stale_postgres)
+      refute File.exists?(stale_postgres)
       refute File.exists?(node_agent)
       refute File.exists?(marker_path)
       assert File.exists?(request_path)
@@ -474,7 +497,7 @@ defmodule OrchardCLI.PackagingScriptTest do
         end
 
       refute launchctl_log =~ "bootout system/com.orchard.controller"
-      refute launchctl_log =~ "bootout system/com.orchard.postgres"
+      assert launchctl_log =~ "bootout system/com.orchard.postgres"
     end)
   end
 
@@ -635,6 +658,23 @@ defmodule OrchardCLI.PackagingScriptTest do
       assert File.read!(ctx.launchctl_log) =~ "bootout system/com.orchard.postgres"
       refute File.read!(ctx.launchctl_log) =~ "bootstrap system #{postgres}"
       assert File.read!(marker_path) == "node-agent\n"
+    end)
+  end
+
+  test "postinstall installs managed postgres guard without PATH symlink or launchd service" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      helper = Path.join([ctx.root, "bin", "orchard-managed-postgres"])
+      helper_symlink = Path.join(ctx.local_bin, "orchard-managed-postgres")
+      postgres = Path.join(ctx.launch_daemons, "com.orchard.postgres.plist")
+
+      File.write!(request_path, "controller\n")
+
+      assert {_output, 0} = run_script(script, ctx)
+
+      assert File.exists?(helper)
+      refute File.exists?(helper_symlink)
+      refute File.exists?(postgres)
+      refute File.read!(ctx.launchctl_log) =~ "bootstrap system #{postgres}"
     end)
   end
 
@@ -1073,37 +1113,69 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
-  test "postinstall rejects group/world-writable request file" do
+  test "postinstall rejects group/world-writable request file after postgres cleanup" do
     with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
       stale_controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
       node_agent = Path.join(ctx.launch_daemons, "com.orchard.node-agent.plist")
+      stale_postgres = Path.join(ctx.launch_daemons, "com.orchard.postgres.plist")
       marker_path = Path.join([ctx.root, "support", ".install-role"])
 
       File.write!(request_path, "node-agent\n")
       File.write!(stale_controller, "stale controller plist\n")
+      File.write!(stale_postgres, "stale postgres plist\n")
 
       assert {output, 1} = run_script(script, ctx, [{"REQUEST_STAT_MODE", "666"}])
       assert output =~ "must not be group/world writable"
+      assert output =~ "removing unsupported managed Postgres LaunchDaemon"
       assert File.exists?(request_path)
       assert File.exists?(stale_controller)
+      refute File.exists?(stale_postgres)
       refute File.exists?(node_agent)
       refute File.exists?(marker_path)
+      assert File.read!(ctx.launchctl_log) =~ "bootout system/com.orchard.postgres"
     end)
   end
 
-  test "postinstall rejects request file with non-root owner" do
+  test "postinstall rejects request file with non-root owner after postgres cleanup" do
     with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
       stale_controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
       node_agent = Path.join(ctx.launch_daemons, "com.orchard.node-agent.plist")
+      stale_postgres = Path.join(ctx.launch_daemons, "com.orchard.postgres.plist")
 
       File.write!(request_path, "node-agent\n")
       File.write!(stale_controller, "stale controller plist\n")
+      File.write!(stale_postgres, "stale postgres plist\n")
 
       assert {output, 1} = run_script(script, ctx, [{"REQUEST_STAT_UID", "501"}])
       assert output =~ "must be root-owned"
+      assert output =~ "removing unsupported managed Postgres LaunchDaemon"
       assert File.exists?(request_path)
       assert File.exists?(stale_controller)
+      refute File.exists?(stale_postgres)
       refute File.exists?(node_agent)
+      assert File.read!(ctx.launchctl_log) =~ "bootout system/com.orchard.postgres"
+    end)
+  end
+
+  test "postinstall rejects invalid existing role marker after postgres cleanup" do
+    with_temp_postinstall(fn %{script: script} = ctx ->
+      stale_controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
+      node_agent = Path.join(ctx.launch_daemons, "com.orchard.node-agent.plist")
+      stale_postgres = Path.join(ctx.launch_daemons, "com.orchard.postgres.plist")
+      marker_path = Path.join([ctx.root, "support", ".install-role"])
+
+      File.write!(marker_path, "invalid\n")
+      File.write!(stale_controller, "stale controller plist\n")
+      File.write!(stale_postgres, "stale postgres plist\n")
+
+      assert {output, 1} = run_script(script, ctx)
+      assert output =~ "invalid existing install role"
+      assert output =~ "removing unsupported managed Postgres LaunchDaemon"
+      assert File.exists?(marker_path)
+      assert File.exists?(stale_controller)
+      refute File.exists?(stale_postgres)
+      refute File.exists?(node_agent)
+      assert File.read!(ctx.launchctl_log) =~ "bootout system/com.orchard.postgres"
     end)
   end
 
@@ -1170,6 +1242,24 @@ defmodule OrchardCLI.PackagingScriptTest do
 
   defp openssl! do
     System.find_executable("openssl") || flunk("openssl is required for packaging script tests")
+  end
+
+  defp run_managed_postgres_wrapper(args \\ []) do
+    System.cmd("sh", [@managed_postgres_wrapper | args], stderr_to_stdout: true)
+  end
+
+  defp assert_managed_postgres_guidance(output) do
+    assert output =~ "managed Postgres is not available in this build"
+    assert output =~ "external PostgreSQL"
+    assert output =~ "does not install, bootstrap, or manage a local Postgres runtime"
+    assert output =~ "sudo orchardctl env init"
+    assert output =~ "DATABASE_URL"
+    assert output =~ "sudo orchardctl migrate"
+    assert output =~ "sudo orchardctl start"
+    assert output =~ "packaging/pkg/README.md"
+    assert output =~ "packaging/container/postgres/README.md"
+    refute output =~ "M0 scaffold"
+    refute output =~ "not implemented yet"
   end
 
   defp with_temp_controller_wrapper(fun) do
@@ -1313,7 +1403,12 @@ defmodule OrchardCLI.PackagingScriptTest do
       File.write!(Path.join([ctx.root, "config/tls", file]), "tls\n")
     end
 
-    for cmd <- ["orchard-controller", "orchard-node-agent", "orchardctl"] do
+    for cmd <- [
+          "orchard-controller",
+          "orchard-node-agent",
+          "orchardctl",
+          "orchard-managed-postgres"
+        ] do
       path = Path.join([ctx.root, "share/bin", cmd])
       File.write!(path, "#!/bin/sh\nexit 0\n")
       File.chmod!(path, 0o755)

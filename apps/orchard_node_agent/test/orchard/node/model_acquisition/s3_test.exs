@@ -185,8 +185,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
       refute File.exists?(Path.join(staging, "model-v1"))
     end
 
-    test "rejects archive with path traversal" do
-      {archive_path, staging} = create_malicious_tar(:traversal)
+    test "rejects archive with path traversal", ctx do
+      {archive_path, staging} = create_malicious_tar(:traversal, ctx.tmp_dir)
 
       assert {:error, {:invalid_source_layout, msg}} =
                Tar.extract_archive(archive_path, staging, :tar)
@@ -194,8 +194,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
       assert msg =~ "path traversal"
     end
 
-    test "rejects archive with absolute path" do
-      {archive_path, staging} = create_malicious_tar(:absolute)
+    test "rejects archive with absolute path", ctx do
+      {archive_path, staging} = create_malicious_tar(:absolute, ctx.tmp_dir)
 
       assert {:error, {:invalid_source_layout, msg}} =
                Tar.extract_archive(archive_path, staging, :tar)
@@ -203,8 +203,8 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
       assert msg =~ "absolute path"
     end
 
-    test "rejects archive with symlink" do
-      {archive_path, staging} = create_malicious_tar(:symlink)
+    test "rejects archive with symlink", ctx do
+      {archive_path, staging} = create_malicious_tar(:symlink, ctx.tmp_dir)
 
       assert {:error, {:invalid_source_layout, msg}} =
                Tar.extract_archive(archive_path, staging, :tar)
@@ -600,8 +600,12 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
     |> Enum.sort()
   end
 
-  defp create_malicious_tar(type) do
-    tmp = System.tmp_dir!() |> Path.join("malicious_tar_#{:rand.uniform(1_000_000)}")
+  defp create_malicious_tar(type, tmp_dir) do
+    tmp =
+      tmp_dir
+      |> Path.join("malicious_tar_#{type}_#{System.unique_integer([:positive, :monotonic])}")
+
+    File.rm_rf!(tmp)
     File.mkdir_p!(tmp)
     staging = Path.join(tmp, "staging")
     File.mkdir_p!(staging)

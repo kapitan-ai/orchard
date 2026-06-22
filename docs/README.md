@@ -48,7 +48,7 @@ large spec sections.
 - [`../packaging/pkg/README.md`](../packaging/pkg/README.md) — current PKG
   build/operator runbook.
 - [`../packaging/container/postgres/README.md`](../packaging/container/postgres/README.md)
-  — managed Postgres status; not implemented today.
+  — managed Postgres current-build status and guard behavior.
 - [`../packaging/dmg/README.md`](../packaging/dmg/README.md) — reserved future
   DMG media notes.
 

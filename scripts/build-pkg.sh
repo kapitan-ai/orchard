@@ -147,7 +147,8 @@ trap cleanup EXIT
 cleanup_pkg_outputs() {
     local pkg_path="$1"
     local manifest_path="${pkg_path}.signing-manifest.txt"
-    local tmp_manifest_path="$(dirname "$pkg_path")/.${pkg_path##*/}.signing-manifest.tmp"
+    local tmp_manifest_path
+    tmp_manifest_path="$(dirname "$pkg_path")/.${pkg_path##*/}.signing-manifest.tmp"
 
     rm -f "$pkg_path" "${pkg_path}.sha256" "$manifest_path" "$tmp_manifest_path"
 }
@@ -170,6 +171,7 @@ discard_payload_keychain_env() {
 }
 
 run_payload_signer() {
+    local env_args=()
     local restore_xtrace=0
     local status=0
     case "$-" in
@@ -180,16 +182,14 @@ run_payload_signer() {
     esac
 
     set +e
-    (
-        export ORCHARD_PAYLOAD_SIGNING_IDENTITY="$PAYLOAD_SIGNING_IDENTITY"
-        if [[ "$PAYLOAD_BUILD_KEYCHAIN_CONFIGURED" == "true" ]]; then
-            export ORCHARD_BUILD_KEYCHAIN="$PAYLOAD_BUILD_KEYCHAIN"
-            if [[ "$PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED" == "true" ]]; then
-                export ORCHARD_KEYCHAIN_PASSWORD="$PAYLOAD_KEYCHAIN_PASSWORD"
-            fi
+    env_args+=("ORCHARD_PAYLOAD_SIGNING_IDENTITY=$PAYLOAD_SIGNING_IDENTITY")
+    if [[ "$PAYLOAD_BUILD_KEYCHAIN_CONFIGURED" == "true" ]]; then
+        env_args+=("ORCHARD_BUILD_KEYCHAIN=$PAYLOAD_BUILD_KEYCHAIN")
+        if [[ "$PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED" == "true" ]]; then
+            env_args+=("ORCHARD_KEYCHAIN_PASSWORD=$PAYLOAD_KEYCHAIN_PASSWORD")
         fi
-        "$REPO_ROOT/scripts/sign-payload.sh" "$@"
-    )
+    fi
+    env "${env_args[@]}" "$REPO_ROOT/scripts/sign-payload.sh" "$@"
     status=$?
     set -e
 
@@ -200,6 +200,7 @@ run_payload_signer() {
 }
 
 run_payload_verifier() {
+    local env_args=()
     local restore_xtrace=0
     local status=0
     case "$-" in
@@ -210,15 +211,13 @@ run_payload_verifier() {
     esac
 
     set +e
-    (
-        if [[ "$PAYLOAD_BUILD_KEYCHAIN_CONFIGURED" == "true" ]]; then
-            export ORCHARD_BUILD_KEYCHAIN="$PAYLOAD_BUILD_KEYCHAIN"
-            if [[ "$PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED" == "true" ]]; then
-                export ORCHARD_KEYCHAIN_PASSWORD="$PAYLOAD_KEYCHAIN_PASSWORD"
-            fi
+    if [[ "$PAYLOAD_BUILD_KEYCHAIN_CONFIGURED" == "true" ]]; then
+        env_args+=("ORCHARD_BUILD_KEYCHAIN=$PAYLOAD_BUILD_KEYCHAIN")
+        if [[ "$PAYLOAD_KEYCHAIN_PASSWORD_CONFIGURED" == "true" ]]; then
+            env_args+=("ORCHARD_KEYCHAIN_PASSWORD=$PAYLOAD_KEYCHAIN_PASSWORD")
         fi
-        "$REPO_ROOT/scripts/verify-payload-signing.sh" "$@"
-    )
+    fi
+    env "${env_args[@]}" "$REPO_ROOT/scripts/verify-payload-signing.sh" "$@"
     status=$?
     set -e
 
@@ -597,6 +596,7 @@ validate_staging_layout() {
         "share/bin/orchardctl"
         "share/bin/orchard-controller"
         "share/bin/orchard-node-agent"
+        "share/bin/orchard-managed-postgres"
         "share/launchd/com.orchard.controller.plist"
         "share/launchd/com.orchard.node-agent.plist"
         "releases/orchard_cli/bin/orchard_cli"
@@ -1361,6 +1361,7 @@ validate_pkg_payload() {
         "./Library/Application Support/Orchard/share/bin/orchardctl"
         "./Library/Application Support/Orchard/share/bin/orchard-controller"
         "./Library/Application Support/Orchard/share/bin/orchard-node-agent"
+        "./Library/Application Support/Orchard/share/bin/orchard-managed-postgres"
         "./Library/Application Support/Orchard/share/launchd/com.orchard.controller.plist"
         "./Library/Application Support/Orchard/share/launchd/com.orchard.node-agent.plist"
         "./Library/Application Support/Orchard/releases/orchard_cli/bin/orchard_cli"
@@ -1618,12 +1619,15 @@ if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" "$STAGING_BASE"; then
     exit 1
 fi
 
-# Copy wrapper scripts (explicit whitelist - exclude managed-postgres until ready)
+# Copy wrapper scripts. The managed Postgres wrapper is an operator-safe guard;
+# the managed Postgres LaunchDaemon remains excluded until Managed Database Mode
+# ships.
 log_info "Copying wrapper scripts..."
 WRAPPER_SCRIPTS=(
     "orchard-controller"
     "orchard-node-agent"
     "orchardctl"
+    "orchard-managed-postgres"
 )
 for script in "${WRAPPER_SCRIPTS[@]}"; do
     script_path="$REPO_ROOT/packaging/pkg/bin/$script"
@@ -1635,7 +1639,8 @@ for script in "${WRAPPER_SCRIPTS[@]}"; do
     fi
 done
 
-# Copy launchd plists (explicit whitelist - exclude managed-postgres until ready)
+# Copy launchd plists (explicit whitelist; exclude managed Postgres service
+# until Managed Database Mode ships)
 log_info "Copying launchd plists..."
 PLIST_FILES=(
     "com.orchard.controller.plist"
@@ -1650,7 +1655,8 @@ for plist in "${PLIST_FILES[@]}"; do
         exit 1
     fi
 done
-# Note: com.orchard.postgres.plist is excluded (managed postgres not yet supported)
+# Note: com.orchard.postgres.plist is excluded (managed Postgres is not
+# available in this build)
 
 log_info "Scrubbing macOS metadata from staging payload..."
 scrub_macos_metadata "$STAGING_BASE"

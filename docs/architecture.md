@@ -13,7 +13,9 @@ product/system/build contract.
   workflows used to build toward that target.
 - **Current packaged/operator limitation:** controller-bearing packaged installs
   require an external PostgreSQL server today. Managed Postgres is specified as
-  a target mode but is not implemented.
+  a target mode but is not available in current builds; the packaged
+  `orchard-managed-postgres` helper is an operator-safe guard, not a runtime
+  service.
 - **Current CLI limitation:** SPEC-required future paths such as
   `orchardctl cluster init`, `orchardctl node join`,
   `orchardctl nodes admit`, `orchardctl requests inspect`, and
@@ -94,7 +96,8 @@ Cluster RPC and worker RPC are separate contracts:
 
 Postgres is the sole persistence and coordination layer. In the target product,
 managed Postgres is one supported topology; in the current packaged flow,
-controller-bearing installs require operator-provided external Postgres.
+controller-bearing installs require operator-provided external Postgres and the
+managed Postgres helper remains a guard only.
 
 ## Where to make changes
 

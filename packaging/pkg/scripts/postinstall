@@ -7,15 +7,15 @@ set -eu
 # optional controller-only or node-only modes.
 #
 # Flow (Sub-tasks 2–4 of Task 4):
-#   1. Resolve install role from request/marker/default
-#   2. Install wrapper binaries
-#   3. Install wrapper symlinks into /usr/local/bin
-#   4. Defer role-selected launchd plist mutation until TLS validation passes
-#   5. Normalize directory ownership/permissions
-#   6. Read install context marker (diagnostic)
-#   7. Securely source controller.env if valid
-#   8. Resolve controller TLS mode and act for controller-bearing roles
-#   9. Remove unsupported managed Postgres launchd plist
+#   1. Remove unsupported managed Postgres launchd plist
+#   2. Resolve install role from request/marker/default
+#   3. Install wrapper binaries
+#   4. Install wrapper symlinks into /usr/local/bin
+#   5. Defer role-selected launchd plist mutation until TLS validation passes
+#   6. Normalize directory ownership/permissions
+#   7. Read install context marker (diagnostic)
+#   8. Securely source controller.env if valid
+#   9. Resolve controller TLS mode and act for controller-bearing roles
 #   10. Install/remove role-selected controller/node-agent launchd plists
 #   11. Write role/completion markers and clean up context marker
 
@@ -353,7 +353,7 @@ write_endpoint_metadata() {
   chmod 0755 "$ORCHARD_ROOT" "$PUBLIC_DIR"
   chown root:wheel "$ORCHARD_ROOT" "$PUBLIC_DIR" 2>/dev/null || true
 
-  _tmp="$ENDPOINT_METADATA_FILE.$$.$RANDOM.tmp"
+  _tmp="$(mktemp "${ENDPOINT_METADATA_FILE}.XXXXXX")"
   {
     printf '{\n'
     printf '  "schema_version": 1,\n'
@@ -546,7 +546,12 @@ remove_unsupported_managed_postgres_plist() {
 }
 
 # ===========================================================================
-# 1. Resolve install role
+# 1. Remove unsupported managed Postgres launchd plist
+# ===========================================================================
+remove_unsupported_managed_postgres_plist
+
+# ===========================================================================
+# 2. Resolve install role
 # ===========================================================================
 if [ -f "$INSTALL_ROLE_REQUEST_FILE" ]; then
   validate_install_role_request_file "$INSTALL_ROLE_REQUEST_FILE" || exit 1
@@ -568,7 +573,7 @@ validate_install_role "$install_role" || {
 printf 'postinstall: install_role=%s source=%s\n' "$install_role" "$install_role_source"
 
 # ===========================================================================
-# 2. Install wrapper commands into bin/
+# 3. Install wrapper commands into bin/
 # ===========================================================================
 for cmd in orchard-controller orchard-node-agent orchardctl orchard-managed-postgres; do
   src="$ORCHARD_ROOT/share/bin/$cmd"
@@ -579,7 +584,7 @@ for cmd in orchard-controller orchard-node-agent orchardctl orchard-managed-post
 done
 
 # ===========================================================================
-# 3. Symlink wrappers into PATH (/usr/local/bin)
+# 4. Symlink wrappers into PATH (/usr/local/bin)
 # ===========================================================================
 # Note: Symlinks are created conditionally to support controller-only or
 # node-only install modes (SPEC.md §11.4). Missing binaries are skipped
@@ -595,11 +600,11 @@ for cmd in orchardctl orchard-controller orchard-node-agent; do
 done
 
 # ===========================================================================
-# 4. Install role-selected launchd plists is deferred until TLS validation
+# 5. Install role-selected launchd plists is deferred until TLS validation
 # ===========================================================================
 
 # ===========================================================================
-# 5. Normalize directory ownership and permissions
+# 6. Normalize directory ownership and permissions
 # ===========================================================================
 # Targeted hardening — do NOT recursive-chown before env inspection, as that
 # would mask insecure controller.env ownership.
@@ -614,7 +619,7 @@ chmod 0750 "$ORCHARD_ROOT/config/tls"
 chmod 0755 "$ORCHARD_ROOT/logs"
 
 # ===========================================================================
-# 6. Read install context marker (diagnostic)
+# 7. Read install context marker (diagnostic)
 # ===========================================================================
 install_mode="unknown"
 install_reason="unknown"
@@ -633,7 +638,7 @@ fi
 printf 'postinstall: install_mode=%s reason=%s\n' "$install_mode" "$install_reason"
 
 # ===========================================================================
-# 7. Securely source controller.env if valid (controller-bearing roles only)
+# 8. Securely source controller.env if valid (controller-bearing roles only)
 # ===========================================================================
 if [ "$install_role" = "node-agent" ]; then
   printf 'postinstall: node-agent role selected; skipping controller.env load\n'
@@ -652,7 +657,7 @@ done
 normalize_console_env_if_trusted
 
 # ===========================================================================
-# 8. Resolve controller TLS mode and act for controller-bearing roles
+# 9. Resolve controller TLS mode and act for controller-bearing roles
 # ===========================================================================
 if [ "$install_role" = "node-agent" ]; then
   printf 'postinstall: node-agent role selected; skipping controller TLS setup\n'
@@ -768,11 +773,6 @@ else
 
   write_endpoint_metadata_for_tls_mode "$tls_mode"
 fi
-
-# ===========================================================================
-# 9. Remove unsupported managed Postgres launchd plist
-# ===========================================================================
-remove_unsupported_managed_postgres_plist
 
 # ===========================================================================
 # 10. Install/remove controller/node-agent launchd plists by role
