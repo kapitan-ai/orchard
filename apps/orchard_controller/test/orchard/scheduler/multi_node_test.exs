@@ -829,6 +829,37 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.candidate_count == 1
     end
 
+    test "SPEC.md §5.5 excludes active loaded node with invalid matching placement max concurrency" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 1,
+          runtime_model_placements: [model_placement("test-model", "v1", 0, 0)]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == node_b.id
+      assert schedule.selected_tier == "cold"
+      assert schedule.candidate_count == 1
+      assert schedule.queue_lane_capacity == 1
+    end
+
     test "excludes active loaded node with duplicate matching placement capacity" do
       node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
       node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})

@@ -106,12 +106,15 @@ defmodule Orchard.Scheduler.SingleNode do
       active_request_count =
         non_negative_integer(placement_value(placement, :active_request_count), 0)
 
-      max_concurrency = positive_integer(placement_value(placement, :max_concurrency), 1)
+      max_concurrency = placement_max_concurrency(placement)
 
       effective_max_concurrency =
         effective_model_capacity(response, active_request_count, max_concurrency)
 
       cond do
+        max_concurrency == 0 ->
+          {:error, :model_busy}
+
         active_request_count < effective_max_concurrency ->
           {:ok, Map.put(schedule, :queue_lane_capacity, effective_max_concurrency)}
 
@@ -164,6 +167,13 @@ defmodule Orchard.Scheduler.SingleNode do
   defp runtime_model_placement_matches?(_placement, _model_ref), do: false
 
   defp placement_state(placement), do: placement_value(placement, :placement_state)
+
+  defp placement_max_concurrency(placement) do
+    case placement_value(placement, :max_concurrency) do
+      capacity when is_integer(capacity) and capacity > 0 -> capacity
+      _other -> 0
+    end
+  end
 
   defp placement_value(placement, key) do
     Map.get(placement, key, Map.get(placement, to_string(key)))

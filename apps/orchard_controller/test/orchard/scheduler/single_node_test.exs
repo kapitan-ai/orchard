@@ -179,6 +179,24 @@ defmodule Orchard.Scheduler.SingleNodeTest do
              )
   end
 
+  test "SPEC.md §5.5 returns model_busy when single-node placement capacity is invalid" do
+    Process.put(:single_node_status, %{
+      runtime_model_placements: [
+        placement("single-invalid-capacity-model", "v1",
+          active_request_count: 0,
+          max_concurrency: 0
+        )
+      ]
+    })
+
+    assert {:error, :model_busy} =
+             SingleNode.default_schedule(
+               canonical_request("single-invalid-capacity-model"),
+               [host: "127.0.0.1", port: 50_071],
+               status_client: StubClient
+             )
+  end
+
   test "keeps conservative queue capacity when single-node status lacks placement capacity" do
     Process.put(:single_node_status, %{runtime_model_placements: []})
 
