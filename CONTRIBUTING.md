@@ -20,7 +20,7 @@ branch reconciles the conflict. `SPEC.md` wins until explicitly updated.
 
 - Read `README.md`.
 - Read `SPEC.md` for normative behavior.
-- Use `docs/m1-local-dev.md` for source development setup.
+- Use `docs/local-dev.md` for source development setup.
 - Use `packaging/pkg/README.md` for packaged installer behavior.
 
 ## Change Workflow

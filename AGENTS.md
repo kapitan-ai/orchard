@@ -231,7 +231,7 @@ When to bypass `bin/dev`:
 - `mise exec -- iex -S mix phx.server` — manual server start with custom env vars
 - `mise exec -- mix test` — test suite (uses its own DB and port 50071 via `test.exs`)
 
-See `docs/m1-local-dev.md` for full environment setup and configuration.
+See `docs/local-dev.md` for full environment setup and configuration.
 
 ## Packaging (PKG)
 

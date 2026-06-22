@@ -75,7 +75,7 @@ Clients (SDKs / curl / apps)
   disabled)
 
 See [docs/tooling.md](docs/tooling.md) for required local toolchain setup,
-[docs/m1-local-dev.md](docs/m1-local-dev.md) for dev setup, and
+[docs/local-dev.md](docs/local-dev.md) for dev setup, and
 [packaging/pkg/README.md](packaging/pkg/README.md) for operator transport
 configuration, including nginx/Caddy/Traefik snippets.
 
