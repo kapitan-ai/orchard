@@ -337,7 +337,7 @@ defmodule Orchard.Nodes do
   defp refresh_observed_queue_capacities(%Node{} = node, status_response) do
     status_response
     |> extract_runtime_model_placements()
-    |> Enum.each(&refresh_loaded_placement_capacity(node, &1))
+    |> Enum.each(&refresh_loaded_placement_capacity(node, status_response, &1))
   rescue
     error ->
       Logger.debug("Queue capacity refresh from node observation failed: #{inspect(error)}")
@@ -350,11 +350,16 @@ defmodule Orchard.Nodes do
 
   defp extract_runtime_model_placements(_status_response), do: []
 
-  defp refresh_loaded_placement_capacity(%Node{} = node, placement) when is_map(placement) do
+  defp refresh_loaded_placement_capacity(%Node{} = node, status_response, placement)
+       when is_map(placement) do
     case placement_model_ref(placement) do
       {:ok, model_id, version} ->
         capacity =
-          if loaded_placement?(placement), do: placement_max_concurrency(placement), else: 0
+          if loaded_placement?(placement) do
+            effective_placement_capacity(status_response, placement)
+          else
+            0
+          end
 
         Orchard.Inference.queue_manager().refresh_capacity(model_id, version, capacity,
           source: {:node, node.id}
@@ -365,7 +370,7 @@ defmodule Orchard.Nodes do
     end
   end
 
-  defp refresh_loaded_placement_capacity(_node, _placement), do: :ok
+  defp refresh_loaded_placement_capacity(_node, _status_response, _placement), do: :ok
 
   defp loaded_placement?(placement) do
     placement
@@ -398,6 +403,23 @@ defmodule Orchard.Nodes do
       _other -> 0
     end
   end
+
+  defp effective_placement_capacity(status_response, placement) do
+    placement_active = non_negative_integer(map_get(placement, :active_request_count), 0)
+    placement_max = placement_max_concurrency(placement)
+
+    node_active = non_negative_integer(map_get(status_response, :active_request_count), 0)
+    node_max = positive_integer(map_get(status_response, :max_concurrency), 1)
+    remaining_node_capacity = max(node_max - node_active, 0)
+
+    min(placement_max, placement_active + remaining_node_capacity)
+  end
+
+  defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
+  defp positive_integer(_value, default), do: default
+
+  defp non_negative_integer(value, _default) when is_integer(value) and value >= 0, do: value
+  defp non_negative_integer(_value, default), do: default
 
   defp extract_hosted_tool_capabilities(%{hosted_tool_capabilities: entries})
        when is_list(entries),

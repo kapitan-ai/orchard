@@ -733,6 +733,50 @@ defmodule Orchard.NodesTest do
       send(second_awaiter, :stop)
     end
 
+    test "SPEC.md §5.5 placement status queue refresh is constrained by node max concurrency" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-capacity-constrained-a", "node-cap-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-capacity-constrained-b", "node-cap-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_node_cap_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_node_cap_result)
+
+      target = make_target("10.0.0.56", 9444)
+
+      status =
+        placement_status("10.0.0.56", "node-cap-model", max_concurrency: 4)
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 2)
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+
+      assert_receive {:first_node_cap_result, {:ok, first_grant}}, 2_000
+      refute_receive {:second_node_cap_result, _result}, 100
+
+      refreshed_status = Map.put(status, :active_request_count, 0)
+
+      assert {:ok, _node} = Nodes.observe_status(target, refreshed_status, DateTime.utc_now())
+      assert_receive {:second_node_cap_result, {:ok, second_grant}}, 2_000
+
+      assert first_grant.queue_result == :queued
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(first_grant)
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
     test "SPEC.md §5.4 non-loaded placement status clears stale queued capacity" do
       QueueManager.reset()
 
