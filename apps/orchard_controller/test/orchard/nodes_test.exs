@@ -777,6 +777,41 @@ defmodule Orchard.NodesTest do
       send(second_awaiter, :stop)
     end
 
+    test "SPEC.md §5.5 invalid placement max concurrency does not wake queued admission" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-invalid-placement-capacity",
+                   "invalid-cap-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.58", 9444)
+
+      invalid_status =
+        placement_status("10.0.0.58", "invalid-cap-model", max_concurrency: 0)
+
+      assert {:ok, _node} = Nodes.observe_status(target, invalid_status, DateTime.utc_now())
+      refute Task.yield(awaiter, 100)
+
+      valid_status =
+        put_in(
+          invalid_status,
+          [:runtime_model_placements, Access.at(0), :max_concurrency],
+          1
+        )
+
+      assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(grant)
+    end
+
     test "SPEC.md §5.4 non-loaded placement status clears stale queued capacity" do
       QueueManager.reset()
 
