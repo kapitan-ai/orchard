@@ -158,6 +158,28 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert :ok = QueueManager.release(grant)
   end
 
+  test "SPEC.md §5.4 periodic queue tick wakes queued requests while non-empty" do
+    assert {:queued, ticket} =
+             QueueManager.acquire(admission_request("req-periodic-wake"),
+               config: queue_config(capacity: 0)
+             )
+
+    awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+    assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+    refute Task.yield(awaiter, 50)
+
+    :sys.replace_state(QueueManager, fn state ->
+      lane = Map.fetch!(state.lanes, "queue-model@v1")
+      %{state | lanes: Map.put(state.lanes, "queue-model@v1", %{lane | capacity: 1})}
+    end)
+
+    assert {:ok, grant} = Task.await(awaiter, 2_000)
+    assert grant.queue_result == :queued
+    assert grant.queue_key == "queue-model@v1"
+
+    assert :ok = QueueManager.release(grant)
+  end
+
   test "SPEC.md §5.4 source-aware capacity refresh aggregates loaded placements" do
     assert {:queued, first_ticket} =
              QueueManager.acquire(admission_request("req-source-refresh-a"),
