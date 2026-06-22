@@ -140,6 +140,24 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.4 placement capacity refresh wakes queued requests without new admission" do
+    assert {:queued, ticket} =
+             QueueManager.acquire(admission_request("req-refresh-wake"),
+               config: queue_config(capacity: 0)
+             )
+
+    awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+    assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+    refute Task.yield(awaiter, 50)
+
+    assert :ok = QueueManager.refresh_capacity("queue-model", "v1", 1)
+    assert {:ok, grant} = Task.await(awaiter, 2_000)
+    assert grant.queue_result == :queued
+    assert grant.queue_key == "queue-model@v1"
+
+    assert :ok = QueueManager.release(grant)
+  end
+
   test "SPEC.md §5.4 cross-tenant weighted round-robin grants one tenant turn at a time" do
     tenant_a = Ecto.UUID.generate()
     tenant_b = Ecto.UUID.generate()

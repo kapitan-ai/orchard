@@ -180,6 +180,15 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(ticket.server, {:abandon, ticket.ticket_ref})
   end
 
+  @spec refresh_capacity(String.t(), String.t(), non_neg_integer(), keyword()) :: :ok
+  def refresh_capacity(model_id, version, capacity, opts \\ [])
+      when is_binary(model_id) and is_binary(version) and is_integer(capacity) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    queue_key = queue_key(model_id, version)
+
+    call_manager(server, {:refresh_capacity, queue_key, max(capacity, 0)})
+  end
+
   @spec release(Grant.t() | String.t(), keyword()) :: :ok
   def release(grant_or_id, opts \\ [])
 
@@ -280,6 +289,11 @@ defmodule Orchard.Inference.QueueManager do
     config = queue_config_for_request(config, request)
     {result, state} = requeue_grant(grant, request, config, state)
     {:reply, result, state}
+  end
+
+  def handle_call({:refresh_capacity, queue_key, capacity}, _from, state) do
+    {_lane, state} = put_lane_capacity(queue_key, capacity, state)
+    {:reply, :ok, maybe_grant_available(state)}
   end
 
   def handle_call({:await, %Ticket{} = ticket}, from, state) do
