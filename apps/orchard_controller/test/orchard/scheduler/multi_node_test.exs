@@ -116,6 +116,33 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     }
   end
 
+  defp queue_config(overrides) do
+    Keyword.merge(
+      [
+        enabled: true,
+        capacity: 1,
+        max_queued_per_tenant: 32,
+        max_wait_ms: 1_000
+      ],
+      overrides
+    )
+  end
+
+  defp start_holding_awaiter(ticket, tag) do
+    parent = self()
+
+    spawn(fn ->
+      result = QueueManager.await(ticket)
+      send(parent, {tag, result})
+
+      receive do
+        :stop -> :ok
+      after
+        5_000 -> :ok
+      end
+    end)
+  end
+
   defp insert_node!(overrides) do
     unique = System.unique_integer([:positive])
 
@@ -3497,6 +3524,72 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       # Node A marked unreachable (stale heartbeat beyond threshold)
       reloaded = Repo.get!(Node, node_a.id)
       assert reloaded.health == :unreachable
+    end
+
+    test "SPEC.md §5.5 scheduler connect failure clears stale cold queue capacity" do
+      QueueManager.reset()
+      stale_hb = DateTime.add(DateTime.utc_now(), -120_000, :millisecond)
+      observed_at = DateTime.utc_now()
+      model_id = "scheduler-connect-clear-model"
+
+      node_a =
+        insert_node!(%{
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :healthy,
+          last_heartbeat_at: stale_hb
+        })
+
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-scheduler-connect-clear-a", model_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-scheduler-connect-clear-b", model_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_scheduler_clear_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_capacity(model_id, "v1", 1, source: {:node, node_a.id, :cold})
+
+      assert_receive {:first_scheduler_clear_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      stub_connect_failure("10.0.0.1", 50_061, {:connect_failed, :econnrefused})
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(model_id),
+                 status_client: StubClient,
+                 observed_at: observed_at
+               )
+
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_b.id
+      assert Repo.get!(Node, node_a.id).health == :unreachable
+
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert :ok = QueueManager.refresh_capacity(model_id, "v1", 1, source: {:test, :restore})
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_key == "#{model_id}@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
     end
 
     test "successful probe with missing metadata does NOT mutate failure health" do
