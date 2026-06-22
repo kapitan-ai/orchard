@@ -35,7 +35,7 @@ defmodule OrchardCLI.Commands.Deferred do
   def group_usage(%{name: name, commands: commands}) do
     command_lines =
       Enum.map(commands, fn command ->
-        "  #{command_label(command)}  #{command.summary}"
+        "  #{group_command_label(command)}  #{command.summary}"
       end)
 
     Enum.join(
@@ -104,6 +104,8 @@ defmodule OrchardCLI.Commands.Deferred do
   end
 
   defp guidance(_command), do: ""
+
+  defp group_command_label(%{path: path}), do: Enum.join(path, " ")
 
   defp command_label(%{usage: "orchardctl " <> command}), do: command
 end

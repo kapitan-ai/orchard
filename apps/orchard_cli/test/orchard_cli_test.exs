@@ -155,6 +155,22 @@ defmodule OrchardCLITest do
     end
   end
 
+  test "advertised deferred group help lists commands relative to group" do
+    commands = [
+      {Cluster, "cluster", "init"},
+      {Node, "node", "join"},
+      {Requests, "requests", "inspect"},
+      {Support, "support", "bundle create"}
+    ]
+
+    for {module, group, relative_command} <- commands do
+      assert {:ok, message} = module.run(["--help"])
+      assert message =~ "Usage: orchardctl #{group} <command>"
+      assert message =~ "  #{relative_command}  "
+      refute message =~ "  #{group} #{relative_command}  "
+    end
+  end
+
   test "env command without subcommand exits non-zero" do
     parent = self()
 
