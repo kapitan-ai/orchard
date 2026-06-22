@@ -972,6 +972,50 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert :ok = QueueManager.release(grant)
   end
 
+  test "SPEC.md §5.3 recovered active grants count against tenant concurrency" do
+    tenant_id = Ecto.UUID.generate()
+
+    recovered_request =
+      create_request!("req_queue_recovered_tenant_active",
+        tenant_id: tenant_id,
+        requested_model: "queue-model-a@v1",
+        state: :running,
+        scheduler_decision: %{
+          queueing_enabled: true,
+          queue_key: "queue-model-a@v1",
+          queue_result: "immediate",
+          queue_grant_id: "grant-recovered-tenant-active",
+          queue_granted_at: DateTime.utc_now() |> DateTime.to_iso8601()
+        }
+      )
+
+    manager = unique_manager_name()
+    start_supervised!({QueueManager, name: manager, owner_runtime: true})
+
+    assert {:queued, ticket} =
+             QueueManager.acquire(
+               admission_request("req-after-tenant-active-recovery",
+                 tenant_id: tenant_id,
+                 model_id: "queue-model-b"
+               ),
+               server: manager,
+               config: queue_config(capacity: 2, max_active_per_tenant: 1)
+             )
+
+    awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+    assert wait_until(fn -> queue_entry_awaiting?(ticket, manager) end)
+    refute Task.yield(awaiter, 100)
+
+    assert {:ok, _request} =
+             Requests.mark_terminal(recovered_request, %{state: :completed, output_tokens: 1})
+
+    assert {:ok, grant} = Task.await(awaiter, 2_000)
+    assert grant.queue_result == :queued
+    assert grant.queue_key == "queue-model-b@v1"
+
+    assert :ok = QueueManager.release(grant, server: manager)
+  end
+
   test "reconstructed legacy in-flight lane remains occupied until terminal" do
     request =
       create_request!("req_queue_recovered_legacy",
