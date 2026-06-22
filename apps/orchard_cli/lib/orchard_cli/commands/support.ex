@@ -7,6 +7,7 @@ defmodule OrchardCLI.Commands.Support do
   @default_max_log_bytes 1_048_576
   @default_max_log_files 32
   @default_max_total_log_bytes 8_388_608
+  @default_max_log_discovery_entries 512
   @usage_exit_code 2
 
   @config_files ~w(controller.env node-agent.env console.env)
@@ -19,7 +20,9 @@ defmodule OrchardCLI.Commands.Support do
     machine_certificate private_key sentry_dsn x_api_key
   )
   @sensitive_key_compact_fragments ~w(
-    accesskey licensekey password passwd passphrase privatekey secretkey
+    accesskey accesstoken apitoken authtoken bearertoken clientsecret idtoken licensekey
+    licensesecret licensetoken password passwd passphrase privatekey refreshtoken
+    secretkey sessiontoken
   )
   @sensitive_key_compact_aliases ~w(dbpass pgpass pgpassfile)
   @sensitive_token_partners ~w(access api auth bearer id license refresh secret session)
@@ -48,9 +51,9 @@ defmodule OrchardCLI.Commands.Support do
   @credential_url_userinfo_regex ~r/\b[a-z][a-z0-9+.-]*:\/\/[^\s\/?#@]*:[^\s\/?#@]*@[^\s\/?#]+/i
   @credential_token_assignment_regex ~r/\b(?:api|access|auth|bearer|id|refresh|session|license)[-_\s]+tokens?\s*(?:=>|:|=)/i
   @license_secret_assignment_regex ~r/\blicense[-_\s]+(?:activation|key|secret|token)\s*(?:=>|:|=)/i
-  @private_key_begin_regex ~r/-----BEGIN [A-Z ]*PRIVATE KEY-----/i
-  @private_key_end_regex ~r/-----END [A-Z ]*PRIVATE KEY-----/i
-  @private_key_regex ~r/-----BEGIN [A-Z ]*PRIVATE KEY-----|\bprivate[-_\s]+key\s*(?:=>|:|=)/i
+  @secret_block_begin_regex ~r/-----BEGIN (?:[A-Z ]*PRIVATE KEY|LICENSE FILE|MACHINE FILE)-----/i
+  @secret_block_end_regex ~r/-----END (?:[A-Z ]*PRIVATE KEY|LICENSE FILE|MACHINE FILE)-----/i
+  @secret_block_regex ~r/-----BEGIN (?:[A-Z ]*PRIVATE KEY|LICENSE FILE|MACHINE FILE)-----|\bprivate[-_\s]+key\s*(?:=>|:|=)/i
   @temp_dir_attempts 20
   @archive_finalize_attempts 100
 
@@ -437,8 +440,8 @@ defmodule OrchardCLI.Commands.Support do
     Enum.join(lines, "\n")
   end
 
-  defp redact_env_line(line, :private_key) do
-    state = if Regex.match?(@private_key_end_regex, line), do: :clear, else: :private_key
+  defp redact_env_line(line, :secret_block) do
+    state = if Regex.match?(@secret_block_end_regex, line), do: :clear, else: :secret_block
     {"[redacted]", state}
   end
 
@@ -476,9 +479,9 @@ defmodule OrchardCLI.Commands.Support do
   end
 
   defp env_secret_block_state(value) do
-    if Regex.match?(@private_key_begin_regex, value) and
-         not Regex.match?(@private_key_end_regex, value) do
-      :private_key
+    if Regex.match?(@secret_block_begin_regex, value) and
+         not Regex.match?(@secret_block_end_regex, value) do
+      :secret_block
     else
       env_quoted_block_state(value)
     end
@@ -588,9 +591,12 @@ defmodule OrchardCLI.Commands.Support do
 
   defp collect_logs!(stage_dir, support_root, max_log_bytes, runtime) do
     logs_root = Path.join(support_root, "logs")
-    candidates = log_file_candidates(logs_root)
     limits = log_collection_limits(runtime)
+    {candidates, discovery_capped?} = log_file_candidates(logs_root, limits.max_discovery_entries)
     {selected, skipped_for_count} = select_log_candidates(candidates, limits.max_files)
+
+    skipped_for_discovery =
+      if discovery_capped?, do: [%{path: ".", reason: "discovery_limit"}], else: []
 
     {copied, bytes_retained, skipped, truncated} =
       collect_selected_logs!(
@@ -598,7 +604,7 @@ defmodule OrchardCLI.Commands.Support do
         selected,
         max_log_bytes,
         limits.max_total_bytes,
-        Enum.reverse(skipped_for_count)
+        Enum.reverse(skipped_for_discovery ++ skipped_for_count)
       )
 
     if copied == 0 do
@@ -607,9 +613,11 @@ defmodule OrchardCLI.Commands.Support do
 
     %{
       bytes_retained: bytes_retained,
+      discovery_capped: discovery_capped?,
       files_available: length(candidates),
       files_collected: copied,
       files_skipped: length(skipped),
+      max_discovery_entries: limits.max_discovery_entries,
       max_log_bytes_per_file: max_log_bytes,
       max_log_files: limits.max_files,
       max_total_log_bytes: limits.max_total_bytes,
@@ -673,24 +681,96 @@ defmodule OrchardCLI.Commands.Support do
     end
   end
 
-  defp log_file_candidates(root) do
-    if real_directory?(root), do: log_file_candidates_in_dir(root, root), else: []
+  defp log_file_candidates(root, max_discovery_entries) do
+    if real_directory?(root) do
+      {preferred, seen, remaining} = preferred_log_candidates(root, max_discovery_entries)
+
+      {candidates, _seen, _remaining, capped?} =
+        log_file_candidates_in_dir(root, root, remaining, seen, [])
+
+      {preferred ++ Enum.reverse(candidates), capped?}
+    else
+      {[], false}
+    end
   end
 
-  defp log_file_candidates_in_dir(root, dir) do
-    dir
-    |> File.ls!()
-    |> Enum.flat_map(fn entry ->
-      path = Path.join(dir, entry)
+  defp preferred_log_candidates(root, max_discovery_entries) do
+    @preferred_log_files
+    |> Enum.reduce_while(
+      {[], MapSet.new(), max_discovery_entries},
+      &preferred_log_candidate_reducer(root, &1, &2)
+    )
+    |> then(fn {candidates, seen, remaining} -> {Enum.reverse(candidates), seen, remaining} end)
+  end
 
-      case File.lstat(path) do
-        {:ok, %{type: :regular} = stat} -> [log_file_candidate(root, path, stat)]
-        {:ok, %{type: :directory}} -> log_file_candidates_in_dir(root, path)
-        _other -> []
-      end
-    end)
-  rescue
-    _exception -> []
+  defp preferred_log_candidate_reducer(_root, _rel, {candidates, seen, remaining})
+       when remaining <= 0 do
+    {:halt, {candidates, seen, remaining}}
+  end
+
+  defp preferred_log_candidate_reducer(root, rel, {candidates, seen, remaining}) do
+    path = Path.join(root, rel)
+    seen = MapSet.put(seen, path)
+
+    case File.lstat(path) do
+      {:ok, %{type: :regular} = stat} ->
+        {:cont, {[log_file_candidate(root, path, stat) | candidates], seen, remaining - 1}}
+
+      _other ->
+        {:cont, {candidates, seen, remaining}}
+    end
+  end
+
+  defp log_file_candidates_in_dir(root, dir, remaining, seen, candidates) do
+    case File.ls(dir) do
+      {:ok, entries} ->
+        entries
+        |> Enum.sort()
+        |> Enum.reduce_while(
+          {candidates, seen, remaining, false},
+          &log_file_candidate_entry_reducer(root, dir, &1, &2)
+        )
+
+      {:error, _reason} ->
+        {candidates, seen, remaining, false}
+    end
+  end
+
+  defp log_file_candidate_entry_reducer(root, dir, entry, {candidates, seen, remaining, capped?}) do
+    path = Path.join(dir, entry)
+
+    cond do
+      MapSet.member?(seen, path) ->
+        {:cont, {candidates, seen, remaining, capped?}}
+
+      remaining <= 0 ->
+        {:halt, {candidates, seen, remaining, true}}
+
+      true ->
+        log_file_candidate_for_entry(root, path, remaining, seen, candidates, capped?)
+    end
+  end
+
+  defp log_file_candidate_for_entry(root, path, remaining, seen, candidates, capped?) do
+    seen = MapSet.put(seen, path)
+    remaining = remaining - 1
+
+    case File.lstat(path) do
+      {:ok, %{type: :regular} = stat} ->
+        {:cont, {[log_file_candidate(root, path, stat) | candidates], seen, remaining, capped?}}
+
+      {:ok, %{type: :directory}} when remaining > 0 ->
+        {candidates, seen, remaining, child_capped?} =
+          log_file_candidates_in_dir(root, path, remaining, seen, candidates)
+
+        {:cont, {candidates, seen, remaining, capped? or child_capped?}}
+
+      {:ok, %{type: :directory}} ->
+        {:cont, {candidates, seen, remaining, true}}
+
+      _other ->
+        {:cont, {candidates, seen, remaining, capped?}}
+    end
   end
 
   defp log_file_candidate(root, path, stat) do
@@ -813,6 +893,11 @@ defmodule OrchardCLI.Commands.Support do
       |> then(& &1.())
 
     %{
+      max_discovery_entries:
+        non_negative_limit(
+          Map.get(limits, :max_discovery_entries),
+          @default_max_log_discovery_entries
+        ),
       max_files: non_negative_limit(Map.get(limits, :max_files), @default_max_log_files),
       max_total_bytes:
         non_negative_limit(Map.get(limits, :max_total_bytes), @default_max_total_log_bytes)
@@ -898,10 +983,10 @@ defmodule OrchardCLI.Commands.Support do
 
   defp redact_log_file(content) do
     if String.valid?(content) do
-      {lines, _in_private_key?} =
+      {lines, _in_secret_block?} =
         content
         |> String.split("\n", trim: false)
-        |> redact_log_lines(initial_private_key_state?(content))
+        |> redact_log_lines(initial_secret_block_state?(content))
 
       Enum.join(lines, "\n")
     else
@@ -911,20 +996,20 @@ defmodule OrchardCLI.Commands.Support do
 
   defp redact_log_lines([line | rest], true) do
     if truncated_log_marker?(line) do
-      {redacted, in_private_key?} = Enum.map_reduce(rest, true, &redact_log_line/2)
-      {[line | redacted], in_private_key?}
+      {redacted, in_secret_block?} = Enum.map_reduce(rest, true, &redact_log_line/2)
+      {[line | redacted], in_secret_block?}
     else
       Enum.map_reduce([line | rest], true, &redact_log_line/2)
     end
   end
 
-  defp redact_log_lines(lines, in_private_key?) do
-    Enum.map_reduce(lines, in_private_key?, &redact_log_line/2)
+  defp redact_log_lines(lines, in_secret_block?) do
+    Enum.map_reduce(lines, in_secret_block?, &redact_log_line/2)
   end
 
-  defp initial_private_key_state?(content) do
-    case {first_regex_index(@private_key_begin_regex, content),
-          first_regex_index(@private_key_end_regex, content)} do
+  defp initial_secret_block_state?(content) do
+    case {first_regex_index(@secret_block_begin_regex, content),
+          first_regex_index(@secret_block_end_regex, content)} do
       {nil, nil} -> false
       {nil, _end_index} -> true
       {begin_index, end_index} when is_integer(end_index) -> end_index < begin_index
@@ -946,15 +1031,15 @@ defmodule OrchardCLI.Commands.Support do
   defp redact_log_line("", false), do: {"", false}
 
   defp redact_log_line(line, true) do
-    {"[redacted log line]", not Regex.match?(@private_key_end_regex, line)}
+    {"[redacted log line]", not Regex.match?(@secret_block_end_regex, line)}
   end
 
   defp redact_log_line(line, false) do
-    in_private_key? =
-      Regex.match?(@private_key_begin_regex, line) and
-        not Regex.match?(@private_key_end_regex, line)
+    in_secret_block? =
+      Regex.match?(@secret_block_begin_regex, line) and
+        not Regex.match?(@secret_block_end_regex, line)
 
-    {redact_log_line(line), in_private_key?}
+    {redact_log_line(line), in_secret_block?}
   end
 
   defp redact_log_line(""), do: ""
@@ -986,7 +1071,7 @@ defmodule OrchardCLI.Commands.Support do
       |> Enum.any?(fn form ->
         Regex.match?(@bearer_value_regex, form) or
           Regex.match?(@credential_url_userinfo_regex, form) or
-          Regex.match?(@private_key_regex, form)
+          Regex.match?(@secret_block_regex, form)
       end)
 
     value_secret? or sensitive_log_assignment?(value)

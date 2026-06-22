@@ -299,6 +299,10 @@ defmodule OrchardCLI.Commands.SupportTest do
       PRIVATEKEY=env-private-key
       ACCESSKEY=env-access-key
       LICENSEKEY=env-license-key
+      ACCESSTOKEN=env-access-token
+      REFRESHTOKEN=env-refresh-token
+      CLIENTSECRET=env-client-secret
+      LICENSESECRET=env-license-secret
       ORCHARD_LICENSE_ENFORCEMENT=strict
       ORCHARD_LICENSE_MODE=offline
       """
@@ -314,6 +318,10 @@ defmodule OrchardCLI.Commands.SupportTest do
       PRIVATEKEY=log-private-key
       ACCESSKEY=log-access-key
       LICENSEKEY=log-license-key
+      ACCESSTOKEN=log-access-token
+      REFRESHTOKEN=log-refresh-token
+      CLIENTSECRET=log-client-secret
+      LICENSESECRET=log-license-secret
       ORCHARD_LICENSE_ENFORCEMENT=strict license_mode=offline
       """
     )
@@ -335,6 +343,10 @@ defmodule OrchardCLI.Commands.SupportTest do
     assert config =~ "PRIVATEKEY=[redacted]"
     assert config =~ "ACCESSKEY=[redacted]"
     assert config =~ "LICENSEKEY=[redacted]"
+    assert config =~ "ACCESSTOKEN=[redacted]"
+    assert config =~ "REFRESHTOKEN=[redacted]"
+    assert config =~ "CLIENTSECRET=[redacted]"
+    assert config =~ "LICENSESECRET=[redacted]"
     assert config =~ "ORCHARD_LICENSE_ENFORCEMENT=strict"
     assert config =~ "ORCHARD_LICENSE_MODE=offline"
     refute config =~ "env-license-secret"
@@ -342,6 +354,10 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute config =~ "env-private-key"
     refute config =~ "env-access-key"
     refute config =~ "env-license-key"
+    refute config =~ "env-access-token"
+    refute config =~ "env-refresh-token"
+    refute config =~ "env-client-secret"
+    refute config =~ "env-license-secret"
 
     log = File.read!(Path.join([extract_dir, "logs", "controller.log"]))
     assert log =~ "[redacted log line]"
@@ -353,6 +369,10 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute log =~ "log-private-key"
     refute log =~ "log-access-key"
     refute log =~ "log-license-key"
+    refute log =~ "log-access-token"
+    refute log =~ "log-refresh-token"
+    refute log =~ "log-client-secret"
+    refute log =~ "log-license-secret"
   end
 
   test "redaction preserves tokenizer and license diagnostics while redacting credentials", %{
@@ -446,6 +466,12 @@ defmodule OrchardCLI.Commands.SupportTest do
       -----BEGIN PRIVATE KEY-----
       MIIPrivateKeyBody
       -----END PRIVATE KEY-----
+      -----BEGIN LICENSE FILE-----
+      MIILicenseFileBody
+      -----END LICENSE FILE-----
+      -----BEGIN MACHINE FILE-----
+      MIIMachineFileBody
+      -----END MACHINE FILE-----
       input_tokens=12 prompt_tokens=8 token_count=20
       safe diagnostic line
       """
@@ -480,6 +506,10 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute log =~ "private content text"
     refute log =~ "MIIPrivateKeyBody"
     refute log =~ "PRIVATE KEY"
+    refute log =~ "MIILicenseFileBody"
+    refute log =~ "LICENSE FILE"
+    refute log =~ "MIIMachineFileBody"
+    refute log =~ "MACHINE FILE"
   end
 
   test "redaction covers prompt token IDs and camel-case sensitive keys", %{
@@ -807,6 +837,55 @@ defmodule OrchardCLI.Commands.SupportTest do
 
     assert "aggregate-3.log" in truncated_paths
     assert "aggregate-2.log" in truncated_paths
+  end
+
+  test "log discovery caps traversal and records metadata", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    controller_log = Path.join([support_root, "logs", "controller.log"])
+    File.write!(controller_log, "controller\n")
+    touch_log!(controller_log, 1)
+
+    for index <- 1..5 do
+      path = Path.join([support_root, "logs", "rotated-#{index}.log"])
+      File.write!(path, "rotated #{index}\n")
+      touch_log!(path, index + 10)
+    end
+
+    runtime =
+      support_root
+      |> runtime()
+      |> Map.put(:log_collection_limits, fn ->
+        %{max_files: 10, max_total_bytes: 1_024, max_discovery_entries: 3}
+      end)
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "log-discovery-cap")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    assert File.exists?(Path.join([extract_dir, "logs", "controller.log"]))
+    assert File.exists?(Path.join([extract_dir, "logs", "rotated-1.log"]))
+    assert File.exists?(Path.join([extract_dir, "logs", "rotated-2.log"]))
+    refute File.exists?(Path.join([extract_dir, "logs", "rotated-3.log"]))
+
+    log_collection = read_json!(extract_dir, "diagnostics/logs.json")
+    assert get_in(log_collection, ["data", "files_available"]) == 3
+    assert get_in(log_collection, ["data", "discovery_capped"]) == true
+    assert get_in(log_collection, ["data", "max_discovery_entries"]) == 3
+
+    assert %{"path" => ".", "reason" => "discovery_limit"} in get_in(
+             log_collection,
+             ["data", "skipped"]
+           )
   end
 
   test "truncated logs omit the first partial line before redaction",
