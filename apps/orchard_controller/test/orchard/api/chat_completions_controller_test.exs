@@ -898,6 +898,67 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       end
     end
 
+    @tag :db
+    test "SPEC.md §5.4 tenant active cap queues same-tenant chat completions despite scheduler capacity",
+         %{bundle: bundle} do
+      put_queue_admission_config!(max_active_per_tenant: 1)
+      put_capacity_two_scheduler!()
+
+      put_blocking_runtime_adapter!(self(),
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: 2,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      )
+
+      create_queue_model!(bundle, "chat-queue-tenant-active-cap-model")
+
+      %{token: token} = create_api_key_with_token!("chat-queue-tenant-active-cap")
+
+      params = %{
+        "model" => "chat-queue-tenant-active-cap-model@v1",
+        "messages" => [%{"role" => "user", "content" => "hello"}]
+      }
+
+      first = Task.async(fn -> post_chat(params, token) end)
+
+      assert_receive {:queue_admission_runtime_started, first_pid, first_request_id,
+                      "chat-queue-tenant-active-cap-model"},
+                     2_000
+
+      second = Task.async(fn -> post_chat(params, token) end)
+
+      assert wait_for_queued_request("chat-queue-tenant-active-cap-model@v1")
+
+      refute_receive {:queue_admission_runtime_started, _pid, _request_id,
+                      "chat-queue-tenant-active-cap-model"},
+                     100
+
+      send(first_pid, :queue_admission_runtime_release)
+      first_conn = Task.await(first, 5_000)
+
+      assert_receive {:queue_admission_runtime_started, second_pid, second_request_id,
+                      "chat-queue-tenant-active-cap-model"},
+                     2_000
+
+      assert first_conn.status == 200
+      refute second_request_id == first_request_id
+
+      send(second_pid, :queue_admission_runtime_release)
+      second_conn = Task.await(second, 5_000)
+
+      assert second_conn.status == 200
+
+      immediate =
+        request_with_queue_result!("chat-queue-tenant-active-cap-model@v1", "immediate")
+
+      queued = request_with_queue_result!("chat-queue-tenant-active-cap-model@v1", "queued")
+
+      assert_queue_metadata(immediate, "immediate", granted?: true)
+      assert immediate.scheduler_decision["queue_lane_capacity"] == 2
+      assert_queue_metadata(queued, "queued", queued?: true, granted?: true)
+      assert queued.scheduler_decision["queue_lane_capacity"] == 2
+    end
+
     test "SPEC.md §7.2.7 returns top-level chat envelopes for busy and queue execute errors" do
       cases = [
         {:model_busy, 503, "server_error", "model_busy"},
