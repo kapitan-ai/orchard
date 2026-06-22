@@ -279,7 +279,9 @@ See `packaging/pkg/README.md` for full PKG operator documentation and `packaging
 | AGENTS.md | This file — agent operating guide |
 | README.md | High-level product and roadmap overview |
 | CONTRIBUTING.md | Human collaborator workflow |
+| CONTEXT-MAP.md | Domain-modeling discovery map for glossary context |
 | mise.toml | Pinned local toolchain contract |
+| docs/glossary/CONTEXT.md | Shared Orchard product glossary |
 | docs/tooling.md | mise, validation command, and local tool guidance |
 | docs/local-dev.md | Source development setup and smoke-test guidance |
 | docs/process.md | Artifact lifecycle and process guidance |

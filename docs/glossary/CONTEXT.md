@@ -1,4 +1,4 @@
-# Orchard Context
+# Orchard Glossary
 
 Orchard is a sovereign on-prem LLM orchestration platform for Apple Silicon macOS. This glossary defines Orchard's shared language; `SPEC.md` remains the normative build contract for behavior, interfaces, states, and milestones.
 

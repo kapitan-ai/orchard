@@ -15,6 +15,7 @@ top-level normative product/system contract.
 - `../README.md` — high-level project overview
 - `../CONTRIBUTING.md` — human collaborator workflow
 - `../AGENTS.md` — contributor and agent workflow
+- `glossary/CONTEXT.md` — shared Orchard product language
 - `tooling.md` — required local toolchain and agent accelerator guidance
 - `local-dev.md` — source development setup and smoke-test guidance
 - `process.md` — artifact lifecycle and review gates
@@ -49,6 +50,7 @@ top-level normative product/system contract.
 ## Current structure
 
 - `milestones/` — milestone execution plans and active milestone status
+- `glossary/` — shared Orchard product language
 - `tooling.md` — mise, validation command, and local tool guidance
 - `local-dev.md` — source development setup and smoke-test guidance
 - `process.md` — artifact lifecycle and review gates
