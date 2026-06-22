@@ -174,7 +174,7 @@ defmodule Orchard.Nodes do
          {:ok, observation} <- normalize_observation(target, status_response, observed_at) do
       case execute_observe(observation) do
         {:ok, node} ->
-          refresh_observed_queue_capacities(status_response)
+          refresh_observed_queue_capacities(node, status_response)
           {:ok, node}
 
         :noop ->
@@ -334,10 +334,10 @@ defmodule Orchard.Nodes do
     |> ToolReadiness.persist_all()
   end
 
-  defp refresh_observed_queue_capacities(status_response) do
+  defp refresh_observed_queue_capacities(%Node{} = node, status_response) do
     status_response
     |> extract_runtime_model_placements()
-    |> Enum.each(&refresh_loaded_placement_capacity/1)
+    |> Enum.each(&refresh_loaded_placement_capacity(node, &1))
   rescue
     error ->
       Logger.debug("Queue capacity refresh from node observation failed: #{inspect(error)}")
@@ -350,17 +350,19 @@ defmodule Orchard.Nodes do
 
   defp extract_runtime_model_placements(_status_response), do: []
 
-  defp refresh_loaded_placement_capacity(placement) when is_map(placement) do
+  defp refresh_loaded_placement_capacity(%Node{} = node, placement) when is_map(placement) do
     with true <- loaded_placement?(placement),
          {:ok, model_id, version} <- placement_model_ref(placement),
          capacity when capacity > 0 <- placement_max_concurrency(placement) do
-      Orchard.Inference.queue_manager().refresh_capacity(model_id, version, capacity)
+      Orchard.Inference.queue_manager().refresh_capacity(model_id, version, capacity,
+        source: {:node, node.id}
+      )
     else
       _ -> :ok
     end
   end
 
-  defp refresh_loaded_placement_capacity(_placement), do: :ok
+  defp refresh_loaded_placement_capacity(_node, _placement), do: :ok
 
   defp loaded_placement?(placement) do
     placement

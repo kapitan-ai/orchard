@@ -158,6 +158,39 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert :ok = QueueManager.release(grant)
   end
 
+  test "SPEC.md §5.4 source-aware capacity refresh aggregates loaded placements" do
+    assert {:queued, first_ticket} =
+             QueueManager.acquire(admission_request("req-source-refresh-a"),
+               config: queue_config(capacity: 0)
+             )
+
+    assert {:queued, second_ticket} =
+             QueueManager.acquire(admission_request("req-source-refresh-b"),
+               config: queue_config(capacity: 0)
+             )
+
+    first_awaiter = start_holding_awaiter(first_ticket, :first_source_refresh_result)
+    second_awaiter = start_holding_awaiter(second_ticket, :second_source_refresh_result)
+
+    assert wait_until(fn -> queue_entry_awaiting?(first_ticket) end)
+    assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+
+    assert :ok = QueueManager.refresh_capacity("queue-model", "v1", 1, source: {:node, "a"})
+    assert_receive {:first_source_refresh_result, {:ok, first_grant}}, 2_000
+    refute_receive {:second_source_refresh_result, _result}, 50
+
+    assert :ok = QueueManager.refresh_capacity("queue-model", "v1", 1, source: {:node, "b"})
+    assert_receive {:second_source_refresh_result, {:ok, second_grant}}, 2_000
+
+    assert first_grant.queue_result == :queued
+    assert second_grant.queue_result == :queued
+
+    assert :ok = QueueManager.release(first_grant)
+    assert :ok = QueueManager.release(second_grant)
+    send(first_awaiter, :stop)
+    send(second_awaiter, :stop)
+  end
+
   test "SPEC.md §5.4 cross-tenant weighted round-robin grants one tenant turn at a time" do
     tenant_a = Ecto.UUID.generate()
     tenant_b = Ecto.UUID.generate()
@@ -1615,6 +1648,21 @@ defmodule Orchard.Inference.QueueManagerTest do
       QueueManager.reset()
       Application.put_env(:orchard_controller, :inference, previous)
     end
+  end
+
+  defp start_holding_awaiter(ticket, tag) do
+    parent = self()
+
+    spawn(fn ->
+      result = QueueManager.await(ticket)
+      send(parent, {tag, result})
+
+      receive do
+        :stop -> :ok
+      after
+        5_000 -> :ok
+      end
+    end)
   end
 
   defp wait_until(fun, attempts \\ 50)

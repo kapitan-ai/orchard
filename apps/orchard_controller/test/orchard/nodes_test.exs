@@ -77,6 +77,21 @@ defmodule Orchard.NodesTest do
     %{node_metadata: metadata, runtime_health: runtime_health}
   end
 
+  defp placement_status(host, model_id, opts) do
+    version = Keyword.get(opts, :version, "v1")
+    max_concurrency = Keyword.fetch!(opts, :max_concurrency)
+
+    make_status_response(%{listen_host: host, listen_port: 9444})
+    |> Map.put(:runtime_model_placements, [
+      %{
+        model_ref: %{model_id: model_id, version: version},
+        placement_state: :PLACEMENT_STATE_LOADED,
+        active_request_count: 0,
+        max_concurrency: max_concurrency
+      }
+    ])
+  end
+
   defp queue_admission_request(public_id, model_id, version \\ "v1") do
     %{
       request_id: Ecto.UUID.generate(),
@@ -98,6 +113,21 @@ defmodule Orchard.NodesTest do
       ],
       overrides
     )
+  end
+
+  defp start_holding_awaiter(ticket, tag) do
+    parent = self()
+
+    spawn(fn ->
+      result = QueueManager.await(ticket)
+      send(parent, {tag, result})
+
+      receive do
+        :stop -> :ok
+      after
+        5_000 -> :ok
+      end
+    end)
   end
 
   # -- Schema validation --
@@ -656,6 +686,50 @@ defmodule Orchard.NodesTest do
       assert grant.queue_key == "wake-model@v1"
 
       assert :ok = QueueManager.release(grant)
+    end
+
+    test "SPEC.md §5.4 placement status aggregates queued capacity across nodes" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-aggregate-a", "aggregate-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-aggregate-b", "aggregate-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_aggregate_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_aggregate_result)
+
+      status_a =
+        placement_status("10.0.0.53", "aggregate-model", max_concurrency: 1)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(make_target("10.0.0.53", 9444), status_a, DateTime.utc_now())
+
+      assert_receive {:first_aggregate_result, {:ok, first_grant}}, 2_000
+      refute_receive {:second_aggregate_result, _result}, 50
+
+      status_b =
+        placement_status("10.0.0.54", "aggregate-model", max_concurrency: 1)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(make_target("10.0.0.54", 9444), status_b, DateTime.utc_now())
+
+      assert_receive {:second_aggregate_result, {:ok, second_grant}}, 2_000
+
+      assert first_grant.queue_result == :queued
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(first_grant)
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
     end
   end
 

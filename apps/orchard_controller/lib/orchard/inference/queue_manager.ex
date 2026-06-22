@@ -95,7 +95,8 @@ defmodule Orchard.Inference.QueueManager do
             tenant_counts: %{},
             ticket_results: %{},
             next_admission_sequence: 0,
-            owner_runtime: false
+            owner_runtime: false,
+            capacity_sources: %{}
 
   @pre_dispatch_states [:admitted, :queued]
   @in_flight_states [:scheduled, :dispatching, :running, :streaming]
@@ -184,9 +185,10 @@ defmodule Orchard.Inference.QueueManager do
   def refresh_capacity(model_id, version, capacity, opts \\ [])
       when is_binary(model_id) and is_binary(version) and is_integer(capacity) do
     server = Keyword.get(opts, :server, __MODULE__)
+    source = Keyword.get(opts, :source)
     queue_key = queue_key(model_id, version)
 
-    call_manager(server, {:refresh_capacity, queue_key, max(capacity, 0)})
+    call_manager(server, {:refresh_capacity, queue_key, max(capacity, 0), source})
   end
 
   @spec release(Grant.t() | String.t(), keyword()) :: :ok
@@ -291,8 +293,16 @@ defmodule Orchard.Inference.QueueManager do
     {:reply, result, state}
   end
 
-  def handle_call({:refresh_capacity, queue_key, capacity}, _from, state) do
-    {_lane, state} = put_lane_capacity(queue_key, capacity, state)
+  def handle_call({:refresh_capacity, queue_key, capacity, nil}, _from, state) do
+    {_lane, state} =
+      put_lane_capacity(queue_key, capacity, clear_capacity_sources(queue_key, state))
+
+    {:reply, :ok, maybe_grant_available(state)}
+  end
+
+  def handle_call({:refresh_capacity, queue_key, capacity, source}, _from, state) do
+    state = put_capacity_source(queue_key, source, capacity, state)
+    {_lane, state} = put_lane_capacity(queue_key, aggregate_capacity(queue_key, state), state)
     {:reply, :ok, maybe_grant_available(state)}
   end
 
@@ -1268,6 +1278,35 @@ defmodule Orchard.Inference.QueueManager do
   defp queue_key(model_id, version), do: "#{model_id}@#{version}"
 
   defp empty_lane, do: %{active: %{}, blocked_until_monotonic_ms: nil, block_ref: nil}
+
+  defp put_lane_capacity(queue_key, capacity, state) do
+    lane =
+      state.lanes
+      |> Map.get(queue_key, empty_lane())
+      |> Map.put(:capacity, capacity)
+
+    {lane, %{state | lanes: Map.put(state.lanes, queue_key, lane)}}
+  end
+
+  defp clear_capacity_sources(queue_key, state) do
+    %{state | capacity_sources: Map.delete(state.capacity_sources, queue_key)}
+  end
+
+  defp put_capacity_source(queue_key, source, capacity, state) do
+    capacity_sources =
+      Map.update(state.capacity_sources, queue_key, %{source => capacity}, fn sources ->
+        Map.put(sources, source, capacity)
+      end)
+
+    %{state | capacity_sources: capacity_sources}
+  end
+
+  defp aggregate_capacity(queue_key, state) do
+    state.capacity_sources
+    |> Map.get(queue_key, %{})
+    |> Map.values()
+    |> Enum.sum()
+  end
 
   defp active_capacity?(lane, capacity) do
     map_size(lane.active) < capacity and not lane_blocked?(lane)
