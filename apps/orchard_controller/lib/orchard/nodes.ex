@@ -777,9 +777,16 @@ defmodule Orchard.Nodes do
         Repo.rollback(:noop)
 
       health ->
-        node
-        |> Ecto.Changeset.change(health: health)
-        |> Repo.update!()
+        updated =
+          node
+          |> Ecto.Changeset.change(health: health)
+          |> Repo.update!()
+
+        unless queue_capacity_eligible_node?(updated) do
+          clear_node_queue_capacity_sources(updated)
+        end
+
+        updated
     end
   end
 
