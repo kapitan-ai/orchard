@@ -12,6 +12,7 @@ defmodule OrchardCLI do
     License,
     Migrate,
     Models,
+    Node,
     Nodes,
     Requests,
     Start,
@@ -47,6 +48,7 @@ defmodule OrchardCLI do
   defp dispatch_command(["cluster" | rest]), do: Cluster.run(rest)
   defp dispatch_command(["env" | rest]), do: Env.run(rest)
   defp dispatch_command(["license" | rest]), do: License.run(rest)
+  defp dispatch_command(["node" | rest]), do: Node.run(rest)
   defp dispatch_command(["nodes" | rest]), do: Nodes.run(rest)
   defp dispatch_command(["models" | rest]), do: Models.run(rest)
   defp dispatch_command(["requests" | rest]), do: Requests.run(rest)
@@ -72,10 +74,10 @@ defmodule OrchardCLI do
   end
 
   defp print_usage do
-    IO.puts("orchardctl (M0 scaffold)")
+    IO.puts("orchardctl")
 
     IO.puts(
-      "Available commands: status, start, stop, init, first-run, migrate, console, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
+      "Available commands: status, start, stop, init, first-run, migrate, console, cluster, env, license, node, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
     )
   end
 end
