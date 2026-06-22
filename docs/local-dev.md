@@ -47,11 +47,9 @@ If you need the underlying commands instead of Makefile aliases:
 ```bash
 mise trust
 mise install
-export ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\""
-mise exec -- mix local.hex --if-missing --force
-mise exec -- mix local.rebar --if-missing --force
-mise exec -- mix deps.get
-unset ERL_AFLAGS
+ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix local.hex --if-missing --force
+ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix local.rebar --if-missing --force
+ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix deps.get
 mise exec -- uv sync --directory native/orchard_tokenizer
 mise exec -- uv sync --directory native/orchard_worker_mlx
 mise exec -- npm ci --ignore-scripts
@@ -196,13 +194,16 @@ ELIXIR
 | `ORCHARD_WORKER_SOCKET_DIR` | `tmp/dev/data/worker-sockets` | Worker UDS directory |
 | `ORCHARD_WORKER_EXECUTABLE` | `native/orchard_worker_mlx/bin/orchard-worker-mlx` (repo-root) | Worker binary path. Override via env var; default resolves from repo root in source-dev mode. |
 | `ORCHARD_WORKER_BACKEND` | `mlx` | Worker backend (`mlx` or `stub`) |
+| `ORCHARD_WORKER_GENERATION_MODE` | `batch` for `mlx`, `stream` for unset `stub` | Worker generation runtime (`stream` or `batch`). Leave unset when using the stub backend. |
 | `ORCHARD_NODE_DISPLAY_NAME` | hostname | Human-readable node name shown in console |
 | `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev) / `hard` (distributed packaged channels) | Licensing mode for startup and packaged useful-work admission: `off`, `warn`, or `hard` |
 
 Node-agent runtime env vars are read when `config/dev.exs` is evaluated at BEAM
 startup. Restart `make dev`, `mise exec -- bin/dev`, or `mise exec --
 bin/dev-node-agent` after changing them. Use `ORCHARD_WORKER_BACKEND=stub` for
-cluster mechanics or rollback testing when real MLX inference is not required.
+cluster mechanics or rollback testing when real MLX inference is not required;
+when `ORCHARD_WORKER_GENERATION_MODE` is unset, the stub backend resolves to
+stream mode automatically.
 `ORCHARD_FAKE_RUNTIME` is a release/runtime config knob; source-dev tests use
 the fake runtime through `config/test.exs`, not a dev env override.
 
@@ -390,7 +391,8 @@ ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0 \
 
 The node-agent boots standalone — no Postgres, controller, or asset watchers
 needed. Use `stub` backend for cluster mechanics testing; switch to `mlx` when
-real inference is required.
+real inference is required. No `ORCHARD_WORKER_GENERATION_MODE` override is
+needed for the stub backend; source dev resolves it to stream mode when unset.
 
 ### Verification
 
@@ -684,7 +686,9 @@ export ORCHARD_WORKER_BACKEND=stub
 mise exec -- iex -S mix phx.server
 ```
 
-Verify: the node-agent log will show `worker starting backend=stub`.
+Verify: the node-agent log will show `worker starting backend=stub`. No
+generation-mode override is required; `stub` resolves to stream mode when the
+mode env var is unset.
 
 ### Packaged Install (launchd)
 

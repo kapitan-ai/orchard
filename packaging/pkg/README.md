@@ -143,6 +143,11 @@ echo 'ORCHARD_WORKER_BACKEND=stub' | sudo tee \
 sudo launchctl kickstart -k system/com.orchard.node-agent
 ```
 
+No `ORCHARD_WORKER_GENERATION_MODE` override is required for this rollback path;
+when the backend is `stub` and the mode env var is unset, packaged runtime
+configuration resolves generation mode to `stream`. If set explicitly, valid
+values are `stream` and `batch`; leave it unset for stub rollback.
+
 **Security note:** These files are sourced by shell scripts running as root
 (via launchd). The wrapper scripts validate ownership and permissions before
 sourcing — files that are not root-owned (`uid 0`) or have group/world
