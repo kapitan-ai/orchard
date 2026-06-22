@@ -383,6 +383,85 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.4 weighted promotion skips tenants blocked by active cap" do
+    tenant_a = Ecto.UUID.generate()
+    tenant_b = Ecto.UUID.generate()
+    tenant_weights = %{tenant_a => 2, tenant_b => 1}
+
+    config =
+      queue_config(capacity: 2, max_active_per_tenant: 1, tenant_weights: tenant_weights)
+
+    assert {:ok, active_a} =
+             QueueManager.acquire(
+               admission_request("req-weighted-active-cap-held",
+                 tenant_id: tenant_a,
+                 model_id: "queue-model-held"
+               ),
+               config: config
+             )
+
+    assert {:queued, ticket_a} =
+             QueueManager.acquire(
+               admission_request("req-weighted-active-cap-a",
+                 tenant_id: tenant_a,
+                 model_id: "queue-model-a"
+               ),
+               config:
+                 queue_config(
+                   capacity: 0,
+                   max_active_per_tenant: 1,
+                   tenant_weights: tenant_weights
+                 )
+             )
+
+    assert {:queued, ticket_b} =
+             QueueManager.acquire(
+               admission_request("req-weighted-active-cap-b",
+                 tenant_id: tenant_b,
+                 model_id: "queue-model-b"
+               ),
+               config: queue_config(capacity: 0, tenant_weights: tenant_weights)
+             )
+
+    awaiter_a = start_result_awaiter(ticket_a, :tenant_a)
+    awaiter_b = start_result_awaiter(ticket_b, :tenant_b)
+
+    assert wait_until(fn -> queue_entry_awaiting?(ticket_a) end)
+    assert wait_until(fn -> queue_entry_awaiting?(ticket_b) end)
+
+    :sys.replace_state(QueueManager, fn state ->
+      lanes =
+        Map.new(state.lanes, fn {queue_key, lane} ->
+          {queue_key, Map.put(lane, :capacity, 1)}
+        end)
+
+      %{state | lanes: lanes}
+    end)
+
+    assert {:queued, trigger_ticket} =
+             QueueManager.acquire(
+               admission_request("req-weighted-active-cap-trigger",
+                 model_id: "queue-model-trigger"
+               ),
+               config: queue_config(capacity: 0, tenant_weights: tenant_weights)
+             )
+
+    assert_receive {:tenant_b, {:ok, grant_b}}, 1_000
+    assert grant_b.queue_key == "queue-model-b@v1"
+    refute_receive {:tenant_a, {:ok, _grant_a}}, 50
+
+    assert :ok = QueueManager.release(active_a)
+    assert_receive {:tenant_a, {:ok, grant_a}}, 1_000
+    assert grant_a.queue_key == "queue-model-a@v1"
+
+    assert :ok = QueueManager.abandon(trigger_ticket)
+    assert :ok = QueueManager.release(grant_a)
+    assert :ok = QueueManager.release(grant_b)
+
+    Process.exit(awaiter_a, :kill)
+    Process.exit(awaiter_b, :kill)
+  end
+
   test "SPEC.md §3.6 immediate grant holder death releases lane before explicit release" do
     db_request = create_request!("req_queue_immediate_holder_death", state: :admitted)
 
