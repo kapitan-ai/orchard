@@ -197,6 +197,18 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(server, {:clear_capacity_source, source})
   end
 
+  @spec active_capacity_source_lanes(term(), keyword()) :: [{String.t(), String.t()}]
+  def active_capacity_source_lanes(source, opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    call_manager(server, {:active_capacity_source_lanes, source})
+  end
+
+  @spec queued_model_lanes(keyword()) :: [{String.t(), String.t()}]
+  def queued_model_lanes(opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    call_manager(server, :queued_model_lanes)
+  end
+
   @spec release(Grant.t() | String.t(), keyword()) :: :ok
   def release(grant_or_id, opts \\ [])
 
@@ -252,6 +264,14 @@ defmodule Orchard.Inference.QueueManager do
 
   @impl true
   def handle_call(:reset, _from, state), do: {:reply, :ok, reset_state(state)}
+
+  def handle_call(:queued_model_lanes, _from, state) do
+    {:reply, queued_model_lanes_from_state(state), state}
+  end
+
+  def handle_call({:active_capacity_source_lanes, source}, _from, state) do
+    {:reply, active_capacity_source_lanes_from_state(source, state), state}
+  end
 
   def handle_call({:acquire, request, config}, {_waiter_pid, _tag}, state) do
     config = queue_config_for_request(config, request)
@@ -1402,6 +1422,8 @@ defmodule Orchard.Inference.QueueManager do
       request_id: request.request_id,
       public_id: request.public_id,
       tenant_id: request.tenant_id,
+      model_id: request.model_id,
+      version: request.version,
       queue_key: request.queue_key,
       caller_pid: request.caller_pid,
       await_from: nil,
@@ -1421,6 +1443,28 @@ defmodule Orchard.Inference.QueueManager do
     }
 
     {ticket, put_entry(entry, state)}
+  end
+
+  defp queued_model_lanes_from_state(state) do
+    state.entries
+    |> Map.values()
+    |> Enum.reject(&terminal_pending?/1)
+    |> Enum.map(&{&1.model_id, &1.version})
+    |> Enum.uniq()
+  end
+
+  defp active_capacity_source_lanes_from_state(source, state) do
+    state.capacity_sources
+    |> Enum.filter(fn {_queue_key, sources} -> Map.get(sources, source, 0) > 0 end)
+    |> Enum.flat_map(fn {queue_key, _sources} -> queue_key_model_lane(queue_key) end)
+    |> Enum.uniq()
+  end
+
+  defp queue_key_model_lane(queue_key) do
+    case String.split(queue_key, "@", parts: 2) do
+      [model_id, version] when model_id != "" and version != "" -> [{model_id, version}]
+      _other -> []
+    end
   end
 
   defp put_entry(entry, state, opts \\ []) do

@@ -777,6 +777,37 @@ defmodule Orchard.NodesTest do
       send(second_awaiter, :stop)
     end
 
+    test "SPEC.md §5.4 heartbeat state change wakes queued cold model lane" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-wake", "cold-wake-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.59", 9444)
+
+      full_status =
+        make_status_response(%{listen_host: "10.0.0.59", listen_port: 9444})
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, full_status, DateTime.utc_now())
+      refute Task.yield(awaiter, 100)
+
+      available_status = Map.put(full_status, :active_request_count, 0)
+
+      assert {:ok, _node} = Nodes.observe_status(target, available_status, DateTime.utc_now())
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "cold-wake-model@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
+
     test "SPEC.md §5.5 invalid placement max concurrency does not wake queued admission" do
       QueueManager.reset()
 

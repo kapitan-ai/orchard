@@ -335,15 +335,35 @@ defmodule Orchard.Nodes do
   end
 
   defp refresh_observed_queue_capacities(%Node{} = node, status_response) do
-    Orchard.Inference.queue_manager().clear_capacity_source({:node, node.id})
+    queue_manager = Orchard.Inference.queue_manager()
+    source = {:node, node.id}
+    previous_source_keys = MapSet.new(queue_manager.active_capacity_source_lanes(source))
 
-    status_response
-    |> extract_runtime_model_placements()
-    |> Enum.each(&refresh_loaded_placement_capacity(node, status_response, &1))
+    queue_manager.clear_capacity_source(source)
+
+    placements = extract_runtime_model_placements(status_response)
+
+    placement_keys =
+      placements
+      |> MapSet.new(&placement_queue_key/1)
+      |> MapSet.union(previous_source_keys)
+
+    Enum.each(placements, &refresh_loaded_placement_capacity(node, status_response, &1))
+    refresh_cold_queue_capacities(queue_manager, source, status_response, placement_keys)
   rescue
     error ->
       Logger.debug("Queue capacity refresh from node observation failed: #{inspect(error)}")
       :ok
+  end
+
+  defp refresh_cold_queue_capacities(queue_manager, source, status_response, placement_keys) do
+    capacity = cold_node_queue_capacity(status_response)
+
+    queue_manager.queued_model_lanes()
+    |> Enum.reject(&(&1 in placement_keys))
+    |> Enum.each(fn {model_id, version} ->
+      queue_manager.refresh_capacity(model_id, version, capacity, source: source)
+    end)
   end
 
   defp extract_runtime_model_placements(%{runtime_model_placements: placements})
@@ -373,6 +393,24 @@ defmodule Orchard.Nodes do
   end
 
   defp refresh_loaded_placement_capacity(_node, _status_response, _placement), do: :ok
+
+  defp placement_queue_key(placement) do
+    case placement_model_ref(placement) do
+      {:ok, model_id, version} -> {model_id, version}
+      :error -> nil
+    end
+  end
+
+  defp cold_node_queue_capacity(status_response) do
+    if node_capacity_available?(status_response), do: 1, else: 0
+  end
+
+  defp node_capacity_available?(status_response) do
+    node_active = non_negative_integer(map_get(status_response, :active_request_count), 0)
+    node_max = positive_integer(map_get(status_response, :max_concurrency), 1)
+
+    node_active < node_max
+  end
 
   defp loaded_placement?(placement) do
     placement
