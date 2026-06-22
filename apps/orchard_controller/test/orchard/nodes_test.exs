@@ -3,6 +3,7 @@ defmodule Orchard.NodesTest do
 
   import ExUnit.CaptureLog
 
+  alias Orchard.Inference.QueueManager
   alias Orchard.Nodes
   alias Orchard.Nodes.Node
 
@@ -74,6 +75,29 @@ defmodule Orchard.NodesTest do
       end
 
     %{node_metadata: metadata, runtime_health: runtime_health}
+  end
+
+  defp queue_admission_request(public_id, model_id, version \\ "v1") do
+    %{
+      request_id: Ecto.UUID.generate(),
+      public_id: public_id,
+      tenant_id: Ecto.UUID.generate(),
+      model_id: model_id,
+      version: version,
+      caller_pid: self()
+    }
+  end
+
+  defp queue_config(overrides) do
+    Keyword.merge(
+      [
+        enabled: true,
+        capacity: 1,
+        max_queued_per_tenant: 32,
+        max_wait_ms: 1_000
+      ],
+      overrides
+    )
   end
 
   # -- Schema validation --
@@ -596,6 +620,42 @@ defmodule Orchard.NodesTest do
 
       assert {:ok, updated} = Nodes.observe_status(target, status, later)
       assert updated.state == :cordoned
+    end
+
+    test "SPEC.md §5.4 placement state change wakes queued model lane" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-wake", "wake-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      refute Task.yield(awaiter, 50)
+
+      status =
+        make_status_response(%{
+          listen_host: "10.0.0.52",
+          listen_port: 9444
+        })
+        |> Map.put(:runtime_model_placements, [
+          %{
+            model_ref: %{model_id: "wake-model", version: "v1"},
+            placement_state: :PLACEMENT_STATE_LOADED,
+            active_request_count: 0,
+            max_concurrency: 1
+          }
+        ])
+
+      assert {:ok, _node} =
+               Nodes.observe_status(make_target("10.0.0.52", 9444), status, DateTime.utc_now())
+
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "wake-model@v1"
+
+      assert :ok = QueueManager.release(grant)
     end
   end
 

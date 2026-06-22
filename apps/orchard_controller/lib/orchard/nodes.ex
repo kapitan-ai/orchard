@@ -172,7 +172,14 @@ defmodule Orchard.Nodes do
   def observe_status(target, status_response, observed_at) do
     with true <- repo_available?(),
          {:ok, observation} <- normalize_observation(target, status_response, observed_at) do
-      execute_observe(observation)
+      case execute_observe(observation) do
+        {:ok, node} ->
+          refresh_observed_queue_capacities(status_response)
+          {:ok, node}
+
+        :noop ->
+          :noop
+      end
     else
       _ -> :noop
     end
@@ -325,6 +332,66 @@ defmodule Orchard.Nodes do
     |> extract_hosted_tool_readiness()
     |> ToolReadiness.normalize_all(capability_refs)
     |> ToolReadiness.persist_all()
+  end
+
+  defp refresh_observed_queue_capacities(status_response) do
+    status_response
+    |> extract_runtime_model_placements()
+    |> Enum.each(&refresh_loaded_placement_capacity/1)
+  rescue
+    error ->
+      Logger.debug("Queue capacity refresh from node observation failed: #{inspect(error)}")
+      :ok
+  end
+
+  defp extract_runtime_model_placements(%{runtime_model_placements: placements})
+       when is_list(placements),
+       do: placements
+
+  defp extract_runtime_model_placements(_status_response), do: []
+
+  defp refresh_loaded_placement_capacity(placement) when is_map(placement) do
+    with true <- loaded_placement?(placement),
+         {:ok, model_id, version} <- placement_model_ref(placement),
+         capacity when capacity > 0 <- placement_max_concurrency(placement) do
+      Orchard.Inference.queue_manager().refresh_capacity(model_id, version, capacity)
+    else
+      _ -> :ok
+    end
+  end
+
+  defp refresh_loaded_placement_capacity(_placement), do: :ok
+
+  defp loaded_placement?(placement) do
+    placement
+    |> map_get(:placement_state)
+    |> then(&(&1 in [:PLACEMENT_STATE_LOADED, "PLACEMENT_STATE_LOADED", 7]))
+  end
+
+  defp placement_model_ref(placement) do
+    case map_get(placement, :model_ref) do
+      model_ref when is_map(model_ref) ->
+        model_id = map_get(model_ref, :model_id)
+        version = map_get(model_ref, :version)
+
+        if non_empty?(model_id) and non_empty?(version) do
+          {:ok, model_id, version}
+        else
+          :error
+        end
+
+      _other ->
+        :error
+    end
+  end
+
+  defp placement_max_concurrency(placement) do
+    placement
+    |> map_get(:max_concurrency)
+    |> case do
+      capacity when is_integer(capacity) and capacity > 0 -> capacity
+      _other -> 0
+    end
   end
 
   defp extract_hosted_tool_capabilities(%{hosted_tool_capabilities: entries})
@@ -570,6 +637,10 @@ defmodule Orchard.Nodes do
       port when is_integer(port) and port in 1..65_535 -> port
       _other -> nil
     end
+  end
+
+  defp map_get(map, key) when is_atom(key) do
+    Map.get(map, key) || Map.get(map, Atom.to_string(key))
   end
 
   defp lookup_node_by_target(host, port) do
