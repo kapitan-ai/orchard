@@ -94,7 +94,7 @@ defmodule Orchard.Scheduler.SingleNode do
   defp capacity_schedule(schedule, request, response) do
     case runtime_model_placement_for(response, request.model_ref) do
       nil ->
-        {:ok, schedule}
+        schedule_unless_node_busy(schedule, response)
 
       placement ->
         placement_capacity_schedule(schedule, response, placement)
@@ -125,8 +125,12 @@ defmodule Orchard.Scheduler.SingleNode do
           {:ok, schedule}
       end
     else
-      {:ok, schedule}
+      schedule_unless_node_busy(schedule, response)
     end
+  end
+
+  defp schedule_unless_node_busy(schedule, response) do
+    if node_concurrency_exhausted?(response), do: {:error, :model_busy}, else: {:ok, schedule}
   end
 
   defp runtime_model_placement_for(response, %CanonicalRequest.ModelRef{} = model_ref) do

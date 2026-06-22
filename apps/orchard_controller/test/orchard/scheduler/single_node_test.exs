@@ -126,6 +126,21 @@ defmodule Orchard.Scheduler.SingleNodeTest do
              )
   end
 
+  test "SPEC.md §5.5 returns model_busy for cold request when single-node capacity is exhausted" do
+    Process.put(:single_node_status, %{
+      active_request_count: 1,
+      max_concurrency: 1,
+      runtime_model_placements: []
+    })
+
+    assert {:error, :model_busy} =
+             SingleNode.default_schedule(
+               canonical_request("single-node-cold-busy-model"),
+               [host: "127.0.0.1", port: 50_071],
+               status_client: StubClient
+             )
+  end
+
   test "keeps legacy single-slot same-model queue scheduling under active placement load" do
     Process.put(:single_node_status, %{
       active_request_count: 1,
