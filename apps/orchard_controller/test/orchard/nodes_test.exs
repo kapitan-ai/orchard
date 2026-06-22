@@ -808,6 +808,36 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(grant)
     end
 
+    test "SPEC.md §5.5 degraded node heartbeat can wake queued cold model lane" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-degraded-cold-wake", "degraded-cold-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.63", 9444)
+
+      status =
+        make_status_response(
+          %{listen_host: "10.0.0.63", listen_port: 9444},
+          %{health_code: "degraded", health_message: "runtime degraded but available"}
+        )
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert node.health == :degraded
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "degraded-cold-model@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
+
     test "SPEC.md §5.5 ineligible node heartbeat does not wake queued cold model lane" do
       QueueManager.reset()
 
