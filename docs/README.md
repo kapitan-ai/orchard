@@ -50,6 +50,7 @@ top-level normative product/system contract.
 ## Current structure
 
 - `milestones/` — milestone execution plans and active milestone status
+- `glossary/` — shared Orchard product language
 - `tooling.md` — mise, validation command, and local tool guidance
 - `local-dev.md` — source development setup and smoke-test guidance
 - `process.md` — artifact lifecycle and review gates

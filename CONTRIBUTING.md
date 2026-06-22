@@ -9,9 +9,10 @@ macOS. This repository is the collaborator-facing source of truth.
 2. `README.md` explains what Orchard is and where to start.
 3. `CONTRIBUTING.md` explains human collaboration workflow.
 4. `AGENTS.md` explains automation and agent workflow.
-5. `docs/process.md` explains artifact lifecycle and review gates.
-6. `docs/decisions/**` records durable decisions not already fixed by `SPEC.md`.
-7. `openspec/README.md` reserves a structured-change path subordinate to `SPEC.md`.
+5. `docs/glossary/CONTEXT.md` defines shared Orchard product language.
+6. `docs/process.md` explains artifact lifecycle and review gates.
+7. `docs/decisions/**` records durable decisions not already fixed by `SPEC.md`.
+8. `openspec/README.md` reserves a structured-change path subordinate to `SPEC.md`.
 
 If these disagree about product behavior, treat the PR as blocked until the
 branch reconciles the conflict. `SPEC.md` wins until explicitly updated.

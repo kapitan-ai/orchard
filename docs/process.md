@@ -27,6 +27,7 @@ truth.
 | Idea or issue | GitHub issue, PR note, local scratch | Commit only if standalone and useful |
 | Local goal package | `goals/<slug>/` | Ignored; not committed by default |
 | Execution evidence | local evidence dirs and logs | Ignored unless sanitized and promoted |
+| Shared product language | `docs/glossary/CONTEXT.md` | Commit when standalone and aligned with `SPEC.md` |
 | Durable decision | `docs/decisions/**` | Commit when standalone and product-relevant |
 | Normative behavior | `SPEC.md`, code, tests | Commit through normal review |
 

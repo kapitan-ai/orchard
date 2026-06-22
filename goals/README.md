@@ -26,6 +26,7 @@ If a goal contains durable product knowledge, promote the conclusion into one
 of these standalone Orchard artifacts instead of committing the goal package:
 
 - `SPEC.md`
+- `docs/glossary/CONTEXT.md`
 - `docs/process.md`
 - `docs/decisions/**`
 - `openspec/README.md` or future verified OpenSpec change files
