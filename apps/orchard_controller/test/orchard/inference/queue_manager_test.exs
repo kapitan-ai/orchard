@@ -101,6 +101,46 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert :ok = QueueManager.release(second_grant)
   end
 
+  test "SPEC.md §5.4 active-cap-blocked tenant does not block another tenant" do
+    first_tenant_id = Ecto.UUID.generate()
+    second_tenant_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 2, max_active_per_tenant: 1)
+
+    assert {:ok, first_grant} =
+             QueueManager.acquire(
+               admission_request("req-tenant-lane-head-a", tenant_id: first_tenant_id),
+               config: config
+             )
+
+    assert {:queued, blocked_ticket} =
+             QueueManager.acquire(
+               admission_request("req-tenant-lane-head-b", tenant_id: first_tenant_id),
+               config: config
+             )
+
+    blocked_awaiter = Task.async(fn -> QueueManager.await(blocked_ticket) end)
+    assert wait_until(fn -> queue_entry_awaiting?(blocked_ticket) end)
+
+    assert {:queued, other_ticket} =
+             QueueManager.acquire(
+               admission_request("req-tenant-lane-head-c", tenant_id: second_tenant_id),
+               config: config
+             )
+
+    other_awaiter = Task.async(fn -> QueueManager.await(other_ticket) end)
+
+    assert {:ok, other_grant} = Task.await(other_awaiter, 2_000)
+    assert other_grant.queue_result == :queued
+    refute Task.yield(blocked_awaiter, 50)
+
+    assert :ok = QueueManager.release(first_grant)
+    assert {:ok, blocked_grant} = Task.await(blocked_awaiter, 2_000)
+    assert blocked_grant.queue_result == :queued
+
+    assert :ok = QueueManager.release(other_grant)
+    assert :ok = QueueManager.release(blocked_grant)
+  end
+
   test "SPEC.md §5.4 cross-tenant weighted round-robin grants one tenant turn at a time" do
     tenant_a = Ecto.UUID.generate()
     tenant_b = Ecto.UUID.generate()
