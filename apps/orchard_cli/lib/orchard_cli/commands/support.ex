@@ -462,8 +462,15 @@ defmodule OrchardCLI.Commands.Support do
 
   defp sensitive_log_payload_key?(parts, compact) do
     compact in @sensitive_log_payload_keys or
+      sensitive_log_token_id_key?(compact) or
       Enum.any?(["messages", "prompt"], &(&1 in parts)) or
       List.last(parts) in ["content", "input"]
+  end
+
+  defp sensitive_log_token_id_key?(compact) do
+    compact in ["input_ids", "token_ids"] or
+      String.ends_with?(compact, "_input_ids") or
+      String.ends_with?(compact, "_token_ids")
   end
 
   defp safe_diagnostic_key?(compact), do: compact in @safe_diagnostic_keys

@@ -333,8 +333,13 @@ defmodule OrchardCLI.Commands.SupportTest do
       """
       prompt_token_ids=[101, 202, 303]
       promptTokenIds: [404, 505, 606]
+      token_ids=[111, 222, 333]
+      tokenIds: [444, 555, 666]
+      input_ids=[777, 888, 999]
+      inputIds: [123, 234, 345]
       tokenizer failed with prompt_token_ids_length_mismatch ids=[707, 808]
       supports_prompt_token_ids=true worker_supports_prompt_token_ids=true token_count=3
+      input_tokens=9 prompt_tokens=8 total_tokens=17 token_count=17
       accessToken=log-access-secret
       clientSecret: log-client-secret
       secretAccessKey=log-secret-access-key
@@ -377,9 +382,14 @@ defmodule OrchardCLI.Commands.SupportTest do
     assert log =~
              "supports_prompt_token_ids=true worker_supports_prompt_token_ids=true token_count=3"
 
+    assert log =~ "input_tokens=9 prompt_tokens=8 total_tokens=17 token_count=17"
     assert log =~ "safe diagnostic line"
     refute log =~ "101"
     refute log =~ "404"
+    refute log =~ "111"
+    refute log =~ "444"
+    refute log =~ "777"
+    refute log =~ "123"
     refute log =~ "707"
     refute log =~ "log-access-secret"
     refute log =~ "log-client-secret"
