@@ -2191,6 +2191,7 @@ message StatusResponse {
   repeated RuntimePrefixCacheStatus runtime_prefix_cache_statuses = 9;
   bool supports_prompt_token_ids = 10;
   repeated RuntimeModelPlacement runtime_model_placements = 11;
+  uint32 max_concurrency = 12;
 }
 
 message EnsureModelLoadedRequest {

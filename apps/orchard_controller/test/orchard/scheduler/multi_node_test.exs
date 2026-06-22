@@ -129,6 +129,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   defp make_status(node_id, opts) do
     loaded_models = Keyword.get(opts, :loaded_models, [])
     active_request_count = Keyword.get(opts, :active_request_count, 0)
+    max_concurrency = Keyword.get(opts, :max_concurrency, 16)
     health = Keyword.get(opts, :health, nil)
     prefix_cache_statuses = Keyword.get(opts, :runtime_prefix_cache_statuses, [])
     memory_budgets = Keyword.get(opts, :runtime_memory_budgets, [])
@@ -151,6 +152,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       runtime_health: health,
       loaded_models: loaded_models,
       active_request_count: active_request_count,
+      max_concurrency: max_concurrency,
       runtime_memory_budgets: memory_budgets,
       runtime_prefix_cache_statuses: prefix_cache_statuses,
       runtime_model_placements: model_placements,
@@ -581,6 +583,80 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.node_id == node_a.id
       assert schedule.selected_tier == "loaded"
       assert schedule.candidate_count == 2
+    end
+
+    test "SPEC.md §5.5 excludes nodes when reported node max concurrency is exhausted" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          active_request_count: 2,
+          max_concurrency: 2,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          runtime_model_placements: [model_placement("test-model", "v1", 0, 2)]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id,
+          host: "10.0.0.2",
+          port: 50_062,
+          active_request_count: 0,
+          max_concurrency: 2,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          runtime_model_placements: [model_placement("test-model", "v1", 0, 2)]
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == node_b.id
+      assert schedule.selected_tier == "loaded"
+      assert schedule.candidate_count == 1
+    end
+
+    test "SPEC.md §5.5 treats missing node max concurrency conservatively" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      status_a =
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          active_request_count: 1,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          runtime_model_placements: [model_placement("test-model", "v1", 0, 2)]
+        )
+        |> Map.delete(:max_concurrency)
+
+      stub_probe("10.0.0.1", 50_061, status_a)
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id,
+          host: "10.0.0.2",
+          port: 50_062,
+          active_request_count: 0,
+          max_concurrency: 2,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          runtime_model_placements: [model_placement("test-model", "v1", 0, 2)]
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == node_b.id
+      assert schedule.candidate_count == 1
     end
 
     test "prefers lower matching placement active count before health and node_id" do

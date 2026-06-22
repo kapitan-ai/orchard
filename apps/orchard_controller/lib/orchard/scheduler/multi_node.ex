@@ -201,6 +201,7 @@ defmodule Orchard.Scheduler.MultiNode do
                     target: target,
                     loaded_model?: loaded_model?,
                     active_request_count: response.active_request_count || 0,
+                    max_concurrency: node_max_concurrency(response),
                     supports_prompt_token_ids: prompt_token_ids_supported?(response)
                   }
                   |> maybe_put_model_placement_capacity(
@@ -228,6 +229,10 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
+  defp candidate_full?(%{active_request_count: active, max_concurrency: max})
+       when is_integer(active) and is_integer(max) and max > 0,
+       do: active >= max
+
   defp candidate_full?(%{
          model_placement_capacity: %{active_request_count: active, max_concurrency: max}
        })
@@ -238,6 +243,13 @@ defmodule Orchard.Scheduler.MultiNode do
     do: true
 
   defp candidate_full?(_candidate), do: false
+
+  defp node_max_concurrency(response) do
+    case Map.get(response, :max_concurrency) || Map.get(response, "max_concurrency") do
+      value when is_integer(value) and value > 0 -> value
+      _other -> 1
+    end
+  end
 
   defp extract_valid_node_id(%{node_metadata: %{node_id: node_id}}) when is_binary(node_id) do
     case Ecto.UUID.cast(node_id) do

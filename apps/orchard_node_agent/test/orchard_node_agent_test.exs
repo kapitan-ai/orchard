@@ -2572,6 +2572,7 @@ defmodule OrchardNodeAgentTest do
 
             status = grpc_status_snapshot()
             assert status.active_request_count == 2
+            assert status.max_concurrency == 2
 
             placement = runtime_model_placement!(status, @test_model_id, @test_version)
             assert placement.active_request_count == 2

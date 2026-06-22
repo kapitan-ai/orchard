@@ -1253,6 +1253,7 @@ defmodule Orchard.Node.ModelManager do
       worker_state: worker_state(state),
       loaded_models: loaded_models(state),
       active_request_count: map_size(state.active_requests),
+      max_concurrency: Node.effective_worker_request_limit(),
       node_metadata: build_node_metadata(),
       runtime_health: runtime_health,
       hosted_tool_capabilities: tool_snapshot.capabilities,
