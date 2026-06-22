@@ -808,6 +808,44 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(grant)
     end
 
+    test "SPEC.md §5.5 cold heartbeat contributes one conservative slot per node" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-conservative-a", "cold-one-slot-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-conservative-b", "cold-one-slot-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_cold_one_slot_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.64", 9444)
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.64", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 4)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert_receive {:first_cold_one_slot_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 100)
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "cold-one-slot-model@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
     test "SPEC.md §5.5 degraded node heartbeat can wake queued cold model lane" do
       QueueManager.reset()
 
