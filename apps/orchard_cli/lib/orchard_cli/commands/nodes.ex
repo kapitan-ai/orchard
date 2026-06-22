@@ -4,15 +4,32 @@ defmodule OrchardCLI.Commands.Nodes do
 
   Supports:
     orchardctl nodes list
+    orchardctl nodes admit (deferred status; SPEC.md 11.9)
   """
 
   alias Orchard.Nodes
+  alias OrchardCLI.Commands.Deferred
+
+  @deferred_commands [
+    %{
+      path: ["admit"],
+      usage: "orchardctl nodes admit",
+      summary: "Admit a pending node into the cluster (SPEC.md 11.9).",
+      status:
+        "Defined by SPEC.md 11.9 for node lifecycle work; not implemented in the current build.",
+      guidance: [
+        "Use orchardctl nodes list to inspect registered nodes that already report to the controller.",
+        "For current source-dev multi-node testing, configure ORCHARD_RUNTIME_CLIENT_TARGETS as documented in docs/local-dev.md."
+      ]
+    }
+  ]
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(args) do
     case args do
       ["list"] -> run_list()
       ["list", "--help"] -> {:ok, list_usage()}
+      ["admit" | rest] -> Deferred.run(["admit" | rest], deferred_spec())
       ["help"] -> {:ok, group_usage()}
       ["--help"] -> {:ok, group_usage()}
       [] -> {:error, group_usage(), 1}
@@ -126,11 +143,14 @@ defmodule OrchardCLI.Commands.Nodes do
         "Usage: orchardctl nodes <command>",
         "",
         "Commands:",
-        "  list  List registered nodes"
+        "  list   List registered nodes",
+        "  admit  Admit a pending node into the cluster (SPEC.md 11.9; not implemented)"
       ],
       "\n"
     )
   end
+
+  defp deferred_spec, do: %{name: "nodes", commands: @deferred_commands}
 
   defp list_usage do
     Enum.join(

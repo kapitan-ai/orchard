@@ -3,7 +3,19 @@ defmodule OrchardCLITest do
 
   import ExUnit.CaptureIO
 
-  alias OrchardCLI.Commands.{ApiKeys, Console, Init, Migrate, Models, Nodes, Tenants}
+  alias OrchardCLI.Commands.{
+    ApiKeys,
+    Cluster,
+    Console,
+    Init,
+    Migrate,
+    Models,
+    Node,
+    Nodes,
+    Requests,
+    Support,
+    Tenants
+  }
 
   # A no-op halt function for tests that just need to suppress halt
   defp no_halt(_code), do: :ok
@@ -73,27 +85,89 @@ defmodule OrchardCLITest do
   test "prints usage when invoked without arguments" do
     output = capture_io(fn -> OrchardCLI.main([], &no_halt/1) end)
 
-    assert output =~ "orchardctl (M0 scaffold)"
+    assert output =~ "orchardctl"
+    refute output =~ "M0 scaffold"
+    refute output =~ "not implemented yet"
 
     assert output =~
-             "status, start, stop, init, first-run, migrate, console, cluster, env, license, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
+             "status, start, stop, init, first-run, migrate, console, cluster, env, license, node, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
   end
 
-  test "dispatches each placeholder command module" do
-    placeholder_commands = ["cluster", "requests", "support"]
+  test "advertised deferred commands report docs-backed status" do
+    commands = [
+      {Cluster, ["init"], "orchardctl cluster init"},
+      {Node, ["join"], "orchardctl node join"},
+      {Nodes, ["admit"], "orchardctl nodes admit"},
+      {Requests, ["inspect"], "orchardctl requests inspect"},
+      {Support, ["bundle", "create"], "orchardctl support bundle create"}
+    ]
 
-    for command <- placeholder_commands do
-      output = capture_io(fn -> OrchardCLI.main([command], &no_halt/1) end)
-      assert output =~ "not implemented yet"
+    for {module, args, usage} <- commands do
+      assert {:error, message, 1} = module.run(args)
+      assert message =~ usage
+      assert message =~ "SPEC.md"
+      assert message =~ "not implemented in this build"
+      assert message =~ "Current supported path:"
+      refute message =~ "M0 scaffold"
+      refute message =~ "not implemented yet"
     end
   end
 
-  test "placeholder commands do not trigger halt" do
+  test "advertised deferred commands exit non-zero through main" do
     parent = self()
 
-    for command <- ["cluster", "requests", "support"] do
-      capture_io(fn -> OrchardCLI.main([command], halt_stub(parent)) end)
-      refute_received {:halt_called, _}
+    commands = [
+      ["cluster", "init"],
+      ["node", "join"],
+      ["nodes", "admit"],
+      ["requests", "inspect"],
+      ["support", "bundle", "create"]
+    ]
+
+    for command <- commands do
+      stderr =
+        capture_io(:stderr, fn ->
+          OrchardCLI.main(command, halt_stub(parent))
+        end)
+
+      assert stderr =~ Enum.join(command, " ")
+      refute stderr =~ "M0 scaffold"
+      refute stderr =~ "not implemented yet"
+      assert_received {:halt_called, 1}
+    end
+  end
+
+  test "advertised deferred command help is side-effect free" do
+    commands = [
+      {Cluster, ["init", "--help"], "orchardctl cluster init"},
+      {Node, ["join", "--help"], "orchardctl node join"},
+      {Nodes, ["admit", "--help"], "orchardctl nodes admit"},
+      {Requests, ["inspect", "--help"], "orchardctl requests inspect"},
+      {Support, ["bundle", "create", "--help"], "orchardctl support bundle create"}
+    ]
+
+    for {module, args, usage} <- commands do
+      assert {:ok, message} = module.run(args)
+      assert message =~ usage
+      refute message =~ "Error:"
+      refute message =~ "M0 scaffold"
+      refute message =~ "not implemented yet"
+    end
+  end
+
+  test "advertised deferred group help lists commands relative to group" do
+    commands = [
+      {Cluster, "cluster", "init"},
+      {Node, "node", "join"},
+      {Requests, "requests", "inspect"},
+      {Support, "support", "bundle create"}
+    ]
+
+    for {module, group, relative_command} <- commands do
+      assert {:ok, message} = module.run(["--help"])
+      assert message =~ "Usage: orchardctl #{group} <command>"
+      assert message =~ "  #{relative_command}  "
+      refute message =~ "  #{group} #{relative_command}  "
     end
   end
 

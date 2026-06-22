@@ -144,6 +144,11 @@ Pre-release. Building from spec. The current source tree includes authenticated
 M2 governance, RBAC, and quota behavior remain in progress. The roadmap and
 target behavior are governed by `SPEC.md` §14.
 
+Some SPEC-required CLI paths are present before their milestone implementation:
+`orchardctl cluster init`, `orchardctl node join`, `orchardctl nodes admit`,
+`orchardctl requests inspect`, and `orchardctl support bundle create` return
+command-specific deferred-status errors with the current supported path.
+
 ## Spec
 
 [`SPEC.md`](SPEC.md) is the normative build contract — every implementation decision traces back to it.
