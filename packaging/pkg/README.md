@@ -1,6 +1,10 @@
-# PKG skeleton
+# PKG Packaging and Operator Runbook
 
-Milestone 0 packaging placeholder for Orchard enterprise/unattended installs.
+Current packaged installs use a universal PKG payload with role selection for
+`all`, `controller`, and `node-agent` hosts. Controller-bearing installs require
+an **external PostgreSQL** server today; managed Postgres is not implemented and
+`orchard-managed-postgres` remains a placeholder that exits with an error.
+Services are installed by role and must be configured before start.
 
 ## Naming strategy
 

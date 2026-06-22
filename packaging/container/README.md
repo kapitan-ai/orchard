@@ -1,6 +1,11 @@
-# Managed Postgres container skeleton
+# Managed Postgres container assets
 
-Milestone 0 placeholder for the managed Postgres mode described in `SPEC.md`.
-This path is reserved for Apple-Silicon-compatible local containerization assets, not Docker-first runtime assumptions.
+This path is reserved for future Managed Database Mode assets described in
+`../../SPEC.md`. It is not part of the current packaged install path.
 
-The launchd-facing command name for managed mode is expected to be `orchard-managed-postgres`, provided by packaging assets rather than an Elixir release.
+Managed Postgres is not implemented today. Controller-bearing packaged installs
+currently require an external PostgreSQL server; see `../pkg/README.md` and
+`postgres/README.md`.
+
+Future assets here should target Apple-Silicon-compatible local
+containerization, not Docker-first operator assumptions.

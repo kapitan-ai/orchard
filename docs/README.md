@@ -1,57 +1,76 @@
 # Orchard Docs
 
-## Purpose
+This directory contains collaborator-facing orientation, tooling guidance,
+process docs, design guidance, and durable decisions for Orchard.
 
-This directory contains subordinate implementation guidance, process docs, and
-durable decision records for Orchard.
+`../SPEC.md` remains the top-level normative product/system/build contract.
+Docs here should help contributors navigate and execute work without duplicating
+large spec sections.
 
-Use these docs to support execution, planning, and decision-making during implementation.
-Do not treat anything here as a replacement for `SPEC.md`, which remains the
-top-level normative product/system contract.
+## Start by intent
 
-## Source of truth
+### I want to understand Orchard
 
-- `../SPEC.md` — normative product/system contract
-- `../README.md` — high-level project overview
-- `../CONTRIBUTING.md` — human collaborator workflow
-- `../AGENTS.md` — contributor and agent workflow
-- `glossary/CONTEXT.md` — shared Orchard product language
-- `tooling.md` — required local toolchain and agent accelerator guidance
-- `local-dev.md` — source development setup and smoke-test guidance
-- `process.md` — artifact lifecycle and review gates
+- [`../SPEC.md`](../SPEC.md) — normative product/system contract.
+- [`../README.md`](../README.md) — product overview and current status.
+- [`architecture.md`](architecture.md) — repo/runtime map for contributors.
+- [`glossary/CONTEXT.md`](glossary/CONTEXT.md) — shared vocabulary and
+  glossary.
+- [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — human collaborator workflow.
+- [`../AGENTS.md`](../AGENTS.md) — automation/agent workflow.
 
-## What belongs here
+### I want to run it locally
 
-- active milestone plans
-- implementation notes that reference the spec
-- local tooling and validation guidance
-- design decisions not already fixed by the spec
-- real runbooks once code and packaging exist
+- [`tooling.md`](tooling.md) — mise/uv toolchain and validation commands.
+- [`local-dev.md`](local-dev.md) — source-dev setup, `bin/dev`, split-role dev,
+  smoke checks, and environment notes.
 
-## What does not belong here
+### I want to contribute code
 
-- duplicated API contracts from `SPEC.md`
-- duplicated schema/state-machine definitions from `SPEC.md`
-- contributor workflow rules already covered in `AGENTS.md`
-- private or historical coordination workspace notes
-- raw prompt exports
-- active local goal packages
-- unsanitized local evidence
-- tool session identifiers
-- placeholder docs with no active use
+- [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — human collaborator workflow.
+- [`../AGENTS.md`](../AGENTS.md) — automation/agent workflow and quality gates.
+- [`process.md`](process.md) — artifact lifecycle and review gates.
+- [`code-quality.md`](code-quality.md) — Credo, ex_slop, and ex_dna policy.
+
+### I want to change Console UI
+
+- [`brand-identity.md`](brand-identity.md) — brand palette, typography, logo,
+  and visual semantics.
+- [`DESIGN.md`](DESIGN.md) — tactical LiveView UI contract downstream of brand
+  identity.
+
+### I want to package or install Orchard
+
+- [`../packaging/pkg/README.md`](../packaging/pkg/README.md) — current PKG
+  build/operator runbook.
+- [`../packaging/container/postgres/README.md`](../packaging/container/postgres/README.md)
+  — managed Postgres status; not implemented today.
+- [`../packaging/dmg/README.md`](../packaging/dmg/README.md) — reserved future
+  DMG media notes.
+
+### I need to make a durable decision
+
+- [`decisions/README.md`](decisions/README.md) — ADR policy.
+- [`decisions/_template.md`](decisions/_template.md) — lightweight ADR template.
+
+## Normative vs orientation docs
+
+- Normative product/system behavior: `../SPEC.md`.
+- Human workflow: `../CONTRIBUTING.md`.
+- Agent workflow and validation: `../AGENTS.md`.
+- Artifact lifecycle: `process.md` and `../goals/README.md`.
+
+If docs, tests, implementation, and `SPEC.md` disagree about product behavior,
+treat the branch as blocked until reconciled. `SPEC.md` wins until explicitly
+updated.
 
 ## Writing rules
 
-- reference relevant `SPEC.md` sections
-- summarize; do not restate large normative sections
-- prefer practical execution guidance over prose
-- update or delete stale docs quickly
-
-## Current structure
-
-- `milestones/` — milestone execution plans and active milestone status
-- `glossary/` — shared Orchard product language
-- `tooling.md` — mise, validation command, and local tool guidance
-- `local-dev.md` — source development setup and smoke-test guidance
-- `process.md` — artifact lifecycle and review gates
-- `decisions/` — ADR-style records for durable implementation decisions
+- Reference relevant `SPEC.md` sections when behavior matters.
+- Summarize and link; do not restate large normative sections.
+- Prefer practical execution guidance over prose.
+- Keep current implementation status separate from target architecture.
+- Update or delete stale docs quickly.
+- Do not commit raw prompt exports, active goal packages, tool session IDs,
+  credentials, DSNs, or machine-specific evidence.
+- Promote durable conclusions into standalone docs, decisions, tests, or code.

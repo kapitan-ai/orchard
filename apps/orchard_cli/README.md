@@ -1,21 +1,28 @@
-# OrchardCLI
+# orchard_cli
 
-**TODO: Add description**
+`orchard_cli` builds the `orchardctl` operator/admin command surface used by
+source-dev workflows and packaged installs.
 
-## Installation
+This README is orientation only. Normative CLI requirements live in
+[`../../SPEC.md`](../../SPEC.md); repo/runtime boundaries are mapped in
+[`../../docs/architecture.md`](../../docs/architecture.md).
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `orchard_cli` to your list of dependencies in `mix.exs`:
+## Owns
 
-```elixir
-def deps do
-  [
-    {:orchard_cli, "~> 0.1.0"}
-  ]
-end
-```
+- Operator commands for cluster/bootstrap, environment, transport, migrations,
+  status, start/stop, support, upgrades, tenants, API keys, nodes, and models.
+- CLI helpers that wrap release scripts and packaged service management.
+- Human-readable operator output and command validation.
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/orchard_cli>.
+## Does not own
 
+- Controller business logic or persistence rules; see `../orchard_controller/`.
+- Node-agent runtime behavior; see `../orchard_node_agent/`.
+- Installer scripts and launchd plist installation; see
+  `../../packaging/pkg/README.md`.
+
+## Local work
+
+Run CLI tests and source-dev commands from the umbrella root through `mise exec --`.
+For setup and validation commands, see [`../../docs/tooling.md`](../../docs/tooling.md)
+and [`../../docs/local-dev.md`](../../docs/local-dev.md).

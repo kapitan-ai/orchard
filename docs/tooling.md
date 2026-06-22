@@ -92,6 +92,25 @@ Package builds should run through the same toolchain:
 mise exec -- ./scripts/build-pkg.sh
 ```
 
+## Generated Contracts
+
+Cluster and worker proto bindings are generated through Mix aliases from the
+repo root:
+
+```bash
+mise exec -- mix proto.gen
+mise exec -- mix proto.gen.worker
+```
+
+- `mix proto.gen` generates Elixir controller ↔ node-agent cluster modules from
+  `proto/cluster/v1/{common,events,runtime}.proto` into
+  `apps/orchard_shared/lib/cluster/v1/`.
+- `mix proto.gen.worker` generates Python bindings for the shared cluster protos
+  and `native/orchard_worker_mlx/proto/orchard/worker/v1/worker_runtime.proto`
+  into `native/orchard_worker_mlx/src/orchard_worker_mlx/generated/`.
+- The node-agent Elixir worker binding is maintained manually; see
+  `native/orchard_worker_mlx/README.md`.
+
 ## Node Policy
 
 Orchard currently has JavaScript assets, but no first-party `package.json`,

@@ -1,21 +1,30 @@
-# Orchard
+# orchard_controller
 
-**TODO: Add description**
+Controller release for Orchard's public API, Console, persistence-backed control
+plane, admission/scheduling/dispatch paths, governance surfaces, and operator
+readiness behavior.
 
-## Installation
+This README is orientation only. Normative behavior lives in
+[`../../SPEC.md`](../../SPEC.md); repo/runtime boundaries are mapped in
+[`../../docs/architecture.md`](../../docs/architecture.md).
 
-If [available in Hex](https://hex.pm/docs/publish), the package can be installed
-by adding `orchard_controller` to your list of dependencies in `mix.exs`:
+## Owns
 
-```elixir
-def deps do
-  [
-    {:orchard_controller, "~> 0.1.0"}
-  ]
-end
-```
+- Phoenix/Plug API endpoints and LiveView Console surfaces.
+- `Orchard.Repo` migrations and Postgres-backed controller state.
+- Request canonicalization, tokenization orchestration, admission, scheduling,
+  dispatch, lifecycle persistence, and public response serialization.
 
-Documentation can be generated with [ExDoc](https://github.com/elixir-lang/ex_doc)
-and published on [HexDocs](https://hexdocs.pm). Once published, the docs can
-be found at <https://hexdocs.pm/orchard_controller>.
+## Does not own
 
+- Node-local model execution or worker subprocess lifecycle; see
+  `../orchard_node_agent/` and `../../native/orchard_worker_mlx/`.
+- Shared generated transport modules and cross-app domain helpers; see
+  `../orchard_shared/`.
+- Packaged install policy; see `../../packaging/pkg/README.md`.
+
+## Local work
+
+Run source dev from the umbrella root with `mise exec -- bin/dev`. For setup and
+validation commands, see [`../../docs/local-dev.md`](../../docs/local-dev.md)
+and [`../../docs/tooling.md`](../../docs/tooling.md).

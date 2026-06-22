@@ -4,6 +4,9 @@ Local development setup for the Orchard inference stack. Default mode is
 single-node; multi-node source-dev testing is supported via env vars
 (see [Two-Node Source-Dev Cluster Testing](#two-node-source-dev-cluster-testing)).
 
+Read [`architecture.md`](architecture.md) first if you need repo/runtime boundary
+orientation, and [`tooling.md`](tooling.md) for pinned tool versions.
+
 ## Prerequisites
 
 | Dependency | Version | Notes |

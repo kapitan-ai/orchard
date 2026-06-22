@@ -10,6 +10,15 @@ inference generation, and health probing for Apple Silicon (MLX) backends.
 
 See `../../docs/tooling.md` for the required mise and uv workflow.
 
+## Responsibility boundary
+
+The worker owns local model loading, generation, prefix-cache/runtime telemetry,
+and MLX backend integration. The node agent supervises the worker process and is
+the network-reachable boundary for controller dispatch. Public clients never call
+this service directly.
+
+See `../../docs/architecture.md` for the broader runtime map.
+
 ## Proto contract
 
 The worker runtime proto lives at:
