@@ -336,10 +336,16 @@ defmodule Orchard.Nodes do
 
   defp refresh_observed_queue_capacities(%Node{} = node, status_response) do
     queue_manager = Orchard.Inference.queue_manager()
-    source = {:node, node.id}
-    previous_source_keys = MapSet.new(queue_manager.active_capacity_source_lanes(source))
+    placement_source = {:node, node.id, :placement}
+    cold_source = {:node, node.id, :cold}
+    legacy_source = {:node, node.id}
 
-    queue_manager.clear_capacity_source(source)
+    previous_source_keys =
+      MapSet.new(queue_manager.active_capacity_source_lanes(placement_source))
+
+    queue_manager.clear_capacity_source(legacy_source)
+    queue_manager.clear_capacity_source(placement_source)
+    queue_manager.clear_capacity_source(cold_source)
 
     if queue_capacity_eligible_node?(node) do
       placements = extract_runtime_model_placements(status_response)
@@ -349,8 +355,12 @@ defmodule Orchard.Nodes do
         |> MapSet.new(&placement_queue_key/1)
         |> MapSet.union(previous_source_keys)
 
-      Enum.each(placements, &refresh_loaded_placement_capacity(node, status_response, &1))
-      refresh_cold_queue_capacities(queue_manager, source, status_response, placement_keys)
+      Enum.each(
+        placements,
+        &refresh_loaded_placement_capacity(placement_source, status_response, &1)
+      )
+
+      refresh_cold_queue_capacities(queue_manager, cold_source, status_response, placement_keys)
     end
   rescue
     error ->
@@ -380,7 +390,7 @@ defmodule Orchard.Nodes do
 
   defp extract_runtime_model_placements(_status_response), do: []
 
-  defp refresh_loaded_placement_capacity(%Node{} = node, status_response, placement)
+  defp refresh_loaded_placement_capacity(source, status_response, placement)
        when is_map(placement) do
     case placement_model_ref(placement) do
       {:ok, model_id, version} ->
@@ -392,7 +402,7 @@ defmodule Orchard.Nodes do
           end
 
         Orchard.Inference.queue_manager().refresh_capacity(model_id, version, capacity,
-          source: {:node, node.id}
+          source: source
         )
 
       :error ->
@@ -400,7 +410,7 @@ defmodule Orchard.Nodes do
     end
   end
 
-  defp refresh_loaded_placement_capacity(_node, _status_response, _placement), do: :ok
+  defp refresh_loaded_placement_capacity(_source, _status_response, _placement), do: :ok
 
   defp placement_queue_key(placement) do
     case placement_model_ref(placement) do
