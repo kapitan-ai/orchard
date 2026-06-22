@@ -21,8 +21,10 @@ large spec sections.
 
 ### I want to run it locally
 
-- [`tooling.md`](tooling.md) — mise/uv toolchain and validation commands.
-- [`local-dev.md`](local-dev.md) — source-dev setup, `bin/dev`, split-role dev,
+- [`tooling.md`](tooling.md) — mise/uv/npm toolchain, Makefile aliases, and
+  validation commands.
+- [`local-dev.md`](local-dev.md) — source-dev setup, `make dev` / `bin/dev`,
+  split-role dev,
   smoke checks, and environment notes.
 
 ### I want to contribute code
@@ -31,6 +33,8 @@ large spec sections.
 - [`../AGENTS.md`](../AGENTS.md) — automation/agent workflow and quality gates.
 - [`process.md`](process.md) — artifact lifecycle and review gates.
 - [`code-quality.md`](code-quality.md) — Credo, ex_slop, and ex_dna policy.
+- [`../openspec/README.md`](../openspec/README.md) — OpenSpec change workflow
+  for substantial collaborator-reviewed changes.
 
 ### I want to change Console UI
 
@@ -58,6 +62,8 @@ large spec sections.
 - Normative product/system behavior: `../SPEC.md`.
 - Human workflow: `../CONTRIBUTING.md`.
 - Agent workflow and validation: `../AGENTS.md`.
+- OpenSpec change intent: `../openspec/README.md` and
+  `../openspec/changes/<change-id>/`.
 - Artifact lifecycle: `process.md` and `../goals/README.md`.
 
 If docs, tests, implementation, and `SPEC.md` disagree about product behavior,
@@ -71,6 +77,7 @@ updated.
 - Prefer practical execution guidance over prose.
 - Keep current implementation status separate from target architecture.
 - Update or delete stale docs quickly.
-- Do not commit raw prompt exports, active goal packages, tool session IDs,
-  credentials, DSNs, or machine-specific evidence.
+- Do not commit raw prompt exports, active goal packages, local context stores
+  such as `.codex/` or `.claude/`, tool session IDs, credentials, DSNs, or
+  machine-specific evidence.
 - Promote durable conclusions into standalone docs, decisions, tests, or code.

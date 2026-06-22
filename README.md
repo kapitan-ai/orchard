@@ -68,7 +68,7 @@ Clients (SDKs / curl / apps)
 | APIs | Phoenix/Plug (loopback HTTP in source dev; HTTPS + SSE in packaged installs) |
 | Packaging | DMG, PKG, launchd |
 | CLI | `orchardctl` |
-| Toolchain | mise-pinned Erlang/OTP, Elixir, Python, and uv |
+| Toolchain | mise-pinned Erlang/OTP, Elixir, Python, uv, Node.js, npm, and OpenSpec |
 
 ### Current transport behavior
 
@@ -163,7 +163,8 @@ must be rewritten into this repo before it counts as Orchard truth.
 - [`docs/tooling.md`](docs/tooling.md) explains the required mise toolchain and local accelerator tools.
 - [`docs/local-dev.md`](docs/local-dev.md) explains source development setup and smoke checks.
 - [`docs/process.md`](docs/process.md) explains artifact lifecycle and review gates.
-- [`openspec/README.md`](openspec/README.md) reserves a future structured-change workflow subordinate to `SPEC.md`.
+- [`openspec/README.md`](openspec/README.md) explains the initialized OpenSpec
+  change workflow subordinate to `SPEC.md`.
 
 Active local `goals/<slug>/` packages are transient execution scaffolding and
 are ignored by default.

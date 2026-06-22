@@ -1,0 +1,17 @@
+{
+  "name": "orchard-tooling",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Repository-local tooling pins for Orchard collaborator workflows.",
+  "packageManager": "npm@11.13.0",
+  "engines": {
+    "node": "24.17.0",
+    "npm": "11.13.0"
+  },
+  "scripts": {
+    "openspec": "OPENSPEC_TELEMETRY=0 openspec"
+  },
+  "devDependencies": {
+    "@fission-ai/openspec": "1.4.1"
+  }
+}

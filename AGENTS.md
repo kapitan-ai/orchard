@@ -8,7 +8,7 @@ Orchard is a sovereign on-prem LLM orchestration platform for Apple Silicon macO
 implementation decision must trace to `SPEC.md`, tests, product docs, a
 decision record, or an explicitly approved issue/PR decision.
 
-If `SPEC.md`, docs, future OpenSpec materials, tests, or implementation disagree
+If `SPEC.md`, docs, OpenSpec materials, tests, or implementation disagree
 about product behavior, treat the PR as blocked until the branch reconciles the
 conflict. `SPEC.md` wins until explicitly updated.
 
@@ -28,7 +28,7 @@ interview JSON, annotation state, tool session identifiers, credentials, DSNs,
 or machine-specific paths.
 
 Durable conclusions belong in this repo: `SPEC.md`, `docs/**`,
-`docs/decisions/**`, tests, code, or future verified OpenSpec materials.
+`docs/decisions/**`, tests, code, or approved OpenSpec materials.
 
 ## Planning And Local Goals
 
@@ -58,6 +58,30 @@ Do not commit active `goals/<slug>/` packages, raw interview JSON, review JSON,
 metadata JSON, local evidence logs, local paths, or tool session identifiers.
 If goal material becomes durable, promote the conclusion into `SPEC.md`,
 product docs, decisions, tests, or code.
+
+## OpenSpec Workflow
+
+OpenSpec is initialized as Orchard's collaborator-reviewable change-intent
+workflow under `SPEC.md`. Use it for substantial behavior, architecture, API,
+security/governance, node lifecycle, scheduling, packaging, or
+collaborator-owned changes.
+
+Rules:
+
+- `SPEC.md` remains the apex product contract.
+- OpenSpec change packages live in `openspec/changes/<change-id>/`.
+- Each OpenSpec change should include `proposal.md`, `tasks.md`, and spec
+  deltas; add `design.md` when the change has technical ambiguity, migration
+  risk, security/performance concerns, or cross-module impact.
+- Before implementation or PR handoff, run
+  `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive`.
+- After archiving or syncing accepted behavior, run
+  `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive`.
+- Review generated main specs for placeholder prose such as `Purpose TBD`;
+  strict validation accepts some incomplete prose that still needs human review.
+- Do not mirror large sections of `SPEC.md` into OpenSpec specs.
+- Do not commit generated `.codex/`, `.claude/`, prompt exports, local context
+  stores, tool session identifiers, or machine-local execution evidence.
 
 ## Architecture (from SPEC.md)
 
@@ -102,6 +126,41 @@ Agent accelerators such as RepoPrompt, codemap, ast-grep, Refero, Superpowers,
 and Exa may help with discovery, review, design, and research. Discover their
 available roles/workflows live before assuming a stale tool surface. They do not
 own product truth and must not become required human collaborator dependencies.
+
+## Agent Command Surface
+
+Prefer the repo command surface when it exists. `Makefile` targets are thin
+aliases over documented `mise exec --` commands; they do not define product
+truth or validation policy.
+
+Authority order:
+
+1. `SPEC.md`, this `AGENTS.md`, and product docs define behavior and workflow.
+2. `docs/tooling.md` defines pinned runtime/tool versions.
+3. `Makefile` provides convenience entrypoints only.
+
+If a `Makefile` target and the docs disagree, treat the docs as authoritative
+and fix the `Makefile`.
+
+Recommended targets:
+
+- `make setup` — install pinned repo dependencies.
+- `make dev` — run source dev in the foreground.
+- `make dev-controller` — run the source-dev controller host in the foreground.
+- `make dev-node-agent` — run the source-dev node-agent host in the foreground.
+- `make openspec` — run pinned OpenSpec validation.
+- `make format` — run Elixir formatter.
+- `make test` — run the default test suite.
+- `make check-elixir` — run the full Elixir quality workflow.
+
+`make dev` must remain a foreground/blocking command equivalent to
+`mise exec -- bin/dev`. Do not background the dev server from `make dev`. If
+background operation is needed, use explicit targets such as `dev-bg`,
+`dev-stop`, and `dev-status` with PID/log handling.
+
+Do not assume packaged Orchard BEAM processes under
+`/Library/Application Support/Orchard/` mean source dev is running. Source dev
+uses the repo checkout and defaults to HTTP `:4000` plus gRPC `:50071`.
 
 ## LiveView Console Conventions
 
@@ -212,7 +271,8 @@ Rules:
 
 ## Dev Environment
 
-**Start with:** `mise exec -- bin/dev`
+**Start with:** `make dev` when a `Makefile` is available; otherwise
+`mise exec -- bin/dev`.
 
 This single command creates the dev database if needed, runs migrations, sets
 the dev gRPC port to 50071 (avoiding conflict with the packaged BEAM on 50061),
@@ -280,6 +340,7 @@ See `packaging/pkg/README.md` for full PKG operator documentation and `packaging
 | README.md | High-level product and roadmap overview |
 | CONTRIBUTING.md | Human collaborator workflow |
 | CONTEXT-MAP.md | Domain-modeling discovery map for glossary context |
+| Makefile | Thin convenience command index over `mise exec --` |
 | mise.toml | Pinned local toolchain contract |
 | docs/glossary/CONTEXT.md | Shared Orchard product glossary |
 | docs/tooling.md | mise, validation command, and local tool guidance |
@@ -288,6 +349,6 @@ See `packaging/pkg/README.md` for full PKG operator documentation and `packaging
 | docs/architecture.md | Contributor architecture and repo-boundary orientation |
 | docs/decisions/ | ADR-style durable decisions |
 | goals/README.md | Local goal package policy |
-| openspec/README.md | Reserved structured-change workflow |
+| openspec/README.md | Initialized OpenSpec change workflow |
 | mix.exs | Umbrella project root |
 | docs/code-quality.md | ex_slop + ex_dna plugin reference and tuning guide |

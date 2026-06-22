@@ -26,6 +26,9 @@ The pinned toolchain currently covers:
 | Elixir | `1.20.0-otp-29` | Mix, umbrella compilation, tests, releases |
 | Python | `3.11.15` | Native tokenizer and MLX worker packages |
 | uv | `0.11.23` | Python package sync, virtualenvs, native tests |
+| Node.js | `24.17.0` | Repository-local OpenSpec CLI runtime |
+| npm | `11.13.0` | Package manager bundled with pinned Node.js |
+| OpenSpec | `@fission-ai/openspec@1.4.1` | OpenSpec change/spec validation |
 
 The mise environment also sets:
 
@@ -47,8 +50,24 @@ tool resolution matters.
 mise exec -- mix deps.get
 mise exec -- uv sync --directory native/orchard_tokenizer
 mise exec -- uv sync --directory native/orchard_worker_mlx
+mise exec -- npm ci --ignore-scripts
 mise exec -- bin/dev
 ```
+
+The root `Makefile` provides thin aliases over these pinned commands for common
+workflows:
+
+```bash
+make setup
+make dev
+make dev-controller
+make dev-node-agent
+make openspec
+make check-elixir
+```
+
+Use the documented `mise exec --` commands as the authority when a Makefile
+target and this guide disagree.
 
 Elixir validation:
 
@@ -116,13 +135,29 @@ mise exec -- mix proto.gen.worker
 
 ## Node Policy
 
-Orchard currently has JavaScript assets, but no first-party `package.json`,
-`npm`, `pnpm`, or `yarn` workflow. Phoenix asset builds use the Mix-managed
-`esbuild` and `tailwind` packages.
+Orchard has a minimal first-party npm workflow for repository-local OpenSpec
+validation. The only root npm dependency is the pinned OpenSpec CLI in
+`package.json` / `package-lock.json`.
 
-Do not add an npm-based or Node-based workflow without first adding the Node
-version to `mise.toml` and updating this document. If a first-party
-`package.json` appears, Node becomes part of the required mise toolchain.
+The root `.npmrc` sets `save-exact=true`; keep Node tool dependencies exact and
+commit the resulting `package-lock.json` changes.
+
+Phoenix asset builds still use the Mix-managed `esbuild` and `tailwind`
+packages. Do not add general app JavaScript dependencies, asset builds, or an
+alternate Node workflow without updating `mise.toml`, `package.json`,
+`package-lock.json`, and this document.
+
+Install the pinned Node package tools from the repo root:
+
+```bash
+mise exec -- npm ci --ignore-scripts
+```
+
+Run OpenSpec through the pinned npm script:
+
+```bash
+OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive
+```
 
 ## Tools Outside mise
 
@@ -139,6 +174,10 @@ by mise:
 
 Document these in the relevant runbook or packaging guide rather than adding
 them to `mise.toml`.
+
+OpenSpec is initialized for collaborator-reviewable change packages and pinned
+through the root npm workflow. For OpenSpec-backed branches, run the validation
+commands in [`../openspec/README.md`](../openspec/README.md).
 
 ## Agent Accelerator Tools
 
@@ -179,8 +218,8 @@ Toolchain bumps must be intentional. For any change to `mise.toml`:
 3. Run the affected validation gates under `mise exec --`.
 4. For Erlang/OTP or Elixir bumps, run the full Elixir workflow.
 5. For Python or uv bumps, run both native package workflows.
-6. For future Node bumps, run the first-party Node workflow that required the
-   pin.
+6. For Node, npm, or OpenSpec bumps, run the first-party Node workflow that
+   required the pin.
 
 If a toolchain bump changes product behavior or packaging behavior, state the
 `SPEC.md` impact and update the relevant docs, tests, or decision record.
