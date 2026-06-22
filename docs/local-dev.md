@@ -50,8 +50,8 @@ mise install
 export ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\""
 mise exec -- mix local.hex --if-missing --force
 mise exec -- mix local.rebar --if-missing --force
-unset ERL_AFLAGS
 mise exec -- mix deps.get
+unset ERL_AFLAGS
 mise exec -- uv sync --directory native/orchard_tokenizer
 mise exec -- uv sync --directory native/orchard_worker_mlx
 mise exec -- npm ci --ignore-scripts

@@ -47,7 +47,9 @@ Documentation and automation should prefer the explicit form when reproducible
 tool resolution matters.
 
 ```bash
+export ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\""
 mise exec -- mix deps.get
+unset ERL_AFLAGS
 mise exec -- uv sync --directory native/orchard_tokenizer
 mise exec -- uv sync --directory native/orchard_worker_mlx
 mise exec -- npm ci --ignore-scripts

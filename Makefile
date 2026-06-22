@@ -21,7 +21,7 @@ setup-elixir:
 	mise install
 	ERL_AFLAGS="$(MIX_BOOTSTRAP_ERL_AFLAGS)" mise exec -- mix local.hex --if-missing --force
 	ERL_AFLAGS="$(MIX_BOOTSTRAP_ERL_AFLAGS)" mise exec -- mix local.rebar --if-missing --force
-	mise exec -- mix deps.get
+	ERL_AFLAGS="$(MIX_BOOTSTRAP_ERL_AFLAGS)" mise exec -- mix deps.get
 
 setup-native:
 	mise exec -- uv sync --directory native/orchard_tokenizer
