@@ -75,7 +75,7 @@ Clients (SDKs / curl / apps)
   disabled)
 
 See [docs/tooling.md](docs/tooling.md) for required local toolchain setup,
-[docs/m1-local-dev.md](docs/m1-local-dev.md) for dev setup, and
+[docs/local-dev.md](docs/local-dev.md) for dev setup, and
 [packaging/pkg/README.md](packaging/pkg/README.md) for operator transport
 configuration, including nginx/Caddy/Traefik snippets.
 
@@ -141,6 +141,7 @@ must be rewritten into this repo before it counts as Orchard truth.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) explains human collaboration workflow.
 - [`AGENTS.md`](AGENTS.md) explains automation and agent workflow.
 - [`docs/tooling.md`](docs/tooling.md) explains the required mise toolchain and local accelerator tools.
+- [`docs/local-dev.md`](docs/local-dev.md) explains source development setup and smoke checks.
 - [`docs/process.md`](docs/process.md) explains artifact lifecycle and review gates.
 - [`openspec/README.md`](openspec/README.md) reserves a future structured-change workflow subordinate to `SPEC.md`.
 

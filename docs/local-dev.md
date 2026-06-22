@@ -1,4 +1,4 @@
-# M1 Local Development
+# Local Development
 
 Local development setup for the Orchard inference stack. Default mode is
 single-node; multi-node source-dev testing is supported via env vars
@@ -115,7 +115,7 @@ Source-dev defaults remain disabled unless explicitly enabled via env vars:
 `ORCHARD_CACHE_INTROSPECTION_ENABLED=false`, and
 `ORCHARD_MEMORY_ADMISSION_ENABLED=false` when unset. The three advanced
 cache-affinity numeric knobs above are optional overrides for
-`:orchard_controller, :inference` and otherwise use shared M1 defaults.
+`:orchard_controller, :inference` and otherwise use shared runtime defaults.
 
 ##### Cache-affinity and memory-admission config regression smoke (source-dev)
 
@@ -201,7 +201,7 @@ on transport modes, truthy/falsy values, and validation behavior.
 | `config/test.exs` | Test environment: sandbox DB, `fake_runtime?: true` |
 | `config/prod.exs` | Prod placeholder |
 | `config/runtime.exs` | Release-time config from env vars |
-| `config/m1_runtime_defaults.exs` | Shared defaults for M1 runtime settings |
+| `config/m1_runtime_defaults.exs` | Shared defaults for source-dev runtime settings |
 
 ### Dev Directory Structure
 
@@ -731,13 +731,13 @@ mise exec -- mix ecto.migrate
 mise exec -- iex -S mix phx.server
 ```
 
-## M1 Limitations
+## Current Source-Dev Limitations
 
 - Source dev controller uses loopback HTTP (`127.0.0.1:4000`); packaged
   installs default to degraded loopback HTTP until an operator selects
   `reverse_proxy` or `direct_https` (see [Transport Modes](#transport-modes))
 - Source dev gRPC on port 50071; packaged installs on 50061
-- Node-agent gRPC remains loopback and non-TLS in M1
+- Source-dev node-agent gRPC remains loopback and non-TLS
 - Single implicit tenant (no auth/RBAC — deferred to M2)
 - Multi-node is supported for source-dev testing only (production/packaged multi-node — M4)
 - No distributed Erlang across machines
