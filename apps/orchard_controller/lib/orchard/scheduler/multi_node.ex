@@ -172,7 +172,7 @@ defmodule Orchard.Scheduler.MultiNode do
             model_load_timeout_ms: Inference.model_load_timeout_ms(),
             node_id: selected.node_id,
             candidate_count: length(ranked),
-            queue_lane_capacity: queue_lane_capacity(available_candidates, selected.loaded_model?),
+            queue_lane_capacity: queue_lane_capacity(available_candidates),
             selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
           }
           |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
@@ -265,22 +265,19 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp active_without_known_capacity?(_candidate), do: false
 
-  defp queue_lane_capacity(candidates, true) do
-    candidates
-    |> Enum.filter(& &1.loaded_model?)
-    |> Enum.map(&effective_model_capacity_for_queue/1)
-    |> Enum.sum()
-    |> case do
-      capacity when capacity > 0 -> capacity
-      _capacity -> 1
-    end
-  end
+  defp queue_lane_capacity(candidates) do
+    loaded_capacity =
+      candidates
+      |> Enum.filter(& &1.loaded_model?)
+      |> Enum.map(&effective_model_capacity_for_queue/1)
+      |> Enum.sum()
 
-  defp queue_lane_capacity(candidates, false) do
-    candidates
-    |> Enum.reject(& &1.loaded_model?)
-    |> Enum.count(&node_has_available_capacity?/1)
-    |> case do
+    cold_capacity =
+      candidates
+      |> Enum.reject(& &1.loaded_model?)
+      |> Enum.count(&node_has_available_capacity?/1)
+
+    case loaded_capacity + cold_capacity do
       capacity when capacity > 0 -> capacity
       _capacity -> 1
     end
