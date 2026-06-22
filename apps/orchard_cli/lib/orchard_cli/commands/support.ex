@@ -404,32 +404,85 @@ defmodule OrchardCLI.Commands.Support do
   end
 
   defp redact_env_file(contents) do
-    contents
-    |> String.split("\n", trim: false)
-    |> Enum.map_join("\n", &redact_env_line/1)
+    {lines, _state} =
+      contents
+      |> String.split("\n", trim: false)
+      |> Enum.map_reduce(:clear, &redact_env_line/2)
+
+    Enum.join(lines, "\n")
   end
 
-  defp redact_env_line("#" <> rest = line) do
+  defp redact_env_line(line, :private_key) do
+    state = if Regex.match?(@private_key_end_regex, line), do: :clear, else: :private_key
+    {"[redacted]", state}
+  end
+
+  defp redact_env_line(line, {:quote, quote}) do
+    state = if contains_unescaped_quote?(line, quote), do: :clear, else: {:quote, quote}
+    {"[redacted]", state}
+  end
+
+  defp redact_env_line(line, :clear) do
+    case env_assignment(line) do
+      {:assignment, prefix, key, value} ->
+        if sensitive_env_key?(key) or sensitive_value?(value) do
+          {"#{prefix}#{key}=[redacted]", env_secret_block_state(value)}
+        else
+          {line, :clear}
+        end
+
+      _other ->
+        {line, :clear}
+    end
+  end
+
+  defp env_assignment("#" <> rest) do
     case String.split(rest, "=", parts: 2) do
-      [key, _value] ->
-        if sensitive_env_key?(key), do: "##{key}=[redacted]", else: line
-
-      _other ->
-        line
+      [key, value] -> {:assignment, "#", key, value}
+      _other -> :none
     end
   end
 
-  defp redact_env_line(""), do: ""
-
-  defp redact_env_line(line) do
+  defp env_assignment(line) do
     case String.split(line, "=", parts: 2) do
-      [key, _value] ->
-        if sensitive_env_key?(key), do: "#{key}=[redacted]", else: line
-
-      _other ->
-        line
+      [key, value] -> {:assignment, "", key, value}
+      _other -> :none
     end
   end
+
+  defp env_secret_block_state(value) do
+    if Regex.match?(@private_key_begin_regex, value) and
+         not Regex.match?(@private_key_end_regex, value) do
+      :private_key
+    else
+      env_quoted_block_state(value)
+    end
+  end
+
+  defp env_quoted_block_state(value) do
+    value = String.trim_leading(value)
+
+    cond do
+      String.starts_with?(value, "\"") ->
+        quoted_block_state(value, "\"")
+
+      String.starts_with?(value, "'") ->
+        quoted_block_state(value, "'")
+
+      true ->
+        :clear
+    end
+  end
+
+  defp quoted_block_state(value, quote) do
+    value
+    |> String.slice(1..-1//1)
+    |> contains_unescaped_quote?(quote)
+    |> then(fn closed? -> if closed?, do: :clear, else: {:quote, quote} end)
+  end
+
+  defp contains_unescaped_quote?(value, "\""), do: Regex.match?(~r/(^|[^\\])"/, value)
+  defp contains_unescaped_quote?(value, "'"), do: Regex.match?(~r/(^|[^\\])'/, value)
 
   defp sensitive_env_key?(key) do
     {parts, compact} = key_identity(key)
@@ -742,23 +795,49 @@ defmodule OrchardCLI.Commands.Support do
 
   defp redact_log_line?(line) do
     sensitive_log_literal?(line) or
-      Regex.match?(@bearer_value_regex, line) or
-      Regex.match?(@credential_url_userinfo_regex, line) or
       Regex.match?(@credential_token_assignment_regex, line) or
       Regex.match?(@license_secret_assignment_regex, line) or
-      Regex.match?(@private_key_regex, line) or
-      sensitive_log_assignment?(line)
+      sensitive_value?(line)
   end
 
   defp sensitive_log_literal?(line) do
-    normalized = String.downcase(line)
-    Enum.any?(@sensitive_log_literals, &String.contains?(normalized, &1))
+    line
+    |> log_line_forms()
+    |> Enum.map(&String.downcase/1)
+    |> Enum.any?(fn normalized ->
+      Enum.any?(@sensitive_log_literals, &String.contains?(normalized, &1))
+    end)
+  end
+
+  defp sensitive_value?(value) do
+    value_secret? =
+      value
+      |> log_line_forms()
+      |> Enum.any?(fn form ->
+        Regex.match?(@bearer_value_regex, form) or
+          Regex.match?(@credential_url_userinfo_regex, form) or
+          Regex.match?(@private_key_regex, form)
+      end)
+
+    value_secret? or sensitive_log_assignment?(value)
   end
 
   defp sensitive_log_assignment?(line) do
     line
+    |> log_line_forms()
+    |> Enum.any?(&sensitive_log_assignment_in_form?/1)
+  end
+
+  defp sensitive_log_assignment_in_form?(line) do
+    line
     |> then(&Regex.scan(@assignment_key_regex, &1, capture: :all_but_first))
     |> Enum.any?(fn [key] -> sensitive_log_key?(key) end)
+  end
+
+  defp log_line_forms(line) do
+    unescaped = Regex.replace(~r/\\+(["'])/, line, fn _match, quote -> quote end)
+
+    if unescaped == line, do: [line], else: [line, unescaped]
   end
 
   defp write_json!(stage_dir, relative_path, data) do

@@ -225,6 +225,67 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute log =~ "query-license-secret"
   end
 
+  test "redaction covers env secret values, multiline env blocks, and escaped JSON logs", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    File.write!(
+      Path.join([support_root, "config", "controller.env"]),
+      """
+      ORCHARD_PUBLIC_HOST=orchard.local
+      REDIS_URL=redis://:redis-secret@localhost:6379/0
+      WEBHOOK=/callback?api_key=env-query-secret&token_count=7
+      PRIVATE_KEY="-----BEGIN PRIVATE KEY-----
+      EnvPrivateKeyBody
+      -----END PRIVATE KEY-----"
+      """
+    )
+
+    File.write!(
+      Path.join([support_root, "logs", "controller.log"]),
+      ~S"""
+      booted
+      body={\"prompt\":\"escaped prompt secret\"}
+      payload=\"{\\\"messages\\\":[{\\\"content\\\":\\\"escaped message secret\\\"}]}\"
+      tokenizer diagnostic prompt_tokens=2 token_count=2
+      ids={\"input_ids\":[1,2,3]}
+      ready
+      """
+    )
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime(support_root)
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "env-value-redaction")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    config = File.read!(Path.join([extract_dir, "config", "controller.env"]))
+    assert config =~ "ORCHARD_PUBLIC_HOST=orchard.local"
+    assert config =~ "REDIS_URL=[redacted]"
+    assert config =~ "WEBHOOK=[redacted]"
+    assert config =~ "PRIVATE_KEY=[redacted]"
+    refute config =~ "redis-secret"
+    refute config =~ "env-query-secret"
+    refute config =~ "EnvPrivateKeyBody"
+    refute config =~ "PRIVATE KEY"
+
+    log = File.read!(Path.join([extract_dir, "logs", "controller.log"]))
+    assert log =~ "booted"
+    assert log =~ "tokenizer diagnostic prompt_tokens=2 token_count=2"
+    assert log =~ "ready"
+    assert log =~ "[redacted log line]"
+    refute log =~ "escaped prompt secret"
+    refute log =~ "escaped message secret"
+    refute log =~ "input_ids"
+    refute log =~ "[1,2,3]"
+  end
+
   test "redaction preserves tokenizer and license diagnostics while redacting credentials", %{
     support_root: support_root,
     output_dir: output_dir,
