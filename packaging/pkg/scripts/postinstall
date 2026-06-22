@@ -7,8 +7,8 @@ set -eu
 # optional controller-only or node-only modes.
 #
 # Flow (Sub-tasks 2–4 of Task 4):
-#   1. Resolve install role from request/marker/default
-#   2. Remove unsupported managed Postgres launchd plist
+#   1. Remove unsupported managed Postgres launchd plist
+#   2. Resolve install role from request/marker/default
 #   3. Install wrapper binaries
 #   4. Install wrapper symlinks into /usr/local/bin
 #   5. Defer role-selected launchd plist mutation until TLS validation passes
@@ -546,7 +546,12 @@ remove_unsupported_managed_postgres_plist() {
 }
 
 # ===========================================================================
-# 1. Resolve install role
+# 1. Remove unsupported managed Postgres launchd plist
+# ===========================================================================
+remove_unsupported_managed_postgres_plist
+
+# ===========================================================================
+# 2. Resolve install role
 # ===========================================================================
 if [ -f "$INSTALL_ROLE_REQUEST_FILE" ]; then
   validate_install_role_request_file "$INSTALL_ROLE_REQUEST_FILE" || exit 1
@@ -566,11 +571,6 @@ validate_install_role "$install_role" || {
   exit 1
 }
 printf 'postinstall: install_role=%s source=%s\n' "$install_role" "$install_role_source"
-
-# ===========================================================================
-# 2. Remove unsupported managed Postgres launchd plist before validation exits
-# ===========================================================================
-remove_unsupported_managed_postgres_plist
 
 # ===========================================================================
 # 3. Install wrapper commands into bin/

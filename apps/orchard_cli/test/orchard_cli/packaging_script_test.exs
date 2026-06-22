@@ -1113,37 +1113,69 @@ defmodule OrchardCLI.PackagingScriptTest do
     end)
   end
 
-  test "postinstall rejects group/world-writable request file" do
+  test "postinstall rejects group/world-writable request file after postgres cleanup" do
     with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
       stale_controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
       node_agent = Path.join(ctx.launch_daemons, "com.orchard.node-agent.plist")
+      stale_postgres = Path.join(ctx.launch_daemons, "com.orchard.postgres.plist")
       marker_path = Path.join([ctx.root, "support", ".install-role"])
 
       File.write!(request_path, "node-agent\n")
       File.write!(stale_controller, "stale controller plist\n")
+      File.write!(stale_postgres, "stale postgres plist\n")
 
       assert {output, 1} = run_script(script, ctx, [{"REQUEST_STAT_MODE", "666"}])
       assert output =~ "must not be group/world writable"
+      assert output =~ "removing unsupported managed Postgres LaunchDaemon"
       assert File.exists?(request_path)
       assert File.exists?(stale_controller)
+      refute File.exists?(stale_postgres)
       refute File.exists?(node_agent)
       refute File.exists?(marker_path)
+      assert File.read!(ctx.launchctl_log) =~ "bootout system/com.orchard.postgres"
     end)
   end
 
-  test "postinstall rejects request file with non-root owner" do
+  test "postinstall rejects request file with non-root owner after postgres cleanup" do
     with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
       stale_controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
       node_agent = Path.join(ctx.launch_daemons, "com.orchard.node-agent.plist")
+      stale_postgres = Path.join(ctx.launch_daemons, "com.orchard.postgres.plist")
 
       File.write!(request_path, "node-agent\n")
       File.write!(stale_controller, "stale controller plist\n")
+      File.write!(stale_postgres, "stale postgres plist\n")
 
       assert {output, 1} = run_script(script, ctx, [{"REQUEST_STAT_UID", "501"}])
       assert output =~ "must be root-owned"
+      assert output =~ "removing unsupported managed Postgres LaunchDaemon"
       assert File.exists?(request_path)
       assert File.exists?(stale_controller)
+      refute File.exists?(stale_postgres)
       refute File.exists?(node_agent)
+      assert File.read!(ctx.launchctl_log) =~ "bootout system/com.orchard.postgres"
+    end)
+  end
+
+  test "postinstall rejects invalid existing role marker after postgres cleanup" do
+    with_temp_postinstall(fn %{script: script} = ctx ->
+      stale_controller = Path.join(ctx.launch_daemons, "com.orchard.controller.plist")
+      node_agent = Path.join(ctx.launch_daemons, "com.orchard.node-agent.plist")
+      stale_postgres = Path.join(ctx.launch_daemons, "com.orchard.postgres.plist")
+      marker_path = Path.join([ctx.root, "support", ".install-role"])
+
+      File.write!(marker_path, "invalid\n")
+      File.write!(stale_controller, "stale controller plist\n")
+      File.write!(stale_postgres, "stale postgres plist\n")
+
+      assert {output, 1} = run_script(script, ctx)
+      assert output =~ "invalid existing install role"
+      assert output =~ "removing unsupported managed Postgres LaunchDaemon"
+      assert File.exists?(marker_path)
+      assert File.exists?(stale_controller)
+      refute File.exists?(stale_postgres)
+      refute File.exists?(node_agent)
+      assert File.read!(ctx.launchctl_log) =~ "bootout system/com.orchard.postgres"
     end)
   end
 
