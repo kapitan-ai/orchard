@@ -2,6 +2,7 @@ defmodule OrchardCLI.BuildPkgScriptTest do
   use ExUnit.Case, async: true
 
   @script_path Path.expand("../../../../scripts/build-pkg.sh", __DIR__)
+  @pkg_readme Path.expand("../../../../packaging/pkg/README.md", __DIR__)
 
   test "build channel allowlist is explicit and rejects deprecated guard" do
     script = File.read!(@script_path)
@@ -66,7 +67,23 @@ defmodule OrchardCLI.BuildPkgScriptTest do
     plist_section = section_between(script, "PLIST_FILES=(", ")\nfor plist")
 
     assert wrapper_section =~ "orchard-managed-postgres"
+    assert script =~ "share/bin/orchard-managed-postgres"
+    assert script =~ "./Library/Application Support/Orchard/share/bin/orchard-managed-postgres"
     refute plist_section =~ "com.orchard.postgres.plist"
+  end
+
+  test "package uninstall runbook deletes shipped wrapper commands" do
+    readme = File.read!(@pkg_readme)
+    delete_section = section_between(readme, "delete: [", "]")
+
+    for wrapper <- [
+          "orchardctl",
+          "orchard-controller",
+          "orchard-node-agent",
+          "orchard-managed-postgres"
+        ] do
+      assert delete_section =~ "/Library/Application Support/Orchard/bin/#{wrapper}"
+    end
   end
 
   defp index_of(haystack, needle) do

@@ -1299,6 +1299,7 @@ cask "orchard" do
               "/Library/Application Support/Orchard/bin/orchardctl",
               "/Library/Application Support/Orchard/bin/orchard-controller",
               "/Library/Application Support/Orchard/bin/orchard-node-agent",
+              "/Library/Application Support/Orchard/bin/orchard-managed-postgres",
               "/Library/LaunchDaemons/com.orchard.controller.plist",
               "/Library/LaunchDaemons/com.orchard.node-agent.plist",
             ]
