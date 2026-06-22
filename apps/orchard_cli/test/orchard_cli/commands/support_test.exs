@@ -311,6 +311,131 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute log =~ "PRIVATE KEY"
   end
 
+  test "redaction covers prompt token IDs and camel-case sensitive keys", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    File.write!(
+      Path.join([support_root, "config", "controller.env"]),
+      """
+      accessToken=env-access-secret
+      clientSecret=env-client-secret
+      secretAccessKey=env-secret-access-key
+      license_certificate=env-license-certificate
+      machine_certificate=env-machine-certificate
+      ORCHARD_TOKENIZER_EXECUTABLE=/Library/Application Support/Orchard/native/tokenizer
+      """
+    )
+
+    File.write!(
+      Path.join([support_root, "logs", "controller.log"]),
+      """
+      prompt_token_ids=[101, 202, 303]
+      promptTokenIds: [404, 505, 606]
+      tokenizer failed with prompt_token_ids_length_mismatch ids=[707, 808]
+      supports_prompt_token_ids=true worker_supports_prompt_token_ids=true token_count=3
+      accessToken=log-access-secret
+      clientSecret: log-client-secret
+      secretAccessKey=log-secret-access-key
+      license_certificate=log-license-certificate
+      machine_certificate=log-machine-certificate
+      safe diagnostic line
+      """
+    )
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime(support_root)
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "token-id-redaction")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    config = File.read!(Path.join([extract_dir, "config", "controller.env"]))
+    assert config =~ "accessToken=[redacted]"
+    assert config =~ "clientSecret=[redacted]"
+    assert config =~ "secretAccessKey=[redacted]"
+    assert config =~ "license_certificate=[redacted]"
+    assert config =~ "machine_certificate=[redacted]"
+
+    assert config =~
+             "ORCHARD_TOKENIZER_EXECUTABLE=/Library/Application Support/Orchard/native/tokenizer"
+
+    refute config =~ "env-access-secret"
+    refute config =~ "env-client-secret"
+    refute config =~ "env-secret-access-key"
+    refute config =~ "env-license-certificate"
+    refute config =~ "env-machine-certificate"
+
+    log = File.read!(Path.join([extract_dir, "logs", "controller.log"]))
+    assert log =~ "[redacted log line]"
+
+    assert log =~
+             "supports_prompt_token_ids=true worker_supports_prompt_token_ids=true token_count=3"
+
+    assert log =~ "safe diagnostic line"
+    refute log =~ "101"
+    refute log =~ "404"
+    refute log =~ "707"
+    refute log =~ "log-access-secret"
+    refute log =~ "log-client-secret"
+    refute log =~ "log-secret-access-key"
+    refute log =~ "log-license-certificate"
+    refute log =~ "log-machine-certificate"
+  end
+
+  test "truncated PEM tails redact through unmatched private key terminators", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    retained_tail = """
+    MIIPrivateKeyBody1
+    MIIPrivateKeyBody2
+    -----END PRIVATE KEY-----
+    safe diagnostic line
+    """
+
+    File.write!(
+      Path.join([support_root, "logs", "controller.log"]),
+      """
+      before
+      -----BEGIN PRIVATE KEY-----
+      """ <> retained_tail
+    )
+
+    assert {:ok, _output} =
+             Support.run(
+               [
+                 "bundle",
+                 "create",
+                 "--support-root",
+                 support_root,
+                 "--output",
+                 output_dir,
+                 "--max-log-bytes",
+                 Integer.to_string(byte_size(retained_tail))
+               ],
+               runtime(support_root)
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "truncated-pem")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    log = File.read!(Path.join([extract_dir, "logs", "controller.log"]))
+    assert log =~ "[truncated to last #{byte_size(retained_tail)} bytes]"
+    assert log =~ "[redacted log line]"
+    assert log =~ "safe diagnostic line"
+    refute log =~ "MIIPrivateKeyBody"
+    refute log =~ "PRIVATE KEY"
+  end
+
   test "config collection skips symlinked env files", %{
     support_root: support_root,
     output_dir: output_dir,

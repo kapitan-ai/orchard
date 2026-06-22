@@ -12,7 +12,8 @@ defmodule OrchardCLI.Commands.Support do
     activation authorization bearer cookie dsn keyfile password passwd passphrase pem secret
   )
   @sensitive_key_compounds ~w(
-    access_key api_key apikey cacertfile certfile database_url private_key sentry_dsn x_api_key
+    access_key api_key apikey cacertfile certfile database_url license_certificate
+    machine_certificate private_key sentry_dsn x_api_key
   )
   @sensitive_key_compact_fragments ~w(password passwd passphrase)
   @sensitive_key_compact_aliases ~w(dbpass pgpass pgpassfile)
@@ -21,7 +22,7 @@ defmodule OrchardCLI.Commands.Support do
   @sensitive_env_license_keys ~w(license orchard_license)
   @safe_diagnostic_keys ~w(
     completion_tokens input_tokens license_enforcement license_mode orchard_license_enforcement
-    orchard_license_mode orchard_tokenizer_executable output_tokens prompt_token_ids prompt_tokens
+    orchard_license_mode orchard_tokenizer_executable output_tokens prompt_tokens
     supports_prompt_token_ids token_count tokenizer_executable tokens_per_second total_tokens
     worker_supports_prompt_token_ids
   )
@@ -32,6 +33,7 @@ defmodule OrchardCLI.Commands.Support do
     "canonical_request",
     "request_payload",
     "response_payload",
+    "prompt_token_ids_length_mismatch",
     ~s("messages"),
     ~s("prompt"),
     "prompt="
@@ -467,15 +469,19 @@ defmodule OrchardCLI.Commands.Support do
   defp safe_diagnostic_key?(compact), do: compact in @safe_diagnostic_keys
 
   defp key_identity(key) do
-    parts =
+    normalized =
       key
       |> String.trim()
       |> String.trim_leading("#")
       |> String.trim()
+      |> Macro.underscore()
       |> String.downcase()
-      |> String.split(~r/[^a-z0-9]+/, trim: true)
+      |> String.replace(~r/[^a-z0-9]+/, "_")
+      |> String.trim("_")
 
-    {parts, Enum.join(parts, "_")}
+    parts = String.split(normalized, "_", trim: true)
+
+    {parts, normalized}
   end
 
   defp collect_logs!(stage_dir, support_root, max_log_bytes) do
@@ -647,12 +653,46 @@ defmodule OrchardCLI.Commands.Support do
       {lines, _in_private_key?} =
         content
         |> String.split("\n", trim: false)
-        |> Enum.map_reduce(false, &redact_log_line/2)
+        |> redact_log_lines(initial_private_key_state?(content))
 
       Enum.join(lines, "\n")
     else
       "[redacted binary log content]\n"
     end
+  end
+
+  defp redact_log_lines([line | rest], true) do
+    if truncated_log_marker?(line) do
+      {redacted, in_private_key?} = Enum.map_reduce(rest, true, &redact_log_line/2)
+      {[line | redacted], in_private_key?}
+    else
+      Enum.map_reduce([line | rest], true, &redact_log_line/2)
+    end
+  end
+
+  defp redact_log_lines(lines, in_private_key?) do
+    Enum.map_reduce(lines, in_private_key?, &redact_log_line/2)
+  end
+
+  defp initial_private_key_state?(content) do
+    case {first_regex_index(@private_key_begin_regex, content),
+          first_regex_index(@private_key_end_regex, content)} do
+      {nil, nil} -> false
+      {nil, _end_index} -> true
+      {begin_index, end_index} when is_integer(end_index) -> end_index < begin_index
+      {_begin_index, nil} -> false
+    end
+  end
+
+  defp first_regex_index(regex, content) do
+    case Regex.run(regex, content, return: :index) do
+      [{index, _length} | _rest] -> index
+      nil -> nil
+    end
+  end
+
+  defp truncated_log_marker?(line) do
+    String.starts_with?(line, "[truncated to last ") and String.ends_with?(line, " bytes]")
   end
 
   defp redact_log_line("", false), do: {"", false}
