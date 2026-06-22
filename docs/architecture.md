@@ -26,9 +26,9 @@ The target topology is:
 ```text
 Public clients
   -> Controller (Phoenix/Elixir public APIs, Console, admission, scheduling)
-  -> Node Agent(s) over internal gRPC/mTLS
-  -> Worker Runtime subprocesses for local MLX inference
-  -> Postgres for durable state and coordination
+     -> Postgres for durable state and coordination
+     -> Node Agent(s) over internal gRPC/mTLS
+        -> Worker Runtime subprocesses for local MLX inference
 ```
 
 Core design rules from `SPEC.md`:
@@ -54,7 +54,7 @@ Core design rules from `SPEC.md`:
 | `packaging/` | PKG, launchd, reserved DMG/container assets, signing/build runbooks. |
 | `docs/` | Contributor-facing orientation, tooling, process, design, and durable decisions subordinate to `SPEC.md`. |
 
-Use [`../CONTEXT.md`](../CONTEXT.md) as the shared vocabulary glossary.
+Use [`glossary/CONTEXT.md`](glossary/CONTEXT.md) as the shared vocabulary glossary.
 
 ## Runtime flow orientation
 
