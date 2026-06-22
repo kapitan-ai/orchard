@@ -93,6 +93,11 @@ env_optional_string = fn env_name ->
   end
 end
 
+default_worker_generation_mode = fn
+  "stub" -> "stream"
+  _backend -> "batch"
+end
+
 env_tokenizer_safe_mode = fn env_name, default ->
   case System.get_env(env_name) || default do
     value when value in [:off, "off"] ->
@@ -589,6 +594,8 @@ if config_env() == :prod do
   orchard_support_root =
     System.get_env("ORCHARD_SUPPORT_ROOT") || "/Library/Application Support/Orchard"
 
+  runtime_worker_backend = System.get_env("ORCHARD_WORKER_BACKEND") || "mlx"
+
   license_enforcement_mode =
     Orchard.Licensing.resolve_enforcement_mode(
       env_optional_string.("ORCHARD_LICENSE_ENFORCEMENT"),
@@ -1038,7 +1045,7 @@ if config_env() == :prod do
                 Path.join([orchard_support_root, "data", "worker-sockets"]),
             worker_executable:
               System.get_env("ORCHARD_WORKER_EXECUTABLE") || "orchard-worker-mlx",
-            worker_backend: System.get_env("ORCHARD_WORKER_BACKEND") || "mlx",
+            worker_backend: runtime_worker_backend,
             worker_ready_timeout_ms: env_int.("ORCHARD_WORKER_READY_TIMEOUT_MS", "5000"),
             worker_load_timeout_ms: env_int.("ORCHARD_WORKER_LOAD_TIMEOUT_MS", "120000"),
             worker_shutdown_timeout_ms: env_int.("ORCHARD_WORKER_SHUTDOWN_TIMEOUT_MS", "1000"),
@@ -1077,7 +1084,9 @@ if config_env() == :prod do
                end).(),
             worker_generation_mode:
               (fn ->
-                 mode = System.get_env("ORCHARD_WORKER_GENERATION_MODE") || "batch"
+                 mode =
+                   System.get_env("ORCHARD_WORKER_GENERATION_MODE") ||
+                     default_worker_generation_mode.(runtime_worker_backend)
 
                  unless mode in ["stream", "batch"] do
                    raise "ORCHARD_WORKER_GENERATION_MODE must be stream|batch, got: #{inspect(mode)}"

@@ -5,6 +5,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     "RELEASE_NAME",
     "MIX_RELEASE_NAME",
     "ORCHARD_SUPPORT_ROOT",
+    "ORCHARD_WORKER_BACKEND",
     "ORCHARD_WORKER_GENERATION_MODE",
     "ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL",
     "ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL",
@@ -90,6 +91,52 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:worker_memory_budget_overhead_bytes] == 1_073_741_824
   end
 
+  test "runtime.exs defaults stub backend generation to stream in prod" do
+    runtime =
+      read_runtime_config!(%{"ORCHARD_WORKER_BACKEND" => "stub"})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:worker_backend] == "stub"
+    assert runtime[:worker_generation_mode] == "stream"
+  end
+
+  test "runtime.exs explicit generation mode overrides stub backend default in prod" do
+    runtime =
+      read_runtime_config!(%{
+        "ORCHARD_WORKER_BACKEND" => "stub",
+        "ORCHARD_WORKER_GENERATION_MODE" => "batch"
+      })
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:worker_backend] == "stub"
+    assert runtime[:worker_generation_mode] == "batch"
+  end
+
+  test "dev.exs defaults stub backend generation to stream" do
+    runtime =
+      read_dev_config!(%{"ORCHARD_WORKER_BACKEND" => "stub"})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:worker_backend] == "stub"
+    assert runtime[:worker_generation_mode] == "stream"
+  end
+
+  test "dev.exs explicit generation mode overrides stub backend default" do
+    runtime =
+      read_dev_config!(%{
+        "ORCHARD_WORKER_BACKEND" => "stub",
+        "ORCHARD_WORKER_GENERATION_MODE" => "batch"
+      })
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:worker_backend] == "stub"
+    assert runtime[:worker_generation_mode] == "batch"
+  end
+
   test "runtime.exs accepts valid worker generation and memory settings in prod" do
     config =
       read_runtime_config!(%{
@@ -125,15 +172,31 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
 
     base
     |> Map.merge(overrides)
-    |> Enum.each(fn
-      {key, nil} -> System.delete_env(key)
-      {key, value} -> System.put_env(key, value)
-    end)
+    |> put_config_env!()
 
     Config.Reader.read!(runtime_config_path(), env: :prod)
   end
 
+  defp read_dev_config!(overrides) do
+    put_config_env!(overrides)
+
+    Config.Reader.read!(dev_config_path(), env: :dev)
+  end
+
+  defp put_config_env!(env) do
+    Enum.each(@tracked_env_vars, &System.delete_env/1)
+
+    Enum.each(env, fn
+      {key, nil} -> System.delete_env(key)
+      {key, value} -> System.put_env(key, value)
+    end)
+  end
+
   defp runtime_config_path do
     Path.expand("../../../../../config/runtime.exs", __DIR__)
+  end
+
+  defp dev_config_path do
+    Path.expand("../../../../../config/dev.exs", __DIR__)
   end
 end
