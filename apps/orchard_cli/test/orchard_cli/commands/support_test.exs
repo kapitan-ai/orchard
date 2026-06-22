@@ -51,6 +51,8 @@ defmodule OrchardCLI.Commands.SupportTest do
       OPENAI_API_KEY=sk-test
       ORCHARD_API_KEY=orch_test.secret
       AWS_ACCESS_KEY_ID=AKIASECRET
+      #SECRET_KEY_BASE=old-super-secret
+      # DATABASE_URL=postgres://user:old-password@localhost/old_orchard
       ORCHARD_PUBLIC_HOST=orchard.local
       """
     )
@@ -99,7 +101,10 @@ defmodule OrchardCLI.Commands.SupportTest do
     assert config =~ "OPENAI_API_KEY=[redacted]"
     assert config =~ "ORCHARD_API_KEY=[redacted]"
     assert config =~ "AWS_ACCESS_KEY_ID=[redacted]"
+    assert config =~ "#SECRET_KEY_BASE=[redacted]"
+    assert config =~ "# DATABASE_URL=[redacted]"
     refute config =~ "super-secret"
+    refute config =~ "old-super-secret"
     refute config =~ "postgres://user"
     refute config =~ "sk-test"
     refute config =~ "orch_test.secret"
@@ -135,6 +140,8 @@ defmodule OrchardCLI.Commands.SupportTest do
       booted
       Authorization: Bearer orch_secret.token
       request_payload={"prompt":"private prompt"}
+      password=orch_password
+      token=orch_token
       ready
       """
     )
@@ -170,6 +177,8 @@ defmodule OrchardCLI.Commands.SupportTest do
     assert log =~ "[redacted log line]"
     refute log =~ "orch_secret"
     refute log =~ "private prompt"
+    refute log =~ "orch_password"
+    refute log =~ "orch_token"
 
     truncated_log = File.read!(Path.join([extract_dir, "logs", "truncated.log"]))
     refute truncated_log =~ "orch_partial_secret"

@@ -12,26 +12,18 @@ defmodule OrchardCLI.Commands.Support do
     access_key activation apikey api_key authorization bearer cacertfile certfile cookie
     database_url dsn keyfile license password pem private_key secret sentry_dsn token
   )
-  @sensitive_log_markers [
-    "authorization",
-    "bearer ",
-    "cookie:",
-    "database_url",
-    "postgres://",
-    "ecto://",
-    "secret",
-    "private_key",
-    "license",
-    "api_key",
-    "x-api-key",
-    "sentry_dsn",
-    "canonical_request",
-    "request_payload",
-    "response_payload",
-    "\"messages\"",
-    "\"prompt\"",
-    "prompt="
-  ]
+  @sensitive_log_markers @sensitive_env_fragments ++
+                           [
+                             "postgres://",
+                             "ecto://",
+                             "x-api-key",
+                             "canonical_request",
+                             "request_payload",
+                             "response_payload",
+                             "\"messages\"",
+                             "\"prompt\"",
+                             "prompt="
+                           ]
 
   @type runtime :: map()
   @type command_opts :: %{
@@ -385,7 +377,16 @@ defmodule OrchardCLI.Commands.Support do
     |> Enum.map_join("\n", &redact_env_line/1)
   end
 
-  defp redact_env_line("#" <> _rest = line), do: line
+  defp redact_env_line("#" <> rest = line) do
+    case String.split(rest, "=", parts: 2) do
+      [key, _value] ->
+        if sensitive_env_key?(key), do: "##{key}=[redacted]", else: line
+
+      _other ->
+        line
+    end
+  end
+
   defp redact_env_line(""), do: ""
 
   defp redact_env_line(line) do
