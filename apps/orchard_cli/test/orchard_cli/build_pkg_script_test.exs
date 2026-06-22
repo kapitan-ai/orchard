@@ -39,6 +39,21 @@ defmodule OrchardCLI.BuildPkgScriptTest do
     assert script =~ "default channel: trial"
   end
 
+  test "package build bootstraps pinned asset dependencies before deploy" do
+    script = File.read!(@script_path)
+
+    mix_deps_index = index_of(script, "mix deps.get")
+    assets_setup_index = index_of(script, "MIX_ENV=prod mix assets.setup")
+    assets_deploy_index = index_of(script, "MIX_ENV=prod mix assets.deploy")
+
+    assert is_integer(mix_deps_index)
+    assert is_integer(assets_setup_index)
+    assert is_integer(assets_deploy_index)
+
+    assert mix_deps_index < assets_setup_index
+    assert assets_setup_index < assets_deploy_index
+  end
+
   defp index_of(haystack, needle) do
     case :binary.match(haystack, needle) do
       {index, _length} -> index

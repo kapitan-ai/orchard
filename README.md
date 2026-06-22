@@ -105,9 +105,11 @@ This creates a native macOS PKG installer following the naming convention
 `Orchard-<version>-<date>-<git-sha>.pkg`. Use `--clean` for reproducible
 builds from scratch, or `--allow-dirty` for development builds.
 
-**Prerequisites:** `mise install` from the repo root, plus macOS packaging
-tools. The script validates dependencies and provides helpful errors if
-anything is missing.
+**Prerequisites:** run `make setup` from the repo root, or run
+`mise trust && mise install` plus the setup commands in
+[`docs/local-dev.md`](docs/local-dev.md), before building. You also need the
+macOS packaging tools. The script validates dependencies and provides helpful
+errors if anything is missing.
 
 See [packaging/pkg/README.md](packaging/pkg/README.md#building-the-pkg) for
 full build documentation.

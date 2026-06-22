@@ -65,7 +65,7 @@ defmodule OrchardController.MixProject do
       setup: ["deps.get", "assets.setup", "ecto.setup"],
       "ecto.setup": ["ecto.create", "ecto.migrate"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
-      "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
+      "assets.setup": [&npm_ci/1],
       "assets.build": ["tailwind orchard", "esbuild orchard"],
       "assets.deploy": [
         "tailwind orchard --minify",
@@ -73,5 +73,22 @@ defmodule OrchardController.MixProject do
         "phx.digest"
       ]
     ]
+  end
+
+  defp npm_ci(_args) do
+    npm =
+      System.find_executable("npm") ||
+        Mix.raise("npm not found. Run `mise install` before running `mix assets.setup`.")
+
+    case System.cmd(
+           npm,
+           ["ci", "--ignore-scripts"],
+           cd: Path.expand("../..", __DIR__),
+           into: IO.stream(:stdio, :line),
+           stderr_to_stdout: true
+         ) do
+      {_output, 0} -> :ok
+      {_output, status} -> Mix.raise("npm ci --ignore-scripts failed with exit status #{status}")
+    end
   end
 end

@@ -143,6 +143,11 @@ echo 'ORCHARD_WORKER_BACKEND=stub' | sudo tee \
 sudo launchctl kickstart -k system/com.orchard.node-agent
 ```
 
+No `ORCHARD_WORKER_GENERATION_MODE` override is required for this rollback path;
+when the backend is `stub` and the mode env var is unset, packaged runtime
+configuration resolves generation mode to `stream`. If set explicitly, valid
+values are `stream` and `batch`; leave it unset for stub rollback.
+
 **Security note:** These files are sourced by shell scripts running as root
 (via launchd). The wrapper scripts validate ownership and permissions before
 sourcing — files that are not root-owned (`uid 0`) or have group/world
@@ -1102,8 +1107,10 @@ rather than environment-variable installer overrides.
 ### Build Requirements
 
 Before building:
-1. **mise toolchain**: Run `mise install` from the repo root. This provides
-   pinned Erlang/OTP, Elixir, Python, and uv versions from `mise.toml`.
+1. **Repo setup**: Run `make setup` from the repo root, or run the equivalent
+   manual setup commands from `docs/local-dev.md`. This installs the pinned
+   mise toolchain, bootstraps the mise-owned Hex/Rebar installs, fetches Elixir
+   deps, syncs native Python packages, and installs root npm tool/asset pins.
 2. **Build shell**: Run builds through `mise exec -- ./scripts/build-pkg.sh`.
 3. **Git**: Clean working tree recommended (use `--allow-dirty` if needed)
 4. **macOS**: PKG build only works on macOS (uses `pkgbuild`)

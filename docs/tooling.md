@@ -26,9 +26,11 @@ The pinned toolchain currently covers:
 | Elixir | `1.20.0-otp-29` | Mix, umbrella compilation, tests, releases |
 | Python | `3.11.15` | Native tokenizer and MLX worker packages |
 | uv | `0.11.23` | Python package sync, virtualenvs, native tests |
-| Node.js | `24.17.0` | Repository-local OpenSpec CLI runtime |
-| npm | `11.13.0` | Package manager bundled with pinned Node.js |
+| Node.js | `24.17.0` | Repository-local OpenSpec and Phoenix asset CLI runtime |
+| npm | `11.13.0` | Package manager for root tool and asset pins |
 | OpenSpec | `@fission-ai/openspec@1.4.1` | OpenSpec change/spec validation |
+| esbuild | `0.25.0` | Phoenix JavaScript asset bundling CLI |
+| Tailwind CSS | `4.1.3` | Phoenix CSS asset build CLI |
 
 The mise environment also sets:
 
@@ -47,7 +49,9 @@ Documentation and automation should prefer the explicit form when reproducible
 tool resolution matters.
 
 ```bash
-mise exec -- mix deps.get
+ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix local.hex --if-missing --force
+ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix local.rebar --if-missing --force
+ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\"" mise exec -- mix deps.get
 mise exec -- uv sync --directory native/orchard_tokenizer
 mise exec -- uv sync --directory native/orchard_worker_mlx
 mise exec -- npm ci --ignore-scripts
@@ -136,16 +140,19 @@ mise exec -- mix proto.gen.worker
 ## Node Policy
 
 Orchard has a minimal first-party npm workflow for repository-local OpenSpec
-validation. The only root npm dependency is the pinned OpenSpec CLI in
-`package.json` / `package-lock.json`.
+validation and the Phoenix asset CLI binaries used by source dev. The root npm
+dependencies are the pinned OpenSpec CLI plus pinned `esbuild`, `tailwindcss`,
+and `@tailwindcss/cli` versions in `package.json` / `package-lock.json`.
 
 The root `.npmrc` sets `save-exact=true`; keep Node tool dependencies exact and
 commit the resulting `package-lock.json` changes.
 
-Phoenix asset builds still use the Mix-managed `esbuild` and `tailwind`
-packages. Do not add general app JavaScript dependencies, asset builds, or an
-alternate Node workflow without updating `mise.toml`, `package.json`,
-`package-lock.json`, and this document.
+Phoenix asset builds still run through the Mix `esbuild` and `tailwind`
+wrappers, but those wrappers point at the npm-managed binaries under
+`node_modules/.bin` to avoid first-run binary downloads from inside
+`mix phx.server`. Do not add general app JavaScript dependencies, broader asset
+builds, or an alternate Node workflow without updating `mise.toml`,
+`package.json`, `package-lock.json`, and this document.
 
 Install the pinned Node package tools from the repo root:
 

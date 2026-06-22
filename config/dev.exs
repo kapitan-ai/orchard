@@ -240,6 +240,10 @@ memory_admission_config =
 
 node_runtime_defaults = Orchard.Config.M1RuntimeDefaults.node_runtime(dev_root)
 
+worker_backend =
+  env_optional_string.("ORCHARD_WORKER_BACKEND") ||
+    Keyword.fetch!(node_runtime_defaults, :worker_backend)
+
 worker_prefix_cache_mode =
   (fn ->
      mode =
@@ -257,7 +261,11 @@ worker_generation_mode =
   (fn ->
      mode =
        System.get_env("ORCHARD_WORKER_GENERATION_MODE") ||
-         Keyword.fetch!(node_runtime_defaults, :worker_generation_mode)
+         if worker_backend == "stub" do
+           "stream"
+         else
+           Keyword.fetch!(node_runtime_defaults, :worker_generation_mode)
+         end
 
      unless mode in ["stream", "batch"] do
        raise "ORCHARD_WORKER_GENERATION_MODE must be stream|batch, got: #{inspect(mode)}"
@@ -338,6 +346,7 @@ config :orchard_node_agent,
       worker_executable:
         System.get_env("ORCHARD_WORKER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
+      worker_backend: worker_backend,
       worker_prefix_cache_mode: worker_prefix_cache_mode,
       worker_generation_mode: worker_generation_mode,
       worker_max_concurrent_requests_per_model: worker_max_concurrent_requests_per_model,

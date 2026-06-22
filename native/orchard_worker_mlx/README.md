@@ -30,6 +30,12 @@ using the real backend:
 mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx
 ```
 
+The CLI also supports `--generation-mode stream|batch`. The stub backend uses
+`stream` when no generation mode is provided and rejects `batch`; the node-agent
+source and packaged runtime configs mirror that by resolving
+`ORCHARD_WORKER_BACKEND=stub` to stream mode when
+`ORCHARD_WORKER_GENERATION_MODE` is unset.
+
 ## Proto contract
 
 The worker runtime proto lives at:
