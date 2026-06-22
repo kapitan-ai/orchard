@@ -846,6 +846,58 @@ defmodule Orchard.NodesTest do
       send(first_awaiter, :stop)
     end
 
+    test "SPEC.md §5.5 cold heartbeat capacity aggregates across eligible nodes" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-aggregate-a", "cold-aggregate-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-aggregate-b", "cold-aggregate-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_cold_aggregate_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_cold_aggregate_result)
+
+      status_a =
+        make_status_response(%{listen_host: "10.0.0.65", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} =
+               Nodes.observe_status(make_target("10.0.0.65", 9444), status_a, DateTime.utc_now())
+
+      assert_receive {:first_cold_aggregate_result, {:ok, first_grant}}, 2_000
+      refute_receive {:second_cold_aggregate_result, _result}, 100
+
+      status_b =
+        make_status_response(%{listen_host: "10.0.0.66", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} =
+               Nodes.observe_status(make_target("10.0.0.66", 9444), status_b, DateTime.utc_now())
+
+      assert_receive {:second_cold_aggregate_result, {:ok, second_grant}}, 2_000
+
+      assert first_grant.queue_result == :queued
+      assert first_grant.queue_key == "cold-aggregate-model@v1"
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "cold-aggregate-model@v1"
+
+      assert :ok = QueueManager.release(first_grant)
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
     test "SPEC.md §5.5 degraded node heartbeat can wake queued cold model lane" do
       QueueManager.reset()
 
