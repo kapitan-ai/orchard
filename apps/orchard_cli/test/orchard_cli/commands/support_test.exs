@@ -184,6 +184,72 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute truncated_log =~ "orch_partial_secret"
   end
 
+  test "redaction preserves tokenizer and license diagnostics while redacting credentials", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    File.write!(
+      Path.join([support_root, "config", "controller.env"]),
+      """
+      ORCHARD_TOKENIZER_EXECUTABLE=/Library/Application Support/Orchard/native/tokenizer
+      ORCHARD_LICENSE_ENFORCEMENT=strict
+      ORCHARD_LICENSE_MODE=offline
+      ORCHARD_LICENSE_KEY=lic-secret
+      ORCHARD_ACCESS_TOKEN=access-secret
+      ORCHARD_TOKEN=plain-token-secret
+      """
+    )
+
+    File.write!(
+      Path.join([support_root, "logs", "controller.log"]),
+      """
+      tokenizer loaded executable=/Library/Application Support/Orchard/native/tokenizer
+      input_tokens=12 output_tokens=4 token_count=16
+      ORCHARD_LICENSE_ENFORCEMENT=strict license_mode=offline
+      license_key=lic-secret
+      api_token=api-secret
+      token=plain-token-secret
+      """
+    )
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime(support_root)
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "precise-redaction")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    config = File.read!(Path.join([extract_dir, "config", "controller.env"]))
+
+    assert config =~
+             "ORCHARD_TOKENIZER_EXECUTABLE=/Library/Application Support/Orchard/native/tokenizer"
+
+    assert config =~ "ORCHARD_LICENSE_ENFORCEMENT=strict"
+    assert config =~ "ORCHARD_LICENSE_MODE=offline"
+    assert config =~ "ORCHARD_LICENSE_KEY=[redacted]"
+    assert config =~ "ORCHARD_ACCESS_TOKEN=[redacted]"
+    assert config =~ "ORCHARD_TOKEN=[redacted]"
+    refute config =~ "lic-secret"
+    refute config =~ "access-secret"
+    refute config =~ "plain-token-secret"
+
+    log = File.read!(Path.join([extract_dir, "logs", "controller.log"]))
+
+    assert log =~
+             "tokenizer loaded executable=/Library/Application Support/Orchard/native/tokenizer"
+
+    assert log =~ "input_tokens=12 output_tokens=4 token_count=16"
+    assert log =~ "ORCHARD_LICENSE_ENFORCEMENT=strict license_mode=offline"
+    refute log =~ "lic-secret"
+    refute log =~ "api-secret"
+    refute log =~ "plain-token-secret"
+  end
+
   test "config collection skips symlinked env files", %{
     support_root: support_root,
     output_dir: output_dir,
@@ -308,9 +374,70 @@ defmodule OrchardCLI.Commands.SupportTest do
              )
 
     assert_received {:archive_dir, archive_dir, 0o700}
-    assert Path.dirname(archive_dir) == output_dir
+    temp_root = Path.dirname(archive_dir)
+    assert Path.dirname(temp_root) == output_dir
+    assert Path.basename(archive_dir) == "archive"
     refute archive_dir == output_dir
-    refute File.exists?(archive_dir)
+    refute File.exists?(temp_root)
+  end
+
+  test "temporary path collision does not remove another in-flight bundle directory",
+       %{support_root: support_root, output_dir: output_dir} do
+    File.mkdir_p!(output_dir)
+
+    colliding_stage_dir =
+      Path.join(output_dir, ".orchard-support-bundle-20260622T123456Z-collide.stage")
+
+    File.mkdir_p!(colliding_stage_dir)
+    File.write!(Path.join(colliding_stage_dir, "sentinel"), "owned")
+
+    {:ok, nonce_agent} = Agent.start(fn -> ["collide", "fresh"] end)
+    on_exit(fn -> Agent.stop(nonce_agent) end)
+
+    runtime =
+      support_root
+      |> runtime()
+      |> Map.put(:path_nonce, fn ->
+        Agent.get_and_update(nonce_agent, fn
+          [nonce | rest] -> {nonce, rest}
+          [] -> {"fresh", []}
+        end)
+      end)
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime
+             )
+
+    assert File.read!(Path.join(colliding_stage_dir, "sentinel")) == "owned"
+  end
+
+  test "final archive creation retries without overwriting an existing bundle",
+       %{support_root: support_root, output_dir: output_dir} do
+    File.mkdir_p!(output_dir)
+
+    existing_archive = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+
+    runtime =
+      support_root
+      |> runtime()
+      |> Map.put(:archive, fn stage_dir, temp_archive_path ->
+        :ok = archive_stage(stage_dir, temp_archive_path)
+        File.write!(existing_archive, "existing archive")
+        :ok
+      end)
+
+    assert {:ok, output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime
+             )
+
+    retry_archive = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z-1.tar.gz")
+    assert output =~ "Created support bundle: #{retry_archive}"
+    assert File.read!(existing_archive) == "existing archive"
+    assert File.regular?(retry_archive)
   end
 
   test "snapshot failures do not serialize raw exception messages",
@@ -359,17 +486,7 @@ defmodule OrchardCLI.Commands.SupportTest do
 
     assert message =~ "tar failed"
     refute File.exists?(Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz"))
-
-    refute File.exists?(
-             Path.join(
-               output_dir,
-               ".orchard-support-bundle-20260622T123456Z-testnonce.tar.gz.tmp"
-             )
-           )
-
-    refute File.exists?(
-             Path.join(output_dir, ".orchard-support-bundle-20260622T123456Z-testnonce.stage")
-           )
+    assert File.ls!(output_dir) == []
   end
 
   test "json output reports archive path", %{support_root: support_root, output_dir: output_dir} do

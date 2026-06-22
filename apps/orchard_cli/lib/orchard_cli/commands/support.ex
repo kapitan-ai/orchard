@@ -8,22 +8,37 @@ defmodule OrchardCLI.Commands.Support do
   @usage_exit_code 2
 
   @config_files ~w(controller.env node-agent.env console.env)
-  @sensitive_env_fragments ~w(
-    access_key activation apikey api_key authorization bearer cacertfile certfile cookie
-    database_url dsn keyfile license password pem private_key secret sentry_dsn token
+  @sensitive_key_parts ~w(
+    activation authorization bearer cookie dsn keyfile password passwd passphrase pem secret
   )
-  @sensitive_log_markers @sensitive_env_fragments ++
-                           [
-                             "postgres://",
-                             "ecto://",
-                             "x-api-key",
-                             "canonical_request",
-                             "request_payload",
-                             "response_payload",
-                             "\"messages\"",
-                             "\"prompt\"",
-                             "prompt="
-                           ]
+  @sensitive_key_compounds ~w(
+    access_key api_key apikey cacertfile certfile database_url private_key sentry_dsn x_api_key
+  )
+  @sensitive_token_partners ~w(access api auth bearer id license refresh secret session)
+  @sensitive_license_partners ~w(activation key secret token)
+  @sensitive_env_license_keys ~w(license orchard_license)
+  @safe_diagnostic_keys ~w(
+    completion_tokens input_tokens license_enforcement license_mode orchard_license_enforcement
+    orchard_license_mode orchard_tokenizer_executable output_tokens prompt_token_ids prompt_tokens
+    token_count tokenizer_executable tokens_per_second total_tokens worker_supports_prompt_token_ids
+  )
+  @sensitive_log_literals [
+    "postgres://",
+    "ecto://",
+    "canonical_request",
+    "request_payload",
+    "response_payload",
+    ~s("messages"),
+    ~s("prompt"),
+    "prompt="
+  ]
+  @assignment_key_regex ~r/(?:^|[\s,{;])["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*(?:=>|:|=)/
+  @bearer_value_regex ~r/\bbearer\s+[^\s,;]+/i
+  @credential_token_assignment_regex ~r/\b(?:api|access|auth|bearer|id|refresh|session|license)[-_\s]+tokens?\s*(?:=>|:|=)/i
+  @license_secret_assignment_regex ~r/\blicense[-_\s]+(?:activation|key|secret|token)\s*(?:=>|:|=)/i
+  @private_key_regex ~r/-----BEGIN [A-Z ]*PRIVATE KEY-----|\bprivate[-_\s]+key\s*(?:=>|:|=)/i
+  @temp_dir_attempts 20
+  @archive_finalize_attempts 100
 
   @type runtime :: map()
   @type command_opts :: %{
@@ -122,51 +137,46 @@ defmodule OrchardCLI.Commands.Support do
     now = runtime.now.()
     output_dir = opts.output_dir || Path.join(opts.support_root, "support")
     basename = "orchard-support-bundle-#{timestamp_for_path(now)}"
-    bundle_name = available_bundle_name(output_dir, basename)
-    archive_path = Path.join(output_dir, bundle_name <> ".tar.gz")
-    path_nonce = runtime.path_nonce.()
-    archive_dir = Path.join(output_dir, ".#{bundle_name}-#{path_nonce}.archive")
-    temp_archive_path = Path.join(archive_dir, bundle_name <> ".tar.gz.tmp")
-    stage_dir = Path.join(output_dir, ".#{bundle_name}-#{path_nonce}.stage")
 
     result =
       try do
         ensure_output_dir!(output_dir)
 
-        File.rm_rf!(stage_dir)
-        File.rm_rf!(archive_dir)
-        ensure_private_dir!(stage_dir)
-        ensure_private_dir!(archive_dir)
-        build_stage!(stage_dir, opts, runtime, now)
+        with_bundle_temp_root(output_dir, basename, runtime, fn temp_root ->
+          stage_dir = Path.join(temp_root, "stage")
+          archive_dir = Path.join(temp_root, "archive")
+          temp_archive_path = Path.join(archive_dir, basename <> ".tar.gz.tmp")
 
-        with :ok <- runtime.archive.(stage_dir, temp_archive_path),
-             :ok <- secure_archive(temp_archive_path),
-             :ok <- move_archive(temp_archive_path, archive_path) do
-          audit =
-            record_audit(runtime, %{
-              archive_name: Path.basename(archive_path),
-              bundle_format: "orchard.support_bundle.v1",
-              generated_at: DateTime.to_iso8601(now),
-              max_log_bytes: opts.max_log_bytes
-            })
+          ensure_private_dir!(stage_dir)
+          ensure_private_dir!(archive_dir)
+          build_stage!(stage_dir, opts, runtime, now)
 
-          bundle = %{
-            archive_path: archive_path,
-            audit: audit,
-            generated_at: DateTime.to_iso8601(now)
-          }
+          with :ok <- runtime.archive.(stage_dir, temp_archive_path),
+               :ok <- secure_archive(temp_archive_path),
+               {:ok, archive_path} <- finalize_archive(temp_archive_path, output_dir, basename) do
+            audit =
+              record_audit(runtime, %{
+                archive_name: Path.basename(archive_path),
+                bundle_format: "orchard.support_bundle.v1",
+                generated_at: DateTime.to_iso8601(now),
+                max_log_bytes: opts.max_log_bytes
+              })
 
-          {:ok, bundle}
-        end
+            bundle = %{
+              archive_path: archive_path,
+              audit: audit,
+              generated_at: DateTime.to_iso8601(now)
+            }
+
+            {:ok, bundle}
+          end
+        end)
       rescue
         exception ->
           {:error, "Error: failed to create support bundle: #{Exception.message(exception)}", 1}
       catch
         kind, reason ->
           {:error, "Error: failed to create support bundle: #{inspect({kind, reason})}", 1}
-      after
-        File.rm_rf(stage_dir)
-        File.rm_rf(archive_dir)
       end
 
     case result do
@@ -400,8 +410,57 @@ defmodule OrchardCLI.Commands.Support do
   end
 
   defp sensitive_env_key?(key) do
-    normalized = key |> String.trim() |> String.downcase()
-    Enum.any?(@sensitive_env_fragments, &String.contains?(normalized, &1))
+    {parts, compact} = key_identity(key)
+
+    cond do
+      safe_diagnostic_key?(compact) -> false
+      sensitive_key?(parts, compact) -> true
+      compact in @sensitive_env_license_keys -> true
+      sensitive_license_key?(parts) -> true
+      true -> false
+    end
+  end
+
+  defp sensitive_log_key?(key) do
+    {parts, compact} = key_identity(key)
+
+    cond do
+      safe_diagnostic_key?(compact) -> false
+      sensitive_key?(parts, compact) -> true
+      sensitive_license_key?(parts) -> true
+      true -> false
+    end
+  end
+
+  defp sensitive_key?(parts, compact) do
+    compact in @sensitive_key_compounds or
+      Enum.any?(@sensitive_key_compounds, &String.contains?(compact, &1)) or
+      Enum.any?(@sensitive_key_parts, &(&1 in parts)) or
+      token_secret_key?(parts, compact)
+  end
+
+  defp token_secret_key?(parts, compact) do
+    compact == "token" or String.ends_with?(compact, "_token") or
+      (Enum.any?(parts, &(&1 in ["token", "tokens"])) and
+         Enum.any?(@sensitive_token_partners, &(&1 in parts)))
+  end
+
+  defp sensitive_license_key?(parts) do
+    "license" in parts and Enum.any?(@sensitive_license_partners, &(&1 in parts))
+  end
+
+  defp safe_diagnostic_key?(compact), do: compact in @safe_diagnostic_keys
+
+  defp key_identity(key) do
+    parts =
+      key
+      |> String.trim()
+      |> String.trim_leading("#")
+      |> String.trim()
+      |> String.downcase()
+      |> String.split(~r/[^a-z0-9]+/, trim: true)
+
+    {parts, Enum.join(parts, "_")}
   end
 
   defp collect_logs!(stage_dir, support_root, max_log_bytes) do
@@ -440,26 +499,42 @@ defmodule OrchardCLI.Commands.Support do
     File.chmod!(path, 0o700)
   end
 
-  defp available_bundle_name(output_dir, basename),
-    do: available_bundle_name(output_dir, basename, 0)
+  defp with_bundle_temp_root(output_dir, basename, runtime, fun) do
+    temp_root = create_bundle_temp_root!(output_dir, basename, runtime)
 
-  defp available_bundle_name(output_dir, basename, 0) do
-    if File.exists?(Path.join(output_dir, basename <> ".tar.gz")) do
-      available_bundle_name(output_dir, basename, 1)
-    else
-      basename
+    try do
+      fun.(temp_root)
+    after
+      File.rm_rf(temp_root)
     end
   end
 
-  defp available_bundle_name(output_dir, basename, suffix) do
-    candidate = "#{basename}-#{suffix}"
+  defp create_bundle_temp_root!(output_dir, basename, runtime) do
+    create_bundle_temp_root!(output_dir, basename, runtime, 0)
+  end
 
-    if File.exists?(Path.join(output_dir, candidate <> ".tar.gz")) do
-      available_bundle_name(output_dir, basename, suffix + 1)
-    else
-      candidate
+  defp create_bundle_temp_root!(_output_dir, _basename, _runtime, @temp_dir_attempts) do
+    raise "failed to create unique support bundle temporary directory"
+  end
+
+  defp create_bundle_temp_root!(output_dir, basename, runtime, attempt) do
+    path = private_temp_root_path(output_dir, basename, runtime.path_nonce.())
+
+    case File.mkdir(path) do
+      :ok ->
+        File.chmod!(path, 0o700)
+        path
+
+      {:error, :eexist} ->
+        create_bundle_temp_root!(output_dir, basename, runtime, attempt + 1)
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "make directory", path: path
     end
   end
+
+  defp private_temp_root_path(output_dir, basename, path_nonce),
+    do: Path.join(output_dir, ".#{basename}-#{path_nonce}.tmp")
 
   defp regular_files(root) do
     case File.lstat(root) do
@@ -565,13 +640,26 @@ defmodule OrchardCLI.Commands.Support do
   defp redact_log_line(""), do: ""
 
   defp redact_log_line(line) do
-    normalized = String.downcase(line)
-
-    if Enum.any?(@sensitive_log_markers, &String.contains?(normalized, &1)) do
-      "[redacted log line]"
-    else
-      line
+    cond do
+      sensitive_log_literal?(line) -> "[redacted log line]"
+      Regex.match?(@bearer_value_regex, line) -> "[redacted log line]"
+      Regex.match?(@credential_token_assignment_regex, line) -> "[redacted log line]"
+      Regex.match?(@license_secret_assignment_regex, line) -> "[redacted log line]"
+      Regex.match?(@private_key_regex, line) -> "[redacted log line]"
+      sensitive_log_assignment?(line) -> "[redacted log line]"
+      true -> line
     end
+  end
+
+  defp sensitive_log_literal?(line) do
+    normalized = String.downcase(line)
+    Enum.any?(@sensitive_log_literals, &String.contains?(normalized, &1))
+  end
+
+  defp sensitive_log_assignment?(line) do
+    line
+    |> then(&Regex.scan(@assignment_key_regex, &1, capture: :all_but_first))
+    |> Enum.any?(fn [key] -> sensitive_log_key?(key) end)
   end
 
   defp write_json!(stage_dir, relative_path, data) do
@@ -606,17 +694,27 @@ defmodule OrchardCLI.Commands.Support do
     end
   end
 
-  defp move_archive(temp_archive_path, archive_path) do
-    if File.exists?(archive_path) do
-      {:error, "Error: support bundle already exists: #{archive_path}"}
-    else
-      case File.rename(temp_archive_path, archive_path) do
-        :ok ->
-          :ok
+  defp finalize_archive(temp_archive_path, output_dir, basename) do
+    finalize_archive(temp_archive_path, output_dir, basename, 0)
+  end
 
-        {:error, reason} ->
-          {:error, "Error: failed to move support bundle: #{:file.format_error(reason)}"}
-      end
+  defp finalize_archive(_temp_archive_path, _output_dir, _basename, @archive_finalize_attempts) do
+    {:error, "Error: failed to move support bundle: no available archive name"}
+  end
+
+  defp finalize_archive(temp_archive_path, output_dir, basename, attempt) do
+    bundle_name = if attempt == 0, do: basename, else: "#{basename}-#{attempt}"
+    archive_path = Path.join(output_dir, bundle_name <> ".tar.gz")
+
+    case File.ln(temp_archive_path, archive_path) do
+      :ok ->
+        {:ok, archive_path}
+
+      {:error, :eexist} ->
+        finalize_archive(temp_archive_path, output_dir, basename, attempt + 1)
+
+      {:error, reason} ->
+        {:error, "Error: failed to move support bundle: #{:file.format_error(reason)}"}
     end
   end
 
@@ -728,7 +826,7 @@ defmodule OrchardCLI.Commands.Support do
       list_recent_requests: &Orchard.Requests.list_recent_requests/1,
       nodes_summary: &Orchard.Nodes.summary/0,
       now: fn -> DateTime.utc_now() |> DateTime.truncate(:second) end,
-      path_nonce: fn -> System.unique_integer([:positive]) |> Integer.to_string(36) end,
+      path_nonce: fn -> :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false) end,
       requests_performance_summary: &Orchard.Requests.performance_summary/0,
       requests_summary: &Orchard.Requests.summary/0,
       status_snapshot: &Status.snapshot/1,
