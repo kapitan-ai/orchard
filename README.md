@@ -140,6 +140,7 @@ must be rewritten into this repo before it counts as Orchard truth.
 - [`SPEC.md`](SPEC.md) is the top-level normative build contract.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) explains human collaboration workflow.
 - [`AGENTS.md`](AGENTS.md) explains automation and agent workflow.
+- [`docs/glossary.md`](docs/glossary.md) defines Orchard's shared product language.
 - [`docs/tooling.md`](docs/tooling.md) explains the required mise toolchain and local accelerator tools.
 - [`docs/local-dev.md`](docs/local-dev.md) explains source development setup and smoke checks.
 - [`docs/process.md`](docs/process.md) explains artifact lifecycle and review gates.
