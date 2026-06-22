@@ -79,6 +79,7 @@ defmodule Orchard.CanonicalRequest do
     defstruct quota_id: nil,
               routing_policy_id: nil,
               allowed_pool_ids: [],
+              max_active_requests: nil,
               residency_preference: :allow_cold_load
 
     @type residency_preference :: :required_loaded | :prefer_loaded | :allow_cold_load
@@ -87,6 +88,7 @@ defmodule Orchard.CanonicalRequest do
             quota_id: String.t() | nil,
             routing_policy_id: String.t() | nil,
             allowed_pool_ids: [String.t()],
+            max_active_requests: pos_integer() | nil,
             residency_preference: residency_preference()
           }
   end
@@ -444,17 +446,19 @@ defmodule Orchard.CanonicalRequest do
              quota_id: quota_id,
              routing_policy_id: routing_policy_id,
              allowed_pool_ids: allowed_pool_ids,
+             max_active_requests: max_active_requests,
              residency_preference: preference
            }
          } = struct
        )
        when preference in [:required_loaded, :prefer_loaded, :allow_cold_load] do
     if valid_optional_binary?(quota_id) and valid_optional_binary?(routing_policy_id) and
-         valid_allowed_pool_ids?(allowed_pool_ids) do
+         valid_allowed_pool_ids?(allowed_pool_ids) and
+         valid_optional_positive_integer?(max_active_requests) do
       struct
     else
       raise ArgumentError,
-            "#{inspect(__MODULE__)} resolved_policy must include non-empty optional IDs and non-empty string allowed_pool_ids, got: #{inspect(struct.resolved_policy)}"
+            "#{inspect(__MODULE__)} resolved_policy must include non-empty optional IDs, non-empty string allowed_pool_ids, and optional positive max_active_requests, got: #{inspect(struct.resolved_policy)}"
     end
   end
 
@@ -511,6 +515,9 @@ defmodule Orchard.CanonicalRequest do
 
   defp valid_optional_binary?(nil), do: true
   defp valid_optional_binary?(value), do: is_binary(value) and value != ""
+
+  defp valid_optional_positive_integer?(nil), do: true
+  defp valid_optional_positive_integer?(value), do: is_integer(value) and value > 0
 
   defp valid_allowed_pool_ids?(allowed_pool_ids) when is_list(allowed_pool_ids),
     do: Enum.all?(allowed_pool_ids, &(is_binary(&1) and &1 != ""))

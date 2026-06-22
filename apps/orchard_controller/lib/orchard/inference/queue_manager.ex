@@ -234,6 +234,8 @@ defmodule Orchard.Inference.QueueManager do
   def handle_call(:reset, _from, state), do: {:reply, :ok, reset_state(state)}
 
   def handle_call({:acquire, request, config}, {_waiter_pid, _tag}, state) do
+    config = queue_config_for_request(config, request)
+
     state =
       request.queue_key
       |> prune_recovered_grants(state)
@@ -271,6 +273,7 @@ defmodule Orchard.Inference.QueueManager do
   end
 
   def handle_call({:requeue, %Grant{} = grant, request, config}, _from, state) do
+    config = queue_config_for_request(config, request)
     {result, state} = requeue_grant(grant, request, config, state)
     {:reply, result, state}
   end
@@ -1196,9 +1199,17 @@ defmodule Orchard.Inference.QueueManager do
       model_id: model_id,
       version: version,
       caller_pid: Map.get(attrs, :caller_pid, self()),
+      max_active_per_tenant: normalize_max_active_per_tenant(Map.get(attrs, :max_active_per_tenant)),
       queue_key: queue_key(model_id, version)
     }
   end
+
+  defp queue_config_for_request(config, %{max_active_per_tenant: limit})
+       when is_integer(limit) and limit > 0 do
+    %{config | max_active_per_tenant: limit}
+  end
+
+  defp queue_config_for_request(config, _request), do: config
 
   defp normalize_config(config) do
     config = Keyword.merge(Orchard.Inference.queue_admission_config(), config)

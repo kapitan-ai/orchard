@@ -308,6 +308,7 @@ All public inference requests SHALL normalize into one internal struct:
     quota_id: UUID | nil,
     routing_policy_id: UUID | nil,
     allowed_pool_ids: [UUID],
+    max_active_requests: pos_integer() | nil,
     residency_preference: :required_loaded | :prefer_loaded | :allow_cold_load
   }
 }
