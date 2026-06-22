@@ -286,6 +286,75 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute log =~ "[1,2,3]"
   end
 
+  test "redaction covers bare license assignments and compact secret keys", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    File.write!(
+      Path.join([support_root, "config", "controller.env"]),
+      """
+      LICENSE=env-license-secret
+      SECRETKEY=env-secret-key
+      PRIVATEKEY=env-private-key
+      ACCESSKEY=env-access-key
+      LICENSEKEY=env-license-key
+      ORCHARD_LICENSE_ENFORCEMENT=strict
+      ORCHARD_LICENSE_MODE=offline
+      """
+    )
+
+    File.write!(
+      Path.join([support_root, "logs", "controller.log"]),
+      """
+      license=log-license-secret
+      orchard_license=log-orchard-license-secret
+      callback=/cb?license=query-license-secret&license_mode=offline
+      SECRETKEY=log-secret-key
+      PRIVATEKEY=log-private-key
+      ACCESSKEY=log-access-key
+      LICENSEKEY=log-license-key
+      ORCHARD_LICENSE_ENFORCEMENT=strict license_mode=offline
+      """
+    )
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime(support_root)
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "compact-key-redaction")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    config = File.read!(Path.join([extract_dir, "config", "controller.env"]))
+    assert config =~ "LICENSE=[redacted]"
+    assert config =~ "SECRETKEY=[redacted]"
+    assert config =~ "PRIVATEKEY=[redacted]"
+    assert config =~ "ACCESSKEY=[redacted]"
+    assert config =~ "LICENSEKEY=[redacted]"
+    assert config =~ "ORCHARD_LICENSE_ENFORCEMENT=strict"
+    assert config =~ "ORCHARD_LICENSE_MODE=offline"
+    refute config =~ "env-license-secret"
+    refute config =~ "env-secret-key"
+    refute config =~ "env-private-key"
+    refute config =~ "env-access-key"
+    refute config =~ "env-license-key"
+
+    log = File.read!(Path.join([extract_dir, "logs", "controller.log"]))
+    assert log =~ "[redacted log line]"
+    assert log =~ "ORCHARD_LICENSE_ENFORCEMENT=strict license_mode=offline"
+    refute log =~ "log-license-secret"
+    refute log =~ "log-orchard-license-secret"
+    refute log =~ "query-license-secret"
+    refute log =~ "log-secret-key"
+    refute log =~ "log-private-key"
+    refute log =~ "log-access-key"
+    refute log =~ "log-license-key"
+  end
+
   test "redaction preserves tokenizer and license diagnostics while redacting credentials", %{
     support_root: support_root,
     output_dir: output_dir,
@@ -633,6 +702,113 @@ defmodule OrchardCLI.Commands.SupportTest do
              "No Orchard log files were found."
   end
 
+  test "log collection caps file count and prefers Orchard service logs", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    controller_log = Path.join([support_root, "logs", "controller.log"])
+    File.write!(controller_log, "controller\n")
+    touch_log!(controller_log, 1)
+
+    for index <- 1..5 do
+      path = Path.join([support_root, "logs", "rotated-#{index}.log"])
+      File.write!(path, "rotated #{index}\n")
+      touch_log!(path, index + 10)
+    end
+
+    runtime =
+      support_root
+      |> runtime()
+      |> Map.put(:log_collection_limits, fn -> %{max_files: 3, max_total_bytes: 1_024} end)
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "log-file-count-cap")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    assert File.exists?(Path.join([extract_dir, "logs", "controller.log"]))
+    assert File.exists?(Path.join([extract_dir, "logs", "rotated-5.log"]))
+    assert File.exists?(Path.join([extract_dir, "logs", "rotated-4.log"]))
+    refute File.exists?(Path.join([extract_dir, "logs", "rotated-3.log"]))
+
+    log_collection = read_json!(extract_dir, "diagnostics/logs.json")
+    assert get_in(log_collection, ["data", "files_available"]) == 6
+    assert get_in(log_collection, ["data", "files_collected"]) == 3
+    assert get_in(log_collection, ["data", "files_skipped"]) == 3
+
+    assert %{"path" => "rotated-3.log", "reason" => "file_count_limit"} in get_in(
+             log_collection,
+             ["data", "skipped"]
+           )
+
+    manifest = read_json!(extract_dir, "manifest.json")
+    assert get_in(manifest, ["log_collection", "files_collected"]) == 3
+  end
+
+  test "log collection caps aggregate retained bytes and records metadata", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    for index <- 1..3 do
+      path = Path.join([support_root, "logs", "aggregate-#{index}.log"])
+      File.write!(path, "prefix\n" <> String.duplicate(Integer.to_string(index), 24))
+      touch_log!(path, index)
+    end
+
+    runtime =
+      support_root
+      |> runtime()
+      |> Map.put(:log_collection_limits, fn -> %{max_files: 10, max_total_bytes: 25} end)
+
+    assert {:ok, _output} =
+             Support.run(
+               [
+                 "bundle",
+                 "create",
+                 "--support-root",
+                 support_root,
+                 "--output",
+                 output_dir,
+                 "--max-log-bytes",
+                 "20"
+               ],
+               runtime
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "log-aggregate-cap")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    assert File.exists?(Path.join([extract_dir, "logs", "aggregate-3.log"]))
+    assert File.exists?(Path.join([extract_dir, "logs", "aggregate-2.log"]))
+    refute File.exists?(Path.join([extract_dir, "logs", "aggregate-1.log"]))
+
+    log_collection = read_json!(extract_dir, "diagnostics/logs.json")
+    assert get_in(log_collection, ["data", "bytes_retained"]) == 25
+
+    assert %{"path" => "aggregate-1.log", "reason" => "total_log_bytes_limit"} in get_in(
+             log_collection,
+             ["data", "skipped"]
+           )
+
+    truncated_paths =
+      log_collection
+      |> get_in(["data", "truncated"])
+      |> Enum.map(& &1["path"])
+
+    assert "aggregate-3.log" in truncated_paths
+    assert "aggregate-2.log" in truncated_paths
+  end
+
   test "truncated logs omit the first partial line before redaction",
        %{support_root: support_root, output_dir: output_dir, tmp_dir: tmp_dir} do
     File.write!(
@@ -972,5 +1148,9 @@ defmodule OrchardCLI.Commands.SupportTest do
     |> Path.join(relative_path)
     |> File.read!()
     |> Jason.decode!()
+  end
+
+  defp touch_log!(path, second) do
+    assert :ok = :file.change_time(String.to_charlist(path), {{2026, 1, 1}, {0, 0, second}})
   end
 end

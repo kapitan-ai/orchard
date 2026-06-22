@@ -5,9 +5,12 @@ defmodule OrchardCLI.Commands.Support do
 
   @default_support_root "/Library/Application Support/Orchard"
   @default_max_log_bytes 1_048_576
+  @default_max_log_files 32
+  @default_max_total_log_bytes 8_388_608
   @usage_exit_code 2
 
   @config_files ~w(controller.env node-agent.env console.env)
+  @preferred_log_files ~w(controller.log node-agent.log console.log)
   @sensitive_key_parts ~w(
     activation authorization bearer cookie dsn keyfile password passwd passphrase pem secret
   )
@@ -15,11 +18,13 @@ defmodule OrchardCLI.Commands.Support do
     access_key api_key apikey cacertfile certfile database_url license_certificate
     machine_certificate private_key sentry_dsn x_api_key
   )
-  @sensitive_key_compact_fragments ~w(password passwd passphrase)
+  @sensitive_key_compact_fragments ~w(
+    accesskey licensekey password passwd passphrase privatekey secretkey
+  )
   @sensitive_key_compact_aliases ~w(dbpass pgpass pgpassfile)
   @sensitive_token_partners ~w(access api auth bearer id license refresh secret session)
   @sensitive_license_partners ~w(activation key secret token)
-  @sensitive_env_license_keys ~w(license orchard_license)
+  @sensitive_bare_license_keys ~w(license orchard_license)
   @safe_diagnostic_keys ~w(
     completion_tokens input_tokens license_enforcement license_mode orchard_license_enforcement
     orchard_license_mode orchard_tokenizer_executable output_tokens prompt_tokens
@@ -197,7 +202,6 @@ defmodule OrchardCLI.Commands.Support do
 
   defp build_stage!(stage_dir, opts, runtime, now) do
     write_text!(stage_dir, "README.txt", readme_text())
-    write_json!(stage_dir, "manifest.json", manifest(opts, runtime, now))
     write_json!(stage_dir, "diagnostics/system.json", system_snapshot(opts, runtime, now))
     write_json!(stage_dir, "diagnostics/status.json", status_snapshot(opts.support_root, runtime))
 
@@ -211,16 +215,24 @@ defmodule OrchardCLI.Commands.Support do
     write_json!(stage_dir, "diagnostics/requests.json", requests_snapshot(runtime))
 
     collect_config!(stage_dir, opts.support_root)
-    collect_logs!(stage_dir, opts.support_root, opts.max_log_bytes)
+    log_collection = collect_logs!(stage_dir, opts.support_root, opts.max_log_bytes, runtime)
+
+    write_json!(stage_dir, "diagnostics/logs.json", %{
+      status: "ok",
+      data: log_collection
+    })
+
+    write_json!(stage_dir, "manifest.json", manifest(opts, runtime, now, log_collection))
   end
 
-  defp manifest(opts, runtime, now) do
+  defp manifest(opts, runtime, now, log_collection) do
     %{
       bundle_format: "orchard.support_bundle.v1",
       command: "orchardctl support bundle create",
       generated_at: DateTime.to_iso8601(now),
       orchard_version: runtime.version.(),
       max_log_bytes: opts.max_log_bytes,
+      log_collection: manifest_log_collection(log_collection),
       spec_references: [
         "SPEC.md 7.3.1 Operator API support-bundles endpoint",
         "SPEC.md 11.9 CLI orchardctl support bundle create",
@@ -232,10 +244,23 @@ defmodule OrchardCLI.Commands.Support do
         "diagnostics/services.json",
         "diagnostics/nodes.json",
         "diagnostics/requests.json",
+        "diagnostics/logs.json",
         "config/*.env redacted when present",
         "logs/** bounded and redacted tail copies when present"
       ]
     }
+  end
+
+  defp manifest_log_collection(log_collection) do
+    Map.take(log_collection, [
+      :bytes_retained,
+      :files_available,
+      :files_collected,
+      :files_skipped,
+      :max_log_bytes_per_file,
+      :max_log_files,
+      :max_total_log_bytes
+    ])
   end
 
   defp system_snapshot(_opts, runtime, now) do
@@ -490,7 +515,7 @@ defmodule OrchardCLI.Commands.Support do
     cond do
       safe_diagnostic_key?(compact) -> false
       sensitive_key?(parts, compact) -> true
-      compact in @sensitive_env_license_keys -> true
+      bare_license_key?(compact) -> true
       sensitive_license_key?(parts) -> true
       true -> false
     end
@@ -502,6 +527,7 @@ defmodule OrchardCLI.Commands.Support do
     cond do
       safe_diagnostic_key?(compact) -> false
       sensitive_key?(parts, compact) -> true
+      bare_license_key?(compact) -> true
       sensitive_license_key?(parts) -> true
       sensitive_log_payload_key?(parts, compact) -> true
       true -> false
@@ -526,6 +552,8 @@ defmodule OrchardCLI.Commands.Support do
   defp sensitive_license_key?(parts) do
     "license" in parts and Enum.any?(@sensitive_license_partners, &(&1 in parts))
   end
+
+  defp bare_license_key?(compact), do: compact in @sensitive_bare_license_keys
 
   defp sensitive_log_payload_key?(parts, compact) do
     compact in @sensitive_log_payload_keys or
@@ -558,29 +586,36 @@ defmodule OrchardCLI.Commands.Support do
     {parts, normalized}
   end
 
-  defp collect_logs!(stage_dir, support_root, max_log_bytes) do
+  defp collect_logs!(stage_dir, support_root, max_log_bytes, runtime) do
     logs_root = Path.join(support_root, "logs")
+    candidates = log_file_candidates(logs_root)
+    limits = log_collection_limits(runtime)
+    {selected, skipped_for_count} = select_log_candidates(candidates, limits.max_files)
 
-    copied =
-      logs_root
-      |> regular_files()
-      |> Enum.reduce(0, fn source_path, count ->
-        rel = Path.relative_to(source_path, logs_root)
-        dest = Path.join("logs", rel)
-
-        case tail_file(source_path, max_log_bytes) do
-          {:ok, content} ->
-            write_text!(stage_dir, dest, redact_log_file(content))
-            count + 1
-
-          :error ->
-            count
-        end
-      end)
+    {copied, bytes_retained, skipped, truncated} =
+      collect_selected_logs!(
+        stage_dir,
+        selected,
+        max_log_bytes,
+        limits.max_total_bytes,
+        Enum.reverse(skipped_for_count)
+      )
 
     if copied == 0 do
       write_text!(stage_dir, "logs/README.txt", "No Orchard log files were found.\n")
     end
+
+    %{
+      bytes_retained: bytes_retained,
+      files_available: length(candidates),
+      files_collected: copied,
+      files_skipped: length(skipped),
+      max_log_bytes_per_file: max_log_bytes,
+      max_log_files: limits.max_files,
+      max_total_log_bytes: limits.max_total_bytes,
+      skipped: Enum.reverse(skipped),
+      truncated: Enum.reverse(truncated)
+    }
   end
 
   defp ensure_output_dir!(path) do
@@ -631,10 +666,6 @@ defmodule OrchardCLI.Commands.Support do
   defp private_temp_root_path(output_dir, basename, path_nonce),
     do: Path.join(output_dir, ".#{basename}-#{path_nonce}.tmp")
 
-  defp regular_files(root) do
-    if real_directory?(root), do: regular_files_in_dir(root), else: []
-  end
-
   defp real_directory?(path) do
     case File.lstat(path) do
       {:ok, %{type: :directory}} -> true
@@ -642,22 +673,154 @@ defmodule OrchardCLI.Commands.Support do
     end
   end
 
-  defp regular_files_in_dir(dir) do
+  defp log_file_candidates(root) do
+    if real_directory?(root), do: log_file_candidates_in_dir(root, root), else: []
+  end
+
+  defp log_file_candidates_in_dir(root, dir) do
     dir
     |> File.ls!()
     |> Enum.flat_map(fn entry ->
       path = Path.join(dir, entry)
 
       case File.lstat(path) do
-        {:ok, %{type: :regular}} -> [path]
-        {:ok, %{type: :directory}} -> regular_files_in_dir(path)
+        {:ok, %{type: :regular} = stat} -> [log_file_candidate(root, path, stat)]
+        {:ok, %{type: :directory}} -> log_file_candidates_in_dir(root, path)
         _other -> []
       end
     end)
-    |> Enum.sort()
   rescue
     _exception -> []
   end
+
+  defp log_file_candidate(root, path, stat) do
+    rel = Path.relative_to(path, root)
+
+    %{
+      path: path,
+      rel: rel,
+      mtime_seconds: datetime_to_seconds(stat.mtime),
+      preferred_index: preferred_log_index(rel)
+    }
+  end
+
+  defp datetime_to_seconds(datetime), do: :calendar.datetime_to_gregorian_seconds(datetime)
+
+  defp preferred_log_index(rel) do
+    case Enum.find_index(@preferred_log_files, &(&1 == rel or &1 == Path.basename(rel))) do
+      nil -> length(@preferred_log_files)
+      index -> index
+    end
+  end
+
+  defp select_log_candidates(candidates, max_files) do
+    candidates
+    |> Enum.sort_by(&log_candidate_sort_key/1)
+    |> Enum.split(max_files)
+    |> then(fn {selected, skipped} ->
+      {selected, Enum.map(skipped, &log_skip(&1, "file_count_limit"))}
+    end)
+  end
+
+  defp log_candidate_sort_key(candidate) do
+    {candidate.preferred_index, -candidate.mtime_seconds, candidate.rel}
+  end
+
+  defp collect_selected_logs!(
+         stage_dir,
+         selected,
+         max_log_bytes,
+         max_total_log_bytes,
+         skipped_for_count
+       ) do
+    Enum.reduce(selected, {0, 0, skipped_for_count, []}, fn candidate,
+                                                            {copied, bytes_retained, skipped,
+                                                             truncated} ->
+      case allowed_log_read_bytes(max_log_bytes, bytes_retained, max_total_log_bytes) do
+        :skip ->
+          {copied, bytes_retained, [log_skip(candidate, "total_log_bytes_limit") | skipped],
+           truncated}
+
+        read_bytes ->
+          copy_log_candidate!(
+            stage_dir,
+            candidate,
+            read_bytes,
+            copied,
+            bytes_retained,
+            skipped,
+            truncated
+          )
+      end
+    end)
+  end
+
+  defp allowed_log_read_bytes(0, _bytes_retained, _max_total_log_bytes), do: 0
+
+  defp allowed_log_read_bytes(max_log_bytes, bytes_retained, max_total_log_bytes) do
+    remaining = max_total_log_bytes - bytes_retained
+
+    if remaining > 0 do
+      min(max_log_bytes, remaining)
+    else
+      :skip
+    end
+  end
+
+  defp copy_log_candidate!(
+         stage_dir,
+         candidate,
+         read_bytes,
+         copied,
+         bytes_retained,
+         skipped,
+         truncated
+       ) do
+    dest = Path.join("logs", candidate.rel)
+
+    case tail_file(candidate.path, read_bytes) do
+      {:ok, content, info} ->
+        write_text!(stage_dir, dest, redact_log_file(content))
+
+        truncated =
+          if info.truncated? do
+            [log_truncated(candidate, info) | truncated]
+          else
+            truncated
+          end
+
+        {copied + 1, bytes_retained + info.retained_bytes, skipped, truncated}
+
+      :error ->
+        {copied, bytes_retained, [log_skip(candidate, "unavailable") | skipped], truncated}
+    end
+  end
+
+  defp log_skip(candidate, reason), do: %{path: candidate.rel, reason: reason}
+
+  defp log_truncated(candidate, info) do
+    %{
+      path: candidate.rel,
+      original_bytes: info.original_bytes,
+      retained_bytes: info.retained_bytes
+    }
+  end
+
+  defp log_collection_limits(runtime) do
+    limits =
+      runtime
+      |> Map.get(:log_collection_limits, fn -> %{} end)
+      |> then(& &1.())
+
+    %{
+      max_files: non_negative_limit(Map.get(limits, :max_files), @default_max_log_files),
+      max_total_bytes:
+        non_negative_limit(Map.get(limits, :max_total_bytes), @default_max_total_log_bytes)
+    }
+  end
+
+  defp non_negative_limit(value, _fallback) when is_integer(value) and value >= 0, do: value
+  defp non_negative_limit(_value, fallback), do: fallback
 
   defp read_regular_file(path) do
     with {:ok, first_stat} <- regular_file_stat(path),
@@ -691,11 +854,18 @@ defmodule OrchardCLI.Commands.Support do
            end),
          {:ok, second_stat} <- regular_file_stat(path),
          true <- same_file?(first_stat, second_stat) do
-      {:ok, format_tail_content(content, first_stat.size, max_bytes)}
+      {:ok, format_tail_content(content, first_stat.size, max_bytes),
+       %{
+         original_bytes: first_stat.size,
+         retained_bytes: min(first_stat.size, max_bytes),
+         truncated?: first_stat.size > max_bytes
+       }}
     else
       _other -> :error
     end
   end
+
+  defp read_tail_content(_file, _file_size, 0), do: {:ok, ""}
 
   defp read_tail_content(file, file_size, max_bytes) do
     offset = max(file_size - max_bytes, 0)
@@ -1002,6 +1172,9 @@ defmodule OrchardCLI.Commands.Support do
       file_regular?: &File.regular?/1,
       list_nodes: &Orchard.Nodes.list_nodes/0,
       list_recent_requests: &Orchard.Requests.list_recent_requests/1,
+      log_collection_limits: fn ->
+        %{max_files: @default_max_log_files, max_total_bytes: @default_max_total_log_bytes}
+      end,
       nodes_summary: &Orchard.Nodes.summary/0,
       now: fn -> DateTime.utc_now() |> DateTime.truncate(:second) end,
       path_nonce: fn -> :crypto.strong_rand_bytes(18) |> Base.url_encode64(padding: false) end,
@@ -1050,7 +1223,7 @@ defmodule OrchardCLI.Commands.Support do
     Options:
       --output DIR           Write the .tar.gz bundle to DIR.
       --support-root PATH    Read Orchard local state from PATH.
-      --max-log-bytes BYTES  Include at most BYTES from each log file.
+      --max-log-bytes BYTES  Include at most BYTES from each collected log file.
       --json                 Emit machine-readable creation output.
       --help                 Show this help.
     """
@@ -1067,7 +1240,8 @@ defmodule OrchardCLI.Commands.Support do
     Redaction policy:
     - config/*.env files are line-redacted for keys that commonly contain secrets.
     - TLS keys, license bundles, model artifacts, and request payload bodies are not collected.
-    - logs are bounded tail copies and lines containing common sensitive markers are redacted.
+    - logs are bounded by per-file, file-count, and aggregate tail-copy caps.
+    - collected log lines containing common sensitive markers are redacted.
     """
     |> String.trim()
     |> Kernel.<>("\n")
