@@ -2835,6 +2835,62 @@ defmodule OrchardNodeAgentTest do
     )
   end
 
+  test "SPEC.md §5.5 batch mode admits two overlapping same-model gRPC requests", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: BlockingRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: 2,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      ],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        first =
+          Task.async(fn ->
+            execute_inference_over_grpc(execute_inference_request("req-batch-grpc-overlap-first"))
+          end)
+
+        second =
+          Task.async(fn ->
+            execute_inference_over_grpc(
+              execute_inference_request("req-batch-grpc-overlap-second")
+            )
+          end)
+
+        wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+
+        assert %StatusResponse{
+                 active_request_count: 2,
+                 max_concurrency: 2,
+                 runtime_model_placements: [
+                   %RuntimeModelPlacement{
+                     active_request_count: 2,
+                     max_concurrency: 2,
+                     placement_state: :PLACEMENT_STATE_LOADED
+                   }
+                 ]
+               } = NodeStatus.current()
+
+        blocking_generation_refs()
+        |> Enum.each(&send_release/1)
+
+        for task <- [first, second] do
+          events = Task.await(task, 1_000)
+
+          assert Enum.any?(events, &match?({:ok, %RPCInferenceEvent{event: {:accepted, _}}}, &1))
+          assert Enum.any?(events, &match?({:ok, %RPCInferenceEvent{event: {:completed, _}}}, &1))
+          refute Enum.any?(events, &match?({:ok, %RPCInferenceEvent{event: {:failed, _}}}, &1))
+        end
+
+        wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+      end
+    )
+  end
+
   test "SPEC.md §5.5 batch mode enforces aggregate node concurrency across models", %{
     bundle: bundle
   } do
@@ -4289,6 +4345,15 @@ defmodule OrchardNodeAgentTest do
     |> Map.fetch!(:generation_ref)
   end
 
+  defp blocking_generation_refs do
+    pid = worker_pid()
+    state = :sys.get_state(pid)
+
+    state.requests
+    |> Map.values()
+    |> Enum.map(&Map.fetch!(&1, :generation_ref))
+  end
+
   defp send_release(generation_ref) do
     pid = worker_pid()
     state = :sys.get_state(pid)
@@ -4311,6 +4376,13 @@ defmodule OrchardNodeAgentTest do
     after
       _ = GRPC.Stub.disconnect(channel)
     end
+  end
+
+  defp execute_inference_over_grpc(request) do
+    with_channel(fn channel ->
+      assert {:ok, event_stream} = NodeRuntimeStub.execute_inference(channel, request)
+      Enum.to_list(event_stream)
+    end)
   end
 
   defp stage_test_bundle! do
