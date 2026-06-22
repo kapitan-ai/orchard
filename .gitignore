@@ -54,6 +54,7 @@ native/*/.venv-pkg/
 /.codex/
 /.repoprompt/
 /.plannotator/
+/.lavish/
 /.agent-scratch/
 /scratch/
 
