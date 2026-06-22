@@ -2835,6 +2835,53 @@ defmodule OrchardNodeAgentTest do
     )
   end
 
+  test "SPEC.md §5.5 batch mode enforces aggregate node concurrency across models", %{
+    bundle: bundle
+  } do
+    other_bundle = stage_test_bundle!("mlx-community/phi-3-alt", "main")
+
+    try do
+      with_runtime_config(
+        [
+          runtime_adapter_impl: BlockingRuntimeAdapter,
+          worker_generation_mode: "batch",
+          worker_max_concurrent_requests_per_model: 2,
+          test_only_allow_batch_admission_for_non_worker_adapters?: true
+        ],
+        fn ->
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(other_bundle))
+
+          request1 = execute_inference_request("req-node-cap-first", bundle)
+          request2 = execute_inference_request("req-node-cap-second", bundle)
+          request3 = execute_inference_request("req-node-cap-third", other_bundle)
+
+          assert :ok = NodeStatus.prepare_request(request1, self())
+          assert :ok = NodeStatus.start_request(request1)
+          assert :ok = NodeStatus.prepare_request(request2, self())
+          assert :ok = NodeStatus.start_request(request2)
+
+          wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+
+          assert %StatusResponse{active_request_count: 2, max_concurrency: 2} =
+                   NodeStatus.current()
+
+          assert {:error, :model_busy} = NodeStatus.prepare_request(request3, self())
+
+          assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
+          assert %{ok: true} = NodeStatus.cancel_request(request2.request_id)
+          wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+        end
+      )
+    after
+      File.rm_rf(other_bundle.cache_path)
+      File.rm_rf(other_bundle.source_path)
+    end
+  end
+
   # -- Acquisition-specific tests ---------------------------------------------
 
   test "ensure_model_loaded with missing source and no cache returns FAILED", %{bundle: bundle} do
@@ -4266,11 +4313,15 @@ defmodule OrchardNodeAgentTest do
   end
 
   defp execute_inference_request(request_id) do
+    execute_inference_request(request_id, %{model_id: @test_model_id, version: @test_version})
+  end
+
+  defp execute_inference_request(request_id, bundle) do
     %ExecuteInferenceRequest{
       request_id: request_id,
       controller_session_id: "controller-session-1",
-      model_id: @test_model_id,
-      version: @test_version,
+      model_id: bundle.model_id,
+      version: bundle.version,
       rendered_prompt_utf8: "hello orchard",
       input_tokens: 2,
       params: %GenerationParams{max_output_tokens: 16},
