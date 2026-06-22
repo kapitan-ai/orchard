@@ -2882,6 +2882,63 @@ defmodule OrchardNodeAgentTest do
     end
   end
 
+  test "SPEC.md §5.5 aggregate node concurrency maps cross-model gRPC request to model_busy",
+       %{bundle: bundle} do
+    other_bundle = stage_test_bundle!("mlx-community/phi-3-grpc-alt", "main")
+
+    try do
+      with_runtime_config(
+        [
+          runtime_adapter_impl: BlockingRuntimeAdapter,
+          worker_generation_mode: "batch",
+          worker_max_concurrent_requests_per_model: 2,
+          test_only_allow_batch_admission_for_non_worker_adapters?: true
+        ],
+        fn ->
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(other_bundle))
+
+          request1 = execute_inference_request("req-node-cap-grpc-first", bundle)
+          request2 = execute_inference_request("req-node-cap-grpc-second", bundle)
+
+          assert :ok = NodeStatus.prepare_request(request1, self())
+          assert :ok = NodeStatus.start_request(request1)
+          assert :ok = NodeStatus.prepare_request(request2, self())
+          assert :ok = NodeStatus.start_request(request2)
+
+          wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+
+          with_channel(fn channel ->
+            request3 = execute_inference_request("req-node-cap-grpc-third", other_bundle)
+            assert {:ok, event_stream} = NodeRuntimeStub.execute_inference(channel, request3)
+            events = Enum.to_list(event_stream)
+
+            assert [{:ok, %RPCInferenceEvent{event: {:failed, failed}}}] = events
+            assert failed.code == "model_busy"
+
+            accepted_events =
+              Enum.filter(events, fn
+                {:ok, %RPCInferenceEvent{event: {:accepted, _}}} -> true
+                _other -> false
+              end)
+
+            assert accepted_events == []
+          end)
+
+          assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
+          assert %{ok: true} = NodeStatus.cancel_request(request2.request_id)
+          wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+        end
+      )
+    after
+      File.rm_rf(other_bundle.cache_path)
+      File.rm_rf(other_bundle.source_path)
+    end
+  end
+
   # -- Acquisition-specific tests ---------------------------------------------
 
   test "ensure_model_loaded with missing source and no cache returns FAILED", %{bundle: bundle} do
