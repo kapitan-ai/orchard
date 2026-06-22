@@ -341,20 +341,28 @@ defmodule Orchard.Nodes do
 
     queue_manager.clear_capacity_source(source)
 
-    placements = extract_runtime_model_placements(status_response)
+    if queue_capacity_eligible_node?(node) do
+      placements = extract_runtime_model_placements(status_response)
 
-    placement_keys =
-      placements
-      |> MapSet.new(&placement_queue_key/1)
-      |> MapSet.union(previous_source_keys)
+      placement_keys =
+        placements
+        |> MapSet.new(&placement_queue_key/1)
+        |> MapSet.union(previous_source_keys)
 
-    Enum.each(placements, &refresh_loaded_placement_capacity(node, status_response, &1))
-    refresh_cold_queue_capacities(queue_manager, source, status_response, placement_keys)
+      Enum.each(placements, &refresh_loaded_placement_capacity(node, status_response, &1))
+      refresh_cold_queue_capacities(queue_manager, source, status_response, placement_keys)
+    end
   rescue
     error ->
       Logger.debug("Queue capacity refresh from node observation failed: #{inspect(error)}")
       :ok
   end
+
+  defp queue_capacity_eligible_node?(%Node{state: :active, health: health})
+       when health in [:healthy, :degraded],
+       do: true
+
+  defp queue_capacity_eligible_node?(%Node{}), do: false
 
   defp refresh_cold_queue_capacities(queue_manager, source, status_response, placement_keys) do
     capacity = cold_node_queue_capacity(status_response)

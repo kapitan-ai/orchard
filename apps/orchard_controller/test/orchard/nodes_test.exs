@@ -808,6 +808,57 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(grant)
     end
 
+    test "SPEC.md §5.5 ineligible node heartbeat does not wake queued cold model lane" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      node =
+        insert_node!(%{
+          id: node_id,
+          state: :cordoned,
+          advertise_addr: "10.0.0.62",
+          rpc_port: 9444
+        })
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cordoned-cold-wake", "cordoned-cold-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.62", 9444)
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.62",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, updated} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert updated.state == :cordoned
+      refute Task.yield(awaiter, 100)
+
+      node
+      |> Ecto.Changeset.change(state: :active)
+      |> Repo.update!()
+
+      later = DateTime.add(DateTime.utc_now(), 1, :second)
+
+      assert {:ok, active_node} = Nodes.observe_status(target, status, later)
+      assert active_node.state == :active
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "cordoned-cold-model@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
+
     test "SPEC.md §5.5 invalid placement max concurrency does not wake queued admission" do
       QueueManager.reset()
 
