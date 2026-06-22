@@ -2739,10 +2739,13 @@ defmodule OrchardNodeAgentTest do
         test_only_allow_batch_admission_for_non_worker_adapters?: true
       ],
       fn ->
+        assert Node.effective_worker_request_limit() == 1
+
         assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
                  NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
         assert %StatusResponse{
+                 max_concurrency: 1,
                  runtime_model_placements: [
                    %{
                      model_ref: %{model_id: @test_model_id, version: @test_version},
