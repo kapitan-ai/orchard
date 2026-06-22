@@ -195,9 +195,13 @@ defmodule OrchardCLI.Commands.SupportTest do
       booted
       postgresql://orchard:db-secret@db.local/orchard
       callback=/health?api_key=query-api-secret&token=query-token-secret
+      fragment=https://idp.test/cb#access_token=fragment-access-secret
+      presigned=https://storage.test/object?X-Amz-Credential=amz-credential-secret&X-Amz-Signature=amz-signature-secret&X-Amz-Security-Token=amz-security-token-secret
+      signed_only=https://storage.test/object?X-Amz-Signature=amz-signature-only-secret&X-Amz-Expires=60
       redirect=https://user:http-secret@example.test/path
       license=/status?license_key=query-license-secret
       stats=/status?token_count=7&license_mode=offline
+      fragment_stats=/status#token_count=7&license_mode=offline
       ready
       """
     )
@@ -217,10 +221,16 @@ defmodule OrchardCLI.Commands.SupportTest do
     assert log =~ "booted"
     assert log =~ "ready"
     assert log =~ "stats=/status?token_count=7&license_mode=offline"
+    assert log =~ "fragment_stats=/status#token_count=7&license_mode=offline"
     assert log =~ "[redacted log line]"
     refute log =~ "db-secret"
     refute log =~ "query-api-secret"
     refute log =~ "query-token-secret"
+    refute log =~ "fragment-access-secret"
+    refute log =~ "amz-credential-secret"
+    refute log =~ "amz-signature-secret"
+    refute log =~ "amz-security-token-secret"
+    refute log =~ "amz-signature-only-secret"
     refute log =~ "http-secret"
     refute log =~ "query-license-secret"
   end
@@ -236,6 +246,8 @@ defmodule OrchardCLI.Commands.SupportTest do
       ORCHARD_PUBLIC_HOST=orchard.local
       REDIS_URL=redis://:redis-secret@localhost:6379/0
       WEBHOOK=/callback?api_key=env-query-secret&token_count=7
+      FRAGMENT_URL=https://idp.test/cb#access_token=env-fragment-secret
+      SIGNED_URL=https://storage.test/object?X-Amz-Signature=env-amz-signature-secret
       PRIVATE_KEY="-----BEGIN PRIVATE KEY-----
       EnvPrivateKeyBody
       -----END PRIVATE KEY-----"
@@ -269,9 +281,13 @@ defmodule OrchardCLI.Commands.SupportTest do
     assert config =~ "ORCHARD_PUBLIC_HOST=orchard.local"
     assert config =~ "REDIS_URL=[redacted]"
     assert config =~ "WEBHOOK=[redacted]"
+    assert config =~ "FRAGMENT_URL=[redacted]"
+    assert config =~ "SIGNED_URL=[redacted]"
     assert config =~ "PRIVATE_KEY=[redacted]"
     refute config =~ "redis-secret"
     refute config =~ "env-query-secret"
+    refute config =~ "env-fragment-secret"
+    refute config =~ "env-amz-signature-secret"
     refute config =~ "EnvPrivateKeyBody"
     refute config =~ "PRIVATE KEY"
 
@@ -538,6 +554,9 @@ defmodule OrchardCLI.Commands.SupportTest do
       tokenIds: [444, 555, 666]
       input_ids=[777, 888, 999]
       inputIds: [123, 234, 345]
+      messages[0].content=bracketed message secret
+      input[0].text=bracketed input secret
+      token_ids[0]=909
       tokenizer failed with prompt_token_ids_length_mismatch ids=[707, 808]
       supports_prompt_token_ids=true worker_supports_prompt_token_ids=true token_count=3
       input_tokens=9 prompt_tokens=8 total_tokens=17 token_count=17
@@ -591,6 +610,9 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute log =~ "444"
     refute log =~ "777"
     refute log =~ "123"
+    refute log =~ "bracketed message secret"
+    refute log =~ "bracketed input secret"
+    refute log =~ "909"
     refute log =~ "707"
     refute log =~ "log-access-secret"
     refute log =~ "log-client-secret"
@@ -872,10 +894,15 @@ defmodule OrchardCLI.Commands.SupportTest do
     File.mkdir_p!(extract_dir)
     assert_tar_extract!(archive_path, extract_dir)
 
-    assert File.exists?(Path.join([extract_dir, "logs", "controller.log"]))
-    assert File.exists?(Path.join([extract_dir, "logs", "rotated-1.log"]))
-    assert File.exists?(Path.join([extract_dir, "logs", "rotated-2.log"]))
-    refute File.exists?(Path.join([extract_dir, "logs", "rotated-3.log"]))
+    collected_logs =
+      extract_dir
+      |> Path.join("logs/*.log")
+      |> Path.wildcard()
+      |> Enum.map(&Path.basename/1)
+
+    assert "controller.log" in collected_logs
+    assert length(collected_logs) == 3
+    assert Enum.count(collected_logs, &String.starts_with?(&1, "rotated-")) == 2
 
     log_collection = read_json!(extract_dir, "diagnostics/logs.json")
     assert get_in(log_collection, ["data", "files_available"]) == 3

@@ -13,11 +13,13 @@ defmodule OrchardCLI.Commands.Support do
   @config_files ~w(controller.env node-agent.env console.env)
   @preferred_log_files ~w(controller.log node-agent.log console.log)
   @sensitive_key_parts ~w(
-    activation authorization bearer cookie dsn keyfile password passwd passphrase pem secret
+    activation authorization bearer cookie credential dsn keyfile password passwd passphrase pem
+    secret signature
   )
   @sensitive_key_compounds ~w(
     access_key api_key apikey cacertfile certfile database_url license_certificate
-    machine_certificate private_key sentry_dsn x_api_key
+    machine_certificate private_key security_token sentry_dsn x_amz_credential
+    x_amz_security_token x_amz_signature x_api_key
   )
   @sensitive_key_compact_fragments ~w(
     accesskey accesstoken apitoken authtoken bearertoken clientsecret idtoken licensekey
@@ -46,7 +48,7 @@ defmodule OrchardCLI.Commands.Support do
     ~s("prompt"),
     "prompt="
   ]
-  @assignment_key_regex ~r/(?:^|[\s,{;?&])["']?([A-Za-z_][A-Za-z0-9_.-]*)["']?\s*(?:=>|:|=)/
+  @assignment_key_regex ~r/(?:^|[\s,{;?&#])["']?([A-Za-z_][A-Za-z0-9_.\[\]-]*)["']?\s*(?:=>|:|=)/
   @bearer_value_regex ~r/\bbearer\s+[^\s,;]+/i
   @credential_url_userinfo_regex ~r/\b[a-z][a-z0-9+.-]*:\/\/[^\s\/?#@]*:[^\s\/?#@]*@[^\s\/?#]+/i
   @credential_token_assignment_regex ~r/\b(?:api|access|auth|bearer|id|refresh|session|license)[-_\s]+tokens?\s*(?:=>|:|=)/i
@@ -560,16 +562,40 @@ defmodule OrchardCLI.Commands.Support do
 
   defp sensitive_log_payload_key?(parts, compact) do
     compact in @sensitive_log_payload_keys or
-      sensitive_log_token_id_key?(compact) or
+      sensitive_log_token_id_key?(parts, compact) or
       Enum.any?(["messages", "prompt"], &(&1 in parts)) or
+      bracketed_payload_key?(parts) or
       List.last(parts) in ["content", "input"]
   end
 
-  defp sensitive_log_token_id_key?(compact) do
+  defp bracketed_payload_key?([root | rest]) when root in ["content", "input"] do
+    Enum.any?(rest, &numeric_part?/1) or
+      Enum.any?(rest, &(&1 in ["content", "input", "message", "text"]))
+  end
+
+  defp bracketed_payload_key?(_parts), do: false
+
+  defp sensitive_log_token_id_key?(parts, compact) do
+    parts
+    |> compact_without_numeric_parts()
+    |> then(&[compact, &1])
+    |> Enum.uniq()
+    |> Enum.any?(&sensitive_log_token_id_compact?/1)
+  end
+
+  defp compact_without_numeric_parts(parts) do
+    parts
+    |> Enum.reject(&numeric_part?/1)
+    |> Enum.join("_")
+  end
+
+  defp sensitive_log_token_id_compact?(compact) do
     compact in ["input_ids", "token_ids"] or
       String.ends_with?(compact, "_input_ids") or
       String.ends_with?(compact, "_token_ids")
   end
+
+  defp numeric_part?(part), do: String.match?(part, ~r/^\d+$/)
 
   defp safe_diagnostic_key?(compact), do: compact in @safe_diagnostic_keys
 
@@ -592,7 +618,10 @@ defmodule OrchardCLI.Commands.Support do
   defp collect_logs!(stage_dir, support_root, max_log_bytes, runtime) do
     logs_root = Path.join(support_root, "logs")
     limits = log_collection_limits(runtime)
-    {candidates, discovery_capped?} = log_file_candidates(logs_root, limits.max_discovery_entries)
+
+    {candidates, discovery_capped?} =
+      log_file_candidates(logs_root, limits.max_discovery_entries, runtime)
+
     {selected, skipped_for_count} = select_log_candidates(candidates, limits.max_files)
 
     skipped_for_discovery =
@@ -681,14 +710,12 @@ defmodule OrchardCLI.Commands.Support do
     end
   end
 
-  defp log_file_candidates(root, max_discovery_entries) do
+  defp log_file_candidates(root, max_discovery_entries, runtime) do
     if real_directory?(root) do
       {preferred, seen, remaining} = preferred_log_candidates(root, max_discovery_entries)
+      {candidates, capped?} = find_log_file_candidates(root, seen, remaining, runtime)
 
-      {candidates, _seen, _remaining, capped?} =
-        log_file_candidates_in_dir(root, root, remaining, seen, [])
-
-      {preferred ++ Enum.reverse(candidates), capped?}
+      {preferred ++ candidates, capped?}
     else
       {[], false}
     end
@@ -721,56 +748,101 @@ defmodule OrchardCLI.Commands.Support do
     end
   end
 
-  defp log_file_candidates_in_dir(root, dir, remaining, seen, candidates) do
-    case File.ls(dir) do
-      {:ok, entries} ->
-        entries
-        |> Enum.sort()
-        |> Enum.reduce_while(
-          {candidates, seen, remaining, false},
-          &log_file_candidate_entry_reducer(root, dir, &1, &2)
-        )
+  defp find_log_file_candidates(root, seen, remaining, runtime) do
+    case find_executable(runtime) do
+      nil ->
+        {[], false}
 
-      {:error, _reason} ->
-        {candidates, seen, remaining, false}
+      executable ->
+        port =
+          Port.open(
+            {:spawn_executable, executable},
+            [:binary, :exit_status, args: [root, "-type", "f", "-print0"]]
+          )
+
+        collect_find_log_candidates(port, root, seen, max(remaining, 0), [], "")
     end
   end
 
-  defp log_file_candidate_entry_reducer(root, dir, entry, {candidates, seen, remaining, capped?}) do
-    path = Path.join(dir, entry)
+  defp find_executable(runtime) do
+    runtime
+    |> Map.get(:find_executable, fn -> System.find_executable("find") end)
+    |> then(& &1.())
+  end
 
+  defp collect_find_log_candidates(port, root, seen, remaining, candidates, buffer) do
+    receive do
+      {^port, {:data, data}} ->
+        {paths, buffer} = find_output_paths(buffer <> data)
+
+        case reduce_find_log_paths(paths, root, seen, remaining, candidates) do
+          {:cont, seen, remaining, candidates} ->
+            collect_find_log_candidates(port, root, seen, remaining, candidates, buffer)
+
+          {:halt, candidates} ->
+            close_find_port(port)
+            {Enum.reverse(candidates), true}
+        end
+
+      {^port, {:exit_status, _status}} ->
+        {candidates, _seen, _remaining, capped?} =
+          reduce_final_find_buffer(buffer, root, seen, remaining, candidates)
+
+        {Enum.reverse(candidates), capped?}
+    end
+  end
+
+  defp find_output_paths(buffer) do
+    parts = :binary.split(buffer, <<0>>, [:global])
+    {Enum.drop(parts, -1), List.last(parts) || ""}
+  end
+
+  defp reduce_final_find_buffer("", _root, seen, remaining, candidates) do
+    {candidates, seen, remaining, false}
+  end
+
+  defp reduce_final_find_buffer(buffer, root, seen, remaining, candidates) do
+    case reduce_find_log_paths([buffer], root, seen, remaining, candidates) do
+      {:cont, seen, remaining, candidates} -> {candidates, seen, remaining, false}
+      {:halt, candidates} -> {candidates, seen, remaining, true}
+    end
+  end
+
+  defp reduce_find_log_paths([], _root, seen, remaining, candidates) do
+    {:cont, seen, remaining, candidates}
+  end
+
+  defp reduce_find_log_paths([path | rest], root, seen, remaining, candidates) do
     cond do
+      path == "" ->
+        reduce_find_log_paths(rest, root, seen, remaining, candidates)
+
       MapSet.member?(seen, path) ->
-        {:cont, {candidates, seen, remaining, capped?}}
+        reduce_find_log_paths(rest, root, seen, remaining, candidates)
 
       remaining <= 0 ->
-        {:halt, {candidates, seen, remaining, true}}
+        {:halt, candidates}
 
       true ->
-        log_file_candidate_for_entry(root, path, remaining, seen, candidates, capped?)
+        seen = MapSet.put(seen, path)
+
+        case regular_file_stat(path) do
+          {:ok, stat} ->
+            candidate = log_file_candidate(root, path, stat)
+            reduce_find_log_paths(rest, root, seen, remaining - 1, [candidate | candidates])
+
+          :error ->
+            reduce_find_log_paths(rest, root, seen, remaining, candidates)
+        end
     end
   end
 
-  defp log_file_candidate_for_entry(root, path, remaining, seen, candidates, capped?) do
-    seen = MapSet.put(seen, path)
-    remaining = remaining - 1
-
-    case File.lstat(path) do
-      {:ok, %{type: :regular} = stat} ->
-        {:cont, {[log_file_candidate(root, path, stat) | candidates], seen, remaining, capped?}}
-
-      {:ok, %{type: :directory}} when remaining > 0 ->
-        {candidates, seen, remaining, child_capped?} =
-          log_file_candidates_in_dir(root, path, remaining, seen, candidates)
-
-        {:cont, {candidates, seen, remaining, capped? or child_capped?}}
-
-      {:ok, %{type: :directory}} ->
-        {:cont, {candidates, seen, remaining, true}}
-
-      _other ->
-        {:cont, {candidates, seen, remaining, capped?}}
+  defp close_find_port(port) do
+    if Port.info(port) != nil do
+      Port.close(port)
     end
+
+    :ok
   end
 
   defp log_file_candidate(root, path, stat) do
@@ -1255,6 +1327,7 @@ defmodule OrchardCLI.Commands.Support do
       audit_support_bundle: &Orchard.Governance.audit_support_bundle_generated/1,
       cmd: &System.cmd/3,
       file_regular?: &File.regular?/1,
+      find_executable: fn -> System.find_executable("find") end,
       list_nodes: &Orchard.Nodes.list_nodes/0,
       list_recent_requests: &Orchard.Requests.list_recent_requests/1,
       log_collection_limits: fn ->
