@@ -80,12 +80,13 @@ defmodule Orchard.NodesTest do
   defp placement_status(host, model_id, opts) do
     version = Keyword.get(opts, :version, "v1")
     max_concurrency = Keyword.fetch!(opts, :max_concurrency)
+    placement_state = Keyword.get(opts, :placement_state, :PLACEMENT_STATE_LOADED)
 
     make_status_response(%{listen_host: host, listen_port: 9444})
     |> Map.put(:runtime_model_placements, [
       %{
         model_ref: %{model_id: model_id, version: version},
-        placement_state: :PLACEMENT_STATE_LOADED,
+        placement_state: placement_state,
         active_request_count: 0,
         max_concurrency: max_concurrency
       }
@@ -730,6 +731,58 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(second_grant)
       send(first_awaiter, :stop)
       send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.4 non-loaded placement status clears stale queued capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-clear-a", "clear-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-clear-b", "clear-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_clear_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+
+      loaded_status =
+        placement_status("10.0.0.55", "clear-model", max_concurrency: 1)
+
+      target = make_target("10.0.0.55", 9444)
+      assert {:ok, _node} = Nodes.observe_status(target, loaded_status, DateTime.utc_now())
+      assert_receive {:first_clear_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      cached_status =
+        put_in(
+          loaded_status,
+          [:runtime_model_placements, Access.at(0), :placement_state],
+          :PLACEMENT_STATE_CACHED
+        )
+
+      assert {:ok, _node} = Nodes.observe_status(target, cached_status, DateTime.utc_now())
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      reloaded_status =
+        put_in(
+          cached_status,
+          [:runtime_model_placements, Access.at(0), :placement_state],
+          :PLACEMENT_STATE_LOADED
+        )
+
+      assert {:ok, _node} = Nodes.observe_status(target, reloaded_status, DateTime.utc_now())
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
     end
   end
 

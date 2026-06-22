@@ -351,14 +351,17 @@ defmodule Orchard.Nodes do
   defp extract_runtime_model_placements(_status_response), do: []
 
   defp refresh_loaded_placement_capacity(%Node{} = node, placement) when is_map(placement) do
-    with true <- loaded_placement?(placement),
-         {:ok, model_id, version} <- placement_model_ref(placement),
-         capacity when capacity > 0 <- placement_max_concurrency(placement) do
-      Orchard.Inference.queue_manager().refresh_capacity(model_id, version, capacity,
-        source: {:node, node.id}
-      )
-    else
-      _ -> :ok
+    case placement_model_ref(placement) do
+      {:ok, model_id, version} ->
+        capacity =
+          if loaded_placement?(placement), do: placement_max_concurrency(placement), else: 0
+
+        Orchard.Inference.queue_manager().refresh_capacity(model_id, version, capacity,
+          source: {:node, node.id}
+        )
+
+      :error ->
+        :ok
     end
   end
 

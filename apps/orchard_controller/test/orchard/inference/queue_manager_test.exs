@@ -191,6 +191,39 @@ defmodule Orchard.Inference.QueueManagerTest do
     send(second_awaiter, :stop)
   end
 
+  test "SPEC.md §5.4 source-aware zero-capacity refresh removes stale placement capacity" do
+    assert {:queued, first_ticket} =
+             QueueManager.acquire(admission_request("req-source-clear-a"),
+               config: queue_config(capacity: 0)
+             )
+
+    assert {:queued, second_ticket} =
+             QueueManager.acquire(admission_request("req-source-clear-b"),
+               config: queue_config(capacity: 0)
+             )
+
+    first_awaiter = start_holding_awaiter(first_ticket, :first_source_clear_result)
+    second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+
+    assert wait_until(fn -> queue_entry_awaiting?(first_ticket) end)
+    assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+
+    assert :ok = QueueManager.refresh_capacity("queue-model", "v1", 1, source: {:node, "a"})
+    assert_receive {:first_source_clear_result, {:ok, first_grant}}, 2_000
+    refute Task.yield(second_awaiter, 50)
+
+    assert :ok = QueueManager.refresh_capacity("queue-model", "v1", 0, source: {:node, "a"})
+    assert :ok = QueueManager.release(first_grant)
+    refute Task.yield(second_awaiter, 100)
+
+    assert :ok = QueueManager.refresh_capacity("queue-model", "v1", 1, source: {:node, "b"})
+    assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+    assert second_grant.queue_result == :queued
+
+    assert :ok = QueueManager.release(second_grant)
+    send(first_awaiter, :stop)
+  end
+
   test "SPEC.md §5.4 cross-tenant weighted round-robin grants one tenant turn at a time" do
     tenant_a = Ecto.UUID.generate()
     tenant_b = Ecto.UUID.generate()
