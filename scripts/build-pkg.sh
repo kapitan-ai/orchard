@@ -1618,12 +1618,15 @@ if ! "$REPO_ROOT/scripts/verify-staged-venv-closure.sh" "$STAGING_BASE"; then
     exit 1
 fi
 
-# Copy wrapper scripts (explicit whitelist - exclude managed-postgres until ready)
+# Copy wrapper scripts. The managed Postgres wrapper is an operator-safe guard;
+# the managed Postgres LaunchDaemon remains excluded until Managed Database Mode
+# ships.
 log_info "Copying wrapper scripts..."
 WRAPPER_SCRIPTS=(
     "orchard-controller"
     "orchard-node-agent"
     "orchardctl"
+    "orchard-managed-postgres"
 )
 for script in "${WRAPPER_SCRIPTS[@]}"; do
     script_path="$REPO_ROOT/packaging/pkg/bin/$script"
@@ -1650,7 +1653,7 @@ for plist in "${PLIST_FILES[@]}"; do
         exit 1
     fi
 done
-# Note: com.orchard.postgres.plist is excluded (managed postgres not yet supported)
+# Note: com.orchard.postgres.plist is excluded (managed Postgres not yet supported)
 
 log_info "Scrubbing macOS metadata from staging payload..."
 scrub_macos_metadata "$STAGING_BASE"

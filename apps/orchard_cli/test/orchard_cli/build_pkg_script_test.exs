@@ -54,10 +54,37 @@ defmodule OrchardCLI.BuildPkgScriptTest do
     assert assets_setup_index < assets_deploy_index
   end
 
+  test "package build ships managed postgres guard but excludes launchd service" do
+    script = File.read!(@script_path)
+
+    assert script =~ "WRAPPER_SCRIPTS=("
+    assert script =~ "PLIST_FILES=("
+    assert script =~ "operator-safe guard"
+    assert script =~ "com.orchard.postgres.plist is excluded"
+
+    wrapper_section = section_between(script, "WRAPPER_SCRIPTS=(", ")\nfor script")
+    plist_section = section_between(script, "PLIST_FILES=(", ")\nfor plist")
+
+    assert wrapper_section =~ "orchard-managed-postgres"
+    refute plist_section =~ "com.orchard.postgres.plist"
+  end
+
   defp index_of(haystack, needle) do
     case :binary.match(haystack, needle) do
       {index, _length} -> index
       :nomatch -> nil
     end
+  end
+
+  defp section_between(haystack, start_marker, end_marker) do
+    start_index = index_of(haystack, start_marker)
+    assert is_integer(start_index)
+
+    section_start = start_index + byte_size(start_marker)
+    rest = binary_part(haystack, section_start, byte_size(haystack) - section_start)
+    end_index = index_of(rest, end_marker)
+    assert is_integer(end_index)
+
+    binary_part(rest, 0, end_index)
   end
 end

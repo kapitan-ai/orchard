@@ -2,8 +2,10 @@
 
 Current packaged installs use a universal PKG payload with role selection for
 `all`, `controller`, and `node-agent` hosts. Controller-bearing installs require
-an **external PostgreSQL** server today; managed Postgres is not implemented and
-`orchard-managed-postgres` remains a placeholder that exits with an error.
+an **external PostgreSQL** server today; managed Postgres is not available in
+this build. The `orchard-managed-postgres` helper remains an operator-safe
+placeholder for future Managed Database Mode and exits non-zero for operational
+invocations with the current external database setup path.
 Services are installed by role and must be configured before start.
 
 ## Naming strategy
@@ -19,8 +21,9 @@ Services are installed by role and must be configured before start.
 ## Prerequisites
 
 The packaged controller requires an **external PostgreSQL** server. Orchard does
-not currently ship a managed Postgres runtime — the `orchard-managed-postgres`
-wrapper is a placeholder that exits with an error.
+not currently ship a managed Postgres runtime. The `orchard-managed-postgres`
+wrapper is a placeholder that exits non-zero for operational invocations and
+points operators back to the external PostgreSQL setup path.
 
 Before starting the controller for the first time:
 

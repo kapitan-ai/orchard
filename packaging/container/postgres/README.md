@@ -1,8 +1,10 @@
-# Managed Postgres (not yet implemented)
+# Managed Postgres (unavailable in current builds)
 
-> **Status:** Not implemented. The `orchard-managed-postgres` wrapper exits
-> with a "not implemented" error. The packaged controller currently requires an
-> **external PostgreSQL** server.
+> **Status:** Managed Postgres is not available in this build. The
+> `orchard-managed-postgres` wrapper is an operator-safe placeholder: help
+> invocations print the current external PostgreSQL setup path, while
+> operational invocations exit non-zero without starting or mutating anything.
+> The packaged controller currently requires an **external PostgreSQL** server.
 
 ## Intended future responsibilities
 

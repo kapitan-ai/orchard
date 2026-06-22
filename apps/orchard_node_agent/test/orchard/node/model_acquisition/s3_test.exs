@@ -601,7 +601,10 @@ defmodule Orchard.Node.ModelAcquisition.Source.S3Test do
   end
 
   defp create_malicious_tar(type) do
-    tmp = System.tmp_dir!() |> Path.join("malicious_tar_#{:rand.uniform(1_000_000)}")
+    tmp =
+      System.tmp_dir!()
+      |> Path.join("malicious_tar_#{System.unique_integer([:positive, :monotonic])}")
+
     File.mkdir_p!(tmp)
     staging = Path.join(tmp, "staging")
     File.mkdir_p!(staging)
