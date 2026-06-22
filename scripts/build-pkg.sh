@@ -1640,7 +1640,8 @@ for script in "${WRAPPER_SCRIPTS[@]}"; do
     fi
 done
 
-# Copy launchd plists (explicit whitelist - exclude managed-postgres until ready)
+# Copy launchd plists (explicit whitelist; exclude managed Postgres service
+# until Managed Database Mode ships)
 log_info "Copying launchd plists..."
 PLIST_FILES=(
     "com.orchard.controller.plist"
@@ -1655,7 +1656,8 @@ for plist in "${PLIST_FILES[@]}"; do
         exit 1
     fi
 done
-# Note: com.orchard.postgres.plist is excluded (managed Postgres not yet supported)
+# Note: com.orchard.postgres.plist is excluded (managed Postgres is not
+# available in this build)
 
 log_info "Scrubbing macOS metadata from staging payload..."
 scrub_macos_metadata "$STAGING_BASE"

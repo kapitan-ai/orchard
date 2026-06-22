@@ -29,7 +29,7 @@ Establish the Orchard repository skeleton, release boundaries, health endpoints,
 - native helper directory scaffold
 - launchd plist skeleton
 - DMG/PKG packaging skeleton
-- managed Postgres packaging/container skeleton
+- managed Postgres packaging/container skeleton and operator-safe guard
 
 ## Out of scope
 
@@ -89,7 +89,7 @@ Establish the Orchard repository skeleton, release boundaries, health endpoints,
 
 - launchd plist skeletons exist
 - DMG/PKG packaging skeleton exists
-- managed Postgres container skeleton exists
+- managed Postgres container skeleton and guard exist
 
 ## Proposed implementation order
 

@@ -23,8 +23,11 @@ Defined by `SPEC.md`, Orchard is being built to:
 - ship as native macOS PKG/DMG media with launchd services and no Kubernetes requirement;
 - support managed Postgres in a future local-container mode while also supporting external Postgres.
 
-Current packaged controller-bearing installs require external Postgres; managed
-Postgres and DMG media remain reserved/not implemented.
+Current packaged controller-bearing installs require external Postgres. Managed
+Postgres is not available in current builds; the shipped
+`orchard-managed-postgres` helper is an operator-safe guard that prints external
+database setup guidance and exits non-zero for operational invocations. DMG
+media remains reserved for future work.
 
 ## Architecture
 
@@ -122,7 +125,9 @@ These are the target product topologies defined by `SPEC.md`:
 2. **Controller + workers** — 1 Mac as control plane, 1–3 Macs as worker nodes; Postgres is either managed on the controller host or operator-managed externally
 3. **HA-lite** — up to 2 controllers with exactly 1 active leader, still within the overall 1–4 Mac deployment limit, with operator-managed endpoint failover
 
-Current packaged controller-bearing installs may require External Database Mode until Managed Database Mode is implemented and enabled.
+Current packaged controller-bearing installs require External Database Mode
+until Managed Database Mode is implemented and enabled; the managed Postgres
+helper is a guard only.
 
 The macOS PKG uses a universal payload with role selection at install time. Seed `/Library/Application Support/Orchard/support/.install-role.request` with `all`, `controller`, or `node-agent` before running `installer`; the installed marker is `/Library/Application Support/Orchard/support/.install-role`. Source development has matching split-role scripts: `bin/dev-controller` for the controller host and `bin/dev-node-agent` for worker hosts.
 
