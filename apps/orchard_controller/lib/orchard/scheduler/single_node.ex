@@ -97,20 +97,23 @@ defmodule Orchard.Scheduler.SingleNode do
         {:ok, schedule}
 
       placement ->
-        placement_capacity_schedule(schedule, placement)
+        placement_capacity_schedule(schedule, response, placement)
     end
   end
 
-  defp placement_capacity_schedule(schedule, placement) do
+  defp placement_capacity_schedule(schedule, response, placement) do
     if loaded_placement_state?(placement_state(placement)) do
       active_request_count =
         non_negative_integer(placement_value(placement, :active_request_count), 0)
 
       max_concurrency = positive_integer(placement_value(placement, :max_concurrency), 1)
 
+      effective_max_concurrency =
+        effective_model_capacity(response, active_request_count, max_concurrency)
+
       cond do
-        active_request_count < max_concurrency ->
-          {:ok, Map.put(schedule, :queue_lane_capacity, max_concurrency)}
+        active_request_count < effective_max_concurrency ->
+          {:ok, Map.put(schedule, :queue_lane_capacity, effective_max_concurrency)}
 
         max_concurrency > 1 ->
           {:error, :model_busy}
@@ -157,6 +160,18 @@ defmodule Orchard.Scheduler.SingleNode do
 
   defp placement_value(placement, key) do
     Map.get(placement, key, Map.get(placement, to_string(key)))
+  end
+
+  defp effective_model_capacity(response, model_active, placement_max) do
+    node_active = non_negative_integer(response_value(response, :active_request_count), 0)
+    node_max = positive_integer(response_value(response, :max_concurrency), 1)
+    remaining_node_capacity = max(node_max - node_active, 0)
+
+    min(placement_max, model_active + remaining_node_capacity)
+  end
+
+  defp response_value(response, key) do
+    Map.get(response, key, Map.get(response, to_string(key)))
   end
 
   defp loaded_placement_state?(state)

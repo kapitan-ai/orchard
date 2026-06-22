@@ -43,6 +43,46 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert schedule.queue_lane_capacity == 2
   end
 
+  test "SPEC.md §5.5 constrains single-node queue capacity by node max concurrency" do
+    Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 2,
+      runtime_model_placements: [
+        placement("single-node-capacity-model", "v1",
+          active_request_count: 0,
+          max_concurrency: 4
+        )
+      ]
+    })
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request("single-node-capacity-model"),
+               [host: "127.0.0.1", port: 50_071],
+               status_client: StubClient
+             )
+
+    assert schedule.strategy == :single_node
+    assert schedule.queue_lane_capacity == 2
+  end
+
+  test "SPEC.md §5.5 returns model_busy when multi-slot single-node capacity is exhausted" do
+    Process.put(:single_node_status, %{
+      active_request_count: 2,
+      max_concurrency: 2,
+      runtime_model_placements: [
+        placement("single-node-busy-model", "v1", active_request_count: 1, max_concurrency: 4)
+      ]
+    })
+
+    assert {:error, :model_busy} =
+             SingleNode.default_schedule(
+               canonical_request("single-node-busy-model"),
+               [host: "127.0.0.1", port: 50_071],
+               status_client: StubClient
+             )
+  end
+
   test "SPEC.md §5.5 returns model_busy when the single-node placement is exhausted" do
     Process.put(:single_node_status, %{
       runtime_model_placements: [

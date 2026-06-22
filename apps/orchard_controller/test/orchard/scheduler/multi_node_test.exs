@@ -664,6 +664,35 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.candidate_count == 1
     end
 
+    test "SPEC.md §5.5 constrains queue admission capacity by node max concurrency" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      for {node, host, port, node_active, model_active} <- [
+            {node_a, "10.0.0.1", 50_061, 0, 0},
+            {node_b, "10.0.0.2", 50_062, 1, 0}
+          ] do
+        stub_probe(
+          host,
+          port,
+          make_status(node.id,
+            host: host,
+            port: port,
+            active_request_count: node_active,
+            max_concurrency: 2,
+            loaded_models: [%{model_id: "test-model", version: "v1"}],
+            runtime_model_placements: [model_placement("test-model", "v1", model_active, 4)]
+          )
+        )
+      end
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.selected_tier == "loaded"
+      assert schedule.queue_lane_capacity == 3
+    end
+
     test "prefers lower matching placement active count before health and node_id" do
       node_a =
         insert_node!(%{
