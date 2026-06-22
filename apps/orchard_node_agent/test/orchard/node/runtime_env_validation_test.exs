@@ -1,28 +1,29 @@
 defmodule Orchard.Node.RuntimeEnvValidationTest do
   use ExUnit.Case, async: false
 
-  @tracked_env_vars [
-    "RELEASE_NAME",
+  @config_env_vars [
+    "DATABASE_URL",
+    "ECTO_IPV6",
+    "HF_TOKEN",
     "MIX_RELEASE_NAME",
-    "ORCHARD_SUPPORT_ROOT",
-    "ORCHARD_WORKER_BACKEND",
-    "ORCHARD_WORKER_GENERATION_MODE",
-    "ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL",
-    "ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL",
-    "ORCHARD_WORKER_MEMORY_BUDGET_MODE",
-    "ORCHARD_WORKER_MEMORY_BUDGET_UTILIZATION",
-    "ORCHARD_WORKER_MEMORY_BUDGET_OVERHEAD_BYTES"
+    "PGDATABASE",
+    "PGHOST",
+    "PGPASSWORD",
+    "PGUSER",
+    "PHX_HOST",
+    "POOL_SIZE",
+    "PORT",
+    "RELEASE_NAME",
+    "SECRET_KEY_BASE"
   ]
 
   setup do
-    snapshot = Map.new(@tracked_env_vars, fn key -> {key, System.get_env(key)} end)
+    snapshot =
+      System.get_env()
+      |> Enum.filter(fn {key, _value} -> config_env_key?(key) end)
+      |> Map.new()
 
-    on_exit(fn ->
-      Enum.each(snapshot, fn
-        {key, nil} -> System.delete_env(key)
-        {key, value} -> System.put_env(key, value)
-      end)
-    end)
+    on_exit(fn -> restore_config_env!(snapshot) end)
 
     :ok
   end
@@ -137,6 +138,19 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:worker_generation_mode] == "batch"
   end
 
+  test "dev.exs evaluation ignores ambient config env outside overrides" do
+    System.put_env("PORT", "not-a-port")
+    System.put_env("ORCHARD_PREFIX_CACHE_SCORING_MAX_RANKING_CANDIDATES", "0")
+
+    runtime =
+      read_dev_config!(%{"ORCHARD_WORKER_BACKEND" => "stub"})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:worker_backend] == "stub"
+    assert runtime[:worker_generation_mode] == "stream"
+  end
+
   test "runtime.exs accepts valid worker generation and memory settings in prod" do
     config =
       read_runtime_config!(%{
@@ -184,7 +198,7 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
   end
 
   defp put_config_env!(env) do
-    Enum.each(@tracked_env_vars, &System.delete_env/1)
+    clear_config_env!()
 
     Enum.each(env, fn
       {key, nil} -> System.delete_env(key)
@@ -198,5 +212,21 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
 
   defp dev_config_path do
     Path.expand("../../../../../config/dev.exs", __DIR__)
+  end
+
+  defp restore_config_env!(snapshot) do
+    clear_config_env!()
+    Enum.each(snapshot, fn {key, value} -> System.put_env(key, value) end)
+  end
+
+  defp clear_config_env! do
+    System.get_env()
+    |> Map.keys()
+    |> Enum.filter(&config_env_key?/1)
+    |> Enum.each(&System.delete_env/1)
+  end
+
+  defp config_env_key?(key) do
+    key in @config_env_vars or String.starts_with?(key, "ORCHARD_")
   end
 end

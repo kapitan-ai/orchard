@@ -1544,16 +1544,18 @@ log_info "Cleaning previous release builds..."
 cd "$REPO_ROOT"
 rm -rf _build/prod/rel/orchard_{controller,node_agent,cli} _build/prod/lib/orchard_shared
 
-  # Fetch deps and build assets
-  log_info "Fetching Elixir dependencies..."
-  mix deps.get
-  
-  log_info "Building assets (controller app)..."
-  cd "$REPO_ROOT/apps/orchard_controller"
-  MIX_ENV=prod mix assets.deploy
-  cd "$REPO_ROOT"
-  
-  # Build releases
+log_info "Fetching Elixir dependencies..."
+mix deps.get
+
+log_info "Installing pinned asset dependencies..."
+cd "$REPO_ROOT/apps/orchard_controller"
+MIX_ENV=prod mix assets.setup
+
+log_info "Building assets (controller app)..."
+MIX_ENV=prod mix assets.deploy
+cd "$REPO_ROOT"
+
+# Build releases
 log_info "Building Elixir releases..."
 
 log_info "  → orchard_controller"
