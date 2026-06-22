@@ -191,6 +191,12 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(server, {:refresh_capacity, queue_key, max(capacity, 0), source})
   end
 
+  @spec clear_capacity_source(term(), keyword()) :: :ok
+  def clear_capacity_source(source, opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    call_manager(server, {:clear_capacity_source, source})
+  end
+
   @spec release(Grant.t() | String.t(), keyword()) :: :ok
   def release(grant_or_id, opts \\ [])
 
@@ -297,13 +303,17 @@ defmodule Orchard.Inference.QueueManager do
     {_lane, state} =
       put_lane_capacity(queue_key, capacity, clear_capacity_sources(queue_key, state))
 
-    {:reply, :ok, maybe_grant_available(state)}
+    {:reply, :ok, maybe_grant_next_global(state)}
   end
 
   def handle_call({:refresh_capacity, queue_key, capacity, source}, _from, state) do
     state = put_capacity_source(queue_key, source, capacity, state)
     {_lane, state} = put_lane_capacity(queue_key, aggregate_capacity(queue_key, state), state)
-    {:reply, :ok, maybe_grant_available(state)}
+    {:reply, :ok, maybe_grant_next_global(state)}
+  end
+
+  def handle_call({:clear_capacity_source, source}, _from, state) do
+    {:reply, :ok, clear_capacity_source_from_state(source, state)}
   end
 
   def handle_call({:await, %Ticket{} = ticket}, from, state) do
@@ -1307,6 +1317,28 @@ defmodule Orchard.Inference.QueueManager do
     |> Map.values()
     |> Enum.sum()
   end
+
+  defp clear_capacity_source_from_state(source, state) do
+    state.capacity_sources
+    |> Enum.reduce(state, fn {queue_key, sources}, state ->
+      if Map.has_key?(sources, source) do
+        sources = Map.delete(sources, source)
+        capacity_sources = put_or_delete_sources(state.capacity_sources, queue_key, sources)
+        state = %{state | capacity_sources: capacity_sources}
+        {_lane, state} = put_lane_capacity(queue_key, aggregate_capacity(queue_key, state), state)
+        state
+      else
+        state
+      end
+    end)
+    |> maybe_grant_next_global()
+  end
+
+  defp put_or_delete_sources(capacity_sources, queue_key, sources) when map_size(sources) == 0,
+    do: Map.delete(capacity_sources, queue_key)
+
+  defp put_or_delete_sources(capacity_sources, queue_key, sources),
+    do: Map.put(capacity_sources, queue_key, sources)
 
   defp active_capacity?(lane, capacity) do
     map_size(lane.active) < capacity and not lane_blocked?(lane)

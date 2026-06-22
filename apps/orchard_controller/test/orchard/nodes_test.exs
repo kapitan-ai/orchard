@@ -828,6 +828,45 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(second_grant)
       send(first_awaiter, :stop)
     end
+
+    test "SPEC.md §5.4 omitted placement status clears stale queued capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-omitted-a", "omitted-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-omitted-b", "omitted-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_omitted_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+
+      target = make_target("10.0.0.57", 9444)
+      loaded_status = placement_status("10.0.0.57", "omitted-model", max_concurrency: 1)
+
+      assert {:ok, _node} = Nodes.observe_status(target, loaded_status, DateTime.utc_now())
+      assert_receive {:first_omitted_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      omitted_status = Map.put(loaded_status, :runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, omitted_status, DateTime.utc_now())
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert {:ok, _node} = Nodes.observe_status(target, loaded_status, DateTime.utc_now())
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
   end
 
   # -- observe_status/3 stale guard --

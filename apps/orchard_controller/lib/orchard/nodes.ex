@@ -335,6 +335,8 @@ defmodule Orchard.Nodes do
   end
 
   defp refresh_observed_queue_capacities(%Node{} = node, status_response) do
+    Orchard.Inference.queue_manager().clear_capacity_source({:node, node.id})
+
     status_response
     |> extract_runtime_model_placements()
     |> Enum.each(&refresh_loaded_placement_capacity(node, status_response, &1))
