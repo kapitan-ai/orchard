@@ -9,7 +9,7 @@
     "npm": "11.13.0"
   },
   "scripts": {
-    "openspec": "openspec"
+    "openspec": "OPENSPEC_TELEMETRY=0 openspec"
   },
   "devDependencies": {
     "@fission-ai/openspec": "1.4.1"

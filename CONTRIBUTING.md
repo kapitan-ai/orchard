@@ -53,13 +53,13 @@ and outcomes in the PR. For bug fixes, include a regression test when practical.
 For OpenSpec-backed work, also run:
 
 ```sh
-mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive
+OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive
 ```
 
 After archiving or syncing accepted OpenSpec behavior, run:
 
 ```sh
-mise exec -- npm run openspec -- validate --all --strict --no-interactive
+OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive
 ```
 
 Review archived specs for placeholders such as `Purpose TBD`; strict validation

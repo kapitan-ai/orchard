@@ -36,7 +36,7 @@ dev-node-agent:
 	mise exec -- bin/dev-node-agent
 
 openspec:
-	mise exec -- npm run openspec -- validate --all --strict --no-interactive
+	OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive
 
 format:
 	mise exec -- mix format

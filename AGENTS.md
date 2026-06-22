@@ -74,9 +74,9 @@ Rules:
   deltas; add `design.md` when the change has technical ambiguity, migration
   risk, security/performance concerns, or cross-module impact.
 - Before implementation or PR handoff, run
-  `mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive`.
+  `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive`.
 - After archiving or syncing accepted behavior, run
-  `mise exec -- npm run openspec -- validate --all --strict --no-interactive`.
+  `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive`.
 - Review generated main specs for placeholder prose such as `Purpose TBD`;
   strict validation accepts some incomplete prose that still needs human review.
 - Do not mirror large sections of `SPEC.md` into OpenSpec specs.

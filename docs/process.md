@@ -51,7 +51,7 @@ rewrite the durable conclusion instead of copying the stale plan.
 - Private local artifacts are not committed.
 - Active `goals/<slug>/` directories are not staged.
 - OpenSpec-backed changes pass
-  `mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive`.
+  `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive`.
 - Archived OpenSpec specs do not contain placeholders such as `Purpose TBD`.
 - Validation commands and outcomes are recorded.
 

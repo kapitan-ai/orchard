@@ -137,7 +137,7 @@ mise exec -- npm ci --ignore-scripts
 Run OpenSpec through the pinned npm script:
 
 ```bash
-mise exec -- npm run openspec -- validate --all --strict --no-interactive
+OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive
 ```
 
 ## Tools Outside mise

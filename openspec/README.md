@@ -40,13 +40,13 @@ code as needed.
 Before implementing or handing off an OpenSpec-backed PR:
 
 ```sh
-mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive
+OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive
 ```
 
 After archiving or syncing accepted behavior:
 
 ```sh
-mise exec -- npm run openspec -- validate --all --strict --no-interactive
+OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive
 ```
 
 Strict validation checks structure, not product correctness. Review generated
