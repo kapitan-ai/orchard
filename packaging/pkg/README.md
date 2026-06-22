@@ -1092,8 +1092,10 @@ rather than environment-variable installer overrides.
 ### Build Requirements
 
 Before building:
-1. **mise toolchain**: Run `mise install` from the repo root. This provides
-   pinned Erlang/OTP, Elixir, Python, and uv versions from `mise.toml`.
+1. **Repo setup**: Run `make setup` from the repo root, or run the equivalent
+   manual setup commands from `docs/local-dev.md`. This installs the pinned
+   mise toolchain, bootstraps the mise-owned Hex/Rebar installs, fetches Elixir
+   deps, syncs native Python packages, and installs root npm tool/asset pins.
 2. **Build shell**: Run builds through `mise exec -- ./scripts/build-pkg.sh`.
 3. **Git**: Clean working tree recommended (use `--allow-dirty` if needed)
 4. **macOS**: PKG build only works on macOS (uses `pkgbuild`)

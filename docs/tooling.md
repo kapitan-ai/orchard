@@ -26,9 +26,11 @@ The pinned toolchain currently covers:
 | Elixir | `1.20.0-otp-29` | Mix, umbrella compilation, tests, releases |
 | Python | `3.11.15` | Native tokenizer and MLX worker packages |
 | uv | `0.11.23` | Python package sync, virtualenvs, native tests |
-| Node.js | `24.17.0` | Repository-local OpenSpec CLI runtime |
-| npm | `11.13.0` | Package manager bundled with pinned Node.js |
+| Node.js | `24.17.0` | Repository-local OpenSpec and Phoenix asset CLI runtime |
+| npm | `11.13.0` | Package manager for root tool and asset pins |
 | OpenSpec | `@fission-ai/openspec@1.4.1` | OpenSpec change/spec validation |
+| esbuild | `0.25.0` | Phoenix JavaScript asset bundling CLI |
+| Tailwind CSS | `4.1.3` | Phoenix CSS asset build CLI |
 
 The mise environment also sets:
 
@@ -48,6 +50,8 @@ tool resolution matters.
 
 ```bash
 export ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\""
+mise exec -- mix local.hex --if-missing --force
+mise exec -- mix local.rebar --if-missing --force
 mise exec -- mix deps.get
 unset ERL_AFLAGS
 mise exec -- uv sync --directory native/orchard_tokenizer

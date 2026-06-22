@@ -195,8 +195,7 @@ ELIXIR
 | `ORCHARD_MODELS_ROOT` | `tmp/dev/models` | Model artifact storage |
 | `ORCHARD_WORKER_SOCKET_DIR` | `tmp/dev/data/worker-sockets` | Worker UDS directory |
 | `ORCHARD_WORKER_EXECUTABLE` | `native/orchard_worker_mlx/bin/orchard-worker-mlx` (repo-root) | Worker binary path. Override via env var; default resolves from repo root in source-dev mode. |
-| `ORCHARD_WORKER_BACKEND` | `mlx` | Inference backend |
-| `ORCHARD_FAKE_RUNTIME` | `false` | Use fake runtime (for testing without GPU) |
+| `ORCHARD_WORKER_BACKEND` | `mlx` | Worker backend (`mlx` or `stub`) |
 | `ORCHARD_NODE_DISPLAY_NAME` | hostname | Human-readable node name shown in console |
 | `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev) / `hard` (distributed packaged channels) | Licensing mode for startup and packaged useful-work admission: `off`, `warn`, or `hard` |
 
@@ -204,6 +203,8 @@ Node-agent runtime env vars are read when `config/dev.exs` is evaluated at BEAM
 startup. Restart `make dev`, `mise exec -- bin/dev`, or `mise exec --
 bin/dev-node-agent` after changing them. Use `ORCHARD_WORKER_BACKEND=stub` for
 cluster mechanics or rollback testing when real MLX inference is not required.
+`ORCHARD_FAKE_RUNTIME` is a release/runtime config knob; source-dev tests use
+the fake runtime through `config/test.exs`, not a dev env override.
 
 #### Controller Multi-Node (Source Dev)
 
@@ -435,8 +436,8 @@ separate from `mix test`, which uses the fake/stub runtime and requires no GPU.
 
 - Apple Silicon Mac (M1/M2/M3/M4)
 - A local Orchard model bundle directory (not downloaded by the script)
-- `mise install` already run in the repo
-- `mise exec -- mix deps.get` already run in the repo
+- `make setup` already run in the repo, or the equivalent manual setup commands
+  from [Quick Start](#quick-start)
 
 ### Required Environment Variable
 
