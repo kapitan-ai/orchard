@@ -66,6 +66,29 @@ defmodule Orchard.Scheduler.SingleNodeTest do
     assert schedule.queue_lane_capacity == 2
   end
 
+  test "SPEC.md §5.5 accounts for unrelated single-node load in queue capacity" do
+    Process.put(:single_node_status, %{
+      active_request_count: 2,
+      max_concurrency: 4,
+      runtime_model_placements: [
+        placement("single-unrelated-load-model", "v1",
+          active_request_count: 1,
+          max_concurrency: 4
+        )
+      ]
+    })
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request("single-unrelated-load-model"),
+               [host: "127.0.0.1", port: 50_071],
+               status_client: StubClient
+             )
+
+    assert schedule.strategy == :single_node
+    assert schedule.queue_lane_capacity == 3
+  end
+
   test "SPEC.md §5.5 returns model_busy when multi-slot single-node capacity is exhausted" do
     Process.put(:single_node_status, %{
       active_request_count: 2,
