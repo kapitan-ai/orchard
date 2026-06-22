@@ -3,6 +3,7 @@ erlang = "29.0.2"
 elixir = "1.20.0-otp-29"
 python = "3.11.15"
 uv = "0.11.23"
+node = "24.17.0"
 
 [env]
 UV_PYTHON = "3.11"

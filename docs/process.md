@@ -20,9 +20,10 @@ For durable decisions, see [`decisions/README.md`](decisions/README.md).
 | Typo or docs clarification | Direct PR |
 | Small bug | Direct PR plus regression test when practical |
 | Internal refactor | Direct PR plus validation |
-| Behavior change | PR must state `SPEC.md` impact |
+| Behavior change | OpenSpec change or PR must state `SPEC.md` impact |
 | Architecture decision | Add or update `docs/decisions/**` when not already covered |
 | Normative invariant change | Update `SPEC.md` in the same branch |
+| Collaborator-owned substantial change | OpenSpec change package plus normal PR |
 
 ## Artifact Lifecycle
 
@@ -31,8 +32,10 @@ For durable decisions, see [`decisions/README.md`](decisions/README.md).
 | Idea or issue | GitHub issue, PR note, local scratch | Commit only if standalone and useful |
 | Local goal package | `goals/<slug>/` | Ignored; not committed by default |
 | Execution evidence | local evidence dirs and logs | Ignored unless sanitized and promoted |
+| OpenSpec proposed change | `openspec/changes/<change-id>/` | Commit when ready for collaborator review |
 | Shared product language | `docs/glossary/CONTEXT.md` | Commit when standalone and aligned with `SPEC.md` |
 | Durable decision | `docs/decisions/**` | Commit when standalone and product-relevant |
+| Accepted OpenSpec behavior | `openspec/specs/**`, `SPEC.md`, docs, tests, code | Commit only after reconciliation |
 | Normative behavior | `SPEC.md`, code, tests | Commit through normal review |
 
 ## Re-Grounding Rule
@@ -47,6 +50,9 @@ rewrite the durable conclusion instead of copying the stale plan.
 - Product docs do not duplicate large normative sections from `SPEC.md`.
 - Private local artifacts are not committed.
 - Active `goals/<slug>/` directories are not staged.
+- OpenSpec-backed changes pass
+  `mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive`.
+- Archived OpenSpec specs do not contain placeholders such as `Purpose TBD`.
 - Validation commands and outcomes are recorded.
 
 ## Optional Local Tools

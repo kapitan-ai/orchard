@@ -31,6 +31,8 @@ large spec sections.
 - [`../AGENTS.md`](../AGENTS.md) — automation/agent workflow and quality gates.
 - [`process.md`](process.md) — artifact lifecycle and review gates.
 - [`code-quality.md`](code-quality.md) — Credo, ex_slop, and ex_dna policy.
+- [`../openspec/README.md`](../openspec/README.md) — OpenSpec change workflow
+  for substantial collaborator-reviewed changes.
 
 ### I want to change Console UI
 
@@ -58,6 +60,8 @@ large spec sections.
 - Normative product/system behavior: `../SPEC.md`.
 - Human workflow: `../CONTRIBUTING.md`.
 - Agent workflow and validation: `../AGENTS.md`.
+- OpenSpec change intent: `../openspec/README.md` and
+  `../openspec/changes/<change-id>/`.
 - Artifact lifecycle: `process.md` and `../goals/README.md`.
 
 If docs, tests, implementation, and `SPEC.md` disagree about product behavior,

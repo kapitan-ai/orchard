@@ -11,6 +11,7 @@ erl_crash.dump
 .elixir_ls/
 
 # Node (if Phoenix assets)
+/node_modules/
 /assets/node_modules/
 
 # macOS
@@ -52,6 +53,7 @@ native/*/.venv-pkg/
 /prompt-exports/
 **/prompt-exports/
 /.codex/
+/.claude/
 /.repoprompt/
 /.plannotator/
 /.lavish/

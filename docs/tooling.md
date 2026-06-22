@@ -26,6 +26,9 @@ The pinned toolchain currently covers:
 | Elixir | `1.20.0-otp-29` | Mix, umbrella compilation, tests, releases |
 | Python | `3.11.15` | Native tokenizer and MLX worker packages |
 | uv | `0.11.23` | Python package sync, virtualenvs, native tests |
+| Node.js | `24.17.0` | Repository-local OpenSpec CLI runtime |
+| npm | `11.13.0` | Package manager bundled with pinned Node.js |
+| OpenSpec | `@fission-ai/openspec@1.4.1` | OpenSpec change/spec validation |
 
 The mise environment also sets:
 
@@ -116,13 +119,26 @@ mise exec -- mix proto.gen.worker
 
 ## Node Policy
 
-Orchard currently has JavaScript assets, but no first-party `package.json`,
-`npm`, `pnpm`, or `yarn` workflow. Phoenix asset builds use the Mix-managed
-`esbuild` and `tailwind` packages.
+Orchard has a minimal first-party npm workflow for repository-local OpenSpec
+validation. The only root npm dependency is the pinned OpenSpec CLI in
+`package.json` / `package-lock.json`.
 
-Do not add an npm-based or Node-based workflow without first adding the Node
-version to `mise.toml` and updating this document. If a first-party
-`package.json` appears, Node becomes part of the required mise toolchain.
+Phoenix asset builds still use the Mix-managed `esbuild` and `tailwind`
+packages. Do not add general app JavaScript dependencies, asset builds, or an
+alternate Node workflow without updating `mise.toml`, `package.json`,
+`package-lock.json`, and this document.
+
+Install the pinned Node package tools from the repo root:
+
+```bash
+mise exec -- npm ci --ignore-scripts
+```
+
+Run OpenSpec through the pinned npm script:
+
+```bash
+mise exec -- npm run openspec -- validate --all --strict --no-interactive
+```
 
 ## Tools Outside mise
 
@@ -139,6 +155,10 @@ by mise:
 
 Document these in the relevant runbook or packaging guide rather than adding
 them to `mise.toml`.
+
+OpenSpec is initialized for collaborator-reviewable change packages and pinned
+through the root npm workflow. For OpenSpec-backed branches, run the validation
+commands in [`../openspec/README.md`](../openspec/README.md).
 
 ## Agent Accelerator Tools
 

@@ -12,7 +12,8 @@ macOS. This repository is the collaborator-facing source of truth.
 5. `docs/glossary/CONTEXT.md` defines shared Orchard product language.
 6. `docs/process.md` explains artifact lifecycle and review gates.
 7. `docs/decisions/**` records durable decisions not already fixed by `SPEC.md`.
-8. `openspec/README.md` reserves a structured-change path subordinate to `SPEC.md`.
+8. `openspec/README.md` explains the initialized OpenSpec change workflow
+   subordinate to `SPEC.md`.
 
 If these disagree about product behavior, treat the PR as blocked until the
 branch reconciles the conflict. `SPEC.md` wins until explicitly updated.
@@ -39,10 +40,30 @@ Behavior-changing or architecture-significant work must state its `SPEC.md`
 impact in the issue or PR. If the behavior is not covered by `SPEC.md`, update
 the relevant durable artifact before or with the implementation.
 
+Use OpenSpec for substantial behavior, architecture, API, security/governance,
+node lifecycle, scheduling, packaging, or collaborator-owned changes. OpenSpec
+change packages live under `openspec/changes/<change-id>/` and must remain
+subordinate to `SPEC.md`.
+
 ## Validation
 
 Run the relevant validation workflow from `AGENTS.md` and report exact commands
 and outcomes in the PR. For bug fixes, include a regression test when practical.
+
+For OpenSpec-backed work, also run:
+
+```sh
+mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive
+```
+
+After archiving or syncing accepted OpenSpec behavior, run:
+
+```sh
+mise exec -- npm run openspec -- validate --all --strict --no-interactive
+```
+
+Review archived specs for placeholders such as `Purpose TBD`; strict validation
+does not catch unfinished prose.
 
 ## Artifact Hygiene
 
