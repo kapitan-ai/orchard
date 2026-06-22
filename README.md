@@ -141,6 +141,7 @@ must be rewritten into this repo before it counts as Orchard truth.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) explains human collaboration workflow.
 - [`AGENTS.md`](AGENTS.md) explains automation and agent workflow.
 - [`docs/tooling.md`](docs/tooling.md) explains the required mise toolchain and local accelerator tools.
+- [`docs/local-dev.md`](docs/local-dev.md) explains source development setup and smoke checks.
 - [`docs/process.md`](docs/process.md) explains artifact lifecycle and review gates.
 - [`openspec/README.md`](openspec/README.md) reserves a future structured-change workflow subordinate to `SPEC.md`.
 

@@ -16,6 +16,7 @@ top-level normative product/system contract.
 - `../CONTRIBUTING.md` — human collaborator workflow
 - `../AGENTS.md` — contributor and agent workflow
 - `tooling.md` — required local toolchain and agent accelerator guidance
+- `local-dev.md` — source development setup and smoke-test guidance
 - `process.md` — artifact lifecycle and review gates
 
 ## What belongs here
@@ -49,5 +50,6 @@ top-level normative product/system contract.
 
 - `milestones/` — milestone execution plans and active milestone status
 - `tooling.md` — mise, validation command, and local tool guidance
+- `local-dev.md` — source development setup and smoke-test guidance
 - `process.md` — artifact lifecycle and review gates
 - `decisions/` — ADR-style records for durable implementation decisions
