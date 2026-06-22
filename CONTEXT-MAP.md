@@ -2,7 +2,7 @@
 
 ## Contexts
 
-- [Orchard Glossary](./docs/glossary.md) - shared Orchard product language for platform, topology, APIs, governance, requests, scheduling, packaging, and operations.
+- [Orchard Glossary](./docs/glossary/CONTEXT.md) - shared Orchard product language for platform, topology, APIs, governance, requests, scheduling, packaging, and operations.
 
 ## Relationships
 
