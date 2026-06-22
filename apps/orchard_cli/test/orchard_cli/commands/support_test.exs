@@ -250,6 +250,67 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute log =~ "plain-token-secret"
   end
 
+  test "redaction covers compact password keys, PEM blocks, and payload assignments", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    File.write!(
+      Path.join([support_root, "config", "controller.env"]),
+      """
+      PGPASSWORD=pg-secret
+      #PGPASSWORD=old-pg-secret
+      ORCHARD_PUBLIC_HOST=orchard.local
+      """
+    )
+
+    File.write!(
+      Path.join([support_root, "logs", "controller.log"]),
+      """
+      PGPASSWORD=pg-log-secret
+      prompt: private prompt text
+      %{messages: [%{role: "user", content: "private message text"}]}
+      input: private input text
+      content: private content text
+      -----BEGIN PRIVATE KEY-----
+      MIIPrivateKeyBody
+      -----END PRIVATE KEY-----
+      input_tokens=12 prompt_tokens=8 token_count=20
+      safe diagnostic line
+      """
+    )
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime(support_root)
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "payload-redaction")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    config = File.read!(Path.join([extract_dir, "config", "controller.env"]))
+    assert config =~ "PGPASSWORD=[redacted]"
+    assert config =~ "#PGPASSWORD=[redacted]"
+    assert config =~ "ORCHARD_PUBLIC_HOST=orchard.local"
+    refute config =~ "pg-secret"
+    refute config =~ "old-pg-secret"
+
+    log = File.read!(Path.join([extract_dir, "logs", "controller.log"]))
+    assert log =~ "input_tokens=12 prompt_tokens=8 token_count=20"
+    assert log =~ "safe diagnostic line"
+    assert log =~ "[redacted log line]"
+    refute log =~ "pg-log-secret"
+    refute log =~ "private prompt text"
+    refute log =~ "private message text"
+    refute log =~ "private input text"
+    refute log =~ "private content text"
+    refute log =~ "MIIPrivateKeyBody"
+    refute log =~ "PRIVATE KEY"
+  end
+
   test "config collection skips symlinked env files", %{
     support_root: support_root,
     output_dir: output_dir,

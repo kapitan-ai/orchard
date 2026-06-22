@@ -14,14 +14,18 @@ defmodule OrchardCLI.Commands.Support do
   @sensitive_key_compounds ~w(
     access_key api_key apikey cacertfile certfile database_url private_key sentry_dsn x_api_key
   )
+  @sensitive_key_compact_fragments ~w(password passwd passphrase)
+  @sensitive_key_compact_aliases ~w(dbpass pgpass pgpassfile)
   @sensitive_token_partners ~w(access api auth bearer id license refresh secret session)
   @sensitive_license_partners ~w(activation key secret token)
   @sensitive_env_license_keys ~w(license orchard_license)
   @safe_diagnostic_keys ~w(
     completion_tokens input_tokens license_enforcement license_mode orchard_license_enforcement
     orchard_license_mode orchard_tokenizer_executable output_tokens prompt_token_ids prompt_tokens
-    token_count tokenizer_executable tokens_per_second total_tokens worker_supports_prompt_token_ids
+    supports_prompt_token_ids token_count tokenizer_executable tokens_per_second total_tokens
+    worker_supports_prompt_token_ids
   )
+  @sensitive_log_payload_keys ~w(content input input_text message_content messages prompt prompt_text)
   @sensitive_log_literals [
     "postgres://",
     "ecto://",
@@ -36,6 +40,8 @@ defmodule OrchardCLI.Commands.Support do
   @bearer_value_regex ~r/\bbearer\s+[^\s,;]+/i
   @credential_token_assignment_regex ~r/\b(?:api|access|auth|bearer|id|refresh|session|license)[-_\s]+tokens?\s*(?:=>|:|=)/i
   @license_secret_assignment_regex ~r/\blicense[-_\s]+(?:activation|key|secret|token)\s*(?:=>|:|=)/i
+  @private_key_begin_regex ~r/-----BEGIN [A-Z ]*PRIVATE KEY-----/i
+  @private_key_end_regex ~r/-----END [A-Z ]*PRIVATE KEY-----/i
   @private_key_regex ~r/-----BEGIN [A-Z ]*PRIVATE KEY-----|\bprivate[-_\s]+key\s*(?:=>|:|=)/i
   @temp_dir_attempts 20
   @archive_finalize_attempts 100
@@ -428,6 +434,7 @@ defmodule OrchardCLI.Commands.Support do
       safe_diagnostic_key?(compact) -> false
       sensitive_key?(parts, compact) -> true
       sensitive_license_key?(parts) -> true
+      sensitive_log_payload_key?(parts, compact) -> true
       true -> false
     end
   end
@@ -435,6 +442,8 @@ defmodule OrchardCLI.Commands.Support do
   defp sensitive_key?(parts, compact) do
     compact in @sensitive_key_compounds or
       Enum.any?(@sensitive_key_compounds, &String.contains?(compact, &1)) or
+      compact in @sensitive_key_compact_aliases or
+      Enum.any?(@sensitive_key_compact_fragments, &String.contains?(compact, &1)) or
       Enum.any?(@sensitive_key_parts, &(&1 in parts)) or
       token_secret_key?(parts, compact)
   end
@@ -447,6 +456,12 @@ defmodule OrchardCLI.Commands.Support do
 
   defp sensitive_license_key?(parts) do
     "license" in parts and Enum.any?(@sensitive_license_partners, &(&1 in parts))
+  end
+
+  defp sensitive_log_payload_key?(parts, compact) do
+    compact in @sensitive_log_payload_keys or
+      Enum.any?(["messages", "prompt"], &(&1 in parts)) or
+      List.last(parts) in ["content", "input"]
   end
 
   defp safe_diagnostic_key?(compact), do: compact in @safe_diagnostic_keys
@@ -629,26 +644,44 @@ defmodule OrchardCLI.Commands.Support do
 
   defp redact_log_file(content) do
     if String.valid?(content) do
-      content
-      |> String.split("\n", trim: false)
-      |> Enum.map_join("\n", &redact_log_line/1)
+      {lines, _in_private_key?} =
+        content
+        |> String.split("\n", trim: false)
+        |> Enum.map_reduce(false, &redact_log_line/2)
+
+      Enum.join(lines, "\n")
     else
       "[redacted binary log content]\n"
     end
   end
 
+  defp redact_log_line("", false), do: {"", false}
+
+  defp redact_log_line(line, true) do
+    {"[redacted log line]", not Regex.match?(@private_key_end_regex, line)}
+  end
+
+  defp redact_log_line(line, false) do
+    in_private_key? =
+      Regex.match?(@private_key_begin_regex, line) and
+        not Regex.match?(@private_key_end_regex, line)
+
+    {redact_log_line(line), in_private_key?}
+  end
+
   defp redact_log_line(""), do: ""
 
   defp redact_log_line(line) do
-    cond do
-      sensitive_log_literal?(line) -> "[redacted log line]"
-      Regex.match?(@bearer_value_regex, line) -> "[redacted log line]"
-      Regex.match?(@credential_token_assignment_regex, line) -> "[redacted log line]"
-      Regex.match?(@license_secret_assignment_regex, line) -> "[redacted log line]"
-      Regex.match?(@private_key_regex, line) -> "[redacted log line]"
-      sensitive_log_assignment?(line) -> "[redacted log line]"
-      true -> line
-    end
+    if redact_log_line?(line), do: "[redacted log line]", else: line
+  end
+
+  defp redact_log_line?(line) do
+    sensitive_log_literal?(line) or
+      Regex.match?(@bearer_value_regex, line) or
+      Regex.match?(@credential_token_assignment_regex, line) or
+      Regex.match?(@license_secret_assignment_regex, line) or
+      Regex.match?(@private_key_regex, line) or
+      sensitive_log_assignment?(line)
   end
 
   defp sensitive_log_literal?(line) do
