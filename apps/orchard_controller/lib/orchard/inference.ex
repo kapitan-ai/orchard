@@ -227,6 +227,7 @@ defmodule Orchard.Inference do
     [
       enabled: false,
       max_wait_ms: 3_000,
+      max_active_per_tenant: nil,
       max_queued_per_tenant: 32,
       poll_interval_ms: 100,
       capacity: 1,

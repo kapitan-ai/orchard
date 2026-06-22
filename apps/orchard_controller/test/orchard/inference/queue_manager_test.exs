@@ -53,6 +53,54 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.3 tenant active cap queues same-tenant work despite placement capacity" do
+    tenant_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 2, max_active_per_tenant: 1)
+
+    assert {:ok, grant} =
+             QueueManager.acquire(admission_request("req-tenant-active-a", tenant_id: tenant_id),
+               config: config
+             )
+
+    assert {:queued, ticket} =
+             QueueManager.acquire(admission_request("req-tenant-active-b", tenant_id: tenant_id),
+               config: config
+             )
+
+    awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+    refute Task.yield(awaiter, 50)
+
+    assert :ok = QueueManager.release(grant)
+    assert {:ok, queued_grant} = Task.await(awaiter, 2_000)
+    assert queued_grant.queue_result == :queued
+
+    assert :ok = QueueManager.release(queued_grant)
+  end
+
+  test "SPEC.md §5.3 tenant active cap does not block another tenant with placement capacity" do
+    first_tenant_id = Ecto.UUID.generate()
+    second_tenant_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 2, max_active_per_tenant: 1)
+
+    assert {:ok, first_grant} =
+             QueueManager.acquire(
+               admission_request("req-tenant-isolated-a", tenant_id: first_tenant_id),
+               config: config
+             )
+
+    assert {:ok, second_grant} =
+             QueueManager.acquire(
+               admission_request("req-tenant-isolated-b", tenant_id: second_tenant_id),
+               config: config
+             )
+
+    assert first_grant.queue_result == :immediate
+    assert second_grant.queue_result == :immediate
+
+    assert :ok = QueueManager.release(first_grant)
+    assert :ok = QueueManager.release(second_grant)
+  end
+
   test "SPEC.md §5.4 cross-tenant weighted round-robin grants one tenant turn at a time" do
     tenant_a = Ecto.UUID.generate()
     tenant_b = Ecto.UUID.generate()
@@ -1387,6 +1435,7 @@ defmodule Orchard.Inference.QueueManagerTest do
       [
         enabled: true,
         max_wait_ms: 500,
+        max_active_per_tenant: nil,
         max_queued_per_tenant: 32,
         poll_interval_ms: 1,
         capacity: 1,
