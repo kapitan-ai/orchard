@@ -175,6 +175,58 @@ defmodule OrchardCLI.Commands.SupportTest do
     refute truncated_log =~ "orch_partial_secret"
   end
 
+  test "config collection skips symlinked env files", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    outside_path = Path.join(tmp_dir, "outside.env")
+    File.write!(outside_path, "ORCHARD_PUBLIC_HOST=leaked.example\n")
+    File.ln_s!(outside_path, Path.join([support_root, "config", "controller.env"]))
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime(support_root)
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "symlink-config")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    refute File.exists?(Path.join([extract_dir, "config", "controller.env"]))
+
+    assert File.read!(Path.join([extract_dir, "config", "README.txt"])) =~
+             "No Orchard env config files were found."
+  end
+
+  test "log collection skips files that become unavailable", %{
+    support_root: support_root,
+    output_dir: output_dir,
+    tmp_dir: tmp_dir
+  } do
+    log_path = Path.join([support_root, "logs", "controller.log"])
+    File.write!(log_path, "ready\n")
+    File.chmod!(log_path, 0o000)
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime(support_root)
+             )
+
+    archive_path = Path.join(output_dir, "orchard-support-bundle-20260622T123456Z.tar.gz")
+    extract_dir = Path.join(tmp_dir, "unavailable-log")
+    File.mkdir_p!(extract_dir)
+    assert_tar_extract!(archive_path, extract_dir)
+
+    refute File.exists?(Path.join([extract_dir, "logs", "controller.log"]))
+
+    assert File.read!(Path.join([extract_dir, "logs", "README.txt"])) =~
+             "No Orchard log files were found."
+  end
+
   test "truncated logs omit the first partial line before redaction",
        %{support_root: support_root, output_dir: output_dir, tmp_dir: tmp_dir} do
     File.write!(
@@ -219,6 +271,37 @@ defmodule OrchardCLI.Commands.SupportTest do
              )
 
     assert Bitwise.band(File.stat!(output_dir).mode, 0o777) == 0o755
+  end
+
+  test "temporary archive is written under a private directory",
+       %{support_root: support_root, output_dir: output_dir} do
+    File.mkdir_p!(output_dir)
+    File.chmod!(output_dir, 0o755)
+
+    runtime =
+      support_root
+      |> runtime()
+      |> Map.put(:archive, fn stage_dir, temp_archive_path ->
+        archive_dir = Path.dirname(temp_archive_path)
+
+        send(
+          self(),
+          {:archive_dir, archive_dir, Bitwise.band(File.stat!(archive_dir).mode, 0o777)}
+        )
+
+        archive_stage(stage_dir, temp_archive_path)
+      end)
+
+    assert {:ok, _output} =
+             Support.run(
+               ["bundle", "create", "--support-root", support_root, "--output", output_dir],
+               runtime
+             )
+
+    assert_received {:archive_dir, archive_dir, 0o700}
+    assert Path.dirname(archive_dir) == output_dir
+    refute archive_dir == output_dir
+    refute File.exists?(archive_dir)
   end
 
   test "snapshot failures do not serialize raw exception messages",

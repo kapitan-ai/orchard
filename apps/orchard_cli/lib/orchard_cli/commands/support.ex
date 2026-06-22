@@ -133,7 +133,8 @@ defmodule OrchardCLI.Commands.Support do
     bundle_name = available_bundle_name(output_dir, basename)
     archive_path = Path.join(output_dir, bundle_name <> ".tar.gz")
     path_nonce = runtime.path_nonce.()
-    temp_archive_path = Path.join(output_dir, ".#{bundle_name}-#{path_nonce}.tar.gz.tmp")
+    archive_dir = Path.join(output_dir, ".#{bundle_name}-#{path_nonce}.archive")
+    temp_archive_path = Path.join(archive_dir, bundle_name <> ".tar.gz.tmp")
     stage_dir = Path.join(output_dir, ".#{bundle_name}-#{path_nonce}.stage")
 
     result =
@@ -141,8 +142,9 @@ defmodule OrchardCLI.Commands.Support do
         ensure_output_dir!(output_dir)
 
         File.rm_rf!(stage_dir)
-        File.rm(temp_archive_path)
+        File.rm_rf!(archive_dir)
         ensure_private_dir!(stage_dir)
+        ensure_private_dir!(archive_dir)
         build_stage!(stage_dir, opts, runtime, now)
 
         with :ok <- runtime.archive.(stage_dir, temp_archive_path),
@@ -172,7 +174,7 @@ defmodule OrchardCLI.Commands.Support do
           {:error, "Error: failed to create support bundle: #{inspect({kind, reason})}", 1}
       after
         File.rm_rf(stage_dir)
-        File.rm(temp_archive_path)
+        File.rm_rf(archive_dir)
       end
 
     case result do
@@ -358,12 +360,13 @@ defmodule OrchardCLI.Commands.Support do
       |> Path.join("config")
       |> config_paths()
       |> Enum.reduce(0, fn {source_path, dest_name}, count ->
-        if File.regular?(source_path) do
-          contents = source_path |> File.read!() |> redact_env_file()
-          write_text!(stage_dir, Path.join("config", dest_name), contents)
-          count + 1
-        else
-          count
+        case read_regular_file(source_path) do
+          {:ok, contents} ->
+            write_text!(stage_dir, Path.join("config", dest_name), contents)
+            count + 1
+
+          :error ->
+            count
         end
       end)
 
@@ -403,21 +406,25 @@ defmodule OrchardCLI.Commands.Support do
   defp collect_logs!(stage_dir, support_root, max_log_bytes) do
     logs_root = Path.join(support_root, "logs")
 
-    case regular_files(logs_root) do
-      [] ->
-        write_text!(stage_dir, "logs/README.txt", "No Orchard log files were found.\n")
+    copied =
+      logs_root
+      |> regular_files()
+      |> Enum.reduce(0, fn source_path, count ->
+        rel = Path.relative_to(source_path, logs_root)
+        dest = Path.join("logs", rel)
 
-      paths ->
-        Enum.each(paths, fn source_path ->
-          rel = Path.relative_to(source_path, logs_root)
-          dest = Path.join("logs", rel)
+        case tail_file(source_path, max_log_bytes) do
+          {:ok, content} ->
+            write_text!(stage_dir, dest, redact_log_file(content))
+            count + 1
 
-          write_text!(
-            stage_dir,
-            dest,
-            source_path |> tail_file!(max_log_bytes) |> redact_log_file()
-          )
-        end)
+          :error ->
+            count
+        end
+      end)
+
+    if copied == 0 do
+      write_text!(stage_dir, "logs/README.txt", "No Orchard log files were found.\n")
     end
   end
 
@@ -477,21 +484,58 @@ defmodule OrchardCLI.Commands.Support do
     _exception -> []
   end
 
-  defp tail_file!(path, max_bytes) do
-    {:ok, stat} = File.stat(path)
+  defp read_regular_file(path) do
+    with {:ok, first_stat} <- regular_file_stat(path),
+         {:ok, contents} <- File.read(path),
+         {:ok, second_stat} <- regular_file_stat(path),
+         true <- same_file?(first_stat, second_stat) do
+      {:ok, redact_env_file(contents)}
+    else
+      _other -> :error
+    end
+  end
 
-    {:ok, content} =
-      File.open(path, [:read, :binary], fn file ->
-        offset = max(stat.size - max_bytes, 0)
-        {:ok, _position} = :file.position(file, offset)
+  defp regular_file_stat(path) do
+    case File.lstat(path) do
+      {:ok, %{type: :regular} = stat} -> {:ok, stat}
+      _other -> :error
+    end
+  end
 
-        case IO.binread(file, max_bytes) do
-          :eof -> ""
-          data -> data
-        end
-      end)
+  defp same_file?(first_stat, second_stat) do
+    first_stat.major_device == second_stat.major_device and
+      first_stat.minor_device == second_stat.minor_device and
+      first_stat.inode == second_stat.inode
+  end
 
-    if stat.size > max_bytes do
+  defp tail_file(path, max_bytes) do
+    with {:ok, first_stat} <- regular_file_stat(path),
+         {:ok, {:ok, content}} <-
+           File.open(path, [:read, :binary], fn file ->
+             read_tail_content(file, first_stat.size, max_bytes)
+           end),
+         {:ok, second_stat} <- regular_file_stat(path),
+         true <- same_file?(first_stat, second_stat) do
+      {:ok, format_tail_content(content, first_stat.size, max_bytes)}
+    else
+      _other -> :error
+    end
+  end
+
+  defp read_tail_content(file, file_size, max_bytes) do
+    offset = max(file_size - max_bytes, 0)
+
+    with {:ok, _position} <- :file.position(file, offset) do
+      case IO.binread(file, max_bytes) do
+        :eof -> {:ok, ""}
+        data when is_binary(data) -> {:ok, data}
+        {:error, reason} -> {:error, reason}
+      end
+    end
+  end
+
+  defp format_tail_content(content, file_size, max_bytes) do
+    if file_size > max_bytes do
       "[truncated to last #{max_bytes} bytes]\n" <> discard_partial_first_line(content)
     else
       content
