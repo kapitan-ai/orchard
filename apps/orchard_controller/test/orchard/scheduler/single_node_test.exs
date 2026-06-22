@@ -106,6 +106,49 @@ defmodule Orchard.Scheduler.SingleNodeTest do
              )
   end
 
+  test "SPEC.md §5.5 returns model_busy when unrelated load exhausts single-node capacity" do
+    Process.put(:single_node_status, %{
+      active_request_count: 1,
+      max_concurrency: 1,
+      runtime_model_placements: [
+        placement("single-node-unrelated-busy-model", "v1",
+          active_request_count: 0,
+          max_concurrency: 1
+        )
+      ]
+    })
+
+    assert {:error, :model_busy} =
+             SingleNode.default_schedule(
+               canonical_request("single-node-unrelated-busy-model"),
+               [host: "127.0.0.1", port: 50_071],
+               status_client: StubClient
+             )
+  end
+
+  test "keeps legacy single-slot same-model queue scheduling under active placement load" do
+    Process.put(:single_node_status, %{
+      active_request_count: 1,
+      max_concurrency: 1,
+      runtime_model_placements: [
+        placement("single-node-same-model-busy-model", "v1",
+          active_request_count: 1,
+          max_concurrency: 1
+        )
+      ]
+    })
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request("single-node-same-model-busy-model"),
+               [host: "127.0.0.1", port: 50_071],
+               status_client: StubClient
+             )
+
+    assert schedule.strategy == :single_node
+    refute Map.has_key?(schedule, :queue_lane_capacity)
+  end
+
   test "SPEC.md §5.5 returns model_busy when the single-node placement is exhausted" do
     Process.put(:single_node_status, %{
       runtime_model_placements: [

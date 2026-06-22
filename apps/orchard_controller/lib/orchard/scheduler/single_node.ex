@@ -115,6 +115,9 @@ defmodule Orchard.Scheduler.SingleNode do
         active_request_count < effective_max_concurrency ->
           {:ok, Map.put(schedule, :queue_lane_capacity, effective_max_concurrency)}
 
+        active_request_count == 0 and node_concurrency_exhausted?(response) ->
+          {:error, :model_busy}
+
         max_concurrency > 1 ->
           {:error, :model_busy}
 
@@ -168,6 +171,13 @@ defmodule Orchard.Scheduler.SingleNode do
     remaining_node_capacity = max(node_max - node_active, 0)
 
     min(placement_max, model_active + remaining_node_capacity)
+  end
+
+  defp node_concurrency_exhausted?(response) do
+    node_active = non_negative_integer(response_value(response, :active_request_count), 0)
+    node_max = positive_integer(response_value(response, :max_concurrency), 1)
+
+    node_active >= node_max
   end
 
   defp response_value(response, key) do
