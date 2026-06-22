@@ -2628,6 +2628,65 @@ defmodule Orchard.NodesTest do
       send(first_awaiter, :stop)
     end
 
+    test "SPEC.md §5.5 scheduler transport failure clears stale placement queue capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-scheduler-placement-failure-a",
+                   "transport-placement-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-scheduler-placement-failure-b",
+                   "transport-placement-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_transport_placement_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.70", 9444)
+      heartbeat_at = DateTime.utc_now()
+
+      status = placement_status("10.0.0.70", "transport-placement-model", max_concurrency: 1)
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, heartbeat_at)
+      assert_receive {:first_transport_placement_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      unreachable_at =
+        DateTime.add(heartbeat_at, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, unreachable_node} =
+               Nodes.record_transport_failure(
+                 target,
+                 {:connect_failed, :econnrefused},
+                 unreachable_at
+               )
+
+      assert unreachable_node.health == :unreachable
+
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      restored_at = DateTime.add(unreachable_at, 1, :second)
+
+      assert {:ok, restored_node} = Nodes.observe_status(target, status, restored_at)
+      assert restored_node.health == :healthy
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "transport-placement-model@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
     test "marks nodes with nil heartbeat as unreachable" do
       insert_node!(%{
         advertise_addr: "10.0.0.52",
