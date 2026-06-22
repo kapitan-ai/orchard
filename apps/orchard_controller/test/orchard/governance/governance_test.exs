@@ -364,6 +364,40 @@ defmodule Orchard.GovernanceTest do
     end
   end
 
+  describe "audit_support_bundle_generated/1" do
+    test "writes a legacy-tenant audit row without local support paths" do
+      assert :ok =
+               Governance.audit_support_bundle_generated(%{
+                 archive_name: "orchard-support-bundle-20260622T123456Z.tar.gz",
+                 bundle_format: "orchard.support_bundle.v1",
+                 generated_at: "2026-06-22T12:34:56Z",
+                 max_log_bytes: 1024,
+                 support_root: "/Library/Application Support/Orchard"
+               })
+
+      audit_log =
+        Repo.one!(
+          from(audit_log in AuditLog,
+            where:
+              audit_log.tenant_id == ^Governance.legacy_tenant_id() and
+                audit_log.action == "support_bundle.generated"
+          )
+        )
+
+      assert audit_log.api_key_id == nil
+      assert audit_log.actor_type == "operator"
+      assert audit_log.target_type == "support_bundle"
+      assert audit_log.target_id == "orchard-support-bundle-20260622T123456Z.tar.gz"
+
+      assert audit_log.payload == %{
+               "archive_name" => "orchard-support-bundle-20260622T123456Z.tar.gz",
+               "bundle_format" => "orchard.support_bundle.v1",
+               "generated_at" => "2026-06-22T12:34:56Z",
+               "max_log_bytes" => 1024
+             }
+    end
+  end
+
   describe "revoke_api_key/1" do
     test "revokes once, writes one audit row, and treats later revokes as a noop" do
       tenant = create_tenant!("tenant-revoke")

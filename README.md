@@ -148,8 +148,10 @@ target behavior are governed by `SPEC.md` §14.
 
 Some SPEC-required CLI paths are present before their milestone implementation:
 `orchardctl cluster init`, `orchardctl node join`, `orchardctl nodes admit`,
-`orchardctl requests inspect`, and `orchardctl support bundle create` return
-command-specific deferred-status errors with the current supported path.
+and `orchardctl requests inspect` return command-specific deferred-status
+errors with the current supported path. `orchardctl support bundle create`
+creates a local diagnostic `.tar.gz` with bounded redacted logs, redacted
+config, service status, node snapshots, and request summaries.
 
 ## Spec
 

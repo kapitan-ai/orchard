@@ -13,7 +13,6 @@ defmodule OrchardCLITest do
     Node,
     Nodes,
     Requests,
-    Support,
     Tenants
   }
 
@@ -98,8 +97,7 @@ defmodule OrchardCLITest do
       {Cluster, ["init"], "orchardctl cluster init"},
       {Node, ["join"], "orchardctl node join"},
       {Nodes, ["admit"], "orchardctl nodes admit"},
-      {Requests, ["inspect"], "orchardctl requests inspect"},
-      {Support, ["bundle", "create"], "orchardctl support bundle create"}
+      {Requests, ["inspect"], "orchardctl requests inspect"}
     ]
 
     for {module, args, usage} <- commands do
@@ -120,8 +118,7 @@ defmodule OrchardCLITest do
       ["cluster", "init"],
       ["node", "join"],
       ["nodes", "admit"],
-      ["requests", "inspect"],
-      ["support", "bundle", "create"]
+      ["requests", "inspect"]
     ]
 
     for command <- commands do
@@ -142,8 +139,7 @@ defmodule OrchardCLITest do
       {Cluster, ["init", "--help"], "orchardctl cluster init"},
       {Node, ["join", "--help"], "orchardctl node join"},
       {Nodes, ["admit", "--help"], "orchardctl nodes admit"},
-      {Requests, ["inspect", "--help"], "orchardctl requests inspect"},
-      {Support, ["bundle", "create", "--help"], "orchardctl support bundle create"}
+      {Requests, ["inspect", "--help"], "orchardctl requests inspect"}
     ]
 
     for {module, args, usage} <- commands do
@@ -159,8 +155,7 @@ defmodule OrchardCLITest do
     commands = [
       {Cluster, "cluster", "init"},
       {Node, "node", "join"},
-      {Requests, "requests", "inspect"},
-      {Support, "support", "bundle create"}
+      {Requests, "requests", "inspect"}
     ]
 
     for {module, group, relative_command} <- commands do
@@ -169,6 +164,39 @@ defmodule OrchardCLITest do
       assert message =~ "  #{relative_command}  "
       refute message =~ "  #{group} #{relative_command}  "
     end
+  end
+
+  test "support bundle create dispatches through main and writes an archive" do
+    tmp_dir =
+      Path.join(System.tmp_dir!(), "orchard cli support #{System.unique_integer([:positive])}")
+
+    support_root = Path.join(tmp_dir, "Application Support/Orchard")
+    output_dir = Path.join(tmp_dir, "bundles")
+
+    File.mkdir_p!(Path.join(support_root, "support"))
+    on_exit(fn -> File.rm_rf(tmp_dir) end)
+
+    output =
+      capture_io(fn ->
+        OrchardCLI.main(
+          [
+            "support",
+            "bundle",
+            "create",
+            "--support-root",
+            support_root,
+            "--output",
+            output_dir
+          ],
+          &no_halt/1
+        )
+      end)
+
+    assert [_, archive_path] = Regex.run(~r/Created support bundle: (.+\.tar\.gz)/, output)
+    assert File.regular?(archive_path)
+
+    assert output =~
+             "Contents: manifest.json, diagnostics/, redacted config/, bounded redacted logs/"
   end
 
   test "env command without subcommand exits non-zero" do

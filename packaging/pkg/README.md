@@ -1037,10 +1037,13 @@ env generation, service start, and `orchardctl status` are the supported path.
 This deferred bootstrap ensures services start with valid environment and TLS
 configuration rather than crash-looping with missing setup.
 
-`orchardctl requests inspect` and `orchardctl support bundle create` are also
-SPEC-required diagnostics paths that return deferred status. Use
-`orchardctl status`, readiness output, service logs, and the troubleshooting
-tables in this runbook for current packaged diagnostics.
+`orchardctl requests inspect` is also a SPEC-required diagnostics path that
+returns deferred status. `orchardctl support bundle create` creates a local
+diagnostic `.tar.gz` with bounded redacted logs, redacted config, service
+status, node snapshots, and request summaries. It records
+`support_bundle.generated` when the controller Repo is available. Use
+`orchardctl status`, readiness output, service logs, support bundles, and the
+troubleshooting tables in this runbook for current packaged diagnostics.
 
 ### Advanced migration fallback
 

@@ -13,7 +13,8 @@ This README is orientation only. Normative CLI requirements live in
   upgrades, tenants, API keys, nodes, and models.
 - SPEC-required future command paths that return explicit deferred status until
   their milestones land: `cluster init`, `node join`, `nodes admit`,
-  `requests inspect`, and `support bundle create`.
+  and `requests inspect`.
+- Local diagnostic support bundle creation via `support bundle create`.
 - CLI helpers that wrap release scripts and packaged service management.
 - Human-readable operator output and command validation.
 
@@ -23,6 +24,11 @@ The deferred paths above are advertised by `orchardctl`, exit non-zero when
 run, and print command-specific usage, `SPEC.md` traceability, and the current
 supported source-dev or packaged workflow. `--help` for the same paths is
 side-effect free.
+
+`orchardctl support bundle create` writes a local `.tar.gz` with bounded
+redacted logs, redacted config, service status, node snapshots, and request
+summaries. It records `support_bundle.generated` when the controller Repo is
+available and reports skipped audit status otherwise.
 
 ## Does not own
 
