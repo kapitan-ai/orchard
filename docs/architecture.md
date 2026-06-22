@@ -14,6 +14,11 @@ product/system/build contract.
 - **Current packaged/operator limitation:** controller-bearing packaged installs
   require an external PostgreSQL server today. Managed Postgres is specified as
   a target mode but is not implemented.
+- **Current CLI limitation:** SPEC-required future paths such as
+  `orchardctl cluster init`, `orchardctl node join`,
+  `orchardctl nodes admit`, `orchardctl requests inspect`, and
+  `orchardctl support bundle create` are routed by `orchardctl` but return
+  deferred-status errors with the current supported path.
 
 When this guide and `SPEC.md` disagree, treat the branch as blocked until the
 conflict is reconciled. `SPEC.md` wins until explicitly updated.

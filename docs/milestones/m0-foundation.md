@@ -135,7 +135,7 @@ Likely initial home for:
 Likely initial home for:
 
 - `orchardctl` entrypoint shell
-- placeholder command groups
+- deferred command-group routing
 
 ## Milestone exit criteria
 

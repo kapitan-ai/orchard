@@ -4,6 +4,7 @@ defmodule OrchardCLI.Commands.Nodes do
 
   Supports:
     orchardctl nodes list
+    orchardctl nodes admit (deferred status; SPEC.md 11.9)
   """
 
   alias Orchard.Nodes

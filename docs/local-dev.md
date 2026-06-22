@@ -341,6 +341,11 @@ Single-node remains the default. To opt into 2-node source-dev testing
 with a remote machine (e.g., Tamingsari as node-agent, mawarduri as
 controller):
 
+`orchardctl cluster init`, `orchardctl node join`, and
+`orchardctl nodes admit` are SPEC-required future node-lifecycle commands. In
+this build they return deferred status; use the env-var split-role flow below
+for source-dev cluster testing.
+
 ### Controller host (mawarduri)
 
 ```bash
@@ -699,6 +704,11 @@ sudo launchctl kickstart -k system/com.orchard.node-agent
 4. Run a chat completion — stub returns canned responses, mlx returns real inference
 
 ## Smoke Test Troubleshooting
+
+`orchardctl requests inspect` and `orchardctl support bundle create` are
+SPEC-required diagnostics paths that return deferred status in this build. Use
+Console request views, health/readiness endpoints, and controller or node-agent
+logs for current source-dev diagnostics.
 
 | Failure | Likely Cause | Where to Look |
 |---------|-------------|---------------|

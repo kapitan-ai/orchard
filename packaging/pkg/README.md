@@ -1024,8 +1024,18 @@ For `node-agent` role installs, run `sudo orchardctl env init`, fill in the
 node-agent environment, then run `sudo orchardctl start` and verify with
 `orchardctl status`.
 
+Do not use the future node-lifecycle CLI paths for current PKG bootstrap:
+`orchardctl cluster init`, `orchardctl node join`, and
+`orchardctl nodes admit` return deferred status in this build. Role selection,
+env generation, service start, and `orchardctl status` are the supported path.
+
 This deferred bootstrap ensures services start with valid environment and TLS
 configuration rather than crash-looping with missing setup.
+
+`orchardctl requests inspect` and `orchardctl support bundle create` are also
+SPEC-required diagnostics paths that return deferred status. Use
+`orchardctl status`, readiness output, service logs, and the troubleshooting
+tables in this runbook for current packaged diagnostics.
 
 ### Advanced migration fallback
 
