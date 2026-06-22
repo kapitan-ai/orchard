@@ -61,6 +61,8 @@ config :orchard_shared,
 # esbuild (JS bundling for LiveView client hooks)
 config :esbuild,
   version: "0.25.0",
+  version_check: false,
+  path: Path.expand("../node_modules/.bin/esbuild", __DIR__),
   orchard: [
     args: ~w(js/app.js --bundle --target=es2020 --outdir=../priv/static/assets),
     cd: Path.expand("../apps/orchard_controller/assets", __DIR__),
@@ -70,6 +72,8 @@ config :esbuild,
 # tailwind (CSS compilation with brand palette)
 config :tailwind,
   version: "4.1.3",
+  version_check: false,
+  path: Path.expand("../node_modules/.bin/tailwindcss", __DIR__),
   orchard: [
     args: ~w(
       --input=css/app.css

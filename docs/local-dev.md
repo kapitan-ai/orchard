@@ -17,6 +17,20 @@ orientation, and [`tooling.md`](tooling.md) for pinned tool versions.
 See [Tooling](tooling.md) for the pinned runtime versions and standard
 `mise exec --` command forms.
 
+PostgreSQL must be accepting TCP connections before `make dev` runs. On a
+Homebrew-managed Mac, install and start it with:
+
+```bash
+brew install postgresql@16
+brew services start postgresql@16
+pg_isready -h localhost
+```
+
+The dev config defaults to `PGUSER=postgres`, `PGPASSWORD=postgres`,
+`PGHOST=localhost`, and `PGDATABASE=orchard_dev`. Either create that local role
+with database-create privileges, or export `PGUSER`/`PGPASSWORD` for an
+existing local superuser before running `make dev`.
+
 ## Quick Start
 
 ```bash
@@ -33,6 +47,10 @@ If you need the underlying commands instead of Makefile aliases:
 ```bash
 mise trust
 mise install
+export ERL_AFLAGS="-ssl protocol_version \"['tlsv1.2']\""
+mise exec -- mix local.hex --if-missing --force
+mise exec -- mix local.rebar --if-missing --force
+unset ERL_AFLAGS
 mise exec -- mix deps.get
 mise exec -- uv sync --directory native/orchard_tokenizer
 mise exec -- uv sync --directory native/orchard_worker_mlx
@@ -182,6 +200,11 @@ ELIXIR
 | `ORCHARD_NODE_DISPLAY_NAME` | hostname | Human-readable node name shown in console |
 | `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev) / `hard` (distributed packaged channels) | Licensing mode for startup and packaged useful-work admission: `off`, `warn`, or `hard` |
 
+Node-agent runtime env vars are read when `config/dev.exs` is evaluated at BEAM
+startup. Restart `make dev`, `mise exec -- bin/dev`, or `mise exec --
+bin/dev-node-agent` after changing them. Use `ORCHARD_WORKER_BACKEND=stub` for
+cluster mechanics or rollback testing when real MLX inference is not required.
+
 #### Controller Multi-Node (Source Dev)
 
 | Variable | Default | Description |
@@ -239,7 +262,7 @@ tmp/dev/
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/health/live` | Liveness probe |
-| GET | `/health/ready` | Readiness probe (DB check) |
+| GET | `/health/ready` | Readiness probe (DB, transport, runtime summary) |
 | GET | `/v1/models` | List active models; Bearer token required |
 | POST | `/v1/chat/completions` | Chat completion; stream + non-stream; Bearer token required |
 | POST | `/v1/responses` | Bounded Responses API subset; stream + non-stream; Bearer token required |
@@ -695,7 +718,7 @@ sudo launchctl kickstart -k system/com.orchard.node-agent
 
 1. Check service is running: `sudo launchctl list | grep orchard`
 2. Check backend in logs: look for `worker starting backend=stub` or `backend=mlx`
-3. Test inference: `curl http://localhost:4000/health/ready`
+3. Test source-dev liveness: `curl http://localhost:4000/health/live`
 4. Run a chat completion — stub returns canned responses, mlx returns real inference
 
 ## Smoke Test Troubleshooting
@@ -753,7 +776,10 @@ All-in-one local boot (dev):
 3. Import at least one model bundle with `OrchardCLI.main(["models", "import", "<path>", "--activate"])`
 4. Create a tenant and API key with `OrchardCLI.main(["tenants", ...])` and
    `OrchardCLI.main(["api-keys", ...])`
-5. API is ready for authenticated requests
+5. Source-dev HTTP is live at `/health/live`; `/health/ready` can remain
+   degraded under the default `plain_http_localhost` transport until HTTPS or a
+   reverse proxy is configured.
+6. API routes are reachable over loopback HTTP for authenticated local testing.
 
 Alternatively, for advanced debugging or when you need a BEAM without the
 HTTP server, you can run the steps manually:

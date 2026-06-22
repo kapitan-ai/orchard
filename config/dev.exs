@@ -338,6 +338,8 @@ config :orchard_node_agent,
       worker_executable:
         System.get_env("ORCHARD_WORKER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
+      worker_backend:
+        env_optional_string.("ORCHARD_WORKER_BACKEND") || node_runtime_defaults[:worker_backend],
       worker_prefix_cache_mode: worker_prefix_cache_mode,
       worker_generation_mode: worker_generation_mode,
       worker_max_concurrent_requests_per_model: worker_max_concurrent_requests_per_model,

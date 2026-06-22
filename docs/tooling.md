@@ -136,16 +136,19 @@ mise exec -- mix proto.gen.worker
 ## Node Policy
 
 Orchard has a minimal first-party npm workflow for repository-local OpenSpec
-validation. The only root npm dependency is the pinned OpenSpec CLI in
-`package.json` / `package-lock.json`.
+validation and the Phoenix asset CLI binaries used by source dev. The root npm
+dependencies are the pinned OpenSpec CLI plus pinned `esbuild`, `tailwindcss`,
+and `@tailwindcss/cli` versions in `package.json` / `package-lock.json`.
 
 The root `.npmrc` sets `save-exact=true`; keep Node tool dependencies exact and
 commit the resulting `package-lock.json` changes.
 
-Phoenix asset builds still use the Mix-managed `esbuild` and `tailwind`
-packages. Do not add general app JavaScript dependencies, asset builds, or an
-alternate Node workflow without updating `mise.toml`, `package.json`,
-`package-lock.json`, and this document.
+Phoenix asset builds still run through the Mix `esbuild` and `tailwind`
+wrappers, but those wrappers point at the npm-managed binaries under
+`node_modules/.bin` to avoid first-run binary downloads from inside
+`mix phx.server`. Do not add general app JavaScript dependencies, broader asset
+builds, or an alternate Node workflow without updating `mise.toml`,
+`package.json`, `package-lock.json`, and this document.
 
 Install the pinned Node package tools from the repo root:
 

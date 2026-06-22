@@ -1,5 +1,7 @@
 .PHONY: help setup setup-elixir setup-native setup-openspec dev dev-controller dev-node-agent openspec format compile credo dialyzer test cover check-elixir
 
+MIX_BOOTSTRAP_ERL_AFLAGS = -ssl protocol_version \"['tlsv1.2']\"
+
 help:
 	@printf '%s\n' \
 	  'Orchard command targets:' \
@@ -17,6 +19,8 @@ setup: setup-elixir setup-native setup-openspec
 setup-elixir:
 	mise trust
 	mise install
+	ERL_AFLAGS="$(MIX_BOOTSTRAP_ERL_AFLAGS)" mise exec -- mix local.hex --if-missing --force
+	ERL_AFLAGS="$(MIX_BOOTSTRAP_ERL_AFLAGS)" mise exec -- mix local.rebar --if-missing --force
 	mise exec -- mix deps.get
 
 setup-native:
