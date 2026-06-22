@@ -131,6 +131,12 @@ defmodule Orchard.Governance do
     end
   end
 
+  @doc """
+  Records a best-effort `support_bundle.generated` audit event when the Repo is running.
+
+  The payload is intentionally limited to bundle metadata and excludes local
+  support-root paths.
+  """
   @spec audit_support_bundle_generated(map()) :: :ok | :skipped | {:error, Changeset.t()}
   def audit_support_bundle_generated(attrs) when is_map(attrs) do
     if repo_started?() do

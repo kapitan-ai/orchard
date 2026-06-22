@@ -28,7 +28,11 @@ side-effect free.
 `orchardctl support bundle create` writes a local `.tar.gz` with bounded
 redacted logs, redacted config, service status, node snapshots, and request
 summaries. It records `support_bundle.generated` when the controller Repo is
-available and reports skipped audit status otherwise.
+available and reports skipped audit status otherwise. By default the archive is
+written under `<support-root>/support/`; operators can override the destination
+with `--output`, read an alternate local state tree with `--support-root`, cap
+per-file log tail bytes with `--max-log-bytes`, and use `--json` for
+machine-readable output.
 
 ## Does not own
 
