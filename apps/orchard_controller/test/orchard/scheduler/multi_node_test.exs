@@ -856,6 +856,35 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert {:error, :cluster_busy} = MultiNode.schedule(request, status_client: StubClient)
     end
 
+    test "SPEC.md §5.5 reports cold-tier queue capacity from eligible node concurrency" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      for {node, host, port, active_count, max_concurrency} <- [
+            {node_a, "10.0.0.1", 50_061, 0, 2},
+            {node_b, "10.0.0.2", 50_062, 1, 3}
+          ] do
+        stub_probe(
+          host,
+          port,
+          make_status(node.id,
+            host: host,
+            port: port,
+            active_request_count: active_count,
+            max_concurrency: max_concurrency,
+            loaded_models: [],
+            runtime_model_placements: []
+          )
+        )
+      end
+
+      request = canonical_request("cold-capacity-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.selected_tier == "cold"
+      assert schedule.queue_lane_capacity == 2
+    end
+
     test "prefers lower matching placement active count before health and node_id" do
       node_a =
         insert_node!(%{

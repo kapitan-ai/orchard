@@ -172,7 +172,7 @@ defmodule Orchard.Scheduler.MultiNode do
             model_load_timeout_ms: Inference.model_load_timeout_ms(),
             node_id: selected.node_id,
             candidate_count: length(ranked),
-            queue_lane_capacity: queue_lane_capacity(available_candidates),
+            queue_lane_capacity: queue_lane_capacity(available_candidates, selected.loaded_model?),
             selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
           }
           |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
@@ -265,11 +265,21 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp active_without_known_capacity?(_candidate), do: false
 
-  defp queue_lane_capacity(candidates) do
+  defp queue_lane_capacity(candidates, true) do
     candidates
     |> Enum.filter(& &1.loaded_model?)
     |> Enum.map(&effective_model_capacity_for_queue/1)
     |> Enum.sum()
+    |> case do
+      capacity when capacity > 0 -> capacity
+      _capacity -> 1
+    end
+  end
+
+  defp queue_lane_capacity(candidates, false) do
+    candidates
+    |> Enum.reject(& &1.loaded_model?)
+    |> Enum.count(&node_has_available_capacity?/1)
     |> case do
       capacity when capacity > 0 -> capacity
       _capacity -> 1
@@ -297,6 +307,12 @@ defmodule Orchard.Scheduler.MultiNode do
        do: placement_max
 
   defp effective_model_capacity_for_queue(_candidate), do: 1
+
+  defp node_has_available_capacity?(%{active_request_count: active, max_concurrency: max})
+       when is_integer(active) and is_integer(max) and max > 0,
+       do: active < max
+
+  defp node_has_available_capacity?(_candidate), do: true
 
   defp node_max_concurrency(response) do
     case Map.get(response, :max_concurrency) || Map.get(response, "max_concurrency") do
