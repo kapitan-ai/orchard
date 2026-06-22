@@ -68,8 +68,9 @@ does not catch unfinished prose.
 ## Artifact Hygiene
 
 Do not commit prompt exports, local execution evidence, private notes, active
-goal packages, raw interview JSON, tool session identifiers, credentials, DSNs,
-or machine-specific paths.
+goal packages, raw interview JSON, local context stores such as `.codex/` or
+`.claude/`, tool session identifiers, credentials, DSNs, or machine-specific
+paths.
 
 Active `goals/<slug>/` packages are local transient execution scaffolding.
 Only `goals/README.md` and `goals/_template/**` are tracked.

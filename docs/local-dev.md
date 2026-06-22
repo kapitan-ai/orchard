@@ -11,7 +11,7 @@ orientation, and [`tooling.md`](tooling.md) for pinned tool versions.
 
 | Dependency | Version | Notes |
 |------------|---------|-------|
-| mise | see `../mise.toml` | Required for Erlang/OTP, Elixir, Python, and uv |
+| mise | see `../mise.toml` | Required for Erlang/OTP, Elixir, Python, uv, Node.js, and npm |
 | PostgreSQL | ≥ 15 | Local instance |
 
 See [Tooling](tooling.md) for the pinned runtime versions and standard
@@ -22,29 +22,37 @@ See [Tooling](tooling.md) for the pinned runtime versions and standard
 ```bash
 # 1. Clone and install dependencies
 cd orchard
+make setup
+
+# 2. Start the dev server (creates DB, migrates, starts Phoenix + node-agent)
+make dev
+```
+
+If you need the underlying commands instead of Makefile aliases:
+
+```bash
 mise trust
 mise install
 mise exec -- mix deps.get
-
-# 2. Install native Python packages (dev mode)
 mise exec -- uv sync --directory native/orchard_tokenizer
 mise exec -- uv sync --directory native/orchard_worker_mlx
-
-# 3. Start the dev server (creates DB, migrates, starts Phoenix + node-agent)
+mise exec -- npm ci --ignore-scripts
 mise exec -- bin/dev
+```
 
-# 4. Import a model bundle (in the running IEx session)
+```elixir
+# 3. Import a model bundle (in the running IEx session)
 OrchardCLI.main(["models", "import", "/path/to/model-bundle", "--activate"])
 
-# 5. Create a tenant and API key for /v1 API calls (in the running IEx session)
+# 4. Create a tenant and API key for /v1 API calls (in the running IEx session)
 OrchardCLI.main(["tenants", "create", "--slug", "dev", "--name", "Dev"])
 OrchardCLI.main(["api-keys", "create", "--tenant-id", "<tenant-id>", "--name", "dev"])
 ```
 
-`bin/dev` is the single entrypoint for source development. It creates the dev
-database if missing, runs migrations, and starts `iex -S mix phx.server` with
-the dev gRPC port set to **50071** (avoiding conflict with the packaged BEAM
-on 50061).
+`make dev` wraps `mise exec -- bin/dev`. `bin/dev` is the single low-level
+entrypoint for source development. It creates the dev database if missing, runs
+migrations, and starts `iex -S mix phx.server` with the dev gRPC port set to
+**50071** (avoiding conflict with the packaged BEAM on 50061).
 
 The controller listens on `http://localhost:4000` and the node-agent
 gRPC server on `127.0.0.1:50071`.
@@ -57,7 +65,7 @@ Orchard has two transport profiles:
 
 ### Source dev (this page)
 
-When running from a source checkout (`mise exec -- bin/dev` or
+When running from a source checkout (`make dev`, `mise exec -- bin/dev`, or
 `mise exec -- iex -S mix phx.server`):
 
 - Controller listens on **HTTP** at `http://127.0.0.1:4000`
@@ -116,8 +124,8 @@ posture.
 | `PORT` | `4000` | HTTP listen port |
 
 Cache-affinity, cache-introspection, and memory-admission env vars are read
-when `config/dev.exs` is evaluated at BEAM startup. Restart
-`mise exec -- bin/dev` or `mise exec -- iex -S mix phx.server` after changing
+when `config/dev.exs` is evaluated at BEAM startup. Restart `make dev`,
+`mise exec -- bin/dev`, or `mise exec -- iex -S mix phx.server` after changing
 them.
 
 Source-dev defaults remain disabled unless explicitly enabled via env vars:
@@ -735,7 +743,7 @@ Required production env vars:
 All-in-one local boot (dev):
 
 1. PostgreSQL must be running
-2. Run `mise exec -- bin/dev` — this handles DB bootstrap and server start:
+2. Run `make dev` or `mise exec -- bin/dev` — this handles DB bootstrap and server start:
    - Creates `orchard_dev` database if missing
    - Runs pending migrations
    - Exports dev gRPC port (50071)

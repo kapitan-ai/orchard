@@ -68,7 +68,7 @@ Clients (SDKs / curl / apps)
 | APIs | Phoenix/Plug (loopback HTTP in source dev; HTTPS + SSE in packaged installs) |
 | Packaging | DMG, PKG, launchd |
 | CLI | `orchardctl` |
-| Toolchain | mise-pinned Erlang/OTP, Elixir, Python, and uv |
+| Toolchain | mise-pinned Erlang/OTP, Elixir, Python, uv, Node.js, npm, and OpenSpec |
 
 ### Current transport behavior
 

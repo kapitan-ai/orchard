@@ -50,8 +50,24 @@ tool resolution matters.
 mise exec -- mix deps.get
 mise exec -- uv sync --directory native/orchard_tokenizer
 mise exec -- uv sync --directory native/orchard_worker_mlx
+mise exec -- npm ci --ignore-scripts
 mise exec -- bin/dev
 ```
+
+The root `Makefile` provides thin aliases over these pinned commands for common
+workflows:
+
+```bash
+make setup
+make dev
+make dev-controller
+make dev-node-agent
+make openspec
+make check-elixir
+```
+
+Use the documented `mise exec --` commands as the authority when a Makefile
+target and this guide disagree.
 
 Elixir validation:
 
@@ -122,6 +138,9 @@ mise exec -- mix proto.gen.worker
 Orchard has a minimal first-party npm workflow for repository-local OpenSpec
 validation. The only root npm dependency is the pinned OpenSpec CLI in
 `package.json` / `package-lock.json`.
+
+The root `.npmrc` sets `save-exact=true`; keep Node tool dependencies exact and
+commit the resulting `package-lock.json` changes.
 
 Phoenix asset builds still use the Mix-managed `esbuild` and `tailwind`
 packages. Do not add general app JavaScript dependencies, asset builds, or an
@@ -199,8 +218,8 @@ Toolchain bumps must be intentional. For any change to `mise.toml`:
 3. Run the affected validation gates under `mise exec --`.
 4. For Erlang/OTP or Elixir bumps, run the full Elixir workflow.
 5. For Python or uv bumps, run both native package workflows.
-6. For future Node bumps, run the first-party Node workflow that required the
-   pin.
+6. For Node, npm, or OpenSpec bumps, run the first-party Node workflow that
+   required the pin.
 
 If a toolchain bump changes product behavior or packaging behavior, state the
 `SPEC.md` impact and update the relevant docs, tests, or decision record.

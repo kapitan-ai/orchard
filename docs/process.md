@@ -31,7 +31,7 @@ For durable decisions, see [`decisions/README.md`](decisions/README.md).
 |---|---|---|
 | Idea or issue | GitHub issue, PR note, local scratch | Commit only if standalone and useful |
 | Local goal package | `goals/<slug>/` | Ignored; not committed by default |
-| Execution evidence | local evidence dirs and logs | Ignored unless sanitized and promoted |
+| Local context/evidence | `.codex/`, `.claude/`, local evidence dirs, and logs | Ignored unless sanitized and promoted |
 | OpenSpec proposed change | `openspec/changes/<change-id>/` | Commit when ready for collaborator review |
 | Shared product language | `docs/glossary/CONTEXT.md` | Commit when standalone and aligned with `SPEC.md` |
 | Durable decision | `docs/decisions/**` | Commit when standalone and product-relevant |
@@ -52,6 +52,8 @@ rewrite the durable conclusion instead of copying the stale plan.
 - Active `goals/<slug>/` directories are not staged.
 - OpenSpec-backed changes pass
   `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive`.
+- Archived or synced OpenSpec behavior passes
+  `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate --all --strict --no-interactive`.
 - Archived OpenSpec specs do not contain placeholders such as `Purpose TBD`.
 - Validation commands and outcomes are recorded.
 

@@ -21,8 +21,10 @@ large spec sections.
 
 ### I want to run it locally
 
-- [`tooling.md`](tooling.md) — mise/uv toolchain and validation commands.
-- [`local-dev.md`](local-dev.md) — source-dev setup, `bin/dev`, split-role dev,
+- [`tooling.md`](tooling.md) — mise/uv/npm toolchain, Makefile aliases, and
+  validation commands.
+- [`local-dev.md`](local-dev.md) — source-dev setup, `make dev` / `bin/dev`,
+  split-role dev,
   smoke checks, and environment notes.
 
 ### I want to contribute code
@@ -75,6 +77,7 @@ updated.
 - Prefer practical execution guidance over prose.
 - Keep current implementation status separate from target architecture.
 - Update or delete stale docs quickly.
-- Do not commit raw prompt exports, active goal packages, tool session IDs,
-  credentials, DSNs, or machine-specific evidence.
+- Do not commit raw prompt exports, active goal packages, local context stores
+  such as `.codex/` or `.claude/`, tool session IDs, credentials, DSNs, or
+  machine-specific evidence.
 - Promote durable conclusions into standalone docs, decisions, tests, or code.

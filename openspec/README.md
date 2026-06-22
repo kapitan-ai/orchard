@@ -31,6 +31,12 @@ A reviewable change package should include:
 - `design.md` when the change has technical ambiguity, migration risk,
   security/performance concerns, or cross-module impact
 
+Requirement deltas use `SHALL` or `MUST` for normative behavior, include at
+least one scenario per requirement, and cite the affected `SPEC.md` section when
+changing product behavior. Tasks use checkbox items such as
+`- [ ] 1.1 Update validation docs`. Design files record alternatives and
+trade-offs when a durable technical choice is being made.
+
 Do not mirror large sections of `SPEC.md` here. Cite or summarize the affected
 contract and reconcile accepted behavior back into `SPEC.md`, docs, tests, and
 code as needed.
