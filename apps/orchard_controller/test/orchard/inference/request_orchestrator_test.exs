@@ -1207,6 +1207,45 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     end
   end
 
+  test "SPEC.md §5.3 tenant active cap queues despite spare model lane capacity", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(
+      enabled: true,
+      capacity: 2,
+      max_active_per_tenant: 1,
+      max_wait_ms: 1_000
+    )
+
+    model = create_active_model!(bundle, "request-orchestrator-tenant-active-cap")
+    canonical = canonical_request("request-orchestrator-tenant-active-cap", stream?: false)
+
+    assert {:ok, held_grant} = hold_queue_lane(canonical)
+
+    task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
+
+    try do
+      assert wait_until(fn -> request_state(canonical.public_id) == :queued end)
+
+      queued_request = Requests.get_request_by_public_id(canonical.public_id)
+      assert_queue_metadata(queued_request, "queued", queued?: true)
+      refute :scheduled in request_event_states(queued_request)
+
+      assert :ok = QueueManager.release(held_grant)
+      assert {:ok, ^canonical, events} = Task.await(task, 2_000)
+      assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+      request = Requests.get_request_by_public_id(canonical.public_id)
+      states = request_event_states(request)
+
+      assert state_before?(states, :queued, :scheduled)
+      assert_queue_metadata(request, "queued", queued?: true, granted?: true)
+    after
+      QueueManager.release(held_grant)
+      Task.shutdown(task, :brutal_kill)
+    end
+  end
+
   test "queue admission returns queue_full before scheduling when tenant cap is exhausted", %{
     bundle: bundle
   } do
