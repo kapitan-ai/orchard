@@ -5,6 +5,8 @@ defmodule Orchard.Node.ModelManager do
   Ensure-load requests run as async supervised tasks with single-flight
   dedup: concurrent callers for the same `{model_id, version}` share one
   acquisition + worker-load pipeline and all receive the same reply.
+  Status responses include loaded-model placement capacity so the controller can
+  avoid dispatching to full same-model placements.
   """
 
   use GenServer

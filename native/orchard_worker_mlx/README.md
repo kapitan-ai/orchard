@@ -35,6 +35,9 @@ The CLI also supports `--generation-mode stream|batch`. The stub backend uses
 source and packaged runtime configs mirror that by resolving
 `ORCHARD_WORKER_BACKEND=stub` to stream mode when
 `ORCHARD_WORKER_GENERATION_MODE` is unset.
+In node-agent runtime, batch mode can admit concurrent same-model requests up to the effective per-model request limit.
+That limit is configured with `ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL` or, when set to `auto`, `ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL`.
+The node-agent publishes the resulting loaded-placement capacity through cluster `StatusResponse.runtime_model_placements`.
 
 ## Proto contract
 

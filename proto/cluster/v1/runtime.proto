@@ -123,7 +123,8 @@ message HostedToolReadiness {
 
 // Per-loaded-model runtime concurrency status. An absent or empty list means
 // model-placement capacity is unknown to the controller and must not be treated
-// as a status-probe error.
+// as a status-probe error. Controller scheduler use requires exactly one
+// matching entry with active_request_count >= 0 and max_concurrency > 0.
 message RuntimeModelPlacement {
   ModelRef model_ref = 1;
   uint32 active_request_count = 2;
