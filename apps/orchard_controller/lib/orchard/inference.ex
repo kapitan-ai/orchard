@@ -230,6 +230,8 @@ defmodule Orchard.Inference do
       max_queued_per_tenant: 32,
       poll_interval_ms: 100,
       capacity: 1,
+      tenant_default_weight: 1,
+      tenant_weights: %{},
       owner_runtime: false,
       single_controller_ack: false
     ]

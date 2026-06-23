@@ -3,8 +3,8 @@ defmodule Orchard.Inference.QueueManager do
   BEAM-local controller admission owner for the bounded queue-first slice.
 
   The owner grants at most `capacity` active requests per `{model_id, version}`
-  lane, queues same-lane callers up to a tenant-global cap, and monitors queued
-  callers so disconnected clients cannot be scheduled later.
+  lane, queues callers by tenant FIFO, and monitors queued callers so
+  disconnected clients cannot be scheduled later.
   """
 
   use GenServer
@@ -81,6 +81,10 @@ defmodule Orchard.Inference.QueueManager do
 
   defstruct server: __MODULE__,
             lanes: %{},
+            tenant_queues: %{},
+            tenant_order: [],
+            tenant_rr_index: 0,
+            scheduler_tick_ref: nil,
             entries: %{},
             monitors: %{},
             grants: %{},
@@ -95,6 +99,7 @@ defmodule Orchard.Inference.QueueManager do
   @ticket_result_max_count 1_024
   @manager_restart_wait_ms 1_000
   @manager_restart_poll_ms 10
+  @max_tenant_weight 100
 
   @type admission_request :: %{
           request_id: Ecto.UUID.t() | String.t(),
@@ -226,11 +231,25 @@ defmodule Orchard.Inference.QueueManager do
   def handle_call(:reset, _from, state), do: {:reply, :ok, reset_state(state)}
 
   def handle_call({:acquire, request, config}, {_waiter_pid, _tag}, state) do
-    state = prune_recovered_grants(request.queue_key, state)
+    state =
+      request.queue_key
+      |> prune_recovered_grants(state)
+      |> maybe_grant_next_global()
+
     lane = Map.get(state.lanes, request.queue_key, empty_lane())
 
     cond do
-      active_capacity?(lane, config.capacity) ->
+      tenant_has_queued_entries?(state, request.tenant_id) and
+          tenant_queue_full?(state, request.tenant_id, config.max_queued_per_tenant) ->
+        metadata = error_metadata(:queue_full, request.queue_key)
+        {:reply, {:error, :queue_full, metadata}, state}
+
+      tenant_has_queued_entries?(state, request.tenant_id) ->
+        {ticket, state} = enqueue_request(request, config, state)
+        {:reply, {:queued, ticket}, state}
+
+      active_capacity?(lane, config.capacity) and
+          not queue_key_has_queued_entries?(state, request.queue_key) ->
         {grant, state} = grant_immediate(request, config, state)
         {:reply, {:ok, grant}, state}
 
@@ -261,7 +280,7 @@ defmodule Orchard.Inference.QueueManager do
         state =
           state
           |> put_entry_update(entry)
-          |> then(&maybe_grant_next(ticket.queue_key, &1))
+          |> maybe_grant_next_global()
 
         {:noreply, state}
 
@@ -301,7 +320,7 @@ defmodule Orchard.Inference.QueueManager do
 
         state
         |> put_lane(queue_key, lane)
-        |> then(&maybe_grant_next(queue_key, &1))
+        |> maybe_grant_next_global()
       else
         state
       end
@@ -336,6 +355,14 @@ defmodule Orchard.Inference.QueueManager do
       :error ->
         {:noreply, state}
     end
+  end
+
+  def handle_info(:queue_tick, state) do
+    state =
+      %{state | scheduler_tick_ref: nil}
+      |> maybe_grant_next_global()
+
+    {:noreply, state}
   end
 
   def handle_info({:DOWN, monitor_ref, :process, _pid, _reason}, state) do
@@ -660,7 +687,7 @@ defmodule Orchard.Inference.QueueManager do
     else
       entry
       |> remove_entry(state)
-      |> then(&maybe_grant_next(entry.queue_key, &1))
+      |> maybe_grant_next_global()
     end
   end
 
@@ -719,7 +746,7 @@ defmodule Orchard.Inference.QueueManager do
     entry
     |> remove_entry(state)
     |> maybe_put_ticket_result(entry, result)
-    |> then(&maybe_grant_next(entry.queue_key, &1))
+    |> maybe_grant_next_global()
   end
 
   defp park_queued_terminalization(entry, state, operation, metadata, result, label, reason) do
@@ -848,7 +875,7 @@ defmodule Orchard.Inference.QueueManager do
       |> drop_active_grant(grant_id, grant.queue_key)
       |> remove_monitor(monitor_ref)
 
-    maybe_grant_next(grant.queue_key, state)
+    maybe_grant_next_global(state)
   end
 
   defp handle_grant_owner_down_outcome(
@@ -1079,7 +1106,7 @@ defmodule Orchard.Inference.QueueManager do
     |> Enum.reduce(state, fn {grant_id, grant}, state ->
       if terminal_request?(grant.request_id) do
         state = drop_active_grant(state, grant_id, grant.queue_key)
-        maybe_grant_next(grant.queue_key, state)
+        maybe_grant_next_global(state)
       else
         state
       end
@@ -1176,20 +1203,51 @@ defmodule Orchard.Inference.QueueManager do
       capacity: max(config[:capacity] || 1, 1),
       max_wait_ms: max(config[:max_wait_ms] || 0, 0),
       max_queued_per_tenant: max(config[:max_queued_per_tenant] || 0, 0),
-      poll_interval_ms: max(config[:poll_interval_ms] || 100, 1)
+      poll_interval_ms: max(config[:poll_interval_ms] || 100, 1),
+      tenant_default_weight: normalize_tenant_weight(config[:tenant_default_weight]),
+      tenant_weights: normalize_tenant_weights(config[:tenant_weights] || %{})
     }
   end
 
+  defp normalize_tenant_weights(weights) when is_map(weights) do
+    weights
+    |> Enum.reduce(%{}, fn {tenant_id, weight}, acc ->
+      normalized_weight =
+        weight
+        |> normalize_tenant_weight()
+
+      Map.put(acc, to_string(tenant_id), normalized_weight)
+    end)
+  end
+
+  defp normalize_tenant_weights(_weights), do: %{}
+
+  defp normalize_tenant_weight(weight) when is_integer(weight),
+    do: weight |> max(1) |> min(@max_tenant_weight)
+
+  defp normalize_tenant_weight(_weight), do: 1
+
   defp queue_key(model_id, version), do: "#{model_id}@#{version}"
 
-  defp empty_lane, do: %{active: %{}, queue: [], blocked_until_monotonic_ms: nil, block_ref: nil}
+  defp empty_lane, do: %{active: %{}, blocked_until_monotonic_ms: nil, block_ref: nil}
 
   defp active_capacity?(lane, capacity) do
-    map_size(lane.active) < capacity and lane.queue == [] and not lane_blocked?(lane)
+    map_size(lane.active) < capacity and not lane_blocked?(lane)
   end
 
   defp tenant_queue_full?(state, tenant_id, max_queued_per_tenant) do
     Map.get(state.tenant_counts, tenant_id, 0) >= max_queued_per_tenant
+  end
+
+  defp tenant_has_queued_entries?(state, tenant_id) do
+    case Map.get(state.tenant_queues, tenant_id) do
+      %{queue: [_head | _tail]} -> true
+      _other -> false
+    end
+  end
+
+  defp queue_key_has_queued_entries?(state, queue_key) do
+    Enum.any?(state.entries, fn {_ticket_ref, entry} -> entry.queue_key == queue_key end)
   end
 
   defp grant_immediate(request, config, state) do
@@ -1240,24 +1298,41 @@ defmodule Orchard.Inference.QueueManager do
     {ticket, put_entry(entry, state)}
   end
 
-  defp put_entry(entry, state) do
-    lane = Map.get(state.lanes, entry.queue_key, empty_lane())
-    lane = %{lane | queue: lane.queue ++ [entry.ticket_ref]}
+  defp put_entry(entry, state, opts \\ []) do
+    position = Keyword.get(opts, :position, :back)
+    tenant_id = entry.tenant_id
+    tenant_queue = Map.get(state.tenant_queues, tenant_id, %{queue: []})
+    queue = put_ticket_in_tenant_queue(tenant_queue.queue, entry.ticket_ref, position)
+    tenant_queues = Map.put(state.tenant_queues, tenant_id, %{tenant_queue | queue: queue})
 
-    %{
+    state = %{
       state
-      | lanes: Map.put(state.lanes, entry.queue_key, lane),
+      | tenant_queues: tenant_queues,
+        tenant_order: maybe_append_tenant_order(state, tenant_id),
         entries: Map.put(state.entries, entry.ticket_ref, entry),
         monitors: Map.put(state.monitors, entry.monitor_ref, {:caller, entry.ticket_ref}),
-        tenant_counts: Map.update(state.tenant_counts, entry.tenant_id, 1, &(&1 + 1))
+        tenant_counts: Map.update(state.tenant_counts, tenant_id, 1, &(&1 + 1))
     }
+
+    schedule_queue_tick(state)
+  end
+
+  defp put_ticket_in_tenant_queue(queue, ticket_ref, :front), do: [ticket_ref | queue]
+  defp put_ticket_in_tenant_queue(queue, ticket_ref, :back), do: queue ++ [ticket_ref]
+
+  defp maybe_append_tenant_order(state, tenant_id) do
+    if tenant_has_queued_entries?(state, tenant_id) do
+      state.tenant_order
+    else
+      state.tenant_order ++ [tenant_id]
+    end
   end
 
   defp release_grant(grant_id, state) do
     case Map.fetch(state.grants, grant_id) do
       {:ok, %{queue_key: queue_key}} ->
         state = drop_active_grant(state, grant_id, queue_key)
-        maybe_grant_next(queue_key, state)
+        maybe_grant_next_global(state)
 
       :error ->
         state
@@ -1290,8 +1365,7 @@ defmodule Orchard.Inference.QueueManager do
         state = drop_active_grant(state, grant.grant_id, grant_state.queue_key)
         metadata = disconnect_metadata(grant_state)
 
-        {{:error, :request_caller_disconnect, metadata},
-         maybe_grant_next(grant_state.queue_key, state)}
+        {{:error, :request_caller_disconnect, metadata}, maybe_grant_next_global(state)}
 
       true ->
         requeue_live_grant(grant, grant_state, request, config, state)
@@ -1307,14 +1381,18 @@ defmodule Orchard.Inference.QueueManager do
     if remaining_ms <= 0 do
       metadata = timeout_metadata(grant_state, queued_at)
       terminalize_requeued_timeout(request, grant_state, queued_at, config, metadata)
-      {{:error, :queue_timeout, metadata}, maybe_grant_next(grant_state.queue_key, state)}
+      {{:error, :queue_timeout, metadata}, maybe_grant_next_global(state)}
     else
       {ticket, state} =
         request
         |> requeue_entry(config, grant_state, queued_at, remaining_ms)
         |> put_requeued_entry(state)
 
-      state = block_lane_retry(request.queue_key, config.poll_interval_ms, state)
+      state =
+        request.queue_key
+        |> block_lane_retry(config.poll_interval_ms, state)
+        |> maybe_grant_next_global()
+
       {{:queued, ticket}, state}
     end
   end
@@ -1357,62 +1435,90 @@ defmodule Orchard.Inference.QueueManager do
     {ticket, entry}
   end
 
-  defp put_requeued_entry({ticket, entry}, state), do: {ticket, put_entry(entry, state)}
+  defp put_requeued_entry({ticket, entry}, state),
+    do: {ticket, put_entry(entry, state, position: :front)}
 
-  defp maybe_grant_next(queue_key, state) do
-    lane = Map.get(state.lanes, queue_key, empty_lane())
+  defp maybe_grant_next_global(state) do
+    case grant_one_queued_entry(state) do
+      {:granted, state} -> maybe_grant_next_global(state)
+      {:removed, state} -> maybe_grant_next_global(state)
+      :blocked -> schedule_queue_tick(state)
+    end
+  end
+
+  defp grant_one_queued_entry(state) do
+    ring = tenant_ring(state)
+
+    if ring == [] do
+      :blocked
+    else
+      scan_tenant_ring(ring, state, 0, rem(state.tenant_rr_index, length(ring)))
+    end
+  end
+
+  defp scan_tenant_ring(ring, _state, scanned, _index) when scanned >= length(ring), do: :blocked
+
+  defp scan_tenant_ring(ring, state, scanned, index) do
+    tenant_id = Enum.at(ring, index)
+
+    case tenant_head_entry(state, tenant_id) do
+      {:ok, entry} -> maybe_grant_tenant_head(entry, ring, state, scanned, index)
+      :empty -> scan_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+      {:stale, ticket_ref} -> {:removed, remove_stale_tenant_ticket(state, tenant_id, ticket_ref)}
+    end
+  end
+
+  defp maybe_grant_tenant_head(%{terminal_operation: operation}, _ring, _state, _scanned, _index)
+       when not is_nil(operation),
+       do: :blocked
+
+  defp maybe_grant_tenant_head(%{await_from: nil}, ring, state, scanned, index) do
+    scan_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+  end
+
+  defp maybe_grant_tenant_head(entry, ring, state, scanned, index) do
+    lane = Map.get(state.lanes, entry.queue_key, empty_lane())
 
     cond do
-      not lane_has_capacity?(lane) ->
-        state
+      not queued_process_alive?(entry) ->
+        {:removed, disconnect_queued_entry(entry, state)}
 
-      lane_blocked?(lane) ->
-        state
-
-      lane.queue == [] ->
-        state
+      not lane_has_capacity?(lane) or lane_blocked?(lane) ->
+        scan_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
 
       true ->
-        grant_next_awaiting_entry(queue_key, lane, state)
+        state = %{grant_queued_entry(entry, state) | tenant_rr_index: index + 1}
+        {:granted, state}
     end
   end
 
-  defp grant_next_awaiting_entry(queue_key, lane, state) do
-    case lane.queue do
-      [] ->
-        state
+  defp next_ring_index(ring, index), do: rem(index + 1, length(ring))
 
-      [ticket_ref | rest] ->
+  defp tenant_head_entry(state, tenant_id) do
+    case Map.get(state.tenant_queues, tenant_id) do
+      %{queue: [ticket_ref | _rest]} ->
         case Map.fetch(state.entries, ticket_ref) do
-          {:ok, %{terminal_operation: operation}} when not is_nil(operation) ->
-            state
-
-          {:ok, %{await_from: nil}} ->
-            state
-
-          {:ok, entry} ->
-            maybe_grant_awaiting_entry(queue_key, lane, rest, entry, state)
-
-          :error ->
-            lane = %{lane | queue: rest}
-            state = %{state | lanes: Map.put(state.lanes, queue_key, lane)}
-            maybe_grant_next(queue_key, state)
+          {:ok, entry} -> {:ok, entry}
+          :error -> {:stale, ticket_ref}
         end
+
+      _other ->
+        :empty
     end
   end
 
-  defp maybe_grant_awaiting_entry(queue_key, lane, rest, entry, state) do
-    if queued_process_alive?(entry) do
-      grant_live_queued_entry(queue_key, lane, rest, entry, state)
-    else
-      disconnect_queued_entry(entry, state)
-    end
+  defp tenant_ring(state) do
+    config = Orchard.Inference.queue_admission_config() |> normalize_config()
+
+    state.tenant_order
+    |> Enum.filter(&tenant_has_queued_entries?(state, &1))
+    |> Enum.flat_map(fn tenant_id ->
+      List.duplicate(tenant_id, tenant_weight(tenant_id, config))
+    end)
   end
 
-  defp grant_live_queued_entry(queue_key, lane, rest, entry, state) do
-    lane = %{lane | queue: rest}
-    state = put_lane(state, queue_key, lane)
-    grant_queued_entry(entry, state)
+  defp tenant_weight(tenant_id, config) do
+    Map.get(config.tenant_weights, to_string(tenant_id), config.tenant_default_weight)
   end
 
   defp queued_process_alive?(entry) do
@@ -1441,11 +1547,7 @@ defmodule Orchard.Inference.QueueManager do
 
     lane = Map.get(state.lanes, entry.queue_key, empty_lane())
 
-    lane = %{
-      lane
-      | active: Map.put(lane.active, grant.grant_id, true),
-        queue: Enum.reject(lane.queue, &(&1 == entry.ticket_ref))
-    }
+    lane = %{lane | active: Map.put(lane.active, grant.grant_id, true)}
 
     monitors =
       state.monitors
@@ -1468,11 +1570,14 @@ defmodule Orchard.Inference.QueueManager do
     %{
       state
       | lanes: Map.put(state.lanes, grant.queue_key, lane),
+        tenant_queues: remove_from_tenant_queues(state.tenant_queues, entry),
+        tenant_order: remove_empty_tenants(state.tenant_order, state.tenant_queues, entry),
         entries: Map.delete(state.entries, entry.ticket_ref),
         monitors: monitors,
         grants: grants,
         tenant_counts: decrement_tenant_count(state.tenant_counts, entry.tenant_id)
     }
+    |> maybe_cancel_queue_tick()
   end
 
   defp put_immediate_grant(%Grant{} = grant, request, config, started_monotonic_ms, state) do
@@ -1510,17 +1615,54 @@ defmodule Orchard.Inference.QueueManager do
       clear_awaiter_monitor(entry)
     end
 
-    lane = Map.get(state.lanes, entry.queue_key, empty_lane())
-    lane = %{lane | queue: Enum.reject(lane.queue, &(&1 == entry.ticket_ref))}
     monitors = remove_entry_monitors(state.monitors, entry)
 
     %{
       state
-      | lanes: Map.put(state.lanes, entry.queue_key, lane),
+      | tenant_queues: remove_from_tenant_queues(state.tenant_queues, entry),
+        tenant_order: remove_empty_tenants(state.tenant_order, state.tenant_queues, entry),
         entries: Map.delete(state.entries, entry.ticket_ref),
         monitors: monitors,
         tenant_counts: decrement_tenant_count(state.tenant_counts, entry.tenant_id)
     }
+    |> maybe_cancel_queue_tick()
+  end
+
+  defp remove_stale_tenant_ticket(state, tenant_id, ticket_ref) do
+    entry = %{tenant_id: tenant_id, ticket_ref: ticket_ref}
+
+    %{
+      state
+      | tenant_queues: remove_from_tenant_queues(state.tenant_queues, entry),
+        tenant_order: remove_empty_tenants(state.tenant_order, state.tenant_queues, entry)
+    }
+    |> maybe_cancel_queue_tick()
+  end
+
+  defp remove_from_tenant_queues(tenant_queues, entry) do
+    case Map.fetch(tenant_queues, entry.tenant_id) do
+      {:ok, tenant_queue} ->
+        queue = Enum.reject(tenant_queue.queue, &(&1 == entry.ticket_ref))
+
+        if queue == [] do
+          Map.delete(tenant_queues, entry.tenant_id)
+        else
+          Map.put(tenant_queues, entry.tenant_id, %{tenant_queue | queue: queue})
+        end
+
+      :error ->
+        tenant_queues
+    end
+  end
+
+  defp remove_empty_tenants(tenant_order, tenant_queues, entry) do
+    tenant_queues = remove_from_tenant_queues(tenant_queues, entry)
+
+    if Map.has_key?(tenant_queues, entry.tenant_id) do
+      tenant_order
+    else
+      Enum.reject(tenant_order, &(&1 == entry.tenant_id))
+    end
   end
 
   defp remove_entry_monitors(monitors, entry) do
@@ -1564,6 +1706,33 @@ defmodule Orchard.Inference.QueueManager do
   defp put_lane(state, queue_key, lane) do
     %{state | lanes: Map.put(state.lanes, queue_key, lane)}
   end
+
+  defp schedule_queue_tick(%{scheduler_tick_ref: tick_ref} = state) when is_reference(tick_ref),
+    do: state
+
+  defp schedule_queue_tick(state) do
+    if queues_empty?(state) do
+      state
+    else
+      poll_interval_ms =
+        Orchard.Inference.queue_admission_config()
+        |> Keyword.get(:poll_interval_ms, 100)
+        |> max(1)
+
+      %{state | scheduler_tick_ref: Process.send_after(self(), :queue_tick, poll_interval_ms)}
+    end
+  end
+
+  defp maybe_cancel_queue_tick(state) do
+    if queues_empty?(state) do
+      cancel_timer(state.scheduler_tick_ref)
+      %{state | scheduler_tick_ref: nil, tenant_rr_index: 0}
+    else
+      state
+    end
+  end
+
+  defp queues_empty?(state), do: map_size(state.tenant_queues) == 0
 
   defp decrement_tenant_count(tenant_counts, tenant_id) do
     case Map.get(tenant_counts, tenant_id, 0) do
@@ -1628,7 +1797,10 @@ defmodule Orchard.Inference.QueueManager do
 
   defp elapsed_ms(started_monotonic_ms), do: max(monotonic_ms() - started_monotonic_ms, 0)
 
-  defp cancel_timer(timeout_ref), do: Process.cancel_timer(timeout_ref, async: true, info: false)
+  defp cancel_timer(timer_ref) when is_reference(timer_ref),
+    do: Process.cancel_timer(timer_ref, async: true, info: false)
+
+  defp cancel_timer(_timer_ref), do: false
 
   defp now_iso8601,
     do: DateTime.utc_now() |> DateTime.truncate(:microsecond) |> DateTime.to_iso8601()

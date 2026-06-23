@@ -53,6 +53,196 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.4 cross-tenant weighted round-robin grants one tenant turn at a time" do
+    tenant_a = Ecto.UUID.generate()
+    tenant_b = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(max_wait_ms: 1_000), fn ->
+      assert {:ok, held_grant} =
+               QueueManager.acquire(admission_request("req-held", tenant_id: tenant_a))
+
+      assert {:queued, ticket_a1} =
+               QueueManager.acquire(admission_request("req-a1", tenant_id: tenant_a))
+
+      assert {:queued, ticket_a2} =
+               QueueManager.acquire(admission_request("req-a2", tenant_id: tenant_a))
+
+      assert {:queued, ticket_b1} =
+               QueueManager.acquire(admission_request("req-b1", tenant_id: tenant_b))
+
+      awaiter_a1 = await_and_hold(ticket_a1, :a1)
+      awaiter_a2 = await_and_hold(ticket_a2, :a2)
+      awaiter_b1 = await_and_hold(ticket_b1, :b1)
+
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a1) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a2) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b1) end)
+
+      assert :ok = QueueManager.release(held_grant)
+      assert_receive {:await_result, :a1, {:ok, grant_a1}}, 1_000
+      refute_receive {:await_result, :a2, _}, 20
+      refute_receive {:await_result, :b1, _}, 20
+
+      assert :ok = QueueManager.release(grant_a1)
+      assert_receive {:await_result, :b1, {:ok, grant_b1}}, 1_000
+      refute_receive {:await_result, :a2, _}, 20
+
+      assert :ok = QueueManager.release(grant_b1)
+      assert_receive {:await_result, :a2, {:ok, grant_a2}}, 1_000
+
+      assert :ok = QueueManager.release(grant_a2)
+      stop_awaiter(awaiter_a1)
+      stop_awaiter(awaiter_a2)
+      stop_awaiter(awaiter_b1)
+    end)
+  end
+
+  test "SPEC.md §5.4 tenant FIFO blocks later same-tenant lane while older request waits" do
+    tenant_id = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(max_wait_ms: 1_000), fn ->
+      assert {:ok, model_a_grant} =
+               QueueManager.acquire(
+                 admission_request("req-model-a-held",
+                   tenant_id: tenant_id,
+                   model_id: "queue-model-a"
+                 )
+               )
+
+      assert {:ok, model_b_grant} =
+               QueueManager.acquire(
+                 admission_request("req-model-b-held",
+                   tenant_id: tenant_id,
+                   model_id: "queue-model-b"
+                 )
+               )
+
+      assert {:queued, ticket_a} =
+               QueueManager.acquire(
+                 admission_request("req-model-a-queued",
+                   tenant_id: tenant_id,
+                   model_id: "queue-model-a"
+                 )
+               )
+
+      assert {:queued, ticket_b} =
+               QueueManager.acquire(
+                 admission_request("req-model-b-queued",
+                   tenant_id: tenant_id,
+                   model_id: "queue-model-b"
+                 )
+               )
+
+      awaiter_a = await_and_hold(ticket_a, :same_tenant_a)
+      awaiter_b = await_and_hold(ticket_b, :same_tenant_b)
+
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b) end)
+
+      assert :ok = QueueManager.release(model_b_grant)
+      refute_receive {:await_result, :same_tenant_b, _}, 50
+
+      assert :ok = QueueManager.release(model_a_grant)
+      assert_receive {:await_result, :same_tenant_a, {:ok, grant_a}}, 1_000
+      assert_receive {:await_result, :same_tenant_b, {:ok, grant_b}}, 1_000
+
+      assert :ok = QueueManager.release(grant_a)
+      assert :ok = QueueManager.release(grant_b)
+      stop_awaiter(awaiter_a)
+      stop_awaiter(awaiter_b)
+    end)
+  end
+
+  test "SPEC.md §5.4 weighted round-robin honors configured tenant weights" do
+    tenant_a = Ecto.UUID.generate()
+    tenant_b = Ecto.UUID.generate()
+
+    config =
+      queue_config(
+        max_wait_ms: 1_000,
+        tenant_weights: %{tenant_a => 1, tenant_b => 2}
+      )
+
+    with_queue_admission_config(config, fn ->
+      assert {:ok, held_grant} =
+               QueueManager.acquire(admission_request("req-weight-held", tenant_id: tenant_a))
+
+      assert {:queued, ticket_a1} =
+               QueueManager.acquire(admission_request("req-weight-a1", tenant_id: tenant_a))
+
+      assert {:queued, ticket_a2} =
+               QueueManager.acquire(admission_request("req-weight-a2", tenant_id: tenant_a))
+
+      assert {:queued, ticket_b1} =
+               QueueManager.acquire(admission_request("req-weight-b1", tenant_id: tenant_b))
+
+      assert {:queued, ticket_b2} =
+               QueueManager.acquire(admission_request("req-weight-b2", tenant_id: tenant_b))
+
+      awaiter_a1 = await_and_hold(ticket_a1, :weight_a1)
+      awaiter_a2 = await_and_hold(ticket_a2, :weight_a2)
+      awaiter_b1 = await_and_hold(ticket_b1, :weight_b1)
+      awaiter_b2 = await_and_hold(ticket_b2, :weight_b2)
+
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a1) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a2) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b1) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b2) end)
+
+      assert :ok = QueueManager.release(held_grant)
+      assert_receive {:await_result, :weight_a1, {:ok, grant_a1}}, 1_000
+
+      assert :ok = QueueManager.release(grant_a1)
+      assert_receive {:await_result, :weight_b1, {:ok, grant_b1}}, 1_000
+
+      assert :ok = QueueManager.release(grant_b1)
+      assert_receive {:await_result, :weight_b2, {:ok, grant_b2}}, 1_000
+      refute_receive {:await_result, :weight_a2, _}, 20
+
+      assert :ok = QueueManager.release(grant_b2)
+      assert_receive {:await_result, :weight_a2, {:ok, grant_a2}}, 1_000
+
+      assert :ok = QueueManager.release(grant_a2)
+      stop_awaiter(awaiter_a1)
+      stop_awaiter(awaiter_a2)
+      stop_awaiter(awaiter_b1)
+      stop_awaiter(awaiter_b2)
+    end)
+  end
+
+  test "SPEC.md §5.4 pre-await queued work prevents same-lane immediate bypass" do
+    tenant_a = Ecto.UUID.generate()
+    tenant_b = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(max_wait_ms: 1_000), fn ->
+      assert {:ok, held_grant} =
+               QueueManager.acquire(admission_request("req-pre-await-held", tenant_id: tenant_a))
+
+      assert {:queued, ticket_a} =
+               QueueManager.acquire(admission_request("req-pre-await-a", tenant_id: tenant_a))
+
+      assert :ok = QueueManager.release(held_grant)
+
+      assert {:queued, ticket_b} =
+               QueueManager.acquire(admission_request("req-pre-await-b", tenant_id: tenant_b))
+
+      awaiter_a = await_and_hold(ticket_a, :pre_await_a)
+      awaiter_b = await_and_hold(ticket_b, :pre_await_b)
+
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b) end)
+
+      assert_receive {:await_result, :pre_await_a, {:ok, grant_a}}, 1_000
+      refute_receive {:await_result, :pre_await_b, _}, 20
+
+      assert :ok = QueueManager.release(grant_a)
+      assert_receive {:await_result, :pre_await_b, {:ok, grant_b}}, 1_000
+
+      assert :ok = QueueManager.release(grant_b)
+      stop_awaiter(awaiter_a)
+      stop_awaiter(awaiter_b)
+    end)
+  end
+
   test "requeue defers an active grant behind the lane retry interval" do
     config = queue_config(max_wait_ms: 500, poll_interval_ms: 50)
 
@@ -1202,6 +1392,25 @@ defmodule Orchard.Inference.QueueManagerTest do
       Process.sleep(20)
       wait_until(fun, attempts - 1)
     end
+  end
+
+  defp await_and_hold(ticket, label) do
+    parent = self()
+
+    spawn(fn ->
+      result = QueueManager.await(ticket)
+      send(parent, {:await_result, label, result})
+
+      receive do
+        :stop -> :ok
+      after
+        2_000 -> :ok
+      end
+    end)
+  end
+
+  defp stop_awaiter(pid) do
+    send(pid, :stop)
   end
 
   defp queue_entry_awaiting?(ticket, manager \\ QueueManager) do
