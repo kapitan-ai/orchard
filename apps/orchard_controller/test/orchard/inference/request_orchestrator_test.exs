@@ -1207,6 +1207,84 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     end
   end
 
+  test "SPEC.md §5.3 tenant active cap queues despite spare model lane capacity", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(
+      enabled: true,
+      capacity: 2,
+      max_active_per_tenant: 1,
+      max_wait_ms: 1_000
+    )
+
+    model = create_active_model!(bundle, "request-orchestrator-tenant-active-cap")
+    canonical = canonical_request("request-orchestrator-tenant-active-cap", stream?: false)
+
+    assert {:ok, held_grant} = hold_queue_lane(canonical)
+
+    task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
+
+    try do
+      assert wait_until(fn -> request_state(canonical.public_id) == :queued end)
+
+      queued_request = Requests.get_request_by_public_id(canonical.public_id)
+      assert_queue_metadata(queued_request, "queued", queued?: true)
+      refute :scheduled in request_event_states(queued_request)
+
+      assert :ok = QueueManager.release(held_grant)
+      assert {:ok, ^canonical, events} = Task.await(task, 2_000)
+      assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+      request = Requests.get_request_by_public_id(canonical.public_id)
+      states = request_event_states(request)
+
+      assert state_before?(states, :queued, :scheduled)
+      assert_queue_metadata(request, "queued", queued?: true, granted?: true)
+    after
+      QueueManager.release(held_grant)
+      Task.shutdown(task, :brutal_kill)
+    end
+  end
+
+  test "SPEC.md §5.3 resolved tenant active policy limits queue admission", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(enabled: true, capacity: 2, max_wait_ms: 1_000)
+
+    model = create_active_model!(bundle, "request-orchestrator-policy-tenant-active-cap")
+
+    canonical =
+      canonical_request("request-orchestrator-policy-tenant-active-cap",
+        stream?: false,
+        resolved_policy: %{max_active_requests: 1}
+      )
+
+    assert {:ok, held_grant} = hold_queue_lane(canonical)
+
+    task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
+
+    try do
+      assert wait_until(fn -> request_state(canonical.public_id) == :queued end)
+
+      queued_request = Requests.get_request_by_public_id(canonical.public_id)
+      assert_queue_metadata(queued_request, "queued", queued?: true)
+      refute :scheduled in request_event_states(queued_request)
+
+      assert :ok = QueueManager.release(held_grant)
+      assert {:ok, ^canonical, events} = Task.await(task, 2_000)
+      assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+      request = Requests.get_request_by_public_id(canonical.public_id)
+      states = request_event_states(request)
+
+      assert state_before?(states, :queued, :scheduled)
+      assert_queue_metadata(request, "queued", queued?: true, granted?: true)
+    after
+      QueueManager.release(held_grant)
+      Task.shutdown(task, :brutal_kill)
+    end
+  end
+
   test "queue admission returns queue_full before scheduling when tenant cap is exhausted", %{
     bundle: bundle
   } do
@@ -2806,6 +2884,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     stop = Keyword.get(overrides, :stop, [])
     max_output_tokens = Keyword.get(overrides, :max_output_tokens)
     tooling = Keyword.get(overrides, :tooling, %{})
+    resolved_policy = Keyword.get(overrides, :resolved_policy, %{})
 
     CanonicalRequest.new(%{
       internal_id: Ecto.UUID.generate(),
@@ -2821,7 +2900,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       sampling: %{temperature: 1.0, top_p: 1.0, stop: stop, max_output_tokens: max_output_tokens},
       response_format: %{type: :text},
       tooling: tooling,
-      metadata: metadata
+      metadata: metadata,
+      resolved_policy: resolved_policy
     })
   end
 

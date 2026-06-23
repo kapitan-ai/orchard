@@ -3,8 +3,9 @@ defmodule Orchard.Inference.QueueManager do
   BEAM-local controller admission owner for the bounded queue-first slice.
 
   The owner grants at most `capacity` active requests per `{model_id, version}`
-  lane, queues callers by tenant FIFO, and monitors queued callers so
-  disconnected clients cannot be scheduled later.
+  lane and, when configured or resolved from policy, at most the tenant active
+  request cap across all lanes. It queues callers by tenant FIFO and monitors
+  queued callers so disconnected clients cannot be scheduled later.
   Cross-tenant grants use weighted round-robin, and live scheduler saturation can
   requeue an active grant under its original queue deadline.
   """
@@ -105,12 +106,13 @@ defmodule Orchard.Inference.QueueManager do
   @max_tenant_weight 100
 
   @type admission_request :: %{
-          request_id: Ecto.UUID.t() | String.t(),
-          public_id: String.t(),
-          tenant_id: Ecto.UUID.t() | String.t(),
-          model_id: String.t(),
-          version: String.t(),
-          caller_pid: pid()
+          required(:request_id) => Ecto.UUID.t() | String.t(),
+          required(:public_id) => String.t(),
+          required(:tenant_id) => Ecto.UUID.t() | String.t(),
+          required(:model_id) => String.t(),
+          required(:version) => String.t(),
+          optional(:max_active_per_tenant) => pos_integer() | nil,
+          optional(:caller_pid) => pid()
         }
 
   @type acquire_result ::
@@ -234,6 +236,8 @@ defmodule Orchard.Inference.QueueManager do
   def handle_call(:reset, _from, state), do: {:reply, :ok, reset_state(state)}
 
   def handle_call({:acquire, request, config}, {_waiter_pid, _tag}, state) do
+    config = queue_config_for_request(config, request)
+
     state =
       request.queue_key
       |> prune_recovered_grants(state)
@@ -252,6 +256,7 @@ defmodule Orchard.Inference.QueueManager do
         {:reply, {:queued, ticket}, state}
 
       active_capacity?(lane, config.capacity) and
+        tenant_active_capacity?(state, request, config) and
           not queue_key_has_queued_entries?(state, request.queue_key) ->
         {grant, state} = grant_immediate(request, config, state)
         {:reply, {:ok, grant}, state}
@@ -271,6 +276,7 @@ defmodule Orchard.Inference.QueueManager do
   end
 
   def handle_call({:requeue, %Grant{} = grant, request, config}, _from, state) do
+    config = queue_config_for_request(config, request)
     {result, state} = requeue_grant(grant, request, config, state)
     {:reply, result, state}
   end
@@ -1051,7 +1057,7 @@ defmodule Orchard.Inference.QueueManager do
     queue_key = queue_key_from_request(request)
     grant_id = recovered_grant_id(request)
 
-    put_recovered_grant(grant_id, queue_key, request.id, state)
+    put_recovered_grant(grant_id, queue_key, request, state)
   end
 
   defp recovered_grant_id(request) do
@@ -1061,7 +1067,7 @@ defmodule Orchard.Inference.QueueManager do
     end
   end
 
-  defp put_recovered_grant(grant_id, queue_key, request_id, state) do
+  defp put_recovered_grant(grant_id, queue_key, request, state) do
     lane = Map.get(state.lanes, queue_key, empty_lane())
     lane = %{lane | active: Map.put(lane.active, grant_id, true)}
 
@@ -1071,7 +1077,8 @@ defmodule Orchard.Inference.QueueManager do
         grants:
           Map.put(state.grants, grant_id, %{
             queue_key: queue_key,
-            request_id: request_id,
+            request_id: request.id,
+            tenant_id: request.tenant_id,
             recovered?: true
           })
     }
@@ -1195,9 +1202,18 @@ defmodule Orchard.Inference.QueueManager do
       model_id: model_id,
       version: version,
       caller_pid: Map.get(attrs, :caller_pid, self()),
+      max_active_per_tenant:
+        normalize_max_active_per_tenant(Map.get(attrs, :max_active_per_tenant)),
       queue_key: queue_key(model_id, version)
     }
   end
+
+  defp queue_config_for_request(config, %{max_active_per_tenant: limit})
+       when is_integer(limit) and limit > 0 do
+    %{config | max_active_per_tenant: limit}
+  end
+
+  defp queue_config_for_request(config, _request), do: config
 
   defp normalize_config(config) do
     config = Keyword.merge(Orchard.Inference.queue_admission_config(), config)
@@ -1205,6 +1221,7 @@ defmodule Orchard.Inference.QueueManager do
     %{
       capacity: max(config[:capacity] || 1, 1),
       max_wait_ms: max(config[:max_wait_ms] || 0, 0),
+      max_active_per_tenant: normalize_max_active_per_tenant(config[:max_active_per_tenant]),
       max_queued_per_tenant: max(config[:max_queued_per_tenant] || 0, 0),
       poll_interval_ms: max(config[:poll_interval_ms] || 100, 1),
       tenant_default_weight: normalize_tenant_weight(config[:tenant_default_weight]),
@@ -1230,12 +1247,25 @@ defmodule Orchard.Inference.QueueManager do
 
   defp normalize_tenant_weight(_weight), do: 1
 
+  defp normalize_max_active_per_tenant(limit) when is_integer(limit) and limit >= 0, do: limit
+  defp normalize_max_active_per_tenant(_limit), do: nil
+
   defp queue_key(model_id, version), do: "#{model_id}@#{version}"
 
   defp empty_lane, do: %{active: %{}, blocked_until_monotonic_ms: nil, block_ref: nil}
 
   defp active_capacity?(lane, capacity) do
     map_size(lane.active) < capacity and not lane_blocked?(lane)
+  end
+
+  defp tenant_active_capacity?(state, %{tenant_id: tenant_id}, %{
+         max_active_per_tenant: limit
+       }) do
+    is_nil(limit) or active_grants_for_tenant(state, tenant_id) < limit
+  end
+
+  defp active_grants_for_tenant(state, tenant_id) do
+    Enum.count(state.grants, fn {_grant_id, grant} -> grant[:tenant_id] == tenant_id end)
   end
 
   defp tenant_queue_full?(state, tenant_id, max_queued_per_tenant) do
@@ -1300,7 +1330,8 @@ defmodule Orchard.Inference.QueueManager do
       terminal_metadata: nil,
       terminal_result: nil,
       terminal_retry_ref: nil,
-      terminal_retry_after_ms: config.poll_interval_ms
+      terminal_retry_after_ms: config.poll_interval_ms,
+      max_active_per_tenant: config.max_active_per_tenant
     }
 
     {ticket, put_entry(entry, state)}
@@ -1461,7 +1492,8 @@ defmodule Orchard.Inference.QueueManager do
       terminal_metadata: nil,
       terminal_result: nil,
       terminal_retry_ref: nil,
-      terminal_retry_after_ms: config.poll_interval_ms
+      terminal_retry_after_ms: config.poll_interval_ms,
+      max_active_per_tenant: config.max_active_per_tenant
     }
 
     {ticket, entry}
@@ -1516,6 +1548,9 @@ defmodule Orchard.Inference.QueueManager do
         {:removed, disconnect_queued_entry(entry, state)}
 
       not lane_has_capacity?(lane) or lane_blocked?(lane) ->
+        scan_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      not tenant_active_capacity?(state, entry, entry) ->
         scan_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
 
       true ->

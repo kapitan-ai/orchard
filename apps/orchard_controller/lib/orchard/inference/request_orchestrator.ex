@@ -318,8 +318,16 @@ defmodule Orchard.Inference.RequestOrchestrator do
       tenant_id: db_request.tenant_id,
       model_id: canonical.model_ref.model_id,
       version: canonical.model_ref.version,
+      max_active_per_tenant: tenant_active_limit(canonical),
       caller_pid: caller
     }
+  end
+
+  defp tenant_active_limit(canonical) do
+    case canonical.resolved_policy.max_active_requests do
+      limit when is_integer(limit) and limit > 0 -> limit
+      _other -> nil
+    end
   end
 
   defp await_queued_grant(db_request, ticket) do

@@ -74,6 +74,7 @@ defmodule Orchard.Inference.CanonicalRequestSerializer do
       "quota_id" => resolved_policy.quota_id,
       "routing_policy_id" => resolved_policy.routing_policy_id,
       "allowed_pool_ids" => normalize_plain_data(resolved_policy.allowed_pool_ids),
+      "max_active_requests" => resolved_policy.max_active_requests,
       "residency_preference" => Atom.to_string(resolved_policy.residency_preference)
     }
   end

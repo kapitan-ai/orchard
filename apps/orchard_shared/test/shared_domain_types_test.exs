@@ -53,6 +53,7 @@ defmodule OrchardSharedDomainTypesTest do
         admission: %Admission{timeout_ms: 30_000, queue_wait_ms: 5_000, max_cold_start_ms: 10_000},
         resolved_policy: %ResolvedPolicy{
           allowed_pool_ids: ["pool_1"],
+          max_active_requests: 2,
           residency_preference: :prefer_loaded
         }
       })
@@ -83,6 +84,7 @@ defmodule OrchardSharedDomainTypesTest do
            }
 
     assert updated.resolved_policy.residency_preference == :prefer_loaded
+    assert updated.resolved_policy.max_active_requests == 2
   end
 
   test "canonical request spec section 3.4 tooling defaults keep old callers valid" do
@@ -363,6 +365,17 @@ defmodule OrchardSharedDomainTypesTest do
         model_ref: %ModelRef{model_id: "mlx-community/phi-3", version: "main"},
         input_items: [42],
         resolved_policy: %ResolvedPolicy{allowed_pool_ids: [nil]}
+      })
+    end
+
+    assert_raise ArgumentError, fn ->
+      CanonicalRequest.new(%{
+        internal_id: "req_internal",
+        public_id: "req_public",
+        endpoint: :chat_completions,
+        tenant_id: "tenant_123",
+        model_ref: %ModelRef{model_id: "mlx-community/phi-3", version: "main"},
+        resolved_policy: %ResolvedPolicy{max_active_requests: 0}
       })
     end
 

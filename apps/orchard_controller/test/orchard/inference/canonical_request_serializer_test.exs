@@ -55,6 +55,7 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
           quota_id: "quota_1",
           routing_policy_id: "route_1",
           allowed_pool_ids: ["pool_1"],
+          max_active_requests: 2,
           residency_preference: :prefer_loaded
         }
       })
@@ -67,6 +68,7 @@ defmodule Orchard.Inference.CanonicalRequestSerializerTest do
     assert serialized["metadata"] == %{"trace_id" => "trace-1", "tags" => ["a", "b"]}
     assert serialized["sampling"]["stop"] == ["END"]
     assert serialized["resolved_policy"]["residency_preference"] == "prefer_loaded"
+    assert serialized["resolved_policy"]["max_active_requests"] == 2
 
     assert serialized["tooling"] == %{
              "tools" => [%{"name" => "calculator"}],

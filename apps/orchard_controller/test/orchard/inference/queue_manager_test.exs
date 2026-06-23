@@ -53,6 +53,93 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.3 tenant active cap queues same-tenant work despite placement capacity" do
+    tenant_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 2, max_active_per_tenant: 1)
+
+    assert {:ok, grant} =
+             QueueManager.acquire(admission_request("req-tenant-active-a", tenant_id: tenant_id),
+               config: config
+             )
+
+    assert {:queued, ticket} =
+             QueueManager.acquire(admission_request("req-tenant-active-b", tenant_id: tenant_id),
+               config: config
+             )
+
+    awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+    refute Task.yield(awaiter, 50)
+
+    assert :ok = QueueManager.release(grant)
+    assert {:ok, queued_grant} = Task.await(awaiter, 2_000)
+    assert queued_grant.queue_result == :queued
+
+    assert :ok = QueueManager.release(queued_grant)
+  end
+
+  test "SPEC.md §5.3 tenant active cap does not block another tenant with placement capacity" do
+    first_tenant_id = Ecto.UUID.generate()
+    second_tenant_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 2, max_active_per_tenant: 1)
+
+    assert {:ok, first_grant} =
+             QueueManager.acquire(
+               admission_request("req-tenant-isolated-a", tenant_id: first_tenant_id),
+               config: config
+             )
+
+    assert {:ok, second_grant} =
+             QueueManager.acquire(
+               admission_request("req-tenant-isolated-b", tenant_id: second_tenant_id),
+               config: config
+             )
+
+    assert first_grant.queue_result == :immediate
+    assert second_grant.queue_result == :immediate
+
+    assert :ok = QueueManager.release(first_grant)
+    assert :ok = QueueManager.release(second_grant)
+  end
+
+  test "SPEC.md §5.4 active-cap-blocked tenant does not block another tenant" do
+    first_tenant_id = Ecto.UUID.generate()
+    second_tenant_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 2, max_active_per_tenant: 1)
+
+    with_queue_admission_config(config, fn ->
+      assert {:ok, first_grant} =
+               QueueManager.acquire(
+                 admission_request("req-tenant-lane-head-a", tenant_id: first_tenant_id)
+               )
+
+      assert {:queued, blocked_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-tenant-lane-head-b", tenant_id: first_tenant_id)
+               )
+
+      blocked_awaiter = Task.async(fn -> QueueManager.await(blocked_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(blocked_ticket) end)
+
+      assert {:queued, other_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-tenant-lane-head-c", tenant_id: second_tenant_id)
+               )
+
+      other_awaiter = Task.async(fn -> QueueManager.await(other_ticket) end)
+
+      assert {:ok, other_grant} = Task.await(other_awaiter, 2_000)
+      assert other_grant.queue_result == :queued
+      refute Task.yield(blocked_awaiter, 50)
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, blocked_grant} = Task.await(blocked_awaiter, 2_000)
+      assert blocked_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(other_grant)
+      assert :ok = QueueManager.release(blocked_grant)
+    end)
+  end
+
   test "SPEC.md §5.4 cross-tenant weighted round-robin grants one tenant turn at a time" do
     tenant_a = Ecto.UUID.generate()
     tenant_b = Ecto.UUID.generate()
@@ -292,6 +379,68 @@ defmodule Orchard.Inference.QueueManagerTest do
       assert requeued_grant_b.queued_at == ticket_b.queued_at
       assert :ok = QueueManager.release(requeued_grant_a)
       assert :ok = QueueManager.release(requeued_grant_b)
+    end)
+  end
+
+  test "SPEC.md §5.4 weighted promotion skips tenants blocked by active cap" do
+    tenant_a = Ecto.UUID.generate()
+    tenant_b = Ecto.UUID.generate()
+
+    config =
+      queue_config(max_active_per_tenant: 1, tenant_weights: %{tenant_a => 2, tenant_b => 1})
+
+    with_queue_admission_config(config, fn ->
+      assert {:ok, active_a} =
+               QueueManager.acquire(
+                 admission_request("req-weighted-active-cap-held-a",
+                   tenant_id: tenant_a,
+                   model_id: "queue-model-a"
+                 )
+               )
+
+      assert {:ok, active_b} =
+               QueueManager.acquire(
+                 admission_request("req-weighted-active-cap-held-b",
+                   tenant_id: tenant_b,
+                   model_id: "queue-model-b"
+                 )
+               )
+
+      assert {:queued, ticket_a} =
+               QueueManager.acquire(
+                 admission_request("req-weighted-active-cap-a",
+                   tenant_id: tenant_a,
+                   model_id: "queue-model-a"
+                 )
+               )
+
+      assert {:queued, ticket_b} =
+               QueueManager.acquire(
+                 admission_request("req-weighted-active-cap-b",
+                   tenant_id: tenant_b,
+                   model_id: "queue-model-b"
+                 )
+               )
+
+      awaiter_a = await_and_hold(ticket_a, :tenant_a)
+      awaiter_b = await_and_hold(ticket_b, :tenant_b)
+
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b) end)
+
+      assert :ok = QueueManager.release(active_b)
+      assert_receive {:await_result, :tenant_b, {:ok, grant_b}}, 1_000
+      assert grant_b.queue_key == "queue-model-b@v1"
+      refute_receive {:await_result, :tenant_a, {:ok, _grant_a}}, 50
+
+      assert :ok = QueueManager.release(active_a)
+      assert_receive {:await_result, :tenant_a, {:ok, grant_a}}, 1_000
+      assert grant_a.queue_key == "queue-model-a@v1"
+
+      assert :ok = QueueManager.release(grant_a)
+      assert :ok = QueueManager.release(grant_b)
+      stop_awaiter(awaiter_a)
+      stop_awaiter(awaiter_b)
     end)
   end
 
@@ -924,6 +1073,50 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert :ok = QueueManager.release(grant)
   end
 
+  test "SPEC.md §5.3 recovered active grants count against tenant concurrency" do
+    tenant_id = Ecto.UUID.generate()
+
+    recovered_request =
+      create_request!("req_queue_recovered_tenant_active",
+        tenant_id: tenant_id,
+        requested_model: "queue-model-a@v1",
+        state: :running,
+        scheduler_decision: %{
+          queueing_enabled: true,
+          queue_key: "queue-model-a@v1",
+          queue_result: "immediate",
+          queue_grant_id: "grant-recovered-tenant-active",
+          queue_granted_at: DateTime.utc_now() |> DateTime.to_iso8601()
+        }
+      )
+
+    manager = unique_manager_name()
+    start_supervised!({QueueManager, name: manager, owner_runtime: true})
+
+    assert {:queued, ticket} =
+             QueueManager.acquire(
+               admission_request("req-after-tenant-active-recovery",
+                 tenant_id: tenant_id,
+                 model_id: "queue-model-b"
+               ),
+               server: manager,
+               config: queue_config(capacity: 2, max_active_per_tenant: 1)
+             )
+
+    awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+    assert wait_until(fn -> queue_entry_awaiting?(ticket, manager) end)
+    refute Task.yield(awaiter, 100)
+
+    assert {:ok, _request} =
+             Requests.mark_terminal(recovered_request, %{state: :completed, output_tokens: 1})
+
+    assert {:ok, grant} = Task.await(awaiter, 2_000)
+    assert grant.queue_result == :queued
+    assert grant.queue_key == "queue-model-b@v1"
+
+    assert :ok = QueueManager.release(grant, server: manager)
+  end
+
   test "reconstructed legacy in-flight lane remains occupied until terminal" do
     request =
       create_request!("req_queue_recovered_legacy",
@@ -1387,6 +1580,7 @@ defmodule Orchard.Inference.QueueManagerTest do
       [
         enabled: true,
         max_wait_ms: 500,
+        max_active_per_tenant: nil,
         max_queued_per_tenant: 32,
         poll_interval_ms: 1,
         capacity: 1,
