@@ -2607,6 +2607,111 @@ defmodule OrchardNodeAgentTest do
     )
   end
 
+  test "batch mode cancel drains one gRPC stream and frees same-model capacity", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: BlockingRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: 2,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      ],
+      fn ->
+        request1 = execute_inference_request("req-batch-grpc-cancel-first")
+        request2 = execute_inference_request("req-batch-grpc-cancel-second")
+        request3 = execute_inference_request("req-batch-grpc-cancel-third")
+        request_id1 = request1.request_id
+        request_id2 = request2.request_id
+        request_id3 = request3.request_id
+
+        with_channel(fn channel ->
+          assert {:ok, %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED}} =
+                   NodeRuntimeStub.ensure_model_loaded(
+                     channel,
+                     ensure_model_loaded_request(bundle)
+                   )
+
+          task1 = start_execute_inference_task(request1, self())
+          task2 = start_execute_inference_task(request2, self())
+
+          try do
+            assert_execute_inference_accepted([request_id1, request_id2])
+
+            refs = wait_for_generation_refs([request_id1, request_id2])
+
+            status = grpc_status_snapshot()
+            assert status.active_request_count == 2
+
+            placement = runtime_model_placement!(status, @test_model_id, @test_version)
+            assert placement.active_request_count == 2
+            assert placement.max_concurrency == 2
+
+            assert {:ok, %{ok: true, message: "cancel accepted"}} =
+                     NodeRuntimeStub.cancel_inference(channel, %CancelInferenceRequest{
+                       request_id: request_id1,
+                       controller_session_id: request1.controller_session_id
+                     })
+
+            assert_cancelled_stream_failed(Task.await(task1, 5_000))
+
+            wait_until(fn ->
+              status = grpc_status_snapshot()
+              placement = runtime_model_placement!(status, @test_model_id, @test_version)
+
+              status.active_request_count == 1 and placement.active_request_count == 1 and
+                placement.max_concurrency == 2
+            end)
+
+            assert %{^request_id2 => _generation_ref} =
+                     generation_refs_for_request_ids([request_id2])
+
+            task3 = start_execute_inference_task(request3, self())
+
+            try do
+              assert_execute_inference_accepted([request_id3])
+
+              refs = Map.merge(refs, wait_for_generation_refs([request_id2, request_id3]))
+
+              refreshed_status = grpc_status_snapshot()
+
+              refreshed_placement =
+                runtime_model_placement!(refreshed_status, @test_model_id, @test_version)
+
+              assert refreshed_status.active_request_count == 2
+              assert refreshed_placement.active_request_count == 2
+              assert refreshed_placement.max_concurrency == 2
+
+              send_release(Map.fetch!(refs, request_id2))
+              send_release(Map.fetch!(refs, request_id3))
+
+              assert_blocking_stream_completed(Task.await(task2, 5_000))
+              assert_blocking_stream_completed(Task.await(task3, 5_000))
+
+              wait_until(fn ->
+                status = grpc_status_snapshot()
+                placement = runtime_model_placement!(status, @test_model_id, @test_version)
+
+                status.active_request_count == 0 and placement.active_request_count == 0 and
+                  placement.max_concurrency == 2
+              end)
+            after
+              best_effort_release_generation_refs([request_id2, request_id3])
+              Task.shutdown(task3, :brutal_kill)
+            end
+          after
+            try do
+              best_effort_release_generation_refs([request_id1, request_id2, request_id3])
+            after
+              Task.shutdown(task1, :brutal_kill)
+              Task.shutdown(task2, :brutal_kill)
+            end
+          end
+        end)
+      end
+    )
+  end
+
   test "current status reports loaded model placement capacity", %{bundle: bundle} do
     with_runtime_adapter(BlockingRuntimeAdapter, fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
@@ -3979,6 +4084,20 @@ defmodule OrchardNodeAgentTest do
 
   defp assert_blocking_stream_completed(events) do
     flunk("unexpected ExecuteInference stream events: #{inspect(events)}")
+  end
+
+  defp assert_cancelled_stream_failed([
+         {:ok,
+          %RPCInferenceEvent{event: {:accepted, %Accepted{accepted_at_unix_ms: accepted_at}}}},
+         {:ok, %RPCInferenceEvent{event: {:failed, failed}}}
+       ]) do
+    assert is_integer(accepted_at)
+    assert accepted_at > 0
+    assert failed.code == "cancelled"
+  end
+
+  defp assert_cancelled_stream_failed(events) do
+    flunk("unexpected cancelled ExecuteInference stream events: #{inspect(events)}")
   end
 
   defp best_effort_release_generation_refs(request_ids) do
