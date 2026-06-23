@@ -33,6 +33,26 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert :ok = QueueManager.release(queued_grant)
   end
 
+  test "capacity two admits two active requests and queues the third" do
+    with_queue_admission_config(queue_config(capacity: 2, max_wait_ms: 1_000), fn ->
+      assert {:ok, first_grant} = QueueManager.acquire(admission_request("req-capacity2-a"))
+      assert first_grant.queue_result == :immediate
+
+      assert {:ok, second_grant} = QueueManager.acquire(admission_request("req-capacity2-b"))
+      assert second_grant.queue_result == :immediate
+
+      assert {:queued, third_ticket} = QueueManager.acquire(admission_request("req-capacity2-c"))
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, third_grant} = QueueManager.await(third_ticket)
+      assert third_grant.queue_result == :queued
+      assert third_grant.queued_at != nil
+
+      assert :ok = QueueManager.release(second_grant)
+      assert :ok = QueueManager.release(third_grant)
+    end)
+  end
+
   test "SPEC.md §3.6 immediate grant holder death releases lane before explicit release" do
     db_request = create_request!("req_queue_immediate_holder_death", state: :admitted)
 
@@ -1132,6 +1152,21 @@ defmodule Orchard.Inference.QueueManagerTest do
       ],
       overrides
     )
+  end
+
+  defp with_queue_admission_config(queue_admission_config, fun) do
+    previous = Application.fetch_env!(:orchard_controller, :inference)
+
+    previous
+    |> Keyword.put(:queue_admission, queue_admission_config)
+    |> then(&Application.put_env(:orchard_controller, :inference, &1))
+
+    try do
+      fun.()
+    after
+      QueueManager.reset()
+      Application.put_env(:orchard_controller, :inference, previous)
+    end
   end
 
   defp wait_until(fun, attempts \\ 50)

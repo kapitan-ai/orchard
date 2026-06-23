@@ -1143,6 +1143,42 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert_queue_metadata(request, "queued", queued?: true, granted?: true)
   end
 
+  test "queue admission capacity two schedules two active requests and queues overflow", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(enabled: true, capacity: 2, max_wait_ms: 1_000)
+
+    model = create_active_model!(bundle, "request-orchestrator-queue-capacity-two")
+    canonical = canonical_request("request-orchestrator-queue-capacity-two", stream?: false)
+
+    assert {:ok, first_grant} = hold_queue_lane(canonical)
+    assert {:ok, second_grant} = hold_queue_lane(canonical)
+
+    task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
+
+    try do
+      assert wait_until(fn -> request_state(canonical.public_id) == :queued end)
+
+      queued_request = Requests.get_request_by_public_id(canonical.public_id)
+      assert_queue_metadata(queued_request, "queued", queued?: true)
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, ^canonical, events} = Task.await(task, 2_000)
+      assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+      request = Requests.get_request_by_public_id(canonical.public_id)
+      states = request_event_states(request)
+
+      assert state_before?(states, :admitted, :queued)
+      assert state_before?(states, :queued, :scheduled)
+      assert_queue_metadata(request, "queued", queued?: true, granted?: true)
+    after
+      QueueManager.release(first_grant)
+      QueueManager.release(second_grant)
+      Task.shutdown(task, :brutal_kill)
+    end
+  end
+
   test "queue admission returns queue_full before scheduling when tenant cap is exhausted", %{
     bundle: bundle
   } do

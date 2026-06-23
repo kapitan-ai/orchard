@@ -421,6 +421,70 @@ defmodule Orchard.API.ResponsesControllerTest do
     assert_queue_metadata(queued, "queued", queued?: true, granted?: true)
   end
 
+  test "SPEC.md §5.2/§5.4 queue admission capacity two admits overlapping responses requests", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config!(capacity: 2, max_wait_ms: 2_000)
+    put_blocking_runtime_adapter!(self())
+    create_queue_model!(bundle, "responses-queue-capacity2-model")
+
+    %{token: token} = create_api_key_with_token!("responses-queue-capacity2")
+
+    params = %{
+      "model" => "responses-queue-capacity2-model@v1",
+      "input" => "hello"
+    }
+
+    Process.put(:queue_admission_runtime_pids, [])
+    tasks = Enum.map(1..3, fn _index -> Task.async(fn -> post_responses(params, token) end) end)
+
+    try do
+      {first_pid, first_request_id} = runtime_start_message("responses-queue-capacity2-model")
+      remember_runtime_pid(first_pid)
+      {second_pid, second_request_id} = runtime_start_message("responses-queue-capacity2-model")
+      remember_runtime_pid(second_pid)
+
+      refute second_request_id == first_request_id
+
+      assert wait_for_queued_request("responses-queue-capacity2-model@v1")
+
+      refute_receive {:queue_admission_runtime_started, _pid, _request_id,
+                      "responses-queue-capacity2-model"},
+                     100
+
+      send(first_pid, :queue_admission_runtime_release)
+
+      {third_pid, third_request_id} = runtime_start_message("responses-queue-capacity2-model")
+      remember_runtime_pid(third_pid)
+
+      refute third_request_id in [first_request_id, second_request_id]
+
+      send(second_pid, :queue_admission_runtime_release)
+      send(third_pid, :queue_admission_runtime_release)
+
+      conns = Enum.map(tasks, &Task.await(&1, 5_000))
+      assert Enum.map(conns, & &1.status) == [200, 200, 200]
+
+      assert_queue_result_count!("responses-queue-capacity2-model@v1", "immediate", 2)
+      assert_queue_result_count!("responses-queue-capacity2-model@v1", "queued", 1)
+
+      Enum.each(
+        requests_with_queue_result!("responses-queue-capacity2-model@v1", "immediate"),
+        &assert_queue_metadata(&1, "immediate", granted?: true)
+      )
+
+      [queued] = requests_with_queue_result!("responses-queue-capacity2-model@v1", "queued")
+      assert_queue_metadata(queued, "queued", queued?: true, granted?: true)
+    after
+      Enum.each(Process.get(:queue_admission_runtime_pids, []), fn pid ->
+        send(pid, :queue_admission_runtime_release)
+      end)
+
+      Enum.each(tasks, &Task.shutdown(&1, :brutal_kill))
+      Process.delete(:queue_admission_runtime_pids)
+    end
+  end
+
   test "SPEC.md §7.2.7 returns top-level sync responses envelopes for busy and queue execute errors" do
     cases = [
       {:model_busy, 503, "server_error", "model_busy"},
@@ -1235,7 +1299,8 @@ defmodule Orchard.API.ResponsesControllerTest do
           {"responses-success-model", "v1"},
           {"responses-replay-model", "v1"},
           {"responses-stream-model", "v1"},
-          {"responses-queue-overlap-model", "v1"}
+          {"responses-queue-overlap-model", "v1"},
+          {"responses-queue-capacity2-model", "v1"}
         ],
         fn {model_id, version} ->
           cache_path = Path.join([models_root, model_id, version])
@@ -1282,5 +1347,10 @@ defmodule Orchard.API.ResponsesControllerTest do
         result -> result
       end
     end
+  end
+
+  defp remember_runtime_pid(pid) do
+    pids = Process.get(:queue_admission_runtime_pids, [])
+    Process.put(:queue_admission_runtime_pids, [pid | pids])
   end
 end
