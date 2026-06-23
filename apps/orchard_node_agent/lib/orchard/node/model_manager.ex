@@ -5,6 +5,8 @@ defmodule Orchard.Node.ModelManager do
   Ensure-load requests run as async supervised tasks with single-flight
   dedup: concurrent callers for the same `{model_id, version}` share one
   acquisition + worker-load pipeline and all receive the same reply.
+  Status responses include loaded-model placement capacity so the controller can
+  avoid dispatching to full same-model placements.
   """
 
   use GenServer
@@ -18,6 +20,7 @@ defmodule Orchard.Node.ModelManager do
   alias Orchard.Cluster.V1.ModelRef
   alias Orchard.Cluster.V1.RuntimeHealth
   alias Orchard.Cluster.V1.RuntimeMemoryBudget
+  alias Orchard.Cluster.V1.RuntimeModelPlacement
   alias Orchard.Cluster.V1.RuntimeNodeMetadata
   alias Orchard.Cluster.V1.RuntimePrefixCacheStatus
   alias Orchard.Cluster.V1.ScorePrefixCacheRequest
@@ -1256,7 +1259,8 @@ defmodule Orchard.Node.ModelManager do
       hosted_tool_readiness: tool_snapshot.readiness,
       runtime_memory_budgets: runtime_memory_budgets,
       runtime_prefix_cache_statuses: runtime_prefix_cache_statuses,
-      supports_prompt_token_ids: supports_prompt_token_ids
+      supports_prompt_token_ids: supports_prompt_token_ids,
+      runtime_model_placements: runtime_model_placements(state)
     }
   end
 
@@ -1311,6 +1315,18 @@ defmodule Orchard.Node.ModelManager do
     state.workers
     |> Enum.filter(fn {_key, entry} -> entry.placement_state == :PLACEMENT_STATE_LOADED end)
     |> Enum.sort_by(fn {{model_id, version}, _} -> {model_id, version} end)
+  end
+
+  defp runtime_model_placements(state) do
+    max_concurrency = Node.effective_worker_request_limit()
+
+    Enum.map(loaded_workers(state), fn {key, entry} ->
+      %RuntimeModelPlacement{
+        model_ref: entry.model_ref,
+        active_request_count: active_request_count_for_model(state.active_requests, key),
+        max_concurrency: max_concurrency
+      }
+    end)
   end
 
   defp runtime_memory_budget(%ModelRef{} = model_ref, budget) do

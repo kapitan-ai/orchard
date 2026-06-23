@@ -16,22 +16,24 @@ defmodule Orchard.TestSupport.QueueAdmissionRuntimeAdapter do
     runtime_owner = Keyword.fetch!(opts, :owner)
     generation_ref = make_ref()
 
-    send(
-      test_owner,
-      {:queue_admission_runtime_started, self(), request.request_id, request.model_id}
-    )
+    spawn(fn ->
+      send(
+        test_owner,
+        {:queue_admission_runtime_started, self(), request.request_id, request.model_id}
+      )
 
-    receive do
-      :queue_admission_runtime_release -> :ok
-    after
-      5_000 -> send(test_owner, {:queue_admission_runtime_release_timeout, request.request_id})
-    end
+      receive do
+        :queue_admission_runtime_release -> :ok
+      after
+        5_000 -> send(test_owner, {:queue_admission_runtime_release_timeout, request.request_id})
+      end
 
-    Enum.each(runtime_events(request), fn event ->
-      send(runtime_owner, {:runtime_adapter_event, generation_ref, event})
+      Enum.each(runtime_events(request), fn event ->
+        send(runtime_owner, {:runtime_adapter_event, generation_ref, event})
+      end)
+
+      send(runtime_owner, {:runtime_adapter_done, generation_ref})
     end)
-
-    send(runtime_owner, {:runtime_adapter_done, generation_ref})
 
     {:ok, generation_ref, adapter_state}
   end
@@ -61,6 +63,9 @@ defmodule Orchard.TestSupport.QueueAdmissionAPI do
   import Ecto.Query
   import ExUnit.Assertions
 
+  alias Orchard.Cluster.V1.StatusResponse
+  alias Orchard.Dispatch.GrpcNodeRuntimeClient
+  alias Orchard.Inference
   alias Orchard.Inference.QueueManager
   alias Orchard.Repo
   alias Orchard.Requests.Request
@@ -92,10 +97,17 @@ defmodule Orchard.TestSupport.QueueAdmissionAPI do
     QueueManager.reset()
   end
 
-  def put_blocking_runtime_adapter!(test_owner) do
+  def put_blocking_runtime_adapter!(test_owner, opts \\ []) do
+    max_concurrent_requests = Keyword.get(opts, :max_concurrent_requests, 3)
+
     runtime =
       Application.fetch_env!(:orchard_node_agent, :runtime)
       |> Keyword.put(:runtime_adapter_impl, QueueAdmissionRuntimeAdapter)
+      # The fake adapter must not serialize WorkerProcess while controller queue
+      # capacity is under test; production worker-adapter limits are covered elsewhere.
+      |> Keyword.put(:worker_generation_mode, "batch")
+      |> Keyword.put(:worker_max_concurrent_requests_per_model, max_concurrent_requests)
+      |> Keyword.put(:test_only_allow_batch_admission_for_non_worker_adapters?, true)
 
     Application.put_env(:orchard_node_agent, :runtime, runtime)
     Application.put_env(:orchard_controller, :queue_admission_api_runtime_owner, test_owner)
@@ -133,16 +145,58 @@ defmodule Orchard.TestSupport.QueueAdmissionAPI do
   end
 
   def request_with_queue_result!(requested_model, queue_result) do
-    Request
-    |> where([request], request.requested_model == ^requested_model)
-    |> Repo.all()
-    |> Enum.find(fn request ->
-      request.scheduler_decision && request.scheduler_decision["queue_result"] == queue_result
-    end)
+    requested_model
+    |> requests_with_queue_result!(queue_result)
+    |> List.first()
     |> case do
       nil -> flunk("expected #{requested_model} request with queue_result=#{queue_result}")
       request -> request
     end
+  end
+
+  def requests_with_queue_result!(requested_model, queue_result) do
+    Request
+    |> where([request], request.requested_model == ^requested_model)
+    |> Repo.all()
+    |> Enum.filter(fn request ->
+      request.scheduler_decision && request.scheduler_decision["queue_result"] == queue_result
+    end)
+  end
+
+  def assert_queue_result_count!(requested_model, queue_result, expected_count) do
+    actual_count =
+      requested_model
+      |> requests_with_queue_result!(queue_result)
+      |> length()
+
+    assert actual_count == expected_count
+    :ok
+  end
+
+  def runtime_start_message(model_id, timeout \\ 2_000) do
+    receive do
+      {:queue_admission_runtime_started, pid, request_id, ^model_id} -> {pid, request_id}
+    after
+      timeout -> flunk("expected runtime start for #{model_id}")
+    end
+  end
+
+  def grpc_status_snapshot do
+    target = Inference.runtime_client_target()
+    assert {:ok, channel} = GrpcNodeRuntimeClient.connect(target)
+
+    try do
+      assert {:ok, %StatusResponse{} = status} = GrpcNodeRuntimeClient.status(channel)
+      status
+    after
+      GrpcNodeRuntimeClient.disconnect(channel)
+    end
+  end
+
+  def runtime_model_placement!(%StatusResponse{} = status, model_id, version) do
+    Enum.find(status.runtime_model_placements, fn placement ->
+      placement.model_ref.model_id == model_id and placement.model_ref.version == version
+    end) || flunk("runtime model placement not found for #{model_id}@#{version}")
   end
 
   def assert_queue_metadata(request, queue_result, opts \\ []) do

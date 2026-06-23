@@ -131,6 +131,19 @@ defmodule Orchard.Cluster.V1.HostedToolReadiness do
   field(:readiness_message, 5, type: :string, json_name: "readinessMessage")
 end
 
+defmodule Orchard.Cluster.V1.RuntimeModelPlacement do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.RuntimeModelPlacement",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:model_ref, 1, type: Orchard.Cluster.V1.ModelRef, json_name: "modelRef")
+  field(:active_request_count, 2, type: :uint32, json_name: "activeRequestCount")
+  field(:max_concurrency, 3, type: :uint32, json_name: "maxConcurrency")
+end
+
 defmodule Orchard.Cluster.V1.StatusResponse do
   @moduledoc false
 
@@ -185,6 +198,12 @@ defmodule Orchard.Cluster.V1.StatusResponse do
   )
 
   field(:supports_prompt_token_ids, 10, type: :bool, json_name: "supportsPromptTokenIds")
+
+  field(:runtime_model_placements, 11,
+    repeated: true,
+    type: Orchard.Cluster.V1.RuntimeModelPlacement,
+    json_name: "runtimeModelPlacements"
+  )
 end
 
 defmodule Orchard.Cluster.V1.EnsureModelLoadedRequest do

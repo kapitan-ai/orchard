@@ -132,6 +132,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     health = Keyword.get(opts, :health, nil)
     prefix_cache_statuses = Keyword.get(opts, :runtime_prefix_cache_statuses, [])
     memory_budgets = Keyword.get(opts, :runtime_memory_budgets, [])
+    model_placements = Keyword.get(opts, :runtime_model_placements, [])
     supports_prompt_token_ids = Keyword.get(opts, :supports_prompt_token_ids, false)
     display_name = Keyword.get(opts, :display_name, "node-#{node_id}")
     host = Keyword.get(opts, :host, "10.0.0.1")
@@ -152,7 +153,16 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       active_request_count: active_request_count,
       runtime_memory_budgets: memory_budgets,
       runtime_prefix_cache_statuses: prefix_cache_statuses,
+      runtime_model_placements: model_placements,
       supports_prompt_token_ids: supports_prompt_token_ids
+    }
+  end
+
+  defp model_placement(model_id, version, active_request_count, max_concurrency) do
+    %{
+      model_ref: %{model_id: model_id, version: version},
+      active_request_count: active_request_count,
+      max_concurrency: max_concurrency
     }
   end
 
@@ -434,6 +444,20 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.strategy == :single_node
     end
+
+    test "returns cluster_busy for one live active target instead of bypassing capacity checks" do
+      put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node.id, host: "10.0.0.1", port: 50_061, active_request_count: 1)
+      )
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request(), status_client: StubClient)
+    end
   end
 
   # -- Multi-node ranking --
@@ -529,7 +553,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.selected_tier == "loaded"
     end
 
-    test "prefers lower active_request_count when both cold" do
+    test "keeps active loaded node eligible when matching placement capacity has room" do
       node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
       node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
 
@@ -539,7 +563,52 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         make_status(node_a.id,
           host: "10.0.0.1",
           port: 50_061,
-          active_request_count: 5
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 1,
+          runtime_model_placements: [model_placement("test-model", "v1", 1, 2)]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == node_a.id
+      assert schedule.selected_tier == "loaded"
+      assert schedule.candidate_count == 2
+    end
+
+    test "prefers lower matching placement active count before health and node_id" do
+      node_a =
+        insert_node!(%{
+          id: "00000000-0000-0000-0000-000000000001",
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :healthy
+        })
+
+      node_b =
+        insert_node!(%{
+          id: "00000000-0000-0000-0000-000000000002",
+          advertise_addr: "10.0.0.2",
+          rpc_port: 50_062,
+          health: :degraded
+        })
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 2,
+          runtime_model_placements: [model_placement("test-model", "v1", 2, 3)]
         )
       )
 
@@ -549,14 +618,222 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         make_status(node_b.id,
           host: "10.0.0.2",
           port: 50_062,
-          active_request_count: 2
+          health: %{ready: true, health_code: "warn", health_message: "degraded"},
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 1,
+          runtime_model_placements: [model_placement("test-model", "v1", 1, 3)]
         )
       )
 
-      request = canonical_request()
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_b.id
+      assert schedule.selected_tier == "loaded"
+      assert schedule.candidate_count == 2
+    end
+
+    test "excludes active loaded node at matching placement capacity" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 2,
+          runtime_model_placements: [model_placement("test-model", "v1", 2, 2)]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request("test-model", "v1")
 
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.node_id == node_b.id
+      assert schedule.selected_tier == "cold"
+      assert schedule.candidate_count == 1
+    end
+
+    test "excludes active loaded node with malformed placement capacity" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 1,
+          runtime_model_placements: [model_placement("other-model", "v1", 0, 2), %{}]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == node_b.id
+      assert schedule.selected_tier == "cold"
+      assert schedule.candidate_count == 1
+    end
+
+    test "excludes active loaded node with duplicate matching placement capacity" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+      duplicate = model_placement("test-model", "v1", 0, 2)
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 1,
+          runtime_model_placements: [duplicate, duplicate]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == node_b.id
+      assert schedule.selected_tier == "cold"
+      assert schedule.candidate_count == 1
+    end
+
+    test "excludes active loaded node with ambiguous matching placement capacity" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 1,
+          runtime_model_placements: [
+            model_placement("test-model", "v1", 1, 2),
+            %{model_ref: %{model_id: "test-model", version: "v1"}}
+          ]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == node_b.id
+      assert schedule.selected_tier == "cold"
+      assert schedule.candidate_count == 1
+    end
+
+    test "excludes active cold node even when status includes spare placement capacity" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          active_request_count: 1,
+          runtime_model_placements: [model_placement("test-model", "v1", 0, 2)]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == node_b.id
+      assert schedule.selected_tier == "cold"
+      assert schedule.candidate_count == 1
+    end
+
+    test "excludes active loaded node in favor of idle cold node when capacity is unknown" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 1
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.node_id == node_b.id
+      assert schedule.selected_tier == "cold"
+      assert schedule.candidate_count == 1
+    end
+
+    test "returns cluster_busy when all joined candidates are active without fallback" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id, host: "10.0.0.1", port: 50_061, active_request_count: 1)
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062, active_request_count: 2)
+      )
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request(), status_client: StubClient)
     end
 
     test "prefers healthy over degraded when tied" do
@@ -1662,7 +1939,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       refute exit_log =~ ":score_call_exit"
     end
 
-    test "does not let cache-affinity outrank active request count" do
+    test "does not let cache-affinity make an active candidate eligible" do
       put_inference(cache_affinity: [enabled: true, max_age_ms: 300_000, max_recent_requests: 8])
 
       id_a = "00000000-0000-0000-0000-000000000001"
@@ -1696,7 +1973,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.node_id == id_a
       assert schedule.cache_affinity_hint_available == true
       assert schedule.cache_affinity_selected_match == false
-      assert schedule.cache_affinity_candidate_count == 1
+      assert schedule.cache_affinity_candidate_count == 0
       assert schedule.selected_cache_tier == "hint_not_selected"
     end
 
@@ -1918,7 +2195,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.memory_admission_tier == "headroom_unknown"
     end
 
-    test "does not let memory admission outrank active load" do
+    test "memory headroom does not make an active candidate eligible" do
       put_inference(memory_admission: [enabled: true])
 
       id_a = "00000000-0000-0000-0000-000000000001"
@@ -1945,6 +2222,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
 
       assert schedule.node_id == id_a
+      assert schedule.candidate_count == 1
       assert schedule.memory_admission_tier == "headroom_unknown"
     end
 
@@ -2495,14 +2773,14 @@ defmodule Orchard.Scheduler.MultiNodeTest do
           health: :degraded
         })
 
-      # Node B has lower request count — should win among degraded peers
+      # Node A is the only idle degraded peer, so it remains eligible.
       stub_probe(
         "10.0.0.1",
         50_061,
         make_status(node_a.id,
           host: "10.0.0.1",
           port: 50_061,
-          active_request_count: 3,
+          active_request_count: 0,
           health: %{ready: true, health_code: "warn", health_message: "degraded"}
         )
       )
@@ -2522,8 +2800,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.strategy == :multi_node
-      assert schedule.node_id == node_b.id
-      assert schedule.candidate_count == 2
+      assert schedule.node_id == node_a.id
+      assert schedule.candidate_count == 1
     end
 
     test "prefers loaded model even when all degraded" do

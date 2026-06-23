@@ -121,6 +121,16 @@ message HostedToolReadiness {
   string readiness_message = 5;
 }
 
+// Per-loaded-model runtime concurrency status. An absent or empty list means
+// model-placement capacity is unknown to the controller and must not be treated
+// as a status-probe error. Controller scheduler use requires exactly one
+// matching entry with active_request_count >= 0 and max_concurrency > 0.
+message RuntimeModelPlacement {
+  ModelRef model_ref = 1;
+  uint32 active_request_count = 2;
+  uint32 max_concurrency = 3;
+}
+
 // M1 assumes one effective worker/runtime path per node for the single-node MVP.
 // Fields 4-5 added for persistent node inventory (M3a Session 1).
 message StatusResponse {
@@ -134,6 +144,7 @@ message StatusResponse {
   repeated RuntimeMemoryBudget runtime_memory_budgets = 8;
   repeated RuntimePrefixCacheStatus runtime_prefix_cache_statuses = 9;
   bool supports_prompt_token_ids = 10;
+  repeated RuntimeModelPlacement runtime_model_placements = 11;
 }
 
 message EnsureModelLoadedRequest {

@@ -86,6 +86,8 @@ the compatibility facade. See `SPEC.md` §3 and §7 for normative behavior.
 
 The node agent owns worker subprocess lifecycle. The worker runtime owns local
 model loading/generation details. Public clients never talk to workers directly.
+Node-agent status is also the live source for loaded-model placement capacity, including per-placement active requests and max concurrency.
+The controller scheduler uses that capacity telemetry to avoid dispatching to full same-model placements.
 
 Cluster RPC and worker RPC are separate contracts:
 

@@ -361,8 +361,14 @@ A scheduler suppression rule for repeatedly failing nodes or placements.
 _Avoid_: Node health
 
 **Queue**:
-A tenant-scoped FIFO wait path used after Admission when no Node is immediately eligible.
+A controller-owned wait path used after Admission when no Node or live placement capacity is immediately eligible.
+Each Tenant keeps FIFO order, and cross-tenant selection uses weighted round-robin.
 _Avoid_: Global backlog, Request lifecycle state
+
+**Cluster Busy**:
+A scheduler outcome meaning joined live candidates exist, but none can currently accept the request because placement capacity is exhausted or unknown for already-active candidates.
+With queue admission enabled, this can return the request to the same Queue deadline; otherwise it is a tenant-facing `503` capacity failure.
+_Avoid_: Transport failure, model not found, queue full
 
 **Cache Affinity**:
 A scheduler warmth hint based on recent request locality and optional prefix-cache fingerprints.
@@ -375,6 +381,11 @@ _Avoid_: Raw prompt fingerprint
 **Runtime Prefix-cache Status**:
 Runtime telemetry about prefix-cache configuration, counters, and bounded HMAC fingerprint presence; counters are observe-only, while fingerprint presence may be used only as a configured non-gating scheduler tie-break hint.
 _Avoid_: Readiness gate, admission gate, scheduler eligibility gate, tenant-facing signal, raw prompt or token data
+
+**Runtime Model Placement**:
+Live node-agent status for one loaded Model Placement, including `active_request_count` and `max_concurrency`.
+The scheduler uses it only to prove same-model placement capacity and to rank by requested-placement load.
+_Avoid_: Catalog State, durable placement record, model manifest metadata
 
 **Prefix-cache Score**:
 A bounded, fail-open score RPC result used only as explicitly configured scheduler tie-break telemetry.

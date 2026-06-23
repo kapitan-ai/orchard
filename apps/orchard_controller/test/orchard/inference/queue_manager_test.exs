@@ -33,6 +33,268 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert :ok = QueueManager.release(queued_grant)
   end
 
+  test "capacity two admits two active requests and queues the third" do
+    with_queue_admission_config(queue_config(capacity: 2, max_wait_ms: 1_000), fn ->
+      assert {:ok, first_grant} = QueueManager.acquire(admission_request("req-capacity2-a"))
+      assert first_grant.queue_result == :immediate
+
+      assert {:ok, second_grant} = QueueManager.acquire(admission_request("req-capacity2-b"))
+      assert second_grant.queue_result == :immediate
+
+      assert {:queued, third_ticket} = QueueManager.acquire(admission_request("req-capacity2-c"))
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, third_grant} = QueueManager.await(third_ticket)
+      assert third_grant.queue_result == :queued
+      assert third_grant.queued_at != nil
+
+      assert :ok = QueueManager.release(second_grant)
+      assert :ok = QueueManager.release(third_grant)
+    end)
+  end
+
+  test "SPEC.md §5.4 cross-tenant weighted round-robin grants one tenant turn at a time" do
+    tenant_a = Ecto.UUID.generate()
+    tenant_b = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(max_wait_ms: 1_000), fn ->
+      assert {:ok, held_grant} =
+               QueueManager.acquire(admission_request("req-held", tenant_id: tenant_a))
+
+      assert {:queued, ticket_a1} =
+               QueueManager.acquire(admission_request("req-a1", tenant_id: tenant_a))
+
+      assert {:queued, ticket_a2} =
+               QueueManager.acquire(admission_request("req-a2", tenant_id: tenant_a))
+
+      assert {:queued, ticket_b1} =
+               QueueManager.acquire(admission_request("req-b1", tenant_id: tenant_b))
+
+      awaiter_a1 = await_and_hold(ticket_a1, :a1)
+      awaiter_a2 = await_and_hold(ticket_a2, :a2)
+      awaiter_b1 = await_and_hold(ticket_b1, :b1)
+
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a1) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a2) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b1) end)
+
+      assert :ok = QueueManager.release(held_grant)
+      assert_receive {:await_result, :a1, {:ok, grant_a1}}, 1_000
+      refute_receive {:await_result, :a2, _}, 20
+      refute_receive {:await_result, :b1, _}, 20
+
+      assert :ok = QueueManager.release(grant_a1)
+      assert_receive {:await_result, :b1, {:ok, grant_b1}}, 1_000
+      refute_receive {:await_result, :a2, _}, 20
+
+      assert :ok = QueueManager.release(grant_b1)
+      assert_receive {:await_result, :a2, {:ok, grant_a2}}, 1_000
+
+      assert :ok = QueueManager.release(grant_a2)
+      stop_awaiter(awaiter_a1)
+      stop_awaiter(awaiter_a2)
+      stop_awaiter(awaiter_b1)
+    end)
+  end
+
+  test "SPEC.md §5.4 tenant FIFO blocks later same-tenant lane while older request waits" do
+    tenant_id = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(max_wait_ms: 1_000), fn ->
+      assert {:ok, model_a_grant} =
+               QueueManager.acquire(
+                 admission_request("req-model-a-held",
+                   tenant_id: tenant_id,
+                   model_id: "queue-model-a"
+                 )
+               )
+
+      assert {:ok, model_b_grant} =
+               QueueManager.acquire(
+                 admission_request("req-model-b-held",
+                   tenant_id: tenant_id,
+                   model_id: "queue-model-b"
+                 )
+               )
+
+      assert {:queued, ticket_a} =
+               QueueManager.acquire(
+                 admission_request("req-model-a-queued",
+                   tenant_id: tenant_id,
+                   model_id: "queue-model-a"
+                 )
+               )
+
+      assert {:queued, ticket_b} =
+               QueueManager.acquire(
+                 admission_request("req-model-b-queued",
+                   tenant_id: tenant_id,
+                   model_id: "queue-model-b"
+                 )
+               )
+
+      awaiter_a = await_and_hold(ticket_a, :same_tenant_a)
+      awaiter_b = await_and_hold(ticket_b, :same_tenant_b)
+
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b) end)
+
+      assert :ok = QueueManager.release(model_b_grant)
+      refute_receive {:await_result, :same_tenant_b, _}, 50
+
+      assert :ok = QueueManager.release(model_a_grant)
+      assert_receive {:await_result, :same_tenant_a, {:ok, grant_a}}, 1_000
+      assert_receive {:await_result, :same_tenant_b, {:ok, grant_b}}, 1_000
+
+      assert :ok = QueueManager.release(grant_a)
+      assert :ok = QueueManager.release(grant_b)
+      stop_awaiter(awaiter_a)
+      stop_awaiter(awaiter_b)
+    end)
+  end
+
+  test "SPEC.md §5.4 weighted round-robin honors configured tenant weights" do
+    tenant_a = Ecto.UUID.generate()
+    tenant_b = Ecto.UUID.generate()
+
+    config =
+      queue_config(
+        max_wait_ms: 1_000,
+        tenant_weights: %{tenant_a => 1, tenant_b => 2}
+      )
+
+    with_queue_admission_config(config, fn ->
+      assert {:ok, held_grant} =
+               QueueManager.acquire(admission_request("req-weight-held", tenant_id: tenant_a))
+
+      assert {:queued, ticket_a1} =
+               QueueManager.acquire(admission_request("req-weight-a1", tenant_id: tenant_a))
+
+      assert {:queued, ticket_a2} =
+               QueueManager.acquire(admission_request("req-weight-a2", tenant_id: tenant_a))
+
+      assert {:queued, ticket_b1} =
+               QueueManager.acquire(admission_request("req-weight-b1", tenant_id: tenant_b))
+
+      assert {:queued, ticket_b2} =
+               QueueManager.acquire(admission_request("req-weight-b2", tenant_id: tenant_b))
+
+      awaiter_a1 = await_and_hold(ticket_a1, :weight_a1)
+      awaiter_a2 = await_and_hold(ticket_a2, :weight_a2)
+      awaiter_b1 = await_and_hold(ticket_b1, :weight_b1)
+      awaiter_b2 = await_and_hold(ticket_b2, :weight_b2)
+
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a1) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a2) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b1) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b2) end)
+
+      assert :ok = QueueManager.release(held_grant)
+      assert_receive {:await_result, :weight_a1, {:ok, grant_a1}}, 1_000
+
+      assert :ok = QueueManager.release(grant_a1)
+      assert_receive {:await_result, :weight_b1, {:ok, grant_b1}}, 1_000
+
+      assert :ok = QueueManager.release(grant_b1)
+      assert_receive {:await_result, :weight_b2, {:ok, grant_b2}}, 1_000
+      refute_receive {:await_result, :weight_a2, _}, 20
+
+      assert :ok = QueueManager.release(grant_b2)
+      assert_receive {:await_result, :weight_a2, {:ok, grant_a2}}, 1_000
+
+      assert :ok = QueueManager.release(grant_a2)
+      stop_awaiter(awaiter_a1)
+      stop_awaiter(awaiter_a2)
+      stop_awaiter(awaiter_b1)
+      stop_awaiter(awaiter_b2)
+    end)
+  end
+
+  test "SPEC.md §5.4 pre-await queued work prevents same-lane immediate bypass" do
+    tenant_a = Ecto.UUID.generate()
+    tenant_b = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(max_wait_ms: 1_000), fn ->
+      assert {:ok, held_grant} =
+               QueueManager.acquire(admission_request("req-pre-await-held", tenant_id: tenant_a))
+
+      assert {:queued, ticket_a} =
+               QueueManager.acquire(admission_request("req-pre-await-a", tenant_id: tenant_a))
+
+      assert :ok = QueueManager.release(held_grant)
+
+      assert {:queued, ticket_b} =
+               QueueManager.acquire(admission_request("req-pre-await-b", tenant_id: tenant_b))
+
+      awaiter_a = await_and_hold(ticket_a, :pre_await_a)
+      awaiter_b = await_and_hold(ticket_b, :pre_await_b)
+
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b) end)
+
+      assert_receive {:await_result, :pre_await_a, {:ok, grant_a}}, 1_000
+      refute_receive {:await_result, :pre_await_b, _}, 20
+
+      assert :ok = QueueManager.release(grant_a)
+      assert_receive {:await_result, :pre_await_b, {:ok, grant_b}}, 1_000
+
+      assert :ok = QueueManager.release(grant_b)
+      stop_awaiter(awaiter_a)
+      stop_awaiter(awaiter_b)
+    end)
+  end
+
+  test "requeue defers an active grant behind the lane retry interval" do
+    config = queue_config(max_wait_ms: 500, poll_interval_ms: 200)
+
+    with_queue_admission_config(config, fn ->
+      request = admission_request("req-requeue")
+
+      assert {:ok, grant} = QueueManager.acquire(request)
+      assert {:queued, ticket} = QueueManager.requeue(grant, request)
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+      refute Task.yield(awaiter, 50)
+
+      assert {:ok, requeued_grant} = Task.await(awaiter, 1_000)
+      assert requeued_grant.queue_result == :queued
+      assert requeued_grant.queue_wait_ms >= config[:poll_interval_ms]
+
+      assert :ok = QueueManager.release(grant)
+      assert :ok = QueueManager.release(requeued_grant)
+    end)
+  end
+
+  test "SPEC.md §5.4 requeued active grants preserve original same-tenant FIFO order" do
+    tenant_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 2, max_wait_ms: 1_000, poll_interval_ms: 50)
+
+    with_queue_admission_config(config, fn ->
+      request_a = admission_request("req-requeue-fifo-a", tenant_id: tenant_id)
+      request_b = admission_request("req-requeue-fifo-b", tenant_id: tenant_id)
+
+      assert {:ok, grant_a} = QueueManager.acquire(request_a)
+      assert {:ok, grant_b} = QueueManager.acquire(request_b)
+
+      assert {:queued, ticket_a} = QueueManager.requeue(grant_a, request_a)
+      assert {:queued, ticket_b} = QueueManager.requeue(grant_b, request_b)
+
+      awaiter_a = Task.async(fn -> QueueManager.await(ticket_a) end)
+
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a) end)
+      assert {:ok, requeued_grant_a} = Task.await(awaiter_a, 1_000)
+
+      awaiter_b = Task.async(fn -> QueueManager.await(ticket_b) end)
+
+      assert {:ok, requeued_grant_b} = Task.await(awaiter_b, 1_000)
+
+      assert requeued_grant_a.queued_at == ticket_a.queued_at
+      assert requeued_grant_b.queued_at == ticket_b.queued_at
+      assert :ok = QueueManager.release(requeued_grant_a)
+      assert :ok = QueueManager.release(requeued_grant_b)
+    end)
+  end
+
   test "SPEC.md §3.6 immediate grant holder death releases lane before explicit release" do
     db_request = create_request!("req_queue_immediate_holder_death", state: :admitted)
 
@@ -223,7 +485,7 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert :ok = QueueManager.release(grant)
   end
 
-  test "SPEC.md §3.6 queue timeout persistence failure retains queue until retry succeeds" do
+  test "SPEC.md §3.6 queue timeout persistence retry does not stall other tenants" do
     request_id = Ecto.UUID.generate()
     public_id = "req_queue_timeout_persistence_retry"
 
@@ -253,7 +515,9 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert queue_entry_terminal_pending?(timeout_ticket)
 
     assert :ok = QueueManager.release(held_grant)
-    refute Task.yield(next_awaiter, 100)
+    assert {:ok, next_grant} = Task.await(next_awaiter, 2_000)
+    assert next_grant.queue_result == :queued
+    assert queue_entry_terminal_pending?(timeout_ticket)
 
     db_request = insert_request_with_id!(request_id, public_id, state: :queued)
 
@@ -265,8 +529,6 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert request.error_code == "queue_timeout"
     assert_queue_metadata(request, "queue_timeout", queued?: true)
 
-    assert {:ok, next_grant} = Task.await(next_awaiter, 2_000)
-    assert next_grant.queue_result == :queued
     assert :ok = QueueManager.release(next_grant)
   end
 
@@ -380,7 +642,7 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert :ok = QueueManager.release(grant)
   end
 
-  test "SPEC.md §3.6 queued disconnect persistence failure retains queue until retry succeeds" do
+  test "SPEC.md §3.6 queued disconnect persistence retry does not stall other tenants" do
     request_id = Ecto.UUID.generate()
     public_id = "req_queue_disconnect_persistence_retry"
 
@@ -413,7 +675,9 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert wait_until(fn -> queue_entry_terminal_pending?(disconnect_ticket) end)
 
     assert :ok = QueueManager.release(held_grant)
-    refute Task.yield(next_awaiter, 100)
+    assert {:ok, next_grant} = Task.await(next_awaiter, 2_000)
+    assert next_grant.queue_result == :queued
+    assert queue_entry_terminal_pending?(disconnect_ticket)
 
     db_request = insert_request_with_id!(request_id, public_id, state: :queued)
 
@@ -428,8 +692,6 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert request.error_code == "request_caller_disconnect"
     assert_queue_metadata(request, "interrupted_before_dispatch", queued?: true)
 
-    assert {:ok, next_grant} = Task.await(next_awaiter, 2_000)
-    assert next_grant.queue_result == :queued
     assert :ok = QueueManager.release(next_grant)
   end
 
@@ -1134,6 +1396,21 @@ defmodule Orchard.Inference.QueueManagerTest do
     )
   end
 
+  defp with_queue_admission_config(queue_admission_config, fun) do
+    previous = Application.fetch_env!(:orchard_controller, :inference)
+
+    previous
+    |> Keyword.put(:queue_admission, queue_admission_config)
+    |> then(&Application.put_env(:orchard_controller, :inference, &1))
+
+    try do
+      fun.()
+    after
+      QueueManager.reset()
+      Application.put_env(:orchard_controller, :inference, previous)
+    end
+  end
+
   defp wait_until(fun, attempts \\ 50)
   defp wait_until(_fun, 0), do: false
 
@@ -1144,6 +1421,25 @@ defmodule Orchard.Inference.QueueManagerTest do
       Process.sleep(20)
       wait_until(fun, attempts - 1)
     end
+  end
+
+  defp await_and_hold(ticket, label) do
+    parent = self()
+
+    spawn(fn ->
+      result = QueueManager.await(ticket)
+      send(parent, {:await_result, label, result})
+
+      receive do
+        :stop -> :ok
+      after
+        2_000 -> :ok
+      end
+    end)
+  end
+
+  defp stop_awaiter(pid) do
+    send(pid, :stop)
   end
 
   defp queue_entry_awaiting?(ticket, manager \\ QueueManager) do
