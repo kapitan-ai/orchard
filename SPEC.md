@@ -942,6 +942,11 @@ When no node is immediately eligible:
 * max wait defaults to `3000 ms`
 * max queued requests per tenant defaults to `32`
 
+With controller queue admission enabled, a scheduler `cluster_busy` result observed after a static queue grant SHALL be treated as queue-waitable live placement capacity exhaustion.
+The controller SHALL return the request to the same controller queue lane for the requested model/version under the original max queue wait budget instead of extending the deadline.
+If no eligible live placement appears before that deadline, the terminal public outcome SHALL be `queue_timeout`.
+With controller queue admission disabled, `cluster_busy` remains an immediate admission failure.
+
 Queue discipline:
 
 * one FIFO queue per tenant

@@ -53,6 +53,29 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "requeue defers an active grant behind the lane retry interval" do
+    config = queue_config(max_wait_ms: 500, poll_interval_ms: 50)
+
+    with_queue_admission_config(config, fn ->
+      request = admission_request("req-requeue")
+
+      assert {:ok, grant} = QueueManager.acquire(request)
+      assert {:queued, ticket} = QueueManager.requeue(grant, request)
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+      refute_receive {:unexpected_immediate_regrant, _}, 20
+      refute Task.yield(awaiter, 0)
+
+      assert {:ok, requeued_grant} = Task.await(awaiter, 500)
+      assert requeued_grant.queue_result == :queued
+      assert requeued_grant.queue_wait_ms >= config[:poll_interval_ms]
+
+      assert :ok = QueueManager.release(grant)
+      assert :ok = QueueManager.release(requeued_grant)
+    end)
+  end
+
   test "SPEC.md §3.6 immediate grant holder death releases lane before explicit release" do
     db_request = create_request!("req_queue_immediate_holder_death", state: :admitted)
 

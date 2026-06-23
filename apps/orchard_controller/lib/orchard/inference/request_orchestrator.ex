@@ -297,14 +297,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp acquire_queue_grant(db_request, canonical, caller) do
-    request = %{
-      request_id: db_request.id,
-      public_id: db_request.public_id,
-      tenant_id: db_request.tenant_id,
-      model_id: canonical.model_ref.model_id,
-      version: canonical.model_ref.version,
-      caller_pid: caller
-    }
+    request = queue_admission_request(db_request, canonical, caller)
 
     case Inference.queue_manager().acquire(request) do
       {:ok, %QueueManager.Grant{} = grant} ->
@@ -316,6 +309,17 @@ defmodule Orchard.Inference.RequestOrchestrator do
       {:error, reason, metadata} ->
         persist_queue_terminal_metadata(db_request, metadata, reason)
     end
+  end
+
+  defp queue_admission_request(db_request, canonical, caller) do
+    %{
+      request_id: db_request.id,
+      public_id: db_request.public_id,
+      tenant_id: db_request.tenant_id,
+      model_id: canonical.model_ref.model_id,
+      version: canonical.model_ref.version,
+      caller_pid: caller
+    }
   end
 
   defp await_queued_grant(db_request, ticket) do
@@ -337,10 +341,17 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp record_queued_admission(db_request, ticket) do
-    with :ok <- advance_fsm(db_request.id, :queued),
+    with :ok <- maybe_advance_queued(db_request.id),
          {:ok, _request} <-
            Requests.record_schedule(db_request, QueueManager.queued_metadata(ticket)) do
       :ok
+    end
+  end
+
+  defp maybe_advance_queued(request_id) do
+    case Requests.get_request!(request_id).state do
+      :queued -> :ok
+      _other -> advance_fsm(request_id, :queued)
     end
   end
 
@@ -400,9 +411,39 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
-    do_dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts)
+    case do_dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
+      {:error, :cluster_busy} ->
+        requeue_after_cluster_busy(db_request, canonical, model, grant, execution_opts)
+
+      result ->
+        result
+    end
   after
     Inference.queue_manager().release(grant)
+  end
+
+  defp requeue_after_cluster_busy(db_request, canonical, model, grant, execution_opts) do
+    request = queue_admission_request(db_request, canonical, execution_opts.caller)
+
+    case Inference.queue_manager().requeue(grant, request) do
+      {:queued, %QueueManager.Ticket{} = ticket} ->
+        with {:ok, next_grant} <- await_queued_grant(db_request, ticket) do
+          dispatch_if_queue_request_live(db_request, canonical, model, next_grant, execution_opts)
+        end
+
+      {:error, :request_caller_disconnect, metadata} ->
+        with {:ok, _request} <- Requests.record_schedule(db_request, metadata),
+             :ok <-
+               terminalize_pre_dispatch_disconnect(
+                 db_request,
+                 execution_opts.terminal_persister
+               ) do
+          {:error, {:admission_already_terminalized, :request_caller_disconnect}}
+        end
+
+      {:error, reason, metadata} ->
+        handle_queue_await_error(db_request, metadata, reason, false)
+    end
   end
 
   defp do_dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do

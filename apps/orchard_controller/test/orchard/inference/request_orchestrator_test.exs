@@ -327,6 +327,29 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler do
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubLiveCapacityScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request) do
+    owner = Application.fetch_env!(:orchard_controller, :request_orchestrator_live_capacity_owner)
+    send(owner, {:live_capacity_schedule_attempt, self(), request.public_id})
+
+    receive do
+      {:live_capacity_schedule_reply, reply} ->
+        reply
+    after
+      1_000 ->
+        {:error, :cluster_busy}
+    end
+  end
+
+  def schedule_success(%CanonicalRequest{} = request),
+    do: StubMultiNodeScheduler.schedule(request)
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.CapturingRuntimeAdapter do
   @behaviour Orchard.Node.RuntimeAdapter
 
@@ -497,6 +520,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     only: [assert_queue_metadata: 2, assert_queue_metadata: 3]
 
   alias Orchard.Inference.RequestOrchestratorTest.StubCacheAffinityScheduler
+  alias Orchard.Inference.RequestOrchestratorTest.StubLiveCapacityScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubMemoryScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubMemoryTierOnlyScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubMemoryUnavailableScheduler
@@ -531,6 +555,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     previous_pre_await_queue_result =
       Application.get_env(:orchard_controller, :request_orchestrator_pre_await_queue_result)
 
+    previous_live_capacity_owner =
+      Application.get_env(:orchard_controller, :request_orchestrator_live_capacity_owner)
+
     if Process.whereis(:request_orchestrator_test_pid) do
       Process.unregister(:request_orchestrator_test_pid)
     end
@@ -546,6 +573,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       Application.put_env(:orchard_node_agent, :runtime, previous_runtime)
       restore_runtime_events(previous_runtime_events)
       restore_pre_await_queue_result(previous_pre_await_queue_result)
+      restore_live_capacity_owner(previous_live_capacity_owner)
       QueueManager.reset()
       ModelManager.reset()
       Enum.each(bundle.cache_paths, &File.rm_rf/1)
@@ -1278,6 +1306,74 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.state == :cancelled
     assert request.error_code == "request_caller_disconnect"
     assert_queue_metadata(request, "interrupted_before_dispatch", granted?: true)
+    refute :scheduled in request_event_states(request)
+
+    assert {:ok, next_grant} = hold_queue_lane(canonical)
+    assert :ok = QueueManager.release(next_grant)
+  end
+
+  test "queue admission requeues post-grant cluster_busy then schedules when live capacity returns",
+       %{bundle: bundle} do
+    put_queue_admission_config(enabled: true, max_wait_ms: 1_000, poll_interval_ms: 150)
+    put_live_capacity_scheduler_config()
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-live-capacity-requeue")
+    canonical = canonical_request("request-orchestrator-live-capacity-requeue", stream?: false)
+    public_id = canonical.public_id
+
+    task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
+
+    assert {:live_capacity_schedule_attempt, scheduler_pid, ^public_id} = live_capacity_attempt()
+
+    send(scheduler_pid, {:live_capacity_schedule_reply, {:error, :cluster_busy}})
+    assert wait_until(fn -> request_state(canonical.public_id) == :queued end)
+    refute_receive {:captured_execute_request, _request}, 50
+
+    queued_request = Requests.get_request_by_public_id(canonical.public_id)
+    assert_queue_metadata(queued_request, "queued", queued?: true)
+    refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
+
+    assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
+             live_capacity_attempt()
+
+    assert {:ok, schedule} = StubLiveCapacityScheduler.schedule_success(canonical)
+
+    send(retry_scheduler_pid, {:live_capacity_schedule_reply, {:ok, schedule}})
+
+    assert_receive {:captured_execute_request, _request}, 500
+    assert {:ok, ^canonical, events} = Task.await(task, 2_000)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    states = request_event_states(request)
+
+    assert state_before?(states, :admitted, :queued)
+    assert state_before?(states, :queued, :scheduled)
+    assert_queue_metadata(request, "queued", queued?: true, granted?: true)
+
+    assert {:ok, next_grant} = hold_queue_lane(canonical)
+    assert :ok = QueueManager.release(next_grant)
+  end
+
+  test "queue admission times out post-grant cluster_busy without dispatching", %{bundle: bundle} do
+    put_queue_admission_config(enabled: true, max_wait_ms: 60, poll_interval_ms: 10)
+    put_live_capacity_scheduler_config()
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-live-capacity-timeout")
+    canonical = canonical_request("request-orchestrator-live-capacity-timeout", stream?: false)
+
+    task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
+    assert {:error, :queue_timeout} = reply_cluster_busy_until_done(task, canonical.public_id)
+    refute_receive {:captured_execute_request, _request}
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+
+    assert request.state == :timed_out
+    assert request.http_status == 504
+    assert request.error_code == "queue_timeout"
+    assert_queue_metadata(request, "queue_timeout", queued?: true)
     refute :scheduled in request_event_states(request)
 
     assert {:ok, next_grant} = hold_queue_lane(canonical)
@@ -2463,6 +2559,15 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     Application.put_env(:orchard_controller, :inference, inference)
   end
 
+  defp put_live_capacity_scheduler_config do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.merge(scheduler_impl: StubLiveCapacityScheduler)
+
+    Application.put_env(:orchard_controller, :inference, inference)
+    Application.put_env(:orchard_controller, :request_orchestrator_live_capacity_owner, self())
+  end
+
   defp put_cache_affinity_scheduler_config do
     inference =
       Application.fetch_env!(:orchard_controller, :inference)
@@ -2646,6 +2751,41 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     end
   end
 
+  defp live_capacity_attempt do
+    receive do
+      {:live_capacity_schedule_attempt, _scheduler_pid, _public_id} = attempt -> attempt
+    after
+      500 -> flunk("expected live capacity scheduler attempt")
+    end
+  end
+
+  defp reply_cluster_busy_until_done(task, public_id) do
+    deadline_ms = System.monotonic_time(:millisecond) + 1_000
+    reply_cluster_busy_until_done(task, public_id, deadline_ms)
+  end
+
+  defp reply_cluster_busy_until_done(task, public_id, deadline_ms) do
+    if System.monotonic_time(:millisecond) > deadline_ms do
+      flunk("request did not complete while scheduler kept returning cluster_busy")
+    end
+
+    case Task.yield(task, 0) do
+      {:ok, result} ->
+        result
+
+      nil ->
+        receive do
+          {:live_capacity_schedule_attempt, scheduler_pid, ^public_id} ->
+            send(scheduler_pid, {:live_capacity_schedule_reply, {:error, :cluster_busy}})
+        after
+          20 ->
+            :ok
+        end
+
+        reply_cluster_busy_until_done(task, public_id, deadline_ms)
+    end
+  end
+
   defp manager_restarted?(manager, previous_pid) do
     case GenServer.whereis(manager) do
       pid when is_pid(pid) and pid != previous_pid -> true
@@ -2800,6 +2940,17 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
         :orchard_controller,
         :request_orchestrator_pre_await_queue_result,
         result
+      )
+
+  defp restore_live_capacity_owner(nil),
+    do: Application.delete_env(:orchard_controller, :request_orchestrator_live_capacity_owner)
+
+  defp restore_live_capacity_owner(owner),
+    do:
+      Application.put_env(
+        :orchard_controller,
+        :request_orchestrator_live_capacity_owner,
+        owner
       )
 
   defp stage_test_bundle! do
