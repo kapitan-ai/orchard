@@ -1009,6 +1009,7 @@ Node concurrency is not exceeded only when live `StatusResponse.active_request_c
 If `max_concurrency` is omitted or zero, schedulers SHALL interpret node capacity as `1`.
 Model placement concurrency is evaluated independently through a valid matching `RuntimeModelPlacement`.
 Both node-level aggregate capacity and requested-placement capacity must remain available for a loaded candidate to be eligible.
+Scheduler decisions MAY include `queue_lane_capacity` only when live node-level capacity leaves room for the requested lane; omitted `queue_lane_capacity` means the controller queue must use its conservative configured capacity.
 
 ### 5.6 Candidate tiers
 
@@ -1816,7 +1817,7 @@ All public inference errors SHALL use OpenAI-style envelope:
 * `404` model not found
 * `409` idempotency conflict
 * `429` quota exceeded or queue full
-* `503` cluster busy / no eligible node
+* `503` cluster busy / model busy / no eligible node
 * `504` request timeout
 
 ---
@@ -2378,6 +2379,8 @@ Runtime prefix-cache wire semantics:
 
 Runtime capacity wire semantics:
 
+* `WorkerStatusResponse.active_request_count` SHALL report active `Generate` calls in that worker process
+* `WorkerStatusResponse.max_concurrency` SHALL report the worker's effective overlapping `Generate` capacity; omitted or zero values SHALL be treated as worker capacity `1` by the node agent
 * `StatusResponse.active_request_count` SHALL report aggregate active runtime requests across all loaded models on the node
 * `StatusResponse.max_concurrency` SHALL report aggregate runtime request capacity for the node
 * omitted or zero `StatusResponse.max_concurrency` SHALL mean aggregate capacity is unknown or legacy; schedulers SHALL treat it conservatively as node capacity `1`

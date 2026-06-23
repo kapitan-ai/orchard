@@ -24,6 +24,9 @@ defmodule Orchard.Scheduler.MultiNode do
   Returns `{:error, :cluster_busy}` when live probes joined to persisted schedulable
   nodes, but every joined candidate has exhausted capacity or is an active
   loaded-model candidate with unknown placement capacity.
+
+  Successful schedules include `:queue_lane_capacity`, derived only from loaded
+  candidates whose live node and placement capacity leave room.
   """
 
   alias Orchard.CanonicalRequest

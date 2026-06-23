@@ -130,7 +130,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   @doc """
   Dispatch an inference request to a node and stream events back to the caller.
 
-  `schedule` is the map returned by `SingleNode.schedule/1` containing:
+  `schedule` is the map returned by the configured scheduler containing:
   - `:runtime_client_target` — `[host: ..., port: ...]` for the node-agent
   - `:request_id` — the canonical request ID
   - `:request_timeout_ms` — maximum wall-clock time for the entire dispatch

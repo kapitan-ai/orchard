@@ -370,6 +370,11 @@ A scheduler outcome meaning joined live candidates exist, but none can currently
 With queue admission enabled, this can return the request to the same Queue deadline; otherwise it is a tenant-facing `503` capacity failure.
 _Avoid_: Transport failure, model not found, queue full
 
+**Model Busy**:
+A runtime or single-node scheduler outcome meaning the requested model path cannot accept the request because live node or placement request capacity is exhausted.
+It maps to a tenant-facing `503` capacity failure and is separate from tenant quota or queue-full admission failures.
+_Avoid_: Cluster Busy, quota exceeded, model not found
+
 **Cache Affinity**:
 A scheduler warmth hint based on recent request locality and optional prefix-cache fingerprints.
 _Avoid_: Placement residency

@@ -80,6 +80,10 @@ defmodule Orchard.Node.WorkerProcess do
   @doc """
   Returns combined worker status: local process state + adapter health.
 
+  The status map includes `:active_request_count` and, when known from the
+  adapter, `:max_concurrency` for node-level and placement-level capacity
+  reporting.
+
   Returns `{:ok, status_map}` or `{:error, reason}`.
   Safe to call from ModelManager — never raises or crashes.
   """

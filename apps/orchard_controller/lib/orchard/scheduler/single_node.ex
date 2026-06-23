@@ -1,6 +1,10 @@
 defmodule Orchard.Scheduler.SingleNode do
   @moduledoc """
   Injectable single-node scheduler and fallback for source-dev runtime targets.
+
+  When status probing succeeds, the scheduler uses live node and placement
+  capacity to advertise `:queue_lane_capacity` or return `{:error, :model_busy}`
+  for proven saturation. Probe failures preserve the legacy direct schedule.
   """
 
   alias Orchard.CanonicalRequest
@@ -30,6 +34,13 @@ defmodule Orchard.Scheduler.SingleNode do
   The 1-arity version uses the configured singular `runtime_client_target`.
   The 2-arity version accepts an explicit target, used by `MultiNode` to
   preserve the actual plural target during fallback.
+  The 3-arity version accepts test seams for live status probing.
+
+  Options:
+  - `:probe_status?` - set to `false` to skip live capacity probing
+  - `:status_client` - module implementing `connect/1`, `status/2`, and
+    `disconnect/1` (default: `GrpcNodeRuntimeClient`)
+  - `:status_timeout_ms` - timeout for the status probe
   """
   def default_schedule(%CanonicalRequest{} = request) do
     default_schedule(request, target())
