@@ -92,43 +92,34 @@ defmodule Orchard.Scheduler.SingleNode do
   end
 
   defp capacity_schedule(schedule, request, response) do
-    case runtime_model_placement_for(response, request.model_ref) do
+    case model_placement_capacity_for(response, request.model_ref) do
       nil ->
         schedule_unless_node_busy(schedule, response)
 
-      placement ->
-        placement_capacity_schedule(schedule, response, placement)
+      capacity ->
+        placement_capacity_schedule(schedule, response, capacity)
     end
   end
 
-  defp placement_capacity_schedule(schedule, response, placement) do
-    if loaded_placement_state?(placement_state(placement)) do
-      active_request_count =
-        non_negative_integer(placement_value(placement, :active_request_count), 0)
+  defp placement_capacity_schedule(schedule, response, %{
+         active_request_count: active_request_count,
+         max_concurrency: max_concurrency
+       }) do
+    effective_max_concurrency =
+      effective_model_capacity(response, active_request_count, max_concurrency)
 
-      max_concurrency = placement_max_concurrency(placement)
+    cond do
+      active_request_count < effective_max_concurrency ->
+        {:ok, Map.put(schedule, :queue_lane_capacity, effective_max_concurrency)}
 
-      effective_max_concurrency =
-        effective_model_capacity(response, active_request_count, max_concurrency)
+      active_request_count == 0 and node_concurrency_exhausted?(response) ->
+        {:error, :model_busy}
 
-      cond do
-        max_concurrency == 0 ->
-          {:error, :model_busy}
+      max_concurrency > 1 ->
+        {:error, :model_busy}
 
-        active_request_count < effective_max_concurrency ->
-          {:ok, Map.put(schedule, :queue_lane_capacity, effective_max_concurrency)}
-
-        active_request_count == 0 and node_concurrency_exhausted?(response) ->
-          {:error, :model_busy}
-
-        max_concurrency > 1 ->
-          {:error, :model_busy}
-
-        true ->
-          {:ok, schedule}
-      end
-    else
-      schedule_unless_node_busy(schedule, response)
+      true ->
+        {:ok, schedule}
     end
   end
 
@@ -136,10 +127,14 @@ defmodule Orchard.Scheduler.SingleNode do
     if node_concurrency_exhausted?(response), do: {:error, :model_busy}, else: {:ok, schedule}
   end
 
-  defp runtime_model_placement_for(response, %CanonicalRequest.ModelRef{} = model_ref) do
+  defp model_placement_capacity_for(response, %CanonicalRequest.ModelRef{} = model_ref) do
     response
     |> response_list(:runtime_model_placements)
-    |> Enum.find(&runtime_model_placement_matches?(&1, model_ref))
+    |> matching_model_placements(model_ref)
+    |> case do
+      [placement] -> valid_model_placement_capacity(placement)
+      _none_or_ambiguous -> nil
+    end
   end
 
   defp response_list(response, key) do
@@ -149,7 +144,10 @@ defmodule Orchard.Scheduler.SingleNode do
     end
   end
 
-  defp runtime_model_placement_matches?(placement, model_ref) when is_map(placement) do
+  defp matching_model_placements(placements, model_ref) when is_list(placements),
+    do: Enum.filter(placements, &model_placement_matches?(&1, model_ref))
+
+  defp model_placement_matches?(placement, model_ref) when is_map(placement) do
     case placement_value(placement, :model_ref) do
       %{model_id: model_id, version: version}
       when is_binary(model_id) and is_binary(version) ->
@@ -164,16 +162,21 @@ defmodule Orchard.Scheduler.SingleNode do
     end
   end
 
-  defp runtime_model_placement_matches?(_placement, _model_ref), do: false
+  defp model_placement_matches?(_placement, _model_ref), do: false
 
-  defp placement_state(placement), do: placement_value(placement, :placement_state)
+  defp valid_model_placement_capacity(placement) when is_map(placement) do
+    active_request_count = placement_value(placement, :active_request_count)
+    max_concurrency = placement_value(placement, :max_concurrency)
 
-  defp placement_max_concurrency(placement) do
-    case placement_value(placement, :max_concurrency) do
-      capacity when is_integer(capacity) and capacity > 0 -> capacity
-      _other -> 0
+    if is_integer(active_request_count) and active_request_count >= 0 and
+         is_integer(max_concurrency) and max_concurrency > 0 do
+      %{active_request_count: active_request_count, max_concurrency: max_concurrency}
+    else
+      nil
     end
   end
+
+  defp valid_model_placement_capacity(_placement), do: nil
 
   defp placement_value(placement, key) do
     Map.get(placement, key, Map.get(placement, to_string(key)))
@@ -197,12 +200,6 @@ defmodule Orchard.Scheduler.SingleNode do
   defp response_value(response, key) do
     Map.get(response, key, Map.get(response, to_string(key)))
   end
-
-  defp loaded_placement_state?(state)
-       when state in [:PLACEMENT_STATE_LOADED, "PLACEMENT_STATE_LOADED", 7],
-       do: true
-
-  defp loaded_placement_state?(_state), do: false
 
   defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
   defp positive_integer(_value, default), do: default

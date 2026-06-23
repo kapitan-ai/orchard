@@ -179,8 +179,10 @@ defmodule Orchard.Scheduler.SingleNodeTest do
              )
   end
 
-  test "SPEC.md §5.5 returns model_busy when single-node placement capacity is invalid" do
+  test "SPEC.md §5.5 treats invalid single-node placement capacity as unknown" do
     Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 4,
       runtime_model_placements: [
         placement("single-invalid-capacity-model", "v1",
           active_request_count: 0,
@@ -189,12 +191,59 @@ defmodule Orchard.Scheduler.SingleNodeTest do
       ]
     })
 
-    assert {:error, :model_busy} =
+    assert {:ok, schedule} =
              SingleNode.default_schedule(
                canonical_request("single-invalid-capacity-model"),
                [host: "127.0.0.1", port: 50_071],
                status_client: StubClient
              )
+
+    assert schedule.strategy == :single_node
+    refute Map.has_key?(schedule, :queue_lane_capacity)
+  end
+
+  test "SPEC.md §5.5 treats duplicate single-node placement capacity as unknown" do
+    duplicate =
+      placement("single-duplicate-capacity-model", "v1",
+        active_request_count: 0,
+        max_concurrency: 4
+      )
+
+    Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 4,
+      runtime_model_placements: [duplicate, duplicate]
+    })
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request("single-duplicate-capacity-model"),
+               [host: "127.0.0.1", port: 50_071],
+               status_client: StubClient
+             )
+
+    assert schedule.strategy == :single_node
+    refute Map.has_key?(schedule, :queue_lane_capacity)
+  end
+
+  test "SPEC.md §5.5 treats malformed matching single-node placement capacity as unknown" do
+    Process.put(:single_node_status, %{
+      active_request_count: 0,
+      max_concurrency: 4,
+      runtime_model_placements: [
+        %{model_ref: %{model_id: "single-malformed-capacity-model", version: "v1"}}
+      ]
+    })
+
+    assert {:ok, schedule} =
+             SingleNode.default_schedule(
+               canonical_request("single-malformed-capacity-model"),
+               [host: "127.0.0.1", port: 50_071],
+               status_client: StubClient
+             )
+
+    assert schedule.strategy == :single_node
+    refute Map.has_key?(schedule, :queue_lane_capacity)
   end
 
   test "keeps conservative queue capacity when single-node status lacks placement capacity" do
@@ -225,7 +274,6 @@ defmodule Orchard.Scheduler.SingleNodeTest do
   defp placement(model_id, version, attrs) do
     %{
       model_ref: %{model_id: model_id, version: version},
-      placement_state: :PLACEMENT_STATE_LOADED,
       active_request_count: Keyword.fetch!(attrs, :active_request_count),
       max_concurrency: Keyword.fetch!(attrs, :max_concurrency)
     }
