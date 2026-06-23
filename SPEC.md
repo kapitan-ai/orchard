@@ -943,9 +943,9 @@ When a request cannot be granted immediately because no node or live placement c
 * request enters tenant FIFO queue
 * max wait defaults to `3000 ms`
 * max queued requests per tenant defaults to `32`
-* max active requests per tenant defaults to unlimited unless a resolved policy supplies `max_active_requests`
+* max active requests per tenant defaults to unlimited unless controller queue configuration or a resolved policy supplies a cap
 
-When `resolved_policy.max_active_requests` is present, controller queue admission SHALL queue same-tenant requests once active grants for that tenant reach the limit, even if the requested model/version lane or a placement still has spare capacity.
+When `resolved_policy.max_active_requests` or controller queue configuration supplies a tenant active cap, controller queue admission SHALL queue same-tenant requests once active grants for that tenant reach the limit, even if the requested model/version lane or a placement still has spare capacity.
 Recovered in-flight grants SHALL count against that tenant active cap until their Request reaches a terminal state.
 
 With controller queue admission enabled, a scheduler `cluster_busy` result observed after a static queue grant SHALL be treated as queue-waitable live placement capacity exhaustion.

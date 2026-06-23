@@ -74,10 +74,12 @@ legacy tenant defaults until full RBAC and quota policy are complete.
 1. Client calls a public `/v1` endpoint on the controller.
 2. Controller authenticates, canonicalizes, renders/tokenizes, admits, and
    persists request state.
-3. Scheduler chooses a node/runtime target.
-4. Controller dispatches to a node agent.
-5. Node agent ensures a worker/model is ready and streams worker events back.
-6. Controller relays SSE/JSON to the client and finalizes usage/state.
+3. Queue admission grants immediately or waits when lane capacity, live
+   placement capacity, or tenant active concurrency is exhausted.
+4. Scheduler chooses a node/runtime target.
+5. Controller dispatches to a node agent.
+6. Node agent ensures a worker/model is ready and streams worker events back.
+7. Controller relays SSE/JSON to the client and finalizes usage/state.
 
 `/v1/responses` is the target canonical abstraction. `/v1/chat/completions` is
 the compatibility facade. See `SPEC.md` §3 and §7 for normative behavior.

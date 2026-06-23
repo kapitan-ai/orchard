@@ -106,12 +106,13 @@ defmodule Orchard.Inference.QueueManager do
   @max_tenant_weight 100
 
   @type admission_request :: %{
-          request_id: Ecto.UUID.t() | String.t(),
-          public_id: String.t(),
-          tenant_id: Ecto.UUID.t() | String.t(),
-          model_id: String.t(),
-          version: String.t(),
-          caller_pid: pid()
+          required(:request_id) => Ecto.UUID.t() | String.t(),
+          required(:public_id) => String.t(),
+          required(:tenant_id) => Ecto.UUID.t() | String.t(),
+          required(:model_id) => String.t(),
+          required(:version) => String.t(),
+          optional(:max_active_per_tenant) => pos_integer() | nil,
+          optional(:caller_pid) => pid()
         }
 
   @type acquire_result ::
