@@ -133,7 +133,7 @@ A tenant-scoped usage or concurrency limit applied during Admission and reconcil
 _Avoid_: Routing Policy, Scheduler Decision, rate limit only
 
 **Routing Policy**:
-A tenant or model policy input that constrains eligible pools, residency preference, cold-start behavior, queue wait, and priority before scheduling.
+A tenant or model policy input that constrains eligible pools, active request limits, residency preference, cold-start behavior, queue wait, and priority before scheduling.
 _Avoid_: Quota, Scheduler Decision
 
 **Audit Log**:
@@ -361,8 +361,8 @@ A scheduler suppression rule for repeatedly failing nodes or placements.
 _Avoid_: Node health
 
 **Queue**:
-A controller-owned wait path used after Admission when no Node or live placement capacity is immediately eligible.
-Each Tenant keeps FIFO order, and cross-tenant selection uses weighted round-robin.
+A controller-owned wait path used after Admission when work cannot be immediately granted because node or live placement capacity is unavailable or tenant active concurrency is exhausted.
+Each Tenant keeps FIFO order, and cross-tenant selection uses weighted round-robin that can skip capped tenants while preserving their FIFO order.
 _Avoid_: Global backlog, Request lifecycle state
 
 **Cluster Busy**:

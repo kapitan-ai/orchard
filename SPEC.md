@@ -917,6 +917,7 @@ Quotas are tenant-scoped. Supported limits:
 * max output tokens per request
 * max queue wait ms
 
+Resolved concurrent active request limits SHALL appear on canonical requests as `resolved_policy.max_active_requests`.
 Quota admission SHALL serialize per tenant via advisory transaction lock on hashed tenant id.
 
 Admission accounting:
@@ -937,23 +938,28 @@ Admission accounting:
 
 ### 5.4 Queue model
 
-When no node is immediately eligible:
+When a request cannot be granted immediately because no node or live placement capacity is eligible, or because the tenant active request cap is exhausted:
 
 * request enters tenant FIFO queue
 * max wait defaults to `3000 ms`
 * max queued requests per tenant defaults to `32`
+* max active requests per tenant defaults to unlimited unless a resolved policy supplies `max_active_requests`
+
+When `resolved_policy.max_active_requests` is present, controller queue admission SHALL queue same-tenant requests once active grants for that tenant reach the limit, even if the requested model/version lane or a placement still has spare capacity.
+Recovered in-flight grants SHALL count against that tenant active cap until their Request reaches a terminal state.
 
 With controller queue admission enabled, a scheduler `cluster_busy` result observed after a static queue grant SHALL be treated as queue-waitable live placement capacity exhaustion.
 The controller SHALL return the request to the same controller queue lane for the requested model/version under the original max queue wait budget instead of extending the deadline.
 Requeued grants SHALL preserve the original `queued_at`, admission order, and queue deadline.
 The queue manager MAY defer the requeued lane until the next poll interval before re-granting to avoid a tight scheduler retry loop.
-If no eligible live placement appears before that deadline, the terminal public outcome SHALL be `queue_timeout`.
+If live placement capacity or tenant active capacity does not become available before that deadline, the terminal public outcome SHALL be `queue_timeout`.
 With controller queue admission disabled, `cluster_busy` remains an immediate admission failure.
 
 Queue discipline:
 
 * one FIFO queue per tenant
 * cross-tenant selection uses weighted round-robin
+* cross-tenant promotion skips tenants whose head entry lacks lane capacity or tenant active capacity without reordering that tenant's FIFO queue
 * tenant weight default = 1
 * within tenant, strict FIFO
 

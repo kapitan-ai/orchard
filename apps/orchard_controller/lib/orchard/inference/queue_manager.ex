@@ -3,8 +3,9 @@ defmodule Orchard.Inference.QueueManager do
   BEAM-local controller admission owner for the bounded queue-first slice.
 
   The owner grants at most `capacity` active requests per `{model_id, version}`
-  lane, queues callers by tenant FIFO, and monitors queued callers so
-  disconnected clients cannot be scheduled later.
+  lane and, when configured or resolved from policy, at most the tenant active
+  request cap across all lanes. It queues callers by tenant FIFO and monitors
+  queued callers so disconnected clients cannot be scheduled later.
   Cross-tenant grants use weighted round-robin, and live scheduler saturation can
   requeue an active grant under its original queue deadline.
   """
