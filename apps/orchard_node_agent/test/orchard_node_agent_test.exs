@@ -170,6 +170,61 @@ defmodule OrchardNodeAgentTest do
     end
   end
 
+  defmodule MixedResolvedLimitRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @blocking_model_id "status-probe/mixed-loading"
+
+    @impl true
+    def get_status(adapter_state, opts) do
+      {:ok, status} = BlockingRuntimeAdapter.get_status(adapter_state, opts)
+      {:ok, Map.put(status, :max_concurrency, max_concurrency_for(adapter_state.model_ref))}
+    end
+
+    @impl true
+    def load_model(%ModelRef{model_id: @blocking_model_id} = model_ref, _opts) do
+      if pid = Process.whereis(:load_timeout_test_pid) do
+        send(pid, {:mixed_limit_blocking_load_started, self(), model_ref})
+      end
+
+      receive do
+        :finish_load -> {:ok, %{model_ref: model_ref, generations: %{}}}
+      after
+        30_000 -> {:error, :load_timeout}
+      end
+    end
+
+    def load_model(%ModelRef{} = model_ref, opts) do
+      BlockingRuntimeAdapter.load_model(model_ref, opts)
+    end
+
+    @impl true
+    def unload_model(adapter_state, opts) do
+      BlockingRuntimeAdapter.unload_model(adapter_state, opts)
+    end
+
+    @impl true
+    def start_generation(adapter_state, %ExecuteInferenceRequest{} = request, opts) do
+      BlockingRuntimeAdapter.start_generation(adapter_state, request, opts)
+    end
+
+    @impl true
+    def cancel_generation(adapter_state, generation_ref, opts) do
+      BlockingRuntimeAdapter.cancel_generation(adapter_state, generation_ref, opts)
+    end
+
+    @impl true
+    def finish_generation(adapter_state, generation_ref, opts) do
+      BlockingRuntimeAdapter.finish_generation(adapter_state, generation_ref, opts)
+    end
+
+    defp max_concurrency_for(%ModelRef{model_id: "mlx-community/phi-3"}), do: 1
+    defp max_concurrency_for(%ModelRef{}), do: 2
+  end
+
   defmodule UnavailableDoneRuntimeAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
 
@@ -2031,6 +2086,71 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  test "SPEC.md §5.5 get_status preserves resolved worker max while load is inflight", %{
+    bundle: bundle
+  } do
+    blocked_bundle = stage_test_bundle!("status-probe/mixed-loading", "v1")
+
+    on_exit(fn ->
+      File.rm_rf(blocked_bundle.cache_path)
+      File.rm_rf(blocked_bundle.source_path)
+    end)
+
+    with_runtime_config(
+      [
+        runtime_adapter_impl: MixedResolvedLimitRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: "auto",
+        worker_auto_max_concurrent_requests_per_model: 3,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      ],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        request = execute_inference_request("req-loading-mixed-limit-active", bundle)
+        assert :ok = NodeStatus.prepare_request(request, self())
+        assert :ok = NodeStatus.start_request(request)
+        wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+
+        ensure_task =
+          Task.async(fn ->
+            NodeStatus.ensure_model_loaded(ensure_model_loaded_request(blocked_bundle, 10_000))
+          end)
+
+        assert_receive {:mixed_limit_blocking_load_started, blocking_pid, blocked_model_ref},
+                       1_000
+
+        assert %StatusResponse{} = response = NodeStatus.current()
+        assert response.runtime_health.ready == false
+        assert response.runtime_health.health_code == "starting"
+        assert response.runtime_health.affected_model.model_id == blocked_bundle.model_id
+        assert response.max_concurrency == 1
+
+        placement = runtime_model_placement!(response, bundle.model_id, bundle.version)
+        assert placement.active_request_count == 1
+        assert placement.max_concurrency == 1
+
+        refute Enum.any?(
+                 response.runtime_model_placements,
+                 &(&1.model_ref.model_id == blocked_bundle.model_id and
+                     &1.model_ref.version == blocked_bundle.version)
+               )
+
+        send(blocking_pid, :finish_load)
+
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 Task.await(ensure_task, 5_000)
+
+        assert blocked_model_ref.model_id == blocked_bundle.model_id
+        assert blocked_model_ref.version == blocked_bundle.version
+
+        assert %{ok: true} = NodeStatus.cancel_request(request.request_id)
+        wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+      end
+    )
+  end
+
   test "get_status downgrades invalid runtime memory budget values from runtime adapter", %{
     bundle: bundle
   } do
@@ -2613,6 +2733,57 @@ defmodule OrchardNodeAgentTest do
         wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
       end
     )
+  end
+
+  test "SPEC.md §5.5 aggregate admission uses minimum loaded worker max", %{bundle: bundle} do
+    other_bundle = stage_test_bundle!("mlx-community/phi-3-mixed-dual", "main")
+
+    try do
+      with_runtime_config(
+        [
+          runtime_adapter_impl: MixedResolvedLimitRuntimeAdapter,
+          worker_generation_mode: "batch",
+          worker_max_concurrent_requests_per_model: "auto",
+          worker_auto_max_concurrent_requests_per_model: 3,
+          test_only_allow_batch_admission_for_non_worker_adapters?: true
+        ],
+        fn ->
+          assert Node.effective_worker_request_limit() == 3
+
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(other_bundle))
+
+          status = NodeStatus.current()
+          assert status.max_concurrency == 1
+
+          single_slot = runtime_model_placement!(status, bundle.model_id, bundle.version)
+
+          dual_slot =
+            runtime_model_placement!(status, other_bundle.model_id, other_bundle.version)
+
+          assert single_slot.max_concurrency == 1
+          assert dual_slot.max_concurrency == 2
+
+          request1 = execute_inference_request("req-mixed-limit-single-active", bundle)
+          request2 = execute_inference_request("req-mixed-limit-dual-rejected", other_bundle)
+
+          assert :ok = NodeStatus.prepare_request(request1, self())
+          assert :ok = NodeStatus.start_request(request1)
+          wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+
+          assert {:error, :model_busy} = NodeStatus.prepare_request(request2, self())
+
+          assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
+          wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+        end
+      )
+    after
+      File.rm_rf(other_bundle.cache_path)
+      File.rm_rf(other_bundle.source_path)
+    end
   end
 
   test "batch mode accepts two same-model gRPC streams and reports active placement capacity", %{
