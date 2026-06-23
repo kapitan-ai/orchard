@@ -303,6 +303,10 @@ defmodule Orchard.Scheduler.MultiNode do
        when is_integer(placement_max) and placement_max > 0,
        do: placement_max
 
+  defp effective_model_capacity_for_queue(%{loaded_model?: true, active_request_count: active})
+       when is_integer(active) and active > 0,
+       do: 0
+
   defp effective_model_capacity_for_queue(_candidate), do: 1
 
   defp node_has_available_capacity?(%{active_request_count: active, max_concurrency: max})

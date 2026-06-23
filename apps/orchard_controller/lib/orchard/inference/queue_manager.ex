@@ -281,7 +281,7 @@ defmodule Orchard.Inference.QueueManager do
       |> prune_recovered_grants(state)
       |> maybe_grant_next_global()
 
-    lane = Map.get(state.lanes, request.queue_key, empty_lane())
+    {lane, state} = put_lane_capacity(request.queue_key, config.capacity, state)
 
     cond do
       tenant_has_queued_entries?(state, request.tenant_id) and
@@ -1274,7 +1274,7 @@ defmodule Orchard.Inference.QueueManager do
     config = Keyword.merge(Orchard.Inference.queue_admission_config(), config)
 
     %{
-      capacity: max(config[:capacity] || 1, 1),
+      capacity: max(config[:capacity] || 1, 0),
       max_wait_ms: max(config[:max_wait_ms] || 0, 0),
       max_active_per_tenant: normalize_max_active_per_tenant(config[:max_active_per_tenant]),
       max_queued_per_tenant: max(config[:max_queued_per_tenant] || 0, 0),
@@ -1885,9 +1885,13 @@ defmodule Orchard.Inference.QueueManager do
 
   defp lane_has_capacity?(lane) do
     capacity =
-      Orchard.Inference.queue_admission_config()
-      |> Keyword.get(:capacity, 1)
-      |> max(1)
+      case Map.get(lane, :capacity) do
+        value when is_integer(value) ->
+          max(value, 0)
+
+        _other ->
+          Orchard.Inference.queue_admission_config() |> Keyword.get(:capacity, 1) |> max(1)
+      end
 
     map_size(lane.active) < capacity
   end
