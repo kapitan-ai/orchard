@@ -2539,6 +2539,74 @@ defmodule OrchardNodeAgentTest do
     )
   end
 
+  test "batch mode accepts two same-model gRPC streams and reports active placement capacity", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: BlockingRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: 2,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      ],
+      fn ->
+        request1 = execute_inference_request("req-batch-grpc-active-first")
+        request2 = execute_inference_request("req-batch-grpc-active-second")
+        request_id1 = request1.request_id
+        request_id2 = request2.request_id
+
+        with_channel(fn channel ->
+          assert {:ok, %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED}} =
+                   NodeRuntimeStub.ensure_model_loaded(
+                     channel,
+                     ensure_model_loaded_request(bundle)
+                   )
+
+          task1 = start_execute_inference_task(request1, self())
+          task2 = start_execute_inference_task(request2, self())
+
+          try do
+            assert_execute_inference_accepted([request_id1, request_id2])
+
+            refs = wait_for_generation_refs([request_id1, request_id2])
+
+            status = grpc_status_snapshot()
+            assert status.active_request_count == 2
+
+            placement = runtime_model_placement!(status, @test_model_id, @test_version)
+            assert placement.active_request_count == 2
+            assert placement.max_concurrency == 2
+
+            send_release(Map.fetch!(refs, request_id1))
+            send_release(Map.fetch!(refs, request_id2))
+
+            assert_blocking_stream_completed(Task.await(task1, 5_000))
+            assert_blocking_stream_completed(Task.await(task2, 5_000))
+
+            wait_until(fn ->
+              grpc_status_snapshot().active_request_count == 0
+            end)
+
+            final_status = grpc_status_snapshot()
+
+            final_placement =
+              runtime_model_placement!(final_status, @test_model_id, @test_version)
+
+            assert final_placement.active_request_count == 0
+            assert final_placement.max_concurrency == 2
+          after
+            try do
+              best_effort_release_generation_refs([request_id1, request_id2])
+            after
+              Task.shutdown(task1, :brutal_kill)
+              Task.shutdown(task2, :brutal_kill)
+            end
+          end
+        end)
+      end
+    )
+  end
+
   test "current status reports loaded model placement capacity", %{bundle: bundle} do
     with_runtime_adapter(BlockingRuntimeAdapter, fn ->
       assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
@@ -3789,6 +3857,203 @@ defmodule OrchardNodeAgentTest do
   end
 
   # -- Private helpers -------------------------------------------------------
+
+  defp start_execute_inference_task(request, test_pid) do
+    Task.async(fn ->
+      with_channel(&collect_execute_inference_events(&1, request, test_pid))
+    end)
+  end
+
+  defp collect_execute_inference_events(channel, request, test_pid) do
+    {:ok, event_stream} = NodeRuntimeStub.execute_inference(channel, request)
+
+    event_stream
+    |> Enum.reduce([], &collect_execute_inference_event(&1, &2, request, test_pid))
+    |> Enum.reverse()
+  end
+
+  defp collect_execute_inference_event(event, events, request, test_pid) do
+    notify_execute_inference_accepted(event, request.request_id, test_pid)
+    [event | events]
+  end
+
+  defp notify_execute_inference_accepted(
+         {:ok, %RPCInferenceEvent{event: {:accepted, %Accepted{}}}},
+         request_id,
+         test_pid
+       ) do
+    send(test_pid, {:execute_inference_accepted, request_id})
+  end
+
+  defp notify_execute_inference_accepted(_event, _request_id, _test_pid), do: :ok
+
+  defp assert_execute_inference_accepted(request_ids) do
+    expected = MapSet.new(request_ids)
+
+    accepted =
+      Enum.reduce_while(1..length(request_ids), MapSet.new(), fn _index, accepted ->
+        receive do
+          {:execute_inference_accepted, request_id} ->
+            next = MapSet.put(accepted, request_id)
+
+            if MapSet.equal?(next, expected) do
+              {:halt, next}
+            else
+              {:cont, next}
+            end
+        after
+          1_000 ->
+            flunk(
+              "missing accepted events for request ids: #{inspect(MapSet.difference(expected, accepted))}"
+            )
+        end
+      end)
+
+    assert MapSet.equal?(accepted, expected)
+  end
+
+  defp wait_for_generation_refs(request_ids, attempts \\ 80)
+
+  defp wait_for_generation_refs(request_ids, attempts) when attempts > 0 do
+    refs = generation_refs_for_request_ids(request_ids)
+
+    if map_size(refs) == length(request_ids) do
+      refs
+    else
+      Process.sleep(25)
+      wait_for_generation_refs(request_ids, attempts - 1)
+    end
+  end
+
+  defp wait_for_generation_refs(request_ids, 0) do
+    flunk("generation refs not active for request ids: #{inspect(request_ids)}")
+  end
+
+  defp generation_refs_for_request_ids(request_ids) do
+    case safe_worker_state() do
+      {:ok, worker_state} ->
+        generation_refs_for_worker_state(worker_state, MapSet.new(request_ids))
+
+      :error ->
+        %{}
+    end
+  end
+
+  defp generation_refs_for_worker_state(worker_state, request_ids) do
+    worker_state
+    |> Map.fetch!(:requests)
+    |> Enum.reduce(%{}, &put_generation_ref_if_requested(&1, &2, request_ids))
+  end
+
+  defp put_generation_ref_if_requested({request_id, request_state}, refs, request_ids) do
+    if MapSet.member?(request_ids, request_id) do
+      Map.put(refs, request_id, Map.fetch!(request_state, :generation_ref))
+    else
+      refs
+    end
+  end
+
+  defp runtime_model_placement!(%StatusResponse{} = status, model_id, version) do
+    Enum.find(status.runtime_model_placements, fn placement ->
+      placement.model_ref.model_id == model_id and placement.model_ref.version == version
+    end) || flunk("runtime model placement not found for #{model_id}@#{version}")
+  end
+
+  defp assert_blocking_stream_completed([
+         {:ok,
+          %RPCInferenceEvent{event: {:accepted, %Accepted{accepted_at_unix_ms: accepted_at}}}},
+         {:ok,
+          %RPCInferenceEvent{event: {:output_text_delta, %OutputTextDelta{delta: "released"}}}},
+         {:ok, %RPCInferenceEvent{event: {:completed, %Completed{} = completed}}}
+       ]) do
+    assert is_integer(accepted_at)
+    assert accepted_at > 0
+    assert completed.finish_reason == :FINISH_REASON_STOP
+
+    assert completed.usage == %TokenUsage{
+             input_tokens: 2,
+             output_tokens: 1,
+             total_tokens: 3
+           }
+  end
+
+  defp assert_blocking_stream_completed(events) do
+    flunk("unexpected ExecuteInference stream events: #{inspect(events)}")
+  end
+
+  defp best_effort_release_generation_refs(request_ids) do
+    request_ids
+    |> release_messages_for_request_ids()
+    |> Enum.each(fn {pid, generation_ref} -> send(pid, {:release, generation_ref}) end)
+  end
+
+  defp grpc_status_snapshot do
+    with_channel(fn channel ->
+      assert {:ok, %StatusResponse{} = status} =
+               NodeRuntimeStub.get_status(channel, %StatusRequest{})
+
+      status
+    end)
+  end
+
+  defp release_messages_for_request_ids(request_ids) do
+    case safe_worker_state() do
+      {:ok, worker_state} ->
+        release_messages_for_worker_state(worker_state, MapSet.new(request_ids))
+
+      :error ->
+        []
+    end
+  end
+
+  defp release_messages_for_worker_state(worker_state, request_ids) do
+    generations = get_in(worker_state, [:adapter_state, :generations]) || %{}
+    requests = Map.get(worker_state, :requests, %{})
+
+    requests
+    |> Enum.flat_map(&release_message_for_request(&1, generations, request_ids))
+  end
+
+  defp release_message_for_request({request_id, request_state}, generations, request_ids) do
+    if MapSet.member?(request_ids, request_id) do
+      release_message_for_generation(request_state, generations)
+    else
+      []
+    end
+  end
+
+  defp release_message_for_generation(request_state, generations) do
+    case Map.get(request_state, :generation_ref) do
+      nil -> []
+      generation_ref -> release_message_for_ref(generation_ref, generations)
+    end
+  end
+
+  defp release_message_for_ref(generation_ref, generations) do
+    case Map.get(generations, generation_ref) do
+      %{pid: pid} when is_pid(pid) -> [{pid, generation_ref}]
+      _missing_or_malformed -> []
+    end
+  end
+
+  defp safe_worker_state do
+    worker_pid()
+    |> fetch_worker_state_if_alive()
+  catch
+    :exit, _reason -> :error
+  end
+
+  defp fetch_worker_state_if_alive(pid) when is_pid(pid) do
+    if Process.alive?(pid), do: fetch_worker_state(pid), else: :error
+  end
+
+  defp fetch_worker_state_if_alive(_pid), do: :error
+
+  defp fetch_worker_state(pid) do
+    {:ok, :sys.get_state(pid)}
+  catch
+    :exit, _reason -> :error
+  end
 
   defp get_blocking_generation_ref do
     pid = worker_pid()
