@@ -17,9 +17,9 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Cluster.V1.ModelRef, as: RPCModelRef
   alias Orchard.Cluster.V1.NodeRuntimeService.Stub, as: NodeRuntimeStub
   alias Orchard.Cluster.V1.OutputTextDelta
+  alias Orchard.Cluster.V1.RuntimeModelPlacement
   alias Orchard.Cluster.V1.ScorePrefixCacheRequest
   alias Orchard.Cluster.V1.ScorePrefixCacheResponse
-  alias Orchard.Cluster.V1.RuntimeModelPlacement
   alias Orchard.Cluster.V1.StatusRequest
   alias Orchard.Cluster.V1.StatusResponse
   alias Orchard.Cluster.V1.TokenUsage
