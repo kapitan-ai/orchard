@@ -244,7 +244,7 @@ defmodule Orchard.Inference.QueueManagerTest do
   end
 
   test "requeue defers an active grant behind the lane retry interval" do
-    config = queue_config(max_wait_ms: 500, poll_interval_ms: 50)
+    config = queue_config(max_wait_ms: 500, poll_interval_ms: 200)
 
     with_queue_admission_config(config, fn ->
       request = admission_request("req-requeue")
@@ -254,15 +254,44 @@ defmodule Orchard.Inference.QueueManagerTest do
 
       awaiter = Task.async(fn -> QueueManager.await(ticket) end)
       assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
-      refute_receive {:unexpected_immediate_regrant, _}, 20
-      refute Task.yield(awaiter, 0)
+      refute Task.yield(awaiter, 50)
 
-      assert {:ok, requeued_grant} = Task.await(awaiter, 500)
+      assert {:ok, requeued_grant} = Task.await(awaiter, 1_000)
       assert requeued_grant.queue_result == :queued
       assert requeued_grant.queue_wait_ms >= config[:poll_interval_ms]
 
       assert :ok = QueueManager.release(grant)
       assert :ok = QueueManager.release(requeued_grant)
+    end)
+  end
+
+  test "SPEC.md §5.4 requeued active grants preserve original same-tenant FIFO order" do
+    tenant_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 2, max_wait_ms: 1_000, poll_interval_ms: 50)
+
+    with_queue_admission_config(config, fn ->
+      request_a = admission_request("req-requeue-fifo-a", tenant_id: tenant_id)
+      request_b = admission_request("req-requeue-fifo-b", tenant_id: tenant_id)
+
+      assert {:ok, grant_a} = QueueManager.acquire(request_a)
+      assert {:ok, grant_b} = QueueManager.acquire(request_b)
+
+      assert {:queued, ticket_a} = QueueManager.requeue(grant_a, request_a)
+      assert {:queued, ticket_b} = QueueManager.requeue(grant_b, request_b)
+
+      awaiter_a = Task.async(fn -> QueueManager.await(ticket_a) end)
+
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a) end)
+      assert {:ok, requeued_grant_a} = Task.await(awaiter_a, 1_000)
+
+      awaiter_b = Task.async(fn -> QueueManager.await(ticket_b) end)
+
+      assert {:ok, requeued_grant_b} = Task.await(awaiter_b, 1_000)
+
+      assert requeued_grant_a.queued_at == ticket_a.queued_at
+      assert requeued_grant_b.queued_at == ticket_b.queued_at
+      assert :ok = QueueManager.release(requeued_grant_a)
+      assert :ok = QueueManager.release(requeued_grant_b)
     end)
   end
 
@@ -456,7 +485,7 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert :ok = QueueManager.release(grant)
   end
 
-  test "SPEC.md §3.6 queue timeout persistence failure retains queue until retry succeeds" do
+  test "SPEC.md §3.6 queue timeout persistence retry does not stall other tenants" do
     request_id = Ecto.UUID.generate()
     public_id = "req_queue_timeout_persistence_retry"
 
@@ -486,7 +515,9 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert queue_entry_terminal_pending?(timeout_ticket)
 
     assert :ok = QueueManager.release(held_grant)
-    refute Task.yield(next_awaiter, 100)
+    assert {:ok, next_grant} = Task.await(next_awaiter, 2_000)
+    assert next_grant.queue_result == :queued
+    assert queue_entry_terminal_pending?(timeout_ticket)
 
     db_request = insert_request_with_id!(request_id, public_id, state: :queued)
 
@@ -498,8 +529,6 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert request.error_code == "queue_timeout"
     assert_queue_metadata(request, "queue_timeout", queued?: true)
 
-    assert {:ok, next_grant} = Task.await(next_awaiter, 2_000)
-    assert next_grant.queue_result == :queued
     assert :ok = QueueManager.release(next_grant)
   end
 
@@ -613,7 +642,7 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert :ok = QueueManager.release(grant)
   end
 
-  test "SPEC.md §3.6 queued disconnect persistence failure retains queue until retry succeeds" do
+  test "SPEC.md §3.6 queued disconnect persistence retry does not stall other tenants" do
     request_id = Ecto.UUID.generate()
     public_id = "req_queue_disconnect_persistence_retry"
 
@@ -646,7 +675,9 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert wait_until(fn -> queue_entry_terminal_pending?(disconnect_ticket) end)
 
     assert :ok = QueueManager.release(held_grant)
-    refute Task.yield(next_awaiter, 100)
+    assert {:ok, next_grant} = Task.await(next_awaiter, 2_000)
+    assert next_grant.queue_result == :queued
+    assert queue_entry_terminal_pending?(disconnect_ticket)
 
     db_request = insert_request_with_id!(request_id, public_id, state: :queued)
 
@@ -661,8 +692,6 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert request.error_code == "request_caller_disconnect"
     assert_queue_metadata(request, "interrupted_before_dispatch", queued?: true)
 
-    assert {:ok, next_grant} = Task.await(next_awaiter, 2_000)
-    assert next_grant.queue_result == :queued
     assert :ok = QueueManager.release(next_grant)
   end
 

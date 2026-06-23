@@ -90,6 +90,7 @@ defmodule Orchard.Inference.QueueManager do
             grants: %{},
             tenant_counts: %{},
             ticket_results: %{},
+            next_admission_sequence: 0,
             owner_runtime: false
 
   @pre_dispatch_states [:admitted, :queued]
@@ -1251,12 +1252,16 @@ defmodule Orchard.Inference.QueueManager do
   end
 
   defp grant_immediate(request, config, state) do
+    {admission_sequence, state} = take_admission_sequence(state)
     started_monotonic_ms = monotonic_ms()
     grant = build_grant(state, request.queue_key, :immediate, nil, started_monotonic_ms)
-    {grant, put_immediate_grant(grant, request, config, started_monotonic_ms, state)}
+
+    {grant,
+     put_immediate_grant(grant, request, config, started_monotonic_ms, admission_sequence, state)}
   end
 
   defp enqueue_request(request, config, state) do
+    {admission_sequence, state} = take_admission_sequence(state)
     ticket_ref = make_ref()
     enqueued_monotonic_ms = monotonic_ms()
     queued_at = now_iso8601()
@@ -1287,6 +1292,7 @@ defmodule Orchard.Inference.QueueManager do
       timeout_ref: timeout_ref,
       queued_at: queued_at,
       enqueued_monotonic_ms: enqueued_monotonic_ms,
+      admission_sequence: admission_sequence,
       queue_deadline_monotonic_ms: queue_deadline_monotonic_ms,
       terminal_operation: nil,
       terminal_metadata: nil,
@@ -1302,7 +1308,7 @@ defmodule Orchard.Inference.QueueManager do
     position = Keyword.get(opts, :position, :back)
     tenant_id = entry.tenant_id
     tenant_queue = Map.get(state.tenant_queues, tenant_id, %{queue: []})
-    queue = put_ticket_in_tenant_queue(tenant_queue.queue, entry.ticket_ref, position)
+    queue = put_ticket_in_tenant_queue(tenant_queue.queue, entry, position, state.entries)
     tenant_queues = Map.put(state.tenant_queues, tenant_id, %{tenant_queue | queue: queue})
 
     state = %{
@@ -1317,8 +1323,31 @@ defmodule Orchard.Inference.QueueManager do
     schedule_queue_tick(state)
   end
 
-  defp put_ticket_in_tenant_queue(queue, ticket_ref, :front), do: [ticket_ref | queue]
-  defp put_ticket_in_tenant_queue(queue, ticket_ref, :back), do: queue ++ [ticket_ref]
+  defp put_ticket_in_tenant_queue(queue, entry, :front, _entries),
+    do: [entry.ticket_ref | queue]
+
+  defp put_ticket_in_tenant_queue(queue, entry, :back, _entries),
+    do: queue ++ [entry.ticket_ref]
+
+  defp put_ticket_in_tenant_queue(queue, entry, :admission_order, entries) do
+    {before, after_} =
+      Enum.split_while(queue, fn ticket_ref ->
+        case Map.fetch(entries, ticket_ref) do
+          {:ok, existing_entry} -> entry_order_key(existing_entry) <= entry_order_key(entry)
+          :error -> true
+        end
+      end)
+
+    before ++ [entry.ticket_ref | after_]
+  end
+
+  defp entry_order_key(entry),
+    do: {entry.enqueued_monotonic_ms, Map.get(entry, :admission_sequence, 0)}
+
+  defp take_admission_sequence(state) do
+    sequence = state.next_admission_sequence
+    {sequence, %{state | next_admission_sequence: sequence + 1}}
+  end
 
   defp maybe_append_tenant_order(state, tenant_id) do
     if tenant_has_queued_entries?(state, tenant_id) do
@@ -1424,6 +1453,7 @@ defmodule Orchard.Inference.QueueManager do
       timeout_ref: timeout_ref,
       queued_at: queued_at,
       enqueued_monotonic_ms: grant_state.enqueued_monotonic_ms,
+      admission_sequence: Map.get(grant_state, :admission_sequence, 0),
       queue_deadline_monotonic_ms: grant_state.queue_deadline_monotonic_ms,
       terminal_operation: nil,
       terminal_metadata: nil,
@@ -1436,7 +1466,7 @@ defmodule Orchard.Inference.QueueManager do
   end
 
   defp put_requeued_entry({ticket, entry}, state),
-    do: {ticket, put_entry(entry, state, position: :front)}
+    do: {ticket, put_entry(entry, state, position: :admission_order)}
 
   defp maybe_grant_next_global(state) do
     case grant_one_queued_entry(state) do
@@ -1468,9 +1498,9 @@ defmodule Orchard.Inference.QueueManager do
     end
   end
 
-  defp maybe_grant_tenant_head(%{terminal_operation: operation}, _ring, _state, _scanned, _index)
+  defp maybe_grant_tenant_head(%{terminal_operation: operation}, ring, state, scanned, index)
        when not is_nil(operation),
-       do: :blocked
+       do: scan_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
 
   defp maybe_grant_tenant_head(%{await_from: nil}, ring, state, scanned, index) do
     scan_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
@@ -1563,6 +1593,7 @@ defmodule Orchard.Inference.QueueManager do
         owner_monitor_ref: entry.awaiter_monitor_ref,
         queued_at: entry.queued_at,
         enqueued_monotonic_ms: entry.enqueued_monotonic_ms,
+        admission_sequence: Map.get(entry, :admission_sequence, 0),
         queue_deadline_monotonic_ms: entry.queue_deadline_monotonic_ms,
         server: state.server
       })
@@ -1580,7 +1611,14 @@ defmodule Orchard.Inference.QueueManager do
     |> maybe_cancel_queue_tick()
   end
 
-  defp put_immediate_grant(%Grant{} = grant, request, config, started_monotonic_ms, state) do
+  defp put_immediate_grant(
+         %Grant{} = grant,
+         request,
+         config,
+         started_monotonic_ms,
+         admission_sequence,
+         state
+       ) do
     owner_monitor_ref = Process.monitor(request.caller_pid)
     lane = Map.get(state.lanes, grant.queue_key, empty_lane())
     lane = %{lane | active: Map.put(lane.active, grant.grant_id, true)}
@@ -1593,6 +1631,7 @@ defmodule Orchard.Inference.QueueManager do
       owner_monitor_ref: owner_monitor_ref,
       queued_at: nil,
       enqueued_monotonic_ms: started_monotonic_ms,
+      admission_sequence: admission_sequence,
       queue_deadline_monotonic_ms: started_monotonic_ms + config.max_wait_ms,
       server: state.server
     }
