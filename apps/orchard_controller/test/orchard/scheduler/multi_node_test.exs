@@ -465,6 +465,47 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert {:error, :cluster_busy} =
                MultiNode.schedule(canonical_request(), status_client: StubClient)
     end
+
+    test "uses spare aggregate capacity for one live cold target" do
+      put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          active_request_count: 1,
+          max_concurrency: 2
+        )
+      )
+
+      assert {:ok, schedule} = MultiNode.schedule(canonical_request(), status_client: StubClient)
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node.id
+      assert schedule.selected_tier == "cold"
+      assert schedule.candidate_count == 1
+    end
+
+    test "returns cluster_busy for one live cold target at aggregate capacity" do
+      put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          active_request_count: 2,
+          max_concurrency: 2
+        )
+      )
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request(), status_client: StubClient)
+    end
   end
 
   # -- Multi-node ranking --
@@ -935,7 +976,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
           host: "10.0.0.1",
           port: 50_061,
           active_request_count: 1,
-          max_concurrency: 2
+          max_concurrency: 2,
+          runtime_model_placements: [model_placement("test-model", "v1", 0, 2)]
         )
       )
 
@@ -2381,7 +2423,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.memory_admission_tier == "headroom_unknown"
     end
 
-    test "memory headroom does not make an active candidate eligible" do
+    test "memory headroom does not make loaded unknown-capacity candidate eligible" do
       put_inference(memory_admission: [enabled: true])
 
       id_a = "00000000-0000-0000-0000-000000000001"
@@ -2398,8 +2440,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         make_status(id_b,
           host: "10.0.0.2",
           port: 50_062,
-          active_request_count: 1,
           loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 1,
           runtime_memory_budgets: [memory_budget("test-model", "v1", %{})]
         )
       )
@@ -2988,7 +3030,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.strategy == :multi_node
       assert schedule.node_id == node_a.id
-      assert schedule.candidate_count == 1
+      assert schedule.candidate_count == 2
     end
 
     test "prefers loaded model even when all degraded" do

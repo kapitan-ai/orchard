@@ -202,7 +202,8 @@ defmodule Orchard.Node.WorkerProcess do
       health_message: adapter_health[:health_message] || "",
       memory_budget: adapter_health[:memory_budget],
       prefix_cache_status: adapter_health[:prefix_cache_status],
-      supports_prompt_token_ids: adapter_health[:supports_prompt_token_ids] || false
+      supports_prompt_token_ids: adapter_health[:supports_prompt_token_ids] || false,
+      max_concurrency: status_max_concurrency(adapter_health)
     }
 
     {:reply, {:ok, status}, state}
@@ -356,8 +357,32 @@ defmodule Orchard.Node.WorkerProcess do
   end
 
   defp request_capacity_reached?(state) do
-    map_size(state.requests) >= Node.effective_worker_request_limit()
+    map_size(state.requests) >= worker_request_limit(state)
   end
+
+  defp worker_request_limit(%{adapter_state: nil}), do: Node.effective_worker_request_limit()
+
+  defp worker_request_limit(state) do
+    case state.adapter.get_status(state.adapter_state, timeout_ms: 1_000) do
+      {:ok, status} ->
+        status_max_concurrency(status) || fallback_worker_request_limit(state.adapter)
+
+      {:error, _reason} ->
+        fallback_worker_request_limit(state.adapter)
+    end
+  end
+
+  defp fallback_worker_request_limit(Orchard.Node.WorkerRuntimeAdapter), do: 1
+  defp fallback_worker_request_limit(_adapter), do: Node.effective_worker_request_limit()
+
+  defp status_max_concurrency(status) when is_map(status) do
+    case Map.get(status, :max_concurrency) do
+      value when is_integer(value) and value > 0 -> value
+      _other -> nil
+    end
+  end
+
+  defp status_max_concurrency(_status), do: nil
 
   defp start_generation(request_id, request, subscriber, state) do
     case state.adapter.start_generation(state.adapter_state, request,

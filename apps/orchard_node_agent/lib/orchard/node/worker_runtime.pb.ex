@@ -105,6 +105,7 @@ defmodule Orchard.Node.Worker.V1.WorkerStatusResponse do
   )
 
   field(:supports_prompt_token_ids, 8, type: :bool, json_name: "supportsPromptTokenIds")
+  field(:max_concurrency, 9, type: :uint32, json_name: "maxConcurrency")
 end
 
 defmodule Orchard.Node.Worker.V1.LoadModelRequest do

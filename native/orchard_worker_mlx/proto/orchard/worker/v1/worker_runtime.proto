@@ -67,6 +67,7 @@ message WorkerStatusResponse {
   WorkerMemoryBudgetStatus memory_budget = 6;
   WorkerPrefixCacheStatus prefix_cache = 7;
   bool supports_prompt_token_ids = 8;
+  uint32 max_concurrency = 9;
 }
 
 message LoadModelRequest {

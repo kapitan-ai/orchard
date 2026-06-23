@@ -132,6 +132,44 @@ defmodule OrchardNodeAgentTest do
     end
   end
 
+  defmodule SingleSlotStatusRuntimeAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(adapter_state, opts) do
+      {:ok, status} = BlockingRuntimeAdapter.get_status(adapter_state, opts)
+      {:ok, Map.put(status, :max_concurrency, 1)}
+    end
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, opts) do
+      BlockingRuntimeAdapter.load_model(model_ref, opts)
+    end
+
+    @impl true
+    def unload_model(adapter_state, opts) do
+      BlockingRuntimeAdapter.unload_model(adapter_state, opts)
+    end
+
+    @impl true
+    def start_generation(adapter_state, %ExecuteInferenceRequest{} = request, opts) do
+      BlockingRuntimeAdapter.start_generation(adapter_state, request, opts)
+    end
+
+    @impl true
+    def cancel_generation(adapter_state, generation_ref, opts) do
+      BlockingRuntimeAdapter.cancel_generation(adapter_state, generation_ref, opts)
+    end
+
+    @impl true
+    def finish_generation(adapter_state, generation_ref, opts) do
+      BlockingRuntimeAdapter.finish_generation(adapter_state, generation_ref, opts)
+    end
+  end
+
   defmodule UnavailableDoneRuntimeAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
 
@@ -2536,6 +2574,42 @@ defmodule OrchardNodeAgentTest do
 
         assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
         assert %{ok: true} = NodeStatus.cancel_request(request2.request_id)
+        wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+      end
+    )
+  end
+
+  test "SPEC.md §5.5 resolved worker max constrains status and admission", %{bundle: bundle} do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: SingleSlotStatusRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: "auto",
+        worker_auto_max_concurrent_requests_per_model: 3,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      ],
+      fn ->
+        assert Node.effective_worker_request_limit() == 3
+
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        status = NodeStatus.current()
+        assert status.max_concurrency == 1
+
+        placement = runtime_model_placement!(status, @test_model_id, @test_version)
+        assert placement.max_concurrency == 1
+
+        request1 = execute_inference_request("req-resolved-max-first")
+        request2 = execute_inference_request("req-resolved-max-second")
+
+        assert :ok = NodeStatus.prepare_request(request1, self())
+        assert :ok = NodeStatus.start_request(request1)
+        wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+
+        assert {:error, :model_busy} = NodeStatus.prepare_request(request2, self())
+
+        assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
         wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
       end
     )

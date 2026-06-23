@@ -102,6 +102,7 @@ class BackendPrefixCacheScore(TypedDict):
 class BackendStatus(TypedDict):
     loaded: bool
     active_request_count: int
+    max_concurrency: NotRequired[int]
     memory_budget: NotRequired[BackendMemoryBudgetStatus]
 
 
@@ -152,6 +153,7 @@ class StubBackend:
             return BackendStatus(
                 loaded=self._loaded_model is not None,
                 active_request_count=self._active_request_count,
+                max_concurrency=1,
             )
 
     def health(self) -> BackendHealth:
@@ -387,6 +389,7 @@ class MLXBackend:
             status = BackendStatus(
                 loaded=loaded,
                 active_request_count=self._active_request_count,
+                max_concurrency=self._max_concurrent_requests,
             )
             if loaded and self._session is not None:
                 budget = self._session.memory_budget_status

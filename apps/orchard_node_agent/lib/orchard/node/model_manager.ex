@@ -343,8 +343,10 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp prepare_loaded_request(request, subscriber, key, pid, state) do
-    if node_at_request_capacity?(state.active_requests) or
-         model_at_request_capacity?(state.active_requests, key) do
+    request_limit = request_limit_for_worker(pid)
+
+    if node_at_request_capacity?(state.active_requests, request_limit) or
+         model_at_request_capacity?(state.active_requests, key, request_limit) do
       {:reply, {:error, :model_busy}, state}
     else
       subscriber_monitor_ref = Process.monitor(subscriber)
@@ -1238,12 +1240,41 @@ defmodule Orchard.Node.ModelManager do
     end)
   end
 
-  defp model_at_request_capacity?(active_requests, key) do
-    active_request_count_for_model(active_requests, key) >= Node.effective_worker_request_limit()
+  defp model_at_request_capacity?(active_requests, key, request_limit) do
+    active_request_count_for_model(active_requests, key) >= request_limit
   end
 
-  defp node_at_request_capacity?(active_requests) do
-    map_size(active_requests) >= Node.effective_worker_request_limit()
+  defp node_at_request_capacity?(active_requests, request_limit) do
+    map_size(active_requests) >= request_limit
+  end
+
+  defp node_max_concurrency(worker_request_limits) do
+    case Map.values(worker_request_limits) do
+      [] -> Node.effective_worker_request_limit()
+      limits -> Enum.min(limits)
+    end
+  end
+
+  defp request_limit_for_worker(pid) do
+    pid
+    |> WorkerProcess.status(timeout: 1_000)
+    |> request_limit_from_status_result()
+  end
+
+  defp request_limit_from_status_result({:ok, %{max_concurrency: value}})
+       when is_integer(value) and value > 0 do
+    value
+  end
+
+  defp request_limit_from_status_result(_status_result) do
+    fallback_worker_request_limit()
+  end
+
+  defp fallback_worker_request_limit do
+    case Node.runtime_adapter_impl() do
+      Orchard.Node.WorkerRuntimeAdapter -> 1
+      _other -> Node.effective_worker_request_limit()
+    end
   end
 
   # -- Response helpers ------------------------------------------------------
@@ -1252,13 +1283,13 @@ defmodule Orchard.Node.ModelManager do
     tool_snapshot = ToolCapabilityCatalog.snapshot()
 
     {runtime_health, runtime_memory_budgets, runtime_prefix_cache_statuses,
-     supports_prompt_token_ids} = runtime_health_and_memory_budgets(state)
+     supports_prompt_token_ids, worker_request_limits} = runtime_health_and_memory_budgets(state)
 
     %StatusResponse{
       worker_state: worker_state(state),
       loaded_models: loaded_models(state),
       active_request_count: map_size(state.active_requests),
-      max_concurrency: Node.effective_worker_request_limit(),
+      max_concurrency: node_max_concurrency(worker_request_limits),
       node_metadata: build_node_metadata(),
       runtime_health: runtime_health,
       hosted_tool_capabilities: tool_snapshot.capabilities,
@@ -1266,7 +1297,7 @@ defmodule Orchard.Node.ModelManager do
       runtime_memory_budgets: runtime_memory_budgets,
       runtime_prefix_cache_statuses: runtime_prefix_cache_statuses,
       supports_prompt_token_ids: supports_prompt_token_ids,
-      runtime_model_placements: runtime_model_placements(state)
+      runtime_model_placements: runtime_model_placements(state, worker_request_limits)
     }
   end
 
@@ -1323,14 +1354,12 @@ defmodule Orchard.Node.ModelManager do
     |> Enum.sort_by(fn {{model_id, version}, _} -> {model_id, version} end)
   end
 
-  defp runtime_model_placements(state) do
-    max_concurrency = Node.effective_worker_request_limit()
-
+  defp runtime_model_placements(state, worker_request_limits) do
     Enum.map(loaded_workers(state), fn {key, entry} ->
       %RuntimeModelPlacement{
         model_ref: entry.model_ref,
         active_request_count: active_request_count_for_model(state.active_requests, key),
-        max_concurrency: max_concurrency
+        max_concurrency: Map.get(worker_request_limits, key, fallback_worker_request_limit())
       }
     end)
   end
@@ -1591,7 +1620,7 @@ defmodule Orchard.Node.ModelManager do
            health_code: "starting",
            health_message: "model load in progress",
            affected_model: first_inflight
-         }, [], [], false}
+         }, [], [], false, %{}}
 
       has_loading_worker?(state) ->
         loading_ref = first_loading_worker_ref(state)
@@ -1601,10 +1630,10 @@ defmodule Orchard.Node.ModelManager do
            health_code: "starting",
            health_message: "model load in progress",
            affected_model: loading_ref
-         }, [], [], false}
+         }, [], [], false, %{}}
 
       map_size(state.workers) == 0 ->
-        {%RuntimeHealth{ready: true, health_code: "", health_message: ""}, [], [], false}
+        {%RuntimeHealth{ready: true, health_code: "", health_message: ""}, [], [], false, %{}}
 
       true ->
         probe_workers_health_and_memory_budgets(loaded_workers(state))
@@ -1645,11 +1674,13 @@ defmodule Orchard.Node.ModelManager do
   defp probe_workers_health_and_memory_budgets(loaded_workers) do
     support_state = %{seen_success?: false, all_true?: true}
 
-    {health, runtime_memory_budgets, runtime_prefix_cache_statuses, support_state} =
-      Enum.reduce(loaded_workers, {nil, [], [], support_state}, fn {_key, entry},
-                                                                   {health, budgets,
-                                                                    prefix_cache_statuses,
-                                                                    support_state} ->
+    {health, runtime_memory_budgets, runtime_prefix_cache_statuses, support_state,
+     worker_request_limits} =
+      Enum.reduce(loaded_workers, {nil, [], [], support_state, %{}}, fn {key, entry},
+                                                                        {health, budgets,
+                                                                         prefix_cache_statuses,
+                                                                         support_state,
+                                                                         worker_request_limits} ->
         status_result = WorkerProcess.status(entry.pid, timeout: 1_000)
 
         updated_budgets = budgets ++ maybe_runtime_memory_budget(entry.model_ref, status_result)
@@ -1660,13 +1691,16 @@ defmodule Orchard.Node.ModelManager do
 
         next_health = health || health_from_status_result(entry.model_ref, status_result)
         support_state = aggregate_supports_prompt_token_ids(support_state, status_result)
+        request_limit = request_limit_from_status_result(status_result)
+        worker_request_limits = Map.put(worker_request_limits, key, request_limit)
 
-        {next_health, updated_budgets, updated_prefix_cache_statuses, support_state}
+        {next_health, updated_budgets, updated_prefix_cache_statuses, support_state,
+         worker_request_limits}
       end)
 
     {health || %RuntimeHealth{ready: true, health_code: "", health_message: ""},
      runtime_memory_budgets, runtime_prefix_cache_statuses,
-     supports_prompt_token_ids_value(support_state)}
+     supports_prompt_token_ids_value(support_state), worker_request_limits}
   end
 
   defp supports_prompt_token_ids_value(%{seen_success?: true, all_true?: true}), do: true
