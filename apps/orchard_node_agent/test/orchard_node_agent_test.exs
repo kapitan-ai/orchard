@@ -2539,6 +2539,80 @@ defmodule OrchardNodeAgentTest do
     )
   end
 
+  test "current status reports loaded model placement capacity", %{bundle: bundle} do
+    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      assert %StatusResponse{
+               runtime_model_placements: [
+                 %{
+                   model_ref: %{model_id: @test_model_id, version: @test_version},
+                   active_request_count: 0,
+                   max_concurrency: 1
+                 }
+               ]
+             } = NodeStatus.current()
+    end)
+  end
+
+  test "current status reports stream mode placement max concurrency as one", %{bundle: bundle} do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: BlockingRuntimeAdapter,
+        worker_generation_mode: "stream",
+        worker_max_concurrent_requests_per_model: 4,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      ],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        assert %StatusResponse{
+                 runtime_model_placements: [
+                   %{
+                     model_ref: %{model_id: @test_model_id, version: @test_version},
+                     active_request_count: 0,
+                     max_concurrency: 1
+                   }
+                 ]
+               } = NodeStatus.current()
+      end
+    )
+  end
+
+  test "current status reports batch placement active count and max concurrency", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: BlockingRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: 2,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      ],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        request = execute_inference_request("req-batch-status-first")
+        assert :ok = NodeStatus.prepare_request(request, self())
+
+        assert %StatusResponse{
+                 runtime_model_placements: [
+                   %{
+                     model_ref: %{model_id: @test_model_id, version: @test_version},
+                     active_request_count: 1,
+                     max_concurrency: 2
+                   }
+                 ]
+               } = NodeStatus.current()
+
+        assert %{ok: true} = NodeStatus.cancel_request(request.request_id)
+      end
+    )
+  end
+
   test "batch mode still maps third request to gRPC model_busy without Accepted", %{
     bundle: bundle
   } do

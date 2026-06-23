@@ -4,7 +4,7 @@ defmodule Orchard.Scheduler.MultiNode do
   selects the best candidate for dispatch.
 
   Ranking order (descending priority):
-  1. Exclude live candidates with `active_request_count > 0`
+  1. Exclude full candidates, or active candidates with unknown placement capacity
   2. Node has the requested model already loaded
   3. Healthier node (`:healthy` over `:degraded`)
   4. Live prefix-cache fingerprint match when explicitly enabled
@@ -20,7 +20,7 @@ defmodule Orchard.Scheduler.MultiNode do
   - No schedulable nodes remain after filtering
 
   Returns `{:error, :cluster_busy}` when live probes joined to persisted schedulable
-  nodes, but every joined candidate is already active.
+  nodes, but every joined candidate is full or active with unknown capacity.
   """
 
   alias Orchard.CanonicalRequest
@@ -102,20 +102,20 @@ defmodule Orchard.Scheduler.MultiNode do
       |> Enum.filter(&Map.has_key?(schedulable_map, &1.node_id))
       |> Enum.map(&Map.put(&1, :node, schedulable_map[&1.node_id]))
 
-    idle_candidates = Enum.reject(candidates, &active_candidate?/1)
+    available_candidates = Enum.reject(candidates, &candidate_full?/1)
 
     cond do
       candidates == [] ->
         fallback_schedule(request, targets)
 
-      idle_candidates == [] ->
+      available_candidates == [] ->
         {:error, :cluster_busy}
 
       true ->
         cache_affinity_config = Inference.cache_affinity_config()
 
         {affinity_candidates, affinity_context} =
-          CacheAffinity.prepare(request, idle_candidates, cache_affinity_config)
+          CacheAffinity.prepare(request, available_candidates, cache_affinity_config)
 
         live_fingerprint_match_enabled? =
           CacheAffinity.live_fingerprint_match_enabled?(cache_affinity_config)
@@ -193,13 +193,18 @@ defmodule Orchard.Scheduler.MultiNode do
                   nil
 
                 node_id ->
+                  loaded_model? = model_loaded?(response, request)
+
                   %{
                     node_id: node_id,
                     target: target,
-                    loaded_model?: model_loaded?(response, request),
+                    loaded_model?: loaded_model?,
                     active_request_count: response.active_request_count || 0,
                     supports_prompt_token_ids: prompt_token_ids_supported?(response)
                   }
+                  |> maybe_put_model_placement_capacity(
+                    model_placement_capacity_for(response, request.model_ref, loaded_model?)
+                  )
                   |> maybe_put_prefix_cache_status(
                     prefix_cache_status_for(response, request.model_ref)
                   )
@@ -222,10 +227,16 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
-  defp active_candidate?(%{active_request_count: count}) when is_integer(count) and count > 0,
+  defp candidate_full?(%{
+         model_placement_capacity: %{active_request_count: active, max_concurrency: max}
+       })
+       when is_integer(active) and is_integer(max) and max > 0,
+       do: active >= max
+
+  defp candidate_full?(%{active_request_count: count}) when is_integer(count) and count > 0,
     do: true
 
-  defp active_candidate?(_candidate), do: false
+  defp candidate_full?(_candidate), do: false
 
   defp extract_valid_node_id(%{node_metadata: %{node_id: node_id}}) when is_binary(node_id) do
     case Ecto.UUID.cast(node_id) do
@@ -308,6 +319,60 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp memory_budget_model_ref_matches?(_budget, _model_ref), do: false
+
+  defp model_placement_capacity_for(_response, _model_ref, false), do: nil
+
+  defp model_placement_capacity_for(response, %CanonicalRequest.ModelRef{} = model_ref, true) do
+    response
+    |> Map.get(:runtime_model_placements, [])
+    |> matching_model_placements(model_ref)
+    |> case do
+      [placement] -> valid_model_placement_capacity(placement)
+      _none_or_ambiguous -> nil
+    end
+  end
+
+  defp matching_model_placements(placements, model_ref) when is_list(placements),
+    do: Enum.filter(placements, &model_placement_matches?(&1, model_ref))
+
+  defp matching_model_placements(_placements, _model_ref), do: []
+
+  defp model_placement_matches?(placement, model_ref) when is_map(placement) do
+    case Map.get(placement, :model_ref) || Map.get(placement, "model_ref") do
+      %{model_id: model_id, version: version}
+      when is_binary(model_id) and is_binary(version) ->
+        model_id == model_ref.model_id and version == model_ref.version
+
+      %{"model_id" => model_id, "version" => version}
+      when is_binary(model_id) and is_binary(version) ->
+        model_id == model_ref.model_id and version == model_ref.version
+
+      _other ->
+        false
+    end
+  end
+
+  defp model_placement_matches?(_placement, _model_ref), do: false
+
+  defp valid_model_placement_capacity(placement) when is_map(placement) do
+    active =
+      Map.get(placement, :active_request_count) || Map.get(placement, "active_request_count")
+
+    max = Map.get(placement, :max_concurrency) || Map.get(placement, "max_concurrency")
+
+    if is_integer(active) and active >= 0 and is_integer(max) and max > 0 do
+      %{active_request_count: active, max_concurrency: max}
+    else
+      nil
+    end
+  end
+
+  defp valid_model_placement_capacity(_placement), do: nil
+
+  defp maybe_put_model_placement_capacity(map, nil), do: map
+
+  defp maybe_put_model_placement_capacity(map, capacity),
+    do: Map.put(map, :model_placement_capacity, capacity)
 
   defp maybe_put_prefix_cache_status(map, nil), do: map
   defp maybe_put_prefix_cache_status(map, status), do: Map.put(map, :prefix_cache_status, status)

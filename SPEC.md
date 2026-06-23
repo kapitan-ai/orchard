@@ -782,6 +782,10 @@ Compatibility and defaulting rules:
 * aggregate `runtime_prefix_cache_statuses` counters SHALL remain observe-only telemetry and SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, queue ordering, hosted-tool eligibility, or `worker_generation_mode`; the Phase 4C bounded HMAC fingerprint field MAY affect scheduler ranking only as the explicitly configured non-gating tie-breaker defined in §5.7 and §7.5.3
 * current `RuntimePrefixCacheStatus.status_code` vocabulary is: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
 * these status codes are observational only in this slice and SHALL NOT gate readiness, admission, or scheduling
+* absent or empty `runtime_model_placements` on `StatusResponse` SHALL mean no explicit per-placement capacity observation is available
+* absent or empty `runtime_model_placements` SHALL NOT be treated as a status-probe error
+* `runtime_model_placements` entries SHALL report controller-observed capacity for loaded model placements using `model_ref`, `active_request_count`, and `max_concurrency`; `max_concurrency <= 0`, malformed entries, duplicate matching entries, or non-matching entries SHALL be treated as unknown capacity
+* unknown placement capacity SHALL NOT prove scheduler eligibility for an already-active node; `Orchard.Scheduler.MultiNode` MAY keep a matching loaded-model active candidate eligible only when exactly one valid matching `runtime_model_placements` entry reports `active_request_count < max_concurrency`
 
 Effective readiness rules for future hosted routing:
 
@@ -2155,6 +2159,12 @@ message RuntimePrefixCacheStatus {
   repeated string prefix_cache_fingerprints = 16;
 }
 
+message RuntimeModelPlacement {
+  ModelRef model_ref = 1;
+  uint32 active_request_count = 2;
+  uint32 max_concurrency = 3;
+}
+
 message StatusResponse {
   WorkerState worker_state = 1;
   repeated ModelRef loaded_models = 2;
@@ -2166,6 +2176,7 @@ message StatusResponse {
   repeated RuntimeMemoryBudget runtime_memory_budgets = 8;
   repeated RuntimePrefixCacheStatus runtime_prefix_cache_statuses = 9;
   bool supports_prompt_token_ids = 10;
+  repeated RuntimeModelPlacement runtime_model_placements = 11;
 }
 
 message EnsureModelLoadedRequest {
