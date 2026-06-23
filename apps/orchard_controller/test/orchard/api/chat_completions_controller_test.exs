@@ -818,11 +818,12 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
 
     @tag :db
-    test "SPEC.md §5.2/§5.4 queue admission capacity two admits overlapping chat completions", %{
-      bundle: bundle
-    } do
+    test "SPEC.md §5.2/§5.4/§7.5 queue admission capacity two exposes WorkerProcess telemetry over gRPC",
+         %{
+           bundle: bundle
+         } do
       put_queue_admission_config!(capacity: 2, max_wait_ms: 2_000)
-      put_blocking_runtime_adapter!(self())
+      put_blocking_runtime_adapter!(self(), max_concurrent_requests: 2)
       create_queue_model!(bundle, "chat-queue-capacity2-model")
 
       %{token: token} = create_api_key_with_token!("chat-queue-capacity2")
@@ -843,6 +844,12 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
         refute second_request_id == first_request_id
 
+        status = grpc_status_snapshot()
+        placement = runtime_model_placement!(status, "chat-queue-capacity2-model", "v1")
+        assert status.active_request_count == 2
+        assert placement.active_request_count == 2
+        assert placement.max_concurrency == 2
+
         assert wait_for_queued_request("chat-queue-capacity2-model@v1")
 
         refute_receive {:queue_admission_runtime_started, _pid, _request_id,
@@ -861,6 +868,15 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
 
         conns = Enum.map(tasks, &Task.await(&1, 5_000))
         assert Enum.map(conns, & &1.status) == [200, 200, 200]
+        assert wait_until(fn -> grpc_status_snapshot().active_request_count == 0 end)
+
+        final_status = grpc_status_snapshot()
+
+        final_placement =
+          runtime_model_placement!(final_status, "chat-queue-capacity2-model", "v1")
+
+        assert final_placement.active_request_count == 0
+        assert final_placement.max_concurrency == 2
 
         assert_queue_result_count!("chat-queue-capacity2-model@v1", "immediate", 2)
         assert_queue_result_count!("chat-queue-capacity2-model@v1", "queued", 1)

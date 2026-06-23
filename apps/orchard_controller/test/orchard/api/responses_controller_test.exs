@@ -9,10 +9,7 @@ defmodule Orchard.API.ResponsesControllerTest do
 
   alias Orchard.API.Router
   alias Orchard.ArtifactBundle
-  alias Orchard.Cluster.V1.StatusResponse
-  alias Orchard.Dispatch.GrpcNodeRuntimeClient
   alias Orchard.Governance
-  alias Orchard.Inference
   alias Orchard.Inference.QueueManager
   alias Orchard.InferenceEvent
   alias Orchard.Node
@@ -1363,23 +1360,5 @@ defmodule Orchard.API.ResponsesControllerTest do
   defp remember_runtime_pid(pid) do
     pids = Process.get(:queue_admission_runtime_pids, [])
     Process.put(:queue_admission_runtime_pids, [pid | pids])
-  end
-
-  defp grpc_status_snapshot do
-    target = Inference.runtime_client_target()
-    assert {:ok, channel} = GrpcNodeRuntimeClient.connect(target)
-
-    try do
-      assert {:ok, %StatusResponse{} = status} = GrpcNodeRuntimeClient.status(channel)
-      status
-    after
-      GrpcNodeRuntimeClient.disconnect(channel)
-    end
-  end
-
-  defp runtime_model_placement!(%StatusResponse{} = status, model_id, version) do
-    Enum.find(status.runtime_model_placements, fn placement ->
-      placement.model_ref.model_id == model_id and placement.model_ref.version == version
-    end) || flunk("runtime model placement not found for #{model_id}@#{version}")
   end
 end

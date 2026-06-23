@@ -63,6 +63,9 @@ defmodule Orchard.TestSupport.QueueAdmissionAPI do
   import Ecto.Query
   import ExUnit.Assertions
 
+  alias Orchard.Cluster.V1.StatusResponse
+  alias Orchard.Dispatch.GrpcNodeRuntimeClient
+  alias Orchard.Inference
   alias Orchard.Inference.QueueManager
   alias Orchard.Repo
   alias Orchard.Requests.Request
@@ -176,6 +179,24 @@ defmodule Orchard.TestSupport.QueueAdmissionAPI do
     after
       timeout -> flunk("expected runtime start for #{model_id}")
     end
+  end
+
+  def grpc_status_snapshot do
+    target = Inference.runtime_client_target()
+    assert {:ok, channel} = GrpcNodeRuntimeClient.connect(target)
+
+    try do
+      assert {:ok, %StatusResponse{} = status} = GrpcNodeRuntimeClient.status(channel)
+      status
+    after
+      GrpcNodeRuntimeClient.disconnect(channel)
+    end
+  end
+
+  def runtime_model_placement!(%StatusResponse{} = status, model_id, version) do
+    Enum.find(status.runtime_model_placements, fn placement ->
+      placement.model_ref.model_id == model_id and placement.model_ref.version == version
+    end) || flunk("runtime model placement not found for #{model_id}@#{version}")
   end
 
   def assert_queue_metadata(request, queue_result, opts \\ []) do
