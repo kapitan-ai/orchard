@@ -361,12 +361,12 @@ A scheduler suppression rule for repeatedly failing nodes or placements.
 _Avoid_: Node health
 
 **Queue**:
-A controller-owned wait path used after Admission when work cannot be immediately granted because node or live placement capacity is unavailable or tenant active concurrency is exhausted.
+A controller-owned wait path used after Admission when work cannot be immediately granted because live node or placement capacity is unavailable, node or placement concurrency is exhausted, or tenant active concurrency is exhausted.
 Each Tenant keeps FIFO order, and cross-tenant selection uses weighted round-robin that can skip capped tenants while preserving their FIFO order.
 _Avoid_: Global backlog, Request lifecycle state
 
 **Cluster Busy**:
-A scheduler outcome meaning joined live candidates exist, but none can currently accept the request because placement capacity is exhausted or unknown for already-active candidates.
+A scheduler outcome meaning joined live candidates exist, but none can currently accept the request because node or placement capacity is exhausted, or because placement capacity is unknown for already-active candidates.
 With queue admission enabled, this can return the request to the same Queue deadline; otherwise it is a tenant-facing `503` capacity failure.
 _Avoid_: Transport failure, model not found, queue full
 
@@ -386,6 +386,11 @@ _Avoid_: Readiness gate, admission gate, scheduler eligibility gate, tenant-faci
 Live node-agent status for one loaded Model Placement, including `active_request_count` and `max_concurrency`.
 The scheduler uses it only to prove same-model placement capacity and to rank by requested-placement load.
 _Avoid_: Catalog State, durable placement record, model manifest metadata
+
+**Runtime Node Capacity**:
+Live node-agent status for aggregate runtime capacity on one node, including `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`.
+The scheduler uses it to exclude nodes that have exhausted aggregate request slots before considering per-placement capacity.
+_Avoid_: Tenant quota, durable Node inventory capacity, model-specific capacity
 
 **Prefix-cache Score**:
 A bounded, fail-open score RPC result used only as explicitly configured scheduler tie-break telemetry.

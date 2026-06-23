@@ -154,9 +154,9 @@ No `ORCHARD_WORKER_GENERATION_MODE` override is required for this rollback path;
 when the backend is `stub` and the mode env var is unset, packaged runtime
 configuration resolves generation mode to `stream`. If set explicitly, valid
 values are `stream` and `batch`; leave it unset for stub rollback.
-For MLX batch mode, `ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL` controls same-model request admission per loaded placement.
+For MLX batch mode, `ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL` controls request admission per loaded placement and aggregate active requests across loaded models on the node.
 The default `auto` value resolves through `ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL`, currently `3`.
-The node-agent reports the effective placement limit in `StatusResponse.runtime_model_placements`.
+The node-agent reports aggregate capacity in `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`, and placement capacity in `StatusResponse.runtime_model_placements`.
 
 **Security note:** These files are sourced by shell scripts running as root
 (via launchd). The wrapper scripts validate ownership and permissions before

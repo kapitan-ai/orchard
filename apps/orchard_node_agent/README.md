@@ -13,7 +13,7 @@ This README is orientation only. Normative behavior lives in
 - Node-local runtime service behavior used by the controller.
 - Model acquisition/cache/load coordination on a node.
 - Worker process supervision and node-local diagnostics/status reporting.
-- Runtime placement capacity telemetry for loaded models.
+- Runtime aggregate node and placement capacity telemetry.
 - Manual Elixir binding for the node-agent ↔ worker proto.
 
 ## Does not own

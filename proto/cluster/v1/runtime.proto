@@ -136,6 +136,7 @@ message RuntimeModelPlacement {
 message StatusResponse {
   WorkerState worker_state = 1;
   repeated ModelRef loaded_models = 2;
+  // Active runtime requests across the node.
   uint32 active_request_count = 3;
   RuntimeNodeMetadata node_metadata = 4;
   RuntimeHealth runtime_health = 5;
