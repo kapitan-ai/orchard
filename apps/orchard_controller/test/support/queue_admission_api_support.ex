@@ -94,14 +94,16 @@ defmodule Orchard.TestSupport.QueueAdmissionAPI do
     QueueManager.reset()
   end
 
-  def put_blocking_runtime_adapter!(test_owner) do
+  def put_blocking_runtime_adapter!(test_owner, opts \\ []) do
+    max_concurrent_requests = Keyword.get(opts, :max_concurrent_requests, 3)
+
     runtime =
       Application.fetch_env!(:orchard_node_agent, :runtime)
       |> Keyword.put(:runtime_adapter_impl, QueueAdmissionRuntimeAdapter)
       # The fake adapter must not serialize WorkerProcess while controller queue
       # capacity is under test; production worker-adapter limits are covered elsewhere.
       |> Keyword.put(:worker_generation_mode, "batch")
-      |> Keyword.put(:worker_max_concurrent_requests_per_model, 3)
+      |> Keyword.put(:worker_max_concurrent_requests_per_model, max_concurrent_requests)
       |> Keyword.put(:test_only_allow_batch_admission_for_non_worker_adapters?, true)
 
     Application.put_env(:orchard_node_agent, :runtime, runtime)
