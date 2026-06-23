@@ -4,8 +4,8 @@ defmodule Orchard.Scheduler.MultiNode do
   selects the best candidate for dispatch.
 
   Ranking order (descending priority):
-  1. Node has the requested model already loaded
-  2. Lower `active_request_count`
+  1. Exclude live candidates with `active_request_count > 0`
+  2. Node has the requested model already loaded
   3. Healthier node (`:healthy` over `:degraded`)
   4. Live prefix-cache fingerprint match when explicitly enabled
   5. Cache-affinity match when explicitly enabled
@@ -15,9 +15,12 @@ defmodule Orchard.Scheduler.MultiNode do
   9. Lexicographically smaller `node_id` (deterministic tie-break)
 
   Falls back to `SingleNode.default_schedule/1` when:
-  - Only 0 or 1 targets are configured
+  - No targets are configured
   - All probes fail
   - No schedulable nodes remain after filtering
+
+  Returns `{:error, :cluster_busy}` when live probes joined to persisted schedulable
+  nodes, but every joined candidate is already active.
   """
 
   alias Orchard.CanonicalRequest
@@ -63,7 +66,7 @@ defmodule Orchard.Scheduler.MultiNode do
   def schedule(%CanonicalRequest{} = request, opts) when is_list(opts) do
     targets = Inference.runtime_client_targets()
 
-    if length(targets) <= 1 do
+    if targets == [] do
       fallback_schedule(request, targets)
     else
       schedule_multi(request, targets, opts)
@@ -99,72 +102,79 @@ defmodule Orchard.Scheduler.MultiNode do
       |> Enum.filter(&Map.has_key?(schedulable_map, &1.node_id))
       |> Enum.map(&Map.put(&1, :node, schedulable_map[&1.node_id]))
 
-    if candidates == [] do
-      fallback_schedule(request, targets)
-    else
-      cache_affinity_config = Inference.cache_affinity_config()
+    idle_candidates = Enum.reject(candidates, &active_candidate?/1)
 
-      {affinity_candidates, affinity_context} =
-        CacheAffinity.prepare(request, candidates, cache_affinity_config)
+    cond do
+      candidates == [] ->
+        fallback_schedule(request, targets)
 
-      live_fingerprint_match_enabled? =
-        CacheAffinity.live_fingerprint_match_enabled?(cache_affinity_config)
+      idle_candidates == [] ->
+        {:error, :cluster_busy}
 
-      prefix_cache_scoring_enabled? = Inference.prefix_cache_scoring_enabled?()
-      memory_admission_enabled? = Inference.memory_admission_enabled?()
+      true ->
+        cache_affinity_config = Inference.cache_affinity_config()
 
-      prefer_capable_workers? =
-        Inference.tokenizer_safe_mode_prefer_capable_workers?() and
-          Inference.tokenizer_safe_mode() != :off
+        {affinity_candidates, affinity_context} =
+          CacheAffinity.prepare(request, idle_candidates, cache_affinity_config)
 
-      annotated_candidates =
-        affinity_candidates
-        |> annotate_prefix_cache_fingerprint_matches(
-          affinity_context,
-          live_fingerprint_match_enabled?
-        )
-        |> annotate_capable_workers(prefer_capable_workers?)
-        |> annotate_memory_admission(memory_admission_enabled?)
+        live_fingerprint_match_enabled? =
+          CacheAffinity.live_fingerprint_match_enabled?(cache_affinity_config)
 
-      ranking_opts = [
-        live_fingerprint_match?: live_fingerprint_match_enabled?,
-        prefer_capable_workers?: prefer_capable_workers?,
-        memory_admission?: memory_admission_enabled?
-      ]
+        prefix_cache_scoring_enabled? = Inference.prefix_cache_scoring_enabled?()
+        memory_admission_enabled? = Inference.memory_admission_enabled?()
 
-      ranked = rank_candidates(annotated_candidates, ranking_opts)
+        prefer_capable_workers? =
+          Inference.tokenizer_safe_mode_prefer_capable_workers?() and
+            Inference.tokenizer_safe_mode() != :off
 
-      {selected, selected_score} =
-        select_candidate_with_prefix_cache_score(
-          request,
-          ranked,
-          client,
-          cache_affinity_config,
-          prefix_cache_scoring_enabled?,
-          ranking_opts
-        )
+        annotated_candidates =
+          affinity_candidates
+          |> annotate_prefix_cache_fingerprint_matches(
+            affinity_context,
+            live_fingerprint_match_enabled?
+          )
+          |> annotate_capable_workers(prefer_capable_workers?)
+          |> annotate_memory_admission(memory_admission_enabled?)
 
-      schedule =
-        %{
-          strategy: :multi_node,
-          request_id: request.public_id,
-          runtime_client_target: selected.target,
-          request_timeout_ms: Inference.request_timeout_ms(),
-          model_load_timeout_ms: Inference.model_load_timeout_ms(),
-          node_id: selected.node_id,
-          candidate_count: length(ranked),
-          selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
-        }
-        |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
-        |> maybe_put_prefix_cache_fingerprint_match(
-          selected,
-          live_fingerprint_match_enabled?
-        )
-        |> maybe_put_prefix_cache_score(selected_score)
-        |> maybe_put_memory_admission(selected, memory_admission_enabled?)
+        ranking_opts = [
+          live_fingerprint_match?: live_fingerprint_match_enabled?,
+          prefer_capable_workers?: prefer_capable_workers?,
+          memory_admission?: memory_admission_enabled?
+        ]
 
-      {:ok,
-       Map.merge(schedule, CacheAffinity.scheduler_metadata(affinity_context, ranked, selected))}
+        ranked = rank_candidates(annotated_candidates, ranking_opts)
+
+        {selected, selected_score} =
+          select_candidate_with_prefix_cache_score(
+            request,
+            ranked,
+            client,
+            cache_affinity_config,
+            prefix_cache_scoring_enabled?,
+            ranking_opts
+          )
+
+        schedule =
+          %{
+            strategy: :multi_node,
+            request_id: request.public_id,
+            runtime_client_target: selected.target,
+            request_timeout_ms: Inference.request_timeout_ms(),
+            model_load_timeout_ms: Inference.model_load_timeout_ms(),
+            node_id: selected.node_id,
+            candidate_count: length(ranked),
+            selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
+          }
+          |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
+          |> maybe_put_prefix_cache_fingerprint_match(
+            selected,
+            live_fingerprint_match_enabled?
+          )
+          |> maybe_put_prefix_cache_score(selected_score)
+          |> maybe_put_memory_admission(selected, memory_admission_enabled?)
+
+        {:ok,
+         Map.merge(schedule, CacheAffinity.scheduler_metadata(affinity_context, ranked, selected))}
     end
   end
 
@@ -211,6 +221,11 @@ defmodule Orchard.Scheduler.MultiNode do
         nil
     end
   end
+
+  defp active_candidate?(%{active_request_count: count}) when is_integer(count) and count > 0,
+    do: true
+
+  defp active_candidate?(_candidate), do: false
 
   defp extract_valid_node_id(%{node_metadata: %{node_id: node_id}}) when is_binary(node_id) do
     case Ecto.UUID.cast(node_id) do
@@ -654,7 +669,6 @@ defmodule Orchard.Scheduler.MultiNode do
   defp base_rank(candidate) do
     [
       not candidate.loaded_model?,
-      candidate.active_request_count,
       health_rank(candidate.node.health)
     ]
   end

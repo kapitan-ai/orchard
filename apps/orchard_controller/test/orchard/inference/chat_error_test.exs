@@ -157,6 +157,32 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
   end
 
+  test "cluster_busy execute errors preserve scheduler saturation mapping" do
+    error = ChatError.from_execute_error(:cluster_busy)
+
+    assert ChatError.api_mapping(error) == %{
+             status: :service_unavailable,
+             type: "server_error",
+             code: "cluster_busy",
+             message: "Cluster is busy",
+             param: nil
+           }
+
+    assert ChatError.sse_mapping(error) == %{
+             type: "server_error",
+             code: "cluster_busy",
+             message: "Cluster is busy",
+             param: nil
+           }
+
+    assert ChatError.terminal_attrs(error) == %{
+             state: :failed,
+             http_status: 503,
+             error_code: "cluster_busy",
+             error_message: "Cluster is busy"
+           }
+  end
+
   test "tooling_not_supported failed events preserve a 400 invalid_request_error mapping" do
     event =
       InferenceEvent.failed(

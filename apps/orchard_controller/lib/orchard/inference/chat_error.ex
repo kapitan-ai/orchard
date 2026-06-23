@@ -20,6 +20,7 @@ defmodule Orchard.Inference.ChatError do
           | :tokenization_internal
           | :model_load_failed
           | :model_busy
+          | :cluster_busy
           | :queue_full
           | :queue_timeout
           | :request_timed_out
@@ -101,15 +102,17 @@ defmodule Orchard.Inference.ChatError do
   def from_execute_error({:model_load_failed, %ModelLoadFailure{} = failure}),
     do: build(:model_load_failed, model_load_failure: failure)
 
-  def from_execute_error(reason) when reason in [:model_busy, :queue_full, :queue_timeout],
-    do: build_admission_error(reason, nil)
+  def from_execute_error(reason)
+      when reason in [:model_busy, :cluster_busy, :queue_full, :queue_timeout],
+      do: build_admission_error(reason, nil)
 
   def from_execute_error({kind, message})
-      when kind in [:model_busy, :queue_full, :queue_timeout] and is_binary(message),
+      when kind in [:model_busy, :cluster_busy, :queue_full, :queue_timeout] and
+             is_binary(message),
       do: build_admission_error(kind, message)
 
   def from_execute_error({kind, detail})
-      when kind in [:model_busy, :queue_full, :queue_timeout],
+      when kind in [:model_busy, :cluster_busy, :queue_full, :queue_timeout],
       do: build_admission_error(kind, nil, detail)
 
   def from_execute_error(reason), do: build(:internal, detail: reason)
@@ -234,6 +237,16 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def api_mapping(%__MODULE__{kind: :cluster_busy}) do
+    %{
+      status: :service_unavailable,
+      type: "server_error",
+      code: "cluster_busy",
+      message: "Cluster is busy",
+      param: nil
+    }
+  end
+
   def api_mapping(%__MODULE__{kind: :queue_full}) do
     %{
       status: :too_many_requests,
@@ -347,6 +360,15 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def terminal_attrs(%__MODULE__{kind: :cluster_busy} = error) do
+    %{
+      state: :failed,
+      http_status: 503,
+      error_code: error.source_code || "cluster_busy",
+      error_message: error.source_message || "Cluster is busy"
+    }
+  end
+
   def terminal_attrs(%__MODULE__{kind: :queue_full} = error) do
     %{
       state: :failed,
@@ -426,6 +448,7 @@ defmodule Orchard.Inference.ChatError do
     do: :request_timed_out
 
   defp failed_event_kind("model_busy"), do: :model_busy
+  defp failed_event_kind("cluster_busy"), do: :cluster_busy
   defp failed_event_kind("queue_full"), do: :queue_full
   defp failed_event_kind("queue_timeout"), do: :queue_timeout
 

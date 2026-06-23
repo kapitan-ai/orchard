@@ -434,6 +434,20 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.strategy == :single_node
     end
+
+    test "returns cluster_busy for one live active target instead of bypassing capacity checks" do
+      put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node.id, host: "10.0.0.1", port: 50_061, active_request_count: 1)
+      )
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request(), status_client: StubClient)
+    end
   end
 
   # -- Multi-node ranking --
@@ -529,7 +543,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.selected_tier == "loaded"
     end
 
-    test "prefers lower active_request_count when both cold" do
+    test "excludes active loaded node in favor of idle cold node" do
       node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
       node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
 
@@ -539,24 +553,43 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         make_status(node_a.id,
           host: "10.0.0.1",
           port: 50_061,
-          active_request_count: 5
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 1
         )
       )
 
       stub_probe(
         "10.0.0.2",
         50_062,
-        make_status(node_b.id,
-          host: "10.0.0.2",
-          port: 50_062,
-          active_request_count: 2
-        )
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
       )
 
-      request = canonical_request()
+      request = canonical_request("test-model", "v1")
 
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.node_id == node_b.id
+      assert schedule.selected_tier == "cold"
+      assert schedule.candidate_count == 1
+    end
+
+    test "returns cluster_busy when all joined candidates are active without fallback" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id, host: "10.0.0.1", port: 50_061, active_request_count: 1)
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062, active_request_count: 2)
+      )
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request(), status_client: StubClient)
     end
 
     test "prefers healthy over degraded when tied" do
@@ -1662,7 +1695,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       refute exit_log =~ ":score_call_exit"
     end
 
-    test "does not let cache-affinity outrank active request count" do
+    test "does not let cache-affinity make an active candidate eligible" do
       put_inference(cache_affinity: [enabled: true, max_age_ms: 300_000, max_recent_requests: 8])
 
       id_a = "00000000-0000-0000-0000-000000000001"
@@ -1696,7 +1729,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.node_id == id_a
       assert schedule.cache_affinity_hint_available == true
       assert schedule.cache_affinity_selected_match == false
-      assert schedule.cache_affinity_candidate_count == 1
+      assert schedule.cache_affinity_candidate_count == 0
       assert schedule.selected_cache_tier == "hint_not_selected"
     end
 
@@ -1918,7 +1951,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.memory_admission_tier == "headroom_unknown"
     end
 
-    test "does not let memory admission outrank active load" do
+    test "memory headroom does not make an active candidate eligible" do
       put_inference(memory_admission: [enabled: true])
 
       id_a = "00000000-0000-0000-0000-000000000001"
@@ -1945,6 +1978,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
 
       assert schedule.node_id == id_a
+      assert schedule.candidate_count == 1
       assert schedule.memory_admission_tier == "headroom_unknown"
     end
 
@@ -2495,14 +2529,14 @@ defmodule Orchard.Scheduler.MultiNodeTest do
           health: :degraded
         })
 
-      # Node B has lower request count — should win among degraded peers
+      # Node A is the only idle degraded peer, so it remains eligible.
       stub_probe(
         "10.0.0.1",
         50_061,
         make_status(node_a.id,
           host: "10.0.0.1",
           port: 50_061,
-          active_request_count: 3,
+          active_request_count: 0,
           health: %{ready: true, health_code: "warn", health_message: "degraded"}
         )
       )
@@ -2522,8 +2556,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.strategy == :multi_node
-      assert schedule.node_id == node_b.id
-      assert schedule.candidate_count == 2
+      assert schedule.node_id == node_a.id
+      assert schedule.candidate_count == 1
     end
 
     test "prefers loaded model even when all degraded" do
