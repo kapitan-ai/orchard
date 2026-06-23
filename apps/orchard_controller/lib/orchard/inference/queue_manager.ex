@@ -254,7 +254,8 @@ defmodule Orchard.Inference.QueueManager do
         {ticket, state} = enqueue_request(request, config, state)
         {:reply, {:queued, ticket}, state}
 
-      active_capacity?(lane, config.capacity) and tenant_active_capacity?(state, request, config) and
+      active_capacity?(lane, config.capacity) and
+        tenant_active_capacity?(state, request, config) and
           not queue_key_has_queued_entries?(state, request.queue_key) ->
         {grant, state} = grant_immediate(request, config, state)
         {:reply, {:ok, grant}, state}
