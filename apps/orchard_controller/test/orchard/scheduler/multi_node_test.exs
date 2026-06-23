@@ -583,6 +583,57 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.candidate_count == 2
     end
 
+    test "prefers lower matching placement active count before health and node_id" do
+      node_a =
+        insert_node!(%{
+          id: "00000000-0000-0000-0000-000000000001",
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :healthy
+        })
+
+      node_b =
+        insert_node!(%{
+          id: "00000000-0000-0000-0000-000000000002",
+          advertise_addr: "10.0.0.2",
+          rpc_port: 50_062,
+          health: :degraded
+        })
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 2,
+          runtime_model_placements: [model_placement("test-model", "v1", 2, 3)]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id,
+          host: "10.0.0.2",
+          port: 50_062,
+          health: %{ready: true, health_code: "warn", health_message: "degraded"},
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          active_request_count: 1,
+          runtime_model_placements: [model_placement("test-model", "v1", 1, 3)]
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_b.id
+      assert schedule.selected_tier == "loaded"
+      assert schedule.candidate_count == 2
+    end
+
     test "excludes active loaded node at matching placement capacity" do
       node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
       node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})

@@ -6,13 +6,14 @@ defmodule Orchard.Scheduler.MultiNode do
   Ranking order (descending priority):
   1. Exclude full candidates, or active candidates with unknown placement capacity
   2. Node has the requested model already loaded
-  3. Healthier node (`:healthy` over `:degraded`)
-  4. Live prefix-cache fingerprint match when explicitly enabled
-  5. Cache-affinity match when explicitly enabled
-  6. Prompt-token-ID capable worker preference when explicitly enabled and safe mode is not `:off`
-  7. Memory headroom positive signal when explicitly enabled
-  8. Gated Phase 4D tie-only `ScorePrefixCache` reselection, when explicitly enabled
-  9. Lexicographically smaller `node_id` (deterministic tie-break)
+  3. Lower active request count for the requested placement
+  4. Healthier node (`:healthy` over `:degraded`)
+  5. Live prefix-cache fingerprint match when explicitly enabled
+  6. Cache-affinity match when explicitly enabled
+  7. Prompt-token-ID capable worker preference when explicitly enabled and safe mode is not `:off`
+  8. Memory headroom positive signal when explicitly enabled
+  9. Gated Phase 4D tie-only `ScorePrefixCache` reselection, when explicitly enabled
+  10. Lexicographically smaller `node_id` (deterministic tie-break)
 
   Falls back to `SingleNode.default_schedule/1` when:
   - No targets are configured
@@ -734,9 +735,22 @@ defmodule Orchard.Scheduler.MultiNode do
   defp base_rank(candidate) do
     [
       not candidate.loaded_model?,
+      active_request_rank(candidate),
       health_rank(candidate.node.health)
     ]
   end
+
+  defp active_request_rank(%{
+         model_placement_capacity: %{active_request_count: active_request_count}
+       })
+       when is_integer(active_request_count) and active_request_count >= 0,
+       do: active_request_count
+
+  defp active_request_rank(%{active_request_count: active_request_count})
+       when is_integer(active_request_count) and active_request_count >= 0,
+       do: active_request_count
+
+  defp active_request_rank(_candidate), do: 0
 
   defp health_rank(:healthy), do: 0
   defp health_rank(:degraded), do: 1
