@@ -17,6 +17,7 @@ defmodule OrchardSharedTest do
     OutputTextDelta,
     PlacementState,
     RuntimeHealth,
+    RuntimeModelPlacement,
     RuntimeNodeMetadata,
     StatusResponse,
     TokenUsage,
@@ -166,6 +167,25 @@ defmodule OrchardSharedTest do
         health_message: "",
         affected_model: nil
       }
+    }
+
+    assert response == response |> StatusResponse.encode() |> StatusResponse.decode()
+  end
+
+  test "round-trips StatusResponse with runtime model placements" do
+    model_ref = %ModelRef{model_id: "test-model", version: "v1"}
+
+    response = %StatusResponse{
+      worker_state: :WORKER_STATE_BUSY,
+      loaded_models: [model_ref],
+      active_request_count: 2,
+      runtime_model_placements: [
+        %RuntimeModelPlacement{
+          model_ref: model_ref,
+          active_request_count: 2,
+          max_concurrency: 3
+        }
+      ]
     }
 
     assert response == response |> StatusResponse.encode() |> StatusResponse.decode()
