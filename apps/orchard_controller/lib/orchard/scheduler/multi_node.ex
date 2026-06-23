@@ -229,20 +229,32 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
-  defp candidate_full?(%{active_request_count: active, max_concurrency: max})
+  defp candidate_full?(candidate) do
+    node_concurrency_full?(candidate) or placement_capacity_full?(candidate) or
+      active_without_known_capacity?(candidate)
+  end
+
+  defp node_concurrency_full?(%{active_request_count: active, max_concurrency: max})
        when is_integer(active) and is_integer(max) and max > 0,
        do: active >= max
 
-  defp candidate_full?(%{
+  defp node_concurrency_full?(_candidate), do: false
+
+  defp placement_capacity_full?(%{
          model_placement_capacity: %{active_request_count: active, max_concurrency: max}
        })
        when is_integer(active) and is_integer(max) and max > 0,
        do: active >= max
 
-  defp candidate_full?(%{active_request_count: count}) when is_integer(count) and count > 0,
-    do: true
+  defp placement_capacity_full?(_candidate), do: false
 
-  defp candidate_full?(_candidate), do: false
+  defp active_without_known_capacity?(%{model_placement_capacity: _capacity}), do: false
+
+  defp active_without_known_capacity?(%{active_request_count: count})
+       when is_integer(count) and count > 0,
+       do: true
+
+  defp active_without_known_capacity?(_candidate), do: false
 
   defp node_max_concurrency(response) do
     case Map.get(response, :max_concurrency) || Map.get(response, "max_concurrency") do

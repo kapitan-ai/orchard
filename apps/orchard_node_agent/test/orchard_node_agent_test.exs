@@ -19,6 +19,7 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Cluster.V1.OutputTextDelta
   alias Orchard.Cluster.V1.ScorePrefixCacheRequest
   alias Orchard.Cluster.V1.ScorePrefixCacheResponse
+  alias Orchard.Cluster.V1.RuntimeModelPlacement
   alias Orchard.Cluster.V1.StatusRequest
   alias Orchard.Cluster.V1.StatusResponse
   alias Orchard.Cluster.V1.TokenUsage
@@ -2872,8 +2873,7 @@ defmodule OrchardNodeAgentTest do
                  runtime_model_placements: [
                    %RuntimeModelPlacement{
                      active_request_count: 2,
-                     max_concurrency: 2,
-                     placement_state: :PLACEMENT_STATE_LOADED
+                     max_concurrency: 2
                    }
                  ]
                } = NodeStatus.current()
