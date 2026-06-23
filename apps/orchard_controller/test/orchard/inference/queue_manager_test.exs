@@ -106,39 +106,38 @@ defmodule Orchard.Inference.QueueManagerTest do
     second_tenant_id = Ecto.UUID.generate()
     config = queue_config(capacity: 2, max_active_per_tenant: 1)
 
-    assert {:ok, first_grant} =
-             QueueManager.acquire(
-               admission_request("req-tenant-lane-head-a", tenant_id: first_tenant_id),
-               config: config
-             )
+    with_queue_admission_config(config, fn ->
+      assert {:ok, first_grant} =
+               QueueManager.acquire(
+                 admission_request("req-tenant-lane-head-a", tenant_id: first_tenant_id)
+               )
 
-    assert {:queued, blocked_ticket} =
-             QueueManager.acquire(
-               admission_request("req-tenant-lane-head-b", tenant_id: first_tenant_id),
-               config: config
-             )
+      assert {:queued, blocked_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-tenant-lane-head-b", tenant_id: first_tenant_id)
+               )
 
-    blocked_awaiter = Task.async(fn -> QueueManager.await(blocked_ticket) end)
-    assert wait_until(fn -> queue_entry_awaiting?(blocked_ticket) end)
+      blocked_awaiter = Task.async(fn -> QueueManager.await(blocked_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(blocked_ticket) end)
 
-    assert {:queued, other_ticket} =
-             QueueManager.acquire(
-               admission_request("req-tenant-lane-head-c", tenant_id: second_tenant_id),
-               config: config
-             )
+      assert {:queued, other_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-tenant-lane-head-c", tenant_id: second_tenant_id)
+               )
 
-    other_awaiter = Task.async(fn -> QueueManager.await(other_ticket) end)
+      other_awaiter = Task.async(fn -> QueueManager.await(other_ticket) end)
 
-    assert {:ok, other_grant} = Task.await(other_awaiter, 2_000)
-    assert other_grant.queue_result == :queued
-    refute Task.yield(blocked_awaiter, 50)
+      assert {:ok, other_grant} = Task.await(other_awaiter, 2_000)
+      assert other_grant.queue_result == :queued
+      refute Task.yield(blocked_awaiter, 50)
 
-    assert :ok = QueueManager.release(first_grant)
-    assert {:ok, blocked_grant} = Task.await(blocked_awaiter, 2_000)
-    assert blocked_grant.queue_result == :queued
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, blocked_grant} = Task.await(blocked_awaiter, 2_000)
+      assert blocked_grant.queue_result == :queued
 
-    assert :ok = QueueManager.release(other_grant)
-    assert :ok = QueueManager.release(blocked_grant)
+      assert :ok = QueueManager.release(other_grant)
+      assert :ok = QueueManager.release(blocked_grant)
+    end)
   end
 
   test "SPEC.md §5.4 cross-tenant weighted round-robin grants one tenant turn at a time" do
@@ -386,80 +385,63 @@ defmodule Orchard.Inference.QueueManagerTest do
   test "SPEC.md §5.4 weighted promotion skips tenants blocked by active cap" do
     tenant_a = Ecto.UUID.generate()
     tenant_b = Ecto.UUID.generate()
-    tenant_weights = %{tenant_a => 2, tenant_b => 1}
 
     config =
-      queue_config(capacity: 2, max_active_per_tenant: 1, tenant_weights: tenant_weights)
+      queue_config(max_active_per_tenant: 1, tenant_weights: %{tenant_a => 2, tenant_b => 1})
 
-    assert {:ok, active_a} =
-             QueueManager.acquire(
-               admission_request("req-weighted-active-cap-held",
-                 tenant_id: tenant_a,
-                 model_id: "queue-model-held"
-               ),
-               config: config
-             )
-
-    assert {:queued, ticket_a} =
-             QueueManager.acquire(
-               admission_request("req-weighted-active-cap-a",
-                 tenant_id: tenant_a,
-                 model_id: "queue-model-a"
-               ),
-               config:
-                 queue_config(
-                   capacity: 0,
-                   max_active_per_tenant: 1,
-                   tenant_weights: tenant_weights
+    with_queue_admission_config(config, fn ->
+      assert {:ok, active_a} =
+               QueueManager.acquire(
+                 admission_request("req-weighted-active-cap-held-a",
+                   tenant_id: tenant_a,
+                   model_id: "queue-model-a"
                  )
-             )
+               )
 
-    assert {:queued, ticket_b} =
-             QueueManager.acquire(
-               admission_request("req-weighted-active-cap-b",
-                 tenant_id: tenant_b,
-                 model_id: "queue-model-b"
-               ),
-               config: queue_config(capacity: 0, tenant_weights: tenant_weights)
-             )
+      assert {:ok, active_b} =
+               QueueManager.acquire(
+                 admission_request("req-weighted-active-cap-held-b",
+                   tenant_id: tenant_b,
+                   model_id: "queue-model-b"
+                 )
+               )
 
-    awaiter_a = start_result_awaiter(ticket_a, :tenant_a)
-    awaiter_b = start_result_awaiter(ticket_b, :tenant_b)
+      assert {:queued, ticket_a} =
+               QueueManager.acquire(
+                 admission_request("req-weighted-active-cap-a",
+                   tenant_id: tenant_a,
+                   model_id: "queue-model-a"
+                 )
+               )
 
-    assert wait_until(fn -> queue_entry_awaiting?(ticket_a) end)
-    assert wait_until(fn -> queue_entry_awaiting?(ticket_b) end)
+      assert {:queued, ticket_b} =
+               QueueManager.acquire(
+                 admission_request("req-weighted-active-cap-b",
+                   tenant_id: tenant_b,
+                   model_id: "queue-model-b"
+                 )
+               )
 
-    :sys.replace_state(QueueManager, fn state ->
-      lanes =
-        Map.new(state.lanes, fn {queue_key, lane} ->
-          {queue_key, Map.put(lane, :capacity, 1)}
-        end)
+      awaiter_a = await_and_hold(ticket_a, :tenant_a)
+      awaiter_b = await_and_hold(ticket_b, :tenant_b)
 
-      %{state | lanes: lanes}
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_a) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket_b) end)
+
+      assert :ok = QueueManager.release(active_b)
+      assert_receive {:await_result, :tenant_b, {:ok, grant_b}}, 1_000
+      assert grant_b.queue_key == "queue-model-b@v1"
+      refute_receive {:await_result, :tenant_a, {:ok, _grant_a}}, 50
+
+      assert :ok = QueueManager.release(active_a)
+      assert_receive {:await_result, :tenant_a, {:ok, grant_a}}, 1_000
+      assert grant_a.queue_key == "queue-model-a@v1"
+
+      assert :ok = QueueManager.release(grant_a)
+      assert :ok = QueueManager.release(grant_b)
+      stop_awaiter(awaiter_a)
+      stop_awaiter(awaiter_b)
     end)
-
-    assert {:queued, trigger_ticket} =
-             QueueManager.acquire(
-               admission_request("req-weighted-active-cap-trigger",
-                 model_id: "queue-model-trigger"
-               ),
-               config: queue_config(capacity: 0, tenant_weights: tenant_weights)
-             )
-
-    assert_receive {:tenant_b, {:ok, grant_b}}, 1_000
-    assert grant_b.queue_key == "queue-model-b@v1"
-    refute_receive {:tenant_a, {:ok, _grant_a}}, 50
-
-    assert :ok = QueueManager.release(active_a)
-    assert_receive {:tenant_a, {:ok, grant_a}}, 1_000
-    assert grant_a.queue_key == "queue-model-a@v1"
-
-    assert :ok = QueueManager.abandon(trigger_ticket)
-    assert :ok = QueueManager.release(grant_a)
-    assert :ok = QueueManager.release(grant_b)
-
-    Process.exit(awaiter_a, :kill)
-    Process.exit(awaiter_b, :kill)
   end
 
   test "SPEC.md §3.6 immediate grant holder death releases lane before explicit release" do

@@ -1199,7 +1199,8 @@ defmodule Orchard.Inference.QueueManager do
       model_id: model_id,
       version: version,
       caller_pid: Map.get(attrs, :caller_pid, self()),
-      max_active_per_tenant: normalize_max_active_per_tenant(Map.get(attrs, :max_active_per_tenant)),
+      max_active_per_tenant:
+        normalize_max_active_per_tenant(Map.get(attrs, :max_active_per_tenant)),
       queue_key: queue_key(model_id, version)
     }
   end

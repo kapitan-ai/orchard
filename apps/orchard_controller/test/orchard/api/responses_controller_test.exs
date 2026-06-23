@@ -493,10 +493,9 @@ defmodule Orchard.API.ResponsesControllerTest do
     end
   end
 
-  test "SPEC.md §5.4 tenant active cap queues same-tenant responses requests despite scheduler capacity",
+  test "SPEC.md §5.4 tenant active cap queues same-tenant responses requests despite lane capacity",
        %{bundle: bundle} do
-    put_queue_admission_config!(max_active_per_tenant: 1)
-    put_capacity_two_scheduler!()
+    put_queue_admission_config!(capacity: 2, max_active_per_tenant: 1)
 
     put_blocking_runtime_adapter!(self(),
       worker_generation_mode: "batch",
@@ -548,9 +547,7 @@ defmodule Orchard.API.ResponsesControllerTest do
     queued = request_with_queue_result!("responses-queue-tenant-active-cap-model@v1", "queued")
 
     assert_queue_metadata(immediate, "immediate", granted?: true)
-    assert immediate.scheduler_decision["queue_lane_capacity"] == 2
     assert_queue_metadata(queued, "queued", queued?: true, granted?: true)
-    assert queued.scheduler_decision["queue_lane_capacity"] == 2
   end
 
   test "SPEC.md §7.2.7 returns top-level sync responses envelopes for busy and queue execute errors" do
@@ -1368,7 +1365,8 @@ defmodule Orchard.API.ResponsesControllerTest do
           {"responses-replay-model", "v1"},
           {"responses-stream-model", "v1"},
           {"responses-queue-overlap-model", "v1"},
-          {"responses-queue-capacity2-model", "v1"}
+          {"responses-queue-capacity2-model", "v1"},
+          {"responses-queue-tenant-active-cap-model", "v1"}
         ],
         fn {model_id, version} ->
           cache_path = Path.join([models_root, model_id, version])

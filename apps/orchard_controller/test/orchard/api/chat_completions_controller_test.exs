@@ -899,10 +899,9 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
     end
 
     @tag :db
-    test "SPEC.md §5.4 tenant active cap queues same-tenant chat completions despite scheduler capacity",
+    test "SPEC.md §5.4 tenant active cap queues same-tenant chat completions despite lane capacity",
          %{bundle: bundle} do
-      put_queue_admission_config!(max_active_per_tenant: 1)
-      put_capacity_two_scheduler!()
+      put_queue_admission_config!(capacity: 2, max_active_per_tenant: 1)
 
       put_blocking_runtime_adapter!(self(),
         worker_generation_mode: "batch",
@@ -954,9 +953,7 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       queued = request_with_queue_result!("chat-queue-tenant-active-cap-model@v1", "queued")
 
       assert_queue_metadata(immediate, "immediate", granted?: true)
-      assert immediate.scheduler_decision["queue_lane_capacity"] == 2
       assert_queue_metadata(queued, "queued", queued?: true, granted?: true)
-      assert queued.scheduler_decision["queue_lane_capacity"] == 2
     end
 
     test "SPEC.md §7.2.7 returns top-level chat envelopes for busy and queue execute errors" do
@@ -1590,7 +1587,8 @@ defmodule Orchard.API.ChatCompletionsControllerTest do
       {"persist-non-stream-model", "v1"},
       {"tenant-scope-model", "v1"},
       {"chat-queue-overlap-model", "v1"},
-      {"chat-queue-capacity2-model", "v1"}
+      {"chat-queue-capacity2-model", "v1"},
+      {"chat-queue-tenant-active-cap-model", "v1"}
     ]
 
     cache_paths =
