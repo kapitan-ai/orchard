@@ -1437,7 +1437,9 @@ defmodule Orchard.Inference.QueueManager do
       node_max: positive_integer(Map.get(observation, :node_max)),
       placements: normalize_node_capacity_placements(Map.get(observation, :placements, [])),
       reserve_unassigned_node_grants?:
-        Map.get(observation, :reserve_unassigned_node_grants?, true) != false
+        Map.get(observation, :reserve_unassigned_node_grants?, true) != false,
+      reserve_unassigned_source_grants?:
+        Map.get(observation, :reserve_unassigned_source_grants?, false) == true
     }
   end
 
@@ -1742,12 +1744,21 @@ defmodule Orchard.Inference.QueueManager do
        ),
        do: 0
 
-  defp unassigned_node_grant_count(state, _observation, source_grant_ids) do
+  defp unassigned_node_grant_count(state, observation, source_grant_ids) do
     Enum.count(state.grants, fn {grant_id, grant} ->
-      is_nil(Map.get(grant, :node_id)) and is_nil(Map.get(grant, :capacity_source)) and
-        not MapSet.member?(source_grant_ids, grant_id)
+      is_nil(Map.get(grant, :node_id)) and not MapSet.member?(source_grant_ids, grant_id) and
+        unassigned_node_grant_reserves_observation?(grant, observation)
     end)
   end
+
+  defp unassigned_node_grant_reserves_observation?(
+         _grant,
+         %{reserve_unassigned_source_grants?: true}
+       ),
+       do: true
+
+  defp unassigned_node_grant_reserves_observation?(grant, _observation),
+    do: is_nil(Map.get(grant, :capacity_source))
 
   defp put_node_capacity_source_limit(
          state,
@@ -2073,10 +2084,47 @@ defmodule Orchard.Inference.QueueManager do
 
         if is_nil(previous_source),
           do: state,
-          else: rebalance_capacity_source(state, previous_source)
+          else: expire_retained_capacity_source_limit(state, previous_source)
 
       _other ->
         state
+    end
+  end
+
+  defp expire_retained_capacity_source_limit(state, source) do
+    previous_queue_keys = capacity_source_queue_keys(state, source)
+
+    case Map.fetch(state.capacity_source_limits, source) do
+      {:ok, %{capacity: capacity} = limit} ->
+        reservation_capacity =
+          source
+          |> active_source_reservation_counts_by_queue(state)
+          |> Map.values()
+          |> Enum.sum()
+          |> min(capacity)
+
+        if reservation_capacity <= 0 do
+          state = %{
+            state
+            | capacity_source_limits: Map.delete(state.capacity_source_limits, source)
+          }
+
+          put_capacity_source_allocations(state, source, %{}, previous_queue_keys)
+        else
+          state = %{
+            state
+            | capacity_source_limits:
+                Map.put(state.capacity_source_limits, source, %{
+                  limit
+                  | capacity: reservation_capacity
+                })
+          }
+
+          rebalance_capacity_source(state, source)
+        end
+
+      :error ->
+        put_capacity_source_allocations(state, source, %{}, previous_queue_keys)
     end
   end
 

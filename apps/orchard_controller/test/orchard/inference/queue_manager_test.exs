@@ -242,6 +242,72 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.5 scheduler probe refresh reserves unassigned source grants" do
+    source_node_id = Ecto.UUID.generate()
+    probed_node_id = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(capacity: 0, max_wait_ms: 1_000), fn ->
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-unassigned-source-a",
+                   model_id: "unassigned-source-a"
+                 )
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_unassigned_source_result)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, source_node_id},
+                   {:node, source_node_id, :placement},
+                   {:node, source_node_id, :cold}
+                 ],
+                 placement_source: {:node, source_node_id, :placement},
+                 cold_source: {:node, source_node_id, :cold},
+                 node_id: source_node_id,
+                 node_active: 0,
+                 node_max: 1,
+                 placements: []
+               })
+
+      assert_receive {:first_unassigned_source_result, {:ok, first_grant}}, 2_000
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-unassigned-source-b",
+                   model_id: "unassigned-source-b"
+                 )
+               )
+
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, probed_node_id},
+                   {:node, probed_node_id, :placement},
+                   {:node, probed_node_id, :cold}
+                 ],
+                 placement_source: {:node, probed_node_id, :placement},
+                 cold_source: {:node, probed_node_id, :cold},
+                 node_id: probed_node_id,
+                 node_active: 0,
+                 node_max: 1,
+                 placements: [],
+                 reserve_unassigned_source_grants?: true
+               })
+
+      refute Task.yield(second_awaiter, 100)
+
+      assert :ok = QueueManager.abandon(second_ticket)
+      Task.shutdown(second_awaiter)
+      assert :ok = QueueManager.release(first_grant)
+      send(first_awaiter, :stop)
+    end)
+  end
+
   test "SPEC.md §5.4 node source refresh retains capacity before await attaches" do
     node_id = Ecto.UUID.generate()
 
@@ -319,6 +385,57 @@ defmodule Orchard.Inference.QueueManagerTest do
       second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
       assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
 
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert :ok = QueueManager.abandon(second_ticket)
+      Task.shutdown(second_awaiter)
+      send(first_awaiter, :stop)
+    end)
+  end
+
+  test "SPEC.md §5.5 resolved node mismatch expires pending source capacity" do
+    source_node_id = Ecto.UUID.generate()
+    resolved_node_id = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(capacity: 0, max_wait_ms: 1_000), fn ->
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-source-mismatch-pending-a",
+                   model_id: "source-mismatch-pending-a"
+                 )
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_source_mismatch_pending_result)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, source_node_id},
+                   {:node, source_node_id, :placement},
+                   {:node, source_node_id, :cold}
+                 ],
+                 placement_source: {:node, source_node_id, :placement},
+                 cold_source: {:node, source_node_id, :cold},
+                 node_id: source_node_id,
+                 node_active: 0,
+                 node_max: 1,
+                 placements: []
+               })
+
+      assert_receive {:first_source_mismatch_pending_result, {:ok, first_grant}}, 2_000
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-source-mismatch-pending-b",
+                   model_id: "source-mismatch-pending-b"
+                 )
+               )
+
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+
+      assert :ok = QueueManager.mark_grant_node(first_grant, resolved_node_id)
       assert :ok = QueueManager.release(first_grant)
       refute Task.yield(second_awaiter, 100)
 

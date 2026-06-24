@@ -196,7 +196,8 @@ defmodule Orchard.Scheduler.MultiNode do
             {:ok, response} ->
               # Persist observation best-effort
               Nodes.observe_status(target, response, observed_at,
-                reserve_unassigned_node_grants?: true
+                reserve_unassigned_node_grants?: true,
+                reserve_unassigned_source_grants?: true
               )
 
               # Extract node_id from metadata — skip if missing/invalid
