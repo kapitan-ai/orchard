@@ -17,6 +17,7 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Cluster.V1.ModelRef, as: RPCModelRef
   alias Orchard.Cluster.V1.NodeRuntimeService.Stub, as: NodeRuntimeStub
   alias Orchard.Cluster.V1.OutputTextDelta
+  alias Orchard.Cluster.V1.RuntimeModelPlacement
   alias Orchard.Cluster.V1.ScorePrefixCacheRequest
   alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.Cluster.V1.StatusRequest
@@ -1200,7 +1201,8 @@ defmodule OrchardNodeAgentTest do
     assert Path.type(runtime[:worker_socket_dir]) == :absolute
     assert Path.type(runtime[:worker_executable]) == :absolute
     assert String.ends_with?(runtime[:models_root], "/tmp/test/models")
-    assert String.ends_with?(runtime[:worker_socket_dir], "/tmp/test/data/worker-sockets")
+    assert String.starts_with?(runtime[:worker_socket_dir], "/tmp/ot-")
+    assert String.ends_with?(runtime[:worker_socket_dir], "/ws")
 
     assert String.ends_with?(
              runtime[:worker_executable],
@@ -2572,6 +2574,7 @@ defmodule OrchardNodeAgentTest do
 
             status = grpc_status_snapshot()
             assert status.active_request_count == 2
+            assert status.max_concurrency == 2
 
             placement = runtime_model_placement!(status, @test_model_id, @test_version)
             assert placement.active_request_count == 2
@@ -2738,10 +2741,13 @@ defmodule OrchardNodeAgentTest do
         test_only_allow_batch_admission_for_non_worker_adapters?: true
       ],
       fn ->
+        assert Node.effective_worker_request_limit() == 1
+
         assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
                  NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
 
         assert %StatusResponse{
+                 max_concurrency: 1,
                  runtime_model_placements: [
                    %{
                      model_ref: %{model_id: @test_model_id, version: @test_version},
@@ -2832,6 +2838,223 @@ defmodule OrchardNodeAgentTest do
         wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
       end
     )
+  end
+
+  test "SPEC.md §5.5 batch mode admits two overlapping same-model gRPC requests", %{
+    bundle: bundle
+  } do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: BlockingRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: 2,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true
+      ],
+      fn ->
+        assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                 NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+        first =
+          Task.async(fn ->
+            execute_inference_over_grpc(execute_inference_request("req-batch-grpc-overlap-first"))
+          end)
+
+        second =
+          Task.async(fn ->
+            execute_inference_over_grpc(
+              execute_inference_request("req-batch-grpc-overlap-second")
+            )
+          end)
+
+        wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+
+        assert %StatusResponse{
+                 active_request_count: 2,
+                 max_concurrency: 2,
+                 runtime_model_placements: [
+                   %RuntimeModelPlacement{
+                     active_request_count: 2,
+                     max_concurrency: 2
+                   }
+                 ]
+               } = NodeStatus.current()
+
+        blocking_generation_refs()
+        |> Enum.each(&send_release/1)
+
+        for task <- [first, second] do
+          events = Task.await(task, 1_000)
+
+          assert Enum.any?(events, &match?({:ok, %RPCInferenceEvent{event: {:accepted, _}}}, &1))
+          assert Enum.any?(events, &match?({:ok, %RPCInferenceEvent{event: {:completed, _}}}, &1))
+          refute Enum.any?(events, &match?({:ok, %RPCInferenceEvent{event: {:failed, _}}}, &1))
+        end
+
+        wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+      end
+    )
+  end
+
+  test "SPEC.md §5.5 batch mode enforces aggregate node concurrency across models", %{
+    bundle: bundle
+  } do
+    other_bundle = stage_test_bundle!("mlx-community/phi-3-alt", "main")
+
+    try do
+      with_runtime_config(
+        [
+          runtime_adapter_impl: BlockingRuntimeAdapter,
+          worker_generation_mode: "batch",
+          worker_max_concurrent_requests_per_model: 2,
+          test_only_allow_batch_admission_for_non_worker_adapters?: true
+        ],
+        fn ->
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(other_bundle))
+
+          request1 = execute_inference_request("req-node-cap-first", bundle)
+          request2 = execute_inference_request("req-node-cap-second", bundle)
+          request3 = execute_inference_request("req-node-cap-third", other_bundle)
+
+          assert :ok = NodeStatus.prepare_request(request1, self())
+          assert :ok = NodeStatus.start_request(request1)
+          assert :ok = NodeStatus.prepare_request(request2, self())
+          assert :ok = NodeStatus.start_request(request2)
+
+          wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+
+          assert %StatusResponse{active_request_count: 2, max_concurrency: 2} =
+                   NodeStatus.current()
+
+          assert {:error, :model_busy} = NodeStatus.prepare_request(request3, self())
+
+          assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
+          assert %{ok: true} = NodeStatus.cancel_request(request2.request_id)
+          wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+        end
+      )
+    after
+      File.rm_rf(other_bundle.cache_path)
+      File.rm_rf(other_bundle.source_path)
+    end
+  end
+
+  test "SPEC.md §5.5 cancellation frees aggregate node concurrency for another model", %{
+    bundle: bundle
+  } do
+    other_bundle = stage_test_bundle!("mlx-community/phi-3-cancel-slot-alt", "main")
+
+    try do
+      with_runtime_config(
+        [
+          runtime_adapter_impl: BlockingRuntimeAdapter,
+          worker_generation_mode: "batch",
+          worker_max_concurrent_requests_per_model: 2,
+          test_only_allow_batch_admission_for_non_worker_adapters?: true
+        ],
+        fn ->
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(other_bundle))
+
+          request1 = execute_inference_request("req-node-cap-cancel-first", bundle)
+          request2 = execute_inference_request("req-node-cap-cancel-second", bundle)
+          request3 = execute_inference_request("req-node-cap-cancel-third", other_bundle)
+
+          assert :ok = NodeStatus.prepare_request(request1, self())
+          assert :ok = NodeStatus.start_request(request1)
+          assert :ok = NodeStatus.prepare_request(request2, self())
+          assert :ok = NodeStatus.start_request(request2)
+
+          wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+          assert {:error, :model_busy} = NodeStatus.prepare_request(request3, self())
+
+          assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
+
+          assert_receive {:node_runtime_event, "req-node-cap-cancel-first",
+                          %OrchardInferenceEvent{
+                            event: %OrchardInferenceEvent.Failed{code: "cancelled"}
+                          }},
+                         1_000
+
+          wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+
+          assert :ok = NodeStatus.prepare_request(request3, self())
+          assert :ok = NodeStatus.start_request(request3)
+
+          wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+
+          assert %{ok: true} = NodeStatus.cancel_request(request2.request_id)
+          assert %{ok: true} = NodeStatus.cancel_request(request3.request_id)
+          wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+        end
+      )
+    after
+      File.rm_rf(other_bundle.cache_path)
+      File.rm_rf(other_bundle.source_path)
+    end
+  end
+
+  test "SPEC.md §5.5 aggregate node concurrency maps cross-model gRPC request to model_busy",
+       %{bundle: bundle} do
+    other_bundle = stage_test_bundle!("mlx-community/phi-3-grpc-alt", "main")
+
+    try do
+      with_runtime_config(
+        [
+          runtime_adapter_impl: BlockingRuntimeAdapter,
+          worker_generation_mode: "batch",
+          worker_max_concurrent_requests_per_model: 2,
+          test_only_allow_batch_admission_for_non_worker_adapters?: true
+        ],
+        fn ->
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+          assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+                   NodeStatus.ensure_model_loaded(ensure_model_loaded_request(other_bundle))
+
+          request1 = execute_inference_request("req-node-cap-grpc-first", bundle)
+          request2 = execute_inference_request("req-node-cap-grpc-second", bundle)
+
+          assert :ok = NodeStatus.prepare_request(request1, self())
+          assert :ok = NodeStatus.start_request(request1)
+          assert :ok = NodeStatus.prepare_request(request2, self())
+          assert :ok = NodeStatus.start_request(request2)
+
+          wait_until(fn -> NodeStatus.current().active_request_count == 2 end)
+
+          with_channel(fn channel ->
+            request3 = execute_inference_request("req-node-cap-grpc-third", other_bundle)
+            assert {:ok, event_stream} = NodeRuntimeStub.execute_inference(channel, request3)
+            events = Enum.to_list(event_stream)
+
+            assert [{:ok, %RPCInferenceEvent{event: {:failed, failed}}}] = events
+            assert failed.code == "model_busy"
+
+            accepted_events =
+              Enum.filter(events, fn
+                {:ok, %RPCInferenceEvent{event: {:accepted, _}}} -> true
+                _other -> false
+              end)
+
+            assert accepted_events == []
+          end)
+
+          assert %{ok: true} = NodeStatus.cancel_request(request1.request_id)
+          assert %{ok: true} = NodeStatus.cancel_request(request2.request_id)
+          wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+        end
+      )
+    after
+      File.rm_rf(other_bundle.cache_path)
+      File.rm_rf(other_bundle.source_path)
+    end
   end
 
   # -- Acquisition-specific tests ---------------------------------------------
@@ -4184,6 +4407,15 @@ defmodule OrchardNodeAgentTest do
     |> Map.fetch!(:generation_ref)
   end
 
+  defp blocking_generation_refs do
+    pid = worker_pid()
+    state = :sys.get_state(pid)
+
+    state.requests
+    |> Map.values()
+    |> Enum.map(&Map.fetch!(&1, :generation_ref))
+  end
+
   defp send_release(generation_ref) do
     pid = worker_pid()
     state = :sys.get_state(pid)
@@ -4206,6 +4438,13 @@ defmodule OrchardNodeAgentTest do
     after
       _ = GRPC.Stub.disconnect(channel)
     end
+  end
+
+  defp execute_inference_over_grpc(request) do
+    with_channel(fn channel ->
+      assert {:ok, event_stream} = NodeRuntimeStub.execute_inference(channel, request)
+      Enum.to_list(event_stream)
+    end)
   end
 
   defp stage_test_bundle! do
@@ -4265,11 +4504,15 @@ defmodule OrchardNodeAgentTest do
   end
 
   defp execute_inference_request(request_id) do
+    execute_inference_request(request_id, %{model_id: @test_model_id, version: @test_version})
+  end
+
+  defp execute_inference_request(request_id, bundle) do
     %ExecuteInferenceRequest{
       request_id: request_id,
       controller_session_id: "controller-session-1",
-      model_id: @test_model_id,
-      version: @test_version,
+      model_id: bundle.model_id,
+      version: bundle.version,
       rendered_prompt_utf8: "hello orchard",
       input_tokens: 2,
       params: %GenerationParams{max_output_tokens: 16},

@@ -4,7 +4,8 @@ defmodule Orchard.Scheduler.MultiNode do
   selects the best candidate for dispatch.
 
   Ranking order (descending priority):
-  1. Exclude full candidates, or active candidates with unknown placement capacity
+  1. Exclude candidates with exhausted node or placement capacity, or loaded-model
+     candidates with active requests and unknown placement capacity
   2. Node has the requested model already loaded
   3. Lower active request count for the requested placement
   4. Healthier node (`:healthy` over `:degraded`)
@@ -21,7 +22,8 @@ defmodule Orchard.Scheduler.MultiNode do
   - No schedulable nodes remain after filtering
 
   Returns `{:error, :cluster_busy}` when live probes joined to persisted schedulable
-  nodes, but every joined candidate is full or active with unknown capacity.
+  nodes, but every joined candidate has exhausted capacity or is an active
+  loaded-model candidate with unknown placement capacity.
   """
 
   alias Orchard.CanonicalRequest
@@ -201,6 +203,7 @@ defmodule Orchard.Scheduler.MultiNode do
                     target: target,
                     loaded_model?: loaded_model?,
                     active_request_count: response.active_request_count || 0,
+                    max_concurrency: node_max_concurrency(response),
                     supports_prompt_token_ids: prompt_token_ids_supported?(response)
                   }
                   |> maybe_put_model_placement_capacity(
@@ -228,16 +231,39 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
-  defp candidate_full?(%{
+  defp candidate_full?(candidate) do
+    node_concurrency_full?(candidate) or placement_capacity_full?(candidate) or
+      active_without_known_capacity?(candidate)
+  end
+
+  defp node_concurrency_full?(%{active_request_count: active, max_concurrency: max})
+       when is_integer(active) and is_integer(max) and max > 0,
+       do: active >= max
+
+  defp node_concurrency_full?(_candidate), do: false
+
+  defp placement_capacity_full?(%{
          model_placement_capacity: %{active_request_count: active, max_concurrency: max}
        })
        when is_integer(active) and is_integer(max) and max > 0,
        do: active >= max
 
-  defp candidate_full?(%{active_request_count: count}) when is_integer(count) and count > 0,
-    do: true
+  defp placement_capacity_full?(_candidate), do: false
 
-  defp candidate_full?(_candidate), do: false
+  defp active_without_known_capacity?(%{model_placement_capacity: _capacity}), do: false
+
+  defp active_without_known_capacity?(%{loaded_model?: true, active_request_count: count})
+       when is_integer(count) and count > 0,
+       do: true
+
+  defp active_without_known_capacity?(_candidate), do: false
+
+  defp node_max_concurrency(response) do
+    case Map.get(response, :max_concurrency) || Map.get(response, "max_concurrency") do
+      value when is_integer(value) and value > 0 -> value
+      _other -> 1
+    end
+  end
 
   defp extract_valid_node_id(%{node_metadata: %{node_id: node_id}}) when is_binary(node_id) do
     case Ecto.UUID.cast(node_id) do

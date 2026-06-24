@@ -5,8 +5,8 @@ defmodule Orchard.Node.ModelManager do
   Ensure-load requests run as async supervised tasks with single-flight
   dedup: concurrent callers for the same `{model_id, version}` share one
   acquisition + worker-load pipeline and all receive the same reply.
-  Status responses include loaded-model placement capacity so the controller can
-  avoid dispatching to full same-model placements.
+  Status responses include aggregate node capacity and loaded-model placement
+  capacity so the controller can avoid dispatching to full nodes or placements.
   """
 
   use GenServer
@@ -343,7 +343,8 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp prepare_loaded_request(request, subscriber, key, pid, state) do
-    if model_at_request_capacity?(state.active_requests, key) do
+    if node_at_request_capacity?(state.active_requests) or
+         model_at_request_capacity?(state.active_requests, key) do
       {:reply, {:error, :model_busy}, state}
     else
       subscriber_monitor_ref = Process.monitor(subscriber)
@@ -1241,6 +1242,10 @@ defmodule Orchard.Node.ModelManager do
     active_request_count_for_model(active_requests, key) >= Node.effective_worker_request_limit()
   end
 
+  defp node_at_request_capacity?(active_requests) do
+    map_size(active_requests) >= Node.effective_worker_request_limit()
+  end
+
   # -- Response helpers ------------------------------------------------------
 
   defp status_response(state) do
@@ -1253,6 +1258,7 @@ defmodule Orchard.Node.ModelManager do
       worker_state: worker_state(state),
       loaded_models: loaded_models(state),
       active_request_count: map_size(state.active_requests),
+      max_concurrency: Node.effective_worker_request_limit(),
       node_metadata: build_node_metadata(),
       runtime_health: runtime_health,
       hosted_tool_capabilities: tool_snapshot.capabilities,

@@ -204,6 +204,8 @@ defmodule Orchard.Cluster.V1.StatusResponse do
     type: Orchard.Cluster.V1.RuntimeModelPlacement,
     json_name: "runtimeModelPlacements"
   )
+
+  field(:max_concurrency, 12, type: :uint32, json_name: "maxConcurrency")
 end
 
 defmodule Orchard.Cluster.V1.EnsureModelLoadedRequest do

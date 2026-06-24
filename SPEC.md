@@ -783,9 +783,12 @@ Compatibility and defaulting rules:
 * aggregate `runtime_prefix_cache_statuses` counters SHALL remain observe-only telemetry and SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, queue ordering, hosted-tool eligibility, or `worker_generation_mode`; the Phase 4C bounded HMAC fingerprint field MAY affect scheduler ranking only as the explicitly configured non-gating tie-breaker defined in §5.7 and §7.5.3
 * current `RuntimePrefixCacheStatus.status_code` vocabulary is: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
 * these status codes are observational only in this slice and SHALL NOT gate readiness, admission, or scheduling
+* `active_request_count` on `StatusResponse` SHALL report active runtime requests across the node
+* `max_concurrency` on `StatusResponse` SHALL report aggregate runtime request capacity for the node; omitted or zero values SHALL be treated conservatively as node capacity `1` by schedulers
 * absent or empty `runtime_model_placements` on `StatusResponse` SHALL mean no explicit per-placement capacity observation is available
 * absent or empty `runtime_model_placements` SHALL NOT be treated as a status-probe error
 * `runtime_model_placements` entries SHALL report controller-observed capacity for loaded model placements using `model_ref`, `active_request_count`, and `max_concurrency`; `max_concurrency <= 0`, malformed entries, duplicate matching entries, or non-matching entries SHALL be treated as unknown capacity
+* valid per-placement capacity SHALL NOT prove node eligibility when node-level `active_request_count >= max_concurrency`
 * unknown placement capacity SHALL NOT prove scheduler eligibility for an already-active node; `Orchard.Scheduler.MultiNode` MAY keep a matching loaded-model active candidate eligible only when exactly one valid matching `runtime_model_placements` entry reports `active_request_count < max_concurrency`
 
 Effective readiness rules for future hosted routing:
@@ -938,7 +941,7 @@ Admission accounting:
 
 ### 5.4 Queue model
 
-When a request cannot be granted immediately because no node or live placement capacity is eligible, or because the tenant active request cap is exhausted:
+When a request cannot be granted immediately because no live node or placement capacity is available, or because the tenant active request cap is exhausted:
 
 * request enters tenant FIFO queue
 * max wait defaults to `3000 ms`
@@ -948,11 +951,11 @@ When a request cannot be granted immediately because no node or live placement c
 When `resolved_policy.max_active_requests` or controller queue configuration supplies a tenant active cap, controller queue admission SHALL queue same-tenant requests once active grants for that tenant reach the limit, even if the requested model/version lane or a placement still has spare capacity.
 Recovered in-flight grants SHALL count against that tenant active cap until their Request reaches a terminal state.
 
-With controller queue admission enabled, a scheduler `cluster_busy` result observed after a static queue grant SHALL be treated as queue-waitable live placement capacity exhaustion.
+With controller queue admission enabled, a scheduler `cluster_busy` result observed after a static queue grant SHALL be treated as queue-waitable live node or placement capacity exhaustion.
 The controller SHALL return the request to the same controller queue lane for the requested model/version under the original max queue wait budget instead of extending the deadline.
 Requeued grants SHALL preserve the original `queued_at`, admission order, and queue deadline.
 The queue manager MAY defer the requeued lane until the next poll interval before re-granting to avoid a tight scheduler retry loop.
-If live placement capacity or tenant active capacity does not become available before that deadline, the terminal public outcome SHALL be `queue_timeout`.
+If live node capacity, placement capacity, or tenant active capacity does not become available before that deadline, the terminal public outcome SHALL be `queue_timeout`.
 With controller queue admission disabled, `cluster_busy` remains an immediate admission failure.
 
 Queue discipline:
@@ -1001,6 +1004,11 @@ Eligibility condition:
 ```text
 available_memory_bytes >= required_bytes
 ```
+
+Node concurrency is not exceeded only when live `StatusResponse.active_request_count < StatusResponse.max_concurrency`.
+If `max_concurrency` is omitted or zero, schedulers SHALL interpret node capacity as `1`.
+Model placement concurrency is evaluated independently through a valid matching `RuntimeModelPlacement`.
+Both node-level aggregate capacity and requested-placement capacity must remain available for a loaded candidate to be eligible.
 
 ### 5.6 Candidate tiers
 
@@ -2182,6 +2190,7 @@ message RuntimeModelPlacement {
 message StatusResponse {
   WorkerState worker_state = 1;
   repeated ModelRef loaded_models = 2;
+  // Active runtime requests across the node.
   uint32 active_request_count = 3;
   RuntimeNodeMetadata node_metadata = 4;
   RuntimeHealth runtime_health = 5;
@@ -2191,6 +2200,9 @@ message StatusResponse {
   repeated RuntimePrefixCacheStatus runtime_prefix_cache_statuses = 9;
   bool supports_prompt_token_ids = 10;
   repeated RuntimeModelPlacement runtime_model_placements = 11;
+  // Aggregate runtime request capacity for the node.
+  // Controllers must treat absent or zero values as node capacity 1.
+  uint32 max_concurrency = 12;
 }
 
 message EnsureModelLoadedRequest {
@@ -2364,15 +2376,22 @@ Runtime prefix-cache wire semantics:
 * in `:tie_only` mode, score MAY affect ranking only as a bounded conditional step before final deterministic `node_id`, only for the leading rank-equivalence group (all current ranking elements equal except `node_id`, including any enabled safe-tokenization capable-worker preference), and only when an authoritative resident challenger (`status_code = "ok"`, `resident_fingerprint_match = true`, `score_tier = "resident_fingerprint"`) is compared against a comparable `ok` non-resident incumbent (`status_code = "ok"`, `resident_fingerprint_match = false`, `score_tier` is `"no_match"` or `"recent_fingerprint_only"`)
 * in `:tie_only` mode, deterministic `node_id` ordering remains the fallback whenever promotion conditions are not met; any non-`ok`, timeout, `UNIMPLEMENTED`/`unsupported_version`, missing, malformed, or transport-failure score outcome for either incumbent or challenger SHALL preserve base order fail-open and SHALL never be surfaced as tenant-facing request errors
 
-Runtime model-placement wire semantics:
+Runtime capacity wire semantics:
 
+* `StatusResponse.active_request_count` SHALL report aggregate active runtime requests across all loaded models on the node
+* `StatusResponse.max_concurrency` SHALL report aggregate runtime request capacity for the node
+* omitted or zero `StatusResponse.max_concurrency` SHALL mean aggregate capacity is unknown or legacy; schedulers SHALL treat it conservatively as node capacity `1`
 * `StatusResponse.runtime_model_placements` SHALL report active request count and max concurrency for each loaded runtime/model path through the existing `GetStatus` probe
 * omitted or empty `runtime_model_placements` SHALL mean no explicit per-placement capacity observation is available
 * omitted or empty `runtime_model_placements` SHALL NOT be treated as a node status error, readiness failure, admission failure, model-admission failure, or scheduler-eligibility failure for otherwise idle candidates
 * a matching placement capacity observation is valid only when exactly one entry matches the requested `model_ref`, `active_request_count >= 0`, and `max_concurrency > 0`
 * duplicate matching entries, malformed matching entries, non-matching entries, or `max_concurrency <= 0` SHALL make placement capacity unknown for that request
+* a valid matching placement observation SHALL NOT override exhausted node-level aggregate capacity
 * unknown placement capacity SHALL NOT prove eligibility for an already-active loaded-model candidate; an already-active loaded-model candidate MAY remain eligible only when exactly one valid matching entry reports `active_request_count < max_concurrency`
 * when multiple eligible candidates remain, the scheduler SHALL rank by the requested placement's active request count before health when a valid matching placement observation is available; otherwise it SHALL use node `active_request_count`
+* node-agent request admission SHALL reject a new runtime request when aggregate active request count has reached the effective worker request limit, even if the requested model placement has remaining per-placement capacity
+* cancellation or terminal completion SHALL release aggregate node capacity so another loaded model can use the freed slot
+* stream generation mode SHALL report `max_concurrency = 1` at both node and placement levels
 
 * controller persistence of selected prefix-cache diagnostics in `requests.scheduler_decision` SHALL be guarded by `orchard_controller.inference.cache_introspection.enabled`, which defaults to `false`; when disabled, prefix-cache fields SHALL be stripped before scheduler-decision persistence
 * score-RPC collection SHALL be default-off behind `orchard_controller.inference.prefix_cache_scoring.enabled` (default `false`).

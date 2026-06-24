@@ -136,6 +136,7 @@ message RuntimeModelPlacement {
 message StatusResponse {
   WorkerState worker_state = 1;
   repeated ModelRef loaded_models = 2;
+  // Active runtime requests across the node.
   uint32 active_request_count = 3;
   RuntimeNodeMetadata node_metadata = 4;
   RuntimeHealth runtime_health = 5;
@@ -145,6 +146,9 @@ message StatusResponse {
   repeated RuntimePrefixCacheStatus runtime_prefix_cache_statuses = 9;
   bool supports_prompt_token_ids = 10;
   repeated RuntimeModelPlacement runtime_model_placements = 11;
+  // Aggregate runtime request capacity for the node. Controllers must treat
+  // absent or zero values as node capacity 1.
+  uint32 max_concurrency = 12;
 }
 
 message EnsureModelLoadedRequest {

@@ -195,8 +195,8 @@ ELIXIR
 | `ORCHARD_WORKER_EXECUTABLE` | `native/orchard_worker_mlx/bin/orchard-worker-mlx` (repo-root) | Worker binary path. Override via env var; default resolves from repo root in source-dev mode. |
 | `ORCHARD_WORKER_BACKEND` | `mlx` | Worker backend (`mlx` or `stub`) |
 | `ORCHARD_WORKER_GENERATION_MODE` | `batch` for `mlx`, `stream` for unset `stub` | Worker generation runtime (`stream` or `batch`). Leave unset when using the stub backend. |
-| `ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL` | `auto` | Per-loaded-model request admission limit in batch generation mode. Use an integer `>= 1` or `auto`. |
-| `ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL` | `3` | Effective per-model request limit when the max-concurrency setting is `auto`. |
+| `ORCHARD_WORKER_MAX_CONCURRENT_REQUESTS_PER_MODEL` | `auto` | Batch request admission limit applied per loaded placement and as aggregate node capacity. Use an integer `>= 1` or `auto`. |
+| `ORCHARD_WORKER_AUTO_MAX_CONCURRENT_REQUESTS_PER_MODEL` | `3` | Effective request limit when the max-concurrency setting is `auto`. |
 | `ORCHARD_NODE_DISPLAY_NAME` | hostname | Human-readable node name shown in console |
 | `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev) / `hard` (distributed packaged channels) | Licensing mode for startup and packaged useful-work admission: `off`, `warn`, or `hard` |
 
@@ -208,8 +208,10 @@ when `ORCHARD_WORKER_GENERATION_MODE` is unset, the stub backend resolves to
 stream mode automatically.
 `ORCHARD_FAKE_RUNTIME` is a release/runtime config knob; source-dev tests use
 the fake runtime through `config/test.exs`, not a dev env override.
-Batch generation mode can admit multiple same-model requests up to the effective per-model limit.
-The node-agent reports that live placement capacity through `StatusResponse.runtime_model_placements` as `active_request_count` and `max_concurrency`; stream mode reports max concurrency as `1`.
+Batch generation mode can admit multiple same-model requests up to the effective limit, while the same limit also caps aggregate active requests across loaded models on the node.
+The node-agent reports aggregate capacity through `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`.
+It reports live placement capacity through `StatusResponse.runtime_model_placements` as `active_request_count` and `max_concurrency`.
+Stream mode reports max concurrency as `1` at both node and placement levels.
 
 #### Controller Multi-Node (Source Dev)
 

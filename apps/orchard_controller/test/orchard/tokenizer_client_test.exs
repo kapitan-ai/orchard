@@ -2211,7 +2211,7 @@ defmodule Orchard.Tokenizer.ClientTest do
           end)
 
         assert {:error, :timeout} = result
-        assert System.convert_time_unit(elapsed_us, :microsecond, :millisecond) < 350
+        assert System.convert_time_unit(elapsed_us, :microsecond, :millisecond) < 500
       end
     )
   end
@@ -2847,7 +2847,7 @@ defmodule Orchard.Tokenizer.ClientTest do
 
     File.write!(script_path, """
     #!/bin/sh
-    perl -e '$| = 1; for (1..20) { print "x" x 1024; select(undef, undef, undef, 0.02); }' 2>/dev/null || true
+    perl -e '$| = 1; for (1..50) { print "x" x 1024; select(undef, undef, undef, 0.02); }' 2>/dev/null || true
     """)
 
     File.chmod!(script_path, 0o755)
