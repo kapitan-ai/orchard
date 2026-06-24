@@ -467,10 +467,52 @@ defmodule Orchard.Nodes do
   defp extract_runtime_model_placements(_status_response), do: []
 
   defp placement_observations(status_response) do
+    runtime_observations =
+      status_response
+      |> extract_runtime_model_placements()
+      |> Enum.reduce(%{}, &put_placement_observation/2)
+
     status_response
-    |> extract_runtime_model_placements()
-    |> Enum.reduce(%{}, &put_placement_observation/2)
+    |> put_active_loaded_model_observations(runtime_observations)
     |> Enum.map(fn {{model_id, version}, status} -> {model_id, version, status} end)
+  end
+
+  defp put_active_loaded_model_observations(status_response, observations) do
+    if non_negative_integer(map_get(status_response, :active_request_count), 0) > 0 do
+      status_response
+      |> extract_loaded_models()
+      |> Enum.reduce(observations, &put_loaded_model_observation/2)
+    else
+      observations
+    end
+  end
+
+  defp extract_loaded_models(%{loaded_models: models}) when is_list(models), do: models
+  defp extract_loaded_models(%{"loaded_models" => models}) when is_list(models), do: models
+  defp extract_loaded_models(_status_response), do: []
+
+  defp put_loaded_model_observation(model, observations) when is_map(model) do
+    case loaded_model_ref(model) do
+      {:ok, model_id, version} -> Map.put_new(observations, {model_id, version}, :unavailable)
+      :error -> observations
+    end
+  end
+
+  defp put_loaded_model_observation(_model, observations), do: observations
+
+  defp loaded_model_ref(model) do
+    model_ref = map_get(model, :model_ref)
+
+    cond do
+      non_empty?(map_get(model, :model_id)) and non_empty?(map_get(model, :version)) ->
+        {:ok, map_get(model, :model_id), map_get(model, :version)}
+
+      is_map(model_ref) ->
+        placement_model_ref(%{model_ref: model_ref})
+
+      true ->
+        :error
+    end
   end
 
   defp put_placement_observation(placement, observations) when is_map(placement) do

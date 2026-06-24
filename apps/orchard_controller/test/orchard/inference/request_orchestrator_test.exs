@@ -551,6 +551,23 @@ defmodule Orchard.Inference.RequestOrchestratorTest.ExitingObservationQueueManag
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.ExitingGrantNodeQueueManager do
+  @moduledoc false
+
+  alias Orchard.Inference.QueueManager
+
+  def acquire(request), do: QueueManager.acquire(request)
+  def await(ticket), do: QueueManager.await(ticket)
+  def abandon(ticket), do: QueueManager.abandon(ticket)
+  def release(grant), do: QueueManager.release(grant)
+  def requeue(grant, request), do: QueueManager.requeue(grant, request)
+  def mark_capacity_source_observed(grant), do: QueueManager.mark_capacity_source_observed(grant)
+
+  def mark_grant_node(_grant, _node_id) do
+    exit({:noproc, {GenServer, :call, [Orchard.Inference.QueueManager, :mark_grant_node, 5_000]}})
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest do
   use Orchard.DataCase, async: false
 
@@ -1105,6 +1122,24 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
     assert Enum.any?(events, &InferenceEvent.terminal?/1)
     assert_received {:recording_queue_mark_grant_node, _grant_id, ^scheduled_node_id}
+  end
+
+  test "execute/3 assigns resolved node when queue grant reconciliation exits", %{
+    bundle: bundle
+  } do
+    put_multi_node_scheduler_config()
+    put_queue_admission_config(enabled: true, capacity: 1, max_wait_ms: 1_000)
+    put_exiting_grant_node_queue_manager()
+
+    runtime_node_id = Orchard.Node.node_id()
+    model = create_active_model!(bundle, "request-orchestrator-node-reconcile-exit")
+    canonical = canonical_request("request-orchestrator-node-reconcile-exit", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.node_id == runtime_node_id
   end
 
   test "execute/3 forwards Accepted event when source observation exits", %{
@@ -2921,6 +2956,17 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       |> Keyword.put(
         :queue_manager_impl,
         Orchard.Inference.RequestOrchestratorTest.ExitingObservationQueueManager
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_exiting_grant_node_queue_manager do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.put(
+        :queue_manager_impl,
+        Orchard.Inference.RequestOrchestratorTest.ExitingGrantNodeQueueManager
       )
 
     Application.put_env(:orchard_controller, :inference, inference)

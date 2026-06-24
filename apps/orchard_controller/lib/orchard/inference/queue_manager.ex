@@ -1222,18 +1222,30 @@ defmodule Orchard.Inference.QueueManager do
   defp put_recovered_grant(grant_id, queue_key, request, state) do
     lane = Map.get(state.lanes, queue_key, empty_lane())
     lane = %{lane | active: Map.put(lane.active, grant_id, true)}
+    grant = recovered_grant(queue_key, request)
 
     %{
       state
       | lanes: Map.put(state.lanes, queue_key, lane),
-        grants:
-          Map.put(state.grants, grant_id, %{
-            queue_key: queue_key,
-            request_id: request.id,
-            tenant_id: request.tenant_id,
-            recovered?: true
-          })
+        grants: Map.put(state.grants, grant_id, grant)
     }
+  end
+
+  defp recovered_grant(queue_key, request) do
+    %{
+      queue_key: queue_key,
+      request_id: request.id,
+      tenant_id: request.tenant_id,
+      recovered?: true
+    }
+    |> maybe_put_recovered_grant_node_id(request)
+  end
+
+  defp maybe_put_recovered_grant_node_id(grant, request) do
+    case normalize_node_id(Map.get(request, :node_id)) do
+      nil -> grant
+      node_id -> Map.put(grant, :node_id, node_id)
+    end
   end
 
   defp prune_recovered_grants(queue_key, state) do
@@ -1592,6 +1604,8 @@ defmodule Orchard.Inference.QueueManager do
     reserved_node_grant_ids =
       reserved_node_grant_ids(state, observation, reservations, observed_count)
 
+    remaining_capacity = max(remaining_capacity - length(reserved_node_grant_ids), 0)
+
     retained_capacity =
       pending_node_source_capacity(state, observation, preserved_reservations, remaining_capacity)
 
@@ -1796,7 +1810,11 @@ defmodule Orchard.Inference.QueueManager do
          retained_capacity,
          reserved_node_grant_ids
        ) do
-    capacity = min(length(preserved_reservations) + retained_capacity, observation.node_max)
+    capacity =
+      min(
+        length(preserved_reservations) + retained_capacity + length(reserved_node_grant_ids),
+        observation.node_max
+      )
 
     if capacity <= 0 do
       %{state | capacity_source_limits: Map.delete(state.capacity_source_limits, source)}

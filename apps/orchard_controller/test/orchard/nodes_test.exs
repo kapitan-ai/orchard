@@ -1885,6 +1885,53 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(second_grant)
       send(first_awaiter, :stop)
     end
+
+    test "SPEC.md §5.5 active loaded model without placement capacity does not wake as cold" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-loaded-missing-placement", "loaded-missing"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.92", 9444)
+      observed_at = DateTime.utc_now()
+
+      missing_placement_status =
+        make_status_response(%{listen_host: "10.0.0.92", listen_port: 9444})
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 2)
+        |> Map.put(:loaded_models, [%{model_id: "loaded-missing", version: "v1"}])
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, missing_placement_status, observed_at)
+      refute Task.yield(awaiter, 100)
+
+      placement_status =
+        missing_placement_status
+        |> Map.put(:runtime_model_placements, [
+          %{
+            model_ref: %{model_id: "loaded-missing", version: "v1"},
+            active_request_count: 1,
+            max_concurrency: 2
+          }
+        ])
+
+      assert {:ok, _node} =
+               Nodes.observe_status(
+                 target,
+                 placement_status,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "loaded-missing@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
   end
 
   # -- observe_status/3 stale guard --

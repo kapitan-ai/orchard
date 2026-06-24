@@ -202,6 +202,54 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.5 reserved base grant still allows observed spare node capacity" do
+    node_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 1, max_wait_ms: 1_000)
+
+    with_queue_admission_config(config, fn ->
+      assert {:ok, active_grant} =
+               QueueManager.acquire(
+                 admission_request("req-node-reserved-spare-a",
+                   model_id: "reserved-spare"
+                 )
+               )
+
+      assert :ok = QueueManager.mark_grant_node(active_grant, node_id)
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-reserved-spare-b",
+                   model_id: "reserved-spare"
+                 )
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, node_id},
+                   {:node, node_id, :placement},
+                   {:node, node_id, :cold}
+                 ],
+                 placement_source: {:node, node_id, :placement},
+                 cold_source: {:node, node_id, :cold},
+                 node_id: node_id,
+                 node_active: 0,
+                 node_max: 2,
+                 placements: []
+               })
+
+      assert {:ok, queued_grant} = Task.await(awaiter, 2_000)
+      assert queued_grant.queue_result == :queued
+      assert queued_grant.queue_key == "reserved-spare@v1"
+
+      assert :ok = QueueManager.release(active_grant)
+      assert :ok = QueueManager.release(queued_grant)
+    end)
+  end
+
   test "SPEC.md §5.5 scheduler probe refresh reserves unassigned base grants" do
     node_id = Ecto.UUID.generate()
     config = queue_config(capacity: 1, max_wait_ms: 1_000)
@@ -2097,6 +2145,63 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert grant.queue_result == :queued
 
     assert :ok = QueueManager.release(grant)
+  end
+
+  test "SPEC.md §5.5 recovered grant with persisted node does not reserve other nodes" do
+    recovered_node_id = Ecto.UUID.generate()
+    observed_node_id = Ecto.UUID.generate()
+
+    create_request!("req_queue_recovered_known_node",
+      state: :running,
+      node_id: recovered_node_id,
+      scheduler_decision: %{
+        queueing_enabled: true,
+        queue_key: "queue-model@v1",
+        queue_result: "immediate",
+        queue_grant_id: "grant-recovered-known-node",
+        queue_granted_at: DateTime.utc_now() |> DateTime.to_iso8601()
+      }
+    )
+
+    manager = unique_manager_name()
+    start_supervised!({QueueManager, name: manager, owner_runtime: true})
+
+    assert {:queued, ticket} =
+             QueueManager.acquire(
+               admission_request("req-after-known-node-recovery",
+                 model_id: "known-node-recovery-other"
+               ),
+               server: manager,
+               config: queue_config(capacity: 0, max_wait_ms: 1_000)
+             )
+
+    awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+    assert wait_until(fn -> queue_entry_awaiting?(ticket, manager) end)
+
+    assert :ok =
+             QueueManager.refresh_node_capacity_sources(
+               %{
+                 clear_sources: [
+                   {:node, observed_node_id},
+                   {:node, observed_node_id, :placement},
+                   {:node, observed_node_id, :cold}
+                 ],
+                 placement_source: {:node, observed_node_id, :placement},
+                 cold_source: {:node, observed_node_id, :cold},
+                 node_id: observed_node_id,
+                 node_active: 0,
+                 node_max: 1,
+                 placements: []
+               },
+               server: manager
+             )
+
+    assert {:ok, grant} = Task.await(awaiter, 2_000)
+    assert grant.queue_result == :queued
+    assert grant.queue_key == "known-node-recovery-other@v1"
+
+    assert :ok = QueueManager.release(grant, server: manager)
+    assert :ok = QueueManager.release("grant-recovered-known-node", server: manager)
   end
 
   test "SPEC.md §5.3 recovered active grants count against tenant concurrency" do

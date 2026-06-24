@@ -966,20 +966,32 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp build_node_resolved_callback(request_id, queue_grant) do
     fn node_id ->
-      maybe_mark_grant_node(queue_grant, node_id)
-
       case Requests.assign_node(request_id, node_id) do
         {:ok, _} -> :ok
         {:error, reason} -> log_warn("assign_node failed: #{inspect(reason)}")
       end
+
+      maybe_mark_grant_node(queue_grant, node_id)
     end
   end
 
   defp maybe_mark_grant_node(%QueueManager.Grant{} = grant, node_id)
        when is_binary(node_id) and node_id != "",
-       do: Inference.queue_manager().mark_grant_node(grant, node_id)
+       do: mark_grant_node_safe(grant, node_id)
 
   defp maybe_mark_grant_node(_grant, _node_id), do: :ok
+
+  defp mark_grant_node_safe(grant, node_id) do
+    Inference.queue_manager().mark_grant_node(grant, node_id)
+  rescue
+    error ->
+      log_warn("queue grant node reconciliation failed: #{inspect(error)}")
+      :ok
+  catch
+    :exit, reason ->
+      log_warn("queue grant node reconciliation exited: #{inspect(reason)}")
+      :ok
+  end
 
   defp finalize(db_request, canonical, events, first_token_at, execution_opts, step_context) do
     case build_terminal_attrs(
