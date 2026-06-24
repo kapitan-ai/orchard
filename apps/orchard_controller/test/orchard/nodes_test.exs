@@ -1890,6 +1890,66 @@ defmodule Orchard.NodesTest do
   # -- observe_status/3 stale guard --
 
   describe "observe_status/3 stale guard" do
+    test "stale invalid metadata does not clear target queue capacity" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+      observed_at = DateTime.utc_now()
+
+      insert_node!(%{
+        id: node_id,
+        state: :active,
+        health: :healthy,
+        advertise_addr: "10.0.0.19",
+        rpc_port: 9444,
+        last_heartbeat_at: observed_at
+      })
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-stale-invalid-metadata-a", "stale-meta-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-stale-invalid-metadata-b", "stale-meta-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_stale_metadata_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.19", 9444)
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.19",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.add(observed_at, 1))
+      assert_receive {:first_stale_metadata_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      assert :noop =
+               Nodes.observe_status(
+                 target,
+                 %{node_metadata: nil, runtime_health: nil},
+                 observed_at
+               )
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
     test "rejects stale observation" do
       node_id = Ecto.UUID.generate()
       now = DateTime.utc_now()
@@ -1960,6 +2020,93 @@ defmodule Orchard.NodesTest do
   # -- observe_status/3 identity conflicts --
 
   describe "observe_status/3 identity conflicts" do
+    test "target conflict clears stale target queue capacity" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      insert_node!(%{
+        id: node_id,
+        state: :active,
+        health: :healthy,
+        advertise_addr: "10.0.0.29",
+        rpc_port: 9444
+      })
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-identity-conflict-a",
+                   "identity-conflict-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-identity-conflict-b",
+                   "identity-conflict-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_identity_conflict_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.29", 9444)
+
+      valid_status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.29",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+      assert_receive {:first_identity_conflict_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      conflicting_status =
+        make_status_response(%{
+          node_id: Ecto.UUID.generate(),
+          listen_host: "10.0.0.29",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      log =
+        capture_log(fn ->
+          assert :noop =
+                   Nodes.observe_status(
+                     target,
+                     conflicting_status,
+                     DateTime.add(DateTime.utc_now(), 1, :second)
+                   )
+        end)
+
+      assert log =~ "identity conflict"
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(
+                 target,
+                 valid_status,
+                 DateTime.add(DateTime.utc_now(), 2, :second)
+               )
+
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
     test "target conflict: same addr:port, different UUID" do
       insert_node!(%{id: Ecto.UUID.generate(), advertise_addr: "10.0.0.30", rpc_port: 9444})
       target = make_target("10.0.0.30", 9444)
@@ -2066,6 +2213,73 @@ defmodule Orchard.NodesTest do
   # -- observe_status/3 missing/invalid metadata --
 
   describe "observe_status/3 missing metadata" do
+    test "invalid metadata clears stale target queue capacity" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      insert_node!(%{
+        id: node_id,
+        state: :active,
+        health: :healthy,
+        advertise_addr: "10.0.0.43",
+        rpc_port: 9444
+      })
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-invalid-metadata-a", "invalid-meta-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-invalid-metadata-b", "invalid-meta-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_invalid_metadata_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.43", 9444)
+
+      valid_status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.43",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+      assert_receive {:first_invalid_metadata_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      assert :noop =
+               Nodes.observe_status(
+                 target,
+                 %{node_metadata: nil, runtime_health: nil},
+                 DateTime.add(DateTime.utc_now(), 1, :second)
+               )
+
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(
+                 target,
+                 valid_status,
+                 DateTime.add(DateTime.utc_now(), 2, :second)
+               )
+
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
     test "nil node_metadata returns noop" do
       target = make_target("10.0.0.40", 9444)
       status = %{node_metadata: nil, runtime_health: nil}

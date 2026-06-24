@@ -288,6 +288,24 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       assert_received {:node_resolved, @other_uuid}
     end
 
+    test "on_node_resolved callback exit does not abort dispatch or observation", ctx do
+      configure_stub(%{status: {:ok, full_status(@other_uuid)}})
+
+      callback = fn _node_id ->
+        exit({:noproc, {GenServer, :call, [:queue_manager, :mark, 5_000]}})
+      end
+
+      assert {:ok, _} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client,
+                 on_node_resolved: callback
+               )
+
+      assert_received {:ensure_model_loaded_called, req}
+      assert req.node_id == @other_uuid
+      assert Repo.get_by!(Node, display_name: "test-node").id == @other_uuid
+    end
+
     test "hosted tool fields remain additive to pre-dispatch probe compatibility", ctx do
       configure_stub(%{
         status:

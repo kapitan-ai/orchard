@@ -395,6 +395,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   rescue
     error ->
       Logger.warning("on_node_resolved callback failed: #{inspect(error)}")
+  catch
+    :exit, reason ->
+      Logger.warning("on_node_resolved callback exited: #{inspect(reason)}")
   end
 
   defp do_ensure_model_loaded(client, channel, target, request, timeout_ms) do

@@ -172,21 +172,41 @@ defmodule Orchard.Nodes do
   @spec observe_status(keyword(), map() | struct(), DateTime.t(), keyword()) ::
           {:ok, Node.t()} | :noop
   def observe_status(target, status_response, observed_at, opts \\ []) do
-    with true <- repo_available?(),
-         {:ok, observation} <- normalize_observation(target, status_response, observed_at) do
-      case execute_observe(observation) do
-        {:ok, node} ->
-          refresh_observed_queue_capacities(node, status_response, opts)
-          {:ok, node}
+    if repo_available?() do
+      case normalize_observation(target, status_response, observed_at) do
+        {:ok, observation} ->
+          handle_observation_result(
+            target,
+            observed_at,
+            execute_observe(observation),
+            status_response,
+            opts
+          )
 
-        :noop ->
+        :error ->
+          clear_existing_target_queue_capacity_sources(target, observed_at)
           :noop
       end
     else
-      _ -> :noop
+      :noop
     end
   rescue
     _ -> :noop
+  end
+
+  defp handle_observation_result(target, observed_at, result, status_response, opts) do
+    case result do
+      {:ok, node} ->
+        refresh_observed_queue_capacities(node, status_response, opts)
+        {:ok, node}
+
+      {:noop, :identity_conflict} ->
+        clear_existing_target_queue_capacity_sources(target, observed_at)
+        :noop
+
+      {:noop, _reason} ->
+        :noop
+    end
   end
 
   @doc """
@@ -393,6 +413,44 @@ defmodule Orchard.Nodes do
       :ok
   end
 
+  defp clear_existing_target_queue_capacity_sources(target, observed_at) do
+    case validate_target(target) do
+      {:ok, host, port} ->
+        case lookup_node_by_target(host, port) do
+          %Node{} = node -> clear_fresh_target_queue_capacity_sources(node, observed_at)
+          nil -> :ok
+        end
+
+      :error ->
+        :ok
+    end
+  rescue
+    error ->
+      Logger.debug("Queue capacity source clear for target failed: #{inspect(error)}")
+      :ok
+  catch
+    :exit, reason ->
+      Logger.debug("Queue capacity source clear for target exited: #{inspect(reason)}")
+      :ok
+  end
+
+  defp clear_fresh_target_queue_capacity_sources(%Node{} = node, observed_at) do
+    if stale_target_observation?(node, observed_at) do
+      :ok
+    else
+      clear_node_queue_capacity_sources(node)
+    end
+  end
+
+  defp stale_target_observation?(
+         %Node{last_heartbeat_at: %DateTime{} = last_heartbeat_at},
+         %DateTime{} = observed_at
+       ) do
+    DateTime.compare(last_heartbeat_at, observed_at) != :lt
+  end
+
+  defp stale_target_observation?(_node, _observed_at), do: false
+
   defp queue_capacity_eligible_node?(%Node{state: :active, health: health})
        when health in [:healthy, :degraded],
        do: true
@@ -513,8 +571,8 @@ defmodule Orchard.Nodes do
     end)
     |> case do
       {:ok, node} -> {:ok, node}
-      {:error, :identity_conflict} -> :noop
-      {:error, :stale} -> :noop
+      {:error, :identity_conflict} -> {:noop, :identity_conflict}
+      {:error, :stale} -> {:noop, :stale}
     end
   rescue
     # Concurrent first-observation race: two transactions see no existing
@@ -522,7 +580,7 @@ defmodule Orchard.Nodes do
     # Treat as a benign conflict — the other process won the insert.
     error in Ecto.ConstraintError ->
       Logger.debug("Node observation lost concurrent insert race: #{inspect(error.constraint)}")
-      :noop
+      {:noop, :constraint_conflict}
   end
 
   defp load_conflicting_nodes(observation) do

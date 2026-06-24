@@ -531,6 +531,26 @@ defmodule Orchard.Inference.RequestOrchestratorTest.RecordingQueueManager do
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.ExitingObservationQueueManager do
+  @moduledoc false
+
+  alias Orchard.Inference.QueueManager
+
+  def acquire(request), do: QueueManager.acquire(request)
+  def await(ticket), do: QueueManager.await(ticket)
+  def abandon(ticket), do: QueueManager.abandon(ticket)
+  def release(grant), do: QueueManager.release(grant)
+  def requeue(grant, request), do: QueueManager.requeue(grant, request)
+  def mark_grant_node(grant, node_id), do: QueueManager.mark_grant_node(grant, node_id)
+
+  def mark_capacity_source_observed(_grant) do
+    exit(
+      {:noproc,
+       {GenServer, :call, [Orchard.Inference.QueueManager, :mark_capacity_source_observed, 5_000]}}
+    )
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest do
   use Orchard.DataCase, async: false
 
@@ -1085,6 +1105,28 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
     assert Enum.any?(events, &InferenceEvent.terminal?/1)
     assert_received {:recording_queue_mark_grant_node, _grant_id, ^scheduled_node_id}
+  end
+
+  test "execute/3 forwards Accepted event when source observation exits", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(enabled: true, capacity: 1, max_wait_ms: 1_000)
+    put_exiting_observation_queue_manager()
+
+    model = create_active_model!(bundle, "request-orchestrator-accepted-observation-exit")
+    canonical = canonical_request("request-orchestrator-accepted-observation-exit", stream?: true)
+    test_pid = self()
+
+    handler = fn _request_id, event ->
+      send(test_pid, {:downstream_event, InferenceEvent.kind(event)})
+      :ok
+    end
+
+    assert {:ok, ^canonical, events} =
+             RequestOrchestrator.execute(canonical, model, event_handler: handler)
+
+    assert Enum.any?(events, &(InferenceEvent.kind(&1) == :accepted))
+    assert_receive {:downstream_event, :accepted}
   end
 
   test "queue admission disabled preserves legacy validated to scheduled flow", %{bundle: bundle} do
@@ -2868,6 +2910,17 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       |> Keyword.put(
         :queue_manager_impl,
         Orchard.Inference.RequestOrchestratorTest.RecordingQueueManager
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_exiting_observation_queue_manager do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.put(
+        :queue_manager_impl,
+        Orchard.Inference.RequestOrchestratorTest.ExitingObservationQueueManager
       )
 
     Application.put_env(:orchard_controller, :inference, inference)

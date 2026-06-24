@@ -854,8 +854,17 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp maybe_mark_capacity_source_observed(
          %QueueManager.Grant{} = grant,
          %InferenceEvent{event: %InferenceEvent.Accepted{}}
-       ),
-       do: Inference.queue_manager().mark_capacity_source_observed(grant)
+       ) do
+    Inference.queue_manager().mark_capacity_source_observed(grant)
+  rescue
+    error ->
+      log_warn("queue capacity source observation failed: #{inspect(error)}")
+      :ok
+  catch
+    :exit, reason ->
+      log_warn("queue capacity source observation exited: #{inspect(reason)}")
+      :ok
+  end
 
   defp maybe_mark_capacity_source_observed(_grant, _event), do: :ok
 
