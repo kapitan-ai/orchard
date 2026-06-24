@@ -31,8 +31,10 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       end
     end
 
-    def status(target, _opts) do
+    def status(target, opts) do
       key = {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
+      calls = Process.get(:stub_status_calls, [])
+      Process.put(:stub_status_calls, [{key, opts} | calls])
 
       case Process.get({:stub_status, key}) do
         nil -> {:error, :unavailable}
@@ -182,6 +184,11 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   defp score_calls do
     Process.get(:stub_score_calls, [])
+    |> Enum.reverse()
+  end
+
+  defp status_calls do
+    Process.get(:stub_status_calls, [])
     |> Enum.reverse()
   end
 
@@ -423,6 +430,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   setup do
     previous = Application.fetch_env!(:orchard_controller, :inference)
+    Process.delete(:stub_status_calls)
     Process.delete(:stub_score_calls)
     on_exit(fn -> Application.put_env(:orchard_controller, :inference, previous) end)
     :ok
@@ -445,6 +453,57 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.strategy == :single_node
+    end
+
+    test "forwards status client options to no-candidate fallback" do
+      target = [host: "127.0.0.1", port: 1]
+
+      put_inference(
+        runtime_client_targets: [target],
+        runtime_client_target: [host: "127.0.0.1", port: 50_071]
+      )
+
+      stub_probe(
+        "127.0.0.1",
+        1,
+        make_status(Ecto.UUID.generate(),
+          host: "127.0.0.1",
+          port: 1,
+          health: %{ready: false, health_code: "unhealthy", health_message: "down"},
+          active_request_count: 1,
+          max_concurrency: 1
+        )
+      )
+
+      assert {:error, :model_busy} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 status_timeout_ms: 17
+               )
+
+      assert status_calls() == [
+               {{"127.0.0.1", 1}, [timeout: 17]},
+               {{"127.0.0.1", 1}, [timeout: 17]}
+             ]
+    end
+
+    test "does not re-probe single-node capacity after all probes fail" do
+      target = [host: "127.0.0.1", port: 1]
+
+      put_inference(
+        runtime_client_targets: [target],
+        runtime_client_target: [host: "127.0.0.1", port: 50_071]
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 status_timeout_ms: 17
+               )
+
+      assert schedule.strategy == :single_node
+      assert schedule.runtime_client_target == target
+      assert status_calls() == [{{"127.0.0.1", 1}, [timeout: 17]}]
     end
 
     test "returns cluster_busy for one live full target instead of bypassing capacity checks" do

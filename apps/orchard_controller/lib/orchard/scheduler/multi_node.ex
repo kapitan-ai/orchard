@@ -73,7 +73,7 @@ defmodule Orchard.Scheduler.MultiNode do
     targets = Inference.runtime_client_targets()
 
     if targets == [] do
-      fallback_schedule(request, targets)
+      fallback_schedule(request, targets, opts)
     else
       schedule_multi(request, targets, opts)
     end
@@ -111,8 +111,11 @@ defmodule Orchard.Scheduler.MultiNode do
     available_candidates = Enum.reject(candidates, &candidate_full?/1)
 
     cond do
+      candidates == [] and probe_results == [] ->
+        fallback_schedule(request, targets, Keyword.put(opts, :probe_status?, false))
+
       candidates == [] ->
-        fallback_schedule(request, targets)
+        fallback_schedule(request, targets, opts)
 
       available_candidates == [] ->
         {:error, :cluster_busy}
@@ -851,11 +854,11 @@ defmodule Orchard.Scheduler.MultiNode do
   # from the plural config, not the separate singular runtime_client_target.
   # When targets is empty or has multiple entries, use the implicit singular
   # fallback (no single deterministic target to pass).
-  defp fallback_schedule(request, [single_target]) do
-    SingleNode.default_schedule(request, single_target)
+  defp fallback_schedule(request, [single_target], opts) do
+    SingleNode.default_schedule(request, single_target, opts)
   end
 
-  defp fallback_schedule(request, _targets) do
-    SingleNode.default_schedule(request)
+  defp fallback_schedule(request, _targets, opts) do
+    SingleNode.default_schedule(request, SingleNode.target(), opts)
   end
 end

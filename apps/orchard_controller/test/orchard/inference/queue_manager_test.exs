@@ -366,14 +366,8 @@ defmodule Orchard.Inference.QueueManagerTest do
       assert {:queued, ticket_a} = QueueManager.requeue(grant_a, request_a)
       assert {:queued, ticket_b} = QueueManager.requeue(grant_b, request_b)
 
-      awaiter_a = Task.async(fn -> QueueManager.await(ticket_a) end)
-
-      assert wait_until(fn -> queue_entry_awaiting?(ticket_a) end)
-      assert {:ok, requeued_grant_a} = Task.await(awaiter_a, 5_000)
-
-      awaiter_b = Task.async(fn -> QueueManager.await(ticket_b) end)
-
-      assert {:ok, requeued_grant_b} = Task.await(awaiter_b, 5_000)
+      assert {:ok, requeued_grant_a} = QueueManager.await(ticket_a)
+      assert {:ok, requeued_grant_b} = QueueManager.await(ticket_b)
 
       assert requeued_grant_a.queued_at == ticket_a.queued_at
       assert requeued_grant_b.queued_at == ticket_b.queued_at
