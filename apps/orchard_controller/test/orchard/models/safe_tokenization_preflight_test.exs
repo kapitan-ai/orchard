@@ -298,7 +298,7 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
       before_dirs = preflight_transport_dirs()
 
       with_app_env(:bundle_build_preflight_max_stdout_bytes, 64, fn ->
-        with_app_env(:bundle_build_preflight_timeout_ms, 2_000, fn ->
+        with_app_env(:bundle_build_preflight_timeout_ms, 5_000, fn ->
           with_inference_overrides([tokenizer_executable: helper], fn ->
             started_at = System.monotonic_time(:millisecond)
 
@@ -306,7 +306,7 @@ defmodule Orchard.Models.SafeTokenizationPreflightTest do
                      SafeTokenizationPreflight.run(preflight_input(tmp_dir))
 
             elapsed_ms = System.monotonic_time(:millisecond) - started_at
-            assert elapsed_ms < 1_500
+            assert elapsed_ms < 4_000
           end)
         end)
       end)

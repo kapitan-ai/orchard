@@ -242,14 +242,16 @@ defmodule Orchard.Inference.QueueManagerTest do
   end
 
   test "SPEC.md §5.4 source-aware zero-capacity refresh removes stale placement capacity" do
+    config = queue_config(capacity: 0, max_wait_ms: 2_000)
+
     assert {:queued, first_ticket} =
              QueueManager.acquire(admission_request("req-source-clear-a"),
-               config: queue_config(capacity: 0)
+               config: config
              )
 
     assert {:queued, second_ticket} =
              QueueManager.acquire(admission_request("req-source-clear-b"),
-               config: queue_config(capacity: 0)
+               config: config
              )
 
     first_awaiter = start_holding_awaiter(first_ticket, :first_source_clear_result)
@@ -516,6 +518,53 @@ defmodule Orchard.Inference.QueueManagerTest do
 
       assert {"requeue-lane-model", "v1"} in QueueManager.queued_model_lanes()
       assert :ok = QueueManager.abandon(ticket)
+    end)
+  end
+
+  test "SPEC.md §5.4 queued model lanes follow same-tenant FIFO order" do
+    tenant_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 0)
+
+    with_queue_admission_config(config, fn ->
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-queued-lanes-fifo-a",
+                   tenant_id: tenant_id,
+                   model_id: "queued-lane-a"
+                 )
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-queued-lanes-fifo-b",
+                   tenant_id: tenant_id,
+                   model_id: "queued-lane-b"
+                 )
+               )
+
+      :sys.replace_state(QueueManager, fn state ->
+        first_entry =
+          state.entries
+          |> Map.fetch!(first_ticket.ticket_ref)
+          |> Map.put(:ticket_ref, 2)
+
+        second_entry =
+          state.entries
+          |> Map.fetch!(second_ticket.ticket_ref)
+          |> Map.put(:ticket_ref, 1)
+
+        %{
+          state
+          | entries: %{1 => second_entry, 2 => first_entry},
+            tenant_queues: %{tenant_id => %{queue: [2, 1]}},
+            tenant_order: [tenant_id]
+        }
+      end)
+
+      assert QueueManager.queued_model_lanes() == [
+               {"queued-lane-a", "v1"},
+               {"queued-lane-b", "v1"}
+             ]
     end)
   end
 

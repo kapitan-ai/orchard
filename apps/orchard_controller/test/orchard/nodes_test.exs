@@ -1271,6 +1271,40 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(grant)
     end
 
+    test "SPEC.md §5.4 exhausted placement status does not publish queued capacity" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-exhausted-placement-capacity", "full-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.76", 9444)
+
+      full_status =
+        placement_status("10.0.0.76", "full-model", max_concurrency: 1)
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 1)
+        |> put_in([:runtime_model_placements, Access.at(0), :active_request_count], 1)
+
+      assert {:ok, _node} = Nodes.observe_status(target, full_status, DateTime.utc_now())
+      refute Task.yield(awaiter, 100)
+
+      available_status =
+        full_status
+        |> Map.put(:active_request_count, 0)
+        |> put_in([:runtime_model_placements, Access.at(0), :active_request_count], 0)
+
+      assert {:ok, _node} = Nodes.observe_status(target, available_status, DateTime.utc_now())
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "full-model@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
+
     test "SPEC.md §5.4 non-loaded placement status clears stale queued capacity" do
       QueueManager.reset()
 

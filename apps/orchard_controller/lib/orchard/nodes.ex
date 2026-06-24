@@ -492,7 +492,7 @@ defmodule Orchard.Nodes do
       spent_node_capacity = min(available_placement_capacity, remaining_node_capacity)
 
       {
-        min(placement_max, placement_active + spent_node_capacity),
+        spent_node_capacity,
         remaining_node_capacity - spent_node_capacity
       }
     else

@@ -1458,11 +1458,68 @@ defmodule Orchard.Inference.QueueManager do
   end
 
   defp queued_model_lanes_from_state(state) do
-    state.entries
-    |> Map.values()
+    state
+    |> queued_entries_in_promotion_order()
     |> Enum.reject(&terminal_pending?/1)
     |> Enum.flat_map(&entry_model_lane/1)
     |> Enum.uniq()
+  end
+
+  defp queued_entries_in_promotion_order(state) do
+    state
+    |> active_tenant_queues()
+    |> collect_queued_entries_in_promotion_order(state, state.tenant_rr_index, [])
+  end
+
+  defp active_tenant_queues(state) do
+    Enum.reduce(state.tenant_queues, %{}, fn {tenant_id, %{queue: queue} = tenant_queue}, acc ->
+      queue = Enum.filter(queue, &Map.has_key?(state.entries, &1))
+
+      if queue == [] do
+        acc
+      else
+        Map.put(acc, tenant_id, %{tenant_queue | queue: queue})
+      end
+    end)
+  end
+
+  defp collect_queued_entries_in_promotion_order(tenant_queues, state, rr_index, entries) do
+    ring = tenant_ring(state, tenant_queues)
+
+    if ring == [] do
+      Enum.reverse(entries)
+    else
+      index = rem(rr_index, length(ring))
+      tenant_id = Enum.at(ring, index)
+
+      case pop_tenant_head(tenant_queues, tenant_id) do
+        {{:ok, ticket_ref}, tenant_queues} ->
+          entry = Map.fetch!(state.entries, ticket_ref)
+
+          collect_queued_entries_in_promotion_order(tenant_queues, state, index + 1, [
+            entry | entries
+          ])
+
+        {:empty, tenant_queues} ->
+          collect_queued_entries_in_promotion_order(tenant_queues, state, rr_index, entries)
+      end
+    end
+  end
+
+  defp pop_tenant_head(tenant_queues, tenant_id) do
+    case Map.fetch(tenant_queues, tenant_id) do
+      {:ok, %{queue: [ticket_ref | rest]} = tenant_queue} ->
+        tenant_queues =
+          case rest do
+            [] -> Map.delete(tenant_queues, tenant_id)
+            queue -> Map.put(tenant_queues, tenant_id, %{tenant_queue | queue: queue})
+          end
+
+        {{:ok, ticket_ref}, tenant_queues}
+
+      _other ->
+        {:empty, Map.delete(tenant_queues, tenant_id)}
+    end
   end
 
   defp entry_model_lane(%{model_id: model_id, version: version})
@@ -1727,14 +1784,23 @@ defmodule Orchard.Inference.QueueManager do
     end
   end
 
-  defp tenant_ring(state) do
+  defp tenant_ring(state), do: tenant_ring(state, state.tenant_queues)
+
+  defp tenant_ring(state, tenant_queues) do
     config = Orchard.Inference.queue_admission_config() |> normalize_config()
 
     state.tenant_order
-    |> Enum.filter(&tenant_has_queued_entries?(state, &1))
+    |> Enum.filter(&tenant_queue_has_entries?(tenant_queues, &1))
     |> Enum.flat_map(fn tenant_id ->
       List.duplicate(tenant_id, tenant_weight(tenant_id, config))
     end)
+  end
+
+  defp tenant_queue_has_entries?(tenant_queues, tenant_id) do
+    case Map.get(tenant_queues, tenant_id) do
+      %{queue: [_head | _tail]} -> true
+      _other -> false
+    end
   end
 
   defp tenant_weight(tenant_id, config) do

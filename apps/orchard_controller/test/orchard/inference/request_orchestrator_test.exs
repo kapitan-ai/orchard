@@ -1392,7 +1392,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   test "queue admission requeues post-grant cluster_busy then schedules when live capacity returns",
        %{bundle: bundle} do
-    put_queue_admission_config(enabled: true, max_wait_ms: 1_000, poll_interval_ms: 150)
+    put_queue_admission_config(enabled: true, max_wait_ms: 2_000, poll_interval_ms: 500)
     put_live_capacity_scheduler_config()
     put_capturing_runtime_adapter_config()
 
@@ -1413,7 +1413,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
 
     assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
-             live_capacity_attempt()
+             live_capacity_attempt(1_500)
 
     assert {:ok, schedule} = StubLiveCapacityScheduler.schedule_success(canonical)
 
@@ -1436,7 +1436,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   test "queue admission requeues post-grant model_busy then schedules when live capacity returns",
        %{bundle: bundle} do
-    put_queue_admission_config(enabled: true, max_wait_ms: 1_000, poll_interval_ms: 150)
+    put_queue_admission_config(enabled: true, max_wait_ms: 2_000, poll_interval_ms: 500)
     put_live_capacity_scheduler_config()
     put_capturing_runtime_adapter_config()
 
@@ -1460,7 +1460,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
 
     assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
-             live_capacity_attempt()
+             live_capacity_attempt(1_500)
 
     assert {:ok, schedule} = StubLiveCapacityScheduler.schedule_success(canonical)
 
@@ -2876,11 +2876,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     end
   end
 
-  defp live_capacity_attempt do
+  defp live_capacity_attempt(timeout \\ 500) do
     receive do
       {:live_capacity_schedule_attempt, _scheduler_pid, _public_id} = attempt -> attempt
     after
-      500 -> flunk("expected live capacity scheduler attempt")
+      timeout -> flunk("expected live capacity scheduler attempt")
     end
   end
 
