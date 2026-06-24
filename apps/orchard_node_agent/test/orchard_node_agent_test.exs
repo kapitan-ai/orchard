@@ -523,13 +523,20 @@ defmodule OrchardNodeAgentTest do
         send(pid, {:prompt_token_ids_status_probe, self(), adapter_state.model_ref})
       end
 
-      status_sleep_ms =
-        Application.fetch_env!(:orchard_node_agent, :runtime)
-        |> Keyword.get(:test_prompt_token_ids_status_sleep_ms, 0)
+      runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+      status_sleep_ms = Keyword.get(runtime, :test_prompt_token_ids_status_sleep_ms, 0)
 
       if status_sleep_ms > 0, do: Process.sleep(status_sleep_ms)
 
       status = %{ready: true, health_code: "", health_message: ""}
+      max_concurrency = Keyword.get(runtime, :test_prompt_token_ids_max_concurrency)
+
+      status =
+        if is_integer(max_concurrency) and max_concurrency > 0 do
+          Map.put(status, :max_concurrency, max_concurrency)
+        else
+          status
+        end
 
       cond do
         adapter_state.model_ref.model_id == @status_error_model_id ->
@@ -1662,6 +1669,40 @@ defmodule OrchardNodeAgentTest do
 
         elapsed_ms = System.monotonic_time(:millisecond) - started_at
         assert elapsed_ms < 500
+      end
+    )
+  end
+
+  test "ensure_model_loaded fresh status probe also captures request capacity", %{bundle: bundle} do
+    with_runtime_config(
+      [
+        runtime_adapter_impl: PromptTokenIdsRuntimeAdapter,
+        worker_generation_mode: "batch",
+        worker_max_concurrent_requests_per_model: "auto",
+        worker_auto_max_concurrent_requests_per_model: 3,
+        test_only_allow_batch_admission_for_non_worker_adapters?: true,
+        test_prompt_token_ids_status_sleep_ms: 400,
+        test_prompt_token_ids_max_concurrency: 2
+      ],
+      fn ->
+        assert Node.effective_worker_request_limit() == 3
+
+        assert %EnsureModelLoadedResponse{
+                 already_loaded: false,
+                 placement_state: :PLACEMENT_STATE_LOADED,
+                 worker_supports_prompt_token_ids: true
+               } = NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle, 700))
+
+        assert_receive {:prompt_token_ids_status_probe, _worker_pid, model_ref}, 1_000
+        assert model_ref.model_id == bundle.model_id
+        assert model_ref.version == bundle.version
+        refute_receive {:prompt_token_ids_status_probe, _worker_pid, _model_ref}, 150
+
+        status = NodeStatus.current()
+        assert status.max_concurrency == 2
+
+        placement = runtime_model_placement!(status, bundle.model_id, bundle.version)
+        assert placement.max_concurrency == 2
       end
     )
   end

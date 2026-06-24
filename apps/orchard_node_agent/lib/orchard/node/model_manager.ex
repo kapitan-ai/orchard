@@ -639,7 +639,6 @@ defmodule Orchard.Node.ModelManager do
           if Map.has_key?(state.workers, key) do
             state
             |> put_worker_state(key, :PLACEMENT_STATE_LOADED)
-            |> put_worker_request_limit(key, request_limit_probe_timeout_ms(valid, now_ms))
             |> touch_worker_last_used(key)
           else
             state
@@ -657,9 +656,7 @@ defmodule Orchard.Node.ModelManager do
         # Reply expired waiters with deadline_exceeded, valid ones with success
         reply_waiters(expired, ModelLoadFailure.to_response(:deadline_exceeded))
 
-        reply_loaded_waiters_with_prompt_token_support(valid, Map.get(state.workers, key))
-
-        state
+        reply_loaded_waiters_with_prompt_token_support(state, key, valid)
 
       {:error, :deadline_exceeded} ->
         if valid == [] do
@@ -1039,25 +1036,35 @@ defmodule Orchard.Node.ModelManager do
     update_in(state, [:workers, key, :placement_state], fn _current -> placement_state end)
   end
 
-  defp put_worker_request_limit(state, key, timeout_ms) when timeout_ms > 0 do
-    case Map.get(state.workers, key) do
-      %{pid: pid} when is_pid(pid) ->
-        put_in(state, [:workers, key, :request_limit], request_limit_for_worker(pid, timeout_ms))
-
-      _other ->
-        state
+  defp put_cached_worker_request_limit(state, key, request_limit)
+       when is_integer(request_limit) and request_limit > 0 do
+    if Map.has_key?(state.workers, key) do
+      put_in(state, [:workers, key, :request_limit], request_limit)
+    else
+      state
     end
   end
 
-  defp put_worker_request_limit(state, _key, _timeout_ms), do: state
+  defp put_cached_worker_request_limit(state, _key, _request_limit), do: state
+
+  defp cacheable_request_limit_from_status_result({:ok, %{health_code: "worker_status_error"}}) do
+    nil
+  end
+
+  defp cacheable_request_limit_from_status_result({:ok, %{max_concurrency: value}})
+       when is_integer(value) and value > 0 do
+    value
+  end
+
+  defp cacheable_request_limit_from_status_result({:ok, _status}) do
+    fallback_worker_request_limit()
+  end
+
+  defp cacheable_request_limit_from_status_result(_status_result), do: nil
 
   defp put_worker_request_limits(state, worker_request_limits) do
     Enum.reduce(worker_request_limits, state, fn {key, request_limit}, acc ->
-      if is_integer(request_limit) and request_limit > 0 and Map.has_key?(acc.workers, key) do
-        put_in(acc, [:workers, key, :request_limit], request_limit)
-      else
-        acc
-      end
+      put_cached_worker_request_limit(acc, key, request_limit)
     end)
   end
 
@@ -1296,16 +1303,6 @@ defmodule Orchard.Node.ModelManager do
 
   defp worker_request_limit(%{pid: pid}) when is_pid(pid) do
     request_limit_for_worker(pid)
-  end
-
-  defp request_limit_probe_timeout_ms(waiters, now_ms) do
-    waiters
-    |> Enum.map(fn waiter -> waiter.deadline_unix_ms - now_ms end)
-    |> Enum.filter(&(&1 > 0))
-    |> case do
-      [] -> 0
-      remaining_ms -> min(Enum.min(remaining_ms), 1_000)
-    end
   end
 
   defp request_limit_for_worker(pid, timeout_ms \\ 1_000) do
@@ -1783,15 +1780,21 @@ defmodule Orchard.Node.ModelManager do
     %{support_state | all_true?: false}
   end
 
-  defp reply_loaded_waiters_with_prompt_token_support(waiters, entry) do
-    _support_cache =
+  defp reply_loaded_waiters_with_prompt_token_support(state, key, waiters) do
+    entry = Map.get(state.workers, key)
+
+    {_support_cache, request_limit} =
       waiters
       |> waiters_by_deadline()
-      |> Enum.reduce(:not_probed, fn waiter, support_cache ->
-        reply_loaded_waiter_with_support_cache(waiter, support_cache, entry)
+      |> Enum.reduce({:not_probed, nil}, fn waiter, {support_cache, request_limit} ->
+        {next_support_cache, status_result} =
+          reply_loaded_waiter_with_support_cache(waiter, support_cache, entry)
+
+        {next_support_cache,
+         request_limit || cacheable_request_limit_from_status_result(status_result)}
       end)
 
-    :ok
+    put_cached_worker_request_limit(state, key, request_limit)
   end
 
   defp waiters_by_deadline(waiters) do
@@ -1805,12 +1808,12 @@ defmodule Orchard.Node.ModelManager do
     cond do
       deadline_expired?(waiter.deadline_unix_ms) ->
         reply_deadline_exceeded(waiter)
-        support_cache
+        {support_cache, nil}
 
       support_cache?(support_cache) ->
         {:ok, supports_prompt_token_ids?} = support_cache
         reply_loaded_waiter_if_valid(waiter, supports_prompt_token_ids?)
-        support_cache
+        {support_cache, nil}
 
       true ->
         probe_and_reply_loaded_waiter(waiter, entry)
@@ -1821,14 +1824,14 @@ defmodule Orchard.Node.ModelManager do
   defp support_cache?(_support_cache), do: false
 
   defp probe_and_reply_loaded_waiter(waiter, entry) do
-    case probe_worker_prompt_token_ids_support(entry, waiter.deadline_unix_ms) do
-      {:ok, supports_prompt_token_ids?} = next_cache ->
+    case probe_worker_prompt_token_ids_support_status(entry, waiter.deadline_unix_ms) do
+      {{:ok, supports_prompt_token_ids?} = next_cache, status_result} ->
         reply_loaded_waiter_if_valid(waiter, supports_prompt_token_ids?)
-        next_cache
+        {next_cache, status_result}
 
-      {:error, :deadline_exceeded} ->
+      {{:error, :deadline_exceeded}, status_result} ->
         reply_deadline_exceeded(waiter)
-        :not_probed
+        {:not_probed, status_result}
     end
   end
 
@@ -1855,16 +1858,27 @@ defmodule Orchard.Node.ModelManager do
   defp probe_worker_prompt_token_ids_support(nil, _deadline_unix_ms), do: {:ok, false}
 
   defp probe_worker_prompt_token_ids_support(entry, deadline_unix_ms) do
+    {result, _status_result} =
+      probe_worker_prompt_token_ids_support_status(entry, deadline_unix_ms)
+
+    result
+  end
+
+  defp probe_worker_prompt_token_ids_support_status(nil, _deadline_unix_ms),
+    do: {{:ok, false}, nil}
+
+  defp probe_worker_prompt_token_ids_support_status(entry, deadline_unix_ms) do
     case remaining_probe_budget_ms(deadline_unix_ms) do
       {:ok, remaining_ms} ->
         timeout_ms = min(remaining_ms, @prompt_token_ids_support_probe_max_timeout_ms)
 
-        entry.pid
-        |> WorkerProcess.status(timeout: timeout_ms)
-        |> normalize_prompt_token_ids_support_status(deadline_unix_ms)
+        status_result = WorkerProcess.status(entry.pid, timeout: timeout_ms)
 
-      {:error, :deadline_exceeded} = error ->
-        error
+        {normalize_prompt_token_ids_support_status(status_result, deadline_unix_ms),
+         status_result}
+
+      {:error, :deadline_exceeded} ->
+        {{:error, :deadline_exceeded}, nil}
     end
   end
 
