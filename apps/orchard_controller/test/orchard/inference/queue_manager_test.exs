@@ -1163,6 +1163,14 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.5 cluster_busy requeue retires source before other lane promotion" do
+    assert_busy_requeue_retires_source(:cluster_busy)
+  end
+
+  test "SPEC.md §5.5 model_busy requeue retires source before other lane promotion" do
+    assert_busy_requeue_retires_source(:model_busy)
+  end
+
   test "SPEC.md §5.4 queued model lanes include requeued entries" do
     config = queue_config(max_wait_ms: 500, poll_interval_ms: 200)
 
@@ -2719,6 +2727,71 @@ defmodule Orchard.Inference.QueueManagerTest do
       ],
       overrides
     )
+  end
+
+  defp assert_busy_requeue_retires_source(reason) do
+    node_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 0, max_wait_ms: 1_000, poll_interval_ms: 50)
+    first_model_id = "source-requeue-#{reason}-a"
+
+    with_queue_admission_config(config, fn ->
+      first_tag = :"source_requeue_#{reason}_first"
+
+      first_request =
+        admission_request("req-node-source-requeue-#{reason}-a", model_id: first_model_id)
+
+      assert {:queued, first_ticket} = QueueManager.acquire(first_request)
+      first_awaiter = start_holding_awaiter(first_ticket, first_tag)
+
+      assert :ok = refresh_node_source_capacity(node_id)
+      assert_receive {^first_tag, {:ok, first_grant}}, 2_000
+
+      assert_requeued_source_does_not_grant_other_lane(reason, first_request, first_grant, config)
+
+      send(first_awaiter, :stop)
+    end)
+  end
+
+  defp assert_requeued_source_does_not_grant_other_lane(
+         reason,
+         first_request,
+         first_grant,
+         config
+       ) do
+    assert {:queued, second_ticket} =
+             QueueManager.acquire(
+               admission_request("req-node-source-requeue-#{reason}-b",
+                 model_id: "source-requeue-#{reason}-b"
+               )
+             )
+
+    second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+    assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+
+    assert {:queued, retry_ticket} =
+             QueueManager.requeue(first_grant, first_request, config: config)
+
+    refute Task.yield(second_awaiter, 100)
+
+    assert :ok = QueueManager.abandon(second_ticket)
+    assert :ok = QueueManager.abandon(retry_ticket)
+    Task.shutdown(second_awaiter)
+  end
+
+  defp refresh_node_source_capacity(node_id) do
+    QueueManager.refresh_node_capacity_sources(%{
+      clear_sources: [
+        {:node, node_id},
+        {:node, node_id, :placement},
+        {:node, node_id, :cold}
+      ],
+      placement_source: {:node, node_id, :placement},
+      cold_source: {:node, node_id, :cold},
+      node_id: node_id,
+      node_active: 0,
+      node_max: 1,
+      placements: []
+    })
   end
 
   defp with_queue_admission_config(queue_admission_config, fun) do

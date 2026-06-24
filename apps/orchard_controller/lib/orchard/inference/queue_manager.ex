@@ -2768,7 +2768,11 @@ defmodule Orchard.Inference.QueueManager do
     now_ms = monotonic_ms()
     remaining_ms = grant_state.queue_deadline_monotonic_ms - now_ms
     queued_at = grant_state.queued_at || now_iso8601()
-    state = drop_active_grant(state, grant.grant_id, grant_state.queue_key)
+
+    state =
+      state
+      |> drop_active_grant(grant.grant_id, grant_state.queue_key)
+      |> expire_requeued_capacity_source(grant_state)
 
     if remaining_ms <= 0 do
       metadata = timeout_metadata(grant_state, queued_at)
@@ -2830,6 +2834,11 @@ defmodule Orchard.Inference.QueueManager do
 
     {ticket, entry}
   end
+
+  defp expire_requeued_capacity_source(state, %{capacity_source: source}) when not is_nil(source),
+    do: expire_retained_capacity_source_limit(state, source)
+
+  defp expire_requeued_capacity_source(state, _grant_state), do: state
 
   defp put_requeued_entry({ticket, entry}, state),
     do: {ticket, put_entry(entry, state, position: :admission_order)}
