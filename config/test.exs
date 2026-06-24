@@ -4,6 +4,7 @@ Code.require_file("m1_runtime_defaults.exs", __DIR__)
 
 repo_root = Path.expand("..", __DIR__)
 test_root = Path.join([repo_root, "tmp", "test"])
+
 test_root_hash =
   :crypto.hash(:sha256, repo_root)
   |> Base.url_encode64(padding: false)
