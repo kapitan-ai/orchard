@@ -370,6 +370,10 @@ defmodule Orchard.Nodes do
     error ->
       Logger.debug("Queue capacity refresh from node observation failed: #{inspect(error)}")
       :ok
+  catch
+    :exit, reason ->
+      Logger.debug("Queue capacity refresh from node observation exited: #{inspect(reason)}")
+      :ok
   end
 
   defp clear_node_queue_capacity_sources(%Node{} = node, opts \\ []) do
@@ -382,6 +386,10 @@ defmodule Orchard.Nodes do
   rescue
     error ->
       Logger.debug("Queue capacity source clear for node failed: #{inspect(error)}")
+      :ok
+  catch
+    :exit, reason ->
+      Logger.debug("Queue capacity source clear for node exited: #{inspect(reason)}")
       :ok
   end
 

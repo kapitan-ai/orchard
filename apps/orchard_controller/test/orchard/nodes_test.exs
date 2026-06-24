@@ -1,3 +1,19 @@
+defmodule Orchard.NodesTest.ExitingQueueManager do
+  def refresh_node_capacity_sources(_observation) do
+    exit(
+      {:noproc,
+       {GenServer, :call, [Orchard.Inference.QueueManager, :refresh_node_capacity_sources, 5_000]}}
+    )
+  end
+
+  def clear_capacity_sources(_sources, _opts) do
+    exit(
+      {:noproc,
+       {GenServer, :call, [Orchard.Inference.QueueManager, :clear_capacity_sources, 5_000]}}
+    )
+  end
+end
+
 defmodule Orchard.NodesTest do
   use Orchard.DataCase, async: false
 
@@ -178,6 +194,20 @@ defmodule Orchard.NodesTest do
       %{await_from: await_from} when await_from != nil -> true
       _other -> false
     end
+  end
+
+  defp put_queue_manager_impl(module) do
+    inference = Application.fetch_env!(:orchard_controller, :inference)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(inference, :queue_manager_impl, module)
+    )
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :inference, inference)
+    end)
   end
 
   # -- Schema validation --
@@ -576,6 +606,26 @@ defmodule Orchard.NodesTest do
                  "status_message" => "warming up"
                }
              }
+    end
+
+    test "swallows QueueManager refresh exits after persisting eligible node" do
+      put_queue_manager_impl(Orchard.NodesTest.ExitingQueueManager)
+
+      node_id = Ecto.UUID.generate()
+      target = make_target("10.0.0.46", 9444)
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.46",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert node.id == node_id
     end
 
     test "drops readiness entries without matching capability" do
@@ -2412,6 +2462,30 @@ defmodule Orchard.NodesTest do
 
       assert_receive {^tag, {:ok, grant}}, 2_000
       assert :ok = QueueManager.release(grant)
+    end
+
+    test "swallows QueueManager clear exits after marking transport failure" do
+      put_queue_manager_impl(Orchard.NodesTest.ExitingQueueManager)
+
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.47",
+          rpc_port: 9444,
+          health: :healthy,
+          last_heartbeat_at: hb_time
+        })
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 make_target("10.0.0.47", 9444),
+                 :node_timeout,
+                 DateTime.add(hb_time, 5, :second)
+               )
+
+      assert marked.id == node.id
+      assert marked.health == :degraded
     end
 
     test "non-transport reason returns :noop without mutating health" do
