@@ -74,8 +74,8 @@ legacy tenant defaults until full RBAC and quota policy are complete.
 1. Client calls a public `/v1` endpoint on the controller.
 2. Controller authenticates, canonicalizes, renders/tokenizes, admits, and
    persists request state.
-3. Queue admission grants immediately or waits when lane capacity, live
-   placement capacity, or tenant active concurrency is exhausted.
+3. Queue admission grants immediately or waits when lane capacity, live node
+   capacity, live placement capacity, or tenant active concurrency is exhausted.
 4. Scheduler chooses a node/runtime target.
 5. Controller dispatches to a node agent.
 6. Node agent ensures a worker/model is ready and streams worker events back.

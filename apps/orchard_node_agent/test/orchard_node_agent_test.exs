@@ -1201,7 +1201,8 @@ defmodule OrchardNodeAgentTest do
     assert Path.type(runtime[:worker_socket_dir]) == :absolute
     assert Path.type(runtime[:worker_executable]) == :absolute
     assert String.ends_with?(runtime[:models_root], "/tmp/test/models")
-    assert String.ends_with?(runtime[:worker_socket_dir], "/tmp/test/data/worker-sockets")
+    assert String.starts_with?(runtime[:worker_socket_dir], "/tmp/ot-")
+    assert String.ends_with?(runtime[:worker_socket_dir], "/ws")
 
     assert String.ends_with?(
              runtime[:worker_executable],

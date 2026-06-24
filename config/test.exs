@@ -4,6 +4,12 @@ Code.require_file("m1_runtime_defaults.exs", __DIR__)
 
 repo_root = Path.expand("..", __DIR__)
 test_root = Path.join([repo_root, "tmp", "test"])
+test_root_hash =
+  :crypto.hash(:sha256, repo_root)
+  |> Base.url_encode64(padding: false)
+  |> binary_part(0, 8)
+
+worker_socket_dir = Path.join(["/tmp", "ot-" <> test_root_hash, "ws"])
 
 config :orchard_controller, Orchard.Repo,
   username: System.get_env("PGUSER") || "postgres",
@@ -36,6 +42,7 @@ config :orchard_node_agent,
       node_id: "00000000-0000-4000-a000-000000000001",
       display_name: "test-node",
       listen_address: [host: "127.0.0.1", port: 50_071],
+      worker_socket_dir: worker_socket_dir,
       worker_executable:
         Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
       worker_backend: "stub",

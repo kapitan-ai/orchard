@@ -941,7 +941,7 @@ Admission accounting:
 
 ### 5.4 Queue model
 
-When a request cannot be granted immediately because no node or live placement capacity is eligible, or because the tenant active request cap is exhausted:
+When a request cannot be granted immediately because no live node or placement capacity is available, or because the tenant active request cap is exhausted:
 
 * request enters tenant FIFO queue
 * max wait defaults to `3000 ms`
@@ -955,7 +955,7 @@ With controller queue admission enabled, a scheduler `cluster_busy` result obser
 The controller SHALL return the request to the same controller queue lane for the requested model/version under the original max queue wait budget instead of extending the deadline.
 Requeued grants SHALL preserve the original `queued_at`, admission order, and queue deadline.
 The queue manager MAY defer the requeued lane until the next poll interval before re-granting to avoid a tight scheduler retry loop.
-If live placement capacity or tenant active capacity does not become available before that deadline, the terminal public outcome SHALL be `queue_timeout`.
+If live node capacity, placement capacity, or tenant active capacity does not become available before that deadline, the terminal public outcome SHALL be `queue_timeout`.
 With controller queue admission disabled, `cluster_busy` remains an immediate admission failure.
 
 Queue discipline:
@@ -2201,7 +2201,7 @@ message StatusResponse {
   bool supports_prompt_token_ids = 10;
   repeated RuntimeModelPlacement runtime_model_placements = 11;
   // Aggregate runtime request capacity for the node.
-  // Controllers must treat absent or zero values conservatively.
+  // Controllers must treat absent or zero values as node capacity 1.
   uint32 max_concurrency = 12;
 }
 
