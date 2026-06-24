@@ -346,8 +346,11 @@ defmodule Orchard.Nodes do
     placement_source = {:node, node.id, :placement}
     cold_source = {:node, node.id, :cold}
 
-    previous_source_keys =
-      MapSet.new(queue_manager.active_capacity_source_lanes(placement_source))
+    placement_reservations =
+      active_capacity_source_reservations_by_lane(queue_manager, placement_source)
+
+    cold_reservations = active_capacity_source_reservations_by_lane(queue_manager, cold_source)
+    reserved_node_capacity = source_reservation_count(placement_reservations, cold_reservations)
 
     clear_node_queue_capacity_sources(node)
 
@@ -356,23 +359,26 @@ defmodule Orchard.Nodes do
       queued_lanes = queue_manager.queued_model_lanes()
       queued_lane_set = MapSet.new(queued_lanes)
 
+      remaining_node_capacity =
+        max(remaining_node_capacity(status_response) - reserved_node_capacity, 0)
+
       {placement_keys, remaining_node_capacity} =
         refresh_loaded_placement_capacities(
           queue_manager,
           placement_source,
-          status_response,
           placements,
-          queued_lane_set
+          queued_lane_set,
+          placement_reservations,
+          remaining_node_capacity
         )
-
-      placement_keys = MapSet.union(placement_keys, previous_source_keys)
 
       refresh_cold_queue_capacities(
         queue_manager,
         cold_source,
         queued_lanes,
         placement_keys,
-        remaining_node_capacity
+        remaining_node_capacity,
+        cold_reservations
       )
     end
   rescue
@@ -400,18 +406,40 @@ defmodule Orchard.Nodes do
 
   defp queue_capacity_eligible_node?(%Node{}), do: false
 
+  defp active_capacity_source_reservations_by_lane(queue_manager, source) do
+    source
+    |> queue_manager.active_capacity_source_reservations()
+    |> Map.new(fn {model_id, version, count} -> {{model_id, version}, count} end)
+  end
+
+  defp source_reservation_count(reservation_maps) do
+    reservation_maps
+    |> Enum.flat_map(&Map.values/1)
+    |> Enum.sum()
+  end
+
+  defp source_reservation_count(first_reservations, second_reservations) do
+    source_reservation_count([first_reservations, second_reservations])
+  end
+
   defp refresh_cold_queue_capacities(
          queue_manager,
          source,
          queued_lanes,
          placement_keys,
-         remaining_node_capacity
+         remaining_node_capacity,
+         source_reservations
        ) do
     queued_lanes
     |> Enum.reject(&(&1 in placement_keys))
     |> Enum.reduce(remaining_node_capacity, fn {model_id, version}, remaining_capacity ->
+      reserved_capacity = Map.get(source_reservations, {model_id, version}, 0)
       capacity = if remaining_capacity > 0, do: 1, else: 0
-      queue_manager.refresh_capacity(model_id, version, capacity, source: source)
+
+      queue_manager.refresh_capacity(model_id, version, reserved_capacity + capacity,
+        source: source
+      )
+
       max(remaining_capacity - capacity, 0)
     end)
   end
@@ -425,19 +453,21 @@ defmodule Orchard.Nodes do
   defp refresh_loaded_placement_capacities(
          queue_manager,
          source,
-         status_response,
          placements,
-         queued_lane_set
+         queued_lane_set,
+         source_reservations,
+         remaining_node_capacity
        ) do
     Enum.reduce(
       placements,
-      {MapSet.new(), remaining_node_capacity(status_response)},
+      {MapSet.new(), remaining_node_capacity},
       fn placement, {placement_keys, remaining_capacity} ->
         refresh_loaded_placement_capacity(
           queue_manager,
           source,
           placement,
           queued_lane_set,
+          source_reservations,
           placement_keys,
           remaining_capacity
         )
@@ -450,6 +480,7 @@ defmodule Orchard.Nodes do
          source,
          placement,
          queued_lane_set,
+         source_reservations,
          placement_keys,
          remaining_capacity
        )
@@ -460,10 +491,16 @@ defmodule Orchard.Nodes do
         placement_keys = MapSet.put(placement_keys, placement_key)
 
         if MapSet.member?(queued_lane_set, placement_key) do
+          reserved_capacity =
+            placement_reserved_capacity(placement, placement_key, source_reservations)
+
           {capacity, remaining_capacity} =
             placement_queue_capacity(placement, remaining_capacity)
 
-          queue_manager.refresh_capacity(model_id, version, capacity, source: source)
+          queue_manager.refresh_capacity(model_id, version, reserved_capacity + capacity,
+            source: source
+          )
+
           {placement_keys, remaining_capacity}
         else
           {placement_keys, remaining_capacity}
@@ -479,10 +516,19 @@ defmodule Orchard.Nodes do
          _source,
          _placement,
          _queued_lane_set,
+         _source_reservations,
          placement_keys,
          remaining_capacity
        ),
        do: {placement_keys, remaining_capacity}
+
+  defp placement_reserved_capacity(placement, placement_key, source_reservations) do
+    if loaded_placement?(placement) and placement_max_concurrency(placement) > 0 do
+      Map.get(source_reservations, placement_key, 0)
+    else
+      0
+    end
+  end
 
   defp placement_queue_capacity(placement, remaining_node_capacity) do
     if loaded_placement?(placement) do

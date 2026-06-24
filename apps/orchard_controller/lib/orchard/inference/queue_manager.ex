@@ -203,6 +203,14 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(server, {:active_capacity_source_lanes, source})
   end
 
+  @spec active_capacity_source_reservations(term(), keyword()) :: [
+          {String.t(), String.t(), pos_integer()}
+        ]
+  def active_capacity_source_reservations(source, opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    call_manager(server, {:active_capacity_source_reservations, source})
+  end
+
   @spec queued_model_lanes(keyword()) :: [{String.t(), String.t()}]
   def queued_model_lanes(opts \\ []) do
     server = Keyword.get(opts, :server, __MODULE__)
@@ -271,6 +279,10 @@ defmodule Orchard.Inference.QueueManager do
 
   def handle_call({:active_capacity_source_lanes, source}, _from, state) do
     {:reply, active_capacity_source_lanes_from_state(source, state), state}
+  end
+
+  def handle_call({:active_capacity_source_reservations, source}, _from, state) do
+    {:reply, active_capacity_source_reservations_from_state(source, state), state}
   end
 
   def handle_call({:acquire, request, config}, {_waiter_pid, _tag}, state) do
@@ -1350,6 +1362,38 @@ defmodule Orchard.Inference.QueueManager do
     |> Enum.sum()
   end
 
+  defp capacity_source_for_next_grant(queue_key, state) do
+    lane = Map.get(state.lanes, queue_key, empty_lane())
+    base_capacity = Map.get(lane, :base_capacity, 0)
+
+    if map_size(lane.active) < base_capacity do
+      nil
+    else
+      available_capacity_source(queue_key, state)
+    end
+  end
+
+  defp available_capacity_source(queue_key, state) do
+    reservations = active_source_reservation_counts(queue_key, state)
+
+    state.capacity_sources
+    |> Map.get(queue_key, %{})
+    |> Enum.sort_by(fn {source, _capacity} -> inspect(source) end)
+    |> Enum.find_value(fn {source, capacity} ->
+      if capacity > Map.get(reservations, source, 0), do: source
+    end)
+  end
+
+  defp active_source_reservation_counts(queue_key, state) do
+    Enum.reduce(state.grants, %{}, fn {_grant_id, grant}, reservations ->
+      if grant[:queue_key] == queue_key and not is_nil(grant[:capacity_source]) do
+        Map.update(reservations, grant.capacity_source, 1, &(&1 + 1))
+      else
+        reservations
+      end
+    end)
+  end
+
   defp clear_capacity_source_from_state(source, state) do
     state.capacity_sources
     |> Enum.reduce(state, fn {queue_key, sources}, state ->
@@ -1459,67 +1503,106 @@ defmodule Orchard.Inference.QueueManager do
 
   defp queued_model_lanes_from_state(state) do
     state
-    |> queued_entries_in_promotion_order()
-    |> Enum.reject(&terminal_pending?/1)
+    |> promotable_entries_in_grant_order()
     |> Enum.flat_map(&entry_model_lane/1)
     |> Enum.uniq()
   end
 
-  defp queued_entries_in_promotion_order(state) do
-    state
-    |> active_tenant_queues()
-    |> collect_queued_entries_in_promotion_order(state, state.tenant_rr_index, [])
+  defp promotable_entries_in_grant_order(state) do
+    collect_promotable_entries(state, [])
   end
 
-  defp active_tenant_queues(state) do
-    Enum.reduce(state.tenant_queues, %{}, fn {tenant_id, %{queue: queue} = tenant_queue}, acc ->
-      queue = Enum.filter(queue, &Map.has_key?(state.entries, &1))
+  defp collect_promotable_entries(state, entries) do
+    case next_promotable_entry(state) do
+      {:ok, entry, state} ->
+        state
+        |> simulate_promotable_entry_grant(entry)
+        |> collect_promotable_entries([entry | entries])
 
-      if queue == [] do
-        acc
-      else
-        Map.put(acc, tenant_id, %{tenant_queue | queue: queue})
-      end
-    end)
+      :blocked ->
+        Enum.reverse(entries)
+    end
   end
 
-  defp collect_queued_entries_in_promotion_order(tenant_queues, state, rr_index, entries) do
-    ring = tenant_ring(state, tenant_queues)
+  defp next_promotable_entry(state) do
+    ring = tenant_ring(state)
 
     if ring == [] do
-      Enum.reverse(entries)
+      :blocked
     else
-      index = rem(rr_index, length(ring))
-      tenant_id = Enum.at(ring, index)
-
-      case pop_tenant_head(tenant_queues, tenant_id) do
-        {{:ok, ticket_ref}, tenant_queues} ->
-          entry = Map.fetch!(state.entries, ticket_ref)
-
-          collect_queued_entries_in_promotion_order(tenant_queues, state, index + 1, [
-            entry | entries
-          ])
-
-        {:empty, tenant_queues} ->
-          collect_queued_entries_in_promotion_order(tenant_queues, state, rr_index, entries)
-      end
+      scan_promotable_tenant_ring(ring, state, 0, rem(state.tenant_rr_index, length(ring)))
     end
   end
 
-  defp pop_tenant_head(tenant_queues, tenant_id) do
-    case Map.fetch(tenant_queues, tenant_id) do
-      {:ok, %{queue: [ticket_ref | rest]} = tenant_queue} ->
-        tenant_queues =
-          case rest do
-            [] -> Map.delete(tenant_queues, tenant_id)
-            queue -> Map.put(tenant_queues, tenant_id, %{tenant_queue | queue: queue})
-          end
+  defp scan_promotable_tenant_ring(ring, _state, scanned, _index)
+       when scanned >= length(ring),
+       do: :blocked
 
-        {{:ok, ticket_ref}, tenant_queues}
+  defp scan_promotable_tenant_ring(ring, state, scanned, index) do
+    tenant_id = Enum.at(ring, index)
 
-      _other ->
-        {:empty, Map.delete(tenant_queues, tenant_id)}
+    case tenant_head_entry(state, tenant_id) do
+      {:ok, entry} ->
+        maybe_select_promotable_entry(entry, ring, state, scanned, index)
+
+      :empty ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      {:stale, ticket_ref} ->
+        scan_without_stale_promotable_ticket(ring, state, tenant_id, ticket_ref)
     end
+  end
+
+  defp maybe_select_promotable_entry(entry, ring, state, scanned, index) do
+    lane = Map.get(state.lanes, entry.queue_key, empty_lane())
+
+    cond do
+      terminal_pending?(entry) ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      is_nil(entry.await_from) ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      not queued_process_alive?(entry) ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      lane_blocked?(lane) ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      not tenant_active_capacity?(state, entry, entry) ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      true ->
+        {:ok, entry, %{state | tenant_rr_index: index + 1}}
+    end
+  end
+
+  defp scan_without_stale_promotable_ticket(_ring, state, tenant_id, ticket_ref) do
+    entry = %{tenant_id: tenant_id, ticket_ref: ticket_ref}
+
+    %{
+      state
+      | tenant_queues: remove_from_tenant_queues(state.tenant_queues, entry),
+        tenant_order: remove_empty_tenants(state.tenant_order, state.tenant_queues, entry)
+    }
+    |> next_promotable_entry()
+  end
+
+  defp simulate_promotable_entry_grant(state, entry) do
+    grant_id = {:queued_model_lanes, entry.ticket_ref}
+
+    %{
+      state
+      | tenant_queues: remove_from_tenant_queues(state.tenant_queues, entry),
+        tenant_order: remove_empty_tenants(state.tenant_order, state.tenant_queues, entry),
+        entries: Map.delete(state.entries, entry.ticket_ref),
+        grants:
+          Map.put(state.grants, grant_id, %{
+            queue_key: entry.queue_key,
+            tenant_id: entry.tenant_id
+          }),
+        tenant_counts: decrement_tenant_count(state.tenant_counts, entry.tenant_id)
+    }
   end
 
   defp entry_model_lane(%{model_id: model_id, version: version})
@@ -1536,6 +1619,17 @@ defmodule Orchard.Inference.QueueManager do
     |> Enum.filter(fn {_queue_key, sources} -> Map.get(sources, source, 0) > 0 end)
     |> Enum.flat_map(fn {queue_key, _sources} -> queue_key_model_lane(queue_key) end)
     |> Enum.uniq()
+  end
+
+  defp active_capacity_source_reservations_from_state(source, state) do
+    state.grants
+    |> Enum.filter(fn {_grant_id, grant} -> Map.get(grant, :capacity_source) == source end)
+    |> Enum.group_by(fn {_grant_id, grant} -> grant.queue_key end)
+    |> Enum.flat_map(fn {queue_key, grants} ->
+      Enum.map(queue_key_model_lane(queue_key), fn {model_id, version} ->
+        {model_id, version, length(grants)}
+      end)
+    end)
   end
 
   defp queue_key_model_lane(queue_key) do
@@ -1819,15 +1913,17 @@ defmodule Orchard.Inference.QueueManager do
   defp awaiter_alive?(%{await_from: {awaiter_pid, _tag}}), do: Process.alive?(awaiter_pid)
 
   defp grant_queued_entry(entry, state) do
+    capacity_source = capacity_source_for_next_grant(entry.queue_key, state)
+
     grant =
       build_grant(state, entry.queue_key, :queued, entry.queued_at, entry.enqueued_monotonic_ms)
 
-    state = promote_entry_to_grant(entry, grant, state)
+    state = promote_entry_to_grant(entry, grant, capacity_source, state)
     reply_awaiter(entry, {:ok, grant})
     state
   end
 
-  defp promote_entry_to_grant(entry, grant, state) do
+  defp promote_entry_to_grant(entry, grant, capacity_source, state) do
     cancel_timer(entry.timeout_ref)
     Process.demonitor(entry.monitor_ref, [:flush])
 
@@ -1851,7 +1947,8 @@ defmodule Orchard.Inference.QueueManager do
         enqueued_monotonic_ms: entry.enqueued_monotonic_ms,
         admission_sequence: Map.get(entry, :admission_sequence, 0),
         queue_deadline_monotonic_ms: entry.queue_deadline_monotonic_ms,
-        server: state.server
+        server: state.server,
+        capacity_source: capacity_source
       })
 
     %{

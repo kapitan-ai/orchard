@@ -506,14 +506,27 @@ defmodule Orchard.Inference.QueueManagerTest do
       assert entry.model_id == "requeue-lane-model"
       assert entry.version == "v1"
 
+      parent = self()
+
       :sys.replace_state(QueueManager, fn state ->
         entry =
           state.entries
           |> Map.fetch!(ticket.ticket_ref)
           |> Map.delete(:model_id)
           |> Map.delete(:version)
+          |> Map.put(:await_from, {parent, make_ref()})
 
-        %{state | entries: Map.put(state.entries, ticket.ticket_ref, entry)}
+        lane =
+          state.lanes
+          |> Map.fetch!(ticket.queue_key)
+          |> Map.put(:blocked_until_monotonic_ms, nil)
+          |> Map.put(:block_ref, nil)
+
+        %{
+          state
+          | entries: Map.put(state.entries, ticket.ticket_ref, entry),
+            lanes: Map.put(state.lanes, ticket.queue_key, lane)
+        }
       end)
 
       assert {"requeue-lane-model", "v1"} in QueueManager.queued_model_lanes()
@@ -542,16 +555,20 @@ defmodule Orchard.Inference.QueueManagerTest do
                  )
                )
 
+      parent = self()
+
       :sys.replace_state(QueueManager, fn state ->
         first_entry =
           state.entries
           |> Map.fetch!(first_ticket.ticket_ref)
           |> Map.put(:ticket_ref, 2)
+          |> Map.put(:await_from, {parent, make_ref()})
 
         second_entry =
           state.entries
           |> Map.fetch!(second_ticket.ticket_ref)
           |> Map.put(:ticket_ref, 1)
+          |> Map.put(:await_from, {parent, make_ref()})
 
         %{
           state
@@ -565,6 +582,106 @@ defmodule Orchard.Inference.QueueManagerTest do
                {"queued-lane-a", "v1"},
                {"queued-lane-b", "v1"}
              ]
+    end)
+  end
+
+  test "SPEC.md §5.4 queued model lanes skip active-cap-blocked tenant heads" do
+    blocked_tenant_id = Ecto.UUID.generate()
+    ready_tenant_id = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(max_active_per_tenant: 1), fn ->
+      assert {:ok, active_grant} =
+               QueueManager.acquire(
+                 admission_request("req-lanes-active-cap-held",
+                   tenant_id: blocked_tenant_id,
+                   model_id: "blocked-active-model"
+                 )
+               )
+
+      assert {:queued, blocked_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-lanes-active-cap-blocked",
+                   tenant_id: blocked_tenant_id,
+                   model_id: "blocked-active-model"
+                 ),
+                 config: queue_config(capacity: 0, max_active_per_tenant: 1)
+               )
+
+      assert {:queued, ready_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-lanes-active-cap-ready",
+                   tenant_id: ready_tenant_id,
+                   model_id: "ready-active-model"
+                 ),
+                 config: queue_config(capacity: 0, max_active_per_tenant: 1)
+               )
+
+      blocked_awaiter = await_and_hold(blocked_ticket, :blocked_active_cap)
+      ready_awaiter = await_and_hold(ready_ticket, :ready_active_cap)
+
+      assert wait_until(fn -> queue_entry_awaiting?(blocked_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ready_ticket) end)
+
+      assert QueueManager.queued_model_lanes() == [{"ready-active-model", "v1"}]
+
+      assert :ok = QueueManager.abandon(blocked_ticket)
+      assert :ok = QueueManager.abandon(ready_ticket)
+      assert :ok = QueueManager.release(active_grant)
+      stop_awaiter(blocked_awaiter)
+      stop_awaiter(ready_awaiter)
+    end)
+  end
+
+  test "SPEC.md §5.4 queued model lanes skip missing awaiters and blocked lanes" do
+    waiting_tenant_id = Ecto.UUID.generate()
+    blocked_tenant_id = Ecto.UUID.generate()
+    ready_tenant_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 0)
+
+    with_queue_admission_config(config, fn ->
+      assert {:queued, waiting_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-lanes-no-awaiter",
+                   tenant_id: waiting_tenant_id,
+                   model_id: "no-awaiter-model"
+                 )
+               )
+
+      assert {:queued, blocked_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-lanes-blocked-lane",
+                   tenant_id: blocked_tenant_id,
+                   model_id: "blocked-lane-model"
+                 )
+               )
+
+      assert {:queued, ready_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-lanes-ready-lane",
+                   tenant_id: ready_tenant_id,
+                   model_id: "ready-lane-model"
+                 )
+               )
+
+      blocked_awaiter = await_and_hold(blocked_ticket, :blocked_lane)
+      ready_awaiter = await_and_hold(ready_ticket, :ready_lane)
+
+      assert wait_until(fn -> queue_entry_awaiting?(blocked_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ready_ticket) end)
+
+      :sys.replace_state(QueueManager, fn state ->
+        lane = Map.fetch!(state.lanes, blocked_ticket.queue_key)
+        lanes = Map.put(state.lanes, blocked_ticket.queue_key, %{lane | block_ref: make_ref()})
+        %{state | lanes: lanes}
+      end)
+
+      assert QueueManager.queued_model_lanes() == [{"ready-lane-model", "v1"}]
+
+      assert :ok = QueueManager.abandon(waiting_ticket)
+      assert :ok = QueueManager.abandon(blocked_ticket)
+      assert :ok = QueueManager.abandon(ready_ticket)
+      stop_awaiter(blocked_awaiter)
+      stop_awaiter(ready_awaiter)
     end)
   end
 
