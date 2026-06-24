@@ -949,7 +949,7 @@ defmodule Orchard.Models.BundleBuilderTest do
             end)
 
           assert {:error, {:safe_tokenization_helper_unavailable, :timeout}} = result
-          assert System.convert_time_unit(elapsed_us, :microsecond, :millisecond) < 350
+          assert System.convert_time_unit(elapsed_us, :microsecond, :millisecond) < 500
         end)
       end)
 

@@ -1434,6 +1434,53 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert :ok = QueueManager.release(next_grant)
   end
 
+  test "queue admission requeues post-grant model_busy then schedules when live capacity returns",
+       %{bundle: bundle} do
+    put_queue_admission_config(enabled: true, max_wait_ms: 1_000, poll_interval_ms: 150)
+    put_live_capacity_scheduler_config()
+    put_capturing_runtime_adapter_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-single-node-capacity-requeue")
+
+    canonical =
+      canonical_request("request-orchestrator-single-node-capacity-requeue", stream?: false)
+
+    public_id = canonical.public_id
+
+    task = Task.async(fn -> RequestOrchestrator.execute(canonical, model) end)
+
+    assert {:live_capacity_schedule_attempt, scheduler_pid, ^public_id} = live_capacity_attempt()
+
+    send(scheduler_pid, {:live_capacity_schedule_reply, {:error, :model_busy}})
+    assert wait_until(fn -> request_state(canonical.public_id) == :queued end)
+    refute_receive {:captured_execute_request, _request}, 50
+
+    queued_request = Requests.get_request_by_public_id(canonical.public_id)
+    assert_queue_metadata(queued_request, "queued", queued?: true)
+    refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
+
+    assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
+             live_capacity_attempt()
+
+    assert {:ok, schedule} = StubLiveCapacityScheduler.schedule_success(canonical)
+
+    send(retry_scheduler_pid, {:live_capacity_schedule_reply, {:ok, schedule}})
+
+    assert_receive {:captured_execute_request, _request}, 500
+    assert {:ok, ^canonical, events} = Task.await(task, 2_000)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    states = request_event_states(request)
+
+    assert state_before?(states, :admitted, :queued)
+    assert state_before?(states, :queued, :scheduled)
+    assert_queue_metadata(request, "queued", queued?: true, granted?: true)
+
+    assert {:ok, next_grant} = hold_queue_lane(canonical)
+    assert :ok = QueueManager.release(next_grant)
+  end
+
   test "queue admission times out post-grant cluster_busy without dispatching", %{bundle: bundle} do
     put_queue_admission_config(enabled: true, max_wait_ms: 60, poll_interval_ms: 10)
     put_live_capacity_scheduler_config()

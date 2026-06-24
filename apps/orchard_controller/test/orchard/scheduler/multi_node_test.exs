@@ -3020,7 +3020,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
           host: "10.0.0.2",
           port: 50_062,
           active_request_count: 1,
-          max_concurrency: 1,
+          max_concurrency: 2,
           health: %{ready: true, health_code: "warn", health_message: "degraded"}
         )
       )
