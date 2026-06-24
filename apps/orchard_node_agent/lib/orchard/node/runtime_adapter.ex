@@ -22,10 +22,13 @@ defmodule Orchard.Node.RuntimeAdapter do
   `Accepted` remains owned by the gRPC runtime server so the node-runtime RPC
   contract stays explicit at the boundary.
 
-  `get_status/2` returns an adapter-owned observational map. Current callers
-  expect `:ready`, `:health_code`, and `:health_message`; adapters may also
-  include optional telemetry such as `:memory_budget` without changing request
-  admission or readiness semantics.
+  `get_status/2` returns an adapter-owned status map. Current callers expect
+  `:ready`, `:health_code`, and `:health_message`. Adapters may include
+  optional telemetry such as `:memory_budget` without changing readiness
+  semantics. Adapters that can run overlapping generations should also report
+  `:max_concurrency`; the node agent uses it for request admission and status
+  capacity telemetry, falling back to conservative single-request capacity when
+  it is absent.
   """
 
   alias Orchard.Cluster.V1.ExecuteInferenceRequest

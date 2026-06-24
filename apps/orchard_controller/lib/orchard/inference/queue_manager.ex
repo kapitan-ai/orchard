@@ -6,8 +6,9 @@ defmodule Orchard.Inference.QueueManager do
   lane and, when configured or resolved from policy, at most the tenant active
   request cap across all lanes. It queues callers by tenant FIFO and monitors
   queued callers so disconnected clients cannot be scheduled later.
-  Cross-tenant grants use weighted round-robin, and live scheduler saturation can
-  requeue an active grant under its original queue deadline.
+  Cross-tenant grants use weighted round-robin, and live `:cluster_busy` or
+  `:model_busy` scheduler saturation can requeue an active grant under its
+  original queue deadline.
   """
 
   use GenServer

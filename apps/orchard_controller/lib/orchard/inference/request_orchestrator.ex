@@ -420,8 +420,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
     case do_dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
-      {:error, :cluster_busy} ->
-        requeue_after_cluster_busy(db_request, canonical, model, grant, execution_opts)
+      {:error, reason} when reason in [:cluster_busy, :model_busy] ->
+        requeue_after_schedule_busy(db_request, canonical, model, grant, execution_opts)
 
       result ->
         result
@@ -430,7 +430,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
     Inference.queue_manager().release(grant)
   end
 
-  defp requeue_after_cluster_busy(db_request, canonical, model, grant, execution_opts) do
+  defp requeue_after_schedule_busy(db_request, canonical, model, grant, execution_opts) do
     request = queue_admission_request(db_request, canonical, execution_opts.caller)
 
     case Inference.queue_manager().requeue(grant, request) do

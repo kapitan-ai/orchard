@@ -41,6 +41,7 @@ defmodule Orchard.Node.ModelManager do
           monitor_ref: reference(),
           pid: pid(),
           placement_state: atom(),
+          request_limit: pos_integer() | nil,
           last_used_monotonic_ms: integer()
         }
 
@@ -181,7 +182,8 @@ defmodule Orchard.Node.ModelManager do
 
   @impl true
   def handle_call(:current, _from, state) do
-    {:reply, status_response(state), state}
+    {response, next_state} = status_response(state)
+    {:reply, response, next_state}
   end
 
   def handle_call(:reset, _from, state) do
@@ -343,8 +345,12 @@ defmodule Orchard.Node.ModelManager do
   end
 
   defp prepare_loaded_request(request, subscriber, key, pid, state) do
-    if node_at_request_capacity?(state.active_requests) or
-         model_at_request_capacity?(state.active_requests, key) do
+    worker_request_limits = loaded_worker_request_limits(state)
+    node_request_limit = node_max_concurrency(worker_request_limits)
+    request_limit = Map.get(worker_request_limits, key) || request_limit_for_worker(pid)
+
+    if node_at_request_capacity?(state.active_requests, node_request_limit) or
+         model_at_request_capacity?(state.active_requests, key, request_limit) do
       {:reply, {:error, :model_busy}, state}
     else
       subscriber_monitor_ref = Process.monitor(subscriber)
@@ -650,9 +656,7 @@ defmodule Orchard.Node.ModelManager do
         # Reply expired waiters with deadline_exceeded, valid ones with success
         reply_waiters(expired, ModelLoadFailure.to_response(:deadline_exceeded))
 
-        reply_loaded_waiters_with_prompt_token_support(valid, Map.get(state.workers, key))
-
-        state
+        reply_loaded_waiters_with_prompt_token_support(state, key, valid)
 
       {:error, :deadline_exceeded} ->
         if valid == [] do
@@ -1017,6 +1021,7 @@ defmodule Orchard.Node.ModelManager do
       monitor_ref: monitor_ref,
       pid: pid,
       placement_state: :PLACEMENT_STATE_LOADING,
+      request_limit: nil,
       last_used_monotonic_ms: System.monotonic_time(:millisecond)
     }
 
@@ -1029,6 +1034,38 @@ defmodule Orchard.Node.ModelManager do
 
   defp put_worker_state(state, key, placement_state) do
     update_in(state, [:workers, key, :placement_state], fn _current -> placement_state end)
+  end
+
+  defp put_cached_worker_request_limit(state, key, request_limit)
+       when is_integer(request_limit) and request_limit > 0 do
+    if Map.has_key?(state.workers, key) do
+      put_in(state, [:workers, key, :request_limit], request_limit)
+    else
+      state
+    end
+  end
+
+  defp put_cached_worker_request_limit(state, _key, _request_limit), do: state
+
+  defp cacheable_request_limit_from_status_result({:ok, %{health_code: "worker_status_error"}}) do
+    nil
+  end
+
+  defp cacheable_request_limit_from_status_result({:ok, %{max_concurrency: value}})
+       when is_integer(value) and value > 0 do
+    value
+  end
+
+  defp cacheable_request_limit_from_status_result({:ok, _status}) do
+    fallback_worker_request_limit()
+  end
+
+  defp cacheable_request_limit_from_status_result(_status_result), do: nil
+
+  defp put_worker_request_limits(state, worker_request_limits) do
+    Enum.reduce(worker_request_limits, state, fn {key, request_limit}, acc ->
+      put_cached_worker_request_limit(acc, key, request_limit)
+    end)
   end
 
   defp touch_worker_last_used(state, key, at_ms \\ System.monotonic_time(:millisecond)) do
@@ -1238,12 +1275,56 @@ defmodule Orchard.Node.ModelManager do
     end)
   end
 
-  defp model_at_request_capacity?(active_requests, key) do
-    active_request_count_for_model(active_requests, key) >= Node.effective_worker_request_limit()
+  defp model_at_request_capacity?(active_requests, key, request_limit) do
+    active_request_count_for_model(active_requests, key) >= request_limit
   end
 
-  defp node_at_request_capacity?(active_requests) do
-    map_size(active_requests) >= Node.effective_worker_request_limit()
+  defp node_at_request_capacity?(active_requests, request_limit) do
+    map_size(active_requests) >= request_limit
+  end
+
+  defp node_max_concurrency(worker_request_limits) do
+    case Map.values(worker_request_limits) do
+      [] -> Node.effective_worker_request_limit()
+      limits -> Enum.min(limits)
+    end
+  end
+
+  defp loaded_worker_request_limits(state) do
+    state
+    |> loaded_workers()
+    |> Map.new(fn {key, entry} -> {key, worker_request_limit(entry)} end)
+  end
+
+  defp worker_request_limit(%{request_limit: request_limit})
+       when is_integer(request_limit) and request_limit > 0 do
+    request_limit
+  end
+
+  defp worker_request_limit(%{pid: pid}) when is_pid(pid) do
+    request_limit_for_worker(pid)
+  end
+
+  defp request_limit_for_worker(pid, timeout_ms \\ 1_000) do
+    pid
+    |> WorkerProcess.status(timeout: timeout_ms)
+    |> request_limit_from_status_result()
+  end
+
+  defp request_limit_from_status_result({:ok, %{max_concurrency: value}})
+       when is_integer(value) and value > 0 do
+    value
+  end
+
+  defp request_limit_from_status_result(_status_result) do
+    fallback_worker_request_limit()
+  end
+
+  defp fallback_worker_request_limit do
+    case Node.runtime_adapter_impl() do
+      Orchard.Node.WorkerRuntimeAdapter -> 1
+      _other -> Node.effective_worker_request_limit()
+    end
   end
 
   # -- Response helpers ------------------------------------------------------
@@ -1252,13 +1333,13 @@ defmodule Orchard.Node.ModelManager do
     tool_snapshot = ToolCapabilityCatalog.snapshot()
 
     {runtime_health, runtime_memory_budgets, runtime_prefix_cache_statuses,
-     supports_prompt_token_ids} = runtime_health_and_memory_budgets(state)
+     supports_prompt_token_ids, worker_request_limits} = runtime_health_and_memory_budgets(state)
 
-    %StatusResponse{
+    response = %StatusResponse{
       worker_state: worker_state(state),
       loaded_models: loaded_models(state),
       active_request_count: map_size(state.active_requests),
-      max_concurrency: Node.effective_worker_request_limit(),
+      max_concurrency: node_max_concurrency(worker_request_limits),
       node_metadata: build_node_metadata(),
       runtime_health: runtime_health,
       hosted_tool_capabilities: tool_snapshot.capabilities,
@@ -1266,8 +1347,10 @@ defmodule Orchard.Node.ModelManager do
       runtime_memory_budgets: runtime_memory_budgets,
       runtime_prefix_cache_statuses: runtime_prefix_cache_statuses,
       supports_prompt_token_ids: supports_prompt_token_ids,
-      runtime_model_placements: runtime_model_placements(state)
+      runtime_model_placements: runtime_model_placements(state, worker_request_limits)
     }
+
+    {response, put_worker_request_limits(state, worker_request_limits)}
   end
 
   defp build_node_metadata do
@@ -1323,14 +1406,12 @@ defmodule Orchard.Node.ModelManager do
     |> Enum.sort_by(fn {{model_id, version}, _} -> {model_id, version} end)
   end
 
-  defp runtime_model_placements(state) do
-    max_concurrency = Node.effective_worker_request_limit()
-
+  defp runtime_model_placements(state, worker_request_limits) do
     Enum.map(loaded_workers(state), fn {key, entry} ->
       %RuntimeModelPlacement{
         model_ref: entry.model_ref,
         active_request_count: active_request_count_for_model(state.active_requests, key),
-        max_concurrency: max_concurrency
+        max_concurrency: Map.get(worker_request_limits, key, fallback_worker_request_limit())
       }
     end)
   end
@@ -1591,7 +1672,7 @@ defmodule Orchard.Node.ModelManager do
            health_code: "starting",
            health_message: "model load in progress",
            affected_model: first_inflight
-         }, [], [], false}
+         }, [], [], false, loaded_worker_request_limits(state)}
 
       has_loading_worker?(state) ->
         loading_ref = first_loading_worker_ref(state)
@@ -1601,10 +1682,10 @@ defmodule Orchard.Node.ModelManager do
            health_code: "starting",
            health_message: "model load in progress",
            affected_model: loading_ref
-         }, [], [], false}
+         }, [], [], false, loaded_worker_request_limits(state)}
 
       map_size(state.workers) == 0 ->
-        {%RuntimeHealth{ready: true, health_code: "", health_message: ""}, [], [], false}
+        {%RuntimeHealth{ready: true, health_code: "", health_message: ""}, [], [], false, %{}}
 
       true ->
         probe_workers_health_and_memory_budgets(loaded_workers(state))
@@ -1645,11 +1726,13 @@ defmodule Orchard.Node.ModelManager do
   defp probe_workers_health_and_memory_budgets(loaded_workers) do
     support_state = %{seen_success?: false, all_true?: true}
 
-    {health, runtime_memory_budgets, runtime_prefix_cache_statuses, support_state} =
-      Enum.reduce(loaded_workers, {nil, [], [], support_state}, fn {_key, entry},
-                                                                   {health, budgets,
-                                                                    prefix_cache_statuses,
-                                                                    support_state} ->
+    {health, runtime_memory_budgets, runtime_prefix_cache_statuses, support_state,
+     worker_request_limits} =
+      Enum.reduce(loaded_workers, {nil, [], [], support_state, %{}}, fn {key, entry},
+                                                                        {health, budgets,
+                                                                         prefix_cache_statuses,
+                                                                         support_state,
+                                                                         worker_request_limits} ->
         status_result = WorkerProcess.status(entry.pid, timeout: 1_000)
 
         updated_budgets = budgets ++ maybe_runtime_memory_budget(entry.model_ref, status_result)
@@ -1660,13 +1743,16 @@ defmodule Orchard.Node.ModelManager do
 
         next_health = health || health_from_status_result(entry.model_ref, status_result)
         support_state = aggregate_supports_prompt_token_ids(support_state, status_result)
+        request_limit = request_limit_from_status_result(status_result)
+        worker_request_limits = Map.put(worker_request_limits, key, request_limit)
 
-        {next_health, updated_budgets, updated_prefix_cache_statuses, support_state}
+        {next_health, updated_budgets, updated_prefix_cache_statuses, support_state,
+         worker_request_limits}
       end)
 
     {health || %RuntimeHealth{ready: true, health_code: "", health_message: ""},
      runtime_memory_budgets, runtime_prefix_cache_statuses,
-     supports_prompt_token_ids_value(support_state)}
+     supports_prompt_token_ids_value(support_state), worker_request_limits}
   end
 
   defp supports_prompt_token_ids_value(%{seen_success?: true, all_true?: true}), do: true
@@ -1694,15 +1780,21 @@ defmodule Orchard.Node.ModelManager do
     %{support_state | all_true?: false}
   end
 
-  defp reply_loaded_waiters_with_prompt_token_support(waiters, entry) do
-    _support_cache =
+  defp reply_loaded_waiters_with_prompt_token_support(state, key, waiters) do
+    entry = Map.get(state.workers, key)
+
+    {_support_cache, request_limit} =
       waiters
       |> waiters_by_deadline()
-      |> Enum.reduce(:not_probed, fn waiter, support_cache ->
-        reply_loaded_waiter_with_support_cache(waiter, support_cache, entry)
+      |> Enum.reduce({:not_probed, nil}, fn waiter, {support_cache, request_limit} ->
+        {next_support_cache, status_result} =
+          reply_loaded_waiter_with_support_cache(waiter, support_cache, entry)
+
+        {next_support_cache,
+         request_limit || cacheable_request_limit_from_status_result(status_result)}
       end)
 
-    :ok
+    put_cached_worker_request_limit(state, key, request_limit)
   end
 
   defp waiters_by_deadline(waiters) do
@@ -1716,12 +1808,12 @@ defmodule Orchard.Node.ModelManager do
     cond do
       deadline_expired?(waiter.deadline_unix_ms) ->
         reply_deadline_exceeded(waiter)
-        support_cache
+        {support_cache, nil}
 
       support_cache?(support_cache) ->
         {:ok, supports_prompt_token_ids?} = support_cache
         reply_loaded_waiter_if_valid(waiter, supports_prompt_token_ids?)
-        support_cache
+        {support_cache, nil}
 
       true ->
         probe_and_reply_loaded_waiter(waiter, entry)
@@ -1732,14 +1824,14 @@ defmodule Orchard.Node.ModelManager do
   defp support_cache?(_support_cache), do: false
 
   defp probe_and_reply_loaded_waiter(waiter, entry) do
-    case probe_worker_prompt_token_ids_support(entry, waiter.deadline_unix_ms) do
-      {:ok, supports_prompt_token_ids?} = next_cache ->
+    case probe_worker_prompt_token_ids_support_status(entry, waiter.deadline_unix_ms) do
+      {{:ok, supports_prompt_token_ids?} = next_cache, status_result} ->
         reply_loaded_waiter_if_valid(waiter, supports_prompt_token_ids?)
-        next_cache
+        {next_cache, status_result}
 
-      {:error, :deadline_exceeded} ->
+      {{:error, :deadline_exceeded}, status_result} ->
         reply_deadline_exceeded(waiter)
-        :not_probed
+        {:not_probed, status_result}
     end
   end
 
@@ -1766,16 +1858,27 @@ defmodule Orchard.Node.ModelManager do
   defp probe_worker_prompt_token_ids_support(nil, _deadline_unix_ms), do: {:ok, false}
 
   defp probe_worker_prompt_token_ids_support(entry, deadline_unix_ms) do
+    {result, _status_result} =
+      probe_worker_prompt_token_ids_support_status(entry, deadline_unix_ms)
+
+    result
+  end
+
+  defp probe_worker_prompt_token_ids_support_status(nil, _deadline_unix_ms),
+    do: {{:ok, false}, nil}
+
+  defp probe_worker_prompt_token_ids_support_status(entry, deadline_unix_ms) do
     case remaining_probe_budget_ms(deadline_unix_ms) do
       {:ok, remaining_ms} ->
         timeout_ms = min(remaining_ms, @prompt_token_ids_support_probe_max_timeout_ms)
 
-        entry.pid
-        |> WorkerProcess.status(timeout: timeout_ms)
-        |> normalize_prompt_token_ids_support_status(deadline_unix_ms)
+        status_result = WorkerProcess.status(entry.pid, timeout: timeout_ms)
 
-      {:error, :deadline_exceeded} = error ->
-        error
+        {normalize_prompt_token_ids_support_status(status_result, deadline_unix_ms),
+         status_result}
+
+      {:error, :deadline_exceeded} ->
+        {{:error, :deadline_exceeded}, nil}
     end
   end
 

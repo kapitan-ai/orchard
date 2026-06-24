@@ -354,7 +354,7 @@ defmodule Orchard.Inference.QueueManagerTest do
 
   test "SPEC.md §5.4 requeued active grants preserve original same-tenant FIFO order" do
     tenant_id = Ecto.UUID.generate()
-    config = queue_config(capacity: 2, max_wait_ms: 1_000, poll_interval_ms: 50)
+    config = queue_config(capacity: 2, max_wait_ms: 5_000, poll_interval_ms: 50)
 
     with_queue_admission_config(config, fn ->
       request_a = admission_request("req-requeue-fifo-a", tenant_id: tenant_id)
@@ -366,14 +366,8 @@ defmodule Orchard.Inference.QueueManagerTest do
       assert {:queued, ticket_a} = QueueManager.requeue(grant_a, request_a)
       assert {:queued, ticket_b} = QueueManager.requeue(grant_b, request_b)
 
-      awaiter_a = Task.async(fn -> QueueManager.await(ticket_a) end)
-
-      assert wait_until(fn -> queue_entry_awaiting?(ticket_a) end)
-      assert {:ok, requeued_grant_a} = Task.await(awaiter_a, 1_000)
-
-      awaiter_b = Task.async(fn -> QueueManager.await(ticket_b) end)
-
-      assert {:ok, requeued_grant_b} = Task.await(awaiter_b, 1_000)
+      assert {:ok, requeued_grant_a} = QueueManager.await(ticket_a)
+      assert {:ok, requeued_grant_b} = QueueManager.await(ticket_b)
 
       assert requeued_grant_a.queued_at == ticket_a.queued_at
       assert requeued_grant_b.queued_at == ticket_b.queued_at

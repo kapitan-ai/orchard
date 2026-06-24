@@ -83,6 +83,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
         ready: true,
         health_code: "",
         health_message: "",
+        max_concurrency: 2,
         memory_budget: %WorkerMemoryBudgetStatus{
           mode: "observe",
           budget_available: true,
@@ -337,6 +338,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
 
       assert status.ready == true
       assert status.health_code == ""
+      assert status.max_concurrency == 2
       assert status.memory_budget.mode == "observe"
       assert status.memory_budget.budget_available == true
       assert status.memory_budget.status_code == "ok"

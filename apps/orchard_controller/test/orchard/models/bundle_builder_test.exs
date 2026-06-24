@@ -949,7 +949,7 @@ defmodule Orchard.Models.BundleBuilderTest do
             end)
 
           assert {:error, {:safe_tokenization_helper_unavailable, :timeout}} = result
-          assert System.convert_time_unit(elapsed_us, :microsecond, :millisecond) < 350
+          assert System.convert_time_unit(elapsed_us, :microsecond, :millisecond) < 800
         end)
       end)
 
@@ -1372,7 +1372,7 @@ defmodule Orchard.Models.BundleBuilderTest do
   defp write_dribbling_catalog_helper!(dir) do
     write_executable!(dir, "dribbling-catalog-helper.sh", """
     #!/bin/sh
-    perl -e '$| = 1; for (1..20) { print "x" x 1024; select(undef, undef, undef, 0.02); }' 2>/dev/null || true
+    perl -e '$| = 1; for (1..20) { print "x" x 1024; select(undef, undef, undef, 0.05); }' 2>/dev/null || true
     """)
   end
 

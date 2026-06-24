@@ -16,7 +16,7 @@ defmodule Orchard.Scheduler.MultiNode do
   9. Gated Phase 4D tie-only `ScorePrefixCache` reselection, when explicitly enabled
   10. Lexicographically smaller `node_id` (deterministic tie-break)
 
-  Falls back to `SingleNode.default_schedule/1` when:
+  Falls back to the single-node scheduler when:
   - No targets are configured
   - All probes fail
   - No schedulable nodes remain after filtering
@@ -24,6 +24,9 @@ defmodule Orchard.Scheduler.MultiNode do
   Returns `{:error, :cluster_busy}` when live probes joined to persisted schedulable
   nodes, but every joined candidate has exhausted capacity or is an active
   loaded-model candidate with unknown placement capacity.
+
+  Successful schedules include `:queue_lane_capacity`, derived only from loaded
+  candidates whose live node and placement capacity leave room.
   """
 
   alias Orchard.CanonicalRequest
@@ -70,7 +73,7 @@ defmodule Orchard.Scheduler.MultiNode do
     targets = Inference.runtime_client_targets()
 
     if targets == [] do
-      fallback_schedule(request, targets)
+      fallback_schedule(request, targets, opts)
     else
       schedule_multi(request, targets, opts)
     end
@@ -108,8 +111,11 @@ defmodule Orchard.Scheduler.MultiNode do
     available_candidates = Enum.reject(candidates, &candidate_full?/1)
 
     cond do
+      candidates == [] and probe_results == [] ->
+        fallback_schedule(request, targets, Keyword.put(opts, :probe_status?, false))
+
       candidates == [] ->
-        fallback_schedule(request, targets)
+        fallback_schedule(request, targets, opts)
 
       available_candidates == [] ->
         {:error, :cluster_busy}
@@ -166,6 +172,7 @@ defmodule Orchard.Scheduler.MultiNode do
             model_load_timeout_ms: Inference.model_load_timeout_ms(),
             node_id: selected.node_id,
             candidate_count: length(ranked),
+            queue_lane_capacity: queue_lane_capacity(available_candidates),
             selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
           }
           |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
@@ -257,6 +264,39 @@ defmodule Orchard.Scheduler.MultiNode do
        do: true
 
   defp active_without_known_capacity?(_candidate), do: false
+
+  defp queue_lane_capacity(candidates) do
+    candidates
+    |> Enum.filter(& &1.loaded_model?)
+    |> Enum.map(&effective_model_capacity_for_queue/1)
+    |> Enum.sum()
+    |> case do
+      capacity when capacity > 0 -> capacity
+      _capacity -> 1
+    end
+  end
+
+  defp effective_model_capacity_for_queue(%{
+         active_request_count: node_active,
+         max_concurrency: node_max,
+         model_placement_capacity: %{
+           active_request_count: model_active,
+           max_concurrency: placement_max
+         }
+       })
+       when is_integer(node_active) and is_integer(node_max) and is_integer(model_active) and
+              is_integer(placement_max) do
+    remaining_node_capacity = max(node_max - node_active, 0)
+    min(placement_max, max(model_active, 0) + remaining_node_capacity)
+  end
+
+  defp effective_model_capacity_for_queue(%{
+         model_placement_capacity: %{max_concurrency: placement_max}
+       })
+       when is_integer(placement_max) and placement_max > 0,
+       do: placement_max
+
+  defp effective_model_capacity_for_queue(_candidate), do: 1
 
   defp node_max_concurrency(response) do
     case Map.get(response, :max_concurrency) || Map.get(response, "max_concurrency") do
@@ -814,11 +854,11 @@ defmodule Orchard.Scheduler.MultiNode do
   # from the plural config, not the separate singular runtime_client_target.
   # When targets is empty or has multiple entries, use the implicit singular
   # fallback (no single deterministic target to pass).
-  defp fallback_schedule(request, [single_target]) do
-    SingleNode.default_schedule(request, single_target)
+  defp fallback_schedule(request, [single_target], opts) do
+    SingleNode.default_schedule(request, single_target, opts)
   end
 
-  defp fallback_schedule(request, _targets) do
-    SingleNode.default_schedule(request)
+  defp fallback_schedule(request, _targets, opts) do
+    SingleNode.default_schedule(request, SingleNode.target(), opts)
   end
 end

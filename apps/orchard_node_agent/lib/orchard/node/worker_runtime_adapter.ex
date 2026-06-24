@@ -78,7 +78,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
            health_message: Map.get(status, :health_message, ""),
            memory_budget: memory_budget_from_proto(Map.get(status, :memory_budget)),
            prefix_cache_status: prefix_cache_from_proto(Map.get(status, :prefix_cache)),
-           supports_prompt_token_ids: Map.get(status, :supports_prompt_token_ids, false) || false
+           supports_prompt_token_ids: Map.get(status, :supports_prompt_token_ids, false) || false,
+           max_concurrency: positive_integer_or_nil(Map.get(status, :max_concurrency))
          }}
 
       {:error, reason} ->
@@ -124,6 +125,9 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
     do: {:ok, ScoreResponse.response("unavailable", "worker runtime is unavailable")}
 
   def normalize_score(response), do: ScoreResponse.normalize(response)
+
+  defp positive_integer_or_nil(value) when is_integer(value) and value > 0, do: value
+  defp positive_integer_or_nil(_value), do: nil
 
   defp memory_budget_from_proto(nil), do: nil
 

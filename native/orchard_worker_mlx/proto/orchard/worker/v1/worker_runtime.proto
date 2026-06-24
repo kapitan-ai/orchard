@@ -60,6 +60,7 @@ message WorkerPrefixCacheStatus {
 
 message WorkerStatusResponse {
   bool loaded = 1;
+  // Active Generate calls in this worker process.
   uint32 active_request_count = 2;
   bool ready = 3;
   string health_code = 4;
@@ -67,6 +68,9 @@ message WorkerStatusResponse {
   WorkerMemoryBudgetStatus memory_budget = 6;
   WorkerPrefixCacheStatus prefix_cache = 7;
   bool supports_prompt_token_ids = 8;
+  // Effective overlapping Generate capacity for this worker. Node agents treat
+  // absent or zero values as capacity 1.
+  uint32 max_concurrency = 9;
 }
 
 message LoadModelRequest {

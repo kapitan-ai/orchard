@@ -74,8 +74,7 @@ legacy tenant defaults until full RBAC and quota policy are complete.
 1. Client calls a public `/v1` endpoint on the controller.
 2. Controller authenticates, canonicalizes, renders/tokenizes, admits, and
    persists request state.
-3. Queue admission grants immediately or waits when lane capacity, live node
-   capacity, live placement capacity, or tenant active concurrency is exhausted.
+3. Queue admission grants immediately or waits when lane capacity, live node capacity, live requested-model or placement capacity, or tenant active concurrency is exhausted.
 4. Scheduler chooses a node/runtime target.
 5. Controller dispatches to a node agent.
 6. Node agent ensures a worker/model is ready and streams worker events back.
@@ -89,6 +88,7 @@ the compatibility facade. See `SPEC.md` §3 and §7 for normative behavior.
 The node agent owns worker subprocess lifecycle. The worker runtime owns local
 model loading/generation details. Public clients never talk to workers directly.
 Node-agent status is also the live source for aggregate node capacity and loaded-model placement capacity, including active requests and max concurrency.
+Aggregate capacity is the conservative limit the node agent enforces across loaded workers, while each loaded placement reports its own active count and capacity.
 The controller scheduler uses that capacity telemetry to avoid dispatching to full nodes or full same-model placements.
 
 Cluster RPC and worker RPC are separate contracts:

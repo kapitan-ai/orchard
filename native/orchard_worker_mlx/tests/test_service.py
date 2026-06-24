@@ -62,7 +62,11 @@ class HappyBackend:
         self.recorded_fingerprints: list[str] = []
 
     def status(self) -> BackendStatus:
-        return BackendStatus(loaded=self._loaded, active_request_count=int(self._active))
+        return BackendStatus(
+            loaded=self._loaded,
+            active_request_count=int(self._active),
+            max_concurrency=1,
+        )
 
     def health(self) -> BackendHealth:
         return BackendHealth(ready=True, code="", message="")
@@ -221,7 +225,11 @@ class ConcurrentGenerateBackend(HappyBackend):
 
     def status(self) -> BackendStatus:
         with self._lock:
-            return BackendStatus(loaded=self._loaded, active_request_count=self._active_count)
+            return BackendStatus(
+                loaded=self._loaded,
+                active_request_count=self._active_count,
+                max_concurrency=2,
+            )
 
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         self._entered.wait(timeout=2.0)
@@ -989,6 +997,7 @@ def test_generate_supports_two_concurrent_servicer_calls() -> None:
     assert backend._entered.wait(timeout=2.0)
     status = servicer.GetStatus(worker_runtime_pb2.WorkerStatusRequest(), context)
     assert status.active_request_count == 2
+    assert status.max_concurrency == 2
 
     backend._release.set()
     t1.join(timeout=3.0)
