@@ -815,6 +815,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
       wrapped_handler =
         wrap_event_handler_for_first_token(event_handler, capture_key, queue_grant)
 
+      maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id))
+
       result =
         RequestDispatcher.dispatch(
           schedule,
@@ -964,8 +966,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp maybe_mark_grant_node(%QueueManager.Grant{} = grant, node_id),
-    do: Inference.queue_manager().mark_grant_node(grant, node_id)
+  defp maybe_mark_grant_node(%QueueManager.Grant{} = grant, node_id)
+       when is_binary(node_id) and node_id != "",
+       do: Inference.queue_manager().mark_grant_node(grant, node_id)
 
   defp maybe_mark_grant_node(_grant, _node_id), do: :ok
 

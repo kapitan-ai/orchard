@@ -361,7 +361,7 @@ defmodule Orchard.Nodes do
         reserve_unassigned_node_grants?:
           Keyword.get(opts, :reserve_unassigned_node_grants?, true),
         reserve_unassigned_source_grants?:
-          Keyword.get(opts, :reserve_unassigned_source_grants?, false)
+          Keyword.get(opts, :reserve_unassigned_source_grants?, true)
       })
     else
       clear_node_queue_capacity_sources(node)

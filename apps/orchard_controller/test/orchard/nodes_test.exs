@@ -759,10 +759,11 @@ defmodule Orchard.NodesTest do
       status_a =
         placement_status("10.0.0.53", "aggregate-model", max_concurrency: 1)
 
-      assert {:ok, _node} =
+      assert {:ok, node_a} =
                Nodes.observe_status(make_target("10.0.0.53", 9444), status_a, DateTime.utc_now())
 
       assert_receive {:first_aggregate_result, {:ok, first_grant}}, 2_000
+      assert :ok = QueueManager.mark_grant_node(first_grant, node_a.id)
       refute_receive {:second_aggregate_result, _result}, 50
 
       status_b =
@@ -1493,10 +1494,11 @@ defmodule Orchard.NodesTest do
         |> Map.put(:max_concurrency, 1)
         |> Map.put(:runtime_model_placements, [])
 
-      assert {:ok, _node} =
+      assert {:ok, node_a} =
                Nodes.observe_status(make_target("10.0.0.65", 9444), status_a, DateTime.utc_now())
 
       assert_receive {:first_cold_aggregate_result, {:ok, first_grant}}, 2_000
+      assert :ok = QueueManager.mark_grant_node(first_grant, node_a.id)
       refute_receive {:second_cold_aggregate_result, _result}, 100
 
       status_b =

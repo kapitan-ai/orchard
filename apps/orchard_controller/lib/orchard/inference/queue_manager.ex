@@ -1439,7 +1439,7 @@ defmodule Orchard.Inference.QueueManager do
       reserve_unassigned_node_grants?:
         Map.get(observation, :reserve_unassigned_node_grants?, true) != false,
       reserve_unassigned_source_grants?:
-        Map.get(observation, :reserve_unassigned_source_grants?, false) == true
+        Map.get(observation, :reserve_unassigned_source_grants?, true) != false
     }
   end
 
@@ -1752,9 +1752,15 @@ defmodule Orchard.Inference.QueueManager do
   end
 
   defp unassigned_node_grant_reserves_observation?(
-         _grant,
+         %{capacity_source: source} = grant,
          %{reserve_unassigned_source_grants?: true}
-       ),
+       )
+       when not is_nil(source),
+       do: Map.get(grant, :capacity_source_observed?) != true
+
+  defp unassigned_node_grant_reserves_observation?(_grant, %{
+         reserve_unassigned_source_grants?: true
+       }),
        do: true
 
   defp unassigned_node_grant_reserves_observation?(grant, _observation),
@@ -1909,7 +1915,6 @@ defmodule Orchard.Inference.QueueManager do
 
           allocations =
             state
-            |> promotable_entries_in_grant_order()
             |> allocate_source_capacity(limit, allocations, remaining_capacity)
 
           put_capacity_source_allocations(state, source, allocations, previous_queue_keys)
@@ -1964,21 +1969,134 @@ defmodule Orchard.Inference.QueueManager do
     end)
   end
 
-  defp allocate_source_capacity(entries, limit, allocations, remaining_capacity) do
-    {allocations, _remaining_capacity} =
-      Enum.reduce(entries, {allocations, remaining_capacity}, fn entry,
-                                                                 {allocations, remaining} ->
+  defp allocate_source_capacity(_state, _limit, allocations, remaining_capacity)
+       when remaining_capacity <= 0,
+       do: allocations
+
+  defp allocate_source_capacity(state, limit, allocations, remaining_capacity) do
+    case next_source_allocatable_entry(state, limit, allocations) do
+      {:ok, entry, state} ->
         allocated = Map.get(allocations, entry.queue_key, 0)
-        lane_limit = source_limit_lane_limit(limit, entry.queue_key, allocated)
 
-        if remaining > 0 and allocated < lane_limit do
-          {Map.put(allocations, entry.queue_key, allocated + 1), remaining - 1}
-        else
-          {allocations, remaining}
-        end
-      end)
+        state
+        |> simulate_promotable_entry_grant(entry)
+        |> allocate_source_capacity(
+          limit,
+          Map.put(allocations, entry.queue_key, allocated + 1),
+          remaining_capacity - 1
+        )
 
-    allocations
+      :blocked ->
+        allocations
+    end
+  end
+
+  defp next_source_allocatable_entry(state, limit, allocations) do
+    ring = tenant_ring(state)
+
+    if ring == [] do
+      :blocked
+    else
+      scan_source_tenant_ring(
+        ring,
+        state,
+        limit,
+        allocations,
+        0,
+        rem(state.tenant_rr_index, length(ring))
+      )
+    end
+  end
+
+  defp scan_source_tenant_ring(ring, _state, _limit, _allocations, scanned, _index)
+       when scanned >= length(ring),
+       do: :blocked
+
+  defp scan_source_tenant_ring(ring, state, limit, allocations, scanned, index) do
+    tenant_id = Enum.at(ring, index)
+
+    case tenant_head_entry(state, tenant_id) do
+      {:ok, entry} ->
+        maybe_select_source_allocatable_entry(
+          entry,
+          ring,
+          state,
+          limit,
+          allocations,
+          scanned,
+          index
+        )
+
+      :empty ->
+        scan_source_tenant_ring(
+          ring,
+          state,
+          limit,
+          allocations,
+          scanned + 1,
+          next_ring_index(ring, index)
+        )
+
+      {:stale, ticket_ref} ->
+        scan_without_stale_source_ticket(state, limit, allocations, tenant_id, ticket_ref)
+    end
+  end
+
+  defp maybe_select_source_allocatable_entry(
+         entry,
+         ring,
+         state,
+         limit,
+         allocations,
+         scanned,
+         index
+       ) do
+    if source_allocatable_entry?(entry, state, limit, allocations) do
+      {:ok, entry, %{state | tenant_rr_index: index + 1}}
+    else
+      scan_next_source_tenant(ring, state, limit, allocations, scanned, index)
+    end
+  end
+
+  defp source_allocatable_entry?(entry, state, limit, allocations) do
+    lane = Map.get(state.lanes, entry.queue_key, empty_lane())
+    allocated = Map.get(allocations, entry.queue_key, 0)
+    lane_limit = source_limit_lane_limit(limit, entry.queue_key, allocated)
+
+    cond do
+      terminal_pending?(entry) -> false
+      is_nil(entry.await_from) -> false
+      not queued_process_alive?(entry) -> false
+      lane_blocked?(lane) -> false
+      not tenant_active_capacity?(state, entry, entry) -> false
+      allocated >= lane_limit -> false
+      true -> true
+    end
+  end
+
+  defp scan_next_source_tenant(ring, state, limit, allocations, scanned, index) do
+    scan_source_tenant_ring(
+      ring,
+      state,
+      limit,
+      allocations,
+      scanned + 1,
+      next_ring_index(ring, index)
+    )
+  end
+
+  defp scan_without_stale_source_ticket(state, limit, allocations, tenant_id, ticket_ref) do
+    entry = %{tenant_id: tenant_id, ticket_ref: ticket_ref}
+
+    state
+    |> Map.put(:tenant_queues, remove_from_tenant_queues(state.tenant_queues, entry))
+    |> then(fn state ->
+      %{
+        state
+        | tenant_order: remove_empty_tenants(state.tenant_order, state.tenant_queues, entry)
+      }
+    end)
+    |> next_source_allocatable_entry(limit, allocations)
   end
 
   defp source_limit_lane_limit(%{lanes: :any} = limit, queue_key, allocated) do

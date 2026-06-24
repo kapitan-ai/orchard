@@ -510,6 +510,27 @@ defmodule Orchard.Inference.RequestOrchestratorTest.PreAwaitTerminalQueueManager
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.RecordingQueueManager do
+  @moduledoc false
+
+  alias Orchard.Inference.QueueManager
+
+  def acquire(request), do: QueueManager.acquire(request)
+  def await(ticket), do: QueueManager.await(ticket)
+  def abandon(ticket), do: QueueManager.abandon(ticket)
+  def release(grant), do: QueueManager.release(grant)
+  def requeue(grant, request), do: QueueManager.requeue(grant, request)
+  def mark_capacity_source_observed(grant), do: QueueManager.mark_capacity_source_observed(grant)
+
+  def mark_grant_node(grant, node_id) do
+    if pid = Process.whereis(:request_orchestrator_test_pid) do
+      send(pid, {:recording_queue_mark_grant_node, grant.grant_id, node_id})
+    end
+
+    QueueManager.mark_grant_node(grant, node_id)
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest do
   use Orchard.DataCase, async: false
 
@@ -1048,6 +1069,22 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.scheduler_decision["node_id"] == scheduled_node_id()
     assert request.node_id == runtime_node_id
     refute request.node_id == request.scheduler_decision["node_id"]
+  end
+
+  test "execute/3 reconciles queue grant from scheduler node before dispatch", %{
+    bundle: bundle
+  } do
+    put_multi_node_scheduler_config()
+    put_queue_admission_config(enabled: true, capacity: 1, max_wait_ms: 1_000)
+    put_recording_queue_manager()
+
+    model = create_active_model!(bundle, "request-orchestrator-queue-schedule-node")
+    canonical = canonical_request("request-orchestrator-queue-schedule-node", stream?: false)
+    scheduled_node_id = scheduled_node_id()
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+    assert_received {:recording_queue_mark_grant_node, _grant_id, ^scheduled_node_id}
   end
 
   test "queue admission disabled preserves legacy validated to scheduled flow", %{bundle: bundle} do
@@ -2820,6 +2857,17 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       |> Keyword.put(
         :queue_manager_impl,
         Orchard.Inference.RequestOrchestratorTest.PreAwaitTerminalQueueManager
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_recording_queue_manager do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.put(
+        :queue_manager_impl,
+        Orchard.Inference.RequestOrchestratorTest.RecordingQueueManager
       )
 
     Application.put_env(:orchard_controller, :inference, inference)
