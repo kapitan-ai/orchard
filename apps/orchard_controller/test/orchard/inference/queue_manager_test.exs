@@ -153,6 +153,41 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.4 node source refresh retains capacity before await attaches" do
+    node_id = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(capacity: 0, max_wait_ms: 1_000), fn ->
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-pre-await-source",
+                   model_id: "pre-await-source-model"
+                 )
+               )
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, node_id},
+                   {:node, node_id, :placement},
+                   {:node, node_id, :cold}
+                 ],
+                 placement_source: {:node, node_id, :placement},
+                 cold_source: {:node, node_id, :cold},
+                 node_id: node_id,
+                 node_active: 0,
+                 node_max: 1,
+                 placements: []
+               })
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "pre-await-source-model@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end)
+  end
+
   test "SPEC.md §5.3 tenant active cap queues same-tenant work despite placement capacity" do
     tenant_id = Ecto.UUID.generate()
     config = queue_config(capacity: 2, max_active_per_tenant: 1)

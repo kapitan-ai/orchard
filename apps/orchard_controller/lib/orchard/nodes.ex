@@ -349,6 +349,7 @@ defmodule Orchard.Nodes do
     if queue_capacity_eligible_node?(node) do
       queue_manager.refresh_node_capacity_sources(%{
         clear_sources: node_queue_capacity_sources(node),
+        node_source: {:node, node.id},
         placement_source: placement_source,
         cold_source: cold_source,
         node_id: node.id,
