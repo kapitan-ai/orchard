@@ -9,6 +9,7 @@ defmodule Orchard.API.SentryContextBoundaryTest do
     previous_config = Application.get_env(:orchard_shared, :sentry_enrichment)
     Application.put_env(:orchard_shared, :sentry_enrichment, enabled?: true)
     SentryContext.clear_all()
+    SentryContext.clear_cached_license_status()
 
     on_exit(fn ->
       restore_enrichment(previous_config)

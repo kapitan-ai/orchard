@@ -172,7 +172,7 @@ defmodule Orchard.Scheduler.MultiNode do
             model_load_timeout_ms: Inference.model_load_timeout_ms(),
             node_id: selected.node_id,
             candidate_count: length(ranked),
-            queue_lane_capacity: queue_lane_capacity(candidates),
+            queue_lane_capacity: queue_lane_capacity(available_candidates),
             selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
           }
           |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
