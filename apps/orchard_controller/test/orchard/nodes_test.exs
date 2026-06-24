@@ -2327,6 +2327,87 @@ defmodule Orchard.NodesTest do
       send(first_awaiter, :stop)
     end
 
+    test "map-shaped invalid metadata clears stale target queue capacity" do
+      invalid_statuses = [
+        {%{node_metadata: %{}, runtime_health: nil}, "10.0.0.44", "empty-map"},
+        {%{node_metadata: %{"node_id" => Ecto.UUID.generate()}, runtime_health: nil}, "10.0.0.45",
+         "string-keyed"}
+      ]
+
+      Enum.each(invalid_statuses, fn {invalid_status, host, suffix} ->
+        QueueManager.reset()
+
+        node_id = Ecto.UUID.generate()
+
+        insert_node!(%{
+          id: node_id,
+          state: :active,
+          health: :healthy,
+          advertise_addr: host,
+          rpc_port: 9444
+        })
+
+        assert {:queued, first_ticket} =
+                 QueueManager.acquire(
+                   queue_admission_request(
+                     "req-node-invalid-map-metadata-a-#{suffix}",
+                     "invalid-map-meta-model-#{suffix}"
+                   ),
+                   config: queue_config(capacity: 0)
+                 )
+
+        assert {:queued, second_ticket} =
+                 QueueManager.acquire(
+                   queue_admission_request(
+                     "req-node-invalid-map-metadata-b-#{suffix}",
+                     "invalid-map-meta-model-#{suffix}"
+                   ),
+                   config: queue_config(capacity: 0)
+                 )
+
+        first_awaiter = start_holding_awaiter(first_ticket, {:first_invalid_map_result, suffix})
+        second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+        target = make_target(host, 9444)
+
+        valid_status =
+          make_status_response(%{
+            node_id: node_id,
+            listen_host: host,
+            listen_port: 9444
+          })
+          |> Map.put(:active_request_count, 0)
+          |> Map.put(:max_concurrency, 1)
+          |> Map.put(:runtime_model_placements, [])
+
+        assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+        assert_receive {{:first_invalid_map_result, ^suffix}, {:ok, first_grant}}, 2_000
+        refute Task.yield(second_awaiter, 50)
+
+        assert :noop =
+                 Nodes.observe_status(
+                   target,
+                   invalid_status,
+                   DateTime.add(DateTime.utc_now(), 1, :second)
+                 )
+
+        assert :ok = QueueManager.release(first_grant)
+        refute Task.yield(second_awaiter, 100)
+
+        assert {:ok, _node} =
+                 Nodes.observe_status(
+                   target,
+                   valid_status,
+                   DateTime.add(DateTime.utc_now(), 2, :second)
+                 )
+
+        assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+        assert second_grant.queue_result == :queued
+
+        assert :ok = QueueManager.release(second_grant)
+        send(first_awaiter, :stop)
+      end)
+    end
+
     test "nil node_metadata returns noop" do
       target = make_target("10.0.0.40", 9444)
       status = %{node_metadata: nil, runtime_health: nil}

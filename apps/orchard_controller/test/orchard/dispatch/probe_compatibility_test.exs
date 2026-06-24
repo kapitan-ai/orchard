@@ -90,6 +90,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   }
 
   alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.Inference.QueueManager
   alias Orchard.Nodes.Node
 
   @valid_uuid "550e8400-e29b-41d4-a716-446655440000"
@@ -200,6 +201,44 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     |> Repo.insert!()
   end
 
+  defp queue_admission_request(public_id, model_id) do
+    %{
+      request_id: Ecto.UUID.generate(),
+      public_id: public_id,
+      tenant_id: Ecto.UUID.generate(),
+      model_id: model_id,
+      version: "v1",
+      caller_pid: self()
+    }
+  end
+
+  defp queue_config(overrides) do
+    Keyword.merge(
+      [
+        enabled: true,
+        capacity: 1,
+        max_queued_per_tenant: 32,
+        max_wait_ms: 1_000
+      ],
+      overrides
+    )
+  end
+
+  defp start_holding_awaiter(ticket, tag) do
+    parent = self()
+
+    spawn(fn ->
+      result = QueueManager.await(ticket)
+      send(parent, {tag, result})
+
+      receive do
+        :stop -> :ok
+      after
+        5_000 -> :ok
+      end
+    end)
+  end
+
   describe "missing metadata from old node-agent" do
     test "dispatch succeeds and keeps original node_id", ctx do
       configure_stub(%{status: {:ok, old_agent_status()}})
@@ -304,6 +343,79 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       assert_received {:ensure_model_loaded_called, req}
       assert req.node_id == @other_uuid
       assert Repo.get_by!(Node, display_name: "test-node").id == @other_uuid
+    end
+
+    test "callback release cannot promote stale source before fresh observation", ctx do
+      QueueManager.reset()
+
+      target = ctx.schedule.runtime_client_target
+      model_id = "probe-stale-source-model"
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-probe-stale-source-a", model_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-probe-stale-source-b", model_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_probe_stale_source_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+
+      healthy_status =
+        @valid_uuid
+        |> full_status()
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} =
+               Orchard.Nodes.observe_status(target, healthy_status, DateTime.utc_now())
+
+      assert_receive {:first_probe_stale_source_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      unhealthy_status =
+        healthy_status
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:runtime_health, %{
+          ready: false,
+          health_code: "busy",
+          health_message: "node busy",
+          affected_model: nil
+        })
+
+      configure_stub(%{status: {:ok, unhealthy_status}})
+
+      callback = fn @valid_uuid ->
+        node = Repo.get!(Node, @valid_uuid)
+        send(self(), {:callback_node_health, node.health})
+        assert :ok = QueueManager.release(first_grant)
+      end
+
+      assert {:ok, _events} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client,
+                 on_node_resolved: callback
+               )
+
+      assert_received {:callback_node_health, :unhealthy}
+      refute Task.yield(second_awaiter, 100)
+
+      assert {:ok, _node} =
+               Orchard.Nodes.observe_status(
+                 target,
+                 healthy_status,
+                 DateTime.add(DateTime.utc_now(), 1, :second)
+               )
+
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
     end
 
     test "hosted tool fields remain additive to pre-dispatch probe compatibility", ctx do

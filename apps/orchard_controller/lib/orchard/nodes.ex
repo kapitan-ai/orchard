@@ -268,22 +268,25 @@ defmodule Orchard.Nodes do
     metadata = extract_metadata(status_response)
 
     with {:metadata, %{} = meta} <- {:metadata, metadata},
-         {:uuid, {:ok, node_id}} <- {:uuid, Ecto.UUID.cast(meta.node_id)},
+         {:uuid, {:ok, node_id}} <- {:uuid, Ecto.UUID.cast(map_get(meta, :node_id))},
          {:display_name, display_name} when display_name != nil <-
            {:display_name, resolve_display_name(meta)},
          {:port, port} when is_integer(port) and port in 1..65_535 <-
            {:port, resolve_port(meta, target)} do
+      hostname = map_get(meta, :hostname)
+      listen_host = map_get(meta, :listen_host)
+
       {:ok,
        %{
          id: node_id,
          display_name: display_name,
-         hostname: non_empty_or(meta.hostname, target_host(target)),
-         advertise_addr: non_empty_or(meta.listen_host, target_host(target)),
+         hostname: non_empty_or(hostname, target_host(target)),
+         advertise_addr: non_empty_or(listen_host, target_host(target)),
          rpc_port: port,
          connect_host: connect_host(target),
          connect_port: connect_port(target),
          health: derive_health(extract_runtime_health(status_response)),
-         agent_version: non_empty_or(meta.agent_version, nil),
+         agent_version: non_empty_or(map_get(meta, :agent_version), nil),
          capabilities: build_capabilities(meta, status_response),
          tool_readiness: build_tool_readiness(status_response),
          last_heartbeat_at: observed_at
@@ -295,21 +298,27 @@ defmodule Orchard.Nodes do
 
   defp extract_metadata(%{node_metadata: nil}), do: nil
   defp extract_metadata(%{node_metadata: meta}), do: meta
+  defp extract_metadata(%{"node_metadata" => nil}), do: nil
+  defp extract_metadata(%{"node_metadata" => meta}), do: meta
   defp extract_metadata(_), do: nil
 
   defp extract_runtime_health(%{runtime_health: health}), do: health
+  defp extract_runtime_health(%{"runtime_health" => health}), do: health
   defp extract_runtime_health(_), do: nil
 
   defp resolve_display_name(meta) do
+    display_name = map_get(meta, :display_name)
+    hostname = map_get(meta, :hostname)
+
     cond do
-      non_empty?(meta.display_name) -> meta.display_name
-      non_empty?(meta.hostname) -> meta.hostname
+      non_empty?(display_name) -> display_name
+      non_empty?(hostname) -> hostname
       true -> nil
     end
   end
 
   defp resolve_port(meta, target) do
-    port = meta.listen_port
+    port = map_get(meta, :listen_port)
 
     if is_integer(port) and port in 1..65_535 do
       port
@@ -319,11 +328,12 @@ defmodule Orchard.Nodes do
   end
 
   defp derive_health(nil), do: :healthy
+  defp derive_health(health) when not is_map(health), do: :healthy
 
   defp derive_health(health) do
-    ready = Map.get(health, :ready, true)
-    code = Map.get(health, :health_code, "")
-    message = Map.get(health, :health_message, "")
+    ready = map_get(health, :ready)
+    code = map_get(health, :health_code) || ""
+    message = map_get(health, :health_message) || ""
 
     cond do
       ready == false -> :unhealthy
@@ -333,7 +343,7 @@ defmodule Orchard.Nodes do
   end
 
   defp build_capabilities(meta, status_response) do
-    backend = Map.get(meta, :worker_backend, "")
+    backend = map_get(meta, :worker_backend) || ""
 
     hosted_tools =
       status_response
@@ -345,7 +355,7 @@ defmodule Orchard.Nodes do
     |> maybe_put_worker_backend(backend)
     |> Map.put(
       "supports_prompt_token_ids",
-      Map.get(status_response, :supports_prompt_token_ids, false)
+      map_get(status_response, :supports_prompt_token_ids) || false
     )
     |> Map.put("hosted_tools", hosted_tools)
   end
@@ -823,9 +833,14 @@ defmodule Orchard.Nodes do
     end
   end
 
-  defp map_get(map, key) when is_atom(key) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp map_get(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
   end
+
+  defp map_get(_map, key) when is_atom(key), do: nil
 
   defp lookup_node_by_target(host, port) do
     lookup_node_by_connect_target(host, port) ||

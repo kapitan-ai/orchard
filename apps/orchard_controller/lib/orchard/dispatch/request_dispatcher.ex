@@ -349,16 +349,15 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       {:ok, response} ->
         observed_at = DateTime.utc_now()
 
-        {model_load_request, metrics} =
+        {resolved_node_id, model_load_request, metrics} =
           case extract_node_id(response) do
             {:ok, node_id} ->
-              invoke_callback_safe(on_node_resolved, node_id)
               metrics = %{metrics | node_id: node_id}
               put_node_resolved_context(metrics, target)
-              {%{model_load_request | node_id: node_id}, metrics}
+              {node_id, %{model_load_request | node_id: node_id}, metrics}
 
             :error ->
-              {model_load_request, metrics}
+              {nil, model_load_request, metrics}
           end
 
         try do
@@ -366,6 +365,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         rescue
           error ->
             Logger.warning("Node observation failed during dispatch probe: #{inspect(error)}")
+        end
+
+        if is_binary(resolved_node_id) do
+          invoke_callback_safe(on_node_resolved, resolved_node_id)
         end
 
         {model_load_request, metrics}
