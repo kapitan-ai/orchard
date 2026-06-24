@@ -195,7 +195,9 @@ defmodule Orchard.Scheduler.MultiNode do
           case client.status(channel, timeout: timeout) do
             {:ok, response} ->
               # Persist observation best-effort
-              Nodes.observe_status(target, response, observed_at)
+              Nodes.observe_status(target, response, observed_at,
+                reserve_unassigned_node_grants?: true
+              )
 
               # Extract node_id from metadata — skip if missing/invalid
               case extract_valid_node_id(response) do

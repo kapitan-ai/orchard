@@ -1435,7 +1435,9 @@ defmodule Orchard.Inference.QueueManager do
       node_id: node_id,
       node_active: non_negative_integer(Map.get(observation, :node_active)),
       node_max: positive_integer(Map.get(observation, :node_max)),
-      placements: normalize_node_capacity_placements(Map.get(observation, :placements, []))
+      placements: normalize_node_capacity_placements(Map.get(observation, :placements, [])),
+      reserve_unassigned_node_grants?:
+        Map.get(observation, :reserve_unassigned_node_grants?) == true
     }
   end
 
@@ -1727,7 +1729,22 @@ defmodule Orchard.Inference.QueueManager do
           not MapSet.member?(source_grant_ids, grant_id)
       end)
 
-    max(assigned_count - observed_node_budget, 0)
+    max(assigned_count - observed_node_budget, 0) +
+      unassigned_node_grant_count(state, observation, source_grant_ids)
+  end
+
+  defp unassigned_node_grant_count(
+         _state,
+         %{reserve_unassigned_node_grants?: false},
+         _source_grant_ids
+       ),
+       do: 0
+
+  defp unassigned_node_grant_count(state, _observation, source_grant_ids) do
+    Enum.count(state.grants, fn {grant_id, grant} ->
+      is_nil(Map.get(grant, :node_id)) and is_nil(Map.get(grant, :capacity_source)) and
+        not MapSet.member?(source_grant_ids, grant_id)
+    end)
   end
 
   defp put_node_capacity_source_limit(

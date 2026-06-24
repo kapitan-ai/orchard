@@ -8,6 +8,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   alias Orchard.CanonicalRequest.ModelRef
   alias Orchard.Cluster.V1.ScorePrefixCacheResponse
   alias Orchard.Inference.CacheAffinity
+  alias Orchard.Inference.QueueManager
   alias Orchard.Nodes.Node
   alias Orchard.Scheduler.MultiNode
 
@@ -102,6 +103,17 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       model_ref: %ModelRef{model_id: model_id, version: version},
       rendered_prompt: Keyword.get(overrides, :rendered_prompt, "shared system prefix\nhello")
     })
+  end
+
+  defp queue_admission_request(public_id, model_id \\ "test-model", version \\ "v1") do
+    %{
+      request_id: Ecto.UUID.generate(),
+      public_id: public_id,
+      tenant_id: Ecto.UUID.generate(),
+      model_id: model_id,
+      version: version,
+      caller_pid: self()
+    }
   end
 
   defp insert_node!(overrides) do
@@ -920,6 +932,66 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.selected_tier == "cold"
       assert schedule.queue_lane_capacity == 2
+    end
+
+    test "SPEC.md §5.5 scheduler probe does not reuse unassigned active grant slot" do
+      QueueManager.reset()
+
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+      queue_config = [enabled: true, capacity: 1, max_wait_ms: 1_000, owner_runtime: true]
+
+      assert {:ok, active_grant} =
+               QueueManager.acquire(queue_admission_request("req-scheduler-probe-active"),
+                 config: queue_config
+               )
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(queue_admission_request("req-scheduler-probe-queued"),
+                 config: queue_config
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          active_request_count: 0,
+          max_concurrency: 1,
+          loaded_models: [],
+          runtime_model_placements: []
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id,
+          host: "10.0.0.2",
+          port: 50_062,
+          active_request_count: 1,
+          max_concurrency: 1,
+          loaded_models: [],
+          runtime_model_placements: []
+        )
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request("test-model", "v1"),
+                 status_client: StubClient
+               )
+
+      assert schedule.node_id == node_a.id
+      refute Task.yield(awaiter, 50)
+
+      assert :ok = QueueManager.release(active_grant)
+      assert {:ok, queued_grant} = Task.await(awaiter, 2_000)
+      assert :ok = QueueManager.release(queued_grant)
+      QueueManager.reset()
     end
 
     test "prefers lower matching placement active count before health and node_id" do
@@ -3584,6 +3656,29 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
       assert schedule.strategy == :single_node
       assert schedule.runtime_client_target == [host: "10.0.0.1", port: 50_061]
+    end
+  end
+
+  defp wait_until(fun, attempts \\ 50)
+  defp wait_until(_fun, 0), do: false
+
+  defp wait_until(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(20)
+      wait_until(fun, attempts - 1)
+    end
+  end
+
+  defp queue_entry_awaiting?(ticket) do
+    QueueManager
+    |> :sys.get_state()
+    |> Map.get(:entries)
+    |> Map.get(ticket.ticket_ref)
+    |> case do
+      %{await_from: await_from} when await_from != nil -> true
+      _other -> false
     end
   end
 end

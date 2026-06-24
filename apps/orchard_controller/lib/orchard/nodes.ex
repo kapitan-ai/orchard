@@ -169,12 +169,14 @@ defmodule Orchard.Nodes do
   """
   @spec observe_status(keyword(), map() | struct(), DateTime.t()) ::
           {:ok, Node.t()} | :noop
-  def observe_status(target, status_response, observed_at) do
+  @spec observe_status(keyword(), map() | struct(), DateTime.t(), keyword()) ::
+          {:ok, Node.t()} | :noop
+  def observe_status(target, status_response, observed_at, opts \\ []) do
     with true <- repo_available?(),
          {:ok, observation} <- normalize_observation(target, status_response, observed_at) do
       case execute_observe(observation) do
         {:ok, node} ->
-          refresh_observed_queue_capacities(node, status_response)
+          refresh_observed_queue_capacities(node, status_response, opts)
           {:ok, node}
 
         :noop ->
@@ -341,7 +343,7 @@ defmodule Orchard.Nodes do
     |> ToolReadiness.persist_all()
   end
 
-  defp refresh_observed_queue_capacities(%Node{} = node, status_response) do
+  defp refresh_observed_queue_capacities(%Node{} = node, status_response, opts) do
     queue_manager = Orchard.Inference.queue_manager()
     placement_source = {:node, node.id, :placement}
     cold_source = {:node, node.id, :cold}
@@ -355,7 +357,9 @@ defmodule Orchard.Nodes do
         node_id: node.id,
         node_active: non_negative_integer(map_get(status_response, :active_request_count), 0),
         node_max: positive_integer(map_get(status_response, :max_concurrency), 1),
-        placements: placement_observations(status_response)
+        placements: placement_observations(status_response),
+        reserve_unassigned_node_grants?:
+          Keyword.get(opts, :reserve_unassigned_node_grants?, false)
       })
     else
       clear_node_queue_capacity_sources(node)
