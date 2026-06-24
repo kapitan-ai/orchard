@@ -1707,15 +1707,33 @@ defmodule Orchard.Inference.QueueManager do
     source_grant_ids = source_reservations |> Enum.map(& &1.grant_id) |> MapSet.new()
     observed_node_budget = max(observation.node_active - observed_source_count, 0)
 
-    assigned_count =
-      Enum.count(state.grants, fn {grant_id, grant} ->
-        Map.get(grant, :node_id) == observation.node_id and
-          not MapSet.member?(source_grant_ids, grant_id)
+    {observed_assigned_count, unobserved_assigned_count} =
+      Enum.reduce(state.grants, {0, 0}, fn {grant_id, grant}, {observed, unobserved} ->
+        count_assigned_node_grant(
+          grant,
+          grant_id,
+          observation.node_id,
+          source_grant_ids,
+          {observed, unobserved}
+        )
       end)
 
-    max(assigned_count - observed_node_budget, 0) +
+    unobserved_assigned_count +
+      max(observed_assigned_count - observed_node_budget, 0) +
       unassigned_node_grant_count(state, observation, source_grant_ids)
   end
+
+  defp count_assigned_node_grant(grant, grant_id, node_id, source_grant_ids, counts) do
+    cond do
+      Map.get(grant, :node_id) != node_id -> counts
+      MapSet.member?(source_grant_ids, grant_id) -> counts
+      Map.get(grant, :node_observed?) == true -> increment_observed_count(counts)
+      true -> increment_unobserved_count(counts)
+    end
+  end
+
+  defp increment_observed_count({observed, unobserved}), do: {observed + 1, unobserved}
+  defp increment_unobserved_count({observed, unobserved}), do: {observed, unobserved + 1}
 
   defp unassigned_node_grant_count(
          _state,
@@ -2030,12 +2048,15 @@ defmodule Orchard.Inference.QueueManager do
   defp mark_capacity_source_observed_in_state(grant_id, state) do
     case Map.fetch(state.grants, grant_id) do
       {:ok, grant} ->
-        if is_nil(Map.get(grant, :capacity_source)) do
-          state
-        else
-          grant = Map.put(grant, :capacity_source_observed?, true)
-          %{state | grants: Map.put(state.grants, grant_id, grant)}
-        end
+        grant =
+          if is_nil(Map.get(grant, :capacity_source)) do
+            grant
+          else
+            Map.put(grant, :capacity_source_observed?, true)
+          end
+
+        grant = Map.put(grant, :node_observed?, true)
+        %{state | grants: Map.put(state.grants, grant_id, grant)}
 
       _other ->
         state
@@ -2045,11 +2066,40 @@ defmodule Orchard.Inference.QueueManager do
   defp mark_grant_node_in_state(grant_id, node_id, state) do
     case Map.fetch(state.grants, grant_id) do
       {:ok, grant} ->
-        grant = Map.put(grant, :node_id, normalize_node_id(node_id))
-        %{state | grants: Map.put(state.grants, grant_id, grant)}
+        normalized_node_id = normalize_node_id(node_id)
+        {grant, previous_source} = reconcile_grant_capacity_source_node(grant, normalized_node_id)
+        grant = Map.put(grant, :node_id, normalized_node_id)
+        state = %{state | grants: Map.put(state.grants, grant_id, grant)}
+
+        if is_nil(previous_source),
+          do: state,
+          else: rebalance_capacity_source(state, previous_source)
 
       _other ->
         state
+    end
+  end
+
+  defp reconcile_grant_capacity_source_node(grant, nil), do: {grant, nil}
+
+  defp reconcile_grant_capacity_source_node(grant, node_id) do
+    source = Map.get(grant, :capacity_source)
+
+    case capacity_source_node_id(source) do
+      nil ->
+        {grant, nil}
+
+      ^node_id ->
+        {grant, nil}
+
+      _other_node_id ->
+        grant =
+          grant
+          |> Map.delete(:capacity_source)
+          |> Map.delete(:capacity_source_kind)
+          |> Map.delete(:capacity_source_observed?)
+
+        {grant, source}
     end
   end
 
@@ -2333,6 +2383,10 @@ defmodule Orchard.Inference.QueueManager do
 
   defp normalize_node_id(node_id) when is_binary(node_id) and node_id != "", do: node_id
   defp normalize_node_id(_node_id), do: nil
+
+  defp capacity_source_node_id({:node, node_id}) when is_binary(node_id), do: node_id
+  defp capacity_source_node_id({:node, node_id, _kind}) when is_binary(node_id), do: node_id
+  defp capacity_source_node_id(_source), do: nil
 
   defp map_value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 
