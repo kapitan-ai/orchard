@@ -1317,6 +1317,7 @@ defmodule Orchard.Inference.QueueManager do
         grants: grants,
         monitors: remove_grant_owner_monitor(state.monitors, grant)
     }
+    |> remove_grant_from_retained_node_capacity_sources(grant_id)
   end
 
   defp park_active_grant(state, grant_id, monitor_ref) do
@@ -1988,10 +1989,14 @@ defmodule Orchard.Inference.QueueManager do
     limit
     |> Map.get(:reserved_node_grants, MapSet.new())
     |> Enum.count(fn grant_id ->
-      MapSet.member?(deferred_grants, grant_id) or
-        state.grants
-        |> Map.get(grant_id)
-        |> retained_node_grant_reserves_source?(node_id, source, limit)
+      case Map.get(state.grants, grant_id) do
+        nil ->
+          false
+
+        grant ->
+          MapSet.member?(deferred_grants, grant_id) or
+            retained_node_grant_reserves_source?(grant, node_id, source, limit)
+      end
     end)
   end
 
@@ -3090,6 +3095,15 @@ defmodule Orchard.Inference.QueueManager do
       :error ->
         state
     end
+  end
+
+  defp remove_grant_from_retained_node_capacity_sources(state, grant_id) do
+    limits =
+      Map.new(state.capacity_source_limits, fn {source, limit} ->
+        {source, remove_grant_from_retained_node_limit(limit, grant_id)}
+      end)
+
+    %{state | capacity_source_limits: limits}
   end
 
   defp defer_grant_in_retained_node_capacity_sources(state, grant_id) do

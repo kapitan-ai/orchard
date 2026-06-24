@@ -284,6 +284,41 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.5 released deferred base grant frees retained node source" do
+    node_id = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(capacity: 0, max_wait_ms: 1_000), fn ->
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-deferred-release-a",
+                   model_id: "deferred-release-a"
+                 )
+               )
+
+      assert :ok = refresh_node_source_capacity(node_id)
+
+      assert {:ok, base_grant} =
+               QueueManager.acquire(
+                 admission_request("req-node-deferred-release-base",
+                   model_id: "deferred-release-base"
+                 ),
+                 config: queue_config(capacity: 1)
+               )
+
+      assert :ok = QueueManager.mark_grant_node(base_grant, node_id, promote?: false)
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+      refute Task.yield(awaiter, 100)
+
+      assert :ok = QueueManager.release(base_grant)
+      assert {:ok, queued_grant} = Task.await(awaiter, 2_000)
+      assert queued_grant.queue_key == "deferred-release-a@v1"
+
+      assert :ok = QueueManager.release(queued_grant)
+    end)
+  end
+
   test "SPEC.md §5.5 scheduler probe refresh reserves unassigned base grants" do
     node_id = Ecto.UUID.generate()
     config = queue_config(capacity: 1, max_wait_ms: 1_000)
