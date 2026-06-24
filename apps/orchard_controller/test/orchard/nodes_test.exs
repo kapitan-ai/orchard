@@ -897,6 +897,48 @@ defmodule Orchard.NodesTest do
       send(second_awaiter, :stop)
     end
 
+    test "SPEC.md §5.5 status observation reserves unassigned base grants by default" do
+      QueueManager.reset()
+
+      assert {:ok, active_grant} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-default-observation-base-a",
+                   "default-observation-base"
+                 ),
+                 config: queue_config(capacity: 1)
+               )
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-default-observation-base-b",
+                   "default-observation-base"
+                 ),
+                 config: queue_config(capacity: 1)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+
+      target = make_target("10.0.0.86", 9444)
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.86", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      refute Task.yield(awaiter, 100)
+
+      assert :ok = QueueManager.release(active_grant)
+      assert {:ok, queued_grant} = Task.await(awaiter, 2_000)
+      assert queued_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(queued_grant)
+    end
+
     test "SPEC.md §5.5 observed source reservation leaves spare node capacity available" do
       QueueManager.reset()
 

@@ -358,8 +358,7 @@ defmodule Orchard.Nodes do
         node_active: non_negative_integer(map_get(status_response, :active_request_count), 0),
         node_max: positive_integer(map_get(status_response, :max_concurrency), 1),
         placements: placement_observations(status_response),
-        reserve_unassigned_node_grants?:
-          Keyword.get(opts, :reserve_unassigned_node_grants?, false)
+        reserve_unassigned_node_grants?: Keyword.get(opts, :reserve_unassigned_node_grants?, true)
       })
     else
       clear_node_queue_capacity_sources(node)

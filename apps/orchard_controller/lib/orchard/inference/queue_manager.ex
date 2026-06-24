@@ -1437,7 +1437,7 @@ defmodule Orchard.Inference.QueueManager do
       node_max: positive_integer(Map.get(observation, :node_max)),
       placements: normalize_node_capacity_placements(Map.get(observation, :placements, [])),
       reserve_unassigned_node_grants?:
-        Map.get(observation, :reserve_unassigned_node_grants?) == true
+        Map.get(observation, :reserve_unassigned_node_grants?, true) != false
     }
   end
 
@@ -1686,24 +1686,8 @@ defmodule Orchard.Inference.QueueManager do
   end
 
   defp preserve_node_source_reservations(reservations, observed_budget, idle_budget) do
-    {preserved, _observed_budget, idle_budget} =
-      Enum.reduce(reservations, {[], observed_budget, idle_budget}, fn reservation,
-                                                                       {preserved,
-                                                                        observed_budget,
-                                                                        idle_budget} ->
-        cond do
-          reservation.observed? and observed_budget > 0 ->
-            {[reservation | preserved], observed_budget - 1, idle_budget}
-
-          idle_budget > 0 ->
-            {[reservation | preserved], observed_budget, idle_budget - 1}
-
-          true ->
-            {preserved, observed_budget, idle_budget}
-        end
-      end)
-
-    {Enum.reverse(preserved), idle_budget}
+    uncovered_reservations = max(length(reservations) - observed_budget, 0)
+    {reservations, max(idle_budget - uncovered_reservations, 0)}
   end
 
   defp unobserved_assigned_node_grant_count(
@@ -1754,7 +1738,7 @@ defmodule Orchard.Inference.QueueManager do
          preserved_reservations,
          retained_capacity
        ) do
-    capacity = length(preserved_reservations) + retained_capacity
+    capacity = min(length(preserved_reservations) + retained_capacity, observation.node_max)
 
     if capacity <= 0 do
       %{state | capacity_source_limits: Map.delete(state.capacity_source_limits, source)}
@@ -1880,22 +1864,38 @@ defmodule Orchard.Inference.QueueManager do
     case Map.fetch(state.capacity_source_limits, source) do
       {:ok, %{capacity: capacity} = limit} ->
         reservations = active_source_reservation_counts_by_queue(source, state)
-        eligible_reservations = eligible_source_reservations(reservations, limit)
 
-        {allocations, remaining_capacity} =
-          reserve_source_capacity(capacity, limit, eligible_reservations)
+        if drop_retained_node_capacity_source_limit?(limit, reservations, state) do
+          state = %{
+            state
+            | capacity_source_limits: Map.delete(state.capacity_source_limits, source)
+          }
 
-        allocations =
-          state
-          |> promotable_entries_in_grant_order()
-          |> allocate_source_capacity(limit, allocations, remaining_capacity)
+          put_capacity_source_allocations(state, source, %{}, previous_queue_keys)
+        else
+          eligible_reservations = eligible_source_reservations(reservations, limit)
 
-        put_capacity_source_allocations(state, source, allocations, previous_queue_keys)
+          {allocations, remaining_capacity} =
+            reserve_source_capacity(capacity, limit, eligible_reservations)
+
+          allocations =
+            state
+            |> promotable_entries_in_grant_order()
+            |> allocate_source_capacity(limit, allocations, remaining_capacity)
+
+          put_capacity_source_allocations(state, source, allocations, previous_queue_keys)
+        end
 
       :error ->
         put_capacity_source_allocations(state, source, %{}, previous_queue_keys)
     end
   end
+
+  defp drop_retained_node_capacity_source_limit?(%{lanes: :any}, reservations, state) do
+    map_size(reservations) == 0 and pending_node_source_entries(state) == []
+  end
+
+  defp drop_retained_node_capacity_source_limit?(_limit, _reservations, _state), do: false
 
   defp active_source_reservation_counts_by_queue(source, state) do
     Enum.reduce(state.grants, %{}, fn {_grant_id, grant}, reservations ->

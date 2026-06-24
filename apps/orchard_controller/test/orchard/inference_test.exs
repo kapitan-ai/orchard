@@ -72,6 +72,7 @@ defmodule Orchard.InferenceTest do
     assert Inference.scheduler() == Orchard.Scheduler.SingleNode
   end
 
+  @tag :db
   test "default scheduler and runtime seam use configured runtime target" do
     request = canonical_request()
 
