@@ -974,6 +974,12 @@ Scheduler wake-up triggers:
 * placement state change
 * periodic tick every `100 ms` while queue non-empty
 
+Queue lane capacity SHALL be the configured base lane capacity plus live capacity sources.
+Valid loaded-placement observations MAY add source-scoped capacity for the matching model/version lane.
+Eligible cold/no-placement node observations MAY add conservative source-scoped capacity for queued model/version lanes, bounded by aggregate node concurrency and by one unreserved cold slot per lane per node observation.
+Live capacity source refreshes SHALL be allowed to wake queued requests without a new admission event.
+Stale, unavailable, non-loaded, invalid, exhausted, ineligible, or transport-failed node and placement observations SHALL NOT inflate queue admission capacity and SHALL clear any stale capacity source owned by that node or target.
+
 ### 5.5 Eligibility filter
 
 A node is eligible only if all conditions are true:
@@ -1009,7 +1015,10 @@ Node concurrency is not exceeded only when live `StatusResponse.active_request_c
 If `max_concurrency` is omitted or zero, schedulers SHALL interpret node capacity as `1`.
 Model placement concurrency is evaluated independently through a valid matching `RuntimeModelPlacement`.
 Both node-level aggregate capacity and requested-placement capacity must remain available for a loaded candidate to be eligible.
-Scheduler decisions MAY include `queue_lane_capacity` only when live node-level capacity leaves room for the requested lane; omitted `queue_lane_capacity` means the controller queue must use its conservative configured capacity.
+Scheduler decisions MAY include `queue_lane_capacity` when live loaded-placement capacity or eligible cold-node capacity leaves room for the requested lane.
+Loaded candidate contribution SHALL be constrained by both requested-placement capacity and aggregate node capacity.
+Cold candidate contribution SHALL count only candidates with remaining aggregate node capacity.
+Omitted `queue_lane_capacity` means the controller queue must use its conservative configured capacity.
 
 ### 5.6 Candidate tiers
 
@@ -2392,6 +2401,8 @@ Runtime capacity wire semantics:
 * a valid matching placement observation SHALL NOT override exhausted node-level aggregate capacity
 * unknown placement capacity SHALL NOT prove eligibility for an already-active loaded-model candidate; an already-active loaded-model candidate MAY remain eligible only when exactly one valid matching entry reports `active_request_count < max_concurrency`
 * when multiple eligible candidates remain, the scheduler SHALL rank by the requested placement's active request count before health when a valid matching placement observation is available; otherwise it SHALL use node `active_request_count`
+* controller queue capacity MAY be refreshed from `StatusResponse` observations; loaded placement observations contribute only to their matching model/version lane, while cold/no-placement node observations contribute conservative source-scoped capacity for queued lanes without exceeding aggregate node capacity
+* stale, unavailable, non-loaded, invalid, exhausted, ineligible, or transport-failed observations SHALL clear their node-owned queue capacity sources instead of preserving stale admission capacity
 * node-agent request admission SHALL reject a new runtime request when aggregate active request count has reached the effective aggregate worker request limit, even if the requested model placement has remaining per-placement capacity
 * cancellation or terminal completion SHALL release aggregate node capacity so another loaded model can use the freed slot
 * stream generation mode SHALL report `max_concurrency = 1` at both node and placement levels

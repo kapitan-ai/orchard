@@ -212,6 +212,7 @@ Batch generation mode can admit multiple same-model requests up to the worker-re
 The node agent also enforces aggregate active request capacity across loaded models using the resolved worker limits, conservatively falling back to single-request capacity when worker status omits `max_concurrency`.
 The node-agent reports aggregate capacity through `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`.
 It reports live placement capacity through `StatusResponse.runtime_model_placements` as `active_request_count` and `max_concurrency`.
+The controller uses those fresh status observations both for scheduler candidate filtering and for queue wakeups from loaded-placement or cold/no-placement capacity.
 Stream mode reports max concurrency as `1` at both node and placement levels.
 
 #### Controller Multi-Node (Source Dev)

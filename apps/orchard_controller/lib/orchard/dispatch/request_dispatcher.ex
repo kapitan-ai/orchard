@@ -131,24 +131,24 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   Dispatch an inference request to a node and stream events back to the caller.
 
   `schedule` is the map returned by the configured scheduler containing:
-  - `:runtime_client_target` — `[host: ..., port: ...]` for the node-agent
-  - `:request_id` — the canonical request ID
-  - `:request_timeout_ms` — maximum wall-clock time for the entire dispatch
+  - `:runtime_client_target` - `[host: ..., port: ...]` for the node-agent
+  - `:request_id` - the canonical request ID
+  - `:request_timeout_ms` - maximum wall-clock time for the entire dispatch
 
   `execute_request` is the protobuf `ExecuteInferenceRequest` to send.
 
   `model_load_request` is the protobuf `EnsureModelLoadedRequest` to send.
 
   Options:
-  - `:caller` — PID to monitor for disconnect (default: `self()`)
-  - `:event_handler` — function called with each `InferenceEvent`.
+  - `:caller` - PID to monitor for disconnect (default: `self()`)
+  - `:event_handler` - function called with each `InferenceEvent`.
                         Return `:cancel` to abort dispatch (e.g. on SSE client disconnect).
                         (default: sends `{:inference_event, request_id, event}` to caller)
-  - `:on_node_resolved` — optional callback `(node_id :: String.t() -> any())`.
+  - `:on_node_resolved` - optional callback `(node_id :: String.t() -> any())`.
                            Called when the pre-dispatch status probe discovers a
                            valid node UUID. Synchronous, lightweight, observational only.
-                           Exceptions are rescued; return value is ignored.
-  - `:client_impl` — gRPC client module (default: `GrpcNodeRuntimeClient`)
+                           Exceptions and exits are logged and ignored; return value is ignored.
+  - `:client_impl` - gRPC client module (default: `GrpcNodeRuntimeClient`)
 
   Returns `{:ok, events}` with the list of all events received (including terminal),
   or `{:error, reason}` if dispatch fails before streaming begins.

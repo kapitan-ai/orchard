@@ -9,6 +9,13 @@ defmodule Orchard.Inference.QueueManager do
   Cross-tenant grants use weighted round-robin, and live `:cluster_busy` or
   `:model_busy` scheduler saturation can requeue an active grant under its
   original queue deadline.
+
+  Lane capacity is the configured base capacity plus source-scoped capacity
+  refreshed from scheduler and node observations. Source refreshes can wake
+  queued requests without a new admission, while source reservations keep
+  loaded-placement and cold/no-placement slots from being double-counted until
+  node assignment, accepted runtime events, release, or later observations
+  reconcile them.
   """
 
   use GenServer
@@ -182,6 +189,13 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(ticket.server, {:abandon, ticket.ticket_ref})
   end
 
+  @doc """
+  Refreshes observed capacity for one model/version lane.
+
+  Without `:source`, this replaces the lane's configured base capacity and
+  clears source-scoped capacity for that lane. With `:source`, this refreshes
+  only that source contribution and preserves the configured base capacity.
+  """
   @spec refresh_capacity(String.t(), String.t(), non_neg_integer(), keyword()) :: :ok
   def refresh_capacity(model_id, version, capacity, opts \\ [])
       when is_binary(model_id) and is_binary(version) and is_integer(capacity) do
@@ -200,6 +214,13 @@ defmodule Orchard.Inference.QueueManager do
     end
   end
 
+  @doc """
+  Refreshes capacity for multiple explicit sources.
+
+  Each record is `{source, source_capacity, lanes}` where `lanes` is either a
+  map of queue keys to lane limits or a list of `{model_id, version, limit}`.
+  Source limits aggregate with base lane capacity and may wake queued requests.
+  """
   @spec refresh_capacity_sources(
           [{term(), non_neg_integer(), [{String.t(), String.t(), non_neg_integer()}]}],
           keyword()
@@ -211,6 +232,14 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(server, {:refresh_capacity_sources, records})
   end
 
+  @doc """
+  Refreshes queue capacity from one node observation.
+
+  The observation must include node, placement, and cold source identifiers,
+  aggregate node active/max counts, and loaded placement statuses. Valid loaded
+  placements contribute matching-lane capacity; otherwise eligible spare node
+  capacity is retained conservatively for queued cold/no-placement lanes.
+  """
   @spec refresh_node_capacity_sources(map(), keyword()) :: :ok
   def refresh_node_capacity_sources(observation, opts \\ []) when is_map(observation) do
     server = Keyword.get(opts, :server, __MODULE__)
@@ -219,12 +248,22 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(server, {:refresh_node_capacity_sources, observation})
   end
 
+  @doc """
+  Clears one source-scoped capacity contribution.
+  """
   @spec clear_capacity_source(term(), keyword()) :: :ok
   def clear_capacity_source(source, opts \\ []) do
     server = Keyword.get(opts, :server, __MODULE__)
     call_manager(server, {:clear_capacity_source, source})
   end
 
+  @doc """
+  Clears source-scoped capacity contributions.
+
+  By default, clearing sources immediately re-runs promotion for any remaining
+  queue capacity. Pass `promote?: false` when a later refresh in the same
+  observation cycle will perform promotion.
+  """
   @spec clear_capacity_sources([term()], keyword()) :: :ok
   def clear_capacity_sources(sources, opts \\ []) when is_list(sources) do
     server = Keyword.get(opts, :server, __MODULE__)
@@ -232,12 +271,18 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(server, {:clear_capacity_sources, sources, promote?})
   end
 
+  @doc """
+  Returns model/version lanes with active capacity from a source.
+  """
   @spec active_capacity_source_lanes(term(), keyword()) :: [{String.t(), String.t()}]
   def active_capacity_source_lanes(source, opts \\ []) do
     server = Keyword.get(opts, :server, __MODULE__)
     call_manager(server, {:active_capacity_source_lanes, source})
   end
 
+  @doc """
+  Returns active source reservations grouped by model/version lane.
+  """
   @spec active_capacity_source_reservations(term(), keyword()) :: [
           {String.t(), String.t(), pos_integer()}
         ]
@@ -246,6 +291,9 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(server, {:active_capacity_source_reservations, source})
   end
 
+  @doc """
+  Marks a source-backed grant as observed by the runtime.
+  """
   @spec mark_capacity_source_observed(Grant.t() | String.t(), keyword()) :: :ok
   def mark_capacity_source_observed(grant_or_id, opts \\ [])
 
@@ -258,6 +306,9 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(server, {:mark_capacity_source_observed, grant_id})
   end
 
+  @doc """
+  Records the node that owns a grant and reconciles stale source reservations.
+  """
   @spec mark_grant_node(Grant.t() | String.t(), Ecto.UUID.t() | String.t(), keyword()) :: :ok
   def mark_grant_node(grant_or_id, node_id, opts \\ [])
 
@@ -271,6 +322,9 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(server, {:mark_grant_node, grant_id, node_id, promote?})
   end
 
+  @doc """
+  Lists queued model/version lanes in the order they would be promotable.
+  """
   @spec queued_model_lanes(keyword()) :: [{String.t(), String.t()}]
   def queued_model_lanes(opts \\ []) do
     server = Keyword.get(opts, :server, __MODULE__)

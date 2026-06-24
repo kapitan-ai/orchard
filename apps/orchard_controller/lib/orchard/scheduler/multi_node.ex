@@ -25,8 +25,9 @@ defmodule Orchard.Scheduler.MultiNode do
   nodes, but every joined candidate has exhausted capacity or is an active
   loaded-model candidate with unknown placement capacity.
 
-  Successful schedules include `:queue_lane_capacity`, derived only from loaded
-  candidates whose live node and placement capacity leave room.
+  Successful schedules include `:queue_lane_capacity`, derived from loaded
+  candidates with live node and placement room plus eligible cold candidates
+  with remaining aggregate node capacity.
   """
 
   alias Orchard.CanonicalRequest
@@ -63,11 +64,11 @@ defmodule Orchard.Scheduler.MultiNode do
   Schedule with injectable options for testing.
 
   Options:
-  - `:status_client` — module implementing `connect/1`, `status/2`, `disconnect/1`,
+  - `:status_client` - module implementing `connect/1`, `status/2`, `disconnect/1`,
     and (for prefix-cache scoring) `score_prefix_cache/3`
     (default: `GrpcNodeRuntimeClient`)
-  - `:status_timeout_ms` — timeout for each status probe (default: #{@default_status_timeout_ms})
-  - `:observed_at` — timestamp for observations (default: `DateTime.utc_now()`)
+  - `:status_timeout_ms` - timeout for each status probe (default: #{@default_status_timeout_ms})
+  - `:observed_at` - timestamp for observations (default: `DateTime.utc_now()`)
   """
   def schedule(%CanonicalRequest{} = request, opts) when is_list(opts) do
     targets = Inference.runtime_client_targets()
@@ -200,7 +201,7 @@ defmodule Orchard.Scheduler.MultiNode do
                 reserve_unassigned_source_grants?: true
               )
 
-              # Extract node_id from metadata — skip if missing/invalid
+              # Extract node_id from metadata - skip if missing/invalid
               case extract_valid_node_id(response) do
                 nil ->
                   nil

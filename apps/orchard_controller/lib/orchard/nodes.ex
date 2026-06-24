@@ -2,7 +2,7 @@ defmodule Orchard.Nodes do
   @moduledoc """
   Persistence context for node inventory.
 
-  Provides observational node discovery (no join ceremony) — nodes are
+  Provides observational node discovery (no join ceremony) - nodes are
   automatically registered when a successful `GetStatus` response includes
   valid `RuntimeNodeMetadata`.
   """
@@ -161,6 +161,16 @@ defmodule Orchard.Nodes do
 
   New nodes are inserted with `state: :active`. Updates preserve the
   existing `state` (admin-managed).
+  Successful eligible observations also refresh source-scoped queue capacity
+  from aggregate node capacity and loaded placement statuses.
+  Fresh invalid metadata, identity conflicts, ineligible nodes, and target
+  failures clear stale queue capacity sources for that node/target.
+
+  Options:
+  - `:reserve_unassigned_node_grants?` - reserve unassigned active grants
+    while reconciling node capacity (default: `true`)
+  - `:reserve_unassigned_source_grants?` - reserve unassigned source-backed
+    grants while reconciling node capacity (default: `true`)
 
   Returns:
   - `{:ok, %Node{}}` on insert or update
@@ -214,11 +224,13 @@ defmodule Orchard.Nodes do
 
   Classifies the given `reason` and, if it matches a transport failure pattern,
   delegates to `mark_target_unreachable/2`. Non-transport reasons are ignored.
+  Successful transport-failure marks also clear queue capacity sources owned by
+  the failed node so stale observations cannot wake queued requests.
 
   Transport failure reasons:
-  - `{:connect_failed, _}` — gRPC channel could not be established
-  - `:node_unavailable` — node not reachable
-  - `:node_timeout` — probe or RPC timed out
+  - `{:connect_failed, _}` - gRPC channel could not be established
+  - `:node_unavailable` - node not reachable
+  - `:node_timeout` - probe or RPC timed out
 
   Returns:
   - `{:ok, %Node{}}` when health was updated
@@ -629,7 +641,7 @@ defmodule Orchard.Nodes do
   rescue
     # Concurrent first-observation race: two transactions see no existing
     # rows, both attempt insert, one hits a uniqueness constraint.
-    # Treat as a benign conflict — the other process won the insert.
+    # Treat as a benign conflict - the other process won the insert.
     error in Ecto.ConstraintError ->
       Logger.debug("Node observation lost concurrent insert race: #{inspect(error.constraint)}")
       {:noop, :constraint_conflict}

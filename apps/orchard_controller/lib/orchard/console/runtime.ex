@@ -79,8 +79,9 @@ defmodule OrchardConsole.Runtime do
   Fetches a runtime status snapshot from the configured node.
 
   On success, also performs a best-effort `Orchard.Nodes.observe_status/3`
-  to persist node inventory data. Observation failures never convert a
-  successful status read into an error snapshot.
+  to persist node inventory data and refresh queue capacity.
+  Observation failures never convert a successful status read into an error
+  snapshot.
 
   Returns `{:ok, snapshot}` on success or `{:error, error_snapshot}` with
   an operator-safe error description on failure. Never raises for expected
@@ -109,13 +110,14 @@ defmodule OrchardConsole.Runtime do
 
   Each entry corresponds to one target from `Inference.runtime_client_targets/0`.
   Successful probes trigger best-effort `observe_status/3` via the existing
-  `snapshot/1` path. Per-target failures are isolated — one failed target
-  never aborts the cluster result.
+  `snapshot/1` path, including queue capacity refresh.
+  Per-target failures are isolated - one failed target never aborts the cluster
+  result.
 
   Options:
-  - `:targets` — explicit ordered target list (default: `Inference.runtime_client_targets/0`)
-  - `:observed_at` — shared timestamp for all probes (default: `DateTime.utc_now()`)
-  - `:timeout` — forwarded to each `snapshot/1` call
+  - `:targets` - explicit ordered target list (default: `Inference.runtime_client_targets/0`)
+  - `:observed_at` - shared timestamp for all probes (default: `DateTime.utc_now()`)
+  - `:timeout` - forwarded to each `snapshot/1` call
   """
   @spec cluster_snapshot() :: [cluster_target_snapshot()]
   def cluster_snapshot, do: cluster_snapshot([])
@@ -179,9 +181,9 @@ defmodule OrchardConsole.Runtime do
   Fetches a runtime status snapshot with optional overrides.
 
   Options:
-  - `:target` — override runtime target (default: from inference config)
-  - `:observed_at` — override observation timestamp (default: `DateTime.utc_now()`)
-  - `:timeout` — status RPC timeout in milliseconds (default: client default)
+  - `:target` - override runtime target (default: from inference config)
+  - `:observed_at` - override observation timestamp (default: `DateTime.utc_now()`)
+  - `:timeout` - status RPC timeout in milliseconds (default: client default)
   """
   @spec snapshot(keyword()) :: {:ok, snapshot()} | {:error, error_snapshot()}
   def snapshot(opts) do
