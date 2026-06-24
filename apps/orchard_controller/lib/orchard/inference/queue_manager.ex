@@ -1888,7 +1888,9 @@ defmodule Orchard.Inference.QueueManager do
     placements
     |> Enum.reduce(%{}, fn
       {queue_key, %{active: active, max: max_concurrency}}, lane_limits ->
-        limit = Map.get(reservation_counts, queue_key, 0) + max(max_concurrency - active, 0)
+        reservations = Map.get(reservation_counts, queue_key, 0)
+        spare = max(max_concurrency - active, 0)
+        limit = max(reservations, min(max_concurrency, reservations + spare))
 
         if limit > 0, do: Map.put(lane_limits, queue_key, limit), else: lane_limits
 

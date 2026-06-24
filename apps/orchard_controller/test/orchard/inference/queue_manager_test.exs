@@ -916,6 +916,93 @@ defmodule Orchard.Inference.QueueManagerTest do
     send(second_awaiter, :stop)
   end
 
+  test "SPEC.md §5.5 placement source limit stays capped by placement max" do
+    node_id = Ecto.UUID.generate()
+    tenant_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 0, max_wait_ms: 1_000)
+
+    with_queue_admission_config(config, fn ->
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-placement-limit-a",
+                   tenant_id: tenant_id,
+                   model_id: "placement-limit"
+                 )
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-placement-limit-b",
+                   tenant_id: tenant_id,
+                   model_id: "placement-limit"
+                 )
+               )
+
+      assert {:queued, third_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-placement-limit-c",
+                   tenant_id: tenant_id,
+                   model_id: "placement-limit"
+                 )
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_placement_limit_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_placement_limit_result)
+      third_awaiter = Task.async(fn -> QueueManager.await(third_ticket) end)
+
+      assert wait_until(fn -> queue_entry_awaiting?(third_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, node_id},
+                   {:node, node_id, :placement},
+                   {:node, node_id, :cold}
+                 ],
+                 placement_source: {:node, node_id, :placement},
+                 cold_source: {:node, node_id, :cold},
+                 node_id: node_id,
+                 node_active: 0,
+                 node_max: 4,
+                 placements: [
+                   {"placement-limit", "v1", %{active_request_count: 0, max_concurrency: 2}}
+                 ]
+               })
+
+      assert_receive {:first_placement_limit_result, {:ok, first_grant}}, 2_000
+      assert_receive {:second_placement_limit_result, {:ok, second_grant}}, 2_000
+      refute Task.yield(third_awaiter, 50)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, node_id},
+                   {:node, node_id, :placement},
+                   {:node, node_id, :cold}
+                 ],
+                 placement_source: {:node, node_id, :placement},
+                 cold_source: {:node, node_id, :cold},
+                 node_id: node_id,
+                 node_active: 0,
+                 node_max: 4,
+                 placements: [
+                   {"placement-limit", "v1", %{active_request_count: 0, max_concurrency: 2}}
+                 ]
+               })
+
+      refute Task.yield(third_awaiter, 100)
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, third_grant} = Task.await(third_awaiter, 2_000)
+      assert third_grant.queue_key == "placement-limit@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      assert :ok = QueueManager.release(third_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end)
+  end
+
   test "SPEC.md §5.4 source-aware zero-capacity refresh removes stale placement capacity" do
     config = queue_config(capacity: 0, max_wait_ms: 2_000)
 
