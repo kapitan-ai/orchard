@@ -352,32 +352,28 @@ defmodule Orchard.Nodes do
     cold_reservations = active_capacity_source_reservations_by_lane(queue_manager, cold_source)
     reserved_node_capacity = source_reservation_count(placement_reservations, cold_reservations)
 
-    clear_node_queue_capacity_sources(node)
+    queue_capacity_eligible? = queue_capacity_eligible_node?(node)
+    clear_node_queue_capacity_sources(node, promote?: not queue_capacity_eligible?)
 
-    if queue_capacity_eligible_node?(node) do
-      placements = extract_runtime_model_placements(status_response)
+    if queue_capacity_eligible? do
+      placement_observations =
+        status_response
+        |> extract_runtime_model_placements()
+        |> placement_observations_by_lane()
+
       queued_lanes = queue_manager.queued_model_lanes()
-      queued_lane_set = MapSet.new(queued_lanes)
 
       remaining_node_capacity =
         max(remaining_node_capacity(status_response) - reserved_node_capacity, 0)
 
-      {placement_keys, remaining_node_capacity} =
-        refresh_loaded_placement_capacities(
-          queue_manager,
-          placement_source,
-          placements,
-          queued_lane_set,
-          placement_reservations,
-          remaining_node_capacity
-        )
-
-      refresh_cold_queue_capacities(
+      refresh_queue_capacities_in_lane_order(
         queue_manager,
+        placement_source,
         cold_source,
         queued_lanes,
-        placement_keys,
+        placement_observations,
         remaining_node_capacity,
+        placement_reservations,
         cold_reservations
       )
     end
@@ -387,12 +383,16 @@ defmodule Orchard.Nodes do
       :ok
   end
 
-  defp clear_node_queue_capacity_sources(%Node{} = node) do
+  defp clear_node_queue_capacity_sources(%Node{} = node, opts \\ []) do
     queue_manager = Orchard.Inference.queue_manager()
 
-    Enum.each(
-      [{:node, node.id}, {:node, node.id, :placement}, {:node, node.id, :cold}],
-      fn source -> queue_manager.clear_capacity_source(source) end
+    queue_manager.clear_capacity_sources(
+      [
+        {:node, node.id},
+        {:node, node.id, :placement},
+        {:node, node.id, :cold}
+      ],
+      promote?: Keyword.get(opts, :promote?, true)
     )
   rescue
     error ->
@@ -422,25 +422,27 @@ defmodule Orchard.Nodes do
     source_reservation_count([first_reservations, second_reservations])
   end
 
-  defp refresh_cold_queue_capacities(
+  defp refresh_queue_capacities_in_lane_order(
          queue_manager,
-         source,
+         placement_source,
+         cold_source,
          queued_lanes,
-         placement_keys,
+         placement_observations,
          remaining_node_capacity,
-         source_reservations
+         placement_reservations,
+         cold_reservations
        ) do
-    queued_lanes
-    |> Enum.reject(&(&1 in placement_keys))
-    |> Enum.reduce(remaining_node_capacity, fn {model_id, version}, remaining_capacity ->
-      reserved_capacity = Map.get(source_reservations, {model_id, version}, 0)
-      capacity = if remaining_capacity > 0, do: 1, else: 0
-
-      queue_manager.refresh_capacity(model_id, version, reserved_capacity + capacity,
-        source: source
+    Enum.reduce(queued_lanes, remaining_node_capacity, fn lane, remaining_capacity ->
+      refresh_queue_capacity_for_lane(
+        queue_manager,
+        placement_source,
+        cold_source,
+        lane,
+        Map.fetch(placement_observations, lane),
+        remaining_capacity,
+        placement_reservations,
+        cold_reservations
       )
-
-      max(remaining_capacity - capacity, 0)
     end)
   end
 
@@ -450,77 +452,76 @@ defmodule Orchard.Nodes do
 
   defp extract_runtime_model_placements(_status_response), do: []
 
-  defp refresh_loaded_placement_capacities(
-         queue_manager,
-         source,
-         placements,
-         queued_lane_set,
-         source_reservations,
-         remaining_node_capacity
-       ) do
-    Enum.reduce(
-      placements,
-      {MapSet.new(), remaining_node_capacity},
-      fn placement, {placement_keys, remaining_capacity} ->
-        refresh_loaded_placement_capacity(
-          queue_manager,
-          source,
-          placement,
-          queued_lane_set,
-          source_reservations,
-          placement_keys,
-          remaining_capacity
-        )
-      end
-    )
+  defp placement_observations_by_lane(placements) do
+    Enum.reduce(placements, %{}, &put_placement_observation/2)
   end
 
-  defp refresh_loaded_placement_capacity(
-         queue_manager,
-         source,
-         placement,
-         queued_lane_set,
-         source_reservations,
-         placement_keys,
-         remaining_capacity
-       )
-       when is_map(placement) do
+  defp put_placement_observation(placement, observations) when is_map(placement) do
     case placement_model_ref(placement) do
       {:ok, model_id, version} ->
-        placement_key = {model_id, version}
-        placement_keys = MapSet.put(placement_keys, placement_key)
-
-        if MapSet.member?(queued_lane_set, placement_key) do
-          reserved_capacity =
-            placement_reserved_capacity(placement, placement_key, source_reservations)
-
-          {capacity, remaining_capacity} =
-            placement_queue_capacity(placement, remaining_capacity)
-
-          queue_manager.refresh_capacity(model_id, version, reserved_capacity + capacity,
-            source: source
-          )
-
-          {placement_keys, remaining_capacity}
-        else
-          {placement_keys, remaining_capacity}
-        end
+        Map.update(observations, {model_id, version}, placement, fn _existing -> :ambiguous end)
 
       :error ->
-        {placement_keys, remaining_capacity}
+        observations
     end
   end
 
-  defp refresh_loaded_placement_capacity(
-         _queue_manager,
+  defp put_placement_observation(_placement, observations), do: observations
+
+  defp refresh_queue_capacity_for_lane(
+         queue_manager,
+         placement_source,
+         _cold_source,
+         {model_id, version} = lane,
+         {:ok, placement},
+         remaining_capacity,
+         placement_reservations,
+         _cold_reservations
+       )
+       when is_map(placement) do
+    reserved_capacity = placement_reserved_capacity(placement, lane, placement_reservations)
+    {capacity, remaining_capacity} = placement_queue_capacity(placement, remaining_capacity)
+
+    queue_manager.refresh_capacity(model_id, version, reserved_capacity + capacity,
+      source: placement_source
+    )
+
+    remaining_capacity
+  end
+
+  defp refresh_queue_capacity_for_lane(
+         queue_manager,
+         placement_source,
+         _cold_source,
+         {model_id, version},
+         {:ok, :ambiguous},
+         remaining_capacity,
+         _placement_reservations,
+         _cold_reservations
+       ) do
+    queue_manager.refresh_capacity(model_id, version, 0, source: placement_source)
+    remaining_capacity
+  end
+
+  defp refresh_queue_capacity_for_lane(
+         queue_manager,
          _source,
-         _placement,
-         _queued_lane_set,
-         _source_reservations,
-         placement_keys,
-         remaining_capacity
-       ),
-       do: {placement_keys, remaining_capacity}
+         cold_source,
+         {model_id, version} = lane,
+         :error,
+         remaining_capacity,
+         _placement_reservations,
+         cold_reservations
+       ) do
+    reserved_capacity = Map.get(cold_reservations, lane, 0)
+    capacity = if remaining_capacity > 0, do: 1, else: 0
+
+    queue_manager.refresh_capacity(model_id, version, reserved_capacity + capacity,
+      source: cold_source
+    )
+
+    max(remaining_capacity - capacity, 0)
+  end
 
   defp placement_reserved_capacity(placement, placement_key, source_reservations) do
     if loaded_placement?(placement) and placement_max_concurrency(placement) > 0 do

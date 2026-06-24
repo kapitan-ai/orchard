@@ -197,6 +197,13 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(server, {:clear_capacity_source, source})
   end
 
+  @spec clear_capacity_sources([term()], keyword()) :: :ok
+  def clear_capacity_sources(sources, opts \\ []) when is_list(sources) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    promote? = Keyword.get(opts, :promote?, true)
+    call_manager(server, {:clear_capacity_sources, sources, promote?})
+  end
+
   @spec active_capacity_source_lanes(term(), keyword()) :: [{String.t(), String.t()}]
   def active_capacity_source_lanes(source, opts \\ []) do
     server = Keyword.get(opts, :server, __MODULE__)
@@ -333,7 +340,7 @@ defmodule Orchard.Inference.QueueManager do
 
   def handle_call({:refresh_capacity, queue_key, capacity, nil}, _from, state) do
     {_lane, state} =
-      put_lane_capacity(queue_key, capacity, clear_capacity_sources(queue_key, state))
+      put_lane_capacity(queue_key, capacity, clear_lane_capacity_sources(queue_key, state))
 
     {:reply, :ok, maybe_grant_next_global(state)}
   end
@@ -346,6 +353,10 @@ defmodule Orchard.Inference.QueueManager do
 
   def handle_call({:clear_capacity_source, source}, _from, state) do
     {:reply, :ok, clear_capacity_source_from_state(source, state)}
+  end
+
+  def handle_call({:clear_capacity_sources, sources, promote?}, _from, state) do
+    {:reply, :ok, clear_capacity_sources_from_state(sources, state, promote?)}
   end
 
   def handle_call({:await, %Ticket{} = ticket}, from, state) do
@@ -1342,7 +1353,7 @@ defmodule Orchard.Inference.QueueManager do
     {lane, %{state | lanes: Map.put(state.lanes, queue_key, lane)}}
   end
 
-  defp clear_capacity_sources(queue_key, state) do
+  defp clear_lane_capacity_sources(queue_key, state) do
     %{state | capacity_sources: Map.delete(state.capacity_sources, queue_key)}
   end
 
@@ -1395,19 +1406,40 @@ defmodule Orchard.Inference.QueueManager do
   end
 
   defp clear_capacity_source_from_state(source, state) do
-    state.capacity_sources
-    |> Enum.reduce(state, fn {queue_key, sources}, state ->
-      if Map.has_key?(sources, source) do
-        sources = Map.delete(sources, source)
-        capacity_sources = put_or_delete_sources(state.capacity_sources, queue_key, sources)
-        state = %{state | capacity_sources: capacity_sources}
-        {_lane, state} = put_source_capacity(queue_key, state)
-        state
-      else
-        state
-      end
+    clear_capacity_sources_from_state([source], state, true)
+  end
+
+  defp clear_capacity_sources_from_state(sources, state, promote?) do
+    source_set = MapSet.new(sources)
+
+    {capacity_sources, queue_keys} =
+      Enum.reduce(state.capacity_sources, {%{}, []}, fn {queue_key, lane_sources},
+                                                        {capacity_sources, queue_keys} ->
+        remaining_sources =
+          Map.reject(lane_sources, fn {source, _capacity} ->
+            MapSet.member?(source_set, source)
+          end)
+
+        if map_size(remaining_sources) == map_size(lane_sources) do
+          {Map.put(capacity_sources, queue_key, lane_sources), queue_keys}
+        else
+          capacity_sources = put_or_delete_sources(capacity_sources, queue_key, remaining_sources)
+          {capacity_sources, [queue_key | queue_keys]}
+        end
+      end)
+
+    state = apply_cleared_capacity_sources({capacity_sources, queue_keys}, state)
+
+    if promote?, do: maybe_grant_next_global(state), else: state
+  end
+
+  defp apply_cleared_capacity_sources({capacity_sources, queue_keys}, state) do
+    state = %{state | capacity_sources: capacity_sources}
+
+    Enum.reduce(queue_keys, state, fn queue_key, state ->
+      {_lane, state} = put_source_capacity(queue_key, state)
+      state
     end)
-    |> maybe_grant_next_global()
   end
 
   defp put_or_delete_sources(capacity_sources, queue_key, sources) when map_size(sources) == 0,

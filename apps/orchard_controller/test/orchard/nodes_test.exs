@@ -138,6 +138,25 @@ defmodule Orchard.NodesTest do
     end)
   end
 
+  defp put_ticket_awaiter(ticket, tag) do
+    parent = self()
+    monitor_ref = Process.monitor(parent)
+
+    :sys.replace_state(QueueManager, fn state ->
+      entry =
+        state.entries
+        |> Map.fetch!(ticket.ticket_ref)
+        |> Map.put(:await_from, {parent, tag})
+        |> Map.put(:awaiter_monitor_ref, monitor_ref)
+
+      %{
+        state
+        | entries: Map.put(state.entries, ticket.ticket_ref, entry),
+          monitors: Map.put(state.monitors, monitor_ref, {:awaiter, ticket.ticket_ref})
+      }
+    end)
+  end
+
   # -- Schema validation --
 
   describe "Node schema" do
@@ -849,6 +868,59 @@ defmodule Orchard.NodesTest do
             assert_receive {:first_placement_lane_result, {:ok, grant}}, 2_000
             grant
         end
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 heartbeat spends node capacity in queue-head order" do
+      QueueManager.reset()
+
+      tenant_id = Ecto.UUID.generate()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-head-order-cold", "head-order-cold")
+                 |> Map.put(:tenant_id, tenant_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-head-order-loaded", "head-order-loaded")
+                 |> Map.put(:tenant_id, tenant_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_head_order_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_head_order_result)
+      target = make_target("10.0.0.78", 9444)
+      observed_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.78", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [
+          %{
+            model_ref: %{model_id: "head-order-loaded", version: "v1"},
+            active_request_count: 0,
+            max_concurrency: 1
+          }
+        ])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+
+      assert_receive {:first_head_order_result, {:ok, first_grant}}, 2_000
+      refute_receive {:second_head_order_result, _result}, 100
+
+      assert :ok = QueueManager.release(first_grant)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 1, :second))
+
+      assert_receive {:second_head_order_result, {:ok, second_grant}}, 2_000
 
       assert :ok = QueueManager.release(second_grant)
       send(first_awaiter, :stop)
@@ -1975,6 +2047,66 @@ defmodule Orchard.NodesTest do
 
       assert :ok = QueueManager.release(second_grant)
       send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 transport failure clears node sources before promotion" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      insert_node!(%{
+        id: node_id,
+        advertise_addr: "10.0.0.79",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: DateTime.utc_now()
+      })
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-failure-atomic-clear",
+                   "failure-atomic-clear-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert :ok =
+               QueueManager.refresh_capacity("failure-atomic-clear-model", "v1", 1,
+                 source: {:node, node_id, :cold}
+               )
+
+      tag = make_ref()
+      put_ticket_awaiter(ticket, tag)
+
+      target = make_target("10.0.0.79", 9444)
+      observed_at = DateTime.utc_now()
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 target,
+                 :node_timeout,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      assert marked.health == :degraded
+      refute_receive {^tag, {:ok, _grant}}, 100
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.79",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 2, :second))
+
+      assert_receive {^tag, {:ok, grant}}, 2_000
+      assert :ok = QueueManager.release(grant)
     end
 
     test "non-transport reason returns :noop without mutating health" do
