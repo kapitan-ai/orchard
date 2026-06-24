@@ -4,8 +4,8 @@ defmodule Orchard.Scheduler.MultiNode do
   selects the best candidate for dispatch.
 
   Ranking order (descending priority):
-  1. Exclude candidates with exhausted node or placement capacity, or active
-     candidates with unknown placement capacity
+  1. Exclude candidates with exhausted node or placement capacity, or loaded-model
+     candidates with active requests and unknown placement capacity
   2. Node has the requested model already loaded
   3. Lower active request count for the requested placement
   4. Healthier node (`:healthy` over `:degraded`)
@@ -22,8 +22,8 @@ defmodule Orchard.Scheduler.MultiNode do
   - No schedulable nodes remain after filtering
 
   Returns `{:error, :cluster_busy}` when live probes joined to persisted schedulable
-  nodes, but every joined candidate has exhausted capacity or active unknown
-  placement capacity.
+  nodes, but every joined candidate has exhausted capacity or is an active
+  loaded-model candidate with unknown placement capacity.
   """
 
   alias Orchard.CanonicalRequest
@@ -252,7 +252,7 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp active_without_known_capacity?(%{model_placement_capacity: _capacity}), do: false
 
-  defp active_without_known_capacity?(%{active_request_count: count})
+  defp active_without_known_capacity?(%{loaded_model?: true, active_request_count: count})
        when is_integer(count) and count > 0,
        do: true
 
