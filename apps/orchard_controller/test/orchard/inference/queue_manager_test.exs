@@ -53,6 +53,34 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.4 source refresh does not reduce configured lane capacity" do
+    config = queue_config(capacity: 2, max_wait_ms: 1_000)
+
+    with_queue_admission_config(config, fn ->
+      assert {:ok, first_grant} = QueueManager.acquire(admission_request("req-source-base-a"))
+      assert {:ok, second_grant} = QueueManager.acquire(admission_request("req-source-base-b"))
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(admission_request("req-source-base-c"))
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_capacity("queue-model", "v1", 1,
+                 source: {:node, "conservative-cold"}
+               )
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, queued_grant} = Task.await(awaiter, 2_000)
+
+      assert queued_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      assert :ok = QueueManager.release(queued_grant)
+    end)
+  end
+
   test "SPEC.md §5.3 tenant active cap queues same-tenant work despite placement capacity" do
     tenant_id = Ecto.UUID.generate()
     config = queue_config(capacity: 2, max_active_per_tenant: 1)
@@ -455,6 +483,39 @@ defmodule Orchard.Inference.QueueManagerTest do
 
       assert :ok = QueueManager.release(grant)
       assert :ok = QueueManager.release(requeued_grant)
+    end)
+  end
+
+  test "SPEC.md §5.4 queued model lanes include requeued entries" do
+    config = queue_config(max_wait_ms: 500, poll_interval_ms: 200)
+
+    with_queue_admission_config(config, fn ->
+      request = admission_request("req-requeue-lane", model_id: "requeue-lane-model")
+
+      assert {:ok, grant} = QueueManager.acquire(request)
+      assert {:queued, ticket} = QueueManager.requeue(grant, request)
+
+      entry =
+        QueueManager
+        |> :sys.get_state()
+        |> Map.fetch!(:entries)
+        |> Map.fetch!(ticket.ticket_ref)
+
+      assert entry.model_id == "requeue-lane-model"
+      assert entry.version == "v1"
+
+      :sys.replace_state(QueueManager, fn state ->
+        entry =
+          state.entries
+          |> Map.fetch!(ticket.ticket_ref)
+          |> Map.delete(:model_id)
+          |> Map.delete(:version)
+
+        %{state | entries: Map.put(state.entries, ticket.ticket_ref, entry)}
+      end)
+
+      assert {"requeue-lane-model", "v1"} in QueueManager.queued_model_lanes()
+      assert :ok = QueueManager.abandon(ticket)
     end)
   end
 

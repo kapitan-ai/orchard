@@ -328,7 +328,7 @@ defmodule Orchard.Inference.QueueManager do
 
   def handle_call({:refresh_capacity, queue_key, capacity, source}, _from, state) do
     state = put_capacity_source(queue_key, source, capacity, state)
-    {_lane, state} = put_lane_capacity(queue_key, aggregate_capacity(queue_key, state), state)
+    {_lane, state} = put_source_capacity(queue_key, state)
     {:reply, :ok, maybe_grant_next_global(state)}
   end
 
@@ -1307,13 +1307,25 @@ defmodule Orchard.Inference.QueueManager do
 
   defp queue_key(model_id, version), do: "#{model_id}@#{version}"
 
-  defp empty_lane, do: %{active: %{}, blocked_until_monotonic_ms: nil, block_ref: nil}
+  defp empty_lane,
+    do: %{active: %{}, base_capacity: 0, blocked_until_monotonic_ms: nil, block_ref: nil}
 
   defp put_lane_capacity(queue_key, capacity, state) do
+    base_capacity = max(capacity, 0)
+
     lane =
       state.lanes
       |> Map.get(queue_key, empty_lane())
-      |> Map.put(:capacity, capacity)
+      |> Map.put(:base_capacity, base_capacity)
+      |> Map.put(:capacity, max(base_capacity, aggregate_capacity(queue_key, state)))
+
+    {lane, %{state | lanes: Map.put(state.lanes, queue_key, lane)}}
+  end
+
+  defp put_source_capacity(queue_key, state) do
+    lane = Map.get(state.lanes, queue_key, empty_lane())
+    capacity = max(Map.get(lane, :base_capacity, 0), aggregate_capacity(queue_key, state))
+    lane = Map.put(lane, :capacity, capacity)
 
     {lane, %{state | lanes: Map.put(state.lanes, queue_key, lane)}}
   end
@@ -1345,7 +1357,7 @@ defmodule Orchard.Inference.QueueManager do
         sources = Map.delete(sources, source)
         capacity_sources = put_or_delete_sources(state.capacity_sources, queue_key, sources)
         state = %{state | capacity_sources: capacity_sources}
-        {_lane, state} = put_lane_capacity(queue_key, aggregate_capacity(queue_key, state), state)
+        {_lane, state} = put_source_capacity(queue_key, state)
         state
       else
         state
@@ -1449,9 +1461,18 @@ defmodule Orchard.Inference.QueueManager do
     state.entries
     |> Map.values()
     |> Enum.reject(&terminal_pending?/1)
-    |> Enum.map(&{&1.model_id, &1.version})
+    |> Enum.flat_map(&entry_model_lane/1)
     |> Enum.uniq()
   end
+
+  defp entry_model_lane(%{model_id: model_id, version: version})
+       when is_binary(model_id) and model_id != "" and is_binary(version) and version != "",
+       do: [{model_id, version}]
+
+  defp entry_model_lane(%{queue_key: queue_key}) when is_binary(queue_key),
+    do: queue_key_model_lane(queue_key)
+
+  defp entry_model_lane(_entry), do: []
 
   defp active_capacity_source_lanes_from_state(source, state) do
     state.capacity_sources
@@ -1608,6 +1629,8 @@ defmodule Orchard.Inference.QueueManager do
       request_id: request.request_id,
       public_id: request.public_id,
       tenant_id: request.tenant_id,
+      model_id: request.model_id,
+      version: request.version,
       queue_key: request.queue_key,
       caller_pid: request.caller_pid,
       await_from: nil,

@@ -205,7 +205,14 @@ defmodule Orchard.Nodes do
   @spec record_transport_failure(keyword(), term(), DateTime.t()) :: {:ok, Node.t()} | :noop
   def record_transport_failure(target, reason, observed_at) do
     if transport_failure_reason?(reason) do
-      mark_target_unreachable(target, observed_at)
+      case mark_target_unreachable(target, observed_at) do
+        {:ok, %Node{} = node} = result ->
+          clear_node_queue_capacity_sources(node)
+          result
+
+        :noop ->
+          :noop
+      end
     else
       :noop
     end
@@ -338,33 +345,52 @@ defmodule Orchard.Nodes do
     queue_manager = Orchard.Inference.queue_manager()
     placement_source = {:node, node.id, :placement}
     cold_source = {:node, node.id, :cold}
-    legacy_source = {:node, node.id}
 
     previous_source_keys =
       MapSet.new(queue_manager.active_capacity_source_lanes(placement_source))
 
-    queue_manager.clear_capacity_source(legacy_source)
-    queue_manager.clear_capacity_source(placement_source)
-    queue_manager.clear_capacity_source(cold_source)
+    clear_node_queue_capacity_sources(node)
 
     if queue_capacity_eligible_node?(node) do
       placements = extract_runtime_model_placements(status_response)
+      queued_lanes = queue_manager.queued_model_lanes()
+      queued_lane_set = MapSet.new(queued_lanes)
 
-      placement_keys =
-        placements
-        |> MapSet.new(&placement_queue_key/1)
-        |> MapSet.union(previous_source_keys)
+      {placement_keys, remaining_node_capacity} =
+        refresh_loaded_placement_capacities(
+          queue_manager,
+          placement_source,
+          status_response,
+          placements,
+          queued_lane_set
+        )
 
-      Enum.each(
-        placements,
-        &refresh_loaded_placement_capacity(placement_source, status_response, &1)
+      placement_keys = MapSet.union(placement_keys, previous_source_keys)
+
+      refresh_cold_queue_capacities(
+        queue_manager,
+        cold_source,
+        queued_lanes,
+        placement_keys,
+        remaining_node_capacity
       )
-
-      refresh_cold_queue_capacities(queue_manager, cold_source, status_response, placement_keys)
     end
   rescue
     error ->
       Logger.debug("Queue capacity refresh from node observation failed: #{inspect(error)}")
+      :ok
+  end
+
+  defp clear_node_queue_capacity_sources(%Node{} = node) do
+    queue_manager = Orchard.Inference.queue_manager()
+
+    Enum.each(
+      [{:node, node.id}, {:node, node.id, :placement}, {:node, node.id, :cold}],
+      fn source -> queue_manager.clear_capacity_source(source) end
+    )
+  rescue
+    error ->
+      Logger.debug("Queue capacity source clear for node failed: #{inspect(error)}")
       :ok
   end
 
@@ -374,13 +400,19 @@ defmodule Orchard.Nodes do
 
   defp queue_capacity_eligible_node?(%Node{}), do: false
 
-  defp refresh_cold_queue_capacities(queue_manager, source, status_response, placement_keys) do
-    capacity = cold_node_queue_capacity(status_response)
-
-    queue_manager.queued_model_lanes()
+  defp refresh_cold_queue_capacities(
+         queue_manager,
+         source,
+         queued_lanes,
+         placement_keys,
+         remaining_node_capacity
+       ) do
+    queued_lanes
     |> Enum.reject(&(&1 in placement_keys))
-    |> Enum.each(fn {model_id, version} ->
+    |> Enum.reduce(remaining_node_capacity, fn {model_id, version}, remaining_capacity ->
+      capacity = if remaining_capacity > 0, do: 1, else: 0
       queue_manager.refresh_capacity(model_id, version, capacity, source: source)
+      max(remaining_capacity - capacity, 0)
     end)
   end
 
@@ -390,50 +422,96 @@ defmodule Orchard.Nodes do
 
   defp extract_runtime_model_placements(_status_response), do: []
 
-  defp refresh_loaded_placement_capacity(source, status_response, placement)
+  defp refresh_loaded_placement_capacities(
+         queue_manager,
+         source,
+         status_response,
+         placements,
+         queued_lane_set
+       ) do
+    Enum.reduce(
+      placements,
+      {MapSet.new(), remaining_node_capacity(status_response)},
+      fn placement, {placement_keys, remaining_capacity} ->
+        refresh_loaded_placement_capacity(
+          queue_manager,
+          source,
+          placement,
+          queued_lane_set,
+          placement_keys,
+          remaining_capacity
+        )
+      end
+    )
+  end
+
+  defp refresh_loaded_placement_capacity(
+         queue_manager,
+         source,
+         placement,
+         queued_lane_set,
+         placement_keys,
+         remaining_capacity
+       )
        when is_map(placement) do
     case placement_model_ref(placement) do
       {:ok, model_id, version} ->
-        capacity =
-          if loaded_placement?(placement) do
-            effective_placement_capacity(status_response, placement)
-          else
-            0
-          end
+        placement_key = {model_id, version}
+        placement_keys = MapSet.put(placement_keys, placement_key)
 
-        Orchard.Inference.queue_manager().refresh_capacity(model_id, version, capacity,
-          source: source
-        )
+        if MapSet.member?(queued_lane_set, placement_key) do
+          {capacity, remaining_capacity} =
+            placement_queue_capacity(placement, remaining_capacity)
+
+          queue_manager.refresh_capacity(model_id, version, capacity, source: source)
+          {placement_keys, remaining_capacity}
+        else
+          {placement_keys, remaining_capacity}
+        end
 
       :error ->
-        :ok
+        {placement_keys, remaining_capacity}
     end
   end
 
-  defp refresh_loaded_placement_capacity(_source, _status_response, _placement), do: :ok
+  defp refresh_loaded_placement_capacity(
+         _queue_manager,
+         _source,
+         _placement,
+         _queued_lane_set,
+         placement_keys,
+         remaining_capacity
+       ),
+       do: {placement_keys, remaining_capacity}
 
-  defp placement_queue_key(placement) do
-    case placement_model_ref(placement) do
-      {:ok, model_id, version} -> {model_id, version}
-      :error -> nil
+  defp placement_queue_capacity(placement, remaining_node_capacity) do
+    if loaded_placement?(placement) do
+      placement_active = non_negative_integer(map_get(placement, :active_request_count), 0)
+      placement_max = placement_max_concurrency(placement)
+      available_placement_capacity = max(placement_max - placement_active, 0)
+      spent_node_capacity = min(available_placement_capacity, remaining_node_capacity)
+
+      {
+        min(placement_max, placement_active + spent_node_capacity),
+        remaining_node_capacity - spent_node_capacity
+      }
+    else
+      {0, remaining_node_capacity}
     end
   end
 
-  defp cold_node_queue_capacity(status_response) do
-    if node_capacity_available?(status_response), do: 1, else: 0
-  end
-
-  defp node_capacity_available?(status_response) do
+  defp remaining_node_capacity(status_response) do
     node_active = non_negative_integer(map_get(status_response, :active_request_count), 0)
     node_max = positive_integer(map_get(status_response, :max_concurrency), 1)
 
-    node_active < node_max
+    max(node_max - node_active, 0)
   end
 
   defp loaded_placement?(placement) do
-    placement
-    |> map_get(:placement_state)
-    |> then(&(&1 in [:PLACEMENT_STATE_LOADED, "PLACEMENT_STATE_LOADED", 7]))
+    case map_get(placement, :placement_state) do
+      nil -> true
+      state -> state in [:PLACEMENT_STATE_LOADED, "PLACEMENT_STATE_LOADED", 7]
+    end
   end
 
   defp placement_model_ref(placement) do
@@ -460,17 +538,6 @@ defmodule Orchard.Nodes do
       capacity when is_integer(capacity) and capacity > 0 -> capacity
       _other -> 0
     end
-  end
-
-  defp effective_placement_capacity(status_response, placement) do
-    placement_active = non_negative_integer(map_get(placement, :active_request_count), 0)
-    placement_max = placement_max_concurrency(placement)
-
-    node_active = non_negative_integer(map_get(status_response, :active_request_count), 0)
-    node_max = positive_integer(map_get(status_response, :max_concurrency), 1)
-    remaining_node_capacity = max(node_max - node_active, 0)
-
-    min(placement_max, placement_active + remaining_node_capacity)
   end
 
   defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value

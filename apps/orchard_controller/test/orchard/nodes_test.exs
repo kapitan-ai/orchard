@@ -80,17 +80,24 @@ defmodule Orchard.NodesTest do
   defp placement_status(host, model_id, opts) do
     version = Keyword.get(opts, :version, "v1")
     max_concurrency = Keyword.fetch!(opts, :max_concurrency)
-    placement_state = Keyword.get(opts, :placement_state, :PLACEMENT_STATE_LOADED)
 
-    make_status_response(%{listen_host: host, listen_port: 9444})
-    |> Map.put(:runtime_model_placements, [
+    placement =
       %{
         model_ref: %{model_id: model_id, version: version},
-        placement_state: placement_state,
         active_request_count: 0,
         max_concurrency: max_concurrency
       }
-    ])
+      |> maybe_put_placement_state(opts)
+
+    make_status_response(%{listen_host: host, listen_port: 9444})
+    |> Map.put(:runtime_model_placements, [placement])
+  end
+
+  defp maybe_put_placement_state(placement, opts) do
+    case Keyword.fetch(opts, :placement_state) do
+      {:ok, placement_state} -> Map.put(placement, :placement_state, placement_state)
+      :error -> placement
+    end
   end
 
   defp queue_admission_request(public_id, model_id, version \\ "v1") do
@@ -777,6 +784,77 @@ defmodule Orchard.NodesTest do
       send(second_awaiter, :stop)
     end
 
+    test "SPEC.md §5.5 placement heartbeat spends one node slot across queued lanes" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-lane-a", "placement-lane-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-lane-b", "placement-lane-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_placement_lane_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_placement_lane_result)
+      target = make_target("10.0.0.68", 9444)
+      observed_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.68", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [
+          %{
+            model_ref: %{model_id: "placement-lane-a", version: "v1"},
+            active_request_count: 0,
+            max_concurrency: 1
+          },
+          %{
+            model_ref: %{model_id: "placement-lane-b", version: "v1"},
+            active_request_count: 0,
+            max_concurrency: 1
+          }
+        ])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+
+      {granted_lane, first_grant} =
+        receive do
+          {:first_placement_lane_result, {:ok, grant}} -> {:first, grant}
+          {:second_placement_lane_result, {:ok, grant}} -> {:second, grant}
+        after
+          2_000 -> flunk("expected exactly one placement lane grant")
+        end
+
+      refute_receive {:first_placement_lane_result, _result}, 100
+      refute_receive {:second_placement_lane_result, _result}, 100
+
+      assert :ok = QueueManager.release(first_grant)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 1, :second))
+
+      second_grant =
+        case granted_lane do
+          :first ->
+            assert_receive {:second_placement_lane_result, {:ok, grant}}, 2_000
+            grant
+
+          :second ->
+            assert_receive {:first_placement_lane_result, {:ok, grant}}, 2_000
+            grant
+        end
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
     test "SPEC.md §5.4 heartbeat state change wakes queued cold model lane" do
       QueueManager.reset()
 
@@ -844,6 +922,66 @@ defmodule Orchard.NodesTest do
 
       assert :ok = QueueManager.release(second_grant)
       send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 cold heartbeat spends one node slot across queued lanes" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-lane-a", "cold-lane-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-lane-b", "cold-lane-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_cold_lane_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_cold_lane_result)
+      target = make_target("10.0.0.69", 9444)
+      observed_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.69", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+
+      {granted_lane, first_grant} =
+        receive do
+          {:first_cold_lane_result, {:ok, grant}} -> {:first, grant}
+          {:second_cold_lane_result, {:ok, grant}} -> {:second, grant}
+        after
+          2_000 -> flunk("expected exactly one cold lane grant")
+        end
+
+      refute_receive {:first_cold_lane_result, _result}, 100
+      refute_receive {:second_cold_lane_result, _result}, 100
+
+      assert :ok = QueueManager.release(first_grant)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 1, :second))
+
+      second_grant =
+        case granted_lane do
+          :first ->
+            assert_receive {:second_cold_lane_result, {:ok, grant}}, 2_000
+            grant
+
+          :second ->
+            assert_receive {:first_cold_lane_result, {:ok, grant}}, 2_000
+            grant
+        end
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
     end
 
     test "SPEC.md §5.4 repeated cold heartbeat preserves queued lane capacity" do
@@ -1669,6 +1807,77 @@ defmodule Orchard.NodesTest do
                )
 
       assert marked.health == :degraded
+    end
+
+    test "SPEC.md §5.5 transport failure clears stale queue capacity sources" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      insert_node!(%{
+        id: node_id,
+        advertise_addr: "10.0.0.74",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: DateTime.utc_now()
+      })
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-failure-clears-capacity-a",
+                   "failure-clear-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-failure-clears-capacity-b",
+                   "failure-clear-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_failure_clear_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.74", 9444)
+      observed_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.74",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+      assert_receive {:first_failure_clear_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 target,
+                 :node_timeout,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      assert marked.health == :degraded
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 2, :second))
+
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
     end
 
     test "non-transport reason returns :noop without mutating health" do
