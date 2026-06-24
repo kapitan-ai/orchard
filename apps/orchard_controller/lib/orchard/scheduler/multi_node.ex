@@ -16,7 +16,7 @@ defmodule Orchard.Scheduler.MultiNode do
   9. Gated Phase 4D tie-only `ScorePrefixCache` reselection, when explicitly enabled
   10. Lexicographically smaller `node_id` (deterministic tie-break)
 
-  Falls back to `SingleNode.default_schedule/1` when:
+  Falls back to the single-node scheduler when:
   - No targets are configured
   - All probes fail
   - No schedulable nodes remain after filtering

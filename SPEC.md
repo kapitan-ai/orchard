@@ -784,7 +784,7 @@ Compatibility and defaulting rules:
 * current `RuntimePrefixCacheStatus.status_code` vocabulary is: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
 * these status codes are observational only in this slice and SHALL NOT gate readiness, admission, or scheduling
 * `active_request_count` on `StatusResponse` SHALL report active runtime requests across the node
-* `max_concurrency` on `StatusResponse` SHALL report aggregate runtime request capacity for the node; omitted or zero values SHALL be treated conservatively as node capacity `1` by schedulers
+* `max_concurrency` on `StatusResponse` SHALL report the aggregate runtime request capacity enforced by the node agent; omitted or zero values SHALL be treated conservatively as node capacity `1` by schedulers
 * absent or empty `runtime_model_placements` on `StatusResponse` SHALL mean no explicit per-placement capacity observation is available
 * absent or empty `runtime_model_placements` SHALL NOT be treated as a status-probe error
 * `runtime_model_placements` entries SHALL report controller-observed capacity for loaded model placements using `model_ref`, `active_request_count`, and `max_concurrency`; `max_concurrency <= 0`, malformed entries, duplicate matching entries, or non-matching entries SHALL be treated as unknown capacity
@@ -951,12 +951,12 @@ When a request cannot be granted immediately because no live node or placement c
 When `resolved_policy.max_active_requests` or controller queue configuration supplies a tenant active cap, controller queue admission SHALL queue same-tenant requests once active grants for that tenant reach the limit, even if the requested model/version lane or a placement still has spare capacity.
 Recovered in-flight grants SHALL count against that tenant active cap until their Request reaches a terminal state.
 
-With controller queue admission enabled, a scheduler `cluster_busy` result observed after a static queue grant SHALL be treated as queue-waitable live node or placement capacity exhaustion.
+With controller queue admission enabled, a scheduler `cluster_busy` or `model_busy` result observed after a static queue grant SHALL be treated as queue-waitable live node, requested model path, or placement capacity exhaustion.
 The controller SHALL return the request to the same controller queue lane for the requested model/version under the original max queue wait budget instead of extending the deadline.
 Requeued grants SHALL preserve the original `queued_at`, admission order, and queue deadline.
 The queue manager MAY defer the requeued lane until the next poll interval before re-granting to avoid a tight scheduler retry loop.
-If live node capacity, placement capacity, or tenant active capacity does not become available before that deadline, the terminal public outcome SHALL be `queue_timeout`.
-With controller queue admission disabled, `cluster_busy` remains an immediate admission failure.
+If live node capacity, requested model path capacity, placement capacity, or tenant active capacity does not become available before that deadline, the terminal public outcome SHALL be `queue_timeout`.
+With controller queue admission disabled, `cluster_busy` and `model_busy` remain immediate admission failures.
 
 Queue discipline:
 
@@ -2382,7 +2382,7 @@ Runtime capacity wire semantics:
 * `WorkerStatusResponse.active_request_count` SHALL report active `Generate` calls in that worker process
 * `WorkerStatusResponse.max_concurrency` SHALL report the worker's effective overlapping `Generate` capacity; omitted or zero values SHALL be treated as worker capacity `1` by the node agent
 * `StatusResponse.active_request_count` SHALL report aggregate active runtime requests across all loaded models on the node
-* `StatusResponse.max_concurrency` SHALL report aggregate runtime request capacity for the node
+* `StatusResponse.max_concurrency` SHALL report the aggregate runtime request capacity that the node agent will enforce across loaded models
 * omitted or zero `StatusResponse.max_concurrency` SHALL mean aggregate capacity is unknown or legacy; schedulers SHALL treat it conservatively as node capacity `1`
 * `StatusResponse.runtime_model_placements` SHALL report active request count and max concurrency for each loaded runtime/model path through the existing `GetStatus` probe
 * omitted or empty `runtime_model_placements` SHALL mean no explicit per-placement capacity observation is available
@@ -2392,7 +2392,7 @@ Runtime capacity wire semantics:
 * a valid matching placement observation SHALL NOT override exhausted node-level aggregate capacity
 * unknown placement capacity SHALL NOT prove eligibility for an already-active loaded-model candidate; an already-active loaded-model candidate MAY remain eligible only when exactly one valid matching entry reports `active_request_count < max_concurrency`
 * when multiple eligible candidates remain, the scheduler SHALL rank by the requested placement's active request count before health when a valid matching placement observation is available; otherwise it SHALL use node `active_request_count`
-* node-agent request admission SHALL reject a new runtime request when aggregate active request count has reached the effective worker request limit, even if the requested model placement has remaining per-placement capacity
+* node-agent request admission SHALL reject a new runtime request when aggregate active request count has reached the effective aggregate worker request limit, even if the requested model placement has remaining per-placement capacity
 * cancellation or terminal completion SHALL release aggregate node capacity so another loaded model can use the freed slot
 * stream generation mode SHALL report `max_concurrency = 1` at both node and placement levels
 
