@@ -220,12 +220,13 @@ defmodule Orchard.Nodes do
   end
 
   @doc """
-  Records a transport-like failure for a target and persists health degradation.
+  Records a transport-like failure for a target and persists node health.
 
   Classifies the given `reason` and, if it matches a transport failure pattern,
-  delegates to `mark_target_unreachable/2`. Non-transport reasons are ignored.
-  Successful transport-failure marks also clear queue capacity sources owned by
-  the failed node so stale observations cannot wake queued requests.
+  marks the target unreachable. Non-transport reasons are ignored.
+  Successful transport-failure marks clear all queue capacity sources owned by
+  the failed node after the health transaction commits, so stale observations
+  cannot wake queued requests.
 
   Transport failure reasons:
   - `{:connect_failed, _}` - gRPC channel could not be established
@@ -259,6 +260,8 @@ defmodule Orchard.Nodes do
 
   Only updates health on an existing node. Does not insert new rows
   on failure-only observations. Preserves `state` and `last_heartbeat_at`.
+  When the resulting node is not queue-capacity eligible, stale node-owned
+  queue capacity sources are cleared after the health transaction commits.
 
   Returns:
   - `{:ok, %Node{}}` on successful mark

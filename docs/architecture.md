@@ -90,7 +90,8 @@ model loading/generation details. Public clients never talk to workers directly.
 Node-agent status is also the live source for aggregate node capacity and loaded-model placement capacity, including active requests and max concurrency.
 Aggregate capacity is the conservative limit the node agent enforces across loaded workers, while each loaded placement reports its own active count and capacity.
 The controller scheduler uses that capacity telemetry to avoid dispatching to full nodes or full same-model placements.
-Controller queue admission also consumes fresh node observations as source-scoped capacity, waking queued loaded-placement or cold/no-placement work only from eligible, non-exhausted nodes and clearing stale sources on invalid, ineligible, unavailable, or failed observations.
+Controller queue admission also consumes fresh node observations as source-scoped capacity, waking queued loaded-placement or cold/no-placement work only from eligible, non-exhausted nodes.
+Invalid, ineligible, unavailable, or transport-failed observations clear stale node-owned capacity sources before queued work can be promoted.
 
 Cluster RPC and worker RPC are separate contracts:
 

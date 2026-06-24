@@ -213,6 +213,7 @@ The node agent also enforces aggregate active request capacity across loaded mod
 The node-agent reports aggregate capacity through `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`.
 It reports live placement capacity through `StatusResponse.runtime_model_placements` as `active_request_count` and `max_concurrency`.
 The controller uses those fresh status observations both for scheduler candidate filtering and for queue wakeups from loaded-placement or cold/no-placement capacity.
+Transport failures and ineligible node observations clear node-owned queue capacity sources so queued work is not promoted against stale loaded-placement or cold/no-placement slots.
 Stream mode reports max concurrency as `1` at both node and placement levels.
 
 #### Controller Multi-Node (Source Dev)
