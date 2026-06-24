@@ -239,7 +239,7 @@ defmodule Orchard.Nodes do
   @spec record_transport_failure(keyword(), term(), DateTime.t()) :: {:ok, Node.t()} | :noop
   def record_transport_failure(target, reason, observed_at) do
     if transport_failure_reason?(reason) do
-      case mark_target_unreachable(target, observed_at) do
+      case mark_target_unreachable_without_queue_cleanup(target, observed_at) do
         {:ok, %Node{} = node} = result ->
           clear_node_queue_capacity_sources(node)
           result
@@ -250,6 +250,8 @@ defmodule Orchard.Nodes do
     else
       :noop
     end
+  rescue
+    _ -> :noop
   end
 
   @doc """
@@ -264,14 +266,25 @@ defmodule Orchard.Nodes do
   """
   @spec mark_target_unreachable(keyword(), DateTime.t()) :: {:ok, Node.t()} | :noop
   def mark_target_unreachable(target, observed_at) do
+    case mark_target_unreachable_without_queue_cleanup(target, observed_at) do
+      {:ok, %Node{} = node} = result ->
+        clear_ineligible_node_queue_capacity_sources(node)
+        result
+
+      :noop ->
+        :noop
+    end
+  rescue
+    _ -> :noop
+  end
+
+  defp mark_target_unreachable_without_queue_cleanup(target, observed_at) do
     with true <- repo_available?(),
          {:ok, host, port} <- validate_target(target) do
       execute_mark_unreachable(host, port, observed_at)
     else
       _ -> :noop
     end
-  rescue
-    _ -> :noop
   end
 
   # -- Observation Normalization --
@@ -433,6 +446,12 @@ defmodule Orchard.Nodes do
     :exit, reason ->
       Logger.debug("Queue capacity source clear for node exited: #{inspect(reason)}")
       :ok
+  end
+
+  defp clear_ineligible_node_queue_capacity_sources(%Node{} = node) do
+    unless queue_capacity_eligible_node?(node) do
+      clear_node_queue_capacity_sources(node)
+    end
   end
 
   defp clear_existing_target_queue_capacity_sources(target, observed_at) do
@@ -777,16 +796,9 @@ defmodule Orchard.Nodes do
         Repo.rollback(:noop)
 
       health ->
-        updated =
-          node
-          |> Ecto.Changeset.change(health: health)
-          |> Repo.update!()
-
-        unless queue_capacity_eligible_node?(updated) do
-          clear_node_queue_capacity_sources(updated)
-        end
-
-        updated
+        node
+        |> Ecto.Changeset.change(health: health)
+        |> Repo.update!()
     end
   end
 

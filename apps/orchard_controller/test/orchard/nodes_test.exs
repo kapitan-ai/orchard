@@ -14,6 +14,19 @@ defmodule Orchard.NodesTest.ExitingQueueManager do
   end
 end
 
+defmodule Orchard.NodesTest.TransactionProbeQueueManager do
+  def refresh_node_capacity_sources(_observation), do: :ok
+
+  def clear_capacity_sources(sources, opts) do
+    send(
+      Process.get(:nodes_test_queue_probe_pid),
+      {:queue_capacity_clear, sources, opts, Orchard.Repo.in_transaction?()}
+    )
+
+    :ok
+  end
+end
+
 defmodule Orchard.NodesTest do
   use Orchard.DataCase, async: false
 
@@ -2502,6 +2515,38 @@ defmodule Orchard.NodesTest do
                Nodes.mark_target_unreachable(make_target("10.0.0.51", 9444), observed_at)
 
       assert marked.health == :unreachable
+    end
+
+    test "unreachable queue cleanup runs after health transaction commits" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      put_queue_manager_impl(Orchard.NodesTest.TransactionProbeQueueManager)
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.67",
+          rpc_port: 9444,
+          health: :healthy,
+          last_heartbeat_at: hb_time
+        })
+
+      observed_at = DateTime.add(hb_time, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, marked} =
+               Nodes.mark_target_unreachable(make_target("10.0.0.67", 9444), observed_at)
+
+      assert marked.health == :unreachable
+
+      assert_receive {:queue_capacity_clear, sources, opts, false}
+
+      assert Enum.sort(sources) ==
+               Enum.sort([
+                 {:node, node.id},
+                 {:node, node.id, :cold},
+                 {:node, node.id, :placement}
+               ])
+
+      assert Keyword.fetch!(opts, :promote?) == true
     end
 
     test "SPEC.md §5.5 unreachable transport failure clears stale cold queue capacity" do
