@@ -363,7 +363,8 @@ _Avoid_: Node health
 **Queue**:
 A controller-owned wait path used after Admission when work cannot be immediately granted because live node or placement capacity is unavailable, node or placement concurrency is exhausted, or tenant active concurrency is exhausted.
 Each Tenant keeps FIFO order, and cross-tenant selection uses weighted round-robin that can skip capped tenants while preserving their FIFO order.
-Fresh node observations can wake queued work by adding source-scoped loaded-placement or cold/no-placement capacity; stale or failed observations clear their source capacity.
+Fresh node observations can wake queued work by adding source-scoped loaded-placement or cold/no-placement capacity.
+Stale, ineligible, or transport-failed observations clear node-owned capacity sources so queued work is not promoted against failed targets.
 _Avoid_: Global backlog, Request lifecycle state
 
 **Cluster Busy**:
@@ -398,6 +399,7 @@ _Avoid_: Catalog State, durable placement record, model manifest metadata
 Live node-agent status for aggregate runtime capacity on one node, including `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`.
 The scheduler uses it to exclude nodes that have exhausted aggregate request slots before considering per-placement capacity.
 Queue admission uses eligible node observations to bound cold/no-placement wakeups and to keep active source reservations from being double-counted across queued lanes.
+Transport-failed or newly ineligible nodes clear node-owned aggregate, cold, and placement sources instead of retaining stale capacity.
 _Avoid_: Tenant quota, durable Node inventory capacity, model-specific capacity
 
 **Prefix-cache Score**:

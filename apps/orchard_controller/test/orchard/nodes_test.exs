@@ -14,6 +14,19 @@ defmodule Orchard.NodesTest.ExitingQueueManager do
   end
 end
 
+defmodule Orchard.NodesTest.TransactionProbeQueueManager do
+  def refresh_node_capacity_sources(_observation), do: :ok
+
+  def clear_capacity_sources(sources, opts) do
+    send(
+      Process.get(:nodes_test_queue_probe_pid),
+      {:queue_capacity_clear, sources, opts, Orchard.Repo.in_transaction?()}
+    )
+
+    :ok
+  end
+end
+
 defmodule Orchard.NodesTest do
   use Orchard.DataCase, async: false
 
@@ -2502,6 +2515,221 @@ defmodule Orchard.NodesTest do
                Nodes.mark_target_unreachable(make_target("10.0.0.51", 9444), observed_at)
 
       assert marked.health == :unreachable
+    end
+
+    test "unreachable queue cleanup runs after health transaction commits" do
+      Process.put(:nodes_test_queue_probe_pid, self())
+      put_queue_manager_impl(Orchard.NodesTest.TransactionProbeQueueManager)
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.67",
+          rpc_port: 9444,
+          health: :healthy,
+          last_heartbeat_at: hb_time
+        })
+
+      observed_at = DateTime.add(hb_time, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, marked} =
+               Nodes.mark_target_unreachable(make_target("10.0.0.67", 9444), observed_at)
+
+      assert marked.health == :unreachable
+
+      assert_receive {:queue_capacity_clear, sources, opts, false}
+
+      assert Enum.sort(sources) ==
+               Enum.sort([
+                 {:node, node.id},
+                 {:node, node.id, :cold},
+                 {:node, node.id, :placement}
+               ])
+
+      assert Keyword.fetch!(opts, :promote?) == true
+    end
+
+    test "SPEC.md §5.5 unreachable transport failure clears stale cold queue capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-unreachable-capacity-a", "unreachable-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-unreachable-capacity-b", "unreachable-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_unreachable_capacity_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      node_id = Ecto.UUID.generate()
+      target = make_target("10.0.0.68", 9444)
+      heartbeat_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.68",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, heartbeat_at)
+      assert_receive {:first_unreachable_capacity_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      unreachable_at =
+        DateTime.add(heartbeat_at, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, unreachable_node} = Nodes.mark_target_unreachable(target, unreachable_at)
+      assert unreachable_node.health == :unreachable
+
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      restored_at = DateTime.add(unreachable_at, 1, :second)
+
+      assert {:ok, restored_node} = Nodes.observe_status(target, status, restored_at)
+      assert restored_node.health == :healthy
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "unreachable-model@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 scheduler transport failure clears stale cold queue capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-scheduler-transport-capacity-a",
+                   "transport-failure-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-scheduler-transport-capacity-b",
+                   "transport-failure-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_transport_capacity_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      node_id = Ecto.UUID.generate()
+      target = make_target("10.0.0.69", 9444)
+      heartbeat_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.69",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, heartbeat_at)
+      assert_receive {:first_transport_capacity_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      unreachable_at =
+        DateTime.add(heartbeat_at, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, unreachable_node} =
+               Nodes.record_transport_failure(
+                 target,
+                 {:connect_failed, :econnrefused},
+                 unreachable_at
+               )
+
+      assert unreachable_node.health == :unreachable
+
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      restored_at = DateTime.add(unreachable_at, 1, :second)
+
+      assert {:ok, restored_node} = Nodes.observe_status(target, status, restored_at)
+      assert restored_node.health == :healthy
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "transport-failure-model@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 scheduler transport failure clears stale placement queue capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-scheduler-placement-failure-a",
+                   "transport-placement-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-scheduler-placement-failure-b",
+                   "transport-placement-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_transport_placement_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.70", 9444)
+      heartbeat_at = DateTime.utc_now()
+
+      status = placement_status("10.0.0.70", "transport-placement-model", max_concurrency: 1)
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, heartbeat_at)
+      assert_receive {:first_transport_placement_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      unreachable_at =
+        DateTime.add(heartbeat_at, Nodes.unreachable_threshold_ms() + 1_000, :millisecond)
+
+      assert {:ok, unreachable_node} =
+               Nodes.record_transport_failure(
+                 target,
+                 {:connect_failed, :econnrefused},
+                 unreachable_at
+               )
+
+      assert unreachable_node.health == :unreachable
+
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      restored_at = DateTime.add(unreachable_at, 1, :second)
+
+      assert {:ok, restored_node} = Nodes.observe_status(target, status, restored_at)
+      assert restored_node.health == :healthy
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "transport-placement-model@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
     end
 
     test "marks nodes with nil heartbeat as unreachable" do

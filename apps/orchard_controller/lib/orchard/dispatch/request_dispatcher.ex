@@ -10,6 +10,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - Request timeout → sends CancelInference to the node
   - Caller process exit → sends CancelInference to the node
 
+  Transport failures during connect, pre-dispatch status, model load, or stream
+  execution are recorded through node inventory so stale capacity for the failed
+  target is cleared.
+
   Timing instrumentation logs one 'dispatch_timing' line per dispatch attempt,
   capturing cold/warm classification, stream timing, and outcome.
   """

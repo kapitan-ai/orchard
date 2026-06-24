@@ -220,12 +220,13 @@ defmodule Orchard.Nodes do
   end
 
   @doc """
-  Records a transport-like failure for a target and persists health degradation.
+  Records a transport-like failure for a target and persists node health.
 
   Classifies the given `reason` and, if it matches a transport failure pattern,
-  delegates to `mark_target_unreachable/2`. Non-transport reasons are ignored.
-  Successful transport-failure marks also clear queue capacity sources owned by
-  the failed node so stale observations cannot wake queued requests.
+  marks the target unreachable. Non-transport reasons are ignored.
+  Successful transport-failure marks clear all queue capacity sources owned by
+  the failed node after the health transaction commits, so stale observations
+  cannot wake queued requests.
 
   Transport failure reasons:
   - `{:connect_failed, _}` - gRPC channel could not be established
@@ -239,7 +240,7 @@ defmodule Orchard.Nodes do
   @spec record_transport_failure(keyword(), term(), DateTime.t()) :: {:ok, Node.t()} | :noop
   def record_transport_failure(target, reason, observed_at) do
     if transport_failure_reason?(reason) do
-      case mark_target_unreachable(target, observed_at) do
+      case mark_target_unreachable_without_queue_cleanup(target, observed_at) do
         {:ok, %Node{} = node} = result ->
           clear_node_queue_capacity_sources(node)
           result
@@ -250,6 +251,8 @@ defmodule Orchard.Nodes do
     else
       :noop
     end
+  rescue
+    _ -> :noop
   end
 
   @doc """
@@ -257,6 +260,8 @@ defmodule Orchard.Nodes do
 
   Only updates health on an existing node. Does not insert new rows
   on failure-only observations. Preserves `state` and `last_heartbeat_at`.
+  When the resulting node is not queue-capacity eligible, stale node-owned
+  queue capacity sources are cleared after the health transaction commits.
 
   Returns:
   - `{:ok, %Node{}}` on successful mark
@@ -264,14 +269,25 @@ defmodule Orchard.Nodes do
   """
   @spec mark_target_unreachable(keyword(), DateTime.t()) :: {:ok, Node.t()} | :noop
   def mark_target_unreachable(target, observed_at) do
+    case mark_target_unreachable_without_queue_cleanup(target, observed_at) do
+      {:ok, %Node{} = node} = result ->
+        clear_ineligible_node_queue_capacity_sources(node)
+        result
+
+      :noop ->
+        :noop
+    end
+  rescue
+    _ -> :noop
+  end
+
+  defp mark_target_unreachable_without_queue_cleanup(target, observed_at) do
     with true <- repo_available?(),
          {:ok, host, port} <- validate_target(target) do
       execute_mark_unreachable(host, port, observed_at)
     else
       _ -> :noop
     end
-  rescue
-    _ -> :noop
   end
 
   # -- Observation Normalization --
@@ -433,6 +449,12 @@ defmodule Orchard.Nodes do
     :exit, reason ->
       Logger.debug("Queue capacity source clear for node exited: #{inspect(reason)}")
       :ok
+  end
+
+  defp clear_ineligible_node_queue_capacity_sources(%Node{} = node) do
+    unless queue_capacity_eligible_node?(node) do
+      clear_node_queue_capacity_sources(node)
+    end
   end
 
   defp clear_existing_target_queue_capacity_sources(target, observed_at) do

@@ -28,6 +28,10 @@ defmodule Orchard.Scheduler.MultiNode do
   Successful schedules include `:queue_lane_capacity`, derived from loaded
   candidates with live node and placement room plus eligible cold candidates
   with remaining aggregate node capacity.
+
+  Transport-like probe and connect failures are recorded through node inventory
+  so failed targets stop contributing stale queue capacity before queued work is
+  promoted.
   """
 
   alias Orchard.CanonicalRequest
