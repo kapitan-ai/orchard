@@ -742,10 +742,16 @@ sudo launchctl kickstart -k system/com.orchard.node-agent
 
 ## Smoke Test Troubleshooting
 
-`orchardctl requests inspect` and `orchardctl support bundle create` are
-SPEC-required diagnostics paths that return deferred status in this build. Use
-Console request views, health/readiness endpoints, and controller or node-agent
-logs for current source-dev diagnostics.
+`orchardctl requests inspect` is a SPEC-required diagnostics path that returns
+deferred status in this build. `orchardctl support bundle create` creates a
+local diagnostic `.tar.gz` containing bounded redacted logs, redacted config,
+service status, node snapshots, and request summaries; use `--support-root` and
+`--output` to point it at an isolated source-dev fixture. Use
+`--max-log-bytes` to cap each retained log tail and `--json` when scripting
+bundle creation. It records `support_bundle.generated` only when the controller
+Repo is already available. Console request views, health/readiness endpoints,
+and controller or node-agent logs remain useful for interactive source-dev
+diagnostics.
 
 | Failure | Likely Cause | Where to Look |
 |---------|-------------|---------------|

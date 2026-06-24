@@ -18,9 +18,11 @@ product/system/build contract.
   service.
 - **Current CLI limitation:** SPEC-required future paths such as
   `orchardctl cluster init`, `orchardctl node join`,
-  `orchardctl nodes admit`, `orchardctl requests inspect`, and
-  `orchardctl support bundle create` are routed by `orchardctl` but return
-  deferred-status errors with the current supported path.
+  `orchardctl nodes admit`, and `orchardctl requests inspect` are routed by
+  `orchardctl` but return deferred-status errors with the current supported
+  path. `orchardctl support bundle create` creates a local diagnostic archive
+  with bounded redacted logs, redacted config, service status, node snapshots,
+  and request summaries.
 
 When this guide and `SPEC.md` disagree, treat the branch as blocked until the
 conflict is reconciled. `SPEC.md` wins until explicitly updated.
