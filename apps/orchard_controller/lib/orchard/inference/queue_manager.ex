@@ -267,7 +267,8 @@ defmodule Orchard.Inference.QueueManager do
 
   def mark_grant_node(grant_id, node_id, opts) when is_binary(grant_id) and is_binary(node_id) do
     server = Keyword.get(opts, :server, __MODULE__)
-    call_manager(server, {:mark_grant_node, grant_id, node_id})
+    promote? = Keyword.get(opts, :promote?, true)
+    call_manager(server, {:mark_grant_node, grant_id, node_id, promote?})
   end
 
   @spec queued_model_lanes(keyword()) :: [{String.t(), String.t()}]
@@ -353,8 +354,8 @@ defmodule Orchard.Inference.QueueManager do
     {:reply, :ok, mark_capacity_source_observed_in_state(grant_id, state)}
   end
 
-  def handle_call({:mark_grant_node, grant_id, node_id}, _from, state) do
-    {:reply, :ok, mark_grant_node_in_state(grant_id, node_id, state)}
+  def handle_call({:mark_grant_node, grant_id, node_id, promote?}, _from, state) do
+    {:reply, :ok, mark_grant_node_in_state(grant_id, node_id, state, promote?)}
   end
 
   def handle_call({:acquire, request, config}, {_waiter_pid, _tag}, state) do
@@ -1982,13 +1983,15 @@ defmodule Orchard.Inference.QueueManager do
 
   defp retained_node_grant_reservation_count(source, limit, state) do
     node_id = Map.get(limit, :node_id) || capacity_source_node_id(source)
+    deferred_grants = Map.get(limit, :deferred_reserved_node_grants, MapSet.new())
 
     limit
     |> Map.get(:reserved_node_grants, MapSet.new())
     |> Enum.count(fn grant_id ->
-      state.grants
-      |> Map.get(grant_id)
-      |> retained_node_grant_reserves_source?(node_id, source, limit)
+      MapSet.member?(deferred_grants, grant_id) or
+        state.grants
+        |> Map.get(grant_id)
+        |> retained_node_grant_reserves_source?(node_id, source, limit)
     end)
   end
 
@@ -2293,7 +2296,7 @@ defmodule Orchard.Inference.QueueManager do
     end
   end
 
-  defp mark_grant_node_in_state(grant_id, node_id, state) do
+  defp mark_grant_node_in_state(grant_id, node_id, state, promote?) do
     case Map.fetch(state.grants, grant_id) do
       {:ok, grant} ->
         normalized_node_id = normalize_node_id(node_id)
@@ -2303,11 +2306,16 @@ defmodule Orchard.Inference.QueueManager do
         state = reserve_grant_in_retained_node_capacity_sources(state, grant_id)
 
         state =
+          if promote?,
+            do: state,
+            else: defer_grant_in_retained_node_capacity_sources(state, grant_id)
+
+        state =
           if is_nil(previous_source),
             do: state,
             else: expire_retained_capacity_source_limit(state, previous_source)
 
-        maybe_grant_next_global(state)
+        if promote?, do: maybe_grant_next_global(state), else: state
 
       _other ->
         state
@@ -3082,6 +3090,33 @@ defmodule Orchard.Inference.QueueManager do
       :error ->
         state
     end
+  end
+
+  defp defer_grant_in_retained_node_capacity_sources(state, grant_id) do
+    limits =
+      Map.new(state.capacity_source_limits, fn
+        {source, %{lanes: :any} = limit} ->
+          reserved_grants = Map.get(limit, :reserved_node_grants, MapSet.new())
+
+          limit =
+            if MapSet.member?(reserved_grants, grant_id) do
+              Map.update(
+                limit,
+                :deferred_reserved_node_grants,
+                MapSet.new([grant_id]),
+                &MapSet.put(&1, grant_id)
+              )
+            else
+              limit
+            end
+
+          {source, limit}
+
+        {source, limit} ->
+          {source, limit}
+      end)
+
+    %{state | capacity_source_limits: limits}
   end
 
   defp maybe_reserve_grant_in_retained_node_limit(source, %{lanes: :any} = limit, grant, grant_id) do

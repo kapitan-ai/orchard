@@ -522,12 +522,12 @@ defmodule Orchard.Inference.RequestOrchestratorTest.RecordingQueueManager do
   def requeue(grant, request), do: QueueManager.requeue(grant, request)
   def mark_capacity_source_observed(grant), do: QueueManager.mark_capacity_source_observed(grant)
 
-  def mark_grant_node(grant, node_id) do
+  def mark_grant_node(grant, node_id, opts \\ []) do
     if pid = Process.whereis(:request_orchestrator_test_pid) do
-      send(pid, {:recording_queue_mark_grant_node, grant.grant_id, node_id})
+      send(pid, {:recording_queue_mark_grant_node, grant.grant_id, node_id, opts})
     end
 
-    QueueManager.mark_grant_node(grant, node_id)
+    QueueManager.mark_grant_node(grant, node_id, opts)
   end
 end
 
@@ -541,7 +541,9 @@ defmodule Orchard.Inference.RequestOrchestratorTest.ExitingObservationQueueManag
   def abandon(ticket), do: QueueManager.abandon(ticket)
   def release(grant), do: QueueManager.release(grant)
   def requeue(grant, request), do: QueueManager.requeue(grant, request)
-  def mark_grant_node(grant, node_id), do: QueueManager.mark_grant_node(grant, node_id)
+
+  def mark_grant_node(grant, node_id, opts \\ []),
+    do: QueueManager.mark_grant_node(grant, node_id, opts)
 
   def mark_capacity_source_observed(_grant) do
     exit(
@@ -563,7 +565,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest.ExitingGrantNodeQueueManager
   def requeue(grant, request), do: QueueManager.requeue(grant, request)
   def mark_capacity_source_observed(grant), do: QueueManager.mark_capacity_source_observed(grant)
 
-  def mark_grant_node(_grant, _node_id) do
+  def mark_grant_node(_grant, _node_id, _opts \\ []) do
     exit({:noproc, {GenServer, :call, [Orchard.Inference.QueueManager, :mark_grant_node, 5_000]}})
   end
 end
@@ -1121,7 +1123,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
     assert Enum.any?(events, &InferenceEvent.terminal?/1)
-    assert_received {:recording_queue_mark_grant_node, _grant_id, ^scheduled_node_id}
+    assert_received {:recording_queue_mark_grant_node, _grant_id, ^scheduled_node_id, opts}
+    assert Keyword.fetch!(opts, :promote?) == false
   end
 
   test "execute/3 assigns resolved node when queue grant reconciliation exits", %{

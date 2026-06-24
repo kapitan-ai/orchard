@@ -815,7 +815,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
       wrapped_handler =
         wrap_event_handler_for_first_token(event_handler, capture_key, queue_grant)
 
-      maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id))
+      maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id), promote?: false)
 
       result =
         RequestDispatcher.dispatch(
@@ -971,18 +971,20 @@ defmodule Orchard.Inference.RequestOrchestrator do
         {:error, reason} -> log_warn("assign_node failed: #{inspect(reason)}")
       end
 
-      maybe_mark_grant_node(queue_grant, node_id)
+      maybe_mark_grant_node(queue_grant, node_id, promote?: false)
     end
   end
 
-  defp maybe_mark_grant_node(%QueueManager.Grant{} = grant, node_id)
+  defp maybe_mark_grant_node(grant, node_id, opts)
+
+  defp maybe_mark_grant_node(%QueueManager.Grant{} = grant, node_id, opts)
        when is_binary(node_id) and node_id != "",
-       do: mark_grant_node_safe(grant, node_id)
+       do: mark_grant_node_safe(grant, node_id, opts)
 
-  defp maybe_mark_grant_node(_grant, _node_id), do: :ok
+  defp maybe_mark_grant_node(_grant, _node_id, _opts), do: :ok
 
-  defp mark_grant_node_safe(grant, node_id) do
-    Inference.queue_manager().mark_grant_node(grant, node_id)
+  defp mark_grant_node_safe(grant, node_id, opts) do
+    Inference.queue_manager().mark_grant_node(grant, node_id, opts)
   rescue
     error ->
       log_warn("queue grant node reconciliation failed: #{inspect(error)}")
