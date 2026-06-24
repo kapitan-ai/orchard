@@ -131,24 +131,24 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   Dispatch an inference request to a node and stream events back to the caller.
 
   `schedule` is the map returned by the configured scheduler containing:
-  - `:runtime_client_target` — `[host: ..., port: ...]` for the node-agent
-  - `:request_id` — the canonical request ID
-  - `:request_timeout_ms` — maximum wall-clock time for the entire dispatch
+  - `:runtime_client_target` - `[host: ..., port: ...]` for the node-agent
+  - `:request_id` - the canonical request ID
+  - `:request_timeout_ms` - maximum wall-clock time for the entire dispatch
 
   `execute_request` is the protobuf `ExecuteInferenceRequest` to send.
 
   `model_load_request` is the protobuf `EnsureModelLoadedRequest` to send.
 
   Options:
-  - `:caller` — PID to monitor for disconnect (default: `self()`)
-  - `:event_handler` — function called with each `InferenceEvent`.
+  - `:caller` - PID to monitor for disconnect (default: `self()`)
+  - `:event_handler` - function called with each `InferenceEvent`.
                         Return `:cancel` to abort dispatch (e.g. on SSE client disconnect).
                         (default: sends `{:inference_event, request_id, event}` to caller)
-  - `:on_node_resolved` — optional callback `(node_id :: String.t() -> any())`.
+  - `:on_node_resolved` - optional callback `(node_id :: String.t() -> any())`.
                            Called when the pre-dispatch status probe discovers a
                            valid node UUID. Synchronous, lightweight, observational only.
-                           Exceptions are rescued; return value is ignored.
-  - `:client_impl` — gRPC client module (default: `GrpcNodeRuntimeClient`)
+                           Exceptions and exits are logged and ignored; return value is ignored.
+  - `:client_impl` - gRPC client module (default: `GrpcNodeRuntimeClient`)
 
   Returns `{:ok, events}` with the list of all events received (including terminal),
   or `{:error, reason}` if dispatch fails before streaming begins.
@@ -347,8 +347,18 @@ defmodule Orchard.Dispatch.RequestDispatcher do
        ) do
     case client.status(channel, timeout: @status_probe_timeout_ms) do
       {:ok, response} ->
-        # Best-effort persistence
         observed_at = DateTime.utc_now()
+
+        {resolved_node_id, model_load_request, metrics} =
+          case extract_node_id(response) do
+            {:ok, node_id} ->
+              metrics = %{metrics | node_id: node_id}
+              put_node_resolved_context(metrics, target)
+              {node_id, %{model_load_request | node_id: node_id}, metrics}
+
+            :error ->
+              {nil, model_load_request, metrics}
+          end
 
         try do
           Orchard.Nodes.observe_status(target, response, observed_at)
@@ -357,17 +367,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             Logger.warning("Node observation failed during dispatch probe: #{inspect(error)}")
         end
 
-        # Extract and validate node_id from metadata
-        case extract_node_id(response) do
-          {:ok, node_id} ->
-            invoke_callback_safe(on_node_resolved, node_id)
-            metrics = %{metrics | node_id: node_id}
-            put_node_resolved_context(metrics, target)
-            {%{model_load_request | node_id: node_id}, metrics}
-
-          :error ->
-            {model_load_request, metrics}
+        if is_binary(resolved_node_id) do
+          invoke_callback_safe(on_node_resolved, resolved_node_id)
         end
+
+        {model_load_request, metrics}
 
       {:error, reason} ->
         # Probe failure is non-fatal, but we still record transport reachability
@@ -394,6 +398,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   rescue
     error ->
       Logger.warning("on_node_resolved callback failed: #{inspect(error)}")
+  catch
+    :exit, reason ->
+      Logger.warning("on_node_resolved callback exited: #{inspect(reason)}")
   end
 
   defp do_ensure_model_loaded(client, channel, target, request, timeout_ms) do

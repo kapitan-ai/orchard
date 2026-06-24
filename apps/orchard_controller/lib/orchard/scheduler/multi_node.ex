@@ -25,8 +25,9 @@ defmodule Orchard.Scheduler.MultiNode do
   nodes, but every joined candidate has exhausted capacity or is an active
   loaded-model candidate with unknown placement capacity.
 
-  Successful schedules include `:queue_lane_capacity`, derived only from loaded
-  candidates whose live node and placement capacity leave room.
+  Successful schedules include `:queue_lane_capacity`, derived from loaded
+  candidates with live node and placement room plus eligible cold candidates
+  with remaining aggregate node capacity.
   """
 
   alias Orchard.CanonicalRequest
@@ -63,11 +64,11 @@ defmodule Orchard.Scheduler.MultiNode do
   Schedule with injectable options for testing.
 
   Options:
-  - `:status_client` — module implementing `connect/1`, `status/2`, `disconnect/1`,
+  - `:status_client` - module implementing `connect/1`, `status/2`, `disconnect/1`,
     and (for prefix-cache scoring) `score_prefix_cache/3`
     (default: `GrpcNodeRuntimeClient`)
-  - `:status_timeout_ms` — timeout for each status probe (default: #{@default_status_timeout_ms})
-  - `:observed_at` — timestamp for observations (default: `DateTime.utc_now()`)
+  - `:status_timeout_ms` - timeout for each status probe (default: #{@default_status_timeout_ms})
+  - `:observed_at` - timestamp for observations (default: `DateTime.utc_now()`)
   """
   def schedule(%CanonicalRequest{} = request, opts) when is_list(opts) do
     targets = Inference.runtime_client_targets()
@@ -195,9 +196,12 @@ defmodule Orchard.Scheduler.MultiNode do
           case client.status(channel, timeout: timeout) do
             {:ok, response} ->
               # Persist observation best-effort
-              Nodes.observe_status(target, response, observed_at)
+              Nodes.observe_status(target, response, observed_at,
+                reserve_unassigned_node_grants?: true,
+                reserve_unassigned_source_grants?: true
+              )
 
-              # Extract node_id from metadata — skip if missing/invalid
+              # Extract node_id from metadata - skip if missing/invalid
               case extract_valid_node_id(response) do
                 nil ->
                   nil
@@ -266,11 +270,18 @@ defmodule Orchard.Scheduler.MultiNode do
   defp active_without_known_capacity?(_candidate), do: false
 
   defp queue_lane_capacity(candidates) do
-    candidates
-    |> Enum.filter(& &1.loaded_model?)
-    |> Enum.map(&effective_model_capacity_for_queue/1)
-    |> Enum.sum()
-    |> case do
+    loaded_capacity =
+      candidates
+      |> Enum.filter(& &1.loaded_model?)
+      |> Enum.map(&effective_model_capacity_for_queue/1)
+      |> Enum.sum()
+
+    cold_capacity =
+      candidates
+      |> Enum.reject(& &1.loaded_model?)
+      |> Enum.count(&node_has_available_capacity?/1)
+
+    case loaded_capacity + cold_capacity do
       capacity when capacity > 0 -> capacity
       _capacity -> 1
     end
@@ -296,7 +307,17 @@ defmodule Orchard.Scheduler.MultiNode do
        when is_integer(placement_max) and placement_max > 0,
        do: placement_max
 
+  defp effective_model_capacity_for_queue(%{loaded_model?: true, active_request_count: active})
+       when is_integer(active) and active > 0,
+       do: 0
+
   defp effective_model_capacity_for_queue(_candidate), do: 1
+
+  defp node_has_available_capacity?(%{active_request_count: active, max_concurrency: max})
+       when is_integer(active) and is_integer(max) and max > 0,
+       do: active < max
+
+  defp node_has_available_capacity?(_candidate), do: true
 
   defp node_max_concurrency(response) do
     case Map.get(response, :max_concurrency) || Map.get(response, "max_concurrency") do

@@ -510,6 +510,66 @@ defmodule Orchard.Inference.RequestOrchestratorTest.PreAwaitTerminalQueueManager
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.RecordingQueueManager do
+  @moduledoc false
+
+  alias Orchard.Inference.QueueManager
+
+  def acquire(request), do: QueueManager.acquire(request)
+  def await(ticket), do: QueueManager.await(ticket)
+  def abandon(ticket), do: QueueManager.abandon(ticket)
+  def release(grant), do: QueueManager.release(grant)
+  def requeue(grant, request), do: QueueManager.requeue(grant, request)
+  def mark_capacity_source_observed(grant), do: QueueManager.mark_capacity_source_observed(grant)
+
+  def mark_grant_node(grant, node_id, opts \\ []) do
+    if pid = Process.whereis(:request_orchestrator_test_pid) do
+      send(pid, {:recording_queue_mark_grant_node, grant.grant_id, node_id, opts})
+    end
+
+    QueueManager.mark_grant_node(grant, node_id, opts)
+  end
+end
+
+defmodule Orchard.Inference.RequestOrchestratorTest.ExitingObservationQueueManager do
+  @moduledoc false
+
+  alias Orchard.Inference.QueueManager
+
+  def acquire(request), do: QueueManager.acquire(request)
+  def await(ticket), do: QueueManager.await(ticket)
+  def abandon(ticket), do: QueueManager.abandon(ticket)
+  def release(grant), do: QueueManager.release(grant)
+  def requeue(grant, request), do: QueueManager.requeue(grant, request)
+
+  def mark_grant_node(grant, node_id, opts \\ []),
+    do: QueueManager.mark_grant_node(grant, node_id, opts)
+
+  def mark_capacity_source_observed(_grant) do
+    exit(
+      {:noproc,
+       {GenServer, :call, [Orchard.Inference.QueueManager, :mark_capacity_source_observed, 5_000]}}
+    )
+  end
+end
+
+defmodule Orchard.Inference.RequestOrchestratorTest.ExitingGrantNodeQueueManager do
+  @moduledoc false
+
+  alias Orchard.Inference.QueueManager
+
+  def acquire(request), do: QueueManager.acquire(request)
+  def await(ticket), do: QueueManager.await(ticket)
+  def abandon(ticket), do: QueueManager.abandon(ticket)
+  def release(grant), do: QueueManager.release(grant)
+  def requeue(grant, request), do: QueueManager.requeue(grant, request)
+  def mark_capacity_source_observed(grant), do: QueueManager.mark_capacity_source_observed(grant)
+
+  def mark_grant_node(_grant, _node_id, _opts \\ []) do
+    exit({:noproc, {GenServer, :call, [Orchard.Inference.QueueManager, :mark_grant_node, 5_000]}})
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest do
   use Orchard.DataCase, async: false
 
@@ -1050,6 +1110,63 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute request.node_id == request.scheduler_decision["node_id"]
   end
 
+  test "execute/3 reconciles queue grant from scheduler node before dispatch", %{
+    bundle: bundle
+  } do
+    put_multi_node_scheduler_config()
+    put_queue_admission_config(enabled: true, capacity: 1, max_wait_ms: 1_000)
+    put_recording_queue_manager()
+
+    model = create_active_model!(bundle, "request-orchestrator-queue-schedule-node")
+    canonical = canonical_request("request-orchestrator-queue-schedule-node", stream?: false)
+    scheduled_node_id = scheduled_node_id()
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+    assert_received {:recording_queue_mark_grant_node, _grant_id, ^scheduled_node_id, opts}
+    assert Keyword.fetch!(opts, :promote?) == false
+  end
+
+  test "execute/3 assigns resolved node when queue grant reconciliation exits", %{
+    bundle: bundle
+  } do
+    put_multi_node_scheduler_config()
+    put_queue_admission_config(enabled: true, capacity: 1, max_wait_ms: 1_000)
+    put_exiting_grant_node_queue_manager()
+
+    runtime_node_id = Orchard.Node.node_id()
+    model = create_active_model!(bundle, "request-orchestrator-node-reconcile-exit")
+    canonical = canonical_request("request-orchestrator-node-reconcile-exit", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    assert request.node_id == runtime_node_id
+  end
+
+  test "execute/3 forwards Accepted event when source observation exits", %{
+    bundle: bundle
+  } do
+    put_queue_admission_config(enabled: true, capacity: 1, max_wait_ms: 1_000)
+    put_exiting_observation_queue_manager()
+
+    model = create_active_model!(bundle, "request-orchestrator-accepted-observation-exit")
+    canonical = canonical_request("request-orchestrator-accepted-observation-exit", stream?: true)
+    test_pid = self()
+
+    handler = fn _request_id, event ->
+      send(test_pid, {:downstream_event, InferenceEvent.kind(event)})
+      :ok
+    end
+
+    assert {:ok, ^canonical, events} =
+             RequestOrchestrator.execute(canonical, model, event_handler: handler)
+
+    assert Enum.any?(events, &(InferenceEvent.kind(&1) == :accepted))
+    assert_receive {:downstream_event, :accepted}
+  end
+
   test "queue admission disabled preserves legacy validated to scheduled flow", %{bundle: bundle} do
     put_queue_admission_config(enabled: false)
 
@@ -1392,7 +1509,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   test "queue admission requeues post-grant cluster_busy then schedules when live capacity returns",
        %{bundle: bundle} do
-    put_queue_admission_config(enabled: true, max_wait_ms: 1_000, poll_interval_ms: 150)
+    put_queue_admission_config(enabled: true, max_wait_ms: 2_000, poll_interval_ms: 500)
     put_live_capacity_scheduler_config()
     put_capturing_runtime_adapter_config()
 
@@ -1413,7 +1530,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
 
     assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
-             live_capacity_attempt()
+             live_capacity_attempt(1_500)
 
     assert {:ok, schedule} = StubLiveCapacityScheduler.schedule_success(canonical)
 
@@ -1436,7 +1553,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   test "queue admission requeues post-grant model_busy then schedules when live capacity returns",
        %{bundle: bundle} do
-    put_queue_admission_config(enabled: true, max_wait_ms: 1_000, poll_interval_ms: 150)
+    put_queue_admission_config(enabled: true, max_wait_ms: 2_000, poll_interval_ms: 500)
     put_live_capacity_scheduler_config()
     put_capturing_runtime_adapter_config()
 
@@ -1460,7 +1577,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
 
     assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
-             live_capacity_attempt()
+             live_capacity_attempt(1_500)
 
     assert {:ok, schedule} = StubLiveCapacityScheduler.schedule_success(canonical)
 
@@ -2825,6 +2942,39 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     Application.put_env(:orchard_controller, :inference, inference)
   end
 
+  defp put_recording_queue_manager do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.put(
+        :queue_manager_impl,
+        Orchard.Inference.RequestOrchestratorTest.RecordingQueueManager
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_exiting_observation_queue_manager do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.put(
+        :queue_manager_impl,
+        Orchard.Inference.RequestOrchestratorTest.ExitingObservationQueueManager
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_exiting_grant_node_queue_manager do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.put(
+        :queue_manager_impl,
+        Orchard.Inference.RequestOrchestratorTest.ExitingGrantNodeQueueManager
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
   defp acknowledge_single_controller_when_enabled(overrides) do
     if Keyword.get(overrides, :enabled) == true do
       overrides
@@ -2876,11 +3026,11 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     end
   end
 
-  defp live_capacity_attempt do
+  defp live_capacity_attempt(timeout \\ 500) do
     receive do
       {:live_capacity_schedule_attempt, _scheduler_pid, _public_id} = attempt -> attempt
     after
-      500 -> flunk("expected live capacity scheduler attempt")
+      timeout -> flunk("expected live capacity scheduler attempt")
     end
   end
 

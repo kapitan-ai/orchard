@@ -474,7 +474,13 @@ defmodule Orchard.Inference.RequestOrchestrator do
          :ok <- put_request_scheduled_context(Map.merge(schedule, metadata)),
          :ok <- advance_fsm(db_request.id, :scheduled),
          :ok <- advance_fsm(db_request.id, :dispatching) do
-      execute_inference_turn(db_request, canonical, model, schedule, execution_opts)
+      execute_inference_turn(
+        db_request,
+        canonical,
+        model,
+        schedule,
+        Map.put(execution_opts, :queue_grant, grant)
+      )
     end
   end
 
@@ -545,7 +551,8 @@ defmodule Orchard.Inference.RequestOrchestrator do
            model,
            schedule,
            execution_opts.caller,
-           execution_opts.event_handler
+           execution_opts.event_handler,
+           Map.get(execution_opts, :queue_grant)
          ) do
       {:ok, events, first_token_at} ->
         finalize_started_inference_turn(
@@ -797,7 +804,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp memory_admission_metadata_key?(_key), do: false
 
-  defp dispatch(db_request, canonical, model, schedule, caller, event_handler) do
+  defp dispatch(db_request, canonical, model, schedule, caller, event_handler, queue_grant) do
     execute_request = build_execute_request(canonical, schedule)
     model_load_request = build_model_load_request(model, schedule)
     capture_key = make_ref()
@@ -805,7 +812,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
     try do
       Process.put(capture_key, nil)
 
-      wrapped_handler = wrap_event_handler_for_first_token(event_handler, capture_key)
+      wrapped_handler =
+        wrap_event_handler_for_first_token(event_handler, capture_key, queue_grant)
+
+      maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id), promote?: false)
 
       result =
         RequestDispatcher.dispatch(
@@ -814,7 +824,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
           model_load_request,
           caller: caller,
           event_handler: wrapped_handler,
-          on_node_resolved: build_node_resolved_callback(db_request.id)
+          on_node_resolved: build_node_resolved_callback(db_request.id, queue_grant)
         )
 
       first_token_at = Process.get(capture_key)
@@ -828,9 +838,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
-  defp wrap_event_handler_for_first_token(downstream_handler, capture_key) do
+  defp wrap_event_handler_for_first_token(downstream_handler, capture_key, queue_grant) do
     fn request_id, event ->
       maybe_capture_first_token(event, capture_key)
+      maybe_mark_capacity_source_observed(queue_grant, event)
 
       if downstream_handler do
         downstream_handler.(request_id, event)
@@ -839,6 +850,23 @@ defmodule Orchard.Inference.RequestOrchestrator do
       end
     end
   end
+
+  defp maybe_mark_capacity_source_observed(
+         %QueueManager.Grant{} = grant,
+         %InferenceEvent{event: %InferenceEvent.Accepted{}}
+       ) do
+    Inference.queue_manager().mark_capacity_source_observed(grant)
+  rescue
+    error ->
+      log_warn("queue capacity source observation failed: #{inspect(error)}")
+      :ok
+  catch
+    :exit, reason ->
+      log_warn("queue capacity source observation exited: #{inspect(reason)}")
+      :ok
+  end
+
+  defp maybe_mark_capacity_source_observed(_grant, _event), do: :ok
 
   defp maybe_capture_first_token(
          %InferenceEvent{event: %InferenceEvent.OutputTextDelta{delta: delta}},
@@ -936,13 +964,35 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp put_if_present(map, _key, nil), do: map
   defp put_if_present(map, key, value), do: Map.put(map, key, value)
 
-  defp build_node_resolved_callback(request_id) do
+  defp build_node_resolved_callback(request_id, queue_grant) do
     fn node_id ->
       case Requests.assign_node(request_id, node_id) do
         {:ok, _} -> :ok
         {:error, reason} -> log_warn("assign_node failed: #{inspect(reason)}")
       end
+
+      maybe_mark_grant_node(queue_grant, node_id, promote?: false)
     end
+  end
+
+  defp maybe_mark_grant_node(grant, node_id, opts)
+
+  defp maybe_mark_grant_node(%QueueManager.Grant{} = grant, node_id, opts)
+       when is_binary(node_id) and node_id != "",
+       do: mark_grant_node_safe(grant, node_id, opts)
+
+  defp maybe_mark_grant_node(_grant, _node_id, _opts), do: :ok
+
+  defp mark_grant_node_safe(grant, node_id, opts) do
+    Inference.queue_manager().mark_grant_node(grant, node_id, opts)
+  rescue
+    error ->
+      log_warn("queue grant node reconciliation failed: #{inspect(error)}")
+      :ok
+  catch
+    :exit, reason ->
+      log_warn("queue grant node reconciliation exited: #{inspect(reason)}")
+      :ok
   end
 
   defp finalize(db_request, canonical, events, first_token_at, execution_opts, step_context) do

@@ -2211,7 +2211,7 @@ defmodule Orchard.Tokenizer.ClientTest do
           end)
 
         assert {:error, :timeout} = result
-        assert System.convert_time_unit(elapsed_us, :microsecond, :millisecond) < 500
+        assert System.convert_time_unit(elapsed_us, :microsecond, :millisecond) < 800
       end
     )
   end

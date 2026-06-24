@@ -9,6 +9,13 @@ defmodule Orchard.Inference.QueueManager do
   Cross-tenant grants use weighted round-robin, and live `:cluster_busy` or
   `:model_busy` scheduler saturation can requeue an active grant under its
   original queue deadline.
+
+  Lane capacity is the configured base capacity plus source-scoped capacity
+  refreshed from scheduler and node observations. Source refreshes can wake
+  queued requests without a new admission, while source reservations keep
+  loaded-placement and cold/no-placement slots from being double-counted until
+  node assignment, accepted runtime events, release, or later observations
+  reconcile them.
   """
 
   use GenServer
@@ -95,7 +102,9 @@ defmodule Orchard.Inference.QueueManager do
             tenant_counts: %{},
             ticket_results: %{},
             next_admission_sequence: 0,
-            owner_runtime: false
+            owner_runtime: false,
+            capacity_sources: %{},
+            capacity_source_limits: %{}
 
   @pre_dispatch_states [:admitted, :queued]
   @in_flight_states [:scheduled, :dispatching, :running, :streaming]
@@ -180,6 +189,149 @@ defmodule Orchard.Inference.QueueManager do
     call_manager(ticket.server, {:abandon, ticket.ticket_ref})
   end
 
+  @doc """
+  Refreshes observed capacity for one model/version lane.
+
+  Without `:source`, this replaces the lane's configured base capacity and
+  clears source-scoped capacity for that lane. With `:source`, this refreshes
+  only that source contribution and preserves the configured base capacity.
+  """
+  @spec refresh_capacity(String.t(), String.t(), non_neg_integer(), keyword()) :: :ok
+  def refresh_capacity(model_id, version, capacity, opts \\ [])
+      when is_binary(model_id) and is_binary(version) and is_integer(capacity) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    source = Keyword.get(opts, :source)
+    queue_key = queue_key(model_id, version)
+
+    if is_nil(source) do
+      call_manager(server, {:refresh_capacity, queue_key, max(capacity, 0), nil})
+    else
+      call_manager(
+        server,
+        {:refresh_capacity_sources,
+         [{source, max(capacity, 0), %{queue_key => max(capacity, 0)}}]}
+      )
+    end
+  end
+
+  @doc """
+  Refreshes capacity for multiple explicit sources.
+
+  Each record is `{source, source_capacity, lanes}` where `lanes` is either a
+  map of queue keys to lane limits or a list of `{model_id, version, limit}`.
+  Source limits aggregate with base lane capacity and may wake queued requests.
+  """
+  @spec refresh_capacity_sources(
+          [{term(), non_neg_integer(), [{String.t(), String.t(), non_neg_integer()}]}],
+          keyword()
+        ) :: :ok
+  def refresh_capacity_sources(records, opts \\ []) when is_list(records) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    records = Enum.map(records, &normalize_capacity_source_record/1)
+
+    call_manager(server, {:refresh_capacity_sources, records})
+  end
+
+  @doc """
+  Refreshes queue capacity from one node observation.
+
+  The observation must include node, placement, and cold source identifiers,
+  aggregate node active/max counts, and loaded placement statuses. Valid loaded
+  placements contribute matching-lane capacity; otherwise eligible spare node
+  capacity is retained conservatively for queued cold/no-placement lanes.
+  """
+  @spec refresh_node_capacity_sources(map(), keyword()) :: :ok
+  def refresh_node_capacity_sources(observation, opts \\ []) when is_map(observation) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    observation = normalize_node_capacity_observation(observation)
+
+    call_manager(server, {:refresh_node_capacity_sources, observation})
+  end
+
+  @doc """
+  Clears one source-scoped capacity contribution.
+  """
+  @spec clear_capacity_source(term(), keyword()) :: :ok
+  def clear_capacity_source(source, opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    call_manager(server, {:clear_capacity_source, source})
+  end
+
+  @doc """
+  Clears source-scoped capacity contributions.
+
+  By default, clearing sources immediately re-runs promotion for any remaining
+  queue capacity. Pass `promote?: false` when a later refresh in the same
+  observation cycle will perform promotion.
+  """
+  @spec clear_capacity_sources([term()], keyword()) :: :ok
+  def clear_capacity_sources(sources, opts \\ []) when is_list(sources) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    promote? = Keyword.get(opts, :promote?, true)
+    call_manager(server, {:clear_capacity_sources, sources, promote?})
+  end
+
+  @doc """
+  Returns model/version lanes with active capacity from a source.
+  """
+  @spec active_capacity_source_lanes(term(), keyword()) :: [{String.t(), String.t()}]
+  def active_capacity_source_lanes(source, opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    call_manager(server, {:active_capacity_source_lanes, source})
+  end
+
+  @doc """
+  Returns active source reservations grouped by model/version lane.
+  """
+  @spec active_capacity_source_reservations(term(), keyword()) :: [
+          {String.t(), String.t(), pos_integer()}
+        ]
+  def active_capacity_source_reservations(source, opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    call_manager(server, {:active_capacity_source_reservations, source})
+  end
+
+  @doc """
+  Marks a source-backed grant as observed by the runtime.
+  """
+  @spec mark_capacity_source_observed(Grant.t() | String.t(), keyword()) :: :ok
+  def mark_capacity_source_observed(grant_or_id, opts \\ [])
+
+  def mark_capacity_source_observed(%Grant{server: server, grant_id: grant_id}, opts) do
+    mark_capacity_source_observed(grant_id, Keyword.put(opts, :server, server))
+  end
+
+  def mark_capacity_source_observed(grant_id, opts) when is_binary(grant_id) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    call_manager(server, {:mark_capacity_source_observed, grant_id})
+  end
+
+  @doc """
+  Records the node that owns a grant and reconciles stale source reservations.
+  """
+  @spec mark_grant_node(Grant.t() | String.t(), Ecto.UUID.t() | String.t(), keyword()) :: :ok
+  def mark_grant_node(grant_or_id, node_id, opts \\ [])
+
+  def mark_grant_node(%Grant{server: server, grant_id: grant_id}, node_id, opts) do
+    mark_grant_node(grant_id, node_id, Keyword.put(opts, :server, server))
+  end
+
+  def mark_grant_node(grant_id, node_id, opts) when is_binary(grant_id) and is_binary(node_id) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    promote? = Keyword.get(opts, :promote?, true)
+    call_manager(server, {:mark_grant_node, grant_id, node_id, promote?})
+  end
+
+  @doc """
+  Lists queued model/version lanes in the order they would be promotable.
+  """
+  @spec queued_model_lanes(keyword()) :: [{String.t(), String.t()}]
+  def queued_model_lanes(opts \\ []) do
+    server = Keyword.get(opts, :server, __MODULE__)
+    unique? = Keyword.get(opts, :unique?, true)
+    call_manager(server, {:queued_model_lanes, unique?})
+  end
+
   @spec release(Grant.t() | String.t(), keyword()) :: :ok
   def release(grant_or_id, opts \\ [])
 
@@ -236,6 +388,30 @@ defmodule Orchard.Inference.QueueManager do
   @impl true
   def handle_call(:reset, _from, state), do: {:reply, :ok, reset_state(state)}
 
+  def handle_call(:queued_model_lanes, _from, state) do
+    {:reply, queued_model_lanes_from_state(state), state}
+  end
+
+  def handle_call({:queued_model_lanes, unique?}, _from, state) do
+    {:reply, queued_model_lanes_from_state(state, unique?), state}
+  end
+
+  def handle_call({:active_capacity_source_lanes, source}, _from, state) do
+    {:reply, active_capacity_source_lanes_from_state(source, state), state}
+  end
+
+  def handle_call({:active_capacity_source_reservations, source}, _from, state) do
+    {:reply, active_capacity_source_reservations_from_state(source, state), state}
+  end
+
+  def handle_call({:mark_capacity_source_observed, grant_id}, _from, state) do
+    {:reply, :ok, mark_capacity_source_observed_in_state(grant_id, state)}
+  end
+
+  def handle_call({:mark_grant_node, grant_id, node_id, promote?}, _from, state) do
+    {:reply, :ok, mark_grant_node_in_state(grant_id, node_id, state, promote?)}
+  end
+
   def handle_call({:acquire, request, config}, {_waiter_pid, _tag}, state) do
     config = queue_config_for_request(config, request)
 
@@ -244,7 +420,7 @@ defmodule Orchard.Inference.QueueManager do
       |> prune_recovered_grants(state)
       |> maybe_grant_next_global()
 
-    lane = Map.get(state.lanes, request.queue_key, empty_lane())
+    {lane, state} = put_lane_capacity(request.queue_key, config.capacity, state)
 
     cond do
       tenant_has_queued_entries?(state, request.tenant_id) and
@@ -280,6 +456,36 @@ defmodule Orchard.Inference.QueueManager do
     config = queue_config_for_request(config, request)
     {result, state} = requeue_grant(grant, request, config, state)
     {:reply, result, state}
+  end
+
+  def handle_call({:refresh_capacity, queue_key, capacity, nil}, _from, state) do
+    {_lane, state} =
+      put_lane_capacity(queue_key, capacity, clear_lane_capacity_sources(queue_key, state))
+
+    {:reply, :ok, maybe_grant_next_global(state)}
+  end
+
+  def handle_call({:refresh_capacity_sources, records}, _from, state) do
+    state = refresh_capacity_source_records(records, state)
+    {:reply, :ok, maybe_grant_next_global(state)}
+  end
+
+  def handle_call({:refresh_node_capacity_sources, observation}, _from, state) do
+    state =
+      observation.clear_sources
+      |> clear_capacity_sources_from_state(state, false)
+      |> refresh_node_capacity_sources_from_state(observation)
+      |> maybe_grant_next_global()
+
+    {:reply, :ok, state}
+  end
+
+  def handle_call({:clear_capacity_source, source}, _from, state) do
+    {:reply, :ok, clear_capacity_source_from_state(source, state)}
+  end
+
+  def handle_call({:clear_capacity_sources, sources, promote?}, _from, state) do
+    {:reply, :ok, clear_capacity_sources_from_state(sources, state, promote?)}
   end
 
   def handle_call({:await, %Ticket{} = ticket}, from, state) do
@@ -1071,18 +1277,30 @@ defmodule Orchard.Inference.QueueManager do
   defp put_recovered_grant(grant_id, queue_key, request, state) do
     lane = Map.get(state.lanes, queue_key, empty_lane())
     lane = %{lane | active: Map.put(lane.active, grant_id, true)}
+    grant = recovered_grant(queue_key, request)
 
     %{
       state
       | lanes: Map.put(state.lanes, queue_key, lane),
-        grants:
-          Map.put(state.grants, grant_id, %{
-            queue_key: queue_key,
-            request_id: request.id,
-            tenant_id: request.tenant_id,
-            recovered?: true
-          })
+        grants: Map.put(state.grants, grant_id, grant)
     }
+  end
+
+  defp recovered_grant(queue_key, request) do
+    %{
+      queue_key: queue_key,
+      request_id: request.id,
+      tenant_id: request.tenant_id,
+      recovered?: true
+    }
+    |> maybe_put_recovered_grant_node_id(request)
+  end
+
+  defp maybe_put_recovered_grant_node_id(grant, request) do
+    case normalize_node_id(Map.get(request, :node_id)) do
+      nil -> grant
+      node_id -> Map.put(grant, :node_id, node_id)
+    end
   end
 
   defp prune_recovered_grants(queue_key, state) do
@@ -1153,6 +1371,7 @@ defmodule Orchard.Inference.QueueManager do
         grants: grants,
         monitors: remove_grant_owner_monitor(state.monitors, grant)
     }
+    |> remove_grant_from_retained_node_capacity_sources(grant_id)
   end
 
   defp park_active_grant(state, grant_id, monitor_ref) do
@@ -1220,7 +1439,7 @@ defmodule Orchard.Inference.QueueManager do
     config = Keyword.merge(Orchard.Inference.queue_admission_config(), config)
 
     %{
-      capacity: max(config[:capacity] || 1, 1),
+      capacity: max(config[:capacity] || 1, 0),
       max_wait_ms: max(config[:max_wait_ms] || 0, 0),
       max_active_per_tenant: normalize_max_active_per_tenant(config[:max_active_per_tenant]),
       max_queued_per_tenant: max(config[:max_queued_per_tenant] || 0, 0),
@@ -1253,7 +1472,1025 @@ defmodule Orchard.Inference.QueueManager do
 
   defp queue_key(model_id, version), do: "#{model_id}@#{version}"
 
-  defp empty_lane, do: %{active: %{}, blocked_until_monotonic_ms: nil, block_ref: nil}
+  defp normalize_capacity_source_record({source, capacity, lanes}) when is_list(lanes) do
+    lane_limits =
+      Enum.reduce(lanes, %{}, fn {model_id, version, lane_capacity}, lane_limits ->
+        Map.update(
+          lane_limits,
+          queue_key(model_id, version),
+          max(lane_capacity, 0),
+          &max(&1, lane_capacity)
+        )
+      end)
+
+    {source, max(capacity, 0), lane_limits}
+  end
+
+  defp normalize_capacity_source_record({source, capacity, lane_limits})
+       when is_map(lane_limits) do
+    {source, max(capacity, 0),
+     Map.new(lane_limits, fn {queue_key, limit} -> {queue_key, max(limit, 0)} end)}
+  end
+
+  defp normalize_node_capacity_observation(observation) do
+    node_id = normalize_node_id(Map.get(observation, :node_id))
+
+    %{
+      clear_sources: Map.get(observation, :clear_sources, []),
+      node_source: Map.get(observation, :node_source) || {:node, node_id},
+      placement_source: Map.fetch!(observation, :placement_source),
+      cold_source: Map.fetch!(observation, :cold_source),
+      node_id: node_id,
+      node_active: non_negative_integer(Map.get(observation, :node_active)),
+      node_max: positive_integer(Map.get(observation, :node_max)),
+      placements: normalize_node_capacity_placements(Map.get(observation, :placements, [])),
+      reserve_unassigned_node_grants?:
+        Map.get(observation, :reserve_unassigned_node_grants?, true) != false,
+      reserve_unassigned_source_grants?:
+        Map.get(observation, :reserve_unassigned_source_grants?, true) != false
+    }
+  end
+
+  defp normalize_node_capacity_placements(placements) when is_list(placements) do
+    Enum.reduce(placements, %{}, fn
+      {model_id, version, status}, acc when is_binary(model_id) and is_binary(version) ->
+        Map.put(acc, queue_key(model_id, version), normalize_node_placement_status(status))
+
+      _entry, acc ->
+        acc
+    end)
+  end
+
+  defp normalize_node_capacity_placements(_placements), do: %{}
+
+  defp normalize_node_placement_status(status) when status in [:ambiguous, :unavailable],
+    do: status
+
+  defp normalize_node_placement_status(status) when is_map(status) do
+    max_concurrency =
+      status
+      |> map_value(:max_concurrency)
+      |> positive_integer_or_zero()
+
+    if max_concurrency > 0 do
+      %{
+        active: non_negative_integer(map_value(status, :active_request_count)),
+        max: max_concurrency
+      }
+    else
+      :unavailable
+    end
+  end
+
+  defp normalize_node_placement_status(_status), do: :unavailable
+
+  defp empty_lane,
+    do: %{active: %{}, base_capacity: 0, blocked_until_monotonic_ms: nil, block_ref: nil}
+
+  defp put_lane_capacity(queue_key, capacity, state) do
+    base_capacity = max(capacity, 0)
+
+    lane =
+      state.lanes
+      |> Map.get(queue_key, empty_lane())
+      |> Map.put(:base_capacity, base_capacity)
+      |> Map.put(:capacity, base_capacity + aggregate_capacity(queue_key, state))
+
+    {lane, %{state | lanes: Map.put(state.lanes, queue_key, lane)}}
+  end
+
+  defp put_source_capacity(queue_key, state) do
+    lane = Map.get(state.lanes, queue_key, empty_lane())
+    capacity = Map.get(lane, :base_capacity, 0) + aggregate_capacity(queue_key, state)
+    lane = Map.put(lane, :capacity, capacity)
+
+    {lane, %{state | lanes: Map.put(state.lanes, queue_key, lane)}}
+  end
+
+  defp clear_lane_capacity_sources(queue_key, state) do
+    %{
+      state
+      | capacity_sources: Map.delete(state.capacity_sources, queue_key),
+        capacity_source_limits: delete_source_limit_lane(state.capacity_source_limits, queue_key)
+    }
+  end
+
+  defp aggregate_capacity(queue_key, state) do
+    state.capacity_sources
+    |> Map.get(queue_key, %{})
+    |> Map.values()
+    |> Enum.sum()
+  end
+
+  defp capacity_source_for_next_grant(queue_key, state) do
+    lane = Map.get(state.lanes, queue_key, empty_lane())
+    base_capacity = Map.get(lane, :base_capacity, 0)
+
+    if map_size(lane.active) < base_capacity do
+      nil
+    else
+      available_capacity_source(queue_key, state)
+    end
+  end
+
+  defp available_capacity_source(queue_key, state) do
+    reservations = active_source_reservation_counts(queue_key, state)
+
+    state.capacity_sources
+    |> Map.get(queue_key, %{})
+    |> Enum.sort_by(fn {source, _capacity} -> inspect(source) end)
+    |> Enum.find_value(fn {source, capacity} ->
+      if capacity > Map.get(reservations, source, 0), do: source
+    end)
+  end
+
+  defp active_source_reservation_counts(queue_key, state) do
+    Enum.reduce(state.grants, %{}, fn {_grant_id, grant}, reservations ->
+      if grant[:queue_key] == queue_key and not is_nil(grant[:capacity_source]) do
+        Map.update(reservations, grant.capacity_source, 1, &(&1 + 1))
+      else
+        reservations
+      end
+    end)
+  end
+
+  defp refresh_capacity_source_records(records, state) do
+    Enum.reduce(records, state, fn {source, capacity, lane_limits}, state ->
+      state
+      |> put_capacity_source_record(source, capacity, lane_limits)
+      |> rebalance_capacity_source(source)
+    end)
+  end
+
+  defp put_capacity_source_record(state, source, capacity, lane_limits) do
+    lane_limits =
+      lane_limits
+      |> Enum.reject(fn {_queue_key, limit} -> limit <= 0 end)
+      |> Map.new()
+
+    capacity = max(capacity, 0)
+
+    capacity_source_limits =
+      if capacity == 0 or map_size(lane_limits) == 0 do
+        Map.delete(state.capacity_source_limits, source)
+      else
+        capacity = min(capacity, source_limit_capacity(lane_limits))
+        Map.put(state.capacity_source_limits, source, %{capacity: capacity, lanes: lane_limits})
+      end
+
+    %{state | capacity_source_limits: capacity_source_limits}
+  end
+
+  defp source_limit_capacity(lane_limits) do
+    lane_limits
+    |> Map.values()
+    |> Enum.sum()
+  end
+
+  defp refresh_node_capacity_sources_from_state(state, observation) do
+    state = move_node_capacity_source_grants(state, observation)
+    sources = [observation.node_source]
+    reservations = active_node_source_reservations(state, sources)
+    observed_count = observed_node_source_reservation_count(reservations, observation)
+    idle_capacity = max(observation.node_max - observation.node_active, 0)
+
+    {preserved_reservations, remaining_capacity} =
+      preserve_node_source_reservations(reservations, observed_count, idle_capacity)
+
+    reserved_node_grant_ids =
+      reserved_node_grant_ids(state, observation, reservations, observed_count)
+
+    remaining_capacity = max(remaining_capacity - length(reserved_node_grant_ids), 0)
+
+    retained_capacity =
+      pending_node_source_capacity(state, observation, preserved_reservations, remaining_capacity)
+
+    state
+    |> put_node_capacity_source_limit(
+      observation.node_source,
+      observation,
+      preserved_reservations,
+      retained_capacity,
+      reserved_node_grant_ids
+    )
+    |> rebalance_capacity_source(observation.node_source)
+  end
+
+  defp move_node_capacity_source_grants(state, observation) do
+    old_sources = MapSet.new([observation.placement_source, observation.cold_source])
+
+    grants =
+      Map.new(state.grants, fn {grant_id, grant} ->
+        source = Map.get(grant, :capacity_source)
+
+        if MapSet.member?(old_sources, source) do
+          source_kind = migrated_node_source_kind(source, observation)
+
+          grant =
+            grant
+            |> Map.put(:capacity_source, observation.node_source)
+            |> Map.update(:capacity_source_kind, source_kind, &(&1 || source_kind))
+
+          {grant_id, grant}
+        else
+          {grant_id, grant}
+        end
+      end)
+
+    %{state | grants: grants}
+  end
+
+  defp migrated_node_source_kind(source, %{placement_source: source}), do: :placement
+  defp migrated_node_source_kind(source, %{cold_source: source}), do: :cold
+  defp migrated_node_source_kind(_source, _observation), do: nil
+
+  defp active_node_source_reservations(state, sources) do
+    source_set = MapSet.new(sources)
+
+    state.grants
+    |> Enum.flat_map(fn {grant_id, grant} ->
+      source = Map.get(grant, :capacity_source)
+
+      if MapSet.member?(source_set, source) do
+        [
+          %{
+            grant_id: grant_id,
+            source: source,
+            queue_key: grant.queue_key,
+            observed?: Map.get(grant, :capacity_source_observed?) == true,
+            kind: Map.get(grant, :capacity_source_kind)
+          }
+        ]
+      else
+        []
+      end
+    end)
+    |> Enum.sort_by(fn reservation ->
+      {not reservation.observed?, inspect(reservation.source), reservation.queue_key,
+       inspect(reservation.grant_id)}
+    end)
+  end
+
+  defp observed_node_source_reservation_count(reservations, observation) do
+    observed_reservations = Enum.filter(reservations, & &1.observed?)
+
+    placement_covered =
+      observed_reservations_covered_by_placements(observed_reservations, observation)
+
+    remaining_observed = length(observed_reservations) - placement_covered
+    remaining_active = max(observation.node_active - placement_covered, 0)
+
+    placement_covered + min(remaining_observed, remaining_active)
+  end
+
+  defp observed_reservations_covered_by_placements(reservations, observation) do
+    reservations
+    |> Enum.group_by(& &1.queue_key)
+    |> Enum.reduce(0, fn {queue_key, reservations}, count ->
+      case Map.get(observation.placements, queue_key) do
+        %{active: active} -> count + min(length(reservations), active)
+        _status -> count
+      end
+    end)
+  end
+
+  defp preserve_node_source_reservations(reservations, observed_budget, idle_budget) do
+    uncovered_reservations = max(length(reservations) - observed_budget, 0)
+    {reservations, max(idle_budget - uncovered_reservations, 0)}
+  end
+
+  defp reserved_node_grant_ids(
+         _state,
+         %{node_id: nil},
+         _source_reservations,
+         _observed_source_count
+       ),
+       do: []
+
+  defp reserved_node_grant_ids(
+         state,
+         observation,
+         source_reservations,
+         observed_source_count
+       ) do
+    source_grant_ids = source_reservations |> Enum.map(& &1.grant_id) |> MapSet.new()
+
+    assigned_node_grant_reservation_ids(
+      state,
+      observation,
+      source_grant_ids,
+      observed_source_count
+    ) ++ unassigned_node_grant_ids(state, observation, source_grant_ids)
+  end
+
+  defp assigned_node_grant_reservation_ids(
+         state,
+         observation,
+         source_grant_ids,
+         observed_source_count
+       ) do
+    observed_node_budget = max(observation.node_active - observed_source_count, 0)
+
+    {observed_grant_ids, unobserved_grant_ids} =
+      Enum.reduce(state.grants, {[], []}, fn {grant_id, grant}, {observed, unobserved} ->
+        collect_assigned_node_grant_id(
+          grant,
+          grant_id,
+          observation.node_id,
+          source_grant_ids,
+          {observed, unobserved}
+        )
+      end)
+
+    observed_grant_ids = Enum.sort_by(observed_grant_ids, &inspect/1)
+    unobserved_grant_ids = Enum.sort_by(unobserved_grant_ids, &inspect/1)
+
+    unobserved_grant_ids ++ Enum.drop(observed_grant_ids, observed_node_budget)
+  end
+
+  defp collect_assigned_node_grant_id(grant, grant_id, node_id, source_grant_ids, counts) do
+    cond do
+      Map.get(grant, :node_id) != node_id -> counts
+      MapSet.member?(source_grant_ids, grant_id) -> counts
+      Map.get(grant, :node_observed?) == true -> collect_observed_grant_id(counts, grant_id)
+      true -> collect_unobserved_grant_id(counts, grant_id)
+    end
+  end
+
+  defp collect_observed_grant_id({observed, unobserved}, grant_id),
+    do: {[grant_id | observed], unobserved}
+
+  defp collect_unobserved_grant_id({observed, unobserved}, grant_id),
+    do: {observed, [grant_id | unobserved]}
+
+  defp unassigned_node_grant_ids(
+         _state,
+         %{reserve_unassigned_node_grants?: false},
+         _source_grant_ids
+       ),
+       do: []
+
+  defp unassigned_node_grant_ids(state, observation, source_grant_ids) do
+    state.grants
+    |> Enum.flat_map(fn {grant_id, grant} ->
+      if is_nil(Map.get(grant, :node_id)) and not MapSet.member?(source_grant_ids, grant_id) and
+           unassigned_node_grant_reserves_observation?(grant, observation) do
+        [grant_id]
+      else
+        []
+      end
+    end)
+    |> Enum.sort_by(&inspect/1)
+  end
+
+  defp unassigned_node_grant_reserves_observation?(
+         %{capacity_source: source} = grant,
+         %{reserve_unassigned_source_grants?: true}
+       )
+       when not is_nil(source),
+       do: Map.get(grant, :capacity_source_observed?) != true
+
+  defp unassigned_node_grant_reserves_observation?(_grant, %{
+         reserve_unassigned_source_grants?: true
+       }),
+       do: true
+
+  defp unassigned_node_grant_reserves_observation?(grant, _observation),
+    do: is_nil(Map.get(grant, :capacity_source))
+
+  defp put_node_capacity_source_limit(
+         state,
+         source,
+         observation,
+         preserved_reservations,
+         retained_capacity,
+         reserved_node_grant_ids
+       ) do
+    capacity =
+      min(
+        length(preserved_reservations) + retained_capacity + length(reserved_node_grant_ids),
+        observation.node_max
+      )
+
+    if capacity <= 0 do
+      %{state | capacity_source_limits: Map.delete(state.capacity_source_limits, source)}
+    else
+      reservation_counts = reservation_counts_by_queue(preserved_reservations)
+
+      limit = %{
+        capacity: capacity,
+        lanes: :any,
+        blocked_lanes: node_capacity_source_blocked_lanes(observation, preserved_reservations),
+        lane_limits: node_capacity_source_lane_limits(observation.placements, reservation_counts),
+        per_lane_limit: node_capacity_source_per_lane_limit(observation, preserved_reservations),
+        node_id: observation.node_id,
+        reserve_unassigned_node_grants?: observation.reserve_unassigned_node_grants?,
+        reserve_unassigned_source_grants?: observation.reserve_unassigned_source_grants?,
+        reserved_node_grants: MapSet.new(reserved_node_grant_ids)
+      }
+
+      %{state | capacity_source_limits: Map.put(state.capacity_source_limits, source, limit)}
+    end
+  end
+
+  defp pending_node_source_capacity(_state, _observation, _reservations, 0), do: 0
+
+  defp pending_node_source_capacity(state, observation, reservations, remaining_capacity) do
+    reservation_counts = reservation_counts_by_queue(reservations)
+
+    limit = %{
+      lanes: :any,
+      blocked_lanes: node_capacity_source_blocked_lanes(observation, reservations),
+      lane_limits: node_capacity_source_lane_limits(observation.placements, reservation_counts),
+      per_lane_limit: node_capacity_source_per_lane_limit(observation, reservations)
+    }
+
+    {_allocations, retained_capacity, _remaining_capacity} =
+      state
+      |> pending_node_source_entries()
+      |> Enum.reduce({reservation_counts, 0, remaining_capacity}, fn entry,
+                                                                     {allocations, retained,
+                                                                      remaining} ->
+        allocated = Map.get(allocations, entry.queue_key, 0)
+        lane_limit = source_limit_lane_limit(limit, entry.queue_key, allocated)
+
+        if remaining > 0 and allocated < lane_limit do
+          {Map.put(allocations, entry.queue_key, allocated + 1), retained + 1, remaining - 1}
+        else
+          {allocations, retained, remaining}
+        end
+      end)
+
+    retained_capacity
+  end
+
+  defp pending_node_source_entries(state) do
+    state.entries
+    |> Map.values()
+    |> Enum.reject(&terminal_pending?/1)
+    |> Enum.filter(&queued_process_alive?/1)
+    |> Enum.sort_by(fn entry ->
+      {Map.get(entry, :admission_sequence, 0), Map.get(entry, :enqueued_monotonic_ms, 0)}
+    end)
+  end
+
+  defp reservation_counts_by_queue(reservations) do
+    Enum.reduce(reservations, %{}, fn reservation, counts ->
+      Map.update(counts, reservation.queue_key, 1, &(&1 + 1))
+    end)
+  end
+
+  defp node_capacity_source_lane_limits(placements, reservation_counts) do
+    placements
+    |> Enum.reduce(%{}, fn
+      {queue_key, %{active: active, max: max_concurrency}}, lane_limits ->
+        reservations = Map.get(reservation_counts, queue_key, 0)
+        spare = max(max_concurrency - active, 0)
+        limit = max(reservations, min(max_concurrency, reservations + spare))
+
+        if limit > 0, do: Map.put(lane_limits, queue_key, limit), else: lane_limits
+
+      _placement, lane_limits ->
+        lane_limits
+    end)
+  end
+
+  defp node_capacity_source_blocked_lanes(observation, reservations) do
+    observation.placements
+    |> Map.keys()
+    |> MapSet.new()
+    |> MapSet.union(stale_placement_reservation_lanes(observation, reservations))
+  end
+
+  defp stale_placement_reservation_lanes(observation, reservations) do
+    reservations
+    |> Enum.filter(fn reservation ->
+      reservation.kind == :placement and
+        not loaded_node_capacity_placement?(
+          Map.get(observation.placements, reservation.queue_key)
+        )
+    end)
+    |> Enum.map(& &1.queue_key)
+    |> MapSet.new()
+  end
+
+  defp loaded_node_capacity_placement?(%{active: _active, max: _max}), do: true
+  defp loaded_node_capacity_placement?(_status), do: false
+
+  defp node_capacity_source_per_lane_limit(observation, reservations) do
+    placement_queue_keys = MapSet.new(Map.keys(observation.placements))
+
+    reservations
+    |> Enum.reject(fn reservation -> reservation.kind == :placement end)
+    |> reservation_counts_by_queue()
+    |> Enum.reject(fn {queue_key, _count} -> MapSet.member?(placement_queue_keys, queue_key) end)
+    |> Enum.map(fn {_queue_key, count} -> count end)
+    |> Enum.max(fn -> 1 end)
+    |> max(1)
+  end
+
+  defp rebalance_capacity_sources(state) do
+    state.capacity_source_limits
+    |> Map.keys()
+    |> Enum.sort_by(&inspect/1)
+    |> Enum.reduce(state, fn source, state -> rebalance_capacity_source(state, source) end)
+  end
+
+  defp rebalance_capacity_source(state, source) do
+    previous_queue_keys = capacity_source_queue_keys(state, source)
+
+    case Map.fetch(state.capacity_source_limits, source) do
+      {:ok, %{capacity: capacity} = limit} ->
+        capacity = effective_capacity_source_capacity(source, limit, state, capacity)
+        reservations = active_source_reservation_counts_by_queue(source, state)
+
+        if drop_retained_node_capacity_source_limit?(limit, reservations, state) do
+          state = %{
+            state
+            | capacity_source_limits: Map.delete(state.capacity_source_limits, source)
+          }
+
+          put_capacity_source_allocations(state, source, %{}, previous_queue_keys)
+        else
+          eligible_reservations = eligible_source_reservations(reservations, limit)
+
+          {allocations, remaining_capacity} =
+            reserve_source_capacity(capacity, limit, eligible_reservations)
+
+          allocations =
+            state
+            |> allocate_source_capacity(limit, allocations, remaining_capacity)
+
+          put_capacity_source_allocations(state, source, allocations, previous_queue_keys)
+        end
+
+      :error ->
+        put_capacity_source_allocations(state, source, %{}, previous_queue_keys)
+    end
+  end
+
+  defp effective_capacity_source_capacity(source, %{lanes: :any} = limit, state, capacity) do
+    reserved_capacity = retained_node_grant_reservation_count(source, limit, state)
+    max(capacity - reserved_capacity, 0)
+  end
+
+  defp effective_capacity_source_capacity(_source, _limit, _state, capacity), do: capacity
+
+  defp retained_node_grant_reservation_count(source, limit, state) do
+    node_id = Map.get(limit, :node_id) || capacity_source_node_id(source)
+    deferred_grants = Map.get(limit, :deferred_reserved_node_grants, MapSet.new())
+
+    limit
+    |> Map.get(:reserved_node_grants, MapSet.new())
+    |> Enum.count(fn grant_id ->
+      case Map.get(state.grants, grant_id) do
+        nil ->
+          false
+
+        grant ->
+          MapSet.member?(deferred_grants, grant_id) or
+            retained_node_grant_reserves_source?(grant, node_id, source, limit)
+      end
+    end)
+  end
+
+  defp retained_node_grant_reserves_source?(_grant, nil, _source, _limit), do: false
+  defp retained_node_grant_reserves_source?(nil, _node_id, _source, _limit), do: false
+
+  defp retained_node_grant_reserves_source?(grant, node_id, source, limit) do
+    cond do
+      Map.get(grant, :capacity_source) == source ->
+        false
+
+      Map.get(grant, :node_id) == node_id ->
+        true
+
+      is_nil(Map.get(grant, :node_id)) ->
+        retained_unassigned_node_grant_reserves_source?(grant, limit)
+
+      true ->
+        false
+    end
+  end
+
+  defp retained_unassigned_node_grant_reserves_source?(grant, limit) do
+    if Map.get(limit, :reserve_unassigned_node_grants?, true) == false do
+      false
+    else
+      case Map.get(grant, :capacity_source) do
+        nil ->
+          true
+
+        _source ->
+          Map.get(limit, :reserve_unassigned_source_grants?, true) and
+            Map.get(grant, :capacity_source_observed?) != true
+      end
+    end
+  end
+
+  defp drop_retained_node_capacity_source_limit?(%{lanes: :any}, reservations, state) do
+    map_size(reservations) == 0 and pending_node_source_entries(state) == []
+  end
+
+  defp drop_retained_node_capacity_source_limit?(_limit, _reservations, _state), do: false
+
+  defp active_source_reservation_counts_by_queue(source, state) do
+    Enum.reduce(state.grants, %{}, fn {_grant_id, grant}, reservations ->
+      if Map.get(grant, :capacity_source) == source do
+        Map.update(reservations, grant.queue_key, 1, &(&1 + 1))
+      else
+        reservations
+      end
+    end)
+  end
+
+  defp eligible_source_reservations(reservations, %{lanes: :any}), do: reservations
+
+  defp eligible_source_reservations(reservations, %{lanes: lane_limits}) do
+    reservations
+    |> Enum.filter(fn {queue_key, _count} -> Map.get(lane_limits, queue_key, 0) > 0 end)
+    |> Map.new()
+  end
+
+  defp reserve_source_capacity(capacity, limit, reservations) do
+    reservations
+    |> Enum.sort_by(fn {queue_key, _count} -> queue_key end)
+    |> Enum.reduce({%{}, capacity}, fn {queue_key, count}, {allocations, remaining} ->
+      reserved_capacity =
+        count
+        |> min(source_limit_lane_limit(limit, queue_key, count))
+        |> min(remaining)
+
+      allocations =
+        if reserved_capacity > 0 do
+          Map.put(allocations, queue_key, reserved_capacity)
+        else
+          allocations
+        end
+
+      {allocations, max(remaining - reserved_capacity, 0)}
+    end)
+  end
+
+  defp allocate_source_capacity(_state, _limit, allocations, remaining_capacity)
+       when remaining_capacity <= 0,
+       do: allocations
+
+  defp allocate_source_capacity(state, limit, allocations, remaining_capacity) do
+    case next_source_allocatable_entry(state, limit, allocations) do
+      {:ok, entry, state} ->
+        allocated = Map.get(allocations, entry.queue_key, 0)
+
+        state
+        |> simulate_promotable_entry_grant(entry)
+        |> allocate_source_capacity(
+          limit,
+          Map.put(allocations, entry.queue_key, allocated + 1),
+          remaining_capacity - 1
+        )
+
+      :blocked ->
+        allocations
+    end
+  end
+
+  defp next_source_allocatable_entry(state, limit, allocations) do
+    ring = tenant_ring(state)
+
+    if ring == [] do
+      :blocked
+    else
+      scan_source_tenant_ring(
+        ring,
+        state,
+        limit,
+        allocations,
+        0,
+        rem(state.tenant_rr_index, length(ring))
+      )
+    end
+  end
+
+  defp scan_source_tenant_ring(ring, _state, _limit, _allocations, scanned, _index)
+       when scanned >= length(ring),
+       do: :blocked
+
+  defp scan_source_tenant_ring(ring, state, limit, allocations, scanned, index) do
+    tenant_id = Enum.at(ring, index)
+
+    case tenant_head_entry(state, tenant_id) do
+      {:ok, entry} ->
+        maybe_select_source_allocatable_entry(
+          entry,
+          ring,
+          state,
+          limit,
+          allocations,
+          scanned,
+          index
+        )
+
+      :empty ->
+        scan_source_tenant_ring(
+          ring,
+          state,
+          limit,
+          allocations,
+          scanned + 1,
+          next_ring_index(ring, index)
+        )
+
+      {:stale, ticket_ref} ->
+        scan_without_stale_source_ticket(state, limit, allocations, tenant_id, ticket_ref)
+    end
+  end
+
+  defp maybe_select_source_allocatable_entry(
+         entry,
+         ring,
+         state,
+         limit,
+         allocations,
+         scanned,
+         index
+       ) do
+    if source_allocatable_entry?(entry, state, limit, allocations) do
+      {:ok, entry, %{state | tenant_rr_index: index + 1}}
+    else
+      scan_next_source_tenant(ring, state, limit, allocations, scanned, index)
+    end
+  end
+
+  defp source_allocatable_entry?(entry, state, limit, allocations) do
+    lane = Map.get(state.lanes, entry.queue_key, empty_lane())
+    allocated = Map.get(allocations, entry.queue_key, 0)
+    lane_limit = source_limit_lane_limit(limit, entry.queue_key, allocated)
+
+    cond do
+      terminal_pending?(entry) -> false
+      is_nil(entry.await_from) -> false
+      not queued_process_alive?(entry) -> false
+      lane_blocked?(lane) -> false
+      not tenant_active_capacity?(state, entry, entry) -> false
+      allocated >= lane_limit -> false
+      true -> true
+    end
+  end
+
+  defp scan_next_source_tenant(ring, state, limit, allocations, scanned, index) do
+    scan_source_tenant_ring(
+      ring,
+      state,
+      limit,
+      allocations,
+      scanned + 1,
+      next_ring_index(ring, index)
+    )
+  end
+
+  defp scan_without_stale_source_ticket(state, limit, allocations, tenant_id, ticket_ref) do
+    entry = %{tenant_id: tenant_id, ticket_ref: ticket_ref}
+
+    state
+    |> Map.put(:tenant_queues, remove_from_tenant_queues(state.tenant_queues, entry))
+    |> then(fn state ->
+      %{
+        state
+        | tenant_order: remove_empty_tenants(state.tenant_order, state.tenant_queues, entry)
+      }
+    end)
+    |> next_source_allocatable_entry(limit, allocations)
+  end
+
+  defp source_limit_lane_limit(%{lanes: :any} = limit, queue_key, allocated) do
+    blocked_lanes = Map.get(limit, :blocked_lanes, MapSet.new())
+    lane_limits = Map.get(limit, :lane_limits, %{})
+    per_lane_limit = Map.get(limit, :per_lane_limit, 1)
+
+    cond do
+      Map.has_key?(lane_limits, queue_key) ->
+        max(Map.fetch!(lane_limits, queue_key), allocated)
+
+      MapSet.member?(blocked_lanes, queue_key) ->
+        allocated
+
+      true ->
+        max(per_lane_limit, allocated)
+    end
+  end
+
+  defp source_limit_lane_limit(%{lanes: lane_limits}, queue_key, _allocated),
+    do: Map.get(lane_limits, queue_key, 0)
+
+  defp put_capacity_source_allocations(state, source, allocations, previous_queue_keys) do
+    queue_keys =
+      allocations
+      |> Map.keys()
+      |> MapSet.new()
+      |> MapSet.union(MapSet.new(previous_queue_keys))
+      |> MapSet.to_list()
+
+    capacity_sources =
+      Enum.reduce(queue_keys, state.capacity_sources, fn queue_key, capacity_sources ->
+        sources = Map.get(capacity_sources, queue_key, %{})
+
+        sources =
+          case Map.get(allocations, queue_key, 0) do
+            capacity when capacity > 0 -> Map.put(sources, source, capacity)
+            _capacity -> Map.delete(sources, source)
+          end
+
+        put_or_delete_sources(capacity_sources, queue_key, sources)
+      end)
+
+    state = %{state | capacity_sources: capacity_sources}
+
+    Enum.reduce(queue_keys, state, fn queue_key, state ->
+      {_lane, state} = put_source_capacity(queue_key, state)
+      state
+    end)
+  end
+
+  defp capacity_source_queue_keys(state, source) do
+    state.capacity_sources
+    |> Enum.filter(fn {_queue_key, sources} -> Map.has_key?(sources, source) end)
+    |> Enum.map(fn {queue_key, _sources} -> queue_key end)
+  end
+
+  defp delete_source_limit_lane(capacity_source_limits, queue_key) do
+    capacity_source_limits
+    |> Enum.reduce(%{}, fn
+      {source, %{lanes: :any} = limit}, limits ->
+        Map.put(limits, source, limit)
+
+      {source, %{capacity: capacity, lanes: lanes}}, limits ->
+        lanes = Map.delete(lanes, queue_key)
+
+        if map_size(lanes) == 0 do
+          limits
+        else
+          Map.put(limits, source, %{
+            capacity: min(capacity, source_limit_capacity(lanes)),
+            lanes: lanes
+          })
+        end
+    end)
+  end
+
+  defp mark_capacity_source_observed_in_state(grant_id, state) do
+    case Map.fetch(state.grants, grant_id) do
+      {:ok, grant} ->
+        grant =
+          if is_nil(Map.get(grant, :capacity_source)) do
+            grant
+          else
+            Map.put(grant, :capacity_source_observed?, true)
+          end
+
+        grant = Map.put(grant, :node_observed?, true)
+        %{state | grants: Map.put(state.grants, grant_id, grant)}
+
+      _other ->
+        state
+    end
+  end
+
+  defp mark_grant_node_in_state(grant_id, node_id, state, promote?) do
+    case Map.fetch(state.grants, grant_id) do
+      {:ok, grant} ->
+        normalized_node_id = normalize_node_id(node_id)
+        {grant, previous_source} = reconcile_grant_capacity_source_node(grant, normalized_node_id)
+        grant = Map.put(grant, :node_id, normalized_node_id)
+        state = %{state | grants: Map.put(state.grants, grant_id, grant)}
+        state = reserve_grant_in_retained_node_capacity_sources(state, grant_id)
+
+        state =
+          if promote?,
+            do: state,
+            else: defer_grant_in_retained_node_capacity_sources(state, grant_id)
+
+        state =
+          if is_nil(previous_source),
+            do: state,
+            else: expire_retained_capacity_source_limit(state, previous_source)
+
+        if promote?, do: maybe_grant_next_global(state), else: state
+
+      _other ->
+        state
+    end
+  end
+
+  defp expire_retained_capacity_source_limit(state, source) do
+    previous_queue_keys = capacity_source_queue_keys(state, source)
+
+    case Map.fetch(state.capacity_source_limits, source) do
+      {:ok, %{capacity: capacity} = limit} ->
+        reservation_capacity =
+          source
+          |> active_source_reservation_counts_by_queue(state)
+          |> Map.values()
+          |> Enum.sum()
+          |> min(capacity)
+
+        reserved_node_capacity = retained_node_grant_reservation_count(source, limit, state)
+        retained_capacity = min(reservation_capacity + reserved_node_capacity, capacity)
+
+        if retained_capacity <= 0 do
+          state = %{
+            state
+            | capacity_source_limits: Map.delete(state.capacity_source_limits, source)
+          }
+
+          put_capacity_source_allocations(state, source, %{}, previous_queue_keys)
+        else
+          state = %{
+            state
+            | capacity_source_limits:
+                Map.put(state.capacity_source_limits, source, %{
+                  limit
+                  | capacity: retained_capacity
+                })
+          }
+
+          rebalance_capacity_source(state, source)
+        end
+
+      :error ->
+        put_capacity_source_allocations(state, source, %{}, previous_queue_keys)
+    end
+  end
+
+  defp reconcile_grant_capacity_source_node(grant, nil), do: {grant, nil}
+
+  defp reconcile_grant_capacity_source_node(grant, node_id) do
+    source = Map.get(grant, :capacity_source)
+
+    case capacity_source_node_id(source) do
+      nil ->
+        {grant, nil}
+
+      ^node_id ->
+        {grant, nil}
+
+      _other_node_id ->
+        grant =
+          grant
+          |> Map.delete(:capacity_source)
+          |> Map.delete(:capacity_source_kind)
+          |> Map.delete(:capacity_source_observed?)
+
+        {grant, source}
+    end
+  end
+
+  defp clear_capacity_source_from_state(source, state) do
+    clear_capacity_sources_from_state([source], state, true)
+  end
+
+  defp clear_capacity_sources_from_state(sources, state, promote?) do
+    source_set = MapSet.new(sources)
+
+    {capacity_sources, queue_keys} =
+      Enum.reduce(state.capacity_sources, {%{}, []}, fn {queue_key, lane_sources},
+                                                        {capacity_sources, queue_keys} ->
+        remaining_sources =
+          Map.reject(lane_sources, fn {source, _capacity} ->
+            MapSet.member?(source_set, source)
+          end)
+
+        if map_size(remaining_sources) == map_size(lane_sources) do
+          {Map.put(capacity_sources, queue_key, lane_sources), queue_keys}
+        else
+          capacity_sources = put_or_delete_sources(capacity_sources, queue_key, remaining_sources)
+          {capacity_sources, [queue_key | queue_keys]}
+        end
+      end)
+
+    state =
+      {capacity_sources, queue_keys}
+      |> apply_cleared_capacity_sources(%{
+        state
+        | capacity_source_limits: Map.drop(state.capacity_source_limits, sources)
+      })
+
+    if promote?, do: maybe_grant_next_global(state), else: state
+  end
+
+  defp apply_cleared_capacity_sources({capacity_sources, queue_keys}, state) do
+    state = %{state | capacity_sources: capacity_sources}
+
+    Enum.reduce(queue_keys, state, fn queue_key, state ->
+      {_lane, state} = put_source_capacity(queue_key, state)
+      state
+    end)
+  end
+
+  defp put_or_delete_sources(capacity_sources, queue_key, sources) when map_size(sources) == 0,
+    do: Map.delete(capacity_sources, queue_key)
+
+  defp put_or_delete_sources(capacity_sources, queue_key, sources),
+    do: Map.put(capacity_sources, queue_key, sources)
 
   defp active_capacity?(lane, capacity) do
     map_size(lane.active) < capacity and not lane_blocked?(lane)
@@ -1317,6 +2554,8 @@ defmodule Orchard.Inference.QueueManager do
       request_id: request.request_id,
       public_id: request.public_id,
       tenant_id: request.tenant_id,
+      model_id: request.model_id,
+      version: request.version,
       queue_key: request.queue_key,
       caller_pid: request.caller_pid,
       await_from: nil,
@@ -1337,6 +2576,169 @@ defmodule Orchard.Inference.QueueManager do
 
     {ticket, put_entry(entry, state)}
   end
+
+  defp queued_model_lanes_from_state(state) do
+    queued_model_lanes_from_state(state, true)
+  end
+
+  defp queued_model_lanes_from_state(state, unique?) do
+    state
+    |> promotable_entries_in_grant_order()
+    |> Enum.flat_map(&entry_model_lane/1)
+    |> maybe_unique_model_lanes(unique?)
+  end
+
+  defp maybe_unique_model_lanes(lanes, true), do: Enum.uniq(lanes)
+  defp maybe_unique_model_lanes(lanes, _unique?), do: lanes
+
+  defp promotable_entries_in_grant_order(state) do
+    collect_promotable_entries(state, [])
+  end
+
+  defp collect_promotable_entries(state, entries) do
+    case next_promotable_entry(state) do
+      {:ok, entry, state} ->
+        state
+        |> simulate_promotable_entry_grant(entry)
+        |> collect_promotable_entries([entry | entries])
+
+      :blocked ->
+        Enum.reverse(entries)
+    end
+  end
+
+  defp next_promotable_entry(state) do
+    ring = tenant_ring(state)
+
+    if ring == [] do
+      :blocked
+    else
+      scan_promotable_tenant_ring(ring, state, 0, rem(state.tenant_rr_index, length(ring)))
+    end
+  end
+
+  defp scan_promotable_tenant_ring(ring, _state, scanned, _index)
+       when scanned >= length(ring),
+       do: :blocked
+
+  defp scan_promotable_tenant_ring(ring, state, scanned, index) do
+    tenant_id = Enum.at(ring, index)
+
+    case tenant_head_entry(state, tenant_id) do
+      {:ok, entry} ->
+        maybe_select_promotable_entry(entry, ring, state, scanned, index)
+
+      :empty ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      {:stale, ticket_ref} ->
+        scan_without_stale_promotable_ticket(ring, state, tenant_id, ticket_ref)
+    end
+  end
+
+  defp maybe_select_promotable_entry(entry, ring, state, scanned, index) do
+    lane = Map.get(state.lanes, entry.queue_key, empty_lane())
+
+    cond do
+      terminal_pending?(entry) ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      is_nil(entry.await_from) ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      not queued_process_alive?(entry) ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      lane_blocked?(lane) ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      not tenant_active_capacity?(state, entry, entry) ->
+        scan_promotable_tenant_ring(ring, state, scanned + 1, next_ring_index(ring, index))
+
+      true ->
+        {:ok, entry, %{state | tenant_rr_index: index + 1}}
+    end
+  end
+
+  defp scan_without_stale_promotable_ticket(_ring, state, tenant_id, ticket_ref) do
+    entry = %{tenant_id: tenant_id, ticket_ref: ticket_ref}
+
+    %{
+      state
+      | tenant_queues: remove_from_tenant_queues(state.tenant_queues, entry),
+        tenant_order: remove_empty_tenants(state.tenant_order, state.tenant_queues, entry)
+    }
+    |> next_promotable_entry()
+  end
+
+  defp simulate_promotable_entry_grant(state, entry) do
+    grant_id = {:queued_model_lanes, entry.ticket_ref}
+
+    %{
+      state
+      | tenant_queues: remove_from_tenant_queues(state.tenant_queues, entry),
+        tenant_order: remove_empty_tenants(state.tenant_order, state.tenant_queues, entry),
+        entries: Map.delete(state.entries, entry.ticket_ref),
+        grants:
+          Map.put(state.grants, grant_id, %{
+            queue_key: entry.queue_key,
+            tenant_id: entry.tenant_id
+          }),
+        tenant_counts: decrement_tenant_count(state.tenant_counts, entry.tenant_id)
+    }
+  end
+
+  defp entry_model_lane(%{model_id: model_id, version: version})
+       when is_binary(model_id) and model_id != "" and is_binary(version) and version != "",
+       do: [{model_id, version}]
+
+  defp entry_model_lane(%{queue_key: queue_key}) when is_binary(queue_key),
+    do: queue_key_model_lane(queue_key)
+
+  defp entry_model_lane(_entry), do: []
+
+  defp active_capacity_source_lanes_from_state(source, state) do
+    state.capacity_sources
+    |> Enum.filter(fn {_queue_key, sources} -> Map.get(sources, source, 0) > 0 end)
+    |> Enum.flat_map(fn {queue_key, _sources} -> queue_key_model_lane(queue_key) end)
+    |> Enum.uniq()
+  end
+
+  defp active_capacity_source_reservations_from_state(source, state) do
+    state.grants
+    |> Enum.filter(fn {_grant_id, grant} -> Map.get(grant, :capacity_source) == source end)
+    |> Enum.group_by(fn {_grant_id, grant} -> grant.queue_key end)
+    |> Enum.flat_map(fn {queue_key, grants} ->
+      Enum.map(queue_key_model_lane(queue_key), fn {model_id, version} ->
+        {model_id, version, length(grants)}
+      end)
+    end)
+  end
+
+  defp queue_key_model_lane(queue_key) do
+    case String.split(queue_key, "@", parts: 2) do
+      [model_id, version] when model_id != "" and version != "" -> [{model_id, version}]
+      _other -> []
+    end
+  end
+
+  defp normalize_node_id(node_id) when is_binary(node_id) and node_id != "", do: node_id
+  defp normalize_node_id(_node_id), do: nil
+
+  defp capacity_source_node_id({:node, node_id}) when is_binary(node_id), do: node_id
+  defp capacity_source_node_id({:node, node_id, _kind}) when is_binary(node_id), do: node_id
+  defp capacity_source_node_id(_source), do: nil
+
+  defp map_value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+
+  defp non_negative_integer(value) when is_integer(value) and value >= 0, do: value
+  defp non_negative_integer(_value), do: 0
+
+  defp positive_integer(value) when is_integer(value) and value > 0, do: value
+  defp positive_integer(_value), do: 1
+
+  defp positive_integer_or_zero(value) when is_integer(value) and value > 0, do: value
+  defp positive_integer_or_zero(_value), do: 0
 
   defp put_entry(entry, state, opts \\ []) do
     position = Keyword.get(opts, :position, :back)
@@ -1425,7 +2827,11 @@ defmodule Orchard.Inference.QueueManager do
         {{:error, :invalid_requeue, metadata}, state}
 
       not Process.alive?(request.caller_pid) ->
-        state = drop_active_grant(state, grant.grant_id, grant_state.queue_key)
+        state =
+          state
+          |> drop_active_grant(grant.grant_id, grant_state.queue_key)
+          |> expire_requeued_capacity_source(grant_state)
+
         metadata = disconnect_metadata(grant_state)
 
         {{:error, :request_caller_disconnect, metadata}, maybe_grant_next_global(state)}
@@ -1439,7 +2845,11 @@ defmodule Orchard.Inference.QueueManager do
     now_ms = monotonic_ms()
     remaining_ms = grant_state.queue_deadline_monotonic_ms - now_ms
     queued_at = grant_state.queued_at || now_iso8601()
-    state = drop_active_grant(state, grant.grant_id, grant_state.queue_key)
+
+    state =
+      state
+      |> drop_active_grant(grant.grant_id, grant_state.queue_key)
+      |> expire_requeued_capacity_source(grant_state)
 
     if remaining_ms <= 0 do
       metadata = timeout_metadata(grant_state, queued_at)
@@ -1479,6 +2889,8 @@ defmodule Orchard.Inference.QueueManager do
       request_id: request.request_id,
       public_id: request.public_id,
       tenant_id: request.tenant_id,
+      model_id: request.model_id,
+      version: request.version,
       queue_key: request.queue_key,
       caller_pid: request.caller_pid,
       await_from: nil,
@@ -1500,10 +2912,17 @@ defmodule Orchard.Inference.QueueManager do
     {ticket, entry}
   end
 
+  defp expire_requeued_capacity_source(state, %{capacity_source: source}) when not is_nil(source),
+    do: expire_retained_capacity_source_limit(state, source)
+
+  defp expire_requeued_capacity_source(state, _grant_state), do: state
+
   defp put_requeued_entry({ticket, entry}, state),
     do: {ticket, put_entry(entry, state, position: :admission_order)}
 
   defp maybe_grant_next_global(state) do
+    state = rebalance_capacity_sources(state)
+
     case grant_one_queued_entry(state) do
       {:granted, state} -> maybe_grant_next_global(state)
       {:removed, state} -> maybe_grant_next_global(state)
@@ -1575,14 +2994,23 @@ defmodule Orchard.Inference.QueueManager do
     end
   end
 
-  defp tenant_ring(state) do
+  defp tenant_ring(state), do: tenant_ring(state, state.tenant_queues)
+
+  defp tenant_ring(state, tenant_queues) do
     config = Orchard.Inference.queue_admission_config() |> normalize_config()
 
     state.tenant_order
-    |> Enum.filter(&tenant_has_queued_entries?(state, &1))
+    |> Enum.filter(&tenant_queue_has_entries?(tenant_queues, &1))
     |> Enum.flat_map(fn tenant_id ->
       List.duplicate(tenant_id, tenant_weight(tenant_id, config))
     end)
+  end
+
+  defp tenant_queue_has_entries?(tenant_queues, tenant_id) do
+    case Map.get(tenant_queues, tenant_id) do
+      %{queue: [_head | _tail]} -> true
+      _other -> false
+    end
   end
 
   defp tenant_weight(tenant_id, config) do
@@ -1601,15 +3029,36 @@ defmodule Orchard.Inference.QueueManager do
   defp awaiter_alive?(%{await_from: {awaiter_pid, _tag}}), do: Process.alive?(awaiter_pid)
 
   defp grant_queued_entry(entry, state) do
+    capacity_source = capacity_source_for_next_grant(entry.queue_key, state)
+    capacity_source_kind = capacity_source_kind_for_grant(entry.queue_key, capacity_source, state)
+
     grant =
       build_grant(state, entry.queue_key, :queued, entry.queued_at, entry.enqueued_monotonic_ms)
 
-    state = promote_entry_to_grant(entry, grant, state)
+    state = promote_entry_to_grant(entry, grant, capacity_source, capacity_source_kind, state)
     reply_awaiter(entry, {:ok, grant})
     state
   end
 
-  defp promote_entry_to_grant(entry, grant, state) do
+  defp capacity_source_kind_for_grant(_queue_key, nil, _state), do: nil
+
+  defp capacity_source_kind_for_grant(queue_key, source, state) do
+    case Map.get(state.capacity_source_limits, source) do
+      %{lane_limits: lane_limits} when is_map(lane_limits) ->
+        if Map.has_key?(lane_limits, queue_key), do: :placement, else: :cold
+
+      %{lanes: lanes} when is_map(lanes) ->
+        if Map.has_key?(lanes, queue_key), do: :placement, else: nil
+
+      %{lanes: :any} ->
+        :cold
+
+      _limit ->
+        nil
+    end
+  end
+
+  defp promote_entry_to_grant(entry, grant, capacity_source, capacity_source_kind, state) do
     cancel_timer(entry.timeout_ref)
     Process.demonitor(entry.monitor_ref, [:flush])
 
@@ -1633,7 +3082,10 @@ defmodule Orchard.Inference.QueueManager do
         enqueued_monotonic_ms: entry.enqueued_monotonic_ms,
         admission_sequence: Map.get(entry, :admission_sequence, 0),
         queue_deadline_monotonic_ms: entry.queue_deadline_monotonic_ms,
-        server: state.server
+        server: state.server,
+        capacity_source: capacity_source,
+        capacity_source_kind: capacity_source_kind,
+        capacity_source_observed?: false
       })
 
     %{
@@ -1647,6 +3099,7 @@ defmodule Orchard.Inference.QueueManager do
         tenant_counts: decrement_tenant_count(state.tenant_counts, entry.tenant_id)
     }
     |> maybe_cancel_queue_tick()
+    |> reserve_grant_in_retained_node_capacity_sources(grant.grant_id)
   end
 
   defp put_immediate_grant(
@@ -1680,7 +3133,111 @@ defmodule Orchard.Inference.QueueManager do
         monitors: Map.put(state.monitors, owner_monitor_ref, {:grant_owner, grant.grant_id}),
         grants: Map.put(state.grants, grant.grant_id, grant_state)
     }
+    |> reserve_grant_in_retained_node_capacity_sources(grant.grant_id)
   end
+
+  defp reserve_grant_in_retained_node_capacity_sources(state, grant_id) do
+    case Map.fetch(state.grants, grant_id) do
+      {:ok, grant} ->
+        limits =
+          Map.new(state.capacity_source_limits, fn {source, limit} ->
+            {source, maybe_reserve_grant_in_retained_node_limit(source, limit, grant, grant_id)}
+          end)
+
+        %{state | capacity_source_limits: limits}
+
+      :error ->
+        state
+    end
+  end
+
+  defp remove_grant_from_retained_node_capacity_sources(state, grant_id) do
+    limits =
+      Map.new(state.capacity_source_limits, fn {source, limit} ->
+        {source, remove_grant_from_retained_node_limit(limit, grant_id)}
+      end)
+
+    %{state | capacity_source_limits: limits}
+  end
+
+  defp defer_grant_in_retained_node_capacity_sources(state, grant_id) do
+    case Map.fetch(state.grants, grant_id) do
+      {:ok, grant} ->
+        limits =
+          Map.new(state.capacity_source_limits, fn
+            {source, %{lanes: :any} = limit} ->
+              {source, maybe_defer_grant_in_retained_node_limit(source, limit, grant, grant_id)}
+
+            {source, limit} ->
+              {source, limit}
+          end)
+
+        %{state | capacity_source_limits: limits}
+
+      :error ->
+        state
+    end
+  end
+
+  defp maybe_defer_grant_in_retained_node_limit(source, limit, grant, grant_id) do
+    node_id = Map.get(limit, :node_id) || capacity_source_node_id(source)
+
+    if retained_node_grant_reserves_source?(grant, node_id, source, limit) do
+      defer_reserved_grant_in_retained_node_limit(limit, grant_id)
+    else
+      remove_grant_from_retained_node_limit(limit, grant_id)
+    end
+  end
+
+  defp defer_reserved_grant_in_retained_node_limit(limit, grant_id) do
+    reserved_grants = Map.get(limit, :reserved_node_grants, MapSet.new())
+
+    if MapSet.member?(reserved_grants, grant_id) do
+      Map.update(
+        limit,
+        :deferred_reserved_node_grants,
+        MapSet.new([grant_id]),
+        &MapSet.put(&1, grant_id)
+      )
+    else
+      limit
+    end
+  end
+
+  defp remove_grant_from_retained_node_limit(limit, grant_id) do
+    limit
+    |> update_mapset_key(:reserved_node_grants, &MapSet.delete(&1, grant_id))
+    |> update_mapset_key(:deferred_reserved_node_grants, &MapSet.delete(&1, grant_id))
+  end
+
+  defp update_mapset_key(map, key, fun) do
+    case Map.fetch(map, key) do
+      {:ok, value} ->
+        value = fun.(value)
+
+        if MapSet.size(value) == 0 do
+          Map.delete(map, key)
+        else
+          Map.put(map, key, value)
+        end
+
+      :error ->
+        map
+    end
+  end
+
+  defp maybe_reserve_grant_in_retained_node_limit(source, %{lanes: :any} = limit, grant, grant_id) do
+    node_id = Map.get(limit, :node_id) || capacity_source_node_id(source)
+
+    if retained_node_grant_reserves_source?(grant, node_id, source, limit) do
+      Map.update(limit, :reserved_node_grants, MapSet.new([grant_id]), &MapSet.put(&1, grant_id))
+    else
+      limit
+    end
+  end
+
+  defp maybe_reserve_grant_in_retained_node_limit(_source, limit, _grant, _grant_id),
+    do: limit
 
   defp remove_entry(entry, state, opts \\ []) do
     if Keyword.get(opts, :cancel_timer?, true), do: cancel_timer(entry.timeout_ref)
@@ -1756,9 +3313,13 @@ defmodule Orchard.Inference.QueueManager do
 
   defp lane_has_capacity?(lane) do
     capacity =
-      Orchard.Inference.queue_admission_config()
-      |> Keyword.get(:capacity, 1)
-      |> max(1)
+      case Map.get(lane, :capacity) do
+        value when is_integer(value) ->
+          max(value, 0)
+
+        _other ->
+          Orchard.Inference.queue_admission_config() |> Keyword.get(:capacity, 1) |> max(1)
+      end
 
     map_size(lane.active) < capacity
   end

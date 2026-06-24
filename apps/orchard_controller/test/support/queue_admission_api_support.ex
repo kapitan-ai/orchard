@@ -4,8 +4,15 @@ defmodule Orchard.TestSupport.QueueAdmissionRuntimeAdapter do
   alias Orchard.Cluster.V1.{ExecuteInferenceRequest, ModelRef}
   alias Orchard.InferenceEvent
 
-  def get_status(_adapter_state, _opts),
-    do: {:ok, %{ready: true, health_code: "", health_message: ""}}
+  def get_status(_adapter_state, _opts) do
+    {:ok,
+     %{
+       ready: true,
+       health_code: "",
+       health_message: "",
+       max_concurrency: configured_max_concurrency()
+     }}
+  end
 
   def load_model(%ModelRef{} = model_ref, _opts), do: {:ok, %{model_ref: model_ref}}
 
@@ -55,6 +62,31 @@ defmodule Orchard.TestSupport.QueueAdmissionRuntimeAdapter do
       )
     ]
   end
+
+  defp configured_max_concurrency do
+    :orchard_node_agent
+    |> Application.fetch_env!(:runtime)
+    |> Keyword.get(:worker_max_concurrent_requests_per_model, 1)
+    |> normalize_max_concurrency()
+  end
+
+  defp normalize_max_concurrency(n) when is_integer(n) and n > 0, do: n
+
+  defp normalize_max_concurrency("auto") do
+    :orchard_node_agent
+    |> Application.fetch_env!(:runtime)
+    |> Keyword.get(:worker_auto_max_concurrent_requests_per_model, 3)
+    |> normalize_max_concurrency()
+  end
+
+  defp normalize_max_concurrency(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {n, ""} when n > 0 -> n
+      _other -> 1
+    end
+  end
+
+  defp normalize_max_concurrency(_value), do: 1
 end
 
 defmodule Orchard.TestSupport.QueueAdmissionAPI do

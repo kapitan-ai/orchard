@@ -1,8 +1,25 @@
+defmodule Orchard.NodesTest.ExitingQueueManager do
+  def refresh_node_capacity_sources(_observation) do
+    exit(
+      {:noproc,
+       {GenServer, :call, [Orchard.Inference.QueueManager, :refresh_node_capacity_sources, 5_000]}}
+    )
+  end
+
+  def clear_capacity_sources(_sources, _opts) do
+    exit(
+      {:noproc,
+       {GenServer, :call, [Orchard.Inference.QueueManager, :clear_capacity_sources, 5_000]}}
+    )
+  end
+end
+
 defmodule Orchard.NodesTest do
   use Orchard.DataCase, async: false
 
   import ExUnit.CaptureLog
 
+  alias Orchard.Inference.QueueManager
   alias Orchard.Nodes
   alias Orchard.Nodes.Node
 
@@ -74,6 +91,123 @@ defmodule Orchard.NodesTest do
       end
 
     %{node_metadata: metadata, runtime_health: runtime_health}
+  end
+
+  defp placement_status(host, model_id, opts) do
+    version = Keyword.get(opts, :version, "v1")
+    max_concurrency = Keyword.fetch!(opts, :max_concurrency)
+
+    placement =
+      %{
+        model_ref: %{model_id: model_id, version: version},
+        active_request_count: 0,
+        max_concurrency: max_concurrency
+      }
+      |> maybe_put_placement_state(opts)
+
+    make_status_response(%{listen_host: host, listen_port: 9444})
+    |> Map.put(:runtime_model_placements, [placement])
+  end
+
+  defp maybe_put_placement_state(placement, opts) do
+    case Keyword.fetch(opts, :placement_state) do
+      {:ok, placement_state} -> Map.put(placement, :placement_state, placement_state)
+      :error -> placement
+    end
+  end
+
+  defp queue_admission_request(public_id, model_id, version \\ "v1") do
+    %{
+      request_id: Ecto.UUID.generate(),
+      public_id: public_id,
+      tenant_id: Ecto.UUID.generate(),
+      model_id: model_id,
+      version: version,
+      caller_pid: self()
+    }
+  end
+
+  defp queue_config(overrides) do
+    Keyword.merge(
+      [
+        enabled: true,
+        capacity: 1,
+        max_queued_per_tenant: 32,
+        max_wait_ms: 1_000
+      ],
+      overrides
+    )
+  end
+
+  defp start_holding_awaiter(ticket, tag) do
+    parent = self()
+
+    spawn(fn ->
+      result = QueueManager.await(ticket)
+      send(parent, {tag, result})
+
+      receive do
+        :stop -> :ok
+      after
+        5_000 -> :ok
+      end
+    end)
+  end
+
+  defp put_ticket_awaiter(ticket, tag) do
+    parent = self()
+    monitor_ref = Process.monitor(parent)
+
+    :sys.replace_state(QueueManager, fn state ->
+      entry =
+        state.entries
+        |> Map.fetch!(ticket.ticket_ref)
+        |> Map.put(:await_from, {parent, tag})
+        |> Map.put(:awaiter_monitor_ref, monitor_ref)
+
+      %{
+        state
+        | entries: Map.put(state.entries, ticket.ticket_ref, entry),
+          monitors: Map.put(state.monitors, monitor_ref, {:awaiter, ticket.ticket_ref})
+      }
+    end)
+  end
+
+  defp wait_until(fun, attempts \\ 50)
+  defp wait_until(_fun, 0), do: false
+
+  defp wait_until(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(20)
+      wait_until(fun, attempts - 1)
+    end
+  end
+
+  defp queue_entry_awaiting?(ticket) do
+    QueueManager
+    |> :sys.get_state()
+    |> Map.get(:entries)
+    |> Map.get(ticket.ticket_ref)
+    |> case do
+      %{await_from: await_from} when await_from != nil -> true
+      _other -> false
+    end
+  end
+
+  defp put_queue_manager_impl(module) do
+    inference = Application.fetch_env!(:orchard_controller, :inference)
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(inference, :queue_manager_impl, module)
+    )
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :inference, inference)
+    end)
   end
 
   # -- Schema validation --
@@ -474,6 +608,26 @@ defmodule Orchard.NodesTest do
              }
     end
 
+    test "swallows QueueManager refresh exits after persisting eligible node" do
+      put_queue_manager_impl(Orchard.NodesTest.ExitingQueueManager)
+
+      node_id = Ecto.UUID.generate()
+      target = make_target("10.0.0.46", 9444)
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.46",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert node.id == node_id
+    end
+
     test "drops readiness entries without matching capability" do
       target = make_target("10.0.0.8", 9444)
 
@@ -597,11 +751,1252 @@ defmodule Orchard.NodesTest do
       assert {:ok, updated} = Nodes.observe_status(target, status, later)
       assert updated.state == :cordoned
     end
+
+    test "SPEC.md §5.4 placement state change wakes queued model lane" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-wake", "wake-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      refute Task.yield(awaiter, 50)
+
+      status =
+        make_status_response(%{
+          listen_host: "10.0.0.52",
+          listen_port: 9444
+        })
+        |> Map.put(:runtime_model_placements, [
+          %{
+            model_ref: %{model_id: "wake-model", version: "v1"},
+            placement_state: :PLACEMENT_STATE_LOADED,
+            active_request_count: 0,
+            max_concurrency: 1
+          }
+        ])
+
+      assert {:ok, _node} =
+               Nodes.observe_status(make_target("10.0.0.52", 9444), status, DateTime.utc_now())
+
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "wake-model@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
+
+    test "SPEC.md §5.4 placement status aggregates queued capacity across nodes" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-aggregate-a", "aggregate-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-aggregate-b", "aggregate-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_aggregate_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_aggregate_result)
+
+      status_a =
+        placement_status("10.0.0.53", "aggregate-model", max_concurrency: 1)
+
+      assert {:ok, node_a} =
+               Nodes.observe_status(make_target("10.0.0.53", 9444), status_a, DateTime.utc_now())
+
+      assert_receive {:first_aggregate_result, {:ok, first_grant}}, 2_000
+      assert :ok = QueueManager.mark_grant_node(first_grant, node_a.id)
+      refute_receive {:second_aggregate_result, _result}, 50
+
+      status_b =
+        placement_status("10.0.0.54", "aggregate-model", max_concurrency: 1)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(make_target("10.0.0.54", 9444), status_b, DateTime.utc_now())
+
+      assert_receive {:second_aggregate_result, {:ok, second_grant}}, 2_000
+
+      assert first_grant.queue_result == :queued
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(first_grant)
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 placement status queue refresh is constrained by node max concurrency" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-capacity-constrained-a", "node-cap-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-capacity-constrained-b", "node-cap-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_node_cap_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_node_cap_result)
+
+      target = make_target("10.0.0.56", 9444)
+
+      status =
+        placement_status("10.0.0.56", "node-cap-model", max_concurrency: 4)
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 2)
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+
+      assert_receive {:first_node_cap_result, {:ok, first_grant}}, 2_000
+      refute_receive {:second_node_cap_result, _result}, 100
+
+      refreshed_status = Map.put(status, :active_request_count, 0)
+
+      assert {:ok, _node} = Nodes.observe_status(target, refreshed_status, DateTime.utc_now())
+      assert_receive {:second_node_cap_result, {:ok, second_grant}}, 2_000
+
+      assert first_grant.queue_result == :queued
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(first_grant)
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 placement heartbeat spends one node slot across queued lanes" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-lane-a", "placement-lane-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-lane-b", "placement-lane-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_placement_lane_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_placement_lane_result)
+      target = make_target("10.0.0.68", 9444)
+      observed_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.68", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [
+          %{
+            model_ref: %{model_id: "placement-lane-a", version: "v1"},
+            active_request_count: 0,
+            max_concurrency: 1
+          },
+          %{
+            model_ref: %{model_id: "placement-lane-b", version: "v1"},
+            active_request_count: 0,
+            max_concurrency: 1
+          }
+        ])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+
+      {granted_lane, first_grant} =
+        receive do
+          {:first_placement_lane_result, {:ok, grant}} -> {:first, grant}
+          {:second_placement_lane_result, {:ok, grant}} -> {:second, grant}
+        after
+          2_000 -> flunk("expected exactly one placement lane grant")
+        end
+
+      refute_receive {:first_placement_lane_result, _result}, 100
+      refute_receive {:second_placement_lane_result, _result}, 100
+
+      assert :ok = QueueManager.release(first_grant)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 1, :second))
+
+      second_grant =
+        case granted_lane do
+          :first ->
+            assert_receive {:second_placement_lane_result, {:ok, grant}}, 2_000
+            grant
+
+          :second ->
+            assert_receive {:first_placement_lane_result, {:ok, grant}}, 2_000
+            grant
+        end
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 status observation reserves unassigned base grants by default" do
+      QueueManager.reset()
+
+      assert {:ok, active_grant} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-default-observation-base-a",
+                   "default-observation-base"
+                 ),
+                 config: queue_config(capacity: 1)
+               )
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-default-observation-base-b",
+                   "default-observation-base"
+                 ),
+                 config: queue_config(capacity: 1)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+
+      target = make_target("10.0.0.86", 9444)
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.86", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      refute Task.yield(awaiter, 100)
+
+      assert :ok = QueueManager.release(active_grant)
+      assert {:ok, queued_grant} = Task.await(awaiter, 2_000)
+      assert queued_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(queued_grant)
+    end
+
+    test "SPEC.md §5.5 observed source reservation leaves spare node capacity available" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-observed-source-a", "observed-source-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-observed-source-b", "observed-source-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_observed_source_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.80", 9444)
+      observed_at = DateTime.utc_now()
+
+      initial_status =
+        placement_status("10.0.0.80", "observed-source-model", max_concurrency: 1)
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+
+      assert {:ok, _node} = Nodes.observe_status(target, initial_status, observed_at)
+      assert_receive {:first_observed_source_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+      assert :ok = QueueManager.mark_capacity_source_observed(first_grant)
+
+      refreshed_status =
+        initial_status
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 2)
+        |> put_in([:runtime_model_placements, Access.at(0), :max_concurrency], 2)
+        |> put_in([:runtime_model_placements, Access.at(0), :active_request_count], 1)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(
+                 target,
+                 refreshed_status,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "observed-source-model@v1"
+
+      assert :ok = QueueManager.release(first_grant)
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 unobserved source reservation does not overlap unrelated active work" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-unobserved-source-a", "unobserved-source-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-unobserved-source-b", "unobserved-source-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_unobserved_source_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_unobserved_source_result)
+      target = make_target("10.0.0.83", 9444)
+      observed_at = DateTime.utc_now()
+
+      initial_status =
+        make_status_response(%{listen_host: "10.0.0.83", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, initial_status, observed_at)
+      assert_receive {:first_unobserved_source_result, {:ok, first_grant}}, 2_000
+      refute_receive {:second_unobserved_source_result, _result}, 50
+
+      refreshed_status =
+        initial_status
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 2)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(
+                 target,
+                 refreshed_status,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      refute_receive {:second_unobserved_source_result, _result}, 100
+
+      assert :ok = QueueManager.release(first_grant)
+      assert_receive {:second_unobserved_source_result, {:ok, second_grant}}, 2_000
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 multi-slot placement heartbeat grants queued lanes in order" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-multislot-placement-a", "multislot-lane-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-multislot-placement-b", "multislot-lane-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_multislot_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_multislot_result)
+      target = make_target("10.0.0.81", 9444)
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.81", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 2)
+        |> Map.put(:runtime_model_placements, [
+          %{
+            model_ref: %{model_id: "multislot-lane-a", version: "v1"},
+            active_request_count: 0,
+            max_concurrency: 2
+          },
+          %{
+            model_ref: %{model_id: "multislot-lane-b", version: "v1"},
+            active_request_count: 0,
+            max_concurrency: 1
+          }
+        ])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+
+      assert_receive {:first_multislot_result, {:ok, first_grant}}, 2_000
+      assert_receive {:second_multislot_result, {:ok, second_grant}}, 2_000
+      assert first_grant.queue_key == "multislot-lane-a@v1"
+      assert second_grant.queue_key == "multislot-lane-b@v1"
+
+      assert :ok = QueueManager.release(first_grant)
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 heartbeat spends node capacity in queue-head order" do
+      QueueManager.reset()
+
+      tenant_id = Ecto.UUID.generate()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-head-order-cold", "head-order-cold")
+                 |> Map.put(:tenant_id, tenant_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-head-order-loaded", "head-order-loaded")
+                 |> Map.put(:tenant_id, tenant_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_head_order_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_head_order_result)
+      target = make_target("10.0.0.78", 9444)
+      observed_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.78", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [
+          %{
+            model_ref: %{model_id: "head-order-loaded", version: "v1"},
+            active_request_count: 0,
+            max_concurrency: 1
+          }
+        ])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+
+      assert_receive {:first_head_order_result, {:ok, first_grant}}, 2_000
+      refute_receive {:second_head_order_result, _result}, 100
+
+      assert :ok = QueueManager.release(first_grant)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 1, :second))
+
+      assert_receive {:second_head_order_result, {:ok, second_grant}}, 2_000
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.4 heartbeat state change wakes queued cold model lane" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-wake", "cold-wake-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.59", 9444)
+
+      full_status =
+        make_status_response(%{listen_host: "10.0.0.59", listen_port: 9444})
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, full_status, DateTime.utc_now())
+      refute Task.yield(awaiter, 100)
+
+      available_status = Map.put(full_status, :active_request_count, 0)
+
+      assert {:ok, _node} = Nodes.observe_status(target, available_status, DateTime.utc_now())
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "cold-wake-model@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
+
+    test "SPEC.md §5.5 cold heartbeat contributes one conservative slot per node" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-conservative-a", "cold-one-slot-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-conservative-b", "cold-one-slot-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_cold_one_slot_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.64", 9444)
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.64", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 4)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert_receive {:first_cold_one_slot_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 100)
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "cold-one-slot-model@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 cold heartbeat spends one node slot across queued lanes" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-lane-a", "cold-lane-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-lane-b", "cold-lane-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_cold_lane_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_cold_lane_result)
+      target = make_target("10.0.0.69", 9444)
+      observed_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.69", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+
+      {granted_lane, first_grant} =
+        receive do
+          {:first_cold_lane_result, {:ok, grant}} -> {:first, grant}
+          {:second_cold_lane_result, {:ok, grant}} -> {:second, grant}
+        after
+          2_000 -> flunk("expected exactly one cold lane grant")
+        end
+
+      refute_receive {:first_cold_lane_result, _result}, 100
+      refute_receive {:second_cold_lane_result, _result}, 100
+
+      assert :ok = QueueManager.release(first_grant)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 1, :second))
+
+      second_grant =
+        case granted_lane do
+          :first ->
+            assert_receive {:second_cold_lane_result, {:ok, grant}}, 2_000
+            grant
+
+          :second ->
+            assert_receive {:first_cold_lane_result, {:ok, grant}}, 2_000
+            grant
+        end
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 releasing cold source grant reallocates to next queued lane" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-release-cold-lane-a", "release-cold-lane-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-release-cold-lane-b", "release-cold-lane-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_release_cold_lane_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.82", 9444)
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.82", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert_receive {:first_release_cold_lane_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "release-cold-lane-b@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 empty queue heartbeat preserves observed cold source capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-empty-source-a", "empty-source-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_empty_source_result)
+      target = make_target("10.0.0.84", 9444)
+      observed_at = DateTime.utc_now()
+
+      initial_status =
+        make_status_response(%{listen_host: "10.0.0.84", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, initial_status, observed_at)
+      assert_receive {:first_empty_source_result, {:ok, first_grant}}, 2_000
+      assert :ok = QueueManager.mark_capacity_source_observed(first_grant)
+
+      active_status = Map.put(initial_status, :active_request_count, 1)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, active_status, DateTime.add(observed_at, 1, :second))
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-empty-source-b", "empty-source-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+      refute Task.yield(second_awaiter, 50)
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_key == "empty-source-b@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 repeated cold heartbeat keeps active source slot reserved across lanes" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-repeat-cold-lane-a", "repeat-cold-lane-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-repeat-cold-lane-b", "repeat-cold-lane-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_repeat_cold_lane_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_repeat_cold_lane_result)
+      target = make_target("10.0.0.77", 9444)
+      observed_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.77", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+
+      {granted_lane, first_grant} =
+        receive do
+          {:first_repeat_cold_lane_result, {:ok, grant}} -> {:first, grant}
+          {:second_repeat_cold_lane_result, {:ok, grant}} -> {:second, grant}
+        after
+          2_000 -> flunk("expected exactly one cold lane grant")
+        end
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 1, :second))
+
+      refute_receive {:first_repeat_cold_lane_result, _result}, 100
+      refute_receive {:second_repeat_cold_lane_result, _result}, 100
+
+      assert :ok = QueueManager.release(first_grant)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 2, :second))
+
+      second_grant =
+        case granted_lane do
+          :first ->
+            assert_receive {:second_repeat_cold_lane_result, {:ok, grant}}, 2_000
+            grant
+
+          :second ->
+            assert_receive {:first_repeat_cold_lane_result, {:ok, grant}}, 2_000
+            grant
+        end
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.4 repeated cold heartbeat preserves queued lane capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-repeated-cold-heartbeat-a",
+                   "repeat-cold-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-repeated-cold-heartbeat-b",
+                   "repeat-cold-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_repeat_cold_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.67", 9444)
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.67", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert_receive {:first_repeat_cold_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(DateTime.utc_now(), 1, :second))
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "repeat-cold-model@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 cold heartbeat capacity aggregates across eligible nodes" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-aggregate-a", "cold-aggregate-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cold-aggregate-b", "cold-aggregate-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_cold_aggregate_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_cold_aggregate_result)
+
+      status_a =
+        make_status_response(%{listen_host: "10.0.0.65", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, node_a} =
+               Nodes.observe_status(make_target("10.0.0.65", 9444), status_a, DateTime.utc_now())
+
+      assert_receive {:first_cold_aggregate_result, {:ok, first_grant}}, 2_000
+      assert :ok = QueueManager.mark_grant_node(first_grant, node_a.id)
+      refute_receive {:second_cold_aggregate_result, _result}, 100
+
+      status_b =
+        make_status_response(%{listen_host: "10.0.0.66", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} =
+               Nodes.observe_status(make_target("10.0.0.66", 9444), status_b, DateTime.utc_now())
+
+      assert_receive {:second_cold_aggregate_result, {:ok, second_grant}}, 2_000
+
+      assert first_grant.queue_result == :queued
+      assert first_grant.queue_key == "cold-aggregate-model@v1"
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "cold-aggregate-model@v1"
+
+      assert :ok = QueueManager.release(first_grant)
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 degraded node heartbeat can wake queued cold model lane" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-degraded-cold-wake", "degraded-cold-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.63", 9444)
+
+      status =
+        make_status_response(
+          %{listen_host: "10.0.0.63", listen_port: 9444},
+          %{health_code: "degraded", health_message: "runtime degraded but available"}
+        )
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert node.health == :degraded
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "degraded-cold-model@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
+
+    test "SPEC.md §5.5 ineligible node heartbeat does not wake queued cold model lane" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      node =
+        insert_node!(%{
+          id: node_id,
+          state: :cordoned,
+          advertise_addr: "10.0.0.62",
+          rpc_port: 9444
+        })
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-cordoned-cold-wake", "cordoned-cold-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.62", 9444)
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.62",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, updated} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert updated.state == :cordoned
+      refute Task.yield(awaiter, 100)
+
+      node
+      |> Ecto.Changeset.change(state: :active)
+      |> Repo.update!()
+
+      later = DateTime.add(DateTime.utc_now(), 1, :second)
+
+      assert {:ok, active_node} = Nodes.observe_status(target, status, later)
+      assert active_node.state == :active
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "cordoned-cold-model@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
+
+    test "SPEC.md §5.5 ineligible heartbeat clears stale cold queue capacity" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      node =
+        insert_node!(%{
+          id: node_id,
+          state: :active,
+          health: :healthy,
+          advertise_addr: "10.0.0.63",
+          rpc_port: 9444
+        })
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-stale-cold-capacity-a", "stale-cold-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-stale-cold-capacity-b", "stale-cold-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_stale_cold_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.63", 9444)
+
+      healthy_status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.63",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _active_node} =
+               Nodes.observe_status(target, healthy_status, DateTime.utc_now())
+
+      assert_receive {:first_stale_cold_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      node
+      |> Ecto.Changeset.change(state: :cordoned)
+      |> Repo.update!()
+
+      later = DateTime.add(DateTime.utc_now(), 1, :second)
+
+      assert {:ok, cordoned_node} = Nodes.observe_status(target, healthy_status, later)
+      assert cordoned_node.state == :cordoned
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      cordoned_node
+      |> Ecto.Changeset.change(state: :active)
+      |> Repo.update!()
+
+      newest = DateTime.add(later, 1, :second)
+
+      assert {:ok, _active_node} = Nodes.observe_status(target, healthy_status, newest)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "stale-cold-model@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 invalid placement max concurrency does not wake queued admission" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-invalid-placement-capacity",
+                   "invalid-cap-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.58", 9444)
+
+      invalid_status =
+        placement_status("10.0.0.58", "invalid-cap-model", max_concurrency: 0)
+
+      assert {:ok, _node} = Nodes.observe_status(target, invalid_status, DateTime.utc_now())
+      refute Task.yield(awaiter, 100)
+
+      valid_status =
+        put_in(
+          invalid_status,
+          [:runtime_model_placements, Access.at(0), :max_concurrency],
+          1
+        )
+
+      assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(grant)
+    end
+
+    test "SPEC.md §5.4 exhausted placement status does not publish queued capacity" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-exhausted-placement-capacity", "full-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.76", 9444)
+
+      full_status =
+        placement_status("10.0.0.76", "full-model", max_concurrency: 1)
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 1)
+        |> put_in([:runtime_model_placements, Access.at(0), :active_request_count], 1)
+
+      assert {:ok, _node} = Nodes.observe_status(target, full_status, DateTime.utc_now())
+      refute Task.yield(awaiter, 100)
+
+      available_status =
+        full_status
+        |> Map.put(:active_request_count, 0)
+        |> put_in([:runtime_model_placements, Access.at(0), :active_request_count], 0)
+
+      assert {:ok, _node} = Nodes.observe_status(target, available_status, DateTime.utc_now())
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "full-model@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
+
+    test "SPEC.md §5.4 non-loaded placement status clears stale queued capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-clear-a", "clear-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-clear-b", "clear-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_clear_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+
+      loaded_status =
+        placement_status("10.0.0.55", "clear-model", max_concurrency: 1)
+
+      target = make_target("10.0.0.55", 9444)
+      assert {:ok, _node} = Nodes.observe_status(target, loaded_status, DateTime.utc_now())
+      assert_receive {:first_clear_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      cached_status =
+        put_in(
+          loaded_status,
+          [:runtime_model_placements, Access.at(0), :placement_state],
+          :PLACEMENT_STATE_CACHED
+        )
+
+      assert {:ok, _node} = Nodes.observe_status(target, cached_status, DateTime.utc_now())
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      reloaded_status =
+        put_in(
+          cached_status,
+          [:runtime_model_placements, Access.at(0), :placement_state],
+          :PLACEMENT_STATE_LOADED
+        )
+
+      assert {:ok, _node} = Nodes.observe_status(target, reloaded_status, DateTime.utc_now())
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.4 omitted placement status clears stale queued capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-omitted-a", "omitted-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-placement-omitted-b", "omitted-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_omitted_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+
+      target = make_target("10.0.0.57", 9444)
+      loaded_status = placement_status("10.0.0.57", "omitted-model", max_concurrency: 1)
+
+      assert {:ok, _node} = Nodes.observe_status(target, loaded_status, DateTime.utc_now())
+      assert_receive {:first_omitted_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      omitted_status = Map.put(loaded_status, :runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, omitted_status, DateTime.utc_now())
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert {:ok, _node} = Nodes.observe_status(target, loaded_status, DateTime.utc_now())
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 active loaded model without placement capacity does not wake as cold" do
+      QueueManager.reset()
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-loaded-missing-placement", "loaded-missing"),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      target = make_target("10.0.0.92", 9444)
+      observed_at = DateTime.utc_now()
+
+      missing_placement_status =
+        make_status_response(%{listen_host: "10.0.0.92", listen_port: 9444})
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 2)
+        |> Map.put(:loaded_models, [%{model_id: "loaded-missing", version: "v1"}])
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, missing_placement_status, observed_at)
+      refute Task.yield(awaiter, 100)
+
+      placement_status =
+        missing_placement_status
+        |> Map.put(:runtime_model_placements, [
+          %{
+            model_ref: %{model_id: "loaded-missing", version: "v1"},
+            active_request_count: 1,
+            max_concurrency: 2
+          }
+        ])
+
+      assert {:ok, _node} =
+               Nodes.observe_status(
+                 target,
+                 placement_status,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_result == :queued
+      assert grant.queue_key == "loaded-missing@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
   end
 
   # -- observe_status/3 stale guard --
 
   describe "observe_status/3 stale guard" do
+    test "stale invalid metadata does not clear target queue capacity" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+      observed_at = DateTime.utc_now()
+
+      insert_node!(%{
+        id: node_id,
+        state: :active,
+        health: :healthy,
+        advertise_addr: "10.0.0.19",
+        rpc_port: 9444,
+        last_heartbeat_at: observed_at
+      })
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-stale-invalid-metadata-a", "stale-meta-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-stale-invalid-metadata-b", "stale-meta-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_stale_metadata_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.19", 9444)
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.19",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.add(observed_at, 1))
+      assert_receive {:first_stale_metadata_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      assert :noop =
+               Nodes.observe_status(
+                 target,
+                 %{node_metadata: nil, runtime_health: nil},
+                 observed_at
+               )
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
     test "rejects stale observation" do
       node_id = Ecto.UUID.generate()
       now = DateTime.utc_now()
@@ -672,6 +2067,93 @@ defmodule Orchard.NodesTest do
   # -- observe_status/3 identity conflicts --
 
   describe "observe_status/3 identity conflicts" do
+    test "target conflict clears stale target queue capacity" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      insert_node!(%{
+        id: node_id,
+        state: :active,
+        health: :healthy,
+        advertise_addr: "10.0.0.29",
+        rpc_port: 9444
+      })
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-identity-conflict-a",
+                   "identity-conflict-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-identity-conflict-b",
+                   "identity-conflict-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_identity_conflict_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.29", 9444)
+
+      valid_status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.29",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+      assert_receive {:first_identity_conflict_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      conflicting_status =
+        make_status_response(%{
+          node_id: Ecto.UUID.generate(),
+          listen_host: "10.0.0.29",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      log =
+        capture_log(fn ->
+          assert :noop =
+                   Nodes.observe_status(
+                     target,
+                     conflicting_status,
+                     DateTime.add(DateTime.utc_now(), 1, :second)
+                   )
+        end)
+
+      assert log =~ "identity conflict"
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(
+                 target,
+                 valid_status,
+                 DateTime.add(DateTime.utc_now(), 2, :second)
+               )
+
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
     test "target conflict: same addr:port, different UUID" do
       insert_node!(%{id: Ecto.UUID.generate(), advertise_addr: "10.0.0.30", rpc_port: 9444})
       target = make_target("10.0.0.30", 9444)
@@ -778,6 +2260,154 @@ defmodule Orchard.NodesTest do
   # -- observe_status/3 missing/invalid metadata --
 
   describe "observe_status/3 missing metadata" do
+    test "invalid metadata clears stale target queue capacity" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      insert_node!(%{
+        id: node_id,
+        state: :active,
+        health: :healthy,
+        advertise_addr: "10.0.0.43",
+        rpc_port: 9444
+      })
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-invalid-metadata-a", "invalid-meta-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-invalid-metadata-b", "invalid-meta-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_invalid_metadata_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.43", 9444)
+
+      valid_status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.43",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+      assert_receive {:first_invalid_metadata_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      assert :noop =
+               Nodes.observe_status(
+                 target,
+                 %{node_metadata: nil, runtime_health: nil},
+                 DateTime.add(DateTime.utc_now(), 1, :second)
+               )
+
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(
+                 target,
+                 valid_status,
+                 DateTime.add(DateTime.utc_now(), 2, :second)
+               )
+
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "map-shaped invalid metadata clears stale target queue capacity" do
+      invalid_statuses = [
+        {%{node_metadata: %{}, runtime_health: nil}, "10.0.0.44", "empty-map"},
+        {%{node_metadata: %{"node_id" => Ecto.UUID.generate()}, runtime_health: nil}, "10.0.0.45",
+         "string-keyed"}
+      ]
+
+      Enum.each(invalid_statuses, fn {invalid_status, host, suffix} ->
+        QueueManager.reset()
+
+        node_id = Ecto.UUID.generate()
+
+        insert_node!(%{
+          id: node_id,
+          state: :active,
+          health: :healthy,
+          advertise_addr: host,
+          rpc_port: 9444
+        })
+
+        assert {:queued, first_ticket} =
+                 QueueManager.acquire(
+                   queue_admission_request(
+                     "req-node-invalid-map-metadata-a-#{suffix}",
+                     "invalid-map-meta-model-#{suffix}"
+                   ),
+                   config: queue_config(capacity: 0)
+                 )
+
+        assert {:queued, second_ticket} =
+                 QueueManager.acquire(
+                   queue_admission_request(
+                     "req-node-invalid-map-metadata-b-#{suffix}",
+                     "invalid-map-meta-model-#{suffix}"
+                   ),
+                   config: queue_config(capacity: 0)
+                 )
+
+        first_awaiter = start_holding_awaiter(first_ticket, {:first_invalid_map_result, suffix})
+        second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+        target = make_target(host, 9444)
+
+        valid_status =
+          make_status_response(%{
+            node_id: node_id,
+            listen_host: host,
+            listen_port: 9444
+          })
+          |> Map.put(:active_request_count, 0)
+          |> Map.put(:max_concurrency, 1)
+          |> Map.put(:runtime_model_placements, [])
+
+        assert {:ok, _node} = Nodes.observe_status(target, valid_status, DateTime.utc_now())
+        assert_receive {{:first_invalid_map_result, ^suffix}, {:ok, first_grant}}, 2_000
+        refute Task.yield(second_awaiter, 50)
+
+        assert :noop =
+                 Nodes.observe_status(
+                   target,
+                   invalid_status,
+                   DateTime.add(DateTime.utc_now(), 1, :second)
+                 )
+
+        assert :ok = QueueManager.release(first_grant)
+        refute Task.yield(second_awaiter, 100)
+
+        assert {:ok, _node} =
+                 Nodes.observe_status(
+                   target,
+                   valid_status,
+                   DateTime.add(DateTime.utc_now(), 2, :second)
+                 )
+
+        assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+        assert second_grant.queue_result == :queued
+
+        assert :ok = QueueManager.release(second_grant)
+        send(first_awaiter, :stop)
+      end)
+    end
+
     test "nil node_metadata returns noop" do
       target = make_target("10.0.0.40", 9444)
       status = %{node_metadata: nil, runtime_health: nil}
@@ -1042,6 +2672,161 @@ defmodule Orchard.NodesTest do
                  observed_at
                )
 
+      assert marked.health == :degraded
+    end
+
+    test "SPEC.md §5.5 transport failure clears stale queue capacity sources" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      insert_node!(%{
+        id: node_id,
+        advertise_addr: "10.0.0.74",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: DateTime.utc_now()
+      })
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-failure-clears-capacity-a",
+                   "failure-clear-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-failure-clears-capacity-b",
+                   "failure-clear-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_failure_clear_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.74", 9444)
+      observed_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.74",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, observed_at)
+      assert_receive {:first_failure_clear_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 target,
+                 :node_timeout,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      assert marked.health == :degraded
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 2, :second))
+
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 transport failure clears node sources before promotion" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+
+      insert_node!(%{
+        id: node_id,
+        advertise_addr: "10.0.0.79",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: DateTime.utc_now()
+      })
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-failure-atomic-clear",
+                   "failure-atomic-clear-model"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert :ok =
+               QueueManager.refresh_capacity("failure-atomic-clear-model", "v1", 1,
+                 source: {:node, node_id, :cold}
+               )
+
+      tag = make_ref()
+      put_ticket_awaiter(ticket, tag)
+
+      target = make_target("10.0.0.79", 9444)
+      observed_at = DateTime.utc_now()
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 target,
+                 :node_timeout,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      assert marked.health == :degraded
+      refute_receive {^tag, {:ok, _grant}}, 100
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          listen_host: "10.0.0.79",
+          listen_port: 9444
+        })
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, status, DateTime.add(observed_at, 2, :second))
+
+      assert_receive {^tag, {:ok, grant}}, 2_000
+      assert :ok = QueueManager.release(grant)
+    end
+
+    test "swallows QueueManager clear exits after marking transport failure" do
+      put_queue_manager_impl(Orchard.NodesTest.ExitingQueueManager)
+
+      hb_time = DateTime.utc_now()
+
+      node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.47",
+          rpc_port: 9444,
+          health: :healthy,
+          last_heartbeat_at: hb_time
+        })
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 make_target("10.0.0.47", 9444),
+                 :node_timeout,
+                 DateTime.add(hb_time, 5, :second)
+               )
+
+      assert marked.id == node.id
       assert marked.health == :degraded
     end
 

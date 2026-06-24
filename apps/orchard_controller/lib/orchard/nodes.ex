@@ -2,7 +2,7 @@ defmodule Orchard.Nodes do
   @moduledoc """
   Persistence context for node inventory.
 
-  Provides observational node discovery (no join ceremony) — nodes are
+  Provides observational node discovery (no join ceremony) - nodes are
   automatically registered when a successful `GetStatus` response includes
   valid `RuntimeNodeMetadata`.
   """
@@ -161,6 +161,16 @@ defmodule Orchard.Nodes do
 
   New nodes are inserted with `state: :active`. Updates preserve the
   existing `state` (admin-managed).
+  Successful eligible observations also refresh source-scoped queue capacity
+  from aggregate node capacity and loaded placement statuses.
+  Fresh invalid metadata, identity conflicts, ineligible nodes, and target
+  failures clear stale queue capacity sources for that node/target.
+
+  Options:
+  - `:reserve_unassigned_node_grants?` - reserve unassigned active grants
+    while reconciling node capacity (default: `true`)
+  - `:reserve_unassigned_source_grants?` - reserve unassigned source-backed
+    grants while reconciling node capacity (default: `true`)
 
   Returns:
   - `{:ok, %Node{}}` on insert or update
@@ -169,15 +179,44 @@ defmodule Orchard.Nodes do
   """
   @spec observe_status(keyword(), map() | struct(), DateTime.t()) ::
           {:ok, Node.t()} | :noop
-  def observe_status(target, status_response, observed_at) do
-    with true <- repo_available?(),
-         {:ok, observation} <- normalize_observation(target, status_response, observed_at) do
-      execute_observe(observation)
+  @spec observe_status(keyword(), map() | struct(), DateTime.t(), keyword()) ::
+          {:ok, Node.t()} | :noop
+  def observe_status(target, status_response, observed_at, opts \\ []) do
+    if repo_available?() do
+      case normalize_observation(target, status_response, observed_at) do
+        {:ok, observation} ->
+          handle_observation_result(
+            target,
+            observed_at,
+            execute_observe(observation),
+            status_response,
+            opts
+          )
+
+        :error ->
+          clear_existing_target_queue_capacity_sources(target, observed_at)
+          :noop
+      end
     else
-      _ -> :noop
+      :noop
     end
   rescue
     _ -> :noop
+  end
+
+  defp handle_observation_result(target, observed_at, result, status_response, opts) do
+    case result do
+      {:ok, node} ->
+        refresh_observed_queue_capacities(node, status_response, opts)
+        {:ok, node}
+
+      {:noop, :identity_conflict} ->
+        clear_existing_target_queue_capacity_sources(target, observed_at)
+        :noop
+
+      {:noop, _reason} ->
+        :noop
+    end
   end
 
   @doc """
@@ -185,11 +224,13 @@ defmodule Orchard.Nodes do
 
   Classifies the given `reason` and, if it matches a transport failure pattern,
   delegates to `mark_target_unreachable/2`. Non-transport reasons are ignored.
+  Successful transport-failure marks also clear queue capacity sources owned by
+  the failed node so stale observations cannot wake queued requests.
 
   Transport failure reasons:
-  - `{:connect_failed, _}` — gRPC channel could not be established
-  - `:node_unavailable` — node not reachable
-  - `:node_timeout` — probe or RPC timed out
+  - `{:connect_failed, _}` - gRPC channel could not be established
+  - `:node_unavailable` - node not reachable
+  - `:node_timeout` - probe or RPC timed out
 
   Returns:
   - `{:ok, %Node{}}` when health was updated
@@ -198,7 +239,14 @@ defmodule Orchard.Nodes do
   @spec record_transport_failure(keyword(), term(), DateTime.t()) :: {:ok, Node.t()} | :noop
   def record_transport_failure(target, reason, observed_at) do
     if transport_failure_reason?(reason) do
-      mark_target_unreachable(target, observed_at)
+      case mark_target_unreachable(target, observed_at) do
+        {:ok, %Node{} = node} = result ->
+          clear_node_queue_capacity_sources(node)
+          result
+
+        :noop ->
+          :noop
+      end
     else
       :noop
     end
@@ -232,22 +280,25 @@ defmodule Orchard.Nodes do
     metadata = extract_metadata(status_response)
 
     with {:metadata, %{} = meta} <- {:metadata, metadata},
-         {:uuid, {:ok, node_id}} <- {:uuid, Ecto.UUID.cast(meta.node_id)},
+         {:uuid, {:ok, node_id}} <- {:uuid, Ecto.UUID.cast(map_get(meta, :node_id))},
          {:display_name, display_name} when display_name != nil <-
            {:display_name, resolve_display_name(meta)},
          {:port, port} when is_integer(port) and port in 1..65_535 <-
            {:port, resolve_port(meta, target)} do
+      hostname = map_get(meta, :hostname)
+      listen_host = map_get(meta, :listen_host)
+
       {:ok,
        %{
          id: node_id,
          display_name: display_name,
-         hostname: non_empty_or(meta.hostname, target_host(target)),
-         advertise_addr: non_empty_or(meta.listen_host, target_host(target)),
+         hostname: non_empty_or(hostname, target_host(target)),
+         advertise_addr: non_empty_or(listen_host, target_host(target)),
          rpc_port: port,
          connect_host: connect_host(target),
          connect_port: connect_port(target),
          health: derive_health(extract_runtime_health(status_response)),
-         agent_version: non_empty_or(meta.agent_version, nil),
+         agent_version: non_empty_or(map_get(meta, :agent_version), nil),
          capabilities: build_capabilities(meta, status_response),
          tool_readiness: build_tool_readiness(status_response),
          last_heartbeat_at: observed_at
@@ -259,21 +310,27 @@ defmodule Orchard.Nodes do
 
   defp extract_metadata(%{node_metadata: nil}), do: nil
   defp extract_metadata(%{node_metadata: meta}), do: meta
+  defp extract_metadata(%{"node_metadata" => nil}), do: nil
+  defp extract_metadata(%{"node_metadata" => meta}), do: meta
   defp extract_metadata(_), do: nil
 
   defp extract_runtime_health(%{runtime_health: health}), do: health
+  defp extract_runtime_health(%{"runtime_health" => health}), do: health
   defp extract_runtime_health(_), do: nil
 
   defp resolve_display_name(meta) do
+    display_name = map_get(meta, :display_name)
+    hostname = map_get(meta, :hostname)
+
     cond do
-      non_empty?(meta.display_name) -> meta.display_name
-      non_empty?(meta.hostname) -> meta.hostname
+      non_empty?(display_name) -> display_name
+      non_empty?(hostname) -> hostname
       true -> nil
     end
   end
 
   defp resolve_port(meta, target) do
-    port = meta.listen_port
+    port = map_get(meta, :listen_port)
 
     if is_integer(port) and port in 1..65_535 do
       port
@@ -283,11 +340,12 @@ defmodule Orchard.Nodes do
   end
 
   defp derive_health(nil), do: :healthy
+  defp derive_health(health) when not is_map(health), do: :healthy
 
   defp derive_health(health) do
-    ready = Map.get(health, :ready, true)
-    code = Map.get(health, :health_code, "")
-    message = Map.get(health, :health_message, "")
+    ready = map_get(health, :ready)
+    code = map_get(health, :health_code) || ""
+    message = map_get(health, :health_message) || ""
 
     cond do
       ready == false -> :unhealthy
@@ -297,7 +355,7 @@ defmodule Orchard.Nodes do
   end
 
   defp build_capabilities(meta, status_response) do
-    backend = Map.get(meta, :worker_backend, "")
+    backend = map_get(meta, :worker_backend) || ""
 
     hosted_tools =
       status_response
@@ -309,7 +367,7 @@ defmodule Orchard.Nodes do
     |> maybe_put_worker_backend(backend)
     |> Map.put(
       "supports_prompt_token_ids",
-      Map.get(status_response, :supports_prompt_token_ids, false)
+      map_get(status_response, :supports_prompt_token_ids) || false
     )
     |> Map.put("hosted_tools", hosted_tools)
   end
@@ -326,6 +384,221 @@ defmodule Orchard.Nodes do
     |> ToolReadiness.normalize_all(capability_refs)
     |> ToolReadiness.persist_all()
   end
+
+  defp refresh_observed_queue_capacities(%Node{} = node, status_response, opts) do
+    queue_manager = Orchard.Inference.queue_manager()
+    placement_source = {:node, node.id, :placement}
+    cold_source = {:node, node.id, :cold}
+
+    if queue_capacity_eligible_node?(node) do
+      queue_manager.refresh_node_capacity_sources(%{
+        clear_sources: node_queue_capacity_sources(node),
+        node_source: {:node, node.id},
+        placement_source: placement_source,
+        cold_source: cold_source,
+        node_id: node.id,
+        node_active: non_negative_integer(map_get(status_response, :active_request_count), 0),
+        node_max: positive_integer(map_get(status_response, :max_concurrency), 1),
+        placements: placement_observations(status_response),
+        reserve_unassigned_node_grants?:
+          Keyword.get(opts, :reserve_unassigned_node_grants?, true),
+        reserve_unassigned_source_grants?:
+          Keyword.get(opts, :reserve_unassigned_source_grants?, true)
+      })
+    else
+      clear_node_queue_capacity_sources(node)
+    end
+  rescue
+    error ->
+      Logger.debug("Queue capacity refresh from node observation failed: #{inspect(error)}")
+      :ok
+  catch
+    :exit, reason ->
+      Logger.debug("Queue capacity refresh from node observation exited: #{inspect(reason)}")
+      :ok
+  end
+
+  defp clear_node_queue_capacity_sources(%Node{} = node, opts \\ []) do
+    queue_manager = Orchard.Inference.queue_manager()
+
+    queue_manager.clear_capacity_sources(
+      node_queue_capacity_sources(node),
+      promote?: Keyword.get(opts, :promote?, true)
+    )
+  rescue
+    error ->
+      Logger.debug("Queue capacity source clear for node failed: #{inspect(error)}")
+      :ok
+  catch
+    :exit, reason ->
+      Logger.debug("Queue capacity source clear for node exited: #{inspect(reason)}")
+      :ok
+  end
+
+  defp clear_existing_target_queue_capacity_sources(target, observed_at) do
+    case validate_target(target) do
+      {:ok, host, port} ->
+        case lookup_node_by_target(host, port) do
+          %Node{} = node -> clear_fresh_target_queue_capacity_sources(node, observed_at)
+          nil -> :ok
+        end
+
+      :error ->
+        :ok
+    end
+  rescue
+    error ->
+      Logger.debug("Queue capacity source clear for target failed: #{inspect(error)}")
+      :ok
+  catch
+    :exit, reason ->
+      Logger.debug("Queue capacity source clear for target exited: #{inspect(reason)}")
+      :ok
+  end
+
+  defp clear_fresh_target_queue_capacity_sources(%Node{} = node, observed_at) do
+    if stale_target_observation?(node, observed_at) do
+      :ok
+    else
+      clear_node_queue_capacity_sources(node)
+    end
+  end
+
+  defp stale_target_observation?(
+         %Node{last_heartbeat_at: %DateTime{} = last_heartbeat_at},
+         %DateTime{} = observed_at
+       ) do
+    DateTime.compare(last_heartbeat_at, observed_at) != :lt
+  end
+
+  defp stale_target_observation?(_node, _observed_at), do: false
+
+  defp queue_capacity_eligible_node?(%Node{state: :active, health: health})
+       when health in [:healthy, :degraded],
+       do: true
+
+  defp queue_capacity_eligible_node?(%Node{}), do: false
+
+  defp node_queue_capacity_sources(%Node{} = node),
+    do: [{:node, node.id}, {:node, node.id, :placement}, {:node, node.id, :cold}]
+
+  defp extract_runtime_model_placements(%{runtime_model_placements: placements})
+       when is_list(placements),
+       do: placements
+
+  defp extract_runtime_model_placements(_status_response), do: []
+
+  defp placement_observations(status_response) do
+    runtime_observations =
+      status_response
+      |> extract_runtime_model_placements()
+      |> Enum.reduce(%{}, &put_placement_observation/2)
+
+    status_response
+    |> put_active_loaded_model_observations(runtime_observations)
+    |> Enum.map(fn {{model_id, version}, status} -> {model_id, version, status} end)
+  end
+
+  defp put_active_loaded_model_observations(status_response, observations) do
+    if non_negative_integer(map_get(status_response, :active_request_count), 0) > 0 do
+      status_response
+      |> extract_loaded_models()
+      |> Enum.reduce(observations, &put_loaded_model_observation/2)
+    else
+      observations
+    end
+  end
+
+  defp extract_loaded_models(%{loaded_models: models}) when is_list(models), do: models
+  defp extract_loaded_models(%{"loaded_models" => models}) when is_list(models), do: models
+  defp extract_loaded_models(_status_response), do: []
+
+  defp put_loaded_model_observation(model, observations) when is_map(model) do
+    case loaded_model_ref(model) do
+      {:ok, model_id, version} -> Map.put_new(observations, {model_id, version}, :unavailable)
+      :error -> observations
+    end
+  end
+
+  defp put_loaded_model_observation(_model, observations), do: observations
+
+  defp loaded_model_ref(model) do
+    model_ref = map_get(model, :model_ref)
+
+    cond do
+      non_empty?(map_get(model, :model_id)) and non_empty?(map_get(model, :version)) ->
+        {:ok, map_get(model, :model_id), map_get(model, :version)}
+
+      is_map(model_ref) ->
+        placement_model_ref(%{model_ref: model_ref})
+
+      true ->
+        :error
+    end
+  end
+
+  defp put_placement_observation(placement, observations) when is_map(placement) do
+    case placement_model_ref(placement) do
+      {:ok, model_id, version} ->
+        status = placement_observation_status(placement)
+        Map.update(observations, {model_id, version}, status, fn _existing -> :ambiguous end)
+
+      :error ->
+        observations
+    end
+  end
+
+  defp put_placement_observation(_placement, observations), do: observations
+
+  defp placement_observation_status(placement) do
+    if loaded_placement?(placement) and placement_max_concurrency(placement) > 0 do
+      %{
+        active_request_count: non_negative_integer(map_get(placement, :active_request_count), 0),
+        max_concurrency: placement_max_concurrency(placement)
+      }
+    else
+      :unavailable
+    end
+  end
+
+  defp loaded_placement?(placement) do
+    case map_get(placement, :placement_state) do
+      nil -> true
+      state -> state in [:PLACEMENT_STATE_LOADED, "PLACEMENT_STATE_LOADED", 7]
+    end
+  end
+
+  defp placement_model_ref(placement) do
+    case map_get(placement, :model_ref) do
+      model_ref when is_map(model_ref) ->
+        model_id = map_get(model_ref, :model_id)
+        version = map_get(model_ref, :version)
+
+        if non_empty?(model_id) and non_empty?(version) do
+          {:ok, model_id, version}
+        else
+          :error
+        end
+
+      _other ->
+        :error
+    end
+  end
+
+  defp placement_max_concurrency(placement) do
+    placement
+    |> map_get(:max_concurrency)
+    |> case do
+      capacity when is_integer(capacity) and capacity > 0 -> capacity
+      _other -> 0
+    end
+  end
+
+  defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
+  defp positive_integer(_value, default), do: default
+
+  defp non_negative_integer(value, _default) when is_integer(value) and value >= 0, do: value
+  defp non_negative_integer(_value, default), do: default
 
   defp extract_hosted_tool_capabilities(%{hosted_tool_capabilities: entries})
        when is_list(entries),
@@ -362,16 +635,16 @@ defmodule Orchard.Nodes do
     end)
     |> case do
       {:ok, node} -> {:ok, node}
-      {:error, :identity_conflict} -> :noop
-      {:error, :stale} -> :noop
+      {:error, :identity_conflict} -> {:noop, :identity_conflict}
+      {:error, :stale} -> {:noop, :stale}
     end
   rescue
     # Concurrent first-observation race: two transactions see no existing
     # rows, both attempt insert, one hits a uniqueness constraint.
-    # Treat as a benign conflict — the other process won the insert.
+    # Treat as a benign conflict - the other process won the insert.
     error in Ecto.ConstraintError ->
       Logger.debug("Node observation lost concurrent insert race: #{inspect(error.constraint)}")
-      :noop
+      {:noop, :constraint_conflict}
   end
 
   defp load_conflicting_nodes(observation) do
@@ -571,6 +844,15 @@ defmodule Orchard.Nodes do
       _other -> nil
     end
   end
+
+  defp map_get(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
+
+  defp map_get(_map, key) when is_atom(key), do: nil
 
   defp lookup_node_by_target(host, port) do
     lookup_node_by_connect_target(host, port) ||
