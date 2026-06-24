@@ -526,8 +526,9 @@ defmodule Orchard.Inference.QueueManagerTest do
   test "SPEC.md §5.5 pre-observation grant node mark does not promote stale source capacity" do
     source_node_id = Ecto.UUID.generate()
     probed_node_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 0, max_wait_ms: 3_000, poll_interval_ms: 5_000)
 
-    with_queue_admission_config(queue_config(capacity: 0, max_wait_ms: 1_000), fn ->
+    with_queue_admission_config(config, fn ->
       assert {:queued, first_ticket} =
                QueueManager.acquire(
                  admission_request("req-node-pre-observe-mark-a",
@@ -604,6 +605,77 @@ defmodule Orchard.Inference.QueueManagerTest do
       assert :ok = QueueManager.abandon(second_ticket)
       assert :ok = QueueManager.release(first_grant)
       Task.shutdown(second_awaiter)
+      send(first_awaiter, :stop)
+    end)
+  end
+
+  test "SPEC.md §5.5 deferred resolved grants replay independent node source capacity" do
+    source_node_id = Ecto.UUID.generate()
+    probed_node_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 0, max_wait_ms: 3_000, poll_interval_ms: 5_000)
+
+    with_queue_admission_config(config, fn ->
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-deferred-replay-a",
+                   model_id: "deferred-replay-a"
+                 )
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_deferred_replay_result)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, source_node_id},
+                   {:node, source_node_id, :placement},
+                   {:node, source_node_id, :cold}
+                 ],
+                 placement_source: {:node, source_node_id, :placement},
+                 cold_source: {:node, source_node_id, :cold},
+                 node_id: source_node_id,
+                 node_active: 0,
+                 node_max: 1,
+                 placements: []
+               })
+
+      assert_receive {:first_deferred_replay_result, {:ok, first_grant}}, 2_000
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-deferred-replay-b",
+                   model_id: "deferred-replay-b"
+                 )
+               )
+
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, probed_node_id},
+                   {:node, probed_node_id, :placement},
+                   {:node, probed_node_id, :cold}
+                 ],
+                 placement_source: {:node, probed_node_id, :placement},
+                 cold_source: {:node, probed_node_id, :cold},
+                 node_id: probed_node_id,
+                 node_active: 0,
+                 node_max: 1,
+                 placements: []
+               })
+
+      refute Task.yield(second_awaiter, 100)
+      assert :ok = QueueManager.mark_grant_node(first_grant, source_node_id, promote?: false)
+      refute Task.yield(second_awaiter, 100)
+
+      assert :ok = QueueManager.refresh_capacity("deferred-replay-trigger", "v1", 0)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_key == "deferred-replay-b@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      assert :ok = QueueManager.release(first_grant)
       send(first_awaiter, :stop)
     end)
   end
@@ -1698,6 +1770,104 @@ defmodule Orchard.Inference.QueueManagerTest do
       stop_awaiter(blocked_awaiter)
       stop_awaiter(later_awaiter)
       stop_awaiter(ready_awaiter)
+    end)
+  end
+
+  test "SPEC.md §5.5 source allocation does not expand blocked placement lanes" do
+    node_id = Ecto.UUID.generate()
+    blocked_model_id = "blocked-placement-expand"
+    cold_model_id = "blocked-placement-expand-cold"
+    config = queue_config(capacity: 0, max_wait_ms: 1_000)
+
+    with_queue_admission_config(config, fn ->
+      assert {:queued, blocked_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-blocked-placement-expand-a",
+                   model_id: blocked_model_id
+                 )
+               )
+
+      assert {:queued, first_cold_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-blocked-placement-expand-cold-a",
+                   model_id: cold_model_id
+                 )
+               )
+
+      assert {:queued, second_cold_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-blocked-placement-expand-cold-b",
+                   model_id: cold_model_id
+                 )
+               )
+
+      blocked_awaiter = await_and_hold(blocked_ticket, :blocked_placement_expand)
+      first_cold_awaiter = await_and_hold(first_cold_ticket, :blocked_placement_cold_a)
+      second_cold_awaiter = await_and_hold(second_cold_ticket, :blocked_placement_cold_b)
+
+      assert wait_until(fn -> queue_entry_awaiting?(blocked_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(first_cold_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(second_cold_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_capacity(blocked_model_id, "v1", 1,
+                 source: {:node, node_id, :placement}
+               )
+
+      assert :ok =
+               QueueManager.refresh_capacity(cold_model_id, "v1", 2,
+                 source: {:node, node_id, :cold}
+               )
+
+      assert_receive {:await_result, :blocked_placement_expand, {:ok, blocked_grant}}, 2_000
+      assert_receive {:await_result, :blocked_placement_cold_a, {:ok, first_cold_grant}}, 2_000
+      assert_receive {:await_result, :blocked_placement_cold_b, {:ok, second_cold_grant}}, 2_000
+
+      :sys.replace_state(QueueManager, fn state ->
+        grants =
+          Enum.reduce([first_cold_grant.grant_id, second_cold_grant.grant_id], state.grants, fn
+            grant_id, grants ->
+              Map.update!(grants, grant_id, &Map.put(&1, :capacity_source_kind, :cold))
+          end)
+
+        %{state | grants: grants}
+      end)
+
+      assert {:queued, extra_blocked_ticket} =
+               QueueManager.acquire(
+                 admission_request("req-blocked-placement-expand-b",
+                   model_id: blocked_model_id
+                 )
+               )
+
+      extra_blocked_awaiter = await_and_hold(extra_blocked_ticket, :blocked_placement_extra)
+      assert wait_until(fn -> queue_entry_awaiting?(extra_blocked_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, node_id},
+                   {:node, node_id, :placement},
+                   {:node, node_id, :cold}
+                 ],
+                 placement_source: {:node, node_id, :placement},
+                 cold_source: {:node, node_id, :cold},
+                 node_id: node_id,
+                 node_active: 0,
+                 node_max: 4,
+                 placements: [{blocked_model_id, "v1", :unavailable}]
+               })
+
+      refute_receive {:await_result, :blocked_placement_extra, _result}, 100
+
+      assert :ok = QueueManager.abandon(extra_blocked_ticket)
+      assert :ok = QueueManager.release(blocked_grant)
+      assert :ok = QueueManager.release(first_cold_grant)
+      assert :ok = QueueManager.release(second_cold_grant)
+      stop_awaiter(blocked_awaiter)
+      stop_awaiter(first_cold_awaiter)
+      stop_awaiter(second_cold_awaiter)
+      stop_awaiter(extra_blocked_awaiter)
     end)
   end
 

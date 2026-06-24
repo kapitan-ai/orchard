@@ -2212,8 +2212,8 @@ defmodule Orchard.Inference.QueueManager do
       Map.has_key?(lane_limits, queue_key) ->
         max(Map.fetch!(lane_limits, queue_key), allocated)
 
-      MapSet.member?(blocked_lanes, queue_key) and allocated == 0 ->
-        0
+      MapSet.member?(blocked_lanes, queue_key) ->
+        allocated
 
       true ->
         max(per_lane_limit, allocated)
@@ -3093,30 +3093,69 @@ defmodule Orchard.Inference.QueueManager do
   end
 
   defp defer_grant_in_retained_node_capacity_sources(state, grant_id) do
-    limits =
-      Map.new(state.capacity_source_limits, fn
-        {source, %{lanes: :any} = limit} ->
-          reserved_grants = Map.get(limit, :reserved_node_grants, MapSet.new())
+    case Map.fetch(state.grants, grant_id) do
+      {:ok, grant} ->
+        limits =
+          Map.new(state.capacity_source_limits, fn
+            {source, %{lanes: :any} = limit} ->
+              {source, maybe_defer_grant_in_retained_node_limit(source, limit, grant, grant_id)}
 
-          limit =
-            if MapSet.member?(reserved_grants, grant_id) do
-              Map.update(
-                limit,
-                :deferred_reserved_node_grants,
-                MapSet.new([grant_id]),
-                &MapSet.put(&1, grant_id)
-              )
-            else
-              limit
-            end
+            {source, limit} ->
+              {source, limit}
+          end)
 
-          {source, limit}
+        %{state | capacity_source_limits: limits}
 
-        {source, limit} ->
-          {source, limit}
-      end)
+      :error ->
+        state
+    end
+  end
 
-    %{state | capacity_source_limits: limits}
+  defp maybe_defer_grant_in_retained_node_limit(source, limit, grant, grant_id) do
+    node_id = Map.get(limit, :node_id) || capacity_source_node_id(source)
+
+    if retained_node_grant_reserves_source?(grant, node_id, source, limit) do
+      defer_reserved_grant_in_retained_node_limit(limit, grant_id)
+    else
+      remove_grant_from_retained_node_limit(limit, grant_id)
+    end
+  end
+
+  defp defer_reserved_grant_in_retained_node_limit(limit, grant_id) do
+    reserved_grants = Map.get(limit, :reserved_node_grants, MapSet.new())
+
+    if MapSet.member?(reserved_grants, grant_id) do
+      Map.update(
+        limit,
+        :deferred_reserved_node_grants,
+        MapSet.new([grant_id]),
+        &MapSet.put(&1, grant_id)
+      )
+    else
+      limit
+    end
+  end
+
+  defp remove_grant_from_retained_node_limit(limit, grant_id) do
+    limit
+    |> update_mapset_key(:reserved_node_grants, &MapSet.delete(&1, grant_id))
+    |> update_mapset_key(:deferred_reserved_node_grants, &MapSet.delete(&1, grant_id))
+  end
+
+  defp update_mapset_key(map, key, fun) do
+    case Map.fetch(map, key) do
+      {:ok, value} ->
+        value = fun.(value)
+
+        if MapSet.size(value) == 0 do
+          Map.delete(map, key)
+        else
+          Map.put(map, key, value)
+        end
+
+      :error ->
+        map
+    end
   end
 
   defp maybe_reserve_grant_in_retained_node_limit(source, %{lanes: :any} = limit, grant, grant_id) do
