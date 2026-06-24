@@ -2326,7 +2326,10 @@ defmodule Orchard.Inference.QueueManager do
           |> Enum.sum()
           |> min(capacity)
 
-        if reservation_capacity <= 0 do
+        reserved_node_capacity = retained_node_grant_reservation_count(source, limit, state)
+        retained_capacity = min(reservation_capacity + reserved_node_capacity, capacity)
+
+        if retained_capacity <= 0 do
           state = %{
             state
             | capacity_source_limits: Map.delete(state.capacity_source_limits, source)
@@ -2339,7 +2342,7 @@ defmodule Orchard.Inference.QueueManager do
             | capacity_source_limits:
                 Map.put(state.capacity_source_limits, source, %{
                   limit
-                  | capacity: reservation_capacity
+                  | capacity: retained_capacity
                 })
           }
 

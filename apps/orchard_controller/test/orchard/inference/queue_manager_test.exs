@@ -1338,6 +1338,115 @@ defmodule Orchard.Inference.QueueManagerTest do
     end
   end
 
+  test "SPEC.md §5.5 source expiry preserves reserved grant budget" do
+    node_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 0, max_wait_ms: 5_000, poll_interval_ms: 50)
+
+    with_queue_admission_config(config, fn ->
+      assert {:ok, base_grant} =
+               QueueManager.acquire(
+                 admission_request("req-node-source-expiry-base",
+                   model_id: "source-expiry-base"
+                 ),
+                 config: queue_config(capacity: 1)
+               )
+
+      assert :ok = QueueManager.mark_grant_node(base_grant, node_id)
+
+      first_request =
+        admission_request("req-node-source-expiry-stale",
+          model_id: "source-expiry-stale"
+        )
+
+      assert {:queued, first_ticket} = QueueManager.acquire(first_request)
+
+      second_request =
+        admission_request("req-node-source-expiry-active",
+          model_id: "source-expiry-active"
+        )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(second_request)
+
+      third_request =
+        admission_request("req-node-source-expiry-next",
+          model_id: "source-expiry-next"
+        )
+
+      assert {:queued, third_ticket} =
+               QueueManager.acquire(third_request)
+
+      first_tag = :source_expiry_first
+      second_tag = :source_expiry_second
+      third_tag = :source_expiry_third
+      tags = [first_tag, second_tag, third_tag]
+
+      requests = %{
+        first_tag => first_request,
+        second_tag => second_request,
+        third_tag => third_request
+      }
+
+      first_awaiter = start_holding_awaiter(first_ticket, first_tag)
+      second_awaiter = start_holding_awaiter(second_ticket, second_tag)
+      third_awaiter = start_holding_awaiter(third_ticket, third_tag)
+      assert wait_until(fn -> queue_entry_awaiting?(first_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(third_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, node_id},
+                   {:node, node_id, :placement},
+                   {:node, node_id, :cold}
+                 ],
+                 placement_source: {:node, node_id, :placement},
+                 cold_source: {:node, node_id, :cold},
+                 node_id: node_id,
+                 node_active: 0,
+                 node_max: 3,
+                 placements: []
+               })
+
+      granted =
+        for _index <- 1..2 do
+          assert_receive {tag, {:ok, grant}}
+                         when tag in [
+                                :source_expiry_first,
+                                :source_expiry_second,
+                                :source_expiry_third
+                              ],
+                         2_000
+
+          {tag, grant}
+        end
+
+      granted_tags = Enum.map(granted, fn {tag, _grant} -> tag end)
+      [remaining_tag] = tags -- granted_tags
+      refute_receive {^remaining_tag, _result}, 50
+
+      {stale_tag, first_grant} = hd(granted)
+      {_active_tag, second_grant} = List.last(granted)
+      first_request = Map.fetch!(requests, stale_tag)
+
+      assert {:queued, retry_ticket} =
+               QueueManager.requeue(first_grant, first_request, config: config)
+
+      refute_receive {^remaining_tag, _result}, 100
+
+      assert :ok = QueueManager.release(second_grant)
+      assert_receive {^remaining_tag, {:ok, third_grant}}, 2_000
+
+      assert :ok = QueueManager.abandon(retry_ticket)
+      assert :ok = QueueManager.release(base_grant)
+      assert :ok = QueueManager.release(third_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+      send(third_awaiter, :stop)
+    end)
+  end
+
   test "SPEC.md §5.4 queued model lanes include requeued entries" do
     config = queue_config(max_wait_ms: 500, poll_interval_ms: 200)
 
