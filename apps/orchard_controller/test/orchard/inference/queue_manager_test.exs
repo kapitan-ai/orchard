@@ -1292,6 +1292,52 @@ defmodule Orchard.Inference.QueueManagerTest do
     assert_busy_requeue_retires_source(:model_busy)
   end
 
+  test "SPEC.md §5.5 caller-dead requeue retires source before other lane promotion" do
+    node_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 0, max_wait_ms: 1_000, poll_interval_ms: 50)
+    caller = spawn(fn -> Process.sleep(:infinity) end)
+
+    try do
+      with_queue_admission_config(config, fn ->
+        first_request =
+          admission_request("req-node-source-requeue-caller-dead-a",
+            model_id: "source-requeue-caller-dead-a",
+            caller_pid: caller
+          )
+
+        assert {:queued, first_ticket} = QueueManager.acquire(first_request)
+        first_awaiter = start_holding_awaiter(first_ticket, :source_requeue_caller_dead_first)
+
+        assert :ok = refresh_node_source_capacity(node_id)
+        assert_receive {:source_requeue_caller_dead_first, {:ok, first_grant}}, 2_000
+
+        assert {:queued, second_ticket} =
+                 QueueManager.acquire(
+                   admission_request("req-node-source-requeue-caller-dead-b",
+                     model_id: "source-requeue-caller-dead-b"
+                   )
+                 )
+
+        second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+        assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+
+        Process.exit(caller, :kill)
+        assert wait_until(fn -> not Process.alive?(caller) end)
+
+        assert {:error, :request_caller_disconnect, _metadata} =
+                 QueueManager.requeue(first_grant, first_request, config: config)
+
+        refute Task.yield(second_awaiter, 100)
+
+        assert :ok = QueueManager.abandon(second_ticket)
+        Task.shutdown(second_awaiter)
+        send(first_awaiter, :stop)
+      end)
+    after
+      if Process.alive?(caller), do: Process.exit(caller, :kill)
+    end
+  end
+
   test "SPEC.md §5.4 queued model lanes include requeued entries" do
     config = queue_config(max_wait_ms: 500, poll_interval_ms: 200)
 

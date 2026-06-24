@@ -2757,7 +2757,11 @@ defmodule Orchard.Inference.QueueManager do
         {{:error, :invalid_requeue, metadata}, state}
 
       not Process.alive?(request.caller_pid) ->
-        state = drop_active_grant(state, grant.grant_id, grant_state.queue_key)
+        state =
+          state
+          |> drop_active_grant(grant.grant_id, grant_state.queue_key)
+          |> expire_requeued_capacity_source(grant_state)
+
         metadata = disconnect_metadata(grant_state)
 
         {{:error, :request_caller_disconnect, metadata}, maybe_grant_next_global(state)}
