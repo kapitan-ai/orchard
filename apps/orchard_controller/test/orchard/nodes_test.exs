@@ -874,6 +874,107 @@ defmodule Orchard.NodesTest do
       send(second_awaiter, :stop)
     end
 
+    test "SPEC.md §5.5 observed source reservation leaves spare node capacity available" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-observed-source-a", "observed-source-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-observed-source-b", "observed-source-model"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_observed_source_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.80", 9444)
+      observed_at = DateTime.utc_now()
+
+      initial_status =
+        placement_status("10.0.0.80", "observed-source-model", max_concurrency: 1)
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+
+      assert {:ok, _node} = Nodes.observe_status(target, initial_status, observed_at)
+      assert_receive {:first_observed_source_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      refreshed_status =
+        initial_status
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 2)
+        |> put_in([:runtime_model_placements, Access.at(0), :max_concurrency], 2)
+        |> put_in([:runtime_model_placements, Access.at(0), :active_request_count], 1)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(
+                 target,
+                 refreshed_status,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "observed-source-model@v1"
+
+      assert :ok = QueueManager.release(first_grant)
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 multi-slot placement heartbeat grants queued lanes in order" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-multislot-placement-a", "multislot-lane-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-multislot-placement-b", "multislot-lane-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_multislot_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_multislot_result)
+      target = make_target("10.0.0.81", 9444)
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.81", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 2)
+        |> Map.put(:runtime_model_placements, [
+          %{
+            model_ref: %{model_id: "multislot-lane-a", version: "v1"},
+            active_request_count: 0,
+            max_concurrency: 2
+          },
+          %{
+            model_ref: %{model_id: "multislot-lane-b", version: "v1"},
+            active_request_count: 0,
+            max_concurrency: 1
+          }
+        ])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+
+      assert_receive {:first_multislot_result, {:ok, first_grant}}, 2_000
+      assert_receive {:second_multislot_result, {:ok, second_grant}}, 2_000
+      assert first_grant.queue_key == "multislot-lane-a@v1"
+      assert second_grant.queue_key == "multislot-lane-b@v1"
+
+      assert :ok = QueueManager.release(first_grant)
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
+    end
+
     test "SPEC.md §5.5 heartbeat spends node capacity in queue-head order" do
       QueueManager.reset()
 
@@ -1054,6 +1155,44 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(second_grant)
       send(first_awaiter, :stop)
       send(second_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 releasing cold source grant reallocates to next queued lane" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-release-cold-lane-a", "release-cold-lane-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-release-cold-lane-b", "release-cold-lane-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_release_cold_lane_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.82", 9444)
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.82", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert_receive {:first_release_cold_lane_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "release-cold-lane-b@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
     end
 
     test "SPEC.md §5.5 repeated cold heartbeat keeps active source slot reserved across lanes" do

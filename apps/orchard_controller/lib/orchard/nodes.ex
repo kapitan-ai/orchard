@@ -361,12 +361,10 @@ defmodule Orchard.Nodes do
         |> extract_runtime_model_placements()
         |> placement_observations_by_lane()
 
-      queued_lanes = queue_manager.queued_model_lanes()
+      queued_lanes = queue_manager.queued_model_lanes(unique?: false)
+      remaining_node_capacity = remaining_node_capacity(status_response, reserved_node_capacity)
 
-      remaining_node_capacity =
-        max(remaining_node_capacity(status_response) - reserved_node_capacity, 0)
-
-      refresh_queue_capacities_in_lane_order(
+      refresh_queue_capacity_sources_in_lane_order(
         queue_manager,
         placement_source,
         cold_source,
@@ -422,7 +420,7 @@ defmodule Orchard.Nodes do
     source_reservation_count([first_reservations, second_reservations])
   end
 
-  defp refresh_queue_capacities_in_lane_order(
+  defp refresh_queue_capacity_sources_in_lane_order(
          queue_manager,
          placement_source,
          cold_source,
@@ -432,18 +430,26 @@ defmodule Orchard.Nodes do
          placement_reservations,
          cold_reservations
        ) do
-    Enum.reduce(queued_lanes, remaining_node_capacity, fn lane, remaining_capacity ->
-      refresh_queue_capacity_for_lane(
-        queue_manager,
-        placement_source,
-        cold_source,
-        lane,
-        Map.fetch(placement_observations, lane),
-        remaining_capacity,
-        placement_reservations,
-        cold_reservations
-      )
-    end)
+    {records, _remaining_capacity} =
+      Enum.reduce(queued_lanes, {%{}, remaining_node_capacity}, fn lane,
+                                                                   {records, remaining_capacity} ->
+        lane
+        |> source_capacity_lane(
+          placement_source,
+          cold_source,
+          Map.fetch(placement_observations, lane),
+          placement_reservations,
+          cold_reservations
+        )
+        |> put_source_capacity_record(records, remaining_capacity)
+      end)
+
+    records =
+      records
+      |> Map.values()
+      |> Enum.map(&source_record_to_refresh/1)
+
+    queue_manager.refresh_capacity_sources(records)
   end
 
   defp extract_runtime_model_placements(%{runtime_model_placements: placements})
@@ -468,90 +474,124 @@ defmodule Orchard.Nodes do
 
   defp put_placement_observation(_placement, observations), do: observations
 
-  defp refresh_queue_capacity_for_lane(
-         queue_manager,
+  defp source_capacity_lane(
+         lane,
          placement_source,
          _cold_source,
-         {model_id, version} = lane,
          {:ok, placement},
-         remaining_capacity,
          placement_reservations,
          _cold_reservations
        )
        when is_map(placement) do
-    reserved_capacity = placement_reserved_capacity(placement, lane, placement_reservations)
-    {capacity, remaining_capacity} = placement_queue_capacity(placement, remaining_capacity)
+    capacity = placement_lane_capacity(placement, lane, placement_reservations)
 
-    queue_manager.refresh_capacity(model_id, version, reserved_capacity + capacity,
-      source: placement_source
+    maybe_source_capacity_lane(
+      placement_source,
+      lane,
+      capacity,
+      Map.get(placement_reservations, lane, 0)
     )
-
-    remaining_capacity
   end
 
-  defp refresh_queue_capacity_for_lane(
-         queue_manager,
-         placement_source,
+  defp source_capacity_lane(
+         _lane,
+         _placement_source,
          _cold_source,
-         {model_id, version},
          {:ok, :ambiguous},
-         remaining_capacity,
          _placement_reservations,
          _cold_reservations
-       ) do
-    queue_manager.refresh_capacity(model_id, version, 0, source: placement_source)
-    remaining_capacity
-  end
+       ),
+       do: :skip
 
-  defp refresh_queue_capacity_for_lane(
-         queue_manager,
-         _source,
+  defp source_capacity_lane(
+         lane,
+         _placement_source,
          cold_source,
-         {model_id, version} = lane,
          :error,
-         remaining_capacity,
          _placement_reservations,
          cold_reservations
        ) do
-    reserved_capacity = Map.get(cold_reservations, lane, 0)
-    capacity = if remaining_capacity > 0, do: 1, else: 0
-
-    queue_manager.refresh_capacity(model_id, version, reserved_capacity + capacity,
-      source: cold_source
-    )
-
-    max(remaining_capacity - capacity, 0)
+    reservation_count = Map.get(cold_reservations, lane, 0)
+    maybe_source_capacity_lane(cold_source, lane, max(reservation_count, 1), reservation_count)
   end
 
-  defp placement_reserved_capacity(placement, placement_key, source_reservations) do
+  defp maybe_source_capacity_lane(_source, _lane, capacity, _reservation_count)
+       when capacity <= 0,
+       do: :skip
+
+  defp maybe_source_capacity_lane(source, lane, capacity, reservation_count),
+    do: {:ok, source, lane, capacity, min(reservation_count, capacity)}
+
+  defp put_source_capacity_record(:skip, records, remaining_capacity),
+    do: {records, remaining_capacity}
+
+  defp put_source_capacity_record(
+         {:ok, source, lane, lane_capacity, reservation_count},
+         records,
+         remaining_capacity
+       ) do
+    record = Map.get(records, source, %{source: source, lanes: %{}, planned: %{}})
+    existing_lane? = Map.has_key?(record.lanes, lane)
+
+    record = %{
+      record
+      | lanes: Map.update(record.lanes, lane, lane_capacity, &max(&1, lane_capacity))
+    }
+
+    record =
+      if existing_lane? do
+        record
+      else
+        %{record | planned: Map.put(record.planned, lane, reservation_count)}
+      end
+
+    planned_capacity = Map.get(record.planned, lane, 0)
+    lane_capacity = Map.fetch!(record.lanes, lane)
+
+    {record, remaining_capacity} =
+      if remaining_capacity > 0 and planned_capacity < lane_capacity do
+        {
+          %{record | planned: Map.put(record.planned, lane, planned_capacity + 1)},
+          remaining_capacity - 1
+        }
+      else
+        {record, remaining_capacity}
+      end
+
+    {Map.put(records, source, record), remaining_capacity}
+  end
+
+  defp source_record_to_refresh(%{source: source, lanes: lanes, planned: planned}) do
+    capacity =
+      planned
+      |> Map.values()
+      |> Enum.sum()
+
+    lanes =
+      Enum.map(lanes, fn {{model_id, version}, lane_capacity} ->
+        {model_id, version, lane_capacity}
+      end)
+
+    {source, capacity, lanes}
+  end
+
+  defp placement_lane_capacity(placement, placement_key, source_reservations) do
     if loaded_placement?(placement) and placement_max_concurrency(placement) > 0 do
-      Map.get(source_reservations, placement_key, 0)
+      placement_active = non_negative_integer(map_get(placement, :active_request_count), 0)
+      placement_max = placement_max_concurrency(placement)
+      reserved_capacity = Map.get(source_reservations, placement_key, 0)
+
+      reserved_capacity + max(placement_max - placement_active, 0)
     else
       0
     end
   end
 
-  defp placement_queue_capacity(placement, remaining_node_capacity) do
-    if loaded_placement?(placement) do
-      placement_active = non_negative_integer(map_get(placement, :active_request_count), 0)
-      placement_max = placement_max_concurrency(placement)
-      available_placement_capacity = max(placement_max - placement_active, 0)
-      spent_node_capacity = min(available_placement_capacity, remaining_node_capacity)
-
-      {
-        spent_node_capacity,
-        remaining_node_capacity - spent_node_capacity
-      }
-    else
-      {0, remaining_node_capacity}
-    end
-  end
-
-  defp remaining_node_capacity(status_response) do
+  defp remaining_node_capacity(status_response, reserved_node_capacity) do
     node_active = non_negative_integer(map_get(status_response, :active_request_count), 0)
     node_max = positive_integer(map_get(status_response, :max_concurrency), 1)
 
-    max(node_max - node_active, 0)
+    max(node_max - max(node_active, reserved_node_capacity), 0)
   end
 
   defp loaded_placement?(placement) do
