@@ -157,6 +157,29 @@ defmodule Orchard.NodesTest do
     end)
   end
 
+  defp wait_until(fun, attempts \\ 50)
+  defp wait_until(_fun, 0), do: false
+
+  defp wait_until(fun, attempts) do
+    if fun.() do
+      true
+    else
+      Process.sleep(20)
+      wait_until(fun, attempts - 1)
+    end
+  end
+
+  defp queue_entry_awaiting?(ticket) do
+    QueueManager
+    |> :sys.get_state()
+    |> Map.get(:entries)
+    |> Map.get(ticket.ticket_ref)
+    |> case do
+      %{await_from: await_from} when await_from != nil -> true
+      _other -> false
+    end
+  end
+
   # -- Schema validation --
 
   describe "Node schema" do
@@ -902,6 +925,7 @@ defmodule Orchard.NodesTest do
       assert {:ok, _node} = Nodes.observe_status(target, initial_status, observed_at)
       assert_receive {:first_observed_source_result, {:ok, first_grant}}, 2_000
       refute Task.yield(second_awaiter, 50)
+      assert :ok = QueueManager.mark_capacity_source_observed(first_grant)
 
       refreshed_status =
         initial_status
@@ -924,6 +948,58 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(first_grant)
       assert :ok = QueueManager.release(second_grant)
       send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 unobserved source reservation does not overlap unrelated active work" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-unobserved-source-a", "unobserved-source-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-unobserved-source-b", "unobserved-source-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_unobserved_source_result)
+      second_awaiter = start_holding_awaiter(second_ticket, :second_unobserved_source_result)
+      target = make_target("10.0.0.83", 9444)
+      observed_at = DateTime.utc_now()
+
+      initial_status =
+        make_status_response(%{listen_host: "10.0.0.83", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, initial_status, observed_at)
+      assert_receive {:first_unobserved_source_result, {:ok, first_grant}}, 2_000
+      refute_receive {:second_unobserved_source_result, _result}, 50
+
+      refreshed_status =
+        initial_status
+        |> Map.put(:active_request_count, 1)
+        |> Map.put(:max_concurrency, 2)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(
+                 target,
+                 refreshed_status,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      refute_receive {:second_unobserved_source_result, _result}, 100
+
+      assert :ok = QueueManager.release(first_grant)
+      assert_receive {:second_unobserved_source_result, {:ok, second_grant}}, 2_000
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+      send(second_awaiter, :stop)
     end
 
     test "SPEC.md §5.5 multi-slot placement heartbeat grants queued lanes in order" do
@@ -1190,6 +1266,52 @@ defmodule Orchard.NodesTest do
       assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
       assert second_grant.queue_result == :queued
       assert second_grant.queue_key == "release-cold-lane-b@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "SPEC.md §5.5 empty queue heartbeat preserves observed cold source capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-empty-source-a", "empty-source-a"),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_empty_source_result)
+      target = make_target("10.0.0.84", 9444)
+      observed_at = DateTime.utc_now()
+
+      initial_status =
+        make_status_response(%{listen_host: "10.0.0.84", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      assert {:ok, _node} = Nodes.observe_status(target, initial_status, observed_at)
+      assert_receive {:first_empty_source_result, {:ok, first_grant}}, 2_000
+      assert :ok = QueueManager.mark_capacity_source_observed(first_grant)
+
+      active_status = Map.put(initial_status, :active_request_count, 1)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, active_status, DateTime.add(observed_at, 1, :second))
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-node-empty-source-b", "empty-source-b"),
+                 config: queue_config(capacity: 0)
+               )
+
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(second_ticket) end)
+      refute Task.yield(second_awaiter, 50)
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_key == "empty-source-b@v1"
 
       assert :ok = QueueManager.release(second_grant)
       send(first_awaiter, :stop)

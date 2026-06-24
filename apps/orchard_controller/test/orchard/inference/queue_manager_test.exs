@@ -81,6 +81,78 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.4 source spare capacity adds to configured lane capacity" do
+    config = queue_config(capacity: 1, max_wait_ms: 1_000)
+
+    with_queue_admission_config(config, fn ->
+      assert {:ok, active_grant} = QueueManager.acquire(admission_request("req-source-spare-a"))
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(admission_request("req-source-spare-b"))
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+      refute Task.yield(awaiter, 50)
+
+      assert :ok =
+               QueueManager.refresh_capacity("queue-model", "v1", 1,
+                 source: {:node, "spare-slot"}
+               )
+
+      assert {:ok, queued_grant} = Task.await(awaiter, 2_000)
+      assert queued_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(active_grant)
+      assert :ok = QueueManager.release(queued_grant)
+    end)
+  end
+
+  test "SPEC.md §5.5 node source refresh reserves assigned unobserved base grants" do
+    node_id = Ecto.UUID.generate()
+    config = queue_config(capacity: 2, max_wait_ms: 1_000)
+
+    with_queue_admission_config(config, fn ->
+      assert {:ok, first_grant} =
+               QueueManager.acquire(admission_request("req-node-assigned-base-a"))
+
+      assert {:ok, second_grant} =
+               QueueManager.acquire(admission_request("req-node-assigned-base-b"))
+
+      assert :ok = QueueManager.mark_grant_node(first_grant, node_id)
+      assert :ok = QueueManager.mark_grant_node(second_grant, node_id)
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(admission_request("req-node-assigned-base-c"))
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      assert wait_until(fn -> queue_entry_awaiting?(ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_node_capacity_sources(%{
+                 clear_sources: [
+                   {:node, node_id},
+                   {:node, node_id, :placement},
+                   {:node, node_id, :cold}
+                 ],
+                 placement_source: {:node, node_id, :placement},
+                 cold_source: {:node, node_id, :cold},
+                 node_id: node_id,
+                 node_active: 0,
+                 node_max: 2,
+                 placements: []
+               })
+
+      refute Task.yield(awaiter, 50)
+
+      assert :ok = QueueManager.release(first_grant)
+      assert {:ok, queued_grant} = Task.await(awaiter, 2_000)
+      assert queued_grant.queue_result == :queued
+
+      assert :ok = QueueManager.release(second_grant)
+      assert :ok = QueueManager.release(queued_grant)
+    end)
+  end
+
   test "SPEC.md §5.3 tenant active cap queues same-tenant work despite placement capacity" do
     tenant_id = Ecto.UUID.generate()
     config = queue_config(capacity: 2, max_active_per_tenant: 1)

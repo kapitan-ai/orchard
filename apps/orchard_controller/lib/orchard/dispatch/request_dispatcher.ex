@@ -347,8 +347,19 @@ defmodule Orchard.Dispatch.RequestDispatcher do
        ) do
     case client.status(channel, timeout: @status_probe_timeout_ms) do
       {:ok, response} ->
-        # Best-effort persistence
         observed_at = DateTime.utc_now()
+
+        {model_load_request, metrics} =
+          case extract_node_id(response) do
+            {:ok, node_id} ->
+              invoke_callback_safe(on_node_resolved, node_id)
+              metrics = %{metrics | node_id: node_id}
+              put_node_resolved_context(metrics, target)
+              {%{model_load_request | node_id: node_id}, metrics}
+
+            :error ->
+              {model_load_request, metrics}
+          end
 
         try do
           Orchard.Nodes.observe_status(target, response, observed_at)
@@ -357,17 +368,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             Logger.warning("Node observation failed during dispatch probe: #{inspect(error)}")
         end
 
-        # Extract and validate node_id from metadata
-        case extract_node_id(response) do
-          {:ok, node_id} ->
-            invoke_callback_safe(on_node_resolved, node_id)
-            metrics = %{metrics | node_id: node_id}
-            put_node_resolved_context(metrics, target)
-            {%{model_load_request | node_id: node_id}, metrics}
-
-          :error ->
-            {model_load_request, metrics}
-        end
+        {model_load_request, metrics}
 
       {:error, reason} ->
         # Probe failure is non-fatal, but we still record transport reachability
