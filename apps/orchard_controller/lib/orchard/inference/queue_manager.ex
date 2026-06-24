@@ -2300,6 +2300,7 @@ defmodule Orchard.Inference.QueueManager do
         {grant, previous_source} = reconcile_grant_capacity_source_node(grant, normalized_node_id)
         grant = Map.put(grant, :node_id, normalized_node_id)
         state = %{state | grants: Map.put(state.grants, grant_id, grant)}
+        state = reserve_grant_in_retained_node_capacity_sources(state, grant_id)
 
         state =
           if is_nil(previous_source),
@@ -3024,6 +3025,7 @@ defmodule Orchard.Inference.QueueManager do
         tenant_counts: decrement_tenant_count(state.tenant_counts, entry.tenant_id)
     }
     |> maybe_cancel_queue_tick()
+    |> reserve_grant_in_retained_node_capacity_sources(grant.grant_id)
   end
 
   defp put_immediate_grant(
@@ -3057,7 +3059,36 @@ defmodule Orchard.Inference.QueueManager do
         monitors: Map.put(state.monitors, owner_monitor_ref, {:grant_owner, grant.grant_id}),
         grants: Map.put(state.grants, grant.grant_id, grant_state)
     }
+    |> reserve_grant_in_retained_node_capacity_sources(grant.grant_id)
   end
+
+  defp reserve_grant_in_retained_node_capacity_sources(state, grant_id) do
+    case Map.fetch(state.grants, grant_id) do
+      {:ok, grant} ->
+        limits =
+          Map.new(state.capacity_source_limits, fn {source, limit} ->
+            {source, maybe_reserve_grant_in_retained_node_limit(source, limit, grant, grant_id)}
+          end)
+
+        %{state | capacity_source_limits: limits}
+
+      :error ->
+        state
+    end
+  end
+
+  defp maybe_reserve_grant_in_retained_node_limit(source, %{lanes: :any} = limit, grant, grant_id) do
+    node_id = Map.get(limit, :node_id) || capacity_source_node_id(source)
+
+    if retained_node_grant_reserves_source?(grant, node_id, source, limit) do
+      Map.update(limit, :reserved_node_grants, MapSet.new([grant_id]), &MapSet.put(&1, grant_id))
+    else
+      limit
+    end
+  end
+
+  defp maybe_reserve_grant_in_retained_node_limit(_source, limit, _grant, _grant_id),
+    do: limit
 
   defp remove_entry(entry, state, opts \\ []) do
     if Keyword.get(opts, :cancel_timer?, true), do: cancel_timer(entry.timeout_ref)

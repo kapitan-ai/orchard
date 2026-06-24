@@ -250,6 +250,40 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
+  test "SPEC.md §5.5 retained node source accounts for newly assigned base grants" do
+    node_id = Ecto.UUID.generate()
+
+    with_queue_admission_config(queue_config(capacity: 0, max_wait_ms: 1_000), fn ->
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 admission_request("req-node-retained-new-base-a",
+                   model_id: "retained-new-base-a"
+                 )
+               )
+
+      assert :ok = refresh_node_source_capacity(node_id)
+
+      assert {:ok, base_grant} =
+               QueueManager.acquire(
+                 admission_request("req-node-retained-new-base-b",
+                   model_id: "retained-new-base-b"
+                 ),
+                 config: queue_config(capacity: 1)
+               )
+
+      assert :ok = QueueManager.mark_grant_node(base_grant, node_id)
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+      refute Task.yield(awaiter, 100)
+
+      assert :ok = QueueManager.release(base_grant)
+      assert {:ok, queued_grant} = Task.await(awaiter, 2_000)
+      assert queued_grant.queue_key == "retained-new-base-a@v1"
+
+      assert :ok = QueueManager.release(queued_grant)
+    end)
+  end
+
   test "SPEC.md §5.5 scheduler probe refresh reserves unassigned base grants" do
     node_id = Ecto.UUID.generate()
     config = queue_config(capacity: 1, max_wait_ms: 1_000)
