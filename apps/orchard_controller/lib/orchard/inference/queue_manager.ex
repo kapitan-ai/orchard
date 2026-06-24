@@ -1589,12 +1589,8 @@ defmodule Orchard.Inference.QueueManager do
     {preserved_reservations, remaining_capacity} =
       preserve_node_source_reservations(reservations, observed_count, idle_capacity)
 
-    remaining_capacity =
-      max(
-        remaining_capacity -
-          unobserved_assigned_node_grant_count(state, observation, reservations, observed_count),
-        0
-      )
+    reserved_node_grant_ids =
+      reserved_node_grant_ids(state, observation, reservations, observed_count)
 
     retained_capacity =
       pending_node_source_capacity(state, observation, preserved_reservations, remaining_capacity)
@@ -1604,7 +1600,8 @@ defmodule Orchard.Inference.QueueManager do
       observation.node_source,
       observation,
       preserved_reservations,
-      retained_capacity
+      retained_capacity,
+      reserved_node_grant_ids
     )
     |> rebalance_capacity_source(observation.node_source)
   end
@@ -1692,26 +1689,41 @@ defmodule Orchard.Inference.QueueManager do
     {reservations, max(idle_budget - uncovered_reservations, 0)}
   end
 
-  defp unobserved_assigned_node_grant_count(
+  defp reserved_node_grant_ids(
          _state,
          %{node_id: nil},
          _source_reservations,
          _observed_source_count
        ),
-       do: 0
+       do: []
 
-  defp unobserved_assigned_node_grant_count(
+  defp reserved_node_grant_ids(
          state,
          observation,
          source_reservations,
          observed_source_count
        ) do
     source_grant_ids = source_reservations |> Enum.map(& &1.grant_id) |> MapSet.new()
+
+    assigned_node_grant_reservation_ids(
+      state,
+      observation,
+      source_grant_ids,
+      observed_source_count
+    ) ++ unassigned_node_grant_ids(state, observation, source_grant_ids)
+  end
+
+  defp assigned_node_grant_reservation_ids(
+         state,
+         observation,
+         source_grant_ids,
+         observed_source_count
+       ) do
     observed_node_budget = max(observation.node_active - observed_source_count, 0)
 
-    {observed_assigned_count, unobserved_assigned_count} =
-      Enum.reduce(state.grants, {0, 0}, fn {grant_id, grant}, {observed, unobserved} ->
-        count_assigned_node_grant(
+    {observed_grant_ids, unobserved_grant_ids} =
+      Enum.reduce(state.grants, {[], []}, fn {grant_id, grant}, {observed, unobserved} ->
+        collect_assigned_node_grant_id(
           grant,
           grant_id,
           observation.node_id,
@@ -1720,35 +1732,45 @@ defmodule Orchard.Inference.QueueManager do
         )
       end)
 
-    unobserved_assigned_count +
-      max(observed_assigned_count - observed_node_budget, 0) +
-      unassigned_node_grant_count(state, observation, source_grant_ids)
+    observed_grant_ids = Enum.sort_by(observed_grant_ids, &inspect/1)
+    unobserved_grant_ids = Enum.sort_by(unobserved_grant_ids, &inspect/1)
+
+    unobserved_grant_ids ++ Enum.drop(observed_grant_ids, observed_node_budget)
   end
 
-  defp count_assigned_node_grant(grant, grant_id, node_id, source_grant_ids, counts) do
+  defp collect_assigned_node_grant_id(grant, grant_id, node_id, source_grant_ids, counts) do
     cond do
       Map.get(grant, :node_id) != node_id -> counts
       MapSet.member?(source_grant_ids, grant_id) -> counts
-      Map.get(grant, :node_observed?) == true -> increment_observed_count(counts)
-      true -> increment_unobserved_count(counts)
+      Map.get(grant, :node_observed?) == true -> collect_observed_grant_id(counts, grant_id)
+      true -> collect_unobserved_grant_id(counts, grant_id)
     end
   end
 
-  defp increment_observed_count({observed, unobserved}), do: {observed + 1, unobserved}
-  defp increment_unobserved_count({observed, unobserved}), do: {observed, unobserved + 1}
+  defp collect_observed_grant_id({observed, unobserved}, grant_id),
+    do: {[grant_id | observed], unobserved}
 
-  defp unassigned_node_grant_count(
+  defp collect_unobserved_grant_id({observed, unobserved}, grant_id),
+    do: {observed, [grant_id | unobserved]}
+
+  defp unassigned_node_grant_ids(
          _state,
          %{reserve_unassigned_node_grants?: false},
          _source_grant_ids
        ),
-       do: 0
+       do: []
 
-  defp unassigned_node_grant_count(state, observation, source_grant_ids) do
-    Enum.count(state.grants, fn {grant_id, grant} ->
-      is_nil(Map.get(grant, :node_id)) and not MapSet.member?(source_grant_ids, grant_id) and
-        unassigned_node_grant_reserves_observation?(grant, observation)
+  defp unassigned_node_grant_ids(state, observation, source_grant_ids) do
+    state.grants
+    |> Enum.flat_map(fn {grant_id, grant} ->
+      if is_nil(Map.get(grant, :node_id)) and not MapSet.member?(source_grant_ids, grant_id) and
+           unassigned_node_grant_reserves_observation?(grant, observation) do
+        [grant_id]
+      else
+        []
+      end
     end)
+    |> Enum.sort_by(&inspect/1)
   end
 
   defp unassigned_node_grant_reserves_observation?(
@@ -1771,7 +1793,8 @@ defmodule Orchard.Inference.QueueManager do
          source,
          observation,
          preserved_reservations,
-         retained_capacity
+         retained_capacity,
+         reserved_node_grant_ids
        ) do
     capacity = min(length(preserved_reservations) + retained_capacity, observation.node_max)
 
@@ -1785,7 +1808,11 @@ defmodule Orchard.Inference.QueueManager do
         lanes: :any,
         blocked_lanes: node_capacity_source_blocked_lanes(observation, preserved_reservations),
         lane_limits: node_capacity_source_lane_limits(observation.placements, reservation_counts),
-        per_lane_limit: node_capacity_source_per_lane_limit(observation, preserved_reservations)
+        per_lane_limit: node_capacity_source_per_lane_limit(observation, preserved_reservations),
+        node_id: observation.node_id,
+        reserve_unassigned_node_grants?: observation.reserve_unassigned_node_grants?,
+        reserve_unassigned_source_grants?: observation.reserve_unassigned_source_grants?,
+        reserved_node_grants: MapSet.new(reserved_node_grant_ids)
       }
 
       %{state | capacity_source_limits: Map.put(state.capacity_source_limits, source, limit)}
@@ -1898,6 +1925,7 @@ defmodule Orchard.Inference.QueueManager do
 
     case Map.fetch(state.capacity_source_limits, source) do
       {:ok, %{capacity: capacity} = limit} ->
+        capacity = effective_capacity_source_capacity(source, limit, state, capacity)
         reservations = active_source_reservation_counts_by_queue(source, state)
 
         if drop_retained_node_capacity_source_limit?(limit, reservations, state) do
@@ -1922,6 +1950,59 @@ defmodule Orchard.Inference.QueueManager do
 
       :error ->
         put_capacity_source_allocations(state, source, %{}, previous_queue_keys)
+    end
+  end
+
+  defp effective_capacity_source_capacity(source, %{lanes: :any} = limit, state, capacity) do
+    reserved_capacity = retained_node_grant_reservation_count(source, limit, state)
+    max(capacity - reserved_capacity, 0)
+  end
+
+  defp effective_capacity_source_capacity(_source, _limit, _state, capacity), do: capacity
+
+  defp retained_node_grant_reservation_count(source, limit, state) do
+    node_id = Map.get(limit, :node_id) || capacity_source_node_id(source)
+
+    limit
+    |> Map.get(:reserved_node_grants, MapSet.new())
+    |> Enum.count(fn grant_id ->
+      state.grants
+      |> Map.get(grant_id)
+      |> retained_node_grant_reserves_source?(node_id, source, limit)
+    end)
+  end
+
+  defp retained_node_grant_reserves_source?(_grant, nil, _source, _limit), do: false
+  defp retained_node_grant_reserves_source?(nil, _node_id, _source, _limit), do: false
+
+  defp retained_node_grant_reserves_source?(grant, node_id, source, limit) do
+    cond do
+      Map.get(grant, :capacity_source) == source ->
+        false
+
+      Map.get(grant, :node_id) == node_id ->
+        true
+
+      is_nil(Map.get(grant, :node_id)) ->
+        retained_unassigned_node_grant_reserves_source?(grant, limit)
+
+      true ->
+        false
+    end
+  end
+
+  defp retained_unassigned_node_grant_reserves_source?(grant, limit) do
+    if Map.get(limit, :reserve_unassigned_node_grants?, true) == false do
+      false
+    else
+      case Map.get(grant, :capacity_source) do
+        nil ->
+          true
+
+        _source ->
+          Map.get(limit, :reserve_unassigned_source_grants?, true) and
+            Map.get(grant, :capacity_source_observed?) != true
+      end
     end
   end
 
@@ -2200,9 +2281,12 @@ defmodule Orchard.Inference.QueueManager do
         grant = Map.put(grant, :node_id, normalized_node_id)
         state = %{state | grants: Map.put(state.grants, grant_id, grant)}
 
-        if is_nil(previous_source),
-          do: state,
-          else: expire_retained_capacity_source_limit(state, previous_source)
+        state =
+          if is_nil(previous_source),
+            do: state,
+            else: expire_retained_capacity_source_limit(state, previous_source)
+
+        maybe_grant_next_global(state)
 
       _other ->
         state
