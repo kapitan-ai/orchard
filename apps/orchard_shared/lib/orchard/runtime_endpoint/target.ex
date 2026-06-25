@@ -70,13 +70,29 @@ defmodule Orchard.RuntimeEndpoint.Target do
     do: raise(ArgumentError, "beam target requires a non-empty binary node_id")
 
   defp beam_target(attrs) do
-    node_id = value(attrs, :node_id) || value(attrs, :id) || value(attrs, :address)
-    address = normalize_beam_address(value(attrs, :address) || node_id)
-    beam(to_string(node_id), Map.put(attrs, :address, address))
+    node_id = normalize_optional_node_id(value(attrs, :node_id))
+    address = normalize_beam_address(value(attrs, :address))
+
+    %__MODULE__{
+      id: to_string(value(attrs, :id) || default_beam_id(node_id, address)),
+      transport: :beam,
+      address: address,
+      node_id: node_id,
+      metadata: metadata(attrs)
+    }
   end
 
   defp normalize_transport(transport) when transport in [:beam, "beam"], do: :beam
   defp normalize_transport(_transport), do: :grpc_compat
+
+  defp normalize_optional_node_id(nil), do: nil
+
+  defp normalize_optional_node_id(node_id) when is_binary(node_id) and node_id != "",
+    do: node_id
+
+  defp normalize_optional_node_id(_node_id) do
+    raise ArgumentError, "beam target node_id must be a non-empty binary when provided"
+  end
 
   defp normalize_beam_address(address) when is_atom(address), do: address
 
@@ -93,6 +109,9 @@ defmodule Orchard.RuntimeEndpoint.Target do
     raise ArgumentError,
           "beam target address must be an atom or binary node name, got: #{inspect(address)}"
   end
+
+  defp default_beam_id(node_id, _address) when is_binary(node_id), do: "beam:#{node_id}"
+  defp default_beam_id(nil, address) when is_atom(address), do: "beam:#{Atom.to_string(address)}"
 
   defp valid_beam_node_name?(address) do
     byte_size(address) in 3..255 and String.match?(address, ~r/^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$/)

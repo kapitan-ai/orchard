@@ -123,6 +123,37 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     assert beam_target.metadata == %{role: :node_agent}
   end
 
+  test "BEAM target normalization keeps node_id nil unless explicitly configured" do
+    target =
+      Target.normalize(%{
+        transport: :beam,
+        id: "source-dev-node-agent",
+        address: :orchard_node_agent@localhost
+      })
+
+    assert target.id == "source-dev-node-agent"
+    assert target.transport == :beam
+    assert target.node_id == nil
+    assert target.address == :orchard_node_agent@localhost
+  end
+
+  test "runtime endpoint observations prefer metadata node identity without target node_id" do
+    node_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    observation =
+      Observation.new(%{
+        target:
+          Target.normalize(%{
+            transport: :beam,
+            id: "source-dev-node-agent",
+            address: :orchard_node_agent@localhost
+          }),
+        metadata: %{node_id: node_id}
+      })
+
+    assert Observation.node_id(observation) == node_id
+  end
+
   test "target normalization rejects malformed configured BEAM node names" do
     assert_raise ArgumentError, fn ->
       Target.normalize(transport: :beam, node_id: "node-1", address: "not a node")

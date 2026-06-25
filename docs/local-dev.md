@@ -224,11 +224,10 @@ Stream mode reports max concurrency as `1` at both node and placement levels.
 
 #### Runtime Endpoint BEAM Guardrails
 
-The current source-dev slice includes default-off BEAM Runtime Endpoint guardrail config under `:orchard_controller, :runtime_endpoint, beam: [...]`.
-This validates future first-party BEAM transport admission settings only.
-It does not implement or enable a live BEAM Runtime Endpoint adapter, and there is no supported source-dev env var surface for it in this slice.
-The accepted target is for BEAM Runtime Endpoint transport to become the primary source-dev Controller-to-Node Agent path after the adapter exists and passes the two-Mac smoke.
-Until that gate passes, source-dev keeps using the gRPC compatibility adapter on port `50071`.
+The current source-dev slice includes a default-off BEAM Runtime Endpoint adapter, Node Agent facade, and guardrail config under `:orchard_controller, :runtime_endpoint, beam: [...]`.
+The adapter is implemented behind explicit application config, but source dev keeps using the gRPC compatibility adapter on port `50071` until the accepted two-Mac smoke passes.
+There is no supported source-dev env var surface for BEAM target selection in this slice.
+The accepted target is for BEAM Runtime Endpoint transport to become the primary source-dev Controller-to-Node Agent path after that smoke passes.
 The accepted smoke requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
 
 If enabled directly in application config for future work, guardrail validation requires non-empty `node_name`, `cookie_file`, `listen_host`, `admitted_services`, and `allowed_cidrs`.
@@ -846,6 +845,6 @@ mise exec -- iex -S mix phx.server
 - Public `/v1/*` API routes require tenant-scoped Bearer API keys; full RBAC and
   quota policy remain incomplete
 - Multi-node is supported for source-dev testing only (production/packaged multi-node — M4)
-- Live BEAM Runtime Endpoint transport is not implemented in source dev; current source dev uses the gRPC compatibility adapter
-- BEAM Runtime Endpoint transport becomes the primary source-dev path only after the adapter exists and passes the accepted two-Mac smoke
+- Live BEAM Runtime Endpoint transport is implemented behind default-off application config; current source dev uses the gRPC compatibility adapter
+- BEAM Runtime Endpoint transport becomes the primary source-dev path only after it passes the accepted two-Mac smoke
 - Model import from local filesystem only (no remote download)
