@@ -219,17 +219,19 @@ defmodule Orchard.InferenceTest do
     end
 
     test "explicit Runtime Endpoint targets opt into BEAM without changing legacy fallback" do
+      node_id = "550e8400-e29b-41d4-a716-446655440000"
+
       put_inference(
         runtime_client_targets: [[host: "10.0.0.1", port: 50_061]],
         runtime_endpoint_targets: [
-          %{transport: :beam, node_id: "node-1", address: :orchard_node_agent@localhost}
+          %{transport: :beam, node_id: node_id, address: :orchard_node_agent@localhost}
         ]
       )
 
       assert [
                %Target{
                  transport: :beam,
-                 node_id: "node-1",
+                 node_id: ^node_id,
                  address: :orchard_node_agent@localhost
                }
              ] = Inference.runtime_endpoint_targets()

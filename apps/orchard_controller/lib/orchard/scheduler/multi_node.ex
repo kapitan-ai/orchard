@@ -224,7 +224,7 @@ defmodule Orchard.Scheduler.MultiNode do
 
                   %{
                     node_id: node_id,
-                    target: target,
+                    target: schedule_target(target, node_id),
                     availability: observation.availability,
                     loaded_model?: loaded_model?,
                     active_request_count: observation.aggregate_active_request_count,
@@ -411,6 +411,11 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp extract_valid_node_id(_), do: nil
+
+  defp schedule_target(%Target{transport: :beam, node_id: nil} = target, node_id),
+    do: %{target | node_id: node_id}
+
+  defp schedule_target(target, _node_id), do: target
 
   defp exception_name(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
 

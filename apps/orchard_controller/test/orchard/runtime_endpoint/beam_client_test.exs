@@ -4,6 +4,8 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.{BeamClient, ModelRef, Observation, Operation, Target}
 
+  @node_id "550e8400-e29b-41d4-a716-446655440000"
+
   defmodule Server do
     alias Orchard.RuntimeEndpoint.{Observation, Operation}
 
@@ -50,7 +52,7 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
   test "serves Runtime Endpoint operations over the BEAM client contract" do
     model_ref = ModelRef.new!("mlx-community/phi-3", "main")
-    target = Target.beam("node-1", address: node(), metadata: %{server_module: Server})
+    target = Target.beam(@node_id, address: node(), metadata: %{server_module: Server})
 
     assert {:ok, connection} = BeamClient.connect(target)
     assert {:ok, %Observation{availability: :available}} = BeamClient.status(connection, [])
@@ -101,7 +103,7 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
   test "prefix-cache scoring fails open when a BEAM target is unavailable" do
     model_ref = ModelRef.new!("mlx-community/phi-3", "main")
-    target = Target.beam("node-1", address: :definitely_missing@localhost)
+    target = Target.beam(@node_id, address: :definitely_missing@localhost)
 
     request = %Operation.PrefixCacheScoreRequest{
       request_id: "req_1",
@@ -116,7 +118,7 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
   test "local BEAM server startup failures send dispatcher-safe completion" do
     model_ref = ModelRef.new!("mlx-community/phi-3", "main")
-    target = Target.beam("node-1", address: node(), metadata: %{server_module: RaisingServer})
+    target = Target.beam(@node_id, address: node(), metadata: %{server_module: RaisingServer})
     assert {:ok, connection} = BeamClient.connect(target)
 
     request = %Operation.ExecuteRequest{
@@ -135,7 +137,7 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
   test "prefix-cache scoring fails open when a local BEAM server raises" do
     model_ref = ModelRef.new!("mlx-community/phi-3", "main")
-    target = Target.beam("node-1", address: node(), metadata: %{server_module: RaisingServer})
+    target = Target.beam(@node_id, address: node(), metadata: %{server_module: RaisingServer})
     assert {:ok, connection} = BeamClient.connect(target)
 
     request = %Operation.PrefixCacheScoreRequest{

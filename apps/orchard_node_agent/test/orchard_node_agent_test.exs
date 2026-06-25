@@ -4881,7 +4881,7 @@ defmodule OrchardNodeAgentTest do
 
   defp runtime_endpoint_observation(%StatusResponse{} = status) do
     Observation.new(%{
-      target: Target.beam(Node.node_id() || "test-node"),
+      target: Target.beam("550e8400-e29b-41d4-a716-446655440000", address: node()),
       aggregate_active_request_count: status.active_request_count,
       worker_state: status.worker_state,
       placements: Enum.map(status.runtime_model_placements, &runtime_endpoint_placement/1)

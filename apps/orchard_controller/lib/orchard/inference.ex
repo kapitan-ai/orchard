@@ -273,6 +273,6 @@ defmodule Orchard.Inference do
     end)
   end
 
-  defp runtime_endpoint_target(%Target{} = target), do: target
+  defp runtime_endpoint_target(%Target{} = target), do: Target.normalize(target)
   defp runtime_endpoint_target(target), do: Target.normalize(target)
 end

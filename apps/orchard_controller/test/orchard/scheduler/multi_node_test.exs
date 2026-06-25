@@ -884,6 +884,68 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.selected_tier == "loaded"
     end
 
+    test "address-only BEAM schedules carry observed node identity for failure cleanup" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+
+      endpoint_target =
+        Target.normalize(
+          transport: :beam,
+          id: "source-dev-node-agent",
+          address: :orchard_node_agent@localhost
+        )
+
+      model_ref = Orchard.RuntimeEndpoint.ModelRef.new!("test-model", "v1")
+
+      observation =
+        Observation.new(%{
+          endpoint_id: endpoint_target.id,
+          target: endpoint_target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 2,
+          metadata: %{
+            node_id: node.id,
+            display_name: node.display_name,
+            hostname: node.hostname,
+            listen_host: node.advertise_addr,
+            listen_port: node.rpc_port
+          },
+          health: %{ready: true},
+          placements: [
+            Placement.new(%{
+              model_ref: model_ref,
+              state: :loaded,
+              capacity:
+                PlacementCapacity.new(%{
+                  model_ref: model_ref,
+                  active_request_count: 0,
+                  max_concurrency: 2,
+                  source: :beam_runtime_endpoint_status
+                })
+            })
+          ]
+        })
+
+      put_inference(runtime_endpoint_targets: [endpoint_target], runtime_client_targets: [])
+      stub_probe(endpoint_target, observation)
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request("test-model", "v1"),
+                 status_client: StubClient
+               )
+
+      node_id = node.id
+
+      assert schedule.node_id == node.id
+
+      assert %Target{
+               id: "source-dev-node-agent",
+               transport: :beam,
+               address: :orchard_node_agent@localhost,
+               node_id: ^node_id
+             } = schedule.runtime_endpoint_target
+    end
+
     test "hosted tool capability and readiness data do not change inference ranking" do
       node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
       node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})

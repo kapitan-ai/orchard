@@ -109,16 +109,18 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     assert grpc_target.transport == :grpc_compat
     assert grpc_target.address == [host: "127.0.0.1", port: 50_071]
 
+    node_id = "550e8400-e29b-41d4-a716-446655440000"
+
     beam_target =
       Target.normalize(%{
         transport: :beam,
-        node_id: "node-1",
+        node_id: node_id,
         address: :orchard_node_agent@localhost,
         metadata: %{role: :node_agent}
       })
 
     assert beam_target.transport == :beam
-    assert beam_target.node_id == "node-1"
+    assert beam_target.node_id == node_id
     assert beam_target.address == :orchard_node_agent@localhost
     assert beam_target.metadata == %{role: :node_agent}
   end
@@ -154,9 +156,36 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     assert Observation.node_id(observation) == node_id
   end
 
+  test "BEAM target normalization rejects configured non-UUID node_id values" do
+    assert_raise ArgumentError, fn ->
+      Target.normalize(
+        transport: :beam,
+        node_id: "node-1",
+        address: :orchard_node_agent@localhost
+      )
+    end
+
+    assert_raise ArgumentError, fn ->
+      Target.beam("node-1", address: :orchard_node_agent@localhost)
+    end
+
+    assert_raise ArgumentError, fn ->
+      Target.normalize(%Target{
+        id: "source-dev-node-agent",
+        transport: :beam,
+        address: :orchard_node_agent@localhost,
+        node_id: "node-1"
+      })
+    end
+  end
+
   test "target normalization rejects malformed configured BEAM node names" do
     assert_raise ArgumentError, fn ->
-      Target.normalize(transport: :beam, node_id: "node-1", address: "not a node")
+      Target.normalize(
+        transport: :beam,
+        node_id: "550e8400-e29b-41d4-a716-446655440000",
+        address: "not a node"
+      )
     end
   end
 

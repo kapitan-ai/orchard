@@ -10,6 +10,8 @@ defmodule Orchard.RuntimeEndpoint.Target do
             node_id: nil,
             metadata: %{}
 
+  @uuid_pattern ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
+
   @type transport :: :grpc_compat | :beam
   @type t :: %__MODULE__{
           id: String.t(),
@@ -20,6 +22,9 @@ defmodule Orchard.RuntimeEndpoint.Target do
         }
 
   @spec normalize(t() | keyword() | map()) :: t()
+  def normalize(%__MODULE__{transport: :beam} = target),
+    do: %{target | node_id: normalize_optional_node_id(target.node_id)}
+
   def normalize(%__MODULE__{} = target), do: target
 
   def normalize(target) when is_list(target) or is_map(target) do
@@ -56,6 +61,7 @@ defmodule Orchard.RuntimeEndpoint.Target do
 
   def beam(node_id, opts) when is_binary(node_id) and node_id != "" do
     attrs = attrs_map(opts)
+    node_id = normalize_required_node_id(node_id)
 
     %__MODULE__{
       id: value(attrs, :id) || "beam:#{node_id}",
@@ -67,7 +73,7 @@ defmodule Orchard.RuntimeEndpoint.Target do
   end
 
   def beam(_node_id, _opts),
-    do: raise(ArgumentError, "beam target requires a non-empty binary node_id")
+    do: raise(ArgumentError, "beam target node_id must be a UUID")
 
   defp beam_target(attrs) do
     node_id = normalize_optional_node_id(value(attrs, :node_id))
@@ -88,10 +94,18 @@ defmodule Orchard.RuntimeEndpoint.Target do
   defp normalize_optional_node_id(nil), do: nil
 
   defp normalize_optional_node_id(node_id) when is_binary(node_id) and node_id != "",
-    do: node_id
+    do: normalize_required_node_id(node_id)
 
   defp normalize_optional_node_id(_node_id) do
-    raise ArgumentError, "beam target node_id must be a non-empty binary when provided"
+    raise ArgumentError, "beam target node_id must be a UUID when provided"
+  end
+
+  defp normalize_required_node_id(node_id) do
+    if String.match?(node_id, @uuid_pattern) do
+      String.downcase(node_id)
+    else
+      raise ArgumentError, "beam target node_id must be a UUID"
+    end
   end
 
   defp normalize_beam_address(address) when is_atom(address), do: address

@@ -14,7 +14,7 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
   alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Operation, PlacementCapacity, Target}
 
   test "maps node-agent status to Runtime Endpoint observation with placement capacity" do
-    target = Target.beam("node-1", address: :node_one@localhost)
+    target = Target.beam("550e8400-e29b-41d4-a716-446655440000", address: :node_one@localhost)
     model_ref = %RPCModelRef{model_id: "mlx-community/phi-3", version: "main"}
 
     response = %StatusResponse{
