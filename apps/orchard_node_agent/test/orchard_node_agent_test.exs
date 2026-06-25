@@ -305,6 +305,37 @@ defmodule OrchardNodeAgentTest do
     def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
   end
 
+  defmodule FailingCancelAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(adapter_state, opts),
+      do: BlockingRuntimeAdapter.get_status(adapter_state, opts)
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, opts),
+      do: BlockingRuntimeAdapter.load_model(model_ref, opts)
+
+    @impl true
+    def unload_model(adapter_state, opts),
+      do: BlockingRuntimeAdapter.unload_model(adapter_state, opts)
+
+    @impl true
+    def start_generation(adapter_state, %ExecuteInferenceRequest{} = request, opts),
+      do: BlockingRuntimeAdapter.start_generation(adapter_state, request, opts)
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts),
+      do: {:error, {:simulated_cancel_failure, map_size(adapter_state.generations)}}
+
+    @impl true
+    def finish_generation(adapter_state, generation_ref, opts),
+      do: BlockingRuntimeAdapter.finish_generation(adapter_state, generation_ref, opts)
+  end
+
   defmodule MemoryBudgetRuntimeAdapter do
     @behaviour Orchard.Node.RuntimeAdapter
 
@@ -2865,6 +2896,33 @@ defmodule OrchardNodeAgentTest do
 
       assert_receive {:runtime_endpoint_done, ^stream_ref2, :ok}, 1_000
       wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+    end)
+  end
+
+  test "BEAM Runtime Endpoint cancel reports rejected acknowledgements", %{bundle: bundle} do
+    with_runtime_adapter(FailingCancelAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      request = beam_execute_request("req-beam-cancel-rejected", bundle)
+      stream_ref = make_ref()
+
+      assert {:ok, _pid} = NodeRuntimeEndpoint.execute_inference(request, self(), stream_ref)
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref, "req-beam-cancel-rejected",
+                      %OrchardInferenceEvent{event: %OrchardInferenceEvent.Accepted{}}},
+                     1_000
+
+      cancel_request =
+        Operation.CancelRequest.new!(%{
+          request_id: request.request_id,
+          controller_session_id: request.controller_session_id
+        })
+
+      assert {:error, {:cancel_rejected, message}} =
+               NodeRuntimeEndpoint.cancel_inference(cancel_request)
+
+      assert message =~ "simulated_cancel_failure"
     end)
   end
 

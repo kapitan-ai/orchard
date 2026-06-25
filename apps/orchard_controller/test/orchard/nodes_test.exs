@@ -36,6 +36,7 @@ defmodule Orchard.NodesTest do
   alias Orchard.Nodes
   alias Orchard.Nodes.Node
   alias Orchard.RuntimeEndpoint.GrpcCompatibilityMapper
+  alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Placement, PlacementCapacity, Target}
 
   # -- Helpers --
 
@@ -1826,6 +1827,65 @@ defmodule Orchard.NodesTest do
       send(first_awaiter, :stop)
     end
 
+    test "SPEC.md §5.5 BEAM runtime endpoint observation persists node capacity" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+      model_ref = ModelRef.new!("beam-observation-placement", "v1")
+      target = Target.beam(node_id, address: :orchard_node_agent@localhost)
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-beam-observation-placement",
+                   "beam-observation-placement"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+
+      observation =
+        Observation.new(%{
+          endpoint_id: target.id,
+          target: target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 1,
+          metadata: %{
+            node_id: node_id,
+            display_name: "beam-observation-node",
+            hostname: "beam-observation.local",
+            listen_host: "10.0.0.95",
+            listen_port: 9444
+          },
+          health: %{ready: true},
+          placements: [
+            Placement.new(%{
+              model_ref: model_ref,
+              state: :loaded,
+              capacity:
+                PlacementCapacity.new(%{
+                  model_ref: model_ref,
+                  active_request_count: 0,
+                  max_concurrency: 1,
+                  source: :beam_runtime_endpoint_status
+                })
+            })
+          ]
+        })
+
+      assert {:ok, node} = Nodes.observe_status(target, observation, DateTime.utc_now())
+      assert node.id == node_id
+      assert node.advertise_addr == "10.0.0.95"
+      assert node.rpc_port == 9444
+
+      assert {:ok, grant} = Task.await(awaiter, 2_000)
+      assert grant.queue_key == "beam-observation-placement@v1"
+
+      assert :ok = QueueManager.release(grant)
+    end
+
     test "SPEC.md §5.5 unavailable runtime endpoint observation clears queue capacity" do
       QueueManager.reset()
 
@@ -3147,6 +3207,61 @@ defmodule Orchard.NodesTest do
 
       assert_receive {^tag, {:ok, grant}}, 2_000
       assert :ok = QueueManager.release(grant)
+    end
+
+    test "SPEC.md §5.5 BEAM transport failure clears stale queue capacity sources" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+      model_id = "beam-failure-clear-model"
+      observed_at = DateTime.utc_now()
+
+      insert_node!(%{
+        id: node_id,
+        advertise_addr: "10.0.0.80",
+        rpc_port: 9444,
+        health: :healthy,
+        last_heartbeat_at: observed_at
+      })
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-beam-failure-clear-a", model_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-beam-failure-clear-b", model_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_beam_failure_clear_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_capacity(model_id, "v1", 1, source: {:node, node_id, :cold})
+
+      assert_receive {:first_beam_failure_clear_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      target = Target.beam(node_id, address: :orchard_node_agent@localhost)
+
+      assert {:ok, marked} =
+               Nodes.record_transport_failure(
+                 target,
+                 :node_timeout,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      assert marked.health == :degraded
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert :ok = QueueManager.refresh_capacity(model_id, "v1", 1, source: {:test, :restore})
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
     end
 
     test "swallows QueueManager clear exits after marking transport failure" do

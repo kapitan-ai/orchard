@@ -48,8 +48,10 @@ defmodule Orchard.Node.RuntimeEndpoint do
 
   @spec cancel_inference(Operation.CancelRequest.t(), keyword()) :: :ok | {:error, term()}
   def cancel_inference(%Operation.CancelRequest{} = request, _opts \\ []) do
-    _ack = Status.cancel_request(request.request_id, request.controller_session_id)
-    :ok
+    request.request_id
+    |> Status.cancel_request(request.controller_session_id)
+    |> RuntimeEndpointMapper.ack_from_response()
+    |> cancel_result()
   end
 
   @spec score_prefix_cache(Operation.PrefixCacheScoreRequest.t(), keyword()) ::
@@ -127,6 +129,11 @@ defmodule Orchard.Node.RuntimeEndpoint do
   defp accepted_event do
     InferenceEvent.accepted(System.system_time(:millisecond))
   end
+
+  defp cancel_result(%Operation.Ack{ok: true}), do: :ok
+
+  defp cancel_result(%Operation.Ack{ok: false, message: message}),
+    do: {:error, {:cancel_rejected, message}}
 
   defp send_failed(owner, stream_ref, request_id, reason) do
     code = RuntimeServer.safe_failure_reason_code(reason)
