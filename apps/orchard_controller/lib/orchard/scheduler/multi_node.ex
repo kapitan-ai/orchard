@@ -223,6 +223,7 @@ defmodule Orchard.Scheduler.MultiNode do
                   %{
                     node_id: node_id,
                     target: target,
+                    availability: observation.availability,
                     loaded_model?: loaded_model?,
                     active_request_count: observation.aggregate_active_request_count,
                     max_concurrency: node_max_concurrency(observation),
@@ -254,9 +255,15 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp candidate_full?(candidate) do
-    node_concurrency_full?(candidate) or placement_capacity_full?(candidate) or
+    runtime_endpoint_unavailable?(candidate) or node_concurrency_full?(candidate) or
+      placement_capacity_full?(candidate) or
       active_without_known_capacity?(candidate)
   end
+
+  defp runtime_endpoint_unavailable?(%{availability: availability}),
+    do: availability not in [:available, :degraded]
+
+  defp runtime_endpoint_unavailable?(_candidate), do: false
 
   defp node_concurrency_full?(%{active_request_count: active, max_concurrency: max})
        when is_integer(active) and is_integer(max) and max > 0,

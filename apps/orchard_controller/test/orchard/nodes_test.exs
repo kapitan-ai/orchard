@@ -1826,6 +1826,69 @@ defmodule Orchard.NodesTest do
       send(first_awaiter, :stop)
     end
 
+    test "SPEC.md §5.5 unavailable runtime endpoint observation clears queue capacity" do
+      QueueManager.reset()
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-unavailable-observation-a",
+                   "unavailable-observation"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-node-unavailable-observation-b",
+                   "unavailable-observation"
+                 ),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter =
+        start_holding_awaiter(first_ticket, :first_unavailable_observation_result)
+
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+      target = make_target("10.0.0.94", 9444)
+      observed_at = DateTime.utc_now()
+
+      status =
+        make_status_response(%{listen_host: "10.0.0.94", listen_port: 9444})
+        |> Map.put(:active_request_count, 0)
+        |> Map.put(:max_concurrency, 1)
+        |> Map.put(:runtime_model_placements, [])
+
+      observation = GrpcCompatibilityMapper.observation_from_status(target, status)
+
+      assert {:ok, _node} = Nodes.observe_status(target, observation, observed_at)
+      assert_receive {:first_unavailable_observation_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      unavailable_observation = %{observation | availability: :unavailable}
+
+      assert {:ok, _node} =
+               Nodes.observe_status(
+                 target,
+                 unavailable_observation,
+                 DateTime.add(observed_at, 1, :second)
+               )
+
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert {:ok, _node} =
+               Nodes.observe_status(target, observation, DateTime.add(observed_at, 2, :second))
+
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_result == :queued
+      assert second_grant.queue_key == "unavailable-observation@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
     test "SPEC.md §5.4 exhausted placement status does not publish queued capacity" do
       QueueManager.reset()
 

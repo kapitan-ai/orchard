@@ -620,6 +620,31 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.candidate_count == 1
     end
 
+    test "SPEC.md §7.5 excludes unavailable runtime endpoint observations" do
+      put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061)
+
+      observation =
+        %{
+          GrpcCompatibilityMapper.observation_from_status(
+            target,
+            make_status(node.id,
+              host: "10.0.0.1",
+              port: 50_061,
+              active_request_count: 0,
+              max_concurrency: 16
+            )
+          )
+          | availability: :unavailable
+        }
+
+      stub_probe("10.0.0.1", 50_061, observation)
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request(), status_client: StubClient)
+    end
+
     test "returns cluster_busy for one live cold target at aggregate capacity" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})

@@ -530,6 +530,27 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       assert marked.health == :degraded
     end
 
+    test "runtime endpoint connect error marks target degraded and returns sanitized failure",
+         ctx do
+      insert_target_node!(ctx.schedule.runtime_client_target)
+      configure_stub(%{connect: {:error, :node_unavailable}})
+
+      assert {:error, {:model_load_failed, failure}} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      assert failure.code == "node_unavailable"
+
+      marked =
+        Repo.get_by!(Node,
+          advertise_addr: Keyword.fetch!(ctx.schedule.runtime_client_target, :host),
+          rpc_port: Keyword.fetch!(ctx.schedule.runtime_client_target, :port)
+        )
+
+      assert marked.health == :degraded
+    end
+
     test "connect failure marks bind-all advertised node by actual connect target", ctx do
       target = ctx.schedule.runtime_client_target
 

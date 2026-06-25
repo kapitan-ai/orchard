@@ -414,7 +414,8 @@ defmodule Orchard.Nodes do
     placement_source = {:node, node.id, :placement}
     cold_source = {:node, node.id, :cold}
 
-    if queue_capacity_eligible_node?(node) do
+    if queue_capacity_eligible_node?(node) and
+         queue_capacity_eligible_observation?(status_response) do
       queue_manager.refresh_node_capacity_sources(%{
         clear_sources: node_queue_capacity_sources(node),
         node_source: {:node, node.id},
@@ -508,6 +509,11 @@ defmodule Orchard.Nodes do
        do: true
 
   defp queue_capacity_eligible_node?(%Node{}), do: false
+
+  defp queue_capacity_eligible_observation?(%Observation{availability: availability}),
+    do: availability in [:available, :degraded]
+
+  defp queue_capacity_eligible_observation?(_status_response), do: true
 
   defp node_queue_capacity_sources(%Node{} = node),
     do: [{:node, node.id}, {:node, node.id, :placement}, {:node, node.id, :cold}]

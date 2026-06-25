@@ -223,7 +223,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       {:ok, channel} ->
         dispatch_with_channel(Map.put(context, :channel, channel))
 
-      {:error, {:connect_failed, _reason} = reason} ->
+      {:error, reason} ->
         handle_dispatch_connect_failure(target, reason, context.metrics)
     end
   end
