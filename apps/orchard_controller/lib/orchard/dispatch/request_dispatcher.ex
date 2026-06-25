@@ -13,6 +13,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   Transport failures during connect, pre-dispatch status, model load, or stream
   execution are recorded through node inventory so stale capacity for the failed
   target is cleared.
+  Runtime Endpoint disconnect cleanup is best-effort and does not override the
+  dispatch outcome.
 
   Timing instrumentation logs one 'dispatch_timing' line per dispatch attempt,
   capturing cold/warm classification, stream timing, and outcome.
@@ -157,6 +159,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   Returns `{:ok, events}` with the list of all events received (including terminal),
   or `{:error, reason}` if dispatch fails before streaming begins.
+  Runtime Endpoint disconnect cleanup failures are logged and ignored after the
+  dispatch outcome is known.
   """
   @spec dispatch(
           schedule :: map(),
@@ -232,7 +236,24 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp dispatch_with_channel(%{client: client, channel: channel} = context) do
     do_dispatch_with_channel(context)
   after
+    disconnect_best_effort(client, channel)
+  end
+
+  defp disconnect_best_effort(client, channel) do
     client.disconnect(channel)
+    :ok
+  rescue
+    error ->
+      Logger.warning("Runtime endpoint disconnect failed: #{exception_name(error)}")
+      :ok
+  catch
+    :exit, _reason ->
+      Logger.warning("Runtime endpoint disconnect exited")
+      :ok
+
+    _kind, _reason ->
+      Logger.warning("Runtime endpoint disconnect threw")
+      :ok
   end
 
   defp do_dispatch_with_channel(%{} = context) do
@@ -710,9 +731,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   rescue
     error ->
       Logger.warning(
-        "Failed to mark target transport failure for #{inspect(target)}: #{inspect(error)}"
+        "Failed to mark runtime endpoint transport failure: #{exception_name(error)}"
       )
   end
+
+  defp exception_name(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
 
   defp emit_event(_event, _request_id, nil), do: :ok
 

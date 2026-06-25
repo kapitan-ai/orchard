@@ -6,6 +6,7 @@
 - [x] 1.4 Update `SPEC.md` to keep Worker Runtime as a Node Agent-local boundary.
 - [x] 1.5 Update `docs/architecture.md` and glossary docs to match accepted Runtime Endpoint language.
 - [x] 1.6 Decide and document which `proto/cluster/v1` artifacts remain as adapter or compatibility protocol inputs.
+- [x] 1.7 Record the source-dev BEAM-primary rollout gate and gRPC fallback policy.
 
 ## 2. Runtime Endpoint Interface
 
@@ -24,6 +25,7 @@
 - [x] 3.5 Preserve timeout, caller disconnect, cancellation, streaming event, and terminal event behavior during dispatch.
 - [x] 3.6 Preserve queue-enabled post-grant `cluster_busy` requeue under the original queue deadline.
 - [x] 3.7 Preserve queue-disabled `cluster_busy` as an immediate public failure.
+- [x] 3.8 Terminalize scheduler and dispatch orchestration crashes with generic failed request outcomes.
 
 ## 4. Node Agent And Worker Runtime Boundary
 
@@ -46,6 +48,7 @@
 - [x] 6.2 Keep targeted gRPC adapter tests if the gRPC compatibility adapter remains supported.
 - [x] 6.3 Add scheduler tests for Runtime Endpoint Observations and Placement Capacity edge cases.
 - [x] 6.4 Add request orchestration tests for `cluster_busy` requeue and timeout behavior through the Runtime Endpoint Interface.
+- [x] 6.4a Add regression tests for scheduler crash, dispatch crash, and disconnect cleanup behavior.
 - [x] 6.5 Run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate beam-first-runtime-endpoints --type change --strict --no-interactive`.
 - [x] 6.6 Run `mise exec -- mix format`.
 - [x] 6.7 Run `mise exec -- mix compile --warnings-as-errors`.

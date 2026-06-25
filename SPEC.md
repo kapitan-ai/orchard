@@ -46,6 +46,7 @@ Supported deployment modes:
 * Runtime Endpoint semantics are transport-independent.
 * The current gRPC/protobuf `NodeRuntimeService` is the compatibility transport for the first implementation and a candidate protocol for future non-BEAM adapters.
 * First-party Orchard Controller and Node Agent services MAY later use BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
+* Source-dev SHALL keep the gRPC compatibility path as the Controller-to-Node Agent runtime transport on port `50071` until a BEAM Runtime Endpoint adapter exists and passes the accepted two-Mac smoke.
 * Production BEAM Distribution MUST be explicitly enabled, identity-bound, network-restricted, and fail closed when required admission configuration is missing.
 * External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
 * All public API traffic SHALL terminate at the controller.
@@ -417,6 +418,7 @@ Rules:
 * `running` means node accepted and worker prefill began
 * `streaming` means at least one token or structured delta has been emitted
 * `interrupted` is used for controller/process failure after dispatch but before terminal reconciliation
+* once a request row has reached `validated`, scheduler or dispatch orchestration crashes MUST terminalize it as `failed` with durable `error_code = "orchestration_error"` and a sanitized public `internal_error`
 * once terminal, state is immutable
 
 ### 3.7 Durable-state write rules
@@ -564,6 +566,8 @@ Future `/v1/responses` terminal projection rules are:
 11. finalize usage/accounting
 12. append terminal request event + audit entries
 ```
+
+After step 5, internal scheduler or dispatch orchestration failures SHALL skip the remaining runtime steps, append a terminal failed request event, and preserve sanitized public error mapping.
 
 ### 3.9 Idempotency
 
@@ -1175,6 +1179,9 @@ Retry rule:
 * only if failure occurs **before first token emitted**
 * retry must choose a different node if one exists
 * after first token, no automatic retry
+
+Runtime Endpoint disconnect and channel cleanup failures are cleanup-only failures.
+They SHALL be logged best-effort and MUST NOT overwrite an otherwise successful scheduler probe or dispatch result.
 
 ### 5.10 Circuit breakers
 
@@ -2075,6 +2082,8 @@ Controller runtime execution SHALL use the Runtime Endpoint Interface.
 Runtime Endpoint semantics are transport-independent.
 The current gRPC/protobuf `NodeRuntimeService` is the gRPC Compatibility Adapter for the first implementation and a candidate protocol for future non-BEAM adapters.
 First-party Orchard Controller and Node Agent services MAY later use BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
+Source-dev SHALL keep the gRPC compatibility path as the Controller-to-Node Agent runtime transport on port `50071` until a BEAM Runtime Endpoint adapter exists and passes the accepted two-Mac smoke.
+The accepted smoke requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
 Production BEAM Distribution MUST be explicitly enabled, identity-bound, network-restricted, and fail closed when required admission configuration is missing.
 External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
 Postgres remains durable truth for inventory, lifecycle state, Runtime Endpoint Observations, scheduling history, request state, and operator-visible status.

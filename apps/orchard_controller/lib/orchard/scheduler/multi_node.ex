@@ -32,6 +32,8 @@ defmodule Orchard.Scheduler.MultiNode do
   Transport-like probe and connect failures are recorded through node inventory
   so failed targets stop contributing stale queue capacity before queued work is
   promoted.
+  Probe disconnect cleanup is best-effort and does not remove an otherwise valid
+  candidate or change the scheduling outcome.
   """
 
   alias Orchard.CanonicalRequest
@@ -244,7 +246,7 @@ defmodule Orchard.Scheduler.MultiNode do
               nil
           end
         after
-          client.disconnect(channel)
+          disconnect_best_effort(client, channel)
         end
 
       {:error, reason} ->
@@ -252,6 +254,23 @@ defmodule Orchard.Scheduler.MultiNode do
         Nodes.record_transport_failure(observation_target(target), reason, observed_at)
         nil
     end
+  end
+
+  defp disconnect_best_effort(client, channel) do
+    client.disconnect(channel)
+    :ok
+  rescue
+    error ->
+      Logger.warning("Runtime endpoint disconnect failed: #{exception_name(error)}")
+      :ok
+  catch
+    :exit, _reason ->
+      Logger.warning("Runtime endpoint disconnect exited")
+      :ok
+
+    _kind, _reason ->
+      Logger.warning("Runtime endpoint disconnect threw")
+      :ok
   end
 
   defp candidate_full?(candidate) do
@@ -392,6 +411,8 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp extract_valid_node_id(_), do: nil
+
+  defp exception_name(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
 
   defp model_loaded?(%Observation{} = observation, %CanonicalRequest{model_ref: model_ref}) do
     Observation.loaded_placement(observation, runtime_model_ref(model_ref)) != nil

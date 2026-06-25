@@ -12,10 +12,12 @@ The architecture should make Orchard's runtime execution semantics transport-ind
 - Treat the first-party Node Agent as Orchard's v1 Runtime Endpoint implementation.
 - Add BEAM Distribution guardrail validation for future live communication and monitoring between first-party Orchard Elixir services.
 - Keep the current gRPC/protobuf `NodeRuntimeService` path as an explicit Runtime Endpoint compatibility adapter for this implementation slice.
+- Keep source-dev on the gRPC compatibility adapter until a BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke.
 - Keep Postgres as Orchard's durable persistence and coordination store.
 - Keep Worker Runtime as a local Node Agent-owned process/protocol boundary for Python/MLX execution.
 - Demote `proto/cluster/v1` and `NodeRuntimeService` from the durable Controller domain contract to an explicit compatibility adapter and possible future non-BEAM adapter protocol.
 - Preserve the latest `gnhf/objective-fully-impl-369718` concurrency semantics around Placement Capacity, conservative scheduler eligibility, `cluster_busy`, queue requeue under the original deadline, tenant FIFO, and weighted round-robin.
+- Terminalize scheduler and dispatch orchestration crashes as generic failed requests rather than leaving validated requests active.
 - Require production BEAM Distribution to be explicitly configured, identity-bound, network-restricted, and limited to admitted first-party Orchard services.
 - Keep external compute, appliance-style accelerators, cloud VMs, high-performance compute nodes, and paid provider integrations outside the BEAM mesh behind future Runtime Endpoint adapters.
 
@@ -36,6 +38,7 @@ The architecture should make Orchard's runtime execution semantics transport-ind
 - Requires updates to `SPEC.md` sections that mandated no distributed Erlang across machines and gRPC over mTLS for all cross-node control traffic at the base of this change.
 - Requires updates to architecture docs and glossary terms that bound internal runtime communication to gRPC/mTLS at the base of this change.
 - Affects controller dispatch, scheduler, request orchestration, queue admission, node-agent runtime status, and runtime telemetry tests.
+- Affects request lifecycle documentation for scheduler and dispatch crash terminalization.
 - Affects current gRPC/protobuf artifacts under `proto/cluster/v1/` and generated cluster bindings by wrapping them as adapter or compatibility transport status.
 - Does not remove the local Worker Runtime protocol boundary.
 - Does not merge `gnhf/objective-fully-impl-369718`, but the accepted architecture must preserve and adapt its concurrency behavior.

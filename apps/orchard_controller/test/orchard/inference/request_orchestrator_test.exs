@@ -351,6 +351,24 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler do
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubFunctionClauseScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+
+  def schedule(%CanonicalRequest{}) do
+    raise FunctionClauseError, module: __MODULE__, function: :schedule, arity: 1
+  end
+end
+
+defmodule Orchard.Inference.RequestOrchestratorTest.StubFunctionClauseRuntimeClient do
+  @moduledoc false
+
+  def connect(_target) do
+    raise FunctionClauseError, module: __MODULE__, function: :connect, arity: 1
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubLiveCapacityScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -1227,6 +1245,54 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     refute :admitted in states
     refute :queued in states
     refute Map.has_key?(request.scheduler_decision, "queueing_enabled")
+  end
+
+  test "execute/3 terminalizes a validated request when scheduling crashes", %{bundle: bundle} do
+    put_queue_admission_config(enabled: false)
+    put_function_clause_scheduler_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-scheduler-crash")
+    canonical = canonical_request("request-orchestrator-scheduler-crash", stream?: false)
+
+    assert {:error,
+            {:orchestration_crash,
+             %{phase: :scheduler, category: :exception, exception: "Elixir.FunctionClauseError"}}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    states = request_event_states(request)
+
+    assert request.state == :failed
+    assert request.node_id == nil
+    assert request.error_code == "orchestration_error"
+    assert request.error_message == "Runtime orchestration failed"
+    assert :validated in states
+    assert :failed in states
+    assert state_before?(states, :validated, :failed)
+    refute :scheduled in states
+  end
+
+  test "execute/3 terminalizes a validated request when dispatch crashes", %{bundle: bundle} do
+    put_queue_admission_config(enabled: false)
+    put_function_clause_runtime_client_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-dispatch-crash")
+    canonical = canonical_request("request-orchestrator-dispatch-crash", stream?: false)
+
+    assert {:error,
+            {:orchestration_crash,
+             %{phase: :dispatch, category: :exception, exception: "Elixir.FunctionClauseError"}}} =
+             RequestOrchestrator.execute(canonical, model)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    states = request_event_states(request)
+
+    assert request.state == :failed
+    assert request.error_code == "orchestration_error"
+    assert request.error_message == "Runtime orchestration failed"
+    assert state_before?(states, :validated, :failed)
+    assert :scheduled in states
+    assert :dispatching in states
   end
 
   test "queue admission enabled records immediate grant metadata before dispatch", %{
@@ -2851,6 +2917,27 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       Application.fetch_env!(:orchard_controller, :inference)
       |> Keyword.merge(
         scheduler_impl: Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_function_clause_scheduler_config do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.merge(
+        scheduler_impl: Orchard.Inference.RequestOrchestratorTest.StubFunctionClauseScheduler
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_function_clause_runtime_client_config do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.merge(
+        runtime_endpoint_client_impl:
+          Orchard.Inference.RequestOrchestratorTest.StubFunctionClauseRuntimeClient
       )
 
     Application.put_env(:orchard_controller, :inference, inference)

@@ -9,6 +9,10 @@ defmodule Orchard.RuntimeEndpoint.Client do
 
     * `{:runtime_endpoint_event, stream_ref, request_id, event}`
     * `{:runtime_endpoint_done, stream_ref, :ok | {:error, reason}}`
+
+  Disconnect is cleanup-only. Callers treat disconnect failures as best-effort
+  cleanup and preserve the status, scheduling, or dispatch outcome already
+  produced by the Runtime Endpoint operation.
   """
 
   alias Orchard.InferenceEvent

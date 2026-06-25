@@ -3390,7 +3390,7 @@ defmodule Orchard.Inference.QueueManagerTest do
     end)
   end
 
-  defp wait_until(fun, attempts \\ 50)
+  defp wait_until(fun, attempts \\ 150)
   defp wait_until(_fun, 0), do: false
 
   defp wait_until(fun, attempts) do

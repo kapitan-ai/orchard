@@ -108,6 +108,30 @@ This preserves the incoming `gnhf/objective-fully-impl-369718` behavior around `
 - **WHEN** queue admission is disabled and scheduling returns `cluster_busy`
 - **THEN** the request fails immediately with the existing `cluster_busy` public error mapping
 
+### Requirement: Runtime Orchestration Failure Terminalization
+After a durable request reaches validation, scheduler or dispatch orchestration failures SHALL terminalize the request instead of leaving it active.
+The durable request SHALL fail with `error_code = "orchestration_error"` and `error_message = "Runtime orchestration failed"`.
+Public HTTP and SSE error payloads SHALL stay sanitized with `internal_error`.
+Runtime Endpoint disconnect cleanup failures SHALL be logged best-effort and MUST NOT overwrite an otherwise successful scheduler probe or dispatch result.
+
+#### Scenario: Scheduler crashes after validation
+- **WHEN** a validated request encounters an exception, exit, throw, or invalid return from the scheduler
+- **THEN** the request reaches terminal state `failed`
+- **THEN** no scheduled request state is required
+- **THEN** the public error payload is generic
+
+#### Scenario: Dispatch crashes after scheduling
+- **WHEN** a scheduled request encounters an exception, exit, throw, or invalid return from dispatch
+- **THEN** the request reaches terminal state `failed`
+- **THEN** the request retains scheduled and dispatching lifecycle evidence when those states were reached
+- **THEN** the public error payload is generic
+
+#### Scenario: Runtime Endpoint cleanup fails
+- **WHEN** a scheduler probe or dispatch attempt has already produced its operation result
+- **AND** disconnect cleanup fails
+- **THEN** Orchard keeps the operation result
+- **THEN** cleanup failure is logged best-effort
+
 ### Requirement: Worker Runtime Boundary Preservation
 The Worker Runtime Interface SHALL remain separate from the Runtime Endpoint Interface.
 The Node Agent SHALL continue to own local Worker Runtime lifecycle, model loading, active request accounting, cancellation, diagnostics, and cleanup.
@@ -130,3 +154,21 @@ This changes the role of the gRPC contract currently described in `SPEC.md` sect
 #### Scenario: Future adapter uses gRPC
 - **WHEN** a future Runtime Endpoint adapter needs a stable non-BEAM protocol
 - **THEN** the existing gRPC/protobuf work may be reused or evolved as an adapter protocol
+
+### Requirement: Source-dev BEAM Primary Rollout
+Orchard SHALL treat the first-party BEAM Runtime Endpoint adapter as the intended primary source-dev Controller-to-Node Agent path only after the adapter is implemented and passes the accepted two-Mac smoke.
+Until that gate passes, current source-dev SHALL keep the gRPC compatibility path as the compatibility and fallback path on port `50071`.
+
+#### Scenario: BEAM adapter passes the source-dev smoke gate
+- **WHEN** the BEAM Runtime Endpoint adapter exists and the accepted two-Mac smoke passes
+- **THEN** Orchard may promote BEAM Runtime Endpoint transport to the primary source-dev Controller-to-Node Agent path
+
+#### Scenario: BEAM adapter has not passed the source-dev smoke gate
+- **WHEN** the BEAM Runtime Endpoint adapter is absent or has not passed the accepted two-Mac smoke
+- **THEN** Orchard keeps using the gRPC compatibility path for source-dev Controller-to-Node Agent communication
+
+#### Scenario: Source-dev smoke gate is evaluated
+- **WHEN** the accepted two-Mac source-dev smoke is run
+- **THEN** Console Nodes shows local and remote Node Agents reachable
+- **THEN** `GET /v1/models` returns `200`
+- **THEN** `POST /v1/chat/completions` completes through the Console Playground or an equivalent API request
