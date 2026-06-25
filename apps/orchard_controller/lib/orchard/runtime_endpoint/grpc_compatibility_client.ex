@@ -20,6 +20,8 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
     end
   end
 
+  def connect(%Target{} = target), do: {:error, {:unsupported_transport, target.transport}}
+
   def connect(target) when is_list(target) or is_map(target) do
     target
     |> GrpcCompatibilityMapper.normalize_target()

@@ -28,7 +28,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
   end
 
   def disconnect(_channel), do: :ok
-  def cancel_inference(_channel, %Operation.CancelRequest{}), do: :ok
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 
   def ensure_model_loaded(
         {:stub_channel, target},

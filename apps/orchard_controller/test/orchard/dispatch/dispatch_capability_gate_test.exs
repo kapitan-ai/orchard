@@ -24,7 +24,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest.StubClient do
   end
 
   def disconnect(_channel), do: :ok
-  def cancel_inference(_channel, %Operation.CancelRequest{}), do: :ok
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 
   def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{} = request, _opts \\ []) do
     send(config().capture_pid, {:captured_ensure_model_loaded_request, request})

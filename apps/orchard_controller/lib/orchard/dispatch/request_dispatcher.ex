@@ -904,7 +904,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       Operation.CancelRequest.new!(
         request_id: request_id,
         controller_session_id: controller_session_id
-      )
+      ),
+      []
     )
   end
 
