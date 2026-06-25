@@ -752,9 +752,18 @@ defmodule Orchard.Inference.RequestOrchestrator do
 
   defp strip_scheduler_runtime_metadata(schedule) do
     schedule
+    |> strip_runtime_endpoint_metadata()
     |> strip_prefix_cache_metadata()
     |> strip_memory_admission_metadata()
   end
+
+  defp strip_runtime_endpoint_metadata(schedule) do
+    Map.reject(schedule, fn {key, _value} -> runtime_endpoint_metadata_key?(key) end)
+  end
+
+  defp runtime_endpoint_metadata_key?(:runtime_endpoint_target), do: true
+  defp runtime_endpoint_metadata_key?("runtime_endpoint_target"), do: true
+  defp runtime_endpoint_metadata_key?(_key), do: false
 
   defp strip_prefix_cache_metadata(schedule) do
     Map.reject(schedule, fn {key, _value} -> prefix_cache_metadata_key?(key) end)

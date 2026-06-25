@@ -15,6 +15,7 @@ defmodule Orchard.Nodes do
   alias Orchard.Nodes.ToolCapability
   alias Orchard.Nodes.ToolReadiness
   alias Orchard.Repo
+  alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Placement, PlacementCapacity, Target}
 
   # -- Read APIs --
 
@@ -153,16 +154,16 @@ defmodule Orchard.Nodes do
   # -- Observational Write APIs --
 
   @doc """
-  Observes a successful status response and persists the node.
+  Observes a successful Runtime Endpoint status observation and persists the node.
 
-  Normalizes metadata from a `StatusResponse` (or compatible map),
-  resolves conflicts (identity, display_name, staleness), and inserts
-  or updates the node row.
+  Normalizes metadata from a Runtime Endpoint Observation, `StatusResponse`,
+  or compatible map before resolving conflicts (identity, display_name,
+  staleness) and inserting or updating the node row.
 
   New nodes are inserted with `state: :active`. Updates preserve the
   existing `state` (admin-managed).
   Successful eligible observations also refresh source-scoped queue capacity
-  from aggregate node capacity and loaded placement statuses.
+  from aggregate endpoint capacity and loaded placement statuses.
   Fresh invalid metadata, identity conflicts, ineligible nodes, and target
   failures clear stale queue capacity sources for that node/target.
 
@@ -177,7 +178,7 @@ defmodule Orchard.Nodes do
   - `:noop` when metadata is missing/invalid, repo unavailable,
     observation is stale, or an identity conflict is detected
   """
-  @spec observe_status(keyword(), map() | struct(), DateTime.t()) ::
+  @spec observe_status(keyword() | Target.t(), map() | struct(), DateTime.t()) ::
           {:ok, Node.t()} | :noop
   @spec observe_status(keyword(), map() | struct(), DateTime.t(), keyword()) ::
           {:ok, Node.t()} | :noop
@@ -237,7 +238,8 @@ defmodule Orchard.Nodes do
   - `{:ok, %Node{}}` when health was updated
   - `:noop` for non-transport reasons, unknown targets, or repo unavailable
   """
-  @spec record_transport_failure(keyword(), term(), DateTime.t()) :: {:ok, Node.t()} | :noop
+  @spec record_transport_failure(keyword() | Target.t(), term(), DateTime.t()) ::
+          {:ok, Node.t()} | :noop
   def record_transport_failure(target, reason, observed_at) do
     if transport_failure_reason?(reason) do
       case mark_target_unreachable_without_queue_cleanup(target, observed_at) do
@@ -267,7 +269,7 @@ defmodule Orchard.Nodes do
   - `{:ok, %Node{}}` on successful mark
   - `:noop` when target is unknown, stale, malformed, or repo unavailable
   """
-  @spec mark_target_unreachable(keyword(), DateTime.t()) :: {:ok, Node.t()} | :noop
+  @spec mark_target_unreachable(keyword() | Target.t(), DateTime.t()) :: {:ok, Node.t()} | :noop
   def mark_target_unreachable(target, observed_at) do
     case mark_target_unreachable_without_queue_cleanup(target, observed_at) do
       {:ok, %Node{} = node} = result ->
@@ -293,6 +295,7 @@ defmodule Orchard.Nodes do
   # -- Observation Normalization --
 
   defp normalize_observation(target, status_response, observed_at) do
+    target = target_address(target)
     metadata = extract_metadata(status_response)
 
     with {:metadata, %{} = meta} <- {:metadata, metadata},
@@ -328,10 +331,15 @@ defmodule Orchard.Nodes do
   defp extract_metadata(%{node_metadata: meta}), do: meta
   defp extract_metadata(%{"node_metadata" => nil}), do: nil
   defp extract_metadata(%{"node_metadata" => meta}), do: meta
+
+  defp extract_metadata(%Observation{metadata: metadata}) when is_map(metadata),
+    do: observation_metadata(metadata)
+
   defp extract_metadata(_), do: nil
 
   defp extract_runtime_health(%{runtime_health: health}), do: health
   defp extract_runtime_health(%{"runtime_health" => health}), do: health
+  defp extract_runtime_health(%Observation{health: health}) when is_map(health), do: health
   defp extract_runtime_health(_), do: nil
 
   defp resolve_display_name(meta) do
@@ -406,15 +414,16 @@ defmodule Orchard.Nodes do
     placement_source = {:node, node.id, :placement}
     cold_source = {:node, node.id, :cold}
 
-    if queue_capacity_eligible_node?(node) do
+    if queue_capacity_eligible_node?(node) and
+         queue_capacity_eligible_observation?(status_response) do
       queue_manager.refresh_node_capacity_sources(%{
         clear_sources: node_queue_capacity_sources(node),
         node_source: {:node, node.id},
         placement_source: placement_source,
         cold_source: cold_source,
         node_id: node.id,
-        node_active: non_negative_integer(map_get(status_response, :active_request_count), 0),
-        node_max: positive_integer(map_get(status_response, :max_concurrency), 1),
+        node_active: observed_node_active(status_response),
+        node_max: observed_node_max(status_response),
         placements: placement_observations(status_response),
         reserve_unassigned_node_grants?:
           Keyword.get(opts, :reserve_unassigned_node_grants?, true),
@@ -501,6 +510,11 @@ defmodule Orchard.Nodes do
 
   defp queue_capacity_eligible_node?(%Node{}), do: false
 
+  defp queue_capacity_eligible_observation?(%Observation{availability: availability}),
+    do: availability in [:available, :degraded]
+
+  defp queue_capacity_eligible_observation?(_status_response), do: true
+
   defp node_queue_capacity_sources(%Node{} = node),
     do: [{:node, node.id}, {:node, node.id, :placement}, {:node, node.id, :cold}]
 
@@ -509,6 +523,12 @@ defmodule Orchard.Nodes do
        do: placements
 
   defp extract_runtime_model_placements(_status_response), do: []
+
+  defp placement_observations(%Observation{placements: placements}) do
+    placements
+    |> Enum.reduce(%{}, &put_runtime_endpoint_placement_observation/2)
+    |> Enum.map(fn {{model_id, version}, status} -> {model_id, version, status} end)
+  end
 
   defp placement_observations(status_response) do
     runtime_observations =
@@ -530,6 +550,41 @@ defmodule Orchard.Nodes do
       observations
     end
   end
+
+  defp put_runtime_endpoint_placement_observation(%Placement{} = placement, observations) do
+    case runtime_endpoint_placement_ref(placement) do
+      {:ok, model_id, version} ->
+        status = runtime_endpoint_placement_status(placement)
+        Map.update(observations, {model_id, version}, status, fn _existing -> :ambiguous end)
+
+      :error ->
+        observations
+    end
+  end
+
+  defp put_runtime_endpoint_placement_observation(_placement, observations), do: observations
+
+  defp runtime_endpoint_placement_ref(%Placement{
+         model_ref: %ModelRef{model_id: model_id, version: version}
+       })
+       when is_binary(model_id) and model_id != "" and is_binary(version) and version != "",
+       do: {:ok, model_id, version}
+
+  defp runtime_endpoint_placement_ref(_placement), do: :error
+
+  defp runtime_endpoint_placement_status(%Placement{
+         state: state,
+         capacity: %PlacementCapacity{
+           status: :known,
+           active_request_count: active,
+           max_concurrency: max
+         }
+       })
+       when state in [:loaded, "loaded", :PLACEMENT_STATE_LOADED] do
+    %{active_request_count: active, max_concurrency: max}
+  end
+
+  defp runtime_endpoint_placement_status(%Placement{}), do: :unavailable
 
   defp extract_loaded_models(%{loaded_models: models}) when is_list(models), do: models
   defp extract_loaded_models(%{"loaded_models" => models}) when is_list(models), do: models
@@ -615,6 +670,18 @@ defmodule Orchard.Nodes do
       _other -> 0
     end
   end
+
+  defp observed_node_active(%Observation{aggregate_active_request_count: active}),
+    do: non_negative_integer(active, 0)
+
+  defp observed_node_active(status_response),
+    do: non_negative_integer(map_get(status_response, :active_request_count), 0)
+
+  defp observed_node_max(%Observation{aggregate_max_concurrency: max}),
+    do: positive_integer(max, 1)
+
+  defp observed_node_max(status_response),
+    do: positive_integer(map_get(status_response, :max_concurrency), 1)
 
   defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
   defp positive_integer(_value, default), do: default
@@ -840,6 +907,7 @@ defmodule Orchard.Nodes do
   end
 
   defp validate_target(target) do
+    target = target_address(target)
     host = Keyword.get(target, :host)
     port = Keyword.get(target, :port)
 
@@ -850,10 +918,12 @@ defmodule Orchard.Nodes do
     end
   end
 
-  defp target_host(target), do: Keyword.get(target, :host, "")
-  defp target_port(target), do: Keyword.get(target, :port)
+  defp target_host(target), do: target |> target_address() |> Keyword.get(:host, "")
+  defp target_port(target), do: target |> target_address() |> Keyword.get(:port)
 
   defp connect_host(target) do
+    target = target_address(target)
+
     case Keyword.get(target, :host) do
       host when is_binary(host) and host != "" -> host
       _other -> nil
@@ -861,6 +931,8 @@ defmodule Orchard.Nodes do
   end
 
   defp connect_port(target) do
+    target = target_address(target)
+
     case Keyword.get(target, :port) do
       port when is_integer(port) and port in 1..65_535 -> port
       _other -> nil
@@ -931,6 +1003,25 @@ defmodule Orchard.Nodes do
 
   defp non_empty?(value), do: is_binary(value) and value != ""
   defp non_empty_or(value, fallback), do: if(non_empty?(value), do: value, else: fallback)
+
+  defp observation_metadata(metadata) do
+    %{
+      node_id: metadata_value(metadata, :node_id),
+      display_name: metadata_value(metadata, :display_name),
+      hostname: metadata_value(metadata, :hostname),
+      agent_version: metadata_value(metadata, :agent_version),
+      listen_host: metadata_value(metadata, :listen_host),
+      listen_port: metadata_value(metadata, :listen_port),
+      worker_backend: metadata_value(metadata, :worker_backend)
+    }
+  end
+
+  defp metadata_value(metadata, key) do
+    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+  end
+
+  defp target_address(%Target{transport: :grpc_compat, address: address}), do: address
+  defp target_address(target), do: target
 
   defp valid_connect_target?(host, port), do: non_empty?(host) and is_integer(port)
 

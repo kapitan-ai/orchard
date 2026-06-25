@@ -4,12 +4,12 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest.StubClient do
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
-    EnsureModelLoadedResponse,
     ExecuteInferenceRequest,
     StatusResponse
   }
 
   alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
 
   def registry_name, do: @registry
 
@@ -24,34 +24,34 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest.StubClient do
   end
 
   def disconnect(_channel), do: :ok
-  def cancel_inference(_channel, _request_id), do: :ok
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 
-  def ensure_model_loaded(_channel, %EnsureModelLoadedRequest{} = request, _opts \\ []) do
+  def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{} = request, _opts \\ []) do
     send(config().capture_pid, {:captured_ensure_model_loaded_request, request})
 
     {:ok,
-     %EnsureModelLoadedResponse{
+     %Operation.EnsureModelLoadedResult{
        already_loaded: false,
-       placement_state: :PLACEMENT_STATE_LOADED,
+       placement_state: :loaded,
        worker_supports_prompt_token_ids: config().worker_supports_prompt_token_ids
      }}
   end
 
-  def execute_inference(_channel, %ExecuteInferenceRequest{} = request, opts \\ []) do
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
     owner = Keyword.get(opts, :owner, self())
     ref = make_ref()
     send(config().capture_pid, {:captured_execute_request, request})
 
     spawn(fn ->
-      send(owner, {:dispatch_event, ref, request.request_id, InferenceEvent.accepted(0)})
+      send(owner, {:runtime_endpoint_event, ref, request.request_id, InferenceEvent.accepted(0)})
 
       send(
         owner,
-        {:dispatch_event, ref, request.request_id,
+        {:runtime_endpoint_event, ref, request.request_id,
          InferenceEvent.completed(:finish_reason_stop, nil)}
       )
 
-      send(owner, {:dispatch_done, ref, :ok})
+      send(owner, {:runtime_endpoint_done, ref, :ok})
     end)
 
     {:ok, ref}
@@ -68,6 +68,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
 
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest}
   alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.RuntimeEndpoint.Operation
 
   @stub_client Orchard.Dispatch.DispatchCapabilityGateTest.StubClient
   @prompt_ids [101, 102, 103]
@@ -92,7 +93,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
     assert metadata.worker_supports_prompt_token_ids == true
 
     assert_receive {:captured_execute_request,
-                    %ExecuteInferenceRequest{prompt_token_ids: @prompt_ids}}
+                    %Operation.ExecuteRequest{prompt_token_ids: @prompt_ids}}
   end
 
   test "safe-mode on with capable worker strips empty prompt_token_ids silently" do
@@ -106,7 +107,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
 
     refute_receive {^dispatched_ref, [:orchard, :tokenizer, :prompt_token_ids_dispatched], _, _}
     refute_receive {^unsafe_ref, [:orchard, :tokenizer, :unsafe_mode_active], _, _}
-    assert_receive {:captured_execute_request, %ExecuteInferenceRequest{prompt_token_ids: []}}
+    assert_receive {:captured_execute_request, %Operation.ExecuteRequest{prompt_token_ids: []}}
   end
 
   test "safe-mode on strips prompt_token_ids for legacy workers and emits unsafe fallback telemetry" do
@@ -122,7 +123,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
 
     assert metadata.reason == :legacy_worker_no_capability
     assert metadata.model_id == "test/model"
-    assert_receive {:captured_execute_request, %ExecuteInferenceRequest{prompt_token_ids: []}}
+    assert_receive {:captured_execute_request, %Operation.ExecuteRequest{prompt_token_ids: []}}
   end
 
   test "safe-mode off strips prompt_token_ids silently" do
@@ -136,7 +137,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
 
     refute_receive {^dispatched_ref, [:orchard, :tokenizer, :prompt_token_ids_dispatched], _, _}
     refute_receive {^unsafe_ref, [:orchard, :tokenizer, :unsafe_mode_active], _, _}
-    assert_receive {:captured_execute_request, %ExecuteInferenceRequest{prompt_token_ids: []}}
+    assert_receive {:captured_execute_request, %Operation.ExecuteRequest{prompt_token_ids: []}}
   end
 
   test "safe-mode reject refuses legacy workers without dispatching execute" do
@@ -149,7 +150,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
       assert metadata.model_id == "test/model"
     end)
 
-    refute_receive {:captured_execute_request, %ExecuteInferenceRequest{}}
+    refute_receive {:captured_execute_request, %Operation.ExecuteRequest{}}
   end
 
   test "safe-mode reject refuses requests missing prompt_token_ids before ensure_model_loaded" do
@@ -163,8 +164,10 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
       assert metadata.model_id == "test/model"
     end)
 
-    refute_receive {:captured_ensure_model_loaded_request, %EnsureModelLoadedRequest{}}, 200
-    refute_receive {:captured_execute_request, %ExecuteInferenceRequest{}}, 200
+    refute_receive {:captured_ensure_model_loaded_request, %Operation.EnsureModelLoadedRequest{}},
+                   200
+
+    refute_receive {:captured_execute_request, %Operation.ExecuteRequest{}}, 200
   end
 
   test "safe-mode reject missing prompt_token_ids short-circuits before connect and probe" do
@@ -180,8 +183,11 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
 
     refute_receive :connect_called, 200
     refute_receive :status_called, 200
-    refute_receive {:captured_ensure_model_loaded_request, %EnsureModelLoadedRequest{}}, 200
-    refute_receive {:captured_execute_request, %ExecuteInferenceRequest{}}, 200
+
+    refute_receive {:captured_ensure_model_loaded_request, %Operation.EnsureModelLoadedRequest{}},
+                   200
+
+    refute_receive {:captured_execute_request, %Operation.ExecuteRequest{}}, 200
   end
 
   test "safe-mode reject keeps prompt_token_ids for capable workers and emits dispatch telemetry" do
@@ -198,7 +204,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
     assert metadata.model_id == "test/model"
 
     assert_receive {:captured_execute_request,
-                    %ExecuteInferenceRequest{prompt_token_ids: @prompt_ids}}
+                    %Operation.ExecuteRequest{prompt_token_ids: @prompt_ids}}
   end
 
   defp configure_stub(overrides) do

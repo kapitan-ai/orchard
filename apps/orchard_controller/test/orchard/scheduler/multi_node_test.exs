@@ -10,6 +10,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes.Node
+  alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, Target}
   alias Orchard.Scheduler.MultiNode
 
   # -- Stub Status Client --
@@ -24,7 +25,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     Target key is `{host, port}`.
     """
     def connect(target) do
-      key = {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
+      key = target_key(target)
 
       case Process.get({:stub_connect, key}) do
         nil -> {:ok, target}
@@ -33,7 +34,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     end
 
     def status(target, opts) do
-      key = {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
+      key = target_key(target)
       calls = Process.get(:stub_status_calls, [])
       Process.put(:stub_status_calls, [{key, opts} | calls])
 
@@ -48,7 +49,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     def disconnect(_channel), do: :ok
 
     def score_prefix_cache(target, request, _opts) do
-      key = {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
+      key = target_key(target)
       calls = Process.get(:stub_score_calls, [])
       Process.put(:stub_score_calls, [{key, request} | calls])
 
@@ -57,6 +58,14 @@ defmodule Orchard.Scheduler.MultiNodeTest do
         {:error, _reason} = error -> error
         response -> {:ok, response}
       end
+    end
+
+    defp target_key(%Orchard.RuntimeEndpoint.Target{transport: :grpc_compat, address: address}) do
+      target_key(address)
+    end
+
+    defp target_key(target) do
+      {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
     end
   end
 
@@ -586,6 +595,56 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.candidate_count == 1
     end
 
+    test "uses runtime endpoint observation aggregate capacity for active cold target" do
+      put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061)
+
+      observation =
+        GrpcCompatibilityMapper.observation_from_status(
+          target,
+          make_status(node.id,
+            host: "10.0.0.1",
+            port: 50_061,
+            active_request_count: 1,
+            max_concurrency: 2
+          )
+        )
+
+      stub_probe("10.0.0.1", 50_061, observation)
+
+      assert {:ok, schedule} = MultiNode.schedule(canonical_request(), status_client: StubClient)
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node.id
+      assert schedule.selected_tier == "cold"
+      assert schedule.candidate_count == 1
+    end
+
+    test "SPEC.md §7.5 excludes unavailable runtime endpoint observations" do
+      put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.grpc_compat(host: "10.0.0.1", port: 50_061)
+
+      observation =
+        %{
+          GrpcCompatibilityMapper.observation_from_status(
+            target,
+            make_status(node.id,
+              host: "10.0.0.1",
+              port: 50_061,
+              active_request_count: 0,
+              max_concurrency: 16
+            )
+          )
+          | availability: :unavailable
+        }
+
+      stub_probe("10.0.0.1", 50_061, observation)
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request(), status_client: StubClient)
+    end
+
     test "returns cluster_busy for one live cold target at aggregate capacity" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
@@ -649,6 +708,37 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.node_id == node_b.id
       assert schedule.selected_tier == "loaded"
       assert schedule.candidate_count == 2
+    end
+
+    test "consumes runtime endpoint observations and preserves legacy dispatch target" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+      endpoint_target = Target.grpc_compat(host: "10.0.0.1", port: 50_061)
+
+      observation =
+        GrpcCompatibilityMapper.observation_from_status(
+          endpoint_target,
+          make_status(node_a.id,
+            host: "10.0.0.1",
+            port: 50_061,
+            loaded_models: [%{model_id: "test-model", version: "v1"}],
+            runtime_model_placements: [model_placement("test-model", "v1", 0, 2)]
+          )
+        )
+
+      stub_probe("10.0.0.1", 50_061, observation)
+      stub_probe("10.0.0.2", 50_062, make_status(node_b.id, host: "10.0.0.2", port: 50_062))
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request("test-model", "v1"),
+                 status_client: StubClient
+               )
+
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_a.id
+      assert schedule.runtime_endpoint_target == endpoint_target
+      assert schedule.runtime_client_target == [host: "10.0.0.1", port: 50_061]
+      assert schedule.selected_tier == "loaded"
     end
 
     test "hosted tool capability and readiness data do not change inference ranking" do

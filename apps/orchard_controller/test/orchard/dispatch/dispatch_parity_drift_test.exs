@@ -4,13 +4,13 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest.StubClient do
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
-    EnsureModelLoadedResponse,
     ExecuteInferenceRequest,
     RuntimeNodeMetadata,
     StatusResponse
   }
 
   alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
 
   @node_id "550e8400-e29b-41d4-a716-446655440000"
 
@@ -26,30 +26,30 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest.StubClient do
   end
 
   def disconnect(_channel), do: :ok
-  def cancel_inference(_channel, _request_id), do: :ok
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 
-  def ensure_model_loaded(_channel, %EnsureModelLoadedRequest{} = request, _opts \\ []) do
+  def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{} = request, _opts \\ []) do
     send(config().capture_pid, {:captured_ensure_model_loaded_request, request})
 
     {:ok,
-     %EnsureModelLoadedResponse{
+     %Operation.EnsureModelLoadedResult{
        already_loaded: false,
-       placement_state: :PLACEMENT_STATE_LOADED,
+       placement_state: :loaded,
        worker_supports_prompt_token_ids: true
      }}
   end
 
-  def execute_inference(_channel, %ExecuteInferenceRequest{} = request, opts \\ []) do
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
     owner = Keyword.get(opts, :owner, self())
     ref = make_ref()
     send(config().capture_pid, {:captured_execute_request, request})
 
     spawn(fn ->
-      send(owner, {:dispatch_event, ref, request.request_id, InferenceEvent.accepted(0)})
+      send(owner, {:runtime_endpoint_event, ref, request.request_id, InferenceEvent.accepted(0)})
 
       send(
         owner,
-        {:dispatch_event, ref, request.request_id,
+        {:runtime_endpoint_event, ref, request.request_id,
          InferenceEvent.failed(
            "prompt_token_ids_length_mismatch",
            config().worker_message,
@@ -57,7 +57,7 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest.StubClient do
          )}
       )
 
-      send(owner, {:dispatch_done, ref, :ok})
+      send(owner, {:runtime_endpoint_done, ref, :ok})
     end)
 
     {:ok, ref}
@@ -75,6 +75,7 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest}
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
 
   @stub_client Orchard.Dispatch.DispatchParityDriftTest.StubClient
   @event [:orchard, :tokenizer, :parity_drift]
@@ -128,10 +129,10 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
     refute Map.has_key?(metadata, :expected_len)
     refute Map.has_key?(metadata, :actual_len)
 
-    assert_receive {:captured_ensure_model_loaded_request, %EnsureModelLoadedRequest{}}
+    assert_receive {:captured_ensure_model_loaded_request, %Operation.EnsureModelLoadedRequest{}}
 
     assert_receive {:captured_execute_request,
-                    %ExecuteInferenceRequest{prompt_token_ids: @prompt_ids}}
+                    %Operation.ExecuteRequest{prompt_token_ids: @prompt_ids}}
   end
 
   test "does not emit parity_drift telemetry for synthesized terminal mismatch failures" do

@@ -5,6 +5,9 @@ package cluster.v1;
 import "cluster/v1/common.proto";
 import "cluster/v1/events.proto";
 
+// Compatibility transport for Runtime Endpoint operations.
+// The transport-independent Runtime Endpoint Interface is the Controller
+// domain contract for runtime execution.
 service NodeRuntimeService {
   rpc GetStatus(StatusRequest) returns (StatusResponse);
   rpc EnsureModelLoaded(EnsureModelLoadedRequest) returns (EnsureModelLoadedResponse);

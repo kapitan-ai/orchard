@@ -1,8 +1,7 @@
 # orchard_node_agent
 
-Node-agent release for Orchard's worker-node boundary. It exposes the internal
-node runtime endpoint, reports node/runtime status, manages model acquisition and
-cache state, and supervises local worker subprocesses.
+Node-agent release for Orchard's worker-node boundary.
+It exposes the current gRPC Runtime Endpoint compatibility service, reports node/runtime status, manages model acquisition and cache state, and supervises local worker subprocesses.
 
 This README is orientation only. Normative behavior lives in
 [`../../SPEC.md`](../../SPEC.md); repo/runtime boundaries are mapped in
@@ -10,7 +9,7 @@ This README is orientation only. Normative behavior lives in
 
 ## Owns
 
-- Node-local runtime service behavior used by the controller.
+- Node-local Runtime Endpoint compatibility behavior used by the controller.
 - Model acquisition/cache/load coordination on a node.
 - Worker process supervision and node-local diagnostics/status reporting.
 - Runtime aggregate node and placement capacity telemetry.

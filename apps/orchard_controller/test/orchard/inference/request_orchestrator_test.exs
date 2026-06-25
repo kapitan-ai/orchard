@@ -23,6 +23,30 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler do
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointTargetScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+  alias Orchard.RuntimeEndpoint.Target
+
+  def schedule(%CanonicalRequest{} = request) do
+    with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
+      target =
+        Target.grpc_compat(%{
+          host: "127.0.0.1",
+          port: 50_071,
+          metadata: %{
+            bearer_token: "must-not-persist-runtime-target",
+            tenant_hint: "tenant-secret"
+          }
+        })
+
+      {:ok, Map.put(schedule, :runtime_endpoint_target, target)}
+    end
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubCacheAffinityScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -769,6 +793,25 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.scheduler_decision["candidate_count"] == 2
     assert request.scheduler_decision["selected_tier"] == "loaded"
     assert request.scheduler_decision["node_id"] == scheduled_node_id()
+  end
+
+  test "execute/3 strips dispatch-only runtime endpoint target metadata", %{bundle: bundle} do
+    put_runtime_endpoint_target_scheduler_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-runtime-target")
+    canonical = canonical_request("request-orchestrator-runtime-target", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert decision["strategy"] == "multi_node"
+    assert decision["runtime_client_target"] == %{"host" => "127.0.0.1", "port" => 50_071}
+    refute Map.has_key?(decision, "runtime_endpoint_target")
+    refute inspect(decision) =~ "must-not-persist-runtime-target"
+    refute inspect(decision) =~ "tenant-secret"
   end
 
   test "execute/3 persists sanitized prefix-cache scheduler fields only when enabled", %{
@@ -2786,6 +2829,18 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
           [host: "127.0.0.2", port: 50_072]
         ],
         scheduler_impl: Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_runtime_endpoint_target_scheduler_config do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.merge(
+        runtime_client_targets: [[host: "127.0.0.1", port: 50_071]],
+        scheduler_impl:
+          Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointTargetScheduler
       )
 
     Application.put_env(:orchard_controller, :inference, inference)

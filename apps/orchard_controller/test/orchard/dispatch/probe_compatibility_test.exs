@@ -4,11 +4,11 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
-    EnsureModelLoadedResponse,
     ExecuteInferenceRequest
   }
 
   alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
 
   @doc false
   def registry_name, do: @registry
@@ -19,7 +19,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
     config().status
   end
 
-  def ensure_model_loaded(_channel, %EnsureModelLoadedRequest{} = request, _opts \\ []) do
+  def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{} = request, _opts \\ []) do
     config = config()
 
     if config.capture_pid do
@@ -27,38 +27,70 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
     end
 
     case config.ensure_model_loaded do
-      {:ok, %EnsureModelLoadedResponse{} = response} -> {:ok, response}
+      {:ok, %Operation.EnsureModelLoadedResult{} = response} -> {:ok, response}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  def execute_inference(_channel, %ExecuteInferenceRequest{} = request, opts \\ []) do
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
     owner = Keyword.get(opts, :owner, self())
     ref = make_ref()
+    execute = config().execute
+    parent = self()
 
     spawn(fn ->
       accepted = InferenceEvent.accepted(System.system_time(:millisecond))
       completed = InferenceEvent.completed(:finish_reason_stop, nil)
 
-      case config().execute do
+      case execute do
         :success ->
-          send(owner, {:dispatch_event, ref, request.request_id, accepted})
-          send(owner, {:dispatch_event, ref, request.request_id, completed})
-          send(owner, {:dispatch_done, ref, :ok})
+          send(owner, {:runtime_endpoint_event, ref, request.request_id, accepted})
+          send(owner, {:runtime_endpoint_event, ref, request.request_id, completed})
+          send(owner, {:runtime_endpoint_done, ref, :ok})
 
         {:error, reason} ->
-          send(owner, {:dispatch_done, ref, {:error, reason}})
+          send(owner, {:runtime_endpoint_done, ref, {:error, reason}})
 
         {:accepted_then_error, reason} ->
-          send(owner, {:dispatch_event, ref, request.request_id, accepted})
-          send(owner, {:dispatch_done, ref, {:error, reason}})
+          send(owner, {:runtime_endpoint_event, ref, request.request_id, accepted})
+          send(owner, {:runtime_endpoint_done, ref, {:error, reason}})
+
+        :accepted_until_cancel ->
+          Registry.register(@registry, {:stream, request.request_id}, {owner, ref})
+          send(parent, {:stream_registered, ref})
+          send(owner, {:runtime_endpoint_event, ref, request.request_id, accepted})
+
+          receive do
+            :finish_after_cancel ->
+              send(owner, {:runtime_endpoint_done, ref, :ok})
+          after
+            1_000 ->
+              :ok
+          end
       end
     end)
+
+    if execute == :accepted_until_cancel do
+      receive do
+        {:stream_registered, ^ref} -> :ok
+      after
+        100 -> :ok
+      end
+    end
 
     {:ok, ref}
   end
 
-  def cancel_inference(_channel, _request_id), do: :ok
+  def cancel_inference(_channel, %Operation.CancelRequest{} = request, opts) do
+    send(config().capture_pid, {:cancel_inference_called, request, opts})
+
+    @registry
+    |> Registry.lookup({:stream, request.request_id})
+    |> Enum.each(fn {pid, _value} -> send(pid, :finish_after_cancel) end)
+
+    :ok
+  end
+
   def disconnect(_channel), do: :ok
 
   defp config do
@@ -85,13 +117,13 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
-    EnsureModelLoadedResponse,
     ExecuteInferenceRequest
   }
 
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes.Node
+  alias Orchard.RuntimeEndpoint.Operation
 
   @valid_uuid "550e8400-e29b-41d4-a716-446655440000"
   @other_uuid "660f9511-f30c-52e5-b827-557766551111"
@@ -140,9 +172,9 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       status: {:ok, old_agent_status()},
       ensure_model_loaded:
         {:ok,
-         %EnsureModelLoadedResponse{
+         %Operation.EnsureModelLoadedResult{
            already_loaded: false,
-           placement_state: :PLACEMENT_STATE_LOADED
+           placement_state: :loaded
          }},
       execute: :success,
       capture_pid: self()
@@ -485,6 +517,24 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   end
 
   describe "Sentry cancellation enrichment" do
+    test "cancellation calls runtime endpoint cancel with opts", ctx do
+      configure_stub(%{execute: :accepted_until_cancel})
+      schedule = %{ctx.schedule | request_timeout_ms: 1}
+
+      assert {:ok, events} =
+               RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      assert_receive {:cancel_inference_called,
+                      %Operation.CancelRequest{
+                        request_id: "req-probe-test",
+                        controller_session_id: "probe-test-session"
+                      }, []}
+
+      assert Enum.any?(events, &Orchard.InferenceEvent.terminal?/1)
+    end
+
     test "handler cancellation records cancel and synthesized terminal breadcrumbs", ctx do
       enable_controller_sentry()
       configure_stub(%{execute: {:accepted_then_error, :client_closed}})
@@ -513,6 +563,27 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     test "connect failure marks target degraded and returns sanitized failure", ctx do
       insert_target_node!(ctx.schedule.runtime_client_target)
       configure_stub(%{connect: {:error, {:connect_failed, :econnrefused}}})
+
+      assert {:error, {:model_load_failed, failure}} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      assert failure.code == "node_unavailable"
+
+      marked =
+        Repo.get_by!(Node,
+          advertise_addr: Keyword.fetch!(ctx.schedule.runtime_client_target, :host),
+          rpc_port: Keyword.fetch!(ctx.schedule.runtime_client_target, :port)
+        )
+
+      assert marked.health == :degraded
+    end
+
+    test "runtime endpoint connect error marks target degraded and returns sanitized failure",
+         ctx do
+      insert_target_node!(ctx.schedule.runtime_client_target)
+      configure_stub(%{connect: {:error, :node_unavailable}})
 
       assert {:error, {:model_load_failed, failure}} =
                RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,

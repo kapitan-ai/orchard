@@ -3,13 +3,13 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
-    EnsureModelLoadedResponse,
     ExecuteInferenceRequest,
     RuntimeNodeMetadata,
     StatusResponse
   }
 
   alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
 
   def connect(target) do
     key = target_key(target)
@@ -28,11 +28,11 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
   end
 
   def disconnect(_channel), do: :ok
-  def cancel_inference(_channel, _request_id), do: :ok
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 
   def ensure_model_loaded(
         {:stub_channel, target},
-        %EnsureModelLoadedRequest{} = request,
+        %Operation.EnsureModelLoadedRequest{} = request,
         _opts \\ []
       ) do
     key = target_key(target)
@@ -44,14 +44,18 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
     send(capture_pid(), {:captured_ensure_model_loaded_target, key, request})
 
     {:ok,
-     %EnsureModelLoadedResponse{
+     %Operation.EnsureModelLoadedResult{
        already_loaded: false,
-       placement_state: :PLACEMENT_STATE_LOADED,
+       placement_state: :loaded,
        worker_supports_prompt_token_ids: response.supports_prompt_token_ids
      }}
   end
 
-  def execute_inference({:stub_channel, target}, %ExecuteInferenceRequest{} = request, opts \\ []) do
+  def execute_inference(
+        {:stub_channel, target},
+        %Operation.ExecuteRequest{} = request,
+        opts \\ []
+      ) do
     key = target_key(target)
     owner = Keyword.get(opts, :owner, self())
     ref = make_ref()
@@ -59,18 +63,22 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest.StubClient do
     send(capture_pid(), {:captured_execute_request, key, request})
 
     spawn(fn ->
-      send(owner, {:dispatch_event, ref, request.request_id, InferenceEvent.accepted(0)})
+      send(owner, {:runtime_endpoint_event, ref, request.request_id, InferenceEvent.accepted(0)})
 
       send(
         owner,
-        {:dispatch_event, ref, request.request_id,
+        {:runtime_endpoint_event, ref, request.request_id,
          InferenceEvent.completed(:finish_reason_stop, nil)}
       )
 
-      send(owner, {:dispatch_done, ref, :ok})
+      send(owner, {:runtime_endpoint_done, ref, :ok})
     end)
 
     {:ok, ref}
+  end
+
+  defp target_key(%Orchard.RuntimeEndpoint.Target{transport: :grpc_compat, address: address}) do
+    target_key(address)
   end
 
   defp target_key(target) do
@@ -117,6 +125,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
   alias Orchard.ModelManifest
   alias Orchard.ModelManifest.{ChatTemplate, RuntimeRequirements, SafeTokenization, Tokenizer}
   alias Orchard.Nodes.Node
+  alias Orchard.RuntimeEndpoint.Operation
   alias Orchard.Scheduler.MultiNode
   alias Orchard.Tokenizer.Client
 
@@ -185,7 +194,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
     assert metadata.node_id == schedule.node_id
 
     assert_receive {:captured_execute_request, ^selected_target,
-                    %ExecuteInferenceRequest{prompt_token_ids: @prompt_ids}}
+                    %Operation.ExecuteRequest{prompt_token_ids: @prompt_ids}}
 
     refute_receive {^unsafe_ref, [:orchard, :tokenizer, :unsafe_mode_active], _, _}, 200
     refute_receive {^drift_ref, [:orchard, :tokenizer, :parity_drift], _, _}, 200
@@ -243,9 +252,9 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
     assert_receive {^dispatched_ref, [:orchard, :tokenizer, :prompt_token_ids_dispatched], _, _}
 
     assert_receive {:captured_execute_request, ^capable_target,
-                    %ExecuteInferenceRequest{prompt_token_ids: @prompt_ids}}
+                    %Operation.ExecuteRequest{prompt_token_ids: @prompt_ids}}
 
-    refute_received {:captured_execute_request, ^legacy_target, %ExecuteInferenceRequest{}}
+    refute_received {:captured_execute_request, ^legacy_target, %Operation.ExecuteRequest{}}
     refute_receive {^unsafe_ref, [:orchard, :tokenizer, :unsafe_mode_active], _, _}, 200
   end
 
@@ -276,7 +285,7 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
     assert metadata.worker_supports_prompt_token_ids == false
 
     assert_receive {:captured_execute_request, ^legacy_target,
-                    %ExecuteInferenceRequest{prompt_token_ids: []}}
+                    %Operation.ExecuteRequest{prompt_token_ids: []}}
   end
 
   test "manifest drift telemetry fires in safe-mode off fixture coverage" do
@@ -412,6 +421,10 @@ defmodule Orchard.Dispatch.SafeTokenizationSmokeTest do
       |> Enum.sort_by(&{Keyword.fetch!(&1, :host), Keyword.fetch!(&1, :port)})
 
     put_inference(runtime_client_targets: targets)
+  end
+
+  defp target_key(%Orchard.RuntimeEndpoint.Target{transport: :grpc_compat, address: address}) do
+    target_key(address)
   end
 
   defp target_key(target) do
