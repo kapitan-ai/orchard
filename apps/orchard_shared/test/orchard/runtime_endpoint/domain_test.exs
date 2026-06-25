@@ -103,6 +103,32 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     assert PlacementCapacity.spare?(Observation.placement_capacity_for(observation, model_ref))
   end
 
+  test "target normalization preserves default gRPC fallback and admits explicit BEAM targets" do
+    grpc_target = Target.normalize(host: "127.0.0.1", port: 50_071)
+
+    assert grpc_target.transport == :grpc_compat
+    assert grpc_target.address == [host: "127.0.0.1", port: 50_071]
+
+    beam_target =
+      Target.normalize(%{
+        transport: :beam,
+        node_id: "node-1",
+        address: :orchard_node_agent@localhost,
+        metadata: %{role: :node_agent}
+      })
+
+    assert beam_target.transport == :beam
+    assert beam_target.node_id == "node-1"
+    assert beam_target.address == :orchard_node_agent@localhost
+    assert beam_target.metadata == %{role: :node_agent}
+  end
+
+  test "target normalization rejects malformed configured BEAM node names" do
+    assert_raise ArgumentError, fn ->
+      Target.normalize(transport: :beam, node_id: "node-1", address: "not a node")
+    end
+  end
+
   test "operation constructors validate scalar request shape without enforcing policy" do
     model_ref = ModelRef.new!("mlx-community/phi-3", "main")
 

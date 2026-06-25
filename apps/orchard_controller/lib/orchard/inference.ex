@@ -219,10 +219,18 @@ defmodule Orchard.Inference do
 
   @spec runtime_endpoint_targets() :: [Target.t()]
   def runtime_endpoint_targets do
-    runtime_client_targets()
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(&runtime_endpoint_target/1)
-    |> Enum.uniq_by(& &1.id)
+    case config()[:runtime_endpoint_targets] do
+      targets when is_list(targets) and targets != [] ->
+        targets
+        |> Enum.map(&runtime_endpoint_target/1)
+        |> Enum.uniq_by(& &1.id)
+
+      _other ->
+        runtime_client_targets()
+        |> Enum.reject(&is_nil/1)
+        |> Enum.map(&runtime_endpoint_target/1)
+        |> Enum.uniq_by(& &1.id)
+    end
   end
 
   @spec request_timeout_ms() :: pos_integer() | nil
@@ -266,5 +274,5 @@ defmodule Orchard.Inference do
   end
 
   defp runtime_endpoint_target(%Target{} = target), do: target
-  defp runtime_endpoint_target(target), do: Target.grpc_compat(target)
+  defp runtime_endpoint_target(target), do: Target.normalize(target)
 end

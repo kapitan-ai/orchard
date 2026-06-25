@@ -24,6 +24,7 @@ defmodule Orchard.Node.Supervisor do
       ModelManager,
       {Task.Supervisor, name: Orchard.Node.ModelLoadTaskSupervisor},
       WorkerSupervisor,
+      {Task.Supervisor, name: Orchard.Node.RuntimeEndpointTaskSupervisor},
       Supervisor.child_spec({GRPC.Server.Supervisor, grpc_server_opts()}, id: @grpc_server_id)
     ]
 

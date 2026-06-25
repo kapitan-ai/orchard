@@ -7,6 +7,7 @@ defmodule Orchard.InferenceTest do
   alias Orchard.Inference
   alias Orchard.Inference.ChatOrchestrator
   alias Orchard.Models
+  alias Orchard.RuntimeEndpoint.Target
   alias Orchard.Scheduler.{MultiNode, SingleNode}
   alias Orchard.Tokenizer.Client
 
@@ -206,6 +207,32 @@ defmodule Orchard.InferenceTest do
       clean = Keyword.delete(config, :node_unreachable_threshold_ms)
       Application.put_env(:orchard_controller, :inference, clean)
       assert Inference.node_unreachable_threshold_ms() == 15_000
+    end
+  end
+
+  describe "runtime_endpoint_targets/0" do
+    test "defaults to gRPC compatibility targets from legacy runtime client config" do
+      put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
+
+      assert [%Target{transport: :grpc_compat, address: [host: "10.0.0.1", port: 50_061]}] =
+               Inference.runtime_endpoint_targets()
+    end
+
+    test "explicit Runtime Endpoint targets opt into BEAM without changing legacy fallback" do
+      put_inference(
+        runtime_client_targets: [[host: "10.0.0.1", port: 50_061]],
+        runtime_endpoint_targets: [
+          %{transport: :beam, node_id: "node-1", address: :orchard_node_agent@localhost}
+        ]
+      )
+
+      assert [
+               %Target{
+                 transport: :beam,
+                 node_id: "node-1",
+                 address: :orchard_node_agent@localhost
+               }
+             ] = Inference.runtime_endpoint_targets()
     end
   end
 

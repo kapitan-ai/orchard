@@ -180,7 +180,6 @@ defmodule Orchard.Scheduler.MultiNode do
           %{
             strategy: :multi_node,
             request_id: request.public_id,
-            runtime_client_target: dispatch_target(selected.target),
             runtime_endpoint_target: selected.target,
             request_timeout_ms: Inference.request_timeout_ms(),
             model_load_timeout_ms: Inference.model_load_timeout_ms(),
@@ -189,6 +188,7 @@ defmodule Orchard.Scheduler.MultiNode do
             queue_lane_capacity: queue_lane_capacity(available_candidates),
             selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
           }
+          |> maybe_put_runtime_client_target(selected.target)
           |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
           |> maybe_put_prefix_cache_fingerprint_match(
             selected,
@@ -924,6 +924,15 @@ defmodule Orchard.Scheduler.MultiNode do
   defp runtime_model_ref(%CanonicalRequest.ModelRef{} = model_ref) do
     ModelRef.new!(model_ref.model_id, model_ref.version)
   end
+
+  defp maybe_put_runtime_client_target(schedule, %Target{
+         transport: :grpc_compat,
+         address: address
+       }) do
+    Map.put(schedule, :runtime_client_target, address)
+  end
+
+  defp maybe_put_runtime_client_target(schedule, _target), do: schedule
 
   defp dispatch_target(%Target{transport: :grpc_compat, address: address}), do: address
   defp dispatch_target(target), do: target

@@ -12,7 +12,7 @@
 
 - [x] 2.1 Define transport-independent Runtime Endpoint request, response, event, status, availability, and Placement Capacity domain types.
 - [x] 2.2 Define a Controller-facing Runtime Endpoint behaviour for status, ensure model loaded, unload model, execute inference, cancel inference, and prefix-cache scoring.
-- [ ] 2.3 Implement the first-party BEAM Runtime Endpoint adapter for Node Agent communication.
+- [x] 2.3 Implement the first-party BEAM Runtime Endpoint adapter for Node Agent communication.
 - [x] 2.4 Add production guardrails for first-party BEAM Distribution configuration, identity binding, network restriction, and admitted-service membership.
 - [x] 2.5 Keep or adapt gRPC client/server modules only behind an explicit compatibility or future-adapter boundary.
 
@@ -29,7 +29,7 @@
 
 ## 4. Node Agent And Worker Runtime Boundary
 
-- [ ] 4.1 Adapt Node Agent status and runtime operations to serve the first-party Runtime Endpoint Interface.
+- [x] 4.1 Adapt Node Agent status and runtime operations to serve the first-party Runtime Endpoint Interface.
 - [x] 4.2 Preserve `ModelManager` ownership of active request accounting and Placement Capacity.
 - [x] 4.3 Preserve local Worker Runtime supervision, model loading, generation, cancellation, diagnostics, and cleanup.
 - [x] 4.4 Keep Python/MLX worker communication behind the Worker Runtime Interface.

@@ -10,7 +10,15 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes.Node
-  alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    GrpcCompatibilityMapper,
+    Observation,
+    Placement,
+    PlacementCapacity,
+    Target
+  }
+
   alias Orchard.Scheduler.MultiNode
 
   # -- Stub Status Client --
@@ -60,11 +68,15 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       end
     end
 
-    defp target_key(%Orchard.RuntimeEndpoint.Target{transport: :grpc_compat, address: address}) do
+    def target_key(%Orchard.RuntimeEndpoint.Target{transport: :grpc_compat, address: address}) do
       target_key(address)
     end
 
-    defp target_key(target) do
+    def target_key(%Orchard.RuntimeEndpoint.Target{transport: :beam, id: id}) do
+      {:beam, id}
+    end
+
+    def target_key(target) do
       {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
     end
   end
@@ -234,6 +246,10 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   defp stub_probe(host, port, response) do
     Process.put({:stub_status, {host, port}}, response)
+  end
+
+  defp stub_probe(%Target{} = target, response) do
+    Process.put({:stub_status, StubClient.target_key(target)}, response)
   end
 
   defp stub_connect_failure(host, port, reason) do
@@ -792,6 +808,56 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.node_id == node_a.id
       assert schedule.runtime_endpoint_target == endpoint_target
       assert schedule.runtime_client_target == [host: "10.0.0.1", port: 50_061]
+      assert schedule.selected_tier == "loaded"
+    end
+
+    test "consumes BEAM runtime endpoint observations without legacy dispatch target" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      endpoint_target = Target.beam(node.id, address: :orchard_node_agent@localhost)
+      model_ref = Orchard.RuntimeEndpoint.ModelRef.new!("test-model", "v1")
+
+      observation =
+        Observation.new(%{
+          endpoint_id: endpoint_target.id,
+          target: endpoint_target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 2,
+          metadata: %{
+            node_id: node.id,
+            display_name: node.display_name,
+            hostname: node.hostname,
+            listen_host: node.advertise_addr,
+            listen_port: node.rpc_port
+          },
+          health: %{ready: true},
+          placements: [
+            Placement.new(%{
+              model_ref: model_ref,
+              state: :loaded,
+              capacity:
+                PlacementCapacity.new(%{
+                  model_ref: model_ref,
+                  active_request_count: 0,
+                  max_concurrency: 2,
+                  source: :beam_runtime_endpoint_status
+                })
+            })
+          ]
+        })
+
+      put_inference(runtime_endpoint_targets: [endpoint_target], runtime_client_targets: [])
+      stub_probe(endpoint_target, observation)
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request("test-model", "v1"),
+                 status_client: StubClient
+               )
+
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node.id
+      assert schedule.runtime_endpoint_target == endpoint_target
+      refute Map.has_key?(schedule, :runtime_client_target)
       assert schedule.selected_tier == "loaded"
     end
 

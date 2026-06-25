@@ -19,6 +19,18 @@ defmodule Orchard.RuntimeEndpoint.Target do
           metadata: map()
         }
 
+  @spec normalize(t() | keyword() | map()) :: t()
+  def normalize(%__MODULE__{} = target), do: target
+
+  def normalize(target) when is_list(target) or is_map(target) do
+    attrs = attrs_map(target)
+
+    case normalize_transport(value(attrs, :transport)) do
+      :beam -> beam_target(attrs)
+      :grpc_compat -> grpc_compat(attrs)
+    end
+  end
+
   @spec grpc_compat(keyword() | map()) :: t()
   def grpc_compat(target) do
     attrs = attrs_map(target)
@@ -56,6 +68,35 @@ defmodule Orchard.RuntimeEndpoint.Target do
 
   def beam(_node_id, _opts),
     do: raise(ArgumentError, "beam target requires a non-empty binary node_id")
+
+  defp beam_target(attrs) do
+    node_id = value(attrs, :node_id) || value(attrs, :id) || value(attrs, :address)
+    address = normalize_beam_address(value(attrs, :address) || node_id)
+    beam(to_string(node_id), Map.put(attrs, :address, address))
+  end
+
+  defp normalize_transport(transport) when transport in [:beam, "beam"], do: :beam
+  defp normalize_transport(_transport), do: :grpc_compat
+
+  defp normalize_beam_address(address) when is_atom(address), do: address
+
+  defp normalize_beam_address(address) when is_binary(address) do
+    unless valid_beam_node_name?(address) do
+      raise ArgumentError,
+            "beam target address must be a valid node name, got: #{inspect(address)}"
+    end
+
+    String.to_atom(address)
+  end
+
+  defp normalize_beam_address(address) do
+    raise ArgumentError,
+          "beam target address must be an atom or binary node name, got: #{inspect(address)}"
+  end
+
+  defp valid_beam_node_name?(address) do
+    byte_size(address) in 3..255 and String.match?(address, ~r/^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$/)
+  end
 
   defp attrs_map(attrs) when is_list(attrs), do: Map.new(attrs)
   defp attrs_map(%{} = attrs), do: attrs
