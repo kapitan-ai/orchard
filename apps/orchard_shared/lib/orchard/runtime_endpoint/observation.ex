@@ -11,6 +11,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
             availability: :unknown,
             worker_state: :unknown,
             aggregate_active_request_count: 0,
+            aggregate_max_concurrency: nil,
             metadata: %{},
             health: %{},
             placements: [],
@@ -28,6 +29,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
           availability: availability(),
           worker_state: term(),
           aggregate_active_request_count: non_neg_integer(),
+          aggregate_max_concurrency: pos_integer() | nil,
           metadata: map(),
           health: map(),
           placements: [Placement.t()],
@@ -49,6 +51,7 @@ defmodule Orchard.RuntimeEndpoint.Observation do
       availability: value(attrs, :availability) || :unknown,
       worker_state: value(attrs, :worker_state) || :unknown,
       aggregate_active_request_count: aggregate_active_request_count(attrs),
+      aggregate_max_concurrency: aggregate_max_concurrency(attrs),
       metadata: map_value(attrs, :metadata),
       health: map_value(attrs, :health),
       placements: Enum.map(list_value(attrs, :placements), &normalize_placement/1),
@@ -110,6 +113,20 @@ defmodule Orchard.RuntimeEndpoint.Observation do
     end
   end
 
+  defp aggregate_max_concurrency(attrs) do
+    case aggregate_max_concurrency_value(attrs) do
+      count when is_integer(count) and count > 0 -> count
+      _ -> nil
+    end
+  end
+
+  defp aggregate_max_concurrency_value(attrs) do
+    case value(attrs, :aggregate_max_concurrency) do
+      nil -> value(attrs, :max_concurrency)
+      value -> value
+    end
+  end
+
   defp map_value(attrs, key) do
     case value(attrs, key) do
       %{} = map -> map
@@ -126,5 +143,13 @@ defmodule Orchard.RuntimeEndpoint.Observation do
     end
   end
 
-  defp value(%{} = attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
+  defp value(%{} = attrs, key) do
+    string_key = Atom.to_string(key)
+
+    cond do
+      Map.has_key?(attrs, key) -> Map.fetch!(attrs, key)
+      Map.has_key?(attrs, string_key) -> Map.fetch!(attrs, string_key)
+      true -> nil
+    end
+  end
 end

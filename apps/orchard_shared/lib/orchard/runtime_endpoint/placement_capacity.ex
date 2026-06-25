@@ -90,5 +90,13 @@ defmodule Orchard.RuntimeEndpoint.PlacementCapacity do
     end
   end
 
-  defp value(%{} = attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
+  defp value(%{} = attrs, key) do
+    string_key = Atom.to_string(key)
+
+    cond do
+      Map.has_key?(attrs, key) -> Map.fetch!(attrs, key)
+      Map.has_key?(attrs, string_key) -> Map.fetch!(attrs, string_key)
+      true -> nil
+    end
+  end
 end

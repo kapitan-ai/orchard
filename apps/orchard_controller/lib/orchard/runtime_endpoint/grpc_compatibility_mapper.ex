@@ -41,6 +41,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapper do
       worker_state: normalize_worker_state(value(response, :worker_state)),
       aggregate_active_request_count:
         non_negative_integer(value(response, :active_request_count)),
+      aggregate_max_concurrency: value(response, :max_concurrency),
       metadata: metadata,
       health: health_from_response(value(response, :runtime_health)),
       placements: placements_from_status(response),

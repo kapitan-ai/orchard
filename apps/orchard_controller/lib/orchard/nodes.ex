@@ -15,7 +15,7 @@ defmodule Orchard.Nodes do
   alias Orchard.Nodes.ToolCapability
   alias Orchard.Nodes.ToolReadiness
   alias Orchard.Repo
-  alias Orchard.RuntimeEndpoint.{Observation, Target}
+  alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Placement, PlacementCapacity, Target}
 
   # -- Read APIs --
 
@@ -421,8 +421,8 @@ defmodule Orchard.Nodes do
         placement_source: placement_source,
         cold_source: cold_source,
         node_id: node.id,
-        node_active: non_negative_integer(map_get(status_response, :active_request_count), 0),
-        node_max: positive_integer(map_get(status_response, :max_concurrency), 1),
+        node_active: observed_node_active(status_response),
+        node_max: observed_node_max(status_response),
         placements: placement_observations(status_response),
         reserve_unassigned_node_grants?:
           Keyword.get(opts, :reserve_unassigned_node_grants?, true),
@@ -518,6 +518,12 @@ defmodule Orchard.Nodes do
 
   defp extract_runtime_model_placements(_status_response), do: []
 
+  defp placement_observations(%Observation{placements: placements}) do
+    placements
+    |> Enum.reduce(%{}, &put_runtime_endpoint_placement_observation/2)
+    |> Enum.map(fn {{model_id, version}, status} -> {model_id, version, status} end)
+  end
+
   defp placement_observations(status_response) do
     runtime_observations =
       status_response
@@ -538,6 +544,41 @@ defmodule Orchard.Nodes do
       observations
     end
   end
+
+  defp put_runtime_endpoint_placement_observation(%Placement{} = placement, observations) do
+    case runtime_endpoint_placement_ref(placement) do
+      {:ok, model_id, version} ->
+        status = runtime_endpoint_placement_status(placement)
+        Map.update(observations, {model_id, version}, status, fn _existing -> :ambiguous end)
+
+      :error ->
+        observations
+    end
+  end
+
+  defp put_runtime_endpoint_placement_observation(_placement, observations), do: observations
+
+  defp runtime_endpoint_placement_ref(%Placement{
+         model_ref: %ModelRef{model_id: model_id, version: version}
+       })
+       when is_binary(model_id) and model_id != "" and is_binary(version) and version != "",
+       do: {:ok, model_id, version}
+
+  defp runtime_endpoint_placement_ref(_placement), do: :error
+
+  defp runtime_endpoint_placement_status(%Placement{
+         state: state,
+         capacity: %PlacementCapacity{
+           status: :known,
+           active_request_count: active,
+           max_concurrency: max
+         }
+       })
+       when state in [:loaded, "loaded", :PLACEMENT_STATE_LOADED] do
+    %{active_request_count: active, max_concurrency: max}
+  end
+
+  defp runtime_endpoint_placement_status(%Placement{}), do: :unavailable
 
   defp extract_loaded_models(%{loaded_models: models}) when is_list(models), do: models
   defp extract_loaded_models(%{"loaded_models" => models}) when is_list(models), do: models
@@ -623,6 +664,18 @@ defmodule Orchard.Nodes do
       _other -> 0
     end
   end
+
+  defp observed_node_active(%Observation{aggregate_active_request_count: active}),
+    do: non_negative_integer(active, 0)
+
+  defp observed_node_active(status_response),
+    do: non_negative_integer(map_get(status_response, :active_request_count), 0)
+
+  defp observed_node_max(%Observation{aggregate_max_concurrency: max}),
+    do: positive_integer(max, 1)
+
+  defp observed_node_max(status_response),
+    do: positive_integer(map_get(status_response, :max_concurrency), 1)
 
   defp positive_integer(value, _default) when is_integer(value) and value > 0, do: value
   defp positive_integer(_value, default), do: default

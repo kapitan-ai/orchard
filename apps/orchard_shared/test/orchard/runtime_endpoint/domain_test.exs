@@ -24,6 +24,21 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     refute PlacementCapacity.full?(capacity)
   end
 
+  test "placement capacity preserves explicit zero values" do
+    capacity =
+      PlacementCapacity.new(%{
+        "active_request_count" => 1,
+        model_ref: ModelRef.new!("mlx-community/phi-3", "main"),
+        active_request_count: 0,
+        max_concurrency: 2,
+        source: :compatibility_status
+      })
+
+    assert capacity.status == :known
+    assert capacity.active_request_count == 0
+    assert PlacementCapacity.spare?(capacity)
+  end
+
   test "known placement capacity can prove full capacity" do
     capacity =
       PlacementCapacity.new(%{
@@ -109,5 +124,29 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     assert request.model_ref == model_ref
     assert request.prompt_token_ids == [1, 2, 3]
     assert request.preload
+  end
+
+  test "operation constructors preserve explicit false and zero values" do
+    model_ref = ModelRef.new!("mlx-community/phi-3", "main")
+
+    load_request =
+      Operation.EnsureModelLoadedRequest.new!(%{
+        "preload" => true,
+        model_ref: model_ref,
+        preload: false
+      })
+
+    execute_request =
+      Operation.ExecuteRequest.new!(%{
+        "input_tokens" => 4,
+        request_id: "req_123",
+        controller_session_id: "session_123",
+        model_ref: model_ref,
+        rendered_prompt_utf8: "",
+        input_tokens: 0
+      })
+
+    refute load_request.preload
+    assert execute_request.input_tokens == 0
   end
 end

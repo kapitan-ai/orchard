@@ -225,7 +225,7 @@ defmodule Orchard.Scheduler.MultiNode do
                     target: target,
                     loaded_model?: loaded_model?,
                     active_request_count: observation.aggregate_active_request_count,
-                    max_concurrency: node_max_concurrency(response),
+                    max_concurrency: node_max_concurrency(observation),
                     supports_prompt_token_ids: observation.supports_prompt_token_ids
                   }
                   |> maybe_put_model_placement_capacity(
@@ -277,7 +277,16 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp placement_capacity_full?(_candidate), do: false
 
-  defp active_without_known_capacity?(%{model_placement_capacity: _capacity}), do: false
+  defp active_without_known_capacity?(%{
+         model_placement_capacity: %PlacementCapacity{status: :known}
+       }),
+       do: false
+
+  defp active_without_known_capacity?(%{
+         model_placement_capacity: %{active_request_count: active, max_concurrency: max}
+       })
+       when is_integer(active) and active >= 0 and is_integer(max) and max > 0,
+       do: false
 
   defp active_without_known_capacity?(%{loaded_model?: true, active_request_count: count})
        when is_integer(count) and count > 0,
@@ -302,6 +311,26 @@ defmodule Orchard.Scheduler.MultiNode do
       _capacity -> 1
     end
   end
+
+  defp effective_model_capacity_for_queue(%{
+         active_request_count: node_active,
+         max_concurrency: node_max,
+         model_placement_capacity: %PlacementCapacity{
+           status: :known,
+           active_request_count: model_active,
+           max_concurrency: placement_max
+         }
+       })
+       when is_integer(node_active) and is_integer(node_max) and is_integer(model_active) and
+              is_integer(placement_max) do
+    remaining_node_capacity = max(node_max - node_active, 0)
+    min(placement_max, max(model_active, 0) + remaining_node_capacity)
+  end
+
+  defp effective_model_capacity_for_queue(%{
+         model_placement_capacity: %PlacementCapacity{}
+       }),
+       do: 1
 
   defp effective_model_capacity_for_queue(%{
          active_request_count: node_active,
@@ -335,8 +364,8 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp node_has_available_capacity?(_candidate), do: true
 
-  defp node_max_concurrency(response) do
-    case Map.get(response, :max_concurrency) || Map.get(response, "max_concurrency") do
+  defp node_max_concurrency(%Observation{aggregate_max_concurrency: value}) do
+    case value do
       value when is_integer(value) and value > 0 -> value
       _other -> 1
     end

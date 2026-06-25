@@ -297,7 +297,15 @@ defmodule Orchard.RuntimeEndpoint.Operation do
   end
 
   @spec value(map(), atom()) :: term()
-  def value(%{} = attrs, key), do: Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
+  def value(%{} = attrs, key) do
+    string_key = Atom.to_string(key)
+
+    cond do
+      Map.has_key?(attrs, key) -> Map.fetch!(attrs, key)
+      Map.has_key?(attrs, string_key) -> Map.fetch!(attrs, string_key)
+      true -> nil
+    end
+  end
 
   @spec map_value(map(), atom()) :: map()
   def map_value(attrs, key) do
