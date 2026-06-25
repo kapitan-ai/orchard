@@ -15,6 +15,7 @@ defmodule Orchard.Nodes do
   alias Orchard.Nodes.ToolCapability
   alias Orchard.Nodes.ToolReadiness
   alias Orchard.Repo
+  alias Orchard.RuntimeEndpoint.{Observation, Target}
 
   # -- Read APIs --
 
@@ -177,7 +178,7 @@ defmodule Orchard.Nodes do
   - `:noop` when metadata is missing/invalid, repo unavailable,
     observation is stale, or an identity conflict is detected
   """
-  @spec observe_status(keyword(), map() | struct(), DateTime.t()) ::
+  @spec observe_status(keyword() | Target.t(), map() | struct(), DateTime.t()) ::
           {:ok, Node.t()} | :noop
   @spec observe_status(keyword(), map() | struct(), DateTime.t(), keyword()) ::
           {:ok, Node.t()} | :noop
@@ -237,7 +238,8 @@ defmodule Orchard.Nodes do
   - `{:ok, %Node{}}` when health was updated
   - `:noop` for non-transport reasons, unknown targets, or repo unavailable
   """
-  @spec record_transport_failure(keyword(), term(), DateTime.t()) :: {:ok, Node.t()} | :noop
+  @spec record_transport_failure(keyword() | Target.t(), term(), DateTime.t()) ::
+          {:ok, Node.t()} | :noop
   def record_transport_failure(target, reason, observed_at) do
     if transport_failure_reason?(reason) do
       case mark_target_unreachable_without_queue_cleanup(target, observed_at) do
@@ -267,7 +269,7 @@ defmodule Orchard.Nodes do
   - `{:ok, %Node{}}` on successful mark
   - `:noop` when target is unknown, stale, malformed, or repo unavailable
   """
-  @spec mark_target_unreachable(keyword(), DateTime.t()) :: {:ok, Node.t()} | :noop
+  @spec mark_target_unreachable(keyword() | Target.t(), DateTime.t()) :: {:ok, Node.t()} | :noop
   def mark_target_unreachable(target, observed_at) do
     case mark_target_unreachable_without_queue_cleanup(target, observed_at) do
       {:ok, %Node{} = node} = result ->
@@ -293,6 +295,7 @@ defmodule Orchard.Nodes do
   # -- Observation Normalization --
 
   defp normalize_observation(target, status_response, observed_at) do
+    target = target_address(target)
     metadata = extract_metadata(status_response)
 
     with {:metadata, %{} = meta} <- {:metadata, metadata},
@@ -328,10 +331,15 @@ defmodule Orchard.Nodes do
   defp extract_metadata(%{node_metadata: meta}), do: meta
   defp extract_metadata(%{"node_metadata" => nil}), do: nil
   defp extract_metadata(%{"node_metadata" => meta}), do: meta
+
+  defp extract_metadata(%Observation{metadata: metadata}) when is_map(metadata),
+    do: observation_metadata(metadata)
+
   defp extract_metadata(_), do: nil
 
   defp extract_runtime_health(%{runtime_health: health}), do: health
   defp extract_runtime_health(%{"runtime_health" => health}), do: health
+  defp extract_runtime_health(%Observation{health: health}) when is_map(health), do: health
   defp extract_runtime_health(_), do: nil
 
   defp resolve_display_name(meta) do
@@ -840,6 +848,7 @@ defmodule Orchard.Nodes do
   end
 
   defp validate_target(target) do
+    target = target_address(target)
     host = Keyword.get(target, :host)
     port = Keyword.get(target, :port)
 
@@ -850,10 +859,12 @@ defmodule Orchard.Nodes do
     end
   end
 
-  defp target_host(target), do: Keyword.get(target, :host, "")
-  defp target_port(target), do: Keyword.get(target, :port)
+  defp target_host(target), do: target |> target_address() |> Keyword.get(:host, "")
+  defp target_port(target), do: target |> target_address() |> Keyword.get(:port)
 
   defp connect_host(target) do
+    target = target_address(target)
+
     case Keyword.get(target, :host) do
       host when is_binary(host) and host != "" -> host
       _other -> nil
@@ -861,6 +872,8 @@ defmodule Orchard.Nodes do
   end
 
   defp connect_port(target) do
+    target = target_address(target)
+
     case Keyword.get(target, :port) do
       port when is_integer(port) and port in 1..65_535 -> port
       _other -> nil
@@ -931,6 +944,25 @@ defmodule Orchard.Nodes do
 
   defp non_empty?(value), do: is_binary(value) and value != ""
   defp non_empty_or(value, fallback), do: if(non_empty?(value), do: value, else: fallback)
+
+  defp observation_metadata(metadata) do
+    %{
+      node_id: metadata_value(metadata, :node_id),
+      display_name: metadata_value(metadata, :display_name),
+      hostname: metadata_value(metadata, :hostname),
+      agent_version: metadata_value(metadata, :agent_version),
+      listen_host: metadata_value(metadata, :listen_host),
+      listen_port: metadata_value(metadata, :listen_port),
+      worker_backend: metadata_value(metadata, :worker_backend)
+    }
+  end
+
+  defp metadata_value(metadata, key) do
+    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
+  end
+
+  defp target_address(%Target{transport: :grpc_compat, address: address}), do: address
+  defp target_address(target), do: target
 
   defp valid_connect_target?(host, port), do: non_empty?(host) and is_integer(port)
 

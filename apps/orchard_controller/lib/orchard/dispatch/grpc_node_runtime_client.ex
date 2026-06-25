@@ -1,7 +1,9 @@
 defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   @moduledoc """
-  Real gRPC client for controller → node-agent dispatch over the
-  `NodeRuntimeService` contract.
+  Low-level gRPC transport client for the `NodeRuntimeService` compatibility protocol.
+
+  Controller code should prefer `Orchard.RuntimeEndpoint.Client` implementations
+  for transport-independent runtime operations.
   """
 
   alias Orchard.Cluster.V1.{
@@ -15,7 +17,8 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
     ScorePrefixCacheRequest,
     ScorePrefixCacheResponse,
     StatusRequest,
-    StatusResponse
+    StatusResponse,
+    UnloadModelRequest
   }
 
   alias Orchard.InferenceEvent
@@ -74,6 +77,18 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
 
     case NodeRuntimeService.Stub.ensure_model_loaded(channel, request, timeout: timeout) do
       {:ok, %EnsureModelLoadedResponse{} = response} -> {:ok, response}
+      {:error, reason} -> {:error, normalize_error(reason)}
+    end
+  end
+
+  @doc "Ask the node-agent to unload a model."
+  @spec unload_model(GRPC.Channel.t(), UnloadModelRequest.t(), keyword()) ::
+          {:ok, Ack.t()} | {:error, term()}
+  def unload_model(channel, %UnloadModelRequest{} = request, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, @rpc_timeout_ms)
+
+    case NodeRuntimeService.Stub.unload_model(channel, request, timeout: timeout) do
+      {:ok, %Ack{} = response} -> {:ok, response}
       {:error, reason} -> {:error, normalize_error(reason)}
     end
   end

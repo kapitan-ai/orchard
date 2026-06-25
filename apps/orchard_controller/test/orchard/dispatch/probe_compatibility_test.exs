@@ -4,11 +4,11 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
-    EnsureModelLoadedResponse,
     ExecuteInferenceRequest
   }
 
   alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
 
   @doc false
   def registry_name, do: @registry
@@ -19,7 +19,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
     config().status
   end
 
-  def ensure_model_loaded(_channel, %EnsureModelLoadedRequest{} = request, _opts \\ []) do
+  def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{} = request, _opts \\ []) do
     config = config()
 
     if config.capture_pid do
@@ -27,12 +27,12 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
     end
 
     case config.ensure_model_loaded do
-      {:ok, %EnsureModelLoadedResponse{} = response} -> {:ok, response}
+      {:ok, %Operation.EnsureModelLoadedResult{} = response} -> {:ok, response}
       {:error, reason} -> {:error, reason}
     end
   end
 
-  def execute_inference(_channel, %ExecuteInferenceRequest{} = request, opts \\ []) do
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
     owner = Keyword.get(opts, :owner, self())
     ref = make_ref()
 
@@ -42,23 +42,23 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
 
       case config().execute do
         :success ->
-          send(owner, {:dispatch_event, ref, request.request_id, accepted})
-          send(owner, {:dispatch_event, ref, request.request_id, completed})
-          send(owner, {:dispatch_done, ref, :ok})
+          send(owner, {:runtime_endpoint_event, ref, request.request_id, accepted})
+          send(owner, {:runtime_endpoint_event, ref, request.request_id, completed})
+          send(owner, {:runtime_endpoint_done, ref, :ok})
 
         {:error, reason} ->
-          send(owner, {:dispatch_done, ref, {:error, reason}})
+          send(owner, {:runtime_endpoint_done, ref, {:error, reason}})
 
         {:accepted_then_error, reason} ->
-          send(owner, {:dispatch_event, ref, request.request_id, accepted})
-          send(owner, {:dispatch_done, ref, {:error, reason}})
+          send(owner, {:runtime_endpoint_event, ref, request.request_id, accepted})
+          send(owner, {:runtime_endpoint_done, ref, {:error, reason}})
       end
     end)
 
     {:ok, ref}
   end
 
-  def cancel_inference(_channel, _request_id), do: :ok
+  def cancel_inference(_channel, %Operation.CancelRequest{}), do: :ok
   def disconnect(_channel), do: :ok
 
   defp config do
@@ -85,13 +85,13 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
-    EnsureModelLoadedResponse,
     ExecuteInferenceRequest
   }
 
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes.Node
+  alias Orchard.RuntimeEndpoint.Operation
 
   @valid_uuid "550e8400-e29b-41d4-a716-446655440000"
   @other_uuid "660f9511-f30c-52e5-b827-557766551111"
@@ -140,9 +140,9 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
       status: {:ok, old_agent_status()},
       ensure_model_loaded:
         {:ok,
-         %EnsureModelLoadedResponse{
+         %Operation.EnsureModelLoadedResult{
            already_loaded: false,
-           placement_state: :PLACEMENT_STATE_LOADED
+           placement_state: :loaded
          }},
       execute: :success,
       capture_pid: self()

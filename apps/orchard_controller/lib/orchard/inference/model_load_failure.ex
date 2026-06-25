@@ -2,17 +2,20 @@ defmodule Orchard.Inference.ModelLoadFailure do
   @moduledoc """
   Controller-side model load failure normalization and API mapping.
 
-  Converts `EnsureModelLoadedResponse` proto failure fields and transport-level
-  gRPC errors into a structured failure value used by the orchestrator and API
+  Converts Runtime Endpoint ensure-model-loaded results, legacy
+  `EnsureModelLoadedResponse` proto failure fields, and transport-level errors
+  into a structured failure value used by the orchestrator and API
   layer for HTTP status selection, SSE error envelopes, and persistence.
 
   This module operates at the controller boundary — it never sees raw node-agent
   error reasons. It normalizes only:
+  - Runtime Endpoint result fields (`failure_category`, `failure_code`, `failure_message`)
   - Proto response fields (`failure_category`, `failure_code`, `failure_message`)
-  - Transport errors from `GrpcNodeRuntimeClient` (`:node_unavailable`, `:node_timeout`, etc.)
+  - Transport errors from Runtime Endpoint clients (`:node_unavailable`, `:node_timeout`, etc.)
   """
 
   alias Orchard.Cluster.V1.EnsureModelLoadedResponse
+  alias Orchard.RuntimeEndpoint.Operation
 
   @enforce_keys [:category, :code, :message]
   defstruct [:category, :code, :message]
@@ -52,6 +55,25 @@ defmodule Orchard.Inference.ModelLoadFailure do
     message =
       if trusted? do
         normalize_message(response.failure_message, default_message)
+      else
+        default_message
+      end
+
+    %__MODULE__{category: category, code: code, message: message}
+  end
+
+  @doc """
+  Extracts a failure struct from a Runtime Endpoint ensure-model-loaded result.
+  """
+  @spec from_result(Operation.EnsureModelLoadedResult.t()) :: t()
+  def from_result(%Operation.EnsureModelLoadedResult{} = result) do
+    {category, trusted?} = normalize_result_category(result.failure_category)
+    {default_code, default_message} = defaults_for_category(category)
+    code = normalize_code(result.failure_code, default_code)
+
+    message =
+      if trusted? do
+        normalize_message(result.failure_message, default_message)
       else
         default_message
       end
@@ -194,6 +216,19 @@ defmodule Orchard.Inference.ModelLoadFailure do
   defp normalize_category(6), do: {:internal, true}
   # UNSPECIFIED, unknown values, nil — untrusted
   defp normalize_category(_), do: {:internal, false}
+
+  defp normalize_result_category(category)
+       when category in [
+              :model_invalid,
+              :acquisition_failed,
+              :runtime_unavailable,
+              :timeout,
+              :resource_exhausted,
+              :internal
+            ],
+       do: {category, true}
+
+  defp normalize_result_category(_category), do: {:internal, false}
 
   defp normalize_code(code, default) when is_binary(code) do
     trimmed = String.trim(code)

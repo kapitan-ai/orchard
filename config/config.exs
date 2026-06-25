@@ -46,6 +46,16 @@ config :orchard_controller,
        :inference,
        Orchard.Config.M1RuntimeDefaults.controller_inference(orchard_support_root)
 
+config :orchard_controller, :runtime_endpoint,
+  beam: [
+    enabled: false,
+    node_name: nil,
+    cookie_file: nil,
+    admitted_services: [],
+    allowed_cidrs: [],
+    listen_host: nil
+  ]
+
 config :orchard_controller,
        :hf,
        Orchard.Config.M1RuntimeDefaults.hf()

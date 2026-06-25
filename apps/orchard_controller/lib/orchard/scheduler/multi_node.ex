@@ -35,12 +35,19 @@ defmodule Orchard.Scheduler.MultiNode do
   """
 
   alias Orchard.CanonicalRequest
-  alias Orchard.Cluster.V1.ModelRef, as: RPCModelRef
-  alias Orchard.Cluster.V1.ScorePrefixCacheRequest
-  alias Orchard.Dispatch.GrpcNodeRuntimeClient
   alias Orchard.Inference
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Nodes
+
+  alias Orchard.RuntimeEndpoint.{
+    GrpcCompatibilityMapper,
+    ModelRef,
+    Observation,
+    Operation,
+    PlacementCapacity,
+    Target
+  }
+
   alias Orchard.Runtime.{MemoryBudget, PrefixCacheScore, PrefixCacheStatus}
   alias Orchard.Scheduler.SingleNode
 
@@ -68,14 +75,13 @@ defmodule Orchard.Scheduler.MultiNode do
   Schedule with injectable options for testing.
 
   Options:
-  - `:status_client` - module implementing `connect/1`, `status/2`, `disconnect/1`,
-    and (for prefix-cache scoring) `score_prefix_cache/3`
-    (default: `GrpcNodeRuntimeClient`)
+  - `:status_client` - module implementing the Runtime Endpoint client callbacks
+    (default: `Inference.runtime_endpoint_client/0`)
   - `:status_timeout_ms` - timeout for each status probe (default: #{@default_status_timeout_ms})
   - `:observed_at` - timestamp for observations (default: `DateTime.utc_now()`)
   """
   def schedule(%CanonicalRequest{} = request, opts) when is_list(opts) do
-    targets = Inference.runtime_client_targets()
+    targets = Inference.runtime_endpoint_targets()
 
     if targets == [] do
       fallback_schedule(request, targets, opts)
@@ -87,7 +93,7 @@ defmodule Orchard.Scheduler.MultiNode do
   # -- Internal --
 
   defp schedule_multi(request, targets, opts) do
-    client = Keyword.get(opts, :status_client, GrpcNodeRuntimeClient)
+    client = Keyword.get(opts, :status_client, Inference.runtime_endpoint_client())
     timeout = Keyword.get(opts, :status_timeout_ms, @default_status_timeout_ms)
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
 
@@ -172,7 +178,8 @@ defmodule Orchard.Scheduler.MultiNode do
           %{
             strategy: :multi_node,
             request_id: request.public_id,
-            runtime_client_target: selected.target,
+            runtime_client_target: dispatch_target(selected.target),
+            runtime_endpoint_target: selected.target,
             request_timeout_ms: Inference.request_timeout_ms(),
             model_load_timeout_ms: Inference.model_load_timeout_ms(),
             node_id: selected.node_id,
@@ -199,40 +206,40 @@ defmodule Orchard.Scheduler.MultiNode do
         try do
           case client.status(channel, timeout: timeout) do
             {:ok, response} ->
-              # Persist observation best-effort
-              Nodes.observe_status(target, response, observed_at,
+              observation = normalize_status_observation(target, response)
+
+              Nodes.observe_status(observation_target(target), observation, observed_at,
                 reserve_unassigned_node_grants?: true,
                 reserve_unassigned_source_grants?: true
               )
 
-              # Extract node_id from metadata - skip if missing/invalid
-              case extract_valid_node_id(response) do
+              case extract_valid_node_id(observation) do
                 nil ->
                   nil
 
                 node_id ->
-                  loaded_model? = model_loaded?(response, request)
+                  loaded_model? = model_loaded?(observation, request)
 
                   %{
                     node_id: node_id,
                     target: target,
                     loaded_model?: loaded_model?,
-                    active_request_count: response.active_request_count || 0,
+                    active_request_count: observation.aggregate_active_request_count,
                     max_concurrency: node_max_concurrency(response),
-                    supports_prompt_token_ids: prompt_token_ids_supported?(response)
+                    supports_prompt_token_ids: observation.supports_prompt_token_ids
                   }
                   |> maybe_put_model_placement_capacity(
-                    model_placement_capacity_for(response, request.model_ref, loaded_model?)
+                    model_placement_capacity_for(observation, request.model_ref, loaded_model?)
                   )
                   |> maybe_put_prefix_cache_status(
-                    prefix_cache_status_for(response, request.model_ref)
+                    prefix_cache_status_for(observation, request.model_ref)
                   )
-                  |> maybe_put_memory_budget(memory_budget_for(response, request.model_ref))
+                  |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))
               end
 
             {:error, reason} ->
               # Persist transport-like probe failures best-effort
-              Nodes.record_transport_failure(target, reason, observed_at)
+              Nodes.record_transport_failure(observation_target(target), reason, observed_at)
               nil
           end
         after
@@ -241,7 +248,7 @@ defmodule Orchard.Scheduler.MultiNode do
 
       {:error, reason} ->
         # Persist transport-like connect failures best-effort
-        Nodes.record_transport_failure(target, reason, observed_at)
+        Nodes.record_transport_failure(observation_target(target), reason, observed_at)
         nil
     end
   end
@@ -256,6 +263,11 @@ defmodule Orchard.Scheduler.MultiNode do
        do: active >= max
 
   defp node_concurrency_full?(_candidate), do: false
+
+  defp placement_capacity_full?(%{
+         model_placement_capacity: %PlacementCapacity{status: :known} = capacity
+       }),
+       do: PlacementCapacity.full?(capacity)
 
   defp placement_capacity_full?(%{
          model_placement_capacity: %{active_request_count: active, max_concurrency: max}
@@ -330,7 +342,13 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
-  defp extract_valid_node_id(%{node_metadata: %{node_id: node_id}}) when is_binary(node_id) do
+  defp extract_valid_node_id(%Observation{} = observation) do
+    observation
+    |> Observation.node_id()
+    |> extract_valid_node_id()
+  end
+
+  defp extract_valid_node_id(node_id) when is_binary(node_id) do
     case Ecto.UUID.cast(node_id) do
       {:ok, id} -> id
       :error -> nil
@@ -339,23 +357,17 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp extract_valid_node_id(_), do: nil
 
-  defp model_loaded?(%{loaded_models: models}, %CanonicalRequest{model_ref: model_ref})
-       when is_list(models) do
-    Enum.any?(models, fn m ->
-      to_string(Map.get(m, :model_id, "")) == model_ref.model_id and
-        to_string(Map.get(m, :version, "")) == model_ref.version
-    end)
+  defp model_loaded?(%Observation{} = observation, %CanonicalRequest{model_ref: model_ref}) do
+    Observation.loaded_placement(observation, runtime_model_ref(model_ref)) != nil
   end
 
   defp model_loaded?(_, _), do: false
 
-  defp prompt_token_ids_supported?(%{supports_prompt_token_ids: true}), do: true
-  defp prompt_token_ids_supported?(%{"supports_prompt_token_ids" => true}), do: true
-  defp prompt_token_ids_supported?(_response), do: false
-
-  defp prefix_cache_status_for(response, %CanonicalRequest.ModelRef{} = model_ref) do
-    response
-    |> Map.get(:runtime_prefix_cache_statuses, [])
+  defp prefix_cache_status_for(
+         %Observation{} = observation,
+         %CanonicalRequest.ModelRef{} = model_ref
+       ) do
+    observation.runtime_prefix_cache_statuses
     |> find_prefix_cache_status(model_ref)
     |> PrefixCacheStatus.normalize_for_scheduler()
   end
@@ -363,8 +375,6 @@ defmodule Orchard.Scheduler.MultiNode do
   defp find_prefix_cache_status(statuses, model_ref) when is_list(statuses) do
     Enum.find(statuses, &prefix_cache_model_ref_matches?(&1, model_ref))
   end
-
-  defp find_prefix_cache_status(_statuses, _model_ref), do: nil
 
   defp prefix_cache_model_ref_matches?(status, model_ref) when is_map(status) do
     case Map.get(status, :model_ref) || Map.get(status, "model_ref") do
@@ -383,17 +393,14 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp prefix_cache_model_ref_matches?(_status, _model_ref), do: false
 
-  defp memory_budget_for(response, %CanonicalRequest.ModelRef{} = model_ref) do
-    response
-    |> Map.get(:runtime_memory_budgets, [])
+  defp memory_budget_for(%Observation{} = observation, %CanonicalRequest.ModelRef{} = model_ref) do
+    observation.runtime_memory_budgets
     |> find_memory_budget(model_ref)
   end
 
   defp find_memory_budget(budgets, model_ref) when is_list(budgets) do
     Enum.find(budgets, &memory_budget_model_ref_matches?(&1, model_ref))
   end
-
-  defp find_memory_budget(_budgets, _model_ref), do: nil
 
   defp memory_budget_model_ref_matches?(budget, model_ref) when is_map(budget) do
     case Map.get(budget, :model_ref) || Map.get(budget, "model_ref") do
@@ -412,54 +419,15 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp memory_budget_model_ref_matches?(_budget, _model_ref), do: false
 
-  defp model_placement_capacity_for(_response, _model_ref, false), do: nil
+  defp model_placement_capacity_for(_observation, _model_ref, false), do: nil
 
-  defp model_placement_capacity_for(response, %CanonicalRequest.ModelRef{} = model_ref, true) do
-    response
-    |> Map.get(:runtime_model_placements, [])
-    |> matching_model_placements(model_ref)
-    |> case do
-      [placement] -> valid_model_placement_capacity(placement)
-      _none_or_ambiguous -> nil
-    end
+  defp model_placement_capacity_for(
+         %Observation{} = observation,
+         %CanonicalRequest.ModelRef{} = model_ref,
+         true
+       ) do
+    Observation.placement_capacity_for(observation, runtime_model_ref(model_ref))
   end
-
-  defp matching_model_placements(placements, model_ref) when is_list(placements),
-    do: Enum.filter(placements, &model_placement_matches?(&1, model_ref))
-
-  defp matching_model_placements(_placements, _model_ref), do: []
-
-  defp model_placement_matches?(placement, model_ref) when is_map(placement) do
-    case Map.get(placement, :model_ref) || Map.get(placement, "model_ref") do
-      %{model_id: model_id, version: version}
-      when is_binary(model_id) and is_binary(version) ->
-        model_id == model_ref.model_id and version == model_ref.version
-
-      %{"model_id" => model_id, "version" => version}
-      when is_binary(model_id) and is_binary(version) ->
-        model_id == model_ref.model_id and version == model_ref.version
-
-      _other ->
-        false
-    end
-  end
-
-  defp model_placement_matches?(_placement, _model_ref), do: false
-
-  defp valid_model_placement_capacity(placement) when is_map(placement) do
-    active =
-      Map.get(placement, :active_request_count) || Map.get(placement, "active_request_count")
-
-    max = Map.get(placement, :max_concurrency) || Map.get(placement, "max_concurrency")
-
-    if is_integer(active) and active >= 0 and is_integer(max) and max > 0 do
-      %{active_request_count: active, max_concurrency: max}
-    else
-      nil
-    end
-  end
-
-  defp valid_model_placement_capacity(_placement), do: nil
 
   defp maybe_put_model_placement_capacity(map, nil), do: map
 
@@ -599,13 +567,10 @@ defmodule Orchard.Scheduler.MultiNode do
     timeout_ms = scoring_context.timeout_ms
 
     response =
-      %ScorePrefixCacheRequest{
+      %Operation.PrefixCacheScoreRequest{
         request_id: request.public_id,
         controller_session_id: request.internal_id,
-        model_ref: %RPCModelRef{
-          model_id: request.model_ref.model_id,
-          version: request.model_ref.version
-        },
+        model_ref: runtime_model_ref(request.model_ref),
         cache_affinity_fingerprint: scoring_context.fingerprint,
         deadline_unix_ms: System.system_time(:millisecond) + timeout_ms
       }
@@ -760,6 +725,9 @@ defmodule Orchard.Scheduler.MultiNode do
     "#{Keyword.get(target, :host, "unknown")}:#{Keyword.get(target, :port, "unknown")}"
   end
 
+  defp prefix_cache_score_target(%Target{} = target),
+    do: prefix_cache_score_target(target.address)
+
   defp prefix_cache_score_target(_target), do: "unknown"
 
   defp maybe_put_memory_admission(map, _selected, false), do: map
@@ -832,7 +800,10 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp active_request_rank(%{
-         model_placement_capacity: %{active_request_count: active_request_count}
+         model_placement_capacity: %PlacementCapacity{
+           status: :known,
+           active_request_count: active_request_count
+         }
        })
        when is_integer(active_request_count) and active_request_count >= 0,
        do: active_request_count
@@ -880,10 +851,26 @@ defmodule Orchard.Scheduler.MultiNode do
   # When targets is empty or has multiple entries, use the implicit singular
   # fallback (no single deterministic target to pass).
   defp fallback_schedule(request, [single_target], opts) do
-    SingleNode.default_schedule(request, single_target, opts)
+    SingleNode.default_schedule(request, dispatch_target(single_target), opts)
   end
 
   defp fallback_schedule(request, _targets, opts) do
     SingleNode.default_schedule(request, SingleNode.target(), opts)
   end
+
+  defp normalize_status_observation(_target, %Observation{} = observation), do: observation
+
+  defp normalize_status_observation(target, %{} = status_response) do
+    GrpcCompatibilityMapper.observation_from_status(target, status_response)
+  end
+
+  defp runtime_model_ref(%CanonicalRequest.ModelRef{} = model_ref) do
+    ModelRef.new!(model_ref.model_id, model_ref.version)
+  end
+
+  defp dispatch_target(%Target{transport: :grpc_compat, address: address}), do: address
+  defp dispatch_target(target), do: target
+
+  defp observation_target(%Target{transport: :grpc_compat, address: address}), do: address
+  defp observation_target(target), do: target
 end

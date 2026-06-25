@@ -40,10 +40,14 @@ Supported deployment modes:
 ### 1.2 Core design rules
 
 * No Kubernetes.
-* No distributed Erlang cluster across machines.
 * No active/active controller mode in v1.
 * All durable state SHALL live in Postgres.
-* All cross-node control traffic SHALL use **gRPC over mTLS**.
+* Controller runtime execution SHALL use the Runtime Endpoint Interface.
+* Runtime Endpoint semantics are transport-independent.
+* The current gRPC/protobuf `NodeRuntimeService` is the compatibility transport for the first implementation and a candidate protocol for future non-BEAM adapters.
+* First-party Orchard Controller and Node Agent services MAY later use BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
+* Production BEAM Distribution MUST be explicitly enabled, identity-bound, network-restricted, and fail closed when required admission configuration is missing.
+* External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
 * All public API traffic SHALL terminate at the controller.
 * Token streams SHALL always pass through the controller so governance, accounting, cancellation, and audit behavior are centralized.
 * Node agents SHALL be the only network-reachable component on worker nodes.
@@ -70,14 +74,23 @@ Supported deployment modes:
                      |  - Dispatch                   |
                      |  - Request FSMs               |
                      |  - Metrics/Tracing/Logs       |
-                     +---------+-----------+---------+
+                     +---------+-----------+-------------------+
                                |           |
-                        SQL / TLS          gRPC / mTLS
+                        SQL / TLS          Runtime Endpoint Interface
                                |           |
-                     +---------v--+   +---v--------------------+
-                     | Postgres    |   | Node Agent(s)         |
-                     | durable DB  |   | - Register/Heartbeat  |
-                     +------------ +   | - Model cache         |
+                     +---------v--+   +---v---------------------------+
+                     | Postgres    |   | Runtime Endpoint Adapter(s) |
+                     | durable DB  |   | - current gRPC compatibility|
+                     +------------ +   | - future first-party BEAM   |
+                                       | - future external/provider  |
+                                       +---+-------------------------+
+                                           |
+                                           | v1 first-party endpoint
+                                           |
+                                       +---v--------------------+
+                                       | Node Agent(s)         |
+                                       | - Register/Heartbeat  |
+                                       | - Model cache         |
                                        | - Worker supervisor   |
                                        | - Diagnostics         |
                                        +---+-------------------+
@@ -125,8 +138,8 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 | `Orchard.API`           | OTP app              | HTTP API surface: `/v1`, `/ops/v1`, `/admin/v1`              |
 | `Orchard.Auth`          | OTP app              | API key auth, service account auth, RBAC                     |
 | `Orchard.Admission`     | OTP app              | validation, tenant policy, quotas, idempotency               |
-| `Orchard.Scheduler`     | OTP app              | node selection, queueing, fairness, placement decisions      |
-| `Orchard.Dispatch`      | OTP app              | gRPC calls to node agents, stream fan-out to clients         |
+| `Orchard.Scheduler`     | OTP app              | Runtime Endpoint selection, queueing, fairness, placement decisions |
+| `Orchard.Dispatch`      | OTP app              | Runtime Endpoint operations, compatibility dispatch, stream fan-out to clients |
 | `Orchard.Catalog`       | OTP app              | model catalog, artifact manifests, routing policy resolution |
 | `Orchard.Nodes`         | OTP app              | node registry, lifecycle, heartbeat snapshots                |
 | `Orchard.Requests`      | OTP app              | per-request FSMs and request event logging                   |
@@ -188,7 +201,7 @@ The implementation SHOULD use an umbrella repository with separate Elixir releas
 
 ### 3.1 Controller runtime model
 
-The controller SHALL be a Phoenix/Plug HTTP service plus a gRPC server and gRPC client pool.
+The controller SHALL be a Phoenix/Plug HTTP service plus Runtime Endpoint clients and the configured internal service ingress for node lifecycle and compatibility transports.
 
 **Required listeners**
 
@@ -196,7 +209,7 @@ The controller SHALL be a Phoenix/Plug HTTP service plus a gRPC server and gRPC 
   * `direct_https`: controller terminates HTTPS, default `:8443`.
   * `reverse_proxy`: controller provides a local/private HTTP backend for an operator-managed TLS-terminating proxy.
   * `plain_http_localhost`: controller provides loopback HTTP only for local development or break-glass recovery.
-* `:8444` gRPC/mTLS for node registration/heartbeat/event ingress
+* `:8444` gRPC/mTLS for node registration/heartbeat/event ingress while the compatibility transport remains enabled
 * `:9464` Prometheus metrics endpoint
 
 **Required readiness conditions**
@@ -749,14 +762,15 @@ Node agent SHALL send heartbeats every 2 seconds with:
 }
 ```
 
-### 4.6.1 Hosted-tool capability and readiness observation
+### 4.6.1 Runtime Endpoint capability and readiness observation
 
 Hosted-tool observation SHALL remain distinct from heartbeat inventory in the current implementation slice.
 
 Rules:
 
-* the active implementation seam for hosted-tool observation SHALL be `NodeRuntimeService.GetStatus` returning `StatusResponse`
-* heartbeat payloads MAY carry equivalent hosted-tool data in a later slice, but controller-owned hosted-tool observation SHALL currently be derived from status-probe ingestion
+* the durable implementation seam for runtime status SHALL be a Runtime Endpoint Observation produced through the Runtime Endpoint Interface
+* the current gRPC Compatibility Adapter SHALL derive Runtime Endpoint Observations from `NodeRuntimeService.GetStatus` returning `StatusResponse`
+* heartbeat payloads MAY carry equivalent hosted-tool data in a later slice, but controller-owned hosted-tool observation SHALL currently be derived from Runtime Endpoint status-probe ingestion
 * this contract defines future hosted routing inputs only; it SHALL NOT by itself enable controller-owned hosted `/v1/responses` execution or any other hosted execution behavior
 
 Hosted-tool observation vocabulary:
@@ -768,28 +782,28 @@ Hosted-tool observation vocabulary:
 
 Compatibility and defaulting rules:
 
-* absent hosted-tool capability/readiness fields on `StatusResponse` SHALL mean the node advertises no hosted tools
+* absent hosted-tool capability/readiness fields on a Runtime Endpoint Observation SHALL mean the endpoint advertises no hosted tools
 * absent hosted-tool capability/readiness fields SHALL NOT be treated as a status-probe error
 * readiness without matching advertised capability for the same `tool://<name>@<version>` SHALL NOT make the node eligible for hosted routing
-* `supports_prompt_token_ids` indicates that the node's loaded worker can accept controller-supplied prompt token IDs on `ExecuteInferenceRequest`. Absence or `false` is treated as legacy capability, not as a probe failure. When `tokenizer_safe_mode_prefer_capable=true` and `tokenizer_safe_mode` is not `:off`, this live status-probe field MAY inform opt-in scheduler preference only; it is not dispatch authority.
-* absent or empty `runtime_memory_budgets` on `StatusResponse` SHALL mean no memory-budget observation is available
+* `supports_prompt_token_ids` indicates that the endpoint's loaded worker can accept controller-supplied prompt token IDs on the runtime execution request. Absence or `false` is treated as legacy capability, not as a probe failure. When `tokenizer_safe_mode_prefer_capable=true` and `tokenizer_safe_mode` is not `:off`, this live status-probe field MAY inform opt-in scheduler preference only; it is not dispatch authority.
+* absent or empty runtime memory budgets on a Runtime Endpoint Observation SHALL mean no memory-budget observation is available
 * absent or empty `runtime_memory_budgets` SHALL NOT be treated as a status-probe error
 * `runtime_memory_budgets` SHALL remain observe-only telemetry except for the Phase 4E scheduler-ranking guard defined in §5.7 and §7.5.3; it SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, hosted-tool eligibility, public error contracts, queue ordering, or memory-budget enforcement
 * when `memory_admission.enabled = true`, `Orchard.Scheduler.MultiNode` MAY use only `RuntimeMemoryBudget.status_code == "ok"` plus `headroom_available == true` as a positive, non-excluding ranking preference below loadedness, requested-placement active request count when known, health, live prefix-cache fingerprint match, historical cache affinity, and any enabled safe-tokenization capable-worker preference, and above deterministic `node_id`
 * absent, empty, stale, malformed, disabled, unavailable, invalid, device-info-failed, compute-failed, non-`ok`, or `headroom_available != true` memory telemetry SHALL be rank-neutral and fail open
 * current `RuntimeMemoryBudget.status_code` vocabulary is: `ok`, `disabled`, `device_info_unavailable`, `device_info_invalid`, `resident_memory_unavailable`, `compute_failed`, `invalid_status`
-* absent or empty `runtime_prefix_cache_statuses` on `StatusResponse` SHALL mean no prefix-cache observation is available
+* absent or empty runtime prefix-cache statuses on a Runtime Endpoint Observation SHALL mean no prefix-cache observation is available
 * absent or empty `runtime_prefix_cache_statuses` SHALL NOT be treated as a status-probe error
 * aggregate `runtime_prefix_cache_statuses` counters SHALL remain observe-only telemetry and SHALL NOT affect node readiness, model admission, request admission, scheduling eligibility, queue ordering, hosted-tool eligibility, or `worker_generation_mode`; the Phase 4C bounded HMAC fingerprint field MAY affect scheduler ranking only as the explicitly configured non-gating tie-breaker defined in §5.7 and §7.5.3
 * current `RuntimePrefixCacheStatus.status_code` vocabulary is: `ok`, `disabled`, `unavailable`, `error`, `invalid_status`
 * these status codes are observational only in this slice and SHALL NOT gate readiness, admission, or scheduling
-* `active_request_count` on `StatusResponse` SHALL report active runtime requests across the node
-* `max_concurrency` on `StatusResponse` SHALL report the aggregate runtime request capacity enforced by the node agent; omitted or zero values SHALL be treated conservatively as node capacity `1` by schedulers
-* absent or empty `runtime_model_placements` on `StatusResponse` SHALL mean no explicit per-placement capacity observation is available
-* absent or empty `runtime_model_placements` SHALL NOT be treated as a status-probe error
-* `runtime_model_placements` entries SHALL report controller-observed capacity for loaded model placements using `model_ref`, `active_request_count`, and `max_concurrency`; `max_concurrency <= 0`, malformed entries, duplicate matching entries, or non-matching entries SHALL be treated as unknown capacity
-* valid per-placement capacity SHALL NOT prove node eligibility when node-level `active_request_count >= max_concurrency`
-* unknown placement capacity SHALL NOT prove scheduler eligibility for an already-active node; `Orchard.Scheduler.MultiNode` MAY keep a matching loaded-model active candidate eligible only when exactly one valid matching `runtime_model_placements` entry reports `active_request_count < max_concurrency`
+* aggregate `active_request_count` on a Runtime Endpoint Observation, and on the current gRPC compatibility `StatusResponse`, SHALL report active runtime requests across the endpoint node
+* `max_concurrency` on the current gRPC compatibility `StatusResponse` SHALL report the aggregate runtime request capacity enforced by the node agent; omitted or zero values SHALL be treated conservatively as endpoint node capacity `1` by schedulers
+* absent or empty Placement Capacity on a Runtime Endpoint Observation, including absent or empty `runtime_model_placements` on the current gRPC compatibility `StatusResponse`, SHALL mean no explicit per-placement capacity observation is available
+* absent or empty Placement Capacity SHALL NOT be treated as a status-probe error
+* Placement Capacity entries SHALL report controller-observed capacity for loaded Model Placements using model reference, active request count, and max concurrency; `max_concurrency <= 0`, malformed entries, duplicate matching entries, or non-matching entries SHALL be treated as unknown capacity
+* valid per-placement capacity SHALL NOT prove endpoint eligibility when known aggregate node-level `active_request_count >= max_concurrency`
+* unknown Placement Capacity SHALL NOT prove scheduler eligibility for an already-active endpoint; `Orchard.Scheduler.MultiNode` MAY keep a matching loaded-model active candidate eligible only when exactly one valid matching Placement Capacity entry reports `active_request_count < max_concurrency`
 
 Effective readiness rules for future hosted routing:
 
@@ -798,7 +812,7 @@ Effective readiness rules for future hosted routing:
 * the node SHALL advertise matching static hosted-tool capability for the same `tool://<name>@<version>`
 * the node lifecycle state SHALL be `active`
 * node health SHALL be `healthy` or `degraded`
-* the node observation SHALL be fresh under Orchard's existing freshness thresholds
+* the Runtime Endpoint Observation SHALL be fresh under Orchard's existing freshness thresholds
 * dynamic readiness for that tool SHALL exist and have `ready = true`
 
 ### 4.7 Pool model
@@ -941,7 +955,7 @@ Admission accounting:
 
 ### 5.4 Queue model
 
-When a request cannot be granted immediately because no live node or placement capacity is available, or because the tenant active request cap is exhausted:
+When a request cannot be granted immediately because no live Runtime Endpoint, node, or placement capacity is available, or because the tenant active request cap is exhausted:
 
 * request enters tenant FIFO queue
 * max wait defaults to `3000 ms`
@@ -1105,7 +1119,7 @@ The score/bonus model above is the broader M4 scheduling contract. The current b
 Controller-side cache-affinity, safe-tokenization capable-worker preference, Phase 4D tie-only scoring, and memory-admission ranking for the bounded current implementation SHALL use the following late tie-break order among otherwise schedulable candidates in the same residency/load/health position:
 
 1. loaded model already present
-2. lower active request count for the requested placement when a valid matching `RuntimeModelPlacement` is available, otherwise lower node `active_request_count`
+2. lower active request count for the requested placement when valid matching Placement Capacity is available, otherwise lower endpoint aggregate `active_request_count`
 3. healthier node (`healthy` before `degraded`)
 4. live prefix-cache fingerprint match, only when both `cache_affinity.enabled=true` and `cache_affinity.live_fingerprint_match_enabled=true`
 5. historical cache-affinity match from recent completed placements, when cache affinity is enabled
@@ -1520,10 +1534,11 @@ The platform SHALL expose four API surfaces:
    * loopback HTTP only in degraded `plain_http_localhost` mode for local development or break-glass recovery
    * admin/tenant-admin auth
 
-4. **Internal Node/Worker API**
+4. **Runtime Endpoint and Worker Interfaces**
 
-   * controller↔node RPC
-   * gRPC over mTLS
+   * controller↔Runtime Endpoint Interface for model readiness, inference execution, cancellation, status, runtime telemetry, and Placement Capacity
+   * current first implementation uses the gRPC Compatibility Adapter over mTLS
+   * Worker Runtime Interface remains local to the Node Agent
 
 ---
 
@@ -2053,16 +2068,37 @@ PATCH /admin/v1/observability
 
 ---
 
-### 7.5 Internal Node/Worker API
+### 7.5 Runtime Endpoint and Internal Worker Interfaces
 
-Protocol: **gRPC over HTTP/2 + TLS 1.3 + mTLS**
+Controller runtime execution SHALL use the Runtime Endpoint Interface.
+Runtime Endpoint semantics are transport-independent.
+The current gRPC/protobuf `NodeRuntimeService` is the gRPC Compatibility Adapter for the first implementation and a candidate protocol for future non-BEAM adapters.
+First-party Orchard Controller and Node Agent services MAY later use BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
+Production BEAM Distribution MUST be explicitly enabled, identity-bound, network-restricted, and fail closed when required admission configuration is missing.
+External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
+Postgres remains durable truth for inventory, lifecycle state, Runtime Endpoint Observations, scheduling history, request state, and operator-visible status.
+BEAM Distribution MUST NOT be treated as durable cluster truth.
 
-Required ports:
+Definitions:
+
+* **Runtime Endpoint**: the scheduler-selected execution boundary that can receive model runtime work from the Controller.
+* **Runtime Endpoint Interface**: the Controller-facing operations and observations for status, model readiness, model unloading, inference execution, cancellation, prefix-cache scoring, runtime telemetry, Placement Capacity, and streaming events.
+* **Runtime Endpoint Observation**: a durable Controller-recorded snapshot of endpoint status, capability, availability, placement, and capacity signals.
+* **Runtime Endpoint Availability**: the scheduler-facing availability of a Runtime Endpoint for new work, independent of whether the endpoint is backed by an Orchard-managed Node, external compute, or a provider integration.
+* **Placement Capacity**: a Runtime Endpoint Observation for a Model Placement that reports the model reference, active request count, and max concurrency.
+* **Worker Runtime**: the Node Agent-local process/protocol boundary for Python, MLX, and future non-BEAM model execution.
+* **gRPC Compatibility Adapter**: the adapter that maps Runtime Endpoint Interface semantics to and from `proto/cluster/v1` and `NodeRuntimeService`.
+
+Compatibility protocol: **gRPC over HTTP/2 + TLS 1.3 + mTLS**
+
+Compatibility ports:
 
 * controller gRPC ingress: `8444`
 * node agent gRPC ingress: `9444`
 
 #### 7.5.1 Controller-side service
+
+Controller-side node lifecycle RPC remains a first-party management surface while Runtime Endpoint execution moves behind the Runtime Endpoint Interface.
 
 ```proto
 service ClusterMembershipService {
@@ -2074,6 +2110,9 @@ service ClusterMembershipService {
 ```
 
 #### 7.5.2 Node-side service
+
+`NodeRuntimeService` is the current gRPC Compatibility Adapter service for Runtime Endpoint operations.
+The Controller domain code SHALL depend on Runtime Endpoint Interface semantics rather than generated protobuf request or response types.
 
 ```proto
 service NodeRuntimeService {
@@ -2088,6 +2127,9 @@ service NodeRuntimeService {
 ```
 
 #### 7.5.2a Worker-side service (node-agent ↔ worker)
+
+The Worker Runtime Interface remains Node Agent-local.
+The Controller communicates with the Runtime Endpoint, not directly with Worker Runtime subprocesses.
 
 ```proto
 service WorkerRuntimeService {
@@ -2363,9 +2405,10 @@ Runtime memory-budget wire semantics:
 * `estimated_headroom_bytes` SHALL NOT be used as a threshold, continuous score, request-rejection input, or operator-tunable memory admission knob in this slice
 * scheduler memory eligibility SHALL continue to use the scheduler/model/node inputs defined elsewhere in this spec; Phase 4E promotes only the hard-coded `status_code = ok` plus `headroom_available = true` case to a non-excluding scheduler-ranking preference
 
-Runtime prefix-cache wire semantics:
+Runtime prefix-cache observation semantics:
 
-* `StatusResponse.runtime_prefix_cache_statuses` SHALL report observe-only aggregate prefix-cache snapshots for loaded runtime/model paths through the existing `GetStatus` probe
+* Runtime Endpoint Observations SHALL report observe-only aggregate prefix-cache snapshots for loaded runtime/model paths
+* the current gRPC Compatibility Adapter maps those observations to and from `StatusResponse.runtime_prefix_cache_statuses` through the existing `GetStatus` probe
 * `prefix_cache_scoring.ranking_mode` defaults to `:observe_only`; in observe-only mode Orchard MAY issue a bounded `ScorePrefixCache` RPC only for the already-selected candidate, after ranking, and at most once per request
 * when `prefix_cache_scoring.ranking_mode = :tie_only`, Orchard MAY additionally score only the challenger in the leading rank-equivalence group (equal on current ranking elements except final deterministic `node_id`, including any enabled safe-tokenization capable-worker preference), with total scored candidates capped at 2 per request (incumbent + challenger)
 * tie-only mode SHALL NOT introduce top-N scoring, all-candidate scoring, prompt-byte fan-out, token-ID fan-out, or parallel score fan-out
@@ -2386,16 +2429,17 @@ Runtime prefix-cache wire semantics:
 * in `:tie_only` mode, score MAY affect ranking only as a bounded conditional step before final deterministic `node_id`, only for the leading rank-equivalence group (all current ranking elements equal except `node_id`, including any enabled safe-tokenization capable-worker preference), and only when an authoritative resident challenger (`status_code = "ok"`, `resident_fingerprint_match = true`, `score_tier = "resident_fingerprint"`) is compared against a comparable `ok` non-resident incumbent (`status_code = "ok"`, `resident_fingerprint_match = false`, `score_tier` is `"no_match"` or `"recent_fingerprint_only"`)
 * in `:tie_only` mode, deterministic `node_id` ordering remains the fallback whenever promotion conditions are not met; any non-`ok`, timeout, `UNIMPLEMENTED`/`unsupported_version`, missing, malformed, or transport-failure score outcome for either incumbent or challenger SHALL preserve base order fail-open and SHALL never be surfaced as tenant-facing request errors
 
-Runtime capacity wire semantics:
+Runtime capacity and Placement Capacity observation semantics:
 
 * `WorkerStatusResponse.active_request_count` SHALL report active `Generate` calls in that worker process
 * `WorkerStatusResponse.max_concurrency` SHALL report the worker's effective overlapping `Generate` capacity; omitted or zero values SHALL be treated as worker capacity `1` by the node agent
 * `StatusResponse.active_request_count` SHALL report aggregate active runtime requests across all loaded models on the node
 * `StatusResponse.max_concurrency` SHALL report the aggregate runtime request capacity that the node agent will enforce across loaded models
 * omitted or zero `StatusResponse.max_concurrency` SHALL mean aggregate capacity is unknown or legacy; schedulers SHALL treat it conservatively as node capacity `1`
-* `StatusResponse.runtime_model_placements` SHALL report active request count and max concurrency for each loaded runtime/model path through the existing `GetStatus` probe
-* omitted or empty `runtime_model_placements` SHALL mean no explicit per-placement capacity observation is available
-* omitted or empty `runtime_model_placements` SHALL NOT be treated as a node status error, readiness failure, admission failure, model-admission failure, or scheduler-eligibility failure for otherwise idle candidates
+* Runtime Endpoint Observations SHALL report active request count and max concurrency for each loaded runtime/model path as Placement Capacity
+* the current gRPC Compatibility Adapter maps Placement Capacity to and from `StatusResponse.runtime_model_placements` through the existing `GetStatus` probe
+* omitted or empty Placement Capacity SHALL mean no explicit per-placement capacity observation is available
+* omitted or empty Placement Capacity SHALL NOT be treated as an endpoint status error, readiness failure, admission failure, model-admission failure, or scheduler-eligibility failure for otherwise idle candidates
 * a matching placement capacity observation is valid only when exactly one entry matches the requested `model_ref`, `active_request_count >= 0`, and `max_concurrency > 0`
 * duplicate matching entries, malformed matching entries, non-matching entries, or `max_concurrency <= 0` SHALL make placement capacity unknown for that request
 * a valid matching placement observation SHALL NOT override exhausted node-level aggregate capacity

@@ -5,12 +5,14 @@ Code.require_file("m1_runtime_defaults.exs", __DIR__)
 repo_root = Path.expand("..", __DIR__)
 test_root = Path.join([repo_root, "tmp", "test"])
 
-test_root_hash =
+worker_socket_dir_hash =
   :crypto.hash(:sha256, repo_root)
   |> Base.url_encode64(padding: false)
   |> binary_part(0, 8)
 
-worker_socket_dir = Path.join(["/tmp", "ot-" <> test_root_hash, "ws"])
+# Python gRPC rejects Unix socket paths above roughly 103 bytes on macOS.
+# Keep test worker sockets under a short, worktree-specific root.
+worker_socket_dir = Path.join(["/tmp", "ot-" <> worker_socket_dir_hash, "ws"])
 
 config :orchard_controller, Orchard.Repo,
   username: System.get_env("PGUSER") || "postgres",

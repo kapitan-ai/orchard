@@ -37,8 +37,14 @@ The central control-plane service that owns public APIs, governance, admission, 
 _Avoid_: Worker, node agent
 
 **Node Agent**:
-The node-local control endpoint that manages node registration, status, model cache, worker supervision, diagnostics, and runtime access.
+The first-party node-local Orchard service that owns local runtime execution, model cache, worker supervision, diagnostics, status, and cleanup.
 _Avoid_: Controller agent, worker runtime
+
+**Runtime Endpoint**:
+A schedulable execution boundary that can receive model runtime work from the Controller through Orchard's runtime semantics.
+Orchard's v1 Runtime Endpoint is the first-party Node Agent; future Runtime Endpoints may be external compute or provider integrations.
+A Runtime Endpoint is not necessarily a Node.
+_Avoid_: Worker Runtime, transport protocol, durable cluster truth, managed Mac
 
 **Worker Runtime**:
 The local model execution process supervised by the Node Agent.
@@ -51,6 +57,11 @@ _Avoid_: Generic remote compute worker
 **Postgres**:
 Orchard's sole durable persistence and coordination store.
 _Avoid_: Redis, Kafka, distributed Erlang state
+
+**BEAM Distribution**:
+The live Orchard communication and monitoring layer between first-party Elixir services.
+In packaged production, BEAM Distribution is limited to admitted first-party Orchard services.
+_Avoid_: Durable cluster truth, database replacement, public API, external provider integration
 
 **All-in-One Deployment**:
 A deployment topology where one Mac runs the Controller, Node Agent, Worker Runtime, and Managed Database Mode.
@@ -98,9 +109,23 @@ _Avoid_: Admin API, Public Inference API, tenant/key mutation unless also admin
 The governance and configuration HTTP API surface for tenants, keys, quotas, models, routing, nodes, and observability settings.
 _Avoid_: Operator API, runtime support action
 
-**Internal Node/Worker API**:
-The private gRPC/mTLS RPC surface between the Controller, Node Agent, and Worker Runtime.
-_Avoid_: Public worker API, public/admin/operator HTTP API
+**Runtime Endpoint Interface**:
+The transport-independent Controller-facing execution semantics for scheduling, model readiness, inference execution, cancellation, status, and runtime telemetry.
+Placement Capacity is part of this interface's observation vocabulary.
+_Avoid_: Worker Runtime Interface, Node Lifecycle Interface, transport protocol
+
+**gRPC Compatibility Adapter**:
+The current adapter that maps Runtime Endpoint Interface semantics to `proto/cluster/v1` and `NodeRuntimeService`.
+It preserves today's gRPC/protobuf implementation while keeping the durable Controller domain contract transport-independent.
+_Avoid_: Runtime Endpoint Interface, Worker Runtime Interface, first-party BEAM mesh
+
+**Worker Runtime Interface**:
+The Node Agent-local execution process contract for loading models, generating output, reporting local worker status, and handling cancellation.
+_Avoid_: Runtime Endpoint Interface, Public Inference API, provider API
+
+**Node Lifecycle Interface**:
+The first-party Orchard node management semantics for node identity, join, health observation, maintenance, drain, and decommissioning.
+_Avoid_: Runtime Endpoint Interface, Worker Runtime Interface, scheduler ranking
 
 **Orchard Console**:
 The product-facing LiveView console for local and operator UI.
@@ -256,15 +281,23 @@ _Avoid_: Server when cluster role matters
 
 **Node Lifecycle State**:
 The operator-controlled lifecycle state that determines how a Node is allowed to participate in the cluster.
-_Avoid_: Node Health, heartbeat freshness
+_Avoid_: Runtime Endpoint Availability, Node Health, heartbeat freshness
 
 **Node Health**:
 The observed condition of a Node, independent of its operator-controlled lifecycle state.
 _Avoid_: Node Lifecycle State, operator action
 
+**Runtime Endpoint Availability**:
+The scheduler-facing availability of a Runtime Endpoint for new work, independent of whether the endpoint is backed by an Orchard-managed Node, external compute, or a provider integration.
+_Avoid_: Node Lifecycle State, durable cluster truth, provider billing status
+
+**Runtime Endpoint Observation**:
+A durable Controller-recorded snapshot of Runtime Endpoint status, capability, availability, and placement signals.
+_Avoid_: live BEAM session, durable cluster truth by itself, provider billing event
+
 **Heartbeat**:
-A periodic Node Agent status report used by the Controller to observe node health, inventory, workers, and placements.
-_Avoid_: Node Lifecycle State, readiness probe
+A periodic durable observation used by the Controller to record first-party Node Agent health, inventory, workers, placements, and Runtime Endpoint Availability.
+_Avoid_: Node Lifecycle State, readiness probe, live BEAM session
 
 **Node Pool**:
 A scheduling group where each v1 Node belongs to exactly one pool.
@@ -295,12 +328,16 @@ A model's global publication state in the Model Catalog, independent of node-loc
 _Avoid_: Placement State, loadedness
 
 **Model Placement**:
-The per-node residency, cache, and load state for a model artifact.
+The per-Runtime Endpoint residency, cache, availability, or load state for a model.
 _Avoid_: Catalog entry
 
 **Placement State**:
-A per-node model state describing whether an artifact is absent, cached, loaded, evicted, failed, or in transition.
+A per-Runtime Endpoint model state describing whether a model is unavailable, cached, loaded, provider-available, failed, or in transition.
 _Avoid_: Catalog State, tenant-visible model activation
+
+**Placement Capacity**:
+A first-class Runtime Endpoint Observation describing current active request count and maximum concurrency for a Model Placement.
+_Avoid_: Quota, durable capacity guarantee, transport field name
 
 **Model Bundle**:
 An offline-importable model artifact directory or archive supplied to Orchard with a Model Manifest.
@@ -337,15 +374,19 @@ The Controller component that evaluates eligible work, applies queue and ranking
 _Avoid_: Admission, Dispatch
 
 **Schedulable Node**:
-A Node eligible for new work because lifecycle, health, policy, capability, memory, concurrency, and breaker conditions allow it.
-_Avoid_: Healthy node
+A Node whose first-party Runtime Endpoint is eligible for new work because lifecycle, health, policy, capability, memory, concurrency, and breaker conditions allow it.
+_Avoid_: Healthy node, every Runtime Endpoint
+
+**Schedulable Runtime Endpoint**:
+A Runtime Endpoint eligible for new work because policy, capability, health, capacity, and breaker conditions allow it.
+_Avoid_: Node inventory, hardware host
 
 **Candidate Tier**:
 A scheduling group based on model residency, such as loaded, cached, or cold.
 _Avoid_: Node pool
 
 **Scheduler Decision**:
-The selected scheduling result and sanitized ranking metadata persisted with a Request.
+The selected Runtime Endpoint and sanitized ranking metadata persisted with a Request.
 _Avoid_: Quota, Routing Policy, Scheduler Explanation, tenant-facing error reason
 
 **Scheduler Explanation**:
@@ -353,7 +394,7 @@ Operator-facing reasoning for selected and rejected scheduling candidates.
 _Avoid_: persisted Scheduler Decision metadata, tenant-facing error contract
 
 **Dispatch**:
-The Controller-to-Node Agent handoff after scheduling that ensures a model is loaded and starts inference execution.
+The Controller-to-Runtime Endpoint handoff after scheduling that ensures a model is loaded and starts inference execution.
 _Avoid_: Scheduler Decision
 
 **Circuit Breaker**:

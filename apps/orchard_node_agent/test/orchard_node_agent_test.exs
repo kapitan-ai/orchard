@@ -39,6 +39,8 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Node.Supervisor, as: NodeSupervisor
   alias Orchard.Node.WorkerSupervisor
   alias Orchard.NodeAgent.Supervisor, as: NodeAgentSupervisor
+  alias Orchard.RuntimeEndpoint.ModelRef, as: RuntimeModelRef
+  alias Orchard.RuntimeEndpoint.{Observation, PlacementCapacity, Target}
 
   @test_model_id "mlx-community/phi-3"
   @test_version "main"
@@ -1303,6 +1305,7 @@ defmodule OrchardNodeAgentTest do
     assert String.ends_with?(runtime[:models_root], "/tmp/test/models")
     assert String.starts_with?(runtime[:worker_socket_dir], "/tmp/ot-")
     assert String.ends_with?(runtime[:worker_socket_dir], "/ws")
+    assert String.length(Node.worker_socket_path(@test_model_id, @test_version)) < 104
 
     assert String.ends_with?(
              runtime[:worker_executable],
@@ -2827,9 +2830,10 @@ defmodule OrchardNodeAgentTest do
     end
   end
 
-  test "batch mode accepts two same-model gRPC streams and reports active placement capacity", %{
-    bundle: bundle
-  } do
+  test "batch mode accepts two same-model gRPC compatibility runtime endpoint streams and reports active placement capacity",
+       %{
+         bundle: bundle
+       } do
     with_runtime_config(
       [
         runtime_adapter_impl: BlockingRuntimeAdapter,
@@ -2866,6 +2870,12 @@ defmodule OrchardNodeAgentTest do
             assert placement.active_request_count == 2
             assert placement.max_concurrency == 2
 
+            capacity = runtime_endpoint_capacity(status)
+            assert capacity.active_request_count == 2
+            assert capacity.max_concurrency == 2
+            assert PlacementCapacity.full?(capacity)
+            refute PlacementCapacity.spare?(capacity)
+
             send_release(Map.fetch!(refs, request_id1))
             send_release(Map.fetch!(refs, request_id2))
 
@@ -2883,6 +2893,12 @@ defmodule OrchardNodeAgentTest do
 
             assert final_placement.active_request_count == 0
             assert final_placement.max_concurrency == 2
+
+            final_capacity = runtime_endpoint_capacity(final_status)
+            assert final_capacity.active_request_count == 0
+            assert final_capacity.max_concurrency == 2
+            assert PlacementCapacity.spare?(final_capacity)
+            refute PlacementCapacity.full?(final_capacity)
           after
             try do
               best_effort_release_generation_refs([request_id1, request_id2])
@@ -2896,7 +2912,7 @@ defmodule OrchardNodeAgentTest do
     )
   end
 
-  test "batch mode cancel drains one gRPC stream and frees same-model capacity", %{
+  test "batch mode cancel drains one runtime endpoint stream and frees same-model capacity", %{
     bundle: bundle
   } do
     with_runtime_config(
@@ -2936,6 +2952,10 @@ defmodule OrchardNodeAgentTest do
             assert placement.active_request_count == 2
             assert placement.max_concurrency == 2
 
+            capacity = runtime_endpoint_capacity(status)
+            assert PlacementCapacity.full?(capacity)
+            refute PlacementCapacity.spare?(capacity)
+
             assert {:ok, %{ok: true, message: "cancel accepted"}} =
                      NodeRuntimeStub.cancel_inference(channel, %CancelInferenceRequest{
                        request_id: request_id1,
@@ -2946,10 +2966,10 @@ defmodule OrchardNodeAgentTest do
 
             wait_until(fn ->
               status = grpc_status_snapshot()
-              placement = runtime_model_placement!(status, @test_model_id, @test_version)
+              capacity = runtime_endpoint_capacity(status)
 
-              status.active_request_count == 1 and placement.active_request_count == 1 and
-                placement.max_concurrency == 2
+              status.active_request_count == 1 and capacity.active_request_count == 1 and
+                capacity.max_concurrency == 2 and PlacementCapacity.spare?(capacity)
             end)
 
             assert %{^request_id2 => _generation_ref} =
@@ -2971,6 +2991,10 @@ defmodule OrchardNodeAgentTest do
               assert refreshed_placement.active_request_count == 2
               assert refreshed_placement.max_concurrency == 2
 
+              refreshed_capacity = runtime_endpoint_capacity(refreshed_status)
+              assert PlacementCapacity.full?(refreshed_capacity)
+              refute PlacementCapacity.spare?(refreshed_capacity)
+
               send_release(Map.fetch!(refs, request_id2))
               send_release(Map.fetch!(refs, request_id3))
 
@@ -2979,10 +3003,10 @@ defmodule OrchardNodeAgentTest do
 
               wait_until(fn ->
                 status = grpc_status_snapshot()
-                placement = runtime_model_placement!(status, @test_model_id, @test_version)
+                capacity = runtime_endpoint_capacity(status)
 
-                status.active_request_count == 0 and placement.active_request_count == 0 and
-                  placement.max_concurrency == 2
+                status.active_request_count == 0 and capacity.active_request_count == 0 and
+                  capacity.max_concurrency == 2 and PlacementCapacity.spare?(capacity)
               end)
             after
               best_effort_release_generation_refs([request_id2, request_id3])
@@ -3014,7 +3038,12 @@ defmodule OrchardNodeAgentTest do
                    max_concurrency: 1
                  }
                ]
-             } = NodeStatus.current()
+             } = status = NodeStatus.current()
+
+      capacity = runtime_endpoint_capacity(status)
+      assert capacity.active_request_count == 0
+      assert capacity.max_concurrency == 1
+      assert PlacementCapacity.spare?(capacity)
     end)
   end
 
@@ -3041,7 +3070,12 @@ defmodule OrchardNodeAgentTest do
                      max_concurrency: 1
                    }
                  ]
-               } = NodeStatus.current()
+               } = status = NodeStatus.current()
+
+        capacity = runtime_endpoint_capacity(status)
+        assert capacity.active_request_count == 0
+        assert capacity.max_concurrency == 1
+        assert PlacementCapacity.spare?(capacity)
       end
     )
   end
@@ -3071,7 +3105,12 @@ defmodule OrchardNodeAgentTest do
                      max_concurrency: 2
                    }
                  ]
-               } = NodeStatus.current()
+               } = status = NodeStatus.current()
+
+        capacity = runtime_endpoint_capacity(status)
+        assert capacity.active_request_count == 1
+        assert capacity.max_concurrency == 2
+        assert PlacementCapacity.spare?(capacity)
 
         assert %{ok: true} = NodeStatus.cancel_request(request.request_id)
       end
@@ -4565,6 +4604,37 @@ defmodule OrchardNodeAgentTest do
     else
       refs
     end
+  end
+
+  defp runtime_endpoint_capacity(%StatusResponse{} = status) do
+    status
+    |> runtime_endpoint_observation()
+    |> Observation.placement_capacity_for(runtime_endpoint_model_ref())
+  end
+
+  defp runtime_endpoint_observation(%StatusResponse{} = status) do
+    Observation.new(%{
+      target: Target.beam(Node.node_id() || "test-node"),
+      aggregate_active_request_count: status.active_request_count,
+      worker_state: status.worker_state,
+      placements: Enum.map(status.runtime_model_placements, &runtime_endpoint_placement/1)
+    })
+  end
+
+  defp runtime_endpoint_placement(placement) do
+    %{
+      model_ref: placement.model_ref,
+      state: :loaded,
+      capacity: %{
+        active_request_count: placement.active_request_count,
+        max_concurrency: placement.max_concurrency,
+        source: :node_agent_status
+      }
+    }
+  end
+
+  defp runtime_endpoint_model_ref do
+    RuntimeModelRef.new!(@test_model_id, @test_version)
   end
 
   defp runtime_model_placement!(%StatusResponse{} = status, model_id, version) do

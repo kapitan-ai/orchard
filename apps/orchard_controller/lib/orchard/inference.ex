@@ -7,6 +7,7 @@ defmodule Orchard.Inference do
 
   alias Orchard.Inference.{CacheAffinity, QueueManager}
   alias Orchard.Requests.Supervisor, as: RequestsSupervisor
+  alias Orchard.RuntimeEndpoint.Target
 
   @spec start_link(keyword()) :: Supervisor.on_start()
   def start_link(init_arg \\ []) do
@@ -211,6 +212,19 @@ defmodule Orchard.Inference do
     end
   end
 
+  @spec runtime_endpoint_client() :: module()
+  def runtime_endpoint_client do
+    config()[:runtime_endpoint_client_impl] || Orchard.RuntimeEndpoint.GrpcCompatibilityClient
+  end
+
+  @spec runtime_endpoint_targets() :: [Target.t()]
+  def runtime_endpoint_targets do
+    runtime_client_targets()
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(&runtime_endpoint_target/1)
+    |> Enum.uniq_by(& &1.id)
+  end
+
   @spec request_timeout_ms() :: pos_integer() | nil
   def request_timeout_ms, do: config()[:request_timeout_ms]
 
@@ -250,4 +264,7 @@ defmodule Orchard.Inference do
       {Keyword.get(target, :host), Keyword.get(target, :port)}
     end)
   end
+
+  defp runtime_endpoint_target(%Target{} = target), do: target
+  defp runtime_endpoint_target(target), do: Target.grpc_compat(target)
 end

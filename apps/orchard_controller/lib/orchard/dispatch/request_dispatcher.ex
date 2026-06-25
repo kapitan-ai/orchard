@@ -20,14 +20,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   alias Orchard.Cluster.V1.{
     EnsureModelLoadedRequest,
-    EnsureModelLoadedResponse,
     ExecuteInferenceRequest
   }
 
-  alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: DefaultClient
   alias Orchard.Inference
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, Observation, Operation, Target}
   alias Orchard.SentryContext
   alias Orchard.Tokenizer.Telemetry
 
@@ -152,7 +151,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
                            Called when the pre-dispatch status probe discovers a
                            valid node UUID. Synchronous, lightweight, observational only.
                            Exceptions and exits are logged and ignored; return value is ignored.
-  - `:client_impl` - gRPC client module (default: `GrpcNodeRuntimeClient`)
+  - `:client_impl` - Runtime Endpoint client module
+                     (default: `Inference.runtime_endpoint_client/0`)
 
   Returns `{:ok, events}` with the list of all events received (including terminal),
   or `{:error, reason}` if dispatch fails before streaming begins.
@@ -169,14 +169,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
         %EnsureModelLoadedRequest{} = model_load_request,
         opts \\ []
       ) do
-    target = Map.fetch!(schedule, :runtime_client_target)
+    target = runtime_endpoint_target(schedule)
     request_id = Map.fetch!(schedule, :request_id)
     timeout_ms = Map.fetch!(schedule, :request_timeout_ms)
     model_load_timeout = Map.get(schedule, :model_load_timeout_ms, 120_000)
     caller = Keyword.get(opts, :caller, self())
     event_handler = Keyword.get(opts, :event_handler)
     on_node_resolved = Keyword.get(opts, :on_node_resolved)
-    client = Keyword.get(opts, :client_impl, DefaultClient)
+    client = Keyword.get(opts, :client_impl, Inference.runtime_endpoint_client())
 
     # Initialize timing metrics
     metrics =
@@ -352,9 +352,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     case client.status(channel, timeout: @status_probe_timeout_ms) do
       {:ok, response} ->
         observed_at = DateTime.utc_now()
+        observation = normalize_status_observation(target, response)
 
         {resolved_node_id, model_load_request, metrics} =
-          case extract_node_id(response) do
+          case extract_node_id(observation) do
             {:ok, node_id} ->
               metrics = %{metrics | node_id: node_id}
               put_node_resolved_context(metrics, target)
@@ -365,7 +366,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
           end
 
         try do
-          Orchard.Nodes.observe_status(target, response, observed_at)
+          Orchard.Nodes.observe_status(observation_target(target), observation, observed_at)
         rescue
           error ->
             Logger.warning("Node observation failed during dispatch probe: #{inspect(error)}")
@@ -389,7 +390,13 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       {model_load_request, metrics}
   end
 
-  defp extract_node_id(%{node_metadata: %{node_id: node_id}}) when is_binary(node_id) do
+  defp extract_node_id(%Observation{} = observation) do
+    observation
+    |> Observation.node_id()
+    |> extract_node_id()
+  end
+
+  defp extract_node_id(node_id) when is_binary(node_id) do
     Ecto.UUID.cast(node_id)
   end
 
@@ -408,8 +415,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp do_ensure_model_loaded(client, channel, target, request, timeout_ms) do
-    case client.ensure_model_loaded(channel, request, timeout: timeout_ms) do
-      {:ok, %EnsureModelLoadedResponse{} = response} ->
+    case client.ensure_model_loaded(channel, ensure_model_loaded_operation(request),
+           timeout: timeout_ms
+         ) do
+      {:ok, %Operation.EnsureModelLoadedResult{} = response} ->
         case normalize_placement_state(response.placement_state) do
           :loaded ->
             {:ok,
@@ -419,7 +428,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
              }}
 
           :failed ->
-            {:error, ModelLoadFailure.from_response(response)}
+            {:error, ModelLoadFailure.from_result(response)}
 
           {:unexpected, placement_state} ->
             {:error,
@@ -451,7 +460,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   # supports_prompt_token_ids persisted under Nodes capabilities is observational
   # inventory from status probes and must not be used as dispatch eligibility
-  # authority. EnsureModelLoadedResponse is the authoritative capability gate.
+  # authority. The Runtime Endpoint ensure-model-loaded result is the
+  # authoritative capability gate.
   defp gate_prompt_token_ids(request, ensure_result, schedule, model_load_request) do
     mode = Inference.tokenizer_safe_mode()
     prompt_token_ids = request.prompt_token_ids || []
@@ -515,8 +525,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   defp normalize_placement_state(:PLACEMENT_STATE_LOADED), do: :loaded
   defp normalize_placement_state(7), do: :loaded
+  defp normalize_placement_state(:loaded), do: :loaded
   defp normalize_placement_state(:PLACEMENT_STATE_FAILED), do: :failed
   defp normalize_placement_state(10), do: :failed
+  defp normalize_placement_state(:failed), do: :failed
   defp normalize_placement_state(other), do: {:unexpected, other}
 
   defp do_execute_and_stream(
@@ -532,12 +544,14 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     caller_ref = Process.monitor(caller)
     timer_ref = start_timeout_timer(timeout_ms)
 
-    {:ok, task_ref} = client.execute_inference(channel, request, owner: self())
+    execute_request = execute_operation(request)
+    {:ok, task_ref} = client.execute_inference(channel, execute_request, owner: self())
 
     loop_ctx = %{
       caller_ref: caller_ref,
       channel: channel,
       client: client,
+      controller_session_id: execute_request.controller_session_id,
       event_handler: event_handler,
       metrics: metrics,
       target: target,
@@ -566,7 +580,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     request_id = metrics.request_id
 
     receive do
-      {:dispatch_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
+      {:runtime_endpoint_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
         handler_result = emit_event(event, request_id, event_handler)
         events = [event | events]
         metrics = update_metrics_for_event(metrics, event)
@@ -577,7 +591,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
           cancelled_by_handler?(handler_result) ->
             put_cancel_sent_context(metrics, :client_disconnect)
-            _ = client.cancel_inference(channel, request_id)
+            _ = cancel_inference(client, channel, request_id, loop_ctx.controller_session_id)
 
             drain_until_terminal_or_done(
               %{loop_ctx | metrics: metrics},
@@ -589,10 +603,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
             receive_loop(%{loop_ctx | metrics: metrics}, events)
         end
 
-      {:dispatch_done, ^task_ref, :ok} ->
+      {:runtime_endpoint_done, ^task_ref, :ok} ->
         {:ok, Enum.reverse(events), metrics}
 
-      {:dispatch_done, ^task_ref, {:error, reason}} ->
+      {:runtime_endpoint_done, ^task_ref, {:error, reason}} ->
         mark_transport_failure(target, reason)
 
         if events == [] do
@@ -618,12 +632,12 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
       {:dispatch_timeout, ^timer_ref} ->
         put_cancel_sent_context(metrics, :timeout)
-        _ = client.cancel_inference(channel, request_id)
+        _ = cancel_inference(client, channel, request_id, loop_ctx.controller_session_id)
         drain_until_terminal_or_done(%{loop_ctx | metrics: metrics}, events, :timeout)
 
       {:DOWN, ^caller_ref, :process, _pid, _reason} ->
         put_cancel_sent_context(metrics, :caller_disconnect)
-        _ = client.cancel_inference(channel, request_id)
+        _ = cancel_inference(client, channel, request_id, loop_ctx.controller_session_id)
         drain_until_terminal_or_done(%{loop_ctx | metrics: metrics}, events, :caller_disconnect)
     end
   end
@@ -635,7 +649,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     request_id = metrics.request_id
 
     receive do
-      {:dispatch_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
+      {:runtime_endpoint_event, ^task_ref, ^request_id, %InferenceEvent{} = event} ->
         emit_event(event, request_id, event_handler)
         events = [event | events]
         metrics = update_metrics_for_event(metrics, event)
@@ -646,7 +660,7 @@ defmodule Orchard.Dispatch.RequestDispatcher do
           drain_until_terminal_or_done(%{loop_ctx | metrics: metrics}, events, cancel_reason)
         end
 
-      {:dispatch_done, ^task_ref, _result} ->
+      {:runtime_endpoint_done, ^task_ref, _result} ->
         # Stream ended without a terminal event after cancel.
         # Synthesize a terminal event so the caller always gets one.
         timeout_event =
@@ -832,9 +846,74 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     |> compact_nil_values()
   end
 
+  defp target_host(%Target{transport: :grpc_compat, address: address}), do: target_host(address)
   defp target_host(target) when is_list(target), do: Keyword.get(target, :host)
   defp target_host(%{} = target), do: Map.get(target, :host) || Map.get(target, "host")
   defp target_host(_target), do: nil
+
+  defp runtime_endpoint_target(schedule) do
+    case Map.get(schedule, :runtime_endpoint_target) do
+      %Target{} = target ->
+        target
+
+      nil ->
+        schedule
+        |> Map.fetch!(:runtime_client_target)
+        |> Target.grpc_compat()
+    end
+  end
+
+  defp observation_target(%Target{transport: :grpc_compat, address: address}), do: address
+  defp observation_target(target), do: target
+
+  defp normalize_status_observation(_target, %Observation{} = observation), do: observation
+
+  defp normalize_status_observation(target, %{} = status_response) do
+    GrpcCompatibilityMapper.observation_from_status(target, status_response)
+  end
+
+  defp ensure_model_loaded_operation(%EnsureModelLoadedRequest{} = request) do
+    Operation.EnsureModelLoadedRequest.new!(
+      node_id: blank_to_nil(request.node_id),
+      model_ref: %{model_id: request.model_id, version: request.version},
+      artifact_sha256: blank_to_nil(request.artifact_sha256),
+      preload: request.preload,
+      deadline_unix_ms: zero_to_nil(request.deadline_unix_ms),
+      artifact_source_uri: blank_to_nil(request.artifact_source_uri)
+    )
+  end
+
+  defp execute_operation(%ExecuteInferenceRequest{} = request) do
+    Operation.ExecuteRequest.new!(
+      request_id: request.request_id,
+      controller_session_id: request.controller_session_id,
+      model_ref: %{model_id: request.model_id, version: request.version},
+      rendered_prompt_utf8: request.rendered_prompt_utf8,
+      input_tokens: request.input_tokens,
+      params: request.params || %{},
+      deadline_unix_ms: zero_to_nil(request.deadline_unix_ms),
+      metadata_json: request.metadata_json || "{}",
+      cache_affinity_fingerprint: blank_to_nil(request.cache_affinity_fingerprint),
+      prompt_token_ids: request.prompt_token_ids || []
+    )
+  end
+
+  defp cancel_inference(client, channel, request_id, controller_session_id) do
+    client.cancel_inference(
+      channel,
+      Operation.CancelRequest.new!(
+        request_id: request_id,
+        controller_session_id: controller_session_id
+      )
+    )
+  end
+
+  defp blank_to_nil(value) when value in [nil, ""], do: nil
+  defp blank_to_nil(value), do: value
+
+  defp zero_to_nil(0), do: nil
+  defp zero_to_nil(nil), do: nil
+  defp zero_to_nil(value), do: value
 
   defp compact_nil_values(map) do
     Map.reject(map, fn {_key, value} -> is_nil(value) end)
