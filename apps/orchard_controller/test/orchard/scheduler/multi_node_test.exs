@@ -584,6 +584,29 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert status_calls() == [{{"127.0.0.1", 1}, [timeout: 17]}]
     end
 
+    test "single BEAM target fallback emits a runtime endpoint schedule" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.beam(node.id, address: :orchard_node_agent@localhost)
+
+      put_inference(
+        runtime_endpoint_targets: [target],
+        runtime_client_targets: [],
+        runtime_client_target: [host: "127.0.0.1", port: 50_071]
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 status_timeout_ms: 17
+               )
+
+      assert schedule.strategy == :single_node
+      assert schedule.runtime_endpoint_target == target
+      refute Map.has_key?(schedule, :runtime_client_target)
+      assert schedule.node_id == node.id
+      assert status_calls() == [{{:beam, target.id}, [timeout: 17]}]
+    end
+
     test "returns cluster_busy for one live full target instead of bypassing capacity checks" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})

@@ -902,11 +902,22 @@ defmodule Orchard.Scheduler.MultiNode do
 
   # -- Helpers --
 
-  # When there is exactly one unique target, pass it explicitly to
-  # SingleNode.default_schedule/2 so the fallback uses the actual target
-  # from the plural config, not the separate singular runtime_client_target.
-  # When targets is empty or has multiple entries, use the implicit singular
-  # fallback (no single deterministic target to pass).
+  defp fallback_schedule(request, [%Target{transport: :grpc_compat} = single_target], opts) do
+    SingleNode.default_schedule(request, dispatch_target(single_target), opts)
+  end
+
+  defp fallback_schedule(request, [%Target{} = single_target], _opts) do
+    {:ok,
+     %{
+       strategy: :single_node,
+       request_id: request.public_id,
+       runtime_endpoint_target: single_target,
+       request_timeout_ms: Inference.request_timeout_ms(),
+       model_load_timeout_ms: Inference.model_load_timeout_ms(),
+       node_id: runtime_endpoint_node_id(single_target)
+     }}
+  end
+
   defp fallback_schedule(request, [single_target], opts) do
     SingleNode.default_schedule(request, dispatch_target(single_target), opts)
   end
@@ -936,6 +947,13 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp dispatch_target(%Target{transport: :grpc_compat, address: address}), do: address
   defp dispatch_target(target), do: target
+
+  defp runtime_endpoint_node_id(%Target{} = target) do
+    case Nodes.lookup_by_target(target) do
+      %{id: id} -> id
+      nil -> nil
+    end
+  end
 
   defp observation_target(%Target{transport: :grpc_compat, address: address}), do: address
   defp observation_target(target), do: target
