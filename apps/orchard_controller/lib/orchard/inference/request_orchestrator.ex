@@ -1,6 +1,10 @@
 defmodule Orchard.Inference.RequestOrchestrator do
   @moduledoc """
   Executes the shared durable request lifecycle for prepared canonical requests.
+
+  Once a request has been persisted and validated, scheduler and dispatch
+  orchestration crashes are converted into durable failed terminal outcomes so
+  requests do not remain active without a runtime owner.
   """
 
   alias Orchard.CanonicalRequest

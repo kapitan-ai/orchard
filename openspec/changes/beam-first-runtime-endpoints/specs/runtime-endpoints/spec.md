@@ -108,6 +108,30 @@ This preserves the incoming `gnhf/objective-fully-impl-369718` behavior around `
 - **WHEN** queue admission is disabled and scheduling returns `cluster_busy`
 - **THEN** the request fails immediately with the existing `cluster_busy` public error mapping
 
+### Requirement: Runtime Orchestration Failure Terminalization
+After a durable request reaches validation, scheduler or dispatch orchestration failures SHALL terminalize the request instead of leaving it active.
+The durable request SHALL fail with `error_code = "orchestration_error"` and `error_message = "Runtime orchestration failed"`.
+Public HTTP and SSE error payloads SHALL stay sanitized with `internal_error`.
+Runtime Endpoint disconnect cleanup failures SHALL be logged best-effort and MUST NOT overwrite an otherwise successful scheduler probe or dispatch result.
+
+#### Scenario: Scheduler crashes after validation
+- **WHEN** a validated request encounters an exception, exit, throw, or invalid return from the scheduler
+- **THEN** the request reaches terminal state `failed`
+- **THEN** no scheduled request state is required
+- **THEN** the public error payload is generic
+
+#### Scenario: Dispatch crashes after scheduling
+- **WHEN** a scheduled request encounters an exception, exit, throw, or invalid return from dispatch
+- **THEN** the request reaches terminal state `failed`
+- **THEN** the request retains scheduled and dispatching lifecycle evidence when those states were reached
+- **THEN** the public error payload is generic
+
+#### Scenario: Runtime Endpoint cleanup fails
+- **WHEN** a scheduler probe or dispatch attempt has already produced its operation result
+- **AND** disconnect cleanup fails
+- **THEN** Orchard keeps the operation result
+- **THEN** cleanup failure is logged best-effort
+
 ### Requirement: Worker Runtime Boundary Preservation
 The Worker Runtime Interface SHALL remain separate from the Runtime Endpoint Interface.
 The Node Agent SHALL continue to own local Worker Runtime lifecycle, model loading, active request accounting, cancellation, diagnostics, and cleanup.

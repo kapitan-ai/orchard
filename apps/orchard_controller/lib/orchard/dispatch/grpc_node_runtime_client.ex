@@ -46,7 +46,7 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
     end
   end
 
-  @doc "Disconnect a gRPC channel."
+  @doc "Disconnect a gRPC channel best-effort and return `:ok`."
   @spec disconnect(GRPC.Channel.t()) :: :ok
   def disconnect(channel) do
     case GRPC.Stub.disconnect(channel) do

@@ -4,6 +4,8 @@ defmodule Orchard.Inference.ChatError do
 
   Centralizes client-safe HTTP/SSE mappings and durable terminal request attrs so
   the public API and console paths stay behavior-aligned.
+  Internal orchestration crashes keep public payloads generic while storing a
+  durable `orchestration_error` terminal reason.
   """
 
   alias Orchard.Inference.ModelLoadFailure

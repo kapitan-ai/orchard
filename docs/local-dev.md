@@ -229,6 +229,7 @@ This validates future first-party BEAM transport admission settings only.
 It does not implement or enable a live BEAM Runtime Endpoint adapter, and there is no supported source-dev env var surface for it in this slice.
 The accepted target is for BEAM Runtime Endpoint transport to become the primary source-dev Controller-to-Node Agent path after the adapter exists and passes the two-Mac smoke.
 Until that gate passes, source-dev keeps using the gRPC compatibility adapter on port `50071`.
+The accepted smoke requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
 
 If enabled directly in application config for future work, guardrail validation requires non-empty `node_name`, `cookie_file`, `listen_host`, `admitted_services`, and `allowed_cidrs`.
 The `listen_host` must not be `0.0.0.0` or `::`, and `allowed_cidrs` must not contain `0.0.0.0/0` or `::/0`.
@@ -420,10 +421,12 @@ needed for the stub backend; source dev resolves it to stream mode when unset.
 
 ### Verification
 
-1. Both nodes should appear in `/console/nodes` with distinct display names
-2. Cluster summary should show 2 configured targets
-3. Playground inference should attribute requests to specific nodes
-4. Killing the remote node-agent should transition its health to
+1. Both nodes should appear in `/console/nodes` with distinct display names and reachable status
+2. `GET /v1/models` should return `200`
+3. `POST /v1/chat/completions` should complete through the Console Playground or an equivalent API request
+4. Cluster summary should show 2 configured targets
+5. Playground inference should attribute requests to specific nodes
+6. Killing the remote node-agent should transition its health to
    degraded/unreachable
 
 ### Troubleshooting

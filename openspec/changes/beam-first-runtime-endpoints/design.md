@@ -17,8 +17,10 @@ The Worker Runtime remains a local process/protocol boundary owned by the Node A
 - Define Runtime Endpoint as the Controller-selected execution boundary.
 - Define Runtime Endpoint Interface as transport-independent runtime semantics.
 - Add guardrails for future BEAM Distribution between first-party Controller and Node Agent services.
+- Keep source-dev on gRPC compatibility until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke.
 - Keep Runtime Endpoint Observations durable in Postgres for operator-visible state and scheduling inputs.
 - Preserve `gnhf/objective-fully-impl-369718` concurrency semantics while moving controller domain code to Runtime Endpoint semantics.
+- Preserve durable request terminalization when scheduler or dispatch orchestration crashes.
 - Keep external compute and provider integrations behind future Runtime Endpoint adapters.
 - Keep `proto/cluster/v1` available as a future adapter or compatibility protocol instead of deleting it immediately.
 
@@ -46,6 +48,7 @@ That keeps v1 terminology simple, but it makes future Cloud VM, high-performance
 The Controller should depend on a Runtime Endpoint Interface for status, model readiness, inference execution, cancellation, runtime telemetry, Placement Capacity, and prefix-cache scoring.
 This slice should introduce the interface and keep the current first-party path behind a gRPC Compatibility Adapter.
 A later first-party implementation can use BEAM Distribution.
+Source-dev should promote BEAM Runtime Endpoint transport only after the adapter exists and the accepted two-Mac smoke passes.
 Future non-BEAM implementations can use provider APIs, gRPC/protobuf, or other adapter protocols.
 
 Alternative considered: keep `NodeRuntimeService` as the core interface.
@@ -80,6 +83,7 @@ The `gnhf` work shows it drives visible concurrency, `cluster_busy`, and queue b
 
 `proto/cluster/v1` and `NodeRuntimeService` should no longer be the durable Controller domain contract.
 They remain the current compatibility transport and may remain as future adapter protocol artifacts.
+Until the BEAM adapter passes the accepted two-Mac smoke, source-dev keeps this gRPC compatibility path on port `50071`.
 
 Alternative considered: delete the proto surface during the pivot.
 That creates avoidable churn and removes a useful candidate protocol for future non-BEAM Runtime Endpoint adapters.
@@ -101,15 +105,20 @@ Mitigation: first recast them as Runtime Endpoint contract tests, then keep or r
 Risk: The term `cluster_busy` may feel stale after Runtime Endpoint modeling.
 Mitigation: keep the name for compatibility and define it as live Runtime Endpoint capacity exhaustion.
 
+Risk: Internal scheduler or dispatch crashes can strand already-validated requests.
+Mitigation: terminalize those crashes as failed `orchestration_error` requests with generic public error payloads.
+
 ## Migration Plan
 
 1. Update `SPEC.md`, architecture docs, and glossary to define Runtime Endpoint, Runtime Endpoint Interface, Runtime Endpoint Observation, Runtime Endpoint Availability, Placement Capacity, and first-party BEAM Distribution constraints.
 2. Introduce a Controller-facing Runtime Endpoint Interface, current gRPC Compatibility Adapter, and BEAM guardrail validation.
 3. Adapt scheduler and dispatch code to depend on Runtime Endpoint semantics instead of the low-level gRPC client module.
 4. Preserve and adapt the `gnhf` queue, placement capacity, and `cluster_busy` behavior after the gnhf baseline is chosen.
-5. Recast current gRPC integration tests as Runtime Endpoint Interface contract tests.
-6. Keep a smaller adapter or compatibility test suite if gRPC remains available for future external endpoints.
-7. Validate OpenSpec, compile, lint, Dialyzer, tests, and coverage under the repo workflow before handoff.
+5. Keep source-dev on gRPC compatibility until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke.
+6. Terminalize scheduler and dispatch orchestration crashes as generic failed requests.
+7. Recast current gRPC integration tests as Runtime Endpoint Interface contract tests.
+8. Keep a smaller adapter or compatibility test suite if gRPC remains available for future external endpoints.
+9. Validate OpenSpec, compile, lint, Dialyzer, tests, and coverage under the repo workflow before handoff.
 
 Rollback is architectural rather than runtime.
 If the BEAM-first path proves unsafe, keep the Runtime Endpoint Interface and continue binding the first-party adapter to gRPC while preserving the transport-independent domain model.

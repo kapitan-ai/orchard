@@ -60,6 +60,7 @@ _Avoid_: Redis, Kafka, distributed Erlang state
 
 **BEAM Distribution**:
 The live Orchard communication and monitoring layer between first-party Elixir services.
+In source-dev, it becomes the primary Runtime Endpoint transport only after the BEAM adapter passes the accepted two-Mac smoke.
 In packaged production, BEAM Distribution is limited to admitted first-party Orchard services.
 _Avoid_: Durable cluster truth, database replacement, public API, external provider integration
 
@@ -181,6 +182,7 @@ _Avoid_: Job, task, request-step observation, public response status
 
 **Request FSM**:
 The lifecycle state machine for an active Request from receipt through terminal outcome.
+Scheduler or dispatch orchestration crashes after validation terminalize the Request as failed with `orchestration_error`.
 _Avoid_: Queue state
 
 **Request Event**:
@@ -395,6 +397,7 @@ _Avoid_: persisted Scheduler Decision metadata, tenant-facing error contract
 
 **Dispatch**:
 The Controller-to-Runtime Endpoint handoff after scheduling that ensures a model is loaded and starts inference execution.
+Runtime Endpoint disconnect cleanup is best-effort and does not define the dispatch outcome.
 _Avoid_: Scheduler Decision
 
 **Circuit Breaker**:

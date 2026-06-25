@@ -13,6 +13,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   Transport failures during connect, pre-dispatch status, model load, or stream
   execution are recorded through node inventory so stale capacity for the failed
   target is cleared.
+  Runtime Endpoint disconnect cleanup is best-effort and does not override the
+  dispatch outcome.
 
   Timing instrumentation logs one 'dispatch_timing' line per dispatch attempt,
   capturing cold/warm classification, stream timing, and outcome.
@@ -157,6 +159,8 @@ defmodule Orchard.Dispatch.RequestDispatcher do
 
   Returns `{:ok, events}` with the list of all events received (including terminal),
   or `{:error, reason}` if dispatch fails before streaming begins.
+  Runtime Endpoint disconnect cleanup failures are logged and ignored after the
+  dispatch outcome is known.
   """
   @spec dispatch(
           schedule :: map(),

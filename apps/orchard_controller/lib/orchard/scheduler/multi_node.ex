@@ -32,6 +32,8 @@ defmodule Orchard.Scheduler.MultiNode do
   Transport-like probe and connect failures are recorded through node inventory
   so failed targets stop contributing stale queue capacity before queued work is
   promoted.
+  Probe disconnect cleanup is best-effort and does not remove an otherwise valid
+  candidate or change the scheduling outcome.
   """
 
   alias Orchard.CanonicalRequest
