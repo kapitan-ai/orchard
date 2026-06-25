@@ -402,14 +402,14 @@ A scheduler suppression rule for repeatedly failing nodes or placements.
 _Avoid_: Node health
 
 **Queue**:
-A controller-owned wait path used after Admission when work cannot be immediately granted because live node or placement capacity is unavailable, node or placement concurrency is exhausted, or tenant active concurrency is exhausted.
+A controller-owned wait path used after Admission when work cannot be immediately granted because live Runtime Endpoint, node, or placement capacity is unavailable, placement or aggregate runtime concurrency is exhausted, or tenant active concurrency is exhausted.
 Each Tenant keeps FIFO order, and cross-tenant selection uses weighted round-robin that can skip capped tenants while preserving their FIFO order.
-Fresh node observations can wake queued work by adding source-scoped loaded-placement or cold/no-placement capacity.
-Stale, ineligible, or transport-failed observations clear node-owned capacity sources so queued work is not promoted against failed targets.
+Fresh Runtime Endpoint Observations can wake queued work by adding source-scoped loaded-placement or cold/no-placement capacity.
+Stale, unavailable, ineligible, or transport-failed observations clear endpoint-owned capacity sources so queued work is not promoted against failed targets.
 _Avoid_: Global backlog, Request lifecycle state
 
 **Cluster Busy**:
-A scheduler outcome meaning joined live candidates exist, but none can currently accept the request because node or placement capacity is exhausted, or because placement capacity is unknown for already-active candidates.
+A scheduler outcome meaning joined live Runtime Endpoint candidates exist, but none can currently accept the request because aggregate endpoint or placement capacity is exhausted, or because placement capacity is unknown for already-active candidates.
 With queue admission enabled, this can return the request to the same Queue deadline; otherwise it is a tenant-facing `503` capacity failure.
 _Avoid_: Transport failure, model not found, queue full
 
@@ -431,16 +431,17 @@ Runtime telemetry about prefix-cache configuration, counters, and bounded HMAC f
 _Avoid_: Readiness gate, admission gate, scheduler eligibility gate, tenant-facing signal, raw prompt or token data
 
 **Runtime Model Placement**:
-Live node-agent status for one loaded Model Placement, including `active_request_count` and `max_concurrency`.
+Compatibility-protocol status for one loaded Model Placement, including `active_request_count` and `max_concurrency`.
 The scheduler uses it only to prove same-model placement capacity and to rank by requested-placement load.
 Queue admission also uses valid loaded-placement observations to wake queued same-model work, and treats non-loaded, invalid, duplicate, or exhausted placement observations as unavailable capacity.
 _Avoid_: Catalog State, durable placement record, model manifest metadata
 
 **Runtime Node Capacity**:
-Live node-agent status for aggregate runtime capacity on one node, including `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`.
-The scheduler uses it to exclude nodes that have exhausted aggregate request slots before considering per-placement capacity.
-Queue admission uses eligible node observations to bound cold/no-placement wakeups and to keep active source reservations from being double-counted across queued lanes.
-Transport-failed or newly ineligible nodes clear node-owned aggregate, cold, and placement sources instead of retaining stale capacity.
+Runtime Endpoint Observation data for aggregate runtime capacity on one endpoint-backed node.
+The current gRPC Compatibility Adapter maps this from `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`.
+The scheduler uses it to exclude endpoint-backed nodes that have exhausted aggregate request slots before considering per-placement capacity.
+Queue admission uses eligible endpoint observations to bound cold/no-placement wakeups and to keep active source reservations from being double-counted across queued lanes.
+Transport-failed or newly ineligible endpoints clear endpoint-owned aggregate, cold, and placement sources instead of retaining stale capacity.
 _Avoid_: Tenant quota, durable Node inventory capacity, model-specific capacity
 
 **Prefix-cache Score**:

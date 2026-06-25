@@ -374,9 +374,10 @@ The controller-side chat-template renderer SHALL support Hugging Face's standard
 
 Tokenizer observability includes `[:orchard, :tokenizer, :prompt_token_ids_dispatched]` when capable workers receive controller-supplied IDs, `[:orchard, :tokenizer, :unsafe_mode_active]` when safe-mode falls back to legacy rendered-prompt dispatch, and `[:orchard, :tokenizer, :parity_drift]` when a capable worker rejects controller-supplied `prompt_token_ids` with `prompt_token_ids_length_mismatch`. The parity-drift event is an operator-visible invariant breach counter; it is emitted only for worker stream failures, not controller-synthesized timeout or cancellation failures.
 
-When `tokenizer_safe_mode_prefer_capable` is enabled and `tokenizer_safe_mode` is not `:off`, the multi-node scheduler MAY prefer workers whose live `StatusResponse.supports_prompt_token_ids` is `true`. This preference is a scheduler tie-breaker only; it is not dispatch authority and MUST NOT replace the per-request `EnsureModelLoadedResponse.worker_supports_prompt_token_ids` gate.
+When `tokenizer_safe_mode_prefer_capable` is enabled and `tokenizer_safe_mode` is not `:off`, the multi-node scheduler MAY prefer Runtime Endpoints whose live Runtime Endpoint Observation reports `supports_prompt_token_ids = true`.
+This preference is a scheduler tie-breaker only; it is not dispatch authority and MUST NOT replace the per-request Runtime Endpoint ensure-model-loaded result gate.
 
-Console Live Cluster diagnostics SHALL surface the latest observed live `StatusResponse.supports_prompt_token_ids` value per reachable runtime target so operators can assess mixed-version safe-tokenization risk; absence or `false` is rendered as legacy capability, not as a probe failure.
+Console Live Cluster diagnostics SHALL surface the latest observed live prompt-token-ID support value per reachable runtime target so operators can assess mixed-version safe-tokenization risk; absence or `false` is rendered as legacy capability, not as a probe failure.
 
 Console diagnostics SHALL surface observe-only, process-local safe-tokenization counters aggregated since counter process start (`control_token_in_user_content`, `detector_error`, `prompt_token_ids_dispatched` event count and accumulated token count, `unsafe_mode_active`, `parity_drift`, `catalog_drift`, and `safe_tokenization.degraded_no_manifest_catalog`). Counter values reset on counter process restart and MUST NOT influence scheduling, dispatch, admission, or readiness.
 
@@ -863,7 +864,7 @@ Node agent SHALL:
 * register with controller
 * renew node certificate
 * heartbeat every 2s
-* expose gRPC runtime endpoint
+* expose the current gRPC Runtime Endpoint compatibility service
 * download/verify model artifacts
 * manage worker subprocess lifecycle
 * report immediate state changes
@@ -1025,13 +1026,13 @@ Eligibility condition:
 available_memory_bytes >= required_bytes
 ```
 
-Node concurrency is not exceeded only when live `StatusResponse.active_request_count < StatusResponse.max_concurrency`.
-If `max_concurrency` is omitted or zero, schedulers SHALL interpret node capacity as `1`.
-Model placement concurrency is evaluated independently through a valid matching `RuntimeModelPlacement`.
-Both node-level aggregate capacity and requested-placement capacity must remain available for a loaded candidate to be eligible.
-Scheduler decisions MAY include `queue_lane_capacity` when live loaded-placement capacity or eligible cold-node capacity leaves room for the requested lane.
-Loaded candidate contribution SHALL be constrained by both requested-placement capacity and aggregate node capacity.
-Cold candidate contribution SHALL count only candidates with remaining aggregate node capacity.
+Endpoint node concurrency is not exceeded only when the live Runtime Endpoint Observation reports aggregate `active_request_count < max_concurrency`.
+If aggregate `max_concurrency` is omitted or zero, schedulers SHALL interpret endpoint node capacity as `1`.
+Model placement concurrency is evaluated independently through valid matching Placement Capacity.
+Both endpoint-level aggregate capacity and requested-placement capacity must remain available for a loaded candidate to be eligible.
+Scheduler decisions MAY include `queue_lane_capacity` when live loaded-placement capacity or eligible cold Runtime Endpoint capacity leaves room for the requested lane.
+Loaded candidate contribution SHALL be constrained by both requested-placement capacity and aggregate endpoint capacity.
+Cold candidate contribution SHALL count only candidates with remaining aggregate endpoint capacity.
 Omitted `queue_lane_capacity` means the controller queue must use its conservative configured capacity.
 
 ### 5.6 Candidate tiers
@@ -2444,9 +2445,9 @@ Runtime capacity and Placement Capacity observation semantics:
 * duplicate matching entries, malformed matching entries, non-matching entries, or `max_concurrency <= 0` SHALL make placement capacity unknown for that request
 * a valid matching placement observation SHALL NOT override exhausted node-level aggregate capacity
 * unknown placement capacity SHALL NOT prove eligibility for an already-active loaded-model candidate; an already-active loaded-model candidate MAY remain eligible only when exactly one valid matching entry reports `active_request_count < max_concurrency`
-* when multiple eligible candidates remain, the scheduler SHALL rank by the requested placement's active request count before health when a valid matching placement observation is available; otherwise it SHALL use node `active_request_count`
-* controller queue capacity MAY be refreshed from `StatusResponse` observations; loaded placement observations contribute only to their matching model/version lane, while cold/no-placement node observations contribute conservative source-scoped capacity for queued lanes without exceeding aggregate node capacity
-* stale, unavailable, non-loaded, invalid, exhausted, ineligible, or transport-failed observations SHALL clear their node-owned queue capacity sources instead of preserving stale admission capacity
+* when multiple eligible candidates remain, the scheduler SHALL rank by the requested placement's active request count before health when a valid matching placement observation is available; otherwise it SHALL use the endpoint aggregate `active_request_count`
+* controller queue capacity MAY be refreshed from Runtime Endpoint Observations; loaded placement observations contribute only to their matching model/version lane, while cold/no-placement endpoint observations contribute conservative source-scoped capacity for queued lanes without exceeding aggregate endpoint capacity
+* stale, unavailable, non-loaded, invalid, exhausted, ineligible, or transport-failed observations SHALL clear their endpoint-owned queue capacity sources instead of preserving stale admission capacity
 * node-agent request admission SHALL reject a new runtime request when aggregate active request count has reached the effective aggregate worker request limit, even if the requested model placement has remaining per-placement capacity
 * cancellation or terminal completion SHALL release aggregate node capacity so another loaded model can use the freed slot
 * stream generation mode SHALL report `max_concurrency = 1` at both node and placement levels
@@ -3138,7 +3139,7 @@ Supported join modes:
 
 ### 10.6 Internal transport
 
-Internal RPC SHALL use:
+Certificate-backed node lifecycle RPC and current gRPC compatibility transports SHALL use:
 
 * TLS 1.3
 * mutual TLS

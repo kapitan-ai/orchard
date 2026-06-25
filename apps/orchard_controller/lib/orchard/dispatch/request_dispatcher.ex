@@ -131,16 +131,17 @@ defmodule Orchard.Dispatch.RequestDispatcher do
              {:model_load_failed, ModelLoadFailure.t()} | {:dispatch_failed, term()} | term()}
 
   @doc """
-  Dispatch an inference request to a node and stream events back to the caller.
+  Dispatch an inference request to a Runtime Endpoint and stream events back to the caller.
 
   `schedule` is the map returned by the configured scheduler containing:
-  - `:runtime_client_target` - `[host: ..., port: ...]` for the node-agent
+  - `:runtime_endpoint_target` - typed Runtime Endpoint target for new schedulers
+  - `:runtime_client_target` - legacy `[host: ..., port: ...]` gRPC compatibility target
   - `:request_id` - the canonical request ID
   - `:request_timeout_ms` - maximum wall-clock time for the entire dispatch
 
-  `execute_request` is the protobuf `ExecuteInferenceRequest` to send.
+  `execute_request` is the protobuf compatibility `ExecuteInferenceRequest` to map into a Runtime Endpoint operation.
 
-  `model_load_request` is the protobuf `EnsureModelLoadedRequest` to send.
+  `model_load_request` is the protobuf compatibility `EnsureModelLoadedRequest` to map into a Runtime Endpoint operation.
 
   Options:
   - `:caller` - PID to monitor for disconnect (default: `self()`)

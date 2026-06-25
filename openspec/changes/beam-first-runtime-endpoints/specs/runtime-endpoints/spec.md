@@ -16,8 +16,8 @@ This changes the topology and scheduler language currently described in `SPEC.md
 
 ### Requirement: Transport-independent Runtime Endpoint Interface
 Orchard SHALL define a transport-independent Runtime Endpoint Interface for model readiness, inference execution, cancellation, status, runtime telemetry, Placement Capacity, and scheduler observations.
-The Controller MUST depend on Runtime Endpoint semantics rather than direct gRPC/protobuf message semantics for first-party Node Agent communication.
-This supersedes the current first-party use of `NodeRuntimeService` in `SPEC.md` section 7.5 while preserving its logical operations.
+The Controller MUST depend on Runtime Endpoint semantics rather than direct gRPC/protobuf message semantics for scheduler and dispatch domain code.
+This wraps the current first-party use of `NodeRuntimeService` in `SPEC.md` section 7.5 behind a compatibility adapter while preserving its logical operations.
 
 #### Scenario: Controller requests inference through interface semantics
 - **WHEN** the Controller dispatches an inference request to a first-party Node Agent
@@ -27,15 +27,16 @@ This supersedes the current first-party use of `NodeRuntimeService` in `SPEC.md`
 - **WHEN** the first-party transport changes from gRPC to BEAM Distribution
 - **THEN** model readiness, inference execution, cancellation, status, and runtime telemetry semantics remain unchanged at the Runtime Endpoint Interface
 
-### Requirement: First-party BEAM Transport
-First-party Orchard Runtime Endpoints SHALL use BEAM Distribution as the preferred live communication and monitoring layer between admitted Elixir services.
+### Requirement: First-party BEAM Transport Guardrails
+Orchard SHALL validate first-party BEAM Distribution guardrails before any live BEAM Runtime Endpoint adapter can be enabled.
+First-party Orchard Runtime Endpoints MAY use BEAM Distribution as a future live communication and monitoring layer between admitted Elixir services.
 Production BEAM Distribution MUST be explicitly configured, identity-bound, network-restricted, and limited to admitted first-party Orchard services.
 External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
-This changes `SPEC.md` section 1.2, which currently forbids distributed Erlang across machines and requires all cross-node control traffic to use gRPC over mTLS.
+This changes the base `SPEC.md` section 1.2 language that forbids distributed Erlang across machines and requires all cross-node control traffic to use gRPC over mTLS.
 
-#### Scenario: First-party BEAM endpoint connects
-- **WHEN** an admitted first-party Node Agent participates in production runtime communication
-- **THEN** it communicates with the Controller through the configured first-party BEAM transport
+#### Scenario: First-party BEAM endpoint is enabled later
+- **WHEN** an admitted first-party Node Agent participates in production runtime communication through a future BEAM adapter
+- **THEN** it communicates with the Controller only through explicitly configured first-party BEAM transport
 - **THEN** the Controller still records durable Runtime Endpoint Observations in Postgres
 
 #### Scenario: External endpoint remains outside BEAM mesh

@@ -154,16 +154,16 @@ defmodule Orchard.Nodes do
   # -- Observational Write APIs --
 
   @doc """
-  Observes a successful status response and persists the node.
+  Observes a successful Runtime Endpoint status observation and persists the node.
 
-  Normalizes metadata from a `StatusResponse` (or compatible map),
-  resolves conflicts (identity, display_name, staleness), and inserts
-  or updates the node row.
+  Normalizes metadata from a Runtime Endpoint Observation, `StatusResponse`,
+  or compatible map before resolving conflicts (identity, display_name,
+  staleness) and inserting or updating the node row.
 
   New nodes are inserted with `state: :active`. Updates preserve the
   existing `state` (admin-managed).
   Successful eligible observations also refresh source-scoped queue capacity
-  from aggregate node capacity and loaded placement statuses.
+  from aggregate endpoint capacity and loaded placement statuses.
   Fresh invalid metadata, identity conflicts, ineligible nodes, and target
   failures clear stale queue capacity sources for that node/target.
 

@@ -39,13 +39,15 @@ Clients (SDKs / curl / apps)
    Controller (Elixir/OTP)
    ├── Inference API    ── `/v1/responses` canonical, `/v1/chat/completions` facade
    ├── Auth / RBAC      ── tenant-scoped keys + quotas
-   ├── Scheduler        ── placement, queueing, fairness
-   ├── Dispatch         ── gRPC fan-out to nodes
+   ├── Scheduler        ── Runtime Endpoint selection, queueing, fairness
+   ├── Dispatch         ── Runtime Endpoint operations + stream relay
    └── Observability    ── Prometheus, OTel, structured logs
         │
-   gRPC / mTLS
+   Runtime Endpoint Interface
         │
-   Node Agent(s)
+   Current gRPC compatibility adapter
+        │
+   Node Agent Runtime Endpoint(s)
    ├── Model cache + verification
    ├── Worker supervisor
    └── MLX runtime (Apple Silicon native)
@@ -55,8 +57,11 @@ Clients (SDKs / curl / apps)
 
 **Key design rules:**
 
-- All durable state in Postgres. No distributed Erlang across machines.
-- All cross-node traffic over gRPC/mTLS. Workers never exposed on the network.
+- All durable state lives in Postgres.
+- Controller runtime execution uses the Runtime Endpoint Interface.
+- The current `NodeRuntimeService` gRPC path is a compatibility adapter, not the durable domain contract.
+- First-party BEAM communication is guarded for future use and must not become durable cluster truth.
+- Workers are local to node agents and are never exposed on the network.
 - Token streams always pass through the controller for governance and accounting.
 - HA-lite only: exactly one active leader, active/standby via Postgres advisory locks, no active/active consensus.
 
@@ -67,7 +72,7 @@ Clients (SDKs / curl / apps)
 | Language | Elixir/OTP (umbrella app) |
 | Database | Postgres |
 | Inference | MLX-LM runtime adapter managed by the node agent |
-| Internal RPC | gRPC over mTLS |
+| Runtime endpoint transport | Runtime Endpoint Interface with current gRPC compatibility adapter |
 | APIs | Phoenix/Plug (loopback HTTP in source dev; HTTPS + SSE in packaged installs) |
 | Packaging | DMG, PKG, launchd |
 | CLI | `orchardctl` |

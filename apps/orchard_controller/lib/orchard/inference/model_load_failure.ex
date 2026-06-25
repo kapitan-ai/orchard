@@ -84,7 +84,7 @@ defmodule Orchard.Inference.ModelLoadFailure do
   @doc """
   Converts a transport-level error reason into a failure struct.
 
-  Accepts the normalized error shapes from `GrpcNodeRuntimeClient.ensure_model_loaded/3`.
+  Accepts normalized error shapes from Runtime Endpoint clients.
   """
   @spec from_transport_reason(term()) :: t()
   def from_transport_reason(:node_unavailable) do

@@ -210,10 +210,9 @@ stream mode automatically.
 the fake runtime through `config/test.exs`, not a dev env override.
 Batch generation mode can admit multiple same-model requests up to the worker-reported limit.
 The node agent also enforces aggregate active request capacity across loaded models using the resolved worker limits, conservatively falling back to single-request capacity when worker status omits `max_concurrency`.
-The node-agent reports aggregate capacity through `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`.
-It reports live placement capacity through `StatusResponse.runtime_model_placements` as `active_request_count` and `max_concurrency`.
-The controller uses those fresh status observations both for scheduler candidate filtering and for queue wakeups from loaded-placement or cold/no-placement capacity.
-Transport failures and ineligible node observations clear node-owned queue capacity sources so queued work is not promoted against stale loaded-placement or cold/no-placement slots.
+The node-agent reports aggregate and placement capacity through the current gRPC compatibility status response.
+The controller maps that response into Runtime Endpoint Observations before multi-node scheduler candidate filtering and queue wakeups from loaded-placement or cold/no-placement capacity.
+Transport failures and ineligible Runtime Endpoint Observations clear endpoint-owned queue capacity sources so queued work is not promoted against stale loaded-placement or cold/no-placement slots.
 Stream mode reports max concurrency as `1` at both node and placement levels.
 
 #### Controller Multi-Node (Source Dev)
@@ -222,6 +221,15 @@ Stream mode reports max concurrency as `1` at both node and placement levels.
 |----------|---------|-------------|
 | `ORCHARD_RUNTIME_CLIENT_HOST` | `127.0.0.1` | Controller’s local gRPC target host |
 | `ORCHARD_RUNTIME_CLIENT_TARGETS` | _(empty)_ | Comma-separated `host:port` list for multi-node scheduling. When set with >1 target, the scheduler auto-selects `MultiNode`. |
+
+#### Runtime Endpoint BEAM Guardrails
+
+The current source-dev slice includes default-off BEAM Runtime Endpoint guardrail config under `:orchard_controller, :runtime_endpoint, beam: [...]`.
+This validates future first-party BEAM transport admission settings only.
+It does not implement or enable a live BEAM Runtime Endpoint adapter, and there is no supported source-dev env var surface for it in this slice.
+
+If enabled directly in application config for future work, guardrail validation requires non-empty `node_name`, `cookie_file`, `listen_host`, `admitted_services`, and `allowed_cidrs`.
+The `listen_host` must not be `0.0.0.0` or `::`, and `allowed_cidrs` must not contain `0.0.0.0/0` or `::/0`.
 
 #### Packaged Controller Transport (release only)
 
@@ -833,5 +841,5 @@ mise exec -- iex -S mix phx.server
 - Public `/v1/*` API routes require tenant-scoped Bearer API keys; full RBAC and
   quota policy remain incomplete
 - Multi-node is supported for source-dev testing only (production/packaged multi-node — M4)
-- No distributed Erlang across machines
+- Live BEAM Runtime Endpoint transport is not implemented in source dev; current source dev uses the gRPC compatibility adapter
 - Model import from local filesystem only (no remote download)

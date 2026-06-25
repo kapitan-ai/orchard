@@ -81,7 +81,7 @@ HTTP client
 - Request persistence before dispatch; terminal state persisted after (§3.7)
 - Terminal states are immutable (§3.6)
 - Unsupported parameters rejected with OpenAI-style errors (§7.2.4)
-- No distributed Erlang across machines (§1.2)
+- M1 used no distributed Erlang across machines under the then-current §1.2 constraint; current runtime transport direction lives in `SPEC.md` §1.2 and §7.5.
 
 ## In Scope
 

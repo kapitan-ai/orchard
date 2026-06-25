@@ -2,7 +2,7 @@
 
 - [x] 1.1 Update `SPEC.md` to replace first-party gRPC-only cross-node rules with Runtime Endpoint and BEAM-first first-party semantics.
 - [x] 1.2 Update `SPEC.md` to define Runtime Endpoint Observation, Runtime Endpoint Availability, Placement Capacity, and `cluster_busy` capacity semantics.
-- [x] 1.3 Update `SPEC.md` to keep Postgres as durable truth and BEAM Distribution as live first-party communication only.
+- [x] 1.3 Update `SPEC.md` to keep Postgres as durable truth and BEAM Distribution as guarded future first-party live communication only.
 - [x] 1.4 Update `SPEC.md` to keep Worker Runtime as a Node Agent-local boundary.
 - [x] 1.5 Update `docs/architecture.md` and glossary docs to match accepted Runtime Endpoint language.
 - [x] 1.6 Decide and document which `proto/cluster/v1` artifacts remain as adapter or compatibility protocol inputs.
