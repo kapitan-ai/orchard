@@ -22,8 +22,13 @@ defmodule Orchard.RuntimeEndpoint.Target do
         }
 
   @spec normalize(t() | keyword() | map()) :: t()
-  def normalize(%__MODULE__{transport: :beam} = target),
-    do: %{target | node_id: normalize_optional_node_id(target.node_id)}
+  def normalize(%__MODULE__{transport: :beam} = target) do
+    %{
+      target
+      | address: normalize_beam_address(target.address),
+        node_id: normalize_optional_node_id(target.node_id)
+    }
+  end
 
   def normalize(%__MODULE__{} = target), do: target
 
@@ -62,11 +67,12 @@ defmodule Orchard.RuntimeEndpoint.Target do
   def beam(node_id, opts) when is_binary(node_id) and node_id != "" do
     attrs = attrs_map(opts)
     node_id = normalize_required_node_id(node_id)
+    address = normalize_beam_address(value(attrs, :address))
 
     %__MODULE__{
       id: value(attrs, :id) || "beam:#{node_id}",
       transport: :beam,
-      address: value(attrs, :address) || node_id,
+      address: address,
       node_id: node_id,
       metadata: metadata(attrs)
     }
@@ -106,6 +112,10 @@ defmodule Orchard.RuntimeEndpoint.Target do
     else
       raise ArgumentError, "beam target node_id must be a UUID"
     end
+  end
+
+  defp normalize_beam_address(nil) do
+    raise ArgumentError, "beam target address must be an atom or binary node name"
   end
 
   defp normalize_beam_address(address) when is_atom(address), do: address

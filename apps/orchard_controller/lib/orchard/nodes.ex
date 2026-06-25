@@ -208,7 +208,7 @@ defmodule Orchard.Nodes do
   defp handle_observation_result(target, observed_at, result, status_response, opts) do
     case result do
       {:ok, node} ->
-        refresh_observed_queue_capacities(node, status_response, opts)
+        refresh_observed_queue_capacities(target, node, status_response, opts)
         {:ok, node}
 
       {:noop, :identity_conflict} ->
@@ -409,12 +409,13 @@ defmodule Orchard.Nodes do
     |> ToolReadiness.persist_all()
   end
 
-  defp refresh_observed_queue_capacities(%Node{} = node, status_response, opts) do
+  defp refresh_observed_queue_capacities(target, %Node{} = node, status_response, opts) do
     queue_manager = Orchard.Inference.queue_manager()
     placement_source = {:node, node.id, :placement}
     cold_source = {:node, node.id, :cold}
 
-    if queue_capacity_eligible_node?(node) and
+    if queue_capacity_refresh_target?(target, node) and
+         queue_capacity_eligible_node?(node) and
          queue_capacity_eligible_observation?(status_response) do
       queue_manager.refresh_node_capacity_sources(%{
         clear_sources: node_queue_capacity_sources(node),
@@ -442,6 +443,18 @@ defmodule Orchard.Nodes do
       Logger.debug("Queue capacity refresh from node observation exited: #{inspect(reason)}")
       :ok
   end
+
+  defp queue_capacity_refresh_target?(%Target{transport: :beam} = target, %Node{id: node_id}) do
+    case target_lookup(target) do
+      {:ok, target_lookup} ->
+        match?(%Node{id: ^node_id}, lookup_node_by_target_lookup(target_lookup))
+
+      :error ->
+        false
+    end
+  end
+
+  defp queue_capacity_refresh_target?(_target, _node), do: true
 
   defp clear_node_queue_capacity_sources(%Node{} = node, opts \\ []) do
     queue_manager = Orchard.Inference.queue_manager()

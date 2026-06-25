@@ -139,6 +139,21 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     assert target.address == :orchard_node_agent@localhost
   end
 
+  test "prebuilt BEAM target normalization validates and normalizes address" do
+    node_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    target =
+      Target.normalize(%Target{
+        id: "source-dev-node-agent",
+        transport: :beam,
+        address: "orchard_node_agent@localhost",
+        node_id: node_id
+      })
+
+    assert target.address == :orchard_node_agent@localhost
+    assert target.node_id == node_id
+  end
+
   test "runtime endpoint observations prefer metadata node identity without target node_id" do
     node_id = "550e8400-e29b-41d4-a716-446655440000"
 
@@ -176,6 +191,12 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
         address: :orchard_node_agent@localhost,
         node_id: "node-1"
       })
+    end
+  end
+
+  test "BEAM target construction requires explicit address" do
+    assert_raise ArgumentError, fn ->
+      Target.beam("550e8400-e29b-41d4-a716-446655440000")
     end
   end
 

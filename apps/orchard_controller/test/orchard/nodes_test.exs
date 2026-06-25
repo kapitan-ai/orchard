@@ -1886,6 +1886,66 @@ defmodule Orchard.NodesTest do
       assert :ok = QueueManager.release(grant)
     end
 
+    test "SPEC.md §5.5 address-only BEAM observation does not publish uncleared capacity" do
+      QueueManager.reset()
+
+      node_id = Ecto.UUID.generate()
+      model_ref = ModelRef.new!("beam-address-only-placement", "v1")
+
+      target =
+        Target.normalize(
+          transport: :beam,
+          id: "source-dev-node-agent",
+          address: :orchard_node_agent@localhost
+        )
+
+      assert {:queued, ticket} =
+               QueueManager.acquire(
+                 queue_admission_request(
+                   "req-beam-address-only-placement",
+                   "beam-address-only-placement"
+                 ),
+                 config: queue_config(capacity: 0, max_wait_ms: 100)
+               )
+
+      awaiter = Task.async(fn -> QueueManager.await(ticket) end)
+
+      observation =
+        Observation.new(%{
+          endpoint_id: target.id,
+          target: target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 1,
+          metadata: %{
+            node_id: node_id,
+            display_name: "beam-address-only-node",
+            hostname: "beam-address-only.local",
+            listen_host: "10.0.0.96",
+            listen_port: 9444
+          },
+          health: %{ready: true},
+          placements: [
+            Placement.new(%{
+              model_ref: model_ref,
+              state: :loaded,
+              capacity:
+                PlacementCapacity.new(%{
+                  model_ref: model_ref,
+                  active_request_count: 0,
+                  max_concurrency: 1,
+                  source: :beam_runtime_endpoint_status
+                })
+            })
+          ]
+        })
+
+      assert {:ok, node} = Nodes.observe_status(target, observation, DateTime.utc_now())
+      assert node.id == node_id
+      assert {:error, :queue_timeout, metadata} = Task.await(awaiter, 2_000)
+      assert metadata.queue_result == :queue_timeout
+    end
+
     test "SPEC.md §5.5 unavailable runtime endpoint observation clears queue capacity" do
       QueueManager.reset()
 
