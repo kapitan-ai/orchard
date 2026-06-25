@@ -27,6 +27,7 @@ defmodule Orchard.Inference.ChatError do
           | :request_cancelled
           | :request_interrupted
           | :request_failed
+          | :orchestration_crash
           | :internal
 
   @type mapping :: %{
@@ -114,6 +115,9 @@ defmodule Orchard.Inference.ChatError do
   def from_execute_error({kind, detail})
       when kind in [:model_busy, :cluster_busy, :queue_full, :queue_timeout],
       do: build_admission_error(kind, nil, detail)
+
+  def from_execute_error({:orchestration_crash, metadata}),
+    do: build(:orchestration_crash, detail: metadata)
 
   def from_execute_error(reason), do: build(:internal, detail: reason)
 
@@ -298,6 +302,16 @@ defmodule Orchard.Inference.ChatError do
     }
   end
 
+  def api_mapping(%__MODULE__{kind: :orchestration_crash}) do
+    %{
+      status: :internal_server_error,
+      type: "api_error",
+      code: "internal_error",
+      message: "Internal error",
+      param: nil
+    }
+  end
+
   def api_mapping(%__MODULE__{kind: :internal, detail: detail}) do
     %{
       status: :internal_server_error,
@@ -333,6 +347,15 @@ defmodule Orchard.Inference.ChatError do
   end
 
   def sse_mapping(%__MODULE__{kind: :internal}) do
+    %{
+      type: "server_error",
+      code: "internal_error",
+      message: "Internal error",
+      param: nil
+    }
+  end
+
+  def sse_mapping(%__MODULE__{kind: :orchestration_crash}) do
     %{
       type: "server_error",
       code: "internal_error",
@@ -420,6 +443,15 @@ defmodule Orchard.Inference.ChatError do
       http_status: 500,
       error_code: error.source_code || "internal_error",
       error_message: error.source_message || "Inference failed"
+    }
+  end
+
+  def terminal_attrs(%__MODULE__{kind: :orchestration_crash}) do
+    %{
+      state: :failed,
+      http_status: 500,
+      error_code: "orchestration_error",
+      error_message: "Runtime orchestration failed"
     }
   end
 

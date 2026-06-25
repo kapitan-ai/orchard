@@ -232,7 +232,24 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   defp dispatch_with_channel(%{client: client, channel: channel} = context) do
     do_dispatch_with_channel(context)
   after
+    disconnect_best_effort(client, channel)
+  end
+
+  defp disconnect_best_effort(client, channel) do
     client.disconnect(channel)
+    :ok
+  rescue
+    error ->
+      Logger.warning("Runtime endpoint disconnect failed: #{exception_name(error)}")
+      :ok
+  catch
+    :exit, _reason ->
+      Logger.warning("Runtime endpoint disconnect exited")
+      :ok
+
+    _kind, _reason ->
+      Logger.warning("Runtime endpoint disconnect threw")
+      :ok
   end
 
   defp do_dispatch_with_channel(%{} = context) do
@@ -710,9 +727,11 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   rescue
     error ->
       Logger.warning(
-        "Failed to mark target transport failure for #{inspect(target)}: #{inspect(error)}"
+        "Failed to mark runtime endpoint transport failure: #{exception_name(error)}"
       )
   end
+
+  defp exception_name(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
 
   defp emit_event(_event, _request_id, nil), do: :ok
 

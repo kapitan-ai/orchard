@@ -1,3 +1,51 @@
+defmodule Orchard.Dispatch.DispatchTest.DisconnectRaisingClient do
+  @moduledoc false
+
+  alias Orchard.Cluster.V1.StatusResponse
+  alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
+
+  def connect(_target), do: {:ok, :disconnect_raising_channel}
+
+  def status(_channel, _opts \\ []), do: {:ok, %StatusResponse{}}
+
+  def disconnect(_channel) do
+    raise FunctionClauseError, module: __MODULE__, function: :disconnect, arity: 1
+  end
+
+  def ensure_model_loaded(
+        _channel,
+        %Operation.EnsureModelLoadedRequest{},
+        _opts \\ []
+      ) do
+    {:ok,
+     %Operation.EnsureModelLoadedResult{
+       already_loaded: false,
+       placement_state: :loaded,
+       worker_supports_prompt_token_ids: true
+     }}
+  end
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts \\ []) do
+    owner = Keyword.get(opts, :owner, self())
+    ref = make_ref()
+
+    send(owner, {:runtime_endpoint_event, ref, request.request_id, InferenceEvent.accepted(0)})
+
+    send(
+      owner,
+      {:runtime_endpoint_event, ref, request.request_id,
+       InferenceEvent.completed(:finish_reason_stop, nil)}
+    )
+
+    send(owner, {:runtime_endpoint_done, ref, :ok})
+
+    {:ok, ref}
+  end
+
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
+end
+
 defmodule Orchard.Dispatch.DispatchTest do
   @moduledoc """
   Tests for R6: single-node dispatch and cancellation.
@@ -159,6 +207,20 @@ defmodule Orchard.Dispatch.DispatchTest do
         |> Enum.map(& &1.event.delta)
 
       assert deltas == ["orchard ", "ready"]
+    end
+
+    test "returns streamed events when disconnect cleanup raises", %{bundle: bundle} do
+      schedule = build_schedule("req-dispatch-cleanup-raises")
+      execute = execute_request("req-dispatch-cleanup-raises")
+      model_load = model_load_request(bundle)
+
+      assert {:ok, events} =
+               RequestDispatcher.dispatch(schedule, execute, model_load,
+                 client_impl: Orchard.Dispatch.DispatchTest.DisconnectRaisingClient
+               )
+
+      assert Enum.map(events, &InferenceEvent.kind/1) == [:accepted, :completed]
+      assert List.last(events) |> InferenceEvent.terminal?()
     end
 
     test "Sentry controller enrichment records sparse dispatch context", %{bundle: bundle} do

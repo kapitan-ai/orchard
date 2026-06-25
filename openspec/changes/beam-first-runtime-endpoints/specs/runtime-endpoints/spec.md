@@ -130,3 +130,21 @@ This changes the role of the gRPC contract currently described in `SPEC.md` sect
 #### Scenario: Future adapter uses gRPC
 - **WHEN** a future Runtime Endpoint adapter needs a stable non-BEAM protocol
 - **THEN** the existing gRPC/protobuf work may be reused or evolved as an adapter protocol
+
+### Requirement: Source-dev BEAM Primary Rollout
+Orchard SHALL treat the first-party BEAM Runtime Endpoint adapter as the intended primary source-dev Controller-to-Node Agent path only after the adapter is implemented and passes the accepted two-Mac smoke.
+Until that gate passes, current source-dev SHALL keep the gRPC compatibility path as the compatibility and fallback path on port `50071`.
+
+#### Scenario: BEAM adapter passes the source-dev smoke gate
+- **WHEN** the BEAM Runtime Endpoint adapter exists and the accepted two-Mac smoke passes
+- **THEN** Orchard may promote BEAM Runtime Endpoint transport to the primary source-dev Controller-to-Node Agent path
+
+#### Scenario: BEAM adapter has not passed the source-dev smoke gate
+- **WHEN** the BEAM Runtime Endpoint adapter is absent or has not passed the accepted two-Mac smoke
+- **THEN** Orchard keeps using the gRPC compatibility path for source-dev Controller-to-Node Agent communication
+
+#### Scenario: Source-dev smoke gate is evaluated
+- **WHEN** the accepted two-Mac source-dev smoke is run
+- **THEN** Console Nodes shows local and remote Node Agents reachable
+- **THEN** `GET /v1/models` returns `200`
+- **THEN** `POST /v1/chat/completions` completes through the Console Playground or an equivalent API request

@@ -305,6 +305,36 @@ defmodule Orchard.Inference.ChatErrorTest do
            }
   end
 
+  test "orchestration crash execute errors stay generic across public and durable mappings" do
+    error =
+      ChatError.from_execute_error(
+        {:orchestration_crash,
+         %{phase: :scheduler, category: :exception, exception: "Elixir.FunctionClauseError"}}
+      )
+
+    assert ChatError.api_mapping(error) == %{
+             status: :internal_server_error,
+             type: "api_error",
+             code: "internal_error",
+             message: "Internal error",
+             param: nil
+           }
+
+    assert ChatError.sse_mapping(error) == %{
+             type: "server_error",
+             code: "internal_error",
+             message: "Internal error",
+             param: nil
+           }
+
+    assert ChatError.terminal_attrs(error) == %{
+             state: :failed,
+             http_status: 500,
+             error_code: "orchestration_error",
+             error_message: "Runtime orchestration failed"
+           }
+  end
+
   test "generic execute errors preserve JSON inspect details but SSE stays sanitized" do
     error = ChatError.from_execute_error({:terminal_persist_failed, :boom})
 

@@ -77,6 +77,20 @@ defmodule Orchard.Scheduler.MultiNodeTest do
     def disconnect(channel), do: StubClient.disconnect(channel)
   end
 
+  defmodule StubClientDisconnectRaises do
+    @moduledoc false
+
+    def connect(target), do: StubClient.connect(target)
+    def status(target, opts), do: StubClient.status(target, opts)
+
+    def disconnect(_channel) do
+      raise FunctionClauseError, module: __MODULE__, function: :disconnect, arity: 1
+    end
+
+    def score_prefix_cache(target, request, opts),
+      do: StubClient.score_prefix_cache(target, request, opts)
+  end
+
   defmodule StubClientRaiseScore do
     @moduledoc false
 
@@ -708,6 +722,46 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.node_id == node_b.id
       assert schedule.selected_tier == "loaded"
       assert schedule.candidate_count == 2
+    end
+
+    test "keeps probe candidates when disconnect cleanup raises" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(node_a.id,
+          host: "10.0.0.1",
+          port: 50_061,
+          loaded_models: [%{model_id: "test-model", version: "v1"}]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id, host: "10.0.0.2", port: 50_062)
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      log =
+        capture_log(fn ->
+          assert {:ok, schedule} =
+                   MultiNode.schedule(request, status_client: StubClientDisconnectRaises)
+
+          send(self(), {:schedule, schedule})
+        end)
+
+      assert log =~ "Runtime endpoint disconnect failed"
+      assert_receive {:schedule, schedule}
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node_a.id
+      assert schedule.selected_tier == "loaded"
+      assert schedule.candidate_count == 2
+      assert Repo.get!(Node, node_a.id).health == :healthy
+      assert Repo.get!(Node, node_b.id).health == :healthy
     end
 
     test "consumes runtime endpoint observations and preserves legacy dispatch target" do

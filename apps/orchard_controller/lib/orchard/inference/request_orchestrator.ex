@@ -668,7 +668,32 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp schedule_request(canonical) do
+    case call_scheduler(canonical) do
+      {:ok, schedule} when is_map(schedule) ->
+        {:ok, schedule}
+
+      {:error, _reason} = error ->
+        error
+
+      _other ->
+        {:error, orchestration_crash(:scheduler, :invalid_return)}
+    end
+  end
+
+  defp call_scheduler(canonical) do
     Inference.scheduler().schedule(canonical)
+  rescue
+    error ->
+      log_warn("scheduler crashed: #{exception_name(error)}")
+      {:error, orchestration_crash(:scheduler, {:exception, error})}
+  catch
+    :exit, _reason ->
+      log_warn("scheduler exited")
+      {:error, orchestration_crash(:scheduler, :exit)}
+
+    _kind, _reason ->
+      log_warn("scheduler threw")
+      {:error, orchestration_crash(:scheduler, :throw)}
   end
 
   defp scheduler_persistence_metadata(schedule) do
@@ -827,13 +852,14 @@ defmodule Orchard.Inference.RequestOrchestrator do
       maybe_mark_grant_node(queue_grant, map_value(schedule, :node_id), promote?: false)
 
       result =
-        RequestDispatcher.dispatch(
+        dispatch_request(
           schedule,
           execute_request,
           model_load_request,
-          caller: caller,
-          event_handler: wrapped_handler,
-          on_node_resolved: build_node_resolved_callback(db_request.id, queue_grant)
+          caller,
+          wrapped_handler,
+          db_request.id,
+          queue_grant
         )
 
       first_token_at = Process.get(capture_key)
@@ -846,6 +872,45 @@ defmodule Orchard.Inference.RequestOrchestrator do
       Process.delete(capture_key)
     end
   end
+
+  defp dispatch_request(
+         schedule,
+         execute_request,
+         model_load_request,
+         caller,
+         wrapped_handler,
+         request_id,
+         queue_grant
+       ) do
+    opts = [
+      caller: caller,
+      event_handler: wrapped_handler,
+      on_node_resolved: build_node_resolved_callback(request_id, queue_grant)
+    ]
+
+    dispatch = &RequestDispatcher.dispatch/4
+
+    dispatch.(schedule, execute_request, model_load_request, opts)
+    |> normalize_dispatch_result()
+  rescue
+    error ->
+      log_warn("dispatch crashed: #{exception_name(error)}")
+      {:error, orchestration_crash(:dispatch, {:exception, error})}
+  catch
+    :exit, _reason ->
+      log_warn("dispatch exited")
+      {:error, orchestration_crash(:dispatch, :exit)}
+
+    _kind, _reason ->
+      log_warn("dispatch threw")
+      {:error, orchestration_crash(:dispatch, :throw)}
+  end
+
+  defp normalize_dispatch_result({:ok, _events} = success), do: success
+  defp normalize_dispatch_result({:error, _reason} = error), do: error
+
+  defp normalize_dispatch_result(_other),
+    do: {:error, orchestration_crash(:dispatch, :invalid_return)}
 
   defp wrap_event_handler_for_first_token(downstream_handler, capture_key, queue_grant) do
     fn request_id, event ->
@@ -1122,7 +1187,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   end
 
   defp advance_fsm_best_effort_terminal(request_id, state) do
-    try_advance(request_id, state)
+    try_advance_terminal(request_id, state)
   end
 
   defp try_advance(request_id, state) do
@@ -1131,6 +1196,31 @@ defmodule Orchard.Inference.RequestOrchestrator do
       {:error, :not_found} -> :ok
       {:error, :already_terminal} -> :ok
       {:error, error} -> log_warn("FSM advance to #{state} failed: #{inspect(error)}")
+    end
+  end
+
+  defp try_advance_terminal(request_id, state) do
+    case advance_fsm(request_id, state) do
+      :ok -> :ok
+      {:error, :not_found} -> append_terminal_state_event(request_id, state)
+      {:error, :already_terminal} -> :ok
+      {:error, error} -> log_warn("FSM terminal advance to #{state} failed: #{inspect(error)}")
+    end
+  end
+
+  defp append_terminal_state_event(request_id, state) do
+    attrs = %{
+      event_type: "state_transition",
+      state: state,
+      payload: %{to_state: to_string(state), source: "request_orchestrator_terminal_fallback"}
+    }
+
+    case Requests.append_request_event(request_id, attrs) do
+      {:ok, _event} ->
+        :ok
+
+      {:error, error} ->
+        log_warn("FSM terminal fallback event for #{state} failed: #{inspect(error)}")
     end
   end
 
@@ -1661,6 +1751,17 @@ defmodule Orchard.Inference.RequestOrchestrator do
       log_warn("canonical_request serialization failed: #{Exception.message(error)}")
       {:error, {:canonical_request_serialization_failed, Exception.message(error)}}
   end
+
+  defp orchestration_crash(phase, {:exception, error}) do
+    {:orchestration_crash,
+     %{phase: phase, category: :exception, exception: exception_name(error)}}
+  end
+
+  defp orchestration_crash(phase, category) do
+    {:orchestration_crash, %{phase: phase, category: category}}
+  end
+
+  defp exception_name(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
 
   defp log_warn(message) do
     require Logger

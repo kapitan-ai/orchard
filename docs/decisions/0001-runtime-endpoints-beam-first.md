@@ -38,6 +38,11 @@ Existing `proto/cluster/v1` work should be demoted from the default first-party 
 Placement Capacity is a first-class Runtime Endpoint observation and must be exposed by the interface independently of transport.
 Unknown, malformed, duplicate, or nonmatching Placement Capacity must not prove eligibility for an active loaded placement.
 
+The BEAM Runtime Endpoint adapter is the intended primary source-dev Controller-to-Node Agent path once the adapter exists and passes the accepted two-Mac smoke.
+Until that gate passes, current source-dev continues to use the gRPC Compatibility Adapter on port `50071` as the compatibility and fallback path.
+The accepted smoke gate requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
+Do not remove gRPC compatibility before the BEAM adapter passes that smoke.
+
 Keep the Worker Runtime Interface separate.
 The Node Agent may continue to use a local worker protocol for Python/MLX subprocesses.
 The BEAM-first decision applies to first-party Controller-to-Node Agent communication.

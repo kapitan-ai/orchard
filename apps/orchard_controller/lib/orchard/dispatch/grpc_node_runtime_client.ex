@@ -24,6 +24,8 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   alias Orchard.InferenceEvent
   alias Orchard.Runtime.PrefixCacheScore
 
+  require Logger
+
   @rpc_timeout_ms 5_000
 
   @doc """
@@ -51,6 +53,18 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
       {:ok, _channel} -> :ok
       {:error, _reason} -> :ok
     end
+  rescue
+    error ->
+      Logger.warning("gRPC disconnect failed: #{exception_name(error)}")
+      :ok
+  catch
+    :exit, _reason ->
+      Logger.warning("gRPC disconnect exited")
+      :ok
+
+    _kind, _reason ->
+      Logger.warning("gRPC disconnect threw")
+      :ok
   end
 
   @doc """
@@ -270,6 +284,8 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   defp normalize_score_transport_error(_reason) do
     score_response("error")
   end
+
+  defp exception_name(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
 
   defp score_response(status_code) do
     normalized = PrefixCacheScore.normalize_for_scheduler(%{status_code: status_code})
