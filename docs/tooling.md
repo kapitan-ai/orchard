@@ -205,8 +205,9 @@ Common agent accelerators include:
 | Superpowers | Planning, debugging, verification discipline | Do not commit generated local plans unless rewritten as product docs |
 | Exa | Web research when current external facts are needed | Cite external sources in product-facing docs when relevant |
 
-Agents should follow `AGENTS.md` for when to use these tools. If an accelerator
-is unavailable, fall back to repo files, tests, and standard git commands
+Agents should follow `AGENTS.md` for when to use these tools.
+Claude Code reads that same guide through root `CLAUDE.md`.
+If an accelerator is unavailable, fall back to repo files, tests, and standard git commands
 without making the accelerator a collaborator requirement.
 
 For substantial agentic work, use RepoPrompt as a review and iteration layer

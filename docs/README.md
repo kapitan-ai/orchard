@@ -17,7 +17,8 @@ large spec sections.
 - [`glossary/CONTEXT.md`](glossary/CONTEXT.md) — shared vocabulary and
   glossary.
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — human collaborator workflow.
-- [`../AGENTS.md`](../AGENTS.md) — automation/agent workflow.
+- [`../AGENTS.md`](../AGENTS.md) - automation/agent workflow.
+  [`../CLAUDE.md`](../CLAUDE.md) imports it for Claude Code.
 
 ### I want to run it locally
 
@@ -30,7 +31,8 @@ large spec sections.
 ### I want to contribute code
 
 - [`../CONTRIBUTING.md`](../CONTRIBUTING.md) — human collaborator workflow.
-- [`../AGENTS.md`](../AGENTS.md) — automation/agent workflow and quality gates.
+- [`../AGENTS.md`](../AGENTS.md) - automation/agent workflow and quality gates.
+  [`../CLAUDE.md`](../CLAUDE.md) imports it for Claude Code.
 - [`process.md`](process.md) — artifact lifecycle and review gates.
 - [`code-quality.md`](code-quality.md) — Credo, ex_slop, and ex_dna policy.
 - [`../openspec/README.md`](../openspec/README.md) — OpenSpec change workflow
@@ -61,7 +63,7 @@ large spec sections.
 
 - Normative product/system behavior: `../SPEC.md`.
 - Human workflow: `../CONTRIBUTING.md`.
-- Agent workflow and validation: `../AGENTS.md`.
+- Agent workflow and validation: `../AGENTS.md`; `../CLAUDE.md` imports it for Claude Code.
 - OpenSpec change intent: `../openspec/README.md` and
   `../openspec/changes/<change-id>/`.
 - Artifact lifecycle: `process.md` and `../goals/README.md`.

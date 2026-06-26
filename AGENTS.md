@@ -337,6 +337,7 @@ See `packaging/pkg/README.md` for full PKG operator documentation and `packaging
 |------|---------|
 | SPEC.md | Normative build contract |
 | AGENTS.md | This file — agent operating guide |
+| CLAUDE.md | Claude Code import shim for AGENTS.md |
 | README.md | High-level product and roadmap overview |
 | CONTRIBUTING.md | Human collaborator workflow |
 | CONTEXT-MAP.md | Domain-modeling discovery map for glossary context |

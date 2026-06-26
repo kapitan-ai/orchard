@@ -178,7 +178,7 @@ must be rewritten into this repo before it counts as Orchard truth.
 
 - [`SPEC.md`](SPEC.md) is the top-level normative build contract.
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) explains human collaboration workflow.
-- [`AGENTS.md`](AGENTS.md) explains automation and agent workflow.
+- [`AGENTS.md`](AGENTS.md) is the canonical automation and agent workflow guide; [`CLAUDE.md`](CLAUDE.md) imports it for Claude Code.
 - [`docs/glossary/CONTEXT.md`](docs/glossary/CONTEXT.md) defines Orchard's shared product language.
 - [`docs/README.md`](docs/README.md) is the collaborator docs hub.
 - [`docs/architecture.md`](docs/architecture.md) explains repo and runtime boundaries.
