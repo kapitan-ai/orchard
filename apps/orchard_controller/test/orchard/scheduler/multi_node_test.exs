@@ -884,6 +884,51 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.selected_tier == "loaded"
     end
 
+    test "SPEC.md §7.5 rejects configured BEAM observations with mismatched metadata identity" do
+      configured_node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      reported_node = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+      endpoint_target = Target.beam(configured_node.id, address: :orchard_node_agent@localhost)
+      model_ref = Orchard.RuntimeEndpoint.ModelRef.new!("test-model", "v1")
+
+      observation =
+        Observation.new(%{
+          endpoint_id: endpoint_target.id,
+          target: endpoint_target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 2,
+          metadata: %{
+            node_id: reported_node.id,
+            display_name: reported_node.display_name,
+            hostname: reported_node.hostname,
+            listen_host: reported_node.advertise_addr,
+            listen_port: reported_node.rpc_port
+          },
+          health: %{ready: true},
+          placements: [
+            Placement.new(%{
+              model_ref: model_ref,
+              state: :loaded,
+              capacity:
+                PlacementCapacity.new(%{
+                  model_ref: model_ref,
+                  active_request_count: 0,
+                  max_concurrency: 2,
+                  source: :beam_runtime_endpoint_status
+                })
+            })
+          ]
+        })
+
+      put_inference(runtime_endpoint_targets: [endpoint_target], runtime_client_targets: [])
+      stub_probe(endpoint_target, observation)
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request("test-model", "v1"),
+                 status_client: StubClient
+               )
+    end
+
     test "address-only BEAM schedules carry observed node identity for failure cleanup" do
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
 

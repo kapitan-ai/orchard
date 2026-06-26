@@ -106,10 +106,19 @@ defmodule Orchard.Scheduler.MultiNode do
     # - Worst-case latency is cumulative (N × timeout_ms) but acceptable at this scale
     # Future: parallel probing via Task.async_stream or cached observations
     # within freshness window for larger clusters.
-    probe_results =
+    probe_outcomes =
       targets
       |> Enum.map(&probe_target(&1, client, timeout, observed_at, request))
       |> Enum.reject(&is_nil/1)
+
+    probe_results =
+      Enum.flat_map(probe_outcomes, fn
+        {:candidate, candidate} -> [candidate]
+        {:rejected, _reason} -> []
+      end)
+
+    beam_identity_rejected? =
+      Enum.any?(probe_outcomes, &match?({:rejected, :beam_node_identity_mismatch}, &1))
 
     # Join with persistent schedulable nodes
     schedulable_map =
@@ -123,17 +132,20 @@ defmodule Orchard.Scheduler.MultiNode do
 
     available_candidates = Enum.reject(candidates, &candidate_full?/1)
 
-    cond do
-      candidates == [] and probe_results == [] ->
-        fallback_schedule(request, targets, Keyword.put(opts, :probe_status?, false))
+    case selection_state(
+           candidates,
+           available_candidates,
+           probe_outcomes,
+           opts,
+           beam_identity_rejected?
+         ) do
+      {:fallback, fallback_opts} ->
+        fallback_schedule(request, targets, fallback_opts)
 
-      candidates == [] ->
-        fallback_schedule(request, targets, opts)
+      {:error, reason} ->
+        {:error, reason}
 
-      available_candidates == [] ->
-        {:error, :cluster_busy}
-
-      true ->
+      :select_candidate ->
         cache_affinity_config = Inference.cache_affinity_config()
 
         {affinity_candidates, affinity_context} =
@@ -202,6 +214,27 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
+  defp selection_state([], _available_candidates, [], opts, _beam_identity_rejected?),
+    do: {:fallback, Keyword.put(opts, :probe_status?, false)}
+
+  defp selection_state([], _available_candidates, _probe_outcomes, _opts, true),
+    do: {:error, :cluster_busy}
+
+  defp selection_state([], _available_candidates, _probe_outcomes, opts, false),
+    do: {:fallback, opts}
+
+  defp selection_state(_candidates, [], _probe_outcomes, _opts, _beam_identity_rejected?),
+    do: {:error, :cluster_busy}
+
+  defp selection_state(
+         _candidates,
+         _available_candidates,
+         _probe_outcomes,
+         _opts,
+         _beam_identity_rejected?
+       ),
+       do: :select_candidate
+
   defp probe_target(target, client, timeout, observed_at, request) do
     case client.connect(target) do
       {:ok, channel} ->
@@ -215,29 +248,33 @@ defmodule Orchard.Scheduler.MultiNode do
                 reserve_unassigned_source_grants?: true
               )
 
-              case extract_valid_node_id(observation) do
-                nil ->
+              case candidate_node_id(target, observation) do
+                :missing ->
                   nil
 
-                node_id ->
+                {:rejected, reason} ->
+                  {:rejected, reason}
+
+                {:ok, node_id} ->
                   loaded_model? = model_loaded?(observation, request)
 
-                  %{
-                    node_id: node_id,
-                    target: schedule_target(target, node_id),
-                    availability: observation.availability,
-                    loaded_model?: loaded_model?,
-                    active_request_count: observation.aggregate_active_request_count,
-                    max_concurrency: node_max_concurrency(observation),
-                    supports_prompt_token_ids: observation.supports_prompt_token_ids
-                  }
-                  |> maybe_put_model_placement_capacity(
-                    model_placement_capacity_for(observation, request.model_ref, loaded_model?)
-                  )
-                  |> maybe_put_prefix_cache_status(
-                    prefix_cache_status_for(observation, request.model_ref)
-                  )
-                  |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))
+                  {:candidate,
+                   %{
+                     node_id: node_id,
+                     target: schedule_target(target, node_id),
+                     availability: observation.availability,
+                     loaded_model?: loaded_model?,
+                     active_request_count: observation.aggregate_active_request_count,
+                     max_concurrency: node_max_concurrency(observation),
+                     supports_prompt_token_ids: observation.supports_prompt_token_ids
+                   }
+                   |> maybe_put_model_placement_capacity(
+                     model_placement_capacity_for(observation, request.model_ref, loaded_model?)
+                   )
+                   |> maybe_put_prefix_cache_status(
+                     prefix_cache_status_for(observation, request.model_ref)
+                   )
+                   |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))}
               end
 
             {:error, reason} ->
@@ -395,6 +432,45 @@ defmodule Orchard.Scheduler.MultiNode do
       value when is_integer(value) and value > 0 -> value
       _other -> 1
     end
+  end
+
+  defp candidate_node_id(
+         %Target{transport: :beam, node_id: node_id},
+         %Observation{} = observation
+       )
+       when is_binary(node_id) do
+    configured_node_id = extract_valid_node_id(node_id)
+    observed_node_id = observed_metadata_node_id(observation)
+
+    cond do
+      configured_node_id == nil -> :missing
+      observed_node_id == configured_node_id -> {:ok, configured_node_id}
+      true -> {:rejected, :beam_node_identity_mismatch}
+    end
+  end
+
+  defp candidate_node_id(%Target{transport: :beam}, %Observation{} = observation) do
+    case observed_metadata_node_id(observation) do
+      nil -> :missing
+      node_id -> {:ok, node_id}
+    end
+  end
+
+  defp candidate_node_id(_target, %Observation{} = observation) do
+    case extract_valid_node_id(observation) do
+      nil -> :missing
+      node_id -> {:ok, node_id}
+    end
+  end
+
+  defp observed_metadata_node_id(%Observation{metadata: metadata}) when is_map(metadata) do
+    metadata
+    |> metadata_value(:node_id)
+    |> extract_valid_node_id()
+  end
+
+  defp metadata_value(metadata, key) do
+    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
   end
 
   defp extract_valid_node_id(%Observation{} = observation) do

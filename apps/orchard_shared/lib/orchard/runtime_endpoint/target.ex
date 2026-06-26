@@ -118,7 +118,16 @@ defmodule Orchard.RuntimeEndpoint.Target do
     raise ArgumentError, "beam target address must be an atom or binary node name"
   end
 
-  defp normalize_beam_address(address) when is_atom(address), do: address
+  defp normalize_beam_address(address) when is_atom(address) do
+    node_name = Atom.to_string(address)
+
+    unless valid_beam_node_name?(node_name) do
+      raise ArgumentError,
+            "beam target address must be a valid node name, got: #{inspect(address)}"
+    end
+
+    address
+  end
 
   defp normalize_beam_address(address) when is_binary(address) do
     unless valid_beam_node_name?(address) do

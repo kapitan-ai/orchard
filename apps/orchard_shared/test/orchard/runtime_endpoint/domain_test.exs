@@ -210,6 +210,16 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     end
   end
 
+  test "target normalization rejects malformed atom BEAM node names" do
+    assert_raise ArgumentError, fn ->
+      Target.normalize(
+        transport: :beam,
+        node_id: "550e8400-e29b-41d4-a716-446655440000",
+        address: :not_a_node
+      )
+    end
+  end
+
   test "operation constructors validate scalar request shape without enforcing policy" do
     model_ref = ModelRef.new!("mlx-community/phi-3", "main")
 
