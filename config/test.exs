@@ -5,6 +5,15 @@ Code.require_file("m1_runtime_defaults.exs", __DIR__)
 repo_root = Path.expand("..", __DIR__)
 test_root = Path.join([repo_root, "tmp", "test"])
 
+test_node_agent_port =
+  case Integer.parse(System.get_env("ORCHARD_TEST_NODE_AGENT_PORT") || "50071") do
+    {port, ""} when port in 1..65_535 ->
+      port
+
+    _ ->
+      raise "ORCHARD_TEST_NODE_AGENT_PORT must be an integer between 1 and 65535"
+  end
+
 worker_socket_dir_hash =
   :crypto.hash(:sha256, repo_root)
   |> Base.url_encode64(padding: false)
@@ -32,7 +41,7 @@ config :orchard_controller,
       tokenizer_mode: :fake,
       tokenizer_executable:
         Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
-      runtime_client_target: [host: "127.0.0.1", port: 50_071],
+      runtime_client_target: [host: "127.0.0.1", port: test_node_agent_port],
       request_timeout_ms: 5_000,
       model_load_timeout_ms: 5_000
     ),
@@ -44,7 +53,7 @@ config :orchard_node_agent,
       Orchard.Config.M1RuntimeDefaults.node_runtime(test_root),
       node_id: "00000000-0000-4000-a000-000000000001",
       display_name: "test-node",
-      listen_address: [host: "127.0.0.1", port: 50_071],
+      listen_address: [host: "127.0.0.1", port: test_node_agent_port],
       worker_socket_dir: worker_socket_dir,
       worker_executable:
         Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),

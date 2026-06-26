@@ -12,6 +12,7 @@ defmodule OrchardConsole.NodesLive do
   require Logger
 
   alias Orchard.Nodes
+  alias Orchard.RuntimeEndpoint.Target
 
   @default_refresh_interval_ms 5_000
   @safe_tokenization_counter_keys [
@@ -592,17 +593,49 @@ defmodule OrchardConsole.NodesLive do
     }
   end
 
-  defp target_label(target) do
+  defp target_label(%Target{transport: :grpc_compat, address: address}), do: target_label(address)
+
+  defp target_label(%Target{transport: :beam, address: address}) do
+    beam_address_label(address)
+  end
+
+  defp target_label(target) when is_list(target) do
     host = to_string(Keyword.get(target, :host, "?"))
     port = Keyword.get(target, :port)
     format_host_port(host, port)
   end
 
-  defp target_dom_id(target) do
+  defp target_label(%{host: host, port: port}) do
+    format_host_port(to_string(host), port)
+  end
+
+  defp target_label(_target), do: "unknown"
+
+  defp target_dom_id(%Target{transport: :grpc_compat, address: address}),
+    do: target_dom_id(address)
+
+  defp target_dom_id(%Target{transport: :beam, address: address}) do
+    "beam-#{beam_address_label(address)}"
+    |> sanitize_dom_id()
+  end
+
+  defp target_dom_id(target) when is_list(target) do
     host = to_string(Keyword.get(target, :host, "unknown"))
     port = Keyword.get(target, :port, 0)
-    raw = "#{host}-#{port}"
+    sanitize_dom_id("#{host}-#{port}")
+  end
 
+  defp target_dom_id(%{host: host, port: port}) do
+    sanitize_dom_id("#{host}-#{port}")
+  end
+
+  defp target_dom_id(_target), do: "unknown"
+
+  defp beam_address_label(address) when is_atom(address), do: Atom.to_string(address)
+  defp beam_address_label(address) when is_binary(address), do: address
+  defp beam_address_label(_address), do: "unknown"
+
+  defp sanitize_dom_id(raw) do
     raw
     |> String.replace(~r/[^a-zA-Z0-9]+/, "-")
     |> String.trim_leading("-")

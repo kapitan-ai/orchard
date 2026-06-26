@@ -80,7 +80,7 @@ defmodule Orchard.InferenceTest do
     assert {:ok, schedule} = SingleNode.schedule(request)
     assert schedule.strategy == :single_node
     assert schedule.request_id == request.public_id
-    assert schedule.runtime_client_target == [host: "127.0.0.1", port: 50_071]
+    assert schedule.runtime_client_target == test_runtime_client_target()
     assert schedule.request_timeout_ms == 5_000
     assert schedule.model_load_timeout_ms == 5_000
 
@@ -696,6 +696,7 @@ defmodule Orchard.InferenceTest do
   end
 
   describe "SingleNode backward compatibility" do
+    @tag :db
     test "SingleNode.schedule/1 always uses singular target even when plural differs" do
       put_inference(
         runtime_client_targets: [
@@ -721,7 +722,7 @@ defmodule Orchard.InferenceTest do
       with_repo_unregistered(fn ->
         assert {:ok, schedule} = SingleNode.schedule(request)
         assert schedule.strategy == :single_node
-        assert schedule.runtime_client_target == [host: "127.0.0.1", port: 50_071]
+        assert schedule.runtime_client_target == test_runtime_client_target()
         assert schedule.request_timeout_ms == 5_000
         assert schedule.model_load_timeout_ms == 5_000
         assert schedule.node_id == nil
@@ -732,6 +733,15 @@ defmodule Orchard.InferenceTest do
   defp put_inference(overrides) do
     config = Application.fetch_env!(:orchard_controller, :inference)
     Application.put_env(:orchard_controller, :inference, Keyword.merge(config, overrides))
+  end
+
+  defp test_runtime_client_target do
+    [host: "127.0.0.1", port: test_node_agent_port()]
+  end
+
+  defp test_node_agent_port do
+    System.get_env("ORCHARD_TEST_NODE_AGENT_PORT", "50071")
+    |> String.to_integer()
   end
 
   defp read_runtime_controller_inference!(overrides) do

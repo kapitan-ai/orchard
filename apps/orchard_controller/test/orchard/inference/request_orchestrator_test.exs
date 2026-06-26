@@ -27,15 +27,18 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointTargetSch
   @behaviour Orchard.Scheduler.SingleNode
 
   alias Orchard.CanonicalRequest
+  alias Orchard.Inference
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
   alias Orchard.RuntimeEndpoint.Target
 
   def schedule(%CanonicalRequest{} = request) do
     with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
+      runtime_target = Inference.runtime_client_target()
+
       target =
         Target.grpc_compat(%{
-          host: "127.0.0.1",
-          port: 50_071,
+          host: Keyword.fetch!(runtime_target, :host),
+          port: Keyword.fetch!(runtime_target, :port),
           metadata: %{
             bearer_token: "must-not-persist-runtime-target",
             tenant_hint: "tenant-secret"
@@ -826,7 +829,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     decision = request.scheduler_decision
 
     assert decision["strategy"] == "multi_node"
-    assert decision["runtime_client_target"] == %{"host" => "127.0.0.1", "port" => 50_071}
+    assert decision["runtime_client_target"] == runtime_client_target_map()
     refute Map.has_key?(decision, "runtime_endpoint_target")
     refute inspect(decision) =~ "must-not-persist-runtime-target"
     refute inspect(decision) =~ "tenant-secret"
@@ -993,7 +996,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     assert decision["strategy"] == "multi_node"
     assert decision["node_id"] == promoted_scheduler.promoted_node_id()
-    assert decision["runtime_client_target"] == %{"host" => "127.0.0.1", "port" => 50_071}
+    assert decision["runtime_client_target"] == runtime_client_target_map()
     assert decision["selected_tier"] == "cold"
     assert decision["selected_cache_tier"] == "no_hint"
     assert decision["cache_affinity_selected_match"] == false
@@ -2910,6 +2913,15 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       )
 
     Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp runtime_client_target_map do
+    runtime_target = Orchard.Inference.runtime_client_target()
+
+    %{
+      "host" => Keyword.fetch!(runtime_target, :host),
+      "port" => Keyword.fetch!(runtime_target, :port)
+    }
   end
 
   defp put_unreachable_scheduler_config do

@@ -103,7 +103,7 @@ defmodule OrchardApplicationTest do
 
     assert inference[:tokenizer_mode] == :fake
     assert inference[:request_timeout_ms] == 5_000
-    assert inference[:runtime_client_target] == [host: "127.0.0.1", port: 50_071]
+    assert inference[:runtime_client_target] == test_runtime_client_target()
     assert Path.type(inference[:artifacts_root]) == :absolute
     assert String.ends_with?(inference[:artifacts_root], "/tmp/test/bundles")
 
@@ -157,5 +157,14 @@ defmodule OrchardApplicationTest do
       :ok -> :ok
       {:error, {:not_started, :orchard_controller}} -> :ok
     end
+  end
+
+  defp test_runtime_client_target do
+    [host: "127.0.0.1", port: test_node_agent_port()]
+  end
+
+  defp test_node_agent_port do
+    System.get_env("ORCHARD_TEST_NODE_AGENT_PORT", "50071")
+    |> String.to_integer()
   end
 end

@@ -1330,7 +1330,7 @@ defmodule OrchardNodeAgentTest do
     runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
 
     assert runtime[:fake_runtime?]
-    assert runtime[:listen_address] == [host: "127.0.0.1", port: 50_071]
+    assert runtime[:listen_address] == test_listen_address()
     assert Path.type(runtime[:models_root]) == :absolute
     assert Path.type(runtime[:worker_socket_dir]) == :absolute
     assert Path.type(runtime[:worker_executable]) == :absolute
@@ -1359,7 +1359,7 @@ defmodule OrchardNodeAgentTest do
     assert runtime[:worker_memory_budget_overhead_bytes] == 1_073_741_824
 
     assert Node.listen_host() == "127.0.0.1"
-    assert Node.listen_port() == 50_071
+    assert Node.listen_port() == test_node_agent_port()
     assert Node.fake_runtime?()
     assert Node.runtime_adapter_impl() == Orchard.Node.FakeRuntimeAdapter
     assert Node.worker_backend() == "stub"
@@ -5478,6 +5478,15 @@ defmodule OrchardNodeAgentTest do
     if Code.ensure_loaded?(Sentry.Context) do
       Sentry.Context.clear_all()
     end
+  end
+
+  defp test_listen_address do
+    [host: "127.0.0.1", port: test_node_agent_port()]
+  end
+
+  defp test_node_agent_port do
+    System.get_env("ORCHARD_TEST_NODE_AGENT_PORT", "50071")
+    |> String.to_integer()
   end
 
   defp restore_sentry_enrichment(nil),

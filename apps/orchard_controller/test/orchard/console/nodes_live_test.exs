@@ -372,6 +372,65 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeMultiTargetStub do
   end
 end
 
+defmodule OrchardConsole.NodesLiveTest.RuntimeBeamTargetStub do
+  @moduledoc false
+  @node_id "550e8400-e29b-41d4-a716-446655440000"
+  @target Orchard.RuntimeEndpoint.Target.beam(@node_id,
+            address: :orchard_node_agent_smoke@mawarduri
+          )
+
+  def cluster_snapshot(_opts \\ []) do
+    [
+      %{
+        target: @target,
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [%{model_id: "model-beam", version: "v1"}],
+        active_request_count: 0,
+        node_metadata: %{
+          node_id: @node_id,
+          display_name: "beam-node",
+          hostname: "mawarduri.local",
+          listen_host: "100.70.81.109",
+          listen_port: 50_071,
+          agent_version: "0.2.0",
+          worker_backend: "stub"
+        },
+        runtime_health: %{ready: true, health_code: nil, health_message: nil, affected_model: nil},
+        supports_prompt_token_ids: true
+      }
+    ]
+  end
+end
+
+defmodule OrchardConsole.NodesLiveTest.RuntimeGrpcMapTargetStub do
+  @moduledoc false
+
+  @target %Orchard.RuntimeEndpoint.Target{
+    id: "grpc_compat:127.0.0.9:50071",
+    transport: :grpc_compat,
+    address: %{host: "127.0.0.9", port: 50_071, metadata: %{token: "must-not-render"}},
+    metadata: %{}
+  }
+
+  def cluster_snapshot(_opts \\ []) do
+    [
+      %{
+        target: @target,
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: nil,
+        runtime_health: %{ready: true, health_code: nil, health_message: nil, affected_model: nil},
+        supports_prompt_token_ids: false
+      }
+    ]
+  end
+end
+
 defmodule OrchardConsole.NodesLiveTest.DiscoveryRuntimeClient do
   @moduledoc false
   @discovery_uuid "770fa622-a41c-63f6-c938-668877662222"
@@ -747,6 +806,34 @@ defmodule OrchardConsole.NodesLiveTest do
 
       # DOM id based on target host:port
       assert html =~ ~s(id="nodes-runtime-card-127-0-0-1-50071")
+    end
+
+    test "renders BEAM Runtime Endpoint targets with readable labels and stable DOM ids", %{
+      conn: conn
+    } do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeBeamTargetStub)
+
+      {:ok, view, html} = live(conn, "/console/nodes")
+
+      assert html =~ ~s(id="nodes-runtime-card-beam-orchard-node-agent-smoke-mawarduri")
+      assert html =~ "beam-node"
+      assert html =~ "orchard_node_agent_smoke@mawarduri"
+
+      summary = element(view, "#nodes-live-cluster-card") |> render()
+      assert summary =~ "1 target(s) configured"
+      assert summary =~ "1 reachable"
+    end
+
+    test "renders map-backed gRPC Runtime Endpoint targets without leaking metadata", %{
+      conn: conn
+    } do
+      put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeGrpcMapTargetStub)
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      assert html =~ ~s(id="nodes-runtime-card-127-0-0-9-50071")
+      assert html =~ "127.0.0.9:50071"
+      refute html =~ "must-not-render"
     end
 
     test "renders prompt-token capability badge for capable target", %{conn: conn} do

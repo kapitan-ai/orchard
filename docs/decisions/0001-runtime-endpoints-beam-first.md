@@ -40,6 +40,7 @@ Unknown, malformed, duplicate, or nonmatching Placement Capacity must not prove 
 The BEAM Runtime Endpoint adapter is the intended primary source-dev Controller-to-Node Agent path once it passes the accepted two-Mac smoke.
 Until that gate passes, current source-dev continues to use the gRPC Compatibility Adapter on port `50071` as the compatibility and fallback path.
 The accepted smoke gate requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
+Console Nodes live diagnostics use the configured Runtime Endpoint target list, so explicit BEAM Runtime Endpoint targets take precedence over legacy gRPC runtime client targets during that smoke.
 Do not remove gRPC compatibility before the BEAM adapter passes that smoke.
 
 Keep the Worker Runtime Interface separate.

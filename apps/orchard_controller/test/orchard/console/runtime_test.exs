@@ -2,11 +2,13 @@ defmodule OrchardConsole.RuntimeTest do
   use ExUnit.Case, async: false
 
   alias Orchard.Runtime.PrefixCacheStatus
+  alias Orchard.RuntimeEndpoint.{Observation, Target}
   alias OrchardConsole.Runtime
   import Orchard.TestSupport.RepoHelpers
 
   setup do
     previous = Application.get_env(:orchard_controller, :console, [])
+    previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
     Application.put_env(
       :orchard_controller,
@@ -16,7 +18,11 @@ defmodule OrchardConsole.RuntimeTest do
       |> Keyword.put(:nodes_impl, __MODULE__.StubNodes)
     )
 
-    on_exit(fn -> Application.put_env(:orchard_controller, :console, previous) end)
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :console, previous)
+      Application.put_env(:orchard_controller, :inference, previous_inference)
+    end)
+
     :ok
   end
 
@@ -812,9 +818,9 @@ defmodule OrchardConsole.RuntimeTest do
       dispatch_stub(:status)
     end
 
-    def disconnect({:stub_channel, _target, channel}) do
+    def disconnect({:stub_channel, target, channel}) do
       send(get_stub_pid(), {:disconnect_called, channel})
-      dispatch_stub(:disconnect)
+      dispatch_stub(:disconnect, target)
     end
 
     def disconnect(channel) do
@@ -840,7 +846,7 @@ defmodule OrchardConsole.RuntimeTest do
       # Support per-target scripted responses via :target_responses map
       case Keyword.get(stubs, :target_responses) do
         responses when is_map(responses) and target != nil ->
-          target_key = {Keyword.get(target, :host), Keyword.get(target, :port)}
+          target_key = target_response_key(target)
 
           case Map.get(responses, target_key) do
             nil -> Keyword.fetch!(stubs, key)
@@ -852,10 +858,63 @@ defmodule OrchardConsole.RuntimeTest do
       end
     end
 
+    defp target_response_key(%Orchard.RuntimeEndpoint.Target{
+           transport: :grpc_compat,
+           address: address
+         }) do
+      target_response_key(address)
+    end
+
+    defp target_response_key(%Orchard.RuntimeEndpoint.Target{transport: :beam, address: address}) do
+      {:beam, address}
+    end
+
+    defp target_response_key(target) when is_list(target) do
+      {Keyword.get(target, :host), Keyword.get(target, :port)}
+    end
+
     defp get_stub_pid do
       [{pid, _stubs}] = Registry.lookup(OrchardConsole.RuntimeTest.StubRegistry, :stubs)
       pid
     end
+  end
+
+  defmodule LegacyPoisonClient do
+    def connect(target) do
+      [{pid, _stubs}] = Registry.lookup(OrchardConsole.RuntimeTest.StubRegistry, :stubs)
+      send(pid, {:legacy_client_called, target})
+      {:error, :legacy_client_used}
+    end
+
+    def status(_channel, _opts \\ []), do: {:error, :legacy_client_used}
+    def disconnect(_channel), do: :ok
+  end
+
+  defmodule LegacyStrictClient do
+    def connect(target) when is_list(target) do
+      [{pid, _stubs}] = Registry.lookup(OrchardConsole.RuntimeTest.StubRegistry, :stubs)
+      send(pid, {:legacy_client_called, target})
+      {:ok, :legacy_channel}
+    end
+
+    def connect(target) do
+      [{pid, _stubs}] = Registry.lookup(OrchardConsole.RuntimeTest.StubRegistry, :stubs)
+      send(pid, {:legacy_client_called, target})
+      raise ArgumentError, "legacy client requires keyword target"
+    end
+
+    def status(:legacy_channel, _opts \\ []) do
+      {:ok,
+       %{
+         worker_state: :WORKER_STATE_IDLE,
+         loaded_models: [],
+         active_request_count: 0,
+         node_metadata: %{node_id: "legacy-node", display_name: "legacy-grpc"},
+         runtime_health: %{ready: true}
+       }}
+    end
+
+    def disconnect(:legacy_channel), do: :ok
   end
 
   defmodule StubNodes do
@@ -887,6 +946,178 @@ defmodule OrchardConsole.RuntimeTest do
   end
 
   describe "cluster_snapshot/0,1" do
+    test "defaults to explicit Runtime Endpoint targets instead of legacy gRPC targets" do
+      node_id = "550e8400-e29b-41d4-a716-446655440000"
+      beam_target = Target.beam(node_id, address: :orchard_node_agent_smoke@localhost)
+      legacy_target = [host: "10.0.0.1", port: 50_061]
+
+      put_inference(
+        runtime_endpoint_client_impl: __MODULE__.StubClient,
+        runtime_endpoint_targets: [beam_target],
+        runtime_client_targets: [legacy_target]
+      )
+
+      stub_client(
+        target_responses: %{
+          {:beam, :orchard_node_agent_smoke@localhost} => [
+            connect: {:ok, :beam_ch},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_IDLE,
+                 loaded_models: [],
+                 active_request_count: 0,
+                 node_metadata: %{
+                   node_id: node_id,
+                   display_name: "beam-node",
+                   hostname: "beam.local",
+                   listen_host: "127.0.0.1",
+                   listen_port: 50_071,
+                   agent_version: "0.1.0",
+                   worker_backend: "stub"
+                 },
+                 runtime_health: %{ready: true}
+               }},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      assert [
+               %{target: ^beam_target, status: :ok, node_metadata: %{display_name: "beam-node"}}
+             ] = Runtime.cluster_snapshot()
+
+      assert_received {:connect_called, ^beam_target}
+      refute_received {:connect_called, ^legacy_target}
+    end
+
+    test "BEAM Runtime Endpoint targets ignore stale legacy Console runtime client override" do
+      node_id = "550e8400-e29b-41d4-a716-446655440000"
+      beam_target = Target.beam(node_id, address: :orchard_node_agent_smoke@localhost)
+
+      put_console(runtime_client_impl: __MODULE__.LegacyPoisonClient)
+
+      put_inference(
+        runtime_endpoint_client_impl: __MODULE__.StubClient,
+        runtime_endpoint_targets: [beam_target]
+      )
+
+      stub_client(
+        target_responses: %{
+          {:beam, :orchard_node_agent_smoke@localhost} => [
+            connect: {:ok, :beam_ch},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_IDLE,
+                 loaded_models: [],
+                 active_request_count: 0,
+                 node_metadata: %{node_id: node_id, display_name: "beam-node"},
+                 runtime_health: %{ready: true}
+               }},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot()
+      assert snapshot.node_metadata.display_name == "beam-node"
+      assert_received {:connect_called, ^beam_target}
+      refute_received {:legacy_client_called, ^beam_target}
+    end
+
+    test "legacy Console runtime client receives keyword gRPC address from Runtime Endpoint target" do
+      target = Target.grpc_compat(host: "127.0.0.1", port: 50_071)
+      legacy_address = [host: "127.0.0.1", port: 50_071]
+
+      put_console(runtime_client_impl: __MODULE__.LegacyStrictClient)
+      put_inference(runtime_endpoint_targets: [target])
+      stub_client([])
+
+      assert [
+               %{target: ^target, status: :ok, node_metadata: %{display_name: "legacy-grpc"}}
+             ] = Runtime.cluster_snapshot()
+
+      assert_received {:legacy_client_called, ^legacy_address}
+      assert_received {:observe_status_called, ^target, _response, _observed_at}
+    end
+
+    test "explicit cluster targets avoid evaluating default Runtime Endpoint config" do
+      target = [host: "127.0.0.1", port: 50_071]
+
+      put_inference(
+        runtime_endpoint_targets: [
+          [transport: :beam, node_id: "not-a-uuid", address: :orchard_node_agent_smoke@localhost]
+        ]
+      )
+
+      stub_client(
+        target_responses: %{
+          {"127.0.0.1", 50_071} => [
+            connect: {:ok, :explicit_ch},
+            status: {:ok, status_response()},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      assert [%{target: ^target, status: :ok}] = Runtime.cluster_snapshot(targets: [target])
+    end
+
+    test "normalizes Runtime Endpoint observations returned by the configured client" do
+      node_id = "550e8400-e29b-41d4-a716-446655440000"
+      target = Target.beam(node_id, address: :orchard_node_agent_smoke@localhost)
+
+      put_inference(runtime_endpoint_client_impl: __MODULE__.StubClient)
+
+      observation =
+        Observation.new(%{
+          endpoint_id: "beam:#{node_id}",
+          target: target,
+          availability: :available,
+          worker_state: :idle,
+          aggregate_active_request_count: 2,
+          metadata: %{
+            node_id: node_id,
+            display_name: "beam-observed",
+            hostname: "beam.local",
+            listen_host: "127.0.0.1",
+            listen_port: 50_071,
+            agent_version: "0.2.0",
+            worker_backend: "stub"
+          },
+          health: %{ready: true, health_code: nil, health_message: nil, affected_model: nil},
+          placements: [
+            %{
+              model_ref: %{model_id: "mlx-community/phi-3", version: "main"},
+              state: :loaded
+            }
+          ],
+          supports_prompt_token_ids: true
+        })
+
+      stub_client(
+        target_responses: %{
+          {:beam, :orchard_node_agent_smoke@localhost} => [
+            connect: {:ok, :beam_ch},
+            status: {:ok, observation},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      assert {:ok, snapshot} = Runtime.snapshot(target: target)
+
+      assert snapshot.worker_state == :idle
+      assert snapshot.active_request_count == 2
+      assert snapshot.node_metadata.display_name == "beam-observed"
+      assert snapshot.runtime_health.ready == true
+      assert snapshot.supports_prompt_token_ids == true
+      assert snapshot.loaded_models == [%{model_id: "mlx-community/phi-3", version: "main"}]
+
+      assert_received {:observe_status_called, ^target, ^observation, _observed_at}
+    end
+
     test "probes all targets in config order" do
       target_a = [host: "127.0.0.1", port: 50_071]
       target_b = [host: "10.0.0.2", port: 50_061]
@@ -1410,5 +1641,15 @@ defmodule OrchardConsole.RuntimeTest do
       },
       attrs
     )
+  end
+
+  defp put_inference(opts) do
+    previous = Application.fetch_env!(:orchard_controller, :inference)
+    Application.put_env(:orchard_controller, :inference, Keyword.merge(previous, opts))
+  end
+
+  defp put_console(opts) do
+    previous = Application.fetch_env!(:orchard_controller, :console)
+    Application.put_env(:orchard_controller, :console, Keyword.merge(previous, opts))
   end
 end

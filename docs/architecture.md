@@ -53,6 +53,7 @@ Core design rules from `SPEC.md`:
 - the current `NodeRuntimeService` gRPC/protobuf path is a compatibility adapter, not the durable domain contract;
 - first-party BEAM communication is implemented behind explicit guardrails and remains default-off until rollout gates allow it;
 - source-dev uses the gRPC compatibility adapter by default until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke and is promoted;
+- Console live runtime diagnostics use the same configured Runtime Endpoint target list as scheduler and dispatch, with explicit BEAM targets taking precedence over legacy gRPC runtime client targets;
 - BEAM Runtime Endpoint targets validate BEAM node-name addresses and configured node UUIDs before scheduler or dispatch trusts endpoint identity;
 - node agents are the v1 first-party Runtime Endpoint boundary;
 - worker runtimes are local subprocesses, not public services;
@@ -104,6 +105,7 @@ The controller scheduler uses that capacity telemetry to avoid dispatching to fu
 Controller queue admission also consumes fresh Runtime Endpoint Observations as source-scoped capacity, waking queued loaded-placement or cold/no-placement work only from eligible, non-exhausted endpoints.
 Invalid, ineligible, unavailable, or transport-failed observations clear stale endpoint-owned capacity sources before queued work can be promoted.
 For BEAM Runtime Endpoint observations, queue capacity is published only when the target resolves back to the same persisted node identity.
+Console Nodes live diagnostics probe the configured Runtime Endpoint targets rather than a separate legacy gRPC-only target list.
 Scheduler and dispatch orchestration crashes after request validation terminalize the durable request as a failed `orchestration_error` with sanitized public error payloads instead of leaving it active.
 
 Runtime Endpoint and worker runtime contracts are separate:
