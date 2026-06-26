@@ -262,6 +262,24 @@ defmodule Orchard.Nodes do
   end
 
   @doc """
+  Clears queue capacity sources owned by an existing target without changing health.
+
+  Use this for fresh identity rejections where the target was reachable enough
+  to report status, but its observation must not remain an admission authority.
+  Cleanup is still freshness-gated against the target's last heartbeat.
+  """
+  @spec clear_target_queue_capacity_sources(keyword() | Target.t(), DateTime.t()) :: :ok
+  def clear_target_queue_capacity_sources(target, observed_at) do
+    if repo_available?() do
+      clear_existing_target_queue_capacity_sources(target, observed_at)
+    else
+      :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  @doc """
   Marks a node as unreachable by target address.
 
   Only updates health on an existing node. Does not insert new rows

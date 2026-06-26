@@ -254,6 +254,11 @@ defmodule Orchard.Scheduler.MultiNode do
                   nil
 
                 {:rejected, reason} ->
+                  Nodes.clear_target_queue_capacity_sources(
+                    observation_target(target),
+                    observed_at
+                  )
+
                   {:rejected, reason}
 
                 {:ok, node_id} ->

@@ -931,6 +931,100 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert Repo.get(Node, reported_node_id) == nil
     end
 
+    test "SPEC.md §5.5 BEAM identity rejection clears stale cold queue capacity" do
+      QueueManager.reset()
+      stale_hb = DateTime.add(DateTime.utc_now(), -120_000, :millisecond)
+      observed_at = DateTime.utc_now()
+      model_id = "beam-identity-clear-model"
+
+      configured_node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :healthy,
+          last_heartbeat_at: stale_hb
+        })
+
+      reported_node_id = Ecto.UUID.generate()
+      endpoint_target = Target.beam(configured_node.id, address: :orchard_node_agent@localhost)
+      model_ref = Orchard.RuntimeEndpoint.ModelRef.new!(model_id, "v1")
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-beam-identity-clear-a", model_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-beam-identity-clear-b", model_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_beam_identity_clear_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_capacity(model_id, "v1", 1,
+                 source: {:node, configured_node.id, :cold}
+               )
+
+      assert_receive {:first_beam_identity_clear_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      observation =
+        Observation.new(%{
+          endpoint_id: endpoint_target.id,
+          target: endpoint_target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 2,
+          metadata: %{
+            node_id: reported_node_id,
+            display_name: "reported-beam-mismatch",
+            hostname: "reported-beam-mismatch.local",
+            listen_host: "10.0.0.2",
+            listen_port: 50_062
+          },
+          health: %{ready: true},
+          placements: [
+            Placement.new(%{
+              model_ref: model_ref,
+              state: :loaded,
+              capacity:
+                PlacementCapacity.new(%{
+                  model_ref: model_ref,
+                  active_request_count: 0,
+                  max_concurrency: 2,
+                  source: :beam_runtime_endpoint_status
+                })
+            })
+          ]
+        })
+
+      put_inference(runtime_endpoint_targets: [endpoint_target], runtime_client_targets: [])
+      stub_probe(endpoint_target, observation)
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request(model_id),
+                 status_client: StubClient,
+                 observed_at: observed_at
+               )
+
+      assert Repo.get(Node, reported_node_id) == nil
+      assert QueueManager.active_capacity_source_lanes({:node, configured_node.id, :cold}) == []
+
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert :ok = QueueManager.refresh_capacity(model_id, "v1", 1, source: {:test, :restore})
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_key == "#{model_id}@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
     test "address-only BEAM schedules carry observed node identity for failure cleanup" do
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
 
