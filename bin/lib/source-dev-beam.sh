@@ -127,8 +127,8 @@ orchard_source_dev_beam_validate_node_name() {
       fi
       ;;
     node_agent)
-      if [[ "$service" != orchard_node_agent* ]]; then
-        echo "error: node-agent BEAM node service must start with orchard_node_agent" >&2
+      if [[ "$service" != orchard_node_agent ]]; then
+        echo "error: node-agent BEAM node service must be exactly orchard_node_agent" >&2
         return 64
       fi
       ;;

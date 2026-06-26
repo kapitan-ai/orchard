@@ -32,4 +32,16 @@ defmodule OrchardCLI.DevScriptsTest do
     assert dev =~ "pgrep -f orchard-worker-mlx"
     assert node_agent =~ "pgrep -f orchard-worker-mlx"
   end
+
+  test "source-dev BEAM bootstrap shell contract stays wired into Mix tests" do
+    script = Path.join(@repo_root, "scripts/test-source-dev-beam-bootstrap.sh")
+
+    assert {output, 0} =
+             System.cmd("bash", [script],
+               cd: @repo_root,
+               stderr_to_stdout: true
+             )
+
+    assert output =~ "source-dev BEAM bootstrap tests passed"
+  end
 end

@@ -41,6 +41,12 @@ defmodule Orchard.Config.SourceDevBeam do
     end
   end
 
+  def validate_transport_role!(:beam, :all_in_one) do
+    raise "all_in_one BEAM source-dev mode is not supported; use bin/dev-controller and bin/dev-node-agent"
+  end
+
+  def validate_transport_role!(_transport, _source_dev_role), do: :ok
+
   def controller_beam_targets!(value, env_name \\ @targets_env) do
     targets =
       value

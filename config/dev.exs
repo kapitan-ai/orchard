@@ -136,6 +136,11 @@ source_dev_role =
 runtime_endpoint_transport =
   Orchard.Config.SourceDevBeam.transport!(System.get_env("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT"))
 
+Orchard.Config.SourceDevBeam.validate_transport_role!(
+  runtime_endpoint_transport,
+  source_dev_role
+)
+
 beam_runtime_endpoint_targets =
   if runtime_endpoint_transport == :beam and source_dev_role == :controller do
     Orchard.Config.SourceDevBeam.controller_beam_targets!(

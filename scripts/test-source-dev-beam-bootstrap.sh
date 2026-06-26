@@ -166,8 +166,13 @@ assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must be an IP literal' "$TMP_ROOT
   run_helper controller "$TMP_ROOT/repo-e2-invalid-ipv6" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller@::::
 assert_fails_with 'controller BEAM node service must start with orchard_controller' "$TMP_ROOT/e3.out" \
   run_helper controller "$TMP_ROOT/repo-e3" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_node_agent@127.0.0.1
-assert_fails_with 'node-agent BEAM node service must start with orchard_node_agent' "$TMP_ROOT/e4.out" \
+assert_fails_with 'node-agent BEAM node service must be exactly orchard_node_agent' "$TMP_ROOT/e4.out" \
   run_helper node_agent "$TMP_ROOT/repo-e4" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller@127.0.0.1
+assert_succeeds "$TMP_ROOT/e4-exact.out" \
+  run_helper node_agent "$TMP_ROOT/repo-e4-exact" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_node_agent@127.0.0.1
+assert_grep 'node=orchard_node_agent@127.0.0.1' "$TMP_ROOT/e4-exact.out"
+assert_fails_with 'node-agent BEAM node service must be exactly orchard_node_agent' "$TMP_ROOT/e4-suffix.out" \
+  run_helper node_agent "$TMP_ROOT/repo-e4-suffix" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_node_agent_dev@127.0.0.1
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME service contains invalid characters' "$TMP_ROOT/e5-space.out" \
   run_helper controller "$TMP_ROOT/repo-e5-space" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME='orchard_controller bad@127.0.0.1'
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME service contains invalid characters' "$TMP_ROOT/e5-slash.out" \

@@ -68,6 +68,20 @@ defmodule Orchard.Config.SourceDevBeamTest do
     end
   end
 
+  describe "validate_transport_role!/2" do
+    test "rejects all-in-one BEAM mode" do
+      assert_raise RuntimeError, ~r/all_in_one BEAM source-dev mode is not supported/, fn ->
+        SourceDevBeam.validate_transport_role!(:beam, :all_in_one)
+      end
+    end
+
+    test "accepts split-role BEAM mode and all-in-one gRPC mode" do
+      assert SourceDevBeam.validate_transport_role!(:beam, :controller) == :ok
+      assert SourceDevBeam.validate_transport_role!(:beam, :node_agent) == :ok
+      assert SourceDevBeam.validate_transport_role!(:grpc, :all_in_one) == :ok
+    end
+  end
+
   describe "beam_guardrail_config!/3" do
     test "derives listen host and allowed CIDRs from source-dev BEAM targets" do
       targets =

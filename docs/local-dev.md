@@ -638,7 +638,7 @@ Default promotion remains deferred to a future OpenSpec change even after the sm
 | gRPC controller shows 1 target | `ORCHARD_RUNTIME_CLIENT_TARGETS` unset or malformed | Check env var, use `host:port,host:port` format. |
 | BEAM controller exits before Mix starts | `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is empty, malformed, or uses a hostname | Use comma-separated `orchard_node_agent@<ip-literal>` targets. |
 | All-in-one `bin/dev` rejects BEAM mode | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` was set with the all-in-one entrypoint | Use `bin/dev-controller` and `bin/dev-node-agent` for BEAM mode. |
-| BEAM node-name validation fails | `ORCHARD_BEAM_NODE_NAME` is not `service@ip` or uses the wrong role prefix | Use `orchard_controller@<controller-ip>` for the controller and `orchard_node_agent@<node-ip>` for node-agents. |
+| BEAM node-name validation fails | `ORCHARD_BEAM_NODE_NAME` is not `service@ip` or uses the wrong role service | Use `orchard_controller@<controller-ip>` for the controller and exactly `orchard_node_agent@<node-ip>` for node-agents. |
 | BEAM cookie validation fails | Cookie file is missing, empty, or group/world-readable | Create or copy the cookie file, then run `chmod 600 tmp/dev/beam.cookie`. |
 | BEAM `connect` returns `:pang` or `:unknown_beam_node` | EPMD cannot resolve the target, the target node is not running, or the cookie does not match | Check `ERL_EPMD_PORT`, node names, cookie digest match, and `nc -vz <target-ip> 4369`. |
 | BEAM RPC times out or is unreachable | Distribution listener port is blocked | Check TCP `52171` for the controller and TCP `52172` for node-agents, or check your overridden range. |

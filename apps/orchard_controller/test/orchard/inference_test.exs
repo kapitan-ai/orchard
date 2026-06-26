@@ -310,6 +310,16 @@ defmodule Orchard.InferenceTest do
                    end
     end
 
+    test "dev.exs rejects all-in-one BEAM mode" do
+      assert_raise RuntimeError, ~r/all_in_one.*BEAM source-dev mode/, fn ->
+        read_dev_controller_inference!(%{
+          "ORCHARD_SOURCE_DEV_ROLE" => "all_in_one",
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1"
+        })
+      end
+    end
+
     test "dev.exs beam node-agent role does not require controller endpoint targets" do
       inference =
         read_dev_controller_inference!(%{
