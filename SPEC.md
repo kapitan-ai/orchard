@@ -47,6 +47,7 @@ Supported deployment modes:
 * The gRPC/protobuf `NodeRuntimeService` remains the compatibility transport and a candidate protocol for future non-BEAM adapters.
 * First-party Orchard Controller and Node Agent services MAY use default-off BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
 * Source-dev SHALL keep the gRPC compatibility path as the default Controller-to-Node Agent runtime transport on port `50071` until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke and is explicitly promoted.
+* Console live runtime diagnostics SHALL use the configured Runtime Endpoint target list; explicit BEAM Runtime Endpoint targets SHALL take precedence over legacy gRPC runtime client targets.
 * Production BEAM Distribution MUST be explicitly enabled, identity-bound, network-restricted, and fail closed when required admission configuration is missing.
 * BEAM Runtime Endpoint targets MUST carry a valid BEAM node-name address (`service@host`) as an atom or binary; a configured `node_id`, when present, MUST be a UUID and MUST match observed endpoint metadata before scheduler or dispatch may trust that candidate identity.
 * External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
@@ -379,7 +380,7 @@ Tokenizer observability includes `[:orchard, :tokenizer, :prompt_token_ids_dispa
 When `tokenizer_safe_mode_prefer_capable` is enabled and `tokenizer_safe_mode` is not `:off`, the multi-node scheduler MAY prefer Runtime Endpoints whose live Runtime Endpoint Observation reports `supports_prompt_token_ids = true`.
 This preference is a scheduler tie-breaker only; it is not dispatch authority and MUST NOT replace the per-request Runtime Endpoint ensure-model-loaded result gate.
 
-Console Live Cluster diagnostics SHALL surface the latest observed live prompt-token-ID support value per reachable runtime target so operators can assess mixed-version safe-tokenization risk; absence or `false` is rendered as legacy capability, not as a probe failure.
+Console Live Cluster diagnostics SHALL surface the latest observed live prompt-token-ID support value per reachable Runtime Endpoint target so operators can assess mixed-version safe-tokenization risk; absence or `false` is rendered as legacy capability, not as a probe failure.
 
 Console diagnostics SHALL surface observe-only, process-local safe-tokenization counters aggregated since counter process start (`control_token_in_user_content`, `detector_error`, `prompt_token_ids_dispatched` event count and accumulated token count, `unsafe_mode_active`, `parity_drift`, `catalog_drift`, and `safe_tokenization.degraded_no_manifest_catalog`). Counter values reset on counter process restart and MUST NOT influence scheduling, dispatch, admission, or readiness.
 
@@ -2086,6 +2087,8 @@ The gRPC/protobuf `NodeRuntimeService` remains the gRPC Compatibility Adapter an
 First-party Orchard Controller and Node Agent services MAY use default-off BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
 Source-dev SHALL keep the gRPC compatibility path as the default Controller-to-Node Agent runtime transport on port `50071` until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke and is explicitly promoted.
 The accepted smoke requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
+Console live runtime diagnostics SHALL use the configured Runtime Endpoint target list.
+Explicit BEAM Runtime Endpoint targets SHALL take precedence over legacy gRPC runtime client targets for Console probes.
 Production BEAM Distribution MUST be explicitly enabled, identity-bound, network-restricted, and fail closed when required admission configuration is missing.
 BEAM Runtime Endpoint targets MUST carry a valid BEAM node-name address (`service@host`) as an atom or binary; a configured `node_id`, when present, MUST be a UUID and MUST match observed endpoint metadata before scheduler or dispatch may trust that candidate identity.
 External Runtime Endpoints MUST NOT join the first-party BEAM mesh.

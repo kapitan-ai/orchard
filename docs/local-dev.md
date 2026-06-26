@@ -237,7 +237,7 @@ The adapter is implemented behind explicit application config, but source dev ke
 There is no supported source-dev env var surface for BEAM target selection in this slice.
 The accepted target is for BEAM Runtime Endpoint transport to become the primary source-dev Controller-to-Node Agent path after that smoke passes.
 The accepted smoke requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
-Console Nodes uses the same Runtime Endpoint targets as scheduler and dispatch.
+Console Nodes live runtime diagnostics use the same Runtime Endpoint targets as scheduler and dispatch.
 For a BEAM-only smoke, duplicate gRPC `ORCHARD_RUNTIME_CLIENT_TARGETS` are no longer required just to make Console Nodes show both Macs.
 
 Application-config opt-in uses the Runtime Endpoint client and target keys under `:orchard_controller, :inference`.
@@ -470,7 +470,8 @@ If the gRPC compatibility path is intentionally configured at the same time, tre
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Controller shows 1 target | `ORCHARD_RUNTIME_CLIENT_TARGETS` unset or malformed | Check env var, use `host:port,host:port` format |
+| gRPC controller shows 1 target | `ORCHARD_RUNTIME_CLIENT_TARGETS` unset or malformed | Check env var, use `host:port,host:port` format |
+| BEAM Console shows gRPC targets | `runtime_endpoint_targets` not configured or legacy Console client override still active | Configure `runtime_endpoint_client_impl` and `runtime_endpoint_targets`; remove `:orchard_controller, :console, :runtime_client_impl` for BEAM diagnostics |
 | Remote node-agent unreachable | Listen host still `127.0.0.1` | Set `ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0` |
 | Remote node fails on MLX | mise toolchain not installed or no `uv sync` | Use `ORCHARD_WORKER_BACKEND=stub` or run `mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx` |
 | Port conflict on remote | Another BEAM on same port | Change `ORCHARD_NODE_AGENT_LISTEN_PORT` |

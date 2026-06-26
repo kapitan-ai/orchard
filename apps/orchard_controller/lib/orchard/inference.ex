@@ -225,7 +225,8 @@ defmodule Orchard.Inference do
   end
 
   @doc """
-  Returns normalized Runtime Endpoint targets for scheduler and dispatch.
+  Returns normalized Runtime Endpoint targets for scheduler, dispatch, and
+  Console live diagnostics.
 
   Explicit `:runtime_endpoint_targets` override legacy
   `:runtime_client_targets`, allow BEAM targets, and force endpoint-aware

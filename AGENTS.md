@@ -289,7 +289,7 @@ start `mise exec -- bin/dev-node-agent` on the worker host with
 When to bypass `bin/dev`:
 - `mise exec -- iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)
 - `mise exec -- iex -S mix phx.server` — manual server start with custom env vars
-- `mise exec -- mix test` — test suite (uses its own DB and port 50071 via `test.exs`)
+- `mise exec -- mix test` - test suite (uses its own DB and defaults to port 50071 via `test.exs`; override with `ORCHARD_TEST_NODE_AGENT_PORT` when another worktree owns that port)
 
 See `docs/local-dev.md` for full environment setup and configuration.
 
