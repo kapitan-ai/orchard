@@ -273,6 +273,10 @@ Hooks.AutoScrollBottom = {
   }
 }
 
+/**
+ * requestSubmitForm - submits through the browser form contract.
+ * Returns false when submission should fall back or stay suppressed.
+ */
 function requestSubmitForm(form, submitter) {
   if (!form) return false
   if (submitter && submitter.disabled) return false
@@ -287,7 +291,7 @@ function requestSubmitForm(form, submitter) {
 
 /**
  * PlaygroundSubmitClick - routes Send clicks through LiveView form submission.
- * Attach to a wrapper around `#playground-form`.
+ * Attach to the wrapper that contains `#playground-form` and `#playground-send`.
  */
 Hooks.PlaygroundSubmitClick = {
   mounted() {
