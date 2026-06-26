@@ -42,6 +42,12 @@ defmodule Orchard.Config.RuntimeTargetParserTest do
              ]
     end
 
+    test "rejects BEAM node names because this parser is gRPC host:port only" do
+      assert_raise RuntimeError, ~r/invalid host:port segment/, fn ->
+        RuntimeTargetParser.parse_csv!("orchard_node_agent@127.0.0.1", @env_name)
+      end
+    end
+
     test "raises on missing port" do
       assert_raise RuntimeError, ~r/invalid host:port segment/, fn ->
         RuntimeTargetParser.parse_csv!("host-only", @env_name)

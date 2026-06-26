@@ -168,8 +168,15 @@ defmodule Orchard.RuntimeEndpoint.Target do
   defp default_beam_id(nil, address) when is_atom(address), do: "beam:#{Atom.to_string(address)}"
 
   defp valid_beam_node_name?(address) do
-    byte_size(address) in 3..255 and String.match?(address, ~r/^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$/)
+    byte_size(address) in 3..255 and
+      case String.split(address, "@") do
+        [service, host] -> valid_beam_service?(service) and valid_beam_host?(host)
+        _other -> false
+      end
   end
+
+  defp valid_beam_service?(service), do: String.match?(service, ~r/^[A-Za-z0-9_.-]+$/)
+  defp valid_beam_host?(host), do: String.match?(host, ~r/^[^\s@]+$/)
 
   defp attrs_map(attrs) when is_list(attrs), do: Map.new(attrs)
   defp attrs_map(%{} = attrs), do: attrs

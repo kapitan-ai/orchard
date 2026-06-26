@@ -238,6 +238,136 @@ defmodule Orchard.InferenceTest do
     end
   end
 
+  describe "source-dev runtime endpoint transport config" do
+    test "dev.exs preserves gRPC compatibility behavior when transport is unset or explicit grpc" do
+      for transport <- [nil, "grpc"] do
+        inference =
+          read_dev_controller_inference!(%{
+            "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => transport,
+            "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1",
+            "ORCHARD_RUNTIME_CLIENT_TARGETS" => "10.0.0.1:50071"
+          })
+
+        refute Keyword.has_key?(inference, :runtime_endpoint_client_impl)
+        refute Keyword.has_key?(inference, :runtime_endpoint_targets)
+
+        assert Keyword.fetch!(inference, :runtime_client_targets) == [
+                 [host: "10.0.0.1", port: 50_071]
+               ]
+      end
+    end
+
+    test "dev.exs beam controller mode configures BEAM client and endpoint targets" do
+      inference =
+        read_dev_controller_inference!(%{
+          "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1",
+          "ORCHARD_RUNTIME_CLIENT_TARGETS" => "10.0.0.1:50071"
+        })
+
+      assert Keyword.fetch!(inference, :runtime_endpoint_client_impl) ==
+               Orchard.RuntimeEndpoint.BeamClient
+
+      assert [
+               %{
+                 transport: :beam,
+                 address: "orchard_node_agent@127.0.0.1",
+                 metadata: %{source_dev: true}
+               }
+             ] = Keyword.fetch!(inference, :runtime_endpoint_targets)
+
+      assert Keyword.fetch!(inference, :runtime_client_targets) == [
+               [host: "10.0.0.1", port: 50_071]
+             ]
+    end
+
+    test "dev.exs rejects invalid runtime endpoint transport values" do
+      assert_raise RuntimeError, ~r/ORCHARD_RUNTIME_ENDPOINT_TRANSPORT must be grpc\|beam/, fn ->
+        read_dev_controller_inference!(%{"ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "http"})
+      end
+    end
+
+    test "dev.exs beam controller mode rejects hostname endpoint targets" do
+      assert_raise RuntimeError, ~r/requires IP-literal BEAM target hosts/, fn ->
+        read_dev_controller_inference!(%{
+          "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@worker.local"
+        })
+      end
+    end
+
+    test "dev.exs beam controller mode requires endpoint targets" do
+      assert_raise RuntimeError,
+                   ~r/ORCHARD_RUNTIME_ENDPOINT_TARGETS.*at least one BEAM target/,
+                   fn ->
+                     read_dev_controller_inference!(%{
+                       "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+                       "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+                       "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => nil
+                     })
+                   end
+    end
+
+    test "dev.exs beam node-agent role does not require controller endpoint targets" do
+      inference =
+        read_dev_controller_inference!(%{
+          "ORCHARD_SOURCE_DEV_ROLE" => "node_agent",
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => nil
+        })
+
+      refute Keyword.has_key?(inference, :runtime_endpoint_client_impl)
+      refute Keyword.has_key?(inference, :runtime_endpoint_targets)
+    end
+
+    test "dev.exs beam controller mode configures source-dev BEAM guardrails" do
+      controller_config =
+        read_dev_controller_config!(%{
+          "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" =>
+            "orchard_node_agent@127.0.0.1,orchard_node_agent@10.0.0.2",
+          "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@127.0.0.1",
+          "ORCHARD_BEAM_COOKIE_FILE" => "/tmp/orchard-dev-cookie"
+        })
+
+      assert Keyword.fetch!(controller_config, :runtime_endpoint)[:beam] == [
+               enabled: true,
+               node_name: "orchard_controller@127.0.0.1",
+               cookie_file: "/tmp/orchard-dev-cookie",
+               listen_host: "127.0.0.1",
+               admitted_services: ["orchard_node_agent"],
+               allowed_cidrs: ["127.0.0.1/32", "10.0.0.2/32"]
+             ]
+    end
+
+    test "dev.exs beam controller mode rejects local controller node names with wrong services" do
+      assert_raise RuntimeError,
+                   ~r/local controller BEAM node service must start with orchard_controller/,
+                   fn ->
+                     read_dev_controller_config!(%{
+                       "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+                       "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+                       "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1",
+                       "ORCHARD_BEAM_NODE_NAME" => "orchard_node_agent@127.0.0.1"
+                     })
+                   end
+    end
+
+    test "dev.exs beam controller mode rejects local controller node names with hostnames" do
+      assert_raise RuntimeError, ~r/requires IP-literal local controller host/, fn ->
+        read_dev_controller_config!(%{
+          "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1",
+          "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@localhost"
+        })
+      end
+    end
+  end
+
   describe "tokenizer_safe_mode/0" do
     test "defaults to :off when not configured" do
       config = Application.fetch_env!(:orchard_controller, :inference)
@@ -766,9 +896,13 @@ defmodule Orchard.InferenceTest do
   end
 
   defp read_dev_controller_inference!(overrides) do
+    read_dev_controller_config!(overrides)
+    |> Keyword.fetch!(:inference)
+  end
+
+  defp read_dev_controller_config!(overrides) do
     read_config!(dev_config_path(), :dev, overrides)
     |> Keyword.fetch!(:orchard_controller)
-    |> Keyword.fetch!(:inference)
   end
 
   defp read_config!(path, env, env_overrides) do

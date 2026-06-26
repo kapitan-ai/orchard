@@ -125,6 +125,26 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     assert beam_target.metadata == %{role: :node_agent}
   end
 
+  test "BEAM target normalization accepts IP-literal BEAM node-name hosts" do
+    ipv4_target =
+      Target.normalize(%{
+        transport: :beam,
+        id: "source-dev-ipv4",
+        address: "orchard_node_agent@127.0.0.1"
+      })
+
+    assert ipv4_target.address == :"orchard_node_agent@127.0.0.1"
+
+    ipv6_target =
+      Target.normalize(%{
+        transport: :beam,
+        id: "source-dev-ipv6",
+        address: "orchard_node_agent@::1"
+      })
+
+    assert ipv6_target.address == :"orchard_node_agent@::1"
+  end
+
   test "BEAM target normalization keeps node_id nil unless explicitly configured" do
     target =
       Target.normalize(%{
