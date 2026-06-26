@@ -135,15 +135,17 @@ defmodule Orchard.Nodes do
   Looks up a node by its connection target.
 
   Accepts a target keyword list matching the scheduler/dispatch shape:
-  `[host: "127.0.0.1", port: 50071]`.
+  `[host: "127.0.0.1", port: 50071]`, or a Runtime Endpoint target.
+  BEAM Runtime Endpoint targets resolve by configured `node_id` first, then by
+  target metadata containing a connect/listen host and port.
 
   Returns `nil` when no match, target is malformed, or repo is unavailable.
   """
-  @spec lookup_by_target(keyword()) :: Node.t() | nil
+  @spec lookup_by_target(keyword() | Target.t()) :: Node.t() | nil
   def lookup_by_target(target) do
     with true <- repo_available?(),
-         {:ok, host, port} <- validate_target(target) do
-      lookup_node_by_target(host, port)
+         {:ok, target_lookup} <- target_lookup(target) do
+      lookup_node_by_target_lookup(target_lookup)
     else
       _ -> nil
     end
@@ -166,6 +168,8 @@ defmodule Orchard.Nodes do
   from aggregate endpoint capacity and loaded placement statuses.
   Fresh invalid metadata, identity conflicts, ineligible nodes, and target
   failures clear stale queue capacity sources for that node/target.
+  BEAM Runtime Endpoint observations refresh queue capacity only when the
+  target resolves back to the same persisted node identity.
 
   Options:
   - `:reserve_unassigned_node_grants?` - reserve unassigned active grants
@@ -208,7 +212,7 @@ defmodule Orchard.Nodes do
   defp handle_observation_result(target, observed_at, result, status_response, opts) do
     case result do
       {:ok, node} ->
-        refresh_observed_queue_capacities(node, status_response, opts)
+        refresh_observed_queue_capacities(target, node, status_response, opts)
         {:ok, node}
 
       {:noop, :identity_conflict} ->
@@ -258,6 +262,24 @@ defmodule Orchard.Nodes do
   end
 
   @doc """
+  Clears queue capacity sources owned by an existing target without changing health.
+
+  Use this for fresh identity rejections where the target was reachable enough
+  to report status, but its observation must not remain an admission authority.
+  Cleanup is still freshness-gated against the target's last heartbeat.
+  """
+  @spec clear_target_queue_capacity_sources(keyword() | Target.t(), DateTime.t()) :: :ok
+  def clear_target_queue_capacity_sources(target, observed_at) do
+    if repo_available?() do
+      clear_existing_target_queue_capacity_sources(target, observed_at)
+    else
+      :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  @doc """
   Marks a node as unreachable by target address.
 
   Only updates health on an existing node. Does not insert new rows
@@ -285,8 +307,8 @@ defmodule Orchard.Nodes do
 
   defp mark_target_unreachable_without_queue_cleanup(target, observed_at) do
     with true <- repo_available?(),
-         {:ok, host, port} <- validate_target(target) do
-      execute_mark_unreachable(host, port, observed_at)
+         {:ok, target_lookup} <- target_lookup(target) do
+      execute_mark_unreachable(target_lookup, observed_at)
     else
       _ -> :noop
     end
@@ -409,12 +431,13 @@ defmodule Orchard.Nodes do
     |> ToolReadiness.persist_all()
   end
 
-  defp refresh_observed_queue_capacities(%Node{} = node, status_response, opts) do
+  defp refresh_observed_queue_capacities(target, %Node{} = node, status_response, opts) do
     queue_manager = Orchard.Inference.queue_manager()
     placement_source = {:node, node.id, :placement}
     cold_source = {:node, node.id, :cold}
 
-    if queue_capacity_eligible_node?(node) and
+    if queue_capacity_refresh_target?(target, node) and
+         queue_capacity_eligible_node?(node) and
          queue_capacity_eligible_observation?(status_response) do
       queue_manager.refresh_node_capacity_sources(%{
         clear_sources: node_queue_capacity_sources(node),
@@ -443,6 +466,18 @@ defmodule Orchard.Nodes do
       :ok
   end
 
+  defp queue_capacity_refresh_target?(%Target{transport: :beam} = target, %Node{id: node_id}) do
+    case target_lookup(target) do
+      {:ok, target_lookup} ->
+        match?(%Node{id: ^node_id}, lookup_node_by_target_lookup(target_lookup))
+
+      :error ->
+        false
+    end
+  end
+
+  defp queue_capacity_refresh_target?(_target, _node), do: true
+
   defp clear_node_queue_capacity_sources(%Node{} = node, opts \\ []) do
     queue_manager = Orchard.Inference.queue_manager()
 
@@ -467,9 +502,9 @@ defmodule Orchard.Nodes do
   end
 
   defp clear_existing_target_queue_capacity_sources(target, observed_at) do
-    case validate_target(target) do
-      {:ok, host, port} ->
-        case lookup_node_by_target(host, port) do
+    case target_lookup(target) do
+      {:ok, target_lookup} ->
+        case lookup_node_by_target_lookup(target_lookup) do
           %Node{} = node -> clear_fresh_target_queue_capacity_sources(node, observed_at)
           nil -> :ok
         end
@@ -839,9 +874,9 @@ defmodule Orchard.Nodes do
 
   # -- Mark Unreachable --
 
-  defp execute_mark_unreachable(host, port, observed_at) do
+  defp execute_mark_unreachable(target_lookup, observed_at) do
     Repo.transaction(fn ->
-      case fetch_node_for_transport_update(host, port) do
+      case fetch_node_for_transport_update(target_lookup) do
         nil ->
           Repo.rollback(:noop)
 
@@ -855,9 +890,16 @@ defmodule Orchard.Nodes do
     end
   end
 
-  defp fetch_node_for_transport_update(host, port) do
+  defp fetch_node_for_transport_update({:connect_target, host, port}) do
     fetch_node_by_connect_target(host, port) ||
       fetch_legacy_node_by_advertise_target(host, port)
+  end
+
+  defp fetch_node_for_transport_update({:node_id, node_id}) do
+    Node
+    |> where([n], n.id == ^node_id)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
   end
 
   defp update_transport_failure_health(%Node{} = node, observed_at) do
@@ -906,13 +948,47 @@ defmodule Orchard.Nodes do
     is_pid(pid) and Process.alive?(pid)
   end
 
-  defp validate_target(target) do
+  defp target_lookup(%Target{transport: :beam} = target) do
+    case target_node_id_lookup(target) do
+      {:ok, _lookup} = result -> result
+      :error -> target_metadata_lookup(target.metadata)
+    end
+  end
+
+  defp target_lookup(target), do: connection_target_lookup(target)
+
+  defp target_node_id_lookup(%Target{node_id: node_id}) when is_binary(node_id) do
+    case Ecto.UUID.cast(node_id) do
+      {:ok, node_id} -> {:ok, {:node_id, node_id}}
+      :error -> :error
+    end
+  end
+
+  defp target_node_id_lookup(_target), do: :error
+
+  defp target_metadata_lookup(%{} = metadata) do
+    host =
+      metadata_value(metadata, :connect_host) ||
+        metadata_value(metadata, :host) ||
+        metadata_value(metadata, :listen_host)
+
+    port =
+      metadata_value(metadata, :connect_port) ||
+        metadata_value(metadata, :port) ||
+        metadata_value(metadata, :listen_port)
+
+    connection_target_lookup(host: host, port: port)
+  end
+
+  defp target_metadata_lookup(_metadata), do: :error
+
+  defp connection_target_lookup(target) do
     target = target_address(target)
     host = Keyword.get(target, :host)
     port = Keyword.get(target, :port)
 
     if is_binary(host) and host != "" and is_integer(port) and port in 1..65_535 do
-      {:ok, host, port}
+      {:ok, {:connect_target, host, port}}
     else
       :error
     end
@@ -948,9 +1024,13 @@ defmodule Orchard.Nodes do
 
   defp map_get(_map, key) when is_atom(key), do: nil
 
-  defp lookup_node_by_target(host, port) do
+  defp lookup_node_by_target_lookup({:connect_target, host, port}) do
     lookup_node_by_connect_target(host, port) ||
       lookup_legacy_node_by_advertise_target(host, port)
+  end
+
+  defp lookup_node_by_target_lookup({:node_id, node_id}) do
+    Repo.get(Node, node_id)
   end
 
   defp lookup_node_by_connect_target(host, port) do
@@ -1021,6 +1101,7 @@ defmodule Orchard.Nodes do
   end
 
   defp target_address(%Target{transport: :grpc_compat, address: address}), do: address
+  defp target_address(%Target{transport: :beam}), do: []
   defp target_address(target), do: target
 
   defp valid_connect_target?(host, port), do: non_empty?(host) and is_integer(port)

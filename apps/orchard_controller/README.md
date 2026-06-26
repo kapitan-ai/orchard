@@ -16,6 +16,8 @@ This README is orientation only. Normative behavior lives in
 - `Orchard.Repo` migrations and Postgres-backed controller state.
 - Request canonicalization, tokenization orchestration, admission, scheduling,
   dispatch, lifecycle persistence, and public response serialization.
+- Runtime Endpoint client adapters, including the gRPC compatibility adapter and
+  default-off first-party BEAM adapter.
 
 ## Does not own
 

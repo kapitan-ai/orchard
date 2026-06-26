@@ -123,7 +123,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   alias Orchard.Dispatch.RequestDispatcher
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes.Node
-  alias Orchard.RuntimeEndpoint.Operation
+  alias Orchard.RuntimeEndpoint.{Operation, Target}
 
   @valid_uuid "550e8400-e29b-41d4-a716-446655440000"
   @other_uuid "660f9511-f30c-52e5-b827-557766551111"
@@ -471,6 +471,27 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
       assert_received {:ensure_model_loaded_called, req}
       assert req.node_id == @valid_uuid
+    end
+  end
+
+  describe "BEAM target identity guard" do
+    test "dispatch fails closed before observe or ensure when live metadata disagrees", ctx do
+      target = Target.beam(@valid_uuid, address: :orchard_node_agent@localhost)
+
+      schedule =
+        ctx.schedule
+        |> Map.put(:runtime_endpoint_target, target)
+        |> Map.delete(:runtime_client_target)
+
+      configure_stub(%{status: {:ok, full_status(@other_uuid)}})
+
+      assert {:error, {:dispatch_failed, :beam_node_identity_mismatch}} =
+               RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      refute_received {:ensure_model_loaded_called, _request}
+      assert Repo.get(Node, @other_uuid) == nil
     end
   end
 

@@ -212,17 +212,39 @@ defmodule Orchard.Inference do
     end
   end
 
+  @doc """
+  Returns the configured Runtime Endpoint client adapter.
+
+  Defaults to the gRPC compatibility adapter.
+  Set `:runtime_endpoint_client_impl` to `Orchard.RuntimeEndpoint.BeamClient`
+  only with explicit Runtime Endpoint targets.
+  """
   @spec runtime_endpoint_client() :: module()
   def runtime_endpoint_client do
     config()[:runtime_endpoint_client_impl] || Orchard.RuntimeEndpoint.GrpcCompatibilityClient
   end
 
+  @doc """
+  Returns normalized Runtime Endpoint targets for scheduler and dispatch.
+
+  Explicit `:runtime_endpoint_targets` override legacy
+  `:runtime_client_targets`, allow BEAM targets, and force endpoint-aware
+  scheduling even when only one target is configured.
+  """
   @spec runtime_endpoint_targets() :: [Target.t()]
   def runtime_endpoint_targets do
-    runtime_client_targets()
-    |> Enum.reject(&is_nil/1)
-    |> Enum.map(&runtime_endpoint_target/1)
-    |> Enum.uniq_by(& &1.id)
+    case config()[:runtime_endpoint_targets] do
+      targets when is_list(targets) and targets != [] ->
+        targets
+        |> Enum.map(&runtime_endpoint_target/1)
+        |> Enum.uniq_by(& &1.id)
+
+      _other ->
+        runtime_client_targets()
+        |> Enum.reject(&is_nil/1)
+        |> Enum.map(&runtime_endpoint_target/1)
+        |> Enum.uniq_by(& &1.id)
+    end
   end
 
   @spec request_timeout_ms() :: pos_integer() | nil
@@ -253,9 +275,22 @@ defmodule Orchard.Inference do
   end
 
   defp auto_scheduler do
-    case runtime_client_targets() do
-      targets when length(targets) > 1 -> Orchard.Scheduler.MultiNode
-      _ -> Orchard.Scheduler.SingleNode
+    cond do
+      explicit_runtime_endpoint_targets?() ->
+        Orchard.Scheduler.MultiNode
+
+      length(runtime_client_targets()) > 1 ->
+        Orchard.Scheduler.MultiNode
+
+      true ->
+        Orchard.Scheduler.SingleNode
+    end
+  end
+
+  defp explicit_runtime_endpoint_targets? do
+    case config()[:runtime_endpoint_targets] do
+      targets when is_list(targets) and targets != [] -> true
+      _other -> false
     end
   end
 
@@ -265,6 +300,6 @@ defmodule Orchard.Inference do
     end)
   end
 
-  defp runtime_endpoint_target(%Target{} = target), do: target
-  defp runtime_endpoint_target(target), do: Target.grpc_compat(target)
+  defp runtime_endpoint_target(%Target{} = target), do: Target.normalize(target)
+  defp runtime_endpoint_target(target), do: Target.normalize(target)
 end

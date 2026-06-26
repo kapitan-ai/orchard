@@ -45,7 +45,9 @@ Clients (SDKs / curl / apps)
         │
    Runtime Endpoint Interface
         │
-   Current gRPC compatibility adapter
+   Runtime Endpoint adapter(s)
+   ├── gRPC compatibility adapter (current default)
+   └── first-party BEAM adapter (default-off rollout)
         │
    Node Agent Runtime Endpoint(s)
    ├── Model cache + verification
@@ -60,8 +62,8 @@ Clients (SDKs / curl / apps)
 - All durable state lives in Postgres.
 - Controller runtime execution uses the Runtime Endpoint Interface.
 - The current `NodeRuntimeService` gRPC path is a compatibility adapter, not the durable domain contract.
-- First-party BEAM communication is guarded for future use and must not become durable cluster truth.
-- Source-dev keeps the gRPC compatibility adapter until a BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke.
+- First-party BEAM communication is implemented behind explicit guardrails and must not become durable cluster truth.
+- Source-dev uses the gRPC compatibility adapter by default until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke and is promoted.
 - Workers are local to node agents and are never exposed on the network.
 - Token streams always pass through the controller for governance and accounting.
 - HA-lite only: exactly one active leader, active/standby via Postgres advisory locks, no active/active consensus.
@@ -73,7 +75,7 @@ Clients (SDKs / curl / apps)
 | Language | Elixir/OTP (umbrella app) |
 | Database | Postgres |
 | Inference | MLX-LM runtime adapter managed by the node agent |
-| Runtime endpoint transport | Runtime Endpoint Interface with current gRPC compatibility adapter; future BEAM adapter gated by accepted two-Mac smoke |
+| Runtime endpoint transport | Runtime Endpoint Interface with current gRPC compatibility adapter and default-off first-party BEAM adapter gated by accepted two-Mac smoke |
 | APIs | Phoenix/Plug (loopback HTTP in source dev; HTTPS + SSE in packaged installs) |
 | Packaging | DMG, PKG, launchd |
 | CLI | `orchardctl` |

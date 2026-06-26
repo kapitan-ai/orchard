@@ -103,6 +103,123 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
     assert PlacementCapacity.spare?(Observation.placement_capacity_for(observation, model_ref))
   end
 
+  test "target normalization preserves default gRPC fallback and admits explicit BEAM targets" do
+    grpc_target = Target.normalize(host: "127.0.0.1", port: 50_071)
+
+    assert grpc_target.transport == :grpc_compat
+    assert grpc_target.address == [host: "127.0.0.1", port: 50_071]
+
+    node_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    beam_target =
+      Target.normalize(%{
+        transport: :beam,
+        node_id: node_id,
+        address: :orchard_node_agent@localhost,
+        metadata: %{role: :node_agent}
+      })
+
+    assert beam_target.transport == :beam
+    assert beam_target.node_id == node_id
+    assert beam_target.address == :orchard_node_agent@localhost
+    assert beam_target.metadata == %{role: :node_agent}
+  end
+
+  test "BEAM target normalization keeps node_id nil unless explicitly configured" do
+    target =
+      Target.normalize(%{
+        transport: :beam,
+        id: "source-dev-node-agent",
+        address: :orchard_node_agent@localhost
+      })
+
+    assert target.id == "source-dev-node-agent"
+    assert target.transport == :beam
+    assert target.node_id == nil
+    assert target.address == :orchard_node_agent@localhost
+  end
+
+  test "prebuilt BEAM target normalization validates and normalizes address" do
+    node_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    target =
+      Target.normalize(%Target{
+        id: "source-dev-node-agent",
+        transport: :beam,
+        address: "orchard_node_agent@localhost",
+        node_id: node_id
+      })
+
+    assert target.address == :orchard_node_agent@localhost
+    assert target.node_id == node_id
+  end
+
+  test "runtime endpoint observations prefer metadata node identity without target node_id" do
+    node_id = "550e8400-e29b-41d4-a716-446655440000"
+
+    observation =
+      Observation.new(%{
+        target:
+          Target.normalize(%{
+            transport: :beam,
+            id: "source-dev-node-agent",
+            address: :orchard_node_agent@localhost
+          }),
+        metadata: %{node_id: node_id}
+      })
+
+    assert Observation.node_id(observation) == node_id
+  end
+
+  test "BEAM target normalization rejects configured non-UUID node_id values" do
+    assert_raise ArgumentError, fn ->
+      Target.normalize(
+        transport: :beam,
+        node_id: "node-1",
+        address: :orchard_node_agent@localhost
+      )
+    end
+
+    assert_raise ArgumentError, fn ->
+      Target.beam("node-1", address: :orchard_node_agent@localhost)
+    end
+
+    assert_raise ArgumentError, fn ->
+      Target.normalize(%Target{
+        id: "source-dev-node-agent",
+        transport: :beam,
+        address: :orchard_node_agent@localhost,
+        node_id: "node-1"
+      })
+    end
+  end
+
+  test "BEAM target construction requires explicit address" do
+    assert_raise ArgumentError, fn ->
+      Target.beam("550e8400-e29b-41d4-a716-446655440000")
+    end
+  end
+
+  test "target normalization rejects malformed configured BEAM node names" do
+    assert_raise ArgumentError, fn ->
+      Target.normalize(
+        transport: :beam,
+        node_id: "550e8400-e29b-41d4-a716-446655440000",
+        address: "not a node"
+      )
+    end
+  end
+
+  test "target normalization rejects malformed atom BEAM node names" do
+    assert_raise ArgumentError, fn ->
+      Target.normalize(
+        transport: :beam,
+        node_id: "550e8400-e29b-41d4-a716-446655440000",
+        address: :not_a_node
+      )
+    end
+  end
+
   test "operation constructors validate scalar request shape without enforcing policy" do
     model_ref = ModelRef.new!("mlx-community/phi-3", "main")
 

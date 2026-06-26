@@ -38,7 +38,7 @@ Public clients
      -> Postgres for durable state and coordination
      -> Runtime Endpoint Interface
         -> current gRPC compatibility adapter
-        -> future first-party BEAM adapter after accepted source-dev smoke
+        -> default-off first-party BEAM adapter, promoted after accepted source-dev smoke
         -> future external/provider adapters
      -> Node Agent(s)
         -> Worker Runtime subprocesses for local MLX inference
@@ -51,8 +51,9 @@ Core design rules from `SPEC.md`:
 - token streams pass through the controller;
 - the Controller dispatches model runtime work through the Runtime Endpoint Interface;
 - the current `NodeRuntimeService` gRPC/protobuf path is a compatibility adapter, not the durable domain contract;
-- first-party BEAM communication requires explicit production guardrails before it can be enabled;
-- source-dev keeps the gRPC compatibility adapter until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke;
+- first-party BEAM communication is implemented behind explicit guardrails and remains default-off until rollout gates allow it;
+- source-dev uses the gRPC compatibility adapter by default until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke and is promoted;
+- BEAM Runtime Endpoint targets validate BEAM node-name addresses and configured node UUIDs before scheduler or dispatch trusts endpoint identity;
 - node agents are the v1 first-party Runtime Endpoint boundary;
 - worker runtimes are local subprocesses, not public services;
 - Postgres remains durable truth for inventory, lifecycle state, Runtime Endpoint Observations, scheduling, and request state.
@@ -102,12 +103,14 @@ Aggregate capacity is the conservative limit the node agent enforces across load
 The controller scheduler uses that capacity telemetry to avoid dispatching to full endpoints or full same-model placements.
 Controller queue admission also consumes fresh Runtime Endpoint Observations as source-scoped capacity, waking queued loaded-placement or cold/no-placement work only from eligible, non-exhausted endpoints.
 Invalid, ineligible, unavailable, or transport-failed observations clear stale endpoint-owned capacity sources before queued work can be promoted.
+For BEAM Runtime Endpoint observations, queue capacity is published only when the target resolves back to the same persisted node identity.
 Scheduler and dispatch orchestration crashes after request validation terminalize the durable request as a failed `orchestration_error` with sanitized public error payloads instead of leaving it active.
 
 Runtime Endpoint and worker runtime contracts are separate:
 
 - `proto/cluster/v1/` describes the current controller ↔ node-agent gRPC compatibility transport.
 - Runtime Endpoint domain structs describe the Controller-facing scheduler and dispatch contract.
+- `Orchard.RuntimeEndpoint.BeamClient` and `Orchard.Node.RuntimeEndpoint` provide the default-off first-party BEAM adapter and Node Agent facade.
 - `native/orchard_worker_mlx/proto/` describes node-agent ↔ worker messages/services.
 
 ### Persistence and coordination

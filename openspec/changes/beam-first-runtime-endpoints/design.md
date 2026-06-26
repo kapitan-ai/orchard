@@ -16,7 +16,7 @@ The Worker Runtime remains a local process/protocol boundary owned by the Node A
 
 - Define Runtime Endpoint as the Controller-selected execution boundary.
 - Define Runtime Endpoint Interface as transport-independent runtime semantics.
-- Add guardrails for future BEAM Distribution between first-party Controller and Node Agent services.
+- Add guardrails for default-off BEAM Distribution between first-party Controller and Node Agent services.
 - Keep source-dev on gRPC compatibility until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke.
 - Keep Runtime Endpoint Observations durable in Postgres for operator-visible state and scheduling inputs.
 - Preserve `gnhf/objective-fully-impl-369718` concurrency semantics while moving controller domain code to Runtime Endpoint semantics.
@@ -48,7 +48,7 @@ That keeps v1 terminology simple, but it makes future Cloud VM, high-performance
 The Controller should depend on a Runtime Endpoint Interface for status, model readiness, inference execution, cancellation, runtime telemetry, Placement Capacity, and prefix-cache scoring.
 This slice should introduce the interface and keep the current first-party path behind a gRPC Compatibility Adapter.
 A later first-party implementation can use BEAM Distribution.
-Source-dev should promote BEAM Runtime Endpoint transport only after the adapter exists and the accepted two-Mac smoke passes.
+Source-dev should promote BEAM Runtime Endpoint transport only after the accepted two-Mac smoke passes.
 Future non-BEAM implementations can use provider APIs, gRPC/protobuf, or other adapter protocols.
 
 Alternative considered: keep `NodeRuntimeService` as the core interface.

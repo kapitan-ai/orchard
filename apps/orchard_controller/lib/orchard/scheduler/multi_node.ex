@@ -24,10 +24,15 @@ defmodule Orchard.Scheduler.MultiNode do
   Returns `{:error, :cluster_busy}` when live probes joined to persisted schedulable
   nodes, but every joined candidate has exhausted capacity or is an active
   loaded-model candidate with unknown placement capacity.
+  BEAM observations whose configured node identity conflicts with observed
+  metadata also fail closed as `:cluster_busy` instead of falling back to a
+  different identity.
 
   Successful schedules include `:queue_lane_capacity`, derived from loaded
   candidates with live node and placement room plus eligible cold candidates
   with remaining aggregate node capacity.
+  gRPC compatibility schedules include legacy `:runtime_client_target`;
+  BEAM schedules carry only `:runtime_endpoint_target`.
 
   Transport-like probe and connect failures are recorded through node inventory
   so failed targets stop contributing stale queue capacity before queued work is
@@ -42,6 +47,7 @@ defmodule Orchard.Scheduler.MultiNode do
   alias Orchard.Nodes
 
   alias Orchard.RuntimeEndpoint.{
+    BeamIdentity,
     GrpcCompatibilityMapper,
     ModelRef,
     Observation,
@@ -106,10 +112,19 @@ defmodule Orchard.Scheduler.MultiNode do
     # - Worst-case latency is cumulative (N × timeout_ms) but acceptable at this scale
     # Future: parallel probing via Task.async_stream or cached observations
     # within freshness window for larger clusters.
-    probe_results =
+    probe_outcomes =
       targets
       |> Enum.map(&probe_target(&1, client, timeout, observed_at, request))
       |> Enum.reject(&is_nil/1)
+
+    probe_results =
+      Enum.flat_map(probe_outcomes, fn
+        {:candidate, candidate} -> [candidate]
+        {:rejected, _reason} -> []
+      end)
+
+    beam_identity_rejected? =
+      Enum.any?(probe_outcomes, &match?({:rejected, :beam_node_identity_mismatch}, &1))
 
     # Join with persistent schedulable nodes
     schedulable_map =
@@ -123,17 +138,20 @@ defmodule Orchard.Scheduler.MultiNode do
 
     available_candidates = Enum.reject(candidates, &candidate_full?/1)
 
-    cond do
-      candidates == [] and probe_results == [] ->
-        fallback_schedule(request, targets, Keyword.put(opts, :probe_status?, false))
+    case selection_state(
+           candidates,
+           available_candidates,
+           probe_outcomes,
+           opts,
+           beam_identity_rejected?
+         ) do
+      {:fallback, fallback_opts} ->
+        fallback_schedule(request, targets, fallback_opts)
 
-      candidates == [] ->
-        fallback_schedule(request, targets, opts)
+      {:error, reason} ->
+        {:error, reason}
 
-      available_candidates == [] ->
-        {:error, :cluster_busy}
-
-      true ->
+      :select_candidate ->
         cache_affinity_config = Inference.cache_affinity_config()
 
         {affinity_candidates, affinity_context} =
@@ -180,7 +198,6 @@ defmodule Orchard.Scheduler.MultiNode do
           %{
             strategy: :multi_node,
             request_id: request.public_id,
-            runtime_client_target: dispatch_target(selected.target),
             runtime_endpoint_target: selected.target,
             request_timeout_ms: Inference.request_timeout_ms(),
             model_load_timeout_ms: Inference.model_load_timeout_ms(),
@@ -189,6 +206,7 @@ defmodule Orchard.Scheduler.MultiNode do
             queue_lane_capacity: queue_lane_capacity(available_candidates),
             selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
           }
+          |> maybe_put_runtime_client_target(selected.target)
           |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
           |> maybe_put_prefix_cache_fingerprint_match(
             selected,
@@ -202,6 +220,27 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
+  defp selection_state([], _available_candidates, [], opts, _beam_identity_rejected?),
+    do: {:fallback, Keyword.put(opts, :probe_status?, false)}
+
+  defp selection_state([], _available_candidates, _probe_outcomes, _opts, true),
+    do: {:error, :cluster_busy}
+
+  defp selection_state([], _available_candidates, _probe_outcomes, opts, false),
+    do: {:fallback, opts}
+
+  defp selection_state(_candidates, [], _probe_outcomes, _opts, _beam_identity_rejected?),
+    do: {:error, :cluster_busy}
+
+  defp selection_state(
+         _candidates,
+         _available_candidates,
+         _probe_outcomes,
+         _opts,
+         _beam_identity_rejected?
+       ),
+       do: :select_candidate
+
   defp probe_target(target, client, timeout, observed_at, request) do
     case client.connect(target) do
       {:ok, channel} ->
@@ -210,34 +249,43 @@ defmodule Orchard.Scheduler.MultiNode do
             {:ok, response} ->
               observation = normalize_status_observation(target, response)
 
-              Nodes.observe_status(observation_target(target), observation, observed_at,
-                reserve_unassigned_node_grants?: true,
-                reserve_unassigned_source_grants?: true
-              )
-
-              case extract_valid_node_id(observation) do
-                nil ->
+              case BeamIdentity.resolve_candidate_node_id(target, observation) do
+                :missing ->
                   nil
 
-                node_id ->
+                {:rejected, reason} ->
+                  Nodes.clear_target_queue_capacity_sources(
+                    observation_target(target),
+                    observed_at
+                  )
+
+                  {:rejected, reason}
+
+                {:ok, node_id} ->
+                  Nodes.observe_status(observation_target(target), observation, observed_at,
+                    reserve_unassigned_node_grants?: true,
+                    reserve_unassigned_source_grants?: true
+                  )
+
                   loaded_model? = model_loaded?(observation, request)
 
-                  %{
-                    node_id: node_id,
-                    target: target,
-                    availability: observation.availability,
-                    loaded_model?: loaded_model?,
-                    active_request_count: observation.aggregate_active_request_count,
-                    max_concurrency: node_max_concurrency(observation),
-                    supports_prompt_token_ids: observation.supports_prompt_token_ids
-                  }
-                  |> maybe_put_model_placement_capacity(
-                    model_placement_capacity_for(observation, request.model_ref, loaded_model?)
-                  )
-                  |> maybe_put_prefix_cache_status(
-                    prefix_cache_status_for(observation, request.model_ref)
-                  )
-                  |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))
+                  {:candidate,
+                   %{
+                     node_id: node_id,
+                     target: schedule_target(target, node_id),
+                     availability: observation.availability,
+                     loaded_model?: loaded_model?,
+                     active_request_count: observation.aggregate_active_request_count,
+                     max_concurrency: node_max_concurrency(observation),
+                     supports_prompt_token_ids: observation.supports_prompt_token_ids
+                   }
+                   |> maybe_put_model_placement_capacity(
+                     model_placement_capacity_for(observation, request.model_ref, loaded_model?)
+                   )
+                   |> maybe_put_prefix_cache_status(
+                     prefix_cache_status_for(observation, request.model_ref)
+                   )
+                   |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))}
               end
 
             {:error, reason} ->
@@ -397,20 +445,10 @@ defmodule Orchard.Scheduler.MultiNode do
     end
   end
 
-  defp extract_valid_node_id(%Observation{} = observation) do
-    observation
-    |> Observation.node_id()
-    |> extract_valid_node_id()
-  end
+  defp schedule_target(%Target{transport: :beam, node_id: nil} = target, node_id),
+    do: %{target | node_id: node_id}
 
-  defp extract_valid_node_id(node_id) when is_binary(node_id) do
-    case Ecto.UUID.cast(node_id) do
-      {:ok, id} -> id
-      :error -> nil
-    end
-  end
-
-  defp extract_valid_node_id(_), do: nil
+  defp schedule_target(target, _node_id), do: target
 
   defp exception_name(%{__struct__: module}) when is_atom(module), do: Atom.to_string(module)
 
@@ -902,11 +940,22 @@ defmodule Orchard.Scheduler.MultiNode do
 
   # -- Helpers --
 
-  # When there is exactly one unique target, pass it explicitly to
-  # SingleNode.default_schedule/2 so the fallback uses the actual target
-  # from the plural config, not the separate singular runtime_client_target.
-  # When targets is empty or has multiple entries, use the implicit singular
-  # fallback (no single deterministic target to pass).
+  defp fallback_schedule(request, [%Target{transport: :grpc_compat} = single_target], opts) do
+    SingleNode.default_schedule(request, dispatch_target(single_target), opts)
+  end
+
+  defp fallback_schedule(request, [%Target{} = single_target], _opts) do
+    {:ok,
+     %{
+       strategy: :single_node,
+       request_id: request.public_id,
+       runtime_endpoint_target: single_target,
+       request_timeout_ms: Inference.request_timeout_ms(),
+       model_load_timeout_ms: Inference.model_load_timeout_ms(),
+       node_id: runtime_endpoint_node_id(single_target)
+     }}
+  end
+
   defp fallback_schedule(request, [single_target], opts) do
     SingleNode.default_schedule(request, dispatch_target(single_target), opts)
   end
@@ -925,8 +974,24 @@ defmodule Orchard.Scheduler.MultiNode do
     ModelRef.new!(model_ref.model_id, model_ref.version)
   end
 
+  defp maybe_put_runtime_client_target(schedule, %Target{
+         transport: :grpc_compat,
+         address: address
+       }) do
+    Map.put(schedule, :runtime_client_target, address)
+  end
+
+  defp maybe_put_runtime_client_target(schedule, _target), do: schedule
+
   defp dispatch_target(%Target{transport: :grpc_compat, address: address}), do: address
   defp dispatch_target(target), do: target
+
+  defp runtime_endpoint_node_id(%Target{} = target) do
+    case Nodes.lookup_by_target(target) do
+      %{id: id} -> id
+      nil -> nil
+    end
+  end
 
   defp observation_target(%Target{transport: :grpc_compat, address: address}), do: address
   defp observation_target(target), do: target

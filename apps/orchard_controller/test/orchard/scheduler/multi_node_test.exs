@@ -10,7 +10,15 @@ defmodule Orchard.Scheduler.MultiNodeTest do
   alias Orchard.Inference.CacheAffinity
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes.Node
-  alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    GrpcCompatibilityMapper,
+    Observation,
+    Placement,
+    PlacementCapacity,
+    Target
+  }
+
   alias Orchard.Scheduler.MultiNode
 
   # -- Stub Status Client --
@@ -60,11 +68,15 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       end
     end
 
-    defp target_key(%Orchard.RuntimeEndpoint.Target{transport: :grpc_compat, address: address}) do
+    def target_key(%Orchard.RuntimeEndpoint.Target{transport: :grpc_compat, address: address}) do
       target_key(address)
     end
 
-    defp target_key(target) do
+    def target_key(%Orchard.RuntimeEndpoint.Target{transport: :beam, id: id}) do
+      {:beam, id}
+    end
+
+    def target_key(target) do
       {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
     end
   end
@@ -234,6 +246,10 @@ defmodule Orchard.Scheduler.MultiNodeTest do
 
   defp stub_probe(host, port, response) do
     Process.put({:stub_status, {host, port}}, response)
+  end
+
+  defp stub_probe(%Target{} = target, response) do
+    Process.put({:stub_status, StubClient.target_key(target)}, response)
   end
 
   defp stub_connect_failure(host, port, reason) do
@@ -568,6 +584,29 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert status_calls() == [{{"127.0.0.1", 1}, [timeout: 17]}]
     end
 
+    test "single BEAM target fallback emits a runtime endpoint schedule" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      target = Target.beam(node.id, address: :orchard_node_agent@localhost)
+
+      put_inference(
+        runtime_endpoint_targets: [target],
+        runtime_client_targets: [],
+        runtime_client_target: [host: "127.0.0.1", port: 50_071]
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 status_timeout_ms: 17
+               )
+
+      assert schedule.strategy == :single_node
+      assert schedule.runtime_endpoint_target == target
+      refute Map.has_key?(schedule, :runtime_client_target)
+      assert schedule.node_id == node.id
+      assert status_calls() == [{{:beam, target.id}, [timeout: 17]}]
+    end
+
     test "returns cluster_busy for one live full target instead of bypassing capacity checks" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
@@ -793,6 +832,259 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.runtime_endpoint_target == endpoint_target
       assert schedule.runtime_client_target == [host: "10.0.0.1", port: 50_061]
       assert schedule.selected_tier == "loaded"
+    end
+
+    test "consumes BEAM runtime endpoint observations without legacy dispatch target" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      endpoint_target = Target.beam(node.id, address: :orchard_node_agent@localhost)
+      model_ref = Orchard.RuntimeEndpoint.ModelRef.new!("test-model", "v1")
+
+      observation =
+        Observation.new(%{
+          endpoint_id: endpoint_target.id,
+          target: endpoint_target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 2,
+          metadata: %{
+            node_id: node.id,
+            display_name: node.display_name,
+            hostname: node.hostname,
+            listen_host: node.advertise_addr,
+            listen_port: node.rpc_port
+          },
+          health: %{ready: true},
+          placements: [
+            Placement.new(%{
+              model_ref: model_ref,
+              state: :loaded,
+              capacity:
+                PlacementCapacity.new(%{
+                  model_ref: model_ref,
+                  active_request_count: 0,
+                  max_concurrency: 2,
+                  source: :beam_runtime_endpoint_status
+                })
+            })
+          ]
+        })
+
+      put_inference(runtime_endpoint_targets: [endpoint_target], runtime_client_targets: [])
+      stub_probe(endpoint_target, observation)
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request("test-model", "v1"),
+                 status_client: StubClient
+               )
+
+      assert schedule.strategy == :multi_node
+      assert schedule.node_id == node.id
+      assert schedule.runtime_endpoint_target == endpoint_target
+      refute Map.has_key?(schedule, :runtime_client_target)
+      assert schedule.selected_tier == "loaded"
+    end
+
+    test "SPEC.md §7.5 rejects configured BEAM observations before persisting mismatched metadata identity" do
+      configured_node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      reported_node_id = Ecto.UUID.generate()
+      endpoint_target = Target.beam(configured_node.id, address: :orchard_node_agent@localhost)
+      model_ref = Orchard.RuntimeEndpoint.ModelRef.new!("test-model", "v1")
+
+      observation =
+        Observation.new(%{
+          endpoint_id: endpoint_target.id,
+          target: endpoint_target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 2,
+          metadata: %{
+            node_id: reported_node_id,
+            display_name: "reported-beam-mismatch",
+            hostname: "reported-beam-mismatch.local",
+            listen_host: "10.0.0.2",
+            listen_port: 50_062
+          },
+          health: %{ready: true},
+          placements: [
+            Placement.new(%{
+              model_ref: model_ref,
+              state: :loaded,
+              capacity:
+                PlacementCapacity.new(%{
+                  model_ref: model_ref,
+                  active_request_count: 0,
+                  max_concurrency: 2,
+                  source: :beam_runtime_endpoint_status
+                })
+            })
+          ]
+        })
+
+      put_inference(runtime_endpoint_targets: [endpoint_target], runtime_client_targets: [])
+      stub_probe(endpoint_target, observation)
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request("test-model", "v1"),
+                 status_client: StubClient
+               )
+
+      assert Repo.get(Node, reported_node_id) == nil
+    end
+
+    test "SPEC.md §5.5 BEAM identity rejection clears stale cold queue capacity" do
+      QueueManager.reset()
+      stale_hb = DateTime.add(DateTime.utc_now(), -120_000, :millisecond)
+      observed_at = DateTime.utc_now()
+      model_id = "beam-identity-clear-model"
+
+      configured_node =
+        insert_node!(%{
+          advertise_addr: "10.0.0.1",
+          rpc_port: 50_061,
+          health: :healthy,
+          last_heartbeat_at: stale_hb
+        })
+
+      reported_node_id = Ecto.UUID.generate()
+      endpoint_target = Target.beam(configured_node.id, address: :orchard_node_agent@localhost)
+      model_ref = Orchard.RuntimeEndpoint.ModelRef.new!(model_id, "v1")
+
+      assert {:queued, first_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-beam-identity-clear-a", model_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      assert {:queued, second_ticket} =
+               QueueManager.acquire(
+                 queue_admission_request("req-beam-identity-clear-b", model_id),
+                 config: queue_config(capacity: 0)
+               )
+
+      first_awaiter = start_holding_awaiter(first_ticket, :first_beam_identity_clear_result)
+      second_awaiter = Task.async(fn -> QueueManager.await(second_ticket) end)
+
+      assert :ok =
+               QueueManager.refresh_capacity(model_id, "v1", 1,
+                 source: {:node, configured_node.id, :cold}
+               )
+
+      assert_receive {:first_beam_identity_clear_result, {:ok, first_grant}}, 2_000
+      refute Task.yield(second_awaiter, 50)
+
+      observation =
+        Observation.new(%{
+          endpoint_id: endpoint_target.id,
+          target: endpoint_target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 2,
+          metadata: %{
+            node_id: reported_node_id,
+            display_name: "reported-beam-mismatch",
+            hostname: "reported-beam-mismatch.local",
+            listen_host: "10.0.0.2",
+            listen_port: 50_062
+          },
+          health: %{ready: true},
+          placements: [
+            Placement.new(%{
+              model_ref: model_ref,
+              state: :loaded,
+              capacity:
+                PlacementCapacity.new(%{
+                  model_ref: model_ref,
+                  active_request_count: 0,
+                  max_concurrency: 2,
+                  source: :beam_runtime_endpoint_status
+                })
+            })
+          ]
+        })
+
+      put_inference(runtime_endpoint_targets: [endpoint_target], runtime_client_targets: [])
+      stub_probe(endpoint_target, observation)
+
+      assert {:error, :cluster_busy} =
+               MultiNode.schedule(canonical_request(model_id),
+                 status_client: StubClient,
+                 observed_at: observed_at
+               )
+
+      assert Repo.get(Node, reported_node_id) == nil
+      assert QueueManager.active_capacity_source_lanes({:node, configured_node.id, :cold}) == []
+
+      assert :ok = QueueManager.release(first_grant)
+      refute Task.yield(second_awaiter, 100)
+
+      assert :ok = QueueManager.refresh_capacity(model_id, "v1", 1, source: {:test, :restore})
+      assert {:ok, second_grant} = Task.await(second_awaiter, 2_000)
+      assert second_grant.queue_key == "#{model_id}@v1"
+
+      assert :ok = QueueManager.release(second_grant)
+      send(first_awaiter, :stop)
+    end
+
+    test "address-only BEAM schedules carry observed node identity for failure cleanup" do
+      node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+
+      endpoint_target =
+        Target.normalize(
+          transport: :beam,
+          id: "source-dev-node-agent",
+          address: :orchard_node_agent@localhost
+        )
+
+      model_ref = Orchard.RuntimeEndpoint.ModelRef.new!("test-model", "v1")
+
+      observation =
+        Observation.new(%{
+          endpoint_id: endpoint_target.id,
+          target: endpoint_target,
+          availability: :available,
+          aggregate_active_request_count: 0,
+          aggregate_max_concurrency: 2,
+          metadata: %{
+            node_id: node.id,
+            display_name: node.display_name,
+            hostname: node.hostname,
+            listen_host: node.advertise_addr,
+            listen_port: node.rpc_port
+          },
+          health: %{ready: true},
+          placements: [
+            Placement.new(%{
+              model_ref: model_ref,
+              state: :loaded,
+              capacity:
+                PlacementCapacity.new(%{
+                  model_ref: model_ref,
+                  active_request_count: 0,
+                  max_concurrency: 2,
+                  source: :beam_runtime_endpoint_status
+                })
+            })
+          ]
+        })
+
+      put_inference(runtime_endpoint_targets: [endpoint_target], runtime_client_targets: [])
+      stub_probe(endpoint_target, observation)
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request("test-model", "v1"),
+                 status_client: StubClient
+               )
+
+      node_id = node.id
+
+      assert schedule.node_id == node.id
+
+      assert %Target{
+               id: "source-dev-node-agent",
+               transport: :beam,
+               address: :orchard_node_agent@localhost,
+               node_id: ^node_id
+             } = schedule.runtime_endpoint_target
     end
 
     test "hosted tool capability and readiness data do not change inference ranking" do

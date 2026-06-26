@@ -32,6 +32,7 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.ModelManifest.Tokenizer
   alias Orchard.Node
   alias Orchard.Node.ModelManager
+  alias Orchard.Node.RuntimeEndpoint, as: NodeRuntimeEndpoint
   alias Orchard.Node.RuntimeServer
   alias Orchard.Node.SentryTelemetryBridge
   alias Orchard.Node.SharedContract
@@ -40,7 +41,7 @@ defmodule OrchardNodeAgentTest do
   alias Orchard.Node.WorkerSupervisor
   alias Orchard.NodeAgent.Supervisor, as: NodeAgentSupervisor
   alias Orchard.RuntimeEndpoint.ModelRef, as: RuntimeModelRef
-  alias Orchard.RuntimeEndpoint.{Observation, PlacementCapacity, Target}
+  alias Orchard.RuntimeEndpoint.{Observation, Operation, PlacementCapacity, Target}
 
   @test_model_id "mlx-community/phi-3"
   @test_version "main"
@@ -302,6 +303,37 @@ defmodule OrchardNodeAgentTest do
 
     @impl true
     def finish_generation(adapter_state, _generation_ref, _opts), do: adapter_state
+  end
+
+  defmodule FailingCancelAdapter do
+    @behaviour Orchard.Node.RuntimeAdapter
+
+    alias Orchard.Cluster.V1.ExecuteInferenceRequest
+    alias Orchard.Cluster.V1.ModelRef
+
+    @impl true
+    def get_status(adapter_state, opts),
+      do: BlockingRuntimeAdapter.get_status(adapter_state, opts)
+
+    @impl true
+    def load_model(%ModelRef{} = model_ref, opts),
+      do: BlockingRuntimeAdapter.load_model(model_ref, opts)
+
+    @impl true
+    def unload_model(adapter_state, opts),
+      do: BlockingRuntimeAdapter.unload_model(adapter_state, opts)
+
+    @impl true
+    def start_generation(adapter_state, %ExecuteInferenceRequest{} = request, opts),
+      do: BlockingRuntimeAdapter.start_generation(adapter_state, request, opts)
+
+    @impl true
+    def cancel_generation(adapter_state, _generation_ref, _opts),
+      do: {:error, {:simulated_cancel_failure, map_size(adapter_state.generations)}}
+
+    @impl true
+    def finish_generation(adapter_state, generation_ref, opts),
+      do: BlockingRuntimeAdapter.finish_generation(adapter_state, generation_ref, opts)
   end
 
   defmodule MemoryBudgetRuntimeAdapter do
@@ -2708,6 +2740,241 @@ defmodule OrchardNodeAgentTest do
     end)
   end
 
+  test "BEAM Runtime Endpoint streams model_busy failure without Accepted when model is busy",
+       %{bundle: bundle} do
+    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      request1 = execute_inference_request("req-beam-busy-first")
+      assert :ok = NodeStatus.prepare_request(request1, self())
+      assert :ok = NodeStatus.start_request(request1)
+
+      wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+
+      stream_ref = make_ref()
+
+      request2 = %Operation.ExecuteRequest{
+        request_id: "req-beam-busy-second",
+        controller_session_id: "session-beam-busy-second",
+        model_ref: RuntimeModelRef.new!(@test_model_id, @test_version),
+        rendered_prompt_utf8: "hello",
+        input_tokens: 1
+      }
+
+      assert {:ok, _pid} = NodeRuntimeEndpoint.execute_inference(request2, self(), stream_ref)
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref, "req-beam-busy-second",
+                      %OrchardInferenceEvent{
+                        event: %OrchardInferenceEvent.Failed{code: "model_busy"}
+                      }},
+                     1_000
+
+      refute_receive {:runtime_endpoint_event, ^stream_ref, "req-beam-busy-second",
+                      %OrchardInferenceEvent{
+                        event: %OrchardInferenceEvent.Accepted{}
+                      }},
+                     100
+
+      assert_receive {:runtime_endpoint_done, ^stream_ref, :ok}, 1_000
+
+      generation_ref = get_blocking_generation_ref()
+      send_release(generation_ref)
+
+      assert_receive {:node_runtime_event, "req-beam-busy-first",
+                      %OrchardInferenceEvent{event: %OrchardInferenceEvent.OutputTextDelta{}}},
+                     1_000
+
+      assert_receive {:node_runtime_event, "req-beam-busy-first",
+                      %OrchardInferenceEvent{event: %OrchardInferenceEvent.Completed{}}},
+                     1_000
+    end)
+  end
+
+  test "BEAM Runtime Endpoint streams accepted delta completed and done", %{bundle: bundle} do
+    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      request = beam_execute_request("req-beam-happy-stream", bundle)
+      stream_ref = make_ref()
+
+      assert {:ok, _pid} = NodeRuntimeEndpoint.execute_inference(request, self(), stream_ref)
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref, "req-beam-happy-stream",
+                      %OrchardInferenceEvent{
+                        event: %OrchardInferenceEvent.Accepted{accepted_at_unix_ms: accepted_at}
+                      }},
+                     1_000
+
+      assert is_integer(accepted_at)
+      assert accepted_at > 0
+
+      wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+      refs = wait_for_generation_refs([request.request_id])
+      send_release(Map.fetch!(refs, request.request_id))
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref, "req-beam-happy-stream",
+                      %OrchardInferenceEvent{
+                        event: %OrchardInferenceEvent.OutputTextDelta{delta: "released"}
+                      }},
+                     1_000
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref, "req-beam-happy-stream",
+                      %OrchardInferenceEvent{
+                        event: %OrchardInferenceEvent.Completed{} = completed
+                      }},
+                     1_000
+
+      assert completed.finish_reason == :finish_reason_stop
+
+      assert completed.usage == %OrchardInferenceEvent.Usage{
+               input_tokens: 2,
+               output_tokens: 1,
+               total_tokens: 3
+             }
+
+      assert_receive {:runtime_endpoint_done, ^stream_ref, :ok}, 1_000
+      wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+    end)
+  end
+
+  test "BEAM Runtime Endpoint cancel releases same-model capacity", %{bundle: bundle} do
+    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      request1 = beam_execute_request("req-beam-cancel-first", bundle)
+      stream_ref1 = make_ref()
+
+      assert {:ok, _pid} = NodeRuntimeEndpoint.execute_inference(request1, self(), stream_ref1)
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref1, "req-beam-cancel-first",
+                      %OrchardInferenceEvent{event: %OrchardInferenceEvent.Accepted{}}},
+                     1_000
+
+      wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+
+      cancel_request =
+        Operation.CancelRequest.new!(%{
+          request_id: request1.request_id,
+          controller_session_id: request1.controller_session_id
+        })
+
+      assert :ok = NodeRuntimeEndpoint.cancel_inference(cancel_request)
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref1, "req-beam-cancel-first",
+                      %OrchardInferenceEvent{
+                        event: %OrchardInferenceEvent.Failed{code: "cancelled"}
+                      }},
+                     1_000
+
+      assert_receive {:runtime_endpoint_done, ^stream_ref1, :ok}, 1_000
+      wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+
+      request2 = beam_execute_request("req-beam-cancel-second", bundle)
+      stream_ref2 = make_ref()
+
+      assert {:ok, _pid} = NodeRuntimeEndpoint.execute_inference(request2, self(), stream_ref2)
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref2, "req-beam-cancel-second",
+                      %OrchardInferenceEvent{event: %OrchardInferenceEvent.Accepted{}}},
+                     1_000
+
+      refs = wait_for_generation_refs([request2.request_id])
+      send_release(Map.fetch!(refs, request2.request_id))
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref2, "req-beam-cancel-second",
+                      %OrchardInferenceEvent{
+                        event: %OrchardInferenceEvent.OutputTextDelta{delta: "released"}
+                      }},
+                     1_000
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref2, "req-beam-cancel-second",
+                      %OrchardInferenceEvent{event: %OrchardInferenceEvent.Completed{}}},
+                     1_000
+
+      assert_receive {:runtime_endpoint_done, ^stream_ref2, :ok}, 1_000
+      wait_until(fn -> NodeStatus.current().active_request_count == 0 end)
+    end)
+  end
+
+  test "BEAM Runtime Endpoint cancel reports rejected acknowledgements", %{bundle: bundle} do
+    with_runtime_adapter(FailingCancelAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      request = beam_execute_request("req-beam-cancel-rejected", bundle)
+      stream_ref = make_ref()
+
+      assert {:ok, _pid} = NodeRuntimeEndpoint.execute_inference(request, self(), stream_ref)
+
+      assert_receive {:runtime_endpoint_event, ^stream_ref, "req-beam-cancel-rejected",
+                      %OrchardInferenceEvent{event: %OrchardInferenceEvent.Accepted{}}},
+                     1_000
+
+      cancel_request =
+        Operation.CancelRequest.new!(%{
+          request_id: request.request_id,
+          controller_session_id: request.controller_session_id
+        })
+
+      assert {:error, {:cancel_rejected, message}} =
+               NodeRuntimeEndpoint.cancel_inference(cancel_request)
+
+      assert message =~ "simulated_cancel_failure"
+    end)
+  end
+
+  test "BEAM Runtime Endpoint owner death releases same-model capacity", %{bundle: bundle} do
+    with_runtime_adapter(BlockingRuntimeAdapter, fn ->
+      assert %EnsureModelLoadedResponse{placement_state: :PLACEMENT_STATE_LOADED} =
+               NodeStatus.ensure_model_loaded(ensure_model_loaded_request(bundle))
+
+      parent = self()
+      request = beam_execute_request("req-beam-owner-death", bundle)
+      stream_ref = make_ref()
+
+      owner_pid =
+        spawn(fn ->
+          result = NodeRuntimeEndpoint.execute_inference(request, self(), stream_ref)
+          send(parent, {:beam_owner_execute_result, result})
+
+          receive do
+            {:runtime_endpoint_event, ^stream_ref, "req-beam-owner-death",
+             %OrchardInferenceEvent{event: %OrchardInferenceEvent.Accepted{}}} ->
+              send(parent, :beam_owner_stream_accepted)
+              Process.sleep(:infinity)
+          after
+            5_000 -> send(parent, :beam_owner_stream_timeout)
+          end
+        end)
+
+      try do
+        assert_receive {:beam_owner_execute_result, {:ok, stream_pid}}, 1_000
+        stream_monitor = Process.monitor(stream_pid)
+
+        assert_receive :beam_owner_stream_accepted, 1_000
+        wait_until(fn -> NodeStatus.current().active_request_count == 1 end)
+
+        Process.exit(owner_pid, :kill)
+
+        assert_receive {:DOWN, ^stream_monitor, :process, ^stream_pid, _reason}, 1_000
+
+        wait_until(fn ->
+          status = NodeStatus.current()
+          capacity = runtime_endpoint_capacity(status)
+
+          status.active_request_count == 0 and capacity.active_request_count == 0 and
+            capacity.max_concurrency == 1 and PlacementCapacity.spare?(capacity)
+        end)
+      after
+        if Process.alive?(owner_pid), do: Process.exit(owner_pid, :kill)
+        best_effort_release_generation_refs([request.request_id])
+      end
+    end)
+  end
+
   test "batch mode allows two active requests and rejects the third at prepare time",
        %{bundle: bundle} do
     with_runtime_config(
@@ -4614,7 +4881,7 @@ defmodule OrchardNodeAgentTest do
 
   defp runtime_endpoint_observation(%StatusResponse{} = status) do
     Observation.new(%{
-      target: Target.beam(Node.node_id() || "test-node"),
+      target: Target.beam("550e8400-e29b-41d4-a716-446655440000", address: node()),
       aggregate_active_request_count: status.active_request_count,
       worker_state: status.worker_state,
       placements: Enum.map(status.runtime_model_placements, &runtime_endpoint_placement/1)
@@ -4875,6 +5142,19 @@ defmodule OrchardNodeAgentTest do
       deadline_unix_ms: System.system_time(:millisecond) + 5_000,
       metadata_json: ~s({"source":"test"})
     }
+  end
+
+  defp beam_execute_request(request_id, bundle) do
+    Operation.ExecuteRequest.new!(%{
+      request_id: request_id,
+      controller_session_id: "controller-session-1",
+      model_ref: RuntimeModelRef.new!(bundle.model_id, bundle.version),
+      rendered_prompt_utf8: "hello orchard",
+      input_tokens: 2,
+      params: %{max_output_tokens: 16},
+      deadline_unix_ms: System.system_time(:millisecond) + 5_000,
+      metadata_json: ~s({"source":"test"})
+    })
   end
 
   defp with_hard_mode_license(fun) when is_function(fun, 0) do

@@ -44,10 +44,11 @@ Supported deployment modes:
 * All durable state SHALL live in Postgres.
 * Controller runtime execution SHALL use the Runtime Endpoint Interface.
 * Runtime Endpoint semantics are transport-independent.
-* The current gRPC/protobuf `NodeRuntimeService` is the compatibility transport for the first implementation and a candidate protocol for future non-BEAM adapters.
-* First-party Orchard Controller and Node Agent services MAY later use BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
-* Source-dev SHALL keep the gRPC compatibility path as the Controller-to-Node Agent runtime transport on port `50071` until a BEAM Runtime Endpoint adapter exists and passes the accepted two-Mac smoke.
+* The gRPC/protobuf `NodeRuntimeService` remains the compatibility transport and a candidate protocol for future non-BEAM adapters.
+* First-party Orchard Controller and Node Agent services MAY use default-off BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
+* Source-dev SHALL keep the gRPC compatibility path as the default Controller-to-Node Agent runtime transport on port `50071` until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke and is explicitly promoted.
 * Production BEAM Distribution MUST be explicitly enabled, identity-bound, network-restricted, and fail closed when required admission configuration is missing.
+* BEAM Runtime Endpoint targets MUST carry a valid BEAM node-name address (`service@host`) as an atom or binary; a configured `node_id`, when present, MUST be a UUID and MUST match observed endpoint metadata before scheduler or dispatch may trust that candidate identity.
 * External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
 * All public API traffic SHALL terminate at the controller.
 * Token streams SHALL always pass through the controller so governance, accounting, cancellation, and audit behavior are centralized.
@@ -82,7 +83,7 @@ Supported deployment modes:
                      +---------v--+   +---v---------------------------+
                      | Postgres    |   | Runtime Endpoint Adapter(s) |
                      | durable DB  |   | - current gRPC compatibility|
-                     +------------ +   | - future first-party BEAM   |
+                     +------------ +   | - default-off BEAM          |
                                        | - future external/provider  |
                                        +---+-------------------------+
                                            |
@@ -998,6 +999,7 @@ Valid loaded-placement observations MAY add source-scoped capacity for the match
 Eligible cold/no-placement node observations MAY add conservative source-scoped capacity for queued model/version lanes, bounded by aggregate node concurrency and by one unreserved cold slot per lane per node observation.
 Live capacity source refreshes SHALL be allowed to wake queued requests without a new admission event.
 Stale, unavailable, non-loaded, invalid, exhausted, ineligible, or transport-failed node and placement observations SHALL NOT inflate queue admission capacity and SHALL clear any stale capacity source owned by that node or target.
+BEAM Runtime Endpoint observations MAY refresh queue capacity only when the target resolves back to the same persisted node identity; address-only or mismatched BEAM observations SHALL NOT publish queue capacity.
 
 ### 5.5 Eligibility filter
 
@@ -2080,11 +2082,12 @@ PATCH /admin/v1/observability
 
 Controller runtime execution SHALL use the Runtime Endpoint Interface.
 Runtime Endpoint semantics are transport-independent.
-The current gRPC/protobuf `NodeRuntimeService` is the gRPC Compatibility Adapter for the first implementation and a candidate protocol for future non-BEAM adapters.
-First-party Orchard Controller and Node Agent services MAY later use BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
-Source-dev SHALL keep the gRPC compatibility path as the Controller-to-Node Agent runtime transport on port `50071` until a BEAM Runtime Endpoint adapter exists and passes the accepted two-Mac smoke.
+The gRPC/protobuf `NodeRuntimeService` remains the gRPC Compatibility Adapter and a candidate protocol for future non-BEAM adapters.
+First-party Orchard Controller and Node Agent services MAY use default-off BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
+Source-dev SHALL keep the gRPC compatibility path as the default Controller-to-Node Agent runtime transport on port `50071` until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke and is explicitly promoted.
 The accepted smoke requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
 Production BEAM Distribution MUST be explicitly enabled, identity-bound, network-restricted, and fail closed when required admission configuration is missing.
+BEAM Runtime Endpoint targets MUST carry a valid BEAM node-name address (`service@host`) as an atom or binary; a configured `node_id`, when present, MUST be a UUID and MUST match observed endpoint metadata before scheduler or dispatch may trust that candidate identity.
 External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
 Postgres remains durable truth for inventory, lifecycle state, Runtime Endpoint Observations, scheduling history, request state, and operator-visible status.
 BEAM Distribution MUST NOT be treated as durable cluster truth.
@@ -2457,6 +2460,7 @@ Runtime capacity and Placement Capacity observation semantics:
 * when multiple eligible candidates remain, the scheduler SHALL rank by the requested placement's active request count before health when a valid matching placement observation is available; otherwise it SHALL use the endpoint aggregate `active_request_count`
 * controller queue capacity MAY be refreshed from Runtime Endpoint Observations; loaded placement observations contribute only to their matching model/version lane, while cold/no-placement endpoint observations contribute conservative source-scoped capacity for queued lanes without exceeding aggregate endpoint capacity
 * stale, unavailable, non-loaded, invalid, exhausted, ineligible, or transport-failed observations SHALL clear their endpoint-owned queue capacity sources instead of preserving stale admission capacity
+* BEAM Runtime Endpoint observations MAY refresh queue capacity only when the target resolves back to the same persisted node identity; address-only or mismatched BEAM observations SHALL NOT publish queue capacity
 * node-agent request admission SHALL reject a new runtime request when aggregate active request count has reached the effective aggregate worker request limit, even if the requested model placement has remaining per-placement capacity
 * cancellation or terminal completion SHALL release aggregate node capacity so another loaded model can use the freed slot
 * stream generation mode SHALL report `max_concurrency = 1` at both node and placement levels
