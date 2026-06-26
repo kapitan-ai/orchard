@@ -884,9 +884,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.selected_tier == "loaded"
     end
 
-    test "SPEC.md §7.5 rejects configured BEAM observations with mismatched metadata identity" do
+    test "SPEC.md §7.5 rejects configured BEAM observations before persisting mismatched metadata identity" do
       configured_node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
-      reported_node = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+      reported_node_id = Ecto.UUID.generate()
       endpoint_target = Target.beam(configured_node.id, address: :orchard_node_agent@localhost)
       model_ref = Orchard.RuntimeEndpoint.ModelRef.new!("test-model", "v1")
 
@@ -898,11 +898,11 @@ defmodule Orchard.Scheduler.MultiNodeTest do
           aggregate_active_request_count: 0,
           aggregate_max_concurrency: 2,
           metadata: %{
-            node_id: reported_node.id,
-            display_name: reported_node.display_name,
-            hostname: reported_node.hostname,
-            listen_host: reported_node.advertise_addr,
-            listen_port: reported_node.rpc_port
+            node_id: reported_node_id,
+            display_name: "reported-beam-mismatch",
+            hostname: "reported-beam-mismatch.local",
+            listen_host: "10.0.0.2",
+            listen_port: 50_062
           },
           health: %{ready: true},
           placements: [
@@ -927,6 +927,8 @@ defmodule Orchard.Scheduler.MultiNodeTest do
                MultiNode.schedule(canonical_request("test-model", "v1"),
                  status_client: StubClient
                )
+
+      assert Repo.get(Node, reported_node_id) == nil
     end
 
     test "address-only BEAM schedules carry observed node identity for failure cleanup" do

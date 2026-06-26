@@ -42,6 +42,7 @@ defmodule Orchard.Scheduler.MultiNode do
   alias Orchard.Nodes
 
   alias Orchard.RuntimeEndpoint.{
+    BeamIdentity,
     GrpcCompatibilityMapper,
     ModelRef,
     Observation,
@@ -243,12 +244,7 @@ defmodule Orchard.Scheduler.MultiNode do
             {:ok, response} ->
               observation = normalize_status_observation(target, response)
 
-              Nodes.observe_status(observation_target(target), observation, observed_at,
-                reserve_unassigned_node_grants?: true,
-                reserve_unassigned_source_grants?: true
-              )
-
-              case candidate_node_id(target, observation) do
+              case BeamIdentity.resolve_candidate_node_id(target, observation) do
                 :missing ->
                   nil
 
@@ -256,6 +252,11 @@ defmodule Orchard.Scheduler.MultiNode do
                   {:rejected, reason}
 
                 {:ok, node_id} ->
+                  Nodes.observe_status(observation_target(target), observation, observed_at,
+                    reserve_unassigned_node_grants?: true,
+                    reserve_unassigned_source_grants?: true
+                  )
+
                   loaded_model? = model_loaded?(observation, request)
 
                   {:candidate,
@@ -433,60 +434,6 @@ defmodule Orchard.Scheduler.MultiNode do
       _other -> 1
     end
   end
-
-  defp candidate_node_id(
-         %Target{transport: :beam, node_id: node_id},
-         %Observation{} = observation
-       )
-       when is_binary(node_id) do
-    configured_node_id = extract_valid_node_id(node_id)
-    observed_node_id = observed_metadata_node_id(observation)
-
-    cond do
-      configured_node_id == nil -> :missing
-      observed_node_id == configured_node_id -> {:ok, configured_node_id}
-      true -> {:rejected, :beam_node_identity_mismatch}
-    end
-  end
-
-  defp candidate_node_id(%Target{transport: :beam}, %Observation{} = observation) do
-    case observed_metadata_node_id(observation) do
-      nil -> :missing
-      node_id -> {:ok, node_id}
-    end
-  end
-
-  defp candidate_node_id(_target, %Observation{} = observation) do
-    case extract_valid_node_id(observation) do
-      nil -> :missing
-      node_id -> {:ok, node_id}
-    end
-  end
-
-  defp observed_metadata_node_id(%Observation{metadata: metadata}) when is_map(metadata) do
-    metadata
-    |> metadata_value(:node_id)
-    |> extract_valid_node_id()
-  end
-
-  defp metadata_value(metadata, key) do
-    Map.get(metadata, key) || Map.get(metadata, Atom.to_string(key))
-  end
-
-  defp extract_valid_node_id(%Observation{} = observation) do
-    observation
-    |> Observation.node_id()
-    |> extract_valid_node_id()
-  end
-
-  defp extract_valid_node_id(node_id) when is_binary(node_id) do
-    case Ecto.UUID.cast(node_id) do
-      {:ok, id} -> id
-      :error -> nil
-    end
-  end
-
-  defp extract_valid_node_id(_), do: nil
 
   defp schedule_target(%Target{transport: :beam, node_id: nil} = target, node_id),
     do: %{target | node_id: node_id}

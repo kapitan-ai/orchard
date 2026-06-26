@@ -28,7 +28,15 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   alias Orchard.Inference
   alias Orchard.Inference.ModelLoadFailure
   alias Orchard.InferenceEvent
-  alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, Observation, Operation, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    BeamIdentity,
+    GrpcCompatibilityMapper,
+    Observation,
+    Operation,
+    Target
+  }
+
   alias Orchard.SentryContext
   alias Orchard.Tokenizer.Telemetry
 
@@ -257,28 +265,31 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   end
 
   defp do_dispatch_with_channel(%{} = context) do
-    {model_load_request, metrics} =
-      probe_and_resolve_node(
-        context.client,
-        context.channel,
-        context.target,
-        context.model_load_request,
-        context.on_node_resolved,
-        context.metrics
-      )
+    case probe_and_resolve_node(
+           context.client,
+           context.channel,
+           context.target,
+           context.model_load_request,
+           context.on_node_resolved,
+           context.metrics
+         ) do
+      {:ok, model_load_request, metrics} ->
+        context = %{context | model_load_request: model_load_request, metrics: metrics}
+        ensure_start = System.monotonic_time(:millisecond)
+        put_ensure_model_load_started_context(metrics)
 
-    context = %{context | model_load_request: model_load_request, metrics: metrics}
-    ensure_start = System.monotonic_time(:millisecond)
-    put_ensure_model_load_started_context(metrics)
+        context.client
+        |> ensure_loaded_for_dispatch(
+          context.channel,
+          context.target,
+          model_load_request,
+          context.model_load_timeout
+        )
+        |> handle_ensure_result(context, ensure_start)
 
-    context.client
-    |> ensure_loaded_for_dispatch(
-      context.channel,
-      context.target,
-      model_load_request,
-      context.model_load_timeout
-    )
-    |> handle_ensure_result(context, ensure_start)
+      {:error, reason, metrics} ->
+        handle_dispatch_result({:error, {:dispatch_failed, reason}}, metrics, context.target)
+    end
   end
 
   defp ensure_loaded_for_dispatch(client, channel, target, model_load_request, model_load_timeout) do
@@ -361,8 +372,6 @@ defmodule Orchard.Dispatch.RequestDispatcher do
     {:error, {:model_load_failed, ModelLoadFailure.from_transport_reason(:node_unavailable)}}
   end
 
-  # Pre-dispatch status probe: best-effort node identity resolution.
-  # Never aborts dispatch on failure.
   defp probe_and_resolve_node(
          client,
          channel,
@@ -373,56 +382,76 @@ defmodule Orchard.Dispatch.RequestDispatcher do
        ) do
     case client.status(channel, timeout: @status_probe_timeout_ms) do
       {:ok, response} ->
-        observed_at = DateTime.utc_now()
-        observation = normalize_status_observation(target, response)
-
-        {resolved_node_id, model_load_request, metrics} =
-          case extract_node_id(observation) do
-            {:ok, node_id} ->
-              metrics = %{metrics | node_id: node_id}
-              put_node_resolved_context(metrics, target)
-              {node_id, %{model_load_request | node_id: node_id}, metrics}
-
-            :error ->
-              {nil, model_load_request, metrics}
-          end
-
-        try do
-          Orchard.Nodes.observe_status(observation_target(target), observation, observed_at)
-        rescue
-          error ->
-            Logger.warning("Node observation failed during dispatch probe: #{inspect(error)}")
-        end
-
-        if is_binary(resolved_node_id) do
-          invoke_callback_safe(on_node_resolved, resolved_node_id)
-        end
-
-        {model_load_request, metrics}
+        resolve_probe_status(response, target, model_load_request, on_node_resolved, metrics)
 
       {:error, reason} ->
-        # Probe failure is non-fatal, but we still record transport reachability
-        # best-effort for node health.
         mark_transport_failure(target, reason)
-        {model_load_request, metrics}
+        {:ok, model_load_request, metrics}
     end
   rescue
     error ->
       Logger.warning("Status probe failed unexpectedly: #{inspect(error)}")
-      {model_load_request, metrics}
+      {:ok, model_load_request, metrics}
   end
 
-  defp extract_node_id(%Observation{} = observation) do
-    observation
-    |> Observation.node_id()
-    |> extract_node_id()
+  defp resolve_probe_status(response, target, model_load_request, on_node_resolved, metrics) do
+    observed_at = DateTime.utc_now()
+    observation = normalize_status_observation(target, response)
+
+    case BeamIdentity.resolve_candidate_node_id(target, observation) do
+      {:rejected, reason} ->
+        {:error, reason, metrics}
+
+      identity_result ->
+        persist_resolved_probe(
+          identity_result,
+          target,
+          observation,
+          observed_at,
+          model_load_request,
+          on_node_resolved,
+          metrics
+        )
+    end
   end
 
-  defp extract_node_id(node_id) when is_binary(node_id) do
-    Ecto.UUID.cast(node_id)
+  defp persist_resolved_probe(
+         identity_result,
+         target,
+         observation,
+         observed_at,
+         model_load_request,
+         on_node_resolved,
+         metrics
+       ) do
+    {resolved_node_id, model_load_request, metrics} =
+      resolved_probe_identity(identity_result, target, model_load_request, metrics)
+
+    observe_probe_status(target, observation, observed_at)
+
+    if is_binary(resolved_node_id) do
+      invoke_callback_safe(on_node_resolved, resolved_node_id)
+    end
+
+    {:ok, model_load_request, metrics}
   end
 
-  defp extract_node_id(_), do: :error
+  defp observe_probe_status(target, observation, observed_at) do
+    Orchard.Nodes.observe_status(observation_target(target), observation, observed_at)
+  rescue
+    error ->
+      Logger.warning("Node observation failed during dispatch probe: #{inspect(error)}")
+  end
+
+  defp resolved_probe_identity({:ok, node_id}, target, model_load_request, metrics) do
+    metrics = %{metrics | node_id: node_id}
+    put_node_resolved_context(metrics, target)
+    {node_id, %{model_load_request | node_id: node_id}, metrics}
+  end
+
+  defp resolved_probe_identity(:missing, _target, model_load_request, metrics) do
+    {nil, model_load_request, metrics}
+  end
 
   defp invoke_callback_safe(nil, _node_id), do: :ok
 
