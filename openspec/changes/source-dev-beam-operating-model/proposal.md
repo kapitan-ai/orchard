@@ -1,7 +1,8 @@
 ## Why
 
-Orchard has a default-off BEAM Runtime Endpoint adapter, but source-dev still boots unnamed Mix VMs and configures only gRPC-shaped runtime targets.
-A collaborator-reviewable operating model is needed before builders add split-role BEAM bootstrap, cookie handling, distribution networking, and BEAM-specific Runtime Endpoint target configuration.
+Orchard has a default-off BEAM Runtime Endpoint adapter.
+Before this change, source-dev still booted unnamed Mix VMs and configured only gRPC-shaped runtime targets.
+A collaborator-reviewable operating model is needed for split-role BEAM bootstrap, cookie handling, distribution networking, and BEAM-specific Runtime Endpoint target configuration.
 
 ## What Changes
 
@@ -12,7 +13,7 @@ A collaborator-reviewable operating model is needed before builders add split-ro
 - Require sanitized durable two-Mac smoke evidence under `docs/investigations/source-dev-beam-smoke-<date>.md` before any source-dev default promotion.
 - Preserve all-in-one `bin/dev` on the current gRPC compatibility default in this change.
 - Preserve gRPC compatibility as an explicitly selected adapter.
-- Exclude product code, script, and runtime config implementation from this proposal package.
+- Include the source-dev code, scripts, runtime config, tests, and documentation needed for the explicit split-role operating model.
 - Exclude production or packaged BEAM Distribution hardening, external Runtime Endpoint adapters, and any change to Postgres as Orchard's durable cluster truth.
 
 ## Capabilities
@@ -30,6 +31,6 @@ A collaborator-reviewable operating model is needed before builders add split-ro
 ## Impact
 
 - SPEC.md impact: this change proposes behavior for the source-dev Runtime Endpoint operating model under the accepted BEAM-first Runtime Endpoint direction, without changing production packaging behavior or durable cluster truth.
-- Affects future implementation work in `bin/dev-controller`, `bin/dev-node-agent`, source-dev config parsing, BEAM Runtime Endpoint target selection, cookie validation, distributed-node launch flags, tests, and local-dev documentation.
+- Affects implementation work in `bin/dev-controller`, `bin/dev-node-agent`, source-dev config parsing, BEAM Runtime Endpoint target selection, cookie validation, distributed-node launch flags, tests, and local-dev documentation.
 - Does not affect public inference APIs, request semantics, scheduler ranking policy, persisted schema, packaged launchd services, or Worker Runtime protocol behavior directly.
 - Depends on the accepted direction in ADR 0001, `docs/decisions/0001-runtime-endpoints-beam-first.md`; the sibling `beam-first-runtime-endpoints` OpenSpec change remains companion architecture context, not an accepted capability spec dependency.

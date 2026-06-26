@@ -2,7 +2,7 @@
 
 Orchard already models Controller runtime execution through the Runtime Endpoint Interface, and `SPEC.md` §1.2 and §7.5 allow default-off BEAM Distribution for admitted first-party Controller and Node Agent services.
 The existing BEAM Runtime Endpoint adapter assumes that BEAM Distribution has already been started with compatible node names, cookies, network reachability, and target addresses.
-Current source-dev entrypoints still boot unnamed Mix VMs and configure the legacy gRPC compatibility target list.
+Before this change, source-dev entrypoints still booted unnamed Mix VMs and configured the legacy gRPC compatibility target list.
 
 This design turns the accepted BEAM-first Runtime Endpoint direction into an apply-ready source-dev operating model.
 It is intentionally narrower than production BEAM Distribution hardening.
@@ -22,7 +22,6 @@ All-in-one `bin/dev` remains on the current gRPC compatibility default until a s
 
 **Non-Goals:**
 
-- Do not implement product code, scripts, runtime config, tests, or documentation updates in this proposal package.
 - Do not update `orchardctl env init` to render the Source-dev BEAM env surface in this implementation slice; defer CLI scaffolding to a separate change.
 - Do not flip all-in-one `bin/dev` from gRPC compatibility to BEAM Runtime Endpoint mode.
 - Do not remove the gRPC Compatibility Adapter.
@@ -34,7 +33,7 @@ All-in-one `bin/dev` remains on the current gRPC compatibility default until a s
 
 ### Split-role source dev is the first BEAM operating target
 
-BEAM Runtime Endpoint mode should be implemented first for `bin/dev-controller` and `bin/dev-node-agent`.
+BEAM Runtime Endpoint mode is implemented first for `bin/dev-controller` and `bin/dev-node-agent`.
 Both processes must start as named distributed BEAM nodes when BEAM transport is selected.
 This keeps the validation path close to the real distributed source-dev topology and avoids hiding operational defects inside an all-in-one VM.
 
@@ -64,7 +63,8 @@ It also makes failures harder to diagnose because the configured Runtime Endpoin
 
 ### Distribution networking is bounded and visible
 
-Source-dev BEAM mode should set an explicit EPMD port policy, defaulting to TCP `4369`, and a configured distribution listener port range through `ORCHARD_BEAM_DIST_PORT_MIN` and `ORCHARD_BEAM_DIST_PORT_MAX`.
+Source-dev BEAM mode sets an explicit EPMD port policy, defaulting to TCP `4369`, and a configured distribution listener port range through `ORCHARD_BEAM_DIST_PORT_MIN` and `ORCHARD_BEAM_DIST_PORT_MAX`.
+The implementation defaults the controller distribution range to TCP `52171..52171` and the node-agent range to TCP `52172..52172`.
 Startup output may show node name, cookie file path, EPMD port, and distribution port range.
 Startup output must not show cookie contents.
 The two-Mac smoke runbook must state that both EPMD and the bounded distribution listener range must be reachable over the trusted source-dev network.
@@ -132,8 +132,9 @@ Rollback is configuration-based during implementation.
 Contributors can return to the existing source-dev gRPC compatibility path by selecting or leaving the compatibility transport in place.
 No data migration is expected because this operating model does not change Postgres schema or durable request data.
 
-## Open Questions
+## Resolved Implementation Notes
 
-- What exact default source-dev distribution port range should implementation choose for same-host and two-Mac workflows?
-- Should the implementation provide a helper command to copy or verify cookie material across two Macs, or should that remain documented manual setup?
-- Should automated distributed BEAM tests use multiple OS processes in the Elixir suite, or remain a smoke-only validation until the launch helper is stable?
+- Source-dev BEAM uses TCP `52171` for the controller distribution listener and TCP `52172` for node-agent distribution listeners by default.
+- Cross-Mac cookie provisioning remains a documented manual setup step; this slice does not add a copy or secret-manager helper.
+- Automated coverage uses config tests and a shell bootstrap harness for launch behavior.
+  Real two-Mac distributed Runtime Endpoint evidence remains the smoke gate tracked in tasks 5.4 and 5.5.

@@ -57,4 +57,4 @@
 - [x] 6.12 Run `mise exec -- mix dialyzer`.
 - [x] 6.13 Run `mise exec -- mix test`.
 - [x] 6.14 Run `mise exec -- mix test --cover`.
-- [ ] 6.15 After spec sync or archive, review generated specs for placeholder prose such as `Purpose TBD`.
+- [x] 6.15 After spec sync or archive, review generated specs for placeholder prose such as `Purpose TBD`.

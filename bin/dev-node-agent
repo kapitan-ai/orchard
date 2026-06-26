@@ -3,7 +3,10 @@ set -euo pipefail
 
 # bin/dev-node-agent — Source-dev node-agent role startup for Orchard.
 # Starts only the node-agent app from source; no DB create/migrate, no Phoenix.
-# Set ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0 for LAN/Tailscale testing.
+# For gRPC compatibility testing, set ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0
+# on LAN/Tailscale worker hosts.
+# For BEAM Runtime Endpoint testing, set ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+# and an ORCHARD_BEAM_NODE_NAME with the host's IPv4 address.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"

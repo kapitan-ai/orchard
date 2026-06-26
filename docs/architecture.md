@@ -38,7 +38,7 @@ Public clients
      -> Postgres for durable state and coordination
      -> Runtime Endpoint Interface
         -> current gRPC compatibility adapter
-        -> default-off first-party BEAM adapter, promoted after accepted source-dev smoke
+        -> explicit split-role first-party BEAM adapter, promoted after accepted source-dev smoke
         -> future external/provider adapters
      -> Node Agent(s)
         -> Worker Runtime subprocesses for local MLX inference
@@ -53,6 +53,7 @@ Core design rules from `SPEC.md`:
 - the current `NodeRuntimeService` gRPC/protobuf path is a compatibility adapter, not the durable domain contract;
 - first-party BEAM communication is implemented behind explicit guardrails and remains default-off until rollout gates allow it;
 - source-dev uses the gRPC compatibility adapter by default until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke and is promoted;
+- explicit source-dev BEAM mode runs only through split-role `bin/dev-controller` and `bin/dev-node-agent` launches, not all-in-one `bin/dev`;
 - Console live runtime diagnostics use the same configured Runtime Endpoint target list as scheduler and dispatch, with explicit BEAM targets taking precedence over legacy gRPC runtime client targets;
 - BEAM Runtime Endpoint targets validate BEAM node-name addresses and configured node UUIDs before scheduler or dispatch trusts endpoint identity;
 - node agents are the v1 first-party Runtime Endpoint boundary;

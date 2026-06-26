@@ -95,7 +95,9 @@ dev_runtime_client_host =
 dev_node_agent_listen_host =
   System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1"
 
-# Inline parser for ORCHARD_RUNTIME_CLIENT_TARGETS (comma-separated host:port).
+# Inline parser for gRPC-only ORCHARD_RUNTIME_CLIENT_TARGETS
+# (comma-separated host:port).
+# Source-dev BEAM targets use ORCHARD_RUNTIME_ENDPOINT_TARGETS instead.
 # Intentionally inline — RuntimeTargetParser may not be compiled when dev.exs
 # evaluates on clean builds. Mirrors RuntimeTargetParser.parse_csv!/2 semantics.
 # SYNC NOTE: if RuntimeTargetParser parse rules change, update this parser too.

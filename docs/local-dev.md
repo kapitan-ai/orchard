@@ -1058,6 +1058,7 @@ mise exec -- iex -S mix phx.server
 - Public `/v1/*` API routes require tenant-scoped Bearer API keys; full RBAC and
   quota policy remain incomplete
 - Multi-node is supported for source-dev testing only (production/packaged multi-node — M4)
-- Live BEAM Runtime Endpoint transport is implemented behind default-off application config; default source dev uses the gRPC compatibility adapter
+- Explicit split-role BEAM Runtime Endpoint mode is implemented for `bin/dev-controller` and `bin/dev-node-agent`; default source dev still uses the gRPC compatibility adapter
+- All-in-one `bin/dev` rejects explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`
 - BEAM Runtime Endpoint transport becomes the primary source-dev path only after it passes the accepted two-Mac smoke
 - Model import from local filesystem only (no remote download)

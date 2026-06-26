@@ -4,6 +4,7 @@
 Orchard SHALL support Source-dev BEAM Runtime Endpoint mode first for the split-role `bin/dev-controller` and `bin/dev-node-agent` entrypoints.
 When Source-dev BEAM mode is selected, both split-role processes SHALL start as named distributed BEAM nodes before Runtime Endpoint work is attempted.
 All-in-one `bin/dev` SHALL remain on the current gRPC compatibility default in this change.
+All-in-one `bin/dev` SHALL reject explicit Source-dev BEAM mode before starting Mix.
 This refines the source-dev BEAM rollout rules in `SPEC.md` §1.2 and §7.5.
 
 #### Scenario: Split-role BEAM mode starts distributed nodes
@@ -15,10 +16,15 @@ This refines the source-dev BEAM rollout rules in `SPEC.md` §1.2 and §7.5.
 - **WHEN** a contributor starts all-in-one `bin/dev` without selecting Source-dev BEAM mode
 - **THEN** Orchard keeps using the current gRPC compatibility runtime transport on source-dev port `50071`
 
+#### Scenario: All-in-one dev rejects BEAM mode
+- **WHEN** a contributor starts all-in-one `bin/dev` with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`
+- **THEN** Orchard rejects the launch before running Mix
+- **THEN** the contributor is directed to use `bin/dev-controller` and `bin/dev-node-agent`
+
 ### Requirement: Source-dev BEAM Node Names
 Source-dev BEAM node names SHALL use long-name format with IPv4-literal host parts for guarded BEAM Runtime Endpoint targets.
-Controller nodes SHALL use role-identifying names such as `orchard_controller@<ipv4>`.
-Node Agent nodes SHALL use role-identifying names such as `orchard_node_agent@<ipv4>`.
+Controller nodes SHALL use role-identifying services that start with `orchard_controller`, such as `orchard_controller@<ipv4>`.
+Node Agent nodes SHALL use the exact role-identifying service `orchard_node_agent`, such as `orchard_node_agent@<ipv4>`.
 Source-dev BEAM target hostnames SHALL be rejected until hostname resolution and CIDR guardrail behavior are specified in a later change.
 Source-dev BEAM IPv6 target hosts SHALL be rejected until IPv6 distribution launch flags and guardrail behavior are specified in a later change.
 This refines BEAM Runtime Endpoint target rules in `SPEC.md` §1.2 and §7.5.
@@ -62,6 +68,7 @@ This refines the first-party BEAM Distribution rules in `SPEC.md` §1.2 and §7.
 Source-dev BEAM mode SHALL define explicit distribution networking settings.
 `ORCHARD_BEAM_EPMD_PORT` SHALL select the source-dev EPMD port and SHALL default to `4369` when unset.
 `ORCHARD_BEAM_DIST_PORT_MIN` and `ORCHARD_BEAM_DIST_PORT_MAX` SHALL bound the BEAM distribution listener port range.
+When unset, the controller distribution listener range SHALL default to `52171..52171` and the node-agent distribution listener range SHALL default to `52172..52172`.
 The two-Mac smoke procedure SHALL document reachability requirements for EPMD and the configured distribution listener range.
 This refines Runtime Endpoint transport requirements in `SPEC.md` §1.2 and §7.5.
 
@@ -75,7 +82,7 @@ This refines Runtime Endpoint transport requirements in `SPEC.md` §1.2 and §7.
 
 ### Requirement: Source-dev Runtime Endpoint Env Surface
 Source-dev Runtime Endpoint transport selection SHALL use `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT`.
-Source-dev BEAM Runtime Endpoint targets SHALL come from `ORCHARD_RUNTIME_ENDPOINT_TARGETS` and SHALL use BEAM node-name addresses.
+Controller Source-dev BEAM Runtime Endpoint targets SHALL come from `ORCHARD_RUNTIME_ENDPOINT_TARGETS` and SHALL use BEAM node-name addresses.
 Source-dev BEAM node bootstrap SHALL use `ORCHARD_BEAM_NODE_NAME`, `ORCHARD_BEAM_COOKIE_FILE`, `ORCHARD_BEAM_DIST_PORT_MIN`, `ORCHARD_BEAM_DIST_PORT_MAX`, and `ORCHARD_BEAM_EPMD_PORT`.
 `ORCHARD_RUNTIME_CLIENT_TARGETS` SHALL remain scoped to gRPC Compatibility Adapter `host:port` targets and SHALL NOT be interpreted as BEAM Runtime Endpoint targets.
 This refines the transport-independent Runtime Endpoint target rules in `SPEC.md` §1.2, §4.6.1, and §7.5.

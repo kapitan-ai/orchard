@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# bin/dev — Idempotent dev environment startup for Orchard.
+# bin/dev — Idempotent all-in-one dev environment startup for Orchard.
 # Creates/migrates the dev DB, sets the dev gRPC port, starts the Phoenix server.
 # Safe to run repeatedly. Works alongside the packaged production BEAM on 50061.
+# Explicit BEAM Runtime Endpoint mode belongs to bin/dev-controller + bin/dev-node-agent.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
