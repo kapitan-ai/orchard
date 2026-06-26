@@ -200,16 +200,18 @@ assert_succeeds "$TMP_ROOT/d4.out" run_helper controller "$TMP_ROOT/repo-d4" ORC
 assert_grep "cookie=$STRICT_COOKIE" "$TMP_ROOT/d4.out"
 assert_no_grep 'fixture-cookie' "$TMP_ROOT/d4.out"
 
-# E: BEAM node names must be role-appropriate long names with IP-literal hosts.
+# E: BEAM node names must be role-appropriate long names with IPv4-literal hosts.
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME must be a long BEAM node name' "$TMP_ROOT/e1.out" \
   run_helper controller "$TMP_ROOT/repo-e1" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller
-assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must be an IP literal' "$TMP_ROOT/e2.out" \
+assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must be an IPv4 literal' "$TMP_ROOT/e2.out" \
   run_helper controller "$TMP_ROOT/repo-e2" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller@localhost
-assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must be an IP literal' "$TMP_ROOT/e2-invalid-ipv6.out" \
+assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must be an IPv4 literal' "$TMP_ROOT/e2-invalid-ipv6.out" \
   run_helper controller "$TMP_ROOT/repo-e2-invalid-ipv6" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller@::::
+assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must be an IPv4 literal' "$TMP_ROOT/e2-ipv6.out" \
+  run_helper node_agent "$TMP_ROOT/repo-e2-ipv6" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_node_agent@::1
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must not be an unspecified or wildcard address' "$TMP_ROOT/e2-wildcard-v4.out" \
   run_helper controller "$TMP_ROOT/repo-e2-wildcard-v4" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller@0.0.0.0
-assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must not be an unspecified or wildcard address' "$TMP_ROOT/e2-wildcard-v6.out" \
+assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must be an IPv4 literal' "$TMP_ROOT/e2-wildcard-v6.out" \
   run_helper controller "$TMP_ROOT/repo-e2-wildcard-v6" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller@::
 assert_fails_with 'controller BEAM node service must start with orchard_controller' "$TMP_ROOT/e3.out" \
   run_helper controller "$TMP_ROOT/repo-e3" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_node_agent@127.0.0.1
@@ -244,10 +246,14 @@ assert_grep 'epmd=4370' "$TMP_ROOT/f4.out"
 assert_grep 'dist=52180..52181' "$TMP_ROOT/f4.out"
 assert_fails_with 'EPMD listener on port 4369 is wildcard-bound' "$TMP_ROOT/f5.out" \
   run_helper controller "$TMP_ROOT/repo-f5" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam FAKE_EPMD_NAMES_EXIT=0 FAKE_LSOF_OUTPUT='epmd 100 user 3u IPv4 0t0 TCP *:4369 (LISTEN)'
-assert_fails_with 'EPMD listener on port 4369 is not bound to 127.0.0.1' "$TMP_ROOT/f6.out" \
+assert_fails_with 'EPMD listener on port 4369 is not constrained to 127.0.0.1' "$TMP_ROOT/f6.out" \
   run_helper controller "$TMP_ROOT/repo-f6" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam FAKE_EPMD_NAMES_EXIT=0 FAKE_LSOF_OUTPUT='epmd 100 user 3u IPv4 0t0 TCP 10.0.0.2:4369 (LISTEN)'
 assert_succeeds "$TMP_ROOT/f7.out" \
   run_helper controller "$TMP_ROOT/repo-f7" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam FAKE_EPMD_NAMES_EXIT=0 FAKE_LSOF_OUTPUT='epmd 100 user 3u IPv4 0t0 TCP 127.0.0.1:4369 (LISTEN)'
+assert_fails_with 'EPMD listener on port 4369 is not constrained to 127.0.0.1' "$TMP_ROOT/f8.out" \
+  run_helper controller "$TMP_ROOT/repo-f8" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam FAKE_EPMD_NAMES_EXIT=0 FAKE_LSOF_OUTPUT='COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+epmd 100 user 3u IPv4 0t0 TCP 127.0.0.1:4369 (LISTEN)
+epmd 100 user 4u IPv4 0t0 TCP 10.0.0.2:4369 (LISTEN)'
 
 # G: the helper rejects unknown transport values early.
 assert_fails_with 'ORCHARD_RUNTIME_ENDPOINT_TRANSPORT must be grpc|beam' "$TMP_ROOT/g.out" \

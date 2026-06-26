@@ -116,7 +116,7 @@ orchard_source_dev_beam_validate_node_name() {
 
   IFS='@' read -r service host rest <<< "$node_name"
   if [[ -z "${service:-}" || -z "${host:-}" || -n "${rest:-}" ]]; then
-    echo "error: ORCHARD_BEAM_NODE_NAME must be a long BEAM node name in service@ip form" >&2
+    echo "error: ORCHARD_BEAM_NODE_NAME must be a long BEAM node name in service@ipv4 form" >&2
     return 64
   fi
 
@@ -144,18 +144,18 @@ orchard_source_dev_beam_validate_node_name() {
       ;;
   esac
 
+  if ! orchard_source_dev_beam_is_ipv4_literal "$host"; then
+    echo "error: ORCHARD_BEAM_NODE_NAME host must be an IPv4 literal" >&2
+    return 64
+  fi
+
   if orchard_source_dev_beam_ip_is_unspecified "$host"; then
     echo "error: ORCHARD_BEAM_NODE_NAME host must not be an unspecified or wildcard address" >&2
     return 64
   fi
-
-  if ! orchard_source_dev_beam_is_ip_literal "$host"; then
-    echo "error: ORCHARD_BEAM_NODE_NAME host must be an IP literal" >&2
-    return 64
-  fi
 }
 
-orchard_source_dev_beam_is_ip_literal() {
+orchard_source_dev_beam_is_ipv4_literal() {
   local host="$1"
 
   if command -v python3 >/dev/null 2>&1; then
@@ -164,9 +164,11 @@ import ipaddress
 import sys
 
 try:
-    ipaddress.ip_address(sys.argv[1])
+    addr = ipaddress.ip_address(sys.argv[1])
 except ValueError:
     raise SystemExit(1)
+
+raise SystemExit(0 if addr.version == 4 else 1)
 PY
     return $?
   fi
@@ -189,7 +191,7 @@ orchard_source_dev_beam_ip_is_unspecified() {
   local host="$1"
 
   case "$host" in
-    0.0.0.0|::|0:0:0:0:0:0:0:0)
+    0.0.0.0)
       return 0
       ;;
   esac
@@ -202,6 +204,9 @@ import sys
 try:
     addr = ipaddress.ip_address(sys.argv[1])
 except ValueError:
+    raise SystemExit(1)
+
+if addr.version != 4:
     raise SystemExit(1)
 
 raise SystemExit(0 if addr.is_unspecified else 1)
@@ -221,13 +226,10 @@ import ipaddress
 import sys
 
 addr = ipaddress.ip_address(sys.argv[1])
-if addr.version == 4:
-    parts = [str(part) for part in addr.packed]
-else:
-    parts = [
-        str(int.from_bytes(addr.packed[index:index + 2], "big"))
-        for index in range(0, 16, 2)
-    ]
+if addr.version != 4:
+    raise SystemExit(1)
+
+parts = [str(part) for part in addr.packed]
 
 print("{" + ",".join(parts) + "}")
 PY
@@ -318,7 +320,15 @@ orchard_source_dev_beam_verify_epmd_listener() {
 
     if [[ "$listener" == "$host" ]]; then
       matched=1
+      continue
     fi
+
+    if orchard_source_dev_beam_listener_is_loopback "$listener"; then
+      continue
+    fi
+
+    echo "error: EPMD listener on port $port is not constrained to $host; stop existing EPMD with ERL_EPMD_PORT=$port epmd -kill, then rerun" >&2
+    return 69
   done <<< "$listeners"
 
   if (( matched == 0 )); then
@@ -356,6 +366,34 @@ orchard_source_dev_beam_epmd_listener_hosts() {
 orchard_source_dev_beam_listener_is_wildcard() {
   case "$1" in
     ""|"*"|0.0.0.0|::)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+orchard_source_dev_beam_listener_is_loopback() {
+  local listener="$1"
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$listener" <<'PY'
+import ipaddress
+import sys
+
+try:
+    addr = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+
+raise SystemExit(0 if addr.is_loopback else 1)
+PY
+    return $?
+  fi
+
+  case "$listener" in
+    127.*|::1|0:0:0:0:0:0:0:1)
       return 0
       ;;
     *)

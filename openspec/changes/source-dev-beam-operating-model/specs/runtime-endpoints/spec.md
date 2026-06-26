@@ -16,13 +16,14 @@ This refines the source-dev BEAM rollout rules in `SPEC.md` §1.2 and §7.5.
 - **THEN** Orchard keeps using the current gRPC compatibility runtime transport on source-dev port `50071`
 
 ### Requirement: Source-dev BEAM Node Names
-Source-dev BEAM node names SHALL use long-name format with IP-literal host parts for guarded BEAM Runtime Endpoint targets.
-Controller nodes SHALL use role-identifying names such as `orchard_controller@<ip>`.
-Node Agent nodes SHALL use role-identifying names such as `orchard_node_agent@<ip>`.
+Source-dev BEAM node names SHALL use long-name format with IPv4-literal host parts for guarded BEAM Runtime Endpoint targets.
+Controller nodes SHALL use role-identifying names such as `orchard_controller@<ipv4>`.
+Node Agent nodes SHALL use role-identifying names such as `orchard_node_agent@<ipv4>`.
 Source-dev BEAM target hostnames SHALL be rejected until hostname resolution and CIDR guardrail behavior are specified in a later change.
+Source-dev BEAM IPv6 target hosts SHALL be rejected until IPv6 distribution launch flags and guardrail behavior are specified in a later change.
 This refines BEAM Runtime Endpoint target rules in `SPEC.md` §1.2 and §7.5.
 
-#### Scenario: BEAM target uses IP-literal host
+#### Scenario: BEAM target uses IPv4-literal host
 - **WHEN** `ORCHARD_RUNTIME_ENDPOINT_TARGETS` contains `orchard_node_agent@100.64.1.10` in Source-dev BEAM mode
 - **THEN** Orchard accepts the target as a BEAM node-name address for guardrail validation
 

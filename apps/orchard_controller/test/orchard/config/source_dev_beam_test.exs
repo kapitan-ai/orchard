@@ -25,7 +25,7 @@ defmodule Orchard.Config.SourceDevBeamTest do
   end
 
   describe "controller_beam_targets!/2" do
-    test "parses comma-separated BEAM node-name targets with IP-literal hosts" do
+    test "parses comma-separated BEAM node-name targets with IPv4-literal hosts" do
       assert SourceDevBeam.controller_beam_targets!(
                " orchard_node_agent@127.0.0.1 , orchard_node_agent@10.0.0.2 ",
                "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
@@ -44,7 +44,7 @@ defmodule Orchard.Config.SourceDevBeamTest do
     end
 
     test "rejects hostname target hosts" do
-      assert_raise RuntimeError, ~r/requires IP-literal BEAM target hosts/, fn ->
+      assert_raise RuntimeError, ~r/requires IPv4-literal BEAM target hosts/, fn ->
         SourceDevBeam.controller_beam_targets!(
           "orchard_node_agent@worker.local",
           "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
@@ -52,14 +52,28 @@ defmodule Orchard.Config.SourceDevBeamTest do
       end
     end
 
+    test "rejects IPv6 target hosts" do
+      assert_raise RuntimeError, ~r/requires IPv4-literal BEAM target hosts/, fn ->
+        SourceDevBeam.controller_beam_targets!(
+          "orchard_node_agent@::1",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
+        )
+      end
+    end
+
     test "rejects unspecified target hosts" do
-      for target <- ["orchard_node_agent@0.0.0.0", "orchard_node_agent@::"] do
-        assert_raise RuntimeError, ~r/must not use unspecified or wildcard BEAM hosts/, fn ->
-          SourceDevBeam.controller_beam_targets!(
-            target,
-            "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
-          )
-        end
+      assert_raise RuntimeError, ~r/must not use unspecified or wildcard BEAM hosts/, fn ->
+        SourceDevBeam.controller_beam_targets!(
+          "orchard_node_agent@0.0.0.0",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
+        )
+      end
+
+      assert_raise RuntimeError, ~r/requires IPv4-literal BEAM target hosts/, fn ->
+        SourceDevBeam.controller_beam_targets!(
+          "orchard_node_agent@::",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
+        )
       end
     end
 
@@ -115,6 +129,22 @@ defmodule Orchard.Config.SourceDevBeamTest do
              ]
     end
 
+    test "rejects IPv6 local controller hosts" do
+      targets =
+        SourceDevBeam.controller_beam_targets!(
+          "orchard_node_agent@127.0.0.1",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
+        )
+
+      assert_raise RuntimeError, ~r/requires IPv4-literal local controller host/, fn ->
+        SourceDevBeam.beam_guardrail_config!(
+          "orchard_controller@::1",
+          "/tmp/orchard-cookie",
+          targets
+        )
+      end
+    end
+
     test "rejects unspecified local controller hosts" do
       targets =
         SourceDevBeam.controller_beam_targets!(
@@ -122,15 +152,31 @@ defmodule Orchard.Config.SourceDevBeamTest do
           "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
         )
 
-      for node_name <- ["orchard_controller@0.0.0.0", "orchard_controller@::"] do
-        assert_raise RuntimeError, ~r/must not use unspecified or wildcard BEAM hosts/, fn ->
-          SourceDevBeam.beam_guardrail_config!(
-            node_name,
-            "/tmp/orchard-cookie",
-            targets
-          )
-        end
+      assert_raise RuntimeError, ~r/must not use unspecified or wildcard BEAM hosts/, fn ->
+        SourceDevBeam.beam_guardrail_config!(
+          "orchard_controller@0.0.0.0",
+          "/tmp/orchard-cookie",
+          targets
+        )
       end
+    end
+
+    test "rejects unsupported local controller service" do
+      targets =
+        SourceDevBeam.controller_beam_targets!(
+          "orchard_node_agent@127.0.0.1",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
+        )
+
+      assert_raise RuntimeError,
+                   ~r/local controller BEAM node service must start with orchard_controller/,
+                   fn ->
+                     SourceDevBeam.beam_guardrail_config!(
+                       "orchard_node_agent@127.0.0.1",
+                       "/tmp/orchard-cookie",
+                       targets
+                     )
+                   end
     end
   end
 end

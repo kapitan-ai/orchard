@@ -6,7 +6,7 @@ A collaborator-reviewable operating model is needed before builders add split-ro
 ## What Changes
 
 - Define the Source-dev BEAM Operating Model for split-role `bin/dev-controller` and `bin/dev-node-agent` launches.
-- Require named distributed BEAM nodes, long BEAM node names with IP-literal hosts, explicit shared cookie material, and bounded source-dev distribution networking when BEAM mode is selected.
+- Require named distributed BEAM nodes, long BEAM node names with IPv4-literal hosts, explicit shared cookie material, and bounded source-dev distribution networking when BEAM mode is selected.
 - Define a BEAM-specific source-dev env/config surface using `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT`, `ORCHARD_RUNTIME_ENDPOINT_TARGETS`, and `ORCHARD_BEAM_*` variables, while deferring `orchardctl env init` scaffolding for that surface to a separate CLI change.
 - Keep `ORCHARD_RUNTIME_CLIENT_TARGETS` scoped to the gRPC Compatibility Adapter and prevent BEAM mode from silently falling back to gRPC for the same request.
 - Require sanitized durable two-Mac smoke evidence under `docs/investigations/source-dev-beam-smoke-<date>.md` before any source-dev default promotion.

@@ -289,7 +289,7 @@ defmodule Orchard.InferenceTest do
     end
 
     test "dev.exs beam controller mode rejects hostname endpoint targets" do
-      assert_raise RuntimeError, ~r/requires IP-literal BEAM target hosts/, fn ->
+      assert_raise RuntimeError, ~r/requires IPv4-literal BEAM target hosts/, fn ->
         read_dev_controller_inference!(%{
           "ORCHARD_SOURCE_DEV_ROLE" => "controller",
           "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
@@ -367,7 +367,7 @@ defmodule Orchard.InferenceTest do
     end
 
     test "dev.exs beam controller mode rejects local controller node names with hostnames" do
-      assert_raise RuntimeError, ~r/requires IP-literal local controller host/, fn ->
+      assert_raise RuntimeError, ~r/requires IPv4-literal local controller host/, fn ->
         read_dev_controller_config!(%{
           "ORCHARD_SOURCE_DEV_ROLE" => "controller",
           "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",

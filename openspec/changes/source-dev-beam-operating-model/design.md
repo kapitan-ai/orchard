@@ -14,7 +14,7 @@ All-in-one `bin/dev` remains on the current gRPC compatibility default until a s
 **Goals:**
 
 - Define the source-dev launch policy for BEAM Runtime Endpoint mode on `bin/dev-controller` and `bin/dev-node-agent`.
-- Define long-name BEAM node naming, IP-literal target hosts, explicit cookie material, bounded distribution ports, and EPMD policy for source dev.
+- Define long-name BEAM node naming, IPv4-literal target hosts, explicit cookie material, bounded distribution ports, and EPMD policy for source dev.
 - Define the BEAM Runtime Endpoint env/config surface separately from the legacy gRPC compatibility target surface.
 - Define visible failure behavior when BEAM mode is selected.
 - Define the smoke-evidence gate required before source-dev defaults can be promoted.
@@ -41,10 +41,10 @@ This keeps the validation path close to the real distributed source-dev topology
 Alternative considered: change all-in-one `bin/dev` first.
 That is simpler to run, but it would not prove remote BEAM Distribution, cookie sharing, EPMD reachability, or remote Runtime Endpoint RPC behavior.
 
-### Source-dev BEAM uses long node names with IP-literal hosts
+### Source-dev BEAM uses long node names with IPv4-literal hosts
 
 Source-dev BEAM node names should use long-name format, such as `orchard_controller@100.x.y.z` and `orchard_node_agent@100.x.y.z`.
-Guarded BEAM Runtime Endpoint targets should require the host part to be an IP literal.
+Guarded BEAM Runtime Endpoint targets should require the host part to be an IPv4 literal.
 This keeps CIDR guardrail validation deterministic and avoids source-dev ambiguity around hostname resolution, local DNS, Bonjour, split-horizon names, and different network interfaces.
 
 Alternative considered: accept short names or arbitrary hostnames.
@@ -105,7 +105,7 @@ Those tests are useful, but they do not prove the source-dev operating model acr
 Risk: Source-dev BEAM mode can fail for local networking reasons unrelated to Runtime Endpoint code.
 Mitigation: keep EPMD and distribution ports explicit, print non-secret startup diagnostics, and document the smoke reachability checklist.
 
-Risk: Requiring IP-literal hosts is less ergonomic than hostnames.
+Risk: Requiring IPv4-literal hosts is less ergonomic than hostnames or IPv6 literals.
 Mitigation: treat hostname target support as a later enhancement after resolution and CIDR guardrail behavior are specified.
 
 Risk: Same-host generated cookie files can be confused with production secret handling.
@@ -124,7 +124,7 @@ Mitigation: record the commit with the smoke evidence and require new evidence b
 3. Implement explicit cookie-file generation or validation, strict permissions, and secret-safe diagnostics.
 4. Add BEAM node-name, EPMD, and distribution-port launch flags for split-role source-dev processes.
 5. Wire BEAM Runtime Endpoint target selection from `ORCHARD_RUNTIME_ENDPOINT_TARGETS` while leaving `ORCHARD_RUNTIME_CLIENT_TARGETS` scoped to gRPC compatibility.
-6. Add unit and integration coverage for parsing, cookie validation, node-name validation, IP-literal target rules, no automatic fallback, and split-role launch behavior.
+6. Add unit and integration coverage for parsing, cookie validation, node-name validation, IPv4-literal target rules, no automatic fallback, and split-role launch behavior.
 7. Run the two-Mac smoke and record durable evidence before proposing any default promotion.
 8. Propose any change to all-in-one `bin/dev` or default source-dev transport separately after the evidence gate passes.
 

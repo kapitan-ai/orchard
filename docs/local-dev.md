@@ -253,8 +253,8 @@ CLI scaffolding for these variables is deferred to a separate change.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` | `grpc` | Runtime Endpoint transport selector. Use `beam` for split-role BEAM source dev. |
-| `ORCHARD_RUNTIME_ENDPOINT_TARGETS` | _(empty)_ | Controller-only comma-separated BEAM target list. Each target must be `orchard_node_agent@<ip-literal>`. |
-| `ORCHARD_BEAM_NODE_NAME` | `orchard_controller@127.0.0.1` or `orchard_node_agent@127.0.0.1` | Long BEAM node name for the current split-role VM. The host part must be an IP literal. |
+| `ORCHARD_RUNTIME_ENDPOINT_TARGETS` | _(empty)_ | Controller-only comma-separated BEAM target list. Each target must be `orchard_node_agent@<ipv4-literal>`. |
+| `ORCHARD_BEAM_NODE_NAME` | `orchard_controller@127.0.0.1` or `orchard_node_agent@127.0.0.1` | Long BEAM node name for the current split-role VM. The host part must be an IPv4 literal. |
 | `ORCHARD_BEAM_COOKIE_FILE` | `tmp/dev/beam.cookie` | Cookie file path. Same-host source dev generates it when absent. Two-Mac source dev must provision the same cookie material on each Mac. |
 | `ORCHARD_BEAM_DIST_PORT_MIN` | `52171` for controller, `52172` for node-agent | Lower bound for the BEAM distribution listener port range. Set both min and max together when overriding. |
 | `ORCHARD_BEAM_DIST_PORT_MAX` | `52171` for controller, `52172` for node-agent | Upper bound for the BEAM distribution listener port range. Set both min and max together when overriding. |
@@ -290,9 +290,9 @@ For same-host mode, the controller defaults to `orchard_controller@127.0.0.1` an
 The node-agent defaults to `orchard_node_agent@127.0.0.1` and distribution port `52172`.
 Both roles use `ERL_EPMD_PORT=4369` unless `ORCHARD_BEAM_EPMD_PORT` is set.
 
-Two-Mac BEAM source-dev mode requires explicit IP-literal node names and the same cookie material on every participating Mac.
+Two-Mac BEAM source-dev mode requires explicit IPv4-literal node names and the same cookie material on every participating Mac.
 Do not use hostnames such as `worker.local` for BEAM target hosts in this slice.
-Use Tailscale IPv4 addresses or another trusted private IP-literal address.
+Use Tailscale IPv4 addresses or another trusted private IPv4-literal address.
 Provision the cookie out of band without pasting the cookie value into docs, tickets, chat, shell history, or evidence files.
 
 From one Mac, create the cookie file if you are not using an existing secret manager output:
@@ -316,17 +316,17 @@ If you override `ORCHARD_BEAM_EPMD_PORT`, `ORCHARD_BEAM_DIST_PORT_MIN`, or `ORCH
 A quick reachability check after the roles start is:
 
 ```bash
-nc -vz <worker-ip> 4369
-nc -vz <worker-ip> 52172
-nc -vz <controller-ip> 4369
-nc -vz <controller-ip> 52171
+nc -vz <worker-ipv4> 4369
+nc -vz <worker-ipv4> 52172
+nc -vz <controller-ipv4> 4369
+nc -vz <controller-ipv4> 52171
 ```
 
 For BEAM Runtime Endpoint RPC evidence from the controller IEx session, use the configured target through the BEAM client.
 This checks the Runtime Endpoint adapter path rather than the legacy gRPC compatibility path.
 
 ```elixir
-target = %{transport: :beam, address: "orchard_node_agent@<worker-ip>"}
+target = %{transport: :beam, address: "orchard_node_agent@<worker-ipv4>"}
 {:ok, conn} = Orchard.RuntimeEndpoint.BeamClient.connect(target)
 {:ok, observation} = Orchard.RuntimeEndpoint.BeamClient.status(conn)
 observation
@@ -567,7 +567,7 @@ Do not commit cookie material, raw local evidence logs, or machine-specific path
 
 ```bash
 ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
-ORCHARD_BEAM_NODE_NAME=orchard_node_agent@<controller-ip> \
+ORCHARD_BEAM_NODE_NAME=orchard_node_agent@<controller-ipv4> \
 ORCHARD_BEAM_COOKIE_FILE="$PWD/tmp/dev/beam.cookie" \
 ORCHARD_WORKER_BACKEND=stub \
 ORCHARD_NODE_DISPLAY_NAME=<controller-node-agent-label> \
@@ -578,7 +578,7 @@ mise exec -- bin/dev-node-agent
 
 ```bash
 ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
-ORCHARD_BEAM_NODE_NAME=orchard_node_agent@<worker-ip> \
+ORCHARD_BEAM_NODE_NAME=orchard_node_agent@<worker-ipv4> \
 ORCHARD_BEAM_COOKIE_FILE="$PWD/tmp/dev/beam.cookie" \
 ORCHARD_WORKER_BACKEND=stub \
 ORCHARD_NODE_DISPLAY_NAME=<worker-label> \
@@ -589,8 +589,8 @@ mise exec -- bin/dev-node-agent
 
 ```bash
 ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
-ORCHARD_RUNTIME_ENDPOINT_TARGETS="orchard_node_agent@<controller-ip>,orchard_node_agent@<worker-ip>" \
-ORCHARD_BEAM_NODE_NAME=orchard_controller@<controller-ip> \
+ORCHARD_RUNTIME_ENDPOINT_TARGETS="orchard_node_agent@<controller-ipv4>,orchard_node_agent@<worker-ipv4>" \
+ORCHARD_BEAM_NODE_NAME=orchard_controller@<controller-ipv4> \
 ORCHARD_BEAM_COOKIE_FILE="$PWD/tmp/dev/beam.cookie" \
 ORCHARD_NODE_DISPLAY_NAME=<controller-label> \
 mise exec -- bin/dev-controller
@@ -605,7 +605,7 @@ If you override the EPMD or distribution port variables, use the same values in 
 For a remote Runtime Endpoint RPC check from the controller IEx session:
 
 ```elixir
-target = %{transport: :beam, address: "orchard_node_agent@<worker-ip>"}
+target = %{transport: :beam, address: "orchard_node_agent@<worker-ipv4>"}
 {:ok, conn} = Orchard.RuntimeEndpoint.BeamClient.connect(target)
 {:ok, observation} = Orchard.RuntimeEndpoint.BeamClient.status(conn)
 observation
@@ -636,11 +636,11 @@ Default promotion remains deferred to a future OpenSpec change even after the sm
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | gRPC controller shows 1 target | `ORCHARD_RUNTIME_CLIENT_TARGETS` unset or malformed | Check env var, use `host:port,host:port` format. |
-| BEAM controller exits before Mix starts | `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is empty, malformed, or uses a hostname | Use comma-separated `orchard_node_agent@<ip-literal>` targets. |
+| BEAM controller exits before Mix starts | `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is empty, malformed, or uses a hostname or IPv6 address | Use comma-separated `orchard_node_agent@<ipv4-literal>` targets. |
 | All-in-one `bin/dev` rejects BEAM mode | `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` was set with the all-in-one entrypoint | Use `bin/dev-controller` and `bin/dev-node-agent` for BEAM mode. |
-| BEAM node-name validation fails | `ORCHARD_BEAM_NODE_NAME` is not `service@ip` or uses the wrong role service | Use `orchard_controller@<controller-ip>` for the controller and exactly `orchard_node_agent@<node-ip>` for node-agents. |
+| BEAM node-name validation fails | `ORCHARD_BEAM_NODE_NAME` is not `service@ipv4` or uses the wrong role service | Use `orchard_controller@<controller-ipv4>` for the controller and exactly `orchard_node_agent@<node-ipv4>` for node-agents. |
 | BEAM cookie validation fails | Cookie file is missing, empty, or group/world-readable | Create or copy the cookie file, then run `chmod 600 tmp/dev/beam.cookie`. |
-| BEAM `connect` returns `:pang` or `:unknown_beam_node` | EPMD cannot resolve the target, the target node is not running, or the cookie does not match | Check `ERL_EPMD_PORT`, node names, cookie digest match, and `nc -vz <target-ip> 4369`. |
+| BEAM `connect` returns `:pang` or `:unknown_beam_node` | EPMD cannot resolve the target, the target node is not running, or the cookie does not match | Check `ERL_EPMD_PORT`, node names, cookie digest match, and `nc -vz <target-ipv4> 4369`. |
 | BEAM RPC times out or is unreachable | Distribution listener port is blocked | Check TCP `52171` for the controller and TCP `52172` for node-agents, or check your overridden range. |
 | BEAM Console shows stale gRPC expectations | gRPC targets were configured as a comparison path | Use Console Runtime Endpoint target diagnostics and remember that `ORCHARD_RUNTIME_CLIENT_TARGETS` is not a BEAM fallback. |
 | Remote gRPC node-agent unreachable | Listen host still `127.0.0.1` | Set `ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0` for the gRPC compatibility flow. |

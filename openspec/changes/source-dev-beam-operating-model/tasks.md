@@ -4,7 +4,7 @@
 - [x] 1.2 Add source-dev parsing for `ORCHARD_RUNTIME_ENDPOINT_TARGETS` as BEAM node-name targets when transport is `beam`.
 - [x] 1.3 Keep `ORCHARD_RUNTIME_CLIENT_TARGETS` scoped to gRPC Compatibility Adapter `host:port` targets.
 - [x] 1.4 Add source-dev parsing for `ORCHARD_BEAM_NODE_NAME`, `ORCHARD_BEAM_COOKIE_FILE`, `ORCHARD_BEAM_DIST_PORT_MIN`, `ORCHARD_BEAM_DIST_PORT_MAX`, and `ORCHARD_BEAM_EPMD_PORT`.
-- [x] 1.5 Add validation that Source-dev BEAM target host parts are IP literals and reject hostname targets for this slice.
+- [x] 1.5 Add validation that Source-dev BEAM target host parts are IPv4 literals and reject hostname and IPv6 targets for this slice.
 
 ## 2. Split-role BEAM Bootstrap
 
@@ -45,7 +45,7 @@
 
 - [x] 6.1 Add unit tests for source-dev Runtime Endpoint transport parsing and BEAM target parsing.
 - [x] 6.2 Add tests that `ORCHARD_RUNTIME_CLIENT_TARGETS` remains gRPC compatibility-only and is not interpreted as a BEAM target source.
-- [x] 6.3 Add tests for IP-literal BEAM target host validation and hostname rejection.
+- [x] 6.3 Add tests for IPv4-literal BEAM target host validation and hostname or IPv6 rejection.
 - [x] 6.4 Add tests for cookie file existence, non-empty content, strict permissions, and secret-safe diagnostics.
 - [x] 6.5 Add tests for invalid EPMD or distribution port configuration.
 - [x] 6.6 Add tests proving BEAM mode failures do not automatically fall back to gRPC for the same request.
