@@ -273,8 +273,42 @@ Hooks.AutoScrollBottom = {
   }
 }
 
+function requestSubmitForm(form, submitter) {
+  if (!form) return false
+  if (submitter && submitter.disabled) return false
+
+  let validSubmitter = submitter && submitter.form === form ? submitter : undefined
+
+  if (typeof form.requestSubmit !== "function") return false
+
+  form.requestSubmit(validSubmitter)
+  return true
+}
+
 /**
- * SubmitOnModEnter — submits the enclosing form on Cmd/Ctrl+Enter.
+ * PlaygroundSubmitClick - routes Send clicks through LiveView form submission.
+ * Attach to a wrapper around `#playground-form`.
+ */
+Hooks.PlaygroundSubmitClick = {
+  mounted() {
+    this._onClick = (event) => {
+      let btn = event.target.closest("#playground-send")
+      if (!btn || !this.el.contains(btn) || btn.disabled) return
+
+      let form = btn.form || btn.closest("form")
+      if (requestSubmitForm(form, btn)) event.preventDefault()
+    }
+
+    this.el.addEventListener("click", this._onClick)
+  },
+
+  destroyed() {
+    this.el.removeEventListener("click", this._onClick)
+  }
+}
+
+/**
+ * SubmitOnModEnter - submits the enclosing form on Cmd/Ctrl+Enter.
  * Attach to a textarea with `phx-hook="SubmitOnModEnter"`.
  */
 Hooks.SubmitOnModEnter = {
@@ -285,15 +319,10 @@ Hooks.SubmitOnModEnter = {
         let form = this.el.closest("form")
         if (!form) return
 
-        // Respect the disabled state of the submit button
         let btn = form.querySelector("#playground-send")
         if (btn && btn.disabled) return
 
-        if (typeof form.requestSubmit === "function") {
-          form.requestSubmit(btn || undefined)
-        } else if (btn) {
-          btn.click()
-        }
+        if (!requestSubmitForm(form, btn) && btn) btn.click()
       }
     }
     this.el.addEventListener("keydown", this._onKeydown)
