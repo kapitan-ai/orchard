@@ -26,10 +26,11 @@ orchard_source_dev_beam_bootstrap() {
 
   export ORCHARD_SOURCE_DEV_ROLE="$role"
 
-  local node_name
+  local node_name node_host
   node_name="$(orchard_source_dev_beam_default_node_name "$role")"
   node_name="${ORCHARD_BEAM_NODE_NAME:-$node_name}"
   orchard_source_dev_beam_validate_node_name "$role" "$node_name" || return $?
+  node_host="${node_name#*@}"
   export ORCHARD_BEAM_NODE_NAME="$node_name"
 
   local cookie_file
@@ -42,6 +43,7 @@ orchard_source_dev_beam_bootstrap() {
   orchard_source_dev_beam_validate_port "ORCHARD_BEAM_EPMD_PORT" "$epmd_port" || return $?
   export ORCHARD_BEAM_EPMD_PORT="$epmd_port"
   export ERL_EPMD_PORT="$epmd_port"
+  export ERL_EPMD_ADDRESS="$node_host"
 
   local dist_min="${ORCHARD_BEAM_DIST_PORT_MIN:-}"
   local dist_max="${ORCHARD_BEAM_DIST_PORT_MAX:-}"
@@ -74,11 +76,14 @@ orchard_source_dev_beam_bootstrap() {
   export ORCHARD_BEAM_DIST_PORT_MIN="$dist_min"
   export ORCHARD_BEAM_DIST_PORT_MAX="$dist_max"
 
+  local dist_interface
+  dist_interface="$(orchard_source_dev_beam_inet_dist_interface "$node_host")" || return $?
+
   orchard_source_dev_beam_prepare_home "$role" "$repo_root" "$cookie_file" || return $?
 
   ORCHARD_BEAM_IEX_ARGS=(
     --name "$node_name"
-    --erl "-kernel inet_dist_listen_min $dist_min inet_dist_listen_max $dist_max"
+    --erl "-kernel inet_dist_use_interface $dist_interface inet_dist_listen_min $dist_min inet_dist_listen_max $dist_max"
   )
 
   echo "==> Runtime endpoint transport: beam" >&2
@@ -172,6 +177,46 @@ PY
   fi
 
   return 1
+}
+
+orchard_source_dev_beam_inet_dist_interface() {
+  local host="$1"
+
+  if command -v python3 >/dev/null 2>&1; then
+    if python3 - "$host" <<'PY'
+import ipaddress
+import sys
+
+addr = ipaddress.ip_address(sys.argv[1])
+if addr.version == 4:
+    parts = [str(part) for part in addr.packed]
+else:
+    parts = [
+        str(int.from_bytes(addr.packed[index:index + 2], "big"))
+        for index in range(0, 16, 2)
+    ]
+
+print("{" + ",".join(parts) + "}")
+PY
+    then
+      return 0
+    fi
+
+    echo "error: ORCHARD_BEAM_NODE_NAME host cannot be converted to inet_dist_use_interface" >&2
+    return 64
+  fi
+
+  if [[ "$host" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    local a b c d rest
+    IFS='.' read -r a b c d rest <<< "$host"
+    if [[ -n "${a:-}" && -n "${b:-}" && -n "${c:-}" && -n "${d:-}" && -z "${rest:-}" ]]; then
+      printf '{%s,%s,%s,%s}\n' "$a" "$b" "$c" "$d"
+      return 0
+    fi
+  fi
+
+  echo "error: ORCHARD_BEAM_NODE_NAME host cannot be converted to inet_dist_use_interface" >&2
+  return 64
 }
 
 orchard_source_dev_beam_prepare_cookie() {

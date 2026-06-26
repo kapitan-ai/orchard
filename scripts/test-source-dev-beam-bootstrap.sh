@@ -81,7 +81,7 @@ run_helper() {
     PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
     HOME="$TMP_ROOT/home" \
     "$@" \
-    bash -c 'set -euo pipefail; source "$1"; orchard_source_dev_beam_bootstrap "$2" "$3"; printf "transport=%s\n" "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT:-unset}"; printf "node=%s\n" "${ORCHARD_BEAM_NODE_NAME:-unset}"; printf "cookie=%s\n" "${ORCHARD_BEAM_COOKIE_FILE:-unset}"; printf "epmd=%s\n" "${ORCHARD_BEAM_EPMD_PORT:-unset}"; printf "dist=%s..%s\n" "${ORCHARD_BEAM_DIST_PORT_MIN:-unset}" "${ORCHARD_BEAM_DIST_PORT_MAX:-unset}"; printf "home=%s\n" "$HOME"; printf "mix_home=%s\n" "${MIX_HOME:-unset}"; printf "hex_home=%s\n" "${HEX_HOME:-unset}"; printf "args=%s\n" "${ORCHARD_BEAM_IEX_ARGS[*]-}"' \
+    bash -c 'set -euo pipefail; source "$1"; orchard_source_dev_beam_bootstrap "$2" "$3"; printf "transport=%s\n" "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT:-unset}"; printf "node=%s\n" "${ORCHARD_BEAM_NODE_NAME:-unset}"; printf "cookie=%s\n" "${ORCHARD_BEAM_COOKIE_FILE:-unset}"; printf "epmd=%s\n" "${ORCHARD_BEAM_EPMD_PORT:-unset}"; printf "epmd_address=%s\n" "${ERL_EPMD_ADDRESS:-unset}"; printf "dist=%s..%s\n" "${ORCHARD_BEAM_DIST_PORT_MIN:-unset}" "${ORCHARD_BEAM_DIST_PORT_MAX:-unset}"; printf "home=%s\n" "$HOME"; printf "mix_home=%s\n" "${MIX_HOME:-unset}"; printf "hex_home=%s\n" "${HEX_HOME:-unset}"; printf "args=%s\n" "${ORCHARD_BEAM_IEX_ARGS[*]-}"' \
       bash "$HELPER" "$role" "$repo_root"
 }
 
@@ -112,8 +112,10 @@ assert_grep 'node=orchard_controller@127.0.0.1' "$TMP_ROOT/b.out"
 assert_grep "cookie=$COOKIE_B" "$TMP_ROOT/b.out"
 assert_files_equal "$COOKIE_B" "$REPO_B/tmp/dev/beam-home/controller/.erlang.cookie"
 assert_grep 'epmd=4369' "$TMP_ROOT/b.out"
+assert_grep 'epmd_address=127.0.0.1' "$TMP_ROOT/b.out"
 assert_grep 'dist=52171..52171' "$TMP_ROOT/b.out"
 assert_grep '--name orchard_controller@127.0.0.1' "$TMP_ROOT/b.out"
+assert_grep 'inet_dist_use_interface {127,0,0,1}' "$TMP_ROOT/b.out"
 assert_no_grep "$(cat "$COOKIE_B")" "$TMP_ROOT/b.out"
 
 # C: node-agent BEAM mode gets its own role default node and distribution port.
@@ -122,6 +124,7 @@ assert_succeeds "$TMP_ROOT/c.out" run_helper node_agent "$REPO_C" ORCHARD_RUNTIM
 assert_grep 'node=orchard_node_agent@127.0.0.1' "$TMP_ROOT/c.out"
 assert_grep 'dist=52172..52172' "$TMP_ROOT/c.out"
 assert_grep '--name orchard_node_agent@127.0.0.1' "$TMP_ROOT/c.out"
+assert_grep 'inet_dist_use_interface {127,0,0,1}' "$TMP_ROOT/c.out"
 
 # C2: concurrent split-role bootstrap from a clean checkout stages the final default cookie for both roles.
 REPO_C2="$TMP_ROOT/repo-c2"
@@ -181,6 +184,9 @@ assert_fails_with 'ORCHARD_BEAM_NODE_NAME service contains invalid characters' "
   run_helper controller "$TMP_ROOT/repo-e5-colon" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME='orchard_controller:dev@127.0.0.1'
 assert_succeeds "$TMP_ROOT/e5.out" run_helper controller "$TMP_ROOT/repo-e5" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller_dev@127.0.0.1
 assert_grep 'node=orchard_controller_dev@127.0.0.1' "$TMP_ROOT/e5.out"
+assert_succeeds "$TMP_ROOT/e6.out" run_helper controller "$TMP_ROOT/repo-e6" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller@192.0.2.10
+assert_grep 'epmd_address=192.0.2.10' "$TMP_ROOT/e6.out"
+assert_grep 'inet_dist_use_interface {192,0,2,10}' "$TMP_ROOT/e6.out"
 
 # F: EPMD and distribution ports are validated before Mix starts.
 assert_fails_with 'ORCHARD_BEAM_EPMD_PORT must be an integer from 1 to 65535' "$TMP_ROOT/f1.out" \
@@ -234,7 +240,8 @@ exit 0
 SH
 cat > "$TOOLS_I/iex" <<'SH'
 #!/bin/sh
-printf '%s\n' "$*" > "$IEX_ARG_LOG"
+printf 'ERL_EPMD_ADDRESS=%s\n' "${ERL_EPMD_ADDRESS:-unset}" > "$IEX_ARG_LOG"
+printf '%s\n' "$*" >> "$IEX_ARG_LOG"
 exit 0
 SH
 cat > "$TOOLS_I/pgrep" <<'SH'
@@ -250,12 +257,14 @@ assert_succeeds "$TMP_ROOT/i-controller.out" \
   env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/i-controller-mix.log" IEX_ARG_LOG="$TMP_ROOT/i-controller-iex.log" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_RUNTIME_ENDPOINT_TARGETS=orchard_node_agent@127.0.0.1 "$ENTRYPOINT_REPO/bin/dev-controller"
 assert_grep 'mix called: ecto.create --quiet' "$TMP_ROOT/i-controller-mix.log"
 assert_grep 'mix called: ecto.migrate --quiet' "$TMP_ROOT/i-controller-mix.log"
-assert_grep '--name orchard_controller@127.0.0.1 --erl -kernel inet_dist_listen_min 52171 inet_dist_listen_max 52171 -S mix phx.server' "$TMP_ROOT/i-controller-iex.log"
+assert_grep 'ERL_EPMD_ADDRESS=127.0.0.1' "$TMP_ROOT/i-controller-iex.log"
+assert_grep '--name orchard_controller@127.0.0.1 --erl -kernel inet_dist_use_interface {127,0,0,1} inet_dist_listen_min 52171 inet_dist_listen_max 52171 -S mix phx.server' "$TMP_ROOT/i-controller-iex.log"
 assert_grep 'BEAM cookie file:' "$TMP_ROOT/i-controller.out"
 
 : > "$TMP_ROOT/i-node-mix.log"
 assert_succeeds "$TMP_ROOT/i-node.out" \
   env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/i-node-mix.log" IEX_ARG_LOG="$TMP_ROOT/i-node-iex.log" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam "$ENTRYPOINT_REPO/bin/dev-node-agent"
-assert_grep '--name orchard_node_agent@127.0.0.1 --erl -kernel inet_dist_listen_min 52172 inet_dist_listen_max 52172 -S mix run --no-halt' "$TMP_ROOT/i-node-iex.log"
+assert_grep 'ERL_EPMD_ADDRESS=127.0.0.1' "$TMP_ROOT/i-node-iex.log"
+assert_grep '--name orchard_node_agent@127.0.0.1 --erl -kernel inet_dist_use_interface {127,0,0,1} inet_dist_listen_min 52172 inet_dist_listen_max 52172 -S mix run --no-halt' "$TMP_ROOT/i-node-iex.log"
 
 printf 'source-dev BEAM bootstrap tests passed\n'
