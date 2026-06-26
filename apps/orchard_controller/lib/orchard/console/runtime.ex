@@ -2,16 +2,19 @@ defmodule OrchardConsole.Runtime do
   @moduledoc """
   Console-facing wrapper for controller → node runtime status snapshots.
 
-  Wraps `Orchard.Dispatch.GrpcNodeRuntimeClient` connect/status/disconnect
-  into a single `snapshot/0` call that normalizes protobuf enums, sorts
-  loaded models, and returns operator-safe error snapshots.
+  Wraps the configured Runtime Endpoint client connect/status/disconnect flow
+  into a single `snapshot/0` call that normalizes endpoint observations or
+  legacy status responses, sorts loaded models, and returns operator-safe
+  error snapshots.
 
-  The underlying client module is injectable via `:runtime_client_impl`
-  in the `:orchard_controller, :console` config for testing.
+  The underlying client module is injectable via `:runtime_endpoint_client_impl`
+  or the legacy `:runtime_client_impl` in the `:orchard_controller, :console`
+  config for testing.
   """
 
   alias Orchard.Inference
   alias Orchard.Runtime.PrefixCacheStatus
+  alias Orchard.RuntimeEndpoint.{Observation, Placement, Target}
 
   @type worker_state :: :starting | :idle | :busy | :stopping | :failed | :stopped | :unknown
 
@@ -91,7 +94,7 @@ defmodule OrchardConsole.Runtime do
   def snapshot, do: snapshot([])
 
   @type cluster_target_snapshot :: %{
-          target: keyword(),
+          target: Target.t() | keyword(),
           status: :ok | :unavailable | :timeout | :error,
           message: String.t() | nil,
           worker_state: worker_state(),
@@ -108,14 +111,14 @@ defmodule OrchardConsole.Runtime do
   @doc """
   Probes all configured runtime targets and returns an ordered list of snapshots.
 
-  Each entry corresponds to one target from `Inference.runtime_client_targets/0`.
+  Each entry corresponds to one target from `Inference.runtime_endpoint_targets/0`.
   Successful probes trigger best-effort `observe_status/3` via the existing
   `snapshot/1` path, including queue capacity refresh.
   Per-target failures are isolated - one failed target never aborts the cluster
   result.
 
   Options:
-  - `:targets` - explicit ordered target list (default: `Inference.runtime_client_targets/0`)
+  - `:targets` - explicit ordered target list (default: `Inference.runtime_endpoint_targets/0`)
   - `:observed_at` - shared timestamp for all probes (default: `DateTime.utc_now()`)
   - `:timeout` - forwarded to each `snapshot/1` call
   """
@@ -124,7 +127,7 @@ defmodule OrchardConsole.Runtime do
 
   @spec cluster_snapshot(keyword()) :: [cluster_target_snapshot()]
   def cluster_snapshot(opts) do
-    targets = Keyword.get(opts, :targets, Inference.runtime_client_targets())
+    targets = Keyword.get(opts, :targets, Inference.runtime_endpoint_targets())
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
     timeout = opts[:timeout]
 
@@ -181,44 +184,59 @@ defmodule OrchardConsole.Runtime do
   Fetches a runtime status snapshot with optional overrides.
 
   Options:
-  - `:target` - override runtime target (default: from inference config)
+  - `:target` - override runtime target (default: first Runtime Endpoint target)
   - `:observed_at` - override observation timestamp (default: `DateTime.utc_now()`)
   - `:timeout` - status RPC timeout in milliseconds (default: client default)
   """
   @spec snapshot(keyword()) :: {:ok, snapshot()} | {:error, error_snapshot()}
   def snapshot(opts) do
-    client = runtime_client_impl()
-    target = Keyword.get(opts, :target, Inference.runtime_client_target())
+    target = Keyword.get_lazy(opts, :target, &default_runtime_target/0)
+    client = runtime_client_impl(target)
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
     status_opts = if timeout = opts[:timeout], do: [timeout: timeout], else: []
 
+    snapshot_target(client, target, observed_at, status_opts)
+  end
+
+  defp default_runtime_target do
+    case Inference.runtime_endpoint_targets() do
+      [target | _] -> target
+      [] -> nil
+    end
+  end
+
+  defp snapshot_target(_client, nil, _observed_at, _status_opts) do
+    {:error,
+     error_snapshot(:error, "runtime_target_unconfigured", "runtime target is not configured")}
+  end
+
+  defp snapshot_target(client, target, observed_at, status_opts) do
     case safe_connect(client, target) do
       {:ok, channel} ->
-        try do
-          case safe_status(client, channel, status_opts, target) do
-            {:ok, response} ->
-              observe_status_best_effort(target, response, observed_at)
-              {:ok, normalize_response(response)}
+        read_target_status(client, channel, target, observed_at, status_opts)
 
-            {:error, reason} ->
-              {:error, error_snapshot_for(reason)}
-          end
-        after
-          safe_disconnect(client, channel, target)
-        end
-
-      {:error, {:connect_failed, _reason}} ->
-        {:error, error_snapshot(:unavailable, "node_unavailable", "node runtime is unavailable")}
-
-      {:error, _reason} ->
-        {:error, error_snapshot(:error, "runtime_error", "node status request failed")}
+      {:error, reason} ->
+        {:error, error_snapshot_for(reason)}
     end
+  end
+
+  defp read_target_status(client, channel, target, observed_at, status_opts) do
+    case safe_status(client, channel, status_opts, target) do
+      {:ok, response} ->
+        observe_status_best_effort(target, response, observed_at)
+        {:ok, normalize_response(response)}
+
+      {:error, reason} ->
+        {:error, error_snapshot_for(reason)}
+    end
+  after
+    safe_disconnect(client, channel, target)
   end
 
   # ---------------------------------------------------------------------------
   # Safe transport wrappers
   #
-  # gRPC client calls can exit (e.g., GenServer call to a dead process) or
+  # Runtime client calls can exit (e.g., GenServer call to a dead process) or
   # raise unexpectedly. These wrappers ensure transport-layer instability
   # is always converted to tagged error tuples so callers never crash.
   # ---------------------------------------------------------------------------
@@ -274,6 +292,20 @@ defmodule OrchardConsole.Runtime do
   # Response normalization
   # ---------------------------------------------------------------------------
 
+  defp normalize_response(%Observation{} = observation) do
+    %{
+      worker_state: normalize_worker_state(observation.worker_state),
+      loaded_models: normalize_observation_loaded_models(observation),
+      active_request_count: normalize_count(observation.aggregate_active_request_count),
+      node_metadata: normalize_node_metadata(observation),
+      runtime_health: normalize_runtime_health(observation),
+      supports_prompt_token_ids: observation.supports_prompt_token_ids == true,
+      runtime_memory_budgets: normalize_runtime_memory_budgets(observation),
+      runtime_memory_budgets_truncated_count: runtime_memory_budgets_truncated_count(observation),
+      runtime_prefix_cache_statuses: normalize_runtime_prefix_cache_statuses(observation)
+    }
+  end
+
   defp normalize_response(response) do
     %{
       worker_state: normalize_worker_state(response.worker_state),
@@ -295,6 +327,9 @@ defmodule OrchardConsole.Runtime do
   defp normalize_worker_state(:WORKER_STATE_STOPPING), do: :stopping
   defp normalize_worker_state(:WORKER_STATE_FAILED), do: :failed
   defp normalize_worker_state(:WORKER_STATE_STOPPED), do: :stopped
+  defp normalize_worker_state(state) when state in [:starting, :idle, :busy], do: state
+  defp normalize_worker_state(state) when state in [:stopping, :failed, :stopped], do: state
+  defp normalize_worker_state(:unknown), do: :unknown
   # Integer fallbacks for forward compatibility
   defp normalize_worker_state(1), do: :starting
   defp normalize_worker_state(2), do: :idle
@@ -317,6 +352,24 @@ defmodule OrchardConsole.Runtime do
 
   defp normalize_loaded_models(_), do: []
 
+  defp normalize_observation_loaded_models(%Observation{placements: placements})
+       when is_list(placements) do
+    placements
+    |> Enum.filter(&Placement.loaded?/1)
+    |> Enum.map(&loaded_model_from_placement/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(&{&1.model_id, &1.version})
+  end
+
+  defp normalize_observation_loaded_models(_observation), do: []
+
+  defp loaded_model_from_placement(%Placement{model_ref: %{model_id: model_id, version: version}})
+       when is_binary(model_id) and model_id != "" and is_binary(version) and version != "" do
+    %{model_id: model_id, version: version}
+  end
+
+  defp loaded_model_from_placement(_placement), do: nil
+
   defp normalize_count(n) when is_integer(n) and n >= 0, do: n
   defp normalize_count(_), do: 0
 
@@ -327,6 +380,11 @@ defmodule OrchardConsole.Runtime do
   # ---------------------------------------------------------------------------
   # Node metadata / runtime health normalization
   # ---------------------------------------------------------------------------
+
+  defp normalize_node_metadata(%Observation{metadata: metadata}) when metadata == %{}, do: nil
+
+  defp normalize_node_metadata(%Observation{metadata: metadata}) when is_map(metadata),
+    do: do_normalize_metadata(metadata)
 
   defp normalize_node_metadata(%{node_metadata: nil}), do: nil
 
@@ -346,6 +404,11 @@ defmodule OrchardConsole.Runtime do
       worker_backend: non_empty_string(Map.get(meta, :worker_backend))
     }
   end
+
+  defp normalize_runtime_health(%Observation{health: health}) when health == %{}, do: nil
+
+  defp normalize_runtime_health(%Observation{health: health}) when is_map(health),
+    do: do_normalize_health(health)
 
   defp normalize_runtime_health(%{runtime_health: nil}), do: nil
 
@@ -497,11 +560,39 @@ defmodule OrchardConsole.Runtime do
   # Error snapshots
   # ---------------------------------------------------------------------------
 
+  defp error_snapshot_for({:connect_failed, _reason}),
+    do: error_snapshot(:unavailable, "node_unavailable", "node runtime is unavailable")
+
   defp error_snapshot_for(:node_unavailable),
     do: error_snapshot(:unavailable, "node_unavailable", "node runtime is unavailable")
 
   defp error_snapshot_for(:node_timeout),
     do: error_snapshot(:timeout, "node_timeout", "node status request timed out")
+
+  defp error_snapshot_for(:beam_distribution_unavailable),
+    do:
+      error_snapshot(
+        :unavailable,
+        "beam_distribution_unavailable",
+        "BEAM distribution is unavailable"
+      )
+
+  defp error_snapshot_for(:beam_distribution_disabled),
+    do:
+      error_snapshot(
+        :unavailable,
+        "beam_distribution_disabled",
+        "BEAM distribution is disabled"
+      )
+
+  defp error_snapshot_for(:unknown_beam_node),
+    do: error_snapshot(:unavailable, "unknown_beam_node", "BEAM node is unavailable")
+
+  defp error_snapshot_for({:unsupported_transport, _transport}),
+    do: error_snapshot(:error, "unsupported_runtime_transport", "node status request failed")
+
+  defp error_snapshot_for({:beam_rpc_error, _reason}),
+    do: error_snapshot(:error, "beam_rpc_error", "node status request failed")
 
   defp error_snapshot_for({:rpc_error, status, _message}) when is_atom(status),
     do: error_snapshot(:error, "rpc_#{status}", "node status request failed")
@@ -533,9 +624,19 @@ defmodule OrchardConsole.Runtime do
   # Config seam
   # ---------------------------------------------------------------------------
 
-  defp runtime_client_impl do
-    Application.get_env(:orchard_controller, :console, [])
-    |> Keyword.get(:runtime_client_impl, Orchard.Dispatch.GrpcNodeRuntimeClient)
+  defp runtime_client_impl(%Target{transport: :beam}) do
+    console_config = Application.get_env(:orchard_controller, :console, [])
+
+    console_config[:runtime_endpoint_client_impl] ||
+      Inference.runtime_endpoint_client()
+  end
+
+  defp runtime_client_impl(_target) do
+    console_config = Application.get_env(:orchard_controller, :console, [])
+
+    console_config[:runtime_endpoint_client_impl] ||
+      console_config[:runtime_client_impl] ||
+      Inference.runtime_endpoint_client()
   end
 
   defp nodes_impl do

@@ -226,6 +226,9 @@ Stream mode reports max concurrency as `1` at both node and placement levels.
 
 These env vars configure only the gRPC compatibility target path.
 Explicit BEAM Runtime Endpoint targets are application config only in this slice.
+Console Nodes live runtime diagnostics follow the active Runtime Endpoint target source.
+When explicit BEAM `runtime_endpoint_targets` are configured, Console probes those BEAM targets through the configured Runtime Endpoint client.
+Keep `ORCHARD_RUNTIME_CLIENT_TARGETS` alongside BEAM targets only when deliberately comparing or exercising the gRPC compatibility fallback.
 
 #### Runtime Endpoint BEAM Guardrails
 
@@ -234,22 +237,32 @@ The adapter is implemented behind explicit application config, but source dev ke
 There is no supported source-dev env var surface for BEAM target selection in this slice.
 The accepted target is for BEAM Runtime Endpoint transport to become the primary source-dev Controller-to-Node Agent path after that smoke passes.
 The accepted smoke requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
+Console Nodes uses the same Runtime Endpoint targets as scheduler and dispatch.
+For a BEAM-only smoke, duplicate gRPC `ORCHARD_RUNTIME_CLIENT_TARGETS` are no longer required just to make Console Nodes show both Macs.
 
 Application-config opt-in uses the Runtime Endpoint client and target keys under `:orchard_controller, :inference`.
 
 ```elixir
-runtime_endpoint_client_impl: Orchard.RuntimeEndpoint.BeamClient,
-runtime_endpoint_targets: [
-  %{
-    transport: :beam,
-    node_id: "<node-uuid>",
-    address: :orchard_node_agent@localhost
-  }
-]
+config :orchard_controller, :inference,
+  runtime_endpoint_client_impl: Orchard.RuntimeEndpoint.BeamClient,
+  runtime_endpoint_targets: [
+    %{
+      transport: :beam,
+      node_id: "<local-node-uuid>",
+      address: :orchard_node_agent_smoke@tamingsari
+    },
+    %{
+      transport: :beam,
+      node_id: "<remote-node-uuid>",
+      address: :orchard_node_agent_smoke@mawarduri
+    }
+  ]
 ```
 
 BEAM target `address` is required and must be a valid BEAM node name (`service@host`) as an atom or binary.
 Configured BEAM target `node_id` values are optional for address-only discovery, but when present they must be UUIDs and must match observed Node Agent metadata.
+Do not set `:orchard_controller, :console, :runtime_client_impl` for BEAM diagnostics.
+That legacy test seam is only for the gRPC compatibility path; BEAM diagnostics use `:runtime_endpoint_client_impl`.
 When BEAM guardrails are enabled directly in application config, guardrail validation requires non-empty `node_name`, `cookie_file`, `listen_host`, `admitted_services`, and `allowed_cidrs`.
 The `listen_host` must not be `0.0.0.0` or `::`, and `allowed_cidrs` must not contain `0.0.0.0/0` or `::/0`.
 Allowed CIDRs must parse as IP CIDR ranges, the running BEAM node name must match configured `node_name`, BEAM target services must be listed in `admitted_services`, and BEAM target hosts must fall inside `allowed_cidrs`.
@@ -449,6 +462,10 @@ needed for the stub backend; source dev resolves it to stream mode when unset.
 6. Killing the remote node-agent should transition its health to
    degraded/unreachable
 
+For BEAM Runtime Endpoint smoke tests, configure `runtime_endpoint_client_impl` and `runtime_endpoint_targets` instead of relying on `ORCHARD_RUNTIME_CLIENT_TARGETS`.
+The `/console/nodes` Live Cluster panel should reflect the BEAM target list.
+If the gRPC compatibility path is intentionally configured at the same time, treat it as a fallback or comparison path rather than the Console diagnostics source.
+
 ### Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -467,6 +484,9 @@ needed for the stub backend; source dev resolves it to stream mode when unset.
 ```bash
 # Full test suite (uses fake runtime, no GPU needed)
 mise exec -- mix test
+
+# If another worktree already owns the default test node-agent port
+ORCHARD_TEST_NODE_AGENT_PORT=50171 mise exec -- mix test
 
 # With coverage
 mise exec -- mix test --cover
