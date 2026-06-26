@@ -489,8 +489,17 @@ orchard_source_dev_beam_validate_cookie_file() {
 orchard_source_dev_beam_cookie_is_owner_only() {
   local cookie_file="$1"
   local mode
-  mode="$(stat -f '%Lp' "$cookie_file" 2>/dev/null || stat -c '%a' "$cookie_file")"
-  mode="$(printf '%03d' "$mode")"
+
+  if mode="$(stat -c '%a' "$cookie_file" 2>/dev/null)"; then
+    :
+  elif mode="$(stat -f '%Lp' "$cookie_file" 2>/dev/null)"; then
+    :
+  else
+    return 1
+  fi
+
+  [[ "$mode" =~ ^[0-7]+$ ]] || return 1
+  mode="00$mode"
   [[ "${mode: -2}" == "00" ]]
 }
 

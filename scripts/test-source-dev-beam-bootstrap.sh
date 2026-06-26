@@ -198,9 +198,37 @@ printf 'fixture-cookie\n' > "$WEAK_COOKIE"
 chmod 644 "$WEAK_COOKIE"
 assert_fails_with 'ORCHARD_BEAM_COOKIE_FILE must be owner-only' "$TMP_ROOT/d3.out" \
   run_helper controller "$TMP_ROOT/repo-d3" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_COOKIE_FILE="$WEAK_COOKIE"
+FAKE_GNU_STAT_DIR="$TMP_ROOT/fake-gnu-stat-bin"
+mkdir -p "$FAKE_GNU_STAT_DIR"
+cat > "$FAKE_GNU_STAT_DIR/stat" <<'STAT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-c" ]]; then
+  printf '644\n'
+  exit 0
+fi
+if [[ "${1:-}" == "-f" ]]; then
+  printf '100\n'
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+STAT
+chmod +x "$FAKE_GNU_STAT_DIR/stat"
+assert_fails_with 'ORCHARD_BEAM_COOKIE_FILE must be owner-only' "$TMP_ROOT/d3-fake-gnu-stat.out" \
+  run_helper controller "$TMP_ROOT/repo-d3-fake-gnu-stat" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam PATH="$FAKE_GNU_STAT_DIR:/usr/bin:/bin:/usr/sbin:/sbin" ORCHARD_BEAM_COOKIE_FILE="$WEAK_COOKIE"
 STRICT_COOKIE="$TMP_ROOT/strict.cookie"
 printf 'fixture-cookie\n' > "$STRICT_COOKIE"
 chmod 600 "$STRICT_COOKIE"
+FAKE_NON_OCTAL_STAT_DIR="$TMP_ROOT/fake-non-octal-stat-bin"
+mkdir -p "$FAKE_NON_OCTAL_STAT_DIR"
+cat > "$FAKE_NON_OCTAL_STAT_DIR/stat" <<'STAT'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'not-octal\n'
+STAT
+chmod +x "$FAKE_NON_OCTAL_STAT_DIR/stat"
+assert_fails_with 'ORCHARD_BEAM_COOKIE_FILE must be owner-only' "$TMP_ROOT/d3-non-octal-stat.out" \
+  run_helper controller "$TMP_ROOT/repo-d3-non-octal-stat" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam PATH="$FAKE_NON_OCTAL_STAT_DIR:/usr/bin:/bin:/usr/sbin:/sbin" ORCHARD_BEAM_COOKIE_FILE="$STRICT_COOKIE"
 assert_succeeds "$TMP_ROOT/d4.out" run_helper controller "$TMP_ROOT/repo-d4" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_COOKIE_FILE="$STRICT_COOKIE"
 assert_grep "cookie=$STRICT_COOKIE" "$TMP_ROOT/d4.out"
 assert_no_grep 'fixture-cookie' "$TMP_ROOT/d4.out"
