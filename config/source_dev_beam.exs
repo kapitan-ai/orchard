@@ -135,6 +135,7 @@ defmodule Orchard.Config.SourceDevBeam do
   defp require_local_controller_ip_literal!(host, node_name) do
     case :inet.parse_address(String.to_charlist(host)) do
       {:ok, ip} when tuple_size(ip) in [4, 8] ->
+        reject_unspecified_ip!(ip, @node_name_env, node_name)
         :ok
 
       {:error, _reason} ->
@@ -145,13 +146,21 @@ defmodule Orchard.Config.SourceDevBeam do
   defp ip_and_cidr_suffix!(host, env_name, segment) do
     case :inet.parse_address(String.to_charlist(host)) do
       {:ok, ip} when tuple_size(ip) == 4 ->
+        reject_unspecified_ip!(ip, env_name, segment)
         {ip, 32}
 
       {:ok, ip} when tuple_size(ip) == 8 ->
+        reject_unspecified_ip!(ip, env_name, segment)
         {ip, 128}
 
       {:error, _reason} ->
         raise "environment variable #{env_name} requires IP-literal BEAM target hosts, got segment #{inspect(segment)}"
+    end
+  end
+
+  defp reject_unspecified_ip!(ip, env_name, segment) do
+    if ip |> Tuple.to_list() |> Enum.all?(&(&1 == 0)) do
+      raise "environment variable #{env_name} must not use unspecified or wildcard BEAM hosts, got segment #{inspect(segment)}"
     end
   end
 

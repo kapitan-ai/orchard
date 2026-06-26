@@ -6,6 +6,8 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HELPER="$REPO_ROOT/bin/lib/source-dev-beam.sh"
 TMP_ROOT="$(mktemp -d)"
+DEFAULT_TOOLS="$TMP_ROOT/tools-default"
+EPMD_CALL_LOG="$TMP_ROOT/epmd-calls.log"
 cleanup() {
   rm -rf "$TMP_ROOT"
 }
@@ -78,8 +80,9 @@ run_helper() {
   local repo_root="$2"
   shift 2
   env -i \
-    PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+    PATH="$DEFAULT_TOOLS:/usr/bin:/bin:/usr/sbin:/sbin" \
     HOME="$TMP_ROOT/home" \
+    FAKE_EPMD_CALL_LOG="$EPMD_CALL_LOG" \
     "$@" \
     bash -c 'set -euo pipefail; source "$1"; orchard_source_dev_beam_bootstrap "$2" "$3"; printf "transport=%s\n" "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT:-unset}"; printf "node=%s\n" "${ORCHARD_BEAM_NODE_NAME:-unset}"; printf "cookie=%s\n" "${ORCHARD_BEAM_COOKIE_FILE:-unset}"; printf "epmd=%s\n" "${ORCHARD_BEAM_EPMD_PORT:-unset}"; printf "epmd_address=%s\n" "${ERL_EPMD_ADDRESS:-unset}"; printf "dist=%s..%s\n" "${ORCHARD_BEAM_DIST_PORT_MIN:-unset}" "${ORCHARD_BEAM_DIST_PORT_MAX:-unset}"; printf "home=%s\n" "$HOME"; printf "mix_home=%s\n" "${MIX_HOME:-unset}"; printf "hex_home=%s\n" "${HEX_HOME:-unset}"; printf "args=%s\n" "${ORCHARD_BEAM_IEX_ARGS[*]-}"' \
       bash "$HELPER" "$role" "$repo_root"
@@ -91,6 +94,42 @@ if [[ ! -f "$HELPER" ]]; then
 fi
 
 mkdir -p "$TMP_ROOT/home"
+mkdir -p "$DEFAULT_TOOLS"
+
+cat > "$DEFAULT_TOOLS/epmd" <<'SH'
+#!/bin/sh
+if [ -n "${FAKE_EPMD_CALL_LOG:-}" ]; then
+  printf 'epmd %s\n' "$*" >> "$FAKE_EPMD_CALL_LOG"
+fi
+
+case " $* " in
+  *" -names "*)
+    exit "${FAKE_EPMD_NAMES_EXIT:-1}"
+    ;;
+  *" -daemon "*)
+    exit "${FAKE_EPMD_DAEMON_EXIT:-0}"
+    ;;
+esac
+
+exit 0
+SH
+
+cat > "$DEFAULT_TOOLS/lsof" <<'SH'
+#!/bin/sh
+if [ "${FAKE_LSOF_EXIT:-0}" -ne 0 ]; then
+  exit "$FAKE_LSOF_EXIT"
+fi
+
+if [ -n "${FAKE_LSOF_OUTPUT:-}" ]; then
+  printf '%s\n' "$FAKE_LSOF_OUTPUT"
+  exit 0
+fi
+
+printf 'COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\n'
+printf 'epmd 100 user 3u IPv4 0t0 TCP %s:%s (LISTEN)\n' "${ERL_EPMD_ADDRESS:-127.0.0.1}" "${ERL_EPMD_PORT:-4369}"
+SH
+
+chmod +x "$DEFAULT_TOOLS/epmd" "$DEFAULT_TOOLS/lsof"
 
 # A: unset or grpc mode is a no-op for IEx distribution args.
 assert_succeeds "$TMP_ROOT/a0.out" run_helper controller "$TMP_ROOT/repo-a0"
@@ -116,6 +155,7 @@ assert_grep 'epmd_address=127.0.0.1' "$TMP_ROOT/b.out"
 assert_grep 'dist=52171..52171' "$TMP_ROOT/b.out"
 assert_grep '--name orchard_controller@127.0.0.1' "$TMP_ROOT/b.out"
 assert_grep 'inet_dist_use_interface {127,0,0,1}' "$TMP_ROOT/b.out"
+assert_grep 'epmd -daemon -address 127.0.0.1 -port 4369' "$EPMD_CALL_LOG"
 assert_no_grep "$(cat "$COOKIE_B")" "$TMP_ROOT/b.out"
 
 # C: node-agent BEAM mode gets its own role default node and distribution port.
@@ -167,6 +207,10 @@ assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must be an IP literal' "$TMP_ROOT
   run_helper controller "$TMP_ROOT/repo-e2" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller@localhost
 assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must be an IP literal' "$TMP_ROOT/e2-invalid-ipv6.out" \
   run_helper controller "$TMP_ROOT/repo-e2-invalid-ipv6" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller@::::
+assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must not be an unspecified or wildcard address' "$TMP_ROOT/e2-wildcard-v4.out" \
+  run_helper controller "$TMP_ROOT/repo-e2-wildcard-v4" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller@0.0.0.0
+assert_fails_with 'ORCHARD_BEAM_NODE_NAME host must not be an unspecified or wildcard address' "$TMP_ROOT/e2-wildcard-v6.out" \
+  run_helper controller "$TMP_ROOT/repo-e2-wildcard-v6" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_controller@::
 assert_fails_with 'controller BEAM node service must start with orchard_controller' "$TMP_ROOT/e3.out" \
   run_helper controller "$TMP_ROOT/repo-e3" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_NODE_NAME=orchard_node_agent@127.0.0.1
 assert_fails_with 'node-agent BEAM node service must be exactly orchard_node_agent' "$TMP_ROOT/e4.out" \
@@ -198,6 +242,12 @@ assert_fails_with 'ORCHARD_BEAM_DIST_PORT_MIN must be less than or equal to ORCH
 assert_succeeds "$TMP_ROOT/f4.out" run_helper controller "$TMP_ROOT/repo-f4" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_BEAM_EPMD_PORT=4370 ORCHARD_BEAM_DIST_PORT_MIN=52180 ORCHARD_BEAM_DIST_PORT_MAX=52181
 assert_grep 'epmd=4370' "$TMP_ROOT/f4.out"
 assert_grep 'dist=52180..52181' "$TMP_ROOT/f4.out"
+assert_fails_with 'EPMD listener on port 4369 is wildcard-bound' "$TMP_ROOT/f5.out" \
+  run_helper controller "$TMP_ROOT/repo-f5" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam FAKE_EPMD_NAMES_EXIT=0 FAKE_LSOF_OUTPUT='epmd 100 user 3u IPv4 0t0 TCP *:4369 (LISTEN)'
+assert_fails_with 'EPMD listener on port 4369 is not bound to 127.0.0.1' "$TMP_ROOT/f6.out" \
+  run_helper controller "$TMP_ROOT/repo-f6" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam FAKE_EPMD_NAMES_EXIT=0 FAKE_LSOF_OUTPUT='epmd 100 user 3u IPv4 0t0 TCP 10.0.0.2:4369 (LISTEN)'
+assert_succeeds "$TMP_ROOT/f7.out" \
+  run_helper controller "$TMP_ROOT/repo-f7" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam FAKE_EPMD_NAMES_EXIT=0 FAKE_LSOF_OUTPUT='epmd 100 user 3u IPv4 0t0 TCP 127.0.0.1:4369 (LISTEN)'
 
 # G: the helper rejects unknown transport values early.
 assert_fails_with 'ORCHARD_RUNTIME_ENDPOINT_TRANSPORT must be grpc|beam' "$TMP_ROOT/g.out" \
@@ -248,7 +298,9 @@ cat > "$TOOLS_I/pgrep" <<'SH'
 #!/bin/sh
 exit 1
 SH
-chmod +x "$TOOLS_I/mix" "$TOOLS_I/iex" "$TOOLS_I/pgrep"
+cp "$DEFAULT_TOOLS/epmd" "$TOOLS_I/epmd"
+cp "$DEFAULT_TOOLS/lsof" "$TOOLS_I/lsof"
+chmod +x "$TOOLS_I/mix" "$TOOLS_I/iex" "$TOOLS_I/pgrep" "$TOOLS_I/epmd" "$TOOLS_I/lsof"
 
 CONTROLLER_REPO="$TMP_ROOT/controller-entrypoint"
 mkdir -p "$CONTROLLER_REPO"

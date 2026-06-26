@@ -52,6 +52,17 @@ defmodule Orchard.Config.SourceDevBeamTest do
       end
     end
 
+    test "rejects unspecified target hosts" do
+      for target <- ["orchard_node_agent@0.0.0.0", "orchard_node_agent@::"] do
+        assert_raise RuntimeError, ~r/must not use unspecified or wildcard BEAM hosts/, fn ->
+          SourceDevBeam.controller_beam_targets!(
+            target,
+            "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
+          )
+        end
+      end
+    end
+
     test "rejects unsupported target services" do
       assert_raise RuntimeError, ~r/unsupported BEAM target service/, fn ->
         SourceDevBeam.controller_beam_targets!(
@@ -102,6 +113,24 @@ defmodule Orchard.Config.SourceDevBeamTest do
                admitted_services: ["orchard_node_agent"],
                allowed_cidrs: ["127.0.0.1/32", "10.0.0.2/32"]
              ]
+    end
+
+    test "rejects unspecified local controller hosts" do
+      targets =
+        SourceDevBeam.controller_beam_targets!(
+          "orchard_node_agent@127.0.0.1",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
+        )
+
+      for node_name <- ["orchard_controller@0.0.0.0", "orchard_controller@::"] do
+        assert_raise RuntimeError, ~r/must not use unspecified or wildcard BEAM hosts/, fn ->
+          SourceDevBeam.beam_guardrail_config!(
+            node_name,
+            "/tmp/orchard-cookie",
+            targets
+          )
+        end
+      end
     end
   end
 end

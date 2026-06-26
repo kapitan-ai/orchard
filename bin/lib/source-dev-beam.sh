@@ -79,6 +79,7 @@ orchard_source_dev_beam_bootstrap() {
   local dist_interface
   dist_interface="$(orchard_source_dev_beam_inet_dist_interface "$node_host")" || return $?
 
+  orchard_source_dev_beam_preflight_epmd "$node_host" "$epmd_port" || return $?
   orchard_source_dev_beam_prepare_home "$role" "$repo_root" "$cookie_file" || return $?
 
   ORCHARD_BEAM_IEX_ARGS=(
@@ -143,6 +144,11 @@ orchard_source_dev_beam_validate_node_name() {
       ;;
   esac
 
+  if orchard_source_dev_beam_ip_is_unspecified "$host"; then
+    echo "error: ORCHARD_BEAM_NODE_NAME host must not be an unspecified or wildcard address" >&2
+    return 64
+  fi
+
   if ! orchard_source_dev_beam_is_ip_literal "$host"; then
     echo "error: ORCHARD_BEAM_NODE_NAME host must be an IP literal" >&2
     return 64
@@ -174,6 +180,33 @@ PY
       fi
     done
     return 0
+  fi
+
+  return 1
+}
+
+orchard_source_dev_beam_ip_is_unspecified() {
+  local host="$1"
+
+  case "$host" in
+    0.0.0.0|::|0:0:0:0:0:0:0:0)
+      return 0
+      ;;
+  esac
+
+  if command -v python3 >/dev/null 2>&1; then
+    python3 - "$host" <<'PY'
+import ipaddress
+import sys
+
+try:
+    addr = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+
+raise SystemExit(0 if addr.is_unspecified else 1)
+PY
+    return $?
   fi
 
   return 1
@@ -217,6 +250,118 @@ PY
 
   echo "error: ORCHARD_BEAM_NODE_NAME host cannot be converted to inet_dist_use_interface" >&2
   return 64
+}
+
+orchard_source_dev_beam_preflight_epmd() {
+  local host="$1"
+  local port="$2"
+
+  if ! command -v epmd >/dev/null 2>&1; then
+    echo "error: epmd not found on PATH; run through the pinned Erlang toolchain" >&2
+    return 69
+  fi
+
+  if orchard_source_dev_beam_epmd_running "$port"; then
+    orchard_source_dev_beam_verify_epmd_listener "$host" "$port"
+    return $?
+  fi
+
+  if ! epmd -daemon -address "$host" -port "$port" >/dev/null 2>&1; then
+    echo "error: failed to start address-constrained EPMD on $host:$port" >&2
+    return 69
+  fi
+
+  orchard_source_dev_beam_verify_epmd_listener "$host" "$port"
+}
+
+orchard_source_dev_beam_epmd_running() {
+  local port="$1"
+  epmd -port "$port" -names >/dev/null 2>&1
+}
+
+orchard_source_dev_beam_verify_epmd_listener() {
+  local host="$1"
+  local port="$2"
+  local listeners listener matched attempts status
+
+  listeners=""
+  attempts=0
+  status=1
+  while (( attempts < 20 )); do
+    if listeners="$(orchard_source_dev_beam_epmd_listener_hosts "$port")"; then
+      status=0
+      if [[ -n "$listeners" ]]; then
+        break
+      fi
+    else
+      status=$?
+    fi
+
+    sleep 0.05
+    attempts=$((attempts + 1))
+  done
+
+  if (( status != 0 )); then
+    echo "error: unable to verify EPMD listener on port $port; stop any existing EPMD with ERL_EPMD_PORT=$port epmd -kill, then rerun" >&2
+    return 69
+  elif [[ -z "$listeners" ]]; then
+    echo "error: unable to find EPMD listener on port $port after preflight" >&2
+    return 69
+  fi
+
+  matched=0
+  while IFS= read -r listener; do
+    if orchard_source_dev_beam_listener_is_wildcard "$listener"; then
+      echo "error: EPMD listener on port $port is wildcard-bound; stop it with ERL_EPMD_PORT=$port epmd -kill, then rerun" >&2
+      return 69
+    fi
+
+    if [[ "$listener" == "$host" ]]; then
+      matched=1
+    fi
+  done <<< "$listeners"
+
+  if (( matched == 0 )); then
+    echo "error: EPMD listener on port $port is not bound to $host; stop existing EPMD with ERL_EPMD_PORT=$port epmd -kill, then rerun" >&2
+    return 69
+  fi
+}
+
+orchard_source_dev_beam_epmd_listener_hosts() {
+  local port="$1"
+  local output
+
+  if ! command -v lsof >/dev/null 2>&1; then
+    return 1
+  fi
+
+  output="$(lsof -nP -a -iTCP:"$port" -sTCP:LISTEN -c epmd 2>/dev/null)" || return 1
+
+  printf '%s\n' "$output" | awk '
+    / TCP / {
+      endpoint = $0
+      sub(/^.* TCP /, "", endpoint)
+      sub(/ .*/, "", endpoint)
+      if (endpoint ~ /^\[/) {
+        sub(/^\[/, "", endpoint)
+        sub(/\]:[0-9]+$/, "", endpoint)
+      } else {
+        sub(/:[0-9]+$/, "", endpoint)
+      }
+      print endpoint
+    }
+  '
+}
+
+orchard_source_dev_beam_listener_is_wildcard() {
+  case "$1" in
+    ""|"*"|0.0.0.0|::)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 orchard_source_dev_beam_prepare_cookie() {
