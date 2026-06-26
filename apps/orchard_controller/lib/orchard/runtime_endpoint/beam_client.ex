@@ -1,6 +1,12 @@
 defmodule Orchard.RuntimeEndpoint.BeamClient do
   @moduledoc """
   Runtime Endpoint client backed by first-party BEAM Distribution.
+
+  Releases and `:prod` require explicit BEAM guardrail configuration before
+  connecting.
+  Source-dev and test may use the adapter without enabled guardrails for local
+  endpoint validation, but targets are still normalized and BEAM node addresses
+  are validated at the client boundary.
   """
 
   @behaviour Orchard.RuntimeEndpoint.Client

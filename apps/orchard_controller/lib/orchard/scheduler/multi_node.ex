@@ -24,10 +24,15 @@ defmodule Orchard.Scheduler.MultiNode do
   Returns `{:error, :cluster_busy}` when live probes joined to persisted schedulable
   nodes, but every joined candidate has exhausted capacity or is an active
   loaded-model candidate with unknown placement capacity.
+  BEAM observations whose configured node identity conflicts with observed
+  metadata also fail closed as `:cluster_busy` instead of falling back to a
+  different identity.
 
   Successful schedules include `:queue_lane_capacity`, derived from loaded
   candidates with live node and placement room plus eligible cold candidates
   with remaining aggregate node capacity.
+  gRPC compatibility schedules include legacy `:runtime_client_target`;
+  BEAM schedules carry only `:runtime_endpoint_target`.
 
   Transport-like probe and connect failures are recorded through node inventory
   so failed targets stop contributing stale queue capacity before queued work is

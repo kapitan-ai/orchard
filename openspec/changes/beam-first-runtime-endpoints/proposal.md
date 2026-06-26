@@ -3,14 +3,14 @@
 At the base of this change, Orchard treats first-party Controller-to-Node Agent communication as a gRPC over mTLS product boundary even though both sides are first-party Elixir services.
 This adds transport and protobuf complexity before Orchard has a non-BEAM runtime endpoint that needs it.
 
-The architecture should make Orchard's runtime execution semantics transport-independent, add guardrails for future BEAM Distribution between admitted first-party Elixir Runtime Endpoints, keep Postgres as durable truth, and preserve the latest concurrent-inference semantics from `gnhf/objective-fully-impl-369718`.
+The architecture should make Orchard's runtime execution semantics transport-independent, add guardrails for BEAM Distribution between admitted first-party Elixir Runtime Endpoints, keep Postgres as durable truth, and preserve the latest concurrent-inference semantics from `gnhf/objective-fully-impl-369718`.
 
 ## What Changes
 
 - Introduce Runtime Endpoint as the schedulable execution boundary selected by the Controller.
 - Introduce a transport-independent Runtime Endpoint Interface for model readiness, inference execution, cancellation, status, runtime telemetry, Placement Capacity, and scheduler observations.
 - Treat the first-party Node Agent as Orchard's v1 Runtime Endpoint implementation.
-- Add BEAM Distribution guardrail validation for future live communication and monitoring between first-party Orchard Elixir services.
+- Add BEAM Distribution guardrail validation for default-off live communication and monitoring between first-party Orchard Elixir services.
 - Keep the current gRPC/protobuf `NodeRuntimeService` path as an explicit Runtime Endpoint compatibility adapter for this implementation slice.
 - Keep source-dev on the gRPC compatibility adapter until a BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke.
 - Keep Postgres as Orchard's durable persistence and coordination store.

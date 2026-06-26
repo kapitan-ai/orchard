@@ -28,16 +28,22 @@ This wraps the current first-party use of `NodeRuntimeService` in `SPEC.md` sect
 - **THEN** model readiness, inference execution, cancellation, status, and runtime telemetry semantics remain unchanged at the Runtime Endpoint Interface
 
 ### Requirement: First-party BEAM Transport Guardrails
-Orchard SHALL validate first-party BEAM Distribution guardrails before any live BEAM Runtime Endpoint adapter can be enabled.
-First-party Orchard Runtime Endpoints MAY use BEAM Distribution as a future live communication and monitoring layer between admitted Elixir services.
+Orchard SHALL validate first-party BEAM Distribution guardrails before production BEAM Runtime Endpoint transport can be enabled.
+First-party Orchard Runtime Endpoints MAY use BEAM Distribution as a default-off live communication and monitoring layer between admitted Elixir services.
 Production BEAM Distribution MUST be explicitly configured, identity-bound, network-restricted, and limited to admitted first-party Orchard services.
 External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
 This changes the base `SPEC.md` section 1.2 language that forbids distributed Erlang across machines and requires all cross-node control traffic to use gRPC over mTLS.
 
-#### Scenario: First-party BEAM endpoint is enabled later
-- **WHEN** an admitted first-party Node Agent participates in production runtime communication through a future BEAM adapter
+#### Scenario: First-party BEAM endpoint is enabled
+- **WHEN** an admitted first-party Node Agent participates in production runtime communication through the BEAM adapter
 - **THEN** it communicates with the Controller only through explicitly configured first-party BEAM transport
 - **THEN** the Controller still records durable Runtime Endpoint Observations in Postgres
+
+#### Scenario: BEAM target identity is validated
+- **WHEN** a configured BEAM Runtime Endpoint target has a node-name address and node identity
+- **THEN** the address is validated as a BEAM node name
+- **THEN** the node identity is validated as a UUID
+- **THEN** scheduler and dispatch trust the identity only when observed endpoint metadata matches the configured identity
 
 #### Scenario: External endpoint remains outside BEAM mesh
 - **WHEN** a future provider-backed Runtime Endpoint is configured
@@ -70,6 +76,11 @@ This replaces the current first-party dependence on `StatusResponse` as the acti
 #### Scenario: Transport-specific field is absent
 - **WHEN** a first-party BEAM Runtime Endpoint reports status without protobuf fields
 - **THEN** the Controller still records equivalent Runtime Endpoint Observation data
+
+#### Scenario: Address-only BEAM observation lacks persisted identity proof
+- **WHEN** a BEAM Runtime Endpoint Observation is recorded from a target that cannot resolve back to the same persisted node identity
+- **THEN** the Controller does not publish queue capacity from that observation
+- **THEN** stale queue capacity sources for the unresolved target remain unavailable for promotion
 
 ### Requirement: Placement Capacity Observation
 Placement Capacity SHALL be a first-class Runtime Endpoint Observation for Model Placements.
@@ -156,15 +167,15 @@ This changes the role of the gRPC contract currently described in `SPEC.md` sect
 - **THEN** the existing gRPC/protobuf work may be reused or evolved as an adapter protocol
 
 ### Requirement: Source-dev BEAM Primary Rollout
-Orchard SHALL treat the first-party BEAM Runtime Endpoint adapter as the intended primary source-dev Controller-to-Node Agent path only after the adapter is implemented and passes the accepted two-Mac smoke.
+Orchard SHALL treat the first-party BEAM Runtime Endpoint adapter as the intended primary source-dev Controller-to-Node Agent path only after it passes the accepted two-Mac smoke.
 Until that gate passes, current source-dev SHALL keep the gRPC compatibility path as the compatibility and fallback path on port `50071`.
 
 #### Scenario: BEAM adapter passes the source-dev smoke gate
-- **WHEN** the BEAM Runtime Endpoint adapter exists and the accepted two-Mac smoke passes
+- **WHEN** the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke
 - **THEN** Orchard may promote BEAM Runtime Endpoint transport to the primary source-dev Controller-to-Node Agent path
 
 #### Scenario: BEAM adapter has not passed the source-dev smoke gate
-- **WHEN** the BEAM Runtime Endpoint adapter is absent or has not passed the accepted two-Mac smoke
+- **WHEN** the BEAM Runtime Endpoint adapter has not passed the accepted two-Mac smoke
 - **THEN** Orchard keeps using the gRPC compatibility path for source-dev Controller-to-Node Agent communication
 
 #### Scenario: Source-dev smoke gate is evaluated

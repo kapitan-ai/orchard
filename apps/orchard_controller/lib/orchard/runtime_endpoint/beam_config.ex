@@ -1,6 +1,9 @@
 defmodule Orchard.RuntimeEndpoint.BeamConfig do
   @moduledoc """
-  Guardrail validation for future first-party BEAM Runtime Endpoint transport.
+  Guardrail validation for first-party BEAM Runtime Endpoint transport.
+
+  Enabled BEAM transport requires an identity-bound local node, admitted target
+  services, restricted listen host, and allowed target CIDRs.
   """
 
   import Bitwise

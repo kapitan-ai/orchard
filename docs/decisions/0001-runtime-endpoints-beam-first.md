@@ -18,27 +18,26 @@ The key ambiguity is whether the Node Agent is a protocol-isolated runtime endpo
 
 Model Orchard scheduling around transport-independent Runtime Endpoints.
 The v1 Runtime Endpoint is the first-party Node Agent.
-For first-party Runtime Endpoints, keep BEAM Distribution as the preferred future live communication and monitoring layer between Elixir services once the adapter exists.
+For first-party Runtime Endpoints, keep BEAM Distribution as the preferred live communication and monitoring layer between Elixir services when guardrails and rollout gates allow it.
 Limit BEAM Distribution to first-party Orchard Runtime Endpoints.
 External or provider-backed Runtime Endpoints must integrate through explicit Runtime Endpoint adapters and provider-appropriate protocols.
 
 Keep Postgres as the durable persistence and coordination store.
 BEAM Distribution must not become durable cluster truth.
-Use BEAM Distribution for future live first-party communication, monitoring, and fast session failure signals after explicit adapter work.
+Use BEAM Distribution for guarded live first-party communication, monitoring, and fast session failure signals.
 Persist Runtime Endpoint Observations in Postgres for inventory, lifecycle, availability, scheduling, and operator-visible history.
 A connected BEAM node is not automatically schedulable.
 Production BEAM Distribution must be explicitly configured, identity-bound, network-restricted, and limited to admitted first-party Orchard services.
 External Runtime Endpoints must not join the BEAM mesh.
 
 Keep the Runtime Endpoint Interface independent of a transport protocol.
-The first implementation slice defines an Elixir behaviour backed by the current gRPC Compatibility Adapter.
-A later implementation can add a first-party BEAM adapter behind the same Runtime Endpoint Interface.
+The implementation defines an Elixir behaviour with the current gRPC Compatibility Adapter and a default-off first-party BEAM adapter behind the same Runtime Endpoint Interface.
 Future Runtime Endpoint adapters may target external compute, cloud VMs, high-performance compute nodes, appliance-style accelerators, or paid provider integrations.
 Existing `proto/cluster/v1` work should be demoted from the default first-party Controller-to-Node Agent path to a possible future adapter protocol.
 Placement Capacity is a first-class Runtime Endpoint observation and must be exposed by the interface independently of transport.
 Unknown, malformed, duplicate, or nonmatching Placement Capacity must not prove eligibility for an active loaded placement.
 
-The BEAM Runtime Endpoint adapter is the intended primary source-dev Controller-to-Node Agent path once the adapter exists and passes the accepted two-Mac smoke.
+The BEAM Runtime Endpoint adapter is the intended primary source-dev Controller-to-Node Agent path once it passes the accepted two-Mac smoke.
 Until that gate passes, current source-dev continues to use the gRPC Compatibility Adapter on port `50071` as the compatibility and fallback path.
 The accepted smoke gate requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
 Do not remove gRPC compatibility before the BEAM adapter passes that smoke.
@@ -57,7 +56,7 @@ It keeps OTP semantics close to the Orchard services that already run on the BEA
 The design still preserves an extension point for non-BEAM Runtime Endpoints.
 Those endpoints should integrate through Runtime Endpoint adapters rather than forcing the first-party v1 path through an external-service protocol.
 It also avoids extending BEAM trust to endpoints Orchard does not fully own.
-The existing cluster proto surface should not be deleted solely because the durable domain model moves to Runtime Endpoint semantics or a later first-party path moves to BEAM Distribution.
+The existing cluster proto surface should not be deleted solely because the durable domain model moves to Runtime Endpoint semantics or the first-party path moves to BEAM Distribution.
 It may still become useful for external Runtime Endpoint adapters or compatibility bridges.
 
 Node lifecycle remains first-party and Node-specific.
@@ -71,7 +70,7 @@ Keep the existing `cluster_busy` error name for now, but define it as live Runti
 
 ## SPEC.md impact
 
-The `SPEC.md` update replaces prior gRPC-only runtime execution language with Runtime Endpoint semantics, current gRPC compatibility transport, future guarded BEAM transport, node scheduling, node lifecycle, and model placement.
+The `SPEC.md` update replaces prior gRPC-only runtime execution language with Runtime Endpoint semantics, current gRPC compatibility transport, guarded BEAM transport, node scheduling, node lifecycle, and model placement.
 The update also reconciles the incoming gnhf concurrency semantics around Placement Capacity, `cluster_busy`, queue requeue under the original deadline, tenant FIFO, weighted round-robin, and unknown-capacity fail-closed behavior.
 The OpenSpec change should treat `gnhf/objective-fully-impl-369718` as an architecture input and preservation dependency, not as implementation scope to merge inside the proposal.
 This ADR records the decision rationale; `SPEC.md` remains the normative build contract.

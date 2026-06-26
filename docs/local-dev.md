@@ -210,9 +210,11 @@ stream mode automatically.
 the fake runtime through `config/test.exs`, not a dev env override.
 Batch generation mode can admit multiple same-model requests up to the worker-reported limit.
 The node agent also enforces aggregate active request capacity across loaded models using the resolved worker limits, conservatively falling back to single-request capacity when worker status omits `max_concurrency`.
-The node-agent reports aggregate and placement capacity through the current gRPC compatibility status response.
-The controller maps that response into Runtime Endpoint Observations before multi-node scheduler candidate filtering and queue wakeups from loaded-placement or cold/no-placement capacity.
+The node-agent reports aggregate and placement capacity through Runtime Endpoint status.
+The default source-dev path maps the current gRPC compatibility status response into Runtime Endpoint Observations before multi-node scheduler candidate filtering and queue wakeups from loaded-placement or cold/no-placement capacity.
+When the BEAM adapter is explicitly configured, the Node Agent facade maps the same status semantics into BEAM Runtime Endpoint Observations.
 Transport failures and ineligible Runtime Endpoint Observations clear endpoint-owned queue capacity sources so queued work is not promoted against stale loaded-placement or cold/no-placement slots.
+BEAM observations publish queue capacity only when the target resolves back to the same persisted node identity.
 Stream mode reports max concurrency as `1` at both node and placement levels.
 
 #### Controller Multi-Node (Source Dev)
@@ -222,6 +224,9 @@ Stream mode reports max concurrency as `1` at both node and placement levels.
 | `ORCHARD_RUNTIME_CLIENT_HOST` | `127.0.0.1` | Controller’s local gRPC target host |
 | `ORCHARD_RUNTIME_CLIENT_TARGETS` | _(empty)_ | Comma-separated `host:port` list for multi-node scheduling. When set with >1 target, the scheduler auto-selects `MultiNode`. |
 
+These env vars configure only the gRPC compatibility target path.
+Explicit BEAM Runtime Endpoint targets are application config only in this slice.
+
 #### Runtime Endpoint BEAM Guardrails
 
 The current source-dev slice includes a default-off BEAM Runtime Endpoint adapter, Node Agent facade, and guardrail config under `:orchard_controller, :runtime_endpoint, beam: [...]`.
@@ -230,8 +235,24 @@ There is no supported source-dev env var surface for BEAM target selection in th
 The accepted target is for BEAM Runtime Endpoint transport to become the primary source-dev Controller-to-Node Agent path after that smoke passes.
 The accepted smoke requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
 
-If enabled directly in application config for future work, guardrail validation requires non-empty `node_name`, `cookie_file`, `listen_host`, `admitted_services`, and `allowed_cidrs`.
+Application-config opt-in uses the Runtime Endpoint client and target keys under `:orchard_controller, :inference`.
+
+```elixir
+runtime_endpoint_client_impl: Orchard.RuntimeEndpoint.BeamClient,
+runtime_endpoint_targets: [
+  %{
+    transport: :beam,
+    node_id: "<node-uuid>",
+    address: :orchard_node_agent@localhost
+  }
+]
+```
+
+BEAM target `address` is required and must be a valid BEAM node name (`service@host`) as an atom or binary.
+Configured BEAM target `node_id` values are optional for address-only discovery, but when present they must be UUIDs and must match observed Node Agent metadata.
+When BEAM guardrails are enabled directly in application config, guardrail validation requires non-empty `node_name`, `cookie_file`, `listen_host`, `admitted_services`, and `allowed_cidrs`.
 The `listen_host` must not be `0.0.0.0` or `::`, and `allowed_cidrs` must not contain `0.0.0.0/0` or `::/0`.
+Allowed CIDRs must parse as IP CIDR ranges, the running BEAM node name must match configured `node_name`, BEAM target services must be listed in `admitted_services`, and BEAM target hosts must fall inside `allowed_cidrs`.
 
 #### Packaged Controller Transport (release only)
 
@@ -813,8 +834,8 @@ All-in-one local boot (dev):
    - Runs pending migrations
    - Exports dev gRPC port (50071)
    - Starts `iex -S mix phx.server`
-   - Controller boots: Endpoint, Repo, Inference supervisor, gRPC client
-   - Node-agent boots: ModelManager, WorkerSupervisor, gRPC server
+   - Controller boots: Endpoint, Repo, Inference supervisor, Runtime Endpoint clients
+   - Node-agent boots: ModelManager, WorkerSupervisor, Runtime Endpoint task supervisor, gRPC server
 3. Import at least one model bundle with `OrchardCLI.main(["models", "import", "<path>", "--activate"])`
 4. Create a tenant and API key with `OrchardCLI.main(["tenants", ...])` and
    `OrchardCLI.main(["api-keys", ...])`
@@ -845,6 +866,6 @@ mise exec -- iex -S mix phx.server
 - Public `/v1/*` API routes require tenant-scoped Bearer API keys; full RBAC and
   quota policy remain incomplete
 - Multi-node is supported for source-dev testing only (production/packaged multi-node — M4)
-- Live BEAM Runtime Endpoint transport is implemented behind default-off application config; current source dev uses the gRPC compatibility adapter
+- Live BEAM Runtime Endpoint transport is implemented behind default-off application config; default source dev uses the gRPC compatibility adapter
 - BEAM Runtime Endpoint transport becomes the primary source-dev path only after it passes the accepted two-Mac smoke
 - Model import from local filesystem only (no remote download)

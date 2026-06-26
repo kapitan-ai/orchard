@@ -136,6 +136,8 @@ defmodule Orchard.Nodes do
 
   Accepts a target keyword list matching the scheduler/dispatch shape:
   `[host: "127.0.0.1", port: 50071]`, or a Runtime Endpoint target.
+  BEAM Runtime Endpoint targets resolve by configured `node_id` first, then by
+  target metadata containing a connect/listen host and port.
 
   Returns `nil` when no match, target is malformed, or repo is unavailable.
   """
@@ -166,6 +168,8 @@ defmodule Orchard.Nodes do
   from aggregate endpoint capacity and loaded placement statuses.
   Fresh invalid metadata, identity conflicts, ineligible nodes, and target
   failures clear stale queue capacity sources for that node/target.
+  BEAM Runtime Endpoint observations refresh queue capacity only when the
+  target resolves back to the same persisted node identity.
 
   Options:
   - `:reserve_unassigned_node_grants?` - reserve unassigned active grants

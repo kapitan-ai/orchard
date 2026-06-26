@@ -212,11 +212,25 @@ defmodule Orchard.Inference do
     end
   end
 
+  @doc """
+  Returns the configured Runtime Endpoint client adapter.
+
+  Defaults to the gRPC compatibility adapter.
+  Set `:runtime_endpoint_client_impl` to `Orchard.RuntimeEndpoint.BeamClient`
+  only with explicit Runtime Endpoint targets.
+  """
   @spec runtime_endpoint_client() :: module()
   def runtime_endpoint_client do
     config()[:runtime_endpoint_client_impl] || Orchard.RuntimeEndpoint.GrpcCompatibilityClient
   end
 
+  @doc """
+  Returns normalized Runtime Endpoint targets for scheduler and dispatch.
+
+  Explicit `:runtime_endpoint_targets` override legacy
+  `:runtime_client_targets`, allow BEAM targets, and force endpoint-aware
+  scheduling even when only one target is configured.
+  """
   @spec runtime_endpoint_targets() :: [Target.t()]
   def runtime_endpoint_targets do
     case config()[:runtime_endpoint_targets] do

@@ -1,6 +1,11 @@
 defmodule Orchard.RuntimeEndpoint.Target do
   @moduledoc """
   Addressable Runtime Endpoint target selected by the scheduler.
+
+  gRPC compatibility targets use `[host: ..., port: ...]` addresses.
+  BEAM targets use BEAM node-name addresses such as
+  `:orchard_node_agent@localhost` and may carry a persisted Orchard node UUID
+  for identity checks.
   """
 
   @enforce_keys [:id, :transport, :address]
@@ -21,6 +26,13 @@ defmodule Orchard.RuntimeEndpoint.Target do
           metadata: map()
         }
 
+  @doc """
+  Normalizes keyword, map, or prebuilt Runtime Endpoint targets.
+
+  Targets without an explicit transport remain gRPC compatibility targets.
+  BEAM targets require an atom or binary BEAM node-name address and reject
+  malformed configured node IDs.
+  """
   @spec normalize(t() | keyword() | map()) :: t()
   def normalize(%__MODULE__{transport: :beam} = target) do
     %{
@@ -41,6 +53,9 @@ defmodule Orchard.RuntimeEndpoint.Target do
     end
   end
 
+  @doc """
+  Builds a gRPC compatibility target from `:host` and `:port`.
+  """
   @spec grpc_compat(keyword() | map()) :: t()
   def grpc_compat(target) do
     attrs = attrs_map(target)
@@ -61,6 +76,12 @@ defmodule Orchard.RuntimeEndpoint.Target do
     }
   end
 
+  @doc """
+  Builds a BEAM Runtime Endpoint target for a persisted Orchard node UUID.
+
+  The `:address` option is required and must be an atom or binary BEAM node
+  name in `service@host` form.
+  """
   @spec beam(String.t(), keyword() | map()) :: t()
   def beam(node_id, opts \\ [])
 

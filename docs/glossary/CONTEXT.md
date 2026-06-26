@@ -60,7 +60,8 @@ _Avoid_: Redis, Kafka, distributed Erlang state
 
 **BEAM Distribution**:
 The live Orchard communication and monitoring layer between first-party Elixir services.
-In source-dev, it becomes the primary Runtime Endpoint transport only after the BEAM adapter passes the accepted two-Mac smoke.
+The default-off BEAM Runtime Endpoint adapter exists for first-party Controller-to-Node Agent communication.
+In source-dev, it becomes the primary Runtime Endpoint transport only after the BEAM adapter passes the accepted two-Mac smoke and is promoted.
 In packaged production, BEAM Distribution is limited to admitted first-party Orchard services.
 _Avoid_: Durable cluster truth, database replacement, public API, external provider integration
 
@@ -111,7 +112,7 @@ The governance and configuration HTTP API surface for tenants, keys, quotas, mod
 _Avoid_: Operator API, runtime support action
 
 **Runtime Endpoint Interface**:
-The transport-independent Controller-facing execution semantics for scheduling, model readiness, inference execution, cancellation, status, and runtime telemetry.
+The transport-independent Controller-facing execution semantics for scheduling, model readiness, inference execution, cancellation, status, prefix-cache scoring, and runtime telemetry.
 Placement Capacity is part of this interface's observation vocabulary.
 _Avoid_: Worker Runtime Interface, Node Lifecycle Interface, transport protocol
 
@@ -294,7 +295,7 @@ The scheduler-facing availability of a Runtime Endpoint for new work, independen
 _Avoid_: Node Lifecycle State, durable cluster truth, provider billing status
 
 **Runtime Endpoint Observation**:
-A durable Controller-recorded snapshot of Runtime Endpoint status, capability, availability, and placement signals.
+A durable Controller-recorded snapshot of Runtime Endpoint status, capability, availability, placement, and capacity signals.
 _Avoid_: live BEAM session, durable cluster truth by itself, provider billing event
 
 **Heartbeat**:
@@ -442,9 +443,11 @@ _Avoid_: Catalog State, durable placement record, model manifest metadata
 **Runtime Node Capacity**:
 Runtime Endpoint Observation data for aggregate runtime capacity on one endpoint-backed node.
 The current gRPC Compatibility Adapter maps this from `StatusResponse.active_request_count` and `StatusResponse.max_concurrency`.
+The BEAM Node Agent facade maps the same node-agent status semantics into BEAM Runtime Endpoint Observations.
 The scheduler uses it to exclude endpoint-backed nodes that have exhausted aggregate request slots before considering per-placement capacity.
 Queue admission uses eligible endpoint observations to bound cold/no-placement wakeups and to keep active source reservations from being double-counted across queued lanes.
 Transport-failed or newly ineligible endpoints clear endpoint-owned aggregate, cold, and placement sources instead of retaining stale capacity.
+BEAM observations publish queue capacity only when the target resolves back to the same persisted node identity.
 _Avoid_: Tenant quota, durable Node inventory capacity, model-specific capacity
 
 **Prefix-cache Score**:

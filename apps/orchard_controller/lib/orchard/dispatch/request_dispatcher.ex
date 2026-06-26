@@ -149,6 +149,10 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   - `:request_id` - the canonical request ID
   - `:request_timeout_ms` - maximum wall-clock time for the entire dispatch
 
+  BEAM schedules may omit `:runtime_client_target`.
+  If a configured BEAM target node ID conflicts with observed endpoint metadata,
+  dispatch fails before model load rather than trusting the mismatched identity.
+
   `execute_request` is the protobuf compatibility `ExecuteInferenceRequest` to map into a Runtime Endpoint operation.
 
   `model_load_request` is the protobuf compatibility `EnsureModelLoadedRequest` to map into a Runtime Endpoint operation.

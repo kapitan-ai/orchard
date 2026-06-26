@@ -1,6 +1,10 @@
 defmodule Orchard.Node.RuntimeEndpoint do
   @moduledoc """
   First-party BEAM Runtime Endpoint facade served by the Node Agent.
+
+  The facade maps transport-independent Runtime Endpoint operations onto the
+  existing node-agent status, model lifecycle, request execution, cancellation,
+  and prefix-cache scoring paths.
   """
 
   alias Orchard.InferenceEvent
