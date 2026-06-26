@@ -127,7 +127,7 @@ defmodule OrchardConsole.Runtime do
 
   @spec cluster_snapshot(keyword()) :: [cluster_target_snapshot()]
   def cluster_snapshot(opts) do
-    targets = Keyword.get(opts, :targets, Inference.runtime_endpoint_targets())
+    targets = Keyword.get_lazy(opts, :targets, &Inference.runtime_endpoint_targets/0)
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
     timeout = opts[:timeout]
 
@@ -191,11 +191,11 @@ defmodule OrchardConsole.Runtime do
   @spec snapshot(keyword()) :: {:ok, snapshot()} | {:error, error_snapshot()}
   def snapshot(opts) do
     target = Keyword.get_lazy(opts, :target, &default_runtime_target/0)
-    client = runtime_client_impl(target)
+    {client, client_target} = runtime_client(target)
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
     status_opts = if timeout = opts[:timeout], do: [timeout: timeout], else: []
 
-    snapshot_target(client, target, observed_at, status_opts)
+    snapshot_target(client, target, client_target, observed_at, status_opts)
   end
 
   defp default_runtime_target do
@@ -205,13 +205,13 @@ defmodule OrchardConsole.Runtime do
     end
   end
 
-  defp snapshot_target(_client, nil, _observed_at, _status_opts) do
+  defp snapshot_target(_client, nil, _client_target, _observed_at, _status_opts) do
     {:error,
      error_snapshot(:error, "runtime_target_unconfigured", "runtime target is not configured")}
   end
 
-  defp snapshot_target(client, target, observed_at, status_opts) do
-    case safe_connect(client, target) do
+  defp snapshot_target(client, target, client_target, observed_at, status_opts) do
+    case safe_connect(client, client_target, target) do
       {:ok, channel} ->
         read_target_status(client, channel, target, observed_at, status_opts)
 
@@ -241,8 +241,8 @@ defmodule OrchardConsole.Runtime do
   # is always converted to tagged error tuples so callers never crash.
   # ---------------------------------------------------------------------------
 
-  defp safe_connect(client, target) do
-    client.connect(target)
+  defp safe_connect(client, client_target, target) do
+    client.connect(client_target)
   catch
     kind, reason ->
       require Logger
@@ -624,19 +624,44 @@ defmodule OrchardConsole.Runtime do
   # Config seam
   # ---------------------------------------------------------------------------
 
-  defp runtime_client_impl(%Target{transport: :beam}) do
+  defp runtime_client(%Target{transport: :beam} = target) do
     console_config = Application.get_env(:orchard_controller, :console, [])
 
-    console_config[:runtime_endpoint_client_impl] ||
-      Inference.runtime_endpoint_client()
+    client =
+      console_config[:runtime_endpoint_client_impl] ||
+        Inference.runtime_endpoint_client()
+
+    {client, target}
   end
 
-  defp runtime_client_impl(_target) do
+  defp runtime_client(%Target{transport: :grpc_compat, address: address} = target) do
     console_config = Application.get_env(:orchard_controller, :console, [])
 
-    console_config[:runtime_endpoint_client_impl] ||
-      console_config[:runtime_client_impl] ||
-      Inference.runtime_endpoint_client()
+    cond do
+      client = console_config[:runtime_endpoint_client_impl] ->
+        {client, target}
+
+      client = console_config[:runtime_client_impl] ->
+        {client, address}
+
+      true ->
+        {Inference.runtime_endpoint_client(), target}
+    end
+  end
+
+  defp runtime_client(target) do
+    console_config = Application.get_env(:orchard_controller, :console, [])
+
+    cond do
+      client = console_config[:runtime_endpoint_client_impl] ->
+        {client, target}
+
+      client = console_config[:runtime_client_impl] ->
+        {client, target}
+
+      true ->
+        {Inference.runtime_endpoint_client(), target}
+    end
   end
 
   defp nodes_impl do

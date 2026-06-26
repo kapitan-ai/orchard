@@ -818,9 +818,9 @@ defmodule OrchardConsole.RuntimeTest do
       dispatch_stub(:status)
     end
 
-    def disconnect({:stub_channel, _target, channel}) do
+    def disconnect({:stub_channel, target, channel}) do
       send(get_stub_pid(), {:disconnect_called, channel})
-      dispatch_stub(:disconnect)
+      dispatch_stub(:disconnect, target)
     end
 
     def disconnect(channel) do
@@ -888,6 +888,33 @@ defmodule OrchardConsole.RuntimeTest do
 
     def status(_channel, _opts \\ []), do: {:error, :legacy_client_used}
     def disconnect(_channel), do: :ok
+  end
+
+  defmodule LegacyStrictClient do
+    def connect(target) when is_list(target) do
+      [{pid, _stubs}] = Registry.lookup(OrchardConsole.RuntimeTest.StubRegistry, :stubs)
+      send(pid, {:legacy_client_called, target})
+      {:ok, :legacy_channel}
+    end
+
+    def connect(target) do
+      [{pid, _stubs}] = Registry.lookup(OrchardConsole.RuntimeTest.StubRegistry, :stubs)
+      send(pid, {:legacy_client_called, target})
+      raise ArgumentError, "legacy client requires keyword target"
+    end
+
+    def status(:legacy_channel, _opts \\ []) do
+      {:ok,
+       %{
+         worker_state: :WORKER_STATE_IDLE,
+         loaded_models: [],
+         active_request_count: 0,
+         node_metadata: %{node_id: "legacy-node", display_name: "legacy-grpc"},
+         runtime_health: %{ready: true}
+       }}
+    end
+
+    def disconnect(:legacy_channel), do: :ok
   end
 
   defmodule StubNodes do
@@ -997,6 +1024,44 @@ defmodule OrchardConsole.RuntimeTest do
       assert snapshot.node_metadata.display_name == "beam-node"
       assert_received {:connect_called, ^beam_target}
       refute_received {:legacy_client_called, ^beam_target}
+    end
+
+    test "legacy Console runtime client receives keyword gRPC address from Runtime Endpoint target" do
+      target = Target.grpc_compat(host: "127.0.0.1", port: 50_071)
+      legacy_address = [host: "127.0.0.1", port: 50_071]
+
+      put_console(runtime_client_impl: __MODULE__.LegacyStrictClient)
+      put_inference(runtime_endpoint_targets: [target])
+      stub_client([])
+
+      assert [
+               %{target: ^target, status: :ok, node_metadata: %{display_name: "legacy-grpc"}}
+             ] = Runtime.cluster_snapshot()
+
+      assert_received {:legacy_client_called, ^legacy_address}
+      assert_received {:observe_status_called, ^target, _response, _observed_at}
+    end
+
+    test "explicit cluster targets avoid evaluating default Runtime Endpoint config" do
+      target = [host: "127.0.0.1", port: 50_071]
+
+      put_inference(
+        runtime_endpoint_targets: [
+          [transport: :beam, node_id: "not-a-uuid", address: :orchard_node_agent_smoke@localhost]
+        ]
+      )
+
+      stub_client(
+        target_responses: %{
+          {"127.0.0.1", 50_071} => [
+            connect: {:ok, :explicit_ch},
+            status: {:ok, status_response()},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      assert [%{target: ^target, status: :ok}] = Runtime.cluster_snapshot(targets: [target])
     end
 
     test "normalizes Runtime Endpoint observations returned by the configured client" do
