@@ -1,10 +1,20 @@
 defmodule Orchard.RuntimeEndpoint.BeamClientTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.{BeamClient, ModelRef, Observation, Operation, Target}
 
   @node_id "550e8400-e29b-41d4-a716-446655440000"
+
+  setup do
+    previous_config = Application.get_env(:orchard_controller, :runtime_endpoint)
+
+    on_exit(fn ->
+      restore_runtime_endpoint_config(previous_config)
+    end)
+
+    :ok
+  end
 
   defmodule Server do
     alias Orchard.RuntimeEndpoint.{Observation, Operation}
@@ -48,6 +58,35 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
     target = Target.grpc_compat(host: "127.0.0.1", port: 50_071)
 
     assert {:error, {:unsupported_transport, :grpc_compat}} = BeamClient.connect(target)
+  end
+
+  test "SPEC.md §7.5 connect normalizes prebuilt BEAM targets at the client boundary" do
+    target = %Target{
+      id: "source-dev-node-agent",
+      transport: :beam,
+      address: Atom.to_string(node()),
+      node_id: @node_id,
+      metadata: %{server_module: Server}
+    }
+
+    assert {:ok, %BeamClient{target: %Target{address: address}}} = BeamClient.connect(target)
+    assert address == node()
+  end
+
+  test "SPEC.md §7.5 enabled config applies guardrails before local BEAM RPC" do
+    put_beam_config(
+      enabled: true,
+      node_name: "orchard_controller@10.0.0.5",
+      cookie_file: "/Library/Application Support/Orchard/secrets/beam.cookie",
+      admitted_services: ["orchard_node_agent"],
+      allowed_cidrs: ["10.0.0.0/24"],
+      listen_host: "10.0.0.5"
+    )
+
+    target = Target.beam(@node_id, address: node(), metadata: %{server_module: Server})
+
+    assert {:error, reason} = BeamClient.connect(target)
+    assert reason in [:beam_distribution_unavailable, :beam_node_identity_mismatch]
   end
 
   test "serves Runtime Endpoint operations over the BEAM client contract" do
@@ -149,5 +188,17 @@ defmodule Orchard.RuntimeEndpoint.BeamClientTest do
 
     assert {:ok, %Operation.PrefixCacheScoreResult{status_code: "error"}} =
              BeamClient.score_prefix_cache(connection, request, [])
+  end
+
+  defp put_beam_config(config) do
+    Application.put_env(:orchard_controller, :runtime_endpoint, beam: config)
+  end
+
+  defp restore_runtime_endpoint_config(nil) do
+    Application.delete_env(:orchard_controller, :runtime_endpoint)
+  end
+
+  defp restore_runtime_endpoint_config(config) do
+    Application.put_env(:orchard_controller, :runtime_endpoint, config)
   end
 end

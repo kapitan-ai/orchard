@@ -261,9 +261,22 @@ defmodule Orchard.Inference do
   end
 
   defp auto_scheduler do
-    case runtime_client_targets() do
-      targets when length(targets) > 1 -> Orchard.Scheduler.MultiNode
-      _ -> Orchard.Scheduler.SingleNode
+    cond do
+      explicit_runtime_endpoint_targets?() ->
+        Orchard.Scheduler.MultiNode
+
+      length(runtime_client_targets()) > 1 ->
+        Orchard.Scheduler.MultiNode
+
+      true ->
+        Orchard.Scheduler.SingleNode
+    end
+  end
+
+  defp explicit_runtime_endpoint_targets? do
+    case config()[:runtime_endpoint_targets] do
+      targets when is_list(targets) and targets != [] -> true
+      _other -> false
     end
   end
 

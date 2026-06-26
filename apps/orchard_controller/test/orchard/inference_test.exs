@@ -666,6 +666,22 @@ defmodule Orchard.InferenceTest do
       assert Inference.scheduler() == SingleNode
     end
 
+    test "SPEC.md §7.5 explicit Runtime Endpoint targets use endpoint-aware scheduling when singular" do
+      put_inference(
+        runtime_endpoint_targets: [
+          %{
+            transport: :beam,
+            id: "source-dev-node-agent",
+            address: :orchard_node_agent@localhost
+          }
+        ],
+        runtime_client_targets: [],
+        scheduler_impl: nil
+      )
+
+      assert Inference.scheduler() == MultiNode
+    end
+
     test "explicit scheduler override wins over auto-selection" do
       put_inference(
         runtime_client_targets: [

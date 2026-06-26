@@ -3,6 +3,10 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
   Guardrail validation for future first-party BEAM Runtime Endpoint transport.
   """
 
+  import Bitwise
+
+  alias Orchard.RuntimeEndpoint.Target
+
   defstruct enabled: false,
             node_name: nil,
             cookie_file: nil,
@@ -22,6 +26,15 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
   @type error ::
           :beam_distribution_disabled
           | {:invalid_beam_distribution_config, [atom()]}
+
+  @type target_error ::
+          :beam_distribution_unavailable
+          | :beam_node_identity_mismatch
+          | :invalid_beam_target_address
+          | :beam_target_service_not_admitted
+          | :beam_target_outside_allowed_cidrs
+
+  @type cidr :: {:inet.ip_address(), non_neg_integer()}
 
   @spec config() :: keyword()
   def config do
@@ -52,6 +65,28 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
     end
   end
 
+  @spec validate_target(t(), Target.t(), keyword()) :: :ok | {:error, target_error()}
+  def validate_target(config, target, opts \\ [])
+
+  def validate_target(%__MODULE__{enabled: false}, _target, _opts), do: :ok
+
+  def validate_target(
+        %__MODULE__{enabled: true} = config,
+        %Target{transport: :beam} = target,
+        opts
+      ) do
+    current_node = Keyword.get(opts, :current_node, node())
+
+    with :ok <- require_current_node(config, current_node),
+         {:ok, service, host} <- beam_service_host(target.address),
+         :ok <- require_admitted_service(config, service) do
+      require_allowed_host(config, host)
+    end
+  end
+
+  def validate_target(%__MODULE__{enabled: true}, %Target{}, _opts),
+    do: {:error, :invalid_beam_target_address}
+
   defp validate_enabled_attrs(attrs, _env) do
     errors =
       []
@@ -59,6 +94,7 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
       |> require_non_empty(attrs, :cookie_file, :missing_cookie_file)
       |> require_restricted_list(attrs, :admitted_services, :missing_admitted_services)
       |> require_restricted_list(attrs, :allowed_cidrs, :missing_allowed_cidrs)
+      |> require_valid_cidrs(attrs, :allowed_cidrs)
       |> require_list_without_global_cidrs(attrs, :allowed_cidrs)
       |> require_restricted_listen_host(attrs)
 
@@ -79,6 +115,57 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
     }
   end
 
+  defp require_current_node(_config, :nonode@nohost),
+    do: {:error, :beam_distribution_unavailable}
+
+  defp require_current_node(%__MODULE__{node_name: node_name}, current_node)
+       when is_atom(current_node) do
+    if Atom.to_string(current_node) == node_name do
+      :ok
+    else
+      {:error, :beam_node_identity_mismatch}
+    end
+  end
+
+  defp require_current_node(_config, _current_node), do: {:error, :beam_node_identity_mismatch}
+
+  defp beam_service_host(address) when is_atom(address) do
+    address
+    |> Atom.to_string()
+    |> beam_service_host()
+  end
+
+  defp beam_service_host(address) when is_binary(address) do
+    case String.split(address, "@") do
+      [service, host] when service != "" and host != "" -> {:ok, service, host}
+      _other -> {:error, :invalid_beam_target_address}
+    end
+  end
+
+  defp beam_service_host(_address), do: {:error, :invalid_beam_target_address}
+
+  defp require_admitted_service(%__MODULE__{admitted_services: services}, service) do
+    if service in services do
+      :ok
+    else
+      {:error, :beam_target_service_not_admitted}
+    end
+  end
+
+  defp require_allowed_host(%__MODULE__{allowed_cidrs: cidrs}, host) do
+    case parse_ip(host) do
+      {:ok, ip} ->
+        if Enum.any?(cidrs, &cidr_contains?(&1, ip)) do
+          :ok
+        else
+          {:error, :beam_target_outside_allowed_cidrs}
+        end
+
+      :error ->
+        {:error, :beam_target_outside_allowed_cidrs}
+    end
+  end
+
   defp require_non_empty(errors, attrs, key, error) do
     if non_empty_string?(value(attrs, key)), do: errors, else: [error | errors]
   end
@@ -93,10 +180,20 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
     end
   end
 
+  defp require_valid_cidrs(errors, attrs, key) do
+    cidrs = list_value(attrs, key)
+
+    if cidrs != [] and Enum.any?(cidrs, &(parse_cidr(&1) == :error)) do
+      [:invalid_allowed_cidr | errors]
+    else
+      errors
+    end
+  end
+
   defp require_list_without_global_cidrs(errors, attrs, key) do
     cidrs = list_value(attrs, key)
 
-    if Enum.any?(cidrs, &(&1 in ["0.0.0.0/0", "::/0"])) do
+    if Enum.any?(cidrs, &global_cidr?/1) do
       [:global_beam_distribution_cidr | errors]
     else
       errors
@@ -113,6 +210,62 @@ defmodule Orchard.RuntimeEndpoint.BeamConfig do
 
   defp attrs_map(attrs) when is_list(attrs), do: Map.new(attrs)
   defp attrs_map(%{} = attrs), do: attrs
+
+  defp cidr_contains?(cidr, ip) do
+    case parse_cidr(cidr) do
+      {:ok, parsed_cidr} -> ip_in_cidr?(ip, parsed_cidr)
+      :error -> false
+    end
+  end
+
+  defp global_cidr?(cidr) do
+    case parse_cidr(cidr) do
+      {:ok, {_ip, 0}} -> true
+      _other -> false
+    end
+  end
+
+  defp parse_cidr(cidr) when is_binary(cidr) do
+    with [ip_string, prefix_string] <- String.split(cidr, "/", parts: 2),
+         {:ok, ip} <- parse_ip(ip_string),
+         {prefix, ""} <- Integer.parse(prefix_string),
+         true <- prefix >= 0 and prefix <= ip_bits(ip) do
+      {:ok, {ip, prefix}}
+    else
+      _other -> :error
+    end
+  end
+
+  defp parse_cidr(_cidr), do: :error
+
+  defp parse_ip(value) do
+    value
+    |> String.to_charlist()
+    |> :inet.parse_address()
+    |> case do
+      {:ok, ip} -> {:ok, ip}
+      {:error, _reason} -> :error
+    end
+  end
+
+  defp ip_in_cidr?(ip, {network, prefix}) when tuple_size(ip) == tuple_size(network) do
+    bits = ip_bits(ip)
+    mask = ((1 <<< prefix) - 1) <<< (bits - prefix)
+    (ip_to_integer(ip) &&& mask) == (ip_to_integer(network) &&& mask)
+  end
+
+  defp ip_in_cidr?(_ip, _cidr), do: false
+
+  defp ip_bits(ip) when tuple_size(ip) == 4, do: 32
+  defp ip_bits(ip) when tuple_size(ip) == 8, do: 128
+
+  defp ip_to_integer(ip) when tuple_size(ip) == 4 do
+    Enum.reduce(Tuple.to_list(ip), 0, fn octet, acc -> acc * 256 + octet end)
+  end
+
+  defp ip_to_integer(ip) when tuple_size(ip) == 8 do
+    Enum.reduce(Tuple.to_list(ip), 0, fn segment, acc -> acc * 65_536 + segment end)
+  end
 
   defp enabled?(attrs), do: value(attrs, :enabled) == true
 

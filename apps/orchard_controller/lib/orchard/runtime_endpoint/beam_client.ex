@@ -15,20 +15,28 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
   @default_server_module Orchard.Node.RuntimeEndpoint
 
   @impl true
-  def connect(%Target{transport: :beam} = target) do
-    with :ok <- validate_beam_enabled(),
-         {:ok, node} <- target_node(target),
-         :ok <- ensure_connected(node) do
-      {:ok, %__MODULE__{node: node, target: target, server_module: server_module(target)}}
+  def connect(%Target{} = target) do
+    target = Target.normalize(target)
+
+    case target.transport do
+      :beam -> connect_beam(target)
+      transport -> {:error, {:unsupported_transport, transport}}
     end
   end
-
-  def connect(%Target{} = target), do: {:error, {:unsupported_transport, target.transport}}
 
   def connect(target) when is_list(target) or is_map(target) do
     target
     |> Target.normalize()
     |> connect()
+  end
+
+  defp connect_beam(%Target{transport: :beam} = target) do
+    with {:ok, config} <- validate_beam_enabled(),
+         :ok <- validate_beam_target(config, target),
+         {:ok, node} <- target_node(target),
+         :ok <- ensure_connected(node) do
+      {:ok, %__MODULE__{node: node, target: target, server_module: server_module(target)}}
+    end
   end
 
   @impl true
@@ -122,18 +130,20 @@ defmodule Orchard.RuntimeEndpoint.BeamClient do
   defp validate_beam_enabled do
     cond do
       BeamConfig.config()[:enabled] == true ->
-        BeamConfig.validate_enabled() |> validation_result()
+        BeamConfig.validate_enabled()
 
       Code.ensure_loaded?(Mix) and Mix.env() != :prod ->
-        :ok
+        {:ok, nil}
 
       true ->
         {:error, :beam_distribution_disabled}
     end
   end
 
-  defp validation_result({:ok, _config}), do: :ok
-  defp validation_result({:error, reason}), do: {:error, reason}
+  defp validate_beam_target(nil, _target), do: :ok
+
+  defp validate_beam_target(%BeamConfig{} = config, target),
+    do: BeamConfig.validate_target(config, target)
 
   defp target_node(%Target{address: node}) when is_atom(node), do: {:ok, node}
 
