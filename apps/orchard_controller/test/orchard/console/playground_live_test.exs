@@ -564,10 +564,18 @@ defmodule OrchardConsole.PlaygroundLiveTest do
       assert html =~ ~s(data-auto-scroll="true")
     end
 
-    test "prompt textarea has submit shortcut hook and hint", %{conn: conn} do
-      {:ok, _view, html} = live(conn, "/console/playground")
+    test "send button keeps browser submit contract", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/playground")
 
-      assert html =~ ~s(phx-hook="SubmitOnModEnter")
+      assert has_element?(view, ~s|#playground-submit-controls[phx-hook="PlaygroundSubmitClick"]|)
+      assert has_element?(view, "#playground-form")
+      assert has_element?(view, ~s|#playground-send[type="submit"][form="playground-form"]|)
+    end
+
+    test "prompt textarea has submit shortcut hook and hint", %{conn: conn} do
+      {:ok, view, html} = live(conn, "/console/playground")
+
+      assert has_element?(view, ~s|#playground-prompt[phx-hook="SubmitOnModEnter"]|)
       assert html =~ "playground-submit-hint"
       assert html =~ "Cmd/Ctrl + Enter"
     end

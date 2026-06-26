@@ -710,77 +710,80 @@ defmodule OrchardConsole.PlaygroundLive do
               title={@run_error.message}
             />
 
-            <.simple_form
-              id="playground-form"
-              for={@form}
-              phx-change="validate"
-              phx-submit="submit"
-            >
-              <.input
-                id="playground-model"
-                field={@form[:model]}
-                type="select"
-                label="Model"
-                size={:lg}
-                options={Enum.map(@models, &{&1.label, &1.value})}
-                errors={List.wrap(@form_errors[:model])}
-                disabled={@active_run != nil}
-              />
-              <p
-                :if={present_text?(@form[:model].value)}
-                id="playground-model-selected"
-                aria-live="polite"
-                class="-mt-3 font-mono text-xs text-slate-500 dark:text-slate-400 break-all"
+            <div id="playground-submit-controls" phx-hook="PlaygroundSubmitClick">
+              <.simple_form
+                id="playground-form"
+                for={@form}
+                phx-change="validate"
+                phx-submit="submit"
               >
-                Selected: {@form[:model].value}
-              </p>
-              <.input
-                id="playground-system"
-                field={@form[:system]}
-                type="textarea"
-                label="System prompt (optional)"
-                size={:lg}
-                rows={2}
-                disabled={@active_run != nil}
-              />
-              <div id="playground-sample-prompts" class="flex flex-wrap items-center gap-2">
-                <span class="text-xs text-slate-500 dark:text-slate-400">Sample prompts:</span>
-                <.button
-                  :for={sample <- sample_prompts()}
-                  id={"playground-sample-prompt-#{sample.id}"}
-                  type="button"
-                  variant={:secondary}
-                  size={:sm}
-                  phx-click="apply_sample_prompt"
-                  phx-value-sample_id={sample.id}
+                <.input
+                  id="playground-model"
+                  field={@form[:model]}
+                  type="select"
+                  label="Model"
+                  size={:lg}
+                  options={Enum.map(@models, &{&1.label, &1.value})}
+                  errors={List.wrap(@form_errors[:model])}
                   disabled={@active_run != nil}
+                />
+                <p
+                  :if={present_text?(@form[:model].value)}
+                  id="playground-model-selected"
+                  aria-live="polite"
+                  class="-mt-3 font-mono text-xs text-slate-500 dark:text-slate-400 break-all"
                 >
-                  {sample.label}
-                </.button>
-              </div>
-              <.input
-                id="playground-prompt"
-                field={@form[:prompt]}
-                type="textarea"
-                label="Message"
-                size={:lg}
-                rows={3}
-                errors={List.wrap(@form_errors[:prompt])}
-                phx-hook="SubmitOnModEnter"
-              />
-              <p id="playground-submit-hint" class="-mt-2 text-xs text-slate-500 dark:text-slate-400">
-                Press Cmd/Ctrl + Enter to send.
-              </p>
-              <:actions>
-                <.button
-                  id="playground-send"
-                  type="submit"
-                  disabled={@active_run != nil || @models == []}
-                >
-                  Send
-                </.button>
-              </:actions>
-            </.simple_form>
+                  Selected: {@form[:model].value}
+                </p>
+                <.input
+                  id="playground-system"
+                  field={@form[:system]}
+                  type="textarea"
+                  label="System prompt (optional)"
+                  size={:lg}
+                  rows={2}
+                  disabled={@active_run != nil}
+                />
+                <div id="playground-sample-prompts" class="flex flex-wrap items-center gap-2">
+                  <span class="text-xs text-slate-500 dark:text-slate-400">Sample prompts:</span>
+                  <.button
+                    :for={sample <- sample_prompts()}
+                    id={"playground-sample-prompt-#{sample.id}"}
+                    type="button"
+                    variant={:secondary}
+                    size={:sm}
+                    phx-click="apply_sample_prompt"
+                    phx-value-sample_id={sample.id}
+                    disabled={@active_run != nil}
+                  >
+                    {sample.label}
+                  </.button>
+                </div>
+                <.input
+                  id="playground-prompt"
+                  field={@form[:prompt]}
+                  type="textarea"
+                  label="Message"
+                  size={:lg}
+                  rows={3}
+                  errors={List.wrap(@form_errors[:prompt])}
+                  phx-hook="SubmitOnModEnter"
+                />
+                <p id="playground-submit-hint" class="-mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  Press Cmd/Ctrl + Enter to send.
+                </p>
+                <:actions>
+                  <.button
+                    id="playground-send"
+                    type="submit"
+                    form="playground-form"
+                    disabled={@active_run != nil || @models == []}
+                  >
+                    Send
+                  </.button>
+                </:actions>
+              </.simple_form>
+            </div>
           </div>
         </.card>
 

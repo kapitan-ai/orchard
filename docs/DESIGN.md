@@ -620,12 +620,16 @@ For each pair of `{light, dark} × {sidebar-expanded, sidebar-collapsed}`:
 
 **Form input wells (Playground)**
 
-- [ ] `<.input type="select">` model selector — well + caret visually
+- [ ] `<.input type="select">` model selector - well + caret visually
   consistent.
-- [ ] `<.input type="textarea">` system prompt — well treatment scales to
+- [ ] `<.input type="textarea">` system prompt - well treatment scales to
   multi-line.
-- [ ] `<.input type="textarea">` main message — well treatment scales to
+- [ ] `<.input type="textarea">` main message - well treatment scales to
   large height; the `SubmitOnModEnter` hook still fires.
+- [ ] Send remains a submit control for `#playground-form`; click submission
+  routes through `PlaygroundSubmitClick` and respects disabled state.
+- [ ] Cmd/Ctrl + Enter uses the same browser submit path as Send and respects
+  disabled state.
 - [ ] Disabled state legible. Verify via existing component paths or
   short-lived local-only attribute toggles in devtools; do not commit
   fixture-only UI states.
