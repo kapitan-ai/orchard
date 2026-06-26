@@ -8,7 +8,7 @@ macOS. This repository is the collaborator-facing source of truth.
 1. `SPEC.md` is the top-level normative product/system contract.
 2. `README.md` explains what Orchard is and where to start.
 3. `CONTRIBUTING.md` explains human collaboration workflow.
-4. `AGENTS.md` explains automation and agent workflow.
+4. `AGENTS.md` explains automation and agent workflow; `CLAUDE.md` imports it for Claude Code.
 5. `docs/glossary/CONTEXT.md` defines shared Orchard product language.
 6. `docs/process.md` explains artifact lifecycle and review gates.
 7. `docs/decisions/**` records durable decisions not already fixed by `SPEC.md`.
