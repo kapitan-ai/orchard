@@ -225,18 +225,43 @@ Stream mode reports max concurrency as `1` at both node and placement levels.
 | `ORCHARD_RUNTIME_CLIENT_TARGETS` | _(empty)_ | Comma-separated `host:port` list for multi-node scheduling. When set with >1 target, the scheduler auto-selects `MultiNode`. |
 
 These env vars configure only the gRPC compatibility target path.
-Explicit BEAM Runtime Endpoint targets are application config only in this slice.
+Source-dev BEAM Runtime Endpoint mode uses a separate Runtime Endpoint env surface, not `ORCHARD_RUNTIME_CLIENT_TARGETS`.
+The accepted source-dev surface is `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` plus `ORCHARD_RUNTIME_ENDPOINT_TARGETS`, with BEAM node and distribution settings under `ORCHARD_BEAM_*` variables.
 Console Nodes live runtime diagnostics follow the active Runtime Endpoint target source.
-When explicit BEAM `runtime_endpoint_targets` are configured, Console probes those BEAM targets through the configured Runtime Endpoint client.
-Keep `ORCHARD_RUNTIME_CLIENT_TARGETS` alongside BEAM targets only when deliberately comparing or exercising the gRPC compatibility fallback.
+When explicit BEAM Runtime Endpoint targets are configured, Console probes those BEAM targets through the configured Runtime Endpoint client.
+Keep `ORCHARD_RUNTIME_CLIENT_TARGETS` alongside BEAM targets only when deliberately comparing the gRPC compatibility path.
+Do not rely on automatic gRPC fallback when BEAM mode is selected.
 
 #### Runtime Endpoint BEAM Guardrails
 
 The current source-dev slice includes a default-off BEAM Runtime Endpoint adapter, Node Agent facade, and guardrail config under `:orchard_controller, :runtime_endpoint, beam: [...]`.
 The adapter is implemented behind explicit application config, but source dev keeps using the gRPC compatibility adapter on port `50071` until the accepted two-Mac smoke passes.
-There is no supported source-dev env var surface for BEAM target selection in this slice.
-The accepted target is for BEAM Runtime Endpoint transport to become the primary source-dev Controller-to-Node Agent path after that smoke passes.
-The accepted smoke requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
+There is no implemented source-dev env var surface for BEAM target selection in this slice.
+The accepted Source-dev BEAM Operating Model uses long BEAM node names with IP-literal hosts, explicit shared cookie material, bounded distribution networking, and BEAM-specific Runtime Endpoint target variables.
+The intended env surface is separate from legacy gRPC runtime client variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` | `grpc` until promotion | Runtime Endpoint transport selector, with `beam` selecting the BEAM Runtime Endpoint adapter |
+| `ORCHARD_RUNTIME_ENDPOINT_TARGETS` | _(empty)_ | Comma-separated BEAM Runtime Endpoint target list using BEAM node names such as `orchard_node_agent@100.x.y.z` |
+| `ORCHARD_BEAM_NODE_NAME` | role-derived after implementation | Long BEAM node name for the current source-dev VM |
+| `ORCHARD_BEAM_COOKIE_FILE` | `tmp/dev/beam.cookie` for same-host source dev | Explicit cookie file path; two-Mac source dev must provision the same cookie material on both Macs |
+| `ORCHARD_BEAM_DIST_PORT_MIN` | implementation-defined | Lower bound for the BEAM distribution listener port range |
+| `ORCHARD_BEAM_DIST_PORT_MAX` | implementation-defined | Upper bound for the BEAM distribution listener port range |
+| `ORCHARD_BEAM_EPMD_PORT` | `4369` | EPMD port for source-dev node discovery |
+
+Same-host source dev may generate `tmp/dev/beam.cookie` if absent.
+Two-Mac source dev must copy or provision the same cookie material to both Macs.
+Cookie files must be `0600` or stricter and must not be printed.
+Packaged or release runtime configuration must not inherit the repo-local cookie model; use runtime secret injection such as release cookie configuration instead.
+Guarded source-dev BEAM targets require IP-literal host parts for CIDR validation.
+Hostname target support is deferred.
+When BEAM Runtime Endpoint mode is selected, BEAM connection failure must fail visibly rather than automatically falling back to gRPC for the same request.
+gRPC remains an explicitly selected compatibility mode.
+BEAM promotion starts with split-role `bin/dev-controller` and `bin/dev-node-agent` before changing all-in-one `bin/dev`.
+The accepted smoke requires remote BEAM Runtime Endpoint RPC evidence, Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
+Before flipping source-dev defaults, record durable smoke evidence in a sanitized repo document such as `docs/investigations/source-dev-beam-smoke-<date>.md`, including date, commit, sanitized hosts, commands, target node names, pass/fail checklist, and remote Runtime Endpoint RPC evidence.
+The committed evidence must not include cookie material, credentials, raw local evidence logs, local tool session identifiers, or machine-specific filesystem paths.
 Console Nodes live runtime diagnostics use the same Runtime Endpoint targets as scheduler and dispatch.
 For a BEAM-only smoke, duplicate gRPC `ORCHARD_RUNTIME_CLIENT_TARGETS` are no longer required just to make Console Nodes show both Macs.
 
@@ -462,9 +487,10 @@ needed for the stub backend; source dev resolves it to stream mode when unset.
 6. Killing the remote node-agent should transition its health to
    degraded/unreachable
 
-For BEAM Runtime Endpoint smoke tests, configure `runtime_endpoint_client_impl` and `runtime_endpoint_targets` instead of relying on `ORCHARD_RUNTIME_CLIENT_TARGETS`.
+For BEAM Runtime Endpoint smoke tests, configure the BEAM Runtime Endpoint target surface instead of relying on `ORCHARD_RUNTIME_CLIENT_TARGETS`.
 The `/console/nodes` Live Cluster panel should reflect the BEAM target list.
-If the gRPC compatibility path is intentionally configured at the same time, treat it as a fallback or comparison path rather than the Console diagnostics source.
+The accepted smoke evidence must include remote BEAM Runtime Endpoint RPC evidence, Console reachability, `GET /v1/models`, and `POST /v1/chat/completions`.
+If the gRPC compatibility path is intentionally configured at the same time, treat it as an explicit comparison path rather than an automatic fallback.
 
 ### Troubleshooting
 

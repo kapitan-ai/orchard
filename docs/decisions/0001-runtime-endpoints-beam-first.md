@@ -38,8 +38,18 @@ Placement Capacity is a first-class Runtime Endpoint observation and must be exp
 Unknown, malformed, duplicate, or nonmatching Placement Capacity must not prove eligibility for an active loaded placement.
 
 The BEAM Runtime Endpoint adapter is the intended primary source-dev Controller-to-Node Agent path once it passes the accepted two-Mac smoke.
-Until that gate passes, current source-dev continues to use the gRPC Compatibility Adapter on port `50071` as the compatibility and fallback path.
-The accepted smoke gate requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
+Until that gate passes, current source-dev continues to use the gRPC Compatibility Adapter on port `50071` as the compatibility path.
+The Source-dev BEAM Operating Model uses long BEAM node names with IP-literal hosts, explicit shared cookie material, bounded distribution networking, and BEAM-specific Runtime Endpoint target variables rather than legacy gRPC runtime client variables.
+Same-host source dev may generate a repo-local `tmp/dev/beam.cookie` file, while two-Mac source dev must provision the same cookie material on both Macs.
+Packaged or release runtime configuration must not inherit the repo-local cookie model; it should use runtime secret injection such as release cookie configuration.
+Cookie files must be `0600` or stricter and must not be printed in logs or templates.
+Guarded source-dev BEAM targets require IP-literal host parts for CIDR validation.
+When BEAM Runtime Endpoint mode is selected, BEAM connection failure must fail visibly rather than automatically falling back to gRPC for the same request.
+gRPC remains an explicitly selected compatibility mode, not an implicit fallback behind BEAM mode.
+Promotion starts with split-role `bin/dev-controller` and `bin/dev-node-agent` before changing all-in-one `bin/dev`.
+The accepted smoke gate requires remote BEAM Runtime Endpoint RPC evidence, Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
+Before flipping source-dev defaults, record durable smoke evidence in a sanitized repo document such as `docs/investigations/source-dev-beam-smoke-<date>.md`, including date, commit, sanitized hosts, commands, target node names, pass/fail checklist, and remote Runtime Endpoint RPC evidence.
+The committed evidence must not include cookie material, credentials, raw local evidence logs, local tool session identifiers, or machine-specific filesystem paths.
 Console Nodes live diagnostics use the configured Runtime Endpoint target list, so explicit BEAM Runtime Endpoint targets take precedence over legacy gRPC runtime client targets during that smoke.
 Do not remove gRPC compatibility before the BEAM adapter passes that smoke.
 

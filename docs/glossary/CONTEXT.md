@@ -65,6 +65,11 @@ In source-dev, it becomes the primary Runtime Endpoint transport only after the 
 In packaged production, BEAM Distribution is limited to admitted first-party Orchard services.
 _Avoid_: Durable cluster truth, database replacement, public API, external provider integration
 
+**Source-dev BEAM Operating Model**:
+The source-development distribution profile for first-party Controller-to-Node Agent BEAM Runtime Endpoint communication.
+It uses long BEAM node names with IP-literal hosts, explicit shared cookie material, bounded distribution networking, explicit BEAM target configuration, no automatic gRPC fallback, and split-role promotion before all-in-one source dev.
+_Avoid_: Production BEAM security model, ambient `.erlang.cookie`, implicit fallback, durable cluster truth
+
 **All-in-One Deployment**:
 A deployment topology where one Mac runs the Controller, Node Agent, Worker Runtime, and Managed Database Mode.
 _Avoid_: Single binary install, External Database Mode
