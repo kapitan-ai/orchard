@@ -82,6 +82,7 @@ orchard_source_dev_beam_bootstrap() {
   orchard_source_dev_beam_preflight_epmd "$node_host" "$epmd_port" || return $?
   orchard_source_dev_beam_prepare_home "$role" "$repo_root" "$cookie_file" || return $?
 
+  # shellcheck disable=SC2034 # Consumed by caller scripts after this file is sourced.
   ORCHARD_BEAM_IEX_ARGS=(
     --name "$node_name"
     --erl "-kernel inet_dist_use_interface $dist_interface inet_dist_listen_min $dist_min inet_dist_listen_max $dist_max"

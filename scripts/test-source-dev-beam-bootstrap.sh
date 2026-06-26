@@ -78,13 +78,18 @@ assert_mode() {
 run_helper() {
   local role="$1"
   local repo_root="$2"
+  local probe_script
   shift 2
+
+  # shellcheck disable=SC2016 # Expanded by the child bash -c process.
+  probe_script='set -euo pipefail; source "$1"; orchard_source_dev_beam_bootstrap "$2" "$3"; printf "transport=%s\n" "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT:-unset}"; printf "node=%s\n" "${ORCHARD_BEAM_NODE_NAME:-unset}"; printf "cookie=%s\n" "${ORCHARD_BEAM_COOKIE_FILE:-unset}"; printf "epmd=%s\n" "${ORCHARD_BEAM_EPMD_PORT:-unset}"; printf "epmd_address=%s\n" "${ERL_EPMD_ADDRESS:-unset}"; printf "dist=%s..%s\n" "${ORCHARD_BEAM_DIST_PORT_MIN:-unset}" "${ORCHARD_BEAM_DIST_PORT_MAX:-unset}"; printf "home=%s\n" "$HOME"; printf "mix_home=%s\n" "${MIX_HOME:-unset}"; printf "hex_home=%s\n" "${HEX_HOME:-unset}"; printf "args=%s\n" "${ORCHARD_BEAM_IEX_ARGS[*]-}"'
+
   env -i \
     PATH="$DEFAULT_TOOLS:/usr/bin:/bin:/usr/sbin:/sbin" \
     HOME="$TMP_ROOT/home" \
     FAKE_EPMD_CALL_LOG="$EPMD_CALL_LOG" \
     "$@" \
-    bash -c 'set -euo pipefail; source "$1"; orchard_source_dev_beam_bootstrap "$2" "$3"; printf "transport=%s\n" "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT:-unset}"; printf "node=%s\n" "${ORCHARD_BEAM_NODE_NAME:-unset}"; printf "cookie=%s\n" "${ORCHARD_BEAM_COOKIE_FILE:-unset}"; printf "epmd=%s\n" "${ORCHARD_BEAM_EPMD_PORT:-unset}"; printf "epmd_address=%s\n" "${ERL_EPMD_ADDRESS:-unset}"; printf "dist=%s..%s\n" "${ORCHARD_BEAM_DIST_PORT_MIN:-unset}" "${ORCHARD_BEAM_DIST_PORT_MAX:-unset}"; printf "home=%s\n" "$HOME"; printf "mix_home=%s\n" "${MIX_HOME:-unset}"; printf "hex_home=%s\n" "${HEX_HOME:-unset}"; printf "args=%s\n" "${ORCHARD_BEAM_IEX_ARGS[*]-}"' \
+    bash -c "$probe_script" \
       bash "$HELPER" "$role" "$repo_root"
 }
 
