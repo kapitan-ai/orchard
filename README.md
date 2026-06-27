@@ -63,8 +63,9 @@ Clients (SDKs / curl / apps)
 - Controller runtime execution uses the Runtime Endpoint Interface.
 - The current `NodeRuntimeService` gRPC path is a compatibility adapter, not the durable domain contract.
 - First-party BEAM communication is implemented behind explicit guardrails and must not become durable cluster truth.
-- Source-dev uses the gRPC compatibility adapter by default until the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke and is promoted.
+- Source-dev uses the gRPC compatibility adapter by default until BEAM Runtime Endpoint transport is explicitly promoted after accepted two-Mac smoke evidence.
 - Source-dev BEAM is available only through the explicit split-role `bin/dev-controller` and `bin/dev-node-agent` flow while all-in-one `bin/dev` remains the gRPC default.
+- Explicit Source-dev BEAM mode does not automatically retry a failed request through gRPC compatibility.
 - Workers are local to node agents and are never exposed on the network.
 - Token streams always pass through the controller for governance and accounting.
 - HA-lite only: exactly one active leader, active/standby via Postgres advisory locks, no active/active consensus.
@@ -76,7 +77,7 @@ Clients (SDKs / curl / apps)
 | Language | Elixir/OTP (umbrella app) |
 | Database | Postgres |
 | Inference | MLX-LM runtime adapter managed by the node agent |
-| Runtime endpoint transport | Runtime Endpoint Interface with current gRPC compatibility adapter and explicit split-role first-party BEAM mode gated from default promotion by accepted two-Mac smoke |
+| Runtime endpoint transport | Runtime Endpoint Interface with current gRPC compatibility adapter, explicit split-role first-party BEAM mode, and recorded two-Mac smoke evidence awaiting separate default promotion |
 | APIs | Phoenix/Plug (loopback HTTP in source dev; HTTPS + SSE in packaged installs) |
 | Packaging | DMG, PKG, launchd |
 | CLI | `orchardctl` |

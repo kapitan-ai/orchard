@@ -167,16 +167,16 @@ This changes the role of the gRPC contract currently described in `SPEC.md` sect
 - **THEN** the existing gRPC/protobuf work may be reused or evolved as an adapter protocol
 
 ### Requirement: Source-dev BEAM Primary Rollout
-Orchard SHALL treat the first-party BEAM Runtime Endpoint adapter as the intended primary source-dev Controller-to-Node Agent path only after it passes the accepted two-Mac smoke.
-Until that gate passes, current source-dev SHALL keep the gRPC compatibility path as the explicit compatibility transport on port `50071`.
+Orchard SHALL treat the first-party BEAM Runtime Endpoint adapter as eligible for primary source-dev Controller-to-Node Agent transport only after accepted two-Mac smoke evidence exists.
+Until a separate promotion change selects BEAM Runtime Endpoint transport as the source-dev default, current source-dev SHALL keep the gRPC compatibility path as the default and explicit compatibility transport on port `50071`.
 This compatibility transport is not an automatic same-request fallback when BEAM mode has been explicitly selected.
 
-#### Scenario: BEAM adapter passes the source-dev smoke gate
-- **WHEN** the BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke
+#### Scenario: BEAM adapter has accepted smoke evidence
+- **WHEN** accepted two-Mac smoke evidence exists for the BEAM Runtime Endpoint adapter
 - **THEN** Orchard may promote BEAM Runtime Endpoint transport to the primary source-dev Controller-to-Node Agent path
 
-#### Scenario: BEAM adapter has not passed the source-dev smoke gate
-- **WHEN** the BEAM Runtime Endpoint adapter has not passed the accepted two-Mac smoke
+#### Scenario: BEAM adapter has not been promoted as the source-dev default
+- **WHEN** no separate promotion change has selected BEAM Runtime Endpoint transport as the source-dev default
 - **THEN** Orchard keeps using the gRPC compatibility path by default for source-dev Controller-to-Node Agent communication
 - **THEN** BEAM-mode requests do not automatically retry through gRPC compatibility after a BEAM transport failure
 

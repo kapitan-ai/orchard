@@ -6,7 +6,7 @@
 - [x] 1.4 Update `SPEC.md` to keep Worker Runtime as a Node Agent-local boundary.
 - [x] 1.5 Update `docs/architecture.md` and glossary docs to match accepted Runtime Endpoint language.
 - [x] 1.6 Decide and document which `proto/cluster/v1` artifacts remain as adapter or compatibility protocol inputs.
-- [x] 1.7 Record the source-dev BEAM-primary rollout gate and gRPC fallback policy.
+- [x] 1.7 Record the source-dev BEAM-primary rollout gate and explicit gRPC compatibility transport policy.
 
 ## 2. Runtime Endpoint Interface
 

@@ -12,7 +12,7 @@ The architecture should make Orchard's runtime execution semantics transport-ind
 - Treat the first-party Node Agent as Orchard's v1 Runtime Endpoint implementation.
 - Add BEAM Distribution guardrail validation for default-off live communication and monitoring between first-party Orchard Elixir services.
 - Keep the current gRPC/protobuf `NodeRuntimeService` path as an explicit Runtime Endpoint compatibility adapter for this implementation slice.
-- Keep source-dev on the gRPC compatibility adapter until a BEAM Runtime Endpoint adapter passes the accepted two-Mac smoke.
+- Keep source-dev on the gRPC compatibility adapter until a separate promotion change selects BEAM as the default, with accepted two-Mac smoke evidence required before that promotion.
 - Keep Postgres as Orchard's durable persistence and coordination store.
 - Keep Worker Runtime as a local Node Agent-owned process/protocol boundary for Python/MLX execution.
 - Demote `proto/cluster/v1` and `NodeRuntimeService` from the durable Controller domain contract to an explicit compatibility adapter and possible future non-BEAM adapter protocol.

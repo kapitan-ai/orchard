@@ -238,6 +238,7 @@ Do not rely on automatic gRPC fallback when BEAM mode is selected.
 
 Source dev now supports an explicit BEAM Runtime Endpoint mode for split-role launches.
 The default source-dev path is still gRPC compatibility on port `50071`.
+Accepted two-Mac smoke evidence is recorded in `docs/investigations/source-dev-beam-smoke-2026-06-27.md`, but default promotion remains a separate change.
 Unset `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` or set it to `grpc` to keep the existing gRPC path.
 Set `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` only with `bin/dev-controller` and `bin/dev-node-agent`.
 All-in-one `bin/dev` intentionally rejects explicit BEAM mode and remains the gRPC default.
@@ -1063,5 +1064,5 @@ mise exec -- iex -S mix phx.server
 - Multi-node is supported for source-dev testing only (production/packaged multi-node — M4)
 - Explicit split-role BEAM Runtime Endpoint mode is implemented for `bin/dev-controller` and `bin/dev-node-agent`; default source dev still uses the gRPC compatibility adapter
 - All-in-one `bin/dev` rejects explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`
-- BEAM Runtime Endpoint transport becomes the primary source-dev path only after it passes the accepted two-Mac smoke
+- BEAM Runtime Endpoint transport becomes the primary source-dev path only through a separate promotion after accepted two-Mac smoke evidence
 - Model import from local filesystem only (no remote download)
