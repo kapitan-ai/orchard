@@ -19,7 +19,7 @@ Defined by `SPEC.md`, Orchard is being built to:
 
 - orchestrate LLM inference across 1–4 Mac nodes using [MLX](https://github.com/ml-explore/mlx);
 - expose OpenAI-compatible APIs with `/v1/responses` as the canonical abstraction and `/v1/chat/completions` as a compatibility facade;
-- support multi-tenant RBAC, API key scoping, quotas, and audit logs;
+- support multi-tenant RBAC, API Token and API Client scoping, quotas, and audit logs;
 - ship as native macOS PKG/DMG media with launchd services and no Kubernetes requirement;
 - support managed Postgres in a future local-container mode while also supporting external Postgres.
 
@@ -38,7 +38,7 @@ Clients (SDKs / curl / apps)
         │
    Controller (Elixir/OTP)
    ├── Inference API    ── `/v1/responses` canonical, `/v1/chat/completions` facade
-   ├── Auth / RBAC      ── tenant-scoped keys + quotas
+   ├── Auth / RBAC      ── API Tokens, API Clients + tenant quotas
    ├── Scheduler        ── Runtime Endpoint selection, queueing, fairness
    ├── Dispatch         ── Runtime Endpoint operations + stream relay
    └── Observability    ── Prometheus, OTel, structured logs
@@ -147,7 +147,7 @@ The macOS PKG uses a universal payload with role selection at install time. Seed
 |-----------|-------|
 | M0 | Skeleton and packaging foundation (umbrella, Postgres, launchd, `/health/live`, `/health/ready`) |
 | M1 | Single-node inference MVP (`GET /v1/models`, `POST /v1/chat/completions`, SSE streaming, MLX worker; compatibility-first while the internal canonical abstraction remains Responses-based) |
-| M2 | Responses API and governance core (public `POST /v1/responses`, tenants, API keys, quotas, audit, idempotency) |
+| M2 | Responses API and governance core (public `POST /v1/responses`, tenants, API Tokens, API Clients, quotas, audit, idempotency) |
 | M3 | Node lifecycle and cluster join (bootstrap/cert join, heartbeats, pools, cordon/drain/maintenance) |
 | M4 | Multi-node scheduler and placements (tiered scoring, queueing, `EnsureModelLoaded`, pre-first-token retry) |
 | M5 | Observability and diagnostics (Prometheus, OTel tracing, structured logs, support bundles) |
@@ -156,10 +156,12 @@ The macOS PKG uses a universal payload with role selection at install time. Seed
 
 ## Status
 
-Pre-release. Building from spec. The current source tree includes authenticated
-`/v1/models`, `/v1/chat/completions`, and a bounded `/v1/responses` slice; full
-M2 governance, RBAC, and quota behavior remain in progress. The roadmap and
-target behavior are governed by `SPEC.md` §14.
+Pre-release.
+Building from spec.
+The current source tree includes authenticated
+`/v1/models`, `/v1/chat/completions`, a bounded `/v1/responses` slice, tenant-direct API Tokens, and bulk API Client provisioning for service-account-owned API Tokens.
+Full M2 quota behavior remains in progress.
+The roadmap and target behavior are governed by `SPEC.md` §14.
 
 Some SPEC-required CLI paths are present before their milestone implementation:
 `orchardctl cluster init`, `orchardctl node join`, `orchardctl nodes admit`,

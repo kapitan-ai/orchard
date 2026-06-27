@@ -147,19 +147,75 @@ _Avoid_: Shell scripts as product interface
 
 **Tenant**:
 A governance boundary for model access, quotas, keys, retention, and usage accounting.
+Product-facing label: Organization.
 _Avoid_: Workspace, account, Service Account, API Key
 
+**Team**:
+A product-facing grouping label stored as API Client metadata for filtering, reporting, and ownership context inside an Organization.
+_Avoid_: Tenant, Quota boundary, Routing Policy, RBAC Role
+
 **Service Account**:
-A non-interactive principal that may own API Keys and RBAC Roles.
-_Avoid_: User account, Tenant, API Key
+A non-interactive principal that may own API Tokens and tenant-scoped RBAC Roles.
+Product-facing label: API Client.
+_Avoid_: User account, Tenant, API Key, Team
 
 **API Key**:
 A bearer credential scoped directly to a Tenant or Service Account.
+Product-facing label: API Token.
 _Avoid_: principal, RBAC Role, Bootstrap Token, Node Certificate, token when referring to model tokens
+
+**One-time Secret Output**:
+The one-time display or export of newly generated API Token secrets at creation.
+_Avoid_: persisted secret, audit payload, support bundle content
+
+**Owner Contact**:
+Descriptive human or team contact metadata for an API Client.
+_Avoid_: User account, Service Account, Principal, RBAC Role
+
+**External Reference**:
+An operator-provided stable identifier used to match an imported API Client across repeated provisioning runs.
+_Avoid_: database id, API Token, Owner Contact
+
+**Tenant-direct API Key**:
+An API Key scoped directly to a Tenant without a Service Account owner.
+_Avoid_: Service-account-owned API Key, Service Account, Owner Contact
+
+**Service-account-owned API Key**:
+An API Key whose effective principal is the Service Account that owns it.
+_Avoid_: Tenant-direct API Key, User account, Owner Contact
+
+**Key Rotation**:
+An explicit credential lifecycle operation that creates a replacement API Token and revokes previous active API Tokens with the same API Client and token name.
+_Avoid_: duplicate import, silent token creation, Service Account disablement
+
+**API Client Disablement**:
+A Service Account lifecycle state that blocks all owned API Tokens without deleting the API Client or mutating each token's revoked state.
+_Avoid_: API Token revocation, deletion, Tenant suspension
+
+**Provisioning Batch**:
+A durable non-secret record of a bulk API Client or API Token provisioning operation.
+It records status, counts, input hash, timestamps, and sanitized error summaries, never plaintext API Token secrets.
+_Avoid_: raw CSV archive, One-time Secret Output, Audit Log
+
+**Dry Run**:
+A validation-only provisioning pass that reports intended changes and errors without creating API Clients, API Tokens, or One-time Secret Output.
+Bulk API Client Dry Run validates one Organization slug per CSV file.
+_Avoid_: partial import, preview that mutates state
+
+**Apply**:
+A provisioning pass that commits all validated changes and emits One-time Secret Output only if the batch succeeds.
+Bulk API Client Apply validates the output path before mutation and treats the input file as an all-or-nothing batch for one Organization.
+If One-time Secret Output delivery fails after the batch commits, Orchard marks the Provisioning Batch `output_failed` and returns API Token prefixes for revocation or rotation without persisting plaintext secrets.
+_Avoid_: Dry Run, partial import, best-effort import
 
 **RBAC Role**:
 A named permission set assignable to principals for cluster, operator, tenant-admin, or inference-client access.
+Product-facing label: Access Level.
 _Avoid_: credential, API Key, ad hoc permission flag
+
+**Inference Client**:
+An Access Level that permits a principal to call public inference endpoints for its Organization.
+_Avoid_: admin, operator, tenant-admin, API Token
 
 **Quota**:
 A tenant-scoped usage or concurrency limit applied during Admission and reconciled at terminal Request state.

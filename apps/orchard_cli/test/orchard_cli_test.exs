@@ -89,7 +89,7 @@ defmodule OrchardCLITest do
     refute output =~ "not implemented yet"
 
     assert output =~
-             "status, start, stop, init, first-run, migrate, console, cluster, env, license, node, nodes, models, requests, support, tenants, api-keys, tls, transport, upgrade"
+             "status, start, stop, init, first-run, migrate, console, cluster, env, license, node, nodes, models, requests, support, tenants, api-clients, api-keys, tls, transport, upgrade"
   end
 
   test "advertised deferred commands report docs-backed status" do

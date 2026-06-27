@@ -28,8 +28,92 @@ defmodule Orchard.API.RequestContextTest do
 
       assert conn.halted == false
       assert conn.assigns[:tenant_id] == tenant.id
+      assert conn.assigns[:principal_type] == :tenant
       assert conn.assigns[:principal_id] == tenant.id
+      assert conn.assigns[:service_account_id] == nil
       assert conn.assigns[:api_key_id] == api_key.id
+    end
+
+    test "SPEC.md §7.2.2 authenticates API Client tokens with inference access" do
+      %{api_client: api_client, api_key: api_key, token: token, tenant: tenant} =
+        create_api_client_token!("request-context-api-client", access?: true)
+
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> RequestContext.call([])
+
+      assert conn.halted == false
+      assert conn.assigns[:tenant_id] == tenant.id
+      assert conn.assigns[:principal_type] == :service_account
+      assert conn.assigns[:principal_id] == api_client.id
+      assert conn.assigns[:service_account_id] == api_client.id
+      assert conn.assigns[:api_key_id] == api_key.id
+    end
+
+    test "SPEC.md §7.2.2 rejects API Client tokens without inference access as forbidden" do
+      %{token: token} = create_api_client_token!("request-context-missing-access")
+
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> RequestContext.call([])
+
+      assert conn.halted
+      assert conn.status == 403
+
+      assert Jason.decode!(conn.resp_body) == %{
+               "error" => %{
+                 "message" => "Forbidden.",
+                 "type" => "invalid_request_error",
+                 "param" => nil,
+                 "code" => "forbidden"
+               }
+             }
+    end
+
+    test "SPEC.md §7.2.2 rejects disabled API Clients with otherwise valid tokens as forbidden" do
+      %{api_client: api_client, token: token, tenant: tenant} =
+        create_api_client_token!("request-context-disabled-client", access?: true)
+
+      assert {:ok, _disabled} = Governance.disable_api_client(tenant, api_client)
+
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> RequestContext.call([])
+
+      assert conn.halted
+      assert conn.status == 403
+
+      assert Jason.decode!(conn.resp_body) == %{
+               "error" => %{
+                 "message" => "API client is disabled.",
+                 "type" => "invalid_request_error",
+                 "param" => nil,
+                 "code" => "api_client_disabled"
+               }
+             }
+    end
+
+    test "SPEC.md §7.2.2 rejects expired API Client tokens as invalid API keys" do
+      expired_at =
+        DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.truncate(:microsecond)
+
+      %{token: token} =
+        create_api_client_token!("request-context-expired-client",
+          access?: true,
+          expires_at: expired_at
+        )
+
+      conn =
+        build_conn(:get, "/v1/models")
+        |> put_req_header("authorization", "Bearer #{token}")
+        |> RequestContext.call([])
+
+      assert conn.halted
+      assert conn.status == 401
+      assert Jason.decode!(conn.resp_body)["error"]["code"] == "invalid_api_key"
     end
 
     test "SPEC.md §7.2.7 rejects a missing bearer header before controller work" do
@@ -93,6 +177,7 @@ defmodule Orchard.API.RequestContextTest do
 
       assert context.extra == %{
                orchard_api_key_hash: SentryContext.hash_id(api_key.id),
+               orchard_principal_type: "tenant",
                orchard_principal_hash: SentryContext.hash_id(tenant.id),
                orchard_tenant_hash: SentryContext.hash_id(tenant.id)
              }
@@ -204,6 +289,7 @@ defmodule Orchard.API.RequestContextTest do
         )
 
       assert canonical.tenant_id == "custom-tenant"
+      assert canonical.principal_type == :tenant
       assert canonical.principal_id == "principal-123"
       assert canonical.api_key_id == "key-456"
     end
@@ -216,6 +302,7 @@ defmodule Orchard.API.RequestContextTest do
         })
 
       assert canonical.tenant_id == Governance.legacy_tenant_id()
+      assert canonical.principal_type == :tenant
       assert canonical.principal_id == nil
       assert canonical.api_key_id == nil
     end
@@ -229,6 +316,32 @@ defmodule Orchard.API.RequestContextTest do
 
     %{tenant: tenant, api_key: api_key, token: token}
   end
+
+  defp create_api_client_token!(slug, opts \\ []) do
+    {:ok, tenant} = Governance.create_tenant(%{slug: slug, name: String.capitalize(slug)})
+
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "#{slug}-client",
+        owner_contact: "owner@example.com"
+      })
+
+    if Keyword.get(opts, :access?, false) do
+      {:ok, _role_binding} = Governance.ensure_inference_client_access(api_client, tenant)
+    end
+
+    token_attrs =
+      %{name: "Primary"}
+      |> maybe_put(:expires_at, Keyword.get(opts, :expires_at))
+
+    {:ok, %{api_key: api_key, token: token}} =
+      Governance.create_api_client_api_token(api_client, token_attrs)
+
+    %{tenant: tenant, api_client: api_client, api_key: api_key, token: token}
+  end
+
+  defp maybe_put(map, _key, nil), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp swap_token_secret(token) do
     [prefix, _secret] = String.split(token, ".", parts: 2)

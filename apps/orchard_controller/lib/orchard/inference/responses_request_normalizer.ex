@@ -13,7 +13,13 @@ defmodule Orchard.Inference.ResponsesRequestNormalizer do
 
     normalizer_opts =
       opts
-      |> Keyword.take([:tenant_id, :principal_id, :api_key_id])
+      |> Keyword.take([
+        :tenant_id,
+        :principal_type,
+        :principal_id,
+        :service_account_id,
+        :api_key_id
+      ])
       |> Keyword.put(:internal_id, internal_id)
       |> Keyword.put(:public_id, public_id)
 

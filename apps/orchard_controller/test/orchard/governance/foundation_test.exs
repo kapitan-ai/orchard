@@ -35,11 +35,11 @@ defmodule Orchard.Governance.FoundationTest do
   end
 
   describe "api key foundation" do
-    test "changeset requires tenant_id, name, token_prefix, and secret_hash" do
+    test "changeset requires an owner, name, token_prefix, and secret_hash" do
       changeset = ApiKey.changeset(%ApiKey{}, %{})
 
       assert %{
-               tenant_id: ["can't be blank"],
+               tenant_id: ["or service_account_id must be present"],
                name: ["can't be blank"],
                token_prefix: ["can't be blank"],
                secret_hash: ["can't be blank"]

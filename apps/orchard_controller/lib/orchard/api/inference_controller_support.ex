@@ -11,7 +11,9 @@ defmodule Orchard.API.InferenceControllerSupport do
   def extract_caller_context(conn) do
     [
       tenant_id: conn.assigns[:tenant_id],
+      principal_type: conn.assigns[:principal_type],
       principal_id: conn.assigns[:principal_id],
+      service_account_id: conn.assigns[:service_account_id],
       api_key_id: conn.assigns[:api_key_id]
     ]
   end

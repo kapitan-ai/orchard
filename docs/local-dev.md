@@ -60,7 +60,7 @@ mise exec -- bin/dev
 # 3. Import a model bundle (in the running IEx session)
 OrchardCLI.main(["models", "import", "/path/to/model-bundle", "--activate"])
 
-# 4. Create a tenant and API key for /v1 API calls (in the running IEx session)
+# 4. Create an Organization and direct API Token for /v1 API calls (in the running IEx session)
 OrchardCLI.main(["tenants", "create", "--slug", "dev", "--name", "Dev"])
 OrchardCLI.main(["api-keys", "create", "--tenant-id", "<tenant-id>", "--name", "dev"])
 ```
@@ -72,7 +72,7 @@ migrations, and starts `iex -S mix phx.server` with the dev gRPC port set to
 
 The controller listens on `http://localhost:4000` and the node-agent
 gRPC server on `127.0.0.1:50071`.
-Copy the API key token printed by `api-keys create` into
+Copy the API Token printed by `api-keys create` into
 `ORCHARD_API_KEY` for the `curl` examples below.
 
 ## Transport Modes
@@ -86,13 +86,31 @@ When running from a source checkout (`make dev`, `mise exec -- bin/dev`, or
 
 - Controller listens on **HTTP** at `http://127.0.0.1:4000`
 - Node-agent gRPC listens on `127.0.0.1:50071` (avoids packaged BEAM on 50061)
-- Public `/v1/*` API routes require `Authorization: Bearer <api_key>`
+- Public `/v1/*` API routes require `Authorization: Bearer <api-token>`
 - CORS is disabled (empty allowlist in `config/dev.exs`)
 - No TLS setup is required
 
-All `curl` examples in this document use plain HTTP because they target the
-source dev controller. API examples assume `ORCHARD_API_KEY` contains a
-tenant-scoped API key token.
+All `curl` examples in this document use plain HTTP because they target the source dev controller.
+API examples assume `ORCHARD_API_KEY` contains a tenant-direct API Token or a service-account-owned API Token whose API Client has the `inference_client` Access Level for the Organization.
+
+### Bulk API Client provisioning
+
+Use `orchardctl api-clients bulk-provision` when a source-dev Organization needs service-account-owned API Tokens for internal developers, applications, coding agents, or automation clients.
+The input CSV must target one Organization slug and include `organization`, `api_client`, `owner_contact`, and `key_name`.
+Optional columns are `team`, `owner_name`, `external_ref`, `description`, `purpose`, `expires_at`, and `metadata_json`.
+
+```csv
+organization,api_client,owner_contact,key_name,team,external_ref
+dev,ci-agent,ci@example.com,default,Platform,ci-agent
+```
+
+```elixir
+OrchardCLI.main(["api-clients", "bulk-provision", "--dry-run", "--file", "/path/to/api-clients.csv"])
+OrchardCLI.main(["api-clients", "bulk-provision", "--apply", "--file", "/path/to/api-clients.csv", "--output", "/path/to/api-client-tokens.csv"])
+```
+
+Apply writes One-time Secret Output to the chosen output CSV only after the batch commits.
+The output CSV contains `organization`, `api_client`, `external_ref`, `key_name`, `api_token_id`, `api_token_prefix`, `api_token`, and `expires_at`.
 
 ### Packaged install
 
@@ -1033,7 +1051,7 @@ All-in-one local boot (dev):
    - Controller boots: Endpoint, Repo, Inference supervisor, Runtime Endpoint clients
    - Node-agent boots: ModelManager, WorkerSupervisor, Runtime Endpoint task supervisor, gRPC server
 3. Import at least one model bundle with `OrchardCLI.main(["models", "import", "<path>", "--activate"])`
-4. Create a tenant and API key with `OrchardCLI.main(["tenants", ...])` and
+4. Create an Organization and API Token with `OrchardCLI.main(["tenants", ...])` and
    `OrchardCLI.main(["api-keys", ...])`
 5. Source-dev HTTP is live at `/health/live`; `/health/ready` can remain
    degraded under the default `plain_http_localhost` transport until HTTPS or a
@@ -1059,8 +1077,9 @@ mise exec -- iex -S mix phx.server
   `reverse_proxy` or `direct_https` (see [Transport Modes](#transport-modes))
 - Source dev gRPC on port 50071; packaged installs on 50061
 - Source-dev node-agent gRPC remains loopback and non-TLS
-- Public `/v1/*` API routes require tenant-scoped Bearer API keys; full RBAC and
-  quota policy remain incomplete
+- Public `/v1/*` API routes require Bearer API Tokens.
+  Tenant-direct API Tokens remain supported, and service-account-owned API Tokens require an enabled API Client with tenant-scoped `inference_client` access.
+  Full quota policy remains incomplete
 - Multi-node is supported for source-dev testing only (production/packaged multi-node — M4)
 - Explicit split-role BEAM Runtime Endpoint mode is implemented for `bin/dev-controller` and `bin/dev-node-agent`; default source dev still uses the gRPC compatibility adapter
 - All-in-one `bin/dev` rejects explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`

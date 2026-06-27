@@ -100,7 +100,9 @@ defmodule Orchard.CanonicalRequest do
             public_id: nil,
             endpoint: nil,
             tenant_id: nil,
+            principal_type: :tenant,
             principal_id: nil,
+            service_account_id: nil,
             api_key_id: nil,
             model_ref: nil,
             input_items: [],
@@ -117,13 +119,16 @@ defmodule Orchard.CanonicalRequest do
             resolved_policy: nil
 
   @type endpoint :: :chat_completions | :responses
+  @type principal_type :: :tenant | :service_account
 
   @type t :: %__MODULE__{
           internal_id: String.t(),
           public_id: String.t(),
           endpoint: endpoint(),
           tenant_id: String.t(),
+          principal_type: principal_type(),
           principal_id: String.t() | nil,
+          service_account_id: String.t() | nil,
           api_key_id: String.t() | nil,
           model_ref: ModelRef.t(),
           input_items: [map()],
@@ -165,6 +170,7 @@ defmodule Orchard.CanonicalRequest do
     |> normalize_sampling_numbers()
     |> validate_required!([:internal_id, :public_id, :endpoint, :tenant_id, :model_ref])
     |> validate_id_fields!()
+    |> validate_principal_type!()
     |> validate_endpoint!()
     |> validate_model_ref!()
     |> validate_input_items!()
@@ -251,10 +257,22 @@ defmodule Orchard.CanonicalRequest do
     if not is_nil(struct.principal_id),
       do: validate_non_empty_binary!(struct.principal_id, :principal_id)
 
+    if not is_nil(struct.service_account_id),
+      do: validate_non_empty_binary!(struct.service_account_id, :service_account_id)
+
     if not is_nil(struct.api_key_id),
       do: validate_non_empty_binary!(struct.api_key_id, :api_key_id)
 
     struct
+  end
+
+  defp validate_principal_type!(%__MODULE__{principal_type: type} = struct)
+       when type in [:tenant, :service_account],
+       do: struct
+
+  defp validate_principal_type!(%__MODULE__{principal_type: type}) do
+    raise ArgumentError,
+          "#{inspect(__MODULE__)} principal_type must be :tenant or :service_account, got: #{inspect(type)}"
   end
 
   defp validate_endpoint!(%__MODULE__{endpoint: endpoint} = struct)

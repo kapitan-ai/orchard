@@ -12,7 +12,7 @@ defmodule Orchard.Requests.Request do
 
   import Ecto.Changeset
 
-  alias Orchard.Governance.{ApiKey, Tenant}
+  alias Orchard.Governance.{ApiKey, ServiceAccount, Tenant}
   alias Orchard.Models.Model
   alias Orchard.Requests.RequestEvent
 
@@ -37,13 +37,14 @@ defmodule Orchard.Requests.Request do
   ]
   @terminal_states [:completed, :failed, :cancelled, :timed_out, :interrupted]
   @payload_capture_modes [none: "none", metadata: "metadata", full: "full"]
+  @principal_types [tenant: "tenant", service_account: "service_account"]
 
   @type t :: %__MODULE__{}
 
   schema "requests" do
     field(:public_id, :string)
     field(:endpoint, Ecto.Enum, values: @endpoints)
-    field(:service_account_id, Ecto.UUID)
+    field(:principal_type, Ecto.Enum, values: @principal_types, default: :tenant)
     field(:requested_model, :string)
     field(:node_id, Ecto.UUID)
     field(:worker_id, Ecto.UUID)
@@ -71,6 +72,7 @@ defmodule Orchard.Requests.Request do
 
     belongs_to(:tenant, Tenant)
     belongs_to(:api_key, ApiKey)
+    belongs_to(:service_account, ServiceAccount)
     belongs_to(:model, Model)
     belongs_to(:retry_of_request, __MODULE__, foreign_key: :retry_of_request_id)
     has_many(:request_events, RequestEvent)
@@ -95,6 +97,7 @@ defmodule Orchard.Requests.Request do
       :public_id,
       :endpoint,
       :tenant_id,
+      :principal_type,
       :api_key_id,
       :service_account_id,
       :model_id,
@@ -128,6 +131,7 @@ defmodule Orchard.Requests.Request do
       :public_id,
       :endpoint,
       :tenant_id,
+      :principal_type,
       :requested_model,
       :state,
       :stream,
@@ -136,10 +140,22 @@ defmodule Orchard.Requests.Request do
     |> validate_number(:input_tokens, greater_than_or_equal_to: 0)
     |> validate_number(:output_tokens, greater_than_or_equal_to: 0)
     |> validate_number(:reserved_output_tokens, greater_than_or_equal_to: 0)
+    |> validate_service_account_principal()
     |> unique_constraint(:public_id)
     |> unique_constraint(:idempotency_key, name: :idx_requests_tenant_idempotency)
+    |> check_constraint(:service_account_id,
+      name: :requests_service_account_principal_requires_id
+    )
     |> foreign_key_constraint(:model_id)
     |> foreign_key_constraint(:retry_of_request_id)
+    |> foreign_key_constraint(:service_account_id)
+  end
+
+  defp validate_service_account_principal(changeset) do
+    case get_field(changeset, :principal_type) do
+      :service_account -> validate_required(changeset, [:service_account_id])
+      _principal_type -> changeset
+    end
   end
 
   @spec terminal_changeset(struct(), map()) :: Ecto.Changeset.t()

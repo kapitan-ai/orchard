@@ -6,6 +6,7 @@ defmodule OrchardConsole.RequestLiveTest do
   import Orchard.TestSupport.LicenseGateHelpers
   alias Ecto.Adapters.SQL.Sandbox
   import Orchard.TestSupport.ModelRequestFixtures
+  alias Orchard.Governance.ApiKey
   alias Orchard.Repo
   alias Orchard.Requests
   alias Orchard.Requests.{RequestEvent, RequestStepEvent}
@@ -586,7 +587,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert summary_html =~ parent.public_id
     end
 
-    test "renders resolved tenant and API key provenance", %{conn: conn} do
+    test "renders resolved Organization and API Token provenance", %{conn: conn} do
       {:ok, tenant} =
         Orchard.Governance.create_tenant(%{name: "Acme Corp", slug: "acme"})
 
@@ -612,7 +613,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert key_html =~ "Active"
     end
 
-    test "renders revoked API key with Revoked badge", %{conn: conn} do
+    test "renders revoked API Token with Revoked badge", %{conn: conn} do
       {:ok, tenant} =
         Orchard.Governance.create_tenant(%{name: "Revoke Test", slug: "revoke-test"})
 
@@ -635,6 +636,41 @@ defmodule OrchardConsole.RequestLiveTest do
       assert key_html =~ "Revoked"
     end
 
+    test "renders expired API Token with Expired badge", %{conn: conn} do
+      {:ok, tenant} =
+        Orchard.Governance.create_tenant(%{name: "Expired Test", slug: "expired-test"})
+
+      expired_at =
+        DateTime.utc_now()
+        |> DateTime.add(-3600, :second)
+        |> DateTime.truncate(:microsecond)
+
+      {:ok, api_key} =
+        %ApiKey{}
+        |> ApiKey.tenant_direct_changeset(%{
+          tenant_id: tenant.id,
+          name: "expired-key",
+          token_prefix: "orch_expired_#{System.unique_integer([:positive])}",
+          secret_hash: "sha256$expired",
+          expires_at: expired_at
+        })
+        |> Repo.insert()
+
+      request =
+        create_request!(%{
+          state: :completed,
+          tenant_id: tenant.id,
+          api_key_id: api_key.id
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      key_html = element(view, "#request-api-key") |> render()
+      assert key_html =~ "expired-key"
+      assert key_html =~ "Expired"
+      refute key_html =~ "Active"
+    end
+
     test "renders orphan provenance with raw IDs without crashing", %{conn: conn} do
       orphan_tenant_id = Ecto.UUID.generate()
       orphan_key_id = Ecto.UUID.generate()
@@ -649,16 +685,16 @@ defmodule OrchardConsole.RequestLiveTest do
       {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
 
       tenant_html = element(view, "#request-tenant") |> render()
-      assert tenant_html =~ "Unknown tenant"
+      assert tenant_html =~ "Unknown Organization"
       assert tenant_html =~ orphan_tenant_id
 
       key_html = element(view, "#request-api-key") |> render()
-      assert key_html =~ "Unknown API key"
+      assert key_html =~ "Unknown API Token"
       assert key_html =~ orphan_key_id
       assert key_html =~ "Missing"
     end
 
-    test "renders legacy tenant and dash for absent API key", %{conn: conn} do
+    test "renders legacy Organization and dash for absent API Token", %{conn: conn} do
       request =
         create_request!(%{
           state: :completed,

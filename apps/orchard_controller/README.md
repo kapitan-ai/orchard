@@ -14,6 +14,7 @@ This README is orientation only. Normative behavior lives in
 - Authenticated public `/v1` routes for models, chat completions, and the
   bounded Responses API subset.
 - `Orchard.Repo` migrations and Postgres-backed controller state.
+- Governance persistence and lifecycle APIs for Organizations, tenant-direct API Tokens, API Clients, service-account-owned API Tokens, role bindings, and provisioning batches.
 - Request canonicalization, tokenization orchestration, admission, scheduling,
   dispatch, lifecycle persistence, and public response serialization.
 - Runtime Endpoint client adapters, including the gRPC compatibility adapter and

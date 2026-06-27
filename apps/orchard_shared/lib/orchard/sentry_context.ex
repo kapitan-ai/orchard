@@ -48,6 +48,7 @@ defmodule Orchard.SentryContext do
   def build_caller_extra(source) do
     %{}
     |> put_hashed(:orchard_tenant_hash, field(source, :tenant_id))
+    |> put_plain(:orchard_principal_type, field(source, :principal_type))
     |> put_hashed(:orchard_principal_hash, field(source, :principal_id))
     |> put_hashed(:orchard_api_key_hash, field(source, :api_key_id))
   end
@@ -299,6 +300,14 @@ defmodule Orchard.SentryContext do
       hashed -> Map.put(acc, key, hashed)
     end
   end
+
+  defp put_plain(acc, _key, nil), do: acc
+
+  defp put_plain(acc, key, value) when is_atom(value),
+    do: Map.put(acc, key, Atom.to_string(value))
+
+  defp put_plain(acc, key, value) when is_binary(value), do: Map.put(acc, key, value)
+  defp put_plain(acc, _key, _value), do: acc
 
   defp tooling?(nil), do: false
 

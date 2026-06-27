@@ -1,6 +1,6 @@
 defmodule OrchardConsole.TenantsLive do
   @moduledoc """
-  Console tenants page — list tenants and create new ones.
+  Console Organizations page.
   """
 
   use OrchardConsole, :live_view
@@ -11,7 +11,7 @@ defmodule OrchardConsole.TenantsLive do
   def mount(_params, _session, socket) do
     socket =
       socket
-      |> assign(page_title: "Tenants", active_nav: :tenants)
+      |> assign(page_title: "Organizations", active_nav: :tenants)
       |> assign_loading_state()
       |> assign_blank_form()
 
@@ -36,8 +36,8 @@ defmodule OrchardConsole.TenantsLive do
       id="tenants-loading-card"
       kind={:loading}
       layout={:panel}
-      title="Tenants"
-      body="Loading tenants…"
+      title="Organizations"
+      body="Loading Organizations…"
     />
     """
   end
@@ -48,7 +48,7 @@ defmodule OrchardConsole.TenantsLive do
       id="tenants-error-card"
       kind={:error}
       layout={:panel}
-      title="Tenants unavailable"
+      title="Organizations unavailable"
       body={@load_error}
     />
     """
@@ -59,8 +59,8 @@ defmodule OrchardConsole.TenantsLive do
     <div class="space-y-6">
       <div id="tenant-create-card">
         <.card>
-          <:title>Create Tenant</:title>
-          <:subtitle>Add a new tenant to issue API keys against.</:subtitle>
+          <:title>Create Organization</:title>
+          <:subtitle>Add a new Organization to issue API Tokens against.</:subtitle>
 
           <.simple_form
             for={@tenant_form}
@@ -85,7 +85,7 @@ defmodule OrchardConsole.TenantsLive do
                 size={:lg}
               />
             <:actions>
-              <.button type="submit" phx-disable-with="Creating…">Create Tenant</.button>
+              <.button type="submit" phx-disable-with="Creating…">Create Organization</.button>
             </:actions>
           </.simple_form>
         </.card>
@@ -93,12 +93,12 @@ defmodule OrchardConsole.TenantsLive do
 
       <div id="tenants-list-card">
         <.card>
-          <:title>Tenants</:title>
+          <:title>Organizations</:title>
 
           <.table id="tenants-table" rows={@tenants} row_id={&"tenant-#{&1.id}"}>
             <:col :let={tenant} label="Name">{tenant.name}</:col>
             <:col :let={tenant} label="Slug" mono>{tenant.slug}</:col>
-            <:col :let={tenant} label="Tenant ID" mono>
+            <:col :let={tenant} label="Organization ID" mono>
               <span class="text-xs">{tenant.id}</span>
             </:col>
             <:col :let={tenant} label="Created" mono><.local_time value={tenant.inserted_at} format={:datetime_minute} /></:col>
@@ -118,10 +118,10 @@ defmodule OrchardConsole.TenantsLive do
                 id="tenants-empty-state"
                 kind={:empty}
                 layout={:compact}
-                title="No tenants created yet."
+                title="No Organizations created yet."
               >
                 <:action>
-                  Create a tenant above to start issuing API keys.
+                  Create an Organization above to start issuing API Tokens.
                 </:action>
               </.state_message>
             </:empty>
@@ -139,7 +139,7 @@ defmodule OrchardConsole.TenantsLive do
       {:ok, tenant} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Created tenant #{tenant.slug}.")
+         |> put_flash(:info, "Created Organization #{tenant.slug}.")
          |> assign_blank_form()
          |> load_tenants()}
 
@@ -190,7 +190,7 @@ defmodule OrchardConsole.TenantsLive do
       assign(socket,
         tenants_status: :error,
         tenants: [],
-        load_error: "Tenant data unavailable."
+        load_error: "Organization data unavailable."
       )
   end
 end

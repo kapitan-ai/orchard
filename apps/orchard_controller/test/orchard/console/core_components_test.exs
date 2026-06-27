@@ -1526,7 +1526,7 @@ defmodule OrchardConsole.CoreComponentsTest do
       assert html =~ "Playground"
       assert html =~ "Models"
       assert html =~ "Model Hub"
-      assert html =~ "Tenants"
+      assert html =~ "Organizations"
       assert html =~ "Requests"
       assert html =~ "Settings"
     end

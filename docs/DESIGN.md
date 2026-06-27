@@ -613,10 +613,10 @@ For each pair of `{light, dark} × {sidebar-expanded, sidebar-collapsed}`:
   dark).
 - [ ] Placeholder contrast is readable.
 
-**Form input wells (Tenants + Tenant Detail)**
+**Form input wells (Organizations + Organization Detail)**
 
-- [ ] Tenant create `<.input>` renders as a tactile well.
-- [ ] API key create `<.input>` renders as a tactile well.
+- [ ] Organization create `<.input>` renders as a tactile well.
+- [ ] API Token create `<.input>` renders as a tactile well.
 
 **Form input wells (Playground)**
 

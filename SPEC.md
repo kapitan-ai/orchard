@@ -149,7 +149,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 | `Orchard.Nodes`         | OTP app              | node registry, lifecycle, heartbeat snapshots                |
 | `Orchard.Requests`      | OTP app              | per-request FSMs and request event logging                   |
 | `Orchard.Observability` | OTP app              | metrics, traces, logs                                        |
-| `Orchard.Governance`    | OTP app              | tenants, quotas, keys, audit logs                            |
+| `Orchard.Governance`    | OTP app              | tenants, API Clients, API Tokens, quotas, role bindings, audit logs |
 
 ### 2.2 Node-side components
 
@@ -169,6 +169,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 | ----------------------- | ---------------------------- | ---------------------------------------------------------- |
 | Tray/menu bar app       | `.app` + LaunchAgent         | local status, onboarding, logs, support bundle entry point |
 | `orchardctl` CLI            | binary                       | admin/operator automation, bootstrap, diagnostics          |
+| Orchard Console         | controller LiveView          | local/operator UI for runtime status, requests, Organizations, API Tokens, and API Clients |
 | Managed Postgres helper | LaunchDaemon in managed mode | local DB lifecycle only                                    |
 
 ### 2.4 Repository structure
@@ -285,7 +286,9 @@ All public inference requests SHALL normalize into one internal struct:
   public_id: String.t(),
   endpoint: :chat_completions | :responses,
   tenant_id: UUID,
+  principal_type: :tenant | :service_account,
   principal_id: UUID | nil,
+  service_account_id: UUID | nil,
   api_key_id: UUID | nil,
   model_ref: %{
     model_id: String.t(),
@@ -920,6 +923,10 @@ Admission MUST execute in this order:
 9. enforce tenant concurrency
 10. create request record
 11. attempt schedule or enqueue
+
+For service-account-owned API Tokens, authentication SHALL resolve the owning Service Account as `principal_type = service_account` and the owning Tenant as the effective Tenant before endpoint authorization.
+For tenant-direct API Keys, authentication SHALL resolve `principal_type = tenant`.
+Public inference endpoint authorization for service-account principals SHALL require tenant-scoped `inference_client` access before model resolution, tenant quota admission, or queue admission.
 
 Failure precedence:
 
@@ -1575,6 +1582,12 @@ Header:
 Authorization: Bearer <api_key>
 ```
 
+The bearer credential MAY be a tenant-direct API Key or a service-account-owned API Token.
+Tenant-direct API Keys SHALL resolve to the Tenant principal.
+Service-account-owned API Tokens SHALL resolve to the owning Service Account principal while keeping the owning Tenant as the effective Tenant for model access, quotas, queues, usage accounting, retention, idempotency, and request persistence.
+Valid API Tokens owned by disabled API Clients SHALL authenticate as known credentials and fail authorization with `403 forbidden`.
+Missing, malformed, invalid, expired, or revoked bearer credentials SHALL fail authentication with `401 invalid_api_key`.
+
 #### 7.2.3 `GET /v1/models`
 
 Returns models visible to the caller’s tenant.
@@ -2041,13 +2054,37 @@ Response:
 ```json
 {
   "id": "uuid",
-  "key_prefix": "orchard_kp_01J...",
+  "token_prefix": "orchard_kp_01J...",
   "secret": "orchard_sk_01J....<secret>",
   "expires_at": "2026-12-31T00:00:00Z"
 }
 ```
 
-#### 7.4.4 Model import example
+#### 7.4.4 Bulk API Client provisioning CLI contract
+
+The first bulk provisioning surface SHALL be `orchardctl api-clients bulk-provision`.
+The command SHALL support exactly one of Dry Run or Apply mode.
+The command SHALL expose `--dry-run`, `--apply`, `--file`, `--output`, `--rotation`, and `--json` options.
+Apply mode SHALL require an operator-specified output path.
+Dry Run mode MAY validate an operator-specified output path without requiring one.
+The input CSV SHALL require `organization`, `api_client`, `owner_contact`, and `key_name`.
+The input CSV MAY include `team`, `owner_name`, `external_ref`, `description`, `purpose`, `expires_at`, and `metadata_json`.
+The `organization` field SHALL identify one Organization slug per input file.
+Plaintext API Token secrets SHALL NOT be accepted in input.
+Dry Run SHALL validate Organizations, API Client identity, duplicate API Token names, optional expiry values, metadata JSON, and output destination readiness without mutating state or generating secrets.
+Apply SHALL validate the output path before mutation and commit all provisioning changes as one batch.
+Apply SHALL write One-time Secret Output only after the batch succeeds.
+One-time Secret Output SHALL be a CSV with `organization`, `api_client`, `external_ref`, `key_name`, `api_token_id`, `api_token_prefix`, `api_token`, and `expires_at` columns.
+If One-time Secret Output delivery fails after a committed Apply, Orchard SHALL mark the Provisioning Batch as `output_failed`, write a redacted audit event, and return recovery guidance that names API Token prefixes for revocation or rotation.
+The output-failed recovery path SHALL NOT persist plaintext API Token secrets.
+Repeated provisioning SHALL match API Clients by Organization plus External Reference when present, otherwise by Organization plus API Client name.
+Repeated provisioning SHALL reject duplicate active API Token names unless explicit Key Rotation mode is enabled.
+Key Rotation mode SHALL create a replacement API Token and revoke previous active API Tokens with the same API Client and token name.
+Repeated provisioning SHALL preserve omitted optional API Client metadata columns, clear present blank optional scalar metadata columns, and replace metadata when `metadata_json` is present.
+Bulk provisioning SHALL reject rows targeting disabled API Clients.
+JSON mode SHALL emit a machine-readable summary without plaintext API Tokens in stdout.
+
+#### 7.4.5 Model import example
 
 ```json
 POST /admin/v1/models/import
@@ -2058,7 +2095,7 @@ POST /admin/v1/models/import
 }
 ```
 
-#### 7.4.5 Observability config example
+#### 7.4.6 Observability config example
 
 ```json
 PATCH /admin/v1/observability
@@ -2729,12 +2766,20 @@ create table tenants (
 
 create table service_accounts (
   id uuid primary key default gen_random_uuid(),
-  tenant_id uuid references tenants(id),
+  tenant_id uuid not null references tenants(id) on delete cascade,
   name text not null,
+  owner_contact text not null,
+  owner_name text,
+  team text,
+  external_ref text,
   description text,
+  purpose text,
+  metadata jsonb not null default '{}'::jsonb,
   disabled_at timestamptz,
   inserted_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  unique(tenant_id, name),
+  unique(tenant_id, external_ref)
 );
 
 create table api_keys (
@@ -2742,11 +2787,11 @@ create table api_keys (
   tenant_id uuid references tenants(id),
   service_account_id uuid references service_accounts(id),
   name text not null,
-  key_prefix text not null unique,
+  token_prefix text not null unique,
   secret_hash bytea not null,
-  status api_key_status not null default 'active',
   expires_at timestamptz,
   last_used_at timestamptz,
+  revoked_at timestamptz,
   inserted_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   check (
@@ -2778,6 +2823,7 @@ create table requests (
   public_id text not null unique,
   endpoint text not null check (endpoint in ('chat_completions', 'responses')),
   tenant_id uuid not null references tenants(id),
+  principal_type text not null default 'tenant' check (principal_type in ('tenant', 'service_account')),
   api_key_id uuid references api_keys(id),
   service_account_id uuid references service_accounts(id),
   model_id uuid not null references models(id),
@@ -2807,7 +2853,8 @@ create table requests (
   error_code text,
   error_message text,
   inserted_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  check (principal_type <> 'service_account' or service_account_id is not null)
 );
 
 create table request_events (
@@ -2846,9 +2893,29 @@ create table role_bindings (
   principal_type text not null check (principal_type in ('tenant', 'service_account', 'api_key')),
   principal_id uuid not null,
   role text not null check (role in ('admin', 'operator', 'tenant_admin', 'inference_client')),
-  tenant_scope_id uuid references tenants(id),
+  tenant_scope_id uuid references tenants(id) on delete cascade,
   inserted_at timestamptz not null default now(),
   unique(principal_type, principal_id, role, tenant_scope_id)
+);
+
+create table provisioning_batches (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references tenants(id) on delete cascade,
+  actor_type text not null default 'operator',
+  actor_id text,
+  status text not null check (status in ('applying', 'applied', 'failed', 'output_failed')),
+  row_count integer not null default 0,
+  api_clients_created_count integer not null default 0,
+  api_clients_updated_count integer not null default 0,
+  api_tokens_created_count integer not null default 0,
+  api_tokens_rotated_count integer not null default 0,
+  api_tokens_revoked_count integer not null default 0,
+  input_sha256 text,
+  error_summary jsonb not null default '{}'::jsonb,
+  started_at timestamptz not null,
+  completed_at timestamptz,
+  inserted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table routing_policies (
@@ -2896,7 +2963,7 @@ create table cluster_settings (
 );
 ```
 
-### 8.4 Required indexes
+### 8.4 Required indexes and constraints
 
 ```sql
 create index idx_node_heartbeats_node_observed_at
@@ -2918,6 +2985,46 @@ create index idx_requests_active_by_tenant
 create unique index idx_requests_tenant_idempotency
   on requests(tenant_id, idempotency_key)
   where idempotency_key is not null;
+
+create unique index idx_service_accounts_tenant_name
+  on service_accounts(tenant_id, name);
+
+create unique index idx_service_accounts_tenant_external_ref
+  on service_accounts(tenant_id, external_ref)
+  where external_ref is not null;
+
+create index idx_service_accounts_tenant_team
+  on service_accounts(tenant_id, team);
+
+create index idx_api_keys_service_account_inserted_at
+  on api_keys(service_account_id, inserted_at);
+
+create extension if not exists btree_gist;
+
+alter table api_keys
+  add constraint api_keys_service_account_active_name_no_overlap
+  exclude using gist (
+    service_account_id with =,
+    name with =,
+    tsrange(
+      inserted_at,
+      greatest(
+        inserted_at,
+        least(
+          coalesce(revoked_at, 'infinity'::timestamp),
+          coalesce(expires_at, 'infinity'::timestamp)
+        )
+      ),
+      '[)'
+    ) with &&
+  )
+  where (service_account_id is not null);
+
+create unique index idx_role_bindings_unique_assignment
+  on role_bindings(principal_type, principal_id, role, tenant_scope_id);
+
+create index idx_provisioning_batches_tenant_inserted_at
+  on provisioning_batches(tenant_id, inserted_at);
 
 create index idx_audit_logs_tenant_occurred_at
   on audit_logs(tenant_id, occurred_at desc);
@@ -3105,18 +3212,27 @@ Requirements:
 * secret entropy: 32 random bytes minimum
 * DB stores:
 
-  * `key_prefix`
+  * `token_prefix`
   * `secret_hash = sha256(secret)`
 * comparison MUST be constant-time
 * key secret displayed once only at creation
 * revocation is immediate
+* plaintext secrets MUST NOT be stored in Postgres, audit logs, provisioning batches, support bundles, or durable local evidence artifacts
+
+Tenant-direct API Keys SHALL remain supported for manual, bootstrap, and compatibility paths.
+Bulk provisioning SHALL create service-account-owned API Tokens by default.
+API Tokens owned by the same Service Account SHALL NOT have duplicate active names unless explicit Key Rotation mode creates a replacement and revokes the previous active token or tokens.
 
 ### 10.3 Service accounts
 
 Service accounts are non-interactive principals.
+Product-facing operator surfaces SHALL label service accounts as API Clients.
+Owner Contact, Owner Name, Team, External Reference, Description, Purpose, and metadata MAY describe an API Client.
+Owner Contact and Team SHALL NOT authenticate, authorize, own quota, define model access, define routing policy, or create a nested Tenant.
+An API Client may be disabled.
+API Client Disablement SHALL block all owned API Tokens without mutating each token's revoked state.
 They may be:
 
-* global
 * tenant-scoped
 
 Keys may belong to:
@@ -3140,6 +3256,8 @@ Permissions:
 * `tenant_admin`: tenant-scoped key/quota/model-access management only
 * `inference_client`: public inference only
 
+Bulk-provisioned API Clients SHALL receive tenant-scoped `inference_client` access by default.
+Public inference requests authenticated by service-account-owned API Tokens SHALL require `inference_client` access for the effective Tenant.
 No implicit cross-tenant access.
 
 ### 10.5 Node trust
@@ -3223,6 +3341,10 @@ Audit logs SHALL capture:
 * tenant creation/update/suspend
 * API key create/revoke
 * service account changes
+* API Client Disablement
+* provisioning batch start/completion/failure
+* Access Level assignment
+* Key Rotation and token replacement
 * quota changes
 * model import/activate/retire
 * routing policy changes
@@ -3230,6 +3352,9 @@ Audit logs SHALL capture:
 * operator drain/cancel/retry actions
 * support bundle generation
 * upgrade actions
+
+Audit payloads SHALL exclude plaintext API Token secrets.
+Provisioning Batch records SHALL include non-secret counts, status, input hash, timestamps, and sanitized error summaries only.
 
 ### 10.10 Data governance
 
@@ -3394,6 +3519,7 @@ Required commands:
 * `orchardctl node join`
 * `orchardctl nodes list`
 * `orchardctl nodes admit`
+* `orchardctl api-clients bulk-provision`
 * `orchardctl models import`
 * `orchardctl requests inspect`
 * `orchardctl support bundle create`
