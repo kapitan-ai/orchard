@@ -64,7 +64,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
        %{
          tenant: tenant,
          rows: planned_rows,
-         counts: count_plan(planned_rows, rotation?),
+         counts: count_plan(planned_rows),
          rotation?: rotation?,
          input_sha256: input_sha256
        }}
@@ -308,11 +308,13 @@ defmodule Orchard.Governance.ApiClientProvisioning do
 
   defp plan_row(tenant, row, rotation?, seen_identities) do
     with {:ok, api_client} <- find_existing_api_client(tenant.id, row) do
+      active_token? = active_token_exists?(api_client, row.key_name)
+
       cond do
         match?(%ServiceAccount{disabled_at: %DateTime{}}, api_client) ->
           {:error, [error(row.row_number, "api_client", "API Client is disabled.")]}
 
-        duplicate_active_token?(api_client, row.key_name) and not rotation? ->
+        active_token? and not rotation? ->
           {:error,
            [
              error(
@@ -327,7 +329,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
            row
            |> Map.put(:existing_api_client_id, existing_api_client_id(api_client))
            |> Map.put(:api_client_action, api_client_action(api_client, row, seen_identities))
-           |> Map.put(:token_action, if(rotation?, do: :rotated, else: :created))}
+           |> Map.put(:token_action, token_action(rotation?, active_token?))}
       end
     end
   end
@@ -347,8 +349,12 @@ defmodule Orchard.Governance.ApiClientProvisioning do
       end
     end)
     |> case do
-      {:ok, {:ok, result}} -> {:ok, result}
-      {:error, reason} -> {:error, reason}
+      {:ok, {:ok, result}} ->
+        {:ok, result}
+
+      {:error, reason} ->
+        _ = persist_failed_apply_batch(plan, opts, reason)
+        {:error, reason}
     end
   end
 
@@ -364,6 +370,38 @@ defmodule Orchard.Governance.ApiClientProvisioning do
       row_count: length(plan.rows),
       input_sha256: plan.input_sha256,
       started_at: now
+    })
+    |> Repo.insert()
+  end
+
+  defp persist_failed_apply_batch(plan, opts, reason) do
+    Repo.transaction(fn ->
+      with {:ok, batch} <- insert_failed_batch(plan, opts, reason),
+           {:ok, _audit_log} <-
+             insert_batch_audit_log(batch, "provisioning_batch.failed", %{
+               "error_summary" => batch.error_summary
+             }) do
+        {:ok, batch}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+  end
+
+  defp insert_failed_batch(plan, opts, reason) do
+    now = utc_now()
+
+    %ProvisioningBatch{}
+    |> ProvisioningBatch.changeset(%{
+      tenant_id: plan.tenant.id,
+      actor_type: Keyword.get(opts, :actor_type, "operator"),
+      actor_id: Keyword.get(opts, :actor_id),
+      status: :failed,
+      row_count: length(plan.rows),
+      input_sha256: plan.input_sha256,
+      error_summary: apply_error_summary(reason),
+      started_at: now,
+      completed_at: now
     })
     |> Repo.insert()
   end
@@ -504,12 +542,12 @@ defmodule Orchard.Governance.ApiClientProvisioning do
     )
   end
 
-  defp count_plan(rows, rotation?) do
+  defp count_plan(rows) do
     %{
       api_clients_created_count: Enum.count(rows, &(&1.api_client_action == :created)),
       api_clients_updated_count: Enum.count(rows, &(&1.api_client_action == :updated)),
       api_tokens_created_count: length(rows),
-      api_tokens_rotated_count: if(rotation?, do: length(rows), else: 0)
+      api_tokens_rotated_count: Enum.count(rows, &(&1.token_action == :rotated))
     }
   end
 
@@ -537,11 +575,13 @@ defmodule Orchard.Governance.ApiClientProvisioning do
   defp order_output_rows(result), do: Map.update!(result, :output_rows, &Enum.reverse/1)
 
   defp row_apply_result(row, token_result) do
+    revoked_count = token_result |> Map.get(:revoked_api_keys, []) |> length()
+
     %{
       api_client_created?: row.api_client_action == :created,
       api_client_updated?: row.api_client_action == :updated,
-      rotated?: row.token_action == :rotated,
-      revoked_count: token_result |> Map.get(:revoked_api_keys, []) |> length()
+      rotated?: revoked_count > 0,
+      revoked_count: revoked_count
     }
   end
 
@@ -643,15 +683,21 @@ defmodule Orchard.Governance.ApiClientProvisioning do
     )
   end
 
-  defp duplicate_active_token?(nil, _key_name), do: false
+  defp active_token_exists?(nil, _key_name), do: false
 
-  defp duplicate_active_token?(%ServiceAccount{} = api_client, key_name) do
+  defp active_token_exists?(%ServiceAccount{} = api_client, key_name) do
+    now = utc_now()
+
     ApiKey
     |> where([api_key], api_key.service_account_id == ^api_client.id)
     |> where([api_key], api_key.name == ^key_name)
     |> where([api_key], is_nil(api_key.revoked_at))
+    |> where([api_key], is_nil(api_key.expires_at) or api_key.expires_at > ^now)
     |> Repo.exists?()
   end
+
+  defp token_action(true, true), do: :rotated
+  defp token_action(_rotation?, _active_token?), do: :created
 
   defp existing_api_client_id(nil), do: nil
   defp existing_api_client_id(%ServiceAccount{id: id}), do: id
@@ -738,6 +784,29 @@ defmodule Orchard.Governance.ApiClientProvisioning do
     payload
     |> sanitize_error_summary()
     |> Map.merge(Map.take(payload, @provisioning_audit_count_fields))
+  end
+
+  defp apply_error_summary(%Changeset{} = changeset) do
+    %{
+      "reason" => "apply_failed",
+      "errors" => changeset_error_summary(changeset)
+    }
+  end
+
+  defp apply_error_summary(reason) when is_atom(reason) do
+    %{"reason" => "apply_failed", "error" => Atom.to_string(reason)}
+  end
+
+  defp apply_error_summary(_reason), do: %{"reason" => "apply_failed"}
+
+  defp changeset_error_summary(%Changeset{} = changeset) do
+    changeset
+    |> Changeset.traverse_errors(fn {message, opts} ->
+      Regex.replace(~r/%{(\w+)}/, message, fn _match, key ->
+        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      end)
+    end)
+    |> Map.new(fn {field, messages} -> {to_string(field), messages} end)
   end
 
   defp sanitize_error_summary(summary) when is_map(summary) do

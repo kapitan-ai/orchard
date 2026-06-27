@@ -1,3 +1,17 @@
+defmodule Orchard.Governance.ApiClientProvisioningTest.CollisionSecret do
+  alias Orchard.Governance.ApiKeySecret
+
+  @token "orch_bulk_collision.fixedsecret"
+
+  def generate do
+    %{
+      token: @token,
+      token_prefix: "orch_bulk_collision",
+      secret_hash: ApiKeySecret.hash(@token)
+    }
+  end
+end
+
 defmodule Orchard.Governance.ApiClientProvisioningTest do
   use Orchard.DataCase, async: false
 
@@ -517,6 +531,54 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
     refute inspect(audit_log) =~ "orch_plaintext.secret"
   end
 
+  test "post-validation apply failure persists redacted failed batch evidence", %{
+    tenant: tenant
+  } do
+    %ApiKey{}
+    |> ApiKey.tenant_direct_changeset(%{
+      tenant_id: tenant.id,
+      name: "collision-source",
+      token_prefix: "orch_bulk_collision",
+      secret_hash: ApiKeySecret.hash("orch_bulk_collision.fixedsecret")
+    })
+    |> Repo.insert!()
+
+    rows = [row(tenant, api_client: "client-apply-failure", key_name: "production")]
+
+    with_env(
+      :governance_api_key_secret_impl,
+      __MODULE__.CollisionSecret,
+      fn ->
+        assert {:error, %Ecto.Changeset{} = changeset} =
+                 Governance.bulk_apply_api_clients(rows)
+
+        assert %{token_prefix: ["has already been taken"]} = errors_on(changeset)
+      end
+    )
+
+    assert [batch] =
+             Repo.all(
+               from(batch in ProvisioningBatch,
+                 where: batch.tenant_id == ^tenant.id and batch.status == :failed
+               )
+             )
+
+    assert batch.row_count == 1
+    assert batch.error_summary["reason"] == "apply_failed"
+    assert batch.error_summary["errors"]["token_prefix"] == ["has already been taken"]
+
+    audit_log =
+      Repo.get_by!(AuditLog,
+        action: "provisioning_batch.failed",
+        target_type: "provisioning_batch",
+        target_id: batch.id
+      )
+
+    assert audit_log.payload["error_summary"] == batch.error_summary
+    refute inspect(batch) =~ "fixedsecret"
+    refute inspect(audit_log) =~ "fixedsecret"
+  end
+
   test "active token duplicates require explicit rotation", %{tenant: tenant} do
     rows = [row(tenant, api_client: "client-c", key_name: "production")]
 
@@ -537,6 +599,91 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
     assert {:error, :api_key_revoked} = Governance.authenticate_api_key(first_output.api_token)
     assert {:ok, rotated_auth} = Governance.authenticate_api_key(rotated_output.api_token)
     assert rotated_auth.principal_type == :service_account
+
+    first_key = Repo.get!(ApiKey, first_output.api_token_id)
+    assert %DateTime{} = first_key.revoked_at
+  end
+
+  test "expired token names can be reprovisioned without rotation", %{tenant: tenant} do
+    expired_at = datetime_seconds_from_now(-3600)
+
+    expired_rows = [
+      row(tenant,
+        api_client: "client-expired-rerun",
+        key_name: "production",
+        expires_at: DateTime.to_iso8601(expired_at)
+      )
+    ]
+
+    assert {:ok, expired_result} = Governance.bulk_apply_api_clients(expired_rows)
+    [expired_output] = expired_result.output_rows
+    assert {:error, :api_key_expired} = Governance.authenticate_api_key(expired_output.api_token)
+
+    rows = [row(tenant, api_client: "client-expired-rerun", key_name: "production")]
+
+    assert {:ok, plan} = Governance.bulk_validate_api_clients(rows)
+    assert plan.counts.api_tokens_created_count == 1
+    assert plan.counts.api_tokens_rotated_count == 0
+
+    assert {:ok, result} = Governance.bulk_apply_api_clients(rows)
+    [output] = result.output_rows
+
+    assert output.api_token != expired_output.api_token
+    assert result.batch.api_tokens_created_count == 1
+    assert result.batch.api_tokens_rotated_count == 0
+    assert result.batch.api_tokens_revoked_count == 0
+
+    expired_key = Repo.get!(ApiKey, expired_output.api_token_id)
+    assert expired_key.revoked_at == nil
+    assert {:ok, auth_context} = Governance.authenticate_api_key(output.api_token)
+    assert auth_context.principal_type == :service_account
+  end
+
+  test "rotation with only expired same-name tokens creates without rotating", %{
+    tenant: tenant
+  } do
+    expired_at = datetime_seconds_from_now(-3600)
+
+    expired_rows = [
+      row(tenant,
+        api_client: "client-expired-rotation",
+        key_name: "production",
+        expires_at: DateTime.to_iso8601(expired_at)
+      )
+    ]
+
+    assert {:ok, expired_result} = Governance.bulk_apply_api_clients(expired_rows)
+    [expired_output] = expired_result.output_rows
+    rows = [row(tenant, api_client: "client-expired-rotation", key_name: "production")]
+
+    assert {:ok, result} = Governance.bulk_apply_api_clients(rows, rotation: true)
+
+    assert result.batch.api_tokens_created_count == 1
+    assert result.batch.api_tokens_rotated_count == 0
+    assert result.batch.api_tokens_revoked_count == 0
+
+    expired_key = Repo.get!(ApiKey, expired_output.api_token_id)
+    assert expired_key.revoked_at == nil
+    assert count_audit_logs("api_key.rotated") == 0
+  end
+
+  test "mixed rotation counts only rows with active replacements", %{tenant: tenant} do
+    active_rows = [row(tenant, api_client: "client-mixed-rotation", key_name: "production")]
+
+    assert {:ok, first_result} = Governance.bulk_apply_api_clients(active_rows)
+    [first_output] = first_result.output_rows
+
+    rows = [
+      row(tenant, api_client: "client-mixed-rotation", key_name: "production"),
+      row(tenant, api_client: "client-mixed-rotation-new", key_name: "production")
+    ]
+
+    assert {:ok, result} = Governance.bulk_apply_api_clients(rows, rotation: true)
+
+    assert result.batch.api_tokens_created_count == 2
+    assert result.batch.api_tokens_rotated_count == 1
+    assert result.batch.api_tokens_revoked_count == 1
+    assert count_audit_logs("api_key.rotated") == 1
 
     first_key = Repo.get!(ApiKey, first_output.api_token_id)
     assert %DateTime{} = first_key.revoked_at
@@ -628,6 +775,30 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
         where: service_account.tenant_id == ^tenant_id and service_account.name == ^name
       )
     )
+  end
+
+  defp count_audit_logs(action) do
+    Repo.aggregate(from(audit_log in AuditLog, where: audit_log.action == ^action), :count, :id)
+  end
+
+  defp datetime_seconds_from_now(seconds) do
+    DateTime.utc_now()
+    |> DateTime.add(seconds, :second)
+    |> DateTime.truncate(:microsecond)
+  end
+
+  defp with_env(key, value, fun) do
+    previous = Application.get_env(:orchard_controller, key, :__missing__)
+    Application.put_env(:orchard_controller, key, value)
+
+    try do
+      fun.()
+    after
+      case previous do
+        :__missing__ -> Application.delete_env(:orchard_controller, key)
+        previous -> Application.put_env(:orchard_controller, key, previous)
+      end
+    end
   end
 
   defp unique_slug(prefix), do: "#{prefix}-#{System.unique_integer([:positive])}"

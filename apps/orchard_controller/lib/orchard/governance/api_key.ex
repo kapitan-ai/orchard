@@ -59,7 +59,10 @@ defmodule Orchard.Governance.ApiKey do
     |> validate_owner()
     |> validate_no_plaintext_attrs(attrs)
     |> unique_constraint(:token_prefix)
-    |> unique_constraint(:name, name: :idx_api_keys_service_account_active_name)
+    |> exclusion_constraint(:name,
+      name: :api_keys_service_account_active_name_no_overlap,
+      message: "has already been taken"
+    )
     |> check_constraint(:tenant_id, name: :api_keys_exactly_one_owner)
     |> foreign_key_constraint(:tenant_id)
     |> foreign_key_constraint(:service_account_id)

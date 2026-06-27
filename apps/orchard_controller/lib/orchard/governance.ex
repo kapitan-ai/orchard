@@ -248,7 +248,13 @@ defmodule Orchard.Governance do
                opts
              ),
            {:ok, _audit_log} <-
-             insert_key_rotation_audit_log(api_client, api_key, revoked_keys, utc_now(), opts) do
+             maybe_insert_key_rotation_audit_log(
+               api_client,
+               api_key,
+               revoked_keys,
+               utc_now(),
+               opts
+             ) do
         {:ok,
          %{
            api_key: redact_api_key(api_key),
@@ -725,11 +731,14 @@ defmodule Orchard.Governance do
 
   defp revoke_active_service_account_tokens(%ServiceAccount{} = api_client, token_name)
        when is_binary(token_name) and token_name != "" do
+    now = utc_now()
+
     api_keys =
       ApiKey
       |> where([api_key], api_key.service_account_id == ^api_client.id)
       |> where([api_key], api_key.name == ^token_name)
       |> where([api_key], is_nil(api_key.revoked_at))
+      |> where([api_key], is_nil(api_key.expires_at) or api_key.expires_at > ^now)
       |> lock("FOR UPDATE")
       |> Repo.all()
 
@@ -1028,6 +1037,13 @@ defmodule Orchard.Governance do
         |> maybe_put_payload("provisioning_batch_id", Keyword.get(opts, :provisioning_batch_id))
     })
     |> Repo.insert()
+  end
+
+  defp maybe_insert_key_rotation_audit_log(_api_client, _api_key, [], _occurred_at, _opts),
+    do: {:ok, nil}
+
+  defp maybe_insert_key_rotation_audit_log(api_client, api_key, revoked_keys, occurred_at, opts) do
+    insert_key_rotation_audit_log(api_client, api_key, revoked_keys, occurred_at, opts)
   end
 
   defp maybe_insert_role_binding_audit_log(_api_client, _role_binding, false, _opts),

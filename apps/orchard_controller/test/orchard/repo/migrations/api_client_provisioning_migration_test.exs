@@ -60,6 +60,37 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
              ])
   end
 
+  test "service-account token names reject only overlapping active windows", %{
+    tenant: tenant
+  } do
+    assert constraint_exists?("api_keys", "api_keys_service_account_active_name_no_overlap")
+
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "migration-window-api-client-#{System.unique_integer([:positive])}",
+        owner_contact: "owner@example.com"
+      })
+
+    past =
+      DateTime.utc_now()
+      |> DateTime.add(-3600, :second)
+      |> DateTime.truncate(:microsecond)
+
+    assert {:ok, _expired_result} =
+             Governance.create_api_client_api_token(api_client, %{
+               name: "window-token",
+               expires_at: past
+             })
+
+    assert {:ok, _active_result} =
+             Governance.create_api_client_api_token(api_client, %{name: "window-token"})
+
+    assert {:error, changeset} =
+             Governance.create_api_client_api_token(api_client, %{name: "window-token"})
+
+    assert %{name: ["has already been taken"]} = errors_on(changeset)
+  end
+
   defp insert_request(attrs) do
     Repo.query(
       """
@@ -89,6 +120,14 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
 
   defp dump_uuid(nil), do: nil
   defp dump_uuid(value), do: Ecto.UUID.dump!(value)
+
+  defp errors_on(changeset) do
+    Ecto.Changeset.traverse_errors(changeset, fn {message, opts} ->
+      Regex.replace(~r/%{(\w+)}/, message, fn _match, key ->
+        opts |> Keyword.get(String.to_existing_atom(key), key) |> to_string()
+      end)
+    end)
+  end
 
   defp constraint_exists?(table_name, constraint_name) do
     %{num_rows: count} =
