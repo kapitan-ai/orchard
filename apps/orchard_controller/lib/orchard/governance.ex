@@ -540,18 +540,20 @@ defmodule Orchard.Governance do
   defp upsert_api_client_row(%Tenant{} = tenant, attrs) do
     attrs = api_client_attrs(tenant, attrs)
 
-    case find_api_client_for_upsert(tenant.id, attrs) do
-      nil ->
-        %ServiceAccount{}
-        |> ServiceAccount.changeset(attrs)
-        |> Repo.insert()
-        |> tag_api_client_action(:created)
+    with {:ok, api_client} <- find_api_client_for_upsert(tenant.id, attrs) do
+      case api_client do
+        nil ->
+          %ServiceAccount{}
+          |> ServiceAccount.changeset(attrs)
+          |> Repo.insert()
+          |> tag_api_client_action(:created)
 
-      %ServiceAccount{} = api_client ->
-        api_client
-        |> ServiceAccount.changeset(attrs)
-        |> Repo.update()
-        |> tag_api_client_action(:updated)
+        %ServiceAccount{} = api_client ->
+          api_client
+          |> ServiceAccount.changeset(attrs)
+          |> Repo.update()
+          |> tag_api_client_action(:updated)
+      end
     end
   end
 
@@ -569,16 +571,52 @@ defmodule Orchard.Governance do
     }
   end
 
-  defp find_api_client_for_upsert(tenant_id, %{"external_ref" => external_ref})
+  defp find_api_client_for_upsert(tenant_id, %{
+         "external_ref" => external_ref,
+         "name" => name
+       })
        when is_binary(external_ref) do
-    Repo.get_by(ServiceAccount, tenant_id: tenant_id, external_ref: external_ref)
+    by_external_ref =
+      Repo.get_by(ServiceAccount, tenant_id: tenant_id, external_ref: external_ref)
+
+    by_name = Repo.get_by(ServiceAccount, tenant_id: tenant_id, name: name)
+
+    resolve_api_client_for_upsert(by_external_ref, by_name)
   end
 
   defp find_api_client_for_upsert(tenant_id, %{"name" => name}) when is_binary(name) do
-    Repo.get_by(ServiceAccount, tenant_id: tenant_id, name: name)
+    {:ok, Repo.get_by(ServiceAccount, tenant_id: tenant_id, name: name)}
   end
 
-  defp find_api_client_for_upsert(_tenant_id, _attrs), do: nil
+  defp find_api_client_for_upsert(_tenant_id, _attrs), do: {:ok, nil}
+
+  defp resolve_api_client_for_upsert(
+         %ServiceAccount{id: external_ref_id} = by_external_ref,
+         %ServiceAccount{id: name_id}
+       )
+       when external_ref_id == name_id do
+    {:ok, by_external_ref}
+  end
+
+  defp resolve_api_client_for_upsert(%ServiceAccount{}, %ServiceAccount{}) do
+    {:error, api_client_identity_conflict_changeset()}
+  end
+
+  defp resolve_api_client_for_upsert(%ServiceAccount{} = by_external_ref, nil) do
+    {:ok, by_external_ref}
+  end
+
+  defp resolve_api_client_for_upsert(nil, %ServiceAccount{} = by_name) do
+    {:ok, by_name}
+  end
+
+  defp resolve_api_client_for_upsert(nil, nil), do: {:ok, nil}
+
+  defp api_client_identity_conflict_changeset do
+    %ServiceAccount{}
+    |> Changeset.change()
+    |> Changeset.add_error(:external_ref, "and name refer to different existing API Clients")
+  end
 
   defp tag_api_client_action({:ok, api_client}, action), do: {:ok, api_client, action}
   defp tag_api_client_action({:error, reason}, _action), do: {:error, reason}

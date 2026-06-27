@@ -121,17 +121,59 @@ defmodule OrchardCLI.Commands.ApiClients do
   defp maybe_preflight_output(nil), do: :ok
 
   defp maybe_preflight_output(path) do
+    parent = Path.dirname(path)
+
     cond do
       File.exists?(path) ->
         {:error, "Error: output path already exists: #{path}", 1}
 
-      not File.dir?(Path.dirname(path)) ->
-        {:error, "Error: output parent directory does not exist: #{Path.dirname(path)}", 1}
+      not File.dir?(parent) ->
+        {:error, "Error: output parent directory does not exist: #{parent}", 1}
 
       true ->
-        :ok
+        verify_output_parent_writable(path, parent)
     end
   end
+
+  defp verify_output_parent_writable(path, parent) do
+    probe_path =
+      Path.join(
+        parent,
+        ".#{Path.basename(path)}.preflight-#{System.unique_integer([:positive])}"
+      )
+
+    case write_preflight_probe(probe_path) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        {:error,
+         "Error: output parent directory is not writable: #{parent}: #{:file.format_error(reason)}",
+         1}
+    end
+  end
+
+  defp write_preflight_probe(path) do
+    case File.open(path, [:write, :exclusive, :binary]) do
+      {:ok, file} ->
+        result =
+          case File.chmod(path, 0o600) do
+            :ok -> IO.binwrite(file, "probe")
+            {:error, reason} -> {:error, reason}
+          end
+
+        close_result = File.close(file)
+        File.rm(path)
+        preflight_probe_result(result, close_result)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp preflight_probe_result(:ok, :ok), do: :ok
+  defp preflight_probe_result({:error, reason}, _close_result), do: {:error, reason}
+  defp preflight_probe_result(:ok, {:error, reason}), do: {:error, reason}
 
   defp parse_csv(contents) do
     rows = NimbleCSV.RFC4180.parse_string(contents, skip_headers: false)
@@ -246,8 +288,8 @@ defmodule OrchardCLI.Commands.ApiClients do
       )
 
     with :ok <- write_tmp_output(tmp_path, output_rows),
-         :ok <- File.rename(tmp_path, path),
-         :ok <- File.chmod(path, 0o600) do
+         :ok <- File.ln(tmp_path, path) do
+      File.rm(tmp_path)
       :ok
     else
       {:error, reason} ->

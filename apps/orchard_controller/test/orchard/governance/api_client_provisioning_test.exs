@@ -314,6 +314,107 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
     assert updated.metadata == %{"cost_center" => "platform"}
   end
 
+  test "existing API Client name can gain a new external_ref", %{tenant: tenant} do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "client-add-ref",
+        owner_contact: "owner@example.com",
+        owner_name: "Original Owner",
+        metadata: %{"cost_center" => "ml"}
+      })
+
+    rows = [
+      row(tenant,
+        api_client: api_client.name,
+        key_name: "secondary",
+        external_ref: "client-add-ref-external"
+      )
+    ]
+
+    assert {:ok, plan} = Governance.bulk_validate_api_clients(rows)
+
+    assert plan.counts == %{
+             api_clients_created_count: 0,
+             api_clients_updated_count: 1,
+             api_tokens_created_count: 1,
+             api_tokens_rotated_count: 0
+           }
+
+    assert {:ok, result} = Governance.bulk_apply_api_clients(rows)
+    assert [output_row] = result.output_rows
+    assert output_row.external_ref == "client-add-ref-external"
+
+    updated = Repo.get!(ServiceAccount, api_client.id)
+    assert updated.external_ref == "client-add-ref-external"
+    assert updated.owner_name == "Original Owner"
+    assert updated.metadata == %{"cost_center" => "ml"}
+  end
+
+  test "existing API Client name can replace external_ref", %{tenant: tenant} do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "client-change-ref",
+        owner_contact: "owner@example.com",
+        external_ref: "client-change-ref-old"
+      })
+
+    rows = [
+      row(tenant,
+        api_client: api_client.name,
+        key_name: "secondary",
+        external_ref: "client-change-ref-new"
+      )
+    ]
+
+    assert {:ok, plan} = Governance.bulk_validate_api_clients(rows)
+    assert plan.counts.api_clients_created_count == 0
+    assert plan.counts.api_clients_updated_count == 1
+
+    assert {:ok, _result} = Governance.bulk_apply_api_clients(rows)
+
+    updated = Repo.get!(ServiceAccount, api_client.id)
+    assert updated.external_ref == "client-change-ref-new"
+
+    refute Repo.get_by(ServiceAccount,
+             tenant_id: tenant.id,
+             external_ref: "client-change-ref-old"
+           )
+  end
+
+  test "external_ref and API Client name conflicts are rejected", %{tenant: tenant} do
+    {:ok, named_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "client-name-conflict",
+        owner_contact: "owner@example.com",
+        external_ref: "client-name-conflict-ref"
+      })
+
+    {:ok, ref_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "client-ref-conflict",
+        owner_contact: "owner@example.com",
+        external_ref: "client-ref-conflict-ref"
+      })
+
+    rows = [
+      row(tenant,
+        api_client: named_client.name,
+        key_name: "secondary",
+        external_ref: ref_client.external_ref
+      )
+    ]
+
+    assert {:error, errors} = Governance.bulk_validate_api_clients(rows)
+
+    assert Enum.any?(errors, fn error ->
+             error.field == "external_ref" and
+               error.message =~ "refer to different existing API Clients"
+           end)
+
+    assert Repo.get!(ServiceAccount, named_client.id).external_ref == "client-name-conflict-ref"
+    assert Repo.get!(ServiceAccount, ref_client.id).name == "client-ref-conflict"
+  end
+
   test "marking output failure writes redacted provisioning batch audit", %{tenant: tenant} do
     rows = [row(tenant, api_client: "client-output-audit", key_name: "production")]
 

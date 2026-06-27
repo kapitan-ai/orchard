@@ -292,28 +292,28 @@ defmodule Orchard.Governance.ApiClientProvisioning do
   end
 
   defp plan_row(tenant, row, rotation?, seen_identities) do
-    api_client = find_existing_api_client(tenant.id, row)
+    with {:ok, api_client} <- find_existing_api_client(tenant.id, row) do
+      cond do
+        match?(%ServiceAccount{disabled_at: %DateTime{}}, api_client) ->
+          {:error, [error(row.row_number, "api_client", "API Client is disabled.")]}
 
-    cond do
-      match?(%ServiceAccount{disabled_at: %DateTime{}}, api_client) ->
-        {:error, [error(row.row_number, "api_client", "API Client is disabled.")]}
+        duplicate_active_token?(api_client, row.key_name) and not rotation? ->
+          {:error,
+           [
+             error(
+               row.row_number,
+               "key_name",
+               "Active API Token name already exists. Use Key Rotation mode to replace it."
+             )
+           ]}
 
-      duplicate_active_token?(api_client, row.key_name) and not rotation? ->
-        {:error,
-         [
-           error(
-             row.row_number,
-             "key_name",
-             "Active API Token name already exists. Use Key Rotation mode to replace it."
-           )
-         ]}
-
-      true ->
-        {:ok,
-         row
-         |> Map.put(:existing_api_client_id, existing_api_client_id(api_client))
-         |> Map.put(:api_client_action, api_client_action(api_client, row, seen_identities))
-         |> Map.put(:token_action, if(rotation?, do: :rotated, else: :created))}
+        true ->
+          {:ok,
+           row
+           |> Map.put(:existing_api_client_id, existing_api_client_id(api_client))
+           |> Map.put(:api_client_action, api_client_action(api_client, row, seen_identities))
+           |> Map.put(:token_action, if(rotation?, do: :rotated, else: :created))}
+      end
     end
   end
 
@@ -367,9 +367,9 @@ defmodule Orchard.Governance.ApiClientProvisioning do
 
   defp apply_row(tenant, row, batch, opts) do
     audit_opts = Keyword.merge(opts, provisioning_batch_id: batch.id)
-    existing_api_client = find_existing_api_client(tenant.id, row)
 
-    with {:ok, api_client} <-
+    with {:ok, existing_api_client} <- find_existing_api_client(tenant.id, row),
+         {:ok, api_client} <-
            Governance.upsert_api_client(
              tenant,
              api_client_attrs(row, existing_api_client),
@@ -549,13 +549,49 @@ defmodule Orchard.Governance.ApiClientProvisioning do
 
   defp token_attrs(row), do: %{name: row.key_name, expires_at: row.expires_at}
 
-  defp find_existing_api_client(tenant_id, %{external_ref: external_ref})
+  defp find_existing_api_client(tenant_id, %{external_ref: external_ref, api_client: name} = row)
        when is_binary(external_ref) do
-    Repo.get_by(ServiceAccount, tenant_id: tenant_id, external_ref: external_ref)
+    by_external_ref =
+      Repo.get_by(ServiceAccount, tenant_id: tenant_id, external_ref: external_ref)
+
+    by_name = Repo.get_by(ServiceAccount, tenant_id: tenant_id, name: name)
+
+    resolve_existing_api_client(row, by_external_ref, by_name)
   end
 
   defp find_existing_api_client(tenant_id, %{api_client: name}) do
-    Repo.get_by(ServiceAccount, tenant_id: tenant_id, name: name)
+    {:ok, Repo.get_by(ServiceAccount, tenant_id: tenant_id, name: name)}
+  end
+
+  defp resolve_existing_api_client(
+         _row,
+         %ServiceAccount{id: external_ref_id} = by_external_ref,
+         %ServiceAccount{id: name_id}
+       )
+       when external_ref_id == name_id do
+    {:ok, by_external_ref}
+  end
+
+  defp resolve_existing_api_client(row, %ServiceAccount{}, %ServiceAccount{}) do
+    {:error, [identity_conflict_error(row)]}
+  end
+
+  defp resolve_existing_api_client(_row, %ServiceAccount{} = by_external_ref, nil) do
+    {:ok, by_external_ref}
+  end
+
+  defp resolve_existing_api_client(_row, nil, %ServiceAccount{} = by_name) do
+    {:ok, by_name}
+  end
+
+  defp resolve_existing_api_client(_row, nil, nil), do: {:ok, nil}
+
+  defp identity_conflict_error(row) do
+    error(
+      row.row_number,
+      "external_ref",
+      "External Reference #{row.external_ref} and API Client #{row.api_client} refer to different existing API Clients."
+    )
   end
 
   defp duplicate_active_token?(nil, _key_name), do: false

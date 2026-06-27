@@ -3,7 +3,7 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
-  alias Orchard.Governance.{ApiKey, ApiKeySecret, AuditLog, ProvisioningBatch, ServiceAccount}
+  alias Orchard.Governance.{ApiKey, ApiKeySecret, ProvisioningBatch, ServiceAccount}
   alias Orchard.Repo
   alias OrchardCLI.Commands.ApiClients
 
@@ -110,11 +110,11 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
     refute Repo.get_by(ServiceAccount, tenant_id: tenant.id, name: "cli-client-preflight")
   end
 
-  test "apply marks output failure when one-time output cannot be written", %{
+  test "apply preflights an unwritable output directory before mutating state", %{
     tenant: tenant,
     tmp_dir: tmp_dir
   } do
-    input_path = write_csv!(tmp_dir, tenant, api_client: "cli-client-output-failure")
+    input_path = write_csv!(tmp_dir, tenant, api_client: "cli-client-unwritable-output")
     blocked_dir = Path.join(tmp_dir, "blocked-output")
     output_path = Path.join(blocked_dir, "tokens.csv")
     File.mkdir!(blocked_dir)
@@ -131,35 +131,15 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
                  output_path
                ])
 
-      assert message =~ "Apply succeeded"
-      assert message =~ "One-time Secret Output failed"
-      assert message =~ "Rotate or revoke these API Token prefixes"
+      assert message =~ "output parent directory is not writable"
       refute File.exists?(output_path)
 
-      api_client =
-        Repo.get_by!(ServiceAccount,
-          tenant_id: tenant.id,
-          name: "cli-client-output-failure"
-        )
+      refute Repo.get_by(ServiceAccount,
+               tenant_id: tenant.id,
+               name: "cli-client-unwritable-output"
+             )
 
-      api_key = Repo.get_by!(ApiKey, service_account_id: api_client.id, name: "primary")
-      assert message =~ api_key.token_prefix
-      refute message =~ api_key.secret_hash
-
-      assert [batch] = Repo.all(ProvisioningBatch)
-      assert batch.status == :output_failed
-      assert batch.error_summary["api_token_prefixes"] == [api_key.token_prefix]
-
-      audit_log =
-        Repo.get_by!(AuditLog,
-          action: "provisioning_batch.output_failed",
-          target_type: "provisioning_batch",
-          target_id: batch.id
-        )
-
-      assert audit_log.payload["error_summary"]["api_token_prefixes"] == [
-               api_key.token_prefix
-             ]
+      assert Repo.aggregate(ProvisioningBatch, :count, :id) == 0
     after
       File.chmod!(blocked_dir, 0o700)
     end
