@@ -91,6 +91,30 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
     assert %{name: ["has already been taken"]} = errors_on(changeset)
   end
 
+  test "down migration backfills service-account token tenant ids before restoring not null", %{
+    tenant: tenant
+  } do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "migration-down-api-client-#{System.unique_integer([:positive])}",
+        owner_contact: "owner@example.com"
+      })
+
+    assert {:ok, %{api_key: api_key}} =
+             Governance.create_api_client_api_token(api_client, %{name: "rollback-token"})
+
+    assert [[nil, api_client_id]] =
+             select_api_key_owner_columns(api_key.id, ["tenant_id", "service_account_id"])
+
+    assert Ecto.UUID.load!(api_client_id) == api_client.id
+
+    run_api_keys_down_owner_sql()
+
+    assert [[tenant_id]] = select_api_key_owner_columns(api_key.id, ["tenant_id"])
+    assert Ecto.UUID.load!(tenant_id) == tenant.id
+    assert column_not_null?("api_keys", "tenant_id")
+  end
+
   defp insert_request(attrs) do
     Repo.query(
       """
@@ -159,5 +183,53 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
       )
 
     action
+  end
+
+  defp run_api_keys_down_owner_sql do
+    Repo.query!(
+      "ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_service_account_active_name_no_overlap"
+    )
+
+    Repo.query!("DROP INDEX IF EXISTS api_keys_service_account_id_inserted_at_index")
+    Repo.query!("ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_exactly_one_owner")
+
+    Repo.query!("""
+    UPDATE api_keys
+    SET tenant_id = service_accounts.tenant_id,
+        updated_at = NOW()
+    FROM service_accounts
+    WHERE api_keys.service_account_id = service_accounts.id
+      AND api_keys.tenant_id IS NULL
+    """)
+
+    Repo.query!("ALTER TABLE api_keys DROP COLUMN expires_at")
+    Repo.query!("ALTER TABLE api_keys DROP COLUMN service_account_id")
+    Repo.query!("ALTER TABLE api_keys ALTER COLUMN tenant_id SET NOT NULL")
+  end
+
+  defp select_api_key_owner_columns(api_key_id, columns) do
+    select = Enum.join(columns, ", ")
+
+    %{rows: rows} =
+      Repo.query!(
+        "SELECT #{select} FROM api_keys WHERE id = $1",
+        [dump_uuid(api_key_id)]
+      )
+
+    rows
+  end
+
+  defp column_not_null?(table_name, column_name) do
+    %{rows: [[nullable]]} =
+      Repo.query!(
+        """
+        SELECT is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = $1 AND column_name = $2
+        """,
+        [table_name, column_name]
+      )
+
+    nullable == "NO"
   end
 end

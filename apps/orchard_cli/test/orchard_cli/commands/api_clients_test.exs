@@ -196,7 +196,7 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
     assert Repo.aggregate(ProvisioningBatch, :count, :id) == 0
   end
 
-  test "apply reports output failure when secret temp cleanup cannot be guaranteed", %{
+  test "apply reports output failure when post-link temp cleanup cannot be guaranteed", %{
     tenant: tenant,
     tmp_dir: tmp_dir
   } do
@@ -220,8 +220,10 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
 
     assert Repo.get_by(ServiceAccount, tenant_id: tenant.id, name: "cli-client-cleanup-failure")
     assert [%ProvisioningBatch{status: :output_failed}] = Repo.all(ProvisioningBatch)
-    assert Path.wildcard(Path.join(tmp_dir, ".tokens.csv.tmp-*")) == []
-    assert File.read!(output_path) == ""
+
+    {[headers], [row]} = read_output_csv!(output_path)
+    output = headers |> Enum.zip(row) |> Map.new()
+    assert Map.fetch!(output, "api_token") =~ "orch_"
   end
 
   test "duplicate API Token names require explicit rotation", %{tenant: tenant, tmp_dir: tmp_dir} do

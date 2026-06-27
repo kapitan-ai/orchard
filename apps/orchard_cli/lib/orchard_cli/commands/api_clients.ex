@@ -291,13 +291,26 @@ defmodule OrchardCLI.Commands.ApiClients do
 
     with :ok <- write_tmp_output(tmp_path, output_rows, ops),
          :ok <- ops.ln(tmp_path, path) do
-      cleanup_sensitive_file(tmp_path, ops)
+      cleanup_delivered_tmp_file(tmp_path, ops)
     else
       {:error, reason} ->
         case cleanup_sensitive_file(tmp_path, ops) do
           :ok -> {:error, format_file_error(reason)}
           {:error, cleanup_reason} -> {:error, cleanup_reason}
         end
+    end
+  end
+
+  defp cleanup_delivered_tmp_file(path, ops) do
+    case ops.rm(path) do
+      :ok ->
+        :ok
+
+      {:error, :enoent} ->
+        :ok
+
+      {:error, reason} ->
+        {:error, "temporary output cleanup failed: #{format_file_error(reason)}"}
     end
   end
 

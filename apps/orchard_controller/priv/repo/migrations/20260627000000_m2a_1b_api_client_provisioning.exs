@@ -200,6 +200,15 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
     drop_if_exists(index(:api_keys, [:service_account_id, :inserted_at]))
     drop(constraint(:api_keys, :api_keys_exactly_one_owner))
 
+    execute("""
+    UPDATE api_keys
+    SET tenant_id = service_accounts.tenant_id,
+        updated_at = NOW()
+    FROM service_accounts
+    WHERE api_keys.service_account_id = service_accounts.id
+      AND api_keys.tenant_id IS NULL
+    """)
+
     alter table(:api_keys) do
       remove(:expires_at)
       remove(:service_account_id)
