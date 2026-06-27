@@ -67,7 +67,8 @@ _Avoid_: Durable cluster truth, database replacement, public API, external provi
 
 **Source-dev BEAM Operating Model**:
 The source-development distribution profile for first-party Controller-to-Node Agent BEAM Runtime Endpoint communication.
-It uses long BEAM node names with IP-literal hosts, explicit shared cookie material, bounded distribution networking, explicit BEAM target configuration, no automatic gRPC fallback, and split-role promotion before all-in-one source dev.
+It uses long BEAM node names with IPv4-literal hosts, explicit shared cookie material, bounded distribution networking, explicit BEAM target configuration, no automatic gRPC fallback, and split-role promotion before all-in-one source dev.
+The current implementation exposes this through explicit `bin/dev-controller` and `bin/dev-node-agent` source-dev launches while `bin/dev` remains the gRPC default.
 _Avoid_: Production BEAM security model, ambient `.erlang.cookie`, implicit fallback, durable cluster truth
 
 **All-in-One Deployment**:

@@ -13,7 +13,15 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest.StubClient do
   @doc false
   def registry_name, do: @registry
 
-  def connect(_target), do: config().connect
+  def connect(target) do
+    config = config()
+
+    if config.capture_pid do
+      send(config.capture_pid, {:connect_called, target})
+    end
+
+    config.connect
+  end
 
   def status(_channel, _opts \\ []) do
     config().status
@@ -474,7 +482,78 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     end
   end
 
-  describe "BEAM target identity guard" do
+  describe "BEAM Runtime Endpoint dispatch" do
+    test "uses the explicit BEAM target and never falls back to the legacy gRPC target", ctx do
+      beam_target = Target.beam(@valid_uuid, address: :"orchard_node_agent@127.0.0.1")
+      legacy_target = [host: "127.0.0.1", port: 59_999]
+
+      schedule =
+        ctx.schedule
+        |> Map.put(:runtime_endpoint_target, beam_target)
+        |> Map.put(:runtime_client_target, legacy_target)
+
+      configure_stub(%{connect: {:error, {:rpc_exit, :nodedown}}})
+
+      assert {:error, {:model_load_failed, failure}} =
+               RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      assert failure.code == "node_unavailable"
+      assert_received {:connect_called, ^beam_target}
+      refute_received {:connect_called, ^legacy_target}
+      refute_received {:ensure_model_loaded_called, _request}
+    end
+
+    test "returns BEAM RPC failures without retrying the legacy gRPC target", ctx do
+      beam_target = Target.beam(@valid_uuid, address: :"orchard_node_agent@127.0.0.1")
+      legacy_target = [host: "127.0.0.1", port: 59_999]
+
+      schedule =
+        ctx.schedule
+        |> Map.put(:runtime_endpoint_target, beam_target)
+        |> Map.put(:runtime_client_target, legacy_target)
+
+      configure_stub(%{
+        status: {:ok, full_status(@valid_uuid)},
+        ensure_model_loaded: {:error, :node_unavailable}
+      })
+
+      assert {:error, {:model_load_failed, failure}} =
+               RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      assert failure.code == "node_unavailable"
+      assert_received {:connect_called, ^beam_target}
+      refute_received {:connect_called, ^legacy_target}
+      assert_received {:ensure_model_loaded_called, _request}
+    end
+
+    test "returns BEAM stream failures without retrying the legacy gRPC target", ctx do
+      beam_target = Target.beam(@valid_uuid, address: :"orchard_node_agent@127.0.0.1")
+      legacy_target = [host: "127.0.0.1", port: 59_999]
+
+      schedule =
+        ctx.schedule
+        |> Map.put(:runtime_endpoint_target, beam_target)
+        |> Map.put(:runtime_client_target, legacy_target)
+
+      configure_stub(%{
+        status: {:ok, full_status(@valid_uuid)},
+        execute: {:error, :node_timeout}
+      })
+
+      assert {:error, {:dispatch_failed, :node_timeout}} =
+               RequestDispatcher.dispatch(schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      assert_received {:connect_called, ^beam_target}
+      refute_received {:connect_called, ^legacy_target}
+      assert_received {:ensure_model_loaded_called, _request}
+    end
+
     test "dispatch fails closed before observe or ensure when live metadata disagrees", ctx do
       target = Target.beam(@valid_uuid, address: :orchard_node_agent@localhost)
 

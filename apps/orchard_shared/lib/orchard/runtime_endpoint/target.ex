@@ -4,8 +4,10 @@ defmodule Orchard.RuntimeEndpoint.Target do
 
   gRPC compatibility targets use `[host: ..., port: ...]` addresses.
   BEAM targets use BEAM node-name addresses such as
-  `:orchard_node_agent@localhost` and may carry a persisted Orchard node UUID
-  for identity checks.
+  `:orchard_node_agent@localhost` or `"orchard_node_agent@127.0.0.1"` and may
+  carry a persisted Orchard node UUID for identity checks.
+  Source-dev env parsing applies the narrower IPv4-literal operating-model
+  rules before these targets reach this domain struct.
   """
 
   @enforce_keys [:id, :transport, :address]
@@ -32,6 +34,8 @@ defmodule Orchard.RuntimeEndpoint.Target do
   Targets without an explicit transport remain gRPC compatibility targets.
   BEAM targets require an atom or binary BEAM node-name address and reject
   malformed configured node IDs.
+  Host policy beyond valid `service@host` shape belongs to the caller's
+  transport config.
   """
   @spec normalize(t() | keyword() | map()) :: t()
   def normalize(%__MODULE__{transport: :beam} = target) do
@@ -168,8 +172,15 @@ defmodule Orchard.RuntimeEndpoint.Target do
   defp default_beam_id(nil, address) when is_atom(address), do: "beam:#{Atom.to_string(address)}"
 
   defp valid_beam_node_name?(address) do
-    byte_size(address) in 3..255 and String.match?(address, ~r/^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+$/)
+    byte_size(address) in 3..255 and
+      case String.split(address, "@") do
+        [service, host] -> valid_beam_service?(service) and valid_beam_host?(host)
+        _other -> false
+      end
   end
+
+  defp valid_beam_service?(service), do: String.match?(service, ~r/^[A-Za-z0-9_.-]+$/)
+  defp valid_beam_host?(host), do: String.match?(host, ~r/^[^\s@]+$/)
 
   defp attrs_map(attrs) when is_list(attrs), do: Map.new(attrs)
   defp attrs_map(%{} = attrs), do: attrs

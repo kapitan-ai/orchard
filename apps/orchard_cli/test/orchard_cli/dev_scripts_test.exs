@@ -9,12 +9,12 @@ defmodule OrchardCLI.DevScriptsTest do
     node_agent = File.read!(Path.join(@repo_root, "bin/dev-node-agent"))
 
     assert controller =~ "cd \"$REPO_ROOT/apps/orchard_controller\""
-    assert controller =~ "exec iex -S mix phx.server"
+    assert controller =~ "exec iex \"${ORCHARD_BEAM_IEX_ARGS[@]}\" -S mix phx.server"
     refute controller =~ "apps/orchard_node_agent"
     refute controller =~ "mix run --no-halt"
 
     assert node_agent =~ "cd \"$REPO_ROOT/apps/orchard_node_agent\""
-    assert node_agent =~ "exec iex -S mix run --no-halt"
+    assert node_agent =~ "exec iex \"${ORCHARD_BEAM_IEX_ARGS[@]}\" -S mix run --no-halt"
 
     assert dev =~ "exec iex -S mix phx.server"
     refute dev =~ "cd \"$REPO_ROOT/apps/orchard_controller\""
@@ -31,5 +31,17 @@ defmodule OrchardCLI.DevScriptsTest do
 
     assert dev =~ "pgrep -f orchard-worker-mlx"
     assert node_agent =~ "pgrep -f orchard-worker-mlx"
+  end
+
+  test "source-dev BEAM bootstrap shell contract stays wired into Mix tests" do
+    script = Path.join(@repo_root, "scripts/test-source-dev-beam-bootstrap.sh")
+
+    assert {output, 0} =
+             System.cmd("bash", [script],
+               cd: @repo_root,
+               stderr_to_stdout: true
+             )
+
+    assert output =~ "source-dev BEAM bootstrap tests passed"
   end
 end

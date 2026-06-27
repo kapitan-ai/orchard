@@ -3,7 +3,10 @@ set -euo pipefail
 
 # bin/dev-node-agent — Source-dev node-agent role startup for Orchard.
 # Starts only the node-agent app from source; no DB create/migrate, no Phoenix.
-# Set ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0 for LAN/Tailscale testing.
+# For gRPC compatibility testing, set ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0
+# on LAN/Tailscale worker hosts.
+# For BEAM Runtime Endpoint testing, set ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+# and an ORCHARD_BEAM_NODE_NAME with the host's IPv4 address.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -14,6 +17,7 @@ cd "$REPO_ROOT"
 command -v mix >/dev/null || { echo "error: mix not found on PATH" >&2; exit 1; }
 
 export MIX_ENV=dev
+export ORCHARD_SOURCE_DEV_ROLE=node_agent
 
 # Resolve dev runtime port (default 50071, avoids packaged BEAM on 50061).
 # Supports both env var names for parity with config/runtime.exs.
@@ -42,6 +46,9 @@ if [[ ! -x "$ORCHARD_WORKER_EXECUTABLE" ]]; then
   echo "warning: ORCHARD_WORKER_EXECUTABLE is not executable: $ORCHARD_WORKER_EXECUTABLE" >&2
 fi
 
+source "$REPO_ROOT/bin/lib/source-dev-beam.sh"
+orchard_source_dev_beam_bootstrap node_agent "$REPO_ROOT"
+
 # Kill orphaned MLX workers from prior sessions.
 orphans=$(pgrep -f orchard-worker-mlx 2>/dev/null || true)
 if [[ -n "$orphans" ]]; then
@@ -56,4 +63,4 @@ echo "==> Starting Orchard dev node-agent (role: node-agent)"
 echo "==> gRPC endpoint: ${ORCHARD_NODE_AGENT_LISTEN_HOST}:${resolved_port}"
 echo "==> Worker executable: ${ORCHARD_WORKER_EXECUTABLE}"
 cd "$REPO_ROOT/apps/orchard_node_agent"
-exec iex -S mix run --no-halt
+exec iex "${ORCHARD_BEAM_IEX_ARGS[@]}" -S mix run --no-halt

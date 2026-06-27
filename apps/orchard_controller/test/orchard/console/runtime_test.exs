@@ -1026,6 +1026,58 @@ defmodule OrchardConsole.RuntimeTest do
       refute_received {:legacy_client_called, ^beam_target}
     end
 
+    test "source-dev BEAM target maps use active Runtime Endpoint client and ignore legacy targets" do
+      node_id = "550e8400-e29b-41d4-a716-446655440000"
+
+      source_dev_target = %{
+        transport: :beam,
+        address: "orchard_node_agent@127.0.0.1",
+        metadata: %{source_dev: true}
+      }
+
+      expected_target = Target.normalize(source_dev_target)
+      legacy_target = [host: "10.0.0.9", port: 50_061]
+
+      put_console(runtime_client_impl: __MODULE__.LegacyPoisonClient)
+
+      put_inference(
+        runtime_endpoint_client_impl: __MODULE__.StubClient,
+        runtime_endpoint_targets: [source_dev_target],
+        runtime_client_targets: [legacy_target]
+      )
+
+      stub_client(
+        target_responses: %{
+          {:beam, :"orchard_node_agent@127.0.0.1"} => [
+            connect: {:ok, :source_dev_beam_ch},
+            status:
+              {:ok,
+               %{
+                 worker_state: :WORKER_STATE_IDLE,
+                 loaded_models: [],
+                 active_request_count: 0,
+                 node_metadata: %{node_id: node_id, display_name: "source-dev-beam-node"},
+                 runtime_health: %{ready: true}
+               }},
+            disconnect: :ok
+          ]
+        }
+      )
+
+      assert [
+               %{
+                 target: ^expected_target,
+                 status: :ok,
+                 node_metadata: %{display_name: "source-dev-beam-node"}
+               }
+             ] =
+               Runtime.cluster_snapshot()
+
+      assert_received {:connect_called, ^expected_target}
+      refute_received {:connect_called, ^legacy_target}
+      refute_received {:legacy_client_called, _target}
+    end
+
     test "legacy Console runtime client receives keyword gRPC address from Runtime Endpoint target" do
       target = Target.grpc_compat(host: "127.0.0.1", port: 50_071)
       legacy_address = [host: "127.0.0.1", port: 50_071]

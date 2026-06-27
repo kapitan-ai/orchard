@@ -29,6 +29,8 @@ This README is orientation only. Normative behavior lives in
 
 ## Local work
 
-Run source dev from the umbrella root with `mise exec -- bin/dev`. For setup and
-validation commands, see [`../../docs/local-dev.md`](../../docs/local-dev.md)
-and [`../../docs/tooling.md`](../../docs/tooling.md).
+Run all-in-one source dev from the umbrella root with `mise exec -- bin/dev`.
+Use `mise exec -- bin/dev-controller` only for split-role controller work.
+For setup, BEAM or gRPC split-role flows, and validation commands, see
+[`../../docs/local-dev.md`](../../docs/local-dev.md) and
+[`../../docs/tooling.md`](../../docs/tooling.md).

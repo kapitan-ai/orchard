@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# bin/dev — Idempotent dev environment startup for Orchard.
+# bin/dev — Idempotent all-in-one dev environment startup for Orchard.
 # Creates/migrates the dev DB, sets the dev gRPC port, starts the Phoenix server.
 # Safe to run repeatedly. Works alongside the packaged production BEAM on 50061.
+# Explicit BEAM Runtime Endpoint mode belongs to bin/dev-controller + bin/dev-node-agent.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -14,6 +15,17 @@ cd "$REPO_ROOT"
 command -v mix >/dev/null || { echo "error: mix not found on PATH" >&2; exit 1; }
 
 export MIX_ENV=dev
+export ORCHARD_SOURCE_DEV_ROLE=all_in_one
+
+runtime_endpoint_transport="${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT:-}"
+runtime_endpoint_transport="${runtime_endpoint_transport#"${runtime_endpoint_transport%%[![:space:]]*}"}"
+runtime_endpoint_transport="${runtime_endpoint_transport%"${runtime_endpoint_transport##*[![:space:]]}"}"
+
+if [[ "$runtime_endpoint_transport" == "beam" ]]; then
+  echo "error: all-in-one bin/dev does not support BEAM source-dev mode yet" >&2
+  echo "error: use bin/dev-controller and bin/dev-node-agent for ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam" >&2
+  exit 64
+fi
 
 # ---------------------------------------------------------------------------
 # Resolve dev runtime port (default 50071, avoids packaged BEAM on 50061).

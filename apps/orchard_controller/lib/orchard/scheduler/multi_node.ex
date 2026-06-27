@@ -945,24 +945,38 @@ defmodule Orchard.Scheduler.MultiNode do
   end
 
   defp fallback_schedule(request, [%Target{} = single_target], _opts) do
-    {:ok,
-     %{
-       strategy: :single_node,
-       request_id: request.public_id,
-       runtime_endpoint_target: single_target,
-       request_timeout_ms: Inference.request_timeout_ms(),
-       model_load_timeout_ms: Inference.model_load_timeout_ms(),
-       node_id: runtime_endpoint_node_id(single_target)
-     }}
+    runtime_endpoint_fallback_schedule(request, single_target)
   end
 
   defp fallback_schedule(request, [single_target], opts) do
     SingleNode.default_schedule(request, dispatch_target(single_target), opts)
   end
 
+  defp fallback_schedule(request, [%Target{} | _] = targets, opts) do
+    case Enum.find(targets, &runtime_endpoint_fallback_target?/1) do
+      nil -> SingleNode.default_schedule(request, SingleNode.target(), opts)
+      %Target{} = target -> runtime_endpoint_fallback_schedule(request, target)
+    end
+  end
+
   defp fallback_schedule(request, _targets, opts) do
     SingleNode.default_schedule(request, SingleNode.target(), opts)
   end
+
+  defp runtime_endpoint_fallback_schedule(request, target) do
+    {:ok,
+     %{
+       strategy: :single_node,
+       request_id: request.public_id,
+       runtime_endpoint_target: target,
+       request_timeout_ms: Inference.request_timeout_ms(),
+       model_load_timeout_ms: Inference.model_load_timeout_ms(),
+       node_id: runtime_endpoint_node_id(target)
+     }}
+  end
+
+  defp runtime_endpoint_fallback_target?(%Target{transport: :grpc_compat}), do: false
+  defp runtime_endpoint_fallback_target?(%Target{}), do: true
 
   defp normalize_status_observation(_target, %Observation{} = observation), do: observation
 

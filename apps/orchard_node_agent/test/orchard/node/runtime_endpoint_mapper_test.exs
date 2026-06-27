@@ -47,6 +47,34 @@ defmodule Orchard.Node.RuntimeEndpointMapperTest do
              capacity
   end
 
+  test "maps source-dev BEAM target address shape into observation identity" do
+    target =
+      Target.beam("550e8400-e29b-41d4-a716-446655440000",
+        address: :"orchard_node_agent@127.0.0.1",
+        metadata: %{source_dev: true}
+      )
+
+    response = %StatusResponse{
+      node_metadata: %RuntimeNodeMetadata{
+        node_id: "node-source-dev",
+        hostname: "127.0.0.1",
+        listen_host: "127.0.0.1"
+      },
+      runtime_health: %RuntimeHealth{ready: true, health_code: "ok"}
+    }
+
+    observation = RuntimeEndpointMapper.observation_from_status(target, response)
+
+    assert observation.endpoint_id == target.id
+    assert observation.target == target
+    assert observation.target.address == :"orchard_node_agent@127.0.0.1"
+    assert observation.target.metadata.source_dev
+    assert observation.metadata.node_id == "node-source-dev"
+    assert observation.metadata.hostname == "127.0.0.1"
+    assert observation.metadata.listen_host == "127.0.0.1"
+    assert observation.availability == :available
+  end
+
   test "maps prefix-cache score responses to Runtime Endpoint operation results" do
     response = %ScorePrefixCacheResponse{
       status_code: "ok",

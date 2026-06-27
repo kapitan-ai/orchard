@@ -607,6 +607,70 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert status_calls() == [{{:beam, target.id}, [timeout: 17]}]
     end
 
+    test "source-dev BEAM target maps emit runtime endpoint schedules without legacy targets" do
+      target_map = %{
+        transport: :beam,
+        address: "orchard_node_agent@127.0.0.1",
+        metadata: %{source_dev: true}
+      }
+
+      target = Target.normalize(target_map)
+
+      put_inference(
+        runtime_endpoint_targets: [target_map],
+        runtime_client_targets: [[host: "10.0.0.9", port: 50_061]],
+        runtime_client_target: [host: "127.0.0.1", port: 50_071]
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 status_timeout_ms: 17
+               )
+
+      assert schedule.strategy == :single_node
+      assert schedule.runtime_endpoint_target == target
+      refute Map.has_key?(schedule, :runtime_client_target)
+      assert status_calls() == [{{:beam, target.id}, [timeout: 17]}]
+    end
+
+    test "multi-target BEAM all-probe failure preserves Runtime Endpoint selection" do
+      target_a =
+        Target.normalize(
+          transport: :beam,
+          address: "orchard_node_agent@127.0.0.1",
+          metadata: %{source_dev: true}
+        )
+
+      target_b =
+        Target.normalize(
+          transport: :beam,
+          address: "orchard_node_agent@10.0.0.2",
+          metadata: %{source_dev: true}
+        )
+
+      put_inference(
+        runtime_endpoint_targets: [target_a, target_b],
+        runtime_client_targets: [[host: "10.0.0.9", port: 50_061]],
+        runtime_client_target: [host: "127.0.0.1", port: 50_071]
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request(),
+                 status_client: StubClient,
+                 status_timeout_ms: 17
+               )
+
+      assert schedule.strategy == :single_node
+      assert schedule.runtime_endpoint_target == target_a
+      refute Map.has_key?(schedule, :runtime_client_target)
+
+      assert status_calls() == [
+               {{:beam, target_a.id}, [timeout: 17]},
+               {{:beam, target_b.id}, [timeout: 17]}
+             ]
+    end
+
     test "returns cluster_busy for one live full target instead of bypassing capacity checks" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
       node = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})

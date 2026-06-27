@@ -1,11 +1,14 @@
 defmodule Orchard.Config.RuntimeTargetParser do
   @moduledoc """
-  Pure parser for `ORCHARD_RUNTIME_CLIENT_TARGETS` environment variable.
+  Pure parser for the gRPC compatibility `ORCHARD_RUNTIME_CLIENT_TARGETS`
+  environment variable.
 
   Extracted from `config/runtime.exs` to enable direct unit testing
   of malformed input rejection.
 
   Format: comma-separated `host:port` pairs.
+  BEAM Runtime Endpoint node names belong to `ORCHARD_RUNTIME_ENDPOINT_TARGETS`
+  and are intentionally rejected here.
   Example: `"127.0.0.1:50071,100.86.198.38:50061"`
   """
 

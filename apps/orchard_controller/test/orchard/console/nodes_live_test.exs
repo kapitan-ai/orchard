@@ -376,7 +376,7 @@ defmodule OrchardConsole.NodesLiveTest.RuntimeBeamTargetStub do
   @moduledoc false
   @node_id "550e8400-e29b-41d4-a716-446655440000"
   @target Orchard.RuntimeEndpoint.Target.beam(@node_id,
-            address: :orchard_node_agent_smoke@mawarduri
+            address: :"orchard_node_agent@127.0.0.1"
           )
 
   def cluster_snapshot(_opts \\ []) do
@@ -808,16 +808,17 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ ~s(id="nodes-runtime-card-127-0-0-1-50071")
     end
 
-    test "renders BEAM Runtime Endpoint targets with readable labels and stable DOM ids", %{
-      conn: conn
-    } do
+    test "renders source-dev BEAM Runtime Endpoint targets with readable labels and stable DOM ids",
+         %{
+           conn: conn
+         } do
       put_runtime_stub(OrchardConsole.NodesLiveTest.RuntimeBeamTargetStub)
 
       {:ok, view, html} = live(conn, "/console/nodes")
 
-      assert html =~ ~s(id="nodes-runtime-card-beam-orchard-node-agent-smoke-mawarduri")
+      assert html =~ ~s(id="nodes-runtime-card-beam-orchard-node-agent-127-0-0-1")
       assert html =~ "beam-node"
-      assert html =~ "orchard_node_agent_smoke@mawarduri"
+      assert html =~ "orchard_node_agent@127.0.0.1"
 
       summary = element(view, "#nodes-live-cluster-card") |> render()
       assert summary =~ "1 target(s) configured"

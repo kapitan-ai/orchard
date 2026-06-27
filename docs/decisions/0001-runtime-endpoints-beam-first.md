@@ -39,11 +39,12 @@ Unknown, malformed, duplicate, or nonmatching Placement Capacity must not prove 
 
 The BEAM Runtime Endpoint adapter is the intended primary source-dev Controller-to-Node Agent path once it passes the accepted two-Mac smoke.
 Until that gate passes, current source-dev continues to use the gRPC Compatibility Adapter on port `50071` as the compatibility path.
-The Source-dev BEAM Operating Model uses long BEAM node names with IP-literal hosts, explicit shared cookie material, bounded distribution networking, and BEAM-specific Runtime Endpoint target variables rather than legacy gRPC runtime client variables.
+The Source-dev BEAM Operating Model uses long BEAM node names with IPv4-literal hosts, explicit shared cookie material, bounded distribution networking, and BEAM-specific Runtime Endpoint target variables rather than legacy gRPC runtime client variables.
+The current implementation exposes that model through explicit split-role `bin/dev-controller` and `bin/dev-node-agent` launches while all-in-one `bin/dev` remains the gRPC default and rejects explicit BEAM mode.
 Same-host source dev may generate a repo-local `tmp/dev/beam.cookie` file, while two-Mac source dev must provision the same cookie material on both Macs.
 Packaged or release runtime configuration must not inherit the repo-local cookie model; it should use runtime secret injection such as release cookie configuration.
 Cookie files must be `0600` or stricter and must not be printed in logs or templates.
-Guarded source-dev BEAM targets require IP-literal host parts for CIDR validation.
+Guarded source-dev BEAM targets require IPv4-literal host parts for CIDR validation.
 When BEAM Runtime Endpoint mode is selected, BEAM connection failure must fail visibly rather than automatically falling back to gRPC for the same request.
 gRPC remains an explicitly selected compatibility mode, not an implicit fallback behind BEAM mode.
 Promotion starts with split-role `bin/dev-controller` and `bin/dev-node-agent` before changing all-in-one `bin/dev`.

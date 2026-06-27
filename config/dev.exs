@@ -1,6 +1,7 @@
 import Config
 
 Code.require_file("m1_runtime_defaults.exs", __DIR__)
+Code.require_file("source_dev_beam.exs", __DIR__)
 
 repo_root = Path.expand("..", __DIR__)
 dev_root = Path.join([repo_root, "tmp", "dev"])
@@ -94,7 +95,9 @@ dev_runtime_client_host =
 dev_node_agent_listen_host =
   System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1"
 
-# Inline parser for ORCHARD_RUNTIME_CLIENT_TARGETS (comma-separated host:port).
+# Inline parser for gRPC-only ORCHARD_RUNTIME_CLIENT_TARGETS
+# (comma-separated host:port).
+# Source-dev BEAM targets use ORCHARD_RUNTIME_ENDPOINT_TARGETS instead.
 # Intentionally inline — RuntimeTargetParser may not be compiled when dev.exs
 # evaluates on clean builds. Mirrors RuntimeTargetParser.parse_csv!/2 semantics.
 # SYNC NOTE: if RuntimeTargetParser parse rules change, update this parser too.
@@ -128,6 +131,42 @@ parse_runtime_targets = fn env_name ->
 end
 
 dev_runtime_targets = parse_runtime_targets.("ORCHARD_RUNTIME_CLIENT_TARGETS")
+
+source_dev_role =
+  Orchard.Config.SourceDevBeam.source_dev_role(System.get_env("ORCHARD_SOURCE_DEV_ROLE"))
+
+runtime_endpoint_transport =
+  Orchard.Config.SourceDevBeam.transport!(System.get_env("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT"))
+
+Orchard.Config.SourceDevBeam.validate_transport_role!(
+  runtime_endpoint_transport,
+  source_dev_role
+)
+
+beam_runtime_endpoint_targets =
+  if runtime_endpoint_transport == :beam and source_dev_role == :controller do
+    Orchard.Config.SourceDevBeam.controller_beam_targets!(
+      System.get_env("ORCHARD_RUNTIME_ENDPOINT_TARGETS")
+    )
+  else
+    []
+  end
+
+beam_controller_node_name =
+  System.get_env("ORCHARD_BEAM_NODE_NAME") || "orchard_controller@127.0.0.1"
+
+beam_cookie_file =
+  System.get_env("ORCHARD_BEAM_COOKIE_FILE") || Path.join(dev_root, "beam.cookie")
+
+runtime_endpoint_inference_config =
+  if beam_runtime_endpoint_targets == [] do
+    []
+  else
+    [
+      runtime_endpoint_client_impl: Orchard.RuntimeEndpoint.BeamClient,
+      runtime_endpoint_targets: beam_runtime_endpoint_targets
+    ]
+  end
 
 controller_inference_defaults = Orchard.Config.M1RuntimeDefaults.controller_inference(dev_root)
 cache_affinity_defaults = Keyword.fetch!(controller_inference_defaults, :cache_affinity)
@@ -323,20 +362,33 @@ config :orchard_controller, Orchard.Repo,
 config :orchard_controller,
   inference:
     Keyword.merge(
-      controller_inference_defaults,
-      runtime_client_target: [host: dev_runtime_client_host, port: dev_runtime_port],
-      runtime_client_targets: dev_runtime_targets,
-      tokenizer_executable:
-        System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
-          Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
-      tokenizer_safe_mode: env_tokenizer_safe_mode.("ORCHARD_TOKENIZER_SAFE_MODE", :off),
-      tokenizer_safe_mode_prefer_capable:
-        env_bool.("ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE", false),
-      cache_affinity: cache_affinity_config,
-      cache_introspection: cache_introspection_config,
-      prefix_cache_scoring: prefix_cache_scoring_config,
-      memory_admission: memory_admission_config
+      Keyword.merge(
+        controller_inference_defaults,
+        runtime_client_target: [host: dev_runtime_client_host, port: dev_runtime_port],
+        runtime_client_targets: dev_runtime_targets,
+        tokenizer_executable:
+          System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
+            Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
+        tokenizer_safe_mode: env_tokenizer_safe_mode.("ORCHARD_TOKENIZER_SAFE_MODE", :off),
+        tokenizer_safe_mode_prefer_capable:
+          env_bool.("ORCHARD_TOKENIZER_SAFE_MODE_PREFER_CAPABLE", false),
+        cache_affinity: cache_affinity_config,
+        cache_introspection: cache_introspection_config,
+        prefix_cache_scoring: prefix_cache_scoring_config,
+        memory_admission: memory_admission_config
+      ),
+      runtime_endpoint_inference_config
     )
+
+if beam_runtime_endpoint_targets != [] do
+  config :orchard_controller, :runtime_endpoint,
+    beam:
+      Orchard.Config.SourceDevBeam.beam_guardrail_config!(
+        beam_controller_node_name,
+        beam_cookie_file,
+        beam_runtime_endpoint_targets
+      )
+end
 
 config :orchard_node_agent,
   runtime:
