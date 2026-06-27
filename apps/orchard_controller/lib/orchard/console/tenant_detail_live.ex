@@ -336,7 +336,7 @@ defmodule OrchardConsole.TenantDetailLive do
                     <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{token.token_prefix}</span>
                     <.api_token_status_badge api_key={token} />
                     <button
-                      :if={api_token_active?(token)}
+                      :if={token.revoked_at == nil}
                       id={"tenant-api-client-token-revoke-#{token.id}"}
                       type="button"
                       phx-click="revoke_api_key"
@@ -552,8 +552,6 @@ defmodule OrchardConsole.TenantDetailLive do
         load_error: "Organization details unavailable."
       )
   end
-
-  defp api_token_active?(%ApiKey{} = api_key), do: ApiKey.status(api_key, utc_now()) == :active
 
   defp inference_client_access?(api_client) do
     Enum.any?(api_client.role_bindings, fn
