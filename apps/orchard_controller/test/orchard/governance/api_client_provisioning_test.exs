@@ -89,6 +89,76 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
            ) == 2
   end
 
+  test "same API Client name with mixed external_ref presence is rejected", %{tenant: tenant} do
+    rows = [
+      row(tenant, api_client: "client-mixed-ref", external_ref: "external-a", key_name: "one"),
+      row(tenant, api_client: "client-mixed-ref", key_name: "two")
+    ]
+
+    assert {:error, errors} = Governance.bulk_validate_api_clients(rows)
+
+    assert Enum.any?(errors, fn error ->
+             error.field == "external_ref" and
+               error.message =~ "must consistently use the same External Reference"
+           end)
+  end
+
+  test "same API Client name with multiple external_ref values is rejected", %{tenant: tenant} do
+    rows = [
+      row(tenant,
+        api_client: "client-conflicting-ref",
+        external_ref: "external-a",
+        key_name: "one"
+      ),
+      row(tenant,
+        api_client: "client-conflicting-ref",
+        external_ref: "external-b",
+        key_name: "two"
+      )
+    ]
+
+    assert {:error, errors} = Governance.bulk_validate_api_clients(rows)
+
+    assert Enum.any?(errors, fn error ->
+             error.field == "external_ref" and
+               error.message =~ "must consistently use the same External Reference"
+           end)
+  end
+
+  test "same external_ref under multiple API Client names is rejected", %{tenant: tenant} do
+    rows = [
+      row(tenant, api_client: "client-ref-a", external_ref: "external-conflict", key_name: "one"),
+      row(tenant, api_client: "client-ref-b", external_ref: "external-conflict", key_name: "two")
+    ]
+
+    assert {:error, errors} = Governance.bulk_validate_api_clients(rows)
+
+    assert Enum.any?(errors, fn error ->
+             error.field == "api_client" and error.message =~ "belongs to multiple API Clients"
+           end)
+  end
+
+  test "rotation rejects ambiguous identity before creating output", %{tenant: tenant} do
+    rows = [
+      row(tenant,
+        api_client: "client-rotation-identity",
+        external_ref: "rotation-external",
+        key_name: "production"
+      ),
+      row(tenant, api_client: "client-rotation-identity", key_name: "production")
+    ]
+
+    assert {:error, errors} = Governance.bulk_apply_api_clients(rows, rotation: true)
+
+    assert Enum.any?(errors, fn error ->
+             error.field == "external_ref" and
+               error.message =~ "must consistently use the same External Reference"
+           end)
+
+    refute service_account_exists?(tenant.id, "client-rotation-identity")
+    assert Repo.aggregate(ProvisioningBatch, :count, :id) == 0
+  end
+
   test "apply creates API Client access and returns one-time API Token output only in memory", %{
     tenant: tenant
   } do
@@ -148,6 +218,100 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
 
     refute inspect(batch) =~ output_row.api_token
     refute inspect(Repo.all(AuditLog)) =~ output_row.api_token
+  end
+
+  test "sparse rerun preserves omitted API Client metadata columns", %{tenant: tenant} do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "client-sparse",
+        owner_contact: "owner@example.com",
+        owner_name: "Original Owner",
+        team: "Platform",
+        external_ref: "sparse-ref",
+        description: "Existing description",
+        purpose: "Existing purpose",
+        metadata: %{"cost_center" => "ml", "tier" => "gold"}
+      })
+
+    rows = [
+      row(tenant,
+        api_client: api_client.name,
+        owner_contact: "new-owner@example.com",
+        key_name: "secondary"
+      )
+    ]
+
+    assert {:ok, _result} = Governance.bulk_apply_api_clients(rows)
+
+    updated = Repo.get!(ServiceAccount, api_client.id)
+    assert updated.owner_contact == "new-owner@example.com"
+    assert updated.owner_name == "Original Owner"
+    assert updated.team == "Platform"
+    assert updated.external_ref == "sparse-ref"
+    assert updated.description == "Existing description"
+    assert updated.purpose == "Existing purpose"
+    assert updated.metadata == %{"cost_center" => "ml", "tier" => "gold"}
+  end
+
+  test "explicit blank API Client metadata columns clear existing values", %{tenant: tenant} do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "client-clear",
+        owner_contact: "owner@example.com",
+        owner_name: "Original Owner",
+        team: "Platform",
+        external_ref: "clear-ref",
+        description: "Existing description",
+        purpose: "Existing purpose",
+        metadata: %{"cost_center" => "ml"}
+      })
+
+    rows = [
+      row(tenant,
+        api_client: api_client.name,
+        owner_contact: "new-owner@example.com",
+        key_name: "secondary",
+        owner_name: "",
+        team: "",
+        external_ref: "",
+        description: "",
+        purpose: "",
+        metadata_json: ""
+      )
+    ]
+
+    assert {:ok, _result} = Governance.bulk_apply_api_clients(rows)
+
+    updated = Repo.get!(ServiceAccount, api_client.id)
+    assert updated.owner_contact == "new-owner@example.com"
+    assert updated.owner_name == nil
+    assert updated.team == nil
+    assert updated.external_ref == nil
+    assert updated.description == nil
+    assert updated.purpose == nil
+    assert updated.metadata == %{}
+  end
+
+  test "present metadata_json replaces existing API Client metadata", %{tenant: tenant} do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "client-replace-metadata",
+        owner_contact: "owner@example.com",
+        metadata: %{"cost_center" => "ml", "tier" => "gold"}
+      })
+
+    rows = [
+      row(tenant,
+        api_client: api_client.name,
+        key_name: "secondary",
+        metadata_json: Jason.encode!(%{"cost_center" => "platform"})
+      )
+    ]
+
+    assert {:ok, _result} = Governance.bulk_apply_api_clients(rows)
+
+    updated = Repo.get!(ServiceAccount, api_client.id)
+    assert updated.metadata == %{"cost_center" => "platform"}
   end
 
   test "marking output failure writes redacted provisioning batch audit", %{tenant: tenant} do

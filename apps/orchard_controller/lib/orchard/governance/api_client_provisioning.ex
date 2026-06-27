@@ -49,6 +49,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
          {:ok, normalized_rows} <- normalize_rows(rows),
          :ok <- validate_same_organization(normalized_rows),
          {:ok, tenant} <- fetch_tenant_by_slug(normalized_rows),
+         :ok <- validate_batch_identities(normalized_rows),
          :ok <- validate_duplicate_rows(normalized_rows),
          {:ok, planned_rows} <- plan_rows(tenant, normalized_rows, rotation?) do
       {:ok,
@@ -129,6 +130,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
 
   defp normalize_row(row, row_number) do
     row = normalize_keys(row)
+    present_fields = MapSet.new(Map.keys(row))
 
     errors =
       @required_fields
@@ -145,6 +147,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
          api_client: required_string(row["api_client"]),
          owner_contact: required_string(row["owner_contact"]),
          key_name: required_string(row["key_name"]),
+         present_fields: present_fields,
          team: optional_string(row["team"]),
          owner_name: optional_string(row["owner_name"]),
          external_ref: optional_string(row["external_ref"]),
@@ -157,6 +160,79 @@ defmodule Orchard.Governance.ApiClientProvisioning do
       [_ | _] = errors -> {:error, errors}
       {:error, errors} -> {:error, errors}
     end
+  end
+
+  defp validate_batch_identities(rows) do
+    errors = api_client_name_identity_errors(rows) ++ external_ref_identity_errors(rows)
+
+    case errors do
+      [] -> :ok
+      errors -> {:error, errors}
+    end
+  end
+
+  defp api_client_name_identity_errors(rows) do
+    rows
+    |> Enum.group_by(& &1.api_client)
+    |> Enum.flat_map(&api_client_name_identity_errors_for_group/1)
+  end
+
+  defp api_client_name_identity_errors_for_group({api_client, grouped_rows}) do
+    external_refs =
+      grouped_rows
+      |> Enum.map(& &1.external_ref)
+      |> Enum.uniq()
+
+    non_nil_external_refs = Enum.reject(external_refs, &is_nil/1)
+
+    if inconsistent_external_refs?(external_refs, non_nil_external_refs) do
+      Enum.map(grouped_rows, &api_client_name_identity_error(&1, api_client))
+    else
+      []
+    end
+  end
+
+  defp inconsistent_external_refs?(external_refs, non_nil_external_refs) do
+    mixed_external_ref_presence? = nil in external_refs and non_nil_external_refs != []
+    multiple_external_refs? = length(non_nil_external_refs) > 1
+
+    mixed_external_ref_presence? or multiple_external_refs?
+  end
+
+  defp api_client_name_identity_error(row, api_client) do
+    error(
+      row.row_number,
+      "external_ref",
+      "API Client #{api_client} must consistently use the same External Reference in this file."
+    )
+  end
+
+  defp external_ref_identity_errors(rows) do
+    rows
+    |> Enum.filter(&is_binary(&1.external_ref))
+    |> Enum.group_by(& &1.external_ref)
+    |> Enum.flat_map(&external_ref_identity_errors_for_group/1)
+  end
+
+  defp external_ref_identity_errors_for_group({external_ref, grouped_rows}) do
+    api_clients =
+      grouped_rows
+      |> Enum.map(& &1.api_client)
+      |> Enum.uniq()
+
+    if length(api_clients) > 1 do
+      Enum.map(grouped_rows, &external_ref_identity_error(&1, external_ref))
+    else
+      []
+    end
+  end
+
+  defp external_ref_identity_error(row, external_ref) do
+    error(
+      row.row_number,
+      "api_client",
+      "External Reference #{external_ref} belongs to multiple API Clients in this file."
+    )
   end
 
   defp validate_same_organization(rows) do
@@ -291,9 +367,14 @@ defmodule Orchard.Governance.ApiClientProvisioning do
 
   defp apply_row(tenant, row, batch, opts) do
     audit_opts = Keyword.merge(opts, provisioning_batch_id: batch.id)
+    existing_api_client = find_existing_api_client(tenant.id, row)
 
     with {:ok, api_client} <-
-           Governance.upsert_api_client(tenant, api_client_attrs(row), audit_opts),
+           Governance.upsert_api_client(
+             tenant,
+             api_client_attrs(row, existing_api_client),
+             audit_opts
+           ),
          {:ok, _role_binding} <-
            Governance.ensure_inference_client_access(api_client, tenant, audit_opts),
          {:ok, token_result} <- create_or_rotate_token(api_client, row, audit_opts) do
@@ -418,11 +499,11 @@ defmodule Orchard.Governance.ApiClientProvisioning do
   defp increment(result, key, true), do: Map.update!(result, key, &(&1 + 1))
   defp increment(result, _key, false), do: result
 
-  defp output_row(tenant, api_client, row, %{api_key: api_key, token: token}) do
+  defp output_row(tenant, api_client, _row, %{api_key: api_key, token: token}) do
     %{
       organization: tenant.slug,
       api_client: api_client.name,
-      external_ref: row.external_ref,
+      external_ref: api_client.external_ref,
       key_name: api_key.name,
       api_token_id: api_key.id,
       api_token_prefix: api_key.token_prefix,
@@ -431,18 +512,40 @@ defmodule Orchard.Governance.ApiClientProvisioning do
     }
   end
 
-  defp api_client_attrs(row) do
+  defp api_client_attrs(row, existing_api_client) do
     %{
       name: row.api_client,
       owner_contact: row.owner_contact,
-      owner_name: row.owner_name,
-      team: row.team,
-      external_ref: row.external_ref,
-      description: row.description,
-      purpose: row.purpose,
-      metadata: row.metadata
+      owner_name: api_client_scalar_attr(row, existing_api_client, "owner_name", :owner_name),
+      team: api_client_scalar_attr(row, existing_api_client, "team", :team),
+      external_ref:
+        api_client_scalar_attr(row, existing_api_client, "external_ref", :external_ref),
+      description: api_client_scalar_attr(row, existing_api_client, "description", :description),
+      purpose: api_client_scalar_attr(row, existing_api_client, "purpose", :purpose),
+      metadata: api_client_metadata_attr(row, existing_api_client)
     }
   end
+
+  defp api_client_scalar_attr(row, existing_api_client, field, row_key) do
+    if field_present?(row, field) do
+      Map.get(row, row_key)
+    else
+      existing_attr(existing_api_client, row_key)
+    end
+  end
+
+  defp api_client_metadata_attr(row, existing_api_client) do
+    if field_present?(row, "metadata_json") do
+      row.metadata
+    else
+      existing_attr(existing_api_client, :metadata) || %{}
+    end
+  end
+
+  defp existing_attr(%ServiceAccount{} = api_client, field), do: Map.get(api_client, field)
+  defp existing_attr(nil, _field), do: nil
+
+  defp field_present?(row, field), do: MapSet.member?(row.present_fields, field)
 
   defp token_attrs(row), do: %{name: row.key_name, expires_at: row.expires_at}
 
