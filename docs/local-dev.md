@@ -191,7 +191,7 @@ ELIXIR
 | `ORCHARD_NODE_AGENT_LISTEN_PORT` | `50071` (source dev) / `50061` (packaged) | gRPC listen port |
 | `ORCHARD_RUNTIME_CLIENT_PORT` | Same as listen port | Controller gRPC client port (must match listen port) |
 | `ORCHARD_MODELS_ROOT` | `tmp/dev/models` | Model artifact storage |
-| `ORCHARD_WORKER_SOCKET_DIR` | `tmp/dev/data/worker-sockets` | Worker UDS directory |
+| `ORCHARD_WORKER_SOCKET_DIR` | `/tmp/od-<hash>/ws` | Worker UDS directory |
 | `ORCHARD_WORKER_EXECUTABLE` | `native/orchard_worker_mlx/bin/orchard-worker-mlx` (repo-root) | Worker binary path. Override via env var; default resolves from repo root in source-dev mode. |
 | `ORCHARD_WORKER_BACKEND` | `mlx` | Worker backend (`mlx` or `stub`) |
 | `ORCHARD_WORKER_GENERATION_MODE` | `batch` for `mlx`, `stream` for unset `stub` | Worker generation runtime (`stream` or `batch`). Leave unset when using the stub backend. |
@@ -206,6 +206,8 @@ bin/dev-node-agent` after changing them. Use `ORCHARD_WORKER_BACKEND=stub` for
 cluster mechanics or rollback testing when real MLX inference is not required;
 when `ORCHARD_WORKER_GENERATION_MODE` is unset, the stub backend resolves to
 stream mode automatically.
+By default, source-dev worker Unix sockets live under a short, worktree-specific `/tmp/od-<hash>/ws` directory to avoid macOS Unix socket path length limits.
+Set `ORCHARD_WORKER_SOCKET_DIR` to override that location.
 `ORCHARD_FAKE_RUNTIME` is a release/runtime config knob; source-dev tests use
 the fake runtime through `config/test.exs`, not a dev env override.
 Batch generation mode can admit multiple same-model requests up to the worker-reported limit.
@@ -393,15 +395,16 @@ on transport modes, truthy/falsy values, and validation behavior.
 
 ### Dev Directory Structure
 
-Dev mode uses `tmp/dev/` under the repo root:
+Dev mode uses `tmp/dev/` under the repo root for model and controller data:
 
 ```
 tmp/dev/
 ├── bundles/           # Imported model artifacts (controller)
 ├── models/            # Model files (node-agent)
-└── data/
-    └── worker-sockets/ # Worker Unix domain sockets
+└── data/              # Source-dev runtime data
 ```
+
+Worker Unix domain sockets default to `/tmp/od-<hash>/ws`, outside the repo tree, and can be overridden with `ORCHARD_WORKER_SOCKET_DIR`.
 
 ## API Endpoints
 

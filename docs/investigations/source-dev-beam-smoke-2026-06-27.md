@@ -10,18 +10,18 @@ It did not rely on automatic gRPC fallback.
 
 Smoke date: 2026-06-27.
 Smoke time: 2026-06-27T02:42:21Z.
-Repo commit at smoke start: `995879a13710ba39ec22c316d91ca5b3f356c2ec`.
-Smoke worktree also included the branch patch that keeps source-dev worker Unix sockets under a short `/tmp/od-<hash>/ws` root.
+Tested code state: base commit `995879a13710ba39ec22c316d91ca5b3f356c2ec` plus the local branch patch that keeps source-dev worker Unix sockets under a short `/tmp/od-<hash>/ws` root.
+No Runtime Endpoint transport implementation files differed from the base commit during the smoke.
 
 ## Hosts
 
-Controller host: `tamingsari`.
-Local node-agent host: `tamingsari`.
-Remote node-agent host: `mawarduri`.
+Controller host: `controller-mac`.
+Local node-agent host: `controller-mac`.
+Remote node-agent host: `remote-worker-mac`.
 
-Controller BEAM node name: `orchard_controller@100.90.207.78`.
-Local node-agent BEAM node name: `orchard_node_agent@100.90.207.78`.
-Remote node-agent BEAM node name: `orchard_node_agent@100.70.81.109`.
+Controller BEAM node name: `orchard_controller@192.0.2.10`.
+Local node-agent BEAM node name: `orchard_node_agent@192.0.2.10`.
+Remote node-agent BEAM node name: `orchard_node_agent@192.0.2.20`.
 
 The run used an alternate EPMD port, `43690`, because the remote Mac already had default EPMD and packaged Orchard state on the standard port.
 The shared BEAM cookie was provisioned from a local transient file to the remote worktree and verified by digest comparison.
@@ -29,42 +29,42 @@ Cookie contents and API token material are intentionally omitted.
 
 ## Launch Commands
 
-The remote node agent was started on `mawarduri` with this sanitized command shape:
+The remote node agent was started on `remote-worker-mac` with this sanitized command shape:
 
 ```bash
-ssh -tt mawarduri env \
+ssh -tt remote-worker-mac env \
   ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
   ORCHARD_BEAM_EPMD_PORT=43690 \
-  ORCHARD_BEAM_NODE_NAME=orchard_node_agent@100.70.81.109 \
+  ORCHARD_BEAM_NODE_NAME=orchard_node_agent@192.0.2.20 \
   ORCHARD_BEAM_COOKIE_FILE=<shared-cookie-file> \
   ORCHARD_WORKER_BACKEND=stub \
-  ORCHARD_NODE_DISPLAY_NAME=mawarduri-smoke \
+  ORCHARD_NODE_DISPLAY_NAME=remote-worker-mac-smoke \
   mise exec -C <remote-worktree> -- bin/dev-node-agent
 ```
 
-The local node agent was started on `tamingsari` with this sanitized command shape:
+The local node agent was started on `controller-mac` with this sanitized command shape:
 
 ```bash
 env \
   ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
   ORCHARD_BEAM_EPMD_PORT=43690 \
-  ORCHARD_BEAM_NODE_NAME=orchard_node_agent@100.90.207.78 \
+  ORCHARD_BEAM_NODE_NAME=orchard_node_agent@192.0.2.10 \
   ORCHARD_BEAM_COOKIE_FILE=<shared-cookie-file> \
   ORCHARD_WORKER_BACKEND=stub \
-  ORCHARD_NODE_DISPLAY_NAME=tamingsari-node-smoke \
+  ORCHARD_NODE_DISPLAY_NAME=controller-mac-node-smoke \
   mise exec -- bin/dev-node-agent
 ```
 
-The controller was started on `tamingsari` with this sanitized command shape:
+The controller was started on `controller-mac` with this sanitized command shape:
 
 ```bash
 env \
   ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
   ORCHARD_BEAM_EPMD_PORT=43690 \
-  ORCHARD_RUNTIME_ENDPOINT_TARGETS=orchard_node_agent@100.90.207.78,orchard_node_agent@100.70.81.109 \
-  ORCHARD_BEAM_NODE_NAME=orchard_controller@100.90.207.78 \
+  ORCHARD_RUNTIME_ENDPOINT_TARGETS=orchard_node_agent@192.0.2.10,orchard_node_agent@192.0.2.20 \
+  ORCHARD_BEAM_NODE_NAME=orchard_controller@192.0.2.10 \
   ORCHARD_BEAM_COOKIE_FILE=<shared-cookie-file> \
-  ORCHARD_NODE_DISPLAY_NAME=tamingsari-controller-smoke \
+  ORCHARD_NODE_DISPLAY_NAME=controller-mac-controller-smoke \
   mise exec -- bin/dev-controller
 ```
 
@@ -76,8 +76,8 @@ The controller called the BEAM Runtime Endpoint client against both configured n
 alias Orchard.RuntimeEndpoint.{BeamClient, Observation, Target}
 
 [
-  {"tamingsari", "orchard_node_agent@100.90.207.78"},
-  {"mawarduri", "orchard_node_agent@100.70.81.109"}
+  {"controller-mac", "orchard_node_agent@192.0.2.10"},
+  {"remote-worker-mac", "orchard_node_agent@192.0.2.20"}
 ]
 |> Enum.map(fn {label, address} ->
   target = Target.normalize(%{transport: :beam, address: address, id: "beam:" <> address})
@@ -100,9 +100,9 @@ The result was:
 
 ```elixir
 [
-  {"tamingsari", "orchard_node_agent@100.90.207.78", :available, :idle,
+  {"controller-mac", "orchard_node_agent@192.0.2.10", :available, :idle,
    "e640079f-6786-482e-9b1a-5cc0b361872c", 1, true},
-  {"mawarduri", "orchard_node_agent@100.70.81.109", :available, :idle,
+  {"remote-worker-mac", "orchard_node_agent@192.0.2.20", :available, :idle,
    "9ec667b3-14bc-437d-80bc-f0d0bc210acb", 0, false}
 ]
 ```
@@ -137,10 +137,10 @@ The Console Nodes page was verified in a connected browser session against `http
 The page title was `Nodes`.
 The connected LiveView reported `2 target(s) configured, 2 reachable`.
 
-The `tamingsari` BEAM runtime card used `orchard_node_agent@100.90.207.78`.
+The `controller-mac` BEAM runtime card used `orchard_node_agent@192.0.2.10`.
 It reported `Idle`, `Healthy`, `Prompt IDs: capable`, backend `stub`, and the Llama model placement.
 
-The `mawarduri` BEAM runtime card used `orchard_node_agent@100.70.81.109`.
+The `remote-worker-mac` BEAM runtime card used `orchard_node_agent@192.0.2.20`.
 It reported `Idle`, `Healthy`, `Prompt IDs: legacy`, backend `stub`, and no loaded models.
 
 The transient screenshot was saved under `tmp/dev/console-nodes.png` during the run and is intentionally not committed.
