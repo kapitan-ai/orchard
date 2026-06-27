@@ -279,6 +279,17 @@ memory_admission_config =
 
 node_runtime_defaults = Orchard.Config.M1RuntimeDefaults.node_runtime(dev_root)
 
+worker_socket_dir_hash =
+  :crypto.hash(:sha256, repo_root)
+  |> Base.url_encode64(padding: false)
+  |> binary_part(0, 8)
+
+# Python gRPC rejects Unix socket paths above roughly 103 bytes on macOS.
+# Keep source-dev worker sockets under a short, worktree-specific root.
+worker_socket_dir =
+  System.get_env("ORCHARD_WORKER_SOCKET_DIR") ||
+    Path.join(["/tmp", "od-" <> worker_socket_dir_hash, "ws"])
+
 worker_backend =
   env_optional_string.("ORCHARD_WORKER_BACKEND") ||
     Keyword.fetch!(node_runtime_defaults, :worker_backend)
@@ -398,6 +409,7 @@ config :orchard_node_agent,
       worker_executable:
         System.get_env("ORCHARD_WORKER_EXECUTABLE") ||
           Path.join([repo_root, "native", "orchard_worker_mlx", "bin", "orchard-worker-mlx"]),
+      worker_socket_dir: worker_socket_dir,
       worker_backend: worker_backend,
       worker_prefix_cache_mode: worker_prefix_cache_mode,
       worker_generation_mode: worker_generation_mode,

@@ -61,7 +61,7 @@ _Avoid_: Redis, Kafka, distributed Erlang state
 **BEAM Distribution**:
 The live Orchard communication and monitoring layer between first-party Elixir services.
 The default-off BEAM Runtime Endpoint adapter exists for first-party Controller-to-Node Agent communication.
-In source-dev, it becomes the primary Runtime Endpoint transport only after the BEAM adapter passes the accepted two-Mac smoke and is promoted.
+In source-dev, it becomes the primary Runtime Endpoint transport only after accepted two-Mac smoke evidence and explicit promotion.
 In packaged production, BEAM Distribution is limited to admitted first-party Orchard services.
 _Avoid_: Durable cluster truth, database replacement, public API, external provider integration
 
