@@ -68,7 +68,21 @@ assert_mode() {
   local expected="$1"
   local path="$2"
   local actual
-  actual="$(stat -f '%Lp' "$path" 2>/dev/null || stat -c '%a' "$path")"
+
+  if actual="$(stat -c '%a' "$path" 2>/dev/null)"; then
+    :
+  elif actual="$(stat -f '%Lp' "$path" 2>/dev/null)"; then
+    :
+  else
+    echo "unable to read $path mode" >&2
+    exit 1
+  fi
+
+  if [[ ! "$actual" =~ ^[0-7]+$ ]]; then
+    echo "expected $path mode $expected, got non-octal output: $actual" >&2
+    exit 1
+  fi
+
   if [[ "$actual" != "$expected" ]]; then
     echo "expected $path mode $expected, got $actual" >&2
     exit 1
@@ -219,6 +233,23 @@ assert_fails_with 'ORCHARD_BEAM_COOKIE_FILE must be owner-only' "$TMP_ROOT/d3-fa
 STRICT_COOKIE="$TMP_ROOT/strict.cookie"
 printf 'fixture-cookie\n' > "$STRICT_COOKIE"
 chmod 600 "$STRICT_COOKIE"
+FAKE_ASSERT_MODE_GNU_STAT_DIR="$TMP_ROOT/fake-assert-mode-gnu-stat-bin"
+mkdir -p "$FAKE_ASSERT_MODE_GNU_STAT_DIR"
+cat > "$FAKE_ASSERT_MODE_GNU_STAT_DIR/stat" <<'STAT'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-c" ]]; then
+  printf '600\n'
+  exit 0
+fi
+if [[ "${1:-}" == "-f" ]]; then
+  printf 'filesystem-blocks-not-mode\n'
+  exit 0
+fi
+exec /usr/bin/stat "$@"
+STAT
+chmod +x "$FAKE_ASSERT_MODE_GNU_STAT_DIR/stat"
+PATH="$FAKE_ASSERT_MODE_GNU_STAT_DIR:/usr/bin:/bin:/usr/sbin:/sbin" assert_mode 600 "$STRICT_COOKIE"
 FAKE_NON_OCTAL_STAT_DIR="$TMP_ROOT/fake-non-octal-stat-bin"
 mkdir -p "$FAKE_NON_OCTAL_STAT_DIR"
 cat > "$FAKE_NON_OCTAL_STAT_DIR/stat" <<'STAT'
