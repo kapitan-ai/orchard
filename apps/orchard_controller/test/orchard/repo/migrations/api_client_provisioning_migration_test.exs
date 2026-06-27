@@ -23,12 +23,24 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
        } do
     assert constraint_exists?("requests", "requests_service_account_id_fkey")
     assert constraint_delete_action("requests", "requests_service_account_id_fkey") == "a"
+    assert constraint_exists?("requests", "requests_service_account_principal_requires_id")
 
     assert {:ok, _result} =
              insert_request(%{
                public_id: "req_tenant_#{System.unique_integer([:positive])}",
                tenant_id: tenant.id,
                principal_type: "tenant",
+               service_account_id: nil
+             })
+
+    assert {:error,
+            %Postgrex.Error{
+              postgres: %{constraint: "requests_service_account_principal_requires_id"}
+            }} =
+             insert_request(%{
+               public_id: "req_service_account_missing_#{System.unique_integer([:positive])}",
+               tenant_id: tenant.id,
+               principal_type: "service_account",
                service_account_id: nil
              })
 

@@ -622,6 +622,36 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
     assert %DateTime{} = first_key.revoked_at
   end
 
+  test "bulk rotation revoke audits preserve provisioning actor and batch context", %{
+    tenant: tenant
+  } do
+    rows = [row(tenant, api_client: "client-audit-rotation", key_name: "production")]
+    actor_id = Ecto.UUID.generate()
+
+    assert {:ok, first_result} = Governance.bulk_apply_api_clients(rows)
+    [first_output] = first_result.output_rows
+
+    assert {:ok, rotated_result} =
+             Governance.bulk_apply_api_clients(rows,
+               rotation: true,
+               actor_type: "operator",
+               actor_id: actor_id,
+               bulk_operation_ref: "bulk-audit-ref"
+             )
+
+    revoke_audit =
+      Repo.get_by!(AuditLog,
+        action: "api_key.revoked",
+        target_type: "api_key",
+        target_id: first_output.api_token_id
+      )
+
+    assert revoke_audit.actor_type == "operator"
+    assert revoke_audit.actor_id == actor_id
+    assert revoke_audit.payload["provisioning_batch_id"] == rotated_result.batch.id
+    assert revoke_audit.payload["bulk_operation_ref"] == "bulk-audit-ref"
+  end
+
   test "expired token names can be reprovisioned without rotation", %{tenant: tenant} do
     expired_at = datetime_seconds_from_now(-3600)
 

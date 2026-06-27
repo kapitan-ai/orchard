@@ -18,6 +18,42 @@ defmodule Orchard.RequestsTest do
     assert request.requested_model == attrs.requested_model
   end
 
+  test "create_request/1 rejects service-account provenance without service_account_id" do
+    attrs =
+      request_attrs(%{
+        principal_type: :service_account,
+        service_account_id: nil
+      })
+
+    assert {:error, changeset} = Requests.create_request(attrs)
+    assert %{service_account_id: ["can't be blank"]} = errors_on(changeset)
+  end
+
+  test "create_request/1 retains valid service-account provenance" do
+    {:ok, tenant} =
+      Governance.create_tenant(%{
+        slug: "request-service-account-#{System.unique_integer([:positive])}",
+        name: "Request Service Account"
+      })
+
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "request-api-client",
+        owner_contact: "owner@example.com"
+      })
+
+    attrs =
+      request_attrs(%{
+        tenant_id: tenant.id,
+        principal_type: :service_account,
+        service_account_id: api_client.id
+      })
+
+    assert {:ok, request} = Requests.create_request(attrs)
+    assert request.principal_type == :service_account
+    assert request.service_account_id == api_client.id
+  end
+
   test "append_request_event/2 auto-assigns per-request sequence numbers and default occurred_at" do
     assert {:ok, request} =
              Requests.create_request(request_attrs(%{public_id: "req_event_test"}))

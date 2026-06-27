@@ -140,11 +140,22 @@ defmodule Orchard.Requests.Request do
     |> validate_number(:input_tokens, greater_than_or_equal_to: 0)
     |> validate_number(:output_tokens, greater_than_or_equal_to: 0)
     |> validate_number(:reserved_output_tokens, greater_than_or_equal_to: 0)
+    |> validate_service_account_principal()
     |> unique_constraint(:public_id)
     |> unique_constraint(:idempotency_key, name: :idx_requests_tenant_idempotency)
+    |> check_constraint(:service_account_id,
+      name: :requests_service_account_principal_requires_id
+    )
     |> foreign_key_constraint(:model_id)
     |> foreign_key_constraint(:retry_of_request_id)
     |> foreign_key_constraint(:service_account_id)
+  end
+
+  defp validate_service_account_principal(changeset) do
+    case get_field(changeset, :principal_type) do
+      :service_account -> validate_required(changeset, [:service_account_id])
+      _principal_type -> changeset
+    end
   end
 
   @spec terminal_changeset(struct(), map()) :: Ecto.Changeset.t()

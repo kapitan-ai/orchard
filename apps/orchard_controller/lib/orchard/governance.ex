@@ -237,7 +237,7 @@ defmodule Orchard.Governance do
       with {:ok, api_client} <- resolve_api_client(service_account_or_id),
            :ok <- ensure_api_client_enabled(api_client),
            {:ok, revoked_keys} <-
-             revoke_active_service_account_tokens(api_client, Map.get(attrs, "name")),
+             revoke_active_service_account_tokens(api_client, Map.get(attrs, "name"), opts),
            {:ok, api_key} <- insert_service_account_api_key(api_client, attrs, generated),
            {:ok, _audit_log} <-
              insert_service_account_api_key_audit_log(
@@ -761,7 +761,7 @@ defmodule Orchard.Governance do
     |> Repo.insert()
   end
 
-  defp revoke_active_service_account_tokens(%ServiceAccount{} = api_client, token_name)
+  defp revoke_active_service_account_tokens(%ServiceAccount{} = api_client, token_name, opts)
        when is_binary(token_name) and token_name != "" do
     now = utc_now()
 
@@ -775,7 +775,7 @@ defmodule Orchard.Governance do
       |> Repo.all()
 
     Enum.reduce_while(api_keys, {:ok, []}, fn api_key, {:ok, revoked_keys} ->
-      case revoke_locked_api_key(api_key) do
+      case revoke_locked_api_key(api_key, opts) do
         {:ok, revoked} -> {:cont, {:ok, [revoked | revoked_keys]}}
         {:error, reason} -> {:halt, {:error, reason}}
       end
@@ -786,7 +786,7 @@ defmodule Orchard.Governance do
     end
   end
 
-  defp revoke_active_service_account_tokens(_api_client, _token_name), do: {:ok, []}
+  defp revoke_active_service_account_tokens(_api_client, _token_name, _opts), do: {:ok, []}
 
   defp ensure_inference_client_role_binding(%ServiceAccount{} = api_client, %Tenant{} = tenant) do
     cond do
@@ -962,29 +962,33 @@ defmodule Orchard.Governance do
     end
   end
 
-  defp revoke_locked_api_key(%ApiKey{revoked_at: %DateTime{}} = api_key), do: {:ok, api_key}
+  defp revoke_locked_api_key(api_key, opts \\ [])
 
-  defp revoke_locked_api_key(%ApiKey{} = api_key) do
+  defp revoke_locked_api_key(%ApiKey{revoked_at: %DateTime{}} = api_key, _opts),
+    do: {:ok, api_key}
+
+  defp revoke_locked_api_key(%ApiKey{} = api_key, opts) do
     revoked_at = utc_now()
 
     with {:ok, api_key} <- api_key |> Changeset.change(revoked_at: revoked_at) |> Repo.update(),
-         {:ok, _audit_log} <- insert_api_key_audit_log(api_key, "api_key.revoked", revoked_at) do
+         {:ok, _audit_log} <-
+           insert_api_key_audit_log(api_key, "api_key.revoked", revoked_at, opts) do
       {:ok, api_key}
     end
   end
 
-  defp insert_api_key_audit_log(%ApiKey{} = api_key, action, occurred_at) do
+  defp insert_api_key_audit_log(%ApiKey{} = api_key, action, occurred_at, opts \\ []) do
     %AuditLog{}
     |> audit_log_impl().changeset(%{
       tenant_id: api_key_effective_tenant_id(api_key),
       api_key_id: api_key.id,
-      actor_type: "system",
-      actor_id: nil,
+      actor_type: audit_actor_type(opts),
+      actor_id: audit_actor_id(opts),
       action: action,
       target_type: "api_key",
       target_id: api_key.id,
       occurred_at: occurred_at,
-      payload: api_key_audit_payload(api_key)
+      payload: put_audit_context_payload(api_key_audit_payload(api_key), opts)
     })
     |> Repo.insert()
   end
@@ -1036,7 +1040,7 @@ defmodule Orchard.Governance do
       payload:
         api_key_audit_payload(api_key)
         |> Map.put("service_account_id", api_client.id)
-        |> maybe_put_payload("provisioning_batch_id", Keyword.get(opts, :provisioning_batch_id))
+        |> put_audit_context_payload(opts)
     })
     |> Repo.insert()
   end
@@ -1066,7 +1070,7 @@ defmodule Orchard.Governance do
           "revoked_api_key_ids" => Enum.map(revoked_keys, & &1.id),
           "revoked_token_prefixes" => Enum.map(revoked_keys, & &1.token_prefix)
         }
-        |> maybe_put_payload("provisioning_batch_id", Keyword.get(opts, :provisioning_batch_id))
+        |> put_audit_context_payload(opts)
     })
     |> Repo.insert()
   end
@@ -1104,7 +1108,7 @@ defmodule Orchard.Governance do
           "role" => "inference_client",
           "tenant_scope_id" => role_binding.tenant_scope_id
         }
-        |> maybe_put_payload("provisioning_batch_id", Keyword.get(opts, :provisioning_batch_id))
+        |> put_audit_context_payload(opts)
     })
     |> Repo.insert()
   end
@@ -1161,11 +1165,17 @@ defmodule Orchard.Governance do
     |> maybe_put_payload("owner_name", api_client.owner_name)
     |> maybe_put_payload("team", api_client.team)
     |> maybe_put_payload("external_ref", api_client.external_ref)
-    |> maybe_put_payload("provisioning_batch_id", Keyword.get(opts, :provisioning_batch_id))
+    |> put_audit_context_payload(opts)
   end
 
   defp audit_actor_type(opts), do: opts |> Keyword.get(:actor_type, "system") |> to_string()
   defp audit_actor_id(opts), do: Keyword.get(opts, :actor_id)
+
+  defp put_audit_context_payload(payload, opts) do
+    payload
+    |> maybe_put_payload("provisioning_batch_id", Keyword.get(opts, :provisioning_batch_id))
+    |> maybe_put_payload("bulk_operation_ref", Keyword.get(opts, :bulk_operation_ref))
+  end
 
   defp maybe_put_payload(payload, _key, nil), do: payload
   defp maybe_put_payload(payload, key, value), do: Map.put(payload, key, value)

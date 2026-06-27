@@ -187,9 +187,16 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
         check: "principal_type IN ('tenant', 'service_account')"
       )
     )
+
+    create(
+      constraint(:requests, :requests_service_account_principal_requires_id,
+        check: "principal_type <> 'service_account' OR service_account_id IS NOT NULL"
+      )
+    )
   end
 
   def down do
+    drop_if_exists(constraint(:requests, :requests_service_account_principal_requires_id))
     drop(constraint(:requests, :requests_principal_type_check))
 
     execute("ALTER TABLE requests DROP CONSTRAINT IF EXISTS requests_service_account_id_fkey")
