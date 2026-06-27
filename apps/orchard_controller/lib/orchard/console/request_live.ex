@@ -688,8 +688,7 @@ defmodule OrchardConsole.RequestLive do
   defp tenant_provenance(_), do: %{mode: :absent}
 
   defp api_key_provenance(%{api_key: %ApiKey{} = key}) do
-    {label, tone} =
-      if is_nil(key.revoked_at), do: {"Active", :success}, else: {"Revoked", :neutral}
+    {label, tone} = api_key_status_display(ApiKey.status(key, utc_now()))
 
     %{
       mode: :resolved,
@@ -705,6 +704,14 @@ defmodule OrchardConsole.RequestLive do
   end
 
   defp api_key_provenance(_), do: %{mode: :absent}
+
+  defp api_key_status_display(:active), do: {"Active", :success}
+  defp api_key_status_display(:expired), do: {"Expired", :warning}
+  defp api_key_status_display(:revoked), do: {"Revoked", :neutral}
+
+  defp utc_now do
+    DateTime.utc_now() |> DateTime.truncate(:microsecond)
+  end
 
   # ===========================================================================
   # Formatting

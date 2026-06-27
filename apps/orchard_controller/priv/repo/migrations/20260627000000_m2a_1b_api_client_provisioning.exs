@@ -55,7 +55,7 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
 
     create(index(:api_keys, [:service_account_id, :inserted_at]))
 
-    execute("CREATE EXTENSION IF NOT EXISTS btree_gist", "DROP EXTENSION IF EXISTS btree_gist")
+    execute("CREATE EXTENSION IF NOT EXISTS btree_gist")
 
     execute(
       """
@@ -195,7 +195,6 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
     drop(table(:role_bindings))
 
     execute("ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_service_account_active_name_no_overlap")
-    execute("DROP EXTENSION IF EXISTS btree_gist")
 
     drop_if_exists(index(:api_keys, [:service_account_id, :inserted_at]))
     drop(constraint(:api_keys, :api_keys_exactly_one_owner))

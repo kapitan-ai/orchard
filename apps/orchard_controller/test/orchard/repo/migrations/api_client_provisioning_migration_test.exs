@@ -91,6 +91,19 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
     assert %{name: ["has already been taken"]} = errors_on(changeset)
   end
 
+  test "down migration keeps database-scoped btree_gist extension installed" do
+    assert extension_exists?("btree_gist")
+    assert constraint_exists?("api_keys", "api_keys_service_account_active_name_no_overlap")
+
+    run_api_keys_down_overlap_constraint_sql()
+
+    refute constraint_exists?("api_keys", "api_keys_service_account_active_name_no_overlap")
+    assert extension_exists?("btree_gist")
+
+    migration_source = File.read!(migration_path())
+    refute migration_source =~ "DROP EXTENSION IF EXISTS btree_gist"
+  end
+
   test "down migration backfills service-account token tenant ids before restoring not null", %{
     tenant: tenant
   } do
@@ -185,10 +198,14 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
     action
   end
 
-  defp run_api_keys_down_owner_sql do
+  defp run_api_keys_down_overlap_constraint_sql do
     Repo.query!(
       "ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_service_account_active_name_no_overlap"
     )
+  end
+
+  defp run_api_keys_down_owner_sql do
+    run_api_keys_down_overlap_constraint_sql()
 
     Repo.query!("DROP INDEX IF EXISTS api_keys_service_account_id_inserted_at_index")
     Repo.query!("ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_exactly_one_owner")
@@ -231,5 +248,22 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
       )
 
     nullable == "NO"
+  end
+
+  defp extension_exists?(extension_name) do
+    %{num_rows: count} =
+      Repo.query!(
+        "SELECT 1 FROM pg_extension WHERE extname = $1",
+        [extension_name]
+      )
+
+    count > 0
+  end
+
+  defp migration_path do
+    Path.expand(
+      "../../../../priv/repo/migrations/20260627000000_m2a_1b_api_client_provisioning.exs",
+      __DIR__
+    )
   end
 end
