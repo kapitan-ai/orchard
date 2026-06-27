@@ -29,13 +29,17 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
 
     create(index(:service_accounts, [:tenant_id, :team]))
 
-    create constraint(:service_accounts, :service_accounts_name_not_blank,
-             check: "length(btrim(name)) > 0"
-           )
+    create(
+      constraint(:service_accounts, :service_accounts_name_not_blank,
+        check: "length(btrim(name)) > 0"
+      )
+    )
 
-    create constraint(:service_accounts, :service_accounts_owner_contact_not_blank,
-             check: "length(btrim(owner_contact)) > 0"
-           )
+    create(
+      constraint(:service_accounts, :service_accounts_owner_contact_not_blank,
+        check: "length(btrim(owner_contact)) > 0"
+      )
+    )
 
     alter table(:api_keys) do
       add(
@@ -48,10 +52,12 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
 
     execute("ALTER TABLE api_keys ALTER COLUMN tenant_id DROP NOT NULL")
 
-    create constraint(:api_keys, :api_keys_exactly_one_owner,
-             check:
-               "(tenant_id IS NOT NULL AND service_account_id IS NULL) OR (tenant_id IS NULL AND service_account_id IS NOT NULL)"
-           )
+    create(
+      constraint(:api_keys, :api_keys_exactly_one_owner,
+        check:
+          "(tenant_id IS NOT NULL AND service_account_id IS NULL) OR (tenant_id IS NULL AND service_account_id IS NOT NULL)"
+      )
+    )
 
     create(index(:api_keys, [:service_account_id, :inserted_at]))
 
@@ -91,17 +97,23 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
       add(:updated_at, :utc_datetime_usec, null: false, default: fragment("NOW()"))
     end
 
-    create constraint(:role_bindings, :role_bindings_principal_type_check,
-             check: "principal_type IN ('tenant', 'service_account', 'api_key')"
-           )
+    create(
+      constraint(:role_bindings, :role_bindings_principal_type_check,
+        check: "principal_type IN ('tenant', 'service_account', 'api_key')"
+      )
+    )
 
-    create constraint(:role_bindings, :role_bindings_role_check,
-             check: "role IN ('admin', 'operator', 'tenant_admin', 'inference_client')"
-           )
+    create(
+      constraint(:role_bindings, :role_bindings_role_check,
+        check: "role IN ('admin', 'operator', 'tenant_admin', 'inference_client')"
+      )
+    )
 
-    create constraint(:role_bindings, :role_bindings_inference_client_tenant_scope,
-             check: "role <> 'inference_client' OR tenant_scope_id IS NOT NULL"
-           )
+    create(
+      constraint(:role_bindings, :role_bindings_inference_client_tenant_scope,
+        check: "role <> 'inference_client' OR tenant_scope_id IS NOT NULL"
+      )
+    )
 
     create(
       unique_index(:role_bindings, [:principal_type, :principal_id, :role, :tenant_scope_id],
@@ -129,14 +141,18 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
       add(:updated_at, :utc_datetime_usec, null: false, default: fragment("NOW()"))
     end
 
-    create constraint(:provisioning_batches, :provisioning_batches_status_check,
-             check: "status IN ('applying', 'applied', 'failed', 'output_failed')"
-           )
+    create(
+      constraint(:provisioning_batches, :provisioning_batches_status_check,
+        check: "status IN ('applying', 'applied', 'failed', 'output_failed')"
+      )
+    )
 
-    create constraint(:provisioning_batches, :provisioning_batches_counts_non_negative,
-             check:
-               "row_count >= 0 AND api_clients_created_count >= 0 AND api_clients_updated_count >= 0 AND api_tokens_created_count >= 0 AND api_tokens_rotated_count >= 0 AND api_tokens_revoked_count >= 0"
-           )
+    create(
+      constraint(:provisioning_batches, :provisioning_batches_counts_non_negative,
+        check:
+          "row_count >= 0 AND api_clients_created_count >= 0 AND api_clients_updated_count >= 0 AND api_tokens_created_count >= 0 AND api_tokens_rotated_count >= 0 AND api_tokens_revoked_count >= 0"
+      )
+    )
 
     create(index(:provisioning_batches, [:tenant_id, :inserted_at]))
 
@@ -161,14 +177,16 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
       ADD CONSTRAINT requests_service_account_id_fkey
       FOREIGN KEY (service_account_id)
       REFERENCES service_accounts(id)
-      ON DELETE SET NULL
+      ON DELETE NO ACTION
       """,
       "ALTER TABLE requests DROP CONSTRAINT IF EXISTS requests_service_account_id_fkey"
     )
 
-    create constraint(:requests, :requests_principal_type_check,
-             check: "principal_type IN ('tenant', 'service_account')"
-           )
+    create(
+      constraint(:requests, :requests_principal_type_check,
+        check: "principal_type IN ('tenant', 'service_account')"
+      )
+    )
   end
 
   def down do
@@ -185,16 +203,20 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
     drop(constraint(:provisioning_batches, :provisioning_batches_status_check))
     drop(table(:provisioning_batches))
 
-    drop_if_exists(index(:role_bindings, [:principal_type, :principal_id, :role, :tenant_scope_id],
-      name: :idx_role_bindings_unique_assignment
-    ))
+    drop_if_exists(
+      index(:role_bindings, [:principal_type, :principal_id, :role, :tenant_scope_id],
+        name: :idx_role_bindings_unique_assignment
+      )
+    )
 
     drop(constraint(:role_bindings, :role_bindings_inference_client_tenant_scope))
     drop(constraint(:role_bindings, :role_bindings_role_check))
     drop(constraint(:role_bindings, :role_bindings_principal_type_check))
     drop(table(:role_bindings))
 
-    execute("ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_service_account_active_name_no_overlap")
+    execute(
+      "ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS api_keys_service_account_active_name_no_overlap"
+    )
 
     drop_if_exists(index(:api_keys, [:service_account_id, :inserted_at]))
     drop(constraint(:api_keys, :api_keys_exactly_one_owner))

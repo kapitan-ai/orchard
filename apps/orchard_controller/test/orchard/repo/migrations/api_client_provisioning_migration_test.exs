@@ -22,6 +22,7 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
          tenant: tenant
        } do
     assert constraint_exists?("requests", "requests_service_account_id_fkey")
+    assert constraint_delete_action("requests", "requests_service_account_id_fkey") == "a"
 
     assert {:ok, _result} =
              insert_request(%{
@@ -38,6 +39,34 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
                principal_type: "service_account",
                service_account_id: Ecto.UUID.generate()
              })
+  end
+
+  test "requests service_account_id restricts API Client deletion and preserves provenance", %{
+    tenant: tenant
+  } do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "migration-request-api-client-#{System.unique_integer([:positive])}",
+        owner_contact: "owner@example.com"
+      })
+
+    public_id = "req_service_account_existing_#{System.unique_integer([:positive])}"
+
+    assert {:ok, _result} =
+             insert_request(%{
+               public_id: public_id,
+               tenant_id: tenant.id,
+               principal_type: "service_account",
+               service_account_id: api_client.id
+             })
+
+    assert {:error, %Postgrex.Error{postgres: %{constraint: "requests_service_account_id_fkey"}}} =
+             Repo.query("DELETE FROM service_accounts WHERE id = $1", [
+               dump_uuid(api_client.id)
+             ])
+
+    assert {"service_account", service_account_id} = select_request_principal(public_id)
+    assert service_account_id == api_client.id
   end
 
   test "service-account-owned API Tokens restrict Service Account deletion", %{
@@ -196,6 +225,16 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
       )
 
     action
+  end
+
+  defp select_request_principal(public_id) do
+    %{rows: [[principal_type, service_account_id]]} =
+      Repo.query!(
+        "SELECT principal_type, service_account_id FROM requests WHERE public_id = $1",
+        [public_id]
+      )
+
+    {principal_type, Ecto.UUID.load!(service_account_id)}
   end
 
   defp run_api_keys_down_overlap_constraint_sql do

@@ -33,6 +33,17 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
     defp secret_tmp?(path), do: String.contains?(Path.basename(path), ".tmp-")
   end
 
+  defmodule OutputFailedPersistenceFailureGovernance do
+    def bulk_validate_api_clients(rows, opts),
+      do: Orchard.Governance.bulk_validate_api_clients(rows, opts)
+
+    def bulk_apply_api_clients(rows, opts),
+      do: Orchard.Governance.bulk_apply_api_clients(rows, opts)
+
+    def mark_provisioning_batch_output_failed(_batch_id, _error_summary),
+      do: {:error, :simulated_output_failed_persistence}
+  end
+
   setup do
     :ok = Sandbox.checkout(Repo)
     Sandbox.mode(Repo, {:shared, self()})
@@ -251,6 +262,43 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
     assert Map.fetch!(output, "api_token") =~ "orch_"
   end
 
+  test "apply surfaces output_failed persistence failure with prefix recovery only", %{
+    tenant: tenant,
+    tmp_dir: tmp_dir
+  } do
+    input_path = write_csv!(tmp_dir, tenant, api_client: "cli-client-output-mark-failure")
+    output_path = Path.join(tmp_dir, "tokens.csv")
+
+    with_configurable_governance(OutputFailedPersistenceFailureGovernance, fn ->
+      with_configurable_file_ops(%{fail_secret_tmp_cleanup: true}, fn ->
+        assert {:error, message, 1} =
+                 ApiClients.run([
+                   "bulk-provision",
+                   "--apply",
+                   "--file",
+                   input_path,
+                   "--output",
+                   output_path
+                 ])
+
+        assert message =~ "Apply succeeded but One-time Secret Output failed"
+        assert message =~ "Failed to record output_failed status/audit"
+        assert message =~ "simulated_output_failed_persistence"
+        assert message =~ "Rotate or revoke these API Token prefixes:"
+
+        {[headers], [row]} = read_output_csv!(output_path)
+        output = headers |> Enum.zip(row) |> Map.new()
+        token = Map.fetch!(output, "api_token")
+        prefix = Map.fetch!(output, "api_token_prefix")
+
+        assert message =~ prefix
+        refute message =~ token
+      end)
+    end)
+
+    assert [%ProvisioningBatch{status: :applied}] = Repo.all(ProvisioningBatch)
+  end
+
   test "duplicate API Token names require explicit rotation", %{tenant: tenant, tmp_dir: tmp_dir} do
     input_path = write_csv!(tmp_dir, tenant, api_client: "cli-client-rotate", key_name: "prod")
     first_output_path = Path.join(tmp_dir, "first-tokens.csv")
@@ -340,6 +388,17 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
       restore_app_env(:api_clients_file_ops, previous_impl)
       put_process_setting(:api_clients_file_ops_link_error, previous_link_error)
       put_process_setting(:api_clients_file_ops_fail_secret_tmp_cleanup, previous_cleanup)
+    end
+  end
+
+  defp with_configurable_governance(module, fun) do
+    previous_impl = Application.get_env(:orchard_cli, :api_clients_governance_impl)
+    Application.put_env(:orchard_cli, :api_clients_governance_impl, module)
+
+    try do
+      fun.()
+    after
+      restore_app_env(:api_clients_governance_impl, previous_impl)
     end
   end
 

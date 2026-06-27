@@ -175,6 +175,41 @@ defmodule Orchard.GovernanceTest do
 
       refute Governance.has_active_api_keys?()
     end
+
+    test "returns true for enabled API Client tokens with inference access" do
+      tenant = create_tenant!("tenant-active-api-client-token")
+      api_client = create_api_client!(tenant, "quickstart-active-client")
+
+      assert {:ok, _result} =
+               Governance.create_api_client_api_token(api_client, %{name: "quickstart"})
+
+      assert {:ok, _role_binding} = Governance.ensure_inference_client_access(api_client, tenant)
+
+      assert Governance.has_active_api_keys?()
+    end
+
+    test "returns false when service-account tokens lack inference access" do
+      tenant = create_tenant!("tenant-api-client-no-role")
+      api_client = create_api_client!(tenant, "quickstart-no-role-client")
+
+      assert {:ok, _result} =
+               Governance.create_api_client_api_token(api_client, %{name: "quickstart"})
+
+      refute Governance.has_active_api_keys?()
+    end
+
+    test "returns false when service-account tokens belong to disabled API Clients" do
+      tenant = create_tenant!("tenant-api-client-disabled")
+      api_client = create_api_client!(tenant, "quickstart-disabled-client")
+
+      assert {:ok, _result} =
+               Governance.create_api_client_api_token(api_client, %{name: "quickstart"})
+
+      assert {:ok, _role_binding} = Governance.ensure_inference_client_access(api_client, tenant)
+      assert {:ok, _disabled} = Governance.disable_api_client(tenant, api_client)
+
+      refute Governance.has_active_api_keys?()
+    end
   end
 
   describe "create_api_key/2" do
@@ -510,6 +545,16 @@ defmodule Orchard.GovernanceTest do
       |> Repo.insert()
 
     api_key
+  end
+
+  defp create_api_client!(tenant, name) do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: name,
+        owner_contact: "#{name}@example.com"
+      })
+
+    api_client
   end
 
   defp audit_log!(api_key_id, action) do

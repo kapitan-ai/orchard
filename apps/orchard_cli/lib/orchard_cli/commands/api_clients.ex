@@ -249,28 +249,29 @@ defmodule OrchardCLI.Commands.ApiClients do
   end
 
   defp execute_bulk(:dry_run, rows, csv, _output_path, opts) do
-    case Governance.bulk_validate_api_clients(rows, provisioning_opts(csv, opts)) do
+    case governance().bulk_validate_api_clients(rows, provisioning_opts(csv, opts)) do
       {:ok, plan} -> {:ok, render_dry_run(plan, Keyword.get(opts, :json, false))}
       {:error, errors} -> {:error, format_validation_errors(errors), 1}
     end
   end
 
   defp execute_bulk(:apply, rows, csv, output_path, opts) do
-    case Governance.bulk_apply_api_clients(rows, provisioning_opts(csv, opts)) do
+    case governance().bulk_apply_api_clients(rows, provisioning_opts(csv, opts)) do
       {:ok, result} ->
         case write_output(output_path, result.output_rows) do
           :ok ->
             {:ok, render_apply_success(result, output_path, Keyword.get(opts, :json, false))}
 
           {:error, reason} ->
-            Governance.mark_provisioning_batch_output_failed(result.batch.id, %{
-              "reason" => reason,
-              "api_token_prefixes" => Enum.map(result.output_rows, & &1.api_token_prefix)
-            })
+            prefixes = Enum.map(result.output_rows, & &1.api_token_prefix)
 
-            {:error,
-             "Error: Apply succeeded but One-time Secret Output failed for batch #{result.batch.id}: #{reason}\nRotate or revoke these API Token prefixes: #{Enum.map_join(result.output_rows, ", ", & &1.api_token_prefix)}",
-             1}
+            mark_result =
+              governance().mark_provisioning_batch_output_failed(result.batch.id, %{
+                "reason" => reason,
+                "api_token_prefixes" => prefixes
+              })
+
+            {:error, output_failure_message(result.batch.id, reason, prefixes, mark_result), 1}
         end
 
       {:error, errors} when is_list(errors) ->
@@ -291,6 +292,34 @@ defmodule OrchardCLI.Commands.ApiClients do
       actor_type: "operator"
     ]
   end
+
+  defp output_failure_message(batch_id, reason, prefixes, mark_result) do
+    [
+      "Error: Apply succeeded but One-time Secret Output failed for batch #{batch_id}: #{reason}",
+      output_failure_persistence_message(mark_result),
+      "Rotate or revoke these API Token prefixes: #{Enum.join(prefixes, ", ")}"
+    ]
+    |> Enum.reject(&(&1 == nil))
+    |> Enum.join("\n")
+  end
+
+  defp output_failure_persistence_message({:ok, _batch}), do: nil
+
+  defp output_failure_persistence_message({:error, reason}) do
+    "Failed to record output_failed status/audit: #{format_output_failed_persistence_error(reason)}"
+  end
+
+  defp format_output_failed_persistence_error(%Ecto.Changeset{} = changeset) do
+    "changeset errors: #{inspect(changeset.errors)}"
+  end
+
+  defp format_output_failed_persistence_error(:provisioning_batch_not_found),
+    do: "provisioning batch not found"
+
+  defp format_output_failed_persistence_error(reason) when is_atom(reason),
+    do: Atom.to_string(reason)
+
+  defp format_output_failed_persistence_error(_reason), do: "unexpected persistence error"
 
   defp write_output(path, output_rows) do
     ops = file_ops()
@@ -470,6 +499,8 @@ defmodule OrchardCLI.Commands.ApiClients do
   defp to_string_or_empty(value), do: to_string(value)
 
   defp file_ops, do: Application.get_env(:orchard_cli, :api_clients_file_ops, File)
+
+  defp governance, do: Application.get_env(:orchard_cli, :api_clients_governance_impl, Governance)
 
   defp format_file_error(reason) when is_atom(reason),
     do: reason |> :file.format_error() |> to_string()

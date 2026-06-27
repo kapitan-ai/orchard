@@ -455,10 +455,39 @@ defmodule Orchard.Governance do
   def has_active_api_keys? do
     now = utc_now()
 
+    tenant_direct_active_api_keys?(now) or service_account_inference_tokens?(now)
+  end
+
+  defp tenant_direct_active_api_keys?(now) do
     ApiKey
+    |> active_api_key_query(now)
+    |> where([api_key], not is_nil(api_key.tenant_id))
+    |> where([api_key], is_nil(api_key.service_account_id))
+    |> Repo.exists?()
+  end
+
+  defp service_account_inference_tokens?(now) do
+    ApiKey
+    |> active_api_key_query(now)
+    |> where([api_key], is_nil(api_key.tenant_id))
+    |> where([api_key], not is_nil(api_key.service_account_id))
+    |> join(:inner, [api_key], service_account in ServiceAccount,
+      on: service_account.id == api_key.service_account_id and is_nil(service_account.disabled_at)
+    )
+    |> join(:inner, [_api_key, service_account], role_binding in RoleBinding,
+      on:
+        role_binding.principal_type == :service_account and
+          role_binding.principal_id == service_account.id and
+          role_binding.role == :inference_client and
+          role_binding.tenant_scope_id == service_account.tenant_id
+    )
+    |> Repo.exists?()
+  end
+
+  defp active_api_key_query(query, now) do
+    query
     |> where([api_key], is_nil(api_key.revoked_at))
     |> where([api_key], is_nil(api_key.expires_at) or api_key.expires_at > ^now)
-    |> Repo.exists?()
   end
 
   @spec get_tenant(Tenant.t() | Ecto.UUID.t()) :: {:ok, Tenant.t()} | {:error, :tenant_not_found}
