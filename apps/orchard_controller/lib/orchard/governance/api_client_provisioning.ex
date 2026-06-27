@@ -7,13 +7,21 @@ defmodule Orchard.Governance.ApiClientProvisioning do
 
   alias Ecto.Changeset
   alias Orchard.Governance
-  alias Orchard.Governance.{ApiKey, AuditLog, ProvisioningBatch, ServiceAccount, Tenant}
+
+  alias Orchard.Governance.{
+    ApiKey,
+    AuditLog,
+    ProvisioningBatch,
+    SecretField,
+    ServiceAccount,
+    Tenant
+  }
+
   alias Orchard.Repo
 
   @required_fields ~w(organization api_client owner_contact key_name)
   @optional_fields ~w(team owner_name external_ref description purpose expires_at metadata_json)
   @allowed_fields @required_fields ++ @optional_fields
-  @secret_field_fragments ~w(secret token api_key api_token one_time_secret plaintext)
 
   @type validation_error :: %{
           row: pos_integer() | nil,
@@ -88,7 +96,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
         header not in @allowed_fields ->
           [error(nil, header, "Unknown CSV field #{header}.") | errors]
 
-        secret_field?(header) ->
+        SecretField.secret_field?(header) ->
           [
             error(nil, header, "CSV input must not include plaintext token or secret fields.")
             | errors
@@ -191,19 +199,23 @@ defmodule Orchard.Governance.ApiClientProvisioning do
 
   defp plan_rows(tenant, rows, rotation?) do
     rows
-    |> Enum.reduce_while({:ok, []}, fn row, {:ok, planned_rows} ->
-      case plan_row(tenant, row, rotation?) do
-        {:ok, planned_row} -> {:cont, {:ok, [planned_row | planned_rows]}}
-        {:error, errors} -> {:halt, {:error, errors}}
+    |> Enum.reduce_while({:ok, [], MapSet.new()}, fn row, {:ok, planned_rows, seen_identities} ->
+      case plan_row(tenant, row, rotation?, seen_identities) do
+        {:ok, planned_row} ->
+          seen_identities = MapSet.put(seen_identities, row_identity(row))
+          {:cont, {:ok, [planned_row | planned_rows], seen_identities}}
+
+        {:error, errors} ->
+          {:halt, {:error, errors}}
       end
     end)
     |> case do
-      {:ok, planned_rows} -> {:ok, Enum.reverse(planned_rows)}
+      {:ok, planned_rows, _seen_identities} -> {:ok, Enum.reverse(planned_rows)}
       {:error, errors} -> {:error, errors}
     end
   end
 
-  defp plan_row(tenant, row, rotation?) do
+  defp plan_row(tenant, row, rotation?, seen_identities) do
     api_client = find_existing_api_client(tenant.id, row)
 
     cond do
@@ -224,7 +236,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
         {:ok,
          row
          |> Map.put(:existing_api_client_id, existing_api_client_id(api_client))
-         |> Map.put(:api_client_action, if(api_client, do: :updated, else: :created))
+         |> Map.put(:api_client_action, api_client_action(api_client, row, seen_identities))
          |> Map.put(:token_action, if(rotation?, do: :rotated, else: :created))}
     end
   end
@@ -456,6 +468,12 @@ defmodule Orchard.Governance.ApiClientProvisioning do
   defp existing_api_client_id(nil), do: nil
   defp existing_api_client_id(%ServiceAccount{id: id}), do: id
 
+  defp api_client_action(%ServiceAccount{}, _row, _seen_identities), do: :updated
+
+  defp api_client_action(nil, row, seen_identities) do
+    if MapSet.member?(seen_identities, row_identity(row)), do: :updated, else: :created
+  end
+
   defp row_identity(%{external_ref: external_ref}) when is_binary(external_ref),
     do: "external_ref:#{external_ref}"
 
@@ -478,7 +496,7 @@ defmodule Orchard.Governance.ApiClientProvisioning do
   defp parse_metadata(row_number, value) when is_binary(value) do
     case Jason.decode(value) do
       {:ok, metadata} when is_map(metadata) ->
-        if contains_secret_field?(metadata) do
+        if SecretField.contains_secret_field?(metadata) do
           {:error,
            [
              error(
@@ -497,30 +515,6 @@ defmodule Orchard.Governance.ApiClientProvisioning do
       {:error, _reason} ->
         {:error, [error(row_number, "metadata_json", "must be valid JSON.")]}
     end
-  end
-
-  defp contains_secret_field?(map) when is_map(map) do
-    Enum.any?(map, fn {key, value} ->
-      secret_field?(to_string(key)) or contains_secret_field?(value)
-    end)
-  end
-
-  defp contains_secret_field?(values) when is_list(values),
-    do: Enum.any?(values, &contains_secret_field?/1)
-
-  defp contains_secret_field?(_value), do: false
-
-  defp secret_field?(field) do
-    normalized = field |> to_string() |> String.downcase()
-
-    not token_prefix_field?(normalized) and
-      Enum.any?(@secret_field_fragments, &String.contains?(normalized, &1))
-  end
-
-  defp token_prefix_field?(field) do
-    field in ["api_token_prefix", "api_token_prefixes", "token_prefix", "token_prefixes"] or
-      String.ends_with?(field, "_token_prefix") or
-      String.ends_with?(field, "_token_prefixes")
   end
 
   defp normalize_keys(map) do
@@ -554,26 +548,12 @@ defmodule Orchard.Governance.ApiClientProvisioning do
 
   defp sanitize_error_summary(summary) when is_map(summary) do
     summary
-    |> reject_secret_fields()
+    |> SecretField.reject_secret_fields()
     |> Map.delete("raw_csv")
     |> Map.delete(:raw_csv)
   end
 
   defp sanitize_error_summary(_summary), do: %{}
-
-  defp reject_secret_fields(map) do
-    Map.new(map, fn {key, value} ->
-      if secret_field?(to_string(key)) do
-        {key, "[redacted]"}
-      else
-        {key, sanitize_nested(value)}
-      end
-    end)
-  end
-
-  defp sanitize_nested(value) when is_map(value), do: reject_secret_fields(value)
-  defp sanitize_nested(values) when is_list(values), do: Enum.map(values, &sanitize_nested/1)
-  defp sanitize_nested(value), do: value
 
   defp fetch_provisioning_batch(batch_id) do
     case Repo.get(ProvisioningBatch, batch_id) do

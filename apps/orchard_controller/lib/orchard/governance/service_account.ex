@@ -7,21 +7,10 @@ defmodule Orchard.Governance.ServiceAccount do
 
   import Ecto.Changeset
 
-  alias Orchard.Governance.{ApiKey, RoleBinding, Tenant}
+  alias Orchard.Governance.{ApiKey, RoleBinding, SecretField, Tenant}
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
-
-  @plaintext_keys ~w(
-    api_key
-    api_token
-    one_time_secret
-    plaintext_secret
-    plaintext_token
-    raw_csv
-    secret
-    token
-  )
 
   @type t :: %__MODULE__{}
 
@@ -79,7 +68,7 @@ defmodule Orchard.Governance.ServiceAccount do
       attrs
       |> Map.keys()
       |> Enum.map(&to_string/1)
-      |> Enum.filter(&plaintext_key?/1)
+      |> Enum.filter(&SecretField.secret_field?/1)
 
     case secret_keys do
       [] ->
@@ -89,7 +78,7 @@ defmodule Orchard.Governance.ServiceAccount do
         add_error(
           changeset,
           :base,
-          "must not include plaintext token fields: #{Enum.join(keys, ", ")}"
+          "must not include plaintext token or secret fields: #{Enum.join(keys, ", ")}"
         )
     end
   end
@@ -97,28 +86,11 @@ defmodule Orchard.Governance.ServiceAccount do
   defp validate_no_plaintext_metadata(changeset) do
     metadata = get_field(changeset, :metadata) || %{}
 
-    if contains_plaintext_key?(metadata) do
-      add_error(changeset, :metadata, "must not include plaintext token fields")
+    if SecretField.contains_secret_field?(metadata) do
+      add_error(changeset, :metadata, "must not include plaintext token or secret fields")
     else
       changeset
     end
-  end
-
-  defp contains_plaintext_key?(map) when is_map(map) do
-    Enum.any?(map, fn {key, value} ->
-      plaintext_key?(to_string(key)) or contains_plaintext_key?(value)
-    end)
-  end
-
-  defp contains_plaintext_key?(values) when is_list(values),
-    do: Enum.any?(values, &contains_plaintext_key?/1)
-
-  defp contains_plaintext_key?(_value), do: false
-
-  defp plaintext_key?(key) do
-    key
-    |> String.downcase()
-    |> then(&Enum.member?(@plaintext_keys, &1))
   end
 
   defp normalize_attrs(attrs) when is_map(attrs) do

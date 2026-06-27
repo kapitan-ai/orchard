@@ -204,6 +204,8 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       %{api_client: api_client, api_key: api_key, token: token} =
         create_api_client_with_token!(tenant, "console-client")
 
+      :ok = Governance.touch_api_key_last_used(api_key.id)
+
       {:ok, view, html} = live(conn, "/console/tenants/#{tenant.id}")
 
       assert html =~ "console-client"
@@ -211,6 +213,14 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert html =~ "Inference Client"
       assert html =~ api_key.token_prefix
       refute html =~ token
+
+      token_html = view |> element("#api-client-token-#{api_key.id}") |> render()
+      assert token_html =~ "Created"
+      assert token_html =~ "Last Used"
+      assert token_html =~ "api-client-token-created-at-#{api_key.id}"
+      assert token_html =~ "api-client-token-last-used-at-#{api_key.id}"
+      assert token_html =~ ~s(data-local-time-format="datetime_minute")
+
       assert has_element?(view, "#tenant-api-client-disable-#{api_client.id}")
       assert has_element?(view, "#tenant-api-client-token-revoke-#{api_key.id}")
     end

@@ -55,6 +55,40 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
     assert Repo.aggregate(ProvisioningBatch, :count, :id) == 0
   end
 
+  test "repeated new API Client rows count one created client and later updates", %{
+    tenant: tenant
+  } do
+    rows = [
+      row(tenant, api_client: "client-repeat", key_name: "production"),
+      row(tenant, api_client: "client-repeat", key_name: "staging")
+    ]
+
+    assert {:ok, plan} = Governance.bulk_validate_api_clients(rows)
+
+    assert plan.counts == %{
+             api_clients_created_count: 1,
+             api_clients_updated_count: 1,
+             api_tokens_created_count: 2,
+             api_tokens_rotated_count: 0
+           }
+
+    assert {:ok, result} = Governance.bulk_apply_api_clients(rows)
+
+    assert result.batch.api_clients_created_count == 1
+    assert result.batch.api_clients_updated_count == 1
+    assert result.batch.api_tokens_created_count == 2
+
+    api_client = Repo.get_by!(ServiceAccount, tenant_id: tenant.id, name: "client-repeat")
+    assert length(result.output_rows) == 2
+    assert Enum.map(result.output_rows, & &1.api_client) == ["client-repeat", "client-repeat"]
+
+    assert Repo.aggregate(
+             from(api_key in ApiKey, where: api_key.service_account_id == ^api_client.id),
+             :count,
+             :id
+           ) == 2
+  end
+
   test "apply creates API Client access and returns one-time API Token output only in memory", %{
     tenant: tenant
   } do
@@ -202,6 +236,35 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
     assert {:error, errors} = Governance.bulk_validate_api_clients(rows)
     assert [%{field: "metadata_json", message: message}] = errors
     assert message =~ "must not include plaintext token or secret fields"
+  end
+
+  test "direct API Client metadata rejects plaintext-like keys and permits token prefixes", %{
+    tenant: tenant
+  } do
+    assert {:error, changeset} =
+             Governance.upsert_api_client(tenant, %{
+               name: "client-direct-secret",
+               owner_contact: "owner@example.com",
+               metadata: %{"access_token" => "plaintext"}
+             })
+
+    assert %{metadata: [message]} = errors_on(changeset)
+    assert message =~ "must not include plaintext token or secret fields"
+
+    assert {:ok, api_client} =
+             Governance.upsert_api_client(tenant, %{
+               name: "client-direct-safe",
+               owner_contact: "owner@example.com",
+               metadata: %{
+                 "token_prefix" => "orch_safe",
+                 "nested" => %{"api_token_prefixes" => ["orch_one", "orch_two"]}
+               }
+             })
+
+    assert api_client.metadata == %{
+             "token_prefix" => "orch_safe",
+             "nested" => %{"api_token_prefixes" => ["orch_one", "orch_two"]}
+           }
   end
 
   defp row(tenant, overrides) do

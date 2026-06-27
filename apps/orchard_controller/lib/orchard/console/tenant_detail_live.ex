@@ -329,22 +329,42 @@ defmodule OrchardConsole.TenantDetailLive do
                 <div
                   :for={token <- client.api_keys}
                   id={"api-client-token-#{token.id}"}
-                  class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+                  class="space-y-1 text-sm"
                 >
-                  <span class="font-medium text-slate-700 dark:text-slate-200">{token.name}</span>
-                  <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{token.token_prefix}</span>
-                  <.api_token_status_badge api_key={token} />
-                  <button
-                    :if={api_token_active?(token)}
-                    id={"tenant-api-client-token-revoke-#{token.id}"}
-                    type="button"
-                    phx-click="revoke_api_key"
-                    phx-value-id={token.id}
-                    phx-disable-with="Revoking…"
-                    class="text-xs font-medium text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-                  >
-                    Revoke
-                  </button>
+                  <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span class="font-medium text-slate-700 dark:text-slate-200">{token.name}</span>
+                    <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{token.token_prefix}</span>
+                    <.api_token_status_badge api_key={token} />
+                    <button
+                      :if={api_token_active?(token)}
+                      id={"tenant-api-client-token-revoke-#{token.id}"}
+                      type="button"
+                      phx-click="revoke_api_key"
+                      phx-value-id={token.id}
+                      phx-disable-with="Revoking…"
+                      class="text-xs font-medium text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                    >
+                      Revoke
+                    </button>
+                  </div>
+                  <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                    <span>
+                      Created <.local_time
+                        id={"api-client-token-created-at-#{token.id}"}
+                        value={token.inserted_at}
+                        format={:datetime_minute}
+                        class="font-mono"
+                      />
+                    </span>
+                    <span>
+                      Last Used <.local_time
+                        id={"api-client-token-last-used-at-#{token.id}"}
+                        value={token.last_used_at}
+                        format={:datetime_minute}
+                        class="font-mono"
+                      />
+                    </span>
+                  </div>
                 </div>
                 <span
                   :if={client.api_keys == []}
