@@ -121,59 +121,59 @@ defmodule OrchardCLI.Commands.ApiClients do
   defp maybe_preflight_output(nil), do: :ok
 
   defp maybe_preflight_output(path) do
+    ops = file_ops()
     parent = Path.dirname(path)
 
     cond do
-      File.exists?(path) ->
+      ops.exists?(path) ->
         {:error, "Error: output path already exists: #{path}", 1}
 
-      not File.dir?(parent) ->
+      not ops.dir?(parent) ->
         {:error, "Error: output parent directory does not exist: #{parent}", 1}
 
       true ->
-        verify_output_parent_writable(path, parent)
+        verify_output_parent_writable(path, parent, ops)
     end
   end
 
-  defp verify_output_parent_writable(path, parent) do
-    probe_path =
-      Path.join(
-        parent,
-        ".#{Path.basename(path)}.preflight-#{System.unique_integer([:positive])}"
-      )
+  defp verify_output_parent_writable(path, parent, ops) do
+    suffix = System.unique_integer([:positive])
+    basename = Path.basename(path)
+    source_probe_path = Path.join(parent, ".#{basename}.preflight-source-#{suffix}")
+    target_probe_path = Path.join(parent, ".#{basename}.preflight-target-#{suffix}")
 
-    case write_preflight_probe(probe_path) do
+    case write_preflight_probe(source_probe_path, target_probe_path, ops) do
       :ok ->
         :ok
 
       {:error, reason} ->
         {:error,
-         "Error: output parent directory is not writable: #{parent}: #{:file.format_error(reason)}",
+         "Error: output parent directory is not ready for exclusive delivery: #{parent}: #{format_file_error(reason)}",
          1}
     end
   end
 
-  defp write_preflight_probe(path) do
-    case File.open(path, [:write, :exclusive, :binary]) do
-      {:ok, file} ->
-        result =
-          case File.chmod(path, 0o600) do
-            :ok -> IO.binwrite(file, "probe")
-            {:error, reason} -> {:error, reason}
-          end
-
-        close_result = File.close(file)
-        File.rm(path)
-        preflight_probe_result(result, close_result)
-
+  defp write_preflight_probe(source_path, target_path, ops) do
+    with :ok <- write_exclusive_iodata(source_path, "probe", ops),
+         :ok <- ops.ln(source_path, target_path),
+         :ok <- cleanup_probe_file(source_path, ops),
+         :ok <- cleanup_probe_file(target_path, ops) do
+      :ok
+    else
       {:error, reason} ->
+        cleanup_probe_file(source_path, ops)
+        cleanup_probe_file(target_path, ops)
         {:error, reason}
     end
   end
 
-  defp preflight_probe_result(:ok, :ok), do: :ok
-  defp preflight_probe_result({:error, reason}, _close_result), do: {:error, reason}
-  defp preflight_probe_result(:ok, {:error, reason}), do: {:error, reason}
+  defp cleanup_probe_file(path, ops) do
+    case ops.rm(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, reason}
+    end
+  end
 
   defp parse_csv(contents) do
     rows = NimbleCSV.RFC4180.parse_string(contents, skip_headers: false)
@@ -281,36 +281,89 @@ defmodule OrchardCLI.Commands.ApiClients do
   end
 
   defp write_output(path, output_rows) do
+    ops = file_ops()
+
     tmp_path =
       Path.join(
         Path.dirname(path),
         ".#{Path.basename(path)}.tmp-#{System.unique_integer([:positive])}"
       )
 
-    with :ok <- write_tmp_output(tmp_path, output_rows),
-         :ok <- File.ln(tmp_path, path) do
-      File.rm(tmp_path)
-      :ok
+    with :ok <- write_tmp_output(tmp_path, output_rows, ops),
+         :ok <- ops.ln(tmp_path, path) do
+      cleanup_sensitive_file(tmp_path, ops)
     else
       {:error, reason} ->
-        File.rm(tmp_path)
-        {:error, :file.format_error(reason) |> to_string()}
+        case cleanup_sensitive_file(tmp_path, ops) do
+          :ok -> {:error, format_file_error(reason)}
+          {:error, cleanup_reason} -> {:error, cleanup_reason}
+        end
     end
   end
 
-  defp write_tmp_output(tmp_path, output_rows) do
+  defp write_tmp_output(tmp_path, output_rows, ops) do
     csv =
       [@output_headers]
       |> Kernel.++(Enum.map(output_rows, &output_values/1))
       |> NimbleCSV.RFC4180.dump_to_iodata()
 
-    with {:ok, file} <- File.open(tmp_path, [:write, :exclusive, :binary]),
-         :ok <- File.chmod(tmp_path, 0o600),
-         :ok <- IO.binwrite(file, csv),
-         :ok <- File.close(file) do
-      :ok
-    else
-      {:error, _reason} = error -> error
+    write_exclusive_iodata(tmp_path, csv, ops)
+  end
+
+  defp write_exclusive_iodata(path, iodata, ops) do
+    case ops.open(path, [:write, :exclusive, :binary]) do
+      {:ok, file} ->
+        result =
+          case ops.chmod(path, 0o600) do
+            :ok -> IO.binwrite(file, iodata)
+            {:error, reason} -> {:error, reason}
+          end
+
+        close_result = ops.close(file)
+        write_file_result(result, close_result)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp write_file_result(:ok, :ok), do: :ok
+  defp write_file_result({:error, reason}, _close_result), do: {:error, reason}
+  defp write_file_result(:ok, {:error, reason}), do: {:error, reason}
+
+  defp cleanup_sensitive_file(path, ops) do
+    case ops.rm(path) do
+      :ok -> :ok
+      {:error, :enoent} -> :ok
+      {:error, reason} -> scrub_sensitive_file(path, ops, reason)
+    end
+  end
+
+  defp scrub_sensitive_file(path, ops, cleanup_reason) do
+    case truncate_sensitive_file(path, ops) do
+      :ok ->
+        case ops.rm(path) do
+          :ok ->
+            :ok
+
+          {:error, :enoent} ->
+            :ok
+
+          {:error, reason} ->
+            {:error, "temporary output cleanup failed: #{format_file_error(reason)}"}
+        end
+
+      {:error, reason} ->
+        {:error,
+         "temporary output cleanup failed: #{format_file_error(cleanup_reason)}; scrub failed: #{format_file_error(reason)}"}
+    end
+  end
+
+  defp truncate_sensitive_file(path, ops) do
+    case ops.open(path, [:write, :binary]) do
+      {:ok, file} -> ops.close(file)
+      {:error, :enoent} -> :ok
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -390,6 +443,13 @@ defmodule OrchardCLI.Commands.ApiClients do
 
   defp to_string_or_empty(nil), do: ""
   defp to_string_or_empty(value), do: to_string(value)
+
+  defp file_ops, do: Application.get_env(:orchard_cli, :api_clients_file_ops, File)
+
+  defp format_file_error(reason) when is_atom(reason),
+    do: reason |> :file.format_error() |> to_string()
+
+  defp format_file_error(reason) when is_binary(reason), do: reason
 
   defp sha256(contents) do
     :sha256

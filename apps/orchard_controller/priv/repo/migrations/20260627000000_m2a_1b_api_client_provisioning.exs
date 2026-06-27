@@ -125,6 +125,28 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
       add(:principal_type, :text, null: false, default: "tenant")
     end
 
+    execute("""
+    UPDATE requests
+    SET service_account_id = NULL
+    WHERE service_account_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM service_accounts
+        WHERE service_accounts.id = requests.service_account_id
+      )
+    """)
+
+    execute(
+      """
+      ALTER TABLE requests
+      ADD CONSTRAINT requests_service_account_id_fkey
+      FOREIGN KEY (service_account_id)
+      REFERENCES service_accounts(id)
+      ON DELETE SET NULL
+      """,
+      "ALTER TABLE requests DROP CONSTRAINT IF EXISTS requests_service_account_id_fkey"
+    )
+
     create constraint(:requests, :requests_principal_type_check,
              check: "principal_type IN ('tenant', 'service_account')"
            )
@@ -132,6 +154,8 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
 
   def down do
     drop(constraint(:requests, :requests_principal_type_check))
+
+    execute("ALTER TABLE requests DROP CONSTRAINT IF EXISTS requests_service_account_id_fkey")
 
     alter table(:requests) do
       remove(:principal_type)

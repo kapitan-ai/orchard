@@ -139,6 +139,11 @@ defmodule Orchard.Repo.Migrations.GovernanceDbFoundationTest do
   defp run_down_sql do
     Repo.query!("DROP TABLE IF EXISTS provisioning_batches")
     Repo.query!("DROP TABLE IF EXISTS role_bindings")
+
+    Repo.query!(
+      "ALTER TABLE IF EXISTS requests DROP CONSTRAINT IF EXISTS requests_service_account_id_fkey"
+    )
+
     Repo.query!("DROP TRIGGER IF EXISTS audit_logs_append_only ON audit_logs")
     Repo.query!("DROP FUNCTION IF EXISTS orchard_reject_audit_log_mutation()")
     Repo.query!("DROP TABLE IF EXISTS audit_logs")

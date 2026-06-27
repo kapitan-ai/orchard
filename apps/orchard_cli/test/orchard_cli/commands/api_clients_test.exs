@@ -7,6 +7,31 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
   alias Orchard.Repo
   alias OrchardCLI.Commands.ApiClients
 
+  defmodule ConfigurableFileOps do
+    def exists?(path), do: File.exists?(path)
+    def dir?(path), do: File.dir?(path)
+    def open(path, modes), do: File.open(path, modes)
+    def chmod(path, mode), do: File.chmod(path, mode)
+    def close(file), do: File.close(file)
+
+    def ln(source, target) do
+      case Process.get(:api_clients_file_ops_link_error) do
+        nil -> File.ln(source, target)
+        reason -> {:error, reason}
+      end
+    end
+
+    def rm(path) do
+      if Process.get(:api_clients_file_ops_fail_secret_tmp_cleanup) && secret_tmp?(path) do
+        {:error, :eperm}
+      else
+        File.rm(path)
+      end
+    end
+
+    defp secret_tmp?(path), do: String.contains?(Path.basename(path), ".tmp-")
+  end
+
   setup do
     :ok = Sandbox.checkout(Repo)
     Sandbox.mode(Repo, {:shared, self()})
@@ -131,7 +156,7 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
                  output_path
                ])
 
-      assert message =~ "output parent directory is not writable"
+      assert message =~ "output parent directory is not ready for exclusive delivery"
       refute File.exists?(output_path)
 
       refute Repo.get_by(ServiceAccount,
@@ -143,6 +168,60 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
     after
       File.chmod!(blocked_dir, 0o700)
     end
+  end
+
+  test "apply preflights the final output delivery primitive before mutating state", %{
+    tenant: tenant,
+    tmp_dir: tmp_dir
+  } do
+    input_path = write_csv!(tmp_dir, tenant, api_client: "cli-client-link-preflight")
+    output_path = Path.join(tmp_dir, "tokens.csv")
+
+    with_configurable_file_ops(%{link_error: :eperm}, fn ->
+      assert {:error, message, 1} =
+               ApiClients.run([
+                 "bulk-provision",
+                 "--apply",
+                 "--file",
+                 input_path,
+                 "--output",
+                 output_path
+               ])
+
+      assert message =~ "output parent directory"
+    end)
+
+    refute File.exists?(output_path)
+    refute Repo.get_by(ServiceAccount, tenant_id: tenant.id, name: "cli-client-link-preflight")
+    assert Repo.aggregate(ProvisioningBatch, :count, :id) == 0
+  end
+
+  test "apply reports output failure when secret temp cleanup cannot be guaranteed", %{
+    tenant: tenant,
+    tmp_dir: tmp_dir
+  } do
+    input_path = write_csv!(tmp_dir, tenant, api_client: "cli-client-cleanup-failure")
+    output_path = Path.join(tmp_dir, "tokens.csv")
+
+    with_configurable_file_ops(%{fail_secret_tmp_cleanup: true}, fn ->
+      assert {:error, message, 1} =
+               ApiClients.run([
+                 "bulk-provision",
+                 "--apply",
+                 "--file",
+                 input_path,
+                 "--output",
+                 output_path
+               ])
+
+      assert message =~ "Apply succeeded but One-time Secret Output failed"
+      assert message =~ "temporary output cleanup failed"
+    end)
+
+    assert Repo.get_by(ServiceAccount, tenant_id: tenant.id, name: "cli-client-cleanup-failure")
+    assert [%ProvisioningBatch{status: :output_failed}] = Repo.all(ProvisioningBatch)
+    assert Path.wildcard(Path.join(tmp_dir, ".tokens.csv.tmp-*")) == []
+    assert File.read!(output_path) == ""
   end
 
   test "duplicate API Token names require explicit rotation", %{tenant: tenant, tmp_dir: tmp_dir} do
@@ -214,6 +293,34 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
 
     path
   end
+
+  defp with_configurable_file_ops(settings, fun) do
+    previous_impl = Application.get_env(:orchard_cli, :api_clients_file_ops)
+    previous_link_error = Process.get(:api_clients_file_ops_link_error)
+    previous_cleanup = Process.get(:api_clients_file_ops_fail_secret_tmp_cleanup)
+
+    Application.put_env(:orchard_cli, :api_clients_file_ops, ConfigurableFileOps)
+    put_process_setting(:api_clients_file_ops_link_error, Map.get(settings, :link_error))
+
+    put_process_setting(
+      :api_clients_file_ops_fail_secret_tmp_cleanup,
+      Map.get(settings, :fail_secret_tmp_cleanup)
+    )
+
+    try do
+      fun.()
+    after
+      restore_app_env(:api_clients_file_ops, previous_impl)
+      put_process_setting(:api_clients_file_ops_link_error, previous_link_error)
+      put_process_setting(:api_clients_file_ops_fail_secret_tmp_cleanup, previous_cleanup)
+    end
+  end
+
+  defp restore_app_env(key, nil), do: Application.delete_env(:orchard_cli, key)
+  defp restore_app_env(key, value), do: Application.put_env(:orchard_cli, key, value)
+
+  defp put_process_setting(key, nil), do: Process.delete(key)
+  defp put_process_setting(key, value), do: Process.put(key, value)
 
   defp read_output_csv!(path) do
     [headers | rows] = path |> File.read!() |> NimbleCSV.RFC4180.parse_string(skip_headers: false)

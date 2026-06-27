@@ -144,6 +144,7 @@ defmodule Orchard.Requests.Request do
     |> unique_constraint(:idempotency_key, name: :idx_requests_tenant_idempotency)
     |> foreign_key_constraint(:model_id)
     |> foreign_key_constraint(:retry_of_request_id)
+    |> foreign_key_constraint(:service_account_id)
   end
 
   @spec terminal_changeset(struct(), map()) :: Ecto.Changeset.t()
