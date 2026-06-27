@@ -77,10 +77,18 @@ defmodule Orchard.SentryContextTest do
   end
 
   test "build_caller_extra omits hashes without a secret and includes only HMAC hashes with one" do
-    caller = %{tenant_id: "tenant-1", principal_id: "principal-1", api_key_id: "key-1"}
+    caller = %{
+      tenant_id: "tenant-1",
+      principal_type: :service_account,
+      principal_id: "principal-1",
+      api_key_id: "key-1"
+    }
 
     Application.put_env(:orchard_shared, :sentry_enrichment, hash_secret: nil)
-    assert SentryContext.build_caller_extra(caller) == %{}
+
+    assert SentryContext.build_caller_extra(caller) == %{
+             orchard_principal_type: "service_account"
+           }
 
     Application.put_env(:orchard_shared, :sentry_enrichment, hash_secret: "hash-secret")
     extra = SentryContext.build_caller_extra(caller)
@@ -88,11 +96,13 @@ defmodule Orchard.SentryContextTest do
     assert MapSet.new(Map.keys(extra)) ==
              MapSet.new([
                :orchard_api_key_hash,
+               :orchard_principal_type,
                :orchard_principal_hash,
                :orchard_tenant_hash
              ])
 
     assert extra.orchard_tenant_hash == SentryContext.hash_id("tenant-1")
+    assert extra.orchard_principal_type == "service_account"
     refute extra.orchard_principal_hash == "principal-1"
     refute extra.orchard_api_key_hash == "key-1"
   end

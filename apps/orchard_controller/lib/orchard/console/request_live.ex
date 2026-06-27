@@ -420,10 +420,10 @@ defmodule OrchardConsole.RequestLive do
         <:title>Request Provenance</:title>
 
         <.detail_grid class="grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-          <.detail_field id="request-tenant" label="Tenant">
+          <.detail_field id="request-tenant" label="Organization">
             <.tenant_display request={@request} />
           </.detail_field>
-          <.detail_field id="request-api-key" label="API Key">
+          <.detail_field id="request-api-key" label="API Token">
             <.api_key_display request={@request} />
           </.detail_field>
           <.detail_field id="request-retry-of" label="Retry Of">
@@ -473,7 +473,7 @@ defmodule OrchardConsole.RequestLive do
           {@tenant_info.slug}
         </span>
       <% :orphan -> %>
-        <span class="text-slate-500 dark:text-slate-400">Unknown tenant</span>
+        <span class="text-slate-500 dark:text-slate-400">Unknown Organization</span>
         <span class="block text-xs font-mono text-slate-500 dark:text-slate-400">
           {@tenant_info.raw_id}
         </span>
@@ -497,7 +497,7 @@ defmodule OrchardConsole.RequestLive do
         </span>
         <.badge tone={@key_info.status_tone}>{@key_info.status_label}</.badge>
       <% :orphan -> %>
-        <span class="text-slate-500 dark:text-slate-400">Unknown API key</span>
+        <span class="text-slate-500 dark:text-slate-400">Unknown API Token</span>
         <span class="block text-xs font-mono text-slate-500 dark:text-slate-400">
           {@key_info.raw_id}
         </span>

@@ -285,7 +285,9 @@ All public inference requests SHALL normalize into one internal struct:
   public_id: String.t(),
   endpoint: :chat_completions | :responses,
   tenant_id: UUID,
+  principal_type: :tenant | :service_account,
   principal_id: UUID | nil,
+  service_account_id: UUID | nil,
   api_key_id: UUID | nil,
   model_ref: %{
     model_id: String.t(),
@@ -920,6 +922,10 @@ Admission MUST execute in this order:
 9. enforce tenant concurrency
 10. create request record
 11. attempt schedule or enqueue
+
+For service-account-owned API Tokens, authentication SHALL resolve the owning Service Account as `principal_type = service_account` and the owning Tenant as the effective Tenant before endpoint authorization.
+For tenant-direct API Keys, authentication SHALL resolve `principal_type = tenant`.
+Public inference endpoint authorization for service-account principals SHALL require tenant-scoped `inference_client` access before model resolution, tenant quota admission, or queue admission.
 
 Failure precedence:
 
@@ -1575,6 +1581,12 @@ Header:
 Authorization: Bearer <api_key>
 ```
 
+The bearer credential MAY be a tenant-direct API Key or a service-account-owned API Token.
+Tenant-direct API Keys SHALL resolve to the Tenant principal.
+Service-account-owned API Tokens SHALL resolve to the owning Service Account principal while keeping the owning Tenant as the effective Tenant for model access, quotas, queues, usage accounting, retention, idempotency, and request persistence.
+Valid API Tokens owned by disabled API Clients SHALL authenticate as known credentials and fail authorization with `403 forbidden`.
+Missing, malformed, invalid, expired, or revoked bearer credentials SHALL fail authentication with `401 invalid_api_key`.
+
 #### 7.2.3 `GET /v1/models`
 
 Returns models visible to the caller’s tenant.
@@ -2046,6 +2058,23 @@ Response:
   "expires_at": "2026-12-31T00:00:00Z"
 }
 ```
+
+#### 7.4.4 Bulk API Client provisioning CLI contract
+
+The first bulk provisioning surface SHALL be `orchardctl api-clients bulk-provision`.
+The command SHALL support exactly one of Dry Run or Apply mode.
+The input CSV SHALL require `organization`, `api_client`, `owner_contact`, and `key_name`.
+The input CSV MAY include `team`, `owner_name`, `external_ref`, `description`, `purpose`, `expires_at`, and `metadata_json`.
+The `organization` field SHALL identify one Organization slug per input file.
+Plaintext API Token secrets SHALL NOT be accepted in input.
+Dry Run SHALL validate Organizations, API Client identity, duplicate API Token names, optional expiry values, metadata JSON, and output destination readiness without mutating state or generating secrets.
+Apply SHALL validate the output path before mutation and commit all provisioning changes as one batch.
+Apply SHALL write One-time Secret Output only after the batch succeeds.
+If One-time Secret Output delivery fails after a committed Apply, Orchard SHALL mark the Provisioning Batch as `output_failed`, write a redacted audit event, and return recovery guidance that names API Token prefixes for revocation or rotation.
+The output-failed recovery path SHALL NOT persist plaintext API Token secrets.
+Repeated provisioning SHALL match API Clients by Organization plus External Reference when present, otherwise by Organization plus API Client name.
+Repeated provisioning SHALL reject duplicate active API Token names unless explicit Key Rotation mode is enabled.
+Key Rotation mode SHALL create a replacement API Token and revoke previous active API Tokens with the same API Client and token name.
 
 #### 7.4.4 Model import example
 
@@ -2729,12 +2758,20 @@ create table tenants (
 
 create table service_accounts (
   id uuid primary key default gen_random_uuid(),
-  tenant_id uuid references tenants(id),
+  tenant_id uuid not null references tenants(id),
   name text not null,
+  owner_contact text not null,
+  owner_name text,
+  team text,
+  external_ref text,
   description text,
+  purpose text,
+  metadata jsonb not null default '{}'::jsonb,
   disabled_at timestamptz,
   inserted_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  unique(tenant_id, name),
+  unique(tenant_id, external_ref)
 );
 
 create table api_keys (
@@ -2742,11 +2779,11 @@ create table api_keys (
   tenant_id uuid references tenants(id),
   service_account_id uuid references service_accounts(id),
   name text not null,
-  key_prefix text not null unique,
+  token_prefix text not null unique,
   secret_hash bytea not null,
-  status api_key_status not null default 'active',
   expires_at timestamptz,
   last_used_at timestamptz,
+  revoked_at timestamptz,
   inserted_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
   check (
@@ -2778,6 +2815,7 @@ create table requests (
   public_id text not null unique,
   endpoint text not null check (endpoint in ('chat_completions', 'responses')),
   tenant_id uuid not null references tenants(id),
+  principal_type text not null default 'tenant' check (principal_type in ('tenant', 'service_account')),
   api_key_id uuid references api_keys(id),
   service_account_id uuid references service_accounts(id),
   model_id uuid not null references models(id),
@@ -2849,6 +2887,26 @@ create table role_bindings (
   tenant_scope_id uuid references tenants(id),
   inserted_at timestamptz not null default now(),
   unique(principal_type, principal_id, role, tenant_scope_id)
+);
+
+create table provisioning_batches (
+  id uuid primary key default gen_random_uuid(),
+  tenant_id uuid not null references tenants(id),
+  actor_type text not null default 'operator',
+  actor_id text,
+  status text not null check (status in ('applying', 'applied', 'failed', 'output_failed')),
+  row_count integer not null default 0,
+  api_clients_created_count integer not null default 0,
+  api_clients_updated_count integer not null default 0,
+  api_tokens_created_count integer not null default 0,
+  api_tokens_rotated_count integer not null default 0,
+  api_tokens_revoked_count integer not null default 0,
+  input_sha256 text,
+  error_summary jsonb not null default '{}'::jsonb,
+  started_at timestamptz not null,
+  completed_at timestamptz,
+  inserted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table routing_policies (
@@ -3105,18 +3163,27 @@ Requirements:
 * secret entropy: 32 random bytes minimum
 * DB stores:
 
-  * `key_prefix`
+  * `token_prefix`
   * `secret_hash = sha256(secret)`
 * comparison MUST be constant-time
 * key secret displayed once only at creation
 * revocation is immediate
+* plaintext secrets MUST NOT be stored in Postgres, audit logs, provisioning batches, support bundles, or durable local evidence artifacts
+
+Tenant-direct API Keys SHALL remain supported for manual, bootstrap, and compatibility paths.
+Bulk provisioning SHALL create service-account-owned API Tokens by default.
+API Tokens owned by the same Service Account SHALL NOT have duplicate active names unless explicit Key Rotation mode creates a replacement and revokes the previous active token or tokens.
 
 ### 10.3 Service accounts
 
 Service accounts are non-interactive principals.
+Product-facing operator surfaces SHALL label service accounts as API Clients.
+Owner Contact, Owner Name, Team, External Reference, Description, Purpose, and metadata MAY describe an API Client.
+Owner Contact and Team SHALL NOT authenticate, authorize, own quota, define model access, define routing policy, or create a nested Tenant.
+An API Client may be disabled.
+API Client Disablement SHALL block all owned API Tokens without mutating each token's revoked state.
 They may be:
 
-* global
 * tenant-scoped
 
 Keys may belong to:
@@ -3140,6 +3207,8 @@ Permissions:
 * `tenant_admin`: tenant-scoped key/quota/model-access management only
 * `inference_client`: public inference only
 
+Bulk-provisioned API Clients SHALL receive tenant-scoped `inference_client` access by default.
+Public inference requests authenticated by service-account-owned API Tokens SHALL require `inference_client` access for the effective Tenant.
 No implicit cross-tenant access.
 
 ### 10.5 Node trust
@@ -3223,6 +3292,10 @@ Audit logs SHALL capture:
 * tenant creation/update/suspend
 * API key create/revoke
 * service account changes
+* API Client Disablement
+* provisioning batch start/completion/failure
+* Access Level assignment
+* Key Rotation and token replacement
 * quota changes
 * model import/activate/retire
 * routing policy changes
@@ -3230,6 +3303,9 @@ Audit logs SHALL capture:
 * operator drain/cancel/retry actions
 * support bundle generation
 * upgrade actions
+
+Audit payloads SHALL exclude plaintext API Token secrets.
+Provisioning Batch records SHALL include non-secret counts, status, input hash, timestamps, and sanitized error summaries only.
 
 ### 10.10 Data governance
 

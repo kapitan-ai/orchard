@@ -1,12 +1,12 @@
 defmodule OrchardConsole.TenantDetailLive do
   @moduledoc """
-  Console tenant detail page — tenant summary, API key management,
-  and one-time secret display.
+  Console Organization detail page with API Token and API Client management.
   """
 
   use OrchardConsole, :live_view
 
   alias Orchard.Governance
+  alias Orchard.Governance.{ApiKey, RoleBinding}
 
   @impl true
   def mount(%{"id" => id}, _session, socket) do
@@ -14,11 +14,12 @@ defmodule OrchardConsole.TenantDetailLive do
       socket
       |> assign(
         tenant_id: id,
-        page_title: "Tenant",
+        page_title: "Organization",
         active_nav: :tenants,
         detail_status: :loading,
         tenant: nil,
         api_keys: [],
+        api_clients: [],
         load_error: nil,
         generated_secret: nil
       )
@@ -41,6 +42,12 @@ defmodule OrchardConsole.TenantDetailLive do
   def handle_event("revoke_api_key", %{"id" => api_key_id}, socket) do
     OrchardConsole.LicenseGate.guard(socket, fn ->
       revoke_api_key(socket, api_key_id)
+    end)
+  end
+
+  def handle_event("disable_api_client", %{"id" => api_client_id}, socket) do
+    OrchardConsole.LicenseGate.guard(socket, fn ->
+      disable_api_client(socket, api_client_id)
     end)
   end
 
@@ -77,8 +84,8 @@ defmodule OrchardConsole.TenantDetailLive do
       id="tenant-loading-card"
       kind={:loading}
       layout={:panel}
-      title="Tenant Detail"
-      body="Loading tenant…"
+      title="Organization Detail"
+      body="Loading Organization…"
     />
     """
   end
@@ -91,14 +98,14 @@ defmodule OrchardConsole.TenantDetailLive do
         navigate="/console/tenants"
         class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
       >
-        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Tenants
+        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Organizations
       </.link>
       <.state_message
         id="tenant-not-found-message"
         kind={:empty}
         layout={:panel}
-        title="Tenant not found"
-        body="The requested tenant does not exist or the ID is invalid."
+        title="Organization not found"
+        body="The requested Organization does not exist or the ID is invalid."
       />
     </div>
     """
@@ -112,13 +119,13 @@ defmodule OrchardConsole.TenantDetailLive do
         navigate="/console/tenants"
         class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
       >
-        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Tenants
+        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Organizations
       </.link>
       <.state_message
         id="tenant-error-message"
         kind={:error}
         layout={:panel}
-        title="Tenant details unavailable"
+        title="Organization details unavailable"
         body={@load_error}
       />
     </div>
@@ -133,14 +140,14 @@ defmodule OrchardConsole.TenantDetailLive do
         navigate="/console/tenants"
         class="inline-flex items-center gap-1 text-sm text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
       >
-        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Tenants
+        <.icon name="hero-arrow-left" class="h-4 w-4" /> Back to Organizations
       </.link>
 
-      <%!-- Tenant Summary --%>
+      <%!-- Organization Summary --%>
       <div id="tenant-summary-card">
         <.card>
           <:title>{@tenant.name}</:title>
-          <:subtitle>Tenant details</:subtitle>
+          <:subtitle>Organization details</:subtitle>
 
           <.detail_grid
             gap_class="gap-x-6 gap-y-3"
@@ -152,7 +159,7 @@ defmodule OrchardConsole.TenantDetailLive do
             <.detail_field id="tenant-detail-slug" label="Slug" mono>
               {@tenant.slug}
             </.detail_field>
-            <.detail_field id="tenant-detail-id" label="Tenant ID" mono break_all>
+            <.detail_field id="tenant-detail-id" label="Organization ID" mono break_all>
               {@tenant.id}
             </.detail_field>
             <.detail_field id="tenant-detail-created-at" label="Created" mono>
@@ -165,7 +172,7 @@ defmodule OrchardConsole.TenantDetailLive do
       <%!-- One-Time Secret Card --%>
       <div :if={@generated_secret} id="tenant-api-key-secret-card">
         <.card>
-          <:title>API Key Created — Copy Your Secret</:title>
+          <:title>API Token Created - Copy Your Secret</:title>
           <:subtitle>
             This secret is shown <strong>only once</strong>. It cannot be retrieved after you navigate
             away or dismiss this card.
@@ -224,8 +231,8 @@ defmodule OrchardConsole.TenantDetailLive do
       <%!-- Create API Key --%>
       <div id="tenant-api-key-create-card">
         <.card>
-          <:title>Create API Key</:title>
-          <:subtitle>Issue a new API key for this tenant.</:subtitle>
+          <:title>Create API Token</:title>
+          <:subtitle>Issue a new API Token for this Organization.</:subtitle>
 
           <.simple_form
             for={@api_key_form}
@@ -233,9 +240,9 @@ defmodule OrchardConsole.TenantDetailLive do
             id="tenant-api-key-create-form"
             phx-submit="create_api_key"
           >
-            <.input field={@api_key_form[:name]} label="Key Name" placeholder="production-key…" size={:lg} />
+            <.input field={@api_key_form[:name]} label="Token Name" placeholder="production-token…" size={:lg} />
             <:actions>
-              <.button type="submit" phx-disable-with="Creating…">Create API Key</.button>
+              <.button type="submit" phx-disable-with="Creating…">Create API Token</.button>
             </:actions>
           </.simple_form>
         </.card>
@@ -244,7 +251,7 @@ defmodule OrchardConsole.TenantDetailLive do
       <%!-- API Keys Table --%>
       <div id="tenant-api-keys-card">
         <.card>
-          <:title>API Keys</:title>
+          <:title>Organization API Tokens</:title>
 
           <.table id="tenant-api-keys-table" rows={@api_keys} row_id={&"api-key-#{&1.id}"}>
             <:col :let={key} label="Name">{key.name}</:col>
@@ -252,8 +259,7 @@ defmodule OrchardConsole.TenantDetailLive do
             <:col :let={key} label="Created" mono><.local_time value={key.inserted_at} format={:datetime_minute} /></:col>
               <:col :let={key} label="Last Used" mono><.local_time value={key.last_used_at} format={:datetime_minute} /></:col>
             <:col :let={key} label="Status">
-              <.badge :if={key.revoked_at == nil} tone={:success}>Active</.badge>
-              <.badge :if={key.revoked_at != nil} tone={:neutral}>Revoked</.badge>
+              <.api_token_status_badge api_key={key} />
             </:col>
 
             <:action :let={key}>
@@ -281,10 +287,103 @@ defmodule OrchardConsole.TenantDetailLive do
                 id="tenant-api-keys-empty-state"
                 kind={:empty}
                 layout={:compact}
-                title="No API keys created yet."
+                title="No API Tokens created yet."
               >
                 <:action>
-                  Create a key above to issue API access for this tenant.
+                  Create an API Token above to issue direct Organization access.
+                </:action>
+              </.state_message>
+            </:empty>
+          </.table>
+        </.card>
+      </div>
+
+      <div id="tenant-api-clients-card">
+        <.card>
+          <:title>API Clients</:title>
+          <:subtitle>Non-interactive clients, access levels, and owned API Tokens.</:subtitle>
+
+          <.table id="tenant-api-clients-table" rows={@api_clients} row_id={&"api-client-#{&1.id}"}>
+            <:col :let={client} label="Name">{client.name}</:col>
+            <:col :let={client} label="Owner">
+              <div class="space-y-0.5">
+                <div>{client.owner_contact}</div>
+                <div :if={client.team} class="text-xs text-slate-500 dark:text-slate-400">
+                  {client.team}
+                </div>
+              </div>
+            </:col>
+            <:col :let={client} label="External Ref" mono>
+              {client.external_ref || "—"}
+            </:col>
+            <:col :let={client} label="Access Level">
+              <.badge :if={inference_client_access?(client)} tone={:success}>Inference Client</.badge>
+              <.badge :if={!inference_client_access?(client)} tone={:neutral}>None</.badge>
+            </:col>
+            <:col :let={client} label="Status">
+              <.badge :if={client.disabled_at == nil} tone={:success}>Active</.badge>
+              <.badge :if={client.disabled_at != nil} tone={:neutral}>Disabled</.badge>
+            </:col>
+            <:col :let={client} label="API Tokens">
+              <div id={"api-client-tokens-#{client.id}"} class="space-y-2">
+                <div
+                  :for={token <- client.api_keys}
+                  id={"api-client-token-#{token.id}"}
+                  class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm"
+                >
+                  <span class="font-medium text-slate-700 dark:text-slate-200">{token.name}</span>
+                  <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{token.token_prefix}</span>
+                  <.api_token_status_badge api_key={token} />
+                  <button
+                    :if={api_token_active?(token)}
+                    id={"tenant-api-client-token-revoke-#{token.id}"}
+                    type="button"
+                    phx-click="revoke_api_key"
+                    phx-value-id={token.id}
+                    phx-disable-with="Revoking…"
+                    class="text-xs font-medium text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                  >
+                    Revoke
+                  </button>
+                </div>
+                <span
+                  :if={client.api_keys == []}
+                  class="text-sm text-slate-500 dark:text-slate-400"
+                >
+                  No API Tokens
+                </span>
+              </div>
+            </:col>
+
+            <:action :let={client}>
+              <.button
+                :if={client.disabled_at == nil}
+                id={"tenant-api-client-disable-#{client.id}"}
+                variant={:danger}
+                size={:sm}
+                phx-click="disable_api_client"
+                phx-value-id={client.id}
+                phx-disable-with="Disabling…"
+              >
+                Disable
+              </.button>
+              <span
+                :if={client.disabled_at != nil}
+                class="text-slate-400 dark:text-slate-500"
+              >
+                —
+              </span>
+            </:action>
+
+            <:empty>
+              <.state_message
+                id="tenant-api-clients-empty-state"
+                kind={:empty}
+                layout={:compact}
+                title="No API Clients provisioned yet."
+              >
+                <:action>
+                  Use orchardctl bulk provisioning to create API Clients and one-time API Token output.
                 </:action>
               </.state_message>
             </:empty>
@@ -302,7 +401,7 @@ defmodule OrchardConsole.TenantDetailLive do
       {:ok, %{api_key: api_key, token: token}} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Created API key #{api_key.name}.")
+         |> put_flash(:info, "Created API Token #{api_key.name}.")
          |> assign(
            generated_secret: %{
              api_key_id: api_key.id,
@@ -324,7 +423,7 @@ defmodule OrchardConsole.TenantDetailLive do
     end
   rescue
     _ ->
-      {:noreply, put_flash(socket, :error, "Unable to create API key.")}
+      {:noreply, put_flash(socket, :error, "Unable to create API Token.")}
   end
 
   defp revoke_api_key(socket, api_key_id) do
@@ -332,13 +431,13 @@ defmodule OrchardConsole.TenantDetailLive do
       {:ok, api_key} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Revoked API key #{api_key.name}.")
+         |> put_flash(:info, "Revoked API Token #{api_key.name}.")
          |> load_tenant_detail()}
 
       {:error, :api_key_not_found} ->
         {:noreply,
          socket
-         |> put_flash(:error, "API key not found.")
+         |> put_flash(:error, "API Token not found.")
          |> load_tenant_detail()}
 
       {:error, :tenant_not_found} ->
@@ -347,14 +446,45 @@ defmodule OrchardConsole.TenantDetailLive do
       {:error, _} ->
         {:noreply,
          socket
-         |> put_flash(:error, "Unable to revoke API key.")
+         |> put_flash(:error, "Unable to revoke API Token.")
          |> load_tenant_detail()}
     end
   rescue
     _ ->
       {:noreply,
        socket
-       |> put_flash(:error, "Unable to revoke API key.")
+       |> put_flash(:error, "Unable to revoke API Token.")
+       |> load_tenant_detail()}
+  end
+
+  defp disable_api_client(socket, api_client_id) do
+    case Governance.disable_api_client(socket.assigns.tenant, api_client_id) do
+      {:ok, api_client} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Disabled API Client #{api_client.name}.")
+         |> load_tenant_detail()}
+
+      {:error, :api_client_not_found} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "API Client not found.")
+         |> load_tenant_detail()}
+
+      {:error, :tenant_not_found} ->
+        {:noreply, assign(socket, detail_status: :not_found)}
+
+      {:error, _} ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Unable to disable API Client.")
+         |> load_tenant_detail()}
+    end
+  rescue
+    _ ->
+      {:noreply,
+       socket
+       |> put_flash(:error, "Unable to disable API Client.")
        |> load_tenant_detail()}
   end
 
@@ -381,12 +511,14 @@ defmodule OrchardConsole.TenantDetailLive do
     tenant_id = socket.assigns.tenant_id
 
     with {:ok, tenant} <- Governance.get_tenant(tenant_id),
-         {:ok, api_keys} <- Governance.list_api_keys_for_tenant(tenant) do
+         {:ok, api_keys} <- Governance.list_api_keys_for_tenant(tenant),
+         {:ok, api_clients} <- Governance.list_api_clients_for_tenant(tenant) do
       assign(socket,
         detail_status: :ok,
         tenant: tenant,
         api_keys: api_keys,
-        page_title: "Tenant #{tenant.slug}",
+        api_clients: api_clients,
+        page_title: "Organization #{tenant.slug}",
         load_error: nil
       )
     else
@@ -397,7 +529,32 @@ defmodule OrchardConsole.TenantDetailLive do
     _ ->
       assign(socket,
         detail_status: :error,
-        load_error: "Tenant details unavailable."
+        load_error: "Organization details unavailable."
       )
+  end
+
+  defp api_token_active?(%ApiKey{} = api_key), do: ApiKey.status(api_key, utc_now()) == :active
+
+  defp inference_client_access?(api_client) do
+    Enum.any?(api_client.role_bindings, fn
+      %RoleBinding{role: :inference_client} -> true
+      _role_binding -> false
+    end)
+  end
+
+  attr(:api_key, :map, required: true)
+
+  defp api_token_status_badge(assigns) do
+    assigns = assign(assigns, :status, ApiKey.status(assigns.api_key, utc_now()))
+
+    ~H"""
+    <.badge :if={@status == :active} tone={:success}>Active</.badge>
+    <.badge :if={@status == :expired} tone={:warning}>Expired</.badge>
+    <.badge :if={@status == :revoked} tone={:neutral}>Revoked</.badge>
+    """
+  end
+
+  defp utc_now do
+    DateTime.utc_now() |> DateTime.truncate(:microsecond)
   end
 end

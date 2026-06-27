@@ -22,7 +22,9 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
   ## Options (caller context)
 
     * `:tenant_id` — resolved tenant (default: seeded legacy tenant UUID)
+    * `:principal_type` — resolved principal type (default: `:tenant`)
     * `:principal_id` — resolved principal when available
+    * `:service_account_id` — resolved service account when available
     * `:api_key_id` — resolved API key when available
 
   ## Options (test overrides)
@@ -35,7 +37,9 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
     internal_id = Keyword.get(opts, :internal_id, Ecto.UUID.generate())
     public_id = Keyword.get(opts, :public_id, "chatcmpl-" <> internal_id)
     tenant_id = Keyword.get(opts, :tenant_id, Governance.legacy_tenant_id())
+    principal_type = Keyword.get(opts, :principal_type, :tenant)
     principal_id = Keyword.get(opts, :principal_id)
+    service_account_id = Keyword.get(opts, :service_account_id)
     api_key_id = Keyword.get(opts, :api_key_id)
 
     canonical =
@@ -44,7 +48,9 @@ defmodule Orchard.Inference.ChatRequestNormalizer do
         public_id: public_id,
         endpoint: :chat_completions,
         tenant_id: tenant_id,
+        principal_type: principal_type,
         principal_id: principal_id,
+        service_account_id: service_account_id,
         api_key_id: api_key_id,
         model_ref: parse_model_ref(params["model"]),
         input_items: params["messages"],

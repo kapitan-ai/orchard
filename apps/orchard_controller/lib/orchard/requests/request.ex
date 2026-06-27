@@ -12,7 +12,7 @@ defmodule Orchard.Requests.Request do
 
   import Ecto.Changeset
 
-  alias Orchard.Governance.{ApiKey, Tenant}
+  alias Orchard.Governance.{ApiKey, ServiceAccount, Tenant}
   alias Orchard.Models.Model
   alias Orchard.Requests.RequestEvent
 
@@ -37,13 +37,14 @@ defmodule Orchard.Requests.Request do
   ]
   @terminal_states [:completed, :failed, :cancelled, :timed_out, :interrupted]
   @payload_capture_modes [none: "none", metadata: "metadata", full: "full"]
+  @principal_types [tenant: "tenant", service_account: "service_account"]
 
   @type t :: %__MODULE__{}
 
   schema "requests" do
     field(:public_id, :string)
     field(:endpoint, Ecto.Enum, values: @endpoints)
-    field(:service_account_id, Ecto.UUID)
+    field(:principal_type, Ecto.Enum, values: @principal_types, default: :tenant)
     field(:requested_model, :string)
     field(:node_id, Ecto.UUID)
     field(:worker_id, Ecto.UUID)
@@ -71,6 +72,7 @@ defmodule Orchard.Requests.Request do
 
     belongs_to(:tenant, Tenant)
     belongs_to(:api_key, ApiKey)
+    belongs_to(:service_account, ServiceAccount)
     belongs_to(:model, Model)
     belongs_to(:retry_of_request, __MODULE__, foreign_key: :retry_of_request_id)
     has_many(:request_events, RequestEvent)
@@ -95,6 +97,7 @@ defmodule Orchard.Requests.Request do
       :public_id,
       :endpoint,
       :tenant_id,
+      :principal_type,
       :api_key_id,
       :service_account_id,
       :model_id,
@@ -128,6 +131,7 @@ defmodule Orchard.Requests.Request do
       :public_id,
       :endpoint,
       :tenant_id,
+      :principal_type,
       :requested_model,
       :state,
       :stream,

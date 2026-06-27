@@ -311,7 +311,7 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert html =~ "Playground"
       assert html =~ "Models"
       assert html =~ "Model Hub"
-      assert html =~ "Tenants"
+      assert html =~ "Organizations"
       assert html =~ "Requests"
     end
 
@@ -1440,7 +1440,7 @@ defmodule OrchardConsole.OverviewLiveTest do
     tool_config = view |> element("#overview-quickstart-guide-tool-config") |> render()
     assert tool_config =~ "Provider: OpenAI-compatible / Custom OpenAI"
     assert tool_config =~ "Base URL: #{Endpoint.url()}/v1"
-    assert tool_config =~ "API key: &lt;your-api-key&gt;"
+    assert tool_config =~ "API Token: &lt;your-api-token&gt;"
     assert tool_config =~ "Model: &lt;your-model&gt;"
   end
 

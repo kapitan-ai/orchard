@@ -32,7 +32,7 @@ defmodule OrchardConsole.OverviewLive do
       title: "Import your first model"
     },
     %{id: :run_test_request, dom_id: "run-test-request", ordinal: 3, title: "Run a test request"},
-    %{id: :create_api_key, dom_id: "create-api-key", ordinal: 4, title: "Create an API key"},
+    %{id: :create_api_key, dom_id: "create-api-key", ordinal: 4, title: "Create an API Token"},
     %{
       id: :connect_your_tools,
       dom_id: "connect-your-tools",
@@ -543,7 +543,7 @@ defmodule OrchardConsole.OverviewLive do
             <code id="overview-quickstart-guide-base-url" class="rounded bg-slate-100 px-1 py-0.5 text-xs dark:bg-slate-900">
               {quickstart_api_base_url()}
             </code>
-            with your generated API key and selected model.
+            with your generated API Token and selected model.
           </p>
 
           <div class="space-y-2">
@@ -993,7 +993,7 @@ defmodule OrchardConsole.OverviewLive do
     do: %{kind: :navigate, label: "Open Playground →", path: ~p"/console/playground"}
 
   defp quickstart_step_action(:create_api_key),
-    do: %{kind: :navigate, label: "Manage API Keys →", path: ~p"/console/tenants"}
+    do: %{kind: :navigate, label: "Manage API Tokens", path: ~p"/console/tenants"}
 
   defp quickstart_step_action(:connect_your_tools),
     do: %{kind: :open_guide, label: "View Integration Guide"}
@@ -1202,7 +1202,7 @@ defmodule OrchardConsole.OverviewLive do
     """
     Provider: OpenAI-compatible / Custom OpenAI
     Base URL: #{quickstart_api_base_url()}
-    API key: <your-api-key>
+    API Token: <your-api-token>
     Model: <your-model>
     """
     |> String.trim()

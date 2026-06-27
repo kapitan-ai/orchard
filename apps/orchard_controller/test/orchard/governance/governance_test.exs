@@ -207,6 +207,7 @@ defmodule Orchard.GovernanceTest do
 
       assert audit_log.payload == %{
                "name" => "Primary Key",
+               "owner_type" => "tenant",
                "token_prefix" => persisted.token_prefix
              }
 

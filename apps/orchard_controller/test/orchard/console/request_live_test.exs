@@ -586,7 +586,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert summary_html =~ parent.public_id
     end
 
-    test "renders resolved tenant and API key provenance", %{conn: conn} do
+    test "renders resolved Organization and API Token provenance", %{conn: conn} do
       {:ok, tenant} =
         Orchard.Governance.create_tenant(%{name: "Acme Corp", slug: "acme"})
 
@@ -612,7 +612,7 @@ defmodule OrchardConsole.RequestLiveTest do
       assert key_html =~ "Active"
     end
 
-    test "renders revoked API key with Revoked badge", %{conn: conn} do
+    test "renders revoked API Token with Revoked badge", %{conn: conn} do
       {:ok, tenant} =
         Orchard.Governance.create_tenant(%{name: "Revoke Test", slug: "revoke-test"})
 
@@ -649,16 +649,16 @@ defmodule OrchardConsole.RequestLiveTest do
       {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
 
       tenant_html = element(view, "#request-tenant") |> render()
-      assert tenant_html =~ "Unknown tenant"
+      assert tenant_html =~ "Unknown Organization"
       assert tenant_html =~ orphan_tenant_id
 
       key_html = element(view, "#request-api-key") |> render()
-      assert key_html =~ "Unknown API key"
+      assert key_html =~ "Unknown API Token"
       assert key_html =~ orphan_key_id
       assert key_html =~ "Missing"
     end
 
-    test "renders legacy tenant and dash for absent API key", %{conn: conn} do
+    test "renders legacy Organization and dash for absent API Token", %{conn: conn} do
       request =
         create_request!(%{
           state: :completed,

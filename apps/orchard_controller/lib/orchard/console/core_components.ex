@@ -1439,7 +1439,7 @@ defmodule OrchardConsole.CoreComponents do
     },
     %{
       key: :tenants,
-      label: "Tenants",
+      label: "Organizations",
       icon: "hero-key",
       path: "/console/tenants",
       enabled: true

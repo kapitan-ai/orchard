@@ -10,12 +10,10 @@ defmodule Orchard.API.RequestContext do
   inference surface. Successful authentication assigns:
 
     * `tenant_id`
+    * `principal_type`
     * `principal_id`
+    * `service_account_id`
     * `api_key_id`
-
-  Current M2a principal semantics are temporary: `principal_id = tenant_id`
-  until service-account-backed principals exist. API-key expiry is still a known
-  gap because the current governance schema only supports `revoked_at`.
   """
 
   @behaviour Plug
@@ -23,6 +21,8 @@ defmodule Orchard.API.RequestContext do
   @invalid_api_key_message "Invalid API key provided."
   @invalid_api_key_type "authentication_error"
   @invalid_api_key_code "invalid_api_key"
+  @api_client_disabled_message "API client is disabled."
+  @forbidden_message "Forbidden."
 
   @impl Plug
   def init(opts), do: opts
@@ -44,17 +44,30 @@ defmodule Orchard.API.RequestContext do
     case Governance.authenticate_api_key(token) do
       {:ok, auth_context} ->
         Governance.touch_api_key_last_used(auth_context.api_key_id)
-        put_auth_success_context(auth_context)
-
-        conn
-        |> Plug.Conn.assign(:tenant_id, auth_context.tenant_id)
-        |> Plug.Conn.assign(:principal_id, auth_context.principal_id)
-        |> Plug.Conn.assign(:api_key_id, auth_context.api_key_id)
+        authorize_request(conn, auth_context)
 
       {:error, reason} ->
         conn
         |> audit_auth_failure(token, reason)
         |> send_auth_error()
+    end
+  end
+
+  defp authorize_request(conn, auth_context) do
+    case Governance.authorize_public_inference(auth_context) do
+      :ok ->
+        put_auth_success_context(auth_context)
+
+        conn
+        |> Plug.Conn.assign(:tenant_id, auth_context.tenant_id)
+        |> Plug.Conn.assign(:principal_type, auth_context.principal_type)
+        |> Plug.Conn.assign(:principal_id, auth_context.principal_id)
+        |> Plug.Conn.assign(:service_account_id, auth_context.service_account_id)
+        |> Plug.Conn.assign(:api_key_id, auth_context.api_key_id)
+
+      {:error, reason} ->
+        put_auth_failure_context(reason)
+        send_authorization_error(conn, reason)
     end
   end
 
@@ -119,6 +132,28 @@ defmodule Orchard.API.RequestContext do
       @invalid_api_key_message,
       @invalid_api_key_type,
       code: @invalid_api_key_code
+    )
+    |> Plug.Conn.halt()
+  end
+
+  defp send_authorization_error(conn, :api_client_disabled) do
+    conn
+    |> ErrorHelpers.send_error(
+      :forbidden,
+      @api_client_disabled_message,
+      "invalid_request_error",
+      code: "api_client_disabled"
+    )
+    |> Plug.Conn.halt()
+  end
+
+  defp send_authorization_error(conn, :missing_inference_client_access) do
+    conn
+    |> ErrorHelpers.send_error(
+      :forbidden,
+      @forbidden_message,
+      "invalid_request_error",
+      code: "forbidden"
     )
     |> Plug.Conn.halt()
   end

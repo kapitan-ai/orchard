@@ -25,6 +25,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert html =~ "tenant-summary-card"
       assert html =~ "tenant-api-key-create-card"
       assert html =~ "tenant-api-keys-card"
+      assert html =~ "tenant-api-clients-card"
       assert html =~ "Detail Tenant"
       assert html =~ "detail-t"
       assert html =~ tenant.id
@@ -36,25 +37,31 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
     test "shows not-found state for unknown tenant ID", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/tenants/#{Ecto.UUID.generate()}")
-      assert html =~ "Tenant not found"
+      assert html =~ "Organization not found"
       assert html =~ "tenant-back-to-list"
     end
 
     test "shows not-found state for malformed ID", %{conn: conn} do
       {:ok, _view, html} = live(conn, "/console/tenants/not-a-uuid")
-      assert html =~ "Tenant not found"
+      assert html =~ "Organization not found"
     end
 
     test "shows empty API keys state", %{conn: conn, tenant: tenant} do
       {:ok, _view, html} = live(conn, "/console/tenants/#{tenant.id}")
-      assert html =~ "No API keys created yet."
+      assert html =~ "No API Tokens created yet."
       assert html =~ "tenant-api-keys-empty-state"
+    end
+
+    test "shows empty API Clients state", %{conn: conn, tenant: tenant} do
+      {:ok, _view, html} = live(conn, "/console/tenants/#{tenant.id}")
+      assert html =~ "No API Clients provisioned yet."
+      assert html =~ "tenant-api-clients-empty-state"
     end
 
     test "back link navigates to tenants list", %{conn: conn, tenant: tenant} do
       {:ok, _view, html} = live(conn, "/console/tenants/#{tenant.id}")
       assert html =~ "/console/tenants"
-      assert html =~ "Back to Tenants"
+      assert html =~ "Back to Organizations"
     end
   end
 
@@ -98,12 +105,12 @@ defmodule OrchardConsole.TenantDetailLiveTest do
         |> render_submit()
 
       # Flash and key in table
-      assert html =~ "Created API key prod-key."
+      assert html =~ "Created API Token prod-key."
       assert html =~ "prod-key"
 
       # Secret card shown
       assert html =~ "tenant-api-key-secret-card"
-      assert html =~ "API Key Created"
+      assert html =~ "API Token Created"
       assert html =~ "orch_"
       assert html =~ "only once"
       assert html =~ "Not yet copied"
@@ -173,7 +180,7 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
       html = render_click(view, "revoke_api_key", %{"id" => key.id})
 
-      assert html =~ "Revoked API key revoke-me."
+      assert html =~ "Revoked API Token revoke-me."
       assert html =~ "Revoked"
       refute has_element?(view, "#tenant-api-key-revoke-#{key.id}")
     end
@@ -185,7 +192,68 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
 
       html = render_click(view, "revoke_api_key", %{"id" => other_key.id})
-      assert html =~ "API key not found."
+      assert html =~ "API Token not found."
+    end
+  end
+
+  describe "API Clients" do
+    test "renders API Clients, access levels, and owned API Tokens without plaintext secrets", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      %{api_client: api_client, api_key: api_key, token: token} =
+        create_api_client_with_token!(tenant, "console-client")
+
+      {:ok, view, html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      assert html =~ "console-client"
+      assert html =~ "owner@example.com"
+      assert html =~ "Inference Client"
+      assert html =~ api_key.token_prefix
+      refute html =~ token
+      assert has_element?(view, "#tenant-api-client-disable-#{api_client.id}")
+      assert has_element?(view, "#tenant-api-client-token-revoke-#{api_key.id}")
+    end
+
+    test "revokes API Client-owned API Tokens from the Organization detail page", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      %{api_key: api_key} = create_api_client_with_token!(tenant, "console-client-revoke")
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      html = render_click(view, "revoke_api_key", %{"id" => api_key.id})
+
+      assert html =~ "Revoked API Token prod."
+      assert html =~ "Revoked"
+      refute has_element?(view, "#tenant-api-client-token-revoke-#{api_key.id}")
+    end
+
+    test "disables API Clients from the Organization detail page", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      %{api_client: api_client} = create_api_client_with_token!(tenant, "console-client-disable")
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      html = render_click(view, "disable_api_client", %{"id" => api_client.id})
+
+      assert html =~ "Disabled API Client console-client-disable."
+      assert html =~ "Disabled"
+      refute has_element?(view, "#tenant-api-client-disable-#{api_client.id}")
+    end
+
+    test "shows error for cross-Organization API Client disable attempt", %{
+      conn: conn,
+      tenant: tenant
+    } do
+      {:ok, other_tenant} = Governance.create_tenant(%{slug: "other-client-t", name: "Other"})
+      %{api_client: other_client} = create_api_client_with_token!(other_tenant, "other-client")
+
+      {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
+
+      html = render_click(view, "disable_api_client", %{"id" => other_client.id})
+      assert html =~ "API Client not found."
     end
   end
 
@@ -232,5 +300,21 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       html = render_click(view, "generated_secret_copy_failed", %{"api_key_id" => api_key_id})
       assert html =~ "Copy failed"
     end
+  end
+
+  defp create_api_client_with_token!(tenant, name) do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: name,
+        owner_contact: "owner@example.com",
+        team: "Inference"
+      })
+
+    {:ok, _role_binding} = Governance.ensure_inference_client_access(api_client, tenant)
+
+    {:ok, %{api_key: api_key, token: token}} =
+      Governance.create_api_client_api_token(api_client, %{name: "prod"})
+
+    %{api_client: api_client, api_key: api_key, token: token}
   end
 end
