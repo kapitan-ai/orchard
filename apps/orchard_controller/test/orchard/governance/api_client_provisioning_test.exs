@@ -245,7 +245,15 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
       )
     ]
 
-    assert {:ok, result} = Governance.bulk_apply_api_clients(rows, input_sha256: "input-sha")
+    actor_id = Ecto.UUID.generate()
+
+    assert {:ok, result} =
+             Governance.bulk_apply_api_clients(rows,
+               input_sha256: "input-sha",
+               actor_type: "operator",
+               actor_id: actor_id
+             )
+
     assert [output_row] = result.output_rows
     assert output_row.organization == tenant.slug
     assert output_row.api_client == "client-b"
@@ -276,6 +284,16 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
       )
 
     assert role_binding.tenant_scope_id == tenant.id
+
+    role_binding_audit_log =
+      Repo.get_by!(AuditLog,
+        action: "role_binding.created",
+        target_type: "role_binding",
+        target_id: role_binding.id
+      )
+
+    assert role_binding_audit_log.actor_type == "operator"
+    assert role_binding_audit_log.actor_id == actor_id
 
     assert {:ok, auth_context} = Governance.authenticate_api_key(output_row.api_token)
     assert auth_context.tenant_id == tenant.id

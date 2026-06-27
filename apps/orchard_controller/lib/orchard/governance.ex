@@ -1091,8 +1091,8 @@ defmodule Orchard.Governance do
     |> audit_log_impl().changeset(%{
       tenant_id: role_binding.tenant_scope_id,
       api_key_id: nil,
-      actor_type: "system",
-      actor_id: nil,
+      actor_type: audit_actor_type(opts),
+      actor_id: audit_actor_id(opts),
       action: "role_binding.created",
       target_type: "role_binding",
       target_id: role_binding.id,
