@@ -37,8 +37,8 @@
 - [x] 5.1 Update `docs/local-dev.md` with the implemented Source-dev BEAM split-role launch commands and troubleshooting guidance.
 - [x] 5.2 Document two-Mac cookie provisioning and verification without committing cookie material.
 - [x] 5.3 Document EPMD and bounded distribution port reachability requirements for the two-Mac smoke.
-- [ ] 5.4 Run the two-Mac Source-dev BEAM smoke and record durable evidence in `docs/investigations/source-dev-beam-smoke-<date>.md` with date, commit, sanitized hosts, commands, controller and node-agent BEAM node names, and remote Runtime Endpoint RPC evidence.
-- [ ] 5.5 Record Console Nodes reachability for local and remote Node Agents, `GET /v1/models` returning `200`, and `POST /v1/chat/completions` completing through Console Playground or an equivalent API request.
+- [x] 5.4 Run the two-Mac Source-dev BEAM smoke and record durable evidence in `docs/investigations/source-dev-beam-smoke-<date>.md` with date, commit, sanitized hosts, commands, controller and node-agent BEAM node names, and remote Runtime Endpoint RPC evidence.
+- [x] 5.5 Record Console Nodes reachability for local and remote Node Agents, `GET /v1/models` returning `200`, and `POST /v1/chat/completions` completing through Console Playground or an equivalent API request.
 - [x] 5.6 Defer any source-dev default promotion or all-in-one `bin/dev` BEAM default change to a separate OpenSpec change after the smoke evidence gate passes.
 
 ## 6. Tests And Validation

@@ -125,6 +125,25 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:worker_generation_mode] == "stream"
   end
 
+  test "dev.exs keeps worker sockets under a short worktree-specific root" do
+    runtime =
+      read_dev_config!(%{})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert String.starts_with?(runtime[:worker_socket_dir], "/tmp/od-")
+    assert String.ends_with?(runtime[:worker_socket_dir], "/ws")
+  end
+
+  test "dev.exs parses ORCHARD_WORKER_SOCKET_DIR" do
+    runtime =
+      read_dev_config!(%{"ORCHARD_WORKER_SOCKET_DIR" => "/tmp/orchard-worker-sockets"})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:worker_socket_dir] == "/tmp/orchard-worker-sockets"
+  end
+
   test "dev.exs explicit generation mode overrides stub backend default" do
     runtime =
       read_dev_config!(%{
