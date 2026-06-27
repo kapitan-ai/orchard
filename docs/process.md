@@ -50,6 +50,11 @@ rewrite the durable conclusion instead of copying the stale plan.
 - Product docs do not duplicate large normative sections from `SPEC.md`.
 - Private local artifacts are not committed.
 - Active `goals/<slug>/` directories are not staged.
+- Non-outdated review threads that touch security, runtime startup, contract behavior, cross-platform shell behavior, or data safety are resolved or explicitly disproven against the current PR head.
+- External validation summaries are tied to the exact commit that is being merged.
+  For shell, packaging, native helper, and portability-sensitive changes, record the OS, shell, and critical tool variants that were exercised.
+- Security-sensitive shell preflights fail closed on empty, nonnumeric, multiline, or otherwise unexpected command output.
+  Tests should cover platform-specific command behavior and launcher-shaped conditional paths such as `if`, `!`, and `... || return $?` when `set -e` semantics matter.
 - OpenSpec-backed changes pass
   `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate <change-id> --type change --strict --no-interactive`.
 - Archived or synced OpenSpec behavior passes
