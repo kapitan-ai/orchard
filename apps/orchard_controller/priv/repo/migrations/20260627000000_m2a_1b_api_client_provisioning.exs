@@ -40,7 +40,7 @@ defmodule Orchard.Repo.Migrations.M2A1BApiClientProvisioning do
     alter table(:api_keys) do
       add(
         :service_account_id,
-        references(:service_accounts, type: :binary_id, on_delete: :nilify_all)
+        references(:service_accounts, type: :binary_id, on_delete: :nothing)
       )
 
       add(:expires_at, :utc_datetime_usec)

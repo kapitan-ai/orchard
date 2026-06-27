@@ -40,6 +40,26 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
              })
   end
 
+  test "service-account-owned API Tokens restrict Service Account deletion", %{
+    tenant: tenant
+  } do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "migration-api-client-#{System.unique_integer([:positive])}",
+        owner_contact: "owner@example.com"
+      })
+
+    assert {:ok, _result} =
+             Governance.create_api_client_api_token(api_client, %{name: "migration-token"})
+
+    assert constraint_delete_action("api_keys", "api_keys_service_account_id_fkey") == "a"
+
+    assert {:error, %Postgrex.Error{postgres: %{constraint: "api_keys_service_account_id_fkey"}}} =
+             Repo.query("DELETE FROM service_accounts WHERE id = $1", [
+               dump_uuid(api_client.id)
+             ])
+  end
+
   defp insert_request(attrs) do
     Repo.query(
       """
@@ -84,5 +104,21 @@ defmodule Orchard.Repo.Migrations.ApiClientProvisioningMigrationTest do
       )
 
     count > 0
+  end
+
+  defp constraint_delete_action(table_name, constraint_name) do
+    %{rows: [[action]]} =
+      Repo.query!(
+        """
+        SELECT c.confdeltype
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid = c.conrelid
+        JOIN pg_namespace n ON n.oid = t.relnamespace
+        WHERE n.nspname = 'public' AND t.relname = $1 AND c.conname = $2
+        """,
+        [table_name, constraint_name]
+      )
+
+    action
   end
 end

@@ -22,6 +22,14 @@ defmodule Orchard.Governance.ApiClientProvisioning do
   @required_fields ~w(organization api_client owner_contact key_name)
   @optional_fields ~w(team owner_name external_ref description purpose expires_at metadata_json)
   @allowed_fields @required_fields ++ @optional_fields
+  @provisioning_audit_count_fields ~w(
+    row_count
+    api_clients_created_count
+    api_clients_updated_count
+    api_tokens_created_count
+    api_tokens_rotated_count
+    api_tokens_revoked_count
+  )
 
   @type validation_error :: %{
           row: pos_integer() | nil,
@@ -286,8 +294,15 @@ defmodule Orchard.Governance.ApiClientProvisioning do
       end
     end)
     |> case do
-      {:ok, planned_rows, _seen_identities} -> {:ok, Enum.reverse(planned_rows)}
-      {:error, errors} -> {:error, errors}
+      {:ok, planned_rows, _seen_identities} ->
+        planned_rows = Enum.reverse(planned_rows)
+
+        with :ok <- validate_resolved_api_client_identities(planned_rows) do
+          {:ok, planned_rows}
+        end
+
+      {:error, errors} ->
+        {:error, errors}
     end
   end
 
@@ -450,9 +465,43 @@ defmodule Orchard.Governance.ApiClientProvisioning do
       payload:
         %{"row_count" => batch.row_count}
         |> Map.merge(payload)
-        |> sanitize_error_summary()
+        |> sanitize_batch_audit_payload()
     })
     |> Repo.insert()
+  end
+
+  defp validate_resolved_api_client_identities(rows) do
+    errors =
+      rows
+      |> Enum.reject(&is_nil(&1.existing_api_client_id))
+      |> Enum.group_by(& &1.existing_api_client_id)
+      |> Enum.flat_map(&resolved_api_client_identity_errors_for_group/1)
+
+    case errors do
+      [] -> :ok
+      errors -> {:error, errors}
+    end
+  end
+
+  defp resolved_api_client_identity_errors_for_group({_api_client_id, grouped_rows}) do
+    identities =
+      grouped_rows
+      |> Enum.map(&row_identity/1)
+      |> Enum.uniq()
+
+    if length(identities) > 1 do
+      Enum.map(grouped_rows, &resolved_api_client_identity_error/1)
+    else
+      []
+    end
+  end
+
+  defp resolved_api_client_identity_error(row) do
+    error(
+      row.row_number,
+      "api_client",
+      "Rows resolve to the same existing API Client through multiple identities in this file."
+    )
   end
 
   defp count_plan(rows, rotation?) do
@@ -683,6 +732,12 @@ defmodule Orchard.Governance.ApiClientProvisioning do
       "api_tokens_rotated_count" => batch.api_tokens_rotated_count,
       "api_tokens_revoked_count" => batch.api_tokens_revoked_count
     }
+  end
+
+  defp sanitize_batch_audit_payload(payload) when is_map(payload) do
+    payload
+    |> sanitize_error_summary()
+    |> Map.merge(Map.take(payload, @provisioning_audit_count_fields))
   end
 
   defp sanitize_error_summary(summary) when is_map(summary) do

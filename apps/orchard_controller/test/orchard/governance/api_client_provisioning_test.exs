@@ -138,6 +138,31 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
            end)
   end
 
+  test "same existing API Client resolved by different identities is rejected", %{tenant: tenant} do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "client-resolved-identity",
+        owner_contact: "owner@example.com",
+        external_ref: "resolved-identity-ref"
+      })
+
+    rows = [
+      row(tenant, api_client: api_client.name, key_name: "one"),
+      row(tenant,
+        api_client: "client-resolved-identity-alias",
+        external_ref: api_client.external_ref,
+        key_name: "two"
+      )
+    ]
+
+    assert {:error, errors} = Governance.bulk_validate_api_clients(rows)
+
+    assert Enum.any?(errors, fn error ->
+             error.field == "api_client" and
+               error.message =~ "same existing API Client through multiple identities"
+           end)
+  end
+
   test "rotation rejects ambiguous identity before creating output", %{tenant: tenant} do
     rows = [
       row(tenant,
@@ -156,6 +181,41 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
            end)
 
     refute service_account_exists?(tenant.id, "client-rotation-identity")
+    assert Repo.aggregate(ProvisioningBatch, :count, :id) == 0
+  end
+
+  test "rotation rejects resolved identity conflict before returning revoked output", %{
+    tenant: tenant
+  } do
+    {:ok, api_client} =
+      Governance.upsert_api_client(tenant, %{
+        name: "client-rotation-resolved",
+        owner_contact: "owner@example.com",
+        external_ref: "rotation-resolved-ref"
+      })
+
+    rows = [
+      row(tenant, api_client: api_client.name, key_name: "production"),
+      row(tenant,
+        api_client: "client-rotation-resolved-alias",
+        external_ref: api_client.external_ref,
+        key_name: "production"
+      )
+    ]
+
+    assert {:error, errors} = Governance.bulk_apply_api_clients(rows, rotation: true)
+
+    assert Enum.any?(errors, fn error ->
+             error.field == "api_client" and
+               error.message =~ "same existing API Client through multiple identities"
+           end)
+
+    assert Repo.aggregate(
+             from(api_key in ApiKey, where: api_key.service_account_id == ^api_client.id),
+             :count,
+             :id
+           ) == 0
+
     assert Repo.aggregate(ProvisioningBatch, :count, :id) == 0
   end
 
@@ -215,6 +275,19 @@ defmodule Orchard.Governance.ApiClientProvisioningTest do
     assert [listed_token] = listed_client.api_keys
     assert listed_token.id == api_key.id
     assert listed_token.secret_hash == nil
+
+    applied_audit_log =
+      Repo.get_by!(AuditLog,
+        action: "provisioning_batch.applied",
+        target_type: "provisioning_batch",
+        target_id: batch.id
+      )
+
+    assert applied_audit_log.payload["api_clients_created_count"] == 1
+    assert applied_audit_log.payload["api_clients_updated_count"] == 0
+    assert applied_audit_log.payload["api_tokens_created_count"] == 1
+    assert applied_audit_log.payload["api_tokens_rotated_count"] == 0
+    assert applied_audit_log.payload["api_tokens_revoked_count"] == 0
 
     refute inspect(batch) =~ output_row.api_token
     refute inspect(Repo.all(AuditLog)) =~ output_row.api_token
