@@ -163,6 +163,18 @@ defmodule Orchard.GovernanceTest do
 
       refute Governance.has_active_api_keys?()
     end
+
+    test "returns false when only expired unrevoked api keys remain" do
+      tenant = create_tenant!("tenant-only-expired-api-keys")
+
+      expired_at =
+        DateTime.utc_now() |> DateTime.add(-3600, :second) |> DateTime.truncate(:microsecond)
+
+      create_api_key_record!(tenant, %{expires_at: expired_at})
+      create_api_key_record!(tenant, %{expires_at: expired_at})
+
+      refute Governance.has_active_api_keys?()
+    end
   end
 
   describe "create_api_key/2" do

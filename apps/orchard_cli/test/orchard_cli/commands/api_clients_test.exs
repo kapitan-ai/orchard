@@ -10,6 +10,7 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
   defmodule ConfigurableFileOps do
     def exists?(path), do: File.exists?(path)
     def dir?(path), do: File.dir?(path)
+    def lstat(path), do: File.lstat(path)
     def open(path, modes), do: File.open(path, modes)
     def chmod(path, mode), do: File.chmod(path, mode)
     def close(file), do: File.close(file)
@@ -133,6 +134,30 @@ defmodule OrchardCLI.Commands.ApiClientsTest do
 
     assert message =~ "output path already exists"
     refute Repo.get_by(ServiceAccount, tenant_id: tenant.id, name: "cli-client-preflight")
+  end
+
+  test "apply preflights a dangling symlink output path before mutating state", %{
+    tenant: tenant,
+    tmp_dir: tmp_dir
+  } do
+    input_path = write_csv!(tmp_dir, tenant, api_client: "cli-client-symlink-preflight")
+    output_path = Path.join(tmp_dir, "tokens.csv")
+    File.ln_s!(Path.join(tmp_dir, "missing-output.csv"), output_path)
+
+    assert {:error, message, 1} =
+             ApiClients.run([
+               "bulk-provision",
+               "--apply",
+               "--file",
+               input_path,
+               "--output",
+               output_path
+             ])
+
+    assert message =~ "output path already exists"
+    assert {:ok, _stat} = File.lstat(output_path)
+    refute Repo.get_by(ServiceAccount, tenant_id: tenant.id, name: "cli-client-symlink-preflight")
+    assert Repo.aggregate(ProvisioningBatch, :count, :id) == 0
   end
 
   test "apply preflights an unwritable output directory before mutating state", %{

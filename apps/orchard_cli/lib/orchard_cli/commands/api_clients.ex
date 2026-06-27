@@ -124,15 +124,27 @@ defmodule OrchardCLI.Commands.ApiClients do
     ops = file_ops()
     parent = Path.dirname(path)
 
-    cond do
-      ops.exists?(path) ->
+    case output_path_entry(path, ops) do
+      :present ->
         {:error, "Error: output path already exists: #{path}", 1}
 
-      not ops.dir?(parent) ->
-        {:error, "Error: output parent directory does not exist: #{parent}", 1}
+      :absent ->
+        if ops.dir?(parent) do
+          verify_output_parent_writable(path, parent, ops)
+        else
+          {:error, "Error: output parent directory does not exist: #{parent}", 1}
+        end
 
-      true ->
-        verify_output_parent_writable(path, parent, ops)
+      {:error, reason} ->
+        {:error, "Error: unable to inspect output path #{path}: #{format_file_error(reason)}", 1}
+    end
+  end
+
+  defp output_path_entry(path, ops) do
+    case ops.lstat(path) do
+      {:ok, _stat} -> :present
+      {:error, :enoent} -> :absent
+      {:error, reason} -> {:error, reason}
     end
   end
 

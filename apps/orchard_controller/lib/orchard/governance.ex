@@ -453,8 +453,11 @@ defmodule Orchard.Governance do
 
   @spec has_active_api_keys?() :: boolean()
   def has_active_api_keys? do
+    now = utc_now()
+
     ApiKey
     |> where([api_key], is_nil(api_key.revoked_at))
+    |> where([api_key], is_nil(api_key.expires_at) or api_key.expires_at > ^now)
     |> Repo.exists?()
   end
 

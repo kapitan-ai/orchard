@@ -810,6 +810,22 @@ defmodule OrchardConsole.OverviewLiveTest do
       assert step_5_action =~ ~s(data-quickstart-action-emphasis="current")
     end
 
+    test "expired API Tokens do not complete the create API key quickstart step", %{
+      conn: conn
+    } do
+      {:ok, view, _html} = live(conn, "/console")
+
+      complete_quickstart_server_steps_with_expired_key(view)
+      assert_quickstart_hydrating(view)
+      hydrate_quickstart(view)
+
+      assert_quickstart_status(view, "system-healthy", "completed")
+      assert_quickstart_status(view, "import-first-model", "completed")
+      assert_quickstart_status(view, "run-test-request", "completed")
+      assert_quickstart_status(view, "create-api-key", "current")
+      assert_quickstart_status(view, "connect-your-tools", "pending")
+    end
+
     test "goes straight from hydrating to compact completed for returning completed users", %{
       conn: conn
     } do
@@ -1459,7 +1475,16 @@ defmodule OrchardConsole.OverviewLiveTest do
       )
   end
 
-  defp complete_quickstart_server_steps(view) do
+  defp complete_quickstart_server_steps(view), do: complete_quickstart_server_steps(view, [])
+
+  defp complete_quickstart_server_steps_with_expired_key(view) do
+    expired_at =
+      DateTime.utc_now() |> DateTime.add(-3600, :second) |> DateTime.truncate(:microsecond)
+
+    complete_quickstart_server_steps(view, expires_at: expired_at)
+  end
+
+  defp complete_quickstart_server_steps(view, opts) do
     create_model!(%{state: :active})
     create_request!(%{state: :completed})
 
@@ -1471,9 +1496,21 @@ defmodule OrchardConsole.OverviewLiveTest do
         name: "Quickstart Tenant #{suffix}"
       })
 
-    {:ok, _api_key} = Governance.create_api_key(tenant.id, %{name: "Quickstart Key"})
+    {:ok, %{api_key: api_key}} = Governance.create_api_key(tenant.id, %{name: "Quickstart Key"})
+
+    if expires_at = Keyword.get(opts, :expires_at) do
+      patch_api_key_expires_at(api_key, expires_at)
+    end
 
     send(view.pid, :refresh_overview)
     render(view)
+  end
+
+  defp patch_api_key_expires_at(api_key, %DateTime{} = expires_at) do
+    {1, _} =
+      Repo.update_all(
+        from(k in Orchard.Governance.ApiKey, where: k.id == ^api_key.id),
+        set: [expires_at: expires_at]
+      )
   end
 end
