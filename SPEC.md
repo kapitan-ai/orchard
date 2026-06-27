@@ -2629,7 +2629,7 @@ create type request_state as enum (
 
 create type tenant_status as enum ('active', 'suspended', 'deleted');
 create type api_key_status as enum ('active', 'revoked', 'expired');
-create type actor_type as enum ('user', 'service_account', 'api_key', 'node', 'system');
+create type actor_type as enum ('user', 'operator', 'service_account', 'api_key', 'node', 'system');
 create type payload_capture_mode as enum ('none', 'metadata', 'full');
 ```
 
@@ -2870,20 +2870,22 @@ create table request_events (
 
 create table audit_logs (
   id bigserial primary key,
-  occurred_at timestamptz not null default now(),
+  tenant_id uuid not null references tenants(id),
+  api_key_id uuid references api_keys(id) on delete set null,
   actor_type actor_type not null,
-  actor_id text not null,
-  tenant_id uuid references tenants(id),
-  request_id uuid references requests(id),
+  actor_id text,
   action text not null,
-  resource_type text not null,
-  resource_id text not null,
-  outcome text not null,
-  remote_addr inet,
-  user_agent text,
-  details jsonb not null default '{}'::jsonb
+  target_type text not null,
+  target_id text,
+  occurred_at timestamptz not null default now(),
+  payload jsonb not null default '{}'::jsonb
 );
 ```
+
+Audit log `actor_type` SHALL identify the provenance class of the action.
+`operator` represents operator and admin product surfaces such as Orchard Console, Orchard CLI, Operator API, and Admin API actions.
+`actor_id` MAY be null for `system` actions and for local operator actions before Orchard has an authenticated first-class operator identity.
+Audit log `payload` MAY include `surface` to preserve the originating product surface, for example `console` or `cli`, when that context is useful for governance review.
 
 ### 8.3 Supplemental governance tables
 

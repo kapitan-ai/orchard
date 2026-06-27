@@ -145,6 +145,11 @@ _Avoid_: Shell scripts as product interface
 
 ### Governance
 
+**Operator**:
+A human or local administrative actor who configures, governs, or operates Orchard through Console, CLI, Operator API, or Admin API surfaces.
+An Operator is not a Service Account, API Client, API Key, or Tenant.
+_Avoid_: Service Account, API Client, API Key, Tenant
+
 **Tenant**:
 A governance boundary for model access, quotas, keys, retention, and usage accounting.
 Product-facing label: Organization.
