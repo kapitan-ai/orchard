@@ -81,9 +81,9 @@ Use [`glossary/CONTEXT.md`](glossary/CONTEXT.md) as the shared vocabulary glossa
 
 ### Target public inference
 
-This is the full-product target flow. Current public `/v1/*` routes resolve a
-tenant-scoped Bearer API key. Some direct internal tests/helpers still keep
-legacy tenant defaults until full RBAC and quota policy are complete.
+This is the full-product target flow.
+Current public `/v1/*` routes resolve either a tenant-direct Bearer API Token or a service-account-owned API Token whose API Client has tenant-scoped `inference_client` access.
+Some direct internal tests/helpers still keep legacy tenant defaults until full quota policy is complete.
 
 1. Client calls a public `/v1` endpoint on the controller.
 2. Controller authenticates, canonicalizes, renders/tokenizes, admits, and

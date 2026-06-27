@@ -14,7 +14,7 @@ This changes `SPEC.md` §10.3 and §10.4 by making the service-account principal
 ### Requirement: Bulk provisioning creates service-account-owned API Tokens
 Bulk provisioning SHALL create service-account-owned API Tokens by default.
 Tenant-direct API Keys SHALL remain valid for manual, bootstrap, and compatibility paths, but SHALL NOT be the default output of the bulk provisioning workflow.
-This changes `SPEC.md` §7.4.3, §8.2, §10.2, and §10.3 by requiring bulk-created credentials to resolve through Service Account ownership.
+This changes `SPEC.md` §7.4.4, §8.2, §10.2, and §10.3 by requiring bulk-created credentials to resolve through Service Account ownership.
 
 #### Scenario: Bulk row creates API Client and API Token
 - **WHEN** an operator applies a valid bulk provisioning row for Organization `acme`, API Client `alice-codex-dev`, Owner Contact `alice@example.com`, and key name `default`
@@ -26,6 +26,7 @@ This changes `SPEC.md` §7.4.3, §8.2, §10.2, and §10.3 by requiring bulk-crea
 Bulk provisioning SHALL match API Clients by Organization plus External Reference when an External Reference is present.
 Bulk provisioning SHALL otherwise match API Clients by Organization plus API Client name.
 Bulk provisioning SHALL NOT silently create duplicate active API Tokens when the same API Client and key name already have an active token.
+Bulk provisioning SHALL reject rows targeting disabled API Clients.
 Replacement token creation SHALL require an explicit Key Rotation mode.
 This changes `SPEC.md` §10.2 and §10.9 by defining safe repeated provisioning behavior.
 
@@ -40,7 +41,7 @@ Dry Run SHALL validate the entire input, duplicate behavior, referenced Organiza
 Apply SHALL reject the entire batch before creating token secrets when validation fails.
 Apply SHALL commit all validated provisioning changes as one batch or roll back the batch on failure.
 Post-commit One-time Secret Output delivery failure SHALL mark the Provisioning Batch `output_failed`, emit a redacted audit event, and return API Token prefixes for revocation or rotation.
-This changes `SPEC.md` §7.4.3 and §10.9 by defining the operator workflow and failure behavior for bulk credential creation.
+This changes `SPEC.md` §7.4.4 and §10.9 by defining the operator workflow and failure behavior for bulk credential creation.
 
 #### Scenario: Invalid row prevents all secret generation
 - **WHEN** an operator runs Apply with a bulk provisioning file that contains one invalid row
@@ -54,7 +55,8 @@ The bulk provisioning CSV input SHALL require `organization`, `api_client`, `own
 The bulk provisioning CSV input MAY include `team`, `owner_name`, `external_ref`, `description`, `purpose`, `expires_at`, and `metadata_json`.
 Plaintext API Token secrets MUST NOT be accepted in the input file.
 Token expiry SHALL be supported but SHALL NOT be required in the first slice.
-This changes `SPEC.md` §7.4.3 and §10.2 by defining the operator input contract for bulk API Token creation.
+Repeated provisioning SHALL preserve omitted optional API Client metadata columns, clear present blank optional scalar metadata columns, and replace metadata when `metadata_json` is present.
+This changes `SPEC.md` §7.4.4 and §10.2 by defining the operator input contract for bulk API Token creation.
 
 #### Scenario: CSV with required fields is accepted
 - **WHEN** an operator validates a CSV row with `organization`, `api_client`, `owner_contact`, and `key_name`
@@ -65,7 +67,9 @@ This changes `SPEC.md` §7.4.3 and §10.2 by defining the operator input contrac
 Orchard SHALL display or export plaintext API Token secrets only as One-time Secret Output after successful API Token creation.
 Orchard MUST NOT persist plaintext token secrets in Postgres, audit logs, provisioning batches, Console assigns after dismissal, support bundles, local evidence logs, or raw OpenSpec artifacts.
 The bulk provisioning CLI SHALL validate the operator-chosen output path before mutating state.
-This changes `SPEC.md` §10.2, §10.9, and §11.8 by defining secret handling for bulk token creation.
+The bulk provisioning CLI SHALL support `--json` summaries without writing plaintext API Tokens to stdout.
+One-time Secret Output CSV SHALL include `organization`, `api_client`, `external_ref`, `key_name`, `api_token_id`, `api_token_prefix`, `api_token`, and `expires_at`.
+This changes `SPEC.md` §7.4.4, §10.2, §10.9, and §11.9 by defining secret handling for bulk token creation.
 
 #### Scenario: Successful apply writes sensitive output once
 - **WHEN** an operator applies a valid bulk provisioning batch with an output CSV path
@@ -132,7 +136,7 @@ This changes `SPEC.md` §10.9 by adding bulk provisioning audit requirements.
 Orchard Console SHALL show Organizations, API Clients, Team metadata, Owner Contact metadata, API Token prefixes, creation timestamps, last-used timestamps, revocation state, expiry state, and API Client Disablement state.
 Orchard Console SHALL allow operators with sufficient access to revoke API Tokens and disable API Clients.
 The first slice SHALL NOT require Console bulk secret export or a bulk Admin API endpoint.
-This changes `SPEC.md` §2.3 and §11.8 by defining the initial Console management surface for API Client access.
+This changes `SPEC.md` §2.3 and §10.3 by defining the initial Console management surface for API Client access.
 
 #### Scenario: Console shows API Client token provenance
 - **WHEN** an operator opens an Organization's API Client management view

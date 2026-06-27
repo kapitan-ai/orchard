@@ -6,8 +6,10 @@ defmodule Orchard.API.RequestContext do
   @moduledoc """
   Plug that resolves authenticated caller context for `/v1/*` requests.
 
-  M2a requires a single `Authorization: Bearer <api_key>` header on the public
-  inference surface. Successful authentication assigns:
+  M2a requires a single `Authorization: Bearer <api-token>` header on the
+  public inference surface.
+  The bearer credential may be tenant-direct or service-account-owned.
+  Successful authentication assigns:
 
     * `tenant_id`
     * `principal_type`

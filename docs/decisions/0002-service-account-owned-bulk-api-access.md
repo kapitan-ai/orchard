@@ -2,7 +2,7 @@
 
 Accepted.
 
-Bulk API access provisioning will create service-account-owned API Keys by default, using the product labels API Clients and API Tokens in operator-facing surfaces.
+Bulk API access provisioning will create service-account-owned API Tokens by default, using the canonical API Key schema and the product labels API Clients and API Tokens in operator-facing surfaces.
 Owner Contact and Team are descriptive API Client metadata only; they do not authenticate, authorize, own quota, or define routing policy.
 Tenant-direct API Keys remain supported for manual, bootstrap, and compatibility paths, but bulk provisioning uses API Clients so Orchard can audit, disable, and rotate non-interactive client access without introducing first-class human users.
 Each bulk-provisioned API Client receives an explicit tenant-scoped `inference_client` Access Level by default.

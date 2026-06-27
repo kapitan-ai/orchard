@@ -149,7 +149,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 | `Orchard.Nodes`         | OTP app              | node registry, lifecycle, heartbeat snapshots                |
 | `Orchard.Requests`      | OTP app              | per-request FSMs and request event logging                   |
 | `Orchard.Observability` | OTP app              | metrics, traces, logs                                        |
-| `Orchard.Governance`    | OTP app              | tenants, quotas, keys, audit logs                            |
+| `Orchard.Governance`    | OTP app              | tenants, API Clients, API Tokens, quotas, role bindings, audit logs |
 
 ### 2.2 Node-side components
 
@@ -169,6 +169,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 | ----------------------- | ---------------------------- | ---------------------------------------------------------- |
 | Tray/menu bar app       | `.app` + LaunchAgent         | local status, onboarding, logs, support bundle entry point |
 | `orchardctl` CLI            | binary                       | admin/operator automation, bootstrap, diagnostics          |
+| Orchard Console         | controller LiveView          | local/operator UI for runtime status, requests, Organizations, API Tokens, and API Clients |
 | Managed Postgres helper | LaunchDaemon in managed mode | local DB lifecycle only                                    |
 
 ### 2.4 Repository structure
@@ -2053,7 +2054,7 @@ Response:
 ```json
 {
   "id": "uuid",
-  "key_prefix": "orchard_kp_01J...",
+  "token_prefix": "orchard_kp_01J...",
   "secret": "orchard_sk_01J....<secret>",
   "expires_at": "2026-12-31T00:00:00Z"
 }
@@ -2063,6 +2064,9 @@ Response:
 
 The first bulk provisioning surface SHALL be `orchardctl api-clients bulk-provision`.
 The command SHALL support exactly one of Dry Run or Apply mode.
+The command SHALL expose `--dry-run`, `--apply`, `--file`, `--output`, `--rotation`, and `--json` options.
+Apply mode SHALL require an operator-specified output path.
+Dry Run mode MAY validate an operator-specified output path without requiring one.
 The input CSV SHALL require `organization`, `api_client`, `owner_contact`, and `key_name`.
 The input CSV MAY include `team`, `owner_name`, `external_ref`, `description`, `purpose`, `expires_at`, and `metadata_json`.
 The `organization` field SHALL identify one Organization slug per input file.
@@ -2070,13 +2074,17 @@ Plaintext API Token secrets SHALL NOT be accepted in input.
 Dry Run SHALL validate Organizations, API Client identity, duplicate API Token names, optional expiry values, metadata JSON, and output destination readiness without mutating state or generating secrets.
 Apply SHALL validate the output path before mutation and commit all provisioning changes as one batch.
 Apply SHALL write One-time Secret Output only after the batch succeeds.
+One-time Secret Output SHALL be a CSV with `organization`, `api_client`, `external_ref`, `key_name`, `api_token_id`, `api_token_prefix`, `api_token`, and `expires_at` columns.
 If One-time Secret Output delivery fails after a committed Apply, Orchard SHALL mark the Provisioning Batch as `output_failed`, write a redacted audit event, and return recovery guidance that names API Token prefixes for revocation or rotation.
 The output-failed recovery path SHALL NOT persist plaintext API Token secrets.
 Repeated provisioning SHALL match API Clients by Organization plus External Reference when present, otherwise by Organization plus API Client name.
 Repeated provisioning SHALL reject duplicate active API Token names unless explicit Key Rotation mode is enabled.
 Key Rotation mode SHALL create a replacement API Token and revoke previous active API Tokens with the same API Client and token name.
+Repeated provisioning SHALL preserve omitted optional API Client metadata columns, clear present blank optional scalar metadata columns, and replace metadata when `metadata_json` is present.
+Bulk provisioning SHALL reject rows targeting disabled API Clients.
+JSON mode SHALL emit a machine-readable summary without plaintext API Tokens in stdout.
 
-#### 7.4.4 Model import example
+#### 7.4.5 Model import example
 
 ```json
 POST /admin/v1/models/import
@@ -2087,7 +2095,7 @@ POST /admin/v1/models/import
 }
 ```
 
-#### 7.4.5 Observability config example
+#### 7.4.6 Observability config example
 
 ```json
 PATCH /admin/v1/observability
@@ -2758,7 +2766,7 @@ create table tenants (
 
 create table service_accounts (
   id uuid primary key default gen_random_uuid(),
-  tenant_id uuid not null references tenants(id),
+  tenant_id uuid not null references tenants(id) on delete cascade,
   name text not null,
   owner_contact text not null,
   owner_name text,
@@ -2845,7 +2853,8 @@ create table requests (
   error_code text,
   error_message text,
   inserted_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  updated_at timestamptz not null default now(),
+  check (principal_type <> 'service_account' or service_account_id is not null)
 );
 
 create table request_events (
@@ -2884,14 +2893,14 @@ create table role_bindings (
   principal_type text not null check (principal_type in ('tenant', 'service_account', 'api_key')),
   principal_id uuid not null,
   role text not null check (role in ('admin', 'operator', 'tenant_admin', 'inference_client')),
-  tenant_scope_id uuid references tenants(id),
+  tenant_scope_id uuid references tenants(id) on delete cascade,
   inserted_at timestamptz not null default now(),
   unique(principal_type, principal_id, role, tenant_scope_id)
 );
 
 create table provisioning_batches (
   id uuid primary key default gen_random_uuid(),
-  tenant_id uuid not null references tenants(id),
+  tenant_id uuid not null references tenants(id) on delete cascade,
   actor_type text not null default 'operator',
   actor_id text,
   status text not null check (status in ('applying', 'applied', 'failed', 'output_failed')),
@@ -2954,7 +2963,7 @@ create table cluster_settings (
 );
 ```
 
-### 8.4 Required indexes
+### 8.4 Required indexes and constraints
 
 ```sql
 create index idx_node_heartbeats_node_observed_at
@@ -2976,6 +2985,46 @@ create index idx_requests_active_by_tenant
 create unique index idx_requests_tenant_idempotency
   on requests(tenant_id, idempotency_key)
   where idempotency_key is not null;
+
+create unique index idx_service_accounts_tenant_name
+  on service_accounts(tenant_id, name);
+
+create unique index idx_service_accounts_tenant_external_ref
+  on service_accounts(tenant_id, external_ref)
+  where external_ref is not null;
+
+create index idx_service_accounts_tenant_team
+  on service_accounts(tenant_id, team);
+
+create index idx_api_keys_service_account_inserted_at
+  on api_keys(service_account_id, inserted_at);
+
+create extension if not exists btree_gist;
+
+alter table api_keys
+  add constraint api_keys_service_account_active_name_no_overlap
+  exclude using gist (
+    service_account_id with =,
+    name with =,
+    tsrange(
+      inserted_at,
+      greatest(
+        inserted_at,
+        least(
+          coalesce(revoked_at, 'infinity'::timestamp),
+          coalesce(expires_at, 'infinity'::timestamp)
+        )
+      ),
+      '[)'
+    ) with &&
+  )
+  where (service_account_id is not null);
+
+create unique index idx_role_bindings_unique_assignment
+  on role_bindings(principal_type, principal_id, role, tenant_scope_id);
+
+create index idx_provisioning_batches_tenant_inserted_at
+  on provisioning_batches(tenant_id, inserted_at);
 
 create index idx_audit_logs_tenant_occurred_at
   on audit_logs(tenant_id, occurred_at desc);
@@ -3470,6 +3519,7 @@ Required commands:
 * `orchardctl node join`
 * `orchardctl nodes list`
 * `orchardctl nodes admit`
+* `orchardctl api-clients bulk-provision`
 * `orchardctl models import`
 * `orchardctl requests inspect`
 * `orchardctl support bundle create`

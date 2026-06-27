@@ -1024,12 +1024,18 @@ controller-bearing installs (`all` or `controller`):
    command arguments.
 2. Run `sudo orchardctl env init` and fill in required database/runtime values.
 3. Run `sudo orchardctl migrate`.
-4. Create a tenant and API key before making public `/v1` API calls. The API key
-   token is printed once:
+4. Create an Organization and API Token before making public `/v1` API calls.
+   Tenant-direct API Tokens remain supported for manual/bootstrap use and the token is printed once:
    ```bash
    sudo orchardctl tenants create --slug default --name "Default"
    sudo orchardctl api-keys create --tenant-id <tenant-id> --name "Primary"
    ```
+   For internal developers, applications, coding agents, or automation clients, use bulk API Client provisioning instead:
+   ```bash
+   sudo orchardctl api-clients bulk-provision --dry-run --file /path/to/api-clients.csv
+   sudo orchardctl api-clients bulk-provision --apply --file /path/to/api-clients.csv --output /secure/path/api-client-tokens.csv
+   ```
+   The input CSV requires `organization`, `api_client`, `owner_contact`, and `key_name`, and the output CSV is One-time Secret Output containing the new API Tokens.
 5. Run `sudo orchardctl transport enable-local-https --host HOST` for the local
    generated-CA direct HTTPS path, or configure an operator-managed direct HTTPS
    certificate/reverse-proxy transport before starting services.

@@ -228,7 +228,7 @@ defmodule OrchardConsole.TenantDetailLive do
         </.card>
       </div>
 
-      <%!-- Create API Key --%>
+      <%!-- Create tenant-direct API Token --%>
       <div id="tenant-api-key-create-card">
         <.card>
           <:title>Create API Token</:title>
@@ -248,7 +248,7 @@ defmodule OrchardConsole.TenantDetailLive do
         </.card>
       </div>
 
-      <%!-- API Keys Table --%>
+      <%!-- Organization API Tokens table --%>
       <div id="tenant-api-keys-card">
         <.card>
           <:title>Organization API Tokens</:title>

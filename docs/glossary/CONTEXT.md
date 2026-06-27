@@ -155,7 +155,7 @@ A product-facing grouping label stored as API Client metadata for filtering, rep
 _Avoid_: Tenant, Quota boundary, Routing Policy, RBAC Role
 
 **Service Account**:
-A non-interactive principal that may own API Keys and RBAC Roles.
+A non-interactive principal that may own API Tokens and tenant-scoped RBAC Roles.
 Product-facing label: API Client.
 _Avoid_: User account, Tenant, API Key, Team
 
@@ -185,7 +185,7 @@ An API Key whose effective principal is the Service Account that owns it.
 _Avoid_: Tenant-direct API Key, User account, Owner Contact
 
 **Key Rotation**:
-An explicit credential lifecycle operation that creates a replacement API Key and may revoke an older API Key after the replacement is available.
+An explicit credential lifecycle operation that creates a replacement API Token and revokes previous active API Tokens with the same API Client and token name.
 _Avoid_: duplicate import, silent token creation, Service Account disablement
 
 **API Client Disablement**:

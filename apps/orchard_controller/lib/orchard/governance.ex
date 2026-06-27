@@ -1,7 +1,7 @@
 defmodule Orchard.Governance do
   @moduledoc """
-  Governance constants and lifecycle APIs shared across the controller's current
-  M1 compatibility path and the emerging M2 governance surface.
+  Governance constants and lifecycle APIs for tenants, API Clients, API Tokens,
+  role bindings, provisioning batches, and audit records.
   """
 
   import Ecto.Query

@@ -1,8 +1,8 @@
 ## Context
 
-Orchard currently authenticates public `/v1/*` calls with tenant-scoped Bearer API Keys.
-The current implementation stores tenants, API keys, and audit logs, and temporarily resolves `principal_id` to the tenant id.
-`SPEC.md` already describes service accounts, role bindings, API key status and expiry, and RBAC, but the implementation has not yet built those pieces.
+Before this change, Orchard authenticated public `/v1/*` calls with tenant-scoped Bearer API Keys.
+The implementation stored tenants, API keys, and audit logs, and temporarily resolved `principal_id` to the tenant id.
+This change builds the service-account, role-binding, API key expiry, API Client provisioning, and typed-principal pieces described by `SPEC.md`.
 
 The user-facing need is easier rollout for several internal developers, applications, coding agents, and automation clients inside the same organization or team.
 The design keeps Tenant as the governance boundary and uses API Clients as the product-facing label for service accounts.

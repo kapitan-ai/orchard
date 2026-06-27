@@ -1,6 +1,6 @@
 defmodule Orchard.Governance.ApiKey do
   @moduledoc """
-  Ecto schema for governance API-key metadata.
+  Ecto schema for tenant-direct and service-account-owned API Token metadata.
   """
 
   use Ecto.Schema

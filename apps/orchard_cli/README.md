@@ -10,11 +10,14 @@ This README is orientation only. Normative CLI requirements live in
 ## Owns
 
 - Operator commands for environment, transport, migrations, status, start/stop,
-  upgrades, tenants, API keys, nodes, and models.
+  upgrades, tenants, API keys, API Client bulk provisioning, nodes, and models.
 - SPEC-required future command paths that return explicit deferred status until
   their milestones land: `cluster init`, `node join`, `nodes admit`,
   and `requests inspect`.
 - Local diagnostic support bundle creation via `support bundle create`.
+- Bulk API Client provisioning through `api-clients bulk-provision`, including
+  Dry Run, all-or-nothing Apply, output preflight, Key Rotation, and One-time
+  Secret Output CSV delivery.
 - CLI helpers that wrap release scripts and packaged service management.
 - Human-readable operator output and command validation.
 

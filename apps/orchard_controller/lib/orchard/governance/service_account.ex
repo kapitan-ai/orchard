@@ -1,6 +1,6 @@
 defmodule Orchard.Governance.ServiceAccount do
   @moduledoc """
-  Ecto schema for non-interactive service-account principals.
+  Ecto schema for non-interactive service-account principals labeled as API Clients.
   """
 
   use Ecto.Schema
