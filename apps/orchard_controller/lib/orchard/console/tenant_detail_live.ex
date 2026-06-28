@@ -305,132 +305,11 @@ defmodule OrchardConsole.TenantDetailLive do
           <:title>API Clients</:title>
           <:subtitle>Non-interactive access, ownership context, and owned API Tokens.</:subtitle>
 
-          <.table id="tenant-api-clients-table" rows={@api_clients} row_id={&"api-client-#{&1.id}"}>
-            <:col :let={client} label="API Client" class="min-w-64">
-              <div class="space-y-1">
-                <div class="font-medium text-slate-900 dark:text-slate-100">{client.name}</div>
-                <p :if={present?(client.purpose)} class="text-xs text-slate-600 dark:text-slate-300">
-                  {client.purpose}
-                </p>
-                <p :if={present?(client.description)} class="text-xs text-slate-500 dark:text-slate-400">
-                  {client.description}
-                </p>
-              </div>
-            </:col>
-            <:col :let={client} label="Owner">
-              <div class="space-y-1">
-                <div :if={present?(client.owner_name)} class="font-medium text-slate-900 dark:text-slate-100">
-                  {client.owner_name}
-                </div>
-                <div class="text-sm text-slate-700 dark:text-slate-200">{client.owner_contact}</div>
-                <div :if={present?(client.team)} class="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
-                  <span class="font-medium uppercase tracking-wide">Team</span>
-                  <span>{client.team}</span>
-                </div>
-              </div>
-            </:col>
-            <:col :let={client} label="External Ref" mono>
-              {client.external_ref || "—"}
-            </:col>
-            <:col :let={client} label="Access / State" class="min-w-36">
-              <div class="space-y-1.5 text-xs">
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <span class="font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Access</span>
-                  <.badge :if={inference_client_access?(client)} tone={:neutral}>Inference Client</.badge>
-                  <.badge :if={!inference_client_access?(client)} tone={:neutral}>No Access</.badge>
-                </div>
-                <div class="flex flex-wrap items-center gap-1.5">
-                  <span class="font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">State</span>
-                  <.badge :if={client.disabled_at == nil} tone={:success}>Active</.badge>
-                  <.badge :if={client.disabled_at != nil} tone={:neutral}>Disabled</.badge>
-                </div>
-                <div
-                  :if={client.disabled_at != nil}
-                  class="text-xs text-slate-500 dark:text-slate-400"
-                >
-                  Disabled <.local_time value={client.disabled_at} format={:datetime_minute} class="font-mono" />
-                </div>
-              </div>
-            </:col>
-            <:col :let={client} label="API Tokens" class="min-w-72">
-              <div id={"api-client-tokens-#{client.id}"} class="space-y-2">
-                <div
-                  :for={token <- client.api_keys}
-                  id={"api-client-token-#{token.id}"}
-                  class={[
-                    "space-y-1 text-sm",
-                    ApiKey.revoked?(token) && "opacity-75"
-                  ]}
-                >
-                  <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
-                    <span class="font-medium text-slate-700 dark:text-slate-200">{token.name}</span>
-                    <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{token.token_prefix}</span>
-                    <.api_token_status_badge api_key={token} />
-                    <.badge :if={client.disabled_at != nil && active_api_token?(token)} tone={:warning}>
-                      Blocked by client
-                    </.badge>
-                    <button
-                      :if={token.revoked_at == nil}
-                      id={"tenant-api-client-token-revoke-#{token.id}"}
-                      type="button"
-                      phx-click="revoke_api_key"
-                      phx-value-id={token.id}
-                      phx-disable-with="Revoking…"
-                      class="text-xs font-medium text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
-                    >
-                      Revoke
-                    </button>
-                  </div>
-                  <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
-                    <span>
-                      Created <.local_time
-                        id={"api-client-token-created-at-#{token.id}"}
-                        value={token.inserted_at}
-                        format={:datetime_minute}
-                        class="font-mono"
-                      />
-                    </span>
-                    <span>
-                      Last Used <.local_time
-                        id={"api-client-token-last-used-at-#{token.id}"}
-                        value={token.last_used_at}
-                        format={:datetime_minute}
-                        class="font-mono"
-                      />
-                    </span>
-                  </div>
-                </div>
-                <span
-                  :if={client.api_keys == []}
-                  class="text-sm text-slate-500 dark:text-slate-400"
-                >
-                  No API Tokens
-                </span>
-              </div>
-            </:col>
-
-            <:action :let={client}>
-              <.button
-                :if={client.disabled_at == nil}
-                id={"tenant-api-client-disable-#{client.id}"}
-                variant={:danger}
-                size={:sm}
-                phx-click="disable_api_client"
-                phx-value-id={client.id}
-                phx-disable-with="Disabling…"
-                data-confirm="Disable this API Client? Active owned API Tokens will be blocked, but tokens are not revoked."
-              >
-                Disable
-              </.button>
-              <span
-                :if={client.disabled_at != nil}
-                class="text-slate-400 dark:text-slate-500"
-              >
-                —
-              </span>
-            </:action>
-
-            <:empty>
+          <div
+            id="tenant-api-clients-list"
+            class="-mx-6 -my-4 divide-y divide-slate-200 dark:divide-slate-700"
+          >
+            <div :if={@api_clients == []} class="px-6 py-8">
               <.state_message
                 id="tenant-api-clients-empty-state"
                 kind={:empty}
@@ -441,8 +320,167 @@ defmodule OrchardConsole.TenantDetailLive do
                   Use orchardctl bulk provisioning to create API Clients and one-time API Token output.
                 </:action>
               </.state_message>
-            </:empty>
-          </.table>
+            </div>
+
+            <article
+              :for={client <- @api_clients}
+              id={"api-client-#{client.id}"}
+              class="px-6 py-4"
+            >
+              <div class="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                <div class="min-w-0 flex-1 space-y-4">
+                  <div class="space-y-1">
+                    <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                      <h3 class="min-w-0 break-words font-medium text-slate-900 dark:text-slate-100">
+                        {client.name}
+                      </h3>
+                      <.badge :if={client.disabled_at == nil} tone={:success}>Active</.badge>
+                      <.badge :if={client.disabled_at != nil} tone={:neutral}>Disabled</.badge>
+                    </div>
+                    <p :if={present?(client.purpose)} class="break-words text-xs text-slate-600 dark:text-slate-300">
+                      {client.purpose}
+                    </p>
+                    <p :if={present?(client.description)} class="break-words text-xs text-slate-500 dark:text-slate-400">
+                      {client.description}
+                    </p>
+                  </div>
+
+                  <.detail_grid
+                    gap_class="gap-x-6 gap-y-3"
+                    class="grid-cols-1 sm:grid-cols-2 xl:grid-cols-4"
+                  >
+                    <.detail_field id={"api-client-owner-#{client.id}"} label="Owner">
+                      <div :if={present?(client.owner_name)} class="break-words font-medium">
+                        {client.owner_name}
+                      </div>
+                      <div class="break-all text-slate-700 dark:text-slate-200">
+                        {client.owner_contact}
+                      </div>
+                      <div
+                        :if={present?(client.team)}
+                        class="mt-1 flex min-w-0 max-w-full flex-wrap items-center gap-x-1 gap-y-0.5 text-xs text-slate-500 dark:text-slate-400"
+                      >
+                        <span class="font-medium uppercase tracking-wide">Team</span>
+                        <span class="min-w-0 break-words">{client.team}</span>
+                      </div>
+                    </.detail_field>
+                    <.detail_field
+                      id={"api-client-external-ref-#{client.id}"}
+                      label="External Ref"
+                      mono
+                      break_all
+                    >
+                      {client.external_ref || "None"}
+                    </.detail_field>
+                    <.detail_field id={"api-client-access-#{client.id}"} label="Access">
+                      <div class="flex flex-wrap items-center gap-1.5">
+                        <.badge :if={inference_client_access?(client)} tone={:neutral}>
+                          Inference Client
+                        </.badge>
+                        <.badge :if={!inference_client_access?(client)} tone={:neutral}>
+                          No Access
+                        </.badge>
+                      </div>
+                    </.detail_field>
+                    <.detail_field id={"api-client-state-#{client.id}"} label="State">
+                      <div class="space-y-1.5">
+                        <div class="flex flex-wrap items-center gap-1.5">
+                          <.badge :if={client.disabled_at == nil} tone={:success}>Active</.badge>
+                          <.badge :if={client.disabled_at != nil} tone={:neutral}>Disabled</.badge>
+                        </div>
+                        <div
+                          :if={client.disabled_at != nil}
+                          class="text-xs text-slate-500 dark:text-slate-400"
+                        >
+                          Disabled <.local_time value={client.disabled_at} format={:datetime_minute} class="font-mono" />
+                        </div>
+                      </div>
+                    </.detail_field>
+                  </.detail_grid>
+
+                  <div
+                    id={"api-client-tokens-#{client.id}"}
+                    class="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/60"
+                  >
+                    <div class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+                      API Tokens
+                    </div>
+                    <div
+                      :for={token <- client.api_keys}
+                      id={"api-client-token-#{token.id}"}
+                      class={[
+                        "space-y-1 text-sm",
+                        ApiKey.revoked?(token) && "opacity-75"
+                      ]}
+                    >
+                      <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span class="min-w-0 max-w-full break-words font-medium text-slate-700 dark:text-slate-200">
+                          {token.name}
+                        </span>
+                        <span class="break-all font-mono text-xs text-slate-500 dark:text-slate-400">
+                          {token.token_prefix}
+                        </span>
+                        <.api_token_status_badge api_key={token} />
+                        <.badge :if={client.disabled_at != nil && active_api_token?(token)} tone={:warning}>
+                          Blocked by client
+                        </.badge>
+                        <button
+                          :if={token.revoked_at == nil}
+                          id={"tenant-api-client-token-revoke-#{token.id}"}
+                          type="button"
+                          phx-click="revoke_api_key"
+                          phx-value-id={token.id}
+                          phx-disable-with="Revoking…"
+                          class="text-xs font-medium text-red-600 hover:text-red-700 dark:text-red-400 dark:hover:text-red-300"
+                        >
+                          Revoke
+                        </button>
+                      </div>
+                      <div class="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                        <span>
+                          Created <.local_time
+                            id={"api-client-token-created-at-#{token.id}"}
+                            value={token.inserted_at}
+                            format={:datetime_minute}
+                            class="font-mono"
+                          />
+                        </span>
+                        <span>
+                          Last Used <.local_time
+                            id={"api-client-token-last-used-at-#{token.id}"}
+                            value={token.last_used_at}
+                            format={:datetime_minute}
+                            class="font-mono"
+                          />
+                        </span>
+                      </div>
+                    </div>
+                    <span
+                      :if={client.api_keys == []}
+                      class="text-sm text-slate-500 dark:text-slate-400"
+                    >
+                      No API Tokens
+                    </span>
+                  </div>
+                </div>
+
+                <div class="flex shrink-0 items-center justify-start md:justify-end">
+                  <.button
+                    :if={client.disabled_at == nil}
+                    id={"tenant-api-client-disable-#{client.id}"}
+                    variant={:danger}
+                    size={:sm}
+                    phx-click="disable_api_client"
+                    phx-value-id={client.id}
+                    phx-disable-with="Disabling…"
+                    data-confirm="Disable this API Client? Active owned API Tokens will be blocked, but tokens are not revoked."
+                  >
+                    Disable
+                  </.button>
+                </div>
+              </div>
+            </article>
+          </div>
         </.card>
       </div>
     </div>
