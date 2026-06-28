@@ -2647,6 +2647,12 @@ create type node_health as enum (
   'unreachable'
 );
 
+create type node_admission_decision_kind as enum (
+  'rejected',
+  'rejection_cleared',
+  'admitted'
+);
+
 create type worker_state as enum (
   'starting',
   'idle',
@@ -2749,6 +2755,37 @@ create table node_heartbeats (
   thermal_pressure text,
   active_requests integer not null default 0,
   payload jsonb not null default '{}'::jsonb
+);
+
+create table node_admission_candidates (
+  id uuid primary key default gen_random_uuid(),
+  node_id uuid references nodes(id) on delete set null,
+  source text not null check (
+    source in (
+      'runtime_endpoint_observation',
+      'provisioned_placeholder',
+      'registered_node'
+    )
+  ),
+  admission_category text not null check (
+    admission_category in (
+      'pending_observed',
+      'pending_provisioned',
+      'pending_registered',
+      'rejected',
+      'admitted'
+    )
+  ),
+  observed_identity jsonb not null default '{}'::jsonb,
+  target_ref text,
+  endpoint_transport text check (endpoint_transport in ('grpc', 'beam', 'external')),
+  endpoint_target text,
+  inventory jsonb not null default '{}'::jsonb,
+  compatibility_evidence jsonb not null default '{}'::jsonb,
+  last_observed_at timestamptz not null,
+  inserted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (node_id is not null or source = 'runtime_endpoint_observation')
 );
 
 create table models (
@@ -2945,7 +2982,36 @@ create table audit_logs (
   occurred_at timestamptz not null default now(),
   payload jsonb not null default '{}'::jsonb
 );
+
+create table node_admission_decisions (
+  id uuid primary key default gen_random_uuid(),
+  candidate_id uuid references node_admission_candidates(id) on delete set null,
+  node_id uuid references nodes(id) on delete set null,
+  decision node_admission_decision_kind not null,
+  actor_type actor_type not null,
+  actor_id text,
+  reason text,
+  observed_identity jsonb not null default '{}'::jsonb,
+  target_ref text,
+  audit_log_id bigint references audit_logs(id) on delete set null,
+  metadata jsonb not null default '{}'::jsonb,
+  decided_at timestamptz not null default now(),
+  inserted_at timestamptz not null default now(),
+  check (candidate_id is not null or node_id is not null)
+);
 ```
+
+`node_admission_candidates` SHALL store first-observed Runtime Endpoint metadata before it is reconciled to a trusted Node.
+Rows MAY also link review state for provisioned placeholders or registered Nodes through `node_id`, but `admission_category` remains derived review state, not a `node_state` lifecycle enum.
+Candidate `observed_identity`, `inventory`, `compatibility_evidence`, `target_ref`, and `endpoint_target` SHALL be sanitized and bounded.
+They MUST NOT contain plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw local evidence logs, local tool session identifiers, or machine-specific prompt exports.
+`target_ref` and `endpoint_target` are operator-review references only and SHALL NOT prove Node identity ownership.
+
+`node_admission_decisions` SHALL store durable admission decisions for rejection, rejection clearance, and admission after rejection.
+A rejection SHALL write `decision = 'rejected'`, actor, decided timestamp, reason, observed identity or node reference, target reference when applicable, and `audit_log_id`.
+Clearing a rejection SHALL write `decision = 'rejection_cleared'` and a related audit event.
+Admitting after rejection SHALL write `decision = 'admitted'` and a related audit event.
+Decision rows SHALL NOT be updated in place to change the historical decision; later decisions append new rows.
 
 Audit log `actor_type` SHALL identify the provenance class of the action.
 `operator` represents operator and admin product surfaces such as Orchard Console, Orchard CLI, Operator API, and Admin API actions.
@@ -3036,6 +3102,31 @@ create table cluster_settings (
 create index idx_node_heartbeats_node_observed_at
   on node_heartbeats(node_id, observed_at desc);
 
+create index idx_node_admission_candidates_category_observed
+  on node_admission_candidates(admission_category, last_observed_at desc);
+
+create index idx_node_admission_candidates_node
+  on node_admission_candidates(node_id)
+  where node_id is not null;
+
+create unique index idx_node_admission_candidates_open_target
+  on node_admission_candidates(target_ref)
+  where node_id is null
+    and target_ref is not null
+    and admission_category in ('pending_observed', 'rejected');
+
+create index idx_node_admission_decisions_candidate_decided
+  on node_admission_decisions(candidate_id, decided_at desc)
+  where candidate_id is not null;
+
+create index idx_node_admission_decisions_node_decided
+  on node_admission_decisions(node_id, decided_at desc)
+  where node_id is not null;
+
+create index idx_node_admission_decisions_audit_log
+  on node_admission_decisions(audit_log_id)
+  where audit_log_id is not null;
+
 create index idx_model_placements_node_state
   on model_placements(node_id, state);
 
@@ -3100,6 +3191,8 @@ create index idx_audit_logs_tenant_occurred_at
 ### 8.5 Data retention defaults
 
 * `node_heartbeats`: 7 days
+* `node_admission_candidates`: unresolved candidates until admin resolution; resolved candidate metadata 90 days minimum
+* `node_admission_decisions`: 365 days minimum
 * `request_events`: 30 days
 * `requests`: 90 days metadata minimum
 * `audit_logs`: 365 days minimum
