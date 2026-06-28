@@ -2972,7 +2972,8 @@ create table request_events (
 
 create table audit_logs (
   id bigserial primary key,
-  tenant_id uuid not null references tenants(id),
+  scope text not null default 'tenant' check (scope in ('tenant', 'cluster')),
+  tenant_id uuid references tenants(id),
   api_key_id uuid references api_keys(id) on delete set null,
   actor_type actor_type not null,
   actor_id text,
@@ -2980,7 +2981,12 @@ create table audit_logs (
   target_type text not null,
   target_id text,
   occurred_at timestamptz not null default now(),
-  payload jsonb not null default '{}'::jsonb
+  payload jsonb not null default '{}'::jsonb,
+  check (
+    (scope = 'tenant' and tenant_id is not null)
+    or
+    (scope = 'cluster' and tenant_id is null)
+  )
 );
 
 create table node_admission_decisions (
@@ -2996,8 +3002,7 @@ create table node_admission_decisions (
   audit_log_id bigint references audit_logs(id) on delete set null,
   metadata jsonb not null default '{}'::jsonb,
   decided_at timestamptz not null default now(),
-  inserted_at timestamptz not null default now(),
-  check (candidate_id is not null or node_id is not null)
+  inserted_at timestamptz not null default now()
 );
 ```
 
@@ -3012,7 +3017,13 @@ A rejection SHALL write `decision = 'rejected'`, actor, decided timestamp, reaso
 Clearing a rejection SHALL write `decision = 'rejection_cleared'` and a related audit event.
 Admitting after rejection SHALL write `decision = 'admitted'` and a related audit event.
 Decision rows SHALL NOT be updated in place to change the historical decision; later decisions append new rows.
+At decision creation time, either `candidate_id` or `node_id` SHOULD be present when the referenced candidate or Node exists.
+Both references MAY later become null through retention cleanup, because decision rows retain bounded snapshot fields in `observed_identity`, `target_ref`, `reason`, `metadata`, and `audit_log_id`.
 
+Audit log `scope` SHALL distinguish tenant-scoped and cluster-scoped governance events.
+Tenant-scoped audit events SHALL set `scope = 'tenant'` and a non-null `tenant_id`.
+Cluster-scoped audit events SHALL set `scope = 'cluster'` and a null `tenant_id`.
+Node admission candidate review, node admission rejection, rejection clearance, admission after rejection, node decommission, HA-lite status-affecting writes, and cluster-scoped support bundle generation SHALL use cluster-scoped audit events unless a future accepted contract makes them tenant-owned.
 Audit log `actor_type` SHALL identify the provenance class of the action.
 `operator` represents operator and admin product surfaces such as Orchard Console, Orchard CLI, Operator API, and Admin API actions.
 `actor_id` MAY be null for `system` actions and for local operator actions before Orchard has an authenticated first-class operator identity.
@@ -3185,7 +3196,12 @@ create index idx_provisioning_batches_tenant_inserted_at
   on provisioning_batches(tenant_id, inserted_at);
 
 create index idx_audit_logs_tenant_occurred_at
-  on audit_logs(tenant_id, occurred_at desc);
+  on audit_logs(tenant_id, occurred_at desc)
+  where scope = 'tenant';
+
+create index idx_audit_logs_cluster_occurred_at
+  on audit_logs(occurred_at desc)
+  where scope = 'cluster';
 ```
 
 ### 8.5 Data retention defaults

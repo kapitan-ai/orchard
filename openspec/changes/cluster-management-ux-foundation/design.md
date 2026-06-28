@@ -28,29 +28,16 @@ The current source tree has useful foundations but does not yet implement the fu
 - Do not define active/active controller behavior.
 - Do not add HA-lite failover, leadership transfer, or standby mutation actions.
 - Do not change scheduler ranking policy or dispatch behavior beyond explanation vocabulary.
-- Do not make Mobbin, Refero, RepoPrompt, or local research outputs product truth.
+- Do not make local research outputs product truth.
 - Do not commit raw prompt exports, local context stores, tool identifiers, credentials, DSNs, or transient evidence logs.
 
-## Research Evidence
+## UX Direction
 
-Refero style research reviewed Axiom, Linear Changelog, and Checkly as infrastructure and developer-tool references.
-Axiom contributed the strongest reference lock for a precise command-center mood: dense data surfaces, small radius, thin borders, mono-friendly data, and one high-signal accent.
-Linear contributed compact text hierarchy, restrained dark surfaces, and capsule controls for search and filtering.
-Checkly contributed monitoring-oriented grouping of code, status, and diagnostics without making status colors decorative.
-Orchard should adapt those traits through existing `docs/brand-identity.md` and `docs/DESIGN.md`, not through copied tokens.
-
-Refero screen and flow research reviewed developer/admin dashboards and destructive confirmation flows.
-Fingerprint's webhook deletion flow showed a list row action, explicit irreversible confirmation, updated list state, and success feedback.
-Resend's team deletion flow showed typed confirmation and a list of affected resources before an irreversible action.
-Rox, Fingerprint, Retool, and Anthropic dashboard screens reinforced compact tables, status badges, filters, and secondary detail panels.
-
-Mobbin research inspected representative web screens directly.
-[ClickUp trash confirmation](https://mobbin.com/screens/7266b502-d0a5-40bc-b4e9-a1bb81015ec1) uses a dimmed page, focused modal, concise consequence copy, and a red destructive primary action.
-[Twingate resources](https://mobbin.com/screens/641d8f1f-96cc-4d35-8cfd-d661f2afcd1b) uses a resource list with status filters and per-row actions.
-[Twingate audit logs report](https://mobbin.com/screens/5cb19107-f01b-48a2-8353-2dce67e02632) uses a scoped report dialog with category and date-range inputs before generating an export.
-[Airwallex spend requests](https://mobbin.com/screens/64cb7251-edd5-4bfa-ad69-8f89182ffafa) uses summary tiles plus a pending approval table with searchable and filterable review state.
-These references inform UX mechanics only.
-Normative decisions below trace back to Orchard `SPEC.md`, repo docs, and source reality.
+The cluster-management surface should feel operational, compact, and repeatable.
+It should favor dense but readable tables, clear filtering, restrained status badges, secondary detail panels, and reason-code drill-ins over decorative presentation.
+Dangerous actions should use explicit previews, concise consequence copy, affected-resource summaries, confirmation requirements, and visible success or failure feedback.
+Support bundle generation should start from scope selection, show included and omitted evidence categories, expose redaction status, and produce the same artifact contract from CLI and Console.
+These UX conclusions are subordinate to `SPEC.md`, `docs/brand-identity.md`, `docs/DESIGN.md`, and the accepted OpenSpec requirements below.
 
 ## Decision Ledger
 
@@ -111,6 +98,9 @@ This keeps admission review state outside the Node Lifecycle State machine while
 Decision rows append history and include candidate or node reference, decision kind, actor, reason, observed identity, target reference, audit log reference, and decided timestamp.
 Implementation must not update a prior decision row to rewrite history.
 Later decisions append new rows.
+Decision rows should reference a candidate or node when created, but those references may become null after retention cleanup.
+The decision must retain enough bounded snapshot fields to remain understandable after referenced candidate or node rows are removed.
+Node admission decisions use cluster-scoped audit events unless a future accepted contract makes the action tenant-owned.
 
 Candidate and decision metadata must be sanitized and bounded.
 It must not contain plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw local evidence logs, local tool session identifiers, or machine-specific prompt exports.

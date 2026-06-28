@@ -49,6 +49,12 @@ This refines `SPEC.md` §4.2, §4.3, §4.4, and §7.5.4.
 - **AND** Orchard records a later `node_admission_decisions` row for rejection clearance
 - **AND** Orchard does not update the original rejection row to erase the historical decision
 
+#### Scenario: Admin rejects pending admission
+- **WHEN** an authorized admin rejects a pending node admission
+- **THEN** Orchard records an auditable rejection decision
+- **AND** Orchard keeps the node non-schedulable
+- **AND** Orchard does not transition the node to `decommissioning`
+
 ### Requirement: Admission Review Persistence Is Explicit
 Orchard SHALL persist first-observed Runtime Endpoint admission candidates in `node_admission_candidates` until they are resolved by admin review.
 `node_admission_candidates` SHALL include source, admission category, optional node reference, sanitized observed identity, sanitized target reference, endpoint transport and target reference, inventory, compatibility evidence, and last observation timestamp.
@@ -56,7 +62,10 @@ Orchard SHALL persist first-observed Runtime Endpoint admission candidates in `n
 Orchard SHALL persist rejection, rejection clearance, and admission-after-rejection decisions in `node_admission_decisions`.
 `node_admission_decisions` SHALL include candidate or node reference, decision kind, actor, decided timestamp, reason, observed identity, target reference when applicable, audit event reference, and bounded metadata.
 Admission decision history SHALL be append-only.
+Admission decision rows SHOULD reference a candidate or Node when created if that row exists.
+Admission decision rows MAY later have null candidate and Node references after retention cleanup, because bounded snapshot fields preserve the durable decision record.
 Candidate and decision metadata SHALL be sanitized and MUST NOT include plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw local evidence logs, local tool session identifiers, or machine-specific prompt exports.
+Node Admission candidate review, rejection, rejection clearance, admission after rejection, decommission, HA-lite write-path decisions, and cluster-scoped support bundle generation SHALL use cluster-scoped audit events with no tenant id.
 Candidate review queries SHALL have indexes for admission category and recent observation time.
 Decision review queries SHALL have indexes by candidate, node, and audit log reference.
 This refines `SPEC.md` §8.1 through §8.5.
@@ -70,13 +79,14 @@ This refines `SPEC.md` §8.1 through §8.5.
 - **WHEN** an authorized admin rejects an admission candidate
 - **THEN** Orchard stores a `node_admission_decisions` row with decision `rejected`
 - **AND** the decision row references the related audit event when the audit write succeeds
+- **AND** the related audit event is cluster-scoped and has no tenant id
 - **AND** the candidate remains visible as `rejected`
 
-#### Scenario: Admin rejects pending admission
-- **WHEN** an authorized admin rejects a pending node admission
-- **THEN** Orchard records an auditable rejection decision
-- **AND** Orchard keeps the node non-schedulable
-- **AND** Orchard does not transition the node to `decommissioning`
+#### Scenario: Decision survives candidate retention
+- **WHEN** a resolved admission candidate is removed by retention cleanup before the corresponding admission decision expires
+- **THEN** Orchard preserves the `node_admission_decisions` row
+- **AND** the decision row may retain null candidate and Node references
+- **AND** the decision remains understandable from its snapshot fields and audit reference
 
 ### Requirement: Cluster Status Separates Signal Categories
 Orchard Console, CLI, Operator API, and Admin API SHALL present node and cluster status as separate signal categories rather than a single combined status badge.

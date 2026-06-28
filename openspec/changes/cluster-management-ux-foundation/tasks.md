@@ -13,8 +13,8 @@
 - [ ] 2.4 Add pending-admission category handling without adding a lifecycle enum that is absent from `SPEC.md`.
 - [ ] 2.5 Preserve observed inventory, target metadata, and compatibility evidence for pending admission review.
 - [ ] 2.6 Block admission execution for observed candidates and provisioned placeholders until registration inventory, trust evidence, pool assignment, and required policy inputs are present.
-- [ ] 2.7 Implement and test rejected-admission persistence semantics through `node_admission_decisions` with actor, decided timestamp, reason, observed identity or node reference, target reference when applicable, and audit event reference.
-- [ ] 2.8 Implement Admin API admission and pending-admission rejection semantics with audit events.
+- [ ] 2.7 Implement and test rejected-admission persistence semantics through `node_admission_decisions` with actor, decided timestamp, reason, observed identity or node reference, target reference when applicable, retention-safe snapshot fields, and audit event reference.
+- [ ] 2.8 Implement Admin API admission and pending-admission rejection semantics with cluster-scoped audit events.
 - [ ] 2.9 Implement explicit admin clear or new-registration handling before re-admission after rejection.
 - [ ] 2.10 Preserve existing admitted node rows through migration or explicit compatibility handling.
 - [ ] 2.11 Add regression tests for `SPEC.md` §4.2, §4.3, and §7.5.4 lifecycle behavior.
