@@ -211,7 +211,15 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       {:ok, view, html} = live(conn, "/console/tenants/#{tenant.id}")
 
       assert html =~ "console-client"
+      assert html =~ "Owner Example"
       assert html =~ "owner@example.com"
+      assert html =~ "Purpose for console-client"
+      assert html =~ "Description for console-client"
+      assert html =~ "external-console-client"
+      assert html =~ "Team"
+      assert html =~ "Inference"
+      assert html =~ "Access"
+      assert html =~ "State"
       assert html =~ "Inference Client"
       assert html =~ api_key.token_prefix
       refute html =~ token
@@ -224,6 +232,11 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert token_html =~ ~s(data-local-time-format="datetime_minute")
 
       assert has_element?(view, "#tenant-api-client-disable-#{api_client.id}")
+      disable_html = view |> element("#tenant-api-client-disable-#{api_client.id}") |> render()
+
+      assert disable_html =~
+               "Disable this API Client? Active owned API Tokens will be blocked, but tokens are not revoked."
+
       assert has_element?(view, "#tenant-api-client-token-revoke-#{api_key.id}")
     end
 
@@ -274,14 +287,39 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       conn: conn,
       tenant: tenant
     } do
-      %{api_client: api_client} = create_api_client_with_token!(tenant, "console-client-disable")
+      %{api_client: api_client, api_key: active_key} =
+        create_api_client_with_token!(tenant, "console-client-disable")
+
+      expired_at =
+        DateTime.utc_now() |> DateTime.add(-60, :second) |> DateTime.truncate(:microsecond)
+
+      {:ok, %{api_key: expired_key}} =
+        Governance.create_api_client_api_token(api_client, %{
+          name: "expired",
+          expires_at: expired_at
+        })
+
+      {:ok, %{api_key: revoked_key}} =
+        Governance.create_api_client_api_token(api_client, %{name: "revoked"})
+
+      {:ok, _api_key} = Governance.revoke_api_key(tenant, revoked_key)
+
       {:ok, view, _html} = live(conn, "/console/tenants/#{tenant.id}")
 
       html = render_click(view, "disable_api_client", %{"id" => api_client.id})
 
       assert html =~ "Disabled API Client console-client-disable."
       assert html =~ "Disabled"
+      assert has_element?(view, "#api-client-#{api_client.id}")
       refute has_element?(view, "#tenant-api-client-disable-#{api_client.id}")
+
+      active_token_html = view |> element("#api-client-token-#{active_key.id}") |> render()
+      expired_token_html = view |> element("#api-client-token-#{expired_key.id}") |> render()
+      revoked_token_html = view |> element("#api-client-token-#{revoked_key.id}") |> render()
+
+      assert active_token_html =~ "Blocked by client"
+      refute expired_token_html =~ "Blocked by client"
+      refute revoked_token_html =~ "Blocked by client"
 
       audit_log =
         Repo.get_by!(AuditLog,
@@ -359,7 +397,11 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       Governance.upsert_api_client(tenant, %{
         name: name,
         owner_contact: "owner@example.com",
-        team: "Inference"
+        owner_name: "Owner Example",
+        team: "Inference",
+        external_ref: "external-#{name}",
+        purpose: "Purpose for #{name}",
+        description: "Description for #{name}"
       })
 
     {:ok, _role_binding} = Governance.ensure_inference_client_access(api_client, tenant)

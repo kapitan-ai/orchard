@@ -303,40 +303,72 @@ defmodule OrchardConsole.TenantDetailLive do
       <div id="tenant-api-clients-card">
         <.card>
           <:title>API Clients</:title>
-          <:subtitle>Non-interactive clients, access levels, and owned API Tokens.</:subtitle>
+          <:subtitle>Non-interactive access, ownership context, and owned API Tokens.</:subtitle>
 
           <.table id="tenant-api-clients-table" rows={@api_clients} row_id={&"api-client-#{&1.id}"}>
-            <:col :let={client} label="Name">{client.name}</:col>
+            <:col :let={client} label="API Client" class="min-w-64">
+              <div class="space-y-1">
+                <div class="font-medium text-slate-900 dark:text-slate-100">{client.name}</div>
+                <p :if={present?(client.purpose)} class="text-xs text-slate-600 dark:text-slate-300">
+                  {client.purpose}
+                </p>
+                <p :if={present?(client.description)} class="text-xs text-slate-500 dark:text-slate-400">
+                  {client.description}
+                </p>
+              </div>
+            </:col>
             <:col :let={client} label="Owner">
-              <div class="space-y-0.5">
-                <div>{client.owner_contact}</div>
-                <div :if={client.team} class="text-xs text-slate-500 dark:text-slate-400">
-                  {client.team}
+              <div class="space-y-1">
+                <div :if={present?(client.owner_name)} class="font-medium text-slate-900 dark:text-slate-100">
+                  {client.owner_name}
+                </div>
+                <div class="text-sm text-slate-700 dark:text-slate-200">{client.owner_contact}</div>
+                <div :if={present?(client.team)} class="inline-flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400">
+                  <span class="font-medium uppercase tracking-wide">Team</span>
+                  <span>{client.team}</span>
                 </div>
               </div>
             </:col>
             <:col :let={client} label="External Ref" mono>
               {client.external_ref || "—"}
             </:col>
-            <:col :let={client} label="Access Level">
-              <.badge :if={inference_client_access?(client)} tone={:success}>Inference Client</.badge>
-              <.badge :if={!inference_client_access?(client)} tone={:neutral}>None</.badge>
+            <:col :let={client} label="Access / State" class="min-w-36">
+              <div class="space-y-1.5 text-xs">
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <span class="font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Access</span>
+                  <.badge :if={inference_client_access?(client)} tone={:neutral}>Inference Client</.badge>
+                  <.badge :if={!inference_client_access?(client)} tone={:neutral}>No Access</.badge>
+                </div>
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <span class="font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">State</span>
+                  <.badge :if={client.disabled_at == nil} tone={:success}>Active</.badge>
+                  <.badge :if={client.disabled_at != nil} tone={:neutral}>Disabled</.badge>
+                </div>
+                <div
+                  :if={client.disabled_at != nil}
+                  class="text-xs text-slate-500 dark:text-slate-400"
+                >
+                  Disabled <.local_time value={client.disabled_at} format={:datetime_minute} class="font-mono" />
+                </div>
+              </div>
             </:col>
-            <:col :let={client} label="Status">
-              <.badge :if={client.disabled_at == nil} tone={:success}>Active</.badge>
-              <.badge :if={client.disabled_at != nil} tone={:neutral}>Disabled</.badge>
-            </:col>
-            <:col :let={client} label="API Tokens">
+            <:col :let={client} label="API Tokens" class="min-w-72">
               <div id={"api-client-tokens-#{client.id}"} class="space-y-2">
                 <div
                   :for={token <- client.api_keys}
                   id={"api-client-token-#{token.id}"}
-                  class="space-y-1 text-sm"
+                  class={[
+                    "space-y-1 text-sm",
+                    ApiKey.revoked?(token) && "opacity-75"
+                  ]}
                 >
                   <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <span class="font-medium text-slate-700 dark:text-slate-200">{token.name}</span>
                     <span class="font-mono text-xs text-slate-500 dark:text-slate-400">{token.token_prefix}</span>
                     <.api_token_status_badge api_key={token} />
+                    <.badge :if={client.disabled_at != nil && active_api_token?(token)} tone={:warning}>
+                      Blocked by client
+                    </.badge>
                     <button
                       :if={token.revoked_at == nil}
                       id={"tenant-api-client-token-revoke-#{token.id}"}
@@ -386,6 +418,7 @@ defmodule OrchardConsole.TenantDetailLive do
                 phx-click="disable_api_client"
                 phx-value-id={client.id}
                 phx-disable-with="Disabling…"
+                data-confirm="Disable this API Client? Active owned API Tokens will be blocked, but tokens are not revoked."
               >
                 Disable
               </.button>
@@ -561,6 +594,11 @@ defmodule OrchardConsole.TenantDetailLive do
       _role_binding -> false
     end)
   end
+
+  defp active_api_token?(%ApiKey{} = api_key), do: ApiKey.status(api_key, utc_now()) == :active
+
+  defp present?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present?(_value), do: false
 
   attr(:api_key, :map, required: true)
 
