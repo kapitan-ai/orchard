@@ -1,4 +1,4 @@
-# Orchard v2 — Technical Specification
+# Orchard v2 - Technical Specification
 
 This document is a normative implementation spec for Orchard, a sovereign on-prem LLM orchestration platform optimized for **1–4 Apple Silicon macOS nodes**. It is intended for a coding agent that will build the system incrementally. “MUST”, “SHALL”, and “MUST NOT” are mandatory requirements. “SHOULD” is a strong recommendation.
 
@@ -608,14 +608,23 @@ A node record SHALL include:
 * current health
 * last heartbeat timestamp
 
+Runtime Endpoint metadata MAY be observed before a trusted Node exists.
+An unreconciled first observation SHALL create or update a Runtime Endpoint Admission Candidate for admin review, not a Node row.
+Runtime Endpoint Admission Candidates live outside the Node Lifecycle State machine.
+They SHALL NOT be represented as `provisioned` unless an admin-created placeholder or bootstrap exists.
+They SHALL NOT be represented as `registered` unless `RegisterNode` or equivalent trust proof has completed.
+They SHALL NOT be represented as `active`, considered schedulable, or allowed to publish queue capacity.
+Candidate metadata is untrusted operator-review evidence and SHALL be sanitized, bounded, and insufficient by itself for scheduling, dispatch, trust establishment, or Node identity ownership.
+In HA-lite mode, creating candidates, rejecting candidates, clearing rejection, admitting nodes, and writing the related audit events are leader-only write paths.
+
 ### 4.2 Node lifecycle states
 
 | State             | Meaning                                                           | Schedulable |
 | ----------------- | ----------------------------------------------------------------- | ----------- |
 | `provisioned`     | admin created placeholder/bootstrap issued; node has not joined   | no          |
 | `registered`      | node proved identity and submitted inventory                      | no          |
-| `admitted`        | admin accepted node into cluster and assigned pool/policy         | no          |
-| `active`          | healthy and eligible for scheduling                               | yes         |
+| `admitted`        | admin accepted trusted registered node into cluster and assigned pool/policy | no |
+| `active`          | admitted node has fresh healthy observation and is eligible for scheduling | yes |
 | `cordoned`        | healthy enough to run existing work, but no new work              | no          |
 | `draining`        | cordoned and actively waiting for active requests to finish       | no          |
 | `maintenance`     | unschedulable for upgrades/diagnostics                            | no          |
@@ -655,7 +664,7 @@ decommissioning -> removed
 * `registered -> admitted`
 
   * trigger: Admin API action
-  * conditions: inventory captured, trust established, pool assigned
+  * conditions: inventory captured, trust established, pool assigned, required policy inputs supplied
 
 * `admitted -> active`
 
@@ -690,6 +699,13 @@ decommissioning -> removed
 
   * trigger: cleanup success
   * effect: no rejoin with same `node_id`
+
+Runtime Endpoint status observation alone MUST NOT bypass `provisioned -> registered`, `registered -> admitted`, or `admitted -> active`.
+Observed candidates and provisioned placeholders MAY appear in admission review, but admit execution SHALL be blocked until a registered Node has current trust, inventory, pool, and required policy inputs.
+Rejecting pending Node Admission SHALL persist a Node Admission Decision and SHALL NOT transition a Node to `decommissioning`.
+Rejected admission metadata SHALL include `decision = rejected`, actor, decided timestamp, reason, observed identity or node reference, target reference when applicable, and audit event reference.
+For lifecycle-managed Node rows, rejection SHALL leave lifecycle as `provisioned` or `registered` and set the derived admission category to `rejected`.
+Re-admission after rejection SHALL require current trusted registration state plus either an explicit admin clear action or a new registration and trust event recorded in audit.
 
 ### 4.5 Node health model
 
@@ -784,6 +800,11 @@ Rules:
 * the current gRPC Compatibility Adapter SHALL derive Runtime Endpoint Observations from `NodeRuntimeService.GetStatus` returning `StatusResponse`
 * heartbeat payloads MAY carry equivalent hosted-tool data in a later slice, but controller-owned hosted-tool observation SHALL currently be derived from Runtime Endpoint status-probe ingestion
 * this contract defines future hosted routing inputs only; it SHALL NOT by itself enable controller-owned hosted `/v1/responses` execution or any other hosted execution behavior
+* Runtime Endpoint Observations are observational until reconciled to a trusted Node
+* unregistered observations MAY update Runtime Endpoint Admission Candidate metadata only
+* unregistered observations SHALL NOT update Node lifecycle state
+* unregistered observations SHALL NOT refresh queue capacity sources
+* gRPC and BEAM Runtime Endpoint Observations SHALL affect scheduling only after the target identity resolves to a persisted trusted Node
 
 Hosted-tool observation vocabulary:
 
@@ -1010,6 +1031,8 @@ Eligible cold/no-placement node observations MAY add conservative source-scoped 
 Live capacity source refreshes SHALL be allowed to wake queued requests without a new admission event.
 Stale, unavailable, non-loaded, invalid, exhausted, ineligible, or transport-failed node and placement observations SHALL NOT inflate queue admission capacity and SHALL clear any stale capacity source owned by that node or target.
 BEAM Runtime Endpoint observations MAY refresh queue capacity only when the target resolves back to the same persisted node identity; address-only or mismatched BEAM observations SHALL NOT publish queue capacity.
+Runtime Endpoint Admission Candidates SHALL NOT publish queue lane capacity.
+Queue lane capacity SHALL come only from trusted active Nodes or Runtime Endpoints resolved to trusted active Nodes.
 
 ### 5.5 Eligibility filter
 
@@ -1023,6 +1046,9 @@ A node is eligible only if all conditions are true:
 * node concurrency not exceeded
 * model placement concurrency not exceeded
 * no placement/node circuit breaker suppresses dispatch
+
+Runtime Endpoint Admission Candidates are never eligible nodes.
+Unresolved, untrusted, rejected, provisioned, registered, or admitted-but-not-active candidates and Nodes SHALL be excluded before candidate tiering and scoring.
 
 Memory eligibility formula:
 
@@ -1895,6 +1921,20 @@ POST   /ops/v1/nodes/:node_id/diagnostics
 POST   /ops/v1/support-bundles
 ```
 
+Eligibility-changing or destructive Operator and Admin node actions SHALL provide an Action Preview before execution.
+Action Previews SHALL be side-effect-free and SHALL NOT create domain rows, audit events, or Node Admission Decisions unless a future preview-audit contract explicitly says otherwise.
+The preview response SHALL separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements`.
+Blockers are non-bypassable safety, permission, leadership, write-path, lifecycle, or data-integrity constraints.
+Warnings are advisory and MAY require confirmation.
+Consequence codes describe expected effects accepted only through explicit parameters or confirmation requirements.
+Confirmation requirements are explicit acknowledgements or typed values and MUST NOT bypass blockers.
+Action execution SHALL revalidate permissions, leadership and write-path availability, lifecycle state, health, active request count when relevant, and blockers at mutation time.
+
+`POST /ops/v1/support-bundles` SHALL produce the `orchard.support_bundle.v2` format for cluster-management evidence.
+Support Bundle v2 SHALL include bundle format, generated time, Orchard version, scope, included sections, omitted sections, redaction manifest, max log bytes, and relevant SPEC references.
+Supported scopes SHALL include `cluster`, `node`, `request`, `scheduler_decision`, `runtime_endpoint`, `control_plane`, and `ha_lite`.
+v1 compatibility MAY remain only if it is documented separately and does not satisfy or weaken v2 manifest or redaction requirements.
+
 #### 7.3.2 Node drain request example
 
 ```json
@@ -1967,16 +2007,32 @@ Response example:
         "warmth_bonus": 20,
         "swap_penalty": 20
       },
-      "rejections": []
-    },
+      "reason_codes": []
+    }
+  ],
+  "rejected_candidates": [
     {
       "node_id": "node-1",
-      "eligible": false,
-      "rejections": ["cordoned", "insufficient_memory"]
+      "reason_codes": ["node_not_active", "insufficient_memory"]
+    }
+  ],
+  "skipped_candidates": [
+    {
+      "node_id": "node-3",
+      "reason_codes": ["lower_tier_not_considered"]
     }
   ]
 }
 ```
+
+Scheduler explanations SHALL expose stable reason codes for selected, rejected, and skipped candidates.
+Reason codes SHALL be shared by Operator API, CLI, Console, support bundles, and tests.
+Human-readable explanation text MAY be included, but it SHALL be supplemental to machine-readable reason codes.
+Rejected candidates SHALL include at least one stable rejection reason code.
+Skipped candidates SHALL be represented in `skipped_candidates` outside the rejected-candidate list and SHALL include at least one stable skip reason code.
+The initial scheduler rejection vocabulary SHALL include `inventory_missing`, `node_not_admitted`, `node_not_active`, `node_not_registered`, `node_health_unreachable`, `node_health_unhealthy`, `node_observation_stale`, `transport_unreachable`, `runtime_not_ready`, `runtime_identity_mismatch`, `version_incompatible`, `pool_not_allowed`, `model_format_unsupported`, `model_not_available_on_node`, `insufficient_memory`, `node_concurrency_exhausted`, `placement_concurrency_exhausted`, `placement_suppressed`, `node_circuit_breaker_open`, `model_load_suppressed`, `policy_required`, `pool_required`, `queue_lane_capacity_unavailable`, `trust_not_established`, and `unknown_capacity`.
+The initial scheduler skip vocabulary SHALL include `lower_tier_not_considered`, `not_scored_after_selection`, `not_applicable_to_request`, and `candidate_limit_reached`.
+Queue-waitable capacity outcomes SHALL preserve whether the wait reason is live node capacity, requested model path capacity, placement capacity, or tenant active capacity.
 
 ---
 
@@ -2017,6 +2073,10 @@ GET    /admin/v1/routing-policies
 POST   /admin/v1/routing-policies
 PATCH  /admin/v1/routing-policies/:id
 
+GET    /admin/v1/node-admission/candidates
+GET    /admin/v1/node-admission/candidates/:candidate_id
+POST   /admin/v1/node-admission/candidates/:candidate_id/reject
+POST   /admin/v1/node-admission/candidates/:candidate_id/clear-rejection
 POST   /admin/v1/nodes/provision
 POST   /admin/v1/nodes/:node_id/admit
 POST   /admin/v1/nodes/:node_id/decommission
@@ -2024,6 +2084,11 @@ POST   /admin/v1/nodes/:node_id/decommission
 PATCH  /admin/v1/observability
 POST   /admin/v1/bootstrap-tokens
 ```
+
+Node Admission Candidate review endpoints SHALL expose sanitized observed identity, target reference, inventory, compatibility evidence, last observation timestamp, admission category, decision metadata when present, and audit event reference when present.
+Admin admission execution SHALL require a registered trusted Node with inventory, pool, and required policy inputs.
+Pending admission rejection SHALL persist a Node Admission Decision and audit event without deleting observed inventory.
+Clearing rejection SHALL require admin authority and SHALL persist an audit event.
 
 #### 7.4.2 Tenant create example
 
@@ -3299,9 +3364,9 @@ Renewal threshold:
 
 Public API transport SHALL be configured by a first-class transport mode. Valid values are:
 
-* `reverse_proxy` — the controller listens on a local HTTP backend and an operator-managed reverse proxy terminates public HTTPS.
-* `direct_https` — the controller terminates HTTPS with operator-provided certificate material or explicit local-CA helper output.
-* `plain_http_localhost` — the controller listens on loopback HTTP only for local development or break-glass recovery; this mode is degraded and MUST NOT be treated as production public transport.
+* `reverse_proxy` - the controller listens on a local HTTP backend and an operator-managed reverse proxy terminates public HTTPS.
+* `direct_https` - the controller terminates HTTPS with operator-provided certificate material or explicit local-CA helper output.
+* `plain_http_localhost` - the controller listens on loopback HTTP only for local development or break-glass recovery; this mode is degraded and MUST NOT be treated as production public transport.
 
 Public client traffic SHALL use HTTPS in `reverse_proxy` and `direct_https` modes. Orchard SHALL NOT assume a public certificate provider. Paid CAs, proprietary CAs, internal PKI, and air-gapped certificate distribution all map to `direct_https` with operator-provided certificate material.
 
@@ -3351,12 +3416,17 @@ Audit logs SHALL capture:
 * model import/activate/retire
 * routing policy changes
 * node admission/decommission
+* Node Admission Candidate rejection
+* Node Admission rejection clearance
+* node admission after rejection
+* registration or trust event used to permit re-admission
 * operator drain/cancel/retry actions
 * support bundle generation
 * upgrade actions
 
 Audit payloads SHALL exclude plaintext API Token secrets.
 Provisioning Batch records SHALL include non-secret counts, status, input hash, timestamps, and sanitized error summaries only.
+Observed target references and admission-candidate metadata in audit payloads SHALL be sanitized and MUST NOT include secrets.
 
 ### 10.10 Data governance
 
@@ -3526,6 +3596,10 @@ Required commands:
 * `orchardctl requests inspect`
 * `orchardctl support bundle create`
 * `orchardctl upgrade plan`
+
+`orchardctl support bundle create` SHALL be able to emit `orchard.support_bundle.v2` for cluster-management support bundles.
+Console-triggered support bundles and CLI-created support bundles SHALL use the same v2 archive format for the same scope.
+Request and scheduler-decision scoped bundles SHALL include sanitized metadata only and MUST NOT include prompt bodies, response bodies, raw token sequences, raw prefix-cache fingerprints, tenant secret material, raw local evidence logs, local tool session identifiers, or machine-specific prompt exports.
 
 ---
 
@@ -3721,7 +3795,7 @@ No standalone worker upgrade path in v1.
 
 ## 14. Implementation Roadmap
 
-### Milestone 0 — Skeleton and packaging foundation
+### Milestone 0 - Skeleton and packaging foundation
 
 Deliver:
 
@@ -3739,7 +3813,7 @@ Acceptance:
 * node agent starts on macOS
 * PKG installs launchd services correctly
 
-### Milestone 1 — Single-node inference MVP
+### Milestone 1 - Single-node inference MVP
 
 Deliver:
 
@@ -3759,7 +3833,7 @@ Acceptance:
 * request state transitions persisted
 * cancellation works
 
-### Milestone 2 — Responses API and governance core
+### Milestone 2 - Responses API and governance core
 
 Deliver:
 
@@ -3778,7 +3852,7 @@ Acceptance:
 * `/v1/responses` stream emits typed events
 * audit events emitted for key governance actions
 
-### Milestone 3 — Node lifecycle and cluster join
+### Milestone 3 - Node lifecycle and cluster join
 
 Deliver:
 
@@ -3798,7 +3872,7 @@ Acceptance:
 * health transitions behave as specified
 * drain prevents new scheduling
 
-### Milestone 4 — Multi-node scheduler and placements
+### Milestone 4 - Multi-node scheduler and placements
 
 Deliver:
 
@@ -3817,7 +3891,7 @@ Acceptance:
 * automatic retry before first token works once
 * scheduler explanation matches actual decision
 
-### Milestone 5 — Observability and diagnostics
+### Milestone 5 - Observability and diagnostics
 
 Deliver:
 
@@ -3832,9 +3906,9 @@ Acceptance:
 
 * p95 latency visible in Grafana
 * a request trace spans auth→schedule→execute→stream
-* support bundle contains logs, config, node snapshots, request summary
+* Support Bundle v2 contains scoped logs, config, node snapshots, request summaries, scheduler explanations, sanitized Node Admission evidence, omitted-section metadata, and a redaction manifest
 
-### Milestone 6 — Security hardening and air-gap
+### Milestone 6 - Security hardening and air-gap
 
 Deliver:
 
@@ -3852,7 +3926,7 @@ Acceptance:
 * internal gRPC rejects non-mTLS clients
 * air-gapped installation completes with no internet access
 
-### Milestone 7 — Upgrade safety and HA-lite controller
+### Milestone 7 - Upgrade safety and HA-lite controller
 
 Deliver:
 

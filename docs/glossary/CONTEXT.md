@@ -349,6 +349,19 @@ _Avoid_: Arbitrary remote compute
 A managed Apple Silicon macOS machine represented in Orchard's cluster inventory.
 _Avoid_: Server when cluster role matters
 
+**Runtime Endpoint Admission Candidate**:
+An unreconciled Runtime Endpoint identity observed from status metadata and eligible for admin review before it becomes a managed Node.
+It is not a Node Lifecycle State and is never schedulable.
+_Avoid_: provisioned Node, registered Node, active Node, trusted Node
+
+**Node Admission**:
+The admin-controlled reconciliation step that accepts a trusted registered Node into cluster participation.
+_Avoid_: Request Admission, Runtime Endpoint Observation, automatic discovery
+
+**Node Admission Decision**:
+Durable metadata recording a Node Admission outcome such as rejection or rejection clearance, with actor, timestamp, reason, observed identity or node reference, target reference when applicable, and audit event reference.
+_Avoid_: Node Lifecycle State, Decommission, debug note
+
 **Node Lifecycle State**:
 The operator-controlled lifecycle state that determines how a Node is allowed to participate in the cluster.
 _Avoid_: Runtime Endpoint Availability, Node Health, heartbeat freshness
@@ -463,6 +476,11 @@ _Avoid_: Quota, Routing Policy, Scheduler Explanation, tenant-facing error reaso
 Operator-facing reasoning for selected and rejected scheduling candidates.
 _Avoid_: persisted Scheduler Decision metadata, tenant-facing error contract
 
+**Skipped Scheduler Candidate**:
+A scheduler candidate omitted from scoring or rejection for a stable non-error reason such as lower-priority tier selection or candidate-budget limits.
+It is distinct from a rejected candidate that was evaluated and failed eligibility.
+_Avoid_: rejected candidate, failed dispatch, hidden error
+
 **Dispatch**:
 The Controller-to-Runtime Endpoint handoff after scheduling that ensures a model is loaded and starts inference execution.
 Runtime Endpoint disconnect cleanup is best-effort and does not define the dispatch outcome.
@@ -529,6 +547,27 @@ _Avoid_: Memory enforcement input, request-admission gate, scheduler eligibility
 Despite the name, a bounded scheduler-ranking feature that can prefer positive memory-headroom observations without excluding candidates.
 _Avoid_: Request Admission, memory rejection, scheduler eligibility filter, memory-budget enforcement
 
+**Action Preview**:
+A side-effect-free evaluation of an Operator or Admin action before execution.
+It reports blockers, warnings, consequence codes, and confirmation requirements.
+_Avoid_: Dry Run for provisioning, action execution, audit event
+
+**Blocker**:
+A non-bypassable condition that prevents an action from executing.
+_Avoid_: Warning, Confirmation Requirement
+
+**Warning**:
+An advisory condition that does not by itself prevent action execution.
+_Avoid_: Blocker, failure reason
+
+**Consequence Code**:
+A stable machine-readable code describing an expected effect of an action.
+_Avoid_: free-text warning, Blocker
+
+**Confirmation Requirement**:
+A required explicit acknowledgement or typed value before executing a risky but otherwise allowed action.
+_Avoid_: Blocker, permission grant
+
 ### Packaging, Trust, and Operations
 
 **Transport Mode**:
@@ -566,6 +605,11 @@ _Avoid_: Managed Database Mode, All-in-One Deployment
 **Support Bundle**:
 An operator-generated diagnostic package for logs, config, snapshots, and request summaries.
 _Avoid_: Audit Log, Payload Capture Mode, raw local evidence
+
+**Support Bundle v2**:
+The required diagnostic bundle format for cluster-management evidence, including sanitized admission candidates, Node Admission Decisions, scheduler explanations, support scope, omitted sections, and redaction manifest.
+v1 compatibility must not weaken v2 contents or redaction rules.
+_Avoid_: Support Bundle v1, raw local evidence, prompt export
 
 **DMG Installer**:
 The interactive macOS distribution container for Orchard installer materials.
