@@ -6,6 +6,8 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
+  alias Orchard.Governance.AuditLog
+  alias Orchard.Repo
 
   @moduletag :live
   @moduletag :db
@@ -237,6 +239,11 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert html =~ "Revoked API Token prod."
       assert html =~ "Revoked"
       refute has_element?(view, "#tenant-api-client-token-revoke-#{api_key.id}")
+
+      audit_log = Repo.get_by!(AuditLog, api_key_id: api_key.id, action: "api_key.revoked")
+      assert audit_log.actor_type == "operator"
+      assert audit_log.actor_id == nil
+      assert audit_log.payload["surface"] == "console"
     end
 
     test "revokes expired API Client-owned API Tokens from the Organization detail page", %{
@@ -275,6 +282,17 @@ defmodule OrchardConsole.TenantDetailLiveTest do
       assert html =~ "Disabled API Client console-client-disable."
       assert html =~ "Disabled"
       refute has_element?(view, "#tenant-api-client-disable-#{api_client.id}")
+
+      audit_log =
+        Repo.get_by!(AuditLog,
+          action: "service_account.disabled",
+          target_type: "service_account",
+          target_id: api_client.id
+        )
+
+      assert audit_log.actor_type == "operator"
+      assert audit_log.actor_id == nil
+      assert audit_log.payload["surface"] == "console"
     end
 
     test "shows error for cross-Organization API Client disable attempt", %{

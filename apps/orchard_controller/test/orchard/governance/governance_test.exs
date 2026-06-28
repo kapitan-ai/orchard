@@ -457,6 +457,8 @@ defmodule Orchard.GovernanceTest do
 
       audit_log = audit_log!(api_key.id, "api_key.revoked")
       assert audit_log.occurred_at == revoked.revoked_at
+      assert audit_log.actor_type == "system"
+      assert audit_log.actor_id == nil
       assert count_audit_logs(api_key.id, "api_key.revoked") == 1
 
       assert {:ok, reloaded} = Governance.revoke_api_key(api_key.id)
@@ -519,6 +521,26 @@ defmodule Orchard.GovernanceTest do
       reloaded = Repo.get!(ApiKey, api_key.id)
       assert reloaded.revoked_at == nil
       assert count_audit_logs(api_key.id, "api_key.revoked") == 0
+    end
+  end
+
+  describe "disable_api_client/2" do
+    test "no-opts disable audit defaults to system actor" do
+      tenant = create_tenant!("tenant-disable-system-audit")
+      api_client = create_api_client!(tenant, "disable-system-client")
+
+      assert {:ok, disabled} = Governance.disable_api_client(tenant, api_client)
+      assert %DateTime{} = disabled.disabled_at
+
+      audit_log =
+        Repo.get_by!(AuditLog,
+          action: "service_account.disabled",
+          target_type: "service_account",
+          target_id: api_client.id
+        )
+
+      assert audit_log.actor_type == "system"
+      assert audit_log.actor_id == nil
     end
   end
 

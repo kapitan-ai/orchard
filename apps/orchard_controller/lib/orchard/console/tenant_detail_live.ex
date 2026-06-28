@@ -8,6 +8,8 @@ defmodule OrchardConsole.TenantDetailLive do
   alias Orchard.Governance
   alias Orchard.Governance.{ApiKey, RoleBinding}
 
+  @console_audit_opts [actor_type: "operator", surface: "console"]
+
   @impl true
   def mount(%{"id" => id}, _session, socket) do
     socket =
@@ -447,7 +449,7 @@ defmodule OrchardConsole.TenantDetailLive do
   end
 
   defp revoke_api_key(socket, api_key_id) do
-    case Governance.revoke_api_key(socket.assigns.tenant, api_key_id) do
+    case Governance.revoke_api_key(socket.assigns.tenant, api_key_id, @console_audit_opts) do
       {:ok, api_key} ->
         {:noreply,
          socket
@@ -478,7 +480,7 @@ defmodule OrchardConsole.TenantDetailLive do
   end
 
   defp disable_api_client(socket, api_client_id) do
-    case Governance.disable_api_client(socket.assigns.tenant, api_client_id) do
+    case Governance.disable_api_client(socket.assigns.tenant, api_client_id, @console_audit_opts) do
       {:ok, api_client} ->
         {:noreply,
          socket

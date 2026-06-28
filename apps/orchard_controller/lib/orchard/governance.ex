@@ -149,19 +149,25 @@ defmodule Orchard.Governance do
     end
   end
 
-  @spec disable_api_client(Tenant.t() | Ecto.UUID.t(), ServiceAccount.t() | Ecto.UUID.t()) ::
+  @spec disable_api_client(
+          Tenant.t() | Ecto.UUID.t(),
+          ServiceAccount.t() | Ecto.UUID.t(),
+          keyword()
+        ) ::
           {:ok, ServiceAccount.t()}
           | {:error, Changeset.t() | :tenant_not_found | :api_client_not_found}
-  def disable_api_client(tenant_or_id, %ServiceAccount{id: service_account_id}),
-    do: disable_api_client(tenant_or_id, service_account_id)
+  def disable_api_client(tenant_or_id, service_account_or_id, opts \\ [])
 
-  def disable_api_client(tenant_or_id, service_account_id) do
+  def disable_api_client(tenant_or_id, %ServiceAccount{id: service_account_id}, opts),
+    do: disable_api_client(tenant_or_id, service_account_id, opts)
+
+  def disable_api_client(tenant_or_id, service_account_id, opts) do
     Repo.transaction(fn ->
       with {:ok, tenant} <- resolve_tenant(tenant_or_id),
            {:ok, service_account_id} <- normalize_service_account_id(service_account_id),
            {:ok, api_client} <- lock_api_client_for_tenant(tenant.id, service_account_id),
            {:ok, api_client, audit?} <- disable_locked_api_client(api_client),
-           {:ok, _audit_log} <- maybe_insert_disable_audit_log(api_client, audit?) do
+           {:ok, _audit_log} <- maybe_insert_disable_audit_log(api_client, audit?, opts) do
         {:ok, api_client}
       else
         {:error, reason} -> Repo.rollback(reason)
@@ -429,13 +435,17 @@ defmodule Orchard.Governance do
 
   @spec revoke_api_key(ApiKey.t() | Ecto.UUID.t()) ::
           {:ok, ApiKey.t()} | {:error, Changeset.t() | :api_key_not_found}
-  def revoke_api_key(%ApiKey{id: api_key_id}), do: revoke_api_key(api_key_id)
+  @spec revoke_api_key(ApiKey.t() | Ecto.UUID.t(), keyword()) ::
+          {:ok, ApiKey.t()} | {:error, Changeset.t() | :api_key_not_found}
+  def revoke_api_key(api_key_or_id, opts \\ [])
 
-  def revoke_api_key(api_key_id) do
+  def revoke_api_key(%ApiKey{id: api_key_id}, opts), do: revoke_api_key(api_key_id, opts)
+
+  def revoke_api_key(api_key_id, opts) when is_list(opts) do
     Repo.transaction(fn ->
       with {:ok, api_key_id} <- normalize_api_key_id(api_key_id),
            {:ok, api_key} <- lock_api_key(api_key_id),
-           {:ok, api_key} <- revoke_locked_api_key(api_key) do
+           {:ok, api_key} <- revoke_locked_api_key(api_key, opts) do
         {:ok, redact_api_key(api_key)}
       else
         {:error, reason} -> Repo.rollback(reason)
@@ -443,6 +453,44 @@ defmodule Orchard.Governance do
     end)
     |> unwrap_transaction_result()
   end
+
+  @spec revoke_api_key(Tenant.t() | Ecto.UUID.t(), ApiKey.t() | Ecto.UUID.t()) ::
+          {:ok, ApiKey.t()} | {:error, Changeset.t() | :tenant_not_found | :api_key_not_found}
+  @spec revoke_api_key(Tenant.t() | Ecto.UUID.t(), ApiKey.t() | Ecto.UUID.t(), keyword()) ::
+          {:ok, ApiKey.t()} | {:error, Changeset.t() | :tenant_not_found | :api_key_not_found}
+
+  def revoke_api_key(%Tenant{id: tenant_id}, api_key_or_id),
+    do: revoke_api_key(tenant_id, api_key_or_id, [])
+
+  def revoke_api_key(tenant_id, %ApiKey{id: api_key_id}),
+    do: revoke_api_key(tenant_id, api_key_id, [])
+
+  def revoke_api_key(tenant_id, api_key_id) when is_binary(tenant_id) and is_binary(api_key_id),
+    do: revoke_api_key(tenant_id, api_key_id, [])
+
+  def revoke_api_key(%Tenant{id: tenant_id}, api_key_or_id, opts),
+    do: revoke_api_key(tenant_id, api_key_or_id, opts)
+
+  def revoke_api_key(tenant_id, %ApiKey{id: api_key_id}, opts),
+    do: revoke_api_key(tenant_id, api_key_id, opts)
+
+  def revoke_api_key(tenant_id, api_key_id, opts)
+      when is_binary(tenant_id) and is_binary(api_key_id) do
+    Repo.transaction(fn ->
+      with {:ok, tenant_id} <- normalize_tenant_id(tenant_id),
+           {:ok, _tenant} <- fetch_tenant(tenant_id),
+           {:ok, api_key_id} <- normalize_api_key_id(api_key_id),
+           {:ok, api_key} <- lock_api_key_for_tenant(api_key_id, tenant_id),
+           {:ok, api_key} <- revoke_locked_api_key(api_key, opts) do
+        {:ok, redact_api_key(api_key)}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  def revoke_api_key(_tenant_id, _api_key_id, _opts), do: {:error, :tenant_not_found}
 
   @spec list_tenants() :: [Tenant.t()]
   def list_tenants do
@@ -517,31 +565,6 @@ defmodule Orchard.Governance do
       {:ok, api_keys}
     end
   end
-
-  @spec revoke_api_key(Tenant.t() | Ecto.UUID.t(), ApiKey.t() | Ecto.UUID.t()) ::
-          {:ok, ApiKey.t()} | {:error, Changeset.t() | :tenant_not_found | :api_key_not_found}
-  def revoke_api_key(%Tenant{id: tenant_id}, api_key_or_id),
-    do: revoke_api_key(tenant_id, api_key_or_id)
-
-  def revoke_api_key(tenant_id, %ApiKey{id: api_key_id}),
-    do: revoke_api_key(tenant_id, api_key_id)
-
-  def revoke_api_key(tenant_id, api_key_id) when is_binary(tenant_id) and is_binary(api_key_id) do
-    Repo.transaction(fn ->
-      with {:ok, tenant_id} <- normalize_tenant_id(tenant_id),
-           {:ok, _tenant} <- fetch_tenant(tenant_id),
-           {:ok, api_key_id} <- normalize_api_key_id(api_key_id),
-           {:ok, api_key} <- lock_api_key_for_tenant(api_key_id, tenant_id),
-           {:ok, api_key} <- revoke_locked_api_key(api_key) do
-        {:ok, redact_api_key(api_key)}
-      else
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-    |> unwrap_transaction_result()
-  end
-
-  def revoke_api_key(_tenant_id, _api_key_id), do: {:error, :tenant_not_found}
 
   defp insert_tenant(attrs) do
     %Tenant{}
@@ -962,8 +985,6 @@ defmodule Orchard.Governance do
     end
   end
 
-  defp revoke_locked_api_key(api_key, opts \\ [])
-
   defp revoke_locked_api_key(%ApiKey{revoked_at: %DateTime{}} = api_key, _opts),
     do: {:ok, api_key}
 
@@ -1009,14 +1030,14 @@ defmodule Orchard.Governance do
     |> Repo.insert()
   end
 
-  defp maybe_insert_disable_audit_log(_api_client, false), do: {:ok, nil}
+  defp maybe_insert_disable_audit_log(_api_client, false, _opts), do: {:ok, nil}
 
-  defp maybe_insert_disable_audit_log(%ServiceAccount{} = api_client, true) do
+  defp maybe_insert_disable_audit_log(%ServiceAccount{} = api_client, true, opts) do
     insert_api_client_audit_log(
       api_client,
       "service_account.disabled",
       api_client.disabled_at,
-      []
+      opts
     )
   end
 
@@ -1175,6 +1196,7 @@ defmodule Orchard.Governance do
     payload
     |> maybe_put_payload("provisioning_batch_id", Keyword.get(opts, :provisioning_batch_id))
     |> maybe_put_payload("bulk_operation_ref", Keyword.get(opts, :bulk_operation_ref))
+    |> maybe_put_payload("surface", Keyword.get(opts, :surface))
   end
 
   defp maybe_put_payload(payload, _key, nil), do: payload
