@@ -82,7 +82,8 @@ defmodule OrchardConsole.Runtime do
   Fetches a runtime status snapshot from the configured node.
 
   On success, also performs a best-effort `Orchard.Nodes.observe_status/3`
-  to persist node inventory data and refresh queue capacity.
+  to update trusted node inventory or record an admission candidate, and to
+  refresh queue capacity.
   Observation failures never convert a successful status read into an error
   snapshot.
 
