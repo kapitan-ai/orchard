@@ -9,7 +9,7 @@ Observed admission candidates SHALL NOT be represented as `provisioned` unless a
 Observed admission candidates SHALL NOT be represented as `registered` unless `RegisterNode` or equivalent trust proof required by `SPEC.md` §4.4 has completed.
 Observed admission candidates MAY appear in admission review, but admit execution SHALL be blocked until they are reconciled to a registered node with required trust, inventory, pool, and policy inputs.
 Pending admission nodes SHALL NOT be schedulable.
-Pending admission nodes SHALL retain observed inventory, target metadata, compatibility evidence, and last observation timestamps for review.
+Pending admission nodes SHALL retain observed inventory, target metadata, compatibility evidence, and last observation timestamps for review when observations exist.
 Successful Runtime Endpoint observation alone SHALL NOT transition a node to `active`.
 Provisioned nodes MAY appear in the admission review surface, but admit execution SHALL be blocked until registration inventory and trust evidence required by `SPEC.md` §4.4 are present.
 This refines `SPEC.md` §4.2, §4.3, §4.4, and §7.5.4.
@@ -57,10 +57,13 @@ This refines `SPEC.md` §4.2, §4.3, §4.4, and §7.5.4.
 
 ### Requirement: Admission Review Persistence Is Explicit
 Orchard SHALL persist first-observed Runtime Endpoint admission candidates in `node_admission_candidates` until they are resolved by admin review.
-`node_admission_candidates` SHALL include source, admission category, optional node reference, sanitized observed identity, sanitized target reference, endpoint transport and target reference, inventory, compatibility evidence, and last observation timestamp.
+`node_admission_candidates` SHALL include source, admission category, optional node reference, sanitized observed identity, sanitized target reference, endpoint transport and target reference, inventory, compatibility evidence, and optional last observation timestamp.
 `node_admission_candidates.admission_category` SHALL be review state and SHALL NOT add or replace a `node_state` lifecycle enum.
 Candidate rows SHOULD reference the linked Node when created for provisioned-placeholder or registered-node sources if that Node row exists.
 Candidate rows MAY later have a null node reference after retention cleanup, because bounded snapshot fields preserve admission review evidence.
+Candidate rows SHALL populate last observation timestamp when `source = 'runtime_endpoint_observation'` and whenever the row represents a concrete Runtime Endpoint observation.
+Candidate rows MAY have a null last observation timestamp before an observation exists.
+Candidate lookup indexes MAY include sanitized target reference, but target reference SHALL NOT be treated as a unique candidate identity.
 Orchard SHALL persist rejection, rejection clearance, and admission-after-rejection decisions in `node_admission_decisions`.
 `node_admission_decisions` SHALL include candidate or node reference, decision kind, actor, decided timestamp, reason, observed identity, target reference when applicable, audit event reference, and bounded metadata.
 Admission decision history SHALL be append-only.
@@ -69,6 +72,7 @@ Admission decision rows MAY later have null candidate and Node references after 
 Candidate and decision metadata SHALL be sanitized and MUST NOT include plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw local evidence logs, local tool session identifiers, or machine-specific prompt exports.
 Node Admission candidate review, rejection, rejection clearance, admission after rejection, decommission, HA-lite write-path decisions, and cluster-scoped support bundle generation SHALL use cluster-scoped audit events with no tenant id.
 Candidate review queries SHALL have indexes for admission category and recent observation time.
+Recent-observation indexes SHALL order candidates without an observation timestamp after candidates with observed timestamps.
 Decision review queries SHALL have indexes by candidate, node, and audit log reference.
 This refines `SPEC.md` §8.1 through §8.5.
 
@@ -83,6 +87,17 @@ This refines `SPEC.md` §8.1 through §8.5.
 - **AND** the candidate row may retain a null node reference
 - **AND** the candidate remains understandable from its source, admission category, observed identity, target reference, inventory, and compatibility evidence
 
+#### Scenario: Unobserved candidate does not invent freshness
+- **WHEN** Orchard creates a provisioned-placeholder or registered-node review row before any Runtime Endpoint observation has occurred
+- **THEN** Orchard stores the candidate without a last observation timestamp
+- **AND** review ordering does not treat the missing timestamp as more recent than observed candidates
+- **AND** Orchard does not fabricate observation freshness
+
+#### Scenario: Target reference is not unique identity
+- **WHEN** two pending or rejected admission candidates share the same sanitized target reference
+- **THEN** Orchard may retain both candidate rows independently
+- **AND** Orchard does not reconcile or overwrite either candidate based on target reference alone
+
 #### Scenario: Rejection is traceable to audit
 - **WHEN** an authorized admin rejects an admission candidate
 - **THEN** Orchard stores a `node_admission_decisions` row with decision `rejected`
@@ -94,7 +109,7 @@ This refines `SPEC.md` §8.1 through §8.5.
 - **WHEN** a resolved admission candidate is removed by retention cleanup before the corresponding admission decision expires
 - **THEN** Orchard preserves the `node_admission_decisions` row
 - **AND** the decision row may retain null candidate and Node references
-- **AND** the decision remains understandable from its snapshot fields and audit reference
+- **AND** the decision remains understandable from its snapshot fields and any retained audit reference
 
 ### Requirement: Cluster Status Separates Signal Categories
 Orchard Console, CLI, Operator API, and Admin API SHALL present node and cluster status as separate signal categories rather than a single combined status badge.

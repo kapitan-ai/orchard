@@ -7,7 +7,7 @@ This change defines the operator-facing UX contract before implementation so the
 
 ## What Changes
 
-- Define pending admission as an explicit operator review state for first-observed or registered nodes.
+- Define pending admission as an explicit operator review state for first-observed, provisioned, or registered nodes.
 - Define first-observed unregistered Runtime Endpoint observations as observed admission candidates outside the node lifecycle state machine until they are reconciled to a provisioned placeholder or registered node.
 - Define rejected pending admission as admission-decision metadata, not a `decommissioning` lifecycle transition.
 - Require Console, CLI, Operator API, and Admin API surfaces to keep lifecycle, health, freshness, transport reachability, runtime readiness, compatibility, scheduling, and warnings distinct.

@@ -8,7 +8,7 @@
 ## 2. Node Lifecycle And Admission
 
 - [ ] 2.1 Change first-observed Runtime Endpoint node persistence so new nodes are not inserted as `active` without explicit admission.
-- [ ] 2.2 Add observed admission candidate persistence through `node_admission_candidates` for first-observed Runtime Endpoint observations that do not match an existing provisioned placeholder or registered node, including retention-safe snapshot fields for linked candidates.
+- [ ] 2.2 Add observed admission candidate persistence through `node_admission_candidates` for first-observed Runtime Endpoint observations that do not match an existing provisioned placeholder or registered node, including retention-safe snapshot fields for linked candidates, nullable observation timestamps for unobserved review rows, and non-unique target-reference lookup.
 - [ ] 2.3 Add reconciliation logic that prevents observed candidates from being represented as `provisioned` without an admin-created placeholder or as `registered` without `RegisterNode` or equivalent trust proof.
 - [ ] 2.4 Add pending-admission category handling without adding a lifecycle enum that is absent from `SPEC.md`.
 - [ ] 2.5 Preserve observed inventory, target metadata, and compatibility evidence for pending admission review.

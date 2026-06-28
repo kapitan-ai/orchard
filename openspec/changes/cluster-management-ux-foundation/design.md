@@ -91,17 +91,19 @@ Re-admission after rejection requires an explicit admin clear action or a new re
 
 `SPEC.md` §8 defines `node_admission_candidates` for first-observed Runtime Endpoint metadata and review state before the observation becomes a trusted Node.
 Rows may also link to provisioned placeholders or registered Nodes through `node_id`.
-The table stores source, admission category, sanitized observed identity, sanitized target reference, endpoint transport and target reference, inventory, compatibility evidence, and last observation timestamp.
+The table stores source, admission category, sanitized observed identity, sanitized target reference, endpoint transport and target reference, inventory, compatibility evidence, and optional last observation timestamp.
+The last observation timestamp is required for first-observed Runtime Endpoint observation rows and whenever the row represents a concrete Runtime Endpoint observation, but may be null for provisioned placeholder or registered-node review rows before an observation occurs.
 This keeps admission review state outside the Node Lifecycle State machine while still making pending, rejected, and admitted review categories queryable.
 Linked candidates should reference their Node when created, but that reference may become null after retention cleanup.
 The candidate must retain enough bounded snapshot fields to remain understandable after the linked Node row is removed.
+Target references remain non-authoritative operator-review fields and are indexed for lookup, not uniqueness or reconciliation identity.
 
 `SPEC.md` §8 defines `node_admission_decisions` for durable rejection, rejection-clearance, and admission-after-rejection decisions.
 Decision rows append history and include candidate or node reference, decision kind, actor, reason, observed identity, target reference, audit log reference, and decided timestamp.
 Implementation must not update a prior decision row to rewrite history.
 Later decisions append new rows.
 Decision rows should reference a candidate or node when created, but those references may become null after retention cleanup.
-The decision must retain enough bounded snapshot fields to remain understandable after referenced candidate or node rows are removed.
+The decision must retain enough bounded snapshot fields to remain understandable after referenced candidate or node rows are removed, even if an audit reference is no longer present after retention cleanup.
 Node admission decisions use cluster-scoped audit events unless a future accepted contract makes the action tenant-owned.
 
 Candidate and decision metadata must be sanitized and bounded.
