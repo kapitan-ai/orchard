@@ -207,7 +207,7 @@ Common agent accelerators include:
 | Exa | Web research when current external facts are needed | Cite external sources in product-facing docs when relevant |
 
 No Mistakes is configured outside the repo in `~/.no-mistakes/config.yaml`.
-For Orchard agent workstreams, prefer the Claude native agent there when model selection is needed, because `agent_args_override` is a global-only No Mistakes setting.
+For significant Orchard No Mistakes gates, prefer the Claude native agent with the Opus model as the independent reviewer, because `agent_args_override` is a global-only No Mistakes setting.
 Use `no-mistakes doctor`, `no-mistakes axi`, and `no-mistakes axi run --help` as cheap smoke checks before starting an expensive gate run.
 
 Agents should follow `AGENTS.md` for when to use these tools.
