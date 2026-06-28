@@ -59,6 +59,8 @@ This refines `SPEC.md` §4.2, §4.3, §4.4, and §7.5.4.
 Orchard SHALL persist first-observed Runtime Endpoint admission candidates in `node_admission_candidates` until they are resolved by admin review.
 `node_admission_candidates` SHALL include source, admission category, optional node reference, sanitized observed identity, sanitized target reference, endpoint transport and target reference, inventory, compatibility evidence, and last observation timestamp.
 `node_admission_candidates.admission_category` SHALL be review state and SHALL NOT add or replace a `node_state` lifecycle enum.
+Candidate rows SHOULD reference the linked Node when created for provisioned-placeholder or registered-node sources if that Node row exists.
+Candidate rows MAY later have a null node reference after retention cleanup, because bounded snapshot fields preserve admission review evidence.
 Orchard SHALL persist rejection, rejection clearance, and admission-after-rejection decisions in `node_admission_decisions`.
 `node_admission_decisions` SHALL include candidate or node reference, decision kind, actor, decided timestamp, reason, observed identity, target reference when applicable, audit event reference, and bounded metadata.
 Admission decision history SHALL be append-only.
@@ -74,6 +76,12 @@ This refines `SPEC.md` §8.1 through §8.5.
 - **WHEN** Orchard observes Runtime Endpoint metadata that does not match a provisioned placeholder or registered Node
 - **THEN** Orchard stores a `node_admission_candidates` row with sanitized observed identity, target reference, inventory, compatibility evidence, and last observation timestamp
 - **AND** Orchard does not create a trusted Node row from that observation alone
+
+#### Scenario: Linked candidate survives node retention
+- **WHEN** a provisioned-placeholder or registered-node admission candidate remains after its linked Node row is removed by retention cleanup
+- **THEN** Orchard preserves the `node_admission_candidates` row
+- **AND** the candidate row may retain a null node reference
+- **AND** the candidate remains understandable from its source, admission category, observed identity, target reference, inventory, and compatibility evidence
 
 #### Scenario: Rejection is traceable to audit
 - **WHEN** an authorized admin rejects an admission candidate

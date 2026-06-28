@@ -2784,8 +2784,7 @@ create table node_admission_candidates (
   compatibility_evidence jsonb not null default '{}'::jsonb,
   last_observed_at timestamptz not null,
   inserted_at timestamptz not null default now(),
-  updated_at timestamptz not null default now(),
-  check (node_id is not null or source = 'runtime_endpoint_observation')
+  updated_at timestamptz not null default now()
 );
 
 create table models (
@@ -3008,6 +3007,8 @@ create table node_admission_decisions (
 
 `node_admission_candidates` SHALL store first-observed Runtime Endpoint metadata before it is reconciled to a trusted Node.
 Rows MAY also link review state for provisioned placeholders or registered Nodes through `node_id`, but `admission_category` remains derived review state, not a `node_state` lifecycle enum.
+At candidate creation time, `node_id` SHOULD be present for `source = 'provisioned_placeholder'` or `source = 'registered_node'` when the referenced Node row exists.
+`node_id` MAY later become null through retention cleanup because candidate rows retain bounded snapshot fields in `observed_identity`, `target_ref`, `endpoint_transport`, `endpoint_target`, `inventory`, and `compatibility_evidence`.
 Candidate `observed_identity`, `inventory`, `compatibility_evidence`, `target_ref`, and `endpoint_target` SHALL be sanitized and bounded.
 They MUST NOT contain plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw local evidence logs, local tool session identifiers, or machine-specific prompt exports.
 `target_ref` and `endpoint_target` are operator-review references only and SHALL NOT prove Node identity ownership.

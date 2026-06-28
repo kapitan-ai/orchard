@@ -93,6 +93,8 @@ Re-admission after rejection requires an explicit admin clear action or a new re
 Rows may also link to provisioned placeholders or registered Nodes through `node_id`.
 The table stores source, admission category, sanitized observed identity, sanitized target reference, endpoint transport and target reference, inventory, compatibility evidence, and last observation timestamp.
 This keeps admission review state outside the Node Lifecycle State machine while still making pending, rejected, and admitted review categories queryable.
+Linked candidates should reference their Node when created, but that reference may become null after retention cleanup.
+The candidate must retain enough bounded snapshot fields to remain understandable after the linked Node row is removed.
 
 `SPEC.md` §8 defines `node_admission_decisions` for durable rejection, rejection-clearance, and admission-after-rejection decisions.
 Decision rows append history and include candidate or node reference, decision kind, actor, reason, observed identity, target reference, audit log reference, and decided timestamp.
