@@ -203,7 +203,12 @@ Common agent accelerators include:
 | ast-grep | Structural search and refactors | Keep edits traceable to product files and tests |
 | Refero | UI and visual design research | Do not copy private research artifacts into product docs |
 | Superpowers | Planning, debugging, verification discipline | Do not commit generated local plans unless rewritten as product docs |
+| No Mistakes | Significant workstream validation, smoke checks, and push or PR gate driving | Configure the tool-owned `~/.no-mistakes/config.yaml`; do not commit gate repos, logs, evidence, prompt exports, or machine-specific paths |
 | Exa | Web research when current external facts are needed | Cite external sources in product-facing docs when relevant |
+
+No Mistakes is configured outside the repo in `~/.no-mistakes/config.yaml`.
+For significant Orchard No Mistakes gates, prefer the Claude native agent with the Opus model as the independent reviewer, because `agent_args_override` is a global-only No Mistakes setting.
+Use `no-mistakes doctor`, `no-mistakes axi`, and `no-mistakes axi run --help` as cheap smoke checks before starting an expensive gate run.
 
 Agents should follow `AGENTS.md` for when to use these tools.
 Claude Code reads that same guide through root `CLAUDE.md`.
