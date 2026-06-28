@@ -1010,28 +1010,21 @@ defmodule Orchard.Nodes do
 
     case lock_open_observed_candidate(observation) do
       %AdmissionCandidate{} = candidate ->
-        attrs = Map.put(attrs, :admission_category, candidate.admission_category)
+        if fresh_candidate_observation?(candidate, observation) do
+          attrs = Map.put(attrs, :admission_category, candidate.admission_category)
 
-        candidate
-        |> AdmissionCandidate.changeset(attrs)
-        |> Repo.update!()
+          candidate
+          |> AdmissionCandidate.changeset(attrs)
+          |> Repo.update!()
+        else
+          candidate
+        end
 
       nil ->
         %AdmissionCandidate{}
         |> AdmissionCandidate.changeset(attrs)
         |> Repo.insert!(
-          on_conflict:
-            {:replace,
-             [
-               :observed_identity,
-               :target_ref,
-               :endpoint_transport,
-               :endpoint_target,
-               :inventory,
-               :compatibility_evidence,
-               :last_observed_at,
-               :updated_at
-             ]},
+          on_conflict: observed_candidate_conflict_update(),
           conflict_target:
             {:unsafe_fragment,
              """
@@ -1044,6 +1037,36 @@ defmodule Orchard.Nodes do
              """}
         )
     end
+  end
+
+  defp fresh_candidate_observation?(%AdmissionCandidate{last_observed_at: nil}, _observation),
+    do: true
+
+  defp fresh_candidate_observation?(
+         %AdmissionCandidate{last_observed_at: last_observed_at},
+         observation
+       ) do
+    DateTime.compare(last_observed_at, observation.last_heartbeat_at) == :lt
+  end
+
+  defp observed_candidate_conflict_update do
+    from(candidate in AdmissionCandidate,
+      where:
+        is_nil(candidate.last_observed_at) or
+          candidate.last_observed_at < fragment("EXCLUDED.last_observed_at"),
+      update: [
+        set: [
+          observed_identity: fragment("EXCLUDED.observed_identity"),
+          target_ref: fragment("EXCLUDED.target_ref"),
+          endpoint_transport: fragment("EXCLUDED.endpoint_transport"),
+          endpoint_target: fragment("EXCLUDED.endpoint_target"),
+          inventory: fragment("EXCLUDED.inventory"),
+          compatibility_evidence: fragment("EXCLUDED.compatibility_evidence"),
+          last_observed_at: fragment("EXCLUDED.last_observed_at"),
+          updated_at: fragment("EXCLUDED.updated_at")
+        ]
+      ]
+    )
   end
 
   defp lock_open_observed_candidate(observation) do
@@ -1190,8 +1213,16 @@ defmodule Orchard.Nodes do
 
   defp registered_inventory_present?(%Node{} = node) do
     non_empty?(node.hostname) and non_empty?(node.display_name) and
-      routable_advertise_addr?(node.advertise_addr) and is_integer(node.rpc_port)
+      node_has_routable_target?(node)
   end
+
+  defp node_has_routable_target?(%Node{} = node) do
+    (routable_advertise_addr?(node.advertise_addr) and is_integer(node.rpc_port)) or
+      routable_connect_target?(node.connect_host, node.connect_port)
+  end
+
+  defp routable_connect_target?(host, port),
+    do: routable_advertise_addr?(host) and is_integer(port)
 
   defp blank_admission_input?(attrs, keys) do
     keys

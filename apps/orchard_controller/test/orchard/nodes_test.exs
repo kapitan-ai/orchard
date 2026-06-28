@@ -49,7 +49,7 @@ defmodule Orchard.NodesTest do
         id: Ecto.UUID.generate(),
         hostname: "host-#{unique}.local",
         display_name: "node-#{unique}",
-        advertise_addr: "10.0.0.#{rem(unique, 255)}",
+        advertise_addr: unique_advertise_addr(unique),
         rpc_port: 9444,
         state: :active,
         health: :healthy,
@@ -58,6 +58,14 @@ defmodule Orchard.NodesTest do
       },
       overrides
     )
+  end
+
+  defp unique_advertise_addr(unique) do
+    second_octet = unique |> div(65_536) |> rem(256)
+    third_octet = unique |> div(256) |> rem(256)
+    fourth_octet = rem(unique, 254) + 1
+
+    "10.#{second_octet}.#{third_octet}.#{fourth_octet}"
   end
 
   defp insert_node!(overrides) do
@@ -544,6 +552,54 @@ defmodule Orchard.NodesTest do
       assert candidate.last_observed_at == DateTime.truncate(second_observed_at, :microsecond)
     end
 
+    test "SPEC.md §4.2 stale duplicate observations preserve newer candidate evidence" do
+      node_id = Ecto.UUID.generate()
+      target = make_target("10.0.0.33", 9444)
+      newer_observed_at = DateTime.utc_now()
+      older_observed_at = DateTime.add(newer_observed_at, -30, :second)
+
+      newer_status =
+        make_status_response(%{
+          node_id: node_id,
+          display_name: "newer-candidate-node",
+          hostname: "newer-candidate.local",
+          listen_host: "10.0.0.33",
+          listen_port: 9444,
+          agent_version: "0.3.0"
+        })
+
+      older_status =
+        make_status_response(%{
+          node_id: node_id,
+          display_name: "older-candidate-node",
+          hostname: "older-candidate.local",
+          listen_host: "10.0.0.33",
+          listen_port: 9444,
+          agent_version: "0.1.0"
+        })
+
+      equal_timestamp_status =
+        make_status_response(%{
+          node_id: node_id,
+          display_name: "equal-candidate-node",
+          hostname: "equal-candidate.local",
+          listen_host: "10.0.0.33",
+          listen_port: 9444,
+          agent_version: "0.2.0"
+        })
+
+      assert :noop = Nodes.observe_status(target, newer_status, newer_observed_at)
+      assert :noop = Nodes.observe_status(target, older_status, older_observed_at)
+      assert :noop = Nodes.observe_status(target, equal_timestamp_status, newer_observed_at)
+
+      assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
+      assert candidate.observed_identity["claimed_node_id"] == node_id
+      assert candidate.observed_identity["display_name"] == "newer-candidate-node"
+      assert candidate.observed_identity["hostname"] == "newer-candidate.local"
+      assert candidate.observed_identity["agent_version"] == "0.3.0"
+      assert candidate.last_observed_at == DateTime.truncate(newer_observed_at, :microsecond)
+    end
+
     test "SPEC.md §4.2 open observed candidate identity is unique in the database" do
       node_id = Ecto.UUID.generate()
       now = DateTime.utc_now()
@@ -792,6 +848,23 @@ defmodule Orchard.NodesTest do
                  trust_evidence_ref: "registration-audit:test",
                  pool_id: Ecto.UUID.generate()
                })
+    end
+
+    test "SPEC.md §4.2 registered node admission accepts bind-all inventory with connect target" do
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-bind-all",
+          hostname: "registered-bind-all.local",
+          advertise_addr: "0.0.0.0",
+          rpc_port: 50_071,
+          connect_host: "100.90.207.78",
+          connect_port: 50_071
+        })
+
+      assert {:ok, admitted} = Nodes.admit_node(node.id, admission_attrs())
+      assert admitted.node.state == :admitted
+      assert admitted.decision.decision == :admitted
     end
 
     test "SPEC.md §4.3 admission decisions reject direct updates" do
