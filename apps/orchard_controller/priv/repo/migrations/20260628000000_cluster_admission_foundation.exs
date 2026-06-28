@@ -200,7 +200,10 @@ defmodule Orchard.Repo.Migrations.ClusterAdmissionFoundation do
   end
 
   def down do
-    execute("DROP TRIGGER IF EXISTS node_admission_decisions_append_only ON node_admission_decisions")
+    execute(
+      "DROP TRIGGER IF EXISTS node_admission_decisions_append_only ON node_admission_decisions"
+    )
+
     execute("DROP FUNCTION IF EXISTS orchard_reject_node_admission_decision_mutation()")
 
     drop_if_exists(table(:node_admission_decisions))
