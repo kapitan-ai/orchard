@@ -1,7 +1,7 @@
 # DESIGN.md — Orchard Console Tactical UI Contract
 
 **Status:** Active (v2)
-**Last Updated:** 2026-05-11
+**Last Updated:** 2026-06-28
 **Audience:** AI coding agents and contributors generating or modifying Console UI.
 
 This document is the tactical, component-level design contract for the Orchard
@@ -277,6 +277,7 @@ Notes:
   keeps its existing classes, including the badge wrapper's `bg-slate-50
   dark:bg-slate-900/60`. The badge now reads as a tinted chip *inside* the
   recessed rail; this is intended.
+  In the collapsed rail the badge hides cleanly; see section 5.3.
 
 ### 5.2 Sidebar Nav Items (`sidebar_nav/1`)
 
@@ -326,12 +327,13 @@ Disabled items keep their `aria-disabled="true"` (when not active) and
 `title="<label> — coming soon"` from the existing `sidebar_nav/1`
 implementation. Do not add hover styling to the disabled span.
 
-### 5.3 Collapse Behavior (Unchanged)
+### 5.3 Collapse Behavior
 
 - The `sidebar-label`, `console-sidebar-version`, and `sidebar-toggle-icon`
   rules in `app.css` (`#console-sidebar { width / min-width }`,
-  `.sidebar-collapsed` overrides, reduced-motion media query) are not
-  modified in v2.
+  `.sidebar-collapsed` overrides, reduced-motion media query) are unchanged
+  from v2.
+- `#console-license-badge` collapses out of view in `.sidebar-collapsed` mode via an `app.css` rule (`max-height` / `opacity` / `margin` / `border` / `padding` reset) that mirrors `console-sidebar-version`, so the full license chip does not crowd the 4.5rem collapsed rail.
 - The icon column at `h-5 w-5 flex-shrink-0` is kept on every nav item so
   collapsed-state alignment continues to work.
 - Active `aria-current="page"` is set by `sidebar_nav/1` and must remain.

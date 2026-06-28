@@ -210,6 +210,8 @@ defmodule OrchardConsole.TenantDetailLiveTest do
 
       {:ok, view, html} = live(conn, "/console/tenants/#{tenant.id}")
 
+      assert has_element?(view, "#tenant-api-clients-list")
+      assert has_element?(view, "#api-client-#{api_client.id}")
       assert html =~ "console-client"
       assert html =~ "Owner Example"
       assert html =~ "owner@example.com"
