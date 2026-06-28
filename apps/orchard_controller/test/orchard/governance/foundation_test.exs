@@ -120,6 +120,75 @@ defmodule Orchard.Governance.FoundationTest do
                target_type: ["can't be blank"]
              } = errors_on(changeset)
     end
+
+    test "cluster-scoped audit records require no tenant" do
+      assert {:ok, audit_log} =
+               Governance.insert_cluster_audit_log(%{
+                 action: "node_admission.rejected",
+                 target_type: "node_admission_candidate",
+                 target_id: Ecto.UUID.generate(),
+                 payload: %{"surface" => "test"}
+               })
+
+      assert audit_log.scope == "cluster"
+      assert audit_log.tenant_id == nil
+      assert audit_log.actor_type == "operator"
+      assert audit_log.payload == %{"surface" => "test"}
+
+      changeset =
+        AuditLog.changeset(%AuditLog{}, %{
+          scope: "cluster",
+          tenant_id: Governance.legacy_tenant_id(),
+          actor_type: "operator",
+          action: "cluster.write",
+          target_type: "cluster"
+        })
+
+      assert %{tenant_id: ["must be blank"]} = errors_on(changeset)
+    end
+
+    test "cluster-scoped audit records return validation errors for missing required fields" do
+      assert {:error, changeset} = Governance.insert_cluster_audit_log(%{})
+
+      assert %{
+               action: ["can't be blank"],
+               target_type: ["can't be blank"]
+             } = errors_on(changeset)
+    end
+
+    test "cluster audit rows can be mapped before rollback restores tenant_id not null" do
+      assert {:ok, audit_log} =
+               Governance.insert_cluster_audit_log(%{
+                 action: "node_admission.rejected",
+                 target_type: "node_admission_candidate",
+                 target_id: Ecto.UUID.generate(),
+                 payload: %{"surface" => "rollback-test"}
+               })
+
+      Repo.query!("ALTER TABLE audit_logs DISABLE TRIGGER audit_logs_append_only")
+      {:ok, legacy_tenant_id} = Ecto.UUID.dump(Governance.legacy_tenant_id())
+
+      Repo.query!(
+        """
+        UPDATE audit_logs
+        SET tenant_id = $1,
+            scope = 'tenant',
+            payload = COALESCE(payload, '{}'::jsonb) || '{"legacy_cluster_scope": true}'::jsonb
+        WHERE scope = 'cluster'
+        """,
+        [legacy_tenant_id]
+      )
+
+      Repo.query!("ALTER TABLE audit_logs ENABLE TRIGGER audit_logs_append_only")
+      Repo.query!("ALTER TABLE audit_logs ALTER COLUMN tenant_id SET NOT NULL")
+
+      reloaded = Repo.get!(AuditLog, audit_log.id)
+
+      assert reloaded.scope == "tenant"
+      assert reloaded.tenant_id == Governance.legacy_tenant_id()
+      assert reloaded.payload["legacy_cluster_scope"] == true
+      assert reloaded.payload["surface"] == "rollback-test"
+    end
   end
 
   defp create_tenant!(slug) do

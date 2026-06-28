@@ -433,6 +433,27 @@ defmodule Orchard.Governance do
 
   def audit_support_bundle_generated(_attrs), do: audit_support_bundle_generated(%{})
 
+  @spec insert_cluster_audit_log(map() | keyword()) ::
+          {:ok, AuditLog.t()} | {:error, Changeset.t()}
+  def insert_cluster_audit_log(attrs) do
+    attrs = normalize_attrs(attrs)
+
+    %AuditLog{}
+    |> audit_log_impl().changeset(%{
+      scope: "cluster",
+      tenant_id: nil,
+      api_key_id: nil,
+      actor_type: Map.get(attrs, "actor_type", "operator"),
+      actor_id: Map.get(attrs, "actor_id"),
+      action: Map.get(attrs, "action"),
+      target_type: Map.get(attrs, "target_type"),
+      target_id: Map.get(attrs, "target_id"),
+      occurred_at: Map.get(attrs, "occurred_at", utc_now()),
+      payload: Map.get(attrs, "payload", %{})
+    })
+    |> Repo.insert()
+  end
+
   @spec revoke_api_key(ApiKey.t() | Ecto.UUID.t()) ::
           {:ok, ApiKey.t()} | {:error, Changeset.t() | :api_key_not_found}
   @spec revoke_api_key(ApiKey.t() | Ecto.UUID.t(), keyword()) ::
