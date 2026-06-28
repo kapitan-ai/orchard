@@ -71,12 +71,13 @@ defmodule Orchard.Nodes.AdmissionDecision do
     end
   end
 
-  defp normalize_reason(reason) when is_binary(reason) do
+  @spec normalize_reason(term()) :: String.t() | nil | term()
+  def normalize_reason(reason) when is_binary(reason) do
     case String.trim(reason) do
       "" -> nil
       trimmed -> trimmed
     end
   end
 
-  defp normalize_reason(reason), do: reason
+  def normalize_reason(reason), do: reason
 end

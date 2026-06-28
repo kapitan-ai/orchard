@@ -1375,25 +1375,16 @@ defmodule Orchard.Nodes do
   end
 
   defp required_reason(attrs) do
-    case attrs |> Map.get("reason") |> normalize_reason() do
+    case attrs |> Map.get("reason") |> AdmissionDecision.normalize_reason() do
       nil -> {:error, :reason_required}
       reason -> {:ok, reason}
     end
   end
 
-  defp normalize_reason(reason) when is_binary(reason) do
-    case String.trim(reason) do
-      "" -> nil
-      trimmed -> trimmed
-    end
-  end
-
-  defp normalize_reason(reason), do: reason
-
   defp audit_actor_type(opts), do: opts |> Keyword.get(:actor_type, "operator") |> to_string()
   defp audit_actor_id(opts), do: Keyword.get(opts, :actor_id)
 
-  defp utc_now, do: DateTime.utc_now()
+  defp utc_now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
 
   defp unwrap_transaction_result({:ok, {:ok, value}}), do: {:ok, value}
   defp unwrap_transaction_result({:ok, value}), do: value
@@ -1407,7 +1398,7 @@ defmodule Orchard.Nodes do
 
   defp normalize_attrs(attrs) when is_map(attrs) do
     Enum.reduce(attrs, %{}, fn
-      {key, value}, acc when is_atom(key) -> Map.put(acc, Atom.to_string(key), value)
+      {key, value}, acc when is_atom(key) -> Map.put_new(acc, Atom.to_string(key), value)
       {key, value}, acc -> Map.put(acc, key, value)
     end)
   end
