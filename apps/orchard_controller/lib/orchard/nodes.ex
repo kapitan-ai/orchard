@@ -141,19 +141,6 @@ defmodule Orchard.Nodes do
   def get_node!(id), do: Repo.get!(Node, id)
 
   @doc """
-  Fetches a node by ID for API surfaces that need stable not-found errors.
-  """
-  @spec fetch_node(Ecto.UUID.t()) :: {:ok, Node.t()} | {:error, :node_not_found}
-  def fetch_node(id) do
-    with {:ok, id} <- normalize_uuid(id, :node_not_found) do
-      case Repo.get(Node, id) do
-        %Node{} = node -> {:ok, node}
-        nil -> {:error, :node_not_found}
-      end
-    end
-  end
-
-  @doc """
   Lists node admission candidates ordered for operator review.
   """
   @spec list_admission_candidates(keyword()) :: [AdmissionCandidate.t()]
@@ -278,27 +265,7 @@ defmodule Orchard.Nodes do
            }}
           | {:error, term()}
   def reject_admission(candidate_or_node_id, attrs, opts \\ []) do
-    attrs = normalize_attrs(attrs)
-
-    Repo.transaction(fn ->
-      with {:ok, target} <- lock_admission_target(candidate_or_node_id),
-           {:ok, reason} <- required_reason(attrs),
-           {:ok, candidate} <- reject_admission_target(target),
-           {:ok, audit_log} <-
-             insert_admission_audit_log(
-               "node_admission.rejected",
-               candidate,
-               admission_audit_payload(candidate, %{"reason" => reason}),
-               opts
-             ),
-           {:ok, decision} <-
-             insert_admission_decision(candidate, :rejected, reason, audit_log, %{}, opts) do
-        {:ok, %{candidate: candidate, decision: decision, audit_log: audit_log}}
-      else
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-    |> unwrap_transaction_result()
+    do_reject_admission(fn -> lock_admission_target(candidate_or_node_id) end, attrs, opts)
   end
 
   @doc """
@@ -313,27 +280,7 @@ defmodule Orchard.Nodes do
            }}
           | {:error, term()}
   def reject_admission_candidate(candidate_id, attrs, opts \\ []) do
-    attrs = normalize_attrs(attrs)
-
-    Repo.transaction(fn ->
-      with {:ok, candidate} <- lock_candidate_by_id(candidate_id),
-           {:ok, reason} <- required_reason(attrs),
-           {:ok, candidate} <- reject_admission_target({:candidate, candidate}),
-           {:ok, audit_log} <-
-             insert_admission_audit_log(
-               "node_admission.rejected",
-               candidate,
-               admission_audit_payload(candidate, %{"reason" => reason}),
-               opts
-             ),
-           {:ok, decision} <-
-             insert_admission_decision(candidate, :rejected, reason, audit_log, %{}, opts) do
-        {:ok, %{candidate: candidate, decision: decision, audit_log: audit_log}}
-      else
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-    |> unwrap_transaction_result()
+    do_reject_admission(fn -> lock_candidate_target(candidate_id) end, attrs, opts)
   end
 
   @doc """
@@ -348,26 +295,11 @@ defmodule Orchard.Nodes do
            }}
           | {:error, term()}
   def clear_admission_rejection(candidate_or_node_id, attrs \\ %{}, opts \\ []) do
-    attrs = normalize_attrs(attrs)
-
-    Repo.transaction(fn ->
-      with {:ok, candidate} <- lock_rejected_candidate(candidate_or_node_id),
-           {:ok, restored} <- restore_candidate_pending_category(candidate),
-           {:ok, audit_log} <-
-             insert_admission_audit_log(
-               "node_admission.rejection_cleared",
-               restored,
-               admission_audit_payload(restored, attrs),
-               opts
-             ),
-           {:ok, decision} <-
-             insert_admission_decision(restored, :rejection_cleared, nil, audit_log, attrs, opts) do
-        {:ok, %{candidate: restored, decision: decision, audit_log: audit_log}}
-      else
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-    |> unwrap_transaction_result()
+    do_clear_admission_rejection(
+      fn -> lock_rejected_candidate(candidate_or_node_id) end,
+      attrs,
+      opts
+    )
   end
 
   @doc """
@@ -382,26 +314,11 @@ defmodule Orchard.Nodes do
            }}
           | {:error, term()}
   def clear_admission_candidate_rejection(candidate_id, attrs \\ %{}, opts \\ []) do
-    attrs = normalize_attrs(attrs)
-
-    Repo.transaction(fn ->
-      with {:ok, candidate} <- lock_rejected_candidate_by_id(candidate_id),
-           {:ok, restored} <- restore_candidate_pending_category(candidate),
-           {:ok, audit_log} <-
-             insert_admission_audit_log(
-               "node_admission.rejection_cleared",
-               restored,
-               admission_audit_payload(restored, attrs),
-               opts
-             ),
-           {:ok, decision} <-
-             insert_admission_decision(restored, :rejection_cleared, nil, audit_log, attrs, opts) do
-        {:ok, %{candidate: restored, decision: decision, audit_log: audit_log}}
-      else
-        {:error, reason} -> Repo.rollback(reason)
-      end
-    end)
-    |> unwrap_transaction_result()
+    do_clear_admission_rejection(
+      fn -> lock_rejected_candidate_by_id(candidate_id) end,
+      attrs,
+      opts
+    )
   end
 
   @doc """
@@ -1255,6 +1172,53 @@ defmodule Orchard.Nodes do
 
   # -- Admission Decisions --
 
+  defp do_reject_admission(lock_target, attrs, opts) do
+    attrs = normalize_attrs(attrs)
+
+    Repo.transaction(fn ->
+      with {:ok, target} <- lock_target.(),
+           {:ok, reason} <- required_reason(attrs),
+           {:ok, candidate} <- reject_admission_target(target),
+           {:ok, audit_log} <-
+             insert_admission_audit_log(
+               "node_admission.rejected",
+               candidate,
+               admission_audit_payload(candidate, %{"reason" => reason}),
+               opts
+             ),
+           {:ok, decision} <-
+             insert_admission_decision(candidate, :rejected, reason, audit_log, %{}, opts) do
+        {:ok, %{candidate: candidate, decision: decision, audit_log: audit_log}}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  defp do_clear_admission_rejection(lock_candidate, attrs, opts) do
+    attrs = normalize_attrs(attrs)
+
+    Repo.transaction(fn ->
+      with {:ok, candidate} <- lock_candidate.(),
+           {:ok, restored} <- restore_candidate_pending_category(candidate),
+           {:ok, audit_log} <-
+             insert_admission_audit_log(
+               "node_admission.rejection_cleared",
+               restored,
+               admission_audit_payload(restored, attrs),
+               opts
+             ),
+           {:ok, decision} <-
+             insert_admission_decision(restored, :rejection_cleared, nil, audit_log, attrs, opts) do
+        {:ok, %{candidate: restored, decision: decision, audit_log: audit_log}}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
   defp lock_admission_target(id) do
     case lock_candidate(id) do
       %AdmissionCandidate{} = candidate ->
@@ -1276,6 +1240,12 @@ defmodule Orchard.Nodes do
         %AdmissionCandidate{} = candidate -> {:ok, candidate}
         nil -> {:error, :candidate_not_found}
       end
+    end
+  end
+
+  defp lock_candidate_target(candidate_id) do
+    with {:ok, candidate} <- lock_candidate_by_id(candidate_id) do
+      {:ok, {:candidate, candidate}}
     end
   end
 
