@@ -14,7 +14,7 @@
 - [x] 2.5 Preserve observed inventory, target metadata, and compatibility evidence for pending admission review.
 - [x] 2.6 Block admission execution for observed candidates and provisioned placeholders until registration inventory, trust evidence, pool assignment, and required policy inputs are present.
 - [x] 2.7 Implement and test rejected-admission persistence semantics through `node_admission_decisions` with actor, decided timestamp, reason, observed identity or node reference, target reference when applicable, retention-safe snapshot fields, and audit event reference.
-- [ ] 2.8 Implement Admin API admission and pending-admission rejection semantics with cluster-scoped audit events.
+- [x] 2.8 Implement Admin API admission and pending-admission rejection semantics with cluster-scoped audit events.
 - [x] 2.9 Implement explicit admin clear or new-registration handling before re-admission after rejection.
 - [x] 2.10 Preserve existing admitted node rows through migration or explicit compatibility handling.
 - [x] 2.11 Add regression tests for `SPEC.md` §4.2, §4.3, and §7.5.4 lifecycle behavior.

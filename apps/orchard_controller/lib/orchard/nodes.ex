@@ -141,6 +141,19 @@ defmodule Orchard.Nodes do
   def get_node!(id), do: Repo.get!(Node, id)
 
   @doc """
+  Fetches a node by ID for API surfaces that need stable not-found errors.
+  """
+  @spec fetch_node(Ecto.UUID.t()) :: {:ok, Node.t()} | {:error, :node_not_found}
+  def fetch_node(id) do
+    with {:ok, id} <- normalize_uuid(id, :node_not_found) do
+      case Repo.get(Node, id) do
+        %Node{} = node -> {:ok, node}
+        nil -> {:error, :node_not_found}
+      end
+    end
+  end
+
+  @doc """
   Lists node admission candidates ordered for operator review.
   """
   @spec list_admission_candidates(keyword()) :: [AdmissionCandidate.t()]
@@ -158,6 +171,20 @@ defmodule Orchard.Nodes do
   """
   @spec get_admission_candidate!(Ecto.UUID.t()) :: AdmissionCandidate.t()
   def get_admission_candidate!(id), do: Repo.get!(AdmissionCandidate, id)
+
+  @doc """
+  Fetches a node admission candidate by ID for API surfaces.
+  """
+  @spec fetch_admission_candidate(Ecto.UUID.t()) ::
+          {:ok, AdmissionCandidate.t()} | {:error, :candidate_not_found}
+  def fetch_admission_candidate(id) do
+    with {:ok, id} <- normalize_uuid(id, :candidate_not_found) do
+      case Repo.get(AdmissionCandidate, id) do
+        %AdmissionCandidate{} = candidate -> {:ok, candidate}
+        nil -> {:error, :candidate_not_found}
+      end
+    end
+  end
 
   @doc """
   Looks up a node by its connection target.
@@ -275,6 +302,41 @@ defmodule Orchard.Nodes do
   end
 
   @doc """
+  Rejects a pending node admission candidate by candidate ID only.
+  """
+  @spec reject_admission_candidate(Ecto.UUID.t(), map() | keyword(), keyword()) ::
+          {:ok,
+           %{
+             candidate: AdmissionCandidate.t(),
+             decision: AdmissionDecision.t(),
+             audit_log: AuditLog.t()
+           }}
+          | {:error, term()}
+  def reject_admission_candidate(candidate_id, attrs, opts \\ []) do
+    attrs = normalize_attrs(attrs)
+
+    Repo.transaction(fn ->
+      with {:ok, candidate} <- lock_candidate_by_id(candidate_id),
+           {:ok, reason} <- required_reason(attrs),
+           {:ok, candidate} <- reject_admission_target({:candidate, candidate}),
+           {:ok, audit_log} <-
+             insert_admission_audit_log(
+               "node_admission.rejected",
+               candidate,
+               admission_audit_payload(candidate, %{"reason" => reason}),
+               opts
+             ),
+           {:ok, decision} <-
+             insert_admission_decision(candidate, :rejected, reason, audit_log, %{}, opts) do
+        {:ok, %{candidate: candidate, decision: decision, audit_log: audit_log}}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  @doc """
   Clears a rejected admission candidate by appending a clearance decision.
   """
   @spec clear_admission_rejection(Ecto.UUID.t(), map() | keyword(), keyword()) ::
@@ -290,6 +352,40 @@ defmodule Orchard.Nodes do
 
     Repo.transaction(fn ->
       with {:ok, candidate} <- lock_rejected_candidate(candidate_or_node_id),
+           {:ok, restored} <- restore_candidate_pending_category(candidate),
+           {:ok, audit_log} <-
+             insert_admission_audit_log(
+               "node_admission.rejection_cleared",
+               restored,
+               admission_audit_payload(restored, attrs),
+               opts
+             ),
+           {:ok, decision} <-
+             insert_admission_decision(restored, :rejection_cleared, nil, audit_log, attrs, opts) do
+        {:ok, %{candidate: restored, decision: decision, audit_log: audit_log}}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
+  @doc """
+  Clears a rejected node admission candidate by candidate ID only.
+  """
+  @spec clear_admission_candidate_rejection(Ecto.UUID.t(), map() | keyword(), keyword()) ::
+          {:ok,
+           %{
+             candidate: AdmissionCandidate.t(),
+             decision: AdmissionDecision.t(),
+             audit_log: AuditLog.t()
+           }}
+          | {:error, term()}
+  def clear_admission_candidate_rejection(candidate_id, attrs \\ %{}, opts \\ []) do
+    attrs = normalize_attrs(attrs)
+
+    Repo.transaction(fn ->
+      with {:ok, candidate} <- lock_rejected_candidate_by_id(candidate_id),
            {:ok, restored} <- restore_candidate_pending_category(candidate),
            {:ok, audit_log} <-
              insert_admission_audit_log(
@@ -345,6 +441,48 @@ defmodule Orchard.Nodes do
       end
     end)
     |> unwrap_transaction_result()
+  end
+
+  @doc """
+  Returns the latest admission decision for a candidate.
+  """
+  @spec latest_admission_decision_for_candidate(Ecto.UUID.t()) :: AdmissionDecision.t() | nil
+  def latest_admission_decision_for_candidate(candidate_id) do
+    case normalize_uuid(candidate_id, :candidate_not_found) do
+      {:ok, candidate_id} ->
+        AdmissionDecision
+        |> where([decision], decision.candidate_id == ^candidate_id)
+        |> order_by([decision], desc: decision.decided_at, desc: decision.inserted_at)
+        |> limit(1)
+        |> Repo.one()
+
+      {:error, :candidate_not_found} ->
+        nil
+    end
+  end
+
+  @doc """
+  Returns the latest admission decisions keyed by candidate ID.
+  """
+  @spec latest_admission_decisions_for_candidates([Ecto.UUID.t()]) :: %{
+          optional(Ecto.UUID.t()) => AdmissionDecision.t()
+        }
+  def latest_admission_decisions_for_candidates(candidate_ids) do
+    candidate_ids
+    |> normalize_uuid_list()
+    |> do_latest_admission_decisions_for_candidates()
+  end
+
+  defp do_latest_admission_decisions_for_candidates([]), do: %{}
+
+  defp do_latest_admission_decisions_for_candidates(candidate_ids) do
+    AdmissionDecision
+    |> where([decision], decision.candidate_id in ^candidate_ids)
+    |> order_by([decision], desc: decision.decided_at, desc: decision.inserted_at)
+    |> Repo.all()
+    |> Enum.reduce(%{}, fn decision, decisions_by_candidate ->
+      Map.put_new(decisions_by_candidate, decision.candidate_id, decision)
+    end)
   end
 
   defp handle_observation_result(target, observed_at, result, status_response, opts) do
@@ -1130,6 +1268,17 @@ defmodule Orchard.Nodes do
     end
   end
 
+  defp lock_candidate_by_id(candidate_id) do
+    with {:ok, candidate_id} <- normalize_uuid(candidate_id, :candidate_not_found) do
+      candidate_id
+      |> lock_candidate()
+      |> case do
+        %AdmissionCandidate{} = candidate -> {:ok, candidate}
+        nil -> {:error, :candidate_not_found}
+      end
+    end
+  end
+
   defp reject_admission_target({:candidate, %AdmissionCandidate{} = candidate}) do
     if candidate.admission_category in [
          :pending_observed,
@@ -1161,6 +1310,18 @@ defmodule Orchard.Nodes do
 
       nil ->
         lock_rejected_candidate_for_node(id)
+    end
+  end
+
+  defp lock_rejected_candidate_by_id(candidate_id) do
+    with {:ok, candidate} <- lock_candidate_by_id(candidate_id) do
+      case candidate do
+        %AdmissionCandidate{admission_category: :rejected} = candidate ->
+          {:ok, candidate}
+
+        %AdmissionCandidate{} ->
+          {:error, :admission_not_rejected}
+      end
     end
   end
 
@@ -1242,7 +1403,18 @@ defmodule Orchard.Nodes do
   defp blank_admission_value?(nil), do: true
   defp blank_admission_value?(_value), do: false
 
-  defp latest_admission_decision_for_node(node_id) do
+  @doc """
+  Returns the latest admission decision for a node.
+  """
+  @spec latest_admission_decision_for_node(Ecto.UUID.t()) :: AdmissionDecision.t() | nil
+  def latest_admission_decision_for_node(node_id) do
+    case normalize_uuid(node_id, :node_not_found) do
+      {:ok, node_id} -> do_latest_admission_decision_for_node(node_id)
+      {:error, :node_not_found} -> nil
+    end
+  end
+
+  defp do_latest_admission_decision_for_node(node_id) do
     AdmissionDecision
     |> where([decision], decision.node_id == ^node_id)
     |> order_by([decision], desc: decision.decided_at, desc: decision.inserted_at)
@@ -1279,13 +1451,15 @@ defmodule Orchard.Nodes do
   end
 
   defp lock_node(node_id) do
-    Node
-    |> where([node], node.id == ^node_id)
-    |> lock("FOR UPDATE")
-    |> Repo.one()
-    |> case do
-      %Node{} = node -> {:ok, node}
-      nil -> {:error, :node_not_found}
+    with {:ok, node_id} <- normalize_uuid(node_id, :node_not_found) do
+      Node
+      |> where([node], node.id == ^node_id)
+      |> lock("FOR UPDATE")
+      |> Repo.one()
+      |> case do
+        %Node{} = node -> {:ok, node}
+        nil -> {:error, :node_not_found}
+      end
     end
   end
 
@@ -1434,6 +1608,24 @@ defmodule Orchard.Nodes do
   end
 
   defp normalize_attrs(attrs), do: SchemaSupport.normalize_attrs(attrs)
+
+  defp normalize_uuid(value, error) do
+    case Ecto.UUID.cast(value) do
+      {:ok, uuid} -> {:ok, uuid}
+      :error -> {:error, error}
+    end
+  end
+
+  defp normalize_uuid_list(values) do
+    values
+    |> Enum.flat_map(fn value ->
+      case Ecto.UUID.cast(value) do
+        {:ok, uuid} -> [uuid]
+        :error -> []
+      end
+    end)
+    |> Enum.uniq()
+  end
 
   defp sanitize_snapshot(value), do: sanitize_snapshot(value, 0)
 

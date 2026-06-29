@@ -15,6 +15,11 @@ defmodule Orchard.API.Router do
     plug(Orchard.API.LicensePlug)
   end
 
+  pipeline :admin_api do
+    plug(:accepts, ["json"])
+    plug(Orchard.API.AdminRequestContext)
+  end
+
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
@@ -44,6 +49,22 @@ defmodule Orchard.API.Router do
     get("/models", ModelsController, :index)
     post("/chat/completions", ChatCompletionsController, :create)
     post("/responses", ResponsesController, :create)
+  end
+
+  scope "/admin/v1", Orchard.API.Admin do
+    pipe_through(:admin_api)
+
+    get("/node-admission/candidates", NodeAdmissionController, :index)
+    get("/node-admission/candidates/:candidate_id", NodeAdmissionController, :show)
+    post("/node-admission/candidates/:candidate_id/reject", NodeAdmissionController, :reject)
+
+    post(
+      "/node-admission/candidates/:candidate_id/clear-rejection",
+      NodeAdmissionController,
+      :clear_rejection
+    )
+
+    post("/nodes/:node_id/admit", NodeAdmissionController, :admit)
   end
 
   # Console — LiveView operator UI

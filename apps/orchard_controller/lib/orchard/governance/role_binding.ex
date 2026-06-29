@@ -43,6 +43,7 @@ defmodule Orchard.Governance.RoleBinding do
     |> check_constraint(:role, name: :role_bindings_role_check)
     |> check_constraint(:tenant_scope_id, name: :role_bindings_inference_client_tenant_scope)
     |> unique_constraint(:role, name: :idx_role_bindings_unique_assignment)
+    |> unique_constraint(:role, name: :idx_role_bindings_unique_cluster_assignment)
     |> foreign_key_constraint(:tenant_scope_id)
   end
 end
