@@ -53,4 +53,8 @@ echo "==> Starting Orchard dev controller (role: controller)"
 echo "==> HTTP endpoint: 127.0.0.1:${PORT:-4000}"
 echo "==> Runtime client targets: ${ORCHARD_RUNTIME_CLIENT_TARGETS}"
 cd "$REPO_ROOT/apps/orchard_controller"
-exec iex "${ORCHARD_BEAM_IEX_ARGS[@]}" -S mix phx.server
+if [[ "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT}" == "beam" ]]; then
+  exec iex "${ORCHARD_BEAM_IEX_ARGS[@]}" -S mix phx.server
+else
+  exec iex -S mix phx.server
+fi

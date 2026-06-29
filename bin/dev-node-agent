@@ -63,4 +63,8 @@ echo "==> Starting Orchard dev node-agent (role: node-agent)"
 echo "==> gRPC endpoint: ${ORCHARD_NODE_AGENT_LISTEN_HOST}:${resolved_port}"
 echo "==> Worker executable: ${ORCHARD_WORKER_EXECUTABLE}"
 cd "$REPO_ROOT/apps/orchard_node_agent"
-exec iex "${ORCHARD_BEAM_IEX_ARGS[@]}" -S mix run --no-halt
+if [[ "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT}" == "beam" ]]; then
+  exec iex "${ORCHARD_BEAM_IEX_ARGS[@]}" -S mix run --no-halt
+else
+  exec iex -S mix run --no-halt
+fi
