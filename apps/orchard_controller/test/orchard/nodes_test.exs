@@ -671,6 +671,135 @@ defmodule Orchard.NodesTest do
       assert hosted_tool_name != ""
     end
 
+    test "SPEC.md §4.2 observed candidate list snapshots mark count truncation" do
+      node_id = Ecto.UUID.generate()
+      target = make_target("10.0.0.25", 9444)
+
+      tools =
+        for index <- 1..41 do
+          hosted_tool_capability("tool-#{index}", "2026-06-28", "mcp")
+        end
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          display_name: "truncated-list-candidate",
+          hostname: "truncated-list-candidate.local",
+          listen_host: "10.0.0.25",
+          listen_port: 9444
+        })
+        |> Map.put(:hosted_tool_capabilities, tools)
+
+      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
+
+      hosted_tools = candidate.inventory["capabilities"]["hosted_tools"]
+      marker = List.last(hosted_tools)
+
+      assert length(hosted_tools) == 40
+
+      assert marker == %{
+               "truncated" => true,
+               "reason" => "entry_limit",
+               "kind" => "list",
+               "entry_limit" => 40,
+               "original_count" => 41
+             }
+
+      refute Enum.any?(hosted_tools, &match?(%{"name" => "tool-41"}, &1))
+    end
+
+    test "SPEC.md §4.2 observed candidate list snapshots at count cap stay unmarked" do
+      node_id = Ecto.UUID.generate()
+      target = make_target("10.0.0.26", 9444)
+
+      tools =
+        for index <- 1..40 do
+          hosted_tool_capability("complete-tool-#{index}", "2026-06-28", "mcp")
+        end
+
+      status =
+        make_status_response(%{
+          node_id: node_id,
+          display_name: "complete-list-candidate",
+          hostname: "complete-list-candidate.local",
+          listen_host: "10.0.0.26",
+          listen_port: 9444
+        })
+        |> Map.put(:hosted_tool_capabilities, tools)
+
+      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert [%AdmissionCandidate{} = candidate] = Nodes.list_admission_candidates()
+
+      hosted_tools = candidate.inventory["capabilities"]["hosted_tools"]
+
+      assert length(hosted_tools) == 40
+      refute Enum.any?(hosted_tools, &Map.has_key?(&1, "truncated"))
+    end
+
+    test "SPEC.md §4.3 admission decision map snapshots mark count truncation" do
+      target = make_target("10.0.0.27", 9444)
+
+      status =
+        make_status_response(%{
+          display_name: "truncated-map-candidate",
+          hostname: "truncated-map-candidate.local",
+          listen_host: "10.0.0.27",
+          listen_port: 9444
+        })
+
+      oversized_metadata =
+        1..41
+        |> Enum.map(fn index -> {"evidence_#{index}", "value-#{index}"} end)
+        |> Map.new()
+
+      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      [candidate] = Nodes.list_admission_candidates()
+      assert {:ok, rejected} = Nodes.reject_admission(candidate.id, %{reason: "needs review"})
+
+      assert {:ok, cleared} =
+               Nodes.clear_admission_rejection(rejected.candidate.id, oversized_metadata)
+
+      marker = cleared.decision.metadata["__orchard_snapshot_truncation__"]
+
+      assert map_size(cleared.decision.metadata) == 40
+
+      assert marker == %{
+               "truncated" => true,
+               "reason" => "entry_limit",
+               "kind" => "map",
+               "entry_limit" => 40,
+               "original_count" => 41
+             }
+    end
+
+    test "SPEC.md §4.3 admission decision map snapshots at count cap stay unmarked" do
+      target = make_target("10.0.0.28", 9444)
+
+      status =
+        make_status_response(%{
+          display_name: "complete-map-candidate",
+          hostname: "complete-map-candidate.local",
+          listen_host: "10.0.0.28",
+          listen_port: 9444
+        })
+
+      complete_metadata =
+        1..40
+        |> Enum.map(fn index -> {"evidence_#{index}", "value-#{index}"} end)
+        |> Map.new()
+
+      assert :noop = Nodes.observe_status(target, status, DateTime.utc_now())
+      [candidate] = Nodes.list_admission_candidates()
+      assert {:ok, rejected} = Nodes.reject_admission(candidate.id, %{reason: "needs review"})
+
+      assert {:ok, cleared} =
+               Nodes.clear_admission_rejection(rejected.candidate.id, complete_metadata)
+
+      assert map_size(cleared.decision.metadata) == 40
+      refute Map.has_key?(cleared.decision.metadata, "__orchard_snapshot_truncation__")
+    end
+
     test "SPEC.md §4.3 pending admission rejection is auditable and not decommissioning" do
       target = make_target("10.0.0.12", 9444)
 

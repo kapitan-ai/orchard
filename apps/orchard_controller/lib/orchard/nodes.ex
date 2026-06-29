@@ -19,6 +19,12 @@ defmodule Orchard.Nodes do
   alias Orchard.Nodes.ToolReadiness
   alias Orchard.Repo
   alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Placement, PlacementCapacity, Target}
+  alias Orchard.SchemaSupport
+
+  @snapshot_entry_limit 40
+  @snapshot_max_depth 4
+  @snapshot_string_limit_bytes 512
+  @snapshot_truncation_key "__orchard_snapshot_truncation__"
 
   # -- Read APIs --
 
@@ -1415,7 +1421,7 @@ defmodule Orchard.Nodes do
   defp audit_actor_type(opts), do: opts |> Keyword.get(:actor_type, "operator") |> to_string()
   defp audit_actor_id(opts), do: Keyword.get(opts, :actor_id)
 
-  defp utc_now, do: DateTime.utc_now() |> DateTime.truncate(:microsecond)
+  defp utc_now, do: SchemaSupport.utc_now()
 
   defp unwrap_transaction_result({:ok, {:ok, value}}), do: {:ok, value}
   defp unwrap_transaction_result({:ok, value}), do: value
@@ -1427,19 +1433,11 @@ defmodule Orchard.Nodes do
     where(query, [candidate], candidate.admission_category == ^category)
   end
 
-  defp normalize_attrs(attrs) when is_map(attrs) do
-    Enum.reduce(attrs, %{}, fn
-      {key, value}, acc when is_atom(key) -> Map.put_new(acc, Atom.to_string(key), value)
-      {key, value}, acc -> Map.put(acc, key, value)
-    end)
-  end
-
-  defp normalize_attrs(attrs) when is_list(attrs), do: normalize_attrs(Enum.into(attrs, %{}))
-  defp normalize_attrs(_attrs), do: %{}
+  defp normalize_attrs(attrs), do: SchemaSupport.normalize_attrs(attrs)
 
   defp sanitize_snapshot(value), do: sanitize_snapshot(value, 0)
 
-  defp sanitize_snapshot(value, depth) when depth >= 4 do
+  defp sanitize_snapshot(value, depth) when depth >= @snapshot_max_depth do
     cond do
       is_map(value) -> %{"truncated" => true}
       is_list(value) -> ["truncated"]
@@ -1449,24 +1447,52 @@ defmodule Orchard.Nodes do
   end
 
   defp sanitize_snapshot(value, depth) when is_map(value) do
-    value
-    |> Enum.take(40)
-    |> Map.new(fn {key, entry} -> {to_string(key), sanitize_snapshot(entry, depth + 1)} end)
+    entries = Enum.to_list(value)
+
+    if length(entries) > @snapshot_entry_limit do
+      entries
+      |> Enum.take(@snapshot_entry_limit - 1)
+      |> Map.new(&sanitize_snapshot_map_entry(&1, depth))
+      |> Map.put(@snapshot_truncation_key, snapshot_truncation_marker(:map, length(entries)))
+    else
+      Map.new(entries, &sanitize_snapshot_map_entry(&1, depth))
+    end
   end
 
   defp sanitize_snapshot(value, depth) when is_list(value) do
-    value
-    |> Enum.take(40)
-    |> Enum.map(&sanitize_snapshot(&1, depth + 1))
+    if length(value) > @snapshot_entry_limit do
+      retained =
+        value
+        |> Enum.take(@snapshot_entry_limit - 1)
+        |> Enum.map(&sanitize_snapshot(&1, depth + 1))
+
+      retained ++ [snapshot_truncation_marker(:list, length(value))]
+    else
+      Enum.map(value, &sanitize_snapshot(&1, depth + 1))
+    end
   end
 
   defp sanitize_snapshot(value, _depth) when is_binary(value), do: bound_string(value)
   defp sanitize_snapshot(value, _depth), do: value
 
-  defp bound_string(value) when byte_size(value) > 512 do
+  defp sanitize_snapshot_map_entry({key, entry}, depth) do
+    {to_string(key), sanitize_snapshot(entry, depth + 1)}
+  end
+
+  defp snapshot_truncation_marker(kind, original_count) do
+    %{
+      "truncated" => true,
+      "reason" => "entry_limit",
+      "kind" => Atom.to_string(kind),
+      "entry_limit" => @snapshot_entry_limit,
+      "original_count" => original_count
+    }
+  end
+
+  defp bound_string(value) when byte_size(value) > @snapshot_string_limit_bytes do
     value
-    |> String.slice(0, 512)
-    |> trim_to_byte_size(512)
+    |> String.slice(0, @snapshot_string_limit_bytes)
+    |> trim_to_byte_size(@snapshot_string_limit_bytes)
   end
 
   defp bound_string(value), do: value

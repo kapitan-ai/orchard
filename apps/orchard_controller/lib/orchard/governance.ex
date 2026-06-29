@@ -8,6 +8,7 @@ defmodule Orchard.Governance do
 
   alias Ecto.Changeset
   alias Orchard.Governance.ApiClientProvisioning
+  alias Orchard.SchemaSupport
 
   alias Orchard.Governance.{
     ApiKey,
@@ -1226,15 +1227,7 @@ defmodule Orchard.Governance do
   defp maybe_iso8601(nil), do: nil
   defp maybe_iso8601(%DateTime{} = datetime), do: DateTime.to_iso8601(datetime)
 
-  defp normalize_attrs(attrs) when is_map(attrs) do
-    Enum.reduce(attrs, %{}, fn
-      {key, value}, acc when is_atom(key) -> Map.put_new(acc, Atom.to_string(key), value)
-      {key, value}, acc -> Map.put(acc, key, value)
-    end)
-  end
-
-  defp normalize_attrs(attrs) when is_list(attrs), do: normalize_attrs(Enum.into(attrs, %{}))
-  defp normalize_attrs(_attrs), do: %{}
+  defp normalize_attrs(attrs), do: SchemaSupport.normalize_attrs(attrs)
 
   defp trim_string(value) when is_binary(value), do: String.trim(value)
   defp trim_string(value), do: value
@@ -1278,9 +1271,7 @@ defmodule Orchard.Governance do
 
   defp redact_api_key(%ApiKey{} = api_key), do: %ApiKey{api_key | secret_hash: nil}
 
-  defp utc_now do
-    DateTime.utc_now() |> DateTime.truncate(:microsecond)
-  end
+  defp utc_now, do: SchemaSupport.utc_now()
 
   defp unwrap_transaction_result({:ok, {:ok, value}}), do: {:ok, value}
 
