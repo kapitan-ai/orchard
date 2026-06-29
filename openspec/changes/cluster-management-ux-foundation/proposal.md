@@ -2,7 +2,7 @@
 
 Orchard's cluster management surface is approaching the point where operators need one coherent answer across Console, CLI, Operator API, Admin API, scheduler explanations, diagnostics, and support bundles.
 `SPEC.md` already defines node lifecycle, health, scheduler eligibility, Runtime Endpoint observations, operator APIs, admin APIs, diagnostics, support bundles, and HA-lite leadership.
-Current implementation reality is not yet aligned with the full contract: `Orchard.Nodes` still performs observational node discovery from successful Runtime Endpoint status reads and inserts new nodes as `active`, while `orchardctl nodes admit` and `orchardctl cluster init` are deferred.
+Before this change, implementation reality was not yet aligned with the full contract: `Orchard.Nodes` performed observational node discovery from successful Runtime Endpoint status reads and inserted new nodes as `active`, while `orchardctl nodes admit` and `orchardctl cluster init` were deferred.
 This change defines the operator-facing UX contract before implementation so the next code slices reconcile that gap deliberately instead of growing disconnected Console and CLI behavior.
 
 ## What Changes

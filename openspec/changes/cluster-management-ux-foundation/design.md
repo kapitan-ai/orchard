@@ -7,8 +7,8 @@ Orchard targets one to four Apple Silicon macOS nodes, with all durable state in
 `SPEC.md` §7.3 and §7.4 split operator actions from admin actions.
 `SPEC.md` §7.5 says Runtime Endpoint observations are transport-independent and Postgres remains durable truth for inventory, lifecycle state, observations, scheduling history, request state, and operator-visible status.
 
-The current source tree has useful foundations but does not yet implement the full lifecycle UX.
-`apps/orchard_controller/lib/orchard/nodes.ex` describes observational node discovery and inserts new nodes from successful Runtime Endpoint observations with `state: :active`.
+The pre-implementation source tree had useful foundations but did not yet implement the full lifecycle UX.
+`apps/orchard_controller/lib/orchard/nodes.ex` described observational node discovery and inserted new nodes from successful Runtime Endpoint observations with `state: :active`.
 `apps/orchard_controller/lib/orchard/console/nodes_live.ex` renders persisted inventory and live Runtime Endpoint diagnostics, but it does not yet expose pending admission review or safe lifecycle actions.
 `apps/orchard_cli/lib/orchard_cli/commands/nodes.ex` supports `orchardctl nodes list`, while `orchardctl nodes admit` is a deferred command.
 `apps/orchard_cli/lib/orchard_cli/commands/support.ex` already has a redacted support bundle flow that can become the shared diagnostics foundation.

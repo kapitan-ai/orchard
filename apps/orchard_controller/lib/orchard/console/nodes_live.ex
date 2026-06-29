@@ -358,8 +358,9 @@ defmodule OrchardConsole.NodesLive do
   defp load_nodes_page(socket) do
     observed_at = DateTime.utc_now() |> DateTime.truncate(:second)
 
-    # Runtime first: observe_status may persist a newly discovered node,
-    # so inventory queried second can show it in the same cycle.
+    # Runtime first: observe_status may refresh an existing node's inventory
+    # and lifecycle state (e.g. admitted -> active), so inventory queried
+    # second reflects it in the same cycle.
     cluster = fetch_runtime_cluster(observed_at)
     inventory = fetch_inventory()
     safe_tokenization_counters = fetch_safe_tokenization_counters()

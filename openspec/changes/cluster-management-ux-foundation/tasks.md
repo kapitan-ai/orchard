@@ -7,17 +7,17 @@
 
 ## 2. Node Lifecycle And Admission
 
-- [ ] 2.1 Change first-observed Runtime Endpoint node persistence so new nodes are not inserted as `active` without explicit admission.
-- [ ] 2.2 Add observed admission candidate persistence through `node_admission_candidates` for first-observed Runtime Endpoint observations that do not match an existing provisioned placeholder or registered node, including retention-safe snapshot fields for linked candidates, nullable observation timestamps for unobserved review rows, and non-unique target-reference lookup.
-- [ ] 2.3 Add reconciliation logic that prevents observed candidates from being represented as `provisioned` without an admin-created placeholder or as `registered` without `RegisterNode` or equivalent trust proof.
-- [ ] 2.4 Add pending-admission category handling without adding a lifecycle enum that is absent from `SPEC.md`.
-- [ ] 2.5 Preserve observed inventory, target metadata, and compatibility evidence for pending admission review.
-- [ ] 2.6 Block admission execution for observed candidates and provisioned placeholders until registration inventory, trust evidence, pool assignment, and required policy inputs are present.
-- [ ] 2.7 Implement and test rejected-admission persistence semantics through `node_admission_decisions` with actor, decided timestamp, reason, observed identity or node reference, target reference when applicable, retention-safe snapshot fields, and audit event reference.
+- [x] 2.1 Change first-observed Runtime Endpoint node persistence so new nodes are not inserted as `active` without explicit admission.
+- [x] 2.2 Add observed admission candidate persistence through `node_admission_candidates` for first-observed Runtime Endpoint observations that do not match an existing provisioned placeholder or registered node, including retention-safe snapshot fields for linked candidates, nullable observation timestamps for unobserved review rows, and non-unique target-reference lookup.
+- [x] 2.3 Add reconciliation logic that prevents observed candidates from being represented as `provisioned` without an admin-created placeholder or as `registered` without `RegisterNode` or equivalent trust proof.
+- [x] 2.4 Add pending-admission category handling without adding a lifecycle enum that is absent from `SPEC.md`.
+- [x] 2.5 Preserve observed inventory, target metadata, and compatibility evidence for pending admission review.
+- [x] 2.6 Block admission execution for observed candidates and provisioned placeholders until registration inventory, trust evidence, pool assignment, and required policy inputs are present.
+- [x] 2.7 Implement and test rejected-admission persistence semantics through `node_admission_decisions` with actor, decided timestamp, reason, observed identity or node reference, target reference when applicable, retention-safe snapshot fields, and audit event reference.
 - [ ] 2.8 Implement Admin API admission and pending-admission rejection semantics with cluster-scoped audit events.
-- [ ] 2.9 Implement explicit admin clear or new-registration handling before re-admission after rejection.
-- [ ] 2.10 Preserve existing admitted node rows through migration or explicit compatibility handling.
-- [ ] 2.11 Add regression tests for `SPEC.md` §4.2, §4.3, and §7.5.4 lifecycle behavior.
+- [x] 2.9 Implement explicit admin clear or new-registration handling before re-admission after rejection.
+- [x] 2.10 Preserve existing admitted node rows through migration or explicit compatibility handling.
+- [x] 2.11 Add regression tests for `SPEC.md` §4.2, §4.3, and §7.5.4 lifecycle behavior.
 
 ## 3. Shared Status And Reason Codes
 

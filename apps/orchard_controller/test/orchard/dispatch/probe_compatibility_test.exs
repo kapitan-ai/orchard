@@ -370,6 +370,13 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     test "on_node_resolved callback exit does not abort dispatch or observation", ctx do
       configure_stub(%{status: {:ok, full_status(@other_uuid)}})
 
+      insert_target_node!(ctx.schedule.runtime_client_target,
+        id: @other_uuid,
+        display_name: "test-node",
+        hostname: "test.local",
+        rpc_port: 50_071
+      )
+
       callback = fn _node_id ->
         exit({:noproc, {GenServer, :call, [:queue_manager, :mark, 5_000]}})
       end
@@ -411,6 +418,13 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
         |> full_status()
         |> Map.put(:max_concurrency, 1)
         |> Map.put(:runtime_model_placements, [])
+
+      insert_target_node!(target,
+        id: @valid_uuid,
+        display_name: "test-node",
+        hostname: "test.local",
+        rpc_port: 50_071
+      )
 
       assert {:ok, _node} =
                Orchard.Nodes.observe_status(target, healthy_status, DateTime.utc_now())
