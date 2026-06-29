@@ -161,6 +161,7 @@ Building from spec.
 The current source tree includes authenticated
 `/v1/models`, `/v1/chat/completions`, a bounded `/v1/responses` slice, tenant-direct API Tokens, and bulk API Client provisioning for service-account-owned API Tokens.
 Full M2 quota behavior remains in progress.
+An initial cluster-admin `/admin/v1` node-admission surface (candidate review, rejection, rejection clearance, and admission) is present ahead of its M3 milestone, but is not yet operator-usable because cluster bootstrap and first-admin credential provisioning are not yet implemented.
 The roadmap and target behavior are governed by `SPEC.md` §14.
 
 Some SPEC-required CLI paths are present before their milestone implementation:
