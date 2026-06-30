@@ -199,6 +199,7 @@ Common agent accelerators include:
 | Tool | Use | Product boundary |
 |------|-----|------------------|
 | RepoPrompt | Context building, review, second opinions, durable investigations | Discover roles/workflows live; do not commit RP sessions, prompt exports, chat IDs, or routing notes |
+| RepoMix | Linux/headless context packs, RepoPrompt fallback, scoped second-model review inputs | Keep generated packs in ignored local paths such as `/tmp`; cite original repo files and lines, not generated pack lines |
 | codemap | Cheap source and diff orientation | Treat output as orientation, not contract truth |
 | ast-grep | Structural search and refactors | Keep edits traceable to product files and tests |
 | Refero | UI and visual design research | Do not copy private research artifacts into product docs |
@@ -221,6 +222,48 @@ ask for plan/review second opinions, address the findings, and repeat until the
 remaining risks are explicit. Keep RP session IDs, prompt exports, routing
 notes, generated reports, and local evidence out of committed Orchard source
 unless they are rewritten as standalone product-facing artifacts.
+
+Use RepoMix as a lightweight optional fallback when RepoPrompt is unavailable, unsuitable for the current task, or not available in a Linux/headless workflow.
+RepoMix is useful for building scoped context packs for Codex threads, second-model review prompts, architecture scans, and PR review preparation.
+It is an accelerator only, not a pinned Orchard toolchain dependency; generated packs are snapshots and are not product truth.
+Do not commit RepoMix outputs, local prompt packs, generated gap reviews, or transient model responses.
+Promote durable conclusions into `SPEC.md`, `docs/**`, `docs/decisions/**`, tests, code, or accepted OpenSpec materials.
+
+Prefer precise file lists over broad repository dumps:
+
+```bash
+rg --files \
+  -g 'SPEC.md' \
+  -g 'AGENTS.md' \
+  -g 'docs/local-dev.md' \
+  -g 'openspec/changes/<change-id>/**' \
+  -g 'apps/orchard_controller/lib/orchard/<area>/**' \
+  -g 'apps/orchard_controller/test/orchard/<area>/**' |
+repomix --stdin \
+  --output /tmp/orchard-repomix-<topic>.xml \
+  --style xml \
+  --output-show-line-numbers \
+  --token-count-tree 1000 \
+  --top-files-len 20 \
+  --token-budget 180000
+```
+
+For broad orientation, run RepoMix with `--no-files` first, inspect the token tree, then generate a narrower pack.
+Use `--compress` for architecture discovery and module-shape questions, but prefer full packs for correctness review, security review, or bug diagnosis where implementation details matter.
+For PR review, consider `--include-diffs` and `--include-logs --include-logs-count 10` after checking that the resulting pack remains scoped and non-sensitive.
+Keep RepoMix security checks enabled unless a specific local diagnostic requires otherwise.
+
+Agents should report the local RepoMix version when relying on a pack:
+
+```bash
+repomix --version
+npm view repomix version
+```
+
+`--token-budget` may exit non-zero when a pack is too large while still writing the output file.
+Treat that as a failed guardrail, narrow the pack, and regenerate before using it as review context.
+`--split-output` can fail when a large top-level entry exceeds the requested split size, so do not rely on it as the primary way to make oversized packs manageable.
+When citing evidence from RepoMix-assisted work, cite the original Orchard file paths and line numbers rather than the generated pack.
 
 ## Version Changes
 
