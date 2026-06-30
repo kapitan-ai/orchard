@@ -114,6 +114,7 @@ Use `503` for `controller_standby`.
 Initial stable error codes should include:
 
 ```text
+invalid_api_key
 admin_required
 candidate_not_found
 node_not_found
