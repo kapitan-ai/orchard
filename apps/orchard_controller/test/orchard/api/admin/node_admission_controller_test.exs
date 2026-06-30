@@ -89,7 +89,7 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
           :post,
           "/admin/v1/node-admission/candidates/#{candidate.id}/clear-rejection",
           token,
-          %{"surface" => "admin-api-test"}
+          malicious_metadata(%{"surface" => "admin-api-test"})
         )
 
       assert clear_conn.status == 200
@@ -98,6 +98,13 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       assert cleared["candidate"]["admission_category"] == "pending_observed"
       assert cleared["decision"]["metadata"] == %{"surface" => "admin-api-test"}
       refute Map.has_key?(cleared["decision"]["metadata"], "candidate_id")
+
+      clear_audit_log = Repo.get!(AuditLog, cleared["audit_log"]["id"])
+      assert clear_audit_log.payload["source"] == "runtime_endpoint_observation"
+      assert clear_audit_log.payload["admission_category"] == "pending_observed"
+      assert clear_audit_log.payload["target_ref"] == "10.0.0.45:50071"
+      assert clear_audit_log.payload["observed_identity"] == candidate.observed_identity
+      assert clear_audit_log.payload["surface"] == "admin-api-test"
 
       decisions =
         AdmissionDecision
@@ -279,7 +286,13 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
           hostname: "registered-admit-node.local"
         })
 
-      conn = admin_json(:post, "/admin/v1/nodes/#{node.id}/admit", token, admission_attrs())
+      conn =
+        admin_json(
+          :post,
+          "/admin/v1/nodes/#{node.id}/admit",
+          token,
+          malicious_metadata(admission_attrs())
+        )
 
       assert conn.status == 200
       body = Jason.decode!(conn.resp_body)
@@ -288,7 +301,17 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       assert body["decision"]["decision"] == "admitted"
       assert body["decision"]["metadata"]["trust_evidence_ref"] == "registration-audit:test"
       refute Map.has_key?(body["decision"]["metadata"], "node_id")
+      refute Map.has_key?(body["decision"]["metadata"], "source")
+      refute Map.has_key?(body["decision"]["metadata"], "observed_identity")
       assert body["audit_log"]["scope"] == "cluster"
+
+      audit_log = Repo.get!(AuditLog, body["audit_log"]["id"])
+      assert audit_log.payload["source"] == "registered_node"
+      assert audit_log.payload["admission_category"] == "admitted"
+      assert audit_log.payload["node_id"] == node.id
+      assert audit_log.payload["observed_identity"]["node_id"] == node.id
+      assert audit_log.payload["target_ref"] != "spoofed-target"
+
       assert Repo.get!(Node, node.id).state == :admitted
     end
 
@@ -436,5 +459,16 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       "pool_id" => Ecto.UUID.generate(),
       "routing_policy_id" => Ecto.UUID.generate()
     }
+  end
+
+  defp malicious_metadata(attrs) do
+    Map.merge(attrs, %{
+      "source" => "spoofed-source",
+      "admission_category" => "spoofed-category",
+      "observed_identity" => %{"claimed_node_id" => "spoofed-node"},
+      "target_ref" => "spoofed-target",
+      "candidate_id" => Ecto.UUID.generate(),
+      "node_id" => Ecto.UUID.generate()
+    })
   end
 end

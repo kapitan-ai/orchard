@@ -2,14 +2,8 @@
 
 ## Status
 
-Ready for implementation after Najib approval.
-This is a planning artifact for the next cluster-management implementation slice after PR #31.
-It intentionally does not implement product code.
-
-The working branch is `najibninaba/plan-cluster-admission-admin-api-slice` from `origin/main` at `5e2956164a79dc528f7740624061ef1066fea460`.
-RepoPrompt Oracle review was run against the Orchard worktree and agreed with the slice after tightening candidate-only route semantics, Admin API auth, and HA-lite wording.
-Web research used official Phoenix router pipeline documentation, OWASP API authorization guidance, and NIST zero-trust guidance.
-Exa was not available in this Codex tool surface, so web search was used instead.
+Accepted implementation plan for the initial cluster-management Admin API node-admission slice.
+The implemented slice covers OpenSpec task `2.8` and preserves the explicit out-of-scope boundaries below for later CLI, Console, bootstrap, and diagnostics work.
 
 ## Recommended Slice
 

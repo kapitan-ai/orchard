@@ -287,6 +287,65 @@ defmodule Orchard.GovernanceTest do
       assert %{role: ["has already been taken"]} = errors_on(changeset)
     end
 
+    test "concurrent cluster admin grants stay idempotent and write one audit row" do
+      tenant = create_tenant!("tenant-cluster-admin-race")
+      api_client = create_api_client!(tenant, "cluster-admin-race-client")
+      start_ref = make_ref()
+      parent = self()
+
+      task = fn actor_id ->
+        Task.async(fn ->
+          Sandbox.allow(Repo, parent, self())
+          send(parent, {:ready, self()})
+
+          receive do
+            ^start_ref -> Governance.ensure_cluster_admin_access(api_client, actor_id: actor_id)
+          end
+        end)
+      end
+
+      task_one = task.("cluster-admin-race-one")
+      task_two = task.("cluster-admin-race-two")
+
+      assert_receive {:ready, _pid}, 1_000
+      assert_receive {:ready, _pid}, 1_000
+
+      send(task_one.pid, start_ref)
+      send(task_two.pid, start_ref)
+
+      results = [Task.await(task_one, 5_000), Task.await(task_two, 5_000)]
+
+      assert Enum.all?(results, &match?({:ok, %RoleBinding{}}, &1))
+
+      role_binding_ids =
+        Enum.map(results, fn {:ok, role_binding} -> role_binding.id end)
+
+      assert Enum.uniq(role_binding_ids) |> length() == 1
+      [role_binding_id] = Enum.uniq(role_binding_ids)
+
+      assert Repo.aggregate(
+               from(role_binding in RoleBinding,
+                 where:
+                   role_binding.principal_type == :service_account and
+                     role_binding.principal_id == ^api_client.id and
+                     role_binding.role == :admin and
+                     is_nil(role_binding.tenant_scope_id)
+               ),
+               :count,
+               :id
+             ) == 1
+
+      assert Repo.aggregate(
+               from(audit_log in AuditLog,
+                 where:
+                   audit_log.action == "role_binding.created" and
+                     audit_log.target_id == ^role_binding_id
+               ),
+               :count,
+               :id
+             ) == 1
+    end
+
     test "denies tenant-direct, inference-only, and disabled API Client tokens" do
       tenant = create_tenant!("tenant-cluster-admin-denied")
 

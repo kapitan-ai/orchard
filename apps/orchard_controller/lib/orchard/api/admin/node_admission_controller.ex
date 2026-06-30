@@ -10,6 +10,27 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
   alias Orchard.ControlPlane
   alias Orchard.Nodes
 
+  @reserved_request_metadata_keys MapSet.new([
+                                    "admission_category",
+                                    "audit_log_id",
+                                    "candidate_id",
+                                    "compatibility_evidence",
+                                    "decided_at",
+                                    "decision",
+                                    "endpoint",
+                                    "endpoint_target",
+                                    "endpoint_transport",
+                                    "id",
+                                    "inserted_at",
+                                    "inventory",
+                                    "last_observed_at",
+                                    "node_id",
+                                    "observed_identity",
+                                    "source",
+                                    "target_ref",
+                                    "updated_at"
+                                  ])
+
   @spec index(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def index(conn, _params) do
     json(conn, NodeAdmissionPresenter.list_candidates(Nodes.list_admission_candidates()))
@@ -72,7 +93,9 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
   defp request_attrs(%Plug.Conn{body_params: %Plug.Conn.Unfetched{}}), do: %{}
 
   defp request_attrs(%Plug.Conn{body_params: body_params}) when is_map(body_params) do
-    Map.drop(body_params, ["candidate_id", "node_id"])
+    Map.reject(body_params, fn {key, _value} ->
+      MapSet.member?(@reserved_request_metadata_keys, key)
+    end)
   end
 
   defp request_attrs(_conn), do: %{}

@@ -919,23 +919,34 @@ defmodule Orchard.Governance do
   end
 
   defp insert_cluster_admin_role_binding(%ServiceAccount{} = api_client) do
-    %RoleBinding{}
-    |> RoleBinding.changeset(%{
-      principal_type: :service_account,
-      principal_id: api_client.id,
-      role: :admin,
-      tenant_scope_id: nil
-    })
-    |> Repo.insert()
+    attempted =
+      %RoleBinding{}
+      |> RoleBinding.changeset(%{
+        principal_type: :service_account,
+        principal_id: api_client.id,
+        role: :admin,
+        tenant_scope_id: nil
+      })
+
+    attempted
+    |> Repo.insert(
+      on_conflict: :nothing,
+      conflict_target:
+        {:unsafe_fragment, "(principal_type, principal_id, role) WHERE tenant_scope_id IS NULL"},
+      returning: true
+    )
     |> case do
-      {:ok, role_binding} ->
-        {:ok, role_binding, true}
+      {:ok, %RoleBinding{} = attempted_role_binding} ->
+        case fetch_cluster_admin_role_binding(api_client.id) do
+          %RoleBinding{} = role_binding ->
+            {:ok, role_binding, role_binding.id == attempted_role_binding.id}
+
+          nil ->
+            {:error, attempted}
+        end
 
       {:error, changeset} ->
-        case fetch_cluster_admin_role_binding(api_client.id) do
-          %RoleBinding{} = role_binding -> {:ok, role_binding, false}
-          nil -> {:error, changeset}
-        end
+        {:error, changeset}
     end
   end
 
