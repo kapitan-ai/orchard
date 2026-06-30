@@ -240,7 +240,7 @@ rg --files \
   -g 'apps/orchard_controller/lib/orchard/<area>/**' \
   -g 'apps/orchard_controller/test/orchard/<area>/**' |
 repomix --stdin \
-  --output /tmp/orchard-repomix-<topic>.xml \
+  --output /tmp/orchard-repomix-TOPIC.xml \
   --style xml \
   --output-show-line-numbers \
   --token-count-tree 1000 \
