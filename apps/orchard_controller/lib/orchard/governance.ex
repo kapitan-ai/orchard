@@ -36,7 +36,8 @@ defmodule Orchard.Governance do
           api_key_id: Ecto.UUID.t()
         }
   @type api_key_auth_error :: :invalid_api_key | :api_key_revoked | :api_key_expired
-  @type authorization_error :: :api_client_disabled | :missing_inference_client_access
+  @type authorization_error ::
+          :api_client_disabled | :missing_inference_client_access | :admin_required
   @type auth_failure_reason :: :missing_header | :malformed_header | api_key_auth_error
 
   @spec legacy_tenant_id() :: Ecto.UUID.t()
@@ -297,6 +298,22 @@ defmodule Orchard.Governance do
     |> unwrap_transaction_result()
   end
 
+  @spec ensure_cluster_admin_access(ServiceAccount.t() | Ecto.UUID.t(), keyword()) ::
+          {:ok, RoleBinding.t()} | {:error, Changeset.t() | :api_client_not_found}
+  def ensure_cluster_admin_access(service_account_or_id, opts \\ []) do
+    Repo.transaction(fn ->
+      with {:ok, api_client} <- resolve_api_client(service_account_or_id),
+           {:ok, role_binding, created?} <- ensure_cluster_admin_role_binding(api_client),
+           {:ok, _audit_log} <-
+             maybe_insert_role_binding_audit_log(api_client, role_binding, created?, opts) do
+        {:ok, role_binding}
+      else
+        {:error, reason} -> Repo.rollback(reason)
+      end
+    end)
+    |> unwrap_transaction_result()
+  end
+
   @spec has_inference_client_access?(
           ServiceAccount.t() | Ecto.UUID.t(),
           Tenant.t() | Ecto.UUID.t()
@@ -308,6 +325,14 @@ defmodule Orchard.Governance do
       inference_client_role_binding_exists?(api_client.id, tenant.id)
     else
       _ -> false
+    end
+  end
+
+  @spec has_cluster_admin_access?(ServiceAccount.t() | Ecto.UUID.t()) :: boolean()
+  def has_cluster_admin_access?(service_account_or_id) do
+    case resolve_api_client(service_account_or_id) do
+      {:ok, api_client} -> cluster_admin_role_binding_exists?(api_client.id)
+      {:error, _reason} -> false
     end
   end
 
@@ -329,6 +354,22 @@ defmodule Orchard.Governance do
       {:error, _reason} -> {:error, :missing_inference_client_access}
     end
   end
+
+  @spec authorize_admin_api(api_key_auth_result()) :: :ok | {:error, :admin_required}
+  def authorize_admin_api(%{
+        principal_type: :service_account,
+        principal_id: service_account_id
+      }) do
+    with {:ok, api_client} <- resolve_api_client(service_account_id),
+         false <- ServiceAccount.disabled?(api_client),
+         true <- cluster_admin_role_binding_exists?(api_client.id) do
+      :ok
+    else
+      _ -> {:error, :admin_required}
+    end
+  end
+
+  def authorize_admin_api(_auth_context), do: {:error, :admin_required}
 
   @spec bulk_validate_api_clients([map()], keyword()) ::
           {:ok, ApiClientProvisioning.plan()}
@@ -846,6 +887,16 @@ defmodule Orchard.Governance do
     end
   end
 
+  defp ensure_cluster_admin_role_binding(%ServiceAccount{} = api_client) do
+    case fetch_cluster_admin_role_binding(api_client.id) do
+      %RoleBinding{} = role_binding ->
+        {:ok, role_binding, false}
+
+      nil ->
+        insert_cluster_admin_role_binding(api_client)
+    end
+  end
+
   defp insert_inference_client_role_binding(%ServiceAccount{} = api_client, %Tenant{} = tenant) do
     %RoleBinding{}
     |> RoleBinding.changeset(%{
@@ -856,8 +907,46 @@ defmodule Orchard.Governance do
     })
     |> Repo.insert()
     |> case do
-      {:ok, role_binding} -> {:ok, role_binding, true}
-      {:error, changeset} -> {:error, changeset}
+      {:ok, role_binding} ->
+        {:ok, role_binding, true}
+
+      {:error, changeset} ->
+        case fetch_inference_client_role_binding(api_client.id, tenant.id) do
+          %RoleBinding{} = role_binding -> {:ok, role_binding, false}
+          nil -> {:error, changeset}
+        end
+    end
+  end
+
+  defp insert_cluster_admin_role_binding(%ServiceAccount{} = api_client) do
+    attempted =
+      %RoleBinding{}
+      |> RoleBinding.changeset(%{
+        principal_type: :service_account,
+        principal_id: api_client.id,
+        role: :admin,
+        tenant_scope_id: nil
+      })
+
+    attempted
+    |> Repo.insert(
+      on_conflict: :nothing,
+      conflict_target:
+        {:unsafe_fragment, "(principal_type, principal_id, role) WHERE tenant_scope_id IS NULL"},
+      returning: true
+    )
+    |> case do
+      {:ok, %RoleBinding{} = attempted_role_binding} ->
+        case fetch_cluster_admin_role_binding(api_client.id) do
+          %RoleBinding{} = role_binding ->
+            {:ok, role_binding, role_binding.id == attempted_role_binding.id}
+
+          nil ->
+            {:error, attempted}
+        end
+
+      {:error, changeset} ->
+        {:error, changeset}
     end
   end
 
@@ -875,6 +964,22 @@ defmodule Orchard.Governance do
       role: :inference_client,
       tenant_scope_id: tenant_id
     )
+  end
+
+  defp cluster_admin_role_binding_exists?(service_account_id) do
+    case fetch_cluster_admin_role_binding(service_account_id) do
+      %RoleBinding{} -> true
+      nil -> false
+    end
+  end
+
+  defp fetch_cluster_admin_role_binding(service_account_id) do
+    RoleBinding
+    |> where([role_binding], role_binding.principal_type == :service_account)
+    |> where([role_binding], role_binding.principal_id == ^service_account_id)
+    |> where([role_binding], role_binding.role == :admin)
+    |> where([role_binding], is_nil(role_binding.tenant_scope_id))
+    |> Repo.one()
   end
 
   defp fetch_api_key_by_prefix(token_prefix) do
@@ -1134,26 +1239,37 @@ defmodule Orchard.Governance do
          true,
          opts
        ) do
+    scope_attrs = role_binding_audit_scope_attrs(role_binding)
+
     %AuditLog{}
-    |> audit_log_impl().changeset(%{
-      tenant_id: role_binding.tenant_scope_id,
-      api_key_id: nil,
-      actor_type: audit_actor_type(opts),
-      actor_id: audit_actor_id(opts),
-      action: "role_binding.created",
-      target_type: "role_binding",
-      target_id: role_binding.id,
-      occurred_at: utc_now(),
-      payload:
-        %{
-          "principal_type" => "service_account",
-          "principal_id" => api_client.id,
-          "role" => "inference_client",
-          "tenant_scope_id" => role_binding.tenant_scope_id
-        }
-        |> put_audit_context_payload(opts)
-    })
+    |> audit_log_impl().changeset(
+      Map.merge(scope_attrs, %{
+        api_key_id: nil,
+        actor_type: audit_actor_type(opts),
+        actor_id: audit_actor_id(opts),
+        action: "role_binding.created",
+        target_type: "role_binding",
+        target_id: role_binding.id,
+        occurred_at: utc_now(),
+        payload:
+          %{
+            "principal_type" => "service_account",
+            "principal_id" => api_client.id,
+            "role" => Atom.to_string(role_binding.role),
+            "tenant_scope_id" => role_binding.tenant_scope_id
+          }
+          |> put_audit_context_payload(opts)
+      })
+    )
     |> Repo.insert()
+  end
+
+  defp role_binding_audit_scope_attrs(%RoleBinding{tenant_scope_id: nil}) do
+    %{scope: "cluster", tenant_id: nil}
+  end
+
+  defp role_binding_audit_scope_attrs(%RoleBinding{tenant_scope_id: tenant_scope_id}) do
+    %{scope: "tenant", tenant_id: tenant_scope_id}
   end
 
   defp insert_tenant_audit_log(%Tenant{} = tenant, action, occurred_at) do

@@ -95,6 +95,11 @@ _Avoid_: Secondary active controller
 A Postgres coordination lock used by Orchard for exclusive leadership and ownership of single-writer tasks.
 _Avoid_: Distributed lock service
 
+**Leader-only Write Path**:
+A mutating operation that may execute only on the Active Leader in HA-lite mode and must fail closed on a Standby Controller.
+Examples include node admission rejection, rejection clearance, admission, decommissioning, and the related cluster-scoped audit events.
+_Avoid_: best-effort write, local-controller write
+
 ### APIs and Product Surfaces
 
 **Public Inference API**:
@@ -217,6 +222,11 @@ _Avoid_: Dry Run, partial import, best-effort import
 A named permission set assignable to principals for cluster, operator, tenant-admin, or inference-client access.
 Product-facing label: Access Level.
 _Avoid_: credential, API Key, ad hoc permission flag
+
+**Cluster-scoped Admin Role**:
+An RBAC Role assignment that grants a Service Account full cluster access through Admin API surfaces without a Tenant scope.
+Tenant-direct API Keys do not imply this role.
+_Avoid_: tenant admin, inference client, local dev admin
 
 **Inference Client**:
 An Access Level that permits a principal to call public inference endpoints for its Organization.

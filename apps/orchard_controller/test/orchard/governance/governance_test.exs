@@ -37,7 +37,7 @@ defmodule Orchard.GovernanceTest do
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.Governance
-  alias Orchard.Governance.{ApiKey, ApiKeySecret, AuditLog, Tenant}
+  alias Orchard.Governance.{ApiKey, ApiKeySecret, AuditLog, RoleBinding, Tenant}
 
   describe "create_tenant/1" do
     test "creates a tenant, ignores caller-supplied ids, and writes one audit row" do
@@ -209,6 +209,170 @@ defmodule Orchard.GovernanceTest do
       assert {:ok, _disabled} = Governance.disable_api_client(tenant, api_client)
 
       refute Governance.has_active_api_keys?()
+    end
+  end
+
+  describe "cluster-scoped admin access" do
+    test "creates a cluster-scoped admin role binding and audit event" do
+      tenant = create_tenant!("tenant-cluster-admin")
+      api_client = create_api_client!(tenant, "cluster-admin-client")
+
+      assert {:ok, role_binding} =
+               Governance.ensure_cluster_admin_access(api_client, actor_id: "setup@example.test")
+
+      assert role_binding.principal_type == :service_account
+      assert role_binding.principal_id == api_client.id
+      assert role_binding.role == :admin
+      assert role_binding.tenant_scope_id == nil
+      assert Governance.has_cluster_admin_access?(api_client)
+
+      audit_log =
+        Repo.one!(
+          from(audit_log in AuditLog,
+            where:
+              audit_log.action == "role_binding.created" and
+                audit_log.target_id == ^role_binding.id
+          )
+        )
+
+      assert audit_log.scope == "cluster"
+      assert audit_log.tenant_id == nil
+      assert audit_log.actor_id == "setup@example.test"
+
+      assert audit_log.payload == %{
+               "principal_type" => "service_account",
+               "principal_id" => api_client.id,
+               "role" => "admin",
+               "tenant_scope_id" => nil
+             }
+    end
+
+    test "is idempotent and authorizes only enabled service-account cluster admins" do
+      tenant = create_tenant!("tenant-cluster-admin-auth")
+      api_client = create_api_client!(tenant, "cluster-admin-auth-client")
+
+      assert {:ok, first} = Governance.ensure_cluster_admin_access(api_client)
+      assert {:ok, second} = Governance.ensure_cluster_admin_access(api_client)
+      assert first.id == second.id
+
+      {:ok, %{token: token}} =
+        Governance.create_api_client_api_token(api_client, %{name: "admin"})
+
+      {:ok, auth_context} = Governance.authenticate_api_key(token)
+
+      assert :ok = Governance.authorize_admin_api(auth_context)
+
+      assert Repo.aggregate(
+               from(role_binding in RoleBinding,
+                 where:
+                   role_binding.principal_type == :service_account and
+                     role_binding.principal_id == ^api_client.id and
+                     role_binding.role == :admin and
+                     is_nil(role_binding.tenant_scope_id)
+               ),
+               :count,
+               :id
+             ) == 1
+
+      assert {:error, changeset} =
+               %RoleBinding{}
+               |> RoleBinding.changeset(%{
+                 principal_type: :service_account,
+                 principal_id: api_client.id,
+                 role: :admin,
+                 tenant_scope_id: nil
+               })
+               |> Repo.insert()
+
+      assert %{role: ["has already been taken"]} = errors_on(changeset)
+    end
+
+    test "concurrent cluster admin grants stay idempotent and write one audit row" do
+      tenant = create_tenant!("tenant-cluster-admin-race")
+      api_client = create_api_client!(tenant, "cluster-admin-race-client")
+      start_ref = make_ref()
+      parent = self()
+
+      task = fn actor_id ->
+        Task.async(fn ->
+          Sandbox.allow(Repo, parent, self())
+          send(parent, {:ready, self()})
+
+          receive do
+            ^start_ref -> Governance.ensure_cluster_admin_access(api_client, actor_id: actor_id)
+          end
+        end)
+      end
+
+      task_one = task.("cluster-admin-race-one")
+      task_two = task.("cluster-admin-race-two")
+
+      assert_receive {:ready, _pid}, 1_000
+      assert_receive {:ready, _pid}, 1_000
+
+      send(task_one.pid, start_ref)
+      send(task_two.pid, start_ref)
+
+      results = [Task.await(task_one, 5_000), Task.await(task_two, 5_000)]
+
+      assert Enum.all?(results, &match?({:ok, %RoleBinding{}}, &1))
+
+      role_binding_ids =
+        Enum.map(results, fn {:ok, role_binding} -> role_binding.id end)
+
+      assert Enum.uniq(role_binding_ids) |> length() == 1
+      [role_binding_id] = Enum.uniq(role_binding_ids)
+
+      assert Repo.aggregate(
+               from(role_binding in RoleBinding,
+                 where:
+                   role_binding.principal_type == :service_account and
+                     role_binding.principal_id == ^api_client.id and
+                     role_binding.role == :admin and
+                     is_nil(role_binding.tenant_scope_id)
+               ),
+               :count,
+               :id
+             ) == 1
+
+      assert Repo.aggregate(
+               from(audit_log in AuditLog,
+                 where:
+                   audit_log.action == "role_binding.created" and
+                     audit_log.target_id == ^role_binding_id
+               ),
+               :count,
+               :id
+             ) == 1
+    end
+
+    test "denies tenant-direct, inference-only, and disabled API Client tokens" do
+      tenant = create_tenant!("tenant-cluster-admin-denied")
+
+      {:ok, %{token: tenant_token}} = Governance.create_api_key(tenant, %{name: "tenant"})
+      {:ok, tenant_auth} = Governance.authenticate_api_key(tenant_token)
+      assert {:error, :admin_required} = Governance.authorize_admin_api(tenant_auth)
+
+      inference_client = create_api_client!(tenant, "inference-only-client")
+
+      assert {:ok, _role_binding} =
+               Governance.ensure_inference_client_access(inference_client, tenant)
+
+      {:ok, %{token: inference_token}} =
+        Governance.create_api_client_api_token(inference_client, %{name: "inference"})
+
+      {:ok, inference_auth} = Governance.authenticate_api_key(inference_token)
+      assert {:error, :admin_required} = Governance.authorize_admin_api(inference_auth)
+
+      disabled_client = create_api_client!(tenant, "disabled-admin-client")
+      assert {:ok, _role_binding} = Governance.ensure_cluster_admin_access(disabled_client)
+
+      {:ok, %{token: disabled_token}} =
+        Governance.create_api_client_api_token(disabled_client, %{name: "disabled"})
+
+      assert {:ok, _disabled} = Governance.disable_api_client(tenant, disabled_client)
+      {:ok, disabled_auth} = Governance.authenticate_api_key(disabled_token)
+      assert {:error, :admin_required} = Governance.authorize_admin_api(disabled_auth)
     end
   end
 
