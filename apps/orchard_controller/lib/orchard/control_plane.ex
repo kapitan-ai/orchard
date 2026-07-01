@@ -1,6 +1,7 @@
 defmodule Orchard.ControlPlane do
   @moduledoc """
-  Small control-plane write gate for leader-only mutation paths.
+  Small control-plane write gate for leader-only mutation paths, plus read-only
+  HA-lite control-plane status.
   """
 
   alias Orchard.ClusterManagement.HALiteStatus

@@ -992,11 +992,14 @@ sudo launchctl kickstart -k system/com.orchard.node-agent
 `orchardctl requests inspect` is a SPEC-required diagnostics path that returns
 deferred status in this build. `orchardctl support bundle create` creates a
 local diagnostic `.tar.gz` containing bounded redacted logs, redacted config,
-service status, node snapshots, and request summaries; use `--support-root` and
+service status, node snapshots, shared cluster-management node status, and
+request summaries; use `--support-root` and
 `--output` to point it at an isolated source-dev fixture. Use
 `--max-log-bytes` to cap each retained log tail and `--json` when scripting
 bundle creation. It records `support_bundle.generated` only when the controller
-Repo is already available. Console request views, health/readiness endpoints,
+Repo is already available. `orchardctl nodes list --json` emits the same shared
+cluster-management node status contract for scripting node inventory checks.
+Console request views, health/readiness endpoints,
 and controller or node-agent logs remain useful for interactive source-dev
 diagnostics.
 

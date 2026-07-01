@@ -22,7 +22,7 @@ product/system/build contract.
   `orchardctl` but return deferred-status errors with the current supported
   path. `orchardctl support bundle create` creates a local diagnostic archive
   with bounded redacted logs, redacted config, service status, node snapshots,
-  and request summaries.
+  shared cluster-management node status, and request summaries.
 
 When this guide and `SPEC.md` disagree, treat the branch as blocked until the
 conflict is reconciled. `SPEC.md` wins until explicitly updated.
