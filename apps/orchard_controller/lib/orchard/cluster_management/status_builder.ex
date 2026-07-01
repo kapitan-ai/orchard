@@ -138,7 +138,20 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
   end
 
   @spec node_status_maps([Node.t() | map()]) :: [map()]
-  def node_status_maps(nodes), do: Enum.map(nodes, &node_status_map/1)
+  def node_status_maps(nodes) do
+    decisions =
+      nodes
+      |> Enum.map(&node_id/1)
+      |> Enum.reject(&is_nil/1)
+      |> Nodes.latest_admission_decisions_for_nodes()
+
+    Enum.map(nodes, fn node ->
+      node_status_map(node, latest_decision: Map.get(decisions, node_id(node)))
+    end)
+  end
+
+  defp node_id(%Node{id: id}), do: id
+  defp node_id(%{} = node), do: node_field(node, :id)
 
   defp node_admission_category(_node, %AdmissionDecision{decision: :rejected}), do: :rejected
   defp node_admission_category(%Node{state: :provisioned}, _decision), do: :pending_provisioned
@@ -148,6 +161,8 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
     do: :admitted
 
   defp node_admission_category(%Node{state: :removed}, _decision), do: :removed
+
+  defp node_admission_category(%Node{}, _decision), do: :pending_registered
 
   defp node_admission_category(%{} = node, decision) do
     node_admission_category(%Node{state: node_field(node, :state)}, decision)
@@ -243,10 +258,12 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
 
   defp freshness(%DateTime{} = observed_at) do
     age_ms = DateTime.diff(DateTime.utc_now(), observed_at, :millisecond)
+    freshness_ms = Orchard.Inference.node_freshness_threshold_ms()
+    unreachable_ms = Orchard.Inference.node_unreachable_threshold_ms()
 
     cond do
-      age_ms <= Orchard.Inference.node_freshness_threshold_ms() -> :fresh
-      age_ms <= Orchard.Inference.node_unreachable_threshold_ms() -> :stale
+      age_ms <= min(freshness_ms, unreachable_ms) -> :fresh
+      age_ms <= max(freshness_ms, unreachable_ms) -> :stale
       true -> :unreachable
     end
   end

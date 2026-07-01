@@ -2,9 +2,12 @@ defmodule Orchard.ClusterManagement.StatusBuilderTest do
   use Orchard.DataCase, async: false
 
   alias Orchard.ClusterManagement.StatusBuilder
+  alias Orchard.Nodes
   alias Orchard.Nodes.AdmissionCandidate
   alias Orchard.Nodes.Node
   alias Orchard.Repo
+
+  import Orchard.TestSupport.ToolRegistryTestSupport, only: [with_inference_overrides: 2]
 
   describe "node status" do
     test "active fresh healthy node is schedulable" do
@@ -52,6 +55,47 @@ defmodule Orchard.ClusterManagement.StatusBuilderTest do
       assert status.scheduling.eligible == false
       assert "node_observation_stale" in status.scheduling.reason_codes
       assert status.freshness.status == "unreachable"
+    end
+
+    test "heartbeat between the two thresholds is reported as stale" do
+      with_inference_overrides(
+        [node_freshness_threshold_ms: 30_000, node_unreachable_threshold_ms: 15_000],
+        fn ->
+          node =
+            insert_node!(%{
+              state: :active,
+              health: :healthy,
+              last_heartbeat_at: DateTime.add(DateTime.utc_now(), -20, :second)
+            })
+
+          status = StatusBuilder.node_status_map(node)
+
+          assert status.freshness.status == "stale"
+        end
+      )
+    end
+
+    test "unknown node state resolves without infinite recursion" do
+      status =
+        StatusBuilder.node_status_map(%{
+          id: Ecto.UUID.generate(),
+          state: nil,
+          health: :healthy,
+          last_heartbeat_at: DateTime.utc_now()
+        })
+
+      assert status.admission.category == "pending_registered"
+    end
+
+    test "node_status_maps threads batched admission decisions" do
+      node = insert_node!(%{state: :registered, health: :healthy})
+
+      assert {:ok, _rejected} =
+               Nodes.reject_admission(node.id, %{reason: "needs review"})
+
+      assert [status] = StatusBuilder.node_status_maps([node])
+      assert status.admission.category == "rejected"
+      assert status.admission.latest_decision == "rejected"
     end
   end
 
