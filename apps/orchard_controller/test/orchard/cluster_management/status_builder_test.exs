@@ -57,7 +57,7 @@ defmodule Orchard.ClusterManagement.StatusBuilderTest do
       assert status.freshness.status == "unreachable"
     end
 
-    test "heartbeat between the two thresholds is reported as stale" do
+    test "heartbeat between the two thresholds is reported as stale but remains schedulable" do
       with_inference_overrides(
         [node_freshness_threshold_ms: 30_000, node_unreachable_threshold_ms: 15_000],
         fn ->
@@ -71,6 +71,9 @@ defmodule Orchard.ClusterManagement.StatusBuilderTest do
           status = StatusBuilder.node_status_map(node)
 
           assert status.freshness.status == "stale"
+          assert status.scheduling.eligible == true
+          assert status.scheduling.reason_codes == []
+          assert Enum.map(Nodes.schedulable_nodes(), & &1.id) == [node.id]
         end
       )
     end

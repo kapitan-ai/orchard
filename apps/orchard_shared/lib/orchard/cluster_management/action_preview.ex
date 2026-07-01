@@ -44,7 +44,6 @@ defmodule Orchard.ClusterManagement.ActionPreview do
              :confirmation_requirement,
              value(attrs, :confirmation_requirements)
            ),
-         :ok <- reject_confirmation_blockers(blockers),
          {:ok, scheduler_eligibility} <- scheduler_eligibility(attrs) do
       {:ok,
        %__MODULE__{
@@ -141,15 +140,6 @@ defmodule Orchard.ClusterManagement.ActionPreview do
   end
 
   defp coded_entry(_entry, _vocabulary, _fixed), do: {:error, :entry_must_be_map}
-
-  defp reject_confirmation_blockers(blockers) do
-    confirmation_codes = ReasonCodes.confirmation_requirement_codes()
-
-    case Enum.find(blockers, &(&1.code in confirmation_codes)) do
-      nil -> :ok
-      blocker -> {:error, {:confirmation_requirement_used_as_blocker, blocker.code}}
-    end
-  end
 
   defp string_map(nil, defaults), do: defaults
 

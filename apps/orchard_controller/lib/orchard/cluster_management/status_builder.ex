@@ -215,8 +215,9 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
   defp add_health_reason(reasons, _health), do: [:node_health_unhealthy | reasons]
 
   defp add_freshness_reason(reasons, :fresh), do: reasons
+  defp add_freshness_reason(reasons, :stale), do: reasons
   defp add_freshness_reason(reasons, :unknown), do: reasons
-  defp add_freshness_reason(reasons, _freshness), do: [:node_observation_stale | reasons]
+  defp add_freshness_reason(reasons, :unreachable), do: [:node_observation_stale | reasons]
 
   defp candidate_scheduling(%AdmissionCandidate{admission_category: :pending_observed}) do
     %{eligible: false, reason_codes: [:node_not_registered, :trust_not_established]}
