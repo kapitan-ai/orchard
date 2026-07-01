@@ -1,5 +1,10 @@
 # Orchard
 
+[![Elixir 1.20.0-otp-29](https://img.shields.io/badge/Elixir-1.20.0--otp--29-4B275F)](docs/tooling.md)
+[![Erlang/OTP 29.0.2](https://img.shields.io/badge/Erlang%2FOTP-29.0.2-A90533)](docs/tooling.md)
+[![mise pinned](https://img.shields.io/badge/toolchain-mise--pinned-0F766E)](mise.toml)
+[![OpenSpec strict validation](https://img.shields.io/badge/OpenSpec-strict%20validation-2563EB)](openspec/README.md)
+
 **Your LLMs. Your hardware. Your rules.**
 
 Orchard is a sovereign on-prem LLM orchestration platform for 1–4 Apple Silicon macOS machines. It runs inference on your own hardware, behind your own firewall, with no cloud dependency.
