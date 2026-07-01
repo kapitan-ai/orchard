@@ -78,6 +78,27 @@ defmodule Orchard.ClusterManagement.StatusBuilderTest do
       )
     end
 
+    test "heartbeat past the freshness cutoff is ineligible even when unreachable threshold is longer" do
+      with_inference_overrides(
+        [node_freshness_threshold_ms: 15_000, node_unreachable_threshold_ms: 60_000],
+        fn ->
+          node =
+            insert_node!(%{
+              state: :active,
+              health: :healthy,
+              last_heartbeat_at: DateTime.add(DateTime.utc_now(), -30, :second)
+            })
+
+          status = StatusBuilder.node_status_map(node)
+
+          assert status.freshness.status == "stale"
+          assert status.scheduling.eligible == false
+          assert "node_observation_stale" in status.scheduling.reason_codes
+          assert Nodes.schedulable_nodes() == []
+        end
+      )
+    end
+
     test "unknown node state resolves without infinite recursion" do
       status =
         StatusBuilder.node_status_map(%{

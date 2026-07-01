@@ -185,7 +185,7 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
     []
     |> add_state_reason(node.state)
     |> add_health_reason(node.health)
-    |> add_freshness_reason(freshness(node.last_heartbeat_at))
+    |> add_freshness_reason(node.last_heartbeat_at)
     |> Enum.uniq()
     |> Enum.reverse()
   end
@@ -194,7 +194,7 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
     []
     |> add_state_reason(node_field(node, :state))
     |> add_health_reason(node_field(node, :health))
-    |> add_freshness_reason(freshness(node_field(node, :last_heartbeat_at)))
+    |> add_freshness_reason(node_field(node, :last_heartbeat_at))
     |> Enum.uniq()
     |> Enum.reverse()
   end
@@ -214,10 +214,20 @@ defmodule Orchard.ClusterManagement.StatusBuilder do
   defp add_health_reason(reasons, :unhealthy), do: [:node_health_unhealthy | reasons]
   defp add_health_reason(reasons, _health), do: [:node_health_unhealthy | reasons]
 
-  defp add_freshness_reason(reasons, :fresh), do: reasons
-  defp add_freshness_reason(reasons, :stale), do: reasons
-  defp add_freshness_reason(reasons, :unknown), do: reasons
-  defp add_freshness_reason(reasons, :unreachable), do: [:node_observation_stale | reasons]
+  defp add_freshness_reason(reasons, last_heartbeat_at) do
+    if schedulable_observation?(last_heartbeat_at) do
+      reasons
+    else
+      [:node_observation_stale | reasons]
+    end
+  end
+
+  defp schedulable_observation?(%DateTime{} = observed_at) do
+    age_ms = DateTime.diff(DateTime.utc_now(), observed_at, :millisecond)
+    age_ms <= Orchard.Inference.node_freshness_threshold_ms()
+  end
+
+  defp schedulable_observation?(_observed_at), do: false
 
   defp candidate_scheduling(%AdmissionCandidate{admission_category: :pending_observed}) do
     %{eligible: false, reason_codes: [:node_not_registered, :trust_not_established]}
