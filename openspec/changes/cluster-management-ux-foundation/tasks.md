@@ -21,13 +21,13 @@
 
 ## 3. Shared Status And Reason Codes
 
-- [ ] 3.1 Add shared domain structures for lifecycle, admission, freshness, transport, runtime readiness, compatibility, scheduling, warnings, and HA-lite read-only status.
-- [ ] 3.2 Add fixed scheduler explanation rejection codes and action preview blocker codes.
+- [x] 3.1 Add shared domain structures for lifecycle, admission, freshness, transport, runtime readiness, compatibility, scheduling, warnings, and HA-lite read-only status.
+- [x] 3.2 Add fixed scheduler explanation rejection codes and action preview blocker codes.
 - [ ] 3.3 Ensure reason codes are used by Operator API, Admin API, CLI, Console, support bundles, and tests.
-- [ ] 3.4 Add tests that reject unknown or free-text-only scheduler explanation reasons where fixed codes are required.
-- [ ] 3.5 Add shared JSON schema or golden fixtures for node status categories, action previews, scheduler explanations, and HA-lite status.
-- [ ] 3.6 Ensure action preview schema fixtures include separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements` fields.
-- [ ] 3.7 Add parity tests proving CLI JSON and Console data assigns derive from the same domain structures.
+- [x] 3.4 Add tests that reject unknown or free-text-only scheduler explanation reasons where fixed codes are required.
+- [x] 3.5 Add shared JSON schema or golden fixtures for node status categories, action previews, scheduler explanations, and HA-lite status.
+- [x] 3.6 Ensure action preview schema fixtures include separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements` fields.
+- [x] 3.7 Add parity tests proving CLI JSON and Console data assigns derive from the same domain structures.
 
 ## 4. CLI Parity
 

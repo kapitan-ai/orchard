@@ -1,0 +1,13 @@
+{
+  "object": "cluster_management.ha_lite_status",
+  "contract_version": "orchard.cluster_management.ha_lite_status.v1",
+  "deployment_mode": "ha_lite",
+  "this_controller_identity": "controller-a",
+  "controller_role": "standby",
+  "leader_identity": "controller-b",
+  "advisory_lock_status": "not_held",
+  "lock_age_ms": 1200,
+  "last_renewed_at": "2026-07-01T00:00:00Z",
+  "standby_write_path_behavior": "writes_return_503_controller_standby",
+  "last_observed_leadership_error": null
+}

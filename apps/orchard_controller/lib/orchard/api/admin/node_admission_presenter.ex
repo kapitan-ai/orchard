@@ -3,6 +3,7 @@ defmodule Orchard.API.Admin.NodeAdmissionPresenter do
   JSON presenters for Admin API node admission resources.
   """
 
+  alias Orchard.ClusterManagement.StatusBuilder
   alias Orchard.Governance.AuditLog
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
@@ -43,6 +44,7 @@ defmodule Orchard.API.Admin.NodeAdmissionPresenter do
       last_observed_at: iso8601(candidate.last_observed_at),
       inserted_at: iso8601(candidate.inserted_at),
       updated_at: iso8601(candidate.updated_at),
+      status: StatusBuilder.candidate_status_map(candidate, latest_decision: latest_decision),
       latest_decision: decision(latest_decision)
     }
   end
@@ -80,6 +82,8 @@ defmodule Orchard.API.Admin.NodeAdmissionPresenter do
   end
 
   defp present_node(%Node{} = node) do
+    latest_decision = Nodes.latest_admission_decision_for_node(node.id)
+
     %{
       object: "node",
       id: node.id,
@@ -97,14 +101,9 @@ defmodule Orchard.API.Admin.NodeAdmissionPresenter do
       last_heartbeat_at: iso8601(node.last_heartbeat_at),
       inserted_at: iso8601(node.inserted_at),
       updated_at: iso8601(node.updated_at),
-      latest_decision: latest_node_decision(node)
+      status: StatusBuilder.node_status_map(node, latest_decision: latest_decision),
+      latest_decision: decision(latest_decision)
     }
-  end
-
-  defp latest_node_decision(%Node{id: id}) do
-    id
-    |> Nodes.latest_admission_decision_for_node()
-    |> decision()
   end
 
   defp decision(nil), do: nil

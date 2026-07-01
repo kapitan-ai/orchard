@@ -13,6 +13,7 @@ defmodule OrchardConsole.NodesLive do
 
   alias Orchard.Nodes
   alias Orchard.RuntimeEndpoint.Target
+  alias OrchardConsole.NodesPageData
 
   @default_refresh_interval_ms 5_000
   @safe_tokenization_counter_keys [
@@ -378,6 +379,7 @@ defmodule OrchardConsole.NodesLive do
       inventory: %{
         status: :loading,
         rows: [],
+        statuses: [],
         summary: %{
           total: nil,
           by_health: %{healthy: nil, degraded: nil, unhealthy: nil, unreachable: nil}
@@ -646,12 +648,13 @@ defmodule OrchardConsole.NodesLive do
   defp fetch_inventory do
     rows = Nodes.list_nodes()
     summary = Nodes.summary()
-    %{status: :ok, rows: rows, summary: summary, message: nil}
+    NodesPageData.inventory(rows, summary)
   rescue
     _ ->
       %{
         status: :error,
         rows: [],
+        statuses: [],
         summary: %{total: 0, by_health: %{healthy: 0, degraded: 0, unhealthy: 0, unreachable: 0}},
         message: "Node inventory unavailable."
       }

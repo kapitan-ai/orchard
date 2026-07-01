@@ -7,6 +7,7 @@ defmodule OrchardCLI.Commands.Nodes do
     orchardctl nodes admit (deferred status; SPEC.md 11.9)
   """
 
+  alias Orchard.ClusterManagement.{NodeStatus, StatusBuilder}
   alias Orchard.Nodes
   alias OrchardCLI.Commands.Deferred
 
@@ -28,6 +29,7 @@ defmodule OrchardCLI.Commands.Nodes do
   def run(args) do
     case args do
       ["list"] -> run_list()
+      ["list", "--json"] -> run_list_json()
       ["list", "--help"] -> {:ok, list_usage()}
       ["admit" | rest] -> Deferred.run(["admit" | rest], deferred_spec())
       ["help"] -> {:ok, group_usage()}
@@ -52,6 +54,19 @@ defmodule OrchardCLI.Commands.Nodes do
       table = format_table(nodes)
       {:ok, summary_line <> "\n\n" <> table}
     end
+  end
+
+  defp run_list_json do
+    nodes = Nodes.list_nodes()
+
+    payload = %{
+      object: "cluster_management.node_status_list",
+      contract_version: NodeStatus.contract_version(),
+      data: StatusBuilder.node_status_maps(nodes),
+      summary: Nodes.summary()
+    }
+
+    {:ok, Jason.encode!(payload, pretty: true)}
   end
 
   # ---------------------------------------------------------------------------
@@ -155,7 +170,7 @@ defmodule OrchardCLI.Commands.Nodes do
   defp list_usage do
     Enum.join(
       [
-        "Usage: orchardctl nodes list",
+        "Usage: orchardctl nodes list [--json]",
         "",
         "Lists all registered nodes with state, health, and agent version."
       ],
