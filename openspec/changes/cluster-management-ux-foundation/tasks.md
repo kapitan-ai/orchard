@@ -31,7 +31,7 @@
 
 ## 4. CLI Parity
 
-- [ ] 4.1 Implement `orchardctl nodes list --json` with separated status categories.
+- [x] 4.1 Implement `orchardctl nodes list --json` with separated status categories.
 - [ ] 4.2 Implement `orchardctl nodes inspect <node-id> --json`.
 - [ ] 4.3 Implement `orchardctl nodes pending` or an equivalent admission-review command.
 - [ ] 4.4 Implement `orchardctl nodes admit <node-id>` with dry-run and JSON preview support.
