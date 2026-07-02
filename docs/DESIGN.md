@@ -670,8 +670,10 @@ contract first.
   is reserved, not yet used).
 - Page-header, breadcrumb, status pill, modal, toast/flash, badge, or button
   restyling beyond what already exists.
-- Mobile sidebar / responsive collapse below `lg`. The rail is desktop-only
-  in v2.
+- Off-canvas / drawer mobile navigation with a hamburger toggle. Below the
+  `sm` breakpoint the rail auto-collapses to the icon-only tokens and hides
+  the manual toggle (see §5.3 and §6); a hidden-by-default drawer pattern
+  remains out of scope in v2.
 - Animated entrance/exit transitions for inputs, nav items, or rail.
 - Component library swap (Headless UI, Radix, etc.).
 - A LiveView component split (`Orchard.Console.UI.Input` etc.).
