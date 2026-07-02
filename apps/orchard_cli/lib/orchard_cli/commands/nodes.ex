@@ -33,11 +33,12 @@ defmodule OrchardCLI.Commands.Nodes do
 
   defp run_inspect(args) do
     with {:ok, %{id: node_id, json?: json?}} <- parse_inspect_args(args),
-         {:ok, node} <- Nodes.fetch_node(node_id) do
+         {:ok, node} <- guarded_fetch_node(node_id) do
       output = NodeAdmissionPresenter.node(node)
       {:ok, render_node(output, json?)}
     else
       {:error, :node_not_found} -> {:error, "Error: node not found.", 1}
+      {:help, usage} -> {:ok, usage}
       {:error, message, code} -> {:error, message, code}
     end
   end
@@ -46,14 +47,16 @@ defmodule OrchardCLI.Commands.Nodes do
   defp run_pending(["help"]), do: {:ok, pending_usage()}
 
   defp run_pending(args) do
-    with {:ok, %{json?: json?}} <- parse_pending_args(args) do
-      candidates =
-        Nodes.list_admission_candidates(
-          admission_category: AdmissionCandidate.review_categories()
-        )
+    case parse_pending_args(args) do
+      {:ok, %{json?: json?}} ->
+        output = NodeAdmissionPresenter.list_candidates(guarded_pending_candidates())
+        {:ok, render_pending(output, json?)}
 
-      output = NodeAdmissionPresenter.list_candidates(candidates)
-      {:ok, render_pending(output, json?)}
+      {:help, usage} ->
+        {:ok, usage}
+
+      {:error, message, code} ->
+        {:error, message, code}
     end
   end
 
@@ -61,19 +64,26 @@ defmodule OrchardCLI.Commands.Nodes do
   defp run_admit(["help"]), do: {:ok, admit_usage()}
 
   defp run_admit(args) do
-    with {:ok, opts} <- parse_admit_args(args) do
-      preview = ActionPreviewBuilder.admit_node(opts.id, opts.attrs)
+    case parse_admit_args(args) do
+      {:ok, opts} ->
+        preview = ActionPreviewBuilder.admit_node(opts.id, opts.attrs)
 
-      cond do
-        opts.dry_run? ->
-          {:ok, render_preview(preview, opts.json?)}
+        cond do
+          opts.dry_run? ->
+            {:ok, render_preview(preview, opts.json?)}
 
-        preview_blocked?(preview) or not opts.yes? ->
-          confirmation_error(preview, opts, :admit)
+          preview_blocked?(preview) or not opts.yes? ->
+            confirmation_error(preview, opts, :admit)
 
-        true ->
-          execute_admit(opts)
-      end
+          true ->
+            execute_admit(opts)
+        end
+
+      {:help, usage} ->
+        {:ok, usage}
+
+      {:error, message, code} ->
+        {:error, message, code}
     end
   end
 
@@ -81,19 +91,26 @@ defmodule OrchardCLI.Commands.Nodes do
   defp run_reject(["help"]), do: {:ok, reject_usage()}
 
   defp run_reject(args) do
-    with {:ok, opts} <- parse_reject_args(args) do
-      preview = ActionPreviewBuilder.reject_admission(opts.id, opts.attrs)
+    case parse_reject_args(args) do
+      {:ok, opts} ->
+        preview = ActionPreviewBuilder.reject_admission(opts.id, opts.attrs)
 
-      cond do
-        opts.dry_run? ->
-          {:ok, render_preview(preview, opts.json?)}
+        cond do
+          opts.dry_run? ->
+            {:ok, render_preview(preview, opts.json?)}
 
-        preview_blocked?(preview) or not opts.yes? or reason_missing?(opts.attrs) ->
-          confirmation_error(preview, opts, :reject)
+          preview_blocked?(preview) or not opts.yes? or reason_missing?(opts.attrs) ->
+            confirmation_error(preview, opts, :reject)
 
-        true ->
-          execute_reject(opts)
-      end
+          true ->
+            execute_reject(opts)
+        end
+
+      {:help, usage} ->
+        {:ok, usage}
+
+      {:error, message, code} ->
+        {:error, message, code}
     end
   end
 
@@ -117,11 +134,42 @@ defmodule OrchardCLI.Commands.Nodes do
     end
   end
 
+  defp guarded_fetch_node(node_id) do
+    guarded_read(fn -> Nodes.fetch_node(node_id) end, {:error, :node_not_found})
+  end
+
+  defp guarded_pending_candidates do
+    guarded_read(
+      fn ->
+        Nodes.list_admission_candidates(
+          admission_category: AdmissionCandidate.review_categories()
+        )
+      end,
+      []
+    )
+  end
+
+  defp guarded_read(fun, fallback) do
+    if repo_available?() do
+      fun.()
+    else
+      fallback
+    end
+  rescue
+    _exception in [DBConnection.ConnectionError, DBConnection.OwnershipError, Postgrex.Error] ->
+      fallback
+  end
+
+  defp repo_available? do
+    pid = Process.whereis(Orchard.Repo)
+    is_pid(pid) and Process.alive?(pid)
+  end
+
   defp parse_inspect_args(args) do
     case OptionParser.parse(args, strict: [json: :boolean, help: :boolean]) do
       {opts, [node_id], []} ->
         if Keyword.get(opts, :help, false) do
-          {:error, inspect_usage(), 0}
+          {:help, inspect_usage()}
         else
           {:ok, %{id: node_id, json?: Keyword.get(opts, :json, false)}}
         end
@@ -138,7 +186,7 @@ defmodule OrchardCLI.Commands.Nodes do
     case OptionParser.parse(args, strict: [json: :boolean, help: :boolean]) do
       {opts, [], []} ->
         if Keyword.get(opts, :help, false) do
-          {:error, pending_usage(), 0}
+          {:help, pending_usage()}
         else
           {:ok, %{json?: Keyword.get(opts, :json, false)}}
         end
@@ -155,7 +203,7 @@ defmodule OrchardCLI.Commands.Nodes do
     case OptionParser.parse(args, strict: admit_switches()) do
       {opts, [node_id], []} ->
         if Keyword.get(opts, :help, false) do
-          {:error, admit_usage(), 0}
+          {:help, admit_usage()}
         else
           {:ok,
            %{
@@ -179,7 +227,7 @@ defmodule OrchardCLI.Commands.Nodes do
     case OptionParser.parse(args, strict: reject_switches()) do
       {opts, [target_id], []} ->
         if Keyword.get(opts, :help, false) do
-          {:error, reject_usage(), 0}
+          {:help, reject_usage()}
         else
           {:ok,
            %{

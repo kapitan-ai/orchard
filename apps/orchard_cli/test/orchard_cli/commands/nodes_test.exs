@@ -65,6 +65,28 @@ defmodule OrchardCLI.Commands.NodesTest do
     end
   end
 
+  describe "help flag on parsed commands" do
+    test "inspect --help with a node id prints usage to stdout with success" do
+      assert {:ok, msg} = NodesCmd.run(["inspect", Ecto.UUID.generate(), "--help"])
+      assert msg =~ "orchardctl nodes inspect"
+    end
+
+    test "pending --json --help prints usage to stdout with success" do
+      assert {:ok, msg} = NodesCmd.run(["pending", "--json", "--help"])
+      assert msg =~ "orchardctl nodes pending"
+    end
+
+    test "admit --help with a node id prints usage to stdout with success" do
+      assert {:ok, msg} = NodesCmd.run(["admit", Ecto.UUID.generate(), "--help"])
+      assert msg =~ "orchardctl nodes admit"
+    end
+
+    test "reject --help with a target id prints usage to stdout with success" do
+      assert {:ok, msg} = NodesCmd.run(["reject", Ecto.UUID.generate(), "--help"])
+      assert msg =~ "orchardctl nodes reject"
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # List command
   # ---------------------------------------------------------------------------
@@ -193,6 +215,15 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert message == "Unknown option: --bogus"
       refute message =~ "----"
     end
+
+    test "degrades to not found when the controller repo is unavailable" do
+      node = insert_node!(display_name: "inspect-repo-off-node")
+
+      with_repo_unavailable(fn ->
+        assert {:error, message, 1} = NodesCmd.run(["inspect", node.id, "--json"])
+        assert message =~ "node not found"
+      end)
+    end
   end
 
   describe "pending" do
@@ -243,6 +274,18 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert output =~ pending.id
       refute output =~ admitted.id
       refute output =~ "admitted"
+    end
+
+    test "degrades to empty review when the controller repo is unavailable" do
+      insert_candidate!()
+
+      with_repo_unavailable(fn ->
+        assert {:ok, output} = NodesCmd.run(["pending"])
+        assert output =~ "No admission candidates pending review."
+
+        assert {:ok, json} = NodesCmd.run(["pending", "--json"])
+        assert Jason.decode!(json)["data"] == []
+      end)
     end
   end
 
@@ -422,6 +465,17 @@ defmodule OrchardCLI.Commands.NodesTest do
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+
+  defp with_repo_unavailable(fun) do
+    repo_pid = Process.whereis(Repo)
+    Process.unregister(Repo)
+
+    try do
+      fun.()
+    after
+      Process.register(repo_pid, Repo)
+    end
+  end
 
   defp insert_node!(attrs) do
     unique = System.unique_integer([:positive])
