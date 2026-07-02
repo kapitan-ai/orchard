@@ -350,6 +350,9 @@ implementation. Do not add hover styling to the disabled span.
   existing radii (`rounded-lg` where already set). Do not introduce
   `rounded-xl` or `rounded-2xl` in v2.
 - Sidebar nav row padding is `px-3 py-2`. Do not change in v2.
+- Below the `sm` breakpoint, the Console sidebar uses the collapsed rail tokens by default and hides the manual expand/collapse toggle.
+- Desktop and tablet widths keep the existing expanded-by-default sidebar with manual collapse behavior.
+- The Console root clips document-level horizontal overflow; wide tables or logs must own their own local horizontal scroll region.
 
 ### 6.1 Page Width Modes
 

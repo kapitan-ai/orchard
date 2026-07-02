@@ -24,7 +24,9 @@
 - [x] 3.1 Add shared domain structures for lifecycle, admission, freshness, transport, runtime readiness, compatibility, scheduling, warnings, and HA-lite read-only status.
 - [x] 3.2 Add fixed scheduler explanation rejection codes and action preview blocker codes.
 - [ ] 3.3 Ensure reason codes are used by Operator API, Admin API, CLI, Console, support bundles, and tests.
-  Note: CLI/Admin admission previews now use shared `ActionPreview` blocker and confirmation codes; Operator API, Console, and support bundles remain future slices.
+  Note: CLI/Admin admission previews now use shared `ActionPreview` blocker and confirmation codes.
+  Console pending admission queue, detail drill-in, and admit/reject preview panels now render shared status, scheduler, blocker, warning, consequence, and confirmation codes for this slice.
+  Operator API and support bundles remain future slices.
 - [x] 3.4 Add tests that reject unknown or free-text-only scheduler explanation reasons where fixed codes are required.
 - [x] 3.5 Add shared JSON schema or golden fixtures for node status categories, action previews, scheduler explanations, and HA-lite status.
 - [x] 3.6 Ensure action preview schema fixtures include separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements` fields.
@@ -43,9 +45,11 @@
 
 ## 5. Console Nodes UX
 
-- [ ] 5.1 Add a pending admission queue to the Console Nodes workspace.
-- [ ] 5.2 Add node detail drill-in that preserves separate lifecycle, health, freshness, transport, runtime, compatibility, scheduling, and warning groups.
+- [x] 5.1 Add a pending admission queue to the Console Nodes workspace.
+- [x] 5.2 Add node detail drill-in that preserves separate lifecycle, health, freshness, transport, runtime, compatibility, scheduling, and warning groups.
 - [ ] 5.3 Add action preview dialogs for admit, reject pending admission, cordon, uncordon, drain, maintenance, resume, and decommission.
+  Note: this slice implements Console admit and reject pending admission preview panels using the shared `ActionPreview` contract.
+  Full lifecycle action previews and any reusable dialog primitive remain future work.
 - [ ] 5.4 Add scheduler explanation views with selected candidate, skipped candidates, fixed reason codes, and sanitized diagnostics.
 - [ ] 5.5 Add diagnostics and support bundle entry points that use the shared support bundle contract.
 - [ ] 5.6 Add read-only HA-lite control-plane status.

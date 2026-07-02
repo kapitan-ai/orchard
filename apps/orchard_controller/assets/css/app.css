@@ -205,6 +205,18 @@
    Console Shell — sidebar transitions
    ========================================================================== */
 
+#console-app,
+#console-shell {
+  width: 100vw;
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+#console-app {
+  position: fixed;
+  inset: 3px 0 0;
+}
+
 #console-sidebar {
   width: 16rem;
   min-width: 16rem;
@@ -273,6 +285,49 @@
 
 .sidebar-collapsed .sidebar-toggle-icon {
   transform: rotate(180deg);
+}
+
+@media (max-width: 639px) {
+  #console-sidebar {
+    width: 4.5rem;
+    min-width: 4.5rem;
+  }
+
+  #console-sidebar .sidebar-label {
+    opacity: 0;
+    width: 0;
+    overflow: hidden;
+  }
+
+  #console-sidebar .console-sidebar-version,
+  #console-sidebar #console-license-badge {
+    max-height: 0;
+    opacity: 0;
+    margin-bottom: 0;
+    overflow: hidden;
+    border-width: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+
+  #console-sidebar #theme-toggle {
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  #console-sidebar #theme-toggle [data-theme-mode] {
+    width: 100%;
+    gap: 0;
+  }
+
+  #console-sidebar .logo-lockup {
+    gap: 0;
+    justify-content: center;
+  }
+
+  #sidebar-toggle {
+    display: none;
+  }
 }
 
 /* Respect reduced-motion preferences */

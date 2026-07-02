@@ -12,6 +12,7 @@ defmodule OrchardConsole.NodesLive do
   require Logger
 
   alias Orchard.Nodes
+  alias Orchard.Nodes.AdmissionCandidate
   alias Orchard.RuntimeEndpoint.Target
   alias OrchardConsole.NodesPageData
 
@@ -93,10 +94,84 @@ defmodule OrchardConsole.NodesLive do
       </.card>
       </div>
 
+      <%!-- Admission Review Queue --%>
+      <div id="nodes-pending-admissions-card">
+      <.card>
+        <:title>Admission Review</:title>
+        <:subtitle>{pending_admissions_subtitle(@pending_admissions)}</:subtitle>
+
+        <%= cond do %>
+          <% @pending_admissions.status == :loading -> %>
+            <.state_message id="nodes-pending-loading" kind={:loading} layout={:compact} title="Loading pending admissions." />
+          <% @pending_admissions.status == :ok and @pending_admissions.rows == [] -> %>
+            <.state_message
+              id="nodes-pending-empty-state"
+              kind={:empty}
+              layout={:compact}
+              title="No admission review items."
+              body="New pending candidates and registered nodes will appear here; rejected records remain visible for audit after decisions."
+            />
+          <% @pending_admissions.status == :ok -> %>
+            <.table
+              id="nodes-pending-table"
+              rows={@pending_admissions.rows}
+              row_id={fn row -> "pending-admission-#{row.kind}-#{row.id}" end}
+            >
+              <:col :let={row} label="Identity" class="min-w-44">
+                <span class="font-medium text-slate-900 dark:text-slate-100">{row.display_label}</span>
+                <span
+                  :if={row.node_id && row.kind == :candidate}
+                  class="mt-1 block text-xs font-mono text-slate-500 dark:text-slate-400"
+                >
+                  linked node {row.node_id}
+                </span>
+              </:col>
+              <:col :let={row} label="Source" class="min-w-28" header_class="whitespace-nowrap">
+                <.badge tone={pending_source_tone(row.source)}>
+                  {pending_source_label(row.source)}
+                </.badge>
+              </:col>
+              <:col :let={row} label="Admission" class="min-w-32" header_class="whitespace-nowrap">
+                <.badge tone={admission_category_tone(row.admission_category)}>
+                  {format_status_value(row.admission_category)}
+                </.badge>
+              </:col>
+              <:col :let={row} label="Compatibility" class="min-w-32" header_class="whitespace-nowrap">
+                <.badge tone={compatibility_tone(status_value(row.status, :compatibility, :status))}>
+                  {format_status_value(status_value(row.status, :compatibility, :status))}
+                </.badge>
+              </:col>
+              <:col :let={row} label="Target" mono class="min-w-40 max-w-[16rem] break-all" header_class="whitespace-nowrap">
+                {format_pending_target(row)}
+              </:col>
+              <:col :let={row} label="Last Observed" mono class="min-w-40" header_class="whitespace-nowrap">
+                <.local_time
+                  :if={row.observed_at}
+                  value={row.observed_at}
+                  format={:datetime_second}
+                />
+                <span :if={!row.observed_at}>Never observed</span>
+              </:col>
+              <:action :let={row}>
+                <.link
+                  navigate={pending_detail_path(row)}
+                  class="inline-flex items-center rounded-md px-3 py-1.5 text-sm font-medium text-navy hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:text-sky-300 dark:hover:bg-slate-800 dark:focus-visible:ring-sky-400"
+                >
+                  Review
+                </.link>
+              </:action>
+            </.table>
+          <% true -> %>
+            <.state_message id="nodes-pending-error" kind={:error} layout={:compact} title="Pending admissions unavailable." body={@pending_admissions.message} />
+          <% end %>
+      </.card>
+      </div>
+
       <%!-- Main Grid --%>
       <div class="grid gap-6 xl:grid-cols-12">
-        <%!-- Persisted Inventory Table --%>
         <div class="xl:col-span-8">
+          <div class="space-y-6">
+          <%!-- Persisted Inventory Table --%>
           <div id="nodes-inventory-card">
           <.card>
             <:title>Registered Nodes</:title>
@@ -115,7 +190,12 @@ defmodule OrchardConsole.NodesLive do
               <% @inventory.status == :ok -> %>
                 <.table id="nodes-table" rows={@inventory.rows} row_id={fn node -> "node-#{node.id}" end}>
                   <:col :let={node} label="Display Name">
-                    <span class="font-medium text-slate-900 dark:text-slate-100">{node.display_name}</span>
+                    <.link
+                      navigate={~p"/console/nodes/#{node.id}"}
+                      class="font-medium text-slate-900 hover:text-navy focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-navy dark:text-slate-100 dark:hover:text-sky-300 dark:focus-visible:ring-sky-400"
+                    >
+                      {node.display_name}
+                    </.link>
                   </:col>
                   <:col :let={node} label="Hostname" mono>{node.hostname}</:col>
                   <:col :let={node} label="Address" mono>{format_address(node)}</:col>
@@ -132,6 +212,7 @@ defmodule OrchardConsole.NodesLive do
                 <.state_message id="nodes-inventory-error" kind={:error} layout={:compact} title="Node inventory unavailable." body={@inventory.message} />
               <% end %>
           </.card>
+          </div>
           </div>
         </div>
 
@@ -364,11 +445,13 @@ defmodule OrchardConsole.NodesLive do
     # second reflects it in the same cycle.
     cluster = fetch_runtime_cluster(observed_at)
     inventory = fetch_inventory()
+    pending_admissions = fetch_pending_admissions(inventory.rows)
     safe_tokenization_counters = fetch_safe_tokenization_counters()
 
     assign(socket,
       cluster: cluster,
       inventory: inventory,
+      pending_admissions: pending_admissions,
       safe_tokenization_counters: safe_tokenization_counters,
       last_refreshed_at: observed_at
     )
@@ -384,6 +467,14 @@ defmodule OrchardConsole.NodesLive do
           total: nil,
           by_health: %{healthy: nil, degraded: nil, unhealthy: nil, unreachable: nil}
         },
+        message: nil
+      },
+      pending_admissions: %{
+        status: :loading,
+        rows: [],
+        count: nil,
+        pending_count: nil,
+        rejected_count: nil,
         message: nil
       },
       cluster: %{
@@ -660,6 +751,32 @@ defmodule OrchardConsole.NodesLive do
       }
   end
 
+  defp fetch_pending_admissions(nodes) do
+    candidates =
+      Nodes.list_admission_candidates(admission_category: AdmissionCandidate.review_categories())
+
+    NodesPageData.pending_admissions(candidates, nodes)
+  rescue
+    error ->
+      Logger.warning("Pending admission fetch failed: #{inspect(error)}")
+      pending_admissions_error_state()
+  catch
+    kind, reason ->
+      Logger.warning("Pending admission fetch #{kind}: #{inspect(reason)}")
+      pending_admissions_error_state()
+  end
+
+  defp pending_admissions_error_state do
+    %{
+      status: :error,
+      rows: [],
+      count: 0,
+      pending_count: 0,
+      rejected_count: 0,
+      message: "Pending admission candidates unavailable."
+    }
+  end
+
   defp fetch_safe_tokenization_counters do
     telemetry_counters_impl().snapshot()
     |> normalize_safe_tokenization_counters()
@@ -850,6 +967,39 @@ defmodule OrchardConsole.NodesLive do
 
   defp has_health_detail?(_), do: false
 
+  defp pending_source_tone(:runtime_endpoint_observation), do: :info
+  defp pending_source_tone("runtime_endpoint_observation"), do: :info
+  defp pending_source_tone(:provisioned_node), do: :neutral
+  defp pending_source_tone("provisioned_node"), do: :neutral
+  defp pending_source_tone(:registered_node), do: :info
+  defp pending_source_tone("registered_node"), do: :info
+  defp pending_source_tone(_source), do: :neutral
+
+  defp pending_source_label(:runtime_endpoint_observation), do: "observed"
+  defp pending_source_label("runtime_endpoint_observation"), do: "observed"
+  defp pending_source_label(:provisioned_node), do: "provisioned"
+  defp pending_source_label("provisioned_node"), do: "provisioned"
+  defp pending_source_label(:registered_node), do: "registered"
+  defp pending_source_label("registered_node"), do: "registered"
+  defp pending_source_label(source), do: format_status_value(source)
+
+  defp admission_category_tone(:rejected), do: :error
+  defp admission_category_tone("rejected"), do: :error
+  defp admission_category_tone(:pending_registered), do: :info
+  defp admission_category_tone("pending_registered"), do: :info
+  defp admission_category_tone(:pending_provisioned), do: :warning
+  defp admission_category_tone("pending_provisioned"), do: :warning
+  defp admission_category_tone(:pending_observed), do: :neutral
+  defp admission_category_tone("pending_observed"), do: :neutral
+  defp admission_category_tone(_category), do: :neutral
+
+  defp compatibility_tone("compatible"), do: :success
+  defp compatibility_tone("legacy_metadata"), do: :warning
+  defp compatibility_tone("partial_metadata"), do: :warning
+  defp compatibility_tone("version_skew"), do: :warning
+  defp compatibility_tone("unsupported_version"), do: :error
+  defp compatibility_tone(_status), do: :neutral
+
   # Observe-only memory telemetry display helpers.
   defp memory_budget_status_label(%{display_state: :invalid}), do: "invalid telemetry"
 
@@ -911,6 +1061,77 @@ defmodule OrchardConsole.NodesLive do
 
   defp format_count(nil), do: "\u2014"
   defp format_count(count) when is_integer(count), do: Integer.to_string(count)
+
+  defp pending_admissions_subtitle(%{
+         status: :ok,
+         pending_count: pending_count,
+         rejected_count: rejected_count
+       })
+       when is_integer(pending_count) and is_integer(rejected_count) do
+    [
+      pending_review_count_label(pending_count),
+      rejected_review_count_label(rejected_count)
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join(" · ")
+  end
+
+  defp pending_admissions_subtitle(%{status: :ok, count: count}) when is_integer(count) do
+    "#{count} admission review items."
+  end
+
+  defp pending_admissions_subtitle(%{status: :loading}), do: "Loading review queue."
+  defp pending_admissions_subtitle(_pending), do: "Review queue unavailable."
+
+  defp pending_review_count_label(0), do: "No pending decisions."
+  defp pending_review_count_label(1), do: "1 awaiting operator decision."
+  defp pending_review_count_label(count), do: "#{count} awaiting operator decision."
+
+  defp rejected_review_count_label(0), do: nil
+  defp rejected_review_count_label(1), do: "1 rejected record visible for audit."
+  defp rejected_review_count_label(count), do: "#{count} rejected records visible for audit."
+
+  defp pending_detail_path(%{kind: :candidate, id: id}), do: ~p"/console/nodes/pending/#{id}"
+  defp pending_detail_path(%{kind: :node, id: id}), do: ~p"/console/nodes/#{id}"
+
+  defp status_value(status, group, key) when is_map(status) do
+    case map_get(status, group) do
+      group_status when is_map(group_status) -> map_get(group_status, key)
+      _group_status -> nil
+    end
+  end
+
+  defp status_value(_status, _group, _key), do: nil
+
+  defp map_get(map, key) when is_map(map) and is_atom(key) do
+    case Map.fetch(map, key) do
+      {:ok, value} -> value
+      :error -> Map.get(map, Atom.to_string(key))
+    end
+  end
+
+  defp map_get(_map, _key), do: nil
+
+  defp format_status_value(nil), do: "unknown"
+
+  defp format_status_value(value) when is_atom(value) do
+    value
+    |> Atom.to_string()
+    |> format_status_value()
+  end
+
+  defp format_status_value(value) when is_binary(value) do
+    value
+    |> String.replace("_", " ")
+    |> String.capitalize()
+  end
+
+  defp format_status_value(value), do: to_string(value)
+
+  defp format_pending_target(%{target_ref: target}) when is_binary(target) and target != "",
+    do: target
+
+  defp format_pending_target(_row), do: "Unconfigured"
 
   defp format_bytes(bytes) when is_integer(bytes) and bytes >= 0, do: "#{bytes} bytes"
 

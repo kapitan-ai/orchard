@@ -601,6 +601,7 @@ defmodule OrchardConsole.NodesLiveTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.ClusterManagement.StatusBuilder
   alias Orchard.Nodes
+  alias Orchard.Nodes.AdmissionCandidate
   alias Orchard.Repo
   alias OrchardConsole.NodesPageData
 
@@ -637,6 +638,7 @@ defmodule OrchardConsole.NodesLiveTest do
       {:ok, _view, html} = live(conn, "/console/nodes")
 
       assert html =~ "Inventory Summary"
+      assert html =~ "Admission Review"
       assert html =~ "Registered Nodes"
       assert html =~ "Live Cluster"
     end
@@ -675,6 +677,97 @@ defmodule OrchardConsole.NodesLiveTest do
       {:ok, _view, html} = live(conn, "/console/nodes")
 
       assert html =~ "Nodes \u2014 Orchard Console"
+    end
+
+    test "renders pending admission candidates above registered inventory", %{conn: conn} do
+      candidate =
+        insert_candidate!(
+          observed_identity: %{
+            "display_name" => "join-review-candidate",
+            "hostname" => "join-review.local"
+          },
+          target_ref: "10.10.10.44:50071"
+        )
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      assert html =~ "nodes-pending-admissions-card"
+      assert html =~ "join-review-candidate"
+      assert html =~ "Pending observed"
+      assert html =~ "10.10.10.44:50071"
+      assert html =~ "/console/nodes/pending/#{candidate.id}"
+    end
+
+    test "renders registered nodes awaiting admission in the pending queue", %{conn: conn} do
+      node =
+        insert_node!(%{
+          display_name: "registered-review-node",
+          state: :registered,
+          health: :healthy
+        })
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      assert html =~ "registered-review-node"
+      assert html =~ "Pending registered"
+      assert html =~ "/console/nodes/#{node.id}"
+    end
+
+    test "keeps rejected admission records visible as audit records", %{conn: conn} do
+      candidate =
+        insert_candidate!(
+          admission_category: :rejected,
+          observed_identity: %{"display_name" => "rejected-review-candidate"}
+        )
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      assert html =~ "Admission Review"
+      assert html =~ "No pending decisions."
+      assert html =~ "1 rejected record visible for audit."
+      assert html =~ "rejected-review-candidate"
+      assert html =~ "Rejected"
+      assert html =~ "/console/nodes/pending/#{candidate.id}"
+    end
+  end
+
+  describe "pending admission page data" do
+    test "combines candidates and pending lifecycle nodes with shared status maps" do
+      candidate = insert_candidate!(admission_category: :pending_observed)
+
+      node =
+        insert_node!(%{
+          display_name: "pending-node-page-data",
+          state: :registered,
+          health: :healthy
+        })
+
+      page = NodesPageData.pending_admissions([candidate], [node])
+
+      assert page.status == :ok
+      assert page.count == 2
+      assert page.pending_count == 2
+      assert page.rejected_count == 0
+      assert Enum.map(page.rows, & &1.kind) |> Enum.sort() == [:candidate, :node]
+
+      candidate_row = Enum.find(page.rows, &(&1.kind == :candidate))
+      node_row = Enum.find(page.rows, &(&1.kind == :node))
+
+      assert candidate_row.status.admission.category == "pending_observed"
+      assert candidate_row.status.resource.type == "admission_candidate"
+      assert node_row.status.admission.category == "pending_registered"
+      assert node_row.status.resource.type == "node"
+    end
+
+    test "separates pending and rejected review counts" do
+      pending_candidate = insert_candidate!(admission_category: :pending_observed)
+      rejected_candidate = insert_candidate!(admission_category: :rejected)
+
+      page = NodesPageData.pending_admissions([pending_candidate, rejected_candidate], [])
+
+      assert page.count == 2
+      assert page.pending_count == 1
+      assert page.rejected_count == 1
     end
   end
 
@@ -1491,6 +1584,32 @@ defmodule OrchardConsole.NodesLiveTest do
 
     %Orchard.Nodes.Node{}
     |> Orchard.Nodes.Node.changeset(merged)
+    |> Repo.insert!()
+  end
+
+  defp insert_candidate!(attrs) do
+    unique = System.unique_integer([:positive])
+
+    defaults = %{
+      source: :runtime_endpoint_observation,
+      admission_category: :pending_observed,
+      observed_identity: %{
+        "claimed_node_id" => Ecto.UUID.generate(),
+        "display_name" => "candidate-#{unique}",
+        "hostname" => "candidate-#{unique}.local"
+      },
+      target_ref: "10.0.0.#{rem(unique, 200) + 1}:50071",
+      endpoint_transport: :grpc,
+      endpoint_target: "10.0.0.#{rem(unique, 200) + 1}:50071",
+      inventory: %{"capabilities" => %{}},
+      compatibility_evidence: %{"metadata" => "partial"},
+      last_observed_at: DateTime.utc_now()
+    }
+
+    merged = Map.merge(defaults, Map.new(attrs))
+
+    %AdmissionCandidate{}
+    |> AdmissionCandidate.changeset(merged)
     |> Repo.insert!()
   end
 end
