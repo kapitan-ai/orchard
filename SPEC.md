@@ -169,7 +169,7 @@ Server-side tool execution MAY be added in a later phased extension. In that mod
 | ----------------------- | ---------------------------- | ---------------------------------------------------------- |
 | Tray/menu bar app       | `.app` + LaunchAgent         | local status, onboarding, logs, support bundle entry point |
 | `orchardctl` CLI            | binary                       | admin/operator automation, bootstrap, diagnostics          |
-| Orchard Console         | controller LiveView          | local/operator UI for runtime status, requests, Organizations, API Tokens, and API Clients |
+| Orchard Console         | controller LiveView          | local/operator UI for runtime status, node inventory and admission review, action previews, requests, Organizations, API Tokens, and API Clients |
 | Managed Postgres helper | LaunchDaemon in managed mode | local DB lifecycle only                                    |
 
 ### 2.4 Repository structure
@@ -723,6 +723,8 @@ Required controller thresholds:
 * heartbeat interval: **2000 ms**
 * stale threshold: **6000 ms**
 * unreachable threshold: **15000 ms**
+
+Cluster-management status freshness categories and scheduler eligibility SHALL derive from the same heartbeat freshness threshold source.
 
 Health derivation:
 
@@ -2089,6 +2091,7 @@ Node Admission Candidate review endpoints SHALL expose sanitized observed identi
 Admin admission execution SHALL require a registered trusted Node with inventory, pool, and required policy inputs.
 Pending admission rejection SHALL persist a Node Admission Decision and audit event without deleting observed inventory.
 Clearing rejection SHALL require admin authority and SHALL persist an audit event.
+Admin admit and pending-admission reject endpoints SHALL support `dry_run` requests that return the shared Action Preview shape and follow the side-effect-free invariants in §7.3.1.
 
 #### 7.4.2 Tenant create example
 
@@ -3707,12 +3710,20 @@ Required commands:
 * `orchardctl cluster init`
 * `orchardctl node join`
 * `orchardctl nodes list`
+* `orchardctl nodes inspect`
+* `orchardctl nodes pending`
 * `orchardctl nodes admit`
+* `orchardctl nodes reject`
 * `orchardctl api-clients bulk-provision`
 * `orchardctl models import`
 * `orchardctl requests inspect`
 * `orchardctl support bundle create`
 * `orchardctl upgrade plan`
+
+Node-admission CLI commands SHALL provide stable human and JSON output for list, inspect, pending-review, admit, and reject workflows.
+`orchardctl nodes admit` and `orchardctl nodes reject` SHALL support side-effect-free `--dry-run` Action Preview output and explicit execution gates, including `--yes` for execution and `--reason` for rejection.
+For source-dev and packaged local use, node-admission CLI commands are local operator/admin commands that execute in the controller runtime context rather than proving Admin API bearer-token authorization.
+They SHALL still enforce the same leader-only write-path, admission, confirmation, cluster-scoped audit, and shared-presenter semantics as the Admin API.
 
 `orchardctl support bundle create` SHALL be able to emit `orchard.support_bundle.v2` for cluster-management support bundles.
 Console-triggered support bundles and CLI-created support bundles SHALL use the same v2 archive format for the same scope.
@@ -3978,9 +3989,9 @@ Deliver:
 * node registration
 * heartbeats
 * pools
-* admission API
+* admission API and admission-review CLI commands
 * cordon/drain/maintenance/decommission
-* node status pages
+* Console node status and admission-review pages
 
 Acceptance:
 
