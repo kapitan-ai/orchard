@@ -497,7 +497,7 @@ Warnings and consequences may use compact badges plus short copy, but stable cod
 Confirmation requirements sit directly above the execution control they gate.
 Page-local preview panels are valid for node actions when they keep review context visible.
 
-Node detail drill-ins keep lifecycle, health, freshness, transport, runtime, compatibility, scheduling, and warnings in labeled groups instead of flattening them into a generic table.
+Node detail drill-ins keep lifecycle, admission, health, freshness, transport, runtime, compatibility, scheduling, and warnings in labeled groups instead of flattening them into a generic table.
 Use `<.detail_grid>`, `<.detail_field>`, and compact status badges for grouped facts.
 Source and compatibility badges should stay close to the identity or inventory field they qualify.
 
