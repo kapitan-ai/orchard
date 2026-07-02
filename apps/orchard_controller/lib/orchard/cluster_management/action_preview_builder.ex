@@ -57,6 +57,15 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
     end
   end
 
+  @spec not_found_preview(:admit | :reject, Ecto.UUID.t()) :: ActionPreview.t()
+  def not_found_preview(:admit, node_id) do
+    missing_target_preview("node_admission.admit", "node", node_id, "node_admission.admitted")
+  end
+
+  def not_found_preview(:reject, target_id) do
+    missing_target_preview("node_admission.reject", "node", target_id, "node_admission.rejected")
+  end
+
   defp reject_candidate_preview(%AdmissionCandidate{} = candidate, attrs) do
     blockers =
       []

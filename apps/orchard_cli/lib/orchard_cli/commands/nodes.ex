@@ -65,18 +65,23 @@ defmodule OrchardCLI.Commands.Nodes do
 
   defp run_admit(args) do
     case parse_admit_args(args) do
+      {:ok, %{dry_run?: true} = opts} ->
+        preview =
+          guarded_preview(
+            fn -> ActionPreviewBuilder.admit_node(opts.id, opts.attrs) end,
+            :admit,
+            opts.id
+          )
+
+        {:ok, render_preview(preview, opts.json?)}
+
       {:ok, opts} ->
         preview = ActionPreviewBuilder.admit_node(opts.id, opts.attrs)
 
-        cond do
-          opts.dry_run? ->
-            {:ok, render_preview(preview, opts.json?)}
-
-          preview_blocked?(preview) or not opts.yes? ->
-            confirmation_error(preview, opts, :admit)
-
-          true ->
-            execute_admit(opts)
+        if preview_blocked?(preview) or not opts.yes? do
+          confirmation_error(preview, opts, :admit)
+        else
+          execute_admit(opts)
         end
 
       {:help, usage} ->
@@ -92,18 +97,23 @@ defmodule OrchardCLI.Commands.Nodes do
 
   defp run_reject(args) do
     case parse_reject_args(args) do
+      {:ok, %{dry_run?: true} = opts} ->
+        preview =
+          guarded_preview(
+            fn -> ActionPreviewBuilder.reject_admission(opts.id, opts.attrs) end,
+            :reject,
+            opts.id
+          )
+
+        {:ok, render_preview(preview, opts.json?)}
+
       {:ok, opts} ->
         preview = ActionPreviewBuilder.reject_admission(opts.id, opts.attrs)
 
-        cond do
-          opts.dry_run? ->
-            {:ok, render_preview(preview, opts.json?)}
-
-          preview_blocked?(preview) or not opts.yes? or reason_missing?(opts.attrs) ->
-            confirmation_error(preview, opts, :reject)
-
-          true ->
-            execute_reject(opts)
+        if preview_blocked?(preview) or not opts.yes? or reason_missing?(opts.attrs) do
+          confirmation_error(preview, opts, :reject)
+        else
+          execute_reject(opts)
         end
 
       {:help, usage} ->
@@ -147,6 +157,10 @@ defmodule OrchardCLI.Commands.Nodes do
       end,
       []
     )
+  end
+
+  defp guarded_preview(build_fun, action, target_id) do
+    guarded_read(build_fun, ActionPreviewBuilder.not_found_preview(action, target_id))
   end
 
   defp guarded_read(fun, fallback) do

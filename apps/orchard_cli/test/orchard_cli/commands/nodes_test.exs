@@ -356,6 +356,21 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["audit_log"]["scope"] == "cluster"
       assert Repo.get!(Node, node.id).state == :admitted
     end
+
+    test "dry-run degrades to a not-found preview when the controller repo is unavailable" do
+      node = insert_node!(state: :registered, display_name: "admit-dry-run-repo-off")
+
+      with_repo_unavailable(fn ->
+        assert {:ok, output} = NodesCmd.run(["admit", node.id, "--dry-run", "--json"])
+        decoded = Jason.decode!(output)
+
+        assert decoded["action"] == "node_admission.admit"
+        assert decoded["target"] == %{"type" => "node", "id" => node.id}
+        assert Enum.map(decoded["blockers"], & &1["code"]) == ["node_not_found"]
+      end)
+
+      assert Repo.get!(Node, node.id).state == :registered
+    end
   end
 
   describe "reject" do
@@ -417,6 +432,21 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert output =~ "requires a nonblank --reason before execution"
       refute output =~ "requires --yes before execution"
       assert output =~ "requires_reason"
+      assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
+    end
+
+    test "dry-run degrades to a not-found preview when the controller repo is unavailable" do
+      candidate = insert_candidate!()
+
+      with_repo_unavailable(fn ->
+        assert {:ok, output} = NodesCmd.run(["reject", candidate.id, "--dry-run", "--json"])
+        decoded = Jason.decode!(output)
+
+        assert decoded["action"] == "node_admission.reject"
+        assert decoded["target"] == %{"type" => "node", "id" => candidate.id}
+        assert Enum.map(decoded["blockers"], & &1["code"]) == ["node_not_found"]
+      end)
+
       assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
     end
   end
