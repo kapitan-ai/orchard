@@ -185,6 +185,14 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert {:error, message, 1} = NodesCmd.run(["inspect", Ecto.UUID.generate(), "--json"])
       assert message =~ "node not found"
     end
+
+    test "unknown option reports the flag without doubled dashes" do
+      assert {:error, message, 2} =
+               NodesCmd.run(["inspect", Ecto.UUID.generate(), "--bogus"])
+
+      assert message == "Unknown option: --bogus"
+      refute message =~ "----"
+    end
   end
 
   describe "pending" do

@@ -532,8 +532,9 @@ Single-node remains the default.
 Use the gRPC compatibility flow when you want the stable default source-dev path.
 Use the BEAM Runtime Endpoint flow when you are validating the explicit split-role BEAM operating model.
 
-`orchardctl cluster init`, `orchardctl node join`, and `orchardctl nodes admit` are SPEC-required future node-lifecycle commands.
+`orchardctl cluster init` and `orchardctl node join` are SPEC-required future node-lifecycle commands.
 In this build they return deferred status.
+`orchardctl nodes inspect`, `orchardctl nodes pending`, `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for the current node-admission-review slice, with stable JSON and human output, `--dry-run` previews, and `--yes`/`--reason` execution gating.
 Use the env-var split-role flows below for source-dev cluster testing.
 
 ### gRPC compatibility flow

@@ -243,7 +243,7 @@ defmodule OrchardCLI.Commands.Nodes do
     end
   end
 
-  defp unknown_option(flag), do: {:error, "Unknown option: --#{flag}", 2}
+  defp unknown_option(flag), do: {:error, "Unknown option: #{flag}", 2}
 
   defp confirmation_error(%ActionPreview{} = preview, %{json?: true}, _action) do
     {:error, render_preview(preview, true), 2}
