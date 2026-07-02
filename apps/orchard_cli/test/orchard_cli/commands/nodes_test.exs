@@ -2,6 +2,7 @@ defmodule OrchardCLI.Commands.NodesTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.ClusterManagement.StatusBuilder
   alias Orchard.Nodes.Node
   alias Orchard.Repo
   alias OrchardCLI.Commands.Nodes, as: NodesCmd
@@ -116,6 +117,28 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert output =~ "Summary: total=1 healthy=0 degraded=0 unhealthy=0 unreachable=1"
       assert output =~ "ghost-node"
       assert output =~ "unreachable"
+    end
+
+    test "json output derives status data from shared cluster management structures" do
+      node =
+        insert_node!(
+          display_name: "json-node",
+          state: :registered,
+          health: :healthy,
+          last_heartbeat_at: DateTime.utc_now()
+        )
+
+      assert {:ok, output} = NodesCmd.run(["list", "--json"])
+      decoded = Jason.decode!(output)
+      expected_status = StatusBuilder.node_status_map(node) |> Jason.encode!() |> Jason.decode!()
+
+      assert decoded["object"] == "cluster_management.node_status_list"
+      assert decoded["contract_version"] == "orchard.cluster_management.status.v1"
+      assert decoded["data"] == [expected_status]
+
+      assert get_in(decoded, ["data", Access.at(0), "scheduling", "reason_codes"]) == [
+               "node_not_admitted"
+             ]
     end
   end
 

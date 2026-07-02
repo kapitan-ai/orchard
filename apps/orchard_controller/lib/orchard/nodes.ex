@@ -387,18 +387,30 @@ defmodule Orchard.Nodes do
   def latest_admission_decisions_for_candidates(candidate_ids) do
     candidate_ids
     |> normalize_uuid_list()
-    |> do_latest_admission_decisions_for_candidates()
+    |> latest_admission_decisions_by(:candidate_id)
   end
 
-  defp do_latest_admission_decisions_for_candidates([]), do: %{}
+  @doc """
+  Returns the latest admission decisions keyed by node ID.
+  """
+  @spec latest_admission_decisions_for_nodes([Ecto.UUID.t()]) :: %{
+          optional(Ecto.UUID.t()) => AdmissionDecision.t()
+        }
+  def latest_admission_decisions_for_nodes(node_ids) do
+    node_ids
+    |> normalize_uuid_list()
+    |> latest_admission_decisions_by(:node_id)
+  end
 
-  defp do_latest_admission_decisions_for_candidates(candidate_ids) do
+  defp latest_admission_decisions_by([], _key), do: %{}
+
+  defp latest_admission_decisions_by(ids, key) do
     AdmissionDecision
-    |> where([decision], decision.candidate_id in ^candidate_ids)
+    |> where([decision], field(decision, ^key) in ^ids)
     |> order_by([decision], desc: decision.decided_at, desc: decision.inserted_at)
     |> Repo.all()
-    |> Enum.reduce(%{}, fn decision, decisions_by_candidate ->
-      Map.put_new(decisions_by_candidate, decision.candidate_id, decision)
+    |> Enum.reduce(%{}, fn decision, decisions ->
+      Map.put_new(decisions, Map.get(decision, key), decision)
     end)
   end
 

@@ -380,6 +380,11 @@ _Avoid_: Runtime Endpoint Availability, Node Health, heartbeat freshness
 The observed condition of a Node, independent of its operator-controlled lifecycle state.
 _Avoid_: Node Lifecycle State, operator action
 
+**Cluster Management Status**:
+A shared operator-facing status contract that separates lifecycle, admission, freshness, transport, runtime readiness, compatibility, scheduling, warnings, and HA-lite read-only signals.
+It is a cross-surface status vocabulary, not a replacement for the Node Lifecycle State machine.
+_Avoid_: Node Lifecycle State, Node Health, Console-only status label
+
 **Runtime Endpoint Availability**:
 The scheduler-facing availability of a Runtime Endpoint for new work, independent of whether the endpoint is backed by an Orchard-managed Node, external compute, or a provider integration.
 _Avoid_: Node Lifecycle State, durable cluster truth, provider billing status
@@ -485,6 +490,11 @@ _Avoid_: Quota, Routing Policy, Scheduler Explanation, tenant-facing error reaso
 **Scheduler Explanation**:
 Operator-facing reasoning for selected and rejected scheduling candidates.
 _Avoid_: persisted Scheduler Decision metadata, tenant-facing error contract
+
+**Scheduler Reason Code**:
+A stable machine-readable identifier explaining why a scheduler candidate was rejected or skipped.
+It is the programmatic contract; human-readable scheduler messages are explanatory and may change.
+_Avoid_: free-text reason, tenant-facing error message
 
 **Skipped Scheduler Candidate**:
 A scheduler candidate omitted from scoring or rejection for a stable non-error reason such as lower-priority tier selection or candidate-budget limits.

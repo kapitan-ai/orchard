@@ -174,7 +174,8 @@ Some SPEC-required CLI paths are present before their milestone implementation:
 and `orchardctl requests inspect` return command-specific deferred-status
 errors with the current supported path. `orchardctl support bundle create`
 creates a local diagnostic `.tar.gz` with bounded redacted logs, redacted
-config, service status, node snapshots, and request summaries.
+config, service status, node snapshots, shared cluster-management node
+status, and request summaries.
 
 ## Spec
 

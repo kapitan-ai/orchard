@@ -1,0 +1,49 @@
+{
+  "object": "cluster_management.scheduler_explanation",
+  "contract_version": "orchard.cluster_management.scheduler_explanation.v1",
+  "request_id": "resp_01J00000000000000000000000",
+  "selected_node_id": "550e8400-e29b-41d4-a716-446655440000",
+  "selection_tier": "loaded",
+  "scored_candidates": [
+    {
+      "node_id": "550e8400-e29b-41d4-a716-446655440000",
+      "target_ref": "127.0.0.1:50071",
+      "eligible": true,
+      "tier": "loaded",
+      "score": 842,
+      "components": {
+        "health_bonus": 30
+      },
+      "diagnostics": {},
+      "reason_codes": []
+    }
+  ],
+  "rejected_candidates": [
+    {
+      "node_id": "660e8400-e29b-41d4-a716-446655440000",
+      "target_ref": "127.0.0.2:50071",
+      "eligible": false,
+      "tier": "loaded",
+      "score": null,
+      "components": {},
+      "diagnostics": {},
+      "reason_codes": [
+        "node_not_active"
+      ]
+    }
+  ],
+  "skipped_candidates": [
+    {
+      "node_id": "770e8400-e29b-41d4-a716-446655440000",
+      "target_ref": "127.0.0.3:50071",
+      "eligible": false,
+      "tier": "cached",
+      "score": null,
+      "components": {},
+      "diagnostics": {},
+      "reason_codes": [
+        "lower_tier_not_considered"
+      ]
+    }
+  ]
+}

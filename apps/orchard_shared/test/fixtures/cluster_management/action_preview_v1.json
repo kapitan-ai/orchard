@@ -1,0 +1,53 @@
+{
+  "object": "cluster_management.action_preview",
+  "contract_version": "orchard.cluster_management.action_preview.v1",
+  "action": "node_admission.admit",
+  "target": {
+    "type": "node",
+    "id": "550e8400-e29b-41d4-a716-446655440000"
+  },
+  "current": {
+    "lifecycle": {
+      "state": "registered"
+    },
+    "health": {
+      "status": "healthy"
+    },
+    "freshness": {
+      "status": "fresh"
+    }
+  },
+  "active_request_count": 0,
+  "scheduler_eligibility": {
+    "eligible": false,
+    "reason_codes": [
+      "node_not_admitted"
+    ]
+  },
+  "blockers": [
+    {
+      "code": "policy_required",
+      "message": "Admission requires policy inputs.",
+      "metadata": {}
+    }
+  ],
+  "warnings": [
+    {
+      "code": "legacy_metadata",
+      "message": "Runtime metadata is partial.",
+      "metadata": {}
+    }
+  ],
+  "consequence_codes": [
+    "existing_requests_continue_until_deadline"
+  ],
+  "confirmation_requirements": [
+    "requires_reason"
+  ],
+  "expected_transition": {
+    "from": "registered",
+    "to": "admitted"
+  },
+  "audit_action": "node_admission.admit",
+  "confirmation_required": true
+}

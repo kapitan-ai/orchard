@@ -1,0 +1,40 @@
+{
+  "object": "cluster_management.node_status",
+  "contract_version": "orchard.cluster_management.status.v1",
+  "resource": {
+    "type": "node",
+    "id": "550e8400-e29b-41d4-a716-446655440000"
+  },
+  "lifecycle": {
+    "state": "active"
+  },
+  "admission": {
+    "category": "admitted",
+    "source": "registered_node",
+    "latest_decision": "admitted"
+  },
+  "health": {
+    "status": "healthy"
+  },
+  "freshness": {
+    "status": "fresh",
+    "observed_at": "2026-07-01T00:00:00Z",
+    "source": "heartbeat"
+  },
+  "transport": {
+    "status": "reachable"
+  },
+  "runtime": {
+    "status": "ready",
+    "health_code": null,
+    "health_message": null
+  },
+  "compatibility": {
+    "status": "compatible"
+  },
+  "scheduling": {
+    "eligible": true,
+    "reason_codes": []
+  },
+  "warnings": []
+}

@@ -27,6 +27,9 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       assert listed["id"] == candidate.id
       assert listed["object"] == "node_admission_candidate"
       assert listed["latest_decision"]["decision"] == "rejected"
+      assert listed["status"]["object"] == "cluster_management.node_status"
+      assert listed["status"]["admission"]["category"] == "rejected"
+      assert listed["status"]["scheduling"]["reason_codes"] == ["node_not_admitted"]
 
       show_conn =
         admin_json(:get, "/admin/v1/node-admission/candidates/#{candidate.id}", token)

@@ -121,6 +121,18 @@ defmodule OrchardCLI.Commands.SupportTest do
     assert get_in(nodes, ["data", "summary", "total"]) == 1
     assert get_in(nodes, ["data", "nodes", Access.at(0), "display_name"]) == "node-a"
 
+    assert get_in(nodes, ["data", "cluster_management_status", "object"]) ==
+             "cluster_management.node_status_list"
+
+    assert get_in(nodes, [
+             "data",
+             "cluster_management_status",
+             "data",
+             Access.at(0),
+             "scheduling",
+             "reason_codes"
+           ]) == ["node_observation_stale"]
+
     requests = read_json!(extract_dir, "diagnostics/requests.json")
     assert requests["status"] == "ok"
     assert get_in(requests, ["data", "summary", "total"]) == 2

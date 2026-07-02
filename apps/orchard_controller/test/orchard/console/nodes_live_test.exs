@@ -599,7 +599,10 @@ defmodule OrchardConsole.NodesLiveTest do
 
   alias __MODULE__.RuntimeOversizedMemoryBudgetRowsStub
   alias Ecto.Adapters.SQL.Sandbox
+  alias Orchard.ClusterManagement.StatusBuilder
+  alias Orchard.Nodes
   alias Orchard.Repo
+  alias OrchardConsole.NodesPageData
 
   @moduletag :live
   @moduletag :db
@@ -755,6 +758,24 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "active"
       assert html =~ "healthy"
       assert html =~ "0.1.0"
+    end
+
+    test "page data derives inventory statuses from shared cluster management structures" do
+      node =
+        insert_node!(
+          display_name: "console-status-node",
+          state: :registered,
+          health: :healthy,
+          last_heartbeat_at: DateTime.utc_now()
+        )
+
+      page_data = NodesPageData.inventory([node], Nodes.summary())
+
+      assert page_data.statuses == [StatusBuilder.node_status_map(node)]
+
+      assert get_in(page_data.statuses, [Access.at(0), :scheduling, :reason_codes]) == [
+               "node_not_admitted"
+             ]
     end
   end
 

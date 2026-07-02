@@ -1,6 +1,7 @@
 defmodule OrchardCLI.Commands.Support do
   @moduledoc false
 
+  alias Orchard.ClusterManagement.{NodeStatus, StatusBuilder}
   alias OrchardCLI.Commands.{LifecycleSupport, Status}
 
   @default_support_root "/Library/Application Support/Orchard"
@@ -312,9 +313,18 @@ defmodule OrchardCLI.Commands.Support do
 
   defp nodes_snapshot(runtime) do
     safe_snapshot(fn ->
+      nodes = runtime.list_nodes.()
+      summary = runtime.nodes_summary.()
+
       %{
-        summary: runtime.nodes_summary.(),
-        nodes: Enum.map(runtime.list_nodes.(), &node_summary/1)
+        summary: summary,
+        nodes: Enum.map(nodes, &node_summary/1),
+        cluster_management_status: %{
+          object: "cluster_management.node_status_list",
+          contract_version: NodeStatus.contract_version(),
+          data: StatusBuilder.node_status_maps(nodes),
+          summary: summary
+        }
       }
     end)
   end
