@@ -969,16 +969,16 @@ defmodule OrchardConsole.NodesLive do
 
   defp pending_source_tone(:runtime_endpoint_observation), do: :info
   defp pending_source_tone("runtime_endpoint_observation"), do: :info
-  defp pending_source_tone(:provisioned_node), do: :neutral
-  defp pending_source_tone("provisioned_node"), do: :neutral
+  defp pending_source_tone(:provisioned_placeholder), do: :neutral
+  defp pending_source_tone("provisioned_placeholder"), do: :neutral
   defp pending_source_tone(:registered_node), do: :info
   defp pending_source_tone("registered_node"), do: :info
   defp pending_source_tone(_source), do: :neutral
 
   defp pending_source_label(:runtime_endpoint_observation), do: "observed"
   defp pending_source_label("runtime_endpoint_observation"), do: "observed"
-  defp pending_source_label(:provisioned_node), do: "provisioned"
-  defp pending_source_label("provisioned_node"), do: "provisioned"
+  defp pending_source_label(:provisioned_placeholder), do: "provisioned"
+  defp pending_source_label("provisioned_placeholder"), do: "provisioned"
   defp pending_source_label(:registered_node), do: "registered"
   defp pending_source_label("registered_node"), do: "registered"
   defp pending_source_label(source), do: format_status_value(source)

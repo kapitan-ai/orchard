@@ -482,7 +482,12 @@ defmodule OrchardConsole.NodeDetailLive do
   defp refresh_open_action(%{assigns: %{action: nil}} = socket), do: socket
 
   defp refresh_open_action(%{assigns: %{action: action}} = socket) do
-    put_action(socket, action.kind, action.inputs, action.confirmed)
+    refreshed = put_action(socket, action.kind, action.inputs, action.confirmed)
+
+    case action.error do
+      nil -> refreshed
+      error -> put_action_error(refreshed, error)
+    end
   end
 
   # ===========================================================================

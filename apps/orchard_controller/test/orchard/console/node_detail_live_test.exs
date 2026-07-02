@@ -171,6 +171,35 @@ defmodule OrchardConsole.NodeDetailLiveTest do
       assert render(view) =~ "Rejected"
       refute render(view) =~ "Preview reject"
     end
+
+    test "preserves execute-action error across periodic refresh", %{conn: conn} do
+      candidate = insert_candidate!(target_ref: "10.4.0.44:50071")
+
+      {:ok, view, _html} = live(conn, "/console/nodes/pending/#{candidate.id}")
+
+      view
+      |> element("#node-detail-open-reject")
+      |> render_click()
+
+      view
+      |> form("#admission-action-form", %{"action" => %{"reason" => "", "confirmed" => "true"}})
+      |> render_submit()
+
+      assert has_element?(
+               view,
+               "#action-preview-error",
+               "Resolve blockers and confirm the preview before executing."
+             )
+
+      send(view.pid, :refresh_node_detail)
+      _ = :sys.get_state(view.pid)
+
+      assert has_element?(
+               view,
+               "#action-preview-error",
+               "Resolve blockers and confirm the preview before executing."
+             )
+    end
   end
 
   defp insert_node!(attrs) do

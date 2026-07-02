@@ -713,6 +713,20 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "/console/nodes/#{node.id}"
     end
 
+    test "labels provisioned-placeholder candidates with the short source badge", %{conn: conn} do
+      insert_candidate!(
+        source: :provisioned_placeholder,
+        admission_category: :pending_provisioned,
+        observed_identity: %{"display_name" => "provisioned-review-candidate"}
+      )
+
+      {:ok, _view, html} = live(conn, "/console/nodes")
+
+      assert html =~ "provisioned-review-candidate"
+      assert html =~ "Pending provisioned"
+      refute html =~ "Provisioned placeholder"
+    end
+
     test "keeps rejected admission records visible as audit records", %{conn: conn} do
       candidate =
         insert_candidate!(
