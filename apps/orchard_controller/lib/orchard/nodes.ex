@@ -1636,6 +1636,10 @@ defmodule Orchard.Nodes do
 
   defp maybe_filter_candidate_category(query, nil), do: query
 
+  defp maybe_filter_candidate_category(query, categories) when is_list(categories) do
+    where(query, [candidate], candidate.admission_category in ^categories)
+  end
+
   defp maybe_filter_candidate_category(query, category) do
     where(query, [candidate], candidate.admission_category == ^category)
   end

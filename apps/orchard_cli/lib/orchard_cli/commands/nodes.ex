@@ -7,6 +7,7 @@ defmodule OrchardCLI.Commands.Nodes do
   alias Orchard.ClusterManagement.{ActionPreview, ActionPreviewBuilder, NodeStatus, StatusBuilder}
   alias Orchard.ControlPlane
   alias Orchard.Nodes
+  alias Orchard.Nodes.AdmissionCandidate
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(args) do
@@ -46,7 +47,11 @@ defmodule OrchardCLI.Commands.Nodes do
 
   defp run_pending(args) do
     with {:ok, %{json?: json?}} <- parse_pending_args(args) do
-      candidates = Nodes.list_admission_candidates()
+      candidates =
+        Nodes.list_admission_candidates(
+          admission_category: AdmissionCandidate.review_categories()
+        )
+
       output = NodeAdmissionPresenter.list_candidates(candidates)
       {:ok, render_pending(output, json?)}
     end
@@ -64,7 +69,7 @@ defmodule OrchardCLI.Commands.Nodes do
           {:ok, render_preview(preview, opts.json?)}
 
         preview_blocked?(preview) or not opts.yes? ->
-          confirmation_error(preview, opts.json?, :admit)
+          confirmation_error(preview, opts, :admit)
 
         true ->
           execute_admit(opts)
@@ -84,7 +89,7 @@ defmodule OrchardCLI.Commands.Nodes do
           {:ok, render_preview(preview, opts.json?)}
 
         preview_blocked?(preview) or not opts.yes? or reason_missing?(opts.attrs) ->
-          confirmation_error(preview, opts.json?, :reject)
+          confirmation_error(preview, opts, :reject)
 
         true ->
           execute_reject(opts)
@@ -240,29 +245,44 @@ defmodule OrchardCLI.Commands.Nodes do
 
   defp unknown_option(flag), do: {:error, "Unknown option: --#{flag}", 2}
 
-  defp confirmation_error(%ActionPreview{} = preview, true, _action) do
+  defp confirmation_error(%ActionPreview{} = preview, %{json?: true}, _action) do
     {:error, render_preview(preview, true), 2}
   end
 
-  defp confirmation_error(%ActionPreview{} = preview, false, action) do
-    message =
-      if preview_blocked?(preview) do
-        "Error: #{action_name(action)} cannot execute because preview blockers are present."
-      else
-        "Error: #{action_name(action)} requires --yes before execution."
-      end
-
+  defp confirmation_error(%ActionPreview{} = preview, opts, action) do
+    message = confirmation_message(preview, opts, action)
     {:error, message <> "\n\n" <> render_preview(preview, false), 2}
+  end
+
+  defp confirmation_message(preview, opts, action) do
+    cond do
+      preview_blocked?(preview) ->
+        "Error: #{action_name(action)} cannot execute because preview blockers are present."
+
+      not opts.yes? ->
+        "Error: #{action_name(action)} requires --yes before execution."
+
+      true ->
+        "Error: #{action_name(action)} requires a nonblank --reason before execution."
+    end
   end
 
   defp action_name(:admit), do: "node admission"
   defp action_name(:reject), do: "node admission rejection"
 
-  defp action_error(reason, true) do
+  defp action_error(reason, true) when is_atom(reason) do
     {:error, Jason.encode!(%{object: "error", code: Atom.to_string(reason)}, pretty: true), 1}
   end
 
-  defp action_error(reason, false), do: {:error, "Error: #{human_reason(reason)}", 1}
+  defp action_error(_reason, true) do
+    {:error, Jason.encode!(%{object: "error", code: "action_failed"}, pretty: true), 1}
+  end
+
+  defp action_error(reason, false) when is_atom(reason),
+    do: {:error, "Error: #{human_reason(reason)}", 1}
+
+  defp action_error(_reason, false),
+    do: {:error, "Error: the admission action could not be completed.", 1}
 
   defp human_reason(:admission_not_pending), do: "admission is not pending."
   defp human_reason(:admission_rejected), do: "admission rejection must be cleared first."

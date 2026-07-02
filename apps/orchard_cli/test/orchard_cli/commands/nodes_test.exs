@@ -1,3 +1,18 @@
+defmodule OrchardCLI.Commands.NodesTest.FailingAuditLog do
+  @moduledoc false
+
+  import Ecto.Changeset
+
+  alias Orchard.Governance.AuditLog
+
+  @spec changeset(AuditLog.t(), map()) :: Ecto.Changeset.t()
+  def changeset(%AuditLog{} = audit_log, _attrs) do
+    audit_log
+    |> change()
+    |> add_error(:action, "forced audit persistence failure")
+  end
+end
+
 defmodule OrchardCLI.Commands.NodesTest do
   use ExUnit.Case, async: false
 
@@ -6,6 +21,7 @@ defmodule OrchardCLI.Commands.NodesTest do
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
   alias Orchard.Repo
   alias OrchardCLI.Commands.Nodes, as: NodesCmd
+  alias OrchardCLI.Commands.NodesTest.FailingAuditLog
 
   setup do
     :ok = Sandbox.checkout(Repo)
@@ -194,6 +210,32 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert {:ok, output} = NodesCmd.run(["pending"])
       assert output =~ "No admission candidates pending review."
     end
+
+    test "json output lists pending and rejected candidates but omits admitted" do
+      pending = insert_candidate!(admission_category: :pending_observed)
+      rejected = insert_candidate!(admission_category: :rejected)
+      admitted = insert_candidate!(admission_category: :admitted)
+
+      assert {:ok, output} = NodesCmd.run(["pending", "--json"])
+      decoded = Jason.decode!(output)
+      ids = Enum.map(decoded["data"], & &1["id"])
+
+      assert pending.id in ids
+      assert rejected.id in ids
+      refute admitted.id in ids
+      refute Enum.any?(decoded["data"], &(&1["admission_category"] == "admitted"))
+    end
+
+    test "human output omits admitted candidates from review scope" do
+      pending = insert_candidate!(admission_category: :pending_observed)
+      admitted = insert_candidate!(admission_category: :admitted)
+
+      assert {:ok, output} = NodesCmd.run(["pending"])
+
+      assert output =~ pending.id
+      refute output =~ admitted.id
+      refute output =~ "admitted"
+    end
   end
 
   describe "admit" do
@@ -314,6 +356,58 @@ defmodule OrchardCLI.Commands.NodesTest do
 
       assert %AdmissionDecision{decision: :rejected} =
                Repo.get_by(AdmissionDecision, candidate_id: candidate.id)
+    end
+
+    test "yes without reason reports the missing reason rather than a missing --yes" do
+      candidate = insert_candidate!()
+
+      assert {:error, output, 2} = NodesCmd.run(["reject", candidate.id, "--yes"])
+
+      assert output =~ "requires a nonblank --reason before execution"
+      refute output =~ "requires --yes before execution"
+      assert output =~ "requires_reason"
+      assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
+    end
+  end
+
+  describe "action persistence failures" do
+    setup do
+      Application.put_env(:orchard_controller, :governance_audit_log_impl, FailingAuditLog)
+      on_exit(fn -> Application.delete_env(:orchard_controller, :governance_audit_log_impl) end)
+      :ok
+    end
+
+    test "admit json surfaces a clean error when audit persistence fails" do
+      node = insert_node!(state: :registered, display_name: "admit-audit-fail-node")
+
+      assert {:error, output, 1} =
+               NodesCmd.run([
+                 "admit",
+                 node.id,
+                 "--yes",
+                 "--json",
+                 "--trust-evidence-ref",
+                 "registration-audit:test",
+                 "--pool-id",
+                 Ecto.UUID.generate(),
+                 "--routing-policy-id",
+                 Ecto.UUID.generate()
+               ])
+
+      decoded = Jason.decode!(output)
+      assert decoded["object"] == "error"
+      assert decoded["code"] == "action_failed"
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "reject human output surfaces a clean error when audit persistence fails" do
+      candidate = insert_candidate!()
+
+      assert {:error, output, 1} =
+               NodesCmd.run(["reject", candidate.id, "--yes", "--reason", "identity mismatch"])
+
+      assert output =~ "the admission action could not be completed."
+      assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
     end
   end
 
