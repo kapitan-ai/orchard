@@ -141,6 +141,19 @@ defmodule Orchard.Nodes do
   def get_node!(id), do: Repo.get!(Node, id)
 
   @doc """
+  Fetches a node by ID for API and CLI surfaces.
+  """
+  @spec fetch_node(Ecto.UUID.t()) :: {:ok, Node.t()} | {:error, :node_not_found}
+  def fetch_node(id) do
+    with {:ok, id} <- normalize_uuid(id, :node_not_found) do
+      case Repo.get(Node, id) do
+        %Node{} = node -> {:ok, node}
+        nil -> {:error, :node_not_found}
+      end
+    end
+  end
+
+  @doc """
   Lists node admission candidates ordered for operator review.
   """
   @spec list_admission_candidates(keyword()) :: [AdmissionCandidate.t()]
@@ -358,6 +371,22 @@ defmodule Orchard.Nodes do
       end
     end)
     |> unwrap_transaction_result()
+  end
+
+  @doc """
+  Returns shared action-preview blocker codes for node admission.
+  """
+  @spec admission_blocker_codes(Node.t(), map() | keyword()) :: [atom()]
+  def admission_blocker_codes(%Node{} = node, attrs \\ %{}) do
+    attrs = normalize_attrs(attrs)
+
+    case latest_admission_decision_for_node(node.id) do
+      %AdmissionDecision{decision: :rejected} ->
+        [:node_not_pending_admission]
+
+      _decision ->
+        do_admission_blocker_codes(node, attrs)
+    end
   end
 
   @doc """
@@ -1341,6 +1370,28 @@ defmodule Orchard.Nodes do
 
   defp ensure_node_admittable(%Node{}, _attrs), do: {:error, :node_not_pending_admission}
 
+  defp do_admission_blocker_codes(%Node{state: :provisioned}, _attrs),
+    do: [:node_not_registered]
+
+  defp do_admission_blocker_codes(%Node{state: :registered} = node, attrs) do
+    []
+    |> maybe_add_blocker(:inventory_missing, not registered_inventory_present?(node))
+    |> maybe_add_blocker(
+      :trust_not_established,
+      blank_admission_input?(attrs, ["trust_evidence_ref", "trust_ref"])
+    )
+    |> maybe_add_blocker(:pool_required, blank_admission_input?(attrs, ["pool_id", "pool"]))
+    |> maybe_add_blocker(
+      :policy_required,
+      blank_admission_input?(attrs, ["routing_policy_id", "policy_ref", "policy_inputs"])
+    )
+  end
+
+  defp do_admission_blocker_codes(%Node{}, _attrs), do: [:node_not_pending_admission]
+
+  defp maybe_add_blocker(blockers, blocker, true), do: blockers ++ [blocker]
+  defp maybe_add_blocker(blockers, _blocker, false), do: blockers
+
   defp ensure_admission_inputs_present(%Node{} = node, attrs) do
     cond do
       not registered_inventory_present?(node) ->
@@ -1584,6 +1635,10 @@ defmodule Orchard.Nodes do
   defp unwrap_transaction_result({:error, reason}), do: {:error, reason}
 
   defp maybe_filter_candidate_category(query, nil), do: query
+
+  defp maybe_filter_candidate_category(query, categories) when is_list(categories) do
+    where(query, [candidate], candidate.admission_category in ^categories)
+  end
 
   defp maybe_filter_candidate_category(query, category) do
     where(query, [candidate], candidate.admission_category == ^category)

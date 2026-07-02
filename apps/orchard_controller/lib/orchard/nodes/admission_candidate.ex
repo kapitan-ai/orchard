@@ -48,6 +48,11 @@ defmodule Orchard.Nodes.AdmissionCandidate do
   @spec admission_categories() :: [atom()]
   def admission_categories, do: @admission_categories
 
+  @review_categories [:pending_observed, :pending_provisioned, :pending_registered, :rejected]
+
+  @spec review_categories() :: [atom()]
+  def review_categories, do: @review_categories
+
   @spec changeset(struct(), map()) :: Ecto.Changeset.t()
   def changeset(candidate, attrs) do
     candidate

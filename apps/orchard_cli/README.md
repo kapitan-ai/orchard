@@ -12,8 +12,10 @@ This README is orientation only. Normative CLI requirements live in
 - Operator commands for environment, transport, migrations, status, start/stop,
   upgrades, tenants, API keys, API Client bulk provisioning, nodes, and models.
 - SPEC-required future command paths that return explicit deferred status until
-  their milestones land: `cluster init`, `node join`, `nodes admit`,
-  and `requests inspect`.
+  their milestones land: `cluster init`, `node join`, and `requests inspect`.
+- Node-admission-review commands (`nodes inspect`, `nodes pending`,
+  `nodes admit`, `nodes reject`) with stable JSON and human output, `--dry-run`
+  previews, and `--yes`/`--reason` execution gating.
 - Local diagnostic support bundle creation via `support bundle create`.
 - Bulk API Client provisioning through `api-clients bulk-provision`, including
   Dry Run, all-or-nothing Apply, output preflight, Key Rotation, and One-time

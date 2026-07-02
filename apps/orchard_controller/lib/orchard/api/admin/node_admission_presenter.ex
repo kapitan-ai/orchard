@@ -3,7 +3,7 @@ defmodule Orchard.API.Admin.NodeAdmissionPresenter do
   JSON presenters for Admin API node admission resources.
   """
 
-  alias Orchard.ClusterManagement.StatusBuilder
+  alias Orchard.ClusterManagement.{ActionPreview, StatusBuilder}
   alias Orchard.Governance.AuditLog
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
@@ -25,6 +25,12 @@ defmodule Orchard.API.Admin.NodeAdmissionPresenter do
   def candidate(%AdmissionCandidate{} = candidate) do
     candidate(candidate, Nodes.latest_admission_decision_for_candidate(candidate.id))
   end
+
+  @spec node(Node.t()) :: map()
+  def node(%Node{} = node), do: present_node(node)
+
+  @spec action_preview(ActionPreview.t()) :: map()
+  def action_preview(%ActionPreview{} = preview), do: ActionPreview.to_map(preview)
 
   defp candidate(%AdmissionCandidate{} = candidate, latest_decision) do
     %{

@@ -17,10 +17,14 @@ product/system/build contract.
   `orchard-managed-postgres` helper is an operator-safe guard, not a runtime
   service.
 - **Current CLI limitation:** SPEC-required future paths such as
-  `orchardctl cluster init`, `orchardctl node join`,
-  `orchardctl nodes admit`, and `orchardctl requests inspect` are routed by
-  `orchardctl` but return deferred-status errors with the current supported
-  path. `orchardctl support bundle create` creates a local diagnostic archive
+  `orchardctl cluster init`, `orchardctl node join`, and
+  `orchardctl requests inspect` are routed by `orchardctl` but return
+  deferred-status errors with the current supported path.
+  `orchardctl nodes inspect`, `orchardctl nodes pending`,
+  `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for
+  the current node-admission-review slice, with stable JSON and human output,
+  `--dry-run` previews, and `--yes`/`--reason` execution gating.
+  `orchardctl support bundle create` creates a local diagnostic archive
   with bounded redacted logs, redacted config, service status, node snapshots,
   shared cluster-management node status, and request summaries.
 

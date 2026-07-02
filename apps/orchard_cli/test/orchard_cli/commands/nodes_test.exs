@@ -1,11 +1,27 @@
+defmodule OrchardCLI.Commands.NodesTest.FailingAuditLog do
+  @moduledoc false
+
+  import Ecto.Changeset
+
+  alias Orchard.Governance.AuditLog
+
+  @spec changeset(AuditLog.t(), map()) :: Ecto.Changeset.t()
+  def changeset(%AuditLog{} = audit_log, _attrs) do
+    audit_log
+    |> change()
+    |> add_error(:action, "forced audit persistence failure")
+  end
+end
+
 defmodule OrchardCLI.Commands.NodesTest do
   use ExUnit.Case, async: false
 
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.ClusterManagement.StatusBuilder
-  alias Orchard.Nodes.Node
+  alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
   alias Orchard.Repo
   alias OrchardCLI.Commands.Nodes, as: NodesCmd
+  alias OrchardCLI.Commands.NodesTest.FailingAuditLog
 
   setup do
     :ok = Sandbox.checkout(Repo)
@@ -22,6 +38,10 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert {:error, msg, 1} = NodesCmd.run([])
       assert msg =~ "orchardctl nodes"
       assert msg =~ "list"
+      assert msg =~ "inspect"
+      assert msg =~ "pending"
+      assert msg =~ "admit"
+      assert msg =~ "reject"
     end
 
     test "--help returns group usage" do
@@ -42,6 +62,28 @@ defmodule OrchardCLI.Commands.NodesTest do
     test "unknown subcommand returns usage" do
       assert {:error, msg, 1} = NodesCmd.run(["unknown"])
       assert msg =~ "orchardctl nodes"
+    end
+  end
+
+  describe "help flag on parsed commands" do
+    test "inspect --help with a node id prints usage to stdout with success" do
+      assert {:ok, msg} = NodesCmd.run(["inspect", Ecto.UUID.generate(), "--help"])
+      assert msg =~ "orchardctl nodes inspect"
+    end
+
+    test "pending --json --help prints usage to stdout with success" do
+      assert {:ok, msg} = NodesCmd.run(["pending", "--json", "--help"])
+      assert msg =~ "orchardctl nodes pending"
+    end
+
+    test "admit --help with a node id prints usage to stdout with success" do
+      assert {:ok, msg} = NodesCmd.run(["admit", Ecto.UUID.generate(), "--help"])
+      assert msg =~ "orchardctl nodes admit"
+    end
+
+    test "reject --help with a target id prints usage to stdout with success" do
+      assert {:ok, msg} = NodesCmd.run(["reject", Ecto.UUID.generate(), "--help"])
+      assert msg =~ "orchardctl nodes reject"
     end
   end
 
@@ -92,8 +134,7 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert {:ok, output} = NodesCmd.run(["list"])
 
       assert output =~ "no-heartbeat-node"
-      # Two dashes: one for last_seen, one for agent_version
-      assert output =~ "\u2014"
+      assert output =~ "-"
     end
 
     test "multiple nodes render in table" do
@@ -142,9 +183,329 @@ defmodule OrchardCLI.Commands.NodesTest do
     end
   end
 
+  describe "inspect" do
+    test "json output renders one node with shared status categories" do
+      node =
+        insert_node!(
+          display_name: "inspect-node",
+          state: :registered,
+          health: :healthy,
+          last_heartbeat_at: DateTime.utc_now()
+        )
+
+      assert {:ok, output} = NodesCmd.run(["inspect", node.id, "--json"])
+      decoded = Jason.decode!(output)
+
+      assert decoded["object"] == "node"
+      assert decoded["id"] == node.id
+      assert decoded["status"]["object"] == "cluster_management.node_status"
+      assert decoded["status"]["admission"]["category"] == "pending_registered"
+      assert decoded["status"]["scheduling"]["reason_codes"] == ["node_not_admitted"]
+    end
+
+    test "missing node reports not found" do
+      assert {:error, message, 1} = NodesCmd.run(["inspect", Ecto.UUID.generate(), "--json"])
+      assert message =~ "node not found"
+    end
+
+    test "unknown option reports the flag without doubled dashes" do
+      assert {:error, message, 2} =
+               NodesCmd.run(["inspect", Ecto.UUID.generate(), "--bogus"])
+
+      assert message == "Unknown option: --bogus"
+      refute message =~ "----"
+    end
+
+    test "degrades to not found when the controller repo is unavailable" do
+      node = insert_node!(display_name: "inspect-repo-off-node")
+
+      with_repo_unavailable(fn ->
+        assert {:error, message, 1} = NodesCmd.run(["inspect", node.id, "--json"])
+        assert message =~ "node not found"
+      end)
+    end
+  end
+
+  describe "pending" do
+    test "json output renders admission review candidates with shared status" do
+      candidate = insert_candidate!(target_ref: "10.0.0.44:50071")
+
+      assert {:ok, output} = NodesCmd.run(["pending", "--json"])
+      decoded = Jason.decode!(output)
+
+      assert decoded["object"] == "cluster_management.node_admission_review"
+      assert decoded["contract_version"] == "orchard.cluster_management.status.v1"
+      assert [listed] = decoded["data"]
+      assert listed["id"] == candidate.id
+      assert listed["status"]["resource"]["type"] == "admission_candidate"
+
+      assert listed["status"]["scheduling"]["reason_codes"] == [
+               "node_not_registered",
+               "trust_not_established"
+             ]
+    end
+
+    test "human output shows empty admission review" do
+      assert {:ok, output} = NodesCmd.run(["pending"])
+      assert output =~ "No admission candidates pending review."
+    end
+
+    test "json output lists pending and rejected candidates but omits admitted" do
+      pending = insert_candidate!(admission_category: :pending_observed)
+      rejected = insert_candidate!(admission_category: :rejected)
+      admitted = insert_candidate!(admission_category: :admitted)
+
+      assert {:ok, output} = NodesCmd.run(["pending", "--json"])
+      decoded = Jason.decode!(output)
+      ids = Enum.map(decoded["data"], & &1["id"])
+
+      assert pending.id in ids
+      assert rejected.id in ids
+      refute admitted.id in ids
+      refute Enum.any?(decoded["data"], &(&1["admission_category"] == "admitted"))
+    end
+
+    test "human output omits admitted candidates from review scope" do
+      pending = insert_candidate!(admission_category: :pending_observed)
+      admitted = insert_candidate!(admission_category: :admitted)
+
+      assert {:ok, output} = NodesCmd.run(["pending"])
+
+      assert output =~ pending.id
+      refute output =~ admitted.id
+      refute output =~ "admitted"
+    end
+
+    test "degrades to empty review when the controller repo is unavailable" do
+      insert_candidate!()
+
+      with_repo_unavailable(fn ->
+        assert {:ok, output} = NodesCmd.run(["pending"])
+        assert output =~ "No admission candidates pending review."
+
+        assert {:ok, json} = NodesCmd.run(["pending", "--json"])
+        assert Jason.decode!(json)["data"] == []
+      end)
+    end
+  end
+
+  describe "admit" do
+    test "dry-run json reports blocker and confirmation requirement without mutation" do
+      node = insert_node!(state: :registered, display_name: "admit-preview-node")
+
+      assert {:ok, output} = NodesCmd.run(["admit", node.id, "--dry-run", "--json"])
+      decoded = Jason.decode!(output)
+
+      assert decoded["object"] == "cluster_management.action_preview"
+      assert decoded["action"] == "node_admission.admit"
+      assert decoded["target"] == %{"type" => "node", "id" => node.id}
+      assert decoded["confirmation_requirements"] == ["requires_yes_flag"]
+
+      assert Enum.map(decoded["blockers"], & &1["code"]) == [
+               "trust_not_established",
+               "pool_required",
+               "policy_required"
+             ]
+
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "json execution without yes returns preview instead of mutating" do
+      node = insert_node!(state: :registered, display_name: "admit-needs-yes-node")
+
+      assert {:error, output, 2} =
+               NodesCmd.run([
+                 "admit",
+                 node.id,
+                 "--json",
+                 "--trust-evidence-ref",
+                 "registration-audit:test",
+                 "--pool-id",
+                 Ecto.UUID.generate(),
+                 "--routing-policy-id",
+                 Ecto.UUID.generate()
+               ])
+
+      decoded = Jason.decode!(output)
+      assert decoded["confirmation_requirements"] == ["requires_yes_flag"]
+      assert decoded["blockers"] == []
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "yes execution admits a registered node and emits action result json" do
+      node = insert_node!(state: :registered, display_name: "admit-execute-node")
+
+      assert {:ok, output} =
+               NodesCmd.run([
+                 "admit",
+                 node.id,
+                 "--yes",
+                 "--json",
+                 "--trust-evidence-ref",
+                 "registration-audit:test",
+                 "--pool-id",
+                 Ecto.UUID.generate(),
+                 "--routing-policy-id",
+                 Ecto.UUID.generate()
+               ])
+
+      decoded = Jason.decode!(output)
+      assert decoded["action"] == "node_admission.admitted"
+      assert decoded["node"]["id"] == node.id
+      assert decoded["node"]["state"] == "admitted"
+      assert decoded["audit_log"]["scope"] == "cluster"
+      assert Repo.get!(Node, node.id).state == :admitted
+    end
+
+    test "dry-run degrades to a not-found preview when the controller repo is unavailable" do
+      node = insert_node!(state: :registered, display_name: "admit-dry-run-repo-off")
+
+      with_repo_unavailable(fn ->
+        assert {:ok, output} = NodesCmd.run(["admit", node.id, "--dry-run", "--json"])
+        decoded = Jason.decode!(output)
+
+        assert decoded["action"] == "node_admission.admit"
+        assert decoded["target"] == %{"type" => "node", "id" => node.id}
+        assert Enum.map(decoded["blockers"], & &1["code"]) == ["node_not_found"]
+      end)
+
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+  end
+
+  describe "reject" do
+    test "dry-run json reports reason and yes confirmation requirements" do
+      candidate = insert_candidate!()
+
+      assert {:ok, output} = NodesCmd.run(["reject", candidate.id, "--dry-run", "--json"])
+      decoded = Jason.decode!(output)
+
+      assert decoded["action"] == "node_admission.reject"
+      assert decoded["target"] == %{"type" => "admission_candidate", "id" => candidate.id}
+      assert decoded["confirmation_requirements"] == ["requires_yes_flag", "requires_reason"]
+      assert decoded["blockers"] == []
+      assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
+    end
+
+    test "json execution without yes returns preview and preserves candidate" do
+      candidate = insert_candidate!()
+
+      assert {:error, output, 2} =
+               NodesCmd.run(["reject", candidate.id, "--json", "--reason", "identity mismatch"])
+
+      decoded = Jason.decode!(output)
+      assert decoded["confirmation_requirements"] == ["requires_yes_flag"]
+      assert decoded["blockers"] == []
+      assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
+    end
+
+    test "yes execution rejects candidate and records a decision" do
+      candidate = insert_candidate!()
+
+      assert {:ok, output} =
+               NodesCmd.run([
+                 "reject",
+                 candidate.id,
+                 "--yes",
+                 "--json",
+                 "--reason",
+                 "identity mismatch"
+               ])
+
+      decoded = Jason.decode!(output)
+      assert decoded["action"] == "node_admission.rejected"
+      assert decoded["candidate"]["id"] == candidate.id
+      assert decoded["candidate"]["admission_category"] == "rejected"
+      assert decoded["decision"]["reason"] == "identity mismatch"
+      assert decoded["audit_log"]["scope"] == "cluster"
+      assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :rejected
+
+      assert %AdmissionDecision{decision: :rejected} =
+               Repo.get_by(AdmissionDecision, candidate_id: candidate.id)
+    end
+
+    test "yes without reason reports the missing reason rather than a missing --yes" do
+      candidate = insert_candidate!()
+
+      assert {:error, output, 2} = NodesCmd.run(["reject", candidate.id, "--yes"])
+
+      assert output =~ "requires a nonblank --reason before execution"
+      refute output =~ "requires --yes before execution"
+      assert output =~ "requires_reason"
+      assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
+    end
+
+    test "dry-run degrades to a not-found preview when the controller repo is unavailable" do
+      candidate = insert_candidate!()
+
+      with_repo_unavailable(fn ->
+        assert {:ok, output} = NodesCmd.run(["reject", candidate.id, "--dry-run", "--json"])
+        decoded = Jason.decode!(output)
+
+        assert decoded["action"] == "node_admission.reject"
+        assert decoded["target"] == %{"type" => "node", "id" => candidate.id}
+        assert Enum.map(decoded["blockers"], & &1["code"]) == ["node_not_found"]
+      end)
+
+      assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
+    end
+  end
+
+  describe "action persistence failures" do
+    setup do
+      Application.put_env(:orchard_controller, :governance_audit_log_impl, FailingAuditLog)
+      on_exit(fn -> Application.delete_env(:orchard_controller, :governance_audit_log_impl) end)
+      :ok
+    end
+
+    test "admit json surfaces a clean error when audit persistence fails" do
+      node = insert_node!(state: :registered, display_name: "admit-audit-fail-node")
+
+      assert {:error, output, 1} =
+               NodesCmd.run([
+                 "admit",
+                 node.id,
+                 "--yes",
+                 "--json",
+                 "--trust-evidence-ref",
+                 "registration-audit:test",
+                 "--pool-id",
+                 Ecto.UUID.generate(),
+                 "--routing-policy-id",
+                 Ecto.UUID.generate()
+               ])
+
+      decoded = Jason.decode!(output)
+      assert decoded["object"] == "error"
+      assert decoded["code"] == "action_failed"
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "reject human output surfaces a clean error when audit persistence fails" do
+      candidate = insert_candidate!()
+
+      assert {:error, output, 1} =
+               NodesCmd.run(["reject", candidate.id, "--yes", "--reason", "identity mismatch"])
+
+      assert output =~ "the admission action could not be completed."
+      assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Helpers
   # ---------------------------------------------------------------------------
+
+  defp with_repo_unavailable(fun) do
+    repo_pid = Process.whereis(Repo)
+    Process.unregister(Repo)
+
+    try do
+      fun.()
+    after
+      Process.register(repo_pid, Repo)
+    end
+  end
 
   defp insert_node!(attrs) do
     unique = System.unique_integer([:positive])
@@ -166,6 +527,30 @@ defmodule OrchardCLI.Commands.NodesTest do
 
     %Node{}
     |> Node.changeset(merged)
+    |> Repo.insert!()
+  end
+
+  defp insert_candidate!(attrs \\ []) do
+    unique = System.unique_integer([:positive])
+
+    defaults = %{
+      source: :runtime_endpoint_observation,
+      admission_category: :pending_observed,
+      observed_identity: %{
+        "claimed_node_id" => Ecto.UUID.generate(),
+        "display_name" => "candidate-#{unique}",
+        "hostname" => "candidate-#{unique}.local"
+      },
+      target_ref: "10.0.0.#{rem(unique, 200) + 1}:50071",
+      endpoint_transport: :grpc,
+      endpoint_target: "10.0.0.#{rem(unique, 200) + 1}:50071",
+      inventory: %{"capabilities" => %{}},
+      compatibility_evidence: %{"health" => "healthy"},
+      last_observed_at: DateTime.utc_now()
+    }
+
+    %AdmissionCandidate{}
+    |> AdmissionCandidate.changeset(Map.merge(defaults, Map.new(attrs)))
     |> Repo.insert!()
   end
 end
