@@ -7,6 +7,7 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
 
   alias Orchard.API.Admin.NodeAdmissionPresenter
   alias Orchard.API.AdminErrorHelpers
+  alias Orchard.ClusterManagement.ActionPreviewBuilder
   alias Orchard.ControlPlane
   alias Orchard.Nodes
 
@@ -17,6 +18,7 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
                                     "compatibility_evidence",
                                     "decided_at",
                                     "decision",
+                                    "dry_run",
                                     "endpoint",
                                     "endpoint_target",
                                     "endpoint_transport",
@@ -49,12 +51,23 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
 
   @spec reject(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def reject(conn, %{"candidate_id" => candidate_id}) do
-    with :ok <- ControlPlane.authorize_write_path(:node_admission),
-         {:ok, result} <-
-           Nodes.reject_admission_candidate(candidate_id, request_attrs(conn), audit_opts(conn)) do
-      json(conn, NodeAdmissionPresenter.reject_result(result))
+    attrs = request_attrs(conn)
+
+    if dry_run?(conn) do
+      json(
+        conn,
+        NodeAdmissionPresenter.action_preview(
+          ActionPreviewBuilder.reject_admission(candidate_id, attrs)
+        )
+      )
     else
-      {:error, reason} -> send_error(conn, reason)
+      with :ok <- ControlPlane.authorize_write_path(:node_admission),
+           {:ok, result} <-
+             Nodes.reject_admission_candidate(candidate_id, attrs, audit_opts(conn)) do
+        json(conn, NodeAdmissionPresenter.reject_result(result))
+      else
+        {:error, reason} -> send_error(conn, reason)
+      end
     end
   end
 
@@ -75,13 +88,30 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
 
   @spec admit(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def admit(conn, %{"node_id" => node_id}) do
-    with :ok <- ControlPlane.authorize_write_path(:node_admission),
-         {:ok, result} <- Nodes.admit_node(node_id, request_attrs(conn), audit_opts(conn)) do
-      json(conn, NodeAdmissionPresenter.admit_result(result))
+    attrs = request_attrs(conn)
+
+    if dry_run?(conn) do
+      json(
+        conn,
+        NodeAdmissionPresenter.action_preview(ActionPreviewBuilder.admit_node(node_id, attrs))
+      )
     else
-      {:error, reason} -> send_error(conn, reason)
+      with :ok <- ControlPlane.authorize_write_path(:node_admission),
+           {:ok, result} <- Nodes.admit_node(node_id, attrs, audit_opts(conn)) do
+        json(conn, NodeAdmissionPresenter.admit_result(result))
+      else
+        {:error, reason} -> send_error(conn, reason)
+      end
     end
   end
+
+  defp dry_run?(%Plug.Conn{body_params: %Plug.Conn.Unfetched{}}), do: false
+
+  defp dry_run?(%Plug.Conn{body_params: body_params}) when is_map(body_params) do
+    Map.get(body_params, "dry_run") in [true, "true"]
+  end
+
+  defp dry_run?(_conn), do: false
 
   defp audit_opts(conn) do
     [

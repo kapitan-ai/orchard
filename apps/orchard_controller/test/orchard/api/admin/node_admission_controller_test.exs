@@ -68,6 +68,28 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       assert Jason.decode!(conn.resp_body)["error"]["code"] == "reason_required"
     end
 
+    test "candidate reject dry-run returns shared action preview without mutation" do
+      token = admin_token!("admin-node-admission-reject-preview")
+      candidate = insert_candidate!()
+
+      conn =
+        admin_json(
+          :post,
+          "/admin/v1/node-admission/candidates/#{candidate.id}/reject",
+          token,
+          %{"dry_run" => true}
+        )
+
+      assert conn.status == 200
+      preview = Jason.decode!(conn.resp_body)
+      assert preview["object"] == "cluster_management.action_preview"
+      assert preview["action"] == "node_admission.reject"
+      assert preview["target"] == %{"type" => "admission_candidate", "id" => candidate.id}
+      assert preview["confirmation_requirements"] == ["requires_yes_flag", "requires_reason"]
+      assert preview["blockers"] == []
+      assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
+    end
+
     test "reject and clear append decisions and cluster audit logs" do
       token = admin_token!("admin-node-admission-reject-clear")
       candidate = insert_candidate!(target_ref: "10.0.0.45:50071")
@@ -277,6 +299,40 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
 
       assert policy_conn.status == 409
       assert Jason.decode!(policy_conn.resp_body)["error"]["code"] == "policy_required"
+    end
+
+    test "admit dry-run returns shared action preview blockers without mutation" do
+      token = admin_token!("admin-node-admission-admit-preview")
+
+      node =
+        insert_node!(%{
+          state: :registered,
+          display_name: "registered-admit-preview-node",
+          hostname: "registered-admit-preview-node.local"
+        })
+
+      conn =
+        admin_json(
+          :post,
+          "/admin/v1/nodes/#{node.id}/admit",
+          token,
+          %{"dry_run" => true}
+        )
+
+      assert conn.status == 200
+      preview = Jason.decode!(conn.resp_body)
+      assert preview["object"] == "cluster_management.action_preview"
+      assert preview["action"] == "node_admission.admit"
+      assert preview["target"] == %{"type" => "node", "id" => node.id}
+      assert preview["confirmation_requirements"] == ["requires_yes_flag"]
+
+      assert Enum.map(preview["blockers"], & &1["code"]) == [
+               "trust_not_established",
+               "pool_required",
+               "policy_required"
+             ]
+
+      assert Repo.get!(Node, node.id).state == :registered
     end
 
     test "admit transitions a registered trusted node to admitted and writes cluster audit" do

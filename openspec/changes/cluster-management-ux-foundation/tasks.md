@@ -24,6 +24,7 @@
 - [x] 3.1 Add shared domain structures for lifecycle, admission, freshness, transport, runtime readiness, compatibility, scheduling, warnings, and HA-lite read-only status.
 - [x] 3.2 Add fixed scheduler explanation rejection codes and action preview blocker codes.
 - [ ] 3.3 Ensure reason codes are used by Operator API, Admin API, CLI, Console, support bundles, and tests.
+  Note: CLI/Admin admission previews now use shared `ActionPreview` blocker and confirmation codes; Operator API, Console, and support bundles remain future slices.
 - [x] 3.4 Add tests that reject unknown or free-text-only scheduler explanation reasons where fixed codes are required.
 - [x] 3.5 Add shared JSON schema or golden fixtures for node status categories, action previews, scheduler explanations, and HA-lite status.
 - [x] 3.6 Ensure action preview schema fixtures include separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements` fields.
@@ -32,10 +33,10 @@
 ## 4. CLI Parity
 
 - [x] 4.1 Implement `orchardctl nodes list --json` with separated status categories.
-- [ ] 4.2 Implement `orchardctl nodes inspect <node-id> --json`.
-- [ ] 4.3 Implement `orchardctl nodes pending` or an equivalent admission-review command.
-- [ ] 4.4 Implement `orchardctl nodes admit <node-id>` with dry-run and JSON preview support.
-- [ ] 4.5 Implement `orchardctl nodes reject <node-id|candidate-id>` with dry-run, JSON preview support, `--reason`, and required confirmation semantics aligned with Console and Admin API.
+- [x] 4.2 Implement `orchardctl nodes inspect <node-id> --json`.
+- [x] 4.3 Implement `orchardctl nodes pending` or an equivalent admission-review command.
+- [x] 4.4 Implement `orchardctl nodes admit <node-id>` with dry-run and JSON preview support.
+- [x] 4.5 Implement `orchardctl nodes reject <node-id|candidate-id>` with dry-run, JSON preview support, `--reason`, and required confirmation semantics aligned with Console and Admin API.
 - [ ] 4.6 Implement safe lifecycle commands for cordon, uncordon, drain, maintenance, resume, and decommission with dry-run, confirmation requirements, and JSON output.
 - [ ] 4.7 Implement `orchardctl scheduler explain <request-id>` or reconcile with the existing `requests inspect` command if that is the repo-preferred path.
 - [ ] 4.8 Implement `orchardctl cluster status --json` for read-only HA-lite and cluster summary status.

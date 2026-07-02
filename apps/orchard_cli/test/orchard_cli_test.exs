@@ -96,7 +96,6 @@ defmodule OrchardCLITest do
     commands = [
       {Cluster, ["init"], "orchardctl cluster init"},
       {Node, ["join"], "orchardctl node join"},
-      {Nodes, ["admit"], "orchardctl nodes admit"},
       {Requests, ["inspect"], "orchardctl requests inspect"}
     ]
 
@@ -117,7 +116,6 @@ defmodule OrchardCLITest do
     commands = [
       ["cluster", "init"],
       ["node", "join"],
-      ["nodes", "admit"],
       ["requests", "inspect"]
     ]
 
@@ -149,6 +147,16 @@ defmodule OrchardCLITest do
       refute message =~ "M0 scaffold"
       refute message =~ "not implemented yet"
     end
+  end
+
+  test "nodes admit help documents the implemented admission command" do
+    assert {:ok, message} = Nodes.run(["admit", "--help"])
+
+    assert message =~ "Usage: orchardctl nodes admit <node-id>"
+    assert message =~ "--dry-run"
+    assert message =~ "--yes"
+    assert message =~ "--trust-evidence-ref"
+    refute message =~ "not implemented"
   end
 
   test "advertised deferred group help lists commands relative to group" do
