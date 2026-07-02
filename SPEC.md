@@ -721,10 +721,14 @@ Valid health values:
 Required controller thresholds:
 
 * heartbeat interval: **2000 ms**
-* stale threshold: **6000 ms**
-* unreachable threshold: **15000 ms**
+* heartbeat freshness threshold (`node_freshness_threshold_ms`): **30000 ms** default
+* heartbeat unreachable threshold (`node_unreachable_threshold_ms`): **15000 ms** default
 
-Cluster-management status freshness categories and scheduler eligibility SHALL derive from the same heartbeat freshness threshold source.
+Cluster-management status freshness categories and scheduler eligibility SHALL derive from the same configurable heartbeat freshness thresholds.
+The cluster-management freshness display is `fresh` through the smaller of the heartbeat freshness and unreachable thresholds, `stale` through the larger threshold, and `unreachable` after the larger threshold.
+With current defaults this means `fresh` at or under 15000 ms, `stale` from over 15000 ms through 30000 ms, and freshness `unreachable` over 30000 ms.
+Scheduler eligibility and the `node_observation_stale` reason code use `node_freshness_threshold_ms`, default 30000 ms, so a `stale` freshness display state can remain schedulable until that cutoff.
+The freshness category named `unreachable` is distinct from the Node Health `unreachable` value; Node Health `unreachable` uses the 15000 ms unreachable threshold.
 
 Health derivation:
 
