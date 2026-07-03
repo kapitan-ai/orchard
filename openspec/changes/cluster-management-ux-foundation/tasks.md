@@ -44,7 +44,11 @@
 - [x] 4.3 Implement `orchardctl nodes pending` or an equivalent admission-review command.
 - [x] 4.4 Implement `orchardctl nodes admit <node-id>` with dry-run and JSON preview support.
 - [x] 4.5 Implement `orchardctl nodes reject <node-id|candidate-id>` with dry-run, JSON preview support, `--reason`, and required confirmation semantics aligned with Console and Admin API.
-- [ ] 4.6 Implement safe lifecycle commands for cordon, uncordon, drain, maintenance, resume, and decommission with dry-run, confirmation requirements, and JSON output.
+- [x] 4.6 Implement safe lifecycle commands for cordon, uncordon, drain, maintenance, resume, and decommission with dry-run, confirmation requirements, and JSON output.
+  Note: this slice implements local `orchardctl nodes` lifecycle commands on the shared `ActionPreview` contract with transactional lifecycle state mutation, mutation-time revalidation, and cluster-scoped audit.
+  Manual `draining -> maintenance` execution remains deferred: the `maintenance` command still exposes its dry-run preview but execution is blocked with a `drain_completion_unverified` blocker until drain completion (active-work quiescence) can be verified.
+  Drain deadline orchestration, active-work cancellation, automatic `draining -> maintenance`, persisted lifecycle reason columns, decommission trust revocation, Admin/Operator API lifecycle routes, and Console lifecycle panels remain future work.
+  Note: `SPEC.md` §11.9 currently enumerates only the node-admission CLI commands as a required-command floor; promoting these lifecycle commands into that normative list remains an owner/OpenSpec-acceptance decision to be reconciled when this change is accepted.
 - [ ] 4.7 Implement `orchardctl scheduler explain <request-id>` or reconcile with the existing `requests inspect` command if that is the repo-preferred path.
 - [ ] 4.8 Implement `orchardctl cluster status --json` for read-only HA-lite and cluster summary status.
 

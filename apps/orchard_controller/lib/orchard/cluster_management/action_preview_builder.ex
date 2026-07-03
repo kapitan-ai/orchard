@@ -6,7 +6,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   alias Orchard.ClusterManagement.{ActionPreview, StatusBuilder}
   alias Orchard.ControlPlane
   alias Orchard.Nodes
-  alias Orchard.Nodes.{AdmissionCandidate, Node}
+  alias Orchard.Nodes.{AdmissionCandidate, Lifecycle, Node}
 
   @spec admit_node(Ecto.UUID.t(), map() | keyword()) :: ActionPreview.t()
   def admit_node(node_id, attrs \\ %{}) do
@@ -57,13 +57,73 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
     end
   end
 
-  @spec not_found_preview(:admit | :reject, Ecto.UUID.t()) :: ActionPreview.t()
+  @spec node_lifecycle(Lifecycle.action(), Ecto.UUID.t(), map() | keyword()) :: ActionPreview.t()
+  def node_lifecycle(action, node_id, _attrs \\ %{})
+      when action in [
+             :cordon,
+             :uncordon,
+             :drain,
+             :maintenance,
+             :resume,
+             :decommission
+           ] do
+    case Nodes.fetch_node(node_id) do
+      {:ok, %Node{} = node} ->
+        blockers =
+          []
+          |> add_write_path_blocker()
+          |> add_blockers(Lifecycle.blocker_codes(action, node))
+
+        action_preview(%{
+          action: Lifecycle.preview_action(action),
+          target: %{type: "node", id: node.id},
+          current: StatusBuilder.node_status_map(node),
+          active_request_count: nil,
+          scheduler_eligibility: scheduler_eligibility(node),
+          blockers: blockers,
+          warnings: [],
+          consequence_codes: Lifecycle.consequence_codes(action),
+          confirmation_requirements: Lifecycle.confirmation_requirements(action),
+          expected_transition: %{from: node.state, to: Lifecycle.target_state(action)},
+          audit_action: Lifecycle.audit_action(action),
+          confirmation_required: true
+        })
+
+      {:error, :node_not_found} ->
+        missing_target_preview(
+          Lifecycle.preview_action(action),
+          "node",
+          node_id,
+          Lifecycle.audit_action(action)
+        )
+    end
+  end
+
+  @spec not_found_preview(:admit | :reject | Lifecycle.action(), Ecto.UUID.t()) ::
+          ActionPreview.t()
   def not_found_preview(:admit, node_id) do
     missing_target_preview("node_admission.admit", "node", node_id, "node_admission.admitted")
   end
 
   def not_found_preview(:reject, target_id) do
     missing_target_preview("node_admission.reject", "node", target_id, "node_admission.rejected")
+  end
+
+  def not_found_preview(action, node_id)
+      when action in [
+             :cordon,
+             :uncordon,
+             :drain,
+             :maintenance,
+             :resume,
+             :decommission
+           ] do
+    missing_target_preview(
+      Lifecycle.preview_action(action),
+      "node",
+      node_id,
+      Lifecycle.audit_action(action)
+    )
   end
 
   defp reject_candidate_preview(%AdmissionCandidate{} = candidate, attrs) do
@@ -181,9 +241,25 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
 
   defp blocker_message(:ha_standby_write_blocked), do: "This controller is in standby mode."
   defp blocker_message(:inventory_missing), do: "Registered node inventory is missing."
+  defp blocker_message(:decommission_already_running), do: "Node decommission is already running."
+  defp blocker_message(:drain_already_running), do: "Node drain is already running."
+
+  defp blocker_message(:lifecycle_transition_invalid),
+    do: "Node lifecycle state does not allow this action."
+
+  defp blocker_message(:maintenance_requires_drain),
+    do: "Node must be draining before maintenance."
+
+  defp blocker_message(:drain_completion_unverified),
+    do: "Manual maintenance is unavailable until node drain completion can be verified."
+
   defp blocker_message(:node_not_found), do: "Node was not found."
+  defp blocker_message(:node_not_active), do: "Node is not active."
+  defp blocker_message(:node_not_admitted), do: "Node is not admitted."
   defp blocker_message(:node_not_pending_admission), do: "Node is not pending admission."
   defp blocker_message(:node_not_registered), do: "Node is not registered."
+  defp blocker_message(:node_unhealthy), do: "Node health is unhealthy."
+  defp blocker_message(:node_unreachable), do: "Node is unreachable."
   defp blocker_message(:policy_required), do: "Required policy inputs are missing."
   defp blocker_message(:pool_required), do: "Node pool assignment is required."
   defp blocker_message(:trust_not_established), do: "Node trust evidence is required."

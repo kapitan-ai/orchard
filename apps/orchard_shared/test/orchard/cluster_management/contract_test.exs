@@ -15,8 +15,12 @@ defmodule Orchard.ClusterManagement.ContractTest do
     assert "node_not_active" in ReasonCodes.scheduler_rejection_codes()
     assert "lower_tier_not_considered" in ReasonCodes.scheduler_skip_codes()
     assert "node_not_pending_admission" in ReasonCodes.action_blocker_codes()
+    assert "lifecycle_transition_invalid" in ReasonCodes.action_blocker_codes()
+    assert "node_unhealthy" in ReasonCodes.action_blocker_codes()
     assert "requires_reason" in ReasonCodes.confirmation_requirement_codes()
     assert "active_requests_present" in ReasonCodes.consequence_codes()
+    assert "future_scheduling_revoked" in ReasonCodes.consequence_codes()
+    assert "no_rejoin_with_same_node_id" in ReasonCodes.consequence_codes()
     assert "ha_lite" in ReasonCodes.support_scope_codes()
   end
 
@@ -37,6 +41,27 @@ defmodule Orchard.ClusterManagement.ContractTest do
     assert [%{"code" => "legacy_metadata"}] = rendered["warnings"]
     assert rendered["consequence_codes"] == ["existing_requests_continue_until_deadline"]
     assert rendered["confirmation_requirements"] == ["requires_reason"]
+  end
+
+  test "lifecycle action preview golden fixture matches shared JSON contract" do
+    fixture = fixture!("action_preview_lifecycle_v1.json")
+    assert {:ok, preview} = ActionPreview.new(fixture)
+
+    rendered = json_round_trip(ActionPreview.to_map(preview))
+
+    assert fixture == rendered
+    assert rendered["action"] == "node_lifecycle.decommission"
+
+    assert rendered["consequence_codes"] == [
+             "future_scheduling_revoked",
+             "no_rejoin_with_same_node_id"
+           ]
+
+    assert rendered["confirmation_requirements"] == [
+             "requires_yes_flag",
+             "requires_typed_node_id",
+             "requires_decommission_consequence_acknowledgement"
+           ]
   end
 
   test "scheduler explanation golden fixture validates fixed rejected and skipped codes" do

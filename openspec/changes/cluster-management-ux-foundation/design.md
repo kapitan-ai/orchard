@@ -170,10 +170,13 @@ Action preview blocker codes should include these initial stable values:
 - `node_not_active`
 - `node_not_registered`
 - `node_unreachable`
+- `node_unhealthy`
 - `inventory_missing`
 - `drain_already_running`
 - `decommission_already_running`
 - `maintenance_requires_drain`
+- `drain_completion_unverified`
+- `lifecycle_transition_invalid`
 - `ha_standby_write_blocked`
 - `cluster_lock_unavailable`
 - `version_incompatible`
@@ -194,6 +197,8 @@ Action preview consequence codes should include these initial stable values:
 - `active_requests_present`
 - `would_cancel_active_requests`
 - `existing_requests_continue_until_deadline`
+- `future_scheduling_revoked`
+- `no_rejoin_with_same_node_id`
 
 Support bundle and diagnostics scope codes should include:
 
