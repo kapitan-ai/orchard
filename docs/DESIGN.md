@@ -622,8 +622,9 @@ For each pair of `{light, dark} × {sidebar-expanded, sidebar-collapsed}`:
 - [ ] Disabled nav item is visibly inactive.
 - [ ] Collapse animation and toggle icon rotation still work; reduced
   motion is respected.
-- [ ] License badge and version label still render correctly when expanded;
-  they collapse cleanly when collapsed.
+- [ ] Version label still renders correctly when expanded; it collapses
+  cleanly when collapsed. The license badge does the same when present (valid
+  license, or `:warn`/`:hard` enforcement); it is absent otherwise.
 
 **Form input wells (Model Hub search)**
 
