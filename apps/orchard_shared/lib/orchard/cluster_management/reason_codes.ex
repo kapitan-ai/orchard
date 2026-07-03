@@ -52,6 +52,7 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     drain_already_running
     decommission_already_running
     maintenance_requires_drain
+    drain_completion_unverified
     lifecycle_transition_invalid
     ha_standby_write_blocked
     cluster_lock_unavailable

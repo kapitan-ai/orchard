@@ -448,21 +448,11 @@ defmodule OrchardCLI.Commands.Nodes do
     end
   end
 
-  defp lifecycle_requirement_error(
-         "requires_drain_consequence_acknowledgement",
-         %{
-           acknowledge?: false
-         } = opts
-       ) do
-    "Error: #{action_name(opts.action)} requires --acknowledge before execution."
-  end
-
-  defp lifecycle_requirement_error(
-         "requires_decommission_consequence_acknowledgement",
-         %{
-           acknowledge?: false
-         } = opts
-       ) do
+  defp lifecycle_requirement_error(requirement, %{acknowledge?: false} = opts)
+       when requirement in [
+              "requires_drain_consequence_acknowledgement",
+              "requires_decommission_consequence_acknowledgement"
+            ] do
     "Error: #{action_name(opts.action)} requires --acknowledge before execution."
   end
 
@@ -502,6 +492,10 @@ defmodule OrchardCLI.Commands.Nodes do
     do: "node lifecycle state does not allow this action."
 
   defp human_reason(:maintenance_requires_drain), do: "node must be draining before maintenance."
+
+  defp human_reason(:drain_completion_unverified),
+    do: "manual maintenance is unavailable until node drain completion can be verified."
+
   defp human_reason(:node_not_found), do: "node was not found."
   defp human_reason(:node_not_active), do: "node is not active."
   defp human_reason(:node_not_admitted), do: "node is not admitted."
@@ -836,7 +830,11 @@ defmodule OrchardCLI.Commands.Nodes do
   end
 
   defp lifecycle_usage(:maintenance) do
-    lifecycle_usage("maintenance", "Previews or moves a draining node into maintenance.")
+    lifecycle_usage(
+      "maintenance",
+      "Previews the draining node maintenance transition.",
+      "Execution is deferred until node drain completion can be verified."
+    )
   end
 
   defp lifecycle_usage(:resume) do

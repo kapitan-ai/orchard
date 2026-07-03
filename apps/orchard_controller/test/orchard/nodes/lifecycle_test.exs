@@ -35,7 +35,6 @@ defmodule Orchard.Nodes.LifecycleTest do
       {:cordon, :active, :cordoned, "node_lifecycle.cordoned"},
       {:uncordon, :cordoned, :active, "node_lifecycle.uncordoned"},
       {:drain, :cordoned, :draining, "node_lifecycle.drain_started"},
-      {:maintenance, :draining, :maintenance, "node_lifecycle.maintenance_entered"},
       {:resume, :maintenance, :active, "node_lifecycle.resumed"},
       {:decommission, :admitted, :decommissioning, "node_lifecycle.decommission_started"}
     ]
@@ -74,11 +73,12 @@ defmodule Orchard.Nodes.LifecycleTest do
       {:cordon, :registered, :node_not_admitted},
       {:drain, :draining, :drain_already_running},
       {:maintenance, :active, :maintenance_requires_drain},
+      {:maintenance, :draining, :drain_completion_unverified},
       {:decommission, :draining, :lifecycle_transition_invalid}
     ]
 
     for {action, state, reason} <- cases do
-      node = insert_node!(state: state, display_name: "blocked-#{action}")
+      node = insert_node!(state: state, display_name: "blocked-#{action}-from-#{state}")
 
       assert {:error, ^reason} = Lifecycle.execute(action, node.id)
       assert Repo.get!(Node, node.id).state == state

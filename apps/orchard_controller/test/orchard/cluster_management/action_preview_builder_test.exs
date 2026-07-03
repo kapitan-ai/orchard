@@ -66,6 +66,18 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilderTest do
     assert map.expected_transition == %{from: "active", to: "decommissioning"}
   end
 
+  test "SPEC.md §4.4 maintenance preview blocks draining nodes until drain completion is verified" do
+    node = insert_node!(state: :draining)
+
+    preview = ActionPreviewBuilder.node_lifecycle(:maintenance, node.id)
+    map = ActionPreview.to_map(preview)
+
+    assert map.action == "node_lifecycle.maintenance"
+    assert Enum.map(map.blockers, & &1.code) == ["drain_completion_unverified"]
+    assert map.expected_transition == %{from: "draining", to: "maintenance"}
+    assert Repo.get!(Node, node.id).state == :draining
+  end
+
   test "missing lifecycle target returns a node_not_found preview" do
     node_id = Ecto.UUID.generate()
 

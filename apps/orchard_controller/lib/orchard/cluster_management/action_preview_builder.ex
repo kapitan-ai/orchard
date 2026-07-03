@@ -58,7 +58,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   end
 
   @spec node_lifecycle(Lifecycle.action(), Ecto.UUID.t(), map() | keyword()) :: ActionPreview.t()
-  def node_lifecycle(action, node_id, attrs \\ %{})
+  def node_lifecycle(action, node_id, _attrs \\ %{})
       when action in [
              :cordon,
              :uncordon,
@@ -67,8 +67,6 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
              :resume,
              :decommission
            ] do
-    _attrs = Map.new(attrs)
-
     case Nodes.fetch_node(node_id) do
       {:ok, %Node{} = node} ->
         blockers =
@@ -251,6 +249,9 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
 
   defp blocker_message(:maintenance_requires_drain),
     do: "Node must be draining before maintenance."
+
+  defp blocker_message(:drain_completion_unverified),
+    do: "Manual maintenance is unavailable until node drain completion can be verified."
 
   defp blocker_message(:node_not_found), do: "Node was not found."
   defp blocker_message(:node_not_active), do: "Node is not active."

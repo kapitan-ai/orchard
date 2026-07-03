@@ -533,7 +533,6 @@ defmodule OrchardCLI.Commands.NodesTest do
         {"cordon", :active, "node_lifecycle.cordoned", "cordoned", []},
         {"uncordon", :cordoned, "node_lifecycle.uncordoned", "active", []},
         {"drain", :cordoned, "node_lifecycle.drain_started", "draining", ["--acknowledge"]},
-        {"maintenance", :draining, "node_lifecycle.maintenance_entered", "maintenance", []},
         {"resume", :maintenance, "node_lifecycle.resumed", "active", []},
         {"decommission", :active, "node_lifecycle.decommission_started", "decommissioning",
          :typed}
@@ -580,6 +579,30 @@ defmodule OrchardCLI.Commands.NodesTest do
       decoded = Jason.decode!(output)
       assert Enum.map(decoded["blockers"], & &1["code"]) == ["node_not_admitted"]
       assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "SPEC.md §4.4 maintenance execution stays blocked while drain completion is unverified" do
+      node = insert_node!(state: :draining, display_name: "maintenance-blocked-node")
+
+      assert {:error, output, 2} =
+               NodesCmd.run(["maintenance", node.id, "--yes", "--json"])
+
+      decoded = Jason.decode!(output)
+      assert Enum.map(decoded["blockers"], & &1["code"]) == ["drain_completion_unverified"]
+      assert Repo.get!(Node, node.id).state == :draining
+    end
+
+    test "SPEC.md §4.4 maintenance dry-run still previews the blocked transition" do
+      node = insert_node!(state: :draining, display_name: "maintenance-dry-run-node")
+
+      assert {:ok, output} = NodesCmd.run(["maintenance", node.id, "--dry-run", "--json"])
+      decoded = Jason.decode!(output)
+
+      assert decoded["object"] == "cluster_management.action_preview"
+      assert decoded["action"] == "node_lifecycle.maintenance"
+      assert Enum.map(decoded["blockers"], & &1["code"]) == ["drain_completion_unverified"]
+      assert decoded["expected_transition"] == %{"from" => "draining", "to" => "maintenance"}
+      assert Repo.get!(Node, node.id).state == :draining
     end
 
     test "dry-run degrades to a not-found preview when the controller repo is unavailable" do

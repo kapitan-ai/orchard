@@ -129,6 +129,7 @@ defmodule Orchard.Nodes.Lifecycle do
     []
     |> add_wrong_state_blocker(action, node.state, spec.allowed_states)
     |> add_resume_health_blockers(action, node.health)
+    |> add_maintenance_drain_verification_blocker(action, node.state)
     |> Enum.uniq()
   end
 
@@ -176,6 +177,11 @@ defmodule Orchard.Nodes.Lifecycle do
     do: blockers ++ [:node_unhealthy]
 
   defp add_resume_health_blockers(blockers, _action, _health), do: blockers
+
+  defp add_maintenance_drain_verification_blocker(blockers, :maintenance, :draining),
+    do: blockers ++ [:drain_completion_unverified]
+
+  defp add_maintenance_drain_verification_blocker(blockers, _action, _state), do: blockers
 
   defp update_node_state(%Node{} = node, state) do
     node

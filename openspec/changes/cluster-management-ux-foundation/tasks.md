@@ -46,6 +46,7 @@
 - [x] 4.5 Implement `orchardctl nodes reject <node-id|candidate-id>` with dry-run, JSON preview support, `--reason`, and required confirmation semantics aligned with Console and Admin API.
 - [x] 4.6 Implement safe lifecycle commands for cordon, uncordon, drain, maintenance, resume, and decommission with dry-run, confirmation requirements, and JSON output.
   Note: this slice implements local `orchardctl nodes` lifecycle commands on the shared `ActionPreview` contract with transactional lifecycle state mutation, mutation-time revalidation, and cluster-scoped audit.
+  Manual `draining -> maintenance` execution remains deferred: the `maintenance` command still exposes its dry-run preview but execution is blocked with a `drain_completion_unverified` blocker until drain completion (active-work quiescence) can be verified.
   Drain deadline orchestration, active-work cancellation, automatic `draining -> maintenance`, persisted lifecycle reason columns, decommission trust revocation, Admin/Operator API lifecycle routes, and Console lifecycle panels remain future work.
 - [ ] 4.7 Implement `orchardctl scheduler explain <request-id>` or reconcile with the existing `requests inspect` command if that is the repo-preferred path.
 - [ ] 4.8 Implement `orchardctl cluster status --json` for read-only HA-lite and cluster summary status.
