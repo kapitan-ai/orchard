@@ -1,7 +1,7 @@
 # DESIGN.md — Orchard Console Tactical UI Contract
 
 **Status:** Active (v2)
-**Last Updated:** 2026-06-28
+**Last Updated:** 2026-07-03
 **Audience:** AI coding agents and contributors generating or modifying Console UI.
 
 This document is the tactical, component-level design contract for the Orchard
@@ -487,7 +487,21 @@ columns or margins through `class`. The component must not bake in page-specific
 column counts. Use it only with children that render `<dt>` / `<dd>` pairs,
 normally `<.detail_field>`.
 
-### 6.4 Table Density Policy
+### 6.4 Operational Review Panels
+
+Console actions that use the shared Action Preview contract render the preview as one panel, not as scattered flash text.
+Use the existing card surface vocabulary for the panel and reserve semantic alert rows for blockers and warnings.
+Order preview content as blockers, warnings, consequence codes, confirmation requirements, then the execution control.
+Blocker rows must read as non-bypassable and must disable or omit the execute command for that action.
+Warnings and consequences may use compact badges plus short copy, but stable codes remain visible or inspectable when the code is part of the user-facing contract.
+Confirmation requirements sit directly above the execution control they gate.
+Page-local preview panels are valid for node actions when they keep review context visible.
+
+Node detail drill-ins keep lifecycle, admission, health, freshness, transport, runtime, compatibility, scheduling, and warnings in labeled groups instead of flattening them into a generic table.
+Use `<.detail_grid>`, `<.detail_field>`, and compact status badges for grouped facts.
+Source and compatibility badges should stay close to the identity or inventory field they qualify.
+
+### 6.5 Table Density Policy
 
 `<.table>` remains the standard Console table density in v2. PR3 does **not**
 introduce a `density` attribute, does not bump table-cell typography, and does

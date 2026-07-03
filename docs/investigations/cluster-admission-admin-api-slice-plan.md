@@ -2,6 +2,8 @@
 
 ## Status
 
+> Superseded: this historical slice plan is superseded by landed PRs #30-#37; the current contract lives in `SPEC.md` and the OpenSpec task list.
+
 Accepted implementation plan for the initial cluster-management Admin API node-admission slice.
 The implemented slice covers OpenSpec task `2.8` and preserves the explicit out-of-scope boundaries below for later CLI, Console, bootstrap, and diagnostics work.
 

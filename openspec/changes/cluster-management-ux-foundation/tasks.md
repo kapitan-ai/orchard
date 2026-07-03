@@ -1,9 +1,13 @@
 ## 1. Contract Reconciliation
 
-- [ ] 1.1 Reconcile accepted cluster-management UX behavior back into `SPEC.md` without mirroring this OpenSpec package.
-- [ ] 1.2 Update `docs/DESIGN.md` only if Console node-management UI patterns introduce reusable tactical components.
-- [ ] 1.3 Update `docs/glossary/CONTEXT.md` if accepted terminology adds durable glossary entries such as pending admission, action preview, or scheduler reason code.
-- [ ] 1.4 Add or update an ADR only if implementation chooses a durable architectural boundary not already fixed by `SPEC.md`.
+- [x] 1.1 Reconcile accepted cluster-management UX behavior back into `SPEC.md` without mirroring this OpenSpec package.
+  Note: Reconciled accepted admission, Admin API dry-run preview, CLI admission-review command, Console admission-review, and shared freshness behavior from PRs #30 through #37.
+- [x] 1.2 Update `docs/DESIGN.md` only if Console node-management UI patterns introduce reusable tactical components.
+  Note: Documented reusable operational review panel guidance for Action Preview panels, grouped node detail drill-ins, and source or compatibility badges.
+- [x] 1.3 Update `docs/glossary/CONTEXT.md` if accepted terminology adds durable glossary entries such as pending admission, action preview, or scheduler reason code.
+  Note: Added Pending Admission and Rejected Admission entries; existing entries already cover Runtime Endpoint Admission Candidate, Node Admission, Node Admission Decision, Action Preview, and reason-code terms.
+- [x] 1.4 Add or update an ADR only if implementation chooses a durable architectural boundary not already fixed by `SPEC.md`.
+  Note: Existing ADRs 0003, 0004, and 0005 cover observed candidates, Admin API cluster-admin auth, and shared cluster-management contracts; ADR 0006 records the local `orchardctl` node-admission authority boundary.
 
 ## 2. Node Lifecycle And Admission
 
@@ -26,7 +30,8 @@
 - [ ] 3.3 Ensure reason codes are used by Operator API, Admin API, CLI, Console, support bundles, and tests.
   Note: CLI/Admin admission previews now use shared `ActionPreview` blocker and confirmation codes.
   Console pending admission queue, detail drill-in, and admit/reject preview panels now render shared status, scheduler, blocker, warning, consequence, and confirmation codes for this slice.
-  Operator API and support bundles remain future slices.
+  Admin API, CLI, Console, and tests consume the shared contract for landed admission-review behavior.
+  Operator API, support bundles, and full scheduler-explanation producer wiring remain future slices.
 - [x] 3.4 Add tests that reject unknown or free-text-only scheduler explanation reasons where fixed codes are required.
 - [x] 3.5 Add shared JSON schema or golden fixtures for node status categories, action previews, scheduler explanations, and HA-lite status.
 - [x] 3.6 Ensure action preview schema fixtures include separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements` fields.
@@ -47,13 +52,15 @@
 
 - [x] 5.1 Add a pending admission queue to the Console Nodes workspace.
 - [x] 5.2 Add node detail drill-in that preserves separate lifecycle, health, freshness, transport, runtime, compatibility, scheduling, and warning groups.
-- [ ] 5.3 Add action preview dialogs for admit, reject pending admission, cordon, uncordon, drain, maintenance, resume, and decommission.
+- [ ] 5.3 Add action preview dialogs or page-local panels for admit, reject pending admission, cordon, uncordon, drain, maintenance, resume, and decommission.
   Note: this slice implements Console admit and reject pending admission preview panels using the shared `ActionPreview` contract.
+  Reusable Console review-panel guidance is now documented in `docs/DESIGN.md`.
   Full lifecycle action previews and any reusable dialog primitive remain future work.
 - [ ] 5.4 Add scheduler explanation views with selected candidate, skipped candidates, fixed reason codes, and sanitized diagnostics.
 - [ ] 5.5 Add diagnostics and support bundle entry points that use the shared support bundle contract.
 - [ ] 5.6 Add read-only HA-lite control-plane status.
 - [ ] 5.7 Verify Console UI against `docs/DESIGN.md` and `docs/brand-identity.md` with browser screenshots during implementation.
+  Note: PR #37 browser-verified the admission-review slice against `docs/DESIGN.md` and brand identity on desktop and mobile; keep this unchecked as a recurring gate for future Console slices.
 
 ## 6. Diagnostics And Support Bundles
 
@@ -78,10 +85,12 @@
 
 ## 8. Validation
 
-- [ ] 8.1 Run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate cluster-management-ux-foundation --type change --strict --no-interactive`.
+- [x] 8.1 Run `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate cluster-management-ux-foundation --type change --strict --no-interactive`.
+  Note: Re-run for this docs reconciliation slice; future implementation slices and archive handoff must rerun this gate.
 - [ ] 8.2 For implementation slices, run `mise exec -- mix format`.
 - [ ] 8.3 For implementation slices, run `mise exec -- mix compile --warnings-as-errors`.
 - [ ] 8.4 For implementation slices, run `mise exec -- mix credo --strict`.
 - [ ] 8.5 For implementation slices, run `mise exec -- mix dialyzer`.
 - [ ] 8.6 For implementation slices, run `mise exec -- mix test`.
 - [ ] 8.7 For implementation slices, run `mise exec -- mix test --cover`.
+  Note: These implementation gates remain unchecked for future product-code slices; this reconciliation changes docs and the normative contract only.

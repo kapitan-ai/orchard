@@ -368,6 +368,16 @@ _Avoid_: provisioned Node, registered Node, active Node, trusted Node
 The admin-controlled reconciliation step that accepts a trusted registered Node into cluster participation.
 _Avoid_: Request Admission, Runtime Endpoint Observation, automatic discovery
 
+**Pending Admission**:
+A derived review category for a Runtime Endpoint Admission Candidate, provisioned placeholder, or registered Node that has not been explicitly admitted.
+It is not a Node Lifecycle State and never makes the target schedulable.
+_Avoid_: pending lifecycle state, active Node, automatic join
+
+**Rejected Admission**:
+A Node Admission outcome that keeps a candidate or lifecycle-managed Node out of scheduling while preserving review evidence and decision history.
+It is not Decommission and does not delete observed inventory.
+_Avoid_: Decommission, removed Node, failed heartbeat
+
 **Node Admission Decision**:
 Durable metadata recording a Node Admission outcome such as rejection or rejection clearance, with actor, timestamp, reason, observed identity or node reference, target reference when applicable, and audit event reference.
 _Avoid_: Node Lifecycle State, Decommission, debug note
