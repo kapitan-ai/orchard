@@ -56,10 +56,13 @@
 
 - [x] 5.1 Add a pending admission queue to the Console Nodes workspace.
 - [x] 5.2 Add node detail drill-in that preserves separate lifecycle, health, freshness, transport, runtime, compatibility, scheduling, and warning groups.
-- [ ] 5.3 Add action preview dialogs or page-local panels for admit, reject pending admission, cordon, uncordon, drain, maintenance, resume, and decommission.
+- [x] 5.3 Add action preview dialogs or page-local panels for admit, reject pending admission, cordon, uncordon, drain, maintenance, resume, and decommission.
   Note: this slice implements Console admit and reject pending admission preview panels using the shared `ActionPreview` contract.
   Reusable Console review-panel guidance is now documented in `docs/DESIGN.md`.
-  Full lifecycle action previews and any reusable dialog primitive remain future work.
+  Console node detail now exposes lifecycle action preview panels for cordon, uncordon, drain, maintenance, resume, and decommission using the shared `ActionPreview` contract.
+  Existing backend execution is wired for cordon, uncordon, drain, resume, and decommission with confirmation gates and mutation-time lifecycle revalidation.
+  Maintenance remains preview-visible but execution-blocked by `drain_completion_unverified` until drain completion and active-work quiescence can be verified.
+  Drain deadline orchestration, active-work cancellation, automatic `draining -> maintenance`, known active request counts, and any reusable dialog primitive remain future slices.
 - [ ] 5.4 Add scheduler explanation views with selected candidate, skipped candidates, fixed reason codes, and sanitized diagnostics.
 - [ ] 5.5 Add diagnostics and support bundle entry points that use the shared support bundle contract.
 - [ ] 5.6 Add read-only HA-lite control-plane status.

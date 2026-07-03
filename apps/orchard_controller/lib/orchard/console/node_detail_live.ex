@@ -10,10 +10,11 @@ defmodule OrchardConsole.NodeDetailLive do
   alias Orchard.ClusterManagement.{ActionPreview, ActionPreviewBuilder, StatusBuilder}
   alias Orchard.ControlPlane
   alias Orchard.Nodes
-  alias Orchard.Nodes.{AdmissionCandidate, Node}
+  alias Orchard.Nodes.{AdmissionCandidate, Lifecycle, Node}
 
   @default_refresh_interval_ms 5_000
   @pending_admission_categories ~w(pending_observed pending_provisioned pending_registered)
+  @lifecycle_actions Lifecycle.actions()
 
   # ===========================================================================
   # Lifecycle
@@ -80,8 +81,27 @@ defmodule OrchardConsole.NodeDetailLive do
     end
   end
 
+  def handle_event(
+        "open_lifecycle",
+        %{"action" => action},
+        %{assigns: %{record: %Node{}}} = socket
+      ) do
+    with {:ok, action} <- lifecycle_action(action),
+         :node <- socket.assigns.target_kind do
+      {:noreply, put_action(socket, action, default_action_inputs(action), false)}
+    else
+      _error -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("open_lifecycle", _params, socket), do: {:noreply, socket}
+
   def handle_event("cancel_action", _params, socket) do
     {:noreply, assign(socket, action: nil)}
+  end
+
+  def handle_event("action_change", %{"action" => _params}, %{assigns: %{action: nil}} = socket) do
+    {:noreply, socket}
   end
 
   def handle_event("action_change", %{"action" => params}, socket) do
@@ -90,6 +110,10 @@ defmodule OrchardConsole.NodeDetailLive do
     confirmed? = truthy?(Map.get(params, "confirmed"))
 
     {:noreply, put_action(socket, action.kind, inputs, confirmed?)}
+  end
+
+  def handle_event("execute_action", %{"action" => _params}, %{assigns: %{action: nil}} = socket) do
+    {:noreply, socket}
   end
 
   def handle_event("execute_action", %{"action" => params}, socket) do
@@ -135,28 +159,41 @@ defmodule OrchardConsole.NodeDetailLive do
               <.card>
                 <:title>{detail_title(@target_kind, @record)}</:title>
                 <:subtitle>{detail_subtitle(@target_kind, @record)}</:subtitle>
-                <:actions>
-                  <div class="flex flex-wrap justify-end gap-2">
-                    <.button
-                      :if={can_open_admit?(@target_kind, @record, @status)}
-                      id="node-detail-open-admit"
-                      variant={:primary}
-                      size={:sm}
-                      phx-click="open_admit"
-                    >
-                      Preview admit
-                    </.button>
-                    <.button
-                      :if={can_open_reject?(@target_kind, @record, @status)}
-                      id="node-detail-open-reject"
-                      variant={:danger}
-                      size={:sm}
-                      phx-click="open_reject"
-                    >
-                      Preview reject
-                    </.button>
-                  </div>
-                </:actions>
+
+                <div
+                  :if={detail_action_buttons?(@target_kind, @record, @status)}
+                  id="node-detail-actions"
+                  class="mb-4 flex flex-wrap gap-2"
+                >
+                  <.button
+                    :if={can_open_admit?(@target_kind, @record, @status)}
+                    id="node-detail-open-admit"
+                    variant={:primary}
+                    size={:sm}
+                    phx-click="open_admit"
+                  >
+                    Preview admit
+                  </.button>
+                  <.button
+                    :if={can_open_reject?(@target_kind, @record, @status)}
+                    id="node-detail-open-reject"
+                    variant={:danger}
+                    size={:sm}
+                    phx-click="open_reject"
+                  >
+                    Preview reject
+                  </.button>
+                  <.button
+                    :for={lifecycle_action <- lifecycle_action_buttons(@target_kind, @record)}
+                    id={"node-detail-open-lifecycle-#{lifecycle_action}"}
+                    variant={lifecycle_action_variant(lifecycle_action)}
+                    size={:sm}
+                    phx-click="open_lifecycle"
+                    phx-value-action={lifecycle_action}
+                  >
+                    {lifecycle_action_button_label(lifecycle_action)}
+                  </.button>
+                </div>
 
                 <div class="flex flex-wrap items-center gap-2">
                   <.badge tone={admission_category_tone(status_value(@status, :admission, :category))}>
@@ -535,6 +572,15 @@ defmodule OrchardConsole.NodeDetailLive do
     ActionPreviewBuilder.reject_admission(id, inputs)
   end
 
+  defp build_action_preview(
+         %{assigns: %{target_kind: :node, record: %Node{id: id}}},
+         kind,
+         inputs
+       )
+       when kind in @lifecycle_actions do
+    ActionPreviewBuilder.node_lifecycle(kind, id, inputs)
+  end
+
   defp execute_action(socket, %{kind: :admit, inputs: inputs}) do
     with :ok <- ControlPlane.authorize_write_path(:node_admission),
          {:ok, _result} <- Nodes.admit_node(socket.assigns.record.id, inputs, audit_opts()) do
@@ -578,6 +624,20 @@ defmodule OrchardConsole.NodeDetailLive do
     end
   end
 
+  defp execute_action(%{assigns: %{target_kind: :node}} = socket, %{kind: kind, inputs: inputs})
+       when kind in @lifecycle_actions do
+    with :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
+         {:ok, _result} <- Lifecycle.execute(kind, socket.assigns.record.id, inputs, audit_opts()) do
+      {:noreply,
+       socket
+       |> put_flash(:info, lifecycle_success_message(kind))
+       |> assign(action: nil)
+       |> load_detail()}
+    else
+      {:error, reason} -> {:noreply, put_action_error(socket, error_message(reason))}
+    end
+  end
+
   defp put_action_error(%{assigns: %{action: action}} = socket, message) do
     assign(socket, action: Map.put(action, :error, message))
   end
@@ -589,6 +649,16 @@ defmodule OrchardConsole.NodeDetailLive do
   end
 
   defp default_action_inputs(:reject), do: %{"reason" => ""}
+
+  defp default_action_inputs(:decommission) do
+    %{"reason" => "", "node_id_confirmation" => "", "acknowledged" => "false"}
+  end
+
+  defp default_action_inputs(:drain), do: %{"reason" => "", "acknowledged" => "false"}
+
+  defp default_action_inputs(action) when action in @lifecycle_actions do
+    %{"reason" => ""}
+  end
 
   defp normalize_action_inputs(:admit, params) do
     %{
@@ -602,6 +672,25 @@ defmodule OrchardConsole.NodeDetailLive do
     %{"reason" => Map.get(params, "reason", "")}
   end
 
+  defp normalize_action_inputs(:decommission, params) do
+    %{
+      "reason" => Map.get(params, "reason", ""),
+      "node_id_confirmation" => Map.get(params, "node_id_confirmation", ""),
+      "acknowledged" => Map.get(params, "acknowledged", "false")
+    }
+  end
+
+  defp normalize_action_inputs(:drain, params) do
+    %{
+      "reason" => Map.get(params, "reason", ""),
+      "acknowledged" => Map.get(params, "acknowledged", "false")
+    }
+  end
+
+  defp normalize_action_inputs(action, params) when action in @lifecycle_actions do
+    %{"reason" => Map.get(params, "reason", "")}
+  end
+
   defp action_executable?(%{confirmed: true, preview: preview, kind: kind, inputs: inputs}) do
     preview_entries(preview, :blockers) == [] and
       not missing_required_input?(kind, preview, inputs)
@@ -612,6 +701,13 @@ defmodule OrchardConsole.NodeDetailLive do
   defp missing_required_input?(:reject, preview, inputs) do
     "requires_reason" in preview_codes(preview, :confirmation_requirements) and
       blank?(Map.get(inputs, "reason"))
+  end
+
+  defp missing_required_input?(kind, preview, inputs) when kind in @lifecycle_actions do
+    requirements = preview_codes(preview, :confirmation_requirements)
+
+    missing_typed_node_id?(requirements, inputs, preview) or
+      missing_consequence_acknowledgement?(requirements, inputs)
   end
 
   defp missing_required_input?(_kind, _preview, _inputs), do: false
@@ -628,6 +724,25 @@ defmodule OrchardConsole.NodeDetailLive do
   end
 
   defp can_open_reject?(_target_kind, _record, _status), do: false
+
+  defp detail_action_buttons?(target_kind, record, status) do
+    can_open_admit?(target_kind, record, status) or
+      can_open_reject?(target_kind, record, status) or
+      lifecycle_action_buttons(target_kind, record) != []
+  end
+
+  defp lifecycle_action_buttons(:node, %Node{}), do: @lifecycle_actions
+  defp lifecycle_action_buttons(_target_kind, _record), do: []
+
+  defp lifecycle_action_kind?(kind), do: kind in @lifecycle_actions
+
+  defp lifecycle_action(action) when is_binary(action) do
+    action = String.to_existing_atom(action)
+
+    if action in @lifecycle_actions, do: {:ok, action}, else: :error
+  rescue
+    ArgumentError -> :error
+  end
 
   # ===========================================================================
   # Display helpers
@@ -842,14 +957,26 @@ defmodule OrchardConsole.NodeDetailLive do
 
   defp action_title(:admit), do: "Admit Node Preview"
   defp action_title(:reject), do: "Reject Admission Preview"
+  defp action_title(:cordon), do: "Cordon Node Preview"
+  defp action_title(:uncordon), do: "Uncordon Node Preview"
+  defp action_title(:drain), do: "Drain Node Preview"
+  defp action_title(:maintenance), do: "Maintenance Node Preview"
+  defp action_title(:resume), do: "Resume Node Preview"
+  defp action_title(:decommission), do: "Decommission Node Preview"
 
   defp action_submit_label(:admit), do: "Admit node"
   defp action_submit_label(:reject), do: "Reject admission"
+  defp action_submit_label(:cordon), do: "Cordon node"
+  defp action_submit_label(:uncordon), do: "Uncordon node"
+  defp action_submit_label(:drain), do: "Start drain"
+  defp action_submit_label(:maintenance), do: "Enter maintenance"
+  defp action_submit_label(:resume), do: "Resume node"
+  defp action_submit_label(:decommission), do: "Start decommission"
 
-  defp action_variant(:reject), do: :danger
+  defp action_variant(kind) when kind in [:reject, :decommission], do: :danger
   defp action_variant(_kind), do: :primary
 
-  defp action_panel_class(:reject),
+  defp action_panel_class(kind) when kind in [:reject, :decommission],
     do: "border-red-200 bg-red-50/40 dark:border-red-900/50 dark:bg-red-950/20"
 
   defp action_panel_class(_kind), do: ""
@@ -862,6 +989,38 @@ defmodule OrchardConsole.NodeDetailLive do
     "Rejection records an admission decision and keeps the candidate visible for audit review."
   end
 
+  defp action_explanation(kind) when kind in @lifecycle_actions do
+    "Execution revalidates lifecycle blockers before mutating node state."
+  end
+
+  defp action_form_id(kind) when kind in [:admit, :reject], do: "admission-action-form"
+  defp action_form_id(kind) when kind in @lifecycle_actions, do: "node-action-form"
+
+  defp confirmation_label(kind) when kind in [:admit, :reject] do
+    "I reviewed the preview and understand this admission action."
+  end
+
+  defp confirmation_label(kind) when kind in @lifecycle_actions do
+    "I reviewed the preview and understand this lifecycle action."
+  end
+
+  defp lifecycle_action_button_label(:cordon), do: "Preview cordon"
+  defp lifecycle_action_button_label(:uncordon), do: "Preview uncordon"
+  defp lifecycle_action_button_label(:drain), do: "Preview drain"
+  defp lifecycle_action_button_label(:maintenance), do: "Preview maintenance"
+  defp lifecycle_action_button_label(:resume), do: "Preview resume"
+  defp lifecycle_action_button_label(:decommission), do: "Preview decommission"
+
+  defp lifecycle_action_variant(:decommission), do: :danger
+  defp lifecycle_action_variant(_action), do: :secondary
+
+  defp lifecycle_success_message(:cordon), do: "Node cordoned."
+  defp lifecycle_success_message(:uncordon), do: "Node uncordoned."
+  defp lifecycle_success_message(:drain), do: "Node drain started."
+  defp lifecycle_success_message(:maintenance), do: "Node moved to maintenance."
+  defp lifecycle_success_message(:resume), do: "Node resumed."
+  defp lifecycle_success_message(:decommission), do: "Node decommission started."
+
   defp error_message(:controller_standby), do: "This controller is in standby mode."
   defp error_message(:candidate_not_found), do: "Node admission candidate was not found."
   defp error_message(:node_not_found), do: "Node was not found."
@@ -871,11 +1030,44 @@ defmodule OrchardConsole.NodeDetailLive do
   defp error_message(:admission_rejected), do: "Admission rejection must be cleared first."
   defp error_message(:node_not_registered), do: "Node is not registered."
   defp error_message(:node_not_pending_admission), do: "Node is not pending admission."
+  defp error_message(:node_not_active), do: "Node is not active."
+  defp error_message(:node_unhealthy), do: "Node health is unhealthy."
+  defp error_message(:node_unreachable), do: "Node is unreachable."
+  defp error_message(:drain_already_running), do: "Node drain is already running."
+  defp error_message(:decommission_already_running), do: "Node decommission is already running."
+  defp error_message(:maintenance_requires_drain), do: "Node must be draining before maintenance."
+
+  defp error_message(:drain_completion_unverified),
+    do: "Manual maintenance is unavailable until node drain completion can be verified."
+
+  defp error_message(:lifecycle_transition_invalid),
+    do: "Node lifecycle state does not allow this action."
+
   defp error_message(:inventory_missing), do: "Registered node inventory is missing."
   defp error_message(:trust_not_established), do: "Node trust evidence is required."
   defp error_message(:pool_required), do: "Node pool assignment is required."
   defp error_message(:policy_required), do: "Required policy inputs are missing."
-  defp error_message(_reason), do: "Node admission action failed."
+  defp error_message(_reason), do: "Node action failed."
+
+  defp missing_typed_node_id?(requirements, inputs, preview) do
+    "requires_typed_node_id" in requirements and
+      Map.get(inputs, "node_id_confirmation") != nested_preview_value(preview, :target, :id)
+  end
+
+  defp missing_consequence_acknowledgement?(requirements, inputs) do
+    consequence_acknowledgement_required?(requirements) and
+      not truthy?(Map.get(inputs, "acknowledged"))
+  end
+
+  defp consequence_acknowledgement_required?(requirements) do
+    Enum.any?(
+      requirements,
+      &(&1 in [
+          "requires_drain_consequence_acknowledgement",
+          "requires_decommission_consequence_acknowledgement"
+        ])
+    )
+  end
 
   # ===========================================================================
   # Refresh / config
@@ -1015,12 +1207,12 @@ defmodule OrchardConsole.NodeDetailLive do
 
   defp action_preview_panel(assigns) do
     ~H"""
-    <div id="node-admission-action-preview">
+    <div id="node-action-preview">
       <.card class={action_panel_class(@action.kind)}>
         <:title>{action_title(@action.kind)}</:title>
         <:subtitle>{action_explanation(@action.kind)}</:subtitle>
 
-        <form id="admission-action-form" phx-change="action_change" phx-submit="execute_action" class="space-y-5">
+        <form id={action_form_id(@action.kind)} phx-change="action_change" phx-submit="execute_action" class="space-y-5">
           <div id="action-preview-summary" class="grid gap-4 lg:grid-cols-3">
             <.detail_grid id="action-preview-current" class="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-700 dark:bg-slate-950">
               <.detail_field id="action-preview-current-state" label="Current" mono>
@@ -1142,13 +1334,42 @@ defmodule OrchardConsole.NodeDetailLive do
             />
           </div>
 
+          <div :if={lifecycle_action_kind?(@action.kind)} id="action-lifecycle-inputs" class="space-y-4">
+            <.input
+              id="action-lifecycle-reason"
+              name="action[reason]"
+              type="textarea"
+              rows="2"
+              value={@action.inputs["reason"]}
+              label="Reason"
+              placeholder="Optional operator note."
+            />
+            <.input
+              :if={"requires_typed_node_id" in preview_codes(@action.preview, :confirmation_requirements)}
+              id="action-node-id-confirmation"
+              name="action[node_id_confirmation]"
+              value={@action.inputs["node_id_confirmation"]}
+              label="Type Node ID"
+              placeholder={nested_preview_value(@action.preview, :target, :id)}
+              errors={typed_node_id_errors(@action)}
+            />
+            <.input
+              :if={consequence_acknowledgement_required?(preview_codes(@action.preview, :confirmation_requirements))}
+              id="action-acknowledged"
+              name="action[acknowledged]"
+              type="checkbox"
+              checked={truthy?(@action.inputs["acknowledged"])}
+              label="I acknowledge the disclosed lifecycle consequences."
+            />
+          </div>
+
           <div class="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/50">
             <.input
               id="action-confirmed"
               name="action[confirmed]"
               type="checkbox"
               checked={@action.confirmed}
-              label="I reviewed the preview and understand this admission action."
+              label={confirmation_label(@action.kind)}
             />
           </div>
 
@@ -1182,6 +1403,16 @@ defmodule OrchardConsole.NodeDetailLive do
   end
 
   defp reject_reason_errors(_action), do: []
+
+  defp typed_node_id_errors(%{kind: :decommission, preview: preview, inputs: inputs}) do
+    requirements = preview_codes(preview, :confirmation_requirements)
+
+    if missing_typed_node_id?(requirements, inputs, preview),
+      do: ["Type the node ID exactly to confirm decommission."],
+      else: []
+  end
+
+  defp typed_node_id_errors(_action), do: []
 
   defp code_chip_class(:error),
     do:
