@@ -535,11 +535,13 @@ defmodule OrchardCLI.Commands.NodesTest do
         {"drain", :cordoned, "node_lifecycle.drain_started", "draining", ["--acknowledge"]},
         {"resume", :maintenance, "node_lifecycle.resumed", "active", []},
         {"decommission", :active, "node_lifecycle.decommission_started", "decommissioning",
+         :typed},
+        {"decommission", :draining, "node_lifecycle.decommission_started", "decommissioning",
          :typed}
       ]
 
       for {command, from_state, action, to_state, extra_args} <- cases do
-        node = insert_node!(state: from_state, display_name: "execute-#{command}")
+        node = insert_node!(state: from_state, display_name: "execute-#{command}-#{from_state}")
 
         extra_args =
           if extra_args == :typed,

@@ -60,7 +60,7 @@ defmodule Orchard.Nodes.Lifecycle do
       consequence_codes: []
     },
     decommission: %{
-      allowed_states: [:registered, :admitted, :active, :cordoned, :maintenance],
+      allowed_states: [:registered, :admitted, :active, :cordoned, :draining, :maintenance],
       target_state: :decommissioning,
       preview_action: "node_lifecycle.decommission",
       audit_action: "node_lifecycle.decommission_started",

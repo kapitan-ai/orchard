@@ -36,11 +36,12 @@ defmodule Orchard.Nodes.LifecycleTest do
       {:uncordon, :cordoned, :active, "node_lifecycle.uncordoned"},
       {:drain, :cordoned, :draining, "node_lifecycle.drain_started"},
       {:resume, :maintenance, :active, "node_lifecycle.resumed"},
-      {:decommission, :admitted, :decommissioning, "node_lifecycle.decommission_started"}
+      {:decommission, :admitted, :decommissioning, "node_lifecycle.decommission_started"},
+      {:decommission, :draining, :decommissioning, "node_lifecycle.decommission_started"}
     ]
 
     for {action, from_state, to_state, audit_action} <- cases do
-      node = insert_node!(state: from_state, display_name: "lifecycle-#{action}")
+      node = insert_node!(state: from_state, display_name: "lifecycle-#{action}-#{from_state}")
 
       assert {:ok, %{node: updated, audit_log: audit_log}} =
                Lifecycle.execute(action, node.id, %{reason: "operator requested"})
@@ -73,8 +74,7 @@ defmodule Orchard.Nodes.LifecycleTest do
       {:cordon, :registered, :node_not_admitted},
       {:drain, :draining, :drain_already_running},
       {:maintenance, :active, :maintenance_requires_drain},
-      {:maintenance, :draining, :drain_completion_unverified},
-      {:decommission, :draining, :lifecycle_transition_invalid}
+      {:maintenance, :draining, :drain_completion_unverified}
     ]
 
     for {action, state, reason} <- cases do
