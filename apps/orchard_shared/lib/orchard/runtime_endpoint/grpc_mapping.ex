@@ -111,7 +111,8 @@ defmodule Orchard.RuntimeEndpoint.GrpcMapping do
   defp list_value(attrs, key) do
     case Operation.value(attrs, key) do
       values when is_list(values) -> values
-      _other -> []
+      nil -> []
+      value -> [value]
     end
   end
 
