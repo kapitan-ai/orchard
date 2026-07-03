@@ -7,6 +7,8 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
   persistence; it is not a scheduling or admission input in this slice.
   """
 
+  alias Orchard.Runtime.TextBounds
+
   @type t :: %{
           optional(:model_ref) => String.t(),
           required(:implementation) => String.t(),
@@ -82,7 +84,11 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
     normalized = %{
       model_ref: normalize_model_ref(value(status, :model_ref)),
       implementation:
-        bounded_string(value(status, :implementation), "unknown", @max_implementation_length),
+        TextBounds.bounded_string(
+          value(status, :implementation),
+          "unknown",
+          @max_implementation_length
+        ),
       enabled: normalize_boolean(value(status, :enabled)),
       entry_count: normalize_uint32(value(status, :entry_count)),
       total_bytes: normalize_uint64(value(status, :total_bytes)),
@@ -95,7 +101,10 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
       configured_max_bytes: normalize_uint64(value(status, :configured_max_bytes)),
       status_code: normalize_status_code(value(status, :status_code)),
       status_message:
-        bounded_optional_string(value(status, :status_message), @max_status_message_length),
+        TextBounds.bounded_optional_string(
+          value(status, :status_message),
+          @max_status_message_length
+        ),
       session_started_unix_ms: normalize_uint64(value(status, :session_started_unix_ms)),
       prefix_cache_fingerprint_count: prefix_cache_fingerprint_count(status),
       prefix_cache_warmth_indicator: prefix_cache_warmth_indicator?(status)
@@ -289,16 +298,6 @@ defmodule Orchard.Runtime.PrefixCacheStatus do
   end
 
   defp valid_prefix_cache_fingerprint?(_fingerprint), do: false
-
-  defp bounded_string(value, _fallback, limit) when is_binary(value) and value != "",
-    do: String.slice(value, 0, limit)
-
-  defp bounded_string(_value, fallback, _limit), do: fallback
-
-  defp bounded_optional_string(value, limit) when is_binary(value) and value != "",
-    do: String.slice(value, 0, limit)
-
-  defp bounded_optional_string(_value, _limit), do: nil
 
   defp reject_nil_values(map) do
     Map.reject(map, fn {_key, value} -> is_nil(value) end)

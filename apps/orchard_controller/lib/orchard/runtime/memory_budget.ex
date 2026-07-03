@@ -8,6 +8,8 @@ defmodule Orchard.Runtime.MemoryBudget do
   `headroom_available == true` receives scheduler preference.
   """
 
+  alias Orchard.Runtime.TextBounds
+
   @type admission_tier :: :headroom_ok | :headroom_unavailable | :headroom_unknown
 
   @type t :: %{
@@ -67,13 +69,16 @@ defmodule Orchard.Runtime.MemoryBudget do
   def normalize(budget) when is_map(budget) do
     normalized = %{
       model_ref: normalize_model_ref(value(budget, :model_ref)),
-      mode: bounded_string(value(budget, :mode), "unknown", @max_mode_length),
+      mode: TextBounds.bounded_string(value(budget, :mode), "unknown", @max_mode_length),
       budget_available: normalize_boolean(value(budget, :budget_available)),
       headroom_available: normalize_boolean(value(budget, :headroom_available)),
       status_code: normalize_status_code(value(budget, :status_code)),
       status_message:
-        bounded_optional_string(value(budget, :status_message), @max_status_message_length),
-      source: bounded_optional_string(value(budget, :source), @max_source_length),
+        TextBounds.bounded_optional_string(
+          value(budget, :status_message),
+          @max_status_message_length
+        ),
+      source: TextBounds.bounded_optional_string(value(budget, :source), @max_source_length),
       target_working_set_bytes: normalize_uint64(value(budget, :target_working_set_bytes)),
       resident_memory_bytes: normalize_uint64(value(budget, :resident_memory_bytes)),
       estimated_headroom_bytes: normalize_uint64(value(budget, :estimated_headroom_bytes)),
@@ -202,16 +207,6 @@ defmodule Orchard.Runtime.MemoryBudget do
     do: String.slice(value, 0, @max_status_code_length)
 
   defp normalize_status_code(_value), do: "invalid_status"
-
-  defp bounded_string(value, _fallback, limit) when is_binary(value) and value != "",
-    do: String.slice(value, 0, limit)
-
-  defp bounded_string(_value, fallback, _limit), do: fallback
-
-  defp bounded_optional_string(value, limit) when is_binary(value) and value != "",
-    do: String.slice(value, 0, limit)
-
-  defp bounded_optional_string(_value, _limit), do: nil
 
   defp reject_nil_values(map) do
     Map.reject(map, fn {_key, value} -> is_nil(value) end)
