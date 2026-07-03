@@ -16,6 +16,12 @@ This README is orientation only. Normative CLI requirements live in
 - Node-admission-review commands (`nodes inspect`, `nodes pending`,
   `nodes admit`, `nodes reject`) with stable JSON and human output, `--dry-run`
   previews, and `--yes`/`--reason` execution gating.
+- Node lifecycle commands (`nodes cordon`, `nodes uncordon`, `nodes drain`,
+  `nodes maintenance`, `nodes resume`, `nodes decommission`) on the shared
+  Action Preview contract, with `--dry-run`/`--json` previews and `--yes`,
+  `--acknowledge`, and `--typed-node-id` execution gating. `nodes maintenance`
+  previews only; its `draining -> maintenance` execution stays blocked until
+  drain completion can be verified.
 - Local diagnostic support bundle creation via `support bundle create`.
 - Bulk API Client provisioning through `api-clients bulk-provision`, including
   Dry Run, all-or-nothing Apply, output preflight, Key Rotation, and One-time
