@@ -368,6 +368,8 @@ defmodule OrchardConsole.OverviewLiveTest do
     end
 
     test "renders valid license badge in the shared shell", %{conn: conn} do
+      set_license_enforcement(:off)
+
       {:ok, view, _html} = live(conn, "/console")
 
       badge = view |> element("#console-license-badge") |> render()
@@ -375,7 +377,19 @@ defmodule OrchardConsole.OverviewLiveTest do
       refute badge =~ "orchardctl license activate"
     end
 
+    test "hides source-dev missing license noise in the shared shell", %{conn: conn} do
+      set_license_enforcement(:off)
+      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingMissingStub)
+
+      {:ok, view, html} = live(conn, "/console")
+
+      refute has_element?(view, "#console-license-badge")
+      refute has_element?(view, "#overview-license-card")
+      refute html =~ "orchardctl license activate"
+    end
+
     test "renders activation badge in the shared shell for invalid licenses", %{conn: conn} do
+      set_license_enforcement(:warn)
       put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingMissingStub)
 
       {:ok, view, _html} = live(conn, "/console")
@@ -397,6 +411,8 @@ defmodule OrchardConsole.OverviewLiveTest do
 
   describe "license visibility" do
     test "overview license card renders valid license identity and expiry", %{conn: conn} do
+      set_license_enforcement(:off)
+
       {:ok, view, _html} = live(conn, "/console")
 
       card = view |> element("#overview-license-card") |> render()
@@ -418,9 +434,23 @@ defmodule OrchardConsole.OverviewLiveTest do
       refute card =~ "program="
     end
 
+    test "overview hides expired license noise when enforcement is off", %{conn: conn} do
+      set_license_enforcement(:off)
+      put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingExpiredStub)
+
+      {:ok, view, html} = live(conn, "/console")
+
+      refute has_element?(view, "#console-license-badge")
+      refute has_element?(view, "#overview-license-card")
+      refute html =~ "Expired Orchard Lab"
+      refute html =~ "orchardctl license activate"
+    end
+
     test "overview license card omits unsafe identity and tracking for invalid signature", %{
       conn: conn
     } do
+      set_license_enforcement(:warn)
+
       put_console_config(
         licensing_impl: OrchardConsole.OverviewLiveTest.LicensingInvalidSignatureRawFieldsStub
       )
@@ -434,6 +464,7 @@ defmodule OrchardConsole.OverviewLiveTest do
     end
 
     test "overview license card renders activation guidance for a missing license", %{conn: conn} do
+      set_license_enforcement(:warn)
       put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingMissingStub)
 
       {:ok, view, _html} = live(conn, "/console")
@@ -444,6 +475,7 @@ defmodule OrchardConsole.OverviewLiveTest do
     end
 
     test "overview license card renders activation guidance for an expired license", %{conn: conn} do
+      set_license_enforcement(:hard)
       put_console_config(licensing_impl: OrchardConsole.OverviewLiveTest.LicensingExpiredStub)
 
       {:ok, view, _html} = live(conn, "/console")

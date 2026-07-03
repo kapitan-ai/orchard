@@ -574,7 +574,7 @@ defmodule OrchardConsole.SettingsLive do
   def render(assigns) do
     ~H"""
     <div class="space-y-6">
-      <section id="settings-license-card">
+      <section :if={LicenseStatus.visible?(@license_status)} id="settings-license-card">
         <.card>
           <:title>License</:title>
           <:subtitle>Local license state and operator recovery guidance.</:subtitle>

@@ -29,6 +29,7 @@
     <%!-- Sidebar footer: license + version + collapse toggle --%>
     <div class="p-3 border-t border-slate-200 dark:border-slate-700 flex-shrink-0">
       <div
+        :if={OrchardConsole.LicenseStatus.visible?(@license_status)}
         id="console-license-badge"
         class="mb-3 rounded-lg border border-slate-200 bg-slate-50 p-2 text-center dark:border-slate-700 dark:bg-slate-900/60"
         role="status"
