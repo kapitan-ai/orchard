@@ -7,7 +7,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
 
   alias Orchard.Cluster.V1.ScorePrefixCacheRequest
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: TransportClient
-  alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, Operation, Target}
+  alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, GrpcMapping, Operation, Target}
 
   defstruct [:channel, :target]
 
@@ -46,10 +46,10 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
         %Operation.EnsureModelLoadedRequest{} = request,
         opts \\ []
       ) do
-    request = GrpcCompatibilityMapper.ensure_model_loaded_request_to_proto(request)
+    request = GrpcMapping.ensure_model_loaded_request_to_proto(request)
 
     with {:ok, response} <- TransportClient.ensure_model_loaded(channel, request, opts) do
-      {:ok, GrpcCompatibilityMapper.ensure_model_loaded_result_from_response(response)}
+      {:ok, GrpcMapping.ensure_model_loaded_result_from_response(response)}
     end
   end
 
@@ -59,7 +59,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
         %Operation.UnloadModelRequest{} = request,
         opts \\ []
       ) do
-    request = GrpcCompatibilityMapper.unload_model_request_to_proto(request)
+    request = GrpcMapping.unload_model_request_to_proto(request)
 
     with {:ok, response} <- TransportClient.unload_model(channel, request, opts) do
       {:ok, GrpcCompatibilityMapper.ack_from_response(response)}

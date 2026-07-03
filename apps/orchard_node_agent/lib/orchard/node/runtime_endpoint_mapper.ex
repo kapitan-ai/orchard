@@ -3,17 +3,15 @@ defmodule Orchard.Node.RuntimeEndpointMapper do
 
   alias Orchard.Cluster.V1.{
     Ack,
-    EnsureModelLoadedRequest,
-    EnsureModelLoadedResponse,
     ExecuteInferenceRequest,
-    GenerationParams,
     RuntimeHealth,
     RuntimeNodeMetadata,
     ScorePrefixCacheRequest,
     ScorePrefixCacheResponse,
-    StatusResponse,
-    UnloadModelRequest
+    StatusResponse
   }
+
+  alias Orchard.RuntimeEndpoint.GrpcMapping
 
   alias Orchard.RuntimeEndpoint.{
     ModelRef,
@@ -47,43 +45,6 @@ defmodule Orchard.Node.RuntimeEndpointMapper do
     })
   end
 
-  @spec ensure_model_loaded_request_to_proto(Operation.EnsureModelLoadedRequest.t()) ::
-          EnsureModelLoadedRequest.t()
-  def ensure_model_loaded_request_to_proto(%Operation.EnsureModelLoadedRequest{} = request) do
-    %EnsureModelLoadedRequest{
-      node_id: request.node_id || "",
-      model_id: request.model_ref.model_id,
-      version: request.model_ref.version,
-      artifact_sha256: request.artifact_sha256 || "",
-      preload: request.preload,
-      deadline_unix_ms: request.deadline_unix_ms || 0,
-      artifact_source_uri: request.artifact_source_uri || ""
-    }
-  end
-
-  @spec ensure_model_loaded_result_from_response(EnsureModelLoadedResponse.t()) ::
-          Operation.EnsureModelLoadedResult.t()
-  def ensure_model_loaded_result_from_response(%EnsureModelLoadedResponse{} = response) do
-    %Operation.EnsureModelLoadedResult{
-      already_loaded: response.already_loaded,
-      placement_state: normalize_placement_state(response.placement_state),
-      failure_category: normalize_failure_category(response.failure_category),
-      failure_code: empty_to_nil(response.failure_code),
-      failure_message: empty_to_nil(response.failure_message),
-      worker_supports_prompt_token_ids: response.worker_supports_prompt_token_ids
-    }
-  end
-
-  @spec unload_model_request_to_proto(Operation.UnloadModelRequest.t()) :: UnloadModelRequest.t()
-  def unload_model_request_to_proto(%Operation.UnloadModelRequest{} = request) do
-    %UnloadModelRequest{
-      model_id: request.model_ref.model_id,
-      version: request.model_ref.version,
-      force: request.force,
-      evict: request.evict
-    }
-  end
-
   @spec ack_from_response(Ack.t()) :: Operation.Ack.t()
   def ack_from_response(%Ack{} = response) do
     %Operation.Ack{ok: response.ok, message: response.message || ""}
@@ -98,7 +59,7 @@ defmodule Orchard.Node.RuntimeEndpointMapper do
       version: request.model_ref.version,
       rendered_prompt_utf8: request.rendered_prompt_utf8,
       input_tokens: request.input_tokens,
-      params: generation_params_to_proto(request.params),
+      params: GrpcMapping.generation_params_to_proto(request.params),
       deadline_unix_ms: request.deadline_unix_ms || 0,
       metadata_json: request.metadata_json || "{}",
       cache_affinity_fingerprint: request.cache_affinity_fingerprint || "",
@@ -224,49 +185,6 @@ defmodule Orchard.Node.RuntimeEndpointMapper do
   defp normalize_worker_state(:WORKER_STATE_STOPPED), do: :stopped
   defp normalize_worker_state(_state), do: :unknown
 
-  defp normalize_placement_state(:PLACEMENT_STATE_ABSENT), do: :absent
-  defp normalize_placement_state(:PLACEMENT_STATE_DOWNLOADING), do: :downloading
-  defp normalize_placement_state(:PLACEMENT_STATE_DOWNLOADED), do: :downloaded
-  defp normalize_placement_state(:PLACEMENT_STATE_VERIFYING), do: :verifying
-  defp normalize_placement_state(:PLACEMENT_STATE_CACHED), do: :cached
-  defp normalize_placement_state(:PLACEMENT_STATE_LOADING), do: :loading
-  defp normalize_placement_state(:PLACEMENT_STATE_LOADED), do: :loaded
-  defp normalize_placement_state(:PLACEMENT_STATE_UNLOADING), do: :unloading
-  defp normalize_placement_state(:PLACEMENT_STATE_EVICTED), do: :evicted
-  defp normalize_placement_state(:PLACEMENT_STATE_FAILED), do: :failed
-  defp normalize_placement_state(_state), do: :unknown
-
-  defp normalize_failure_category(:MODEL_LOAD_FAILURE_CATEGORY_MODEL_INVALID), do: :model_invalid
-
-  defp normalize_failure_category(:MODEL_LOAD_FAILURE_CATEGORY_ACQUISITION_FAILED),
-    do: :acquisition_failed
-
-  defp normalize_failure_category(:MODEL_LOAD_FAILURE_CATEGORY_RUNTIME_UNAVAILABLE),
-    do: :runtime_unavailable
-
-  defp normalize_failure_category(:MODEL_LOAD_FAILURE_CATEGORY_TIMEOUT), do: :timeout
-
-  defp normalize_failure_category(:MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED),
-    do: :resource_exhausted
-
-  defp normalize_failure_category(:MODEL_LOAD_FAILURE_CATEGORY_INTERNAL), do: :internal
-  defp normalize_failure_category(_category), do: nil
-
-  defp generation_params_to_proto(%GenerationParams{} = params), do: params
-
-  defp generation_params_to_proto(%{} = params) do
-    %GenerationParams{
-      max_output_tokens: non_negative_integer(value(params, :max_output_tokens)),
-      temperature: float_value(value(params, :temperature)),
-      top_p: float_value(value(params, :top_p)),
-      stop_sequences: list_value(params, :stop_sequences),
-      tools_json: value(params, :tools_json) || "",
-      tool_choice_json: value(params, :tool_choice_json) || ""
-    }
-  end
-
-  defp generation_params_to_proto(_params), do: %GenerationParams{}
-
   defp endpoint_id(%Target{id: id}, _metadata) when is_binary(id) and id != "", do: id
 
   defp endpoint_id(_target, %{node_id: node_id}) when is_binary(node_id) and node_id != "",
@@ -274,30 +192,9 @@ defmodule Orchard.Node.RuntimeEndpointMapper do
 
   defp endpoint_id(_target, _metadata), do: nil
 
-  defp value(%{} = attrs, key) do
-    string_key = Atom.to_string(key)
-
-    cond do
-      Map.has_key?(attrs, key) -> Map.fetch!(attrs, key)
-      Map.has_key?(attrs, string_key) -> Map.fetch!(attrs, string_key)
-      true -> nil
-    end
-  end
-
-  defp list_value(attrs, key) do
-    case value(attrs, key) do
-      values when is_list(values) -> values
-      nil -> []
-      value -> [value]
-    end
-  end
-
   defp empty_to_nil(value) when value in [nil, ""], do: nil
   defp empty_to_nil(value), do: value
   defp non_negative_integer(value) when is_integer(value) and value >= 0, do: value
   defp non_negative_integer(_value), do: 0
-  defp float_value(value) when is_float(value), do: value
-  defp float_value(value) when is_integer(value), do: value / 1
-  defp float_value(_value), do: 0.0
   defp compact_nil_values(map), do: Map.reject(map, fn {_key, value} -> is_nil(value) end)
 end

@@ -9,7 +9,7 @@ defmodule Orchard.Node.RuntimeEndpoint do
 
   alias Orchard.InferenceEvent
   alias Orchard.Node.{RuntimeEndpointMapper, RuntimeServer, Status}
-  alias Orchard.RuntimeEndpoint.{Operation, Target}
+  alias Orchard.RuntimeEndpoint.{GrpcMapping, Operation, Target}
 
   @task_supervisor Orchard.Node.RuntimeEndpointTaskSupervisor
 
@@ -23,17 +23,17 @@ defmodule Orchard.Node.RuntimeEndpoint do
   def ensure_model_loaded(%Operation.EnsureModelLoadedRequest{} = request, _opts \\ []) do
     response =
       request
-      |> RuntimeEndpointMapper.ensure_model_loaded_request_to_proto()
+      |> GrpcMapping.ensure_model_loaded_request_to_proto()
       |> Status.ensure_model_loaded()
 
-    {:ok, RuntimeEndpointMapper.ensure_model_loaded_result_from_response(response)}
+    {:ok, GrpcMapping.ensure_model_loaded_result_from_response(response)}
   end
 
   @spec unload_model(Operation.UnloadModelRequest.t(), keyword()) :: {:ok, Operation.Ack.t()}
   def unload_model(%Operation.UnloadModelRequest{} = request, _opts \\ []) do
     response =
       request
-      |> RuntimeEndpointMapper.unload_model_request_to_proto()
+      |> GrpcMapping.unload_model_request_to_proto()
       |> Status.unload_model()
 
     {:ok, RuntimeEndpointMapper.ack_from_response(response)}

@@ -8,6 +8,7 @@ defmodule Orchard.Inference.ResponsesSerializer do
   """
 
   alias Orchard.CanonicalRequest
+  alias Orchard.Inference.EventUsage
   alias Orchard.Inference.ToolCallAccumulator
   alias Orchard.InferenceEvent
 
@@ -25,7 +26,7 @@ defmodule Orchard.Inference.ResponsesSerializer do
       model: format_model_display(canonical),
       output: output_items(output_text, function_call_items),
       output_text: output_text,
-      usage: usage_map(find_usage(events)),
+      usage: usage_map(EventUsage.find(events)),
       error: nil,
       metadata: canonical.metadata
     }
@@ -198,17 +199,6 @@ defmodule Orchard.Inference.ResponsesSerializer do
     events
     |> Enum.filter(&(InferenceEvent.kind(&1) == :output_text_delta))
     |> Enum.map_join("", & &1.event.delta)
-  end
-
-  defp find_usage(events) do
-    usage_event = Enum.find(events, &(InferenceEvent.kind(&1) == :usage))
-    completed_event = Enum.find(events, &(InferenceEvent.kind(&1) == :completed))
-
-    cond do
-      usage_event != nil -> usage_event.event.usage
-      completed_event != nil && completed_event.event.usage != nil -> completed_event.event.usage
-      true -> nil
-    end
   end
 
   defp created_at(_events, created_at_override) when is_integer(created_at_override),

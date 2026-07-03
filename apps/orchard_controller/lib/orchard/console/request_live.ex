@@ -10,6 +10,7 @@ defmodule OrchardConsole.RequestLive do
   alias Orchard.Governance.{ApiKey, Tenant}
   alias Orchard.Requests
   alias Orchard.Requests.Request
+  alias OrchardConsole.TimeHelpers
 
   @default_refresh_interval_ms 5_000
 
@@ -248,14 +249,17 @@ defmodule OrchardConsole.RequestLive do
   defp request_usage(assigns) do
     assigns =
       assigns
-      |> assign(:ttft_ms, elapsed_ms(assigns.request.inserted_at, assigns.request.first_token_at))
+      |> assign(
+        :ttft_ms,
+        TimeHelpers.elapsed_ms(assigns.request.inserted_at, assigns.request.first_token_at)
+      )
       |> assign(
         :generation_ms,
-        elapsed_ms(assigns.request.first_token_at, assigns.request.completed_at)
+        TimeHelpers.elapsed_ms(assigns.request.first_token_at, assigns.request.completed_at)
       )
       |> assign(
         :total_latency_ms,
-        elapsed_ms(assigns.request.inserted_at, assigns.request.completed_at)
+        TimeHelpers.elapsed_ms(assigns.request.inserted_at, assigns.request.completed_at)
       )
       |> assign(:tokens_per_second, request_tokens_per_second(assigns.request))
 
@@ -286,17 +290,17 @@ defmodule OrchardConsole.RequestLive do
           <.metric_tile
             id="request-ttft"
             label="TTFT"
-            value={format_duration(@ttft_ms)}
+            value={TimeHelpers.format_duration(@ttft_ms)}
           />
           <.metric_tile
             id="request-generation-time"
             label="Generation"
-            value={format_duration(@generation_ms)}
+            value={TimeHelpers.format_duration(@generation_ms)}
           />
           <.metric_tile
             id="request-total-latency"
             label="Total Latency"
-            value={format_duration(@total_latency_ms)}
+            value={TimeHelpers.format_duration(@total_latency_ms)}
           />
           <.metric_tile
             id="request-tokens-per-second"
@@ -747,22 +751,6 @@ defmodule OrchardConsole.RequestLive do
   # Performance metric helpers
   # ---------------------------------------------------------------------------
 
-  defp elapsed_ms(nil, _), do: nil
-  defp elapsed_ms(_, nil), do: nil
-
-  defp elapsed_ms(%DateTime{} = start_at, %DateTime{} = end_at) do
-    ms = DateTime.diff(end_at, start_at, :millisecond)
-    if ms >= 0, do: ms, else: nil
-  end
-
-  defp format_duration(nil), do: "—"
-  defp format_duration(ms) when ms < 1000, do: "#{ms} ms"
-
-  defp format_duration(ms) do
-    seconds = ms / 1000
-    :erlang.float_to_binary(seconds, decimals: 1) <> " s"
-  end
-
   defp format_rate(nil), do: "—"
 
   defp format_rate(rate) do
@@ -770,7 +758,7 @@ defmodule OrchardConsole.RequestLive do
   end
 
   defp request_tokens_per_second(request) do
-    generation_ms = elapsed_ms(request.first_token_at, request.completed_at)
+    generation_ms = TimeHelpers.elapsed_ms(request.first_token_at, request.completed_at)
 
     cond do
       is_nil(generation_ms) -> nil

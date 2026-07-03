@@ -4,6 +4,7 @@ defmodule Orchard.Inference.ChatResponseSerializer do
   """
 
   alias Orchard.CanonicalRequest
+  alias Orchard.Inference.EventUsage
   alias Orchard.Inference.ToolCallAccumulator
   alias Orchard.InferenceEvent
 
@@ -26,7 +27,7 @@ defmodule Orchard.Inference.ChatResponseSerializer do
           finish_reason: finish_reason(events)
         }
       ],
-      usage: usage_map(find_usage(events))
+      usage: usage_map(EventUsage.find(events))
     }
   end
 
@@ -78,17 +79,6 @@ defmodule Orchard.Inference.ChatResponseSerializer do
     events
     |> Enum.filter(&(InferenceEvent.kind(&1) == :output_text_delta))
     |> Enum.map_join("", & &1.event.delta)
-  end
-
-  defp find_usage(events) do
-    usage_event = Enum.find(events, &(InferenceEvent.kind(&1) == :usage))
-    completed_event = Enum.find(events, &(InferenceEvent.kind(&1) == :completed))
-
-    cond do
-      usage_event != nil -> usage_event.event.usage
-      completed_event != nil && completed_event.event.usage != nil -> completed_event.event.usage
-      true -> nil
-    end
   end
 
   defp created_at(_events, created_at_override) when is_integer(created_at_override),

@@ -16,6 +16,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
 
   alias Orchard.RuntimeEndpoint.{
     GrpcCompatibilityMapper,
+    GrpcMapping,
     Observation,
     Operation,
     PlacementCapacity,
@@ -152,7 +153,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
         artifact_source_uri: "file:///models/phi"
       )
 
-    proto = GrpcCompatibilityMapper.ensure_model_loaded_request_to_proto(request)
+    proto = GrpcMapping.ensure_model_loaded_request_to_proto(request)
 
     assert proto.node_id == "node-1"
     assert proto.model_id == @model_id
@@ -163,7 +164,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
     assert proto.artifact_source_uri == "file:///models/phi"
 
     loaded =
-      GrpcCompatibilityMapper.ensure_model_loaded_result_from_response(%EnsureModelLoadedResponse{
+      GrpcMapping.ensure_model_loaded_result_from_response(%EnsureModelLoadedResponse{
         already_loaded: true,
         placement_state: :PLACEMENT_STATE_LOADED,
         worker_supports_prompt_token_ids: true
@@ -174,7 +175,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
     assert loaded.worker_supports_prompt_token_ids == true
 
     failed =
-      GrpcCompatibilityMapper.ensure_model_loaded_result_from_response(%EnsureModelLoadedResponse{
+      GrpcMapping.ensure_model_loaded_result_from_response(%EnsureModelLoadedResponse{
         placement_state: :PLACEMENT_STATE_FAILED,
         failure_category: :MODEL_LOAD_FAILURE_CATEGORY_RESOURCE_EXHAUSTED,
         failure_code: "oom",
@@ -275,7 +276,7 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityMapperTest do
         evict: true
       )
 
-    proto = GrpcCompatibilityMapper.unload_model_request_to_proto(request)
+    proto = GrpcMapping.unload_model_request_to_proto(request)
 
     assert proto.model_id == @model_id
     assert proto.version == @version
