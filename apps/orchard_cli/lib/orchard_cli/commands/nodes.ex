@@ -8,6 +8,7 @@ defmodule OrchardCLI.Commands.Nodes do
   alias Orchard.ControlPlane
   alias Orchard.Nodes
   alias Orchard.Nodes.AdmissionCandidate
+  alias Orchard.Nodes.Lifecycle
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(args) do
@@ -26,7 +27,13 @@ defmodule OrchardCLI.Commands.Nodes do
   defp run_command("pending", rest), do: run_pending(rest)
   defp run_command("admit", rest), do: run_admit(rest)
   defp run_command("reject", rest), do: run_reject(rest)
-  defp run_command(_command, _rest), do: {:error, group_usage(), 1}
+
+  defp run_command(command, rest) do
+    case lifecycle_command_action(command) do
+      {:ok, action} -> run_lifecycle(action, rest)
+      :error -> {:error, group_usage(), 1}
+    end
+  end
 
   defp run_inspect(["--help"]), do: {:ok, inspect_usage()}
   defp run_inspect(["help"]), do: {:ok, inspect_usage()}
@@ -124,6 +131,37 @@ defmodule OrchardCLI.Commands.Nodes do
     end
   end
 
+  defp run_lifecycle(action, ["--help"]), do: {:ok, lifecycle_usage(action)}
+  defp run_lifecycle(action, ["help"]), do: {:ok, lifecycle_usage(action)}
+
+  defp run_lifecycle(action, args) do
+    case parse_lifecycle_args(action, args) do
+      {:ok, %{dry_run?: true} = opts} ->
+        preview =
+          guarded_preview(
+            fn -> ActionPreviewBuilder.node_lifecycle(action, opts.id, opts.attrs) end,
+            action,
+            opts.id
+          )
+
+        {:ok, render_preview(preview, opts.json?)}
+
+      {:ok, opts} ->
+        preview = ActionPreviewBuilder.node_lifecycle(action, opts.id, opts.attrs)
+
+        case lifecycle_confirmation_error(preview, opts) do
+          nil -> execute_lifecycle(opts)
+          message -> confirmation_error(preview, opts, action, message)
+        end
+
+      {:help, usage} ->
+        {:ok, usage}
+
+      {:error, message, code} ->
+        {:error, message, code}
+    end
+  end
+
   defp execute_admit(opts) do
     with :ok <- ControlPlane.authorize_write_path(:node_admission),
          {:ok, result} <- Nodes.admit_node(opts.id, opts.attrs) do
@@ -138,6 +176,18 @@ defmodule OrchardCLI.Commands.Nodes do
     with :ok <- ControlPlane.authorize_write_path(:node_admission),
          {:ok, result} <- Nodes.reject_admission(opts.id, opts.attrs) do
       output = NodeAdmissionPresenter.reject_result(result)
+      {:ok, render_action_result(output, opts.json?)}
+    else
+      {:error, reason} -> action_error(reason, opts.json?)
+    end
+  end
+
+  defp execute_lifecycle(opts) do
+    with :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
+         {:ok, result} <- Lifecycle.execute(opts.action, opts.id, opts.attrs) do
+      output =
+        NodeAdmissionPresenter.lifecycle_result(Lifecycle.audit_action(opts.action), result)
+
       {:ok, render_action_result(output, opts.json?)}
     else
       {:error, reason} -> action_error(reason, opts.json?)
@@ -261,6 +311,33 @@ defmodule OrchardCLI.Commands.Nodes do
     end
   end
 
+  defp parse_lifecycle_args(action, args) do
+    case OptionParser.parse(args, strict: lifecycle_switches()) do
+      {opts, [node_id], []} ->
+        if Keyword.get(opts, :help, false) do
+          {:help, lifecycle_usage(action)}
+        else
+          {:ok,
+           %{
+             action: action,
+             id: node_id,
+             json?: Keyword.get(opts, :json, false),
+             dry_run?: Keyword.get(opts, :dry_run, false),
+             yes?: Keyword.get(opts, :yes, false),
+             acknowledge?: Keyword.get(opts, :acknowledge, false),
+             typed_node_id: Keyword.get(opts, :typed_node_id),
+             attrs: lifecycle_attrs(opts)
+           }}
+        end
+
+      {_opts, _rest, [{flag, _value} | _unknown]} ->
+        unknown_option(flag)
+
+      _other ->
+        {:error, lifecycle_usage(action), 1}
+    end
+  end
+
   defp admit_switches do
     [
       dry_run: :boolean,
@@ -286,6 +363,18 @@ defmodule OrchardCLI.Commands.Nodes do
     ]
   end
 
+  defp lifecycle_switches do
+    [
+      acknowledge: :boolean,
+      dry_run: :boolean,
+      help: :boolean,
+      json: :boolean,
+      reason: :string,
+      typed_node_id: :string,
+      yes: :boolean
+    ]
+  end
+
   defp admission_attrs(opts) do
     %{}
     |> put_opt(opts, :trust_evidence_ref)
@@ -297,6 +386,8 @@ defmodule OrchardCLI.Commands.Nodes do
   end
 
   defp reject_attrs(opts), do: put_opt(%{}, opts, :reason)
+
+  defp lifecycle_attrs(opts), do: put_opt(%{}, opts, :reason)
 
   defp put_opt(attrs, opts, key) do
     case Keyword.get(opts, key) do
@@ -316,6 +407,14 @@ defmodule OrchardCLI.Commands.Nodes do
     {:error, message <> "\n\n" <> render_preview(preview, false), 2}
   end
 
+  defp confirmation_error(%ActionPreview{} = preview, %{json?: true}, _action, _message) do
+    {:error, render_preview(preview, true), 2}
+  end
+
+  defp confirmation_error(%ActionPreview{} = preview, _opts, _action, message) do
+    {:error, message <> "\n\n" <> render_preview(preview, false), 2}
+  end
+
   defp confirmation_message(preview, opts, action) do
     cond do
       preview_blocked?(preview) ->
@@ -329,8 +428,54 @@ defmodule OrchardCLI.Commands.Nodes do
     end
   end
 
+  defp lifecycle_confirmation_error(%ActionPreview{} = preview, opts) do
+    if preview_blocked?(preview) do
+      "Error: #{action_name(opts.action)} cannot execute because preview blockers are present."
+    else
+      Enum.find_value(preview.confirmation_requirements, &lifecycle_requirement_error(&1, opts))
+    end
+  end
+
+  defp lifecycle_requirement_error("requires_yes_flag", %{yes?: false} = opts) do
+    "Error: #{action_name(opts.action)} requires --yes before execution."
+  end
+
+  defp lifecycle_requirement_error("requires_typed_node_id", opts) do
+    if opts.typed_node_id == opts.id do
+      nil
+    else
+      "Error: #{action_name(opts.action)} requires --typed-node-id matching the target node id."
+    end
+  end
+
+  defp lifecycle_requirement_error(
+         "requires_drain_consequence_acknowledgement",
+         %{
+           acknowledge?: false
+         } = opts
+       ) do
+    "Error: #{action_name(opts.action)} requires --acknowledge before execution."
+  end
+
+  defp lifecycle_requirement_error(
+         "requires_decommission_consequence_acknowledgement",
+         %{
+           acknowledge?: false
+         } = opts
+       ) do
+    "Error: #{action_name(opts.action)} requires --acknowledge before execution."
+  end
+
+  defp lifecycle_requirement_error(_requirement, _opts), do: nil
+
   defp action_name(:admit), do: "node admission"
   defp action_name(:reject), do: "node admission rejection"
+  defp action_name(:cordon), do: "node cordon"
+  defp action_name(:uncordon), do: "node uncordon"
+  defp action_name(:drain), do: "node drain"
+  defp action_name(:maintenance), do: "node maintenance"
+  defp action_name(:resume), do: "node resume"
+  defp action_name(:decommission), do: "node decommission"
 
   defp action_error(reason, true) when is_atom(reason) do
     {:error, Jason.encode!(%{object: "error", code: Atom.to_string(reason)}, pretty: true), 1}
@@ -349,10 +494,21 @@ defmodule OrchardCLI.Commands.Nodes do
   defp human_reason(:admission_not_pending), do: "admission is not pending."
   defp human_reason(:admission_rejected), do: "admission rejection must be cleared first."
   defp human_reason(:controller_standby), do: "this controller is in standby mode."
+  defp human_reason(:decommission_already_running), do: "node decommission is already running."
+  defp human_reason(:drain_already_running), do: "node drain is already running."
   defp human_reason(:inventory_missing), do: "registered node inventory is missing."
+
+  defp human_reason(:lifecycle_transition_invalid),
+    do: "node lifecycle state does not allow this action."
+
+  defp human_reason(:maintenance_requires_drain), do: "node must be draining before maintenance."
   defp human_reason(:node_not_found), do: "node was not found."
+  defp human_reason(:node_not_active), do: "node is not active."
+  defp human_reason(:node_not_admitted), do: "node is not admitted."
   defp human_reason(:node_not_pending_admission), do: "node is not pending admission."
   defp human_reason(:node_not_registered), do: "node is not registered."
+  defp human_reason(:node_unhealthy), do: "node health is unhealthy."
+  defp human_reason(:node_unreachable), do: "node is unreachable."
   defp human_reason(:policy_required), do: "required policy inputs are missing."
   defp human_reason(:pool_required), do: "node pool assignment is required."
   defp human_reason(:reason_required), do: "a nonblank rejection reason is required."
@@ -439,6 +595,17 @@ defmodule OrchardCLI.Commands.Nodes do
     "Rejected admission candidate #{candidate.id}."
   end
 
+  defp render_action_result(
+         %{
+           object: "node_lifecycle_action_result",
+           action: action,
+           node: node
+         },
+         false
+       ) do
+    "#{lifecycle_result_label(action)} node #{node.id}. State: #{node.state}."
+  end
+
   defp encode_json(payload), do: Jason.encode!(payload, pretty: true)
 
   defp format_scheduling(nil), do: "unknown"
@@ -457,6 +624,25 @@ defmodule OrchardCLI.Commands.Nodes do
 
   defp format_codes([]), do: "none"
   defp format_codes(values), do: Enum.join(values, ", ")
+
+  defp lifecycle_result_label("node_lifecycle.cordoned"), do: "Cordoned"
+  defp lifecycle_result_label("node_lifecycle.uncordoned"), do: "Uncordoned"
+  defp lifecycle_result_label("node_lifecycle.drain_started"), do: "Started drain for"
+  defp lifecycle_result_label("node_lifecycle.maintenance_entered"), do: "Moved to maintenance"
+  defp lifecycle_result_label("node_lifecycle.resumed"), do: "Resumed"
+
+  defp lifecycle_result_label("node_lifecycle.decommission_started"),
+    do: "Started decommission for"
+
+  defp lifecycle_result_label(_action), do: "Updated"
+
+  defp lifecycle_command_action("cordon"), do: {:ok, :cordon}
+  defp lifecycle_command_action("uncordon"), do: {:ok, :uncordon}
+  defp lifecycle_command_action("drain"), do: {:ok, :drain}
+  defp lifecycle_command_action("maintenance"), do: {:ok, :maintenance}
+  defp lifecycle_command_action("resume"), do: {:ok, :resume}
+  defp lifecycle_command_action("decommission"), do: {:ok, :decommission}
+  defp lifecycle_command_action(_command), do: :error
 
   # NOTE: list_nodes/0 and summary/0 gracefully degrade to []/zero when the
   # repo is unavailable. The CLI cannot distinguish "no nodes" from "DB down".
@@ -564,7 +750,13 @@ defmodule OrchardCLI.Commands.Nodes do
         "  inspect  Inspect one node",
         "  pending  Review pending or rejected node admission candidates",
         "  admit    Admit a registered pending node into the cluster",
-        "  reject   Reject pending node admission"
+        "  reject   Reject pending node admission",
+        "  cordon   Stop scheduling new work to an active node",
+        "  uncordon Allow scheduling to a cordoned node",
+        "  drain    Start draining an active or cordoned node",
+        "  maintenance Move a draining node into maintenance",
+        "  resume   Resume a maintenance node",
+        "  decommission Start decommissioning a node"
       ],
       "\n"
     )
@@ -622,6 +814,54 @@ defmodule OrchardCLI.Commands.Nodes do
         "",
         "Previews or rejects pending node admission.",
         "Execution requires --yes, --reason, and a preview with no blockers."
+      ],
+      "\n"
+    )
+  end
+
+  defp lifecycle_usage(:cordon) do
+    lifecycle_usage("cordon", "Previews or cordons an active node.")
+  end
+
+  defp lifecycle_usage(:uncordon) do
+    lifecycle_usage("uncordon", "Previews or uncordons a cordoned node.")
+  end
+
+  defp lifecycle_usage(:drain) do
+    lifecycle_usage(
+      "drain",
+      "Previews or starts draining an active or cordoned node.",
+      "Execution requires --yes, --acknowledge, and a preview with no blockers."
+    )
+  end
+
+  defp lifecycle_usage(:maintenance) do
+    lifecycle_usage("maintenance", "Previews or moves a draining node into maintenance.")
+  end
+
+  defp lifecycle_usage(:resume) do
+    lifecycle_usage("resume", "Previews or resumes a maintenance node.")
+  end
+
+  defp lifecycle_usage(:decommission) do
+    lifecycle_usage(
+      "decommission",
+      "Previews or starts decommissioning a node.",
+      "Execution requires --yes, --acknowledge, --typed-node-id, and a preview with no blockers."
+    )
+  end
+
+  defp lifecycle_usage(
+         command,
+         summary,
+         execution_line \\ "Execution requires --yes and a preview with no blockers."
+       ) do
+    Enum.join(
+      [
+        "Usage: orchardctl nodes #{command} <node-id> [--dry-run] [--json] [--yes] [--reason REASON] [--acknowledge] [--typed-node-id NODE_ID]",
+        "",
+        summary,
+        execution_line
       ],
       "\n"
     )

@@ -73,6 +73,16 @@ defmodule Orchard.API.Admin.NodeAdmissionPresenter do
     }
   end
 
+  @spec lifecycle_result(String.t(), %{node: Node.t(), audit_log: AuditLog.t()}) :: map()
+  def lifecycle_result(action, %{node: %Node{} = node, audit_log: audit_log}) do
+    %{
+      object: "node_lifecycle_action_result",
+      action: action,
+      node: present_node(node),
+      audit_log: audit_log(audit_log)
+    }
+  end
+
   defp candidate_action_result(action, %{
          candidate: %AdmissionCandidate{} = candidate,
          decision: decision,

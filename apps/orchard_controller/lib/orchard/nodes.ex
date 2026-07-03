@@ -1483,7 +1483,9 @@ defmodule Orchard.Nodes do
     |> Repo.one()
   end
 
-  defp lock_node(node_id) do
+  @doc false
+  @spec lock_node(Ecto.UUID.t()) :: {:ok, Node.t()} | {:error, :node_not_found}
+  def lock_node(node_id) do
     with {:ok, node_id} <- normalize_uuid(node_id, :node_not_found) do
       Node
       |> where([node], node.id == ^node_id)
