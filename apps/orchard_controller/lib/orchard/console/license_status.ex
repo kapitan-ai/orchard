@@ -15,25 +15,40 @@ defmodule OrchardConsole.LicenseStatus do
           required(:licensee) => String.t() | nil,
           required(:max_machines) => pos_integer() | nil,
           required(:tracking) => Licensing.tracking_metadata() | nil,
-          required(:activation_guidance) => String.t() | nil
+          required(:activation_guidance) => String.t() | nil,
+          required(:visible?) => boolean()
         }
 
   @spec fetch() :: summary()
   def fetch do
-    licensing_impl().inspect_local()
-    |> summarize()
+    status = licensing_impl().inspect_local()
+
+    summarize(status, safe_enforcement_mode())
   rescue
     _ ->
-      summarize(%Licensing{
-        state: :malformed_bundle,
-        message: "License inspection failed.",
-        bundle_path: ""
-      })
+      summarize(
+        %Licensing{
+          state: :malformed_bundle,
+          message: "License inspection failed.",
+          bundle_path: ""
+        },
+        safe_enforcement_mode()
+      )
   end
 
   @spec valid?(summary()) :: boolean()
   def valid?(%{state: :valid}), do: true
   def valid?(_summary), do: false
+
+  @doc """
+  Returns whether Console license surfaces should render.
+
+  Valid license status stays visible in every enforcement mode.
+  Non-valid states stay quiet in `:off` and render in `:warn` or `:hard` for operator remediation.
+  """
+  @spec visible?(summary()) :: boolean()
+  def visible?(%{visible?: visible?}) when is_boolean(visible?), do: visible?
+  def visible?(_summary), do: true
 
   @spec badge_label(summary()) :: String.t()
   def badge_label(%{state: :valid, licensee: licensee}) do
@@ -69,7 +84,7 @@ defmodule OrchardConsole.LicenseStatus do
 
   def tracking_label(_summary), do: nil
 
-  defp summarize(%Licensing{} = status) do
+  defp summarize(%Licensing{} = status, enforcement_mode) do
     health = Licensing.health_summary(status)
     activation_guidance = activation_guidance(status)
 
@@ -84,8 +99,22 @@ defmodule OrchardConsole.LicenseStatus do
       licensee: Map.get(health, :licensee),
       max_machines: Map.get(health, :max_machines),
       tracking: Map.get(health, :tracking),
-      activation_guidance: activation_guidance
+      activation_guidance: activation_guidance,
+      visible?: visible_status?(status, enforcement_mode)
     }
+  end
+
+  defp visible_status?(%Licensing{state: :valid}, _enforcement_mode), do: true
+  defp visible_status?(%Licensing{}, :off), do: false
+
+  defp visible_status?(%Licensing{}, enforcement_mode) when enforcement_mode in [:warn, :hard],
+    do: true
+
+  defp safe_enforcement_mode do
+    Licensing.enforcement_mode()
+  rescue
+    ArgumentError -> :hard
+    RuntimeError -> :hard
   end
 
   defp activation_guidance(%Licensing{state: :valid}), do: nil

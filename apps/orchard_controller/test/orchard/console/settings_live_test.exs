@@ -2,7 +2,9 @@ defmodule OrchardConsole.SettingsLiveTest do
   use Orchard.ConnCase, async: false
 
   import Phoenix.LiveViewTest
-  import Orchard.TestSupport.LicenseGateHelpers, only: [activation_guidance: 0]
+
+  import Orchard.TestSupport.LicenseGateHelpers,
+    only: [activation_guidance: 0, set_license_enforcement: 1]
 
   alias Orchard.ConsoleSettings
 
@@ -72,7 +74,22 @@ defmodule OrchardConsole.SettingsLiveTest do
   end
 
   describe "License Status" do
+    test "hides missing license activation noise when enforcement is off", %{conn: conn} do
+      set_license_enforcement(:off)
+      put_console_config(licensing_impl: __MODULE__.LicensingMissingStub)
+
+      {:ok, view, html} = live(conn, "/console/settings")
+
+      refute has_element?(view, "#settings-license-card")
+      refute html =~ activation_guidance()
+      assert has_element?(view, "#settings-appearance-card")
+      assert has_element?(view, "#settings-inference-defaults-card")
+      assert has_element?(view, "#settings-advanced-card")
+    end
+
     test "renders display-safe license fields as read-only status", %{conn: conn} do
+      set_license_enforcement(:off)
+
       {:ok, view, _html} = live(conn, "/console/settings")
 
       card_html = view |> element("#settings-license-card") |> render()
@@ -90,7 +107,10 @@ defmodule OrchardConsole.SettingsLiveTest do
       refute card_html =~ "phx-click"
     end
 
-    test "renders fetched activation guidance when the license is not activated", %{conn: conn} do
+    test "renders fetched activation guidance in warn mode when the license is not activated", %{
+      conn: conn
+    } do
+      set_license_enforcement(:warn)
       put_console_config(licensing_impl: __MODULE__.LicensingMissingStub)
 
       {:ok, view, _html} = live(conn, "/console/settings")
@@ -105,6 +125,7 @@ defmodule OrchardConsole.SettingsLiveTest do
     end
 
     test "degrades safely when license inspection fails", %{conn: conn} do
+      set_license_enforcement(:hard)
       put_console_config(licensing_impl: __MODULE__.LicensingProbeFailureStub)
 
       {:ok, view, _html} = live(conn, "/console/settings")
