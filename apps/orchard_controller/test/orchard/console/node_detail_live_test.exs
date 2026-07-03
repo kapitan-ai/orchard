@@ -202,6 +202,213 @@ defmodule OrchardConsole.NodeDetailLiveTest do
     end
   end
 
+  describe "lifecycle action previews" do
+    test "renders lifecycle preview affordances for node rows only", %{conn: conn} do
+      node = insert_node!(state: :active, display_name: "lifecycle-affordance-node")
+      candidate = insert_candidate!(target_ref: "10.4.0.88:50071")
+
+      {:ok, _view, node_html} = live(conn, "/console/nodes/#{node.id}")
+
+      assert node_html =~ "Preview cordon"
+      assert node_html =~ "Preview uncordon"
+      assert node_html =~ "Preview drain"
+      assert node_html =~ "Preview maintenance"
+      assert node_html =~ "Preview resume"
+      assert node_html =~ "Preview decommission"
+
+      {:ok, _view, candidate_html} = live(conn, "/console/nodes/pending/#{candidate.id}")
+
+      refute candidate_html =~ "Preview cordon"
+      refute candidate_html =~ "Preview uncordon"
+      refute candidate_html =~ "Preview drain"
+      refute candidate_html =~ "Preview maintenance"
+      refute candidate_html =~ "Preview resume"
+      refute candidate_html =~ "Preview decommission"
+    end
+
+    test "previews and executes node cordon through the shared action preview", %{conn: conn} do
+      node =
+        insert_node!(%{
+          display_name: "cordon-detail-node",
+          state: :active,
+          health: :healthy
+        })
+
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+
+      view
+      |> element("#node-detail-open-lifecycle-cordon")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "Cordon Node Preview"
+      assert html =~ "node_lifecycle.cordon"
+      assert html =~ "requires_yes_flag"
+      assert html =~ "Active"
+      assert html =~ "Cordoned"
+
+      view
+      |> form("#node-action-form", %{"action" => %{"confirmed" => "true"}})
+      |> render_change()
+
+      view
+      |> form("#node-action-form", %{"action" => %{"confirmed" => "true"}})
+      |> render_submit()
+
+      assert Repo.get!(Node, node.id).state == :cordoned
+      assert render(view) =~ "Cordoned"
+    end
+
+    test "gates decommission execution on typed node id and consequence acknowledgement", %{
+      conn: conn
+    } do
+      node =
+        insert_node!(%{
+          display_name: "decommission-detail-node",
+          state: :active,
+          health: :healthy
+        })
+
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+
+      view
+      |> element("#node-detail-open-lifecycle-decommission")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "Decommission Node Preview"
+      assert html =~ "requires_typed_node_id"
+      assert html =~ "requires_decommission_consequence_acknowledgement"
+      assert html =~ "future_scheduling_revoked"
+      assert html =~ "no_rejoin_with_same_node_id"
+      assert has_element?(view, "#action-submit[disabled]")
+
+      decommission_attrs = %{
+        "action" => %{
+          "node_id_confirmation" => node.id,
+          "acknowledged" => "true",
+          "confirmed" => "true"
+        }
+      }
+
+      view
+      |> form("#node-action-form", decommission_attrs)
+      |> render_change()
+
+      view
+      |> form("#node-action-form", decommission_attrs)
+      |> render_submit()
+
+      assert Repo.get!(Node, node.id).state == :decommissioning
+      assert render(view) =~ "Decommissioning"
+    end
+
+    test "gates drain execution on consequence acknowledgement", %{conn: conn} do
+      node =
+        insert_node!(%{
+          display_name: "drain-detail-node",
+          state: :active,
+          health: :healthy
+        })
+
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+
+      view
+      |> element("#node-detail-open-lifecycle-drain")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "Drain Node Preview"
+      assert html =~ "node_lifecycle.drain"
+      assert html =~ "existing_requests_continue_until_deadline"
+      assert html =~ "requires_drain_consequence_acknowledgement"
+      assert has_element?(view, "#action-submit[disabled]")
+
+      view
+      |> form("#node-action-form", %{"action" => %{"confirmed" => "true"}})
+      |> render_change()
+
+      assert has_element?(view, "#action-submit[disabled]")
+
+      drain_attrs = %{
+        "action" => %{
+          "acknowledged" => "true",
+          "confirmed" => "true"
+        }
+      }
+
+      view
+      |> form("#node-action-form", drain_attrs)
+      |> render_change()
+
+      view
+      |> form("#node-action-form", drain_attrs)
+      |> render_submit()
+
+      assert Repo.get!(Node, node.id).state == :draining
+      assert render(view) =~ "Draining"
+    end
+
+    test "shows invalid-state lifecycle blockers without allowing execution", %{conn: conn} do
+      node =
+        insert_node!(%{
+          display_name: "blocked-cordon-detail-node",
+          state: :registered,
+          health: :healthy
+        })
+
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+
+      view
+      |> element("#node-detail-open-lifecycle-cordon")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "Cordon Node Preview"
+      assert html =~ "node_not_admitted"
+      assert has_element?(view, "#action-submit[disabled]")
+
+      view
+      |> form("#node-action-form", %{"action" => %{"confirmed" => "true"}})
+      |> render_submit()
+
+      assert Repo.get!(Node, node.id).state == :registered
+      assert render(view) =~ "Resolve blockers and confirm the preview before executing."
+    end
+
+    test "previews maintenance but keeps execution blocked until drain completion is verified", %{
+      conn: conn
+    } do
+      node =
+        insert_node!(%{
+          display_name: "maintenance-detail-node",
+          state: :draining,
+          health: :healthy
+        })
+
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+
+      view
+      |> element("#node-detail-open-lifecycle-maintenance")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "Maintenance Node Preview"
+      assert html =~ "node_lifecycle.maintenance"
+      assert html =~ "drain_completion_unverified"
+      assert html =~ "Draining"
+      assert html =~ "Maintenance"
+      assert has_element?(view, "#action-submit[disabled]")
+
+      view
+      |> form("#node-action-form", %{"action" => %{"confirmed" => "true"}})
+      |> render_submit()
+
+      assert Repo.get!(Node, node.id).state == :draining
+      assert render(view) =~ "Resolve blockers and confirm the preview before executing."
+    end
+  end
+
   defp insert_node!(attrs) do
     unique = System.unique_integer([:positive])
 

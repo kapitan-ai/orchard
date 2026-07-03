@@ -47,7 +47,8 @@
 - [x] 4.6 Implement safe lifecycle commands for cordon, uncordon, drain, maintenance, resume, and decommission with dry-run, confirmation requirements, and JSON output.
   Note: this slice implements local `orchardctl nodes` lifecycle commands on the shared `ActionPreview` contract with transactional lifecycle state mutation, mutation-time revalidation, and cluster-scoped audit.
   Manual `draining -> maintenance` execution remains deferred: the `maintenance` command still exposes its dry-run preview but execution is blocked with a `drain_completion_unverified` blocker until drain completion (active-work quiescence) can be verified.
-  Drain deadline orchestration, active-work cancellation, automatic `draining -> maintenance`, persisted lifecycle reason columns, decommission trust revocation, Admin/Operator API lifecycle routes, and Console lifecycle panels remain future work.
+  Drain deadline orchestration, active-work cancellation, automatic `draining -> maintenance`, persisted lifecycle reason columns, decommission trust revocation, and Admin/Operator API lifecycle routes remain future work.
+  Console lifecycle action preview panels are now implemented under task 5.3.
   Note: `SPEC.md` §11.9 currently enumerates only the node-admission CLI commands as a required-command floor; promoting these lifecycle commands into that normative list remains an owner/OpenSpec-acceptance decision to be reconciled when this change is accepted.
 - [ ] 4.7 Implement `orchardctl scheduler explain <request-id>` or reconcile with the existing `requests inspect` command if that is the repo-preferred path.
 - [ ] 4.8 Implement `orchardctl cluster status --json` for read-only HA-lite and cluster summary status.
@@ -56,10 +57,13 @@
 
 - [x] 5.1 Add a pending admission queue to the Console Nodes workspace.
 - [x] 5.2 Add node detail drill-in that preserves separate lifecycle, health, freshness, transport, runtime, compatibility, scheduling, and warning groups.
-- [ ] 5.3 Add action preview dialogs or page-local panels for admit, reject pending admission, cordon, uncordon, drain, maintenance, resume, and decommission.
+- [x] 5.3 Add action preview dialogs or page-local panels for admit, reject pending admission, cordon, uncordon, drain, maintenance, resume, and decommission.
   Note: this slice implements Console admit and reject pending admission preview panels using the shared `ActionPreview` contract.
   Reusable Console review-panel guidance is now documented in `docs/DESIGN.md`.
-  Full lifecycle action previews and any reusable dialog primitive remain future work.
+  Console node detail now exposes lifecycle action preview panels for cordon, uncordon, drain, maintenance, resume, and decommission using the shared `ActionPreview` contract.
+  Existing backend execution is wired for cordon, uncordon, drain, resume, and decommission with confirmation gates and mutation-time lifecycle revalidation.
+  Maintenance remains preview-visible but execution-blocked by `drain_completion_unverified` until drain completion and active-work quiescence can be verified.
+  Drain deadline orchestration, active-work cancellation, automatic `draining -> maintenance`, known active request counts, and any reusable dialog primitive remain future slices.
 - [ ] 5.4 Add scheduler explanation views with selected candidate, skipped candidates, fixed reason codes, and sanitized diagnostics.
 - [ ] 5.5 Add diagnostics and support bundle entry points that use the shared support bundle contract.
 - [ ] 5.6 Add read-only HA-lite control-plane status.

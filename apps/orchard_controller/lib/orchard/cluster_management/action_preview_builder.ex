@@ -16,7 +16,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
       {:ok, %Node{} = node} ->
         blockers =
           []
-          |> add_write_path_blocker()
+          |> add_write_path_blocker(:node_admission)
           |> add_blockers(Nodes.admission_blocker_codes(node, attrs))
 
         action_preview(%{
@@ -71,7 +71,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
       {:ok, %Node{} = node} ->
         blockers =
           []
-          |> add_write_path_blocker()
+          |> add_write_path_blocker(:node_lifecycle)
           |> add_blockers(Lifecycle.blocker_codes(action, node))
 
         action_preview(%{
@@ -129,7 +129,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   defp reject_candidate_preview(%AdmissionCandidate{} = candidate, attrs) do
     blockers =
       []
-      |> add_write_path_blocker()
+      |> add_write_path_blocker(:node_admission)
       |> add_blockers(candidate_rejection_blockers(candidate))
 
     action_preview(%{
@@ -148,7 +148,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   defp reject_node_preview(%Node{} = node, attrs) do
     blockers =
       []
-      |> add_write_path_blocker()
+      |> add_write_path_blocker(:node_admission)
       |> add_blockers(node_rejection_blockers(node))
 
     action_preview(%{
@@ -218,8 +218,8 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
     |> then(& &1.scheduling)
   end
 
-  defp add_write_path_blocker(blockers) do
-    case ControlPlane.authorize_write_path(:node_admission) do
+  defp add_write_path_blocker(blockers, write_path) do
+    case ControlPlane.authorize_write_path(write_path) do
       :ok -> blockers
       {:error, :controller_standby} -> blockers ++ [:ha_standby_write_blocked]
     end
