@@ -93,8 +93,10 @@
   Note: `Requests.record_schedule/2` now validates scheduler explanation maps against the shared fixed reason-code contract before persisting them.
 - [x] 7.2 Expose `GET /ops/v1/scheduler/explanations/:request_id` with the accepted reason-code vocabulary.
   Note: The Operator API route now returns persisted scheduler explanations through the shared `SchedulerExplanation` presenter and cluster operator or admin service-account authorization.
+  Future slice note: `SPEC.md §7.3.5` defines the not-found code for absent requests but is silent on legacy scheduler decisions without candidate keys, so the endpoint currently keeps returning an empty explanation shape for those rows.
 - [x] 7.3 Ensure queue-waitable outcomes preserve whether the reason was live node capacity, requested model path capacity, placement capacity, or tenant active capacity.
   Note: Queue admission and post-grant requeue metadata now preserve stable `queue_wait_reason` values for tenant active capacity, requested model path capacity, live node capacity, and explicit placement capacity.
+  Future slice note: Placement-capacity queue-wait emission remains incomplete end to end until the orchestrator busy return can carry a placement-specific scheduler reason.
 - [x] 7.4 Add tests that explanations match actual scheduler decisions.
   Note: `MultiNode.schedule/2` tests now assert the generated explanation validates against the shared contract and matches selected, rejected, and skipped scheduler decisions.
 - [x] 7.5 Add `skipped_candidates` explanation output with stable skip codes and keep skipped candidates outside the rejected-candidate list.

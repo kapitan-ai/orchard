@@ -3437,11 +3437,11 @@ defmodule Orchard.Inference.QueueManager do
     }
   end
 
-  defp queue_wait_reason(state, lane, request, config) do
-    cond do
-      not tenant_active_capacity?(state, request, config) -> :tenant_active_capacity
-      not active_capacity?(lane, config.capacity) -> :requested_model_path_capacity
-      true -> :requested_model_path_capacity
+  defp queue_wait_reason(state, _lane, request, config) do
+    if tenant_active_capacity?(state, request, config) do
+      :requested_model_path_capacity
+    else
+      :tenant_active_capacity
     end
   end
 

@@ -336,14 +336,6 @@ defmodule Orchard.Governance do
     end
   end
 
-  @spec has_cluster_operator_access?(ServiceAccount.t() | Ecto.UUID.t()) :: boolean()
-  def has_cluster_operator_access?(service_account_or_id) do
-    case resolve_api_client(service_account_or_id) do
-      {:ok, api_client} -> cluster_operator_role_binding_exists?(api_client.id)
-      {:error, _reason} -> false
-    end
-  end
-
   @spec authorize_public_inference(api_key_auth_result()) :: :ok | {:error, authorization_error()}
   def authorize_public_inference(%{principal_type: :tenant}), do: :ok
 

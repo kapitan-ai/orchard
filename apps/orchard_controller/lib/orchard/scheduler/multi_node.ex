@@ -217,7 +217,14 @@ defmodule Orchard.Scheduler.MultiNode do
           |> maybe_put_prefix_cache_score(selected_score)
           |> maybe_put_memory_admission(selected, memory_admission_enabled?)
           |> Map.merge(
-            scheduler_explanation(request, selected, selected_tier, ranked, candidates)
+            scheduler_explanation(
+              request,
+              selected,
+              selected_tier,
+              ranked,
+              candidates,
+              ranking_opts
+            )
           )
 
         {:ok,
@@ -246,14 +253,14 @@ defmodule Orchard.Scheduler.MultiNode do
        ),
        do: :select_candidate
 
-  defp scheduler_explanation(request, selected, selected_tier, ranked, candidates) do
+  defp scheduler_explanation(request, selected, selected_tier, ranked, candidates, ranking_opts) do
     scored = scored_candidates(ranked, selected_tier)
     skipped_node_ids = MapSet.new(Enum.map(ranked -- scored, & &1.node_id))
 
     %{
       selected_node_id: selected.node_id,
       selection_tier: selected_tier,
-      scored_candidates: Enum.map(scored, &scored_candidate/1),
+      scored_candidates: Enum.map(scored, &scored_candidate(&1, ranking_opts)),
       rejected_candidates: rejected_candidates(candidates, skipped_node_ids),
       skipped_candidates: skipped_candidates(ranked -- scored, selected_tier),
       request_id: request.public_id
@@ -266,14 +273,69 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp scored_candidates(ranked, _selected_tier), do: ranked
 
-  defp scored_candidate(candidate) do
+  defp scored_candidate(candidate, ranking_opts) do
+    components = scheduler_score_components(candidate, ranking_opts)
+
     %{
       node_id: candidate.node_id,
       eligible: true,
       tier: candidate_tier(candidate),
+      score: scheduler_score(components),
+      components: components,
       reason_codes: []
     }
   end
+
+  defp scheduler_score(components) do
+    components
+    |> Map.values()
+    |> Enum.sum()
+  end
+
+  defp scheduler_score_components(candidate, ranking_opts) do
+    %{
+      residency_bonus: residency_bonus(candidate),
+      load_bonus: load_bonus(candidate),
+      health_bonus: health_bonus(candidate)
+    }
+    |> maybe_put_score_component(
+      :cache_affinity_bonus,
+      200,
+      Map.get(candidate, :cache_affinity_match?, false)
+    )
+    |> maybe_put_score_component(
+      :live_fingerprint_bonus,
+      100,
+      Keyword.get(ranking_opts, :live_fingerprint_match?, false) and
+        Map.get(candidate, :prefix_cache_fingerprint_match?, false)
+    )
+    |> maybe_put_score_component(
+      :capable_worker_bonus,
+      25,
+      Keyword.get(ranking_opts, :prefer_capable_workers?, false) and
+        Map.get(candidate, :capable_worker_preferred?, false)
+    )
+    |> maybe_put_score_component(
+      :memory_headroom_bonus,
+      72,
+      Keyword.get(ranking_opts, :memory_admission?, false) and
+        Map.get(candidate, :memory_headroom_ok?, false)
+    )
+  end
+
+  defp residency_bonus(%{loaded_model?: true}), do: 500
+  defp residency_bonus(_candidate), do: 0
+
+  defp load_bonus(candidate), do: max(40 - active_request_rank(candidate) * 10, 0)
+
+  defp health_bonus(%{node: %{health: :healthy}}), do: 30
+  defp health_bonus(%{node: %{health: :degraded}}), do: 10
+  defp health_bonus(_candidate), do: 0
+
+  defp maybe_put_score_component(components, _key, _value, false), do: components
+
+  defp maybe_put_score_component(components, key, value, true),
+    do: Map.put(components, key, value)
 
   defp rejected_candidates(candidates, skipped_node_ids) do
     candidates

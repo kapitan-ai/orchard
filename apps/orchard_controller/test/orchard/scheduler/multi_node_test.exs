@@ -877,6 +877,12 @@ defmodule Orchard.Scheduler.MultiNodeTest do
                  node_id: node_b.id,
                  eligible: true,
                  tier: "loaded",
+                 score: 570,
+                 components: %{
+                   residency_bonus: 500,
+                   load_bonus: 40,
+                   health_bonus: 30
+                 },
                  reason_codes: []
                }
              ]
