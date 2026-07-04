@@ -1,6 +1,8 @@
 defmodule OrchardCLI.Commands.RequestsTest do
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureIO
+
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.API.Ops.SchedulerExplanationPresenter
   alias Orchard.Repo
@@ -31,6 +33,36 @@ defmodule OrchardCLI.Commands.RequestsTest do
     test "unknown option reports the flag" do
       assert {:error, message, 2} = RequestsCmd.run(["inspect", "resp_1", "--bogus"])
       assert message == "Unknown option: --bogus"
+    end
+  end
+
+  describe "public dispatcher" do
+    test "OrchardCLI.main/2 prints request scheduler explanation to stdout and exits zero" do
+      parent = self()
+      request = persist_valid_explanation!("resp_cli_main_scheduler_explanation")
+
+      stdout =
+        capture_io(fn ->
+          OrchardCLI.main(["requests", "inspect", request.public_id], halt_stub(parent))
+        end)
+
+      assert stdout =~ "Request: #{request.public_id}"
+      assert stdout =~ "Selected node: node-selected"
+      assert stdout =~ "Rejected candidates:"
+      assert stdout =~ "node_not_active,insufficient_memory"
+      refute_received {:halt_called, _code}
+    end
+
+    test "OrchardCLI.main/2 prints stable not-found error to stderr and exits non-zero" do
+      parent = self()
+
+      stderr =
+        capture_io(:stderr, fn ->
+          OrchardCLI.main(["requests", "inspect", "resp_cli_main_missing"], halt_stub(parent))
+        end)
+
+      assert stderr =~ "Error: Scheduler explanation was not found."
+      assert_received {:halt_called, 1}
     end
   end
 
@@ -125,6 +157,10 @@ defmodule OrchardCLI.Commands.RequestsTest do
         assert Jason.decode!(output)["code"] == "scheduler_explanation_not_found"
       end)
     end
+  end
+
+  defp halt_stub(parent) do
+    fn code -> send(parent, {:halt_called, code}) end
   end
 
   defp with_repo_unavailable(fun) do
