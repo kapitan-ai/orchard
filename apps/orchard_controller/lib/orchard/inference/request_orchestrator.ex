@@ -425,7 +425,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
     case do_dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
       {:error, reason} when reason in [:cluster_busy, :model_busy] ->
-        requeue_after_schedule_busy(db_request, canonical, model, grant, execution_opts)
+        requeue_after_schedule_busy(db_request, canonical, model, grant, execution_opts, reason)
 
       result ->
         result
@@ -434,10 +434,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
     Inference.queue_manager().release(grant)
   end
 
-  defp requeue_after_schedule_busy(db_request, canonical, model, grant, execution_opts) do
+  defp requeue_after_schedule_busy(db_request, canonical, model, grant, execution_opts, reason) do
     request = queue_admission_request(db_request, canonical, execution_opts.caller)
 
-    case Inference.queue_manager().requeue(grant, request) do
+    case Inference.queue_manager().requeue(grant, request,
+           queue_wait_reason: busy_queue_wait_reason(reason)
+         ) do
       {:queued, %QueueManager.Ticket{} = ticket} ->
         with {:ok, next_grant} <- await_queued_grant(db_request, ticket) do
           dispatch_if_queue_request_live(db_request, canonical, model, next_grant, execution_opts)
@@ -457,6 +459,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
         handle_queue_await_error(db_request, metadata, reason, false)
     end
   end
+
+  defp busy_queue_wait_reason(:cluster_busy), do: :live_node_capacity
+  defp busy_queue_wait_reason(:model_busy), do: :requested_model_path_capacity
 
   defp do_dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
     metadata = QueueManager.grant_metadata(grant)

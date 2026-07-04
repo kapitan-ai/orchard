@@ -481,7 +481,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest.PreAwaitTerminalQueueManager
        queue_key: queue_key,
        queued_at: queued_at,
        enqueued_monotonic_ms: System.monotonic_time(:millisecond),
-       max_wait_ms: 1
+       max_wait_ms: 1,
+       queue_wait_reason: :requested_model_path_capacity
      }}
   end
 
@@ -1639,6 +1640,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     queued_request = Requests.get_request_by_public_id(canonical.public_id)
     assert_queue_metadata(queued_request, "queued", queued?: true)
+    assert queued_request.scheduler_decision["queue_wait_reason"] == "live_node_capacity"
     refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
 
     assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
@@ -1686,6 +1688,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     queued_request = Requests.get_request_by_public_id(canonical.public_id)
     assert_queue_metadata(queued_request, "queued", queued?: true)
+
+    assert queued_request.scheduler_decision["queue_wait_reason"] ==
+             "requested_model_path_capacity"
+
     refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
 
     assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
