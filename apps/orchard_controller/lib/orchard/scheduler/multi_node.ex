@@ -260,7 +260,7 @@ defmodule Orchard.Scheduler.MultiNode do
     %{
       selected_node_id: selected.node_id,
       selection_tier: selected_tier,
-      scored_candidates: Enum.map(scored, &scored_candidate(&1, ranking_opts)),
+      scored_candidates: scored_candidate_explanations(scored, ranking_opts),
       rejected_candidates: rejected_candidates(candidates, skipped_node_ids),
       skipped_candidates: skipped_candidates(ranked -- scored, selected_tier),
       request_id: request.public_id
@@ -273,8 +273,28 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp scored_candidates(ranked, _selected_tier), do: ranked
 
-  defp scored_candidate(candidate, ranking_opts) do
-    components = scheduler_score_components(candidate, ranking_opts)
+  defp scored_candidate_explanations(scored, ranking_opts) do
+    total = length(scored)
+    qualitative = Enum.map(scored, &qualitative_score_components(&1, ranking_opts))
+    rank_step = rank_score_step(qualitative)
+
+    [scored, qualitative]
+    |> Enum.zip()
+    |> Enum.with_index()
+    |> Enum.map(fn {{candidate, components}, rank} ->
+      scored_candidate(candidate, components, (total - rank) * rank_step)
+    end)
+  end
+
+  defp rank_score_step(qualitative) do
+    qualitative
+    |> Enum.map(&scheduler_score/1)
+    |> Enum.max(fn -> 0 end)
+    |> Kernel.+(1)
+  end
+
+  defp scored_candidate(candidate, qualitative_components, rank_base) do
+    components = Map.put(qualitative_components, :rank_base, rank_base)
 
     %{
       node_id: candidate.node_id,
@@ -292,7 +312,7 @@ defmodule Orchard.Scheduler.MultiNode do
     |> Enum.sum()
   end
 
-  defp scheduler_score_components(candidate, ranking_opts) do
+  defp qualitative_score_components(candidate, ranking_opts) do
     %{
       residency_bonus: residency_bonus(candidate),
       load_bonus: load_bonus(candidate),

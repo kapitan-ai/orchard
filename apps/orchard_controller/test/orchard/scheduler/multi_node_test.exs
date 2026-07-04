@@ -877,8 +877,9 @@ defmodule Orchard.Scheduler.MultiNodeTest do
                  node_id: node_b.id,
                  eligible: true,
                  tier: "loaded",
-                 score: 570,
+                 score: 1141,
                  components: %{
+                   rank_base: 571,
                    residency_bonus: 500,
                    load_bonus: 40,
                    health_bonus: 30
@@ -900,6 +901,53 @@ defmodule Orchard.Scheduler.MultiNodeTest do
                  reason_codes: ["lower_tier_not_considered"]
                }
              ]
+    end
+
+    test "SPEC.md §7.3.5 (OpenSpec task 7.4) scored candidate scores stay ordered with actual ranking" do
+      {id_a, id_b} = insert_ordered_nodes!()
+      set_node_health!(id_a, :degraded)
+      set_node_health!(id_b, :healthy)
+
+      stub_probe(
+        "10.0.0.1",
+        50_061,
+        make_status(id_a,
+          host: "10.0.0.1",
+          port: 50_061,
+          health: %{ready: true, health_code: "warn", health_message: "degraded"},
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          runtime_model_placements: [model_placement("test-model", "v1", 0, 4)]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(id_b,
+          host: "10.0.0.2",
+          port: 50_062,
+          loaded_models: [%{model_id: "test-model", version: "v1"}],
+          runtime_model_placements: [model_placement("test-model", "v1", 1, 4)]
+        )
+      )
+
+      request = canonical_request("test-model", "v1")
+
+      assert {:ok, schedule} = MultiNode.schedule(request, status_client: StubClient)
+      assert :ok = SchedulerExplanation.validate_map(schedule)
+
+      assert schedule.node_id == id_a
+      assert [first, second] = schedule.scored_candidates
+      assert first.node_id == id_a
+      assert second.node_id == id_b
+
+      assert first.score > second.score
+      assert first.score == Enum.sum(Map.values(first.components))
+      assert second.score == Enum.sum(Map.values(second.components))
+
+      first_bonuses = Map.delete(first.components, :rank_base)
+      second_bonuses = Map.delete(second.components, :rank_base)
+      assert Enum.sum(Map.values(first_bonuses)) < Enum.sum(Map.values(second_bonuses))
     end
 
     test "keeps probe candidates when disconnect cleanup raises" do
