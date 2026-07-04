@@ -305,7 +305,12 @@ defmodule Orchard.Requests do
   sets `node_id` when the schedule contains a non-nil UUID.
   """
   @spec record_schedule(struct() | Ecto.UUID.t(), map()) ::
-          {:ok, struct()} | {:error, Ecto.Changeset.t() | :request_not_found}
+          {:ok, struct()}
+          | {:error,
+             Ecto.Changeset.t()
+             | :request_not_found
+             | :already_terminal
+             | {:invalid_scheduler_explanation, term()}}
   def record_schedule(%Request{id: request_id}, schedule),
     do: record_schedule(request_id, schedule)
 

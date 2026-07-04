@@ -868,6 +868,7 @@ defmodule Orchard.Scheduler.MultiNodeTest do
                  status_client: StubClient
                )
 
+      assert :ok = Orchard.ClusterManagement.SchedulerExplanation.validate_map(schedule)
       assert schedule.node_id == node_b.id
 
       assert schedule.scored_candidates == [
