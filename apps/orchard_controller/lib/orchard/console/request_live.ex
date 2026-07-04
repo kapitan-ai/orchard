@@ -6,6 +6,7 @@ defmodule OrchardConsole.RequestLive do
 
   use OrchardConsole, :live_view
 
+  alias Orchard.API.Ops.SchedulerExplanationPresenter
   alias Orchard.Governance
   alias Orchard.Governance.{ApiKey, Tenant}
   alias Orchard.Requests
@@ -13,6 +14,7 @@ defmodule OrchardConsole.RequestLive do
   alias OrchardConsole.TimeHelpers
 
   @default_refresh_interval_ms 5_000
+  @unsafe_scheduler_diagnostic_key_pattern ~r/(prompt|token|secret|credential|password|dsn|body|payload|request|response)/i
 
   # ===========================================================================
   # Lifecycle
@@ -105,6 +107,11 @@ defmodule OrchardConsole.RequestLive do
           <.request_usage request={@request} />
           <.request_timeline events={@events} />
           <.request_execution_metadata request={@request} />
+          <.request_scheduler_explanation
+            status={@scheduler_explanation_status}
+            explanation={@scheduler_explanation}
+            error_reason={@scheduler_explanation_error}
+          />
           <.request_errors request={@request} />
           <.request_provenance request={@request} />
           <.request_response_debug request={@request} />
@@ -240,6 +247,206 @@ defmodule OrchardConsole.RequestLive do
           </.detail_field>
         </.detail_grid>
       </.card>
+    </div>
+    """
+  end
+
+  attr(:status, :atom, required: true)
+  attr(:explanation, :map, default: nil)
+  attr(:error_reason, :any, default: nil)
+
+  defp request_scheduler_explanation(assigns) do
+    ~H"""
+    <div id="request-scheduler-explanation-card">
+      <.card variant={scheduler_explanation_card_variant(@status)}>
+        <:title>Scheduler Explanation</:title>
+        <:subtitle>
+          Shared selected, scored, skipped, and rejected candidate contract from SPEC.md §7.3.5.
+        </:subtitle>
+
+        <%= case @status do %>
+          <% :ok -> %>
+            <div class="space-y-5">
+              <.detail_grid class="grid-cols-1 sm:grid-cols-3">
+                <.detail_field id="scheduler-explanation-request-id" label="Request ID" mono break_all>
+                  {format_text(@explanation.request_id)}
+                </.detail_field>
+                <.detail_field id="scheduler-explanation-selected-node" label="Selected Node" mono break_all>
+                  {format_text(@explanation.selected_node_id)}
+                </.detail_field>
+                <.detail_field id="scheduler-explanation-selection-tier" label="Selection Tier" mono>
+                  {format_text(@explanation.selection_tier)}
+                </.detail_field>
+              </.detail_grid>
+
+              <.candidate_group
+                id="scheduler-selected-candidate"
+                title="Selected Candidate"
+                candidates={selected_candidates(@explanation)}
+                empty_text="No selected candidate was recorded."
+                tone={:success}
+              />
+              <.candidate_group
+                id="scheduler-scored-candidates"
+                title="Scored Candidates"
+                candidates={@explanation.scored_candidates}
+                empty_text="No scored candidates were recorded."
+                tone={:info}
+              />
+              <.candidate_group
+                id="scheduler-skipped-candidates"
+                title="Skipped Candidates"
+                candidates={@explanation.skipped_candidates}
+                empty_text="No skipped candidates were recorded."
+                tone={:warning}
+              />
+              <.candidate_group
+                id="scheduler-rejected-candidates"
+                title="Rejected Candidates"
+                candidates={@explanation.rejected_candidates}
+                empty_text="No rejected candidates were recorded."
+                tone={:error}
+              />
+            </div>
+
+          <% :not_found -> %>
+            <.state_message
+              id="scheduler-explanation-not-found"
+              kind={:empty}
+              layout={:compact}
+              title="No scheduler explanation recorded."
+              body="This request has no persisted scheduler explanation."
+            />
+
+          <% :invalid -> %>
+            <.state_message
+              id="scheduler-explanation-invalid"
+              kind={:error}
+              layout={:compact}
+              title="Scheduler explanation is invalid."
+              body={scheduler_explanation_error_body(@error_reason)}
+            />
+
+          <% _ -> %>
+            <.state_message
+              id="scheduler-explanation-loading"
+              kind={:loading}
+              layout={:compact}
+              title="Loading scheduler explanation."
+              body="The scheduler explanation will appear when the LiveView connects."
+            />
+        <% end %>
+      </.card>
+    </div>
+    """
+  end
+
+  attr(:id, :string, required: true)
+  attr(:title, :string, required: true)
+  attr(:candidates, :list, default: [])
+  attr(:empty_text, :string, required: true)
+  attr(:tone, :atom, default: :neutral)
+
+  defp candidate_group(assigns) do
+    ~H"""
+    <section id={@id} class="space-y-3">
+      <div class="flex items-center gap-2">
+        <h4 class="text-sm font-semibold text-slate-900 dark:text-slate-100">{@title}</h4>
+        <.badge tone={@tone} class="font-mono">{length(@candidates)}</.badge>
+      </div>
+
+      <div :if={@candidates == []} class="rounded-lg border border-dashed border-slate-200 p-4 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-400">
+        {@empty_text}
+      </div>
+
+      <div :if={@candidates != []} class="grid gap-3 lg:grid-cols-2">
+        <.candidate_card :for={{candidate, index} <- Enum.with_index(@candidates, 1)} id_prefix={@id} candidate={candidate} index={index} />
+      </div>
+    </section>
+    """
+  end
+
+  attr(:id_prefix, :string, required: true)
+  attr(:candidate, :map, required: true)
+  attr(:index, :integer, required: true)
+
+  defp candidate_card(assigns) do
+    assigns =
+      assigns
+      |> assign(:components, scheduler_entries(assigns.candidate.components))
+      |> assign(
+        :diagnostics,
+        scheduler_entries(sanitized_scheduler_diagnostics(assigns.candidate.diagnostics))
+      )
+
+    ~H"""
+    <article class="rounded-lg border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-900/40">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">
+            Candidate {@index}
+          </p>
+          <p class="mt-1 break-all font-mono text-sm text-slate-900 dark:text-slate-100">
+            {format_text(@candidate.node_id)}
+          </p>
+        </div>
+        <.badge tone={candidate_eligibility_tone(@candidate.eligible)}>
+          {candidate_eligibility_label(@candidate.eligible)}
+        </.badge>
+      </div>
+
+      <.detail_grid class="mt-4 grid-cols-2" gap_class="gap-x-4 gap-y-3">
+        <.detail_field id={"#{@id_prefix}-candidate-#{@index}-target"} label="Target" mono break_all>
+          {format_text(@candidate.target_ref)}
+        </.detail_field>
+        <.detail_field id={"#{@id_prefix}-candidate-#{@index}-tier"} label="Tier" mono>
+          {format_text(@candidate.tier)}
+        </.detail_field>
+        <.detail_field id={"#{@id_prefix}-candidate-#{@index}-score"} label="Score" mono>
+          {format_scheduler_score(@candidate.score)}
+        </.detail_field>
+      </.detail_grid>
+
+      <div class="mt-4 space-y-3">
+        <.code_badges title="Reason Codes" values={@candidate.reason_codes} empty_text="No reason codes." />
+        <.key_value_list title="Score Components" entries={@components} empty_text="No score components." />
+        <.key_value_list title="Diagnostics" entries={@diagnostics} empty_text="No diagnostics." />
+      </div>
+    </article>
+    """
+  end
+
+  attr(:title, :string, required: true)
+  attr(:values, :list, default: [])
+  attr(:empty_text, :string, required: true)
+
+  defp code_badges(assigns) do
+    ~H"""
+    <div>
+      <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">{@title}</p>
+      <div :if={@values != []} class="mt-2 flex flex-wrap gap-2">
+        <.badge :for={value <- @values} tone={:neutral} class="font-mono">{value}</.badge>
+      </div>
+      <p :if={@values == []} class="mt-1 text-sm text-slate-400 dark:text-slate-500">{@empty_text}</p>
+    </div>
+    """
+  end
+
+  attr(:title, :string, required: true)
+  attr(:entries, :list, default: [])
+  attr(:empty_text, :string, required: true)
+
+  defp key_value_list(assigns) do
+    ~H"""
+    <div>
+      <p class="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">{@title}</p>
+      <dl :if={@entries != []} class="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div :for={{key, value} <- @entries} class="rounded-md bg-white px-3 py-2 ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+          <dt class="font-mono text-xs text-slate-500 dark:text-slate-400">{key}</dt>
+          <dd class="mt-1 break-all font-mono text-sm text-slate-900 dark:text-slate-100">{format_scheduler_value(value)}</dd>
+        </div>
+      </dl>
+      <p :if={@entries == []} class="mt-1 text-sm text-slate-400 dark:text-slate-500">{@empty_text}</p>
     </div>
     """
   end
@@ -579,6 +786,9 @@ defmodule OrchardConsole.RequestLive do
       request_status: :loading,
       request: nil,
       events: [],
+      scheduler_explanation_status: :loading,
+      scheduler_explanation: nil,
+      scheduler_explanation_error: nil,
       load_error: nil,
       last_checked_at: nil,
       refresh_mode: :static
@@ -595,6 +805,9 @@ defmodule OrchardConsole.RequestLive do
           request_status: :not_found,
           request: nil,
           events: [],
+          scheduler_explanation_status: :not_found,
+          scheduler_explanation: nil,
+          scheduler_explanation_error: nil,
           load_error: nil,
           last_checked_at: now,
           refresh_mode: :static
@@ -606,7 +819,8 @@ defmodule OrchardConsole.RequestLive do
         mode =
           if should_poll?(%{request_status: :ok, request: request}), do: :polling, else: :static
 
-        assign(socket,
+        socket
+        |> assign(
           request_status: :ok,
           request: request,
           events: events,
@@ -614,6 +828,7 @@ defmodule OrchardConsole.RequestLive do
           last_checked_at: now,
           refresh_mode: mode
         )
+        |> assign_scheduler_explanation(request)
     end
   rescue
     e ->
@@ -621,10 +836,38 @@ defmodule OrchardConsole.RequestLive do
         request_status: :error,
         request: nil,
         events: [],
+        scheduler_explanation_status: :error,
+        scheduler_explanation: nil,
+        scheduler_explanation_error: nil,
         load_error: "Request details unavailable: #{Exception.message(e)}",
         last_checked_at: DateTime.utc_now() |> DateTime.truncate(:second),
         refresh_mode: :static
       )
+  end
+
+  defp assign_scheduler_explanation(socket, request) do
+    case SchedulerExplanationPresenter.show(request) do
+      {:ok, explanation} ->
+        assign(socket,
+          scheduler_explanation_status: :ok,
+          scheduler_explanation: explanation,
+          scheduler_explanation_error: nil
+        )
+
+      {:error, :scheduler_explanation_not_found} ->
+        assign(socket,
+          scheduler_explanation_status: :not_found,
+          scheduler_explanation: nil,
+          scheduler_explanation_error: nil
+        )
+
+      {:error, reason} ->
+        assign(socket,
+          scheduler_explanation_status: :invalid,
+          scheduler_explanation: nil,
+          scheduler_explanation_error: reason
+        )
+    end
   end
 
   # ===========================================================================
@@ -720,6 +963,59 @@ defmodule OrchardConsole.RequestLive do
   # ===========================================================================
   # Formatting
   # ===========================================================================
+
+  defp scheduler_explanation_card_variant(:ok), do: :primary
+  defp scheduler_explanation_card_variant(_status), do: :default
+
+  defp scheduler_explanation_error_body(nil),
+    do: "Persisted scheduler explanation is invalid."
+
+  defp scheduler_explanation_error_body(reason),
+    do: "Persisted scheduler explanation is invalid: #{inspect(reason)}"
+
+  defp selected_candidates(%{selected_node_id: selected_node_id, scored_candidates: candidates})
+       when is_binary(selected_node_id) and is_list(candidates) do
+    Enum.filter(candidates, &(&1.node_id == selected_node_id))
+  end
+
+  defp selected_candidates(_explanation), do: []
+
+  defp candidate_eligibility_tone(true), do: :success
+  defp candidate_eligibility_tone(false), do: :neutral
+
+  defp candidate_eligibility_label(true), do: "Eligible"
+  defp candidate_eligibility_label(false), do: "Not eligible"
+
+  defp format_scheduler_score(score) when is_integer(score), do: to_string(score)
+  defp format_scheduler_score(_score), do: "Not recorded"
+
+  defp format_scheduler_value(value) when is_integer(value), do: to_string(value)
+
+  defp format_scheduler_value(value) when is_float(value),
+    do: :erlang.float_to_binary(value, decimals: 2)
+
+  defp format_scheduler_value(value) when is_boolean(value), do: to_string(value)
+  defp format_scheduler_value(value) when is_binary(value), do: value
+  defp format_scheduler_value(nil), do: "Not recorded"
+  defp format_scheduler_value(value), do: inspect(value)
+
+  defp scheduler_entries(map) when is_map(map) do
+    map
+    |> Enum.map(fn {key, value} -> {to_string(key), value} end)
+    |> Enum.sort_by(fn {key, _value} -> key end)
+  end
+
+  defp scheduler_entries(_value), do: []
+
+  defp sanitized_scheduler_diagnostics(map) when is_map(map) do
+    Map.reject(map, fn {key, _value} ->
+      key
+      |> to_string()
+      |> String.match?(@unsafe_scheduler_diagnostic_key_pattern)
+    end)
+  end
+
+  defp sanitized_scheduler_diagnostics(_value), do: %{}
 
   defp state_tone(:completed), do: :success
   defp state_tone(:failed), do: :error
