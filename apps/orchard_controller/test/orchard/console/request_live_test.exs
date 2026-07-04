@@ -363,6 +363,133 @@ defmodule OrchardConsole.RequestLiveTest do
   end
 
   # ===========================================================================
+  # Scheduler explanation
+  # ===========================================================================
+
+  describe "scheduler explanation" do
+    test "SPEC.md §7.3.5 renders selected scored skipped and rejected candidates separately", %{
+      conn: conn
+    } do
+      request = persist_valid_scheduler_explanation!("resp_console_scheduler_explanation_full")
+
+      {:ok, view, html} = live(conn, "/console/requests/#{request.public_id}")
+
+      refute html =~ "internal_prompt"
+      refute html =~ "must not render"
+
+      explanation_html = element(view, "#request-scheduler-explanation-card") |> render()
+
+      assert explanation_html =~ "Scheduler Explanation"
+      assert explanation_html =~ request.public_id
+      assert explanation_html =~ "node-selected"
+      assert explanation_html =~ "loaded"
+      assert explanation_html =~ "842"
+      assert explanation_html =~ "pool_bonus"
+      refute explanation_html =~ "prompt_fragment"
+      refute explanation_html =~ "component prompt leak"
+      assert explanation_html =~ "Selected Candidate"
+      assert explanation_html =~ "Scored Candidates"
+      assert explanation_html =~ "Skipped Candidates"
+      assert explanation_html =~ "Rejected Candidates"
+      assert explanation_html =~ "lower_tier_not_considered"
+      assert explanation_html =~ "node_not_active"
+      assert explanation_html =~ "insufficient_memory"
+      assert explanation_html =~ "capacity_window"
+      refute explanation_html =~ "internal_prompt"
+      refute explanation_html =~ "must not render"
+
+      skipped_pos = :binary.match(explanation_html, "Skipped Candidates") |> elem(0)
+      rejected_pos = :binary.match(explanation_html, "Rejected Candidates") |> elem(0)
+      assert skipped_pos < rejected_pos
+    end
+
+    test "SPEC.md §7.3.5 renders legacy candidate-less scheduler decisions as empty explanation shape",
+         %{conn: conn} do
+      request =
+        create_request!(%{
+          state: :completed,
+          public_id: "resp_console_scheduler_explanation_legacy",
+          scheduler_decision: %{"strategy" => "single_node"}
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      explanation_html = element(view, "#request-scheduler-explanation-card") |> render()
+
+      assert explanation_html =~ "Scheduler Explanation"
+      assert explanation_html =~ request.public_id
+      assert explanation_html =~ "No selected candidate was recorded."
+      assert explanation_html =~ "No scored candidates were recorded."
+      assert explanation_html =~ "No skipped candidates were recorded."
+      assert explanation_html =~ "No rejected candidates were recorded."
+      refute explanation_html =~ "scheduler-explanation-invalid"
+      refute explanation_html =~ "scheduler-explanation-not-found"
+    end
+
+    test "SPEC.md §7.3.5 renders not-found state when a request has no scheduler explanation",
+         %{conn: conn} do
+      request =
+        create_request!(%{
+          state: :completed,
+          public_id: "resp_console_scheduler_explanation_missing",
+          scheduler_decision: nil
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      explanation_html = element(view, "#request-scheduler-explanation-card") |> render()
+
+      assert explanation_html =~ "scheduler-explanation-not-found"
+      assert explanation_html =~ "No scheduler explanation recorded."
+      assert explanation_html =~ "This request has no persisted scheduler explanation."
+      refute explanation_html =~ "scheduler-explanation-invalid"
+    end
+
+    test "SPEC.md §7.3.5 renders invalid persisted scheduler explanations as safe error state",
+         %{conn: conn} do
+      request =
+        create_request!(%{
+          state: :completed,
+          public_id: "resp_console_scheduler_explanation_invalid",
+          scheduler_decision: %{
+            "request_id" => "resp_console_scheduler_explanation_invalid",
+            "selected_node_id" => "node-selected",
+            "selection_tier" => "loaded",
+            "scored_candidates" => [],
+            "rejected_candidates" => [
+              %{"node_id" => "node-rejected", "reason_codes" => ["not_a_scheduler_code"]}
+            ],
+            "skipped_candidates" => []
+          }
+        })
+
+      {:ok, view, _html} = live(conn, "/console/requests/#{request.public_id}")
+
+      explanation_html = element(view, "#request-scheduler-explanation-card") |> render()
+
+      assert explanation_html =~ "scheduler-explanation-invalid"
+      assert explanation_html =~ "Scheduler explanation is invalid."
+      assert explanation_html =~ "Persisted scheduler explanation is invalid"
+      assert explanation_html =~ "unknown_code"
+      refute explanation_html =~ "not_a_scheduler_code"
+      refute explanation_html =~ "Selected Candidate"
+    end
+
+    test "disconnected render defers scheduler explanation loading behind request loading state",
+         %{conn: conn} do
+      request = persist_valid_scheduler_explanation!("resp_console_scheduler_explanation_static")
+
+      conn = get(conn, "/console/requests/#{request.public_id}")
+
+      assert conn.status == 200
+      assert conn.resp_body =~ "request-loading-card"
+      assert conn.resp_body =~ "Request details will appear when the LiveView connects."
+      refute conn.resp_body =~ "request-scheduler-explanation-card"
+      refute conn.resp_body =~ "node-selected"
+    end
+  end
+
+  # ===========================================================================
   # Canonical request
   # ===========================================================================
 
@@ -1166,5 +1293,47 @@ defmodule OrchardConsole.RequestLiveTest do
   defp append_event!(request, attrs) do
     {:ok, event} = Requests.append_request_event(request, attrs)
     event
+  end
+
+  defp persist_valid_scheduler_explanation!(public_id) do
+    request = create_request!(%{public_id: public_id})
+
+    assert {:ok, request} =
+             Requests.record_schedule(request, %{
+               request_id: request.public_id,
+               selected_node_id: "node-selected",
+               selection_tier: :loaded,
+               scored_candidates: [
+                 %{
+                   node_id: "node-selected",
+                   eligible: true,
+                   tier: :loaded,
+                   score: 842,
+                   components: %{
+                     pool_bonus: 200,
+                     health_bonus: 30,
+                     prompt_fragment: "component prompt leak"
+                   },
+                   diagnostics: %{capacity_window: "warm", internal_prompt: "must not render"},
+                   reason_codes: []
+                 }
+               ],
+               rejected_candidates: [
+                 %{
+                   node_id: "node-rejected",
+                   diagnostics: %{capacity_window: "full"},
+                   reason_codes: [:node_not_active, "insufficient_memory"]
+                 }
+               ],
+               skipped_candidates: [
+                 %{
+                   node_id: "node-skipped",
+                   diagnostics: %{capacity_window: "not_considered"},
+                   reason_codes: [:lower_tier_not_considered]
+                 }
+               ]
+             })
+
+    request
   end
 end
