@@ -303,6 +303,12 @@ defmodule Orchard.Requests do
 
   Sets `scheduler_decision` (normalized to JSON-safe map) and optionally
   sets `node_id` when the schedule contains a non-nil UUID.
+
+  When the schedule carries scheduler-explanation candidate keys
+  (`scored_candidates`, `rejected_candidates`, or `skipped_candidates`), they
+  are validated against the shared `SchedulerExplanation` contract before
+  persistence; an invalid explanation returns
+  `{:error, {:invalid_scheduler_explanation, reason}}` and persists nothing.
   """
   @spec record_schedule(struct() | Ecto.UUID.t(), map()) ::
           {:ok, struct()}
