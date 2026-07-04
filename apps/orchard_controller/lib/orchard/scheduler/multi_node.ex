@@ -277,8 +277,10 @@ defmodule Orchard.Scheduler.MultiNode do
 
   defp rejected_candidates(candidates, skipped_node_ids) do
     candidates
-    |> Enum.reject(&MapSet.member?(skipped_node_ids, &1.node_id))
-    |> Enum.reject(&(rejection_reason_codes(&1) == []))
+    |> Enum.reject(fn candidate ->
+      MapSet.member?(skipped_node_ids, candidate.node_id) or
+        rejection_reason_codes(candidate) == []
+    end)
     |> Enum.map(fn candidate ->
       %{node_id: candidate.node_id, reason_codes: rejection_reason_codes(candidate)}
     end)

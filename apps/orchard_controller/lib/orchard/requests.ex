@@ -316,26 +316,25 @@ defmodule Orchard.Requests do
 
   def record_schedule(request_id, schedule) do
     Repo.transaction(fn ->
-      case lock_request(request_id) do
-        {:ok, request} ->
-          with {:ok, normalized_schedule} <- normalize_schedule(schedule) do
-            attrs = %{
-              scheduler_decision: normalized_schedule,
-              node_id: Map.get(schedule, :node_id)
-            }
-
-            request
-            |> Request.schedule_changeset(attrs)
-            |> Repo.update()
-          else
-            {:error, reason} -> Repo.rollback(reason)
-          end
-
-        {:error, :request_not_found} ->
-          Repo.rollback(:request_not_found)
+      with {:ok, request} <- lock_request(request_id),
+           {:ok, normalized_schedule} <- normalize_schedule(schedule) do
+        persist_schedule(request, schedule, normalized_schedule)
+      else
+        {:error, reason} -> Repo.rollback(reason)
       end
     end)
     |> unwrap_transaction_result()
+  end
+
+  defp persist_schedule(request, schedule, normalized_schedule) do
+    attrs = %{
+      scheduler_decision: normalized_schedule,
+      node_id: Map.get(schedule, :node_id)
+    }
+
+    request
+    |> Request.schedule_changeset(attrs)
+    |> Repo.update()
   end
 
   @doc """
