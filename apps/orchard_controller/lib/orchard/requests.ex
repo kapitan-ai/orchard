@@ -5,6 +5,7 @@ defmodule Orchard.Requests do
 
   import Ecto.Query
 
+  alias Orchard.ClusterManagement.SchedulerExplanation
   alias Orchard.Repo
   alias Orchard.Requests.{Request, RequestEvent, RequestStepEvent}
 
@@ -302,30 +303,44 @@ defmodule Orchard.Requests do
 
   Sets `scheduler_decision` (normalized to JSON-safe map) and optionally
   sets `node_id` when the schedule contains a non-nil UUID.
+
+  When the schedule carries scheduler-explanation candidate keys
+  (`scored_candidates`, `rejected_candidates`, or `skipped_candidates`), they
+  are validated against the shared `SchedulerExplanation` contract before
+  persistence; an invalid explanation returns
+  `{:error, {:invalid_scheduler_explanation, reason}}` and persists nothing.
   """
   @spec record_schedule(struct() | Ecto.UUID.t(), map()) ::
-          {:ok, struct()} | {:error, Ecto.Changeset.t() | :request_not_found}
+          {:ok, struct()}
+          | {:error,
+             Ecto.Changeset.t()
+             | :request_not_found
+             | :already_terminal
+             | {:invalid_scheduler_explanation, term()}}
   def record_schedule(%Request{id: request_id}, schedule),
     do: record_schedule(request_id, schedule)
 
   def record_schedule(request_id, schedule) do
     Repo.transaction(fn ->
-      case lock_request(request_id) do
-        {:ok, request} ->
-          attrs = %{
-            scheduler_decision: normalize_schedule(schedule),
-            node_id: Map.get(schedule, :node_id)
-          }
-
-          request
-          |> Request.schedule_changeset(attrs)
-          |> Repo.update()
-
-        {:error, :request_not_found} ->
-          Repo.rollback(:request_not_found)
+      with {:ok, request} <- lock_request(request_id),
+           {:ok, normalized_schedule} <- normalize_schedule(schedule) do
+        persist_schedule(request, schedule, normalized_schedule)
+      else
+        {:error, reason} -> Repo.rollback(reason)
       end
     end)
     |> unwrap_transaction_result()
+  end
+
+  defp persist_schedule(request, schedule, normalized_schedule) do
+    attrs = %{
+      scheduler_decision: normalized_schedule,
+      node_id: Map.get(schedule, :node_id)
+    }
+
+    request
+    |> Request.schedule_changeset(attrs)
+    |> Repo.update()
   end
 
   @doc """
@@ -363,7 +378,27 @@ defmodule Orchard.Requests do
   defp bounded_positive_integer(_value, default), do: default
 
   defp normalize_schedule(schedule) when is_map(schedule) do
-    normalize_schedule_value(schedule)
+    normalized = normalize_schedule_value(schedule)
+
+    case validate_scheduler_explanation(normalized) do
+      :ok -> {:ok, normalized}
+      {:error, reason} -> {:error, {:invalid_scheduler_explanation, reason}}
+    end
+  end
+
+  defp validate_scheduler_explanation(schedule) do
+    if scheduler_explanation?(schedule) do
+      SchedulerExplanation.validate_map(schedule)
+    else
+      :ok
+    end
+  end
+
+  defp scheduler_explanation?(schedule) do
+    Enum.any?(
+      ~w(scored_candidates rejected_candidates skipped_candidates),
+      &Map.has_key?(schedule, &1)
+    )
   end
 
   defp normalize_schedule_value(value) when is_map(value) do
@@ -588,6 +623,9 @@ defmodule Orchard.Requests do
   defp unwrap_transaction_result({:ok, {:error, changeset}}), do: {:error, changeset}
   defp unwrap_transaction_result({:error, :request_not_found}), do: {:error, :request_not_found}
   defp unwrap_transaction_result({:error, :already_terminal}), do: {:error, :already_terminal}
+
+  defp unwrap_transaction_result({:error, {:invalid_scheduler_explanation, reason}}),
+    do: {:error, {:invalid_scheduler_explanation, reason}}
 
   defp unwrap_transaction_result({:error, {:request_event_changeset, changeset}}),
     do: {:error, changeset}

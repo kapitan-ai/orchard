@@ -46,7 +46,8 @@ defmodule Orchard.Inference.QueueManager do
       :queue_result,
       :queued_at,
       :queue_granted_at,
-      :queue_wait_ms
+      :queue_wait_ms,
+      :queue_wait_reason
     ]
 
     @type t :: %__MODULE__{
@@ -56,7 +57,8 @@ defmodule Orchard.Inference.QueueManager do
             queue_result: :immediate | :queued,
             queued_at: String.t() | nil,
             queue_granted_at: String.t(),
-            queue_wait_ms: non_neg_integer()
+            queue_wait_ms: non_neg_integer(),
+            queue_wait_reason: atom() | nil
           }
   end
 
@@ -69,7 +71,8 @@ defmodule Orchard.Inference.QueueManager do
       :queue_key,
       :queued_at,
       :enqueued_monotonic_ms,
-      :max_wait_ms
+      :max_wait_ms,
+      :queue_wait_reason
     ]
     defstruct [
       :server,
@@ -77,7 +80,8 @@ defmodule Orchard.Inference.QueueManager do
       :queue_key,
       :queued_at,
       :enqueued_monotonic_ms,
-      :max_wait_ms
+      :max_wait_ms,
+      :queue_wait_reason
     ]
 
     @type t :: %__MODULE__{
@@ -86,7 +90,8 @@ defmodule Orchard.Inference.QueueManager do
             queue_key: String.t(),
             queued_at: String.t(),
             enqueued_monotonic_ms: integer(),
-            max_wait_ms: non_neg_integer()
+            max_wait_ms: non_neg_integer(),
+            queue_wait_reason: atom()
           }
   end
 
@@ -177,10 +182,11 @@ defmodule Orchard.Inference.QueueManager do
   @spec requeue(Grant.t(), admission_request(), keyword()) :: requeue_result()
   def requeue(%Grant{} = grant, attrs, opts \\ []) do
     config = Keyword.get(opts, :config, Orchard.Inference.queue_admission_config())
+    queue_wait_reason = Keyword.get(opts, :queue_wait_reason)
 
     call_manager(
       grant.server,
-      {:requeue, grant, normalize_request(attrs), normalize_config(config)}
+      {:requeue, grant, normalize_request(attrs), normalize_config(config), queue_wait_reason}
     )
   end
 
@@ -363,7 +369,8 @@ defmodule Orchard.Inference.QueueManager do
       queue_wait_ms: grant.queue_wait_ms,
       queued_at: grant.queued_at,
       queue_granted_at: grant.queue_granted_at,
-      queue_grant_id: grant.grant_id
+      queue_grant_id: grant.grant_id,
+      queue_wait_reason: grant.queue_wait_reason
     }
     |> reject_nil_values()
   end
@@ -373,6 +380,7 @@ defmodule Orchard.Inference.QueueManager do
     :queued
     |> error_metadata(ticket.queue_key, elapsed_ms(ticket.enqueued_monotonic_ms))
     |> Map.put(:queued_at, ticket.queued_at)
+    |> Map.put(:queue_wait_reason, ticket.queue_wait_reason)
   end
 
   @spec error_metadata(atom(), String.t(), non_neg_integer()) :: map()
@@ -429,7 +437,9 @@ defmodule Orchard.Inference.QueueManager do
         {:reply, {:error, :queue_full, metadata}, state}
 
       tenant_has_queued_entries?(state, request.tenant_id) ->
-        {ticket, state} = enqueue_request(request, config, state)
+        {ticket, state} =
+          enqueue_request(request, config, state, queue_wait_reason(state, lane, request, config))
+
         {:reply, {:queued, ticket}, state}
 
       active_capacity?(lane, config.capacity) and
@@ -443,7 +453,9 @@ defmodule Orchard.Inference.QueueManager do
         {:reply, {:error, :queue_full, metadata}, state}
 
       true ->
-        {ticket, state} = enqueue_request(request, config, state)
+        {ticket, state} =
+          enqueue_request(request, config, state, queue_wait_reason(state, lane, request, config))
+
         {:reply, {:queued, ticket}, state}
     end
   end
@@ -452,9 +464,9 @@ defmodule Orchard.Inference.QueueManager do
     {:reply, :ok, release_grant(grant_id, state)}
   end
 
-  def handle_call({:requeue, %Grant{} = grant, request, config}, _from, state) do
+  def handle_call({:requeue, %Grant{} = grant, request, config, queue_wait_reason}, _from, state) do
     config = queue_config_for_request(config, request)
-    {result, state} = requeue_grant(grant, request, config, state)
+    {result, state} = requeue_grant(grant, request, config, queue_wait_reason, state)
     {:reply, result, state}
   end
 
@@ -2530,7 +2542,7 @@ defmodule Orchard.Inference.QueueManager do
      put_immediate_grant(grant, request, config, started_monotonic_ms, admission_sequence, state)}
   end
 
-  defp enqueue_request(request, config, state) do
+  defp enqueue_request(request, config, state, queue_wait_reason) do
     {admission_sequence, state} = take_admission_sequence(state)
     ticket_ref = make_ref()
     enqueued_monotonic_ms = monotonic_ms()
@@ -2546,7 +2558,8 @@ defmodule Orchard.Inference.QueueManager do
       queue_key: request.queue_key,
       queued_at: queued_at,
       enqueued_monotonic_ms: enqueued_monotonic_ms,
-      max_wait_ms: config.max_wait_ms
+      max_wait_ms: config.max_wait_ms,
+      queue_wait_reason: queue_wait_reason
     }
 
     entry = %{
@@ -2571,7 +2584,8 @@ defmodule Orchard.Inference.QueueManager do
       terminal_result: nil,
       terminal_retry_ref: nil,
       terminal_retry_after_ms: config.poll_interval_ms,
-      max_active_per_tenant: config.max_active_per_tenant
+      max_active_per_tenant: config.max_active_per_tenant,
+      queue_wait_reason: queue_wait_reason
     }
 
     {ticket, put_entry(entry, state)}
@@ -2804,10 +2818,10 @@ defmodule Orchard.Inference.QueueManager do
     end
   end
 
-  defp requeue_grant(%Grant{} = grant, request, config, state) do
+  defp requeue_grant(%Grant{} = grant, request, config, queue_wait_reason, state) do
     case Map.fetch(state.grants, grant.grant_id) do
       {:ok, grant_state} ->
-        requeue_active_grant(grant, grant_state, request, config, state)
+        requeue_active_grant(grant, grant_state, request, config, queue_wait_reason, state)
 
       :error ->
         metadata = error_metadata(:invalid_requeue, request.queue_key)
@@ -2815,7 +2829,7 @@ defmodule Orchard.Inference.QueueManager do
     end
   end
 
-  defp requeue_active_grant(grant, grant_state, request, config, state) do
+  defp requeue_active_grant(grant, grant_state, request, config, queue_wait_reason, state) do
     cond do
       grant_state.queue_key != request.queue_key ->
         metadata = error_metadata(:invalid_requeue, request.queue_key)
@@ -2837,11 +2851,11 @@ defmodule Orchard.Inference.QueueManager do
         {{:error, :request_caller_disconnect, metadata}, maybe_grant_next_global(state)}
 
       true ->
-        requeue_live_grant(grant, grant_state, request, config, state)
+        requeue_live_grant(grant, grant_state, request, config, queue_wait_reason, state)
     end
   end
 
-  defp requeue_live_grant(grant, grant_state, request, config, state) do
+  defp requeue_live_grant(grant, grant_state, request, config, queue_wait_reason, state) do
     now_ms = monotonic_ms()
     remaining_ms = grant_state.queue_deadline_monotonic_ms - now_ms
     queued_at = grant_state.queued_at || now_iso8601()
@@ -2858,7 +2872,7 @@ defmodule Orchard.Inference.QueueManager do
     else
       {ticket, state} =
         request
-        |> requeue_entry(config, grant_state, queued_at, remaining_ms)
+        |> requeue_entry(config, grant_state, queued_at, remaining_ms, queue_wait_reason)
         |> put_requeued_entry(state)
 
       state =
@@ -2870,7 +2884,7 @@ defmodule Orchard.Inference.QueueManager do
     end
   end
 
-  defp requeue_entry(request, config, grant_state, queued_at, remaining_ms) do
+  defp requeue_entry(request, config, grant_state, queued_at, remaining_ms, queue_wait_reason) do
     ticket_ref = make_ref()
     monitor_ref = Process.monitor(request.caller_pid)
     timeout_ref = Process.send_after(self(), {:queue_timeout, ticket_ref}, remaining_ms)
@@ -2881,7 +2895,10 @@ defmodule Orchard.Inference.QueueManager do
       queue_key: request.queue_key,
       queued_at: queued_at,
       enqueued_monotonic_ms: grant_state.enqueued_monotonic_ms,
-      max_wait_ms: config.max_wait_ms
+      max_wait_ms: config.max_wait_ms,
+      queue_wait_reason:
+        queue_wait_reason ||
+          Map.get(grant_state, :queue_wait_reason, :requested_model_path_capacity)
     }
 
     entry = %{
@@ -2906,7 +2923,8 @@ defmodule Orchard.Inference.QueueManager do
       terminal_result: nil,
       terminal_retry_ref: nil,
       terminal_retry_after_ms: config.poll_interval_ms,
-      max_active_per_tenant: config.max_active_per_tenant
+      max_active_per_tenant: config.max_active_per_tenant,
+      queue_wait_reason: ticket.queue_wait_reason
     }
 
     {ticket, entry}
@@ -3033,7 +3051,14 @@ defmodule Orchard.Inference.QueueManager do
     capacity_source_kind = capacity_source_kind_for_grant(entry.queue_key, capacity_source, state)
 
     grant =
-      build_grant(state, entry.queue_key, :queued, entry.queued_at, entry.enqueued_monotonic_ms)
+      build_grant(
+        state,
+        entry.queue_key,
+        :queued,
+        entry.queued_at,
+        entry.enqueued_monotonic_ms,
+        entry.queue_wait_reason
+      )
 
     state = promote_entry_to_grant(entry, grant, capacity_source, capacity_source_kind, state)
     reply_awaiter(entry, {:ok, grant})
@@ -3085,7 +3110,8 @@ defmodule Orchard.Inference.QueueManager do
         server: state.server,
         capacity_source: capacity_source,
         capacity_source_kind: capacity_source_kind,
-        capacity_source_observed?: false
+        capacity_source_observed?: false,
+        queue_wait_reason: entry.queue_wait_reason
       })
 
     %{
@@ -3391,22 +3417,55 @@ defmodule Orchard.Inference.QueueManager do
     }
   end
 
+  defp build_grant(
+         state,
+         queue_key,
+         queue_result,
+         queued_at,
+         started_monotonic_ms,
+         queue_wait_reason
+       ) do
+    %Grant{
+      server: state.server,
+      grant_id: Ecto.UUID.generate(),
+      queue_key: queue_key,
+      queue_result: queue_result,
+      queued_at: queued_at,
+      queue_granted_at: now_iso8601(),
+      queue_wait_ms: elapsed_ms(started_monotonic_ms),
+      queue_wait_reason: queue_wait_reason
+    }
+  end
+
+  defp queue_wait_reason(state, _lane, request, config) do
+    if tenant_active_capacity?(state, request, config) do
+      :requested_model_path_capacity
+    else
+      :tenant_active_capacity
+    end
+  end
+
   defp timeout_metadata(%Ticket{} = ticket) do
     :queue_timeout
     |> error_metadata(ticket.queue_key, elapsed_ms(ticket.enqueued_monotonic_ms))
     |> Map.put(:queued_at, ticket.queued_at)
+    |> Map.put(:queue_wait_reason, ticket.queue_wait_reason)
   end
 
   defp timeout_metadata(entry) do
     :queue_timeout
     |> error_metadata(entry.queue_key, elapsed_ms(entry))
     |> Map.put(:queued_at, entry.queued_at)
+    |> Map.put(:queue_wait_reason, Map.get(entry, :queue_wait_reason))
+    |> reject_nil_values()
   end
 
   defp timeout_metadata(grant_state, queued_at) do
     :queue_timeout
     |> error_metadata(grant_state.queue_key, elapsed_ms(grant_state.enqueued_monotonic_ms))
     |> Map.put(:queued_at, queued_at)
+    |> Map.put(:queue_wait_reason, Map.get(grant_state, :queue_wait_reason))
+    |> reject_nil_values()
   end
 
   defp terminalize_requeued_timeout(request, grant_state, queued_at, config, metadata) do

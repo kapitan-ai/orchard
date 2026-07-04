@@ -905,6 +905,28 @@ defmodule Orchard.RequestsTest do
              }
     end
 
+    test "rejects scheduler explanations with reason codes outside the accepted vocabulary" do
+      request = create_request!(%{public_id: "req_schedule_invalid_reason"})
+
+      schedule = %{
+        request_id: request.public_id,
+        selected_node_id: "node-a",
+        selection_tier: :loaded,
+        scored_candidates: [],
+        rejected_candidates: [
+          %{node_id: "node-b", reason_codes: [:made_up_reason]}
+        ],
+        skipped_candidates: []
+      }
+
+      assert {:error,
+              {:invalid_scheduler_explanation,
+               {:unknown_code, :scheduler_rejection, "made_up_reason"}}} =
+               Requests.record_schedule(request, schedule)
+
+      assert Repo.get!(Orchard.Requests.Request, request.id).scheduler_decision == nil
+    end
+
     test "preserves nil node_id when schedule has no node" do
       request = create_request!(%{public_id: "req_schedule_3"})
 

@@ -194,6 +194,8 @@ defmodule Orchard.Scheduler.MultiNode do
             ranking_opts
           )
 
+        selected_tier = if(selected.loaded_model?, do: "loaded", else: "cold")
+
         schedule =
           %{
             strategy: :multi_node,
@@ -204,7 +206,7 @@ defmodule Orchard.Scheduler.MultiNode do
             node_id: selected.node_id,
             candidate_count: length(ranked),
             queue_lane_capacity: queue_lane_capacity(available_candidates),
-            selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
+            selected_tier: selected_tier
           }
           |> maybe_put_runtime_client_target(selected.target)
           |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
@@ -214,6 +216,16 @@ defmodule Orchard.Scheduler.MultiNode do
           )
           |> maybe_put_prefix_cache_score(selected_score)
           |> maybe_put_memory_admission(selected, memory_admission_enabled?)
+          |> Map.merge(
+            scheduler_explanation(
+              request,
+              selected,
+              selected_tier,
+              ranked,
+              candidates,
+              ranking_opts
+            )
+          )
 
         {:ok,
          Map.merge(schedule, CacheAffinity.scheduler_metadata(affinity_context, ranked, selected))}
@@ -240,6 +252,149 @@ defmodule Orchard.Scheduler.MultiNode do
          _beam_identity_rejected?
        ),
        do: :select_candidate
+
+  defp scheduler_explanation(request, selected, selected_tier, ranked, candidates, ranking_opts) do
+    scored = scored_candidates(ranked, selected_tier)
+    skipped_node_ids = MapSet.new(Enum.map(ranked -- scored, & &1.node_id))
+
+    %{
+      selected_node_id: selected.node_id,
+      selection_tier: selected_tier,
+      scored_candidates: scored_candidate_explanations(scored, ranking_opts),
+      rejected_candidates: rejected_candidates(candidates, skipped_node_ids),
+      skipped_candidates: skipped_candidates(ranked -- scored, selected_tier),
+      request_id: request.public_id
+    }
+  end
+
+  defp scored_candidates(ranked, "loaded") do
+    Enum.filter(ranked, & &1.loaded_model?)
+  end
+
+  defp scored_candidates(ranked, _selected_tier), do: ranked
+
+  defp scored_candidate_explanations(scored, ranking_opts) do
+    total = length(scored)
+    qualitative = Enum.map(scored, &qualitative_score_components(&1, ranking_opts))
+    rank_step = rank_score_step(qualitative)
+
+    [scored, qualitative]
+    |> Enum.zip()
+    |> Enum.with_index()
+    |> Enum.map(fn {{candidate, components}, rank} ->
+      scored_candidate(candidate, components, (total - rank) * rank_step)
+    end)
+  end
+
+  defp rank_score_step(qualitative) do
+    qualitative
+    |> Enum.map(&scheduler_score/1)
+    |> Enum.max(fn -> 0 end)
+    |> Kernel.+(1)
+  end
+
+  defp scored_candidate(candidate, qualitative_components, rank_base) do
+    components = Map.put(qualitative_components, :rank_base, rank_base)
+
+    %{
+      node_id: candidate.node_id,
+      eligible: true,
+      tier: candidate_tier(candidate),
+      score: scheduler_score(components),
+      components: components,
+      reason_codes: []
+    }
+  end
+
+  defp scheduler_score(components) do
+    components
+    |> Map.values()
+    |> Enum.sum()
+  end
+
+  defp qualitative_score_components(candidate, ranking_opts) do
+    %{
+      residency_bonus: residency_bonus(candidate),
+      load_bonus: load_bonus(candidate),
+      health_bonus: health_bonus(candidate)
+    }
+    |> maybe_put_score_component(
+      :cache_affinity_bonus,
+      200,
+      Map.get(candidate, :cache_affinity_match?, false)
+    )
+    |> maybe_put_score_component(
+      :live_fingerprint_bonus,
+      100,
+      Keyword.get(ranking_opts, :live_fingerprint_match?, false) and
+        Map.get(candidate, :prefix_cache_fingerprint_match?, false)
+    )
+    |> maybe_put_score_component(
+      :capable_worker_bonus,
+      25,
+      Keyword.get(ranking_opts, :prefer_capable_workers?, false) and
+        Map.get(candidate, :capable_worker_preferred?, false)
+    )
+    |> maybe_put_score_component(
+      :memory_headroom_bonus,
+      72,
+      Keyword.get(ranking_opts, :memory_admission?, false) and
+        Map.get(candidate, :memory_headroom_ok?, false)
+    )
+  end
+
+  defp residency_bonus(%{loaded_model?: true}), do: 500
+  defp residency_bonus(_candidate), do: 0
+
+  defp load_bonus(candidate), do: max(40 - active_request_rank(candidate) * 10, 0)
+
+  defp health_bonus(%{node: %{health: :healthy}}), do: 30
+  defp health_bonus(%{node: %{health: :degraded}}), do: 10
+  defp health_bonus(_candidate), do: 0
+
+  defp maybe_put_score_component(components, _key, _value, false), do: components
+
+  defp maybe_put_score_component(components, key, value, true),
+    do: Map.put(components, key, value)
+
+  defp rejected_candidates(candidates, skipped_node_ids) do
+    candidates
+    |> Enum.map(fn candidate -> {candidate, rejection_reason_codes(candidate)} end)
+    |> Enum.reject(fn {candidate, reason_codes} ->
+      MapSet.member?(skipped_node_ids, candidate.node_id) or reason_codes == []
+    end)
+    |> Enum.map(fn {candidate, reason_codes} ->
+      %{node_id: candidate.node_id, reason_codes: reason_codes}
+    end)
+  end
+
+  defp skipped_candidates(candidates, "loaded") do
+    Enum.map(candidates, fn candidate ->
+      %{
+        node_id: candidate.node_id,
+        reason_codes: ["lower_tier_not_considered"]
+      }
+    end)
+  end
+
+  defp skipped_candidates(_candidates, _selected_tier), do: []
+
+  defp rejection_reason_codes(candidate) do
+    [
+      rejection_reason(candidate, &runtime_endpoint_unavailable?/1, "runtime_not_ready"),
+      rejection_reason(candidate, &node_concurrency_full?/1, "node_concurrency_exhausted"),
+      rejection_reason(candidate, &placement_capacity_full?/1, "placement_concurrency_exhausted"),
+      rejection_reason(candidate, &active_without_known_capacity?/1, "unknown_capacity")
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp rejection_reason(candidate, predicate, code) do
+    if predicate.(candidate), do: code
+  end
+
+  defp candidate_tier(%{loaded_model?: true}), do: "loaded"
+  defp candidate_tier(_candidate), do: "cold"
 
   defp probe_target(target, client, timeout, observed_at, request) do
     case client.connect(target) do

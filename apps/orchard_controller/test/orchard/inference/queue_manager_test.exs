@@ -996,6 +996,8 @@ defmodule Orchard.Inference.QueueManagerTest do
                config: config
              )
 
+    assert QueueManager.queued_metadata(ticket).queue_wait_reason == :tenant_active_capacity
+
     awaiter = Task.async(fn -> QueueManager.await(ticket) end)
     refute Task.yield(awaiter, 50)
 
@@ -1473,6 +1475,26 @@ defmodule Orchard.Inference.QueueManagerTest do
 
       assert :ok = QueueManager.release(grant)
       assert :ok = QueueManager.release(requeued_grant)
+    end)
+  end
+
+  test "SPEC.md §7.3.5 requeue preserves explicit placement capacity wait reason" do
+    config = queue_config(max_wait_ms: 500, poll_interval_ms: 200)
+
+    with_queue_admission_config(config, fn ->
+      request = admission_request("req-requeue-placement-capacity")
+
+      assert {:ok, grant} = QueueManager.acquire(request)
+
+      assert {:queued, ticket} =
+               QueueManager.requeue(grant, request,
+                 config: config,
+                 queue_wait_reason: :placement_capacity
+               )
+
+      assert QueueManager.queued_metadata(ticket).queue_wait_reason == :placement_capacity
+
+      assert :ok = QueueManager.abandon(ticket)
     end)
   end
 

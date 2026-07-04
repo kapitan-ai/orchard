@@ -255,7 +255,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
        ) do
     with {:ok, schedule} <- schedule_request(canonical),
          {:ok, _} <-
-           Requests.record_schedule(db_request, scheduler_persistence_metadata(schedule)),
+           record_scheduler_decision(db_request, scheduler_persistence_metadata(schedule)),
          :ok <- put_request_scheduled_context(schedule),
          :ok <- advance_fsm(db_request.id, :scheduled),
          :ok <- advance_fsm(db_request.id, :dispatching) do
@@ -425,7 +425,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
     case do_dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
       {:error, reason} when reason in [:cluster_busy, :model_busy] ->
-        requeue_after_schedule_busy(db_request, canonical, model, grant, execution_opts)
+        requeue_after_schedule_busy(db_request, canonical, model, grant, execution_opts, reason)
 
       result ->
         result
@@ -434,10 +434,12 @@ defmodule Orchard.Inference.RequestOrchestrator do
     Inference.queue_manager().release(grant)
   end
 
-  defp requeue_after_schedule_busy(db_request, canonical, model, grant, execution_opts) do
+  defp requeue_after_schedule_busy(db_request, canonical, model, grant, execution_opts, reason) do
     request = queue_admission_request(db_request, canonical, execution_opts.caller)
 
-    case Inference.queue_manager().requeue(grant, request) do
+    case Inference.queue_manager().requeue(grant, request,
+           queue_wait_reason: busy_queue_wait_reason(reason)
+         ) do
       {:queued, %QueueManager.Ticket{} = ticket} ->
         with {:ok, next_grant} <- await_queued_grant(db_request, ticket) do
           dispatch_if_queue_request_live(db_request, canonical, model, next_grant, execution_opts)
@@ -458,6 +460,9 @@ defmodule Orchard.Inference.RequestOrchestrator do
     end
   end
 
+  defp busy_queue_wait_reason(:cluster_busy), do: :live_node_capacity
+  defp busy_queue_wait_reason(:model_busy), do: :requested_model_path_capacity
+
   defp do_dispatch_with_queue_grant(db_request, canonical, model, grant, execution_opts) do
     metadata = QueueManager.grant_metadata(grant)
 
@@ -471,7 +476,7 @@ defmodule Orchard.Inference.RequestOrchestrator do
            ),
          {:ok, schedule} <- schedule_request(canonical),
          {:ok, _} <-
-           Requests.record_schedule(
+           record_scheduler_decision(
              db_request,
              scheduler_persistence_metadata(Map.merge(schedule, metadata))
            ),
@@ -700,6 +705,32 @@ defmodule Orchard.Inference.RequestOrchestrator do
     _kind, _reason ->
       log_warn("scheduler threw")
       {:error, orchestration_crash(:scheduler, :throw)}
+  end
+
+  defp record_scheduler_decision(db_request, metadata) do
+    case Requests.record_schedule(db_request, metadata) do
+      {:error, {:invalid_scheduler_explanation, reason}} ->
+        log_error(
+          "invalid scheduler explanation for request #{db_request.public_id}: " <>
+            "#{inspect(reason)}; persisting scheduler decision without explanation candidates"
+        )
+
+        Requests.record_schedule(db_request, drop_scheduler_explanation(metadata))
+
+      result ->
+        result
+    end
+  end
+
+  defp drop_scheduler_explanation(metadata) do
+    Map.drop(metadata, [
+      :scored_candidates,
+      "scored_candidates",
+      :rejected_candidates,
+      "rejected_candidates",
+      :skipped_candidates,
+      "skipped_candidates"
+    ])
   end
 
   defp scheduler_persistence_metadata(schedule) do
@@ -1772,5 +1803,10 @@ defmodule Orchard.Inference.RequestOrchestrator do
   defp log_warn(message) do
     require Logger
     Logger.warning("[RequestOrchestrator] #{message}")
+  end
+
+  defp log_error(message) do
+    require Logger
+    Logger.error("[RequestOrchestrator] #{message}")
   end
 end

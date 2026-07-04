@@ -23,6 +23,28 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler do
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubMalformedExplanationScheduler do
+  @behaviour Orchard.Scheduler.SingleNode
+
+  alias Orchard.CanonicalRequest
+  alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
+
+  def schedule(%CanonicalRequest{} = request) do
+    with {:ok, schedule} <- StubMultiNodeScheduler.schedule(request) do
+      {:ok,
+       Map.merge(schedule, %{
+         selected_node_id: StubMultiNodeScheduler.scheduled_node_id(),
+         selection_tier: :loaded,
+         scored_candidates: [],
+         rejected_candidates: [
+           %{node_id: "00000000-0000-4000-a000-0000000000bb", reason_codes: [:made_up_reason]}
+         ],
+         skipped_candidates: []
+       })}
+    end
+  end
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointTargetScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -481,7 +503,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest.PreAwaitTerminalQueueManager
        queue_key: queue_key,
        queued_at: queued_at,
        enqueued_monotonic_ms: System.monotonic_time(:millisecond),
-       max_wait_ms: 1
+       max_wait_ms: 1,
+       queue_wait_reason: :requested_model_path_capacity
      }}
   end
 
@@ -626,6 +649,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
   alias Orchard.Inference.RequestOrchestratorTest.StubCacheAffinityScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubLiveCapacityScheduler
+  alias Orchard.Inference.RequestOrchestratorTest.StubMalformedExplanationScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubMemoryScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubMemoryTierOnlyScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubMemoryUnavailableScheduler
@@ -633,6 +657,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheUnavailableScheduler
 
+  alias Orchard.API.Ops.SchedulerExplanationPresenter
   alias Orchard.ArtifactBundle
   alias Orchard.CanonicalRequest
   alias Orchard.Inference.CacheAffinity
@@ -814,6 +839,29 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.scheduler_decision["candidate_count"] == 2
     assert request.scheduler_decision["selected_tier"] == "loaded"
     assert request.scheduler_decision["node_id"] == scheduled_node_id()
+  end
+
+  test "SPEC.md §7.3.5 execute/3 fails open and completes dispatch when the scheduler explanation is invalid",
+       %{bundle: bundle} do
+    put_malformed_explanation_scheduler_config()
+
+    model = create_active_model!(bundle, "request-orchestrator-bad-explanation")
+    canonical = canonical_request("request-orchestrator-bad-explanation", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert decision["strategy"] == "multi_node"
+    assert decision["node_id"] == scheduled_node_id()
+    refute Map.has_key?(decision, "scored_candidates")
+    refute Map.has_key?(decision, "rejected_candidates")
+    refute Map.has_key?(decision, "skipped_candidates")
+
+    assert {:ok, %{scored_candidates: [], rejected_candidates: [], skipped_candidates: []}} =
+             SchedulerExplanationPresenter.show(request)
   end
 
   test "execute/3 strips dispatch-only runtime endpoint target metadata", %{bundle: bundle} do
@@ -1639,6 +1687,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     queued_request = Requests.get_request_by_public_id(canonical.public_id)
     assert_queue_metadata(queued_request, "queued", queued?: true)
+    assert queued_request.scheduler_decision["queue_wait_reason"] == "live_node_capacity"
     refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
 
     assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
@@ -1686,6 +1735,10 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
 
     queued_request = Requests.get_request_by_public_id(canonical.public_id)
     assert_queue_metadata(queued_request, "queued", queued?: true)
+
+    assert queued_request.scheduler_decision["queue_wait_reason"] ==
+             "requested_model_path_capacity"
+
     refute Map.has_key?(queued_request.scheduler_decision || %{}, "queue_grant_id")
 
     assert {:live_capacity_schedule_attempt, retry_scheduler_pid, ^public_id} =
@@ -2899,6 +2952,16 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
         ],
         scheduler_impl: Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
       )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp put_malformed_explanation_scheduler_config do
+    put_multi_node_scheduler_config()
+
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.put(:scheduler_impl, StubMalformedExplanationScheduler)
 
     Application.put_env(:orchard_controller, :inference, inference)
   end

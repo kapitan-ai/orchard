@@ -371,6 +371,22 @@ defmodule Orchard.Governance do
 
   def authorize_admin_api(_auth_context), do: {:error, :admin_required}
 
+  @spec authorize_operator_api(api_key_auth_result()) :: :ok | {:error, :operator_required}
+  def authorize_operator_api(%{
+        principal_type: :service_account,
+        principal_id: service_account_id
+      }) do
+    with {:ok, api_client} <- resolve_api_client(service_account_id),
+         false <- ServiceAccount.disabled?(api_client),
+         true <- cluster_operator_or_admin_role_binding_exists?(api_client.id) do
+      :ok
+    else
+      _ -> {:error, :operator_required}
+    end
+  end
+
+  def authorize_operator_api(_auth_context), do: {:error, :operator_required}
+
   @spec bulk_validate_api_clients([map()], keyword()) ::
           {:ok, ApiClientProvisioning.plan()}
           | {:error, [ApiClientProvisioning.validation_error()]}
@@ -973,11 +989,32 @@ defmodule Orchard.Governance do
     end
   end
 
+  defp cluster_operator_role_binding_exists?(service_account_id) do
+    case fetch_cluster_operator_role_binding(service_account_id) do
+      %RoleBinding{} -> true
+      nil -> false
+    end
+  end
+
+  defp cluster_operator_or_admin_role_binding_exists?(service_account_id) do
+    cluster_operator_role_binding_exists?(service_account_id) or
+      cluster_admin_role_binding_exists?(service_account_id)
+  end
+
   defp fetch_cluster_admin_role_binding(service_account_id) do
     RoleBinding
     |> where([role_binding], role_binding.principal_type == :service_account)
     |> where([role_binding], role_binding.principal_id == ^service_account_id)
     |> where([role_binding], role_binding.role == :admin)
+    |> where([role_binding], is_nil(role_binding.tenant_scope_id))
+    |> Repo.one()
+  end
+
+  defp fetch_cluster_operator_role_binding(service_account_id) do
+    RoleBinding
+    |> where([role_binding], role_binding.principal_type == :service_account)
+    |> where([role_binding], role_binding.principal_id == ^service_account_id)
+    |> where([role_binding], role_binding.role == :operator)
     |> where([role_binding], is_nil(role_binding.tenant_scope_id))
     |> Repo.one()
   end

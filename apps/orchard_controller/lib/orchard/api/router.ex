@@ -20,6 +20,11 @@ defmodule Orchard.API.Router do
     plug(Orchard.API.AdminRequestContext)
   end
 
+  pipeline :operator_api do
+    plug(:accepts, ["json"])
+    plug(Orchard.API.OperatorRequestContext)
+  end
+
   pipeline :browser do
     plug(:accepts, ["html"])
     plug(:fetch_session)
@@ -49,6 +54,12 @@ defmodule Orchard.API.Router do
     get("/models", ModelsController, :index)
     post("/chat/completions", ChatCompletionsController, :create)
     post("/responses", ResponsesController, :create)
+  end
+
+  scope "/ops/v1", Orchard.API.Ops do
+    pipe_through(:operator_api)
+
+    get("/scheduler/explanations/:request_id", SchedulerExplanationsController, :show)
   end
 
   scope "/admin/v1", Orchard.API.Admin do
