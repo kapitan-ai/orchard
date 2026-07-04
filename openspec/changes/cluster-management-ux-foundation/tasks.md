@@ -74,8 +74,9 @@
   Note: Console request detail now renders the shared `SchedulerExplanationPresenter` contract in a request-scoped panel after Execution Metadata.
   Note: The placement follows the existing request detail IA because scheduler explanations are request-scoped execution evidence and the page already owns execution metadata and request provenance.
   Note: The panel keeps selected, scored, skipped, and rejected candidates in separate grouped sections and renders stable reason codes as compact badges.
-  Note: Scheduler decision debug JSON and candidate diagnostics now filter unsafe prompt, token, secret, credential, DSN, body, payload, request, and response keys before rendering.
+  Note: Scheduler decision debug JSON plus candidate diagnostics and score components now filter unsafe prompt, token, secret, credential, DSN, body, payload, request, and response keys before rendering.
   Note: Public LiveView tests cover the full candidate groups, not found, legacy empty shape, invalid persisted explanation, and disconnected deferred render.
+  Note: The diagnostics and components deny-list is key-based and does not inspect values, accepted because the data domain is internal scheduler metadata.
 - [ ] 5.5 Add diagnostics and support bundle entry points that use the shared support bundle contract.
 - [ ] 5.6 Add read-only HA-lite control-plane status.
 - [ ] 5.7 Verify Console UI against `docs/DESIGN.md` and `docs/brand-identity.md` with browser screenshots during implementation.

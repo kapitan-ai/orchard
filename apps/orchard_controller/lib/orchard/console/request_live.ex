@@ -329,11 +329,11 @@ defmodule OrchardConsole.RequestLive do
 
           <% _ -> %>
             <.state_message
-              id="scheduler-explanation-loading"
-              kind={:loading}
+              id="scheduler-explanation-unavailable"
+              kind={:error}
               layout={:compact}
-              title="Loading scheduler explanation."
-              body="The scheduler explanation will appear when the LiveView connects."
+              title="Scheduler explanation unavailable."
+              body="The scheduler explanation state is unavailable."
             />
         <% end %>
       </.card>
@@ -373,10 +373,13 @@ defmodule OrchardConsole.RequestLive do
   defp candidate_card(assigns) do
     assigns =
       assigns
-      |> assign(:components, scheduler_entries(assigns.candidate.components))
+      |> assign(
+        :components,
+        scheduler_entries(sanitized_scheduler_metadata(assigns.candidate.components))
+      )
       |> assign(
         :diagnostics,
-        scheduler_entries(sanitized_scheduler_diagnostics(assigns.candidate.diagnostics))
+        scheduler_entries(sanitized_scheduler_metadata(assigns.candidate.diagnostics))
       )
 
     ~H"""
@@ -971,14 +974,38 @@ defmodule OrchardConsole.RequestLive do
     do: "Persisted scheduler explanation is invalid."
 
   defp scheduler_explanation_error_body(reason),
-    do: "Persisted scheduler explanation is invalid: #{inspect(reason)}"
+    do:
+      "Persisted scheduler explanation is invalid: #{scheduler_explanation_error_category(reason)}"
 
-  defp selected_candidates(%{selected_node_id: selected_node_id, scored_candidates: candidates})
-       when is_binary(selected_node_id) and is_list(candidates) do
-    Enum.filter(candidates, &(&1.node_id == selected_node_id))
+  defp scheduler_explanation_error_category({category, _field, _value}) when is_atom(category),
+    do: to_string(category)
+
+  defp scheduler_explanation_error_category({category, _value}) when is_atom(category),
+    do: to_string(category)
+
+  defp scheduler_explanation_error_category(category) when is_atom(category),
+    do: to_string(category)
+
+  defp scheduler_explanation_error_category(_reason), do: "unknown"
+
+  defp selected_candidates(%{selected_node_id: selected_node_id} = explanation)
+       when is_binary(selected_node_id) do
+    explanation
+    |> scheduler_candidate_lists()
+    |> Enum.filter(&(&1.node_id == selected_node_id))
   end
 
   defp selected_candidates(_explanation), do: []
+
+  defp scheduler_candidate_lists(explanation) do
+    [
+      Map.get(explanation, :scored_candidates),
+      Map.get(explanation, :skipped_candidates),
+      Map.get(explanation, :rejected_candidates)
+    ]
+    |> Enum.filter(&is_list/1)
+    |> List.flatten()
+  end
 
   defp candidate_eligibility_tone(true), do: :success
   defp candidate_eligibility_tone(false), do: :neutral
@@ -1007,11 +1034,11 @@ defmodule OrchardConsole.RequestLive do
 
   defp scheduler_entries(_value), do: []
 
-  defp sanitized_scheduler_diagnostics(map) when is_map(map) do
+  defp sanitized_scheduler_metadata(map) when is_map(map) do
     Map.reject(map, fn {key, _value} -> unsafe_scheduler_key?(key) end)
   end
 
-  defp sanitized_scheduler_diagnostics(_value), do: %{}
+  defp sanitized_scheduler_metadata(_value), do: %{}
 
   defp sanitized_scheduler_decision(map) when is_map(map) do
     map

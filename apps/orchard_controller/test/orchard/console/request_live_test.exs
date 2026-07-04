@@ -385,6 +385,8 @@ defmodule OrchardConsole.RequestLiveTest do
       assert explanation_html =~ "loaded"
       assert explanation_html =~ "842"
       assert explanation_html =~ "pool_bonus"
+      refute explanation_html =~ "prompt_fragment"
+      refute explanation_html =~ "component prompt leak"
       assert explanation_html =~ "Selected Candidate"
       assert explanation_html =~ "Scored Candidates"
       assert explanation_html =~ "Skipped Candidates"
@@ -468,7 +470,8 @@ defmodule OrchardConsole.RequestLiveTest do
       assert explanation_html =~ "scheduler-explanation-invalid"
       assert explanation_html =~ "Scheduler explanation is invalid."
       assert explanation_html =~ "Persisted scheduler explanation is invalid"
-      assert explanation_html =~ "not_a_scheduler_code"
+      assert explanation_html =~ "unknown_code"
+      refute explanation_html =~ "not_a_scheduler_code"
       refute explanation_html =~ "Selected Candidate"
     end
 
@@ -1306,7 +1309,11 @@ defmodule OrchardConsole.RequestLiveTest do
                    eligible: true,
                    tier: :loaded,
                    score: 842,
-                   components: %{pool_bonus: 200, health_bonus: 30},
+                   components: %{
+                     pool_bonus: 200,
+                     health_bonus: 30,
+                     prompt_fragment: "component prompt leak"
+                   },
                    diagnostics: %{capacity_window: "warm", internal_prompt: "must not render"},
                    reason_codes: []
                  }
