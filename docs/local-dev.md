@@ -991,8 +991,9 @@ sudo launchctl kickstart -k system/com.orchard.node-agent
 
 ## Smoke Test Troubleshooting
 
-`orchardctl requests inspect` is a SPEC-required diagnostics path that returns
-deferred status in this build. `orchardctl support bundle create` creates a
+`orchardctl requests inspect <request-id>` reads the local controller Repo and renders the persisted scheduler explanation for a request, with stable human and `--json` output from the shared Operator API presenter.
+Broader request execution diagnostics beyond persisted scheduler explanations remain future work.
+`orchardctl support bundle create` creates a
 local diagnostic `.tar.gz` containing bounded redacted logs, redacted config,
 service status, node snapshots, shared cluster-management node status, and
 request summaries; use `--support-root` and
