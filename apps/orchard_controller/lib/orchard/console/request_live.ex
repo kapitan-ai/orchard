@@ -1,7 +1,8 @@
 defmodule OrchardConsole.RequestLive do
   @moduledoc """
   Console request detail page — shows request summary, usage, errors,
-  canonical request JSON, and event timeline for a single inference request.
+  canonical request JSON, the persisted scheduler explanation, and event
+  timeline for a single inference request.
   """
 
   use OrchardConsole, :live_view
