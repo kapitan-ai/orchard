@@ -194,6 +194,8 @@ defmodule Orchard.Scheduler.MultiNode do
             ranking_opts
           )
 
+        selected_tier = if(selected.loaded_model?, do: "loaded", else: "cold")
+
         schedule =
           %{
             strategy: :multi_node,
@@ -204,7 +206,7 @@ defmodule Orchard.Scheduler.MultiNode do
             node_id: selected.node_id,
             candidate_count: length(ranked),
             queue_lane_capacity: queue_lane_capacity(available_candidates),
-            selected_tier: if(selected.loaded_model?, do: "loaded", else: "cold")
+            selected_tier: selected_tier
           }
           |> maybe_put_runtime_client_target(selected.target)
           |> maybe_put_prefix_cache_status(Map.get(selected, :prefix_cache_status))
@@ -214,6 +216,9 @@ defmodule Orchard.Scheduler.MultiNode do
           )
           |> maybe_put_prefix_cache_score(selected_score)
           |> maybe_put_memory_admission(selected, memory_admission_enabled?)
+          |> Map.merge(
+            scheduler_explanation(request, selected, selected_tier, ranked, candidates)
+          )
 
         {:ok,
          Map.merge(schedule, CacheAffinity.scheduler_metadata(affinity_context, ranked, selected))}
@@ -240,6 +245,72 @@ defmodule Orchard.Scheduler.MultiNode do
          _beam_identity_rejected?
        ),
        do: :select_candidate
+
+  defp scheduler_explanation(request, selected, selected_tier, ranked, candidates) do
+    scored = scored_candidates(ranked, selected_tier)
+    skipped_node_ids = MapSet.new(Enum.map(ranked -- scored, & &1.node_id))
+
+    %{
+      selected_node_id: selected.node_id,
+      selection_tier: selected_tier,
+      scored_candidates: Enum.map(scored, &scored_candidate/1),
+      rejected_candidates: rejected_candidates(candidates, skipped_node_ids),
+      skipped_candidates: skipped_candidates(ranked -- scored, selected_tier),
+      request_id: request.public_id
+    }
+  end
+
+  defp scored_candidates(ranked, "loaded") do
+    Enum.filter(ranked, & &1.loaded_model?)
+  end
+
+  defp scored_candidates(ranked, _selected_tier), do: ranked
+
+  defp scored_candidate(candidate) do
+    %{
+      node_id: candidate.node_id,
+      eligible: true,
+      tier: candidate_tier(candidate),
+      reason_codes: []
+    }
+  end
+
+  defp rejected_candidates(candidates, skipped_node_ids) do
+    candidates
+    |> Enum.reject(&MapSet.member?(skipped_node_ids, &1.node_id))
+    |> Enum.reject(&(rejection_reason_codes(&1) == []))
+    |> Enum.map(fn candidate ->
+      %{node_id: candidate.node_id, reason_codes: rejection_reason_codes(candidate)}
+    end)
+  end
+
+  defp skipped_candidates(candidates, "loaded") do
+    Enum.map(candidates, fn candidate ->
+      %{
+        node_id: candidate.node_id,
+        reason_codes: ["lower_tier_not_considered"]
+      }
+    end)
+  end
+
+  defp skipped_candidates(_candidates, _selected_tier), do: []
+
+  defp rejection_reason_codes(candidate) do
+    [
+      rejection_reason(candidate, &runtime_endpoint_unavailable?/1, "runtime_not_ready"),
+      rejection_reason(candidate, &node_concurrency_full?/1, "node_concurrency_exhausted"),
+      rejection_reason(candidate, &placement_capacity_full?/1, "placement_concurrency_exhausted"),
+      rejection_reason(candidate, &active_without_known_capacity?/1, "unknown_capacity")
+    ]
+    |> Enum.reject(&is_nil/1)
+  end
+
+  defp rejection_reason(candidate, predicate, code) do
+    if predicate.(candidate), do: code
+  end
+
+  defp candidate_tier(%{loaded_model?: true}), do: "loaded"
+  defp candidate_tier(_candidate), do: "cold"
 
   defp probe_target(target, client, timeout, observed_at, request) do
     case client.connect(target) do

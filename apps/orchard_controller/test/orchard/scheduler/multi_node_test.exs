@@ -827,6 +827,73 @@ defmodule Orchard.Scheduler.MultiNodeTest do
       assert schedule.candidate_count == 2
     end
 
+    test "SPEC.md §7.3.5 scheduler explanation separates selected rejected and skipped candidates" do
+      node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
+      node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
+      node_c = insert_node!(%{advertise_addr: "10.0.0.3", rpc_port: 50_063})
+
+      put_inference(
+        runtime_client_targets: [
+          [host: "10.0.0.1", port: 50_061],
+          [host: "10.0.0.2", port: 50_062],
+          [host: "10.0.0.3", port: 50_063]
+        ]
+      )
+
+      stub_probe("10.0.0.1", 50_061, make_status(node_a.id, host: "10.0.0.1", port: 50_061))
+
+      stub_probe(
+        "10.0.0.2",
+        50_062,
+        make_status(node_b.id,
+          host: "10.0.0.2",
+          port: 50_062,
+          loaded_models: [%{model_id: "test-model", version: "v1"}]
+        )
+      )
+
+      stub_probe(
+        "10.0.0.3",
+        50_063,
+        make_status(node_c.id,
+          host: "10.0.0.3",
+          port: 50_063,
+          active_request_count: 1,
+          max_concurrency: 1
+        )
+      )
+
+      assert {:ok, schedule} =
+               MultiNode.schedule(canonical_request("test-model", "v1"),
+                 status_client: StubClient
+               )
+
+      assert schedule.node_id == node_b.id
+
+      assert schedule.scored_candidates == [
+               %{
+                 node_id: node_b.id,
+                 eligible: true,
+                 tier: "loaded",
+                 reason_codes: []
+               }
+             ]
+
+      assert schedule.rejected_candidates == [
+               %{
+                 node_id: node_c.id,
+                 reason_codes: ["node_concurrency_exhausted"]
+               }
+             ]
+
+      assert schedule.skipped_candidates == [
+               %{
+                 node_id: node_a.id,
+                 reason_codes: ["lower_tier_not_considered"]
+               }
+             ]
+    end
+
     test "keeps probe candidates when disconnect cleanup raises" do
       node_a = insert_node!(%{advertise_addr: "10.0.0.1", rpc_port: 50_061})
       node_b = insert_node!(%{advertise_addr: "10.0.0.2", rpc_port: 50_062})
