@@ -5,6 +5,8 @@ Accepted.
 Node-admission CLI commands are local operator/admin commands for source-dev and packaged controller hosts.
 They execute inside the controller runtime context and do not require the caller to present an Admin API bearer token.
 They still call the same admission domain functions, leader-only write gate, shared Action Preview builder, presenters, and cluster-scoped audit paths used by Admin API admission execution.
+The same local controller-runtime authority boundary applies to node lifecycle commands: cordon, uncordon, drain, maintenance, resume, and decommission.
+Lifecycle execution enforces the same leader-only write-path, confirmation, revalidation, and cluster-scoped audit semantics as admission execution.
 
 This is separate from ADR 0004.
 Admin API remains service-account-owned bearer-token auth for HTTP callers.
@@ -14,4 +16,4 @@ The trade-off is a parallel trust boundary: local OS/package access to `orchardc
 That boundary must not silently expand to remote or tenant-scoped execution.
 If a future remote CLI transport delegates to Admin API, it must preserve the shared admission contract and use the ADR 0004 token boundary.
 
-SPEC.md impact: `SPEC.md` §11.9 records the local node-admission CLI authority boundary.
+SPEC.md impact: `SPEC.md` §11.9 records the local node-admission and node-lifecycle CLI authority boundary.

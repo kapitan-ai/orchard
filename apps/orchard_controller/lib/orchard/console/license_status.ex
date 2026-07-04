@@ -113,8 +113,7 @@ defmodule OrchardConsole.LicenseStatus do
   defp safe_enforcement_mode do
     Licensing.enforcement_mode()
   rescue
-    ArgumentError -> :hard
-    RuntimeError -> :hard
+    _ -> :hard
   end
 
   defp activation_guidance(%Licensing{state: :valid}), do: nil

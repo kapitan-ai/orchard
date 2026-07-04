@@ -641,6 +641,10 @@ The required diagnostic bundle format for cluster-management evidence, including
 v1 compatibility must not weaken v2 contents or redaction rules.
 _Avoid_: Support Bundle v1, raw local evidence, prompt export
 
+**License Enforcement Mode**:
+The resolved licensing mode, `off`, `warn`, or `hard`, that controls licensing checks at startup and packaged useful-work admission and whether non-valid license state is surfaced for operator remediation.
+_Avoid_: license validity, Console-only visibility flag, Payload Capture Mode
+
 **DMG Installer**:
 The interactive macOS distribution container for Orchard installer materials.
 _Avoid_: PKG Installer, launchd service
