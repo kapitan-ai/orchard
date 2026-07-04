@@ -1033,8 +1033,6 @@ defmodule OrchardConsole.RequestLive do
     |> Enum.sort_by(fn {key, _value} -> key end)
   end
 
-  defp scheduler_entries(_value), do: []
-
   defp sanitized_scheduler_metadata(map) when is_map(map) do
     Map.reject(map, fn {key, _value} -> unsafe_scheduler_key?(key) end)
   end
