@@ -53,7 +53,9 @@
   Drain deadline orchestration, active-work cancellation, automatic `draining -> maintenance`, persisted lifecycle reason columns, decommission trust revocation, and Admin/Operator API lifecycle routes remain future work.
   Console lifecycle action preview panels are now implemented under task 5.3.
   Note: `SPEC.md` §11.9 now records the lifecycle commands and their preview and confirmation gates.
-- [ ] 4.7 Implement `orchardctl scheduler explain <request-id>` or reconcile with the existing `requests inspect` command if that is the repo-preferred path.
+- [x] 4.7 Implement `orchardctl scheduler explain <request-id>` or reconcile with the existing `requests inspect` command if that is the repo-preferred path.
+  Note: Implemented `orchardctl requests inspect <request-id>` because `SPEC.md` §11.9 names `requests inspect` as the required CLI path while `SPEC.md` §7.3.5 requires shared scheduler explanation reason codes across CLI and the Operator API.
+  Note: The command uses local controller-runtime authority, reads the same request row as the Operator API, and renders human plus JSON output through `SchedulerExplanationPresenter` and the shared scheduler explanation contract.
 - [ ] 4.8 Implement `orchardctl cluster status --json` for read-only HA-lite and cluster summary status.
 
 ## 5. Console Nodes UX

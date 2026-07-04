@@ -95,8 +95,7 @@ defmodule OrchardCLITest do
   test "advertised deferred commands report docs-backed status" do
     commands = [
       {Cluster, ["init"], "orchardctl cluster init"},
-      {Node, ["join"], "orchardctl node join"},
-      {Requests, ["inspect"], "orchardctl requests inspect"}
+      {Node, ["join"], "orchardctl node join"}
     ]
 
     for {module, args, usage} <- commands do
@@ -115,8 +114,7 @@ defmodule OrchardCLITest do
 
     commands = [
       ["cluster", "init"],
-      ["node", "join"],
-      ["requests", "inspect"]
+      ["node", "join"]
     ]
 
     for command <- commands do
