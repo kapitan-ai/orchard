@@ -5,6 +5,7 @@ defmodule Orchard.Requests do
 
   import Ecto.Query
 
+  alias Orchard.ClusterManagement.SchedulerExplanation
   alias Orchard.Repo
   alias Orchard.Requests.{Request, RequestEvent, RequestStepEvent}
 
@@ -312,14 +313,18 @@ defmodule Orchard.Requests do
     Repo.transaction(fn ->
       case lock_request(request_id) do
         {:ok, request} ->
-          attrs = %{
-            scheduler_decision: normalize_schedule(schedule),
-            node_id: Map.get(schedule, :node_id)
-          }
+          with {:ok, normalized_schedule} <- normalize_schedule(schedule) do
+            attrs = %{
+              scheduler_decision: normalized_schedule,
+              node_id: Map.get(schedule, :node_id)
+            }
 
-          request
-          |> Request.schedule_changeset(attrs)
-          |> Repo.update()
+            request
+            |> Request.schedule_changeset(attrs)
+            |> Repo.update()
+          else
+            {:error, reason} -> Repo.rollback(reason)
+          end
 
         {:error, :request_not_found} ->
           Repo.rollback(:request_not_found)
@@ -363,7 +368,27 @@ defmodule Orchard.Requests do
   defp bounded_positive_integer(_value, default), do: default
 
   defp normalize_schedule(schedule) when is_map(schedule) do
-    normalize_schedule_value(schedule)
+    normalized = normalize_schedule_value(schedule)
+
+    case validate_scheduler_explanation(normalized) do
+      :ok -> {:ok, normalized}
+      {:error, reason} -> {:error, {:invalid_scheduler_explanation, reason}}
+    end
+  end
+
+  defp validate_scheduler_explanation(schedule) do
+    if scheduler_explanation?(schedule) do
+      SchedulerExplanation.validate_map(schedule)
+    else
+      :ok
+    end
+  end
+
+  defp scheduler_explanation?(schedule) do
+    Enum.any?(
+      ~w(scored_candidates rejected_candidates skipped_candidates),
+      &Map.has_key?(schedule, &1)
+    )
   end
 
   defp normalize_schedule_value(value) when is_map(value) do
@@ -588,6 +613,9 @@ defmodule Orchard.Requests do
   defp unwrap_transaction_result({:ok, {:error, changeset}}), do: {:error, changeset}
   defp unwrap_transaction_result({:error, :request_not_found}), do: {:error, :request_not_found}
   defp unwrap_transaction_result({:error, :already_terminal}), do: {:error, :already_terminal}
+
+  defp unwrap_transaction_result({:error, {:invalid_scheduler_explanation, reason}}),
+    do: {:error, {:invalid_scheduler_explanation, reason}}
 
   defp unwrap_transaction_result({:error, {:request_event_changeset, changeset}}),
     do: {:error, changeset}
