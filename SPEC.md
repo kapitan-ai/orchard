@@ -650,6 +650,7 @@ registered  -> decommissioning
 admitted    -> decommissioning
 active      -> decommissioning
 cordoned    -> decommissioning
+draining    -> decommissioning
 maintenance -> decommissioning
 decommissioning -> removed
 ```
@@ -690,7 +691,7 @@ decommissioning -> removed
   * trigger: operator/admin action
   * conditions: health is not `unreachable` or `unhealthy`
 
-* `* -> decommissioning`
+* `registered|admitted|active|cordoned|draining|maintenance -> decommissioning`
 
   * trigger: admin action
   * effect: cordon, revoke future scheduling, cancel or drain active work, revoke join trust
@@ -1930,6 +1931,7 @@ POST   /ops/v1/support-bundles
 Eligibility-changing or destructive Operator and Admin node actions SHALL provide an Action Preview before execution.
 Action Previews SHALL be side-effect-free and SHALL NOT create domain rows, audit events, or Node Admission Decisions unless a future preview-audit contract explicitly says otherwise.
 The preview response SHALL separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements`.
+Blocker, warning, consequence, and confirmation requirement codes SHALL be stable machine-readable identifiers shared by Admin API, Operator API, CLI, Console, support bundles, and tests.
 Blockers are non-bypassable safety, permission, leadership, write-path, lifecycle, or data-integrity constraints.
 Warnings are advisory and MAY require confirmation.
 Consequence codes describe expected effects accepted only through explicit parameters or confirmation requirements.
@@ -3718,6 +3720,12 @@ Required commands:
 * `orchardctl nodes pending`
 * `orchardctl nodes admit`
 * `orchardctl nodes reject`
+* `orchardctl nodes cordon`
+* `orchardctl nodes uncordon`
+* `orchardctl nodes drain`
+* `orchardctl nodes maintenance`
+* `orchardctl nodes resume`
+* `orchardctl nodes decommission`
 * `orchardctl api-clients bulk-provision`
 * `orchardctl models import`
 * `orchardctl requests inspect`
@@ -3728,6 +3736,11 @@ Node-admission CLI commands SHALL provide stable human and JSON output for list,
 `orchardctl nodes admit` and `orchardctl nodes reject` SHALL support side-effect-free `--dry-run` Action Preview output and explicit execution gates, including `--yes` for execution and `--reason` for rejection.
 For source-dev and packaged local use, node-admission CLI commands are local operator/admin commands that execute in the controller runtime context rather than proving Admin API bearer-token authorization.
 They SHALL still enforce the same leader-only write-path, admission, confirmation, cluster-scoped audit, and shared-presenter semantics as the Admin API.
+
+Node lifecycle CLI commands SHALL provide side-effect-free `--dry-run` Action Preview output in stable human and JSON forms.
+Lifecycle execution SHALL enforce the preview's confirmation requirements, including `--yes`, consequence acknowledgement for drain and decommission, and a typed node id for decommission.
+Node lifecycle CLI commands use the same local controller-runtime authority boundary as node-admission CLI commands and SHALL enforce the same leader-only write-path, mutation-time revalidation, cluster-scoped audit, and shared-presenter semantics.
+Manual `draining -> maintenance` execution SHALL remain blocked with a `drain_completion_unverified` blocker until drain completion can be verified.
 
 `orchardctl support bundle create` SHALL be able to emit `orchard.support_bundle.v2` for cluster-management support bundles.
 Console-triggered support bundles and CLI-created support bundles SHALL use the same v2 archive format for the same scope.

@@ -497,6 +497,10 @@ Blocker rows must read as non-bypassable and must disable or omit the execute co
 Warnings and consequences may use compact badges plus short copy, but stable codes remain visible or inspectable when the code is part of the user-facing contract.
 Confirmation requirements sit directly above the execution control they gate.
 Page-local preview panels are valid for node actions when they keep review context visible.
+Typed-identifier confirmation inputs require the operator to retype the exact target identifier; do not prefill, autocomplete, or accept partial matches.
+Consequence acknowledgement controls default to unacknowledged and name the consequence they accept.
+The execute control stays disabled until every confirmation requirement is satisfied, and satisfying requirements never bypasses blockers.
+When one page offers several previewable actions, show one open preview panel at a time so review context stays unambiguous.
 
 Node detail drill-ins keep lifecycle, admission, health, freshness, transport, runtime, compatibility, scheduling, and warnings in labeled groups instead of flattening them into a generic table.
 Use `<.detail_grid>`, `<.detail_field>`, and compact status badges for grouped facts.

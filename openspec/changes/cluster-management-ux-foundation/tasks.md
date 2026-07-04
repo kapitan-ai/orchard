@@ -2,6 +2,8 @@
 
 - [x] 1.1 Reconcile accepted cluster-management UX behavior back into `SPEC.md` without mirroring this OpenSpec package.
   Note: Reconciled accepted admission, Admin API dry-run preview, CLI admission-review command, Console admission-review, and shared freshness behavior from PRs #30 through #37.
+  Reconciled node lifecycle transitions, lifecycle CLI commands, and preview-code stability from PRs #40 and #41.
+  PR #42 required no `SPEC.md` change.
 - [x] 1.2 Update `docs/DESIGN.md` only if Console node-management UI patterns introduce reusable tactical components.
   Note: Documented reusable operational review panel guidance for Action Preview panels, grouped node detail drill-ins, and source or compatibility badges.
 - [x] 1.3 Update `docs/glossary/CONTEXT.md` if accepted terminology adds durable glossary entries such as pending admission, action preview, or scheduler reason code.
@@ -31,6 +33,7 @@
   Note: CLI/Admin admission previews now use shared `ActionPreview` blocker and confirmation codes.
   Console pending admission queue, detail drill-in, and admit/reject preview panels now render shared status, scheduler, blocker, warning, consequence, and confirmation codes for this slice.
   Admin API, CLI, Console, and tests consume the shared contract for landed admission-review behavior.
+  Node lifecycle previews for cordon, uncordon, drain, maintenance, resume, and decommission now consume the shared blocker, consequence, and confirmation vocabulary across CLI and Console.
   Operator API, support bundles, and full scheduler-explanation producer wiring remain future slices.
 - [x] 3.4 Add tests that reject unknown or free-text-only scheduler explanation reasons where fixed codes are required.
 - [x] 3.5 Add shared JSON schema or golden fixtures for node status categories, action previews, scheduler explanations, and HA-lite status.
@@ -49,7 +52,7 @@
   Manual `draining -> maintenance` execution remains deferred: the `maintenance` command still exposes its dry-run preview but execution is blocked with a `drain_completion_unverified` blocker until drain completion (active-work quiescence) can be verified.
   Drain deadline orchestration, active-work cancellation, automatic `draining -> maintenance`, persisted lifecycle reason columns, decommission trust revocation, and Admin/Operator API lifecycle routes remain future work.
   Console lifecycle action preview panels are now implemented under task 5.3.
-  Note: `SPEC.md` §11.9 currently enumerates only the node-admission CLI commands as a required-command floor; promoting these lifecycle commands into that normative list remains an owner/OpenSpec-acceptance decision to be reconciled when this change is accepted.
+  Note: `SPEC.md` §11.9 now records the lifecycle commands and their preview and confirmation gates.
 - [ ] 4.7 Implement `orchardctl scheduler explain <request-id>` or reconcile with the existing `requests inspect` command if that is the repo-preferred path.
 - [ ] 4.8 Implement `orchardctl cluster status --json` for read-only HA-lite and cluster summary status.
 
@@ -68,7 +71,9 @@
 - [ ] 5.5 Add diagnostics and support bundle entry points that use the shared support bundle contract.
 - [ ] 5.6 Add read-only HA-lite control-plane status.
 - [ ] 5.7 Verify Console UI against `docs/DESIGN.md` and `docs/brand-identity.md` with browser screenshots during implementation.
-  Note: PR #37 browser-verified the admission-review slice against `docs/DESIGN.md` and brand identity on desktop and mobile; keep this unchecked as a recurring gate for future Console slices.
+  Note: PR #37 browser-verified the admission-review slice against `docs/DESIGN.md` and brand identity on desktop and mobile.
+  PR #41 browser-verified the Console lifecycle preview slice against `docs/DESIGN.md`.
+  Keep this unchecked as a recurring gate for future Console slices.
 
 ## 6. Diagnostics And Support Bundles
 
