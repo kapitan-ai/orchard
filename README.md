@@ -170,9 +170,9 @@ An initial cluster-admin `/admin/v1` node-admission surface (candidate review, r
 The roadmap and target behavior are governed by `SPEC.md` §14.
 
 Some SPEC-required CLI paths are present before their milestone implementation:
-`orchardctl cluster init`, `orchardctl node join`, and
-`orchardctl requests inspect` return command-specific deferred-status errors
-with the current supported path. `orchardctl nodes inspect`,
+`orchardctl cluster init` and `orchardctl node join` return command-specific deferred-status errors with the current supported path.
+`orchardctl requests inspect <request-id>` is implemented for local controller request diagnostics with stable human and JSON scheduler-explanation output.
+`orchardctl nodes inspect`,
 `orchardctl nodes pending`, `orchardctl nodes admit`, and
 `orchardctl nodes reject` are implemented for the current node-admission-review
 slice, with stable JSON and human output, `--dry-run` previews, and

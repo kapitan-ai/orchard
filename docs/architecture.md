@@ -16,10 +16,9 @@ product/system/build contract.
   a target mode but is not available in current builds; the packaged
   `orchard-managed-postgres` helper is an operator-safe guard, not a runtime
   service.
-- **Current CLI limitation:** SPEC-required future paths such as
-  `orchardctl cluster init`, `orchardctl node join`, and
-  `orchardctl requests inspect` are routed by `orchardctl` but return
-  deferred-status errors with the current supported path.
+- **Current CLI limitation:** SPEC-required future paths such as `orchardctl cluster init` and `orchardctl node join` are routed by `orchardctl` but return deferred-status errors with the current supported path.
+  `orchardctl requests inspect <request-id>` reads the local controller Repo and renders the persisted scheduler explanation for a request, with stable human and `--json` output from the shared Operator API presenter.
+  Broader request execution diagnostics beyond persisted scheduler explanations remain future work.
   `orchardctl nodes inspect`, `orchardctl nodes pending`,
   `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for
   the current node-admission-review slice, with stable JSON and human output,

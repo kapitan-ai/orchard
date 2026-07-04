@@ -1057,8 +1057,11 @@ this build. Role selection, env generation, service start, and
 This deferred bootstrap ensures services start with valid environment and TLS
 configuration rather than crash-looping with missing setup.
 
-`orchardctl requests inspect` is also a SPEC-required diagnostics path that
-returns deferred status. `orchardctl support bundle create` creates a local
+`orchardctl requests inspect <request-id>` reads the local controller Repo and
+renders the persisted scheduler explanation for a request, with stable human and
+`--json` output from the shared Operator API presenter; broader request
+execution diagnostics beyond persisted scheduler explanations remain future
+work. `orchardctl support bundle create` creates a local
 diagnostic `.tar.gz` with bounded redacted logs, redacted config, service
 status, node snapshots, and request summaries. It records
 `support_bundle.generated` when the controller Repo is available. Archives are

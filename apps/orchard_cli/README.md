@@ -12,7 +12,7 @@ This README is orientation only. Normative CLI requirements live in
 - Operator commands for environment, transport, migrations, status, start/stop,
   upgrades, tenants, API keys, API Client bulk provisioning, nodes, and models.
 - SPEC-required future command paths that return explicit deferred status until
-  their milestones land: `cluster init`, `node join`, and `requests inspect`.
+  their milestones land: `cluster init` and `node join`.
 - Node-admission-review commands (`nodes inspect`, `nodes pending`,
   `nodes admit`, `nodes reject`) with stable JSON and human output, `--dry-run`
   previews, and `--yes`/`--reason` execution gating.
@@ -22,6 +22,9 @@ This README is orientation only. Normative CLI requirements live in
   `--acknowledge`, and `--typed-node-id` execution gating. `nodes maintenance`
   previews only; its `draining -> maintenance` execution stays blocked until
   drain completion can be verified.
+- Request diagnostics through `requests inspect <request-id>`, including stable
+  human and JSON scheduler-explanation output from the shared Operator API
+  presenter and scheduler explanation contract.
 - Local diagnostic support bundle creation via `support bundle create`.
 - Bulk API Client provisioning through `api-clients bulk-provision`, including
   Dry Run, all-or-nothing Apply, output preflight, Key Rotation, and One-time
@@ -35,6 +38,9 @@ The deferred paths above are advertised by `orchardctl`, exit non-zero when
 run, and print command-specific usage, `SPEC.md` traceability, and the current
 supported source-dev or packaged workflow. `--help` for the same paths is
 side-effect free.
+
+`orchardctl requests inspect <request-id>` reads the local controller Repo and renders the persisted scheduler explanation for the request.
+Use `--json` for the same stable explanation map exposed by the Operator API presenter.
 
 `orchardctl support bundle create` writes a local `.tar.gz` with bounded
 redacted logs, redacted config, service status, node snapshots, and request
