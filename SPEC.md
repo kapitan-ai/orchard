@@ -1928,6 +1928,10 @@ POST   /ops/v1/nodes/:node_id/diagnostics
 POST   /ops/v1/support-bundles
 ```
 
+Operator API requests SHALL authenticate with a service-account-owned API Token whose owning API Client is enabled and holds a cluster-scoped `operator` or `admin` RoleBinding.
+Tenant-direct API Keys, tenant-scoped Access Levels, and public inference credentials SHALL NOT authorize Operator API access and SHALL fail closed.
+Missing or invalid credentials SHALL return `401 invalid_api_key`; authenticated non-operator principals SHALL return `403 operator_required`.
+
 Eligibility-changing or destructive Operator and Admin node actions SHALL provide an Action Preview before execution.
 Action Previews SHALL be side-effect-free and SHALL NOT create domain rows, audit events, or Node Admission Decisions unless a future preview-audit contract explicitly says otherwise.
 The preview response SHALL separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements`.
@@ -2041,6 +2045,13 @@ Skipped candidates SHALL be represented in `skipped_candidates` outside the reje
 The initial scheduler rejection vocabulary SHALL include `inventory_missing`, `node_not_admitted`, `node_not_active`, `node_not_registered`, `node_health_unreachable`, `node_health_unhealthy`, `node_observation_stale`, `transport_unreachable`, `runtime_not_ready`, `runtime_identity_mismatch`, `version_incompatible`, `pool_not_allowed`, `model_format_unsupported`, `model_not_available_on_node`, `insufficient_memory`, `node_concurrency_exhausted`, `placement_concurrency_exhausted`, `placement_suppressed`, `node_circuit_breaker_open`, `model_load_suppressed`, `policy_required`, `pool_required`, `queue_lane_capacity_unavailable`, `trust_not_established`, and `unknown_capacity`.
 The initial scheduler skip vocabulary SHALL include `lower_tier_not_considered`, `not_scored_after_selection`, `not_applicable_to_request`, and `candidate_limit_reached`.
 Queue-waitable capacity outcomes SHALL preserve whether the wait reason is live node capacity, requested model path capacity, placement capacity, or tenant active capacity.
+Scored candidates SHALL be listed in the scheduler's actual selection ranking order.
+The selected node SHALL correspond to the top-ranked eligible scored candidate.
+A scored candidate's `score` SHALL be consistent with its additive `components` breakdown.
+Component keys are stable machine-readable identifiers within a persisted explanation and MAY evolve as the ranking model changes, but score and components SHALL remain internally consistent for a given persisted decision.
+Scheduler explanation generation, validation, and persistence are observational.
+An invalid or unbuildable explanation SHALL NOT fail, block, or alter the user's inference request.
+Invalid explanation payloads SHALL NOT be persisted; the controller SHALL drop them with a logged error while still recording the underlying scheduler decision.
 
 ---
 
@@ -3741,6 +3752,9 @@ Node lifecycle CLI commands SHALL provide side-effect-free `--dry-run` Action Pr
 Lifecycle execution SHALL enforce the preview's confirmation requirements, including `--yes`, consequence acknowledgement for drain and decommission, and a typed node id for decommission.
 Node lifecycle CLI commands use the same local controller-runtime authority boundary as node-admission CLI commands and SHALL enforce the same leader-only write-path, mutation-time revalidation, cluster-scoped audit, and shared-presenter semantics.
 Manual `draining -> maintenance` execution SHALL remain blocked with a `drain_completion_unverified` blocker until drain completion can be verified.
+
+`orchardctl requests inspect` SHALL render a request's persisted scheduler explanation through the shared scheduler explanation reason-code contract in stable human and JSON forms.
+Broader request execution diagnostics beyond persisted scheduler explanations remain future work.
 
 `orchardctl support bundle create` SHALL be able to emit `orchard.support_bundle.v2` for cluster-management support bundles.
 Console-triggered support bundles and CLI-created support bundles SHALL use the same v2 archive format for the same scope.

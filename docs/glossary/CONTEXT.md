@@ -493,12 +493,17 @@ _Avoid_: Node inventory, hardware host
 A scheduling group based on model residency, such as loaded, cached, or cold.
 _Avoid_: Node pool
 
+**Queue Wait Reason**:
+A stable machine-readable classification of why queued work is still waiting, as live node capacity, requested model path capacity, placement capacity, or tenant active capacity.
+It is distinct from a Scheduler Reason Code, which explains a rejected or skipped candidate.
+_Avoid_: Scheduler Reason Code, tenant-facing error message, free-text wait note
+
 **Scheduler Decision**:
 The selected Runtime Endpoint and sanitized ranking metadata persisted with a Request.
 _Avoid_: Quota, Routing Policy, Scheduler Explanation, tenant-facing error reason
 
 **Scheduler Explanation**:
-Operator-facing reasoning for selected and rejected scheduling candidates.
+Operator-facing reasoning for a request's scheduling decision across selected, scored, skipped, and rejected candidates.
 _Avoid_: persisted Scheduler Decision metadata, tenant-facing error contract
 
 **Scheduler Reason Code**:

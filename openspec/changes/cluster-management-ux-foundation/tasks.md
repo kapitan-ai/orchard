@@ -4,12 +4,16 @@
   Note: Reconciled accepted admission, Admin API dry-run preview, CLI admission-review command, Console admission-review, and shared freshness behavior from PRs #30 through #37.
   Reconciled node lifecycle transitions, lifecycle CLI commands, and preview-code stability from PRs #40 and #41.
   PR #42 required no `SPEC.md` change.
+  Reconciled scheduler explanation ordering, observational persistence, Operator API authentication, and requests inspect behavior from PRs #44 through #46.
 - [x] 1.2 Update `docs/DESIGN.md` only if Console node-management UI patterns introduce reusable tactical components.
   Note: Documented reusable operational review panel guidance for Action Preview panels, grouped node detail drill-ins, and source or compatibility badges.
+  Documented read-only evidence panel guidance for the request-scoped scheduler explanation panel.
 - [x] 1.3 Update `docs/glossary/CONTEXT.md` if accepted terminology adds durable glossary entries such as pending admission, action preview, or scheduler reason code.
   Note: Added Pending Admission and Rejected Admission entries; existing entries already cover Runtime Endpoint Admission Candidate, Node Admission, Node Admission Decision, Action Preview, and reason-code terms.
+  Added the Queue Wait Reason entry and refreshed the Scheduler Explanation entry to cover selected, scored, skipped, and rejected candidates.
 - [x] 1.4 Add or update an ADR only if implementation chooses a durable architectural boundary not already fixed by `SPEC.md`.
   Note: Existing ADRs 0003, 0004, and 0005 cover observed candidates, Admin API cluster-admin auth, and shared cluster-management contracts; ADR 0006 records the local `orchardctl` node-admission authority boundary.
+  ADR 0007 records the Operator API operator-or-admin service-account authentication boundary.
 
 ## 2. Node Lifecycle And Admission
 
@@ -34,7 +38,8 @@
   Console pending admission queue, detail drill-in, and admit/reject preview panels now render shared status, scheduler, blocker, warning, consequence, and confirmation codes for this slice.
   Admin API, CLI, Console, and tests consume the shared contract for landed admission-review behavior.
   Node lifecycle previews for cordon, uncordon, drain, maintenance, resume, and decommission now consume the shared blocker, consequence, and confirmation vocabulary across CLI and Console.
-  Operator API, support bundles, and full scheduler-explanation producer wiring remain future slices.
+  The Operator API scheduler explanations endpoint and the multi-node scheduler explanation producer now consume the shared reason-code contract.
+  Support bundles remain the outstanding consumer for a future slice.
 - [x] 3.4 Add tests that reject unknown or free-text-only scheduler explanation reasons where fixed codes are required.
 - [x] 3.5 Add shared JSON schema or golden fixtures for node status categories, action previews, scheduler explanations, and HA-lite status.
 - [x] 3.6 Ensure action preview schema fixtures include separate `blockers`, `warnings`, `consequence_codes`, and `confirmation_requirements` fields.
@@ -82,7 +87,7 @@
 - [ ] 5.7 Verify Console UI against `docs/DESIGN.md` and `docs/brand-identity.md` with browser screenshots during implementation.
   Note: PR #37 browser-verified the admission-review slice against `docs/DESIGN.md` and brand identity on desktop and mobile.
   PR #41 browser-verified the Console lifecycle preview slice against `docs/DESIGN.md`.
-  Note: This task 5.4 slice browser-verified the request-scoped scheduler explanation panel on desktop and mobile with screenshots at `tmp/browser-verification/scheduler-explanation-desktop.png` and `tmp/browser-verification/scheduler-explanation-mobile.png`.
+  Note: This task 5.4 slice browser-verified the request-scoped scheduler explanation panel on desktop and mobile.
   Keep this unchecked as a recurring gate for future Console slices.
 
 ## 6. Diagnostics And Support Bundles

@@ -514,6 +514,14 @@ not add a parallel comfortable table variant. A future PR may add table density
 only after a browser walk demonstrates a concrete table-crush regression caused
 by other typography or layout changes.
 
+### 6.6 Read-only Evidence Panels
+
+Read-only evidence surfaces such as the scheduler explanation panel render persisted decision evidence, not gated actions.
+They must not carry an execute control, confirmation input, or blocker row; those belong only to Action Preview panels.
+Use the existing card surface vocabulary and keep grouped candidate or evidence sections in labeled blocks rather than a flattened table.
+Render stable machine-readable codes as compact mono badges that stay visible or inspectable.
+When raw decision debug JSON is shown, apply the same key-based unsafe-key deny-list used for diagnostics and components, and render only a safe error category rather than echoing an offending raw token.
+
 ---
 
 ## 7. Motion
