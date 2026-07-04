@@ -89,12 +89,18 @@
 
 ## 7. Scheduler Explanations
 
-- [ ] 7.1 Persist scheduler explanations using stable reason-code arrays.
-- [ ] 7.2 Expose `GET /ops/v1/scheduler/explanations/:request_id` with the accepted reason-code vocabulary.
-- [ ] 7.3 Ensure queue-waitable outcomes preserve whether the reason was live node capacity, requested model path capacity, placement capacity, or tenant active capacity.
-- [ ] 7.4 Add tests that explanations match actual scheduler decisions.
-- [ ] 7.5 Add `skipped_candidates` explanation output with stable skip codes and keep skipped candidates outside the rejected-candidate list.
-- [ ] 7.6 Add tests for selected, rejected, and skipped candidate explanation shapes.
+- [x] 7.1 Persist scheduler explanations using stable reason-code arrays.
+  Note: `Requests.record_schedule/2` now validates scheduler explanation maps against the shared fixed reason-code contract before persisting them.
+- [x] 7.2 Expose `GET /ops/v1/scheduler/explanations/:request_id` with the accepted reason-code vocabulary.
+  Note: The Operator API route now returns persisted scheduler explanations through the shared `SchedulerExplanation` presenter and cluster operator or admin service-account authorization.
+- [x] 7.3 Ensure queue-waitable outcomes preserve whether the reason was live node capacity, requested model path capacity, placement capacity, or tenant active capacity.
+  Note: Queue admission and post-grant requeue metadata now preserve stable `queue_wait_reason` values for tenant active capacity, requested model path capacity, live node capacity, and explicit placement capacity.
+- [x] 7.4 Add tests that explanations match actual scheduler decisions.
+  Note: `MultiNode.schedule/2` tests now assert the generated explanation validates against the shared contract and matches selected, rejected, and skipped scheduler decisions.
+- [x] 7.5 Add `skipped_candidates` explanation output with stable skip codes and keep skipped candidates outside the rejected-candidate list.
+  Note: Multi-node scheduling now emits lower-tier candidates in `skipped_candidates` with `lower_tier_not_considered` instead of reporting them as rejected.
+- [x] 7.6 Add tests for selected, rejected, and skipped candidate explanation shapes.
+  Note: Scheduler tests now cover selected scored candidates, capacity rejected candidates, and skipped lower-tier candidates through the public `MultiNode.schedule/2` API.
 
 ## 8. Validation
 
