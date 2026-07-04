@@ -592,7 +592,7 @@ defmodule OrchardConsole.RequestLive do
             Scheduler Decision
           </h4>
           <.json_block
-            data={@request.scheduler_decision}
+            data={sanitized_scheduler_decision(@request.scheduler_decision)}
             content_id="request-scheduler-decision"
             fallback_id="request-scheduler-decision-fallback"
             fallback_text="Not recorded for this request."
@@ -1008,14 +1008,32 @@ defmodule OrchardConsole.RequestLive do
   defp scheduler_entries(_value), do: []
 
   defp sanitized_scheduler_diagnostics(map) when is_map(map) do
-    Map.reject(map, fn {key, _value} ->
-      key
-      |> to_string()
-      |> String.match?(@unsafe_scheduler_diagnostic_key_pattern)
-    end)
+    Map.reject(map, fn {key, _value} -> unsafe_scheduler_key?(key) end)
   end
 
   defp sanitized_scheduler_diagnostics(_value), do: %{}
+
+  defp sanitized_scheduler_decision(map) when is_map(map) do
+    map
+    |> Map.reject(fn {key, _value} -> unsafe_scheduler_key?(key) end)
+    |> Map.new(fn {key, value} -> {key, sanitized_scheduler_decision_value(value)} end)
+  end
+
+  defp sanitized_scheduler_decision(_value), do: nil
+
+  defp sanitized_scheduler_decision_value(value) when is_map(value),
+    do: sanitized_scheduler_decision(value)
+
+  defp sanitized_scheduler_decision_value(values) when is_list(values),
+    do: Enum.map(values, &sanitized_scheduler_decision_value/1)
+
+  defp sanitized_scheduler_decision_value(value), do: value
+
+  defp unsafe_scheduler_key?(key) do
+    key
+    |> to_string()
+    |> String.match?(@unsafe_scheduler_diagnostic_key_pattern)
+  end
 
   defp state_tone(:completed), do: :success
   defp state_tone(:failed), do: :error
