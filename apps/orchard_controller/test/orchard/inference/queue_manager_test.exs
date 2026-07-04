@@ -996,6 +996,8 @@ defmodule Orchard.Inference.QueueManagerTest do
                config: config
              )
 
+    assert QueueManager.queued_metadata(ticket).queue_wait_reason == :tenant_active_capacity
+
     awaiter = Task.async(fn -> QueueManager.await(ticket) end)
     refute Task.yield(awaiter, 50)
 
