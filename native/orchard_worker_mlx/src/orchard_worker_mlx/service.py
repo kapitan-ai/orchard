@@ -650,6 +650,16 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
             self._backend.start_generation()
             generation_started = True
 
+            return_logprobs = getattr(request, "return_logprobs", False) is True
+            return_token_ids = (
+                getattr(request, "return_token_ids", False) is True or return_logprobs
+            )
+            try:
+                request.return_token_ids = return_token_ids
+                request.return_logprobs = return_logprobs
+            except Exception:
+                pass
+
             fingerprint = getattr(request, "cache_affinity_fingerprint", "")
             if isinstance(fingerprint, str) and fingerprint != "":
                 try:
@@ -923,6 +933,9 @@ def build_inference_event(event: dict[str, Any]) -> events_pb2.InferenceEvent:
     if kind == "usage":
         return _build_usage_event(event)
 
+    if kind == "token_delta":
+        return _build_token_delta_event(event)
+
     if kind == "tool_call_delta":
         return _build_tool_call_delta_event(event)
 
@@ -983,6 +996,65 @@ def _build_usage_event(event: dict[str, Any]) -> events_pb2.InferenceEvent:
         )
     return events_pb2.InferenceEvent(
         usage=events_pb2.UsageUpdate(usage=_validate_token_usage(usage))
+    )
+
+
+def _build_token_delta_event(event: dict[str, Any]) -> events_pb2.InferenceEvent:
+    token_ids = event.get("token_ids")
+    if not isinstance(token_ids, list) or not token_ids:
+        raise BackendError(
+            "backend_invalid_event",
+            "token_delta.token_ids must be a non-empty list",
+            False,
+        )
+
+    normalized_token_ids: list[int] = []
+    for token_id in token_ids:
+        if isinstance(token_id, bool) or not isinstance(token_id, int) or token_id < 0:
+            raise BackendError(
+                "backend_invalid_event",
+                f"token_delta.token_ids must contain uint32 values, got {token_id!r}",
+                False,
+            )
+        if token_id > 4_294_967_295:
+            raise BackendError(
+                "backend_invalid_event",
+                f"token_delta.token_ids value exceeds uint32: {token_id!r}",
+                False,
+            )
+        normalized_token_ids.append(token_id)
+
+    logprobs = event.get("logprobs", [])
+    if logprobs is None:
+        logprobs = []
+    if not isinstance(logprobs, list):
+        raise BackendError(
+            "backend_invalid_event",
+            "token_delta.logprobs must be a list when present",
+            False,
+        )
+    if logprobs and len(logprobs) != len(normalized_token_ids):
+        raise BackendError(
+            "backend_invalid_event",
+            "token_delta.logprobs must align with token_ids",
+            False,
+        )
+
+    normalized_logprobs: list[float] = []
+    for logprob in logprobs:
+        if isinstance(logprob, bool) or not isinstance(logprob, (float, int)):
+            raise BackendError(
+                "backend_invalid_event",
+                f"token_delta.logprobs must contain floats, got {logprob!r}",
+                False,
+            )
+        normalized_logprobs.append(float(logprob))
+
+    return events_pb2.InferenceEvent(
+        token_delta=events_pb2.TokenDelta(
+            token_ids=normalized_token_ids,
+            logprobs=normalized_logprobs,
+        )
     )
 
 

@@ -26,6 +26,7 @@ defmodule Orchard.Cluster.V1.InferenceEvent do
   field(:completed, 5, type: Orchard.Cluster.V1.Completed, oneof: 0)
   field(:failed, 6, type: Orchard.Cluster.V1.Failed, oneof: 0)
   field(:progress, 7, type: Orchard.Cluster.V1.Progress, oneof: 0)
+  field(:token_delta, 8, type: Orchard.Cluster.V1.TokenDelta, json_name: "tokenDelta", oneof: 0)
 end
 
 defmodule Orchard.Cluster.V1.Accepted do
@@ -48,6 +49,18 @@ defmodule Orchard.Cluster.V1.OutputTextDelta do
     syntax: :proto3
 
   field(:delta, 1, type: :string)
+end
+
+defmodule Orchard.Cluster.V1.TokenDelta do
+  @moduledoc false
+
+  use Protobuf,
+    full_name: "cluster.v1.TokenDelta",
+    protoc_gen_elixir_version: "0.16.0",
+    syntax: :proto3
+
+  field(:token_ids, 1, repeated: true, type: :uint32, json_name: "tokenIds")
+  field(:logprobs, 2, repeated: true, type: :float)
 end
 
 defmodule Orchard.Cluster.V1.ToolCallDelta do

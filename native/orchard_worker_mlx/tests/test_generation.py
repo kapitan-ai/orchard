@@ -102,12 +102,16 @@ def _make_fake_request(
     tools_json: bytes | str = b"",
     tool_choice_json: bytes | str = b"",
     prompt_token_ids: list[int] | None = None,
+    return_token_ids: bool = False,
+    return_logprobs: bool = False,
 ) -> Any:
     """Create a minimal fake ExecuteInferenceRequest."""
     request = MagicMock()
     request.rendered_prompt_utf8 = prompt
     request.input_tokens = input_tokens
     request.prompt_token_ids = prompt_token_ids or []
+    request.return_token_ids = return_token_ids
+    request.return_logprobs = return_logprobs
     params = MagicMock()
     params.max_output_tokens = max_output_tokens
     params.temperature = temperature
@@ -377,6 +381,8 @@ class _AttributionBatchGenerator:
 
 
 class _FakeBatchGenerator:
+    response_includes_logprobs = False
+
     def __init__(self, _model: Any, **_kwargs: Any) -> None:
         self._next_uid = 0
         self._active: list[dict[str, Any]] = []
@@ -430,18 +436,17 @@ class _FakeBatchGenerator:
             item["index"] = index
 
             cache_snapshot = [f"cache-{uid}"]
-            responses.append(
-                type(
-                    "BatchResp",
-                    (),
-                    {
-                        "uid": uid,
-                        "token": token,
-                        "finish_reason": finish_reason,
-                        "prompt_cache": (lambda snap=cache_snapshot: snap),
-                    },
-                )()
-            )
+            attrs = {
+                "uid": uid,
+                "token": token,
+                "finish_reason": finish_reason,
+                "prompt_cache": (lambda snap=cache_snapshot: snap),
+            }
+            if self.response_includes_logprobs:
+                logprobs = [0.0] * 32
+                logprobs[token] = token / 100.0
+                attrs["logprobs"] = logprobs
+            responses.append(type("BatchResp", (), attrs)())
 
             if finish_reason is None:
                 survivors.append(item)
@@ -525,6 +530,141 @@ def test_batch_generator_runtime_streams_through_generate_events() -> None:
     assert deltas == ["A", "B"]
     assert events[-1]["kind"] == "completed"
     assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+class _LogprobsBatchGenerator(_FakeBatchGenerator):
+    response_includes_logprobs = True
+
+
+def test_batch_generator_runtime_opt_in_off_emits_no_token_delta_events() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+    request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    assert [event["kind"] for event in events].count("token_delta") == 0
+
+
+def test_batch_generator_runtime_return_token_ids_emits_ordered_token_deltas() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+    request = _make_fake_request(
+        input_tokens=3,
+        max_output_tokens=2,
+        return_token_ids=True,
+    )
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    token_deltas = [event for event in events if event["kind"] == "token_delta"]
+    assert [event["token_ids"] for event in token_deltas] == [[11], [12]]
+    assert [event.get("logprobs", []) for event in token_deltas] == [[], []]
+
+
+def test_batch_generator_runtime_return_logprobs_aligns_with_token_ids() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_LogprobsBatchGenerator),
+    )
+    request = _make_fake_request(
+        input_tokens=3,
+        max_output_tokens=2,
+        return_logprobs=True,
+    )
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    token_deltas = [event for event in events if event["kind"] == "token_delta"]
+    assert [event["token_ids"] for event in token_deltas] == [[11], [12]]
+    assert [event["logprobs"] for event in token_deltas] == [[0.11], [0.12]]
+
+
+def test_batch_generator_runtime_missing_logprobs_fail_open() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+    request = _make_fake_request(
+        input_tokens=3,
+        max_output_tokens=2,
+        return_logprobs=True,
+    )
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    token_deltas = [event for event in events if event["kind"] == "token_delta"]
+    assert [event["token_ids"] for event in token_deltas] == [[11], [12]]
+    assert [event.get("logprobs", []) for event in token_deltas] == [[], []]
+    assert events[-1]["kind"] == "completed"
+
+
+def test_batch_generator_runtime_emits_no_token_delta_after_terminal() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+    request = _make_fake_request(
+        input_tokens=3,
+        max_output_tokens=2,
+        return_token_ids=True,
+    )
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    terminal_index = next(
+        index for index, event in enumerate(events) if event["kind"] == "completed"
+    )
+    assert all(event["kind"] != "token_delta" for event in events[terminal_index + 1 :])
 
 
 def test_batch_generator_runtime_realigns_row_state_before_next() -> None:
@@ -3292,6 +3432,71 @@ def test_basic_generation_emits_deltas_and_completed() -> None:
         completed["usage"]["output_tokens"] == 3
     )  # all 3 responses counted (incl. empty-text terminal)
     assert completed["usage"]["total_tokens"] == 8
+
+
+def test_non_batch_token_delta_opt_in_does_not_forward_unknown_kwargs() -> None:
+    calls: list[list[int]] = []
+
+    def strict_stream_generate(
+        model,
+        tokenizer,
+        prompt_ids,
+        *,
+        max_tokens,
+        sampler,
+        prefill_step_size,
+        prompt_progress_callback,
+    ):
+        del model, tokenizer, max_tokens, sampler, prefill_step_size, prompt_progress_callback
+        calls.append(list(prompt_ids))
+        yield SimpleNamespace(text="A", token=11, finish_reason=None, logprob=-0.11)
+        yield SimpleNamespace(text="B", token=12, finish_reason="stop", logprob=-0.12)
+
+    session = _make_fake_session()
+    request = _make_fake_request(
+        input_tokens=3,
+        return_token_ids=True,
+        return_logprobs=True,
+    )
+    deps = _make_deps(stream_generate=strict_stream_generate)
+
+    events = _collect_events(session, request, deps)
+
+    assert calls == [[1, 2, 3]]
+    token_deltas = [event for event in events if event["kind"] == "token_delta"]
+    assert [event["token_ids"] for event in token_deltas] == [[11], [12]]
+    assert [event["logprobs"] for event in token_deltas] == [[-0.11], [-0.12]]
+
+
+def test_non_batch_token_delta_extracts_indexed_logprobs_vector() -> None:
+    def strict_stream_generate(
+        model,
+        tokenizer,
+        prompt_ids,
+        *,
+        max_tokens,
+        sampler,
+        prefill_step_size,
+        prompt_progress_callback,
+    ):
+        del model, tokenizer, prompt_ids, max_tokens, sampler, prefill_step_size
+        del prompt_progress_callback
+        first_logprobs = [0.0] * 32
+        first_logprobs[11] = -1.25
+        second_logprobs = [0.0] * 32
+        second_logprobs[12] = -1.5
+        yield SimpleNamespace(text="A", token=11, finish_reason=None, logprobs=first_logprobs)
+        yield SimpleNamespace(text="B", token=12, finish_reason="stop", logprobs=second_logprobs)
+
+    session = _make_fake_session()
+    request = _make_fake_request(input_tokens=3, return_logprobs=True)
+    deps = _make_deps(stream_generate=strict_stream_generate)
+
+    events = _collect_events(session, request, deps)
+
+    token_deltas = [event for event in events if event["kind"] == "token_delta"]
+    assert [event["token_ids"] for event in token_deltas] == [[11], [12]]
+    assert [event["logprobs"] for event in token_deltas] == [[-1.25], [-1.5]]
 
 
 def test_input_tokens_from_request_not_retokenized() -> None:

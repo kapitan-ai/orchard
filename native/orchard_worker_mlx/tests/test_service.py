@@ -807,6 +807,31 @@ def test_build_inference_event_usage_happy_path() -> None:
     assert event.usage.usage.total_tokens == 15
 
 
+def test_build_inference_event_token_delta_happy_path() -> None:
+    event = build_inference_event(
+        {"kind": "token_delta", "token_ids": [11, 12], "logprobs": [-0.5, -0.25]}
+    )
+
+    assert event.WhichOneof("event") == "token_delta"
+    assert list(event.token_delta.token_ids) == [11, 12]
+    assert list(event.token_delta.logprobs) == pytest.approx([-0.5, -0.25])
+
+
+def test_build_inference_event_token_delta_allows_empty_logprobs() -> None:
+    event = build_inference_event({"kind": "token_delta", "token_ids": [11]})
+
+    assert event.WhichOneof("event") == "token_delta"
+    assert list(event.token_delta.token_ids) == [11]
+    assert list(event.token_delta.logprobs) == []
+
+
+def test_build_inference_event_rejects_misaligned_token_delta_logprobs() -> None:
+    with pytest.raises(BackendError) as exc_info:
+        build_inference_event({"kind": "token_delta", "token_ids": [11, 12], "logprobs": [-0.5]})
+
+    assert "align" in exc_info.value.message
+
+
 def test_build_inference_event_tool_call_delta_happy_path() -> None:
     event = build_inference_event(
         {

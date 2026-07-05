@@ -227,6 +227,8 @@ message ExecuteInferenceRequest {
   bytes metadata_json = 9;
   string cache_affinity_fingerprint = 10;
   repeated uint32 prompt_token_ids = 11;
+  bool return_token_ids = 12;
+  bool return_logprobs = 13;
 }
 
 message CancelInferenceRequest {

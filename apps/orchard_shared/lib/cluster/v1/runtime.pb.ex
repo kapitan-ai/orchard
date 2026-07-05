@@ -319,6 +319,8 @@ defmodule Orchard.Cluster.V1.ExecuteInferenceRequest do
   field(:metadata_json, 9, type: :bytes, json_name: "metadataJson")
   field(:cache_affinity_fingerprint, 10, type: :string, json_name: "cacheAffinityFingerprint")
   field(:prompt_token_ids, 11, repeated: true, type: :uint32, json_name: "promptTokenIds")
+  field(:return_token_ids, 12, type: :bool, json_name: "returnTokenIds")
+  field(:return_logprobs, 13, type: :bool, json_name: "returnLogprobs")
 end
 
 defmodule Orchard.Cluster.V1.CancelInferenceRequest do

@@ -18,6 +18,7 @@ message InferenceEvent {
     Completed completed = 5;
     Failed failed = 6;
     Progress progress = 7;
+    TokenDelta token_delta = 8;
   }
 }
 
@@ -27,6 +28,16 @@ message Accepted {
 
 message OutputTextDelta {
   string delta = 1;
+}
+
+// Emitted only when the request opts in.
+// Logprobs, when requested and available, align index-wise with token_ids.
+// Token deltas reflect raw sampled tokens and may not align 1:1 with
+// detokenized text deltas.
+// TokenDelta is never emitted after the terminal event.
+message TokenDelta {
+  repeated uint32 token_ids = 1;
+  repeated float logprobs = 2;
 }
 
 // Tool-call deltas stream partial tool-call metadata and function arguments.

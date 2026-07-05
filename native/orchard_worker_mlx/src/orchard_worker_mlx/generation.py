@@ -276,7 +276,7 @@ class _BatchRequestState:
     prompt_cache: Any | None
     logits_processors: list[Any]
     progress_callback: Callable[[int, int], None] | None
-    events: deque[tuple[int, str | None]] = field(default_factory=deque)
+    events: deque[tuple[int, str | None, float | None]] = field(default_factory=deque)
     progress_events: deque[tuple[int, int]] = field(default_factory=deque)
     last_prefill_progress: tuple[int, int] | None = None
     uid: int | None = None
@@ -417,7 +417,7 @@ class _BatchRequestStream:
                         cb(processed, total)
                     continue
 
-                _, token, finish_reason = payload_tuple
+                _, token, finish_reason, logprob = payload_tuple
 
                 suppress_terminal_stop_token = (
                     finish_reason == "stop" and token in self._stop_token_ids
@@ -437,7 +437,12 @@ class _BatchRequestStream:
                     self._terminal_returned = True
                     self._runtime.finalize_request(self._request_id)
                     self._release_detokenizer()
-                return SimpleNamespace(text=text, token=token, finish_reason=finish_reason)
+                return SimpleNamespace(
+                    text=text,
+                    token=token,
+                    finish_reason=finish_reason,
+                    logprob=logprob,
+                )
         except Exception:
             self._runtime.finalize_request(self._request_id)
             self._release_detokenizer()
@@ -630,8 +635,8 @@ class BatchGeneratorRuntime:
                     return state, ("progress", processed, total)
 
                 if state.events:
-                    token, finish_reason = state.events.popleft()
-                    return state, ("token", token, finish_reason)
+                    token, finish_reason, logprob = state.events.popleft()
+                    return state, ("token", token, finish_reason, logprob)
 
                 if state.error is not None:
                     raise state.error
@@ -1358,7 +1363,9 @@ class BatchGeneratorRuntime:
             pre_finalize_insert_set_id = state.insert_set_id
 
             if not state.closed:
-                state.events.append((token, finish_reason))
+                state.events.append(
+                    (token, finish_reason, _batch_response_token_logprob(response, token))
+                )
 
             if pre_finalize_open and pre_finalize_insert_set_id is not None:
                 candidate = self._stage_prefill_attribution_finalize_locked(
@@ -1734,6 +1741,29 @@ def _response_token_id(response: Any) -> int | None:
     if isinstance(token, bool) or not isinstance(token, int):
         return None
     return token
+
+
+def _batch_response_token_logprob(response: Any, token: int) -> float | None:
+    logprob = getattr(response, "logprob", None)
+    if isinstance(logprob, float):
+        return logprob
+
+    try:
+        logprobs = response.logprobs
+    except Exception:
+        return None
+
+    if logprobs is None:
+        return None
+
+    try:
+        return float(logprobs[token])
+    except Exception:
+        return None
+
+
+def _request_bool_flag(request: Any, field: str) -> bool:
+    return getattr(request, field, False) is True
 
 
 def _close_stream(stream: Any, *, cancelled: bool = True) -> None:
@@ -2199,6 +2229,7 @@ def generate_events(
     - ``{"kind": "progress", "stage": "prefill", "message": "..."}``
     - ``{"kind": "output_text_delta", "delta": "..."}``
     - ``{"kind": "tool_call_delta", ...}``
+    - ``{"kind": "token_delta", "token_ids": [...], "logprobs": [...]}``
     - ``{"kind": "completed", "finish_reason": "...", "usage": {...}}``
     - ``{"kind": "failed", "code": "...", ...}``  (via ``cancelled_event()``)
 
@@ -2229,6 +2260,8 @@ def generate_events(
     prompt_text = None if prompt_ids is not None else _decode_prompt(request.rendered_prompt_utf8)
     stop_sequences = _normalize_stop_sequences(params)
     cache_affinity_fingerprint = getattr(request, "cache_affinity_fingerprint", "")
+    return_logprobs = _request_bool_flag(request, "return_logprobs")
+    return_token_ids = _request_bool_flag(request, "return_token_ids") or return_logprobs
 
     prompt_tokens = 0
     lookup_result = _CacheLookupResult(status=_LOOKUP_DISABLED)
@@ -2349,6 +2382,15 @@ def generate_events(
 
                 finish_reason = response.finish_reason
                 token_id = _response_token_id(response)
+                if return_token_ids and token_id is not None:
+                    token_delta: dict[str, Any] = {
+                        "kind": "token_delta",
+                        "token_ids": [token_id],
+                    }
+                    logprob = _batch_response_token_logprob(response, token_id)
+                    if return_logprobs and logprob is not None:
+                        token_delta["logprobs"] = [logprob]
+                    yield token_delta
                 orchard_eos = (
                     token_id is not None
                     and bool(eos_ids)

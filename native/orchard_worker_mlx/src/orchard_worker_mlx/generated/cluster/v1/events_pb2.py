@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from cluster.v1 import common_pb2 as cluster_dot_v1_dot_common__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17\x63luster/v1/events.proto\x12\ncluster.v1\x1a\x17\x63luster/v1/common.proto\"\xd9\x02\n\x0eInferenceEvent\x12(\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x0b\x32\x14.cluster.v1.AcceptedH\x00\x12\x38\n\x11output_text_delta\x18\x02 \x01(\x0b\x32\x1b.cluster.v1.OutputTextDeltaH\x00\x12\x34\n\x0ftool_call_delta\x18\x03 \x01(\x0b\x32\x19.cluster.v1.ToolCallDeltaH\x00\x12(\n\x05usage\x18\x04 \x01(\x0b\x32\x17.cluster.v1.UsageUpdateH\x00\x12*\n\tcompleted\x18\x05 \x01(\x0b\x32\x15.cluster.v1.CompletedH\x00\x12$\n\x06\x66\x61iled\x18\x06 \x01(\x0b\x32\x12.cluster.v1.FailedH\x00\x12(\n\x08progress\x18\x07 \x01(\x0b\x32\x14.cluster.v1.ProgressH\x00\x42\x07\n\x05\x65vent\"\'\n\x08\x41\x63\x63\x65pted\x12\x1b\n\x13\x61\x63\x63\x65pted_at_unix_ms\x18\x01 \x01(\x04\" \n\x0fOutputTextDelta\x12\r\n\x05\x64\x65lta\x18\x01 \x01(\t\"9\n\rToolCallDelta\x12\x14\n\x0ctool_call_id\x18\x01 \x01(\t\x12\x12\n\ndelta_json\x18\x02 \x01(\t\"4\n\x0bUsageUpdate\x12%\n\x05usage\x18\x01 \x01(\x0b\x32\x16.cluster.v1.TokenUsage\"c\n\tCompleted\x12/\n\rfinish_reason\x18\x01 \x01(\x0e\x32\x18.cluster.v1.FinishReason\x12%\n\x05usage\x18\x02 \x01(\x0b\x32\x16.cluster.v1.TokenUsage\":\n\x06\x46\x61iled\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x11\n\tretryable\x18\x03 \x01(\x08\"*\n\x08Progress\x12\r\n\x05stage\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\tb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17\x63luster/v1/events.proto\x12\ncluster.v1\x1a\x17\x63luster/v1/common.proto\"\x88\x03\n\x0eInferenceEvent\x12(\n\x08\x61\x63\x63\x65pted\x18\x01 \x01(\x0b\x32\x14.cluster.v1.AcceptedH\x00\x12\x38\n\x11output_text_delta\x18\x02 \x01(\x0b\x32\x1b.cluster.v1.OutputTextDeltaH\x00\x12\x34\n\x0ftool_call_delta\x18\x03 \x01(\x0b\x32\x19.cluster.v1.ToolCallDeltaH\x00\x12(\n\x05usage\x18\x04 \x01(\x0b\x32\x17.cluster.v1.UsageUpdateH\x00\x12*\n\tcompleted\x18\x05 \x01(\x0b\x32\x15.cluster.v1.CompletedH\x00\x12$\n\x06\x66\x61iled\x18\x06 \x01(\x0b\x32\x12.cluster.v1.FailedH\x00\x12(\n\x08progress\x18\x07 \x01(\x0b\x32\x14.cluster.v1.ProgressH\x00\x12-\n\x0btoken_delta\x18\x08 \x01(\x0b\x32\x16.cluster.v1.TokenDeltaH\x00\x42\x07\n\x05\x65vent\"\'\n\x08\x41\x63\x63\x65pted\x12\x1b\n\x13\x61\x63\x63\x65pted_at_unix_ms\x18\x01 \x01(\x04\" \n\x0fOutputTextDelta\x12\r\n\x05\x64\x65lta\x18\x01 \x01(\t\"1\n\nTokenDelta\x12\x11\n\ttoken_ids\x18\x01 \x03(\r\x12\x10\n\x08logprobs\x18\x02 \x03(\x02\"9\n\rToolCallDelta\x12\x14\n\x0ctool_call_id\x18\x01 \x01(\t\x12\x12\n\ndelta_json\x18\x02 \x01(\t\"4\n\x0bUsageUpdate\x12%\n\x05usage\x18\x01 \x01(\x0b\x32\x16.cluster.v1.TokenUsage\"c\n\tCompleted\x12/\n\rfinish_reason\x18\x01 \x01(\x0e\x32\x18.cluster.v1.FinishReason\x12%\n\x05usage\x18\x02 \x01(\x0b\x32\x16.cluster.v1.TokenUsage\":\n\x06\x46\x61iled\x12\x0c\n\x04\x63ode\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x11\n\tretryable\x18\x03 \x01(\x08\"*\n\x08Progress\x12\r\n\x05stage\x18\x01 \x01(\t\x12\x0f\n\x07message\x18\x02 \x01(\tb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,19 +33,21 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'cluster.v1.events_pb2', _gl
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_INFERENCEEVENT']._serialized_start=65
-  _globals['_INFERENCEEVENT']._serialized_end=410
-  _globals['_ACCEPTED']._serialized_start=412
-  _globals['_ACCEPTED']._serialized_end=451
-  _globals['_OUTPUTTEXTDELTA']._serialized_start=453
-  _globals['_OUTPUTTEXTDELTA']._serialized_end=485
-  _globals['_TOOLCALLDELTA']._serialized_start=487
-  _globals['_TOOLCALLDELTA']._serialized_end=544
-  _globals['_USAGEUPDATE']._serialized_start=546
-  _globals['_USAGEUPDATE']._serialized_end=598
-  _globals['_COMPLETED']._serialized_start=600
-  _globals['_COMPLETED']._serialized_end=699
-  _globals['_FAILED']._serialized_start=701
-  _globals['_FAILED']._serialized_end=759
-  _globals['_PROGRESS']._serialized_start=761
-  _globals['_PROGRESS']._serialized_end=803
+  _globals['_INFERENCEEVENT']._serialized_end=457
+  _globals['_ACCEPTED']._serialized_start=459
+  _globals['_ACCEPTED']._serialized_end=498
+  _globals['_OUTPUTTEXTDELTA']._serialized_start=500
+  _globals['_OUTPUTTEXTDELTA']._serialized_end=532
+  _globals['_TOKENDELTA']._serialized_start=534
+  _globals['_TOKENDELTA']._serialized_end=583
+  _globals['_TOOLCALLDELTA']._serialized_start=585
+  _globals['_TOOLCALLDELTA']._serialized_end=642
+  _globals['_USAGEUPDATE']._serialized_start=644
+  _globals['_USAGEUPDATE']._serialized_end=696
+  _globals['_COMPLETED']._serialized_start=698
+  _globals['_COMPLETED']._serialized_end=797
+  _globals['_FAILED']._serialized_start=799
+  _globals['_FAILED']._serialized_end=857
+  _globals['_PROGRESS']._serialized_start=859
+  _globals['_PROGRESS']._serialized_end=901
 # @@protoc_insertion_point(module_scope)
