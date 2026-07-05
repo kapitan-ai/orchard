@@ -41,9 +41,17 @@ Prefill progress bridging (Task 5):
     during prefill with ``(processed_tokens, total_tokens)``.  This module
     bridges the synchronous callback into yielded ``progress`` events by
     queuing updates in a request-local deque and draining them before each
-    token delta.  Prefill cancel is NOT cleanly interruptible — upstream
-    ``generate_step()`` has no cancel hook; cancellation applies only after
+    token delta.  Prefill cancel is NOT cleanly interruptible; upstream
+    ``generate_step()`` has no cancel hook.  Cancellation applies only after
     control returns from prefill (i.e., during decode).
+
+MLX cache hygiene policy:
+    Stream mode calls ``mx.synchronize()`` then ``session.clear_cache()`` once
+    per request from ``generate_events()`` ``finally``.  Shared batch mode does
+    not clear per request; it synchronizes then clears only on busy-to-idle
+    transitions, while no request is pending or active.  Load and unload paths
+    already clear in ``model_loader.py``.  Synchronizing before clearing follows
+    oMLX prior art and avoids racing in-flight Metal command buffers.
 """
 
 from __future__ import annotations
@@ -145,6 +153,7 @@ class GenerationDeps:
     trim_prompt_cache: Callable[[Any, int], Any] | None = None
     wired_limit: Callable[[int], Any] | None = None
     current_memory_bytes: Callable[[], int | None] | None = None
+    synchronize: Callable[[], None] | None = None
     supports_orchard_stop_sequences: bool = True
     uses_shared_batch_runtime: bool = False
 
@@ -186,6 +195,7 @@ def _default_generation_deps() -> GenerationDeps:
     _trim_prompt_cache: Callable[[Any, int], Any] | None = None
     _wired_limit: Callable[[int], Any] | None = None
     _current_memory_bytes: Callable[[], int | None] | None = None
+    _synchronize: Callable[[], None] | None = None
     try:
         from mlx_lm.models.cache import (
             make_prompt_cache as _make,
@@ -203,6 +213,9 @@ def _default_generation_deps() -> GenerationDeps:
         import mlx.core as mx
 
         _wired_limit = _build_wired_limit_context(mx)
+        maybe_synchronize = getattr(mx, "synchronize", None)
+        if callable(maybe_synchronize):
+            _synchronize = cast(Callable[[], None], maybe_synchronize)
         maybe_memory_probe = getattr(mx, "get_active_memory", None)
         if callable(maybe_memory_probe):
             _current_memory_bytes = cast(Callable[[], int | None], maybe_memory_probe)
@@ -216,6 +229,7 @@ def _default_generation_deps() -> GenerationDeps:
         trim_prompt_cache=_trim_prompt_cache,
         wired_limit=_wired_limit,
         current_memory_bytes=_current_memory_bytes,
+        synchronize=_synchronize,
         supports_orchard_stop_sequences=True,
         uses_shared_batch_runtime=False,
     )
@@ -480,7 +494,12 @@ _BATCH_RUNTIME_CLOSE_TIMEOUT_S = 1.0
 
 
 class BatchGeneratorRuntime:
-    """Shared request-time BatchGenerator runtime for one loaded model session."""
+    """Shared request-time BatchGenerator runtime for one loaded model session.
+
+    Batch cache hygiene is runtime-scoped: synchronize then clear only when the
+    pump observes a busy-to-idle transition, never while requests are active or
+    pending.
+    """
 
     def __init__(
         self,
@@ -509,6 +528,7 @@ class BatchGeneratorRuntime:
         self._batch_generator_closed = False
         self._closed_batch_generator_refs: dict[int, weakref.ReferenceType[Any]] = {}
         self._row_drift_warned = False
+        self._idle_cache_clear_needed = False
         self.stop_token_ids: frozenset[int] = frozenset(getattr(session, "eos_token_ids", ()))
 
         self._reset_requested: str | None = None
@@ -546,6 +566,7 @@ class BatchGeneratorRuntime:
             trim_prompt_cache=self._generation_deps.trim_prompt_cache,
             wired_limit=self._generation_deps.wired_limit,
             current_memory_bytes=self._generation_deps.current_memory_bytes,
+            synchronize=self._generation_deps.synchronize,
             supports_orchard_stop_sequences=False,
             uses_shared_batch_runtime=True,
         )
@@ -712,6 +733,7 @@ class BatchGeneratorRuntime:
             self._requests_by_id[request_id] = request_state
             self._pending_by_id[request_id] = request_state
             self._pending_request_ids.append(request_id)
+            self._idle_cache_clear_needed = True
             self._cv.notify_all()
 
         try:
@@ -860,6 +882,13 @@ class BatchGeneratorRuntime:
                     and not self._pending_request_ids
                     and not self._active_by_uid
                 ):
+                    if self._idle_cache_clear_needed:
+                        self._idle_cache_clear_needed = False
+                        _synchronize_then_clear_session_cache(
+                            self._session,
+                            self._generation_deps.synchronize,
+                        )
+                        continue
                     self._cv.wait()
 
                 if self._closed:
@@ -1961,8 +1990,21 @@ def _finalize_prefill_workspace_probe_fail_open(
     _update_session_prefill_workspace_bytes_per_token_high_water(session, sampled)
 
 
-def _safe_clear_session_cache(session: Any) -> None:
-    """Best-effort post-generation memory cleanup."""
+def _synchronize_then_clear_session_cache(
+    session: Any,
+    synchronize: Callable[[], None] | None,
+) -> None:
+    """Best-effort request-boundary MLX cache cleanup.
+
+    Synchronize before clear to avoid racing in-flight Metal command buffers.
+    Both operations are fail-open and synchronize failure must not skip clear.
+    """
+    if synchronize is not None:
+        try:
+            synchronize()
+        except Exception:
+            pass
+
     clear_fn = getattr(session, "clear_cache", None)
     if callable(clear_fn):
         try:
@@ -2564,7 +2606,7 @@ def generate_events(
             final_stats=_safe_stats(getattr(session, "prefix_cache", None)),
         )
         if not deps.uses_shared_batch_runtime:
-            _safe_clear_session_cache(session)
+            _synchronize_then_clear_session_cache(session, deps.synchronize)
 
 
 # ---------------------------------------------------------------------------

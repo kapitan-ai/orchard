@@ -129,6 +129,7 @@ def _make_deps(
     stream_generate: Any = None,
     make_prompt_cache: Any = None,
     trim_prompt_cache: Any = None,
+    synchronize: Callable[[], None] | None = None,
 ) -> GenerationDeps:
     """Create GenerationDeps that yields the given responses."""
     responses = responses or []
@@ -144,7 +145,17 @@ def _make_deps(
         make_sampler=fake_make_sampler,
         make_prompt_cache=make_prompt_cache,
         trim_prompt_cache=trim_prompt_cache,
+        synchronize=synchronize,
     )
+
+
+def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        threading.Event().wait(0.01)
+    return predicate()
 
 
 def _collect_events(
@@ -2782,28 +2793,93 @@ def test_batch_runtime_zero_token_early_exit_does_not_clear_session_cache() -> N
     runtime.close()
 
 
-def test_batch_runtime_does_not_clear_session_cache_per_request() -> None:
-    clear_mock = MagicMock(name="clear_cache")
-    session = _make_fake_session(clear_cache=clear_mock)
+def test_batch_runtime_clears_once_when_runtime_goes_idle() -> None:
+    calls: list[str] = []
+
+    def synchronize() -> None:
+        calls.append("synchronize")
+
+    def clear_cache() -> None:
+        calls.append("clear")
+
+    session = _make_fake_session(clear_cache=clear_cache)
     session.tokenizer = _ToyTokenizer()
     runtime = BatchGeneratorRuntime(
         session,
         generation_deps=GenerationDeps(
             stream_generate=lambda *_args, **_kwargs: iter([]),
             make_sampler=lambda **_kw: MagicMock(),
+            synchronize=synchronize,
         ),
         batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
     )
 
-    request = _make_fake_request(input_tokens=3, max_output_tokens=2)
-    events = list(
-        generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+    try:
+        request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+        events = list(
+            generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+        )
+
+        assert events[-1]["kind"] == "completed"
+        assert _wait_until(lambda: calls == ["synchronize", "clear"])
+        threading.Event().wait(0.05)
+        assert calls == ["synchronize", "clear"]
+    finally:
+        runtime.close()
+
+
+def test_batch_runtime_does_not_clear_while_request_is_active() -> None:
+    calls: list[str] = []
+    session = _make_fake_session(clear_cache=lambda: calls.append("clear"))
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            synchronize=lambda: calls.append("synchronize"),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_NeverFinishingBatchGenerator),
     )
 
-    assert events[-1]["kind"] == "completed"
-    clear_mock.assert_not_called()
+    request = _make_fake_request(input_tokens=3, max_output_tokens=32)
+    iterator = generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
 
-    runtime.close()
+    try:
+        first_event = next(iterator)
+        assert first_event["kind"] == "output_text_delta"
+        assert _wait_until(lambda: bool(runtime._active_by_uid))
+        threading.Event().wait(0.05)
+        assert calls == []
+    finally:
+        cast(Any, iterator).close()
+        runtime.close()
+
+
+def test_batch_runtime_idle_clear_is_fail_open_without_sync_or_clear_cache() -> None:
+    session = _make_fake_session()
+    del session.clear_cache
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            synchronize=None,
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    try:
+        request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+        events = list(
+            generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+        )
+
+        assert events[-1]["kind"] == "completed"
+        assert _wait_until(lambda: not runtime._idle_cache_clear_needed)
+    finally:
+        runtime.close()
 
 
 def test_batch_generator_runtime_generator_close_marks_request_cancelled_not_local_close() -> None:
@@ -6069,6 +6145,53 @@ def test_clear_cache_called_on_completed() -> None:
 
     _collect_events(session, request, deps)
     clear_mock.assert_called()
+
+
+def test_stream_finally_synchronizes_before_clear() -> None:
+    calls: list[str] = []
+    responses = [
+        FakeGenerationResponse(text="Hi", token=10, finish_reason="stop"),
+    ]
+    session = _make_fake_session(clear_cache=lambda: calls.append("clear"))
+    request = _make_fake_request()
+    deps = _make_deps(responses, synchronize=lambda: calls.append("synchronize"))
+
+    _collect_events(session, request, deps)
+
+    assert calls == ["synchronize", "clear"]
+
+
+def test_stream_finally_clears_when_synchronize_raises() -> None:
+    calls: list[str] = []
+    responses = [
+        FakeGenerationResponse(text="Hi", token=10, finish_reason="stop"),
+    ]
+
+    def synchronize() -> None:
+        calls.append("synchronize")
+        raise RuntimeError("sync boom")
+
+    session = _make_fake_session(clear_cache=lambda: calls.append("clear"))
+    request = _make_fake_request()
+    deps = _make_deps(responses, synchronize=synchronize)
+
+    _collect_events(session, request, deps)
+
+    assert calls == ["synchronize", "clear"]
+
+
+def test_stream_finally_without_synchronize_still_clears_fail_open() -> None:
+    clear_mock = MagicMock(name="clear_cache")
+    responses = [
+        FakeGenerationResponse(text="Hi", token=10, finish_reason="stop"),
+    ]
+    session = _make_fake_session(clear_cache=clear_mock)
+    request = _make_fake_request()
+    deps = _make_deps(responses, synchronize=None)
+
+    _collect_events(session, request, deps)
+
+    clear_mock.assert_called_once()
 
 
 def test_clear_cache_called_on_cancel() -> None:
