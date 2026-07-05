@@ -1,10 +1,10 @@
 defmodule Orchard.ControlPlane do
   @moduledoc """
   Small control-plane write gate for leader-only mutation paths, plus read-only
-  HA-lite control-plane status.
+  Active/Standby control-plane status.
   """
 
-  alias Orchard.ClusterManagement.HALiteStatus
+  alias Orchard.ClusterManagement.ControlPlaneStatus
   alias Orchard.ClusterManagement.Value
 
   @provider_status_keys [
@@ -35,7 +35,7 @@ defmodule Orchard.ControlPlane do
     end
   end
 
-  @spec read_only_status() :: HALiteStatus.t()
+  @spec read_only_status() :: ControlPlaneStatus.t()
   def read_only_status do
     config = control_plane_config()
     role = normalized_role(Keyword.get(config, :role, :single_controller))
@@ -51,7 +51,7 @@ defmodule Orchard.ControlPlane do
     base_attrs
     |> Map.merge(provider_status(config, base_attrs))
     |> normalize_unproven_leadership()
-    |> HALiteStatus.new!()
+    |> ControlPlaneStatus.new!()
   end
 
   defp configured_role do
@@ -64,7 +64,7 @@ defmodule Orchard.ControlPlane do
   end
 
   defp provider_status(config, base_attrs) do
-    case Keyword.get(config, :ha_lite_status_provider) do
+    case Keyword.get(config, :control_plane_status_provider) do
       nil -> %{}
       provider -> provider |> read_provider_status() |> normalize_provider_status(base_attrs)
     end
@@ -80,7 +80,7 @@ defmodule Orchard.ControlPlane do
     do: apply(module, function, args)
 
   defp read_provider_status(provider),
-    do: {:error, {:invalid_ha_lite_status_provider, inspect(provider)}}
+    do: {:error, {:invalid_control_plane_status_provider, inspect(provider)}}
 
   defp normalize_provider_status({:ok, %{} = attrs}, base_attrs),
     do: attrs |> provider_advisory_lock_attrs() |> validate_provider_status(base_attrs)
@@ -121,7 +121,7 @@ defmodule Orchard.ControlPlane do
     base_attrs
     |> Map.merge(attrs)
     |> normalize_unproven_leadership()
-    |> HALiteStatus.new()
+    |> ControlPlaneStatus.new()
     |> case do
       {:ok, _status} -> attrs
       {:error, _reason} -> unavailable_status(:invalid_provider_status)
@@ -153,7 +153,7 @@ defmodule Orchard.ControlPlane do
 
   defp leadership_error_reason(_reason), do: "advisory_lock_read_failed: provider_error"
 
-  defp normalize_unproven_leadership(%{deployment_mode: :ha_lite} = attrs) do
+  defp normalize_unproven_leadership(%{deployment_mode: :active_standby} = attrs) do
     role = normalized_role(Map.get(attrs, :controller_role, :unknown))
     lock_status = normalize_lock_status(Map.get(attrs, :advisory_lock_status, :unknown))
 
@@ -205,8 +205,8 @@ defmodule Orchard.ControlPlane do
   defp normalized_role("single_controller"), do: :single_controller
   defp normalized_role(_role), do: :unknown
 
-  defp deployment_mode(:leader), do: :ha_lite
-  defp deployment_mode(:standby), do: :ha_lite
+  defp deployment_mode(:leader), do: :active_standby
+  defp deployment_mode(:standby), do: :active_standby
   defp deployment_mode(:single_controller), do: :single_controller
   defp deployment_mode(_role), do: :unknown
 

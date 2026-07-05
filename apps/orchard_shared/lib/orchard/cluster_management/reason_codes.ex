@@ -85,7 +85,6 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     scheduler_decision
     runtime_endpoint
     control_plane
-    ha_lite
   )
 
   @vocabularies %{

@@ -79,7 +79,7 @@ _Avoid_: Single binary install, External Database Mode
 A deployment topology where one Mac runs the Controller and one to three Macs run Node Agents and Worker Runtimes; database ownership may be managed on the controller host or external.
 _Avoid_: Database mode, cloud cluster, Kubernetes cluster
 
-**HA-lite Control Plane**:
+**Active/Standby Control Plane**:
 A control-plane mode with at most two Controller instances and exactly one Active Leader.
 _Avoid_: Active-active cluster, consensus cluster
 
@@ -96,7 +96,7 @@ A Postgres coordination lock used by Orchard for exclusive leadership and owners
 _Avoid_: Distributed lock service
 
 **Leader-only Write Path**:
-A mutating operation that may execute only on the Active Leader in HA-lite mode and must fail closed on a Standby Controller.
+A mutating operation that may execute only on the Active Leader in Active/Standby mode and must fail closed on a Standby Controller.
 Examples include node admission rejection, rejection clearance, admission, decommissioning, and the related cluster-scoped audit events.
 _Avoid_: best-effort write, local-controller write
 
@@ -391,7 +391,7 @@ The observed condition of a Node, independent of its operator-controlled lifecyc
 _Avoid_: Node Lifecycle State, operator action
 
 **Cluster Management Status**:
-A shared operator-facing status contract that separates lifecycle, admission, freshness, transport, runtime readiness, compatibility, scheduling, warnings, and HA-lite read-only signals.
+A shared operator-facing status contract that separates lifecycle, admission, freshness, transport, runtime readiness, compatibility, scheduling, warnings, and control-plane read-only signals.
 It is a cross-surface status vocabulary, not a replacement for the Node Lifecycle State machine.
 _Avoid_: Node Lifecycle State, Node Health, Console-only status label
 

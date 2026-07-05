@@ -652,7 +652,7 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "Admission Review"
       assert html =~ "Registered Nodes"
       assert html =~ "Live Cluster"
-      assert html =~ "HA-lite Status"
+      assert html =~ "Control Plane"
     end
 
     test "renders nodes page with section titles", %{conn: conn} do
@@ -661,7 +661,7 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "Inventory Summary"
       assert html =~ "Registered Nodes"
       assert html =~ "Live Cluster"
-      assert html =~ "HA-lite Status"
+      assert html =~ "Control Plane"
     end
 
     test "opts into workspace shell while keeping registered nodes primary", %{conn: conn} do
@@ -679,10 +679,10 @@ defmodule OrchardConsole.NodesLiveTest do
       assert cluster =~ "xl:grid-cols-2"
       refute cluster =~ "xl:grid-cols-6"
 
-      ha_lite = element(view, "#nodes-ha-lite-status-card") |> render()
-      assert ha_lite =~ "bg-slate-100/70"
-      assert ha_lite =~ "HA-lite Status"
-      refute ha_lite =~ "nodes-cluster-summary"
+      control_plane = element(view, "#nodes-control-plane-status-card") |> render()
+      assert control_plane =~ "bg-slate-100/70"
+      assert control_plane =~ "Control Plane"
+      refute control_plane =~ "nodes-cluster-summary"
 
       counters = element(view, "#nodes-safe-tokenization-telemetry-card") |> render()
       assert counters =~ "bg-slate-50"
@@ -918,17 +918,17 @@ defmodule OrchardConsole.NodesLiveTest do
   end
 
   # ---------------------------------------------------------------------------
-  # HA-lite status
+  # Control-plane status
   # ---------------------------------------------------------------------------
 
-  describe "HA-lite control-plane status" do
-    test "SPEC HA-lite Status Is Read-Only renders directly addressed standby behavior", %{
+  describe "control-plane status" do
+    test "SPEC Control Plane Is Read-Only renders directly addressed standby behavior", %{
       conn: conn
     } do
       Application.put_env(:orchard_controller, :control_plane,
         role: :standby,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           %{
             leader_identity: "controller-b",
             advisory_lock_status: :not_held,
@@ -940,12 +940,12 @@ defmodule OrchardConsole.NodesLiveTest do
 
       {:ok, view, _html} = live(conn, "/console/nodes")
 
-      card = element(view, "#nodes-ha-lite-status-card") |> render()
+      card = element(view, "#nodes-control-plane-status-card") |> render()
 
-      assert card =~ "HA-lite Status"
+      assert card =~ "Control Plane"
       assert card =~ "Standby"
-      assert card =~ "HA-lite control plane"
-      assert card =~ "HA-lite"
+      assert card =~ "Active/Standby control plane"
+      assert card =~ "Active/Standby"
       refute card =~ "Ha lite"
       assert card =~ "Not held"
       assert card =~ "controller-a"
@@ -962,7 +962,7 @@ defmodule OrchardConsole.NodesLiveTest do
       Application.put_env(:orchard_controller, :control_plane,
         role: :leader,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           raise DBConnection.ConnectionError,
             message: "password authentication failed for user orchard_admin at db.internal:5432"
         end
@@ -970,7 +970,7 @@ defmodule OrchardConsole.NodesLiveTest do
 
       {:ok, view, _html} = live(conn, "/console/nodes")
 
-      card = element(view, "#nodes-ha-lite-status-card") |> render()
+      card = element(view, "#nodes-control-plane-status-card") |> render()
 
       assert card =~ "Unknown"
       assert card =~ "Unavailable"
@@ -987,7 +987,7 @@ defmodule OrchardConsole.NodesLiveTest do
       Application.put_env(:orchard_controller, :control_plane,
         role: :standby,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           %{
             leader_identity: "controller-b",
             advisory_lock_status: :not_held,
@@ -999,7 +999,7 @@ defmodule OrchardConsole.NodesLiveTest do
 
       {:ok, view, _html} = live(conn, "/console/nodes")
 
-      card = element(view, "#nodes-ha-lite-status-card") |> render()
+      card = element(view, "#nodes-control-plane-status-card") |> render()
 
       assert card =~ "Leadership error"
       assert card =~ "advisory_lock_read_failed: provider_reported_error"
@@ -1010,18 +1010,18 @@ defmodule OrchardConsole.NodesLiveTest do
     test "single-controller subtitle does not duplicate role copy", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/nodes")
 
-      card = element(view, "#nodes-ha-lite-status-card") |> render()
+      card = element(view, "#nodes-control-plane-status-card") |> render()
 
       assert card =~ "Single controller control plane"
       refute card =~ "Single controller control plane, Single controller"
     end
 
-    test "disconnected render defers HA-lite status until LiveView connects", %{conn: conn} do
+    test "disconnected render defers control-plane status until LiveView connects", %{conn: conn} do
       conn = get(conn, "/console/nodes")
       body = html_response(conn, 200)
 
-      assert body =~ "nodes-ha-lite-status-card"
-      assert body =~ "Loading HA-lite status."
+      assert body =~ "nodes-control-plane-status-card"
+      assert body =~ "Loading control-plane status."
     end
   end
 

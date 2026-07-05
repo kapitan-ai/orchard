@@ -15,3 +15,5 @@ The trade-off is an extra controller builder layer between persistence/runtime s
 That layer is deliberate because `orchard_shared` must not depend on Ecto schemas, Phoenix presenters, Console LiveViews, CLI commands, or support-bundle writers.
 
 SPEC.md impact: no change required.
+
+Amended 2026-07-05: the HA-lite read-only status contract described above is renamed to `ControlPlaneStatus` (`cluster_management.control_plane_status`), and the Active/Standby term replaces HA-lite; see ADR 0008.

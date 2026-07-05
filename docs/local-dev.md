@@ -532,7 +532,7 @@ Use the gRPC compatibility flow only when you intentionally opt out with `ORCHAR
 
 `orchardctl cluster init` and `orchardctl node join` are SPEC-required future node-lifecycle commands.
 In this build they return deferred status.
-`orchardctl cluster status [--json]` is implemented for read-only cluster and HA-lite control-plane status, with the shared `HALiteStatus` payload and a HA-lite summary in `--json` mode.
+`orchardctl cluster status [--json]` is implemented for read-only cluster and control-plane status, with the shared `ControlPlaneStatus` payload and a control-plane summary in `--json` mode.
 `orchardctl nodes inspect`, `orchardctl nodes pending`, `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for the current node-admission-review slice, with stable JSON and human output, `--dry-run` previews, and `--yes`/`--reason` execution gating.
 `orchardctl nodes cordon`, `orchardctl nodes uncordon`, `orchardctl nodes drain`, `orchardctl nodes maintenance`, `orchardctl nodes resume`, and `orchardctl nodes decommission` add node lifecycle previews and execution on the shared Action Preview contract, gated by `--yes`, `--acknowledge`, and `--typed-node-id`; `orchardctl nodes maintenance` previews only, with its `draining -> maintenance` execution deferred until drain completion can be verified.
 Use the env-var split-role flows below for source-dev cluster testing.
