@@ -12,7 +12,7 @@ This README is orientation only. Normative CLI requirements live in
 - Operator commands for environment, transport, migrations, status, start/stop,
   upgrades, tenants, API keys, API Client bulk provisioning, nodes, and models.
 - Read-only cluster status through `cluster status`, with a `--json` mode that
-  emits the shared `ControlPlaneStatus` payload plus a Active/Standby-focused summary of
+  emits the shared `ControlPlaneStatus` payload plus an Active/Standby-focused summary of
   deployment mode, controller role, and advisory-lock status.
 - SPEC-required future command paths that return explicit deferred status until
   their milestones land: `cluster init` and `node join`.
@@ -48,7 +48,7 @@ Use `--json` for the same stable explanation map exposed by the Operator API pre
 `orchardctl cluster status` renders read-only cluster and Active/Standby control-plane
 status from the local controller runtime.
 Use `--json` for a stable automation payload with the shared `ControlPlaneStatus`
-contract and a Active/Standby summary block; it exposes no leadership-transfer or
+contract and an Active/Standby summary block; it exposes no leadership-transfer or
 failover actions.
 
 `orchardctl support bundle create` writes a local `.tar.gz` with bounded
