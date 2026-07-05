@@ -156,5 +156,28 @@ defmodule Orchard.ControlPlaneTest do
       assert status.standby_write_path_behavior == "unknown"
       assert is_binary(status.last_observed_leadership_error)
     end
+
+    test "SPEC Leadership status demotes held-lock evidence owned by another controller" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a",
+        ha_lite_status_provider: fn ->
+          %{
+            leader_identity: "controller-b",
+            advisory_lock_status: :held,
+            lock_age_ms: 400
+          }
+        end
+      )
+
+      status = ControlPlane.read_only_status()
+
+      assert status.deployment_mode == "ha_lite"
+      assert status.controller_role == "unknown"
+      assert status.this_controller_identity == "controller-a"
+      assert status.leader_identity == "controller-b"
+      assert status.advisory_lock_status == "held"
+      assert status.standby_write_path_behavior == "unknown"
+    end
   end
 end

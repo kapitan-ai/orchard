@@ -119,7 +119,7 @@ defmodule Orchard.ControlPlane do
     role = normalized_role(Map.get(attrs, :controller_role, :unknown))
     lock_status = normalize_lock_status(Map.get(attrs, :advisory_lock_status, :unknown))
 
-    if role == :leader and lock_status != :held do
+    if role == :leader and not local_leadership_proven?(attrs, lock_status) do
       attrs
       |> Map.put(:controller_role, :unknown)
       |> Map.put(:standby_write_path_behavior, "unknown")
@@ -129,6 +129,27 @@ defmodule Orchard.ControlPlane do
   end
 
   defp normalize_unproven_leadership(attrs), do: attrs
+
+  defp local_leadership_proven?(attrs, :held) do
+    leader_identity = status_identity(Map.get(attrs, :leader_identity))
+    this_controller_identity = status_identity(Map.get(attrs, :this_controller_identity))
+
+    is_nil(leader_identity) or leader_identity == this_controller_identity
+  end
+
+  defp local_leadership_proven?(_attrs, _lock_status), do: false
+
+  defp status_identity(nil), do: nil
+
+  defp status_identity(value) do
+    value
+    |> to_string()
+    |> String.trim()
+    |> case do
+      "" -> nil
+      identity -> identity
+    end
+  end
 
   defp normalize_lock_status(:held), do: :held
   defp normalize_lock_status("held"), do: :held
