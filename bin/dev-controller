@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # bin/dev-controller — Source-dev controller role startup for Orchard.
-# Creates/migrates the dev DB, sets the dev gRPC target port, starts Phoenix.
-# Use ORCHARD_RUNTIME_CLIENT_TARGETS for gRPC compatibility targets.
-# Use ORCHARD_RUNTIME_ENDPOINT_TARGETS with ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
-# for split-role BEAM Runtime Endpoint targets.
+# Creates/migrates the dev DB, sets the dev runtime port, starts Phoenix.
+# Defaults to split-role BEAM Runtime Endpoint transport.
+# Use ORCHARD_RUNTIME_ENDPOINT_TARGETS for BEAM Runtime Endpoint targets.
+# Use ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc with ORCHARD_RUNTIME_CLIENT_TARGETS
+# for gRPC compatibility targets.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -38,10 +39,13 @@ fi
 
 export ORCHARD_NODE_AGENT_LISTEN_PORT="$resolved_port"
 export ORCHARD_RUNTIME_CLIENT_PORT="$resolved_port"
-export ORCHARD_RUNTIME_CLIENT_TARGETS="${ORCHARD_RUNTIME_CLIENT_TARGETS:-127.0.0.1:${resolved_port}}"
 
 source "$REPO_ROOT/bin/lib/source-dev-beam.sh"
 orchard_source_dev_beam_bootstrap controller "$REPO_ROOT"
+
+if [[ "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT}" != "beam" ]]; then
+  export ORCHARD_RUNTIME_CLIENT_TARGETS="${ORCHARD_RUNTIME_CLIENT_TARGETS:-127.0.0.1:${resolved_port}}"
+fi
 
 # Bootstrap dev database. The controller owns the schema.
 echo "==> Ensuring dev database..."
@@ -51,7 +55,9 @@ mix ecto.migrate --quiet
 # Start the source-dev controller.
 echo "==> Starting Orchard dev controller (role: controller)"
 echo "==> HTTP endpoint: 127.0.0.1:${PORT:-4000}"
-echo "==> Runtime client targets: ${ORCHARD_RUNTIME_CLIENT_TARGETS}"
+if [[ -n "${ORCHARD_RUNTIME_CLIENT_TARGETS:-}" ]]; then
+  echo "==> Runtime client targets: ${ORCHARD_RUNTIME_CLIENT_TARGETS}"
+fi
 cd "$REPO_ROOT/apps/orchard_controller"
 if [[ "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT}" == "beam" ]]; then
   exec iex "${ORCHARD_BEAM_IEX_ARGS[@]}" -S mix phx.server

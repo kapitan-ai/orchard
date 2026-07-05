@@ -370,12 +370,19 @@ config :orchard_controller, Orchard.Repo,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
 
+dev_runtime_client_target =
+  if runtime_endpoint_transport == :beam do
+    nil
+  else
+    [host: dev_runtime_client_host, port: dev_runtime_port]
+  end
+
 config :orchard_controller,
   inference:
     Keyword.merge(
       Keyword.merge(
         controller_inference_defaults,
-        runtime_client_target: [host: dev_runtime_client_host, port: dev_runtime_port],
+        runtime_client_target: dev_runtime_client_target,
         runtime_client_targets: dev_runtime_targets,
         tokenizer_executable:
           System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||

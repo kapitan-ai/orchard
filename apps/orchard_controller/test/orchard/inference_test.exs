@@ -282,6 +282,24 @@ defmodule Orchard.InferenceTest do
              ]
     end
 
+    test "dev.exs beam controller mode without explicit legacy targets configures no gRPC targets" do
+      inference =
+        read_dev_controller_inference!(%{
+          "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1",
+          "ORCHARD_RUNTIME_CLIENT_TARGETS" => nil
+        })
+
+      assert Keyword.fetch!(inference, :runtime_endpoint_client_impl) ==
+               Orchard.RuntimeEndpoint.BeamClient
+
+      assert Keyword.fetch!(inference, :runtime_client_targets) == []
+
+      Application.put_env(:orchard_controller, :inference, inference)
+      assert Inference.runtime_client_targets() == []
+    end
+
     test "dev.exs rejects invalid runtime endpoint transport values" do
       assert_raise RuntimeError, ~r/ORCHARD_RUNTIME_ENDPOINT_TRANSPORT must be grpc\|beam/, fn ->
         read_dev_controller_inference!(%{"ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "http"})

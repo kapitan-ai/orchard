@@ -208,9 +208,12 @@ defmodule Orchard.Inference do
   def runtime_client_targets do
     case config()[:runtime_client_targets] do
       targets when is_list(targets) and targets != [] -> dedup_targets(targets)
-      _ -> [runtime_client_target()]
+      _ -> runtime_client_target_fallback(runtime_client_target())
     end
   end
+
+  defp runtime_client_target_fallback(nil), do: []
+  defp runtime_client_target_fallback(target), do: [target]
 
   @doc """
   Returns the configured Runtime Endpoint client adapter.

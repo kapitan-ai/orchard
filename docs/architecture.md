@@ -47,8 +47,8 @@ Public clients
   -> Controller (Phoenix/Elixir public APIs, Console, admission, scheduling)
      -> Postgres for durable state and coordination
      -> Runtime Endpoint Interface
-        -> current gRPC compatibility adapter
-        -> explicit split-role first-party BEAM adapter, eligible for promotion after accepted source-dev smoke evidence
+        -> first-party BEAM adapter as the split-role source-dev default
+        -> gRPC compatibility adapter as the explicit opt-out path
         -> future external/provider adapters
      -> Node Agent(s)
         -> Worker Runtime subprocesses for local MLX inference
@@ -61,10 +61,11 @@ Core design rules from `SPEC.md`:
 - token streams pass through the controller;
 - the Controller dispatches model runtime work through the Runtime Endpoint Interface;
 - the current `NodeRuntimeService` gRPC/protobuf path is a compatibility adapter, not the durable domain contract;
-- first-party BEAM communication is implemented behind explicit guardrails and remains default-off until explicit promotion;
-- source-dev uses the gRPC compatibility adapter by default until BEAM Runtime Endpoint transport is explicitly promoted after accepted two-Mac smoke evidence;
-- explicit source-dev BEAM mode runs only through split-role `bin/dev-controller` and `bin/dev-node-agent` launches, not all-in-one `bin/dev`;
-- explicit source-dev BEAM mode does not automatically fall back to gRPC compatibility for the same request;
+- first-party BEAM communication is the split-role source-dev default behind explicit guardrails;
+- split-role source dev uses BEAM by default through `bin/dev-controller` and `bin/dev-node-agent` launches;
+- gRPC remains available as an explicit opt-out compatibility adapter with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`;
+- all-in-one `bin/dev` remains the single-host gRPC default and rejects explicit BEAM mode;
+- source-dev BEAM mode does not automatically fall back to gRPC compatibility for the same request;
 - Console live runtime diagnostics use the same configured Runtime Endpoint target list as scheduler and dispatch, with explicit BEAM targets taking precedence over legacy gRPC runtime client targets;
 - BEAM Runtime Endpoint targets validate BEAM node-name addresses and configured node UUIDs before scheduler or dispatch trusts endpoint identity;
 - node agents are the v1 first-party Runtime Endpoint boundary;
@@ -124,7 +125,7 @@ Runtime Endpoint and worker runtime contracts are separate:
 
 - `proto/cluster/v1/` describes the current controller ↔ node-agent gRPC compatibility transport.
 - Runtime Endpoint domain structs describe the Controller-facing scheduler and dispatch contract.
-- `Orchard.RuntimeEndpoint.BeamClient` and `Orchard.Node.RuntimeEndpoint` provide the default-off first-party BEAM adapter and Node Agent facade.
+- `Orchard.RuntimeEndpoint.BeamClient` and `Orchard.Node.RuntimeEndpoint` provide the split-role source-dev default first-party BEAM adapter and Node Agent facade.
 - `native/orchard_worker_mlx/proto/` describes node-agent ↔ worker messages/services.
 
 ### Persistence and coordination

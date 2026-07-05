@@ -280,11 +280,21 @@ and starts `iex -S mix phx.server`.
 
 For source-dev cluster roles, use `mise exec -- bin/dev-controller` for the
 Phoenix/controller host and `mise exec -- bin/dev-node-agent` for a
-node-agent-only worker host. The current validated two-Mac smoke pattern is:
-start `mise exec -- bin/dev-node-agent` on the worker host with
-`ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0`, then start
+node-agent-only worker host.
+The split-role scripts default to BEAM Runtime Endpoint transport when
+`ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` is unset.
+The current validated two-Mac smoke pattern starts `mise exec -- bin/dev-node-agent`
+on each worker host with `ORCHARD_BEAM_NODE_NAME=orchard_node_agent@<ipv4>` and a
+shared owner-only `ORCHARD_BEAM_COOKIE_FILE`, then starts
 `mise exec -- bin/dev-controller` on the controller host with
-`ORCHARD_RUNTIME_CLIENT_TARGETS=<worker-ip>:50071`.
+`ORCHARD_BEAM_NODE_NAME=orchard_controller@<controller-ipv4>`, the same cookie
+file, and `ORCHARD_RUNTIME_ENDPOINT_TARGETS=orchard_node_agent@<worker-ipv4>`.
+Use `ORCHARD_BEAM_EPMD_PORT=43690` or another shared nonstandard port when a host
+already has EPMD on `4369`.
+Use `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`,
+`ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0`, and
+`ORCHARD_RUNTIME_CLIENT_TARGETS=<worker-ip>:50071` only for the gRPC compatibility
+opt-out path.
 
 When to bypass `bin/dev`:
 - `mise exec -- iex -S mix` — BEAM without HTTP server (one-off scripts, migrations)

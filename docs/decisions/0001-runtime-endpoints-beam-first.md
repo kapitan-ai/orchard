@@ -2,7 +2,8 @@
 
 ## Status
 
-Accepted
+Accepted.
+Source-dev split-role default promoted on 2026-07-05.
 
 ## Context
 
@@ -37,11 +38,13 @@ Existing `proto/cluster/v1` work should be demoted from the default first-party 
 Placement Capacity is a first-class Runtime Endpoint observation and must be exposed by the interface independently of transport.
 Unknown, malformed, duplicate, or nonmatching Placement Capacity must not prove eligibility for an active loaded placement.
 
-The BEAM Runtime Endpoint adapter is eligible to become the primary source-dev Controller-to-Node Agent path after accepted two-Mac smoke evidence and explicit promotion.
+The BEAM Runtime Endpoint adapter is the primary source-dev Controller-to-Node Agent path for split-role `bin/dev-controller` and `bin/dev-node-agent` launches after accepted two-Mac smoke evidence and explicit promotion.
 The accepted smoke evidence is recorded in `docs/investigations/source-dev-beam-smoke-2026-06-27.md`.
-Until a separate promotion change is accepted, current source-dev continues to use the gRPC Compatibility Adapter on port `50071` as the explicitly selected compatibility path.
+The 2026-07-05 refresh on `main` 3454423 revalidated BEAM transport, observation, admission, lifecycle actions, and multi-node scheduler explanations against a real remote node-agent.
+The 2026-07-05 promotion makes split-role source dev behave as if `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` when the variable is unset.
+Current split-role source dev continues to expose the gRPC Compatibility Adapter on port `50071` only through explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` opt-out.
 The Source-dev BEAM Operating Model uses long BEAM node names with IPv4-literal hosts, explicit shared cookie material, bounded distribution networking, and BEAM-specific Runtime Endpoint target variables rather than legacy gRPC runtime client variables.
-The current implementation exposes that model through explicit split-role `bin/dev-controller` and `bin/dev-node-agent` launches while all-in-one `bin/dev` remains the gRPC default and rejects explicit BEAM mode.
+All-in-one `bin/dev` remains the gRPC default and rejects explicit BEAM mode.
 Same-host source dev may generate a repo-local `tmp/dev/beam.cookie` file, while two-Mac source dev must provision the same cookie material on both Macs.
 Packaged or release runtime configuration must not inherit the repo-local cookie model; it should use runtime secret injection such as release cookie configuration.
 Cookie files must be `0600` or stricter and must not be printed in logs or templates.
