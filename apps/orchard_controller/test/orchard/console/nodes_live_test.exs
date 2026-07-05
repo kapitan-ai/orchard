@@ -944,7 +944,9 @@ defmodule OrchardConsole.NodesLiveTest do
 
       assert card =~ "HA-lite Status"
       assert card =~ "Standby"
-      assert card =~ "Ha lite"
+      assert card =~ "HA-lite control plane"
+      assert card =~ "HA-lite"
+      refute card =~ "Ha lite"
       assert card =~ "Not held"
       assert card =~ "controller-a"
       assert card =~ "controller-b"
@@ -979,6 +981,15 @@ defmodule OrchardConsole.NodesLiveTest do
       refute card =~ "db.internal"
       refute card =~ "Held"
       refute card =~ "writes allowed when authorized"
+    end
+
+    test "single-controller subtitle does not duplicate role copy", %{conn: conn} do
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      card = element(view, "#nodes-ha-lite-status-card") |> render()
+
+      assert card =~ "Single controller control plane"
+      refute card =~ "Single controller control plane, Single controller"
     end
 
     test "disconnected render defers HA-lite status until LiveView connects", %{conn: conn} do

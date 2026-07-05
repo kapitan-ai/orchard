@@ -982,7 +982,14 @@ defmodule OrchardConsole.NodesLive do
   defp ha_lite_subtitle(%{status: :error}), do: "Read-only control-plane status unavailable."
 
   defp ha_lite_subtitle(%{status: :ok, status_contract: %HALiteStatus{} = status}) do
-    "#{format_status_value(status.deployment_mode)} control plane, #{format_status_value(status.controller_role)}"
+    deployment_mode = format_status_value(status.deployment_mode)
+    controller_role = format_status_value(status.controller_role)
+
+    if deployment_mode == controller_role do
+      "#{deployment_mode} control plane"
+    else
+      "#{deployment_mode} control plane, #{controller_role}"
+    end
   end
 
   defp ha_lite_subtitle(_status), do: "Read-only control-plane status."
@@ -1217,6 +1224,7 @@ defmodule OrchardConsole.NodesLive do
   defp map_get(_map, _key), do: nil
 
   defp format_status_value(nil), do: "unknown"
+  defp format_status_value("ha_lite"), do: "HA-lite"
 
   defp format_status_value(value) when is_atom(value) do
     value

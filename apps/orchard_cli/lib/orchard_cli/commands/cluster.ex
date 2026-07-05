@@ -88,7 +88,7 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp render_status_text(%HALiteStatus{} = status) do
     [
-      "HA-lite: #{format_status_value(status.controller_role)}",
+      "Role: #{format_status_value(status.controller_role)}",
       "Deployment: #{format_status_value(status.deployment_mode)}",
       "This controller: #{status.this_controller_identity || "unknown"}",
       "Leader: #{status.leader_identity || "unknown"}",
