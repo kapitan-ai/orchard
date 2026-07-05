@@ -5,6 +5,7 @@ defmodule Orchard.ControlPlane do
   """
 
   alias Orchard.ClusterManagement.HALiteStatus
+  alias Orchard.ClusterManagement.Value
 
   @provider_status_keys [
     :leader_identity,
@@ -12,6 +13,14 @@ defmodule Orchard.ControlPlane do
     :lock_age_ms,
     :last_renewed_at,
     :last_observed_leadership_error
+  ]
+
+  @stable_leadership_errors [
+    "advisory_lock_read_failed: db_connection_error",
+    "advisory_lock_read_failed: invalid_provider_status",
+    "advisory_lock_read_failed: unexpected_provider_result",
+    "advisory_lock_read_failed: provider_error",
+    "advisory_lock_read_failed: provider_reported_error"
   ]
 
   @type write_path :: atom()
@@ -88,6 +97,24 @@ defmodule Orchard.ControlPlane do
   defp provider_advisory_lock_attrs(attrs) do
     Map.new(@provider_status_keys, fn key -> {key, provider_attr(attrs, key)} end)
     |> Map.reject(fn {_key, value} -> is_nil(value) end)
+    |> sanitize_leadership_error()
+  end
+
+  defp sanitize_leadership_error(%{last_observed_leadership_error: error} = attrs) do
+    case stable_leadership_error(error) do
+      nil -> Map.delete(attrs, :last_observed_leadership_error)
+      reason -> Map.put(attrs, :last_observed_leadership_error, reason)
+    end
+  end
+
+  defp sanitize_leadership_error(attrs), do: attrs
+
+  defp stable_leadership_error(error) do
+    case Value.normalize_string(error) do
+      nil -> nil
+      normalized when normalized in @stable_leadership_errors -> normalized
+      _raw -> "advisory_lock_read_failed: provider_reported_error"
+    end
   end
 
   defp validate_provider_status(attrs, base_attrs) do

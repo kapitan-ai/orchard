@@ -142,5 +142,29 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert decoded["ha_lite"]["last_observed_leadership_error"] ==
                "advisory_lock_read_failed: invalid_provider_status"
     end
+
+    test "SPEC CLI/Console parity sanitizes provider-returned leadership error in JSON" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :standby,
+        this_controller_identity: "controller-a",
+        ha_lite_status_provider: fn ->
+          %{
+            leader_identity: "controller-b",
+            advisory_lock_status: :not_held,
+            last_observed_leadership_error:
+              "password authentication failed for user orchard_admin at db.internal:5432"
+          }
+        end
+      )
+
+      assert {:ok, output} = ClusterCmd.run(["status", "--json"])
+      decoded = Jason.decode!(output)
+
+      assert decoded["ha_lite"]["last_observed_leadership_error"] ==
+               "advisory_lock_read_failed: provider_reported_error"
+
+      refute output =~ "orchard_admin"
+      refute output =~ "db.internal"
+    end
   end
 end

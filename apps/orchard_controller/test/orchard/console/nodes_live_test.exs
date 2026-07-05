@@ -983,6 +983,30 @@ defmodule OrchardConsole.NodesLiveTest do
       refute card =~ "writes allowed when authorized"
     end
 
+    test "SPEC Leadership status sanitizes provider-returned leadership error", %{conn: conn} do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :standby,
+        this_controller_identity: "controller-a",
+        ha_lite_status_provider: fn ->
+          %{
+            leader_identity: "controller-b",
+            advisory_lock_status: :not_held,
+            last_observed_leadership_error:
+              "password authentication failed for user orchard_admin at db.internal:5432"
+          }
+        end
+      )
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      card = element(view, "#nodes-ha-lite-status-card") |> render()
+
+      assert card =~ "Leadership error"
+      assert card =~ "advisory_lock_read_failed: provider_reported_error"
+      refute card =~ "orchard_admin"
+      refute card =~ "db.internal"
+    end
+
     test "single-controller subtitle does not duplicate role copy", %{conn: conn} do
       {:ok, view, _html} = live(conn, "/console/nodes")
 

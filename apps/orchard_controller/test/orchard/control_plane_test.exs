@@ -167,6 +167,32 @@ defmodule Orchard.ControlPlaneTest do
                "advisory_lock_read_failed: invalid_provider_status"
     end
 
+    test "SPEC Leadership status sanitizes provider-returned leadership error into a stable reason" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :standby,
+        this_controller_identity: "controller-a",
+        ha_lite_status_provider: fn ->
+          %{
+            leader_identity: "controller-b",
+            advisory_lock_status: :not_held,
+            last_observed_leadership_error:
+              "password authentication failed for user orchard_admin at db.internal:5432"
+          }
+        end
+      )
+
+      status = ControlPlane.read_only_status()
+
+      assert status.advisory_lock_status == "not_held"
+      assert status.leader_identity == "controller-b"
+
+      assert status.last_observed_leadership_error ==
+               "advisory_lock_read_failed: provider_reported_error"
+
+      refute status.last_observed_leadership_error =~ "orchard_admin"
+      refute status.last_observed_leadership_error =~ "db.internal"
+    end
+
     test "SPEC Leadership status demotes held-lock evidence owned by another controller" do
       Application.put_env(:orchard_controller, :control_plane,
         role: :leader,
