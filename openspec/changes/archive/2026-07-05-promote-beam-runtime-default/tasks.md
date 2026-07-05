@@ -53,4 +53,5 @@
   - Verified the controller log did not report the implicit `Runtime client targets: 127.0.0.1:50071` line.
   - Verified an RPC probe through `Orchard.RuntimeEndpoint.BeamClient.status/1` returned a BEAM observation for `orchard_node_agent@127.0.0.1` with `health.ready == true`.
   - Verified cleanup left HTTP `4000`, gRPC `50071`, and nonstandard EPMD `43690` without source-dev listeners, and removed the generated same-host cookie.
-- [ ] 4.4 After merge: archive `beam-first-runtime-endpoints`, `source-dev-beam-operating-model`, and then this change, running strict validation after each sync and reviewing generated main specs for placeholder prose.
+- [x] 4.4 After merge: archive `beam-first-runtime-endpoints`, `source-dev-beam-operating-model`, and then this change, running strict validation after each sync and reviewing generated main specs for placeholder prose.
+  - Executed after PR #50 merged, as the acceptance cascade that archives all three changes and syncs their runtime-endpoints deltas into main specs.
