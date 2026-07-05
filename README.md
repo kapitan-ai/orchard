@@ -33,7 +33,8 @@ Working today: authenticated `/v1/models`, `/v1/chat/completions` with SSE, a
 bounded `/v1/responses` slice, tenant-direct API Tokens, and bulk API Client
 provisioning for service-account-owned tokens. On the operations side,
 `orchardctl` provides node admission review, node lifecycle previews and
-execution (cordon, drain, maintenance, decommission), request diagnostics with
+execution (cordon, drain, decommission; maintenance previews only), request
+diagnostics with
 scheduler explanations, read-only cluster and HA-lite control-plane status, and
 redacted support bundle creation, alongside a Console UI for the same
 cluster-management surfaces.
