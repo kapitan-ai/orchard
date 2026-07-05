@@ -463,7 +463,10 @@ class BatchGeneratorRuntime:
 
     @property
     def tokenizer(self) -> Any:
-        return self._session.tokenizer
+        session = self._session
+        if session is None:
+            raise BackendError("generation_failed", "batch runtime is closed", False)
+        return session.tokenizer
 
     def generation_deps(self) -> GenerationDeps:
         return GenerationDeps(
@@ -478,7 +481,10 @@ class BatchGeneratorRuntime:
         )
 
     def acquire_detokenizer(self) -> Any:
-        detokenizer = self._detokenizer_factory()
+        factory = self._detokenizer_factory
+        if factory is None:
+            raise BackendError("generation_failed", "batch runtime is closed", False)
+        detokenizer = factory()
         self._validate_detokenizer(detokenizer)
 
         detokenizer_id = id(detokenizer)
@@ -496,6 +502,11 @@ class BatchGeneratorRuntime:
     def release_detokenizer(self, detokenizer: Any) -> None:
         with self._detokenizer_lock:
             self._active_detokenizer_ids.discard(id(detokenizer))
+
+    def _drop_load_scope_aliases_locked(self) -> None:
+        self._session = None
+        self._batch_generator = None
+        self._detokenizer_factory = None
 
     def stream_generate(
         self,
@@ -537,6 +548,7 @@ class BatchGeneratorRuntime:
 
         with self._cv:
             self._batch_generator_closed = True
+            self._drop_load_scope_aliases_locked()
 
     def wait_next(
         self,
@@ -1345,6 +1357,7 @@ class BatchGeneratorRuntime:
         if not isinstance(pump, threading.Thread) or not pump.is_alive():
             with self._cv:
                 self._batch_generator_closed = True
+                self._drop_load_scope_aliases_locked()
 
     def _seconds_until_next_deadline_locked(self, now: float) -> float:
         deadlines = [

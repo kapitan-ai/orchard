@@ -957,10 +957,10 @@ def test_batch_prefill_attribution_interleaved_insert_sets_do_not_bleed() -> Non
         stream_b = _queue_batch_stream(runtime, [4, 5, 6])
         assert [chunk.text for chunk in stream_b] == ["X"]
         assert [chunk.text for chunk in stream_a] == ["B"]
+        generator = cast(_InterleavedInsertSetBatchGenerator, runtime._batch_generator)
     finally:
         runtime.close()
 
-    generator = cast(_InterleavedInsertSetBatchGenerator, runtime._batch_generator)
     assert generator.insert_sizes == [1, 1]
     assert calls == 4
     assert session.memory_budget_status.prefill_workspace_bytes_per_token == 300
@@ -1982,6 +1982,67 @@ def test_batch_generator_runtime_releases_detokenizer_after_terminal_service_bre
     runtime.close()
 
 
+def test_batch_generator_runtime_close_drops_load_scope_aliases() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    runtime.close()
+    gc.collect()
+
+    assert runtime._session is None
+    assert runtime._batch_generator is None
+    assert runtime._detokenizer_factory is None
+
+
+def test_batch_generator_runtime_tokenizer_fails_after_close() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    runtime.close()
+
+    with pytest.raises(BackendError) as exc_info:
+        _ = runtime.tokenizer
+
+    assert exc_info.value.code == "generation_failed"
+    assert "batch runtime is closed" in exc_info.value.message
+
+
+def test_batch_generator_runtime_double_close_keeps_aliases_dropped() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    runtime.close()
+    runtime.close()
+
+    assert runtime._session is None
+    assert runtime._batch_generator is None
+    assert runtime._detokenizer_factory is None
+
+
 def test_batch_generator_runtime_close_raises_if_pump_cannot_stop_after_generator_close() -> None:
     tracker = _WiredLimitTracker()
     session = _make_fake_session(
@@ -2028,6 +2089,9 @@ def test_batch_generator_runtime_close_raises_if_pump_cannot_stop_after_generato
 
     assert exc_info.value.code == "batch_runtime_close_timeout"
     assert runtime._pump.is_alive() is True
+    assert runtime._session is session
+    assert runtime._batch_generator is generator
+    assert callable(runtime._detokenizer_factory)
     assert generator.close_called is True
     assert tracker.enter_count == 0
     assert tracker.exit_count == 0
