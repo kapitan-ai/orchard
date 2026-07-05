@@ -50,4 +50,4 @@
 - [x] 6.9 Run `mise exec -- mix dialyzer`.
 - [x] 6.10 Run `mise exec -- mix test`.
 - [x] 6.11 Run `mise exec -- mix test --cover`.
-- [ ] 6.12 After archive or spec sync, review generated main specs for placeholder prose such as `Purpose TBD` and reconcile accepted behavior into durable docs and tests.
+- [x] 6.12 After archive or spec sync, review generated main specs for placeholder prose such as `Purpose TBD` and reconcile accepted behavior into durable docs and tests.
