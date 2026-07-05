@@ -231,8 +231,8 @@ the fake runtime through `config/test.exs`, not a dev env override.
 Batch generation mode can admit multiple same-model requests up to the worker-reported limit.
 The node agent also enforces aggregate active request capacity across loaded models using the resolved worker limits, conservatively falling back to single-request capacity when worker status omits `max_concurrency`.
 The node-agent reports aggregate and placement capacity through Runtime Endpoint status.
-The default source-dev path maps the current gRPC compatibility status response into Runtime Endpoint Observations before multi-node scheduler candidate filtering and queue wakeups from loaded-placement or cold/no-placement capacity.
-When the BEAM adapter is explicitly configured, the Node Agent facade maps the same status semantics into BEAM Runtime Endpoint Observations.
+The default split-role source-dev path maps BEAM Runtime Endpoint Observations before multi-node scheduler candidate filtering and queue wakeups from loaded-placement or cold/no-placement capacity.
+When the gRPC compatibility adapter is explicitly selected, the Node Agent facade maps the current gRPC status response into Runtime Endpoint Observations.
 Transport failures and ineligible Runtime Endpoint Observations clear endpoint-owned queue capacity sources so queued work is not promoted against stale loaded-placement or cold/no-placement slots.
 BEAM observations publish queue capacity only when the target resolves back to the same persisted node identity.
 Stream mode reports max concurrency as `1` at both node and placement levels.
@@ -245,21 +245,20 @@ Stream mode reports max concurrency as `1` at both node and placement levels.
 | `ORCHARD_RUNTIME_CLIENT_TARGETS` | _(empty)_ | Comma-separated `host:port` list for multi-node scheduling. When set with >1 target, the scheduler auto-selects `MultiNode`. |
 
 These env vars configure only the gRPC compatibility target path.
-Source-dev BEAM Runtime Endpoint mode uses a separate Runtime Endpoint env surface, not `ORCHARD_RUNTIME_CLIENT_TARGETS`.
-The accepted source-dev surface is `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` plus `ORCHARD_RUNTIME_ENDPOINT_TARGETS`, with BEAM node and distribution settings under `ORCHARD_BEAM_*` variables.
+Split-role source-dev defaults to BEAM Runtime Endpoint mode and uses a separate Runtime Endpoint env surface, not `ORCHARD_RUNTIME_CLIENT_TARGETS`.
+The accepted source-dev BEAM surface is `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` plus `ORCHARD_RUNTIME_ENDPOINT_TARGETS`, with BEAM node and distribution settings under `ORCHARD_BEAM_*` variables.
 Console Nodes live runtime diagnostics follow the active Runtime Endpoint target source.
-When explicit BEAM Runtime Endpoint targets are configured, Console probes those BEAM targets through the configured Runtime Endpoint client.
+When BEAM Runtime Endpoint targets are configured, Console probes those BEAM targets through the configured Runtime Endpoint client.
 Keep `ORCHARD_RUNTIME_CLIENT_TARGETS` alongside BEAM targets only when deliberately comparing the gRPC compatibility path.
 Do not rely on automatic gRPC fallback when BEAM mode is selected.
 
 #### Source-dev BEAM Runtime Endpoint Split-role Mode
 
-Source dev now supports an explicit BEAM Runtime Endpoint mode for split-role launches.
-The default source-dev path is still gRPC compatibility on port `50071`.
-Accepted two-Mac smoke evidence is recorded in `docs/investigations/source-dev-beam-smoke-2026-06-27.md`, but default promotion remains a separate change.
-Unset `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` or set it to `grpc` to keep the existing gRPC path.
-Set `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` only with `bin/dev-controller` and `bin/dev-node-agent`.
-All-in-one `bin/dev` intentionally rejects explicit BEAM mode and remains the gRPC default.
+Source dev defaults to BEAM Runtime Endpoint mode for split-role launches through `bin/dev-controller` and `bin/dev-node-agent`.
+Accepted two-Mac smoke evidence is recorded in `docs/investigations/source-dev-beam-smoke-2026-06-27.md`, and the BEAM default was promoted on 2026-07-05.
+Leave `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` unset or set it to `beam` for the default split-role BEAM path.
+Set `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` only when intentionally opting into the gRPC compatibility path on port `50071`.
+All-in-one `bin/dev` intentionally rejects explicit BEAM mode and remains the single-host gRPC default.
 
 The BEAM source-dev env surface is separate from the legacy gRPC compatibility target surface.
 `ORCHARD_RUNTIME_CLIENT_TARGETS` remains gRPC compatibility-only and accepts only `host:port` targets.
@@ -273,7 +272,7 @@ CLI scaffolding for these variables is deferred to a separate change.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` | `grpc` | Runtime Endpoint transport selector. Use `beam` for split-role BEAM source dev. |
+| `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` | `beam` for split-role scripts | Runtime Endpoint transport selector. Leave unset for split-role BEAM source dev, or set `grpc` for compatibility opt-out. |
 | `ORCHARD_RUNTIME_ENDPOINT_TARGETS` | _(empty)_ | Controller-only comma-separated BEAM target list. Each target must be `orchard_node_agent@<ipv4-literal>`. |
 | `ORCHARD_BEAM_NODE_NAME` | `orchard_controller@127.0.0.1` or `orchard_node_agent@127.0.0.1` | Long BEAM node name for the current split-role VM. The host part must be an IPv4 literal. |
 | `ORCHARD_BEAM_COOKIE_FILE` | `tmp/dev/beam.cookie` | Cookie file path. Same-host source dev generates it when absent. Two-Mac source dev must provision the same cookie material on each Mac. |
@@ -294,7 +293,6 @@ Same-host BEAM split-role smoke can run from two terminals in the same checkout.
 Start the node-agent first:
 
 ```bash
-ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
 ORCHARD_WORKER_BACKEND=stub \
 mise exec -- bin/dev-node-agent
 ```
@@ -302,7 +300,6 @@ mise exec -- bin/dev-node-agent
 Then start the controller:
 
 ```bash
-ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
 ORCHARD_RUNTIME_ENDPOINT_TARGETS=orchard_node_agent@127.0.0.1 \
 mise exec -- bin/dev-controller
 ```
@@ -528,9 +525,9 @@ operator workflow, permission expectations, and external certificate setup.
 
 ## Two-Node Source-Dev Cluster Testing
 
-Single-node remains the default.
-Use the gRPC compatibility flow when you want the stable default source-dev path.
-Use the BEAM Runtime Endpoint flow when you are validating the explicit split-role BEAM operating model.
+Single-node all-in-one remains available through `bin/dev`.
+Use the BEAM Runtime Endpoint flow for the default split-role source-dev cluster path.
+Use the gRPC compatibility flow only when you intentionally opt out with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` or need side-by-side comparison.
 
 `orchardctl cluster init` and `orchardctl node join` are SPEC-required future node-lifecycle commands.
 In this build they return deferred status.
@@ -543,6 +540,7 @@ Use the env-var split-role flows below for source-dev cluster testing.
 The gRPC compatibility flow keeps all-in-one `bin/dev` on the controller Mac and starts one remote node-agent.
 It uses `ORCHARD_RUNTIME_CLIENT_TARGETS` as a comma-separated `host:port` list.
 This variable is gRPC-only and is not used by BEAM Runtime Endpoint mode.
+For split-role compatibility testing, set `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` on `bin/dev-controller` and `bin/dev-node-agent`.
 
 #### Controller host
 
@@ -561,7 +559,8 @@ IPv6 addresses are not supported in the gRPC compatibility target list.
 #### Remote node-agent host
 
 ```bash
-ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0 \
+ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc \
+  ORCHARD_NODE_AGENT_LISTEN_HOST=0.0.0.0 \
   ORCHARD_NODE_AGENT_LISTEN_PORT=50071 \
   ORCHARD_WORKER_BACKEND=stub \
   ORCHARD_NODE_DISPLAY_NAME=<worker-label> \
@@ -590,7 +589,6 @@ Do not commit cookie material, raw local evidence logs, or machine-specific path
 #### Controller Mac local node-agent terminal
 
 ```bash
-ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
 ORCHARD_BEAM_NODE_NAME=orchard_node_agent@<controller-ipv4> \
 ORCHARD_BEAM_COOKIE_FILE="$PWD/tmp/dev/beam.cookie" \
 ORCHARD_WORKER_BACKEND=stub \
@@ -601,7 +599,6 @@ mise exec -- bin/dev-node-agent
 #### Remote node-agent Mac terminal
 
 ```bash
-ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
 ORCHARD_BEAM_NODE_NAME=orchard_node_agent@<worker-ipv4> \
 ORCHARD_BEAM_COOKIE_FILE="$PWD/tmp/dev/beam.cookie" \
 ORCHARD_WORKER_BACKEND=stub \
@@ -612,7 +609,6 @@ mise exec -- bin/dev-node-agent
 #### Controller Mac controller terminal
 
 ```bash
-ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
 ORCHARD_RUNTIME_ENDPOINT_TARGETS="orchard_node_agent@<controller-ipv4>,orchard_node_agent@<worker-ipv4>" \
 ORCHARD_BEAM_NODE_NAME=orchard_controller@<controller-ipv4> \
 ORCHARD_BEAM_COOKIE_FILE="$PWD/tmp/dev/beam.cookie" \
@@ -624,6 +620,8 @@ The default controller distribution port is TCP `52171`.
 The default node-agent distribution port is TCP `52172`.
 The default EPMD port is TCP `4369`.
 Those ports must be reachable between the participating private IPs.
+If another EPMD already owns `4369`, set the same nonstandard `ORCHARD_BEAM_EPMD_PORT` on every participating terminal.
+The validated two-Mac smokes used `ORCHARD_BEAM_EPMD_PORT=43690` on hosts with EPMD conflicts.
 If you override the EPMD or distribution port variables, use the same values in your firewall rules and smoke notes.
 
 For a remote Runtime Endpoint RPC check from the controller IEx session:
@@ -653,7 +651,7 @@ It should not fall back to gRPC.
 Do not create `docs/investigations/source-dev-beam-smoke-<date>.md` unless a real two-Mac BEAM smoke has actually been run.
 When that evidence is added, sanitize host labels, commands, node names, pass/fail status, and Runtime Endpoint RPC evidence.
 The evidence must not include cookie material, credentials, raw logs, prompt exports, local tool session identifiers, DSNs, or machine-specific filesystem paths.
-Default promotion remains deferred to a future OpenSpec change even after the smoke evidence gate passes.
+BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evidence gate passed.
 
 ### Troubleshooting
 
@@ -1087,7 +1085,7 @@ mise exec -- iex -S mix phx.server
   Tenant-direct API Tokens remain supported, and service-account-owned API Tokens require an enabled API Client with tenant-scoped `inference_client` access.
   Full quota policy remains incomplete
 - Multi-node is supported for source-dev testing only (production/packaged multi-node — M4)
-- Explicit split-role BEAM Runtime Endpoint mode is implemented for `bin/dev-controller` and `bin/dev-node-agent`; default source dev still uses the gRPC compatibility adapter
+- Split-role BEAM Runtime Endpoint mode is the default for `bin/dev-controller` and `bin/dev-node-agent`
 - All-in-one `bin/dev` rejects explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`
-- BEAM Runtime Endpoint transport becomes the primary source-dev path only through a separate promotion after accepted two-Mac smoke evidence
+- gRPC compatibility remains available for split-role source dev only through `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`
 - Model import from local filesystem only (no remote download)

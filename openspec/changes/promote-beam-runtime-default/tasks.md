@@ -2,23 +2,37 @@
 
 ## 1. Transport Default Flip
 
-- [ ] 1.1 Default `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` to `beam` in `bin/dev-controller` when unset, preserving explicit `grpc` opt-out behavior.
-- [ ] 1.2 Default `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` to `beam` in `bin/dev-node-agent` when unset, preserving explicit `grpc` opt-out behavior.
-- [ ] 1.3 Keep all-in-one `bin/dev` on the single-host gRPC loopback default and verify it still rejects explicit BEAM mode with a clear error.
-- [ ] 1.4 Add or update tests covering default-BEAM resolution and explicit-gRPC opt-out for the split-role env surface.
+- [x] 1.1 Default `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` to `beam` in `bin/dev-controller` when unset, preserving explicit `grpc` opt-out behavior.
+  - Implemented in `bin/lib/source-dev-beam.sh` and exercised through `bin/dev-controller` in `scripts/test-source-dev-beam-bootstrap.sh` scenario I.
+- [x] 1.2 Default `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` to `beam` in `bin/dev-node-agent` when unset, preserving explicit `grpc` opt-out behavior.
+  - Implemented in `bin/lib/source-dev-beam.sh` and exercised through `bin/dev-node-agent` in `scripts/test-source-dev-beam-bootstrap.sh` scenario I.
+- [x] 1.3 Keep all-in-one `bin/dev` on the single-host gRPC loopback default and verify it still rejects explicit BEAM mode with a clear error.
+  - Verified by `scripts/test-source-dev-beam-bootstrap.sh` scenario H.
+- [x] 1.4 Add or update tests covering default-BEAM resolution and explicit-gRPC opt-out for the split-role env surface.
+  - Added default-BEAM helper assertions in `scripts/test-source-dev-beam-bootstrap.sh` scenario A.
+  - Updated entrypoint default-BEAM assertions in scenario I and explicit-gRPC opt-out assertions in scenario J.
 
 ## 2. Legacy Surface Quiescing
 
-- [ ] 2.1 Stop configuring the implicit `127.0.0.1:50071` legacy runtime client target when the resolved transport is BEAM.
-- [ ] 2.2 Preserve explicitly set `ORCHARD_RUNTIME_CLIENT_TARGETS` as a gRPC comparison surface in BEAM mode.
-- [ ] 2.3 Add a regression test asserting no legacy gRPC runtime client target is configured in BEAM mode without explicit `ORCHARD_RUNTIME_CLIENT_TARGETS`.
+- [x] 2.1 Stop configuring the implicit `127.0.0.1:50071` legacy runtime client target when the resolved transport is BEAM.
+  - Implemented in `bin/dev-controller` by injecting the implicit target only after transport resolves to non-BEAM.
+- [x] 2.2 Preserve explicitly set `ORCHARD_RUNTIME_CLIENT_TARGETS` as a gRPC comparison surface in BEAM mode.
+  - Preserved by leaving explicit `ORCHARD_RUNTIME_CLIENT_TARGETS` untouched when BEAM is selected.
+  - Verified by `dev.exs beam controller mode configures BEAM client and endpoint targets`.
+- [x] 2.3 Add a regression test asserting no legacy gRPC runtime client target is configured in BEAM mode without explicit `ORCHARD_RUNTIME_CLIENT_TARGETS`.
+  - Added `dev.exs beam controller mode without explicit legacy targets configures no gRPC targets`.
+  - Added a shell assertion that default BEAM controller startup does not log `Runtime client targets: 127.0.0.1:50071`.
 
 ## 3. Docs And Contract Truth
 
-- [ ] 3.1 Update `docs/local-dev.md`: BEAM split-role mode becomes the documented default, gRPC becomes the explicit opt-out compatibility path, and `ORCHARD_RUNTIME_CLIENT_TARGETS` is described as comparison-only.
-- [ ] 3.2 Update `AGENTS.md`'s two-Mac source-dev pattern to the BEAM surface (node names, cookie provisioning, `ORCHARD_BEAM_EPMD_PORT` guidance) with the gRPC pattern as opt-out.
-- [ ] 3.3 Update `SPEC.md` internal-communications language: BEAM Distribution is the default first-party source-dev Controller-to-Node Agent path and gRPC is the compatibility adapter, per ADR 0001.
-- [ ] 3.4 Amend `docs/decisions/0001-runtime-endpoints-beam-first.md` with a dated promotion note recording the executed gate and its evidence.
+- [x] 3.1 Update `docs/local-dev.md`: BEAM split-role mode becomes the documented default, gRPC becomes the explicit opt-out compatibility path, and `ORCHARD_RUNTIME_CLIENT_TARGETS` is described as comparison-only.
+  - Updated the split-role sections, command examples, EPMD guidance, troubleshooting, and source-dev limitations.
+- [x] 3.2 Update `AGENTS.md`'s two-Mac source-dev pattern to the BEAM surface (node names, cookie provisioning, `ORCHARD_BEAM_EPMD_PORT` guidance) with the gRPC pattern as opt-out.
+  - Updated the Dev Environment two-Mac pattern with BEAM node names, shared cookie file, nonstandard EPMD guidance, and gRPC opt-out variables.
+- [x] 3.3 Update `SPEC.md` internal-communications language: BEAM Distribution is the default first-party source-dev Controller-to-Node Agent path and gRPC is the compatibility adapter, per ADR 0001.
+  - Updated the architecture summary and section 7.5 Runtime Endpoint and Internal Worker Interfaces language.
+- [x] 3.4 Amend `docs/decisions/0001-runtime-endpoints-beam-first.md` with a dated promotion note recording the executed gate and its evidence.
+  - Added the 2026-07-05 promotion status and evidence note citing the 2026-06-27 investigation plus the 2026-07-05 refresh.
 
 ## 4. Validation And Acceptance
 

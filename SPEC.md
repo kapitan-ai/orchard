@@ -45,10 +45,11 @@ Supported deployment modes:
 * Controller runtime execution SHALL use the Runtime Endpoint Interface.
 * Runtime Endpoint semantics are transport-independent.
 * The gRPC/protobuf `NodeRuntimeService` remains the compatibility transport and a candidate protocol for future non-BEAM adapters.
-* First-party Orchard Controller and Node Agent services MAY use default-off BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
-* Source-dev SHALL keep the gRPC compatibility path as the default Controller-to-Node Agent runtime transport on port `50071` until BEAM Runtime Endpoint transport is explicitly promoted in a separate change.
-* Accepted two-Mac smoke evidence SHALL exist before BEAM Runtime Endpoint transport is promoted as the source-dev default.
-* When BEAM Runtime Endpoint transport is explicitly selected, Orchard MUST NOT retry the same request through gRPC compatibility as an automatic fallback.
+* First-party Orchard Controller and Node Agent source-dev services SHALL use BEAM Distribution as the default live Controller-to-Node Agent Runtime Endpoint transport when the endpoint is an admitted first-party Orchard service.
+* Source-dev split-role `bin/dev-controller` and `bin/dev-node-agent` SHALL default to BEAM Runtime Endpoint transport when `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` is unset.
+* Source-dev gRPC compatibility remains available on port `50071` through explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` opt-out.
+* Accepted two-Mac smoke evidence SHALL remain recorded before and after BEAM Runtime Endpoint transport is promoted as the source-dev default.
+* When BEAM Runtime Endpoint transport is selected, Orchard MUST NOT retry the same request through gRPC compatibility as an automatic fallback.
 * Console live runtime diagnostics SHALL use the configured Runtime Endpoint target list; explicit BEAM Runtime Endpoint targets SHALL take precedence over legacy gRPC runtime client targets.
 * Production BEAM Distribution MUST be explicitly enabled, identity-bound, network-restricted, and fail closed when required admission configuration is missing.
 * BEAM Runtime Endpoint targets MUST carry a valid BEAM node-name address (`service@host`) as an atom or binary; a configured `node_id`, when present, MUST be a UUID and MUST match observed endpoint metadata before scheduler or dispatch may trust that candidate identity.
@@ -2208,11 +2209,12 @@ PATCH /admin/v1/observability
 Controller runtime execution SHALL use the Runtime Endpoint Interface.
 Runtime Endpoint semantics are transport-independent.
 The gRPC/protobuf `NodeRuntimeService` remains the gRPC Compatibility Adapter and a candidate protocol for future non-BEAM adapters.
-First-party Orchard Controller and Node Agent services MAY use default-off BEAM Distribution for live communication and monitoring when the endpoint is an admitted first-party Orchard service.
-Source-dev SHALL keep the gRPC compatibility path as the default Controller-to-Node Agent runtime transport on port `50071` until BEAM Runtime Endpoint transport is explicitly promoted in a separate change.
-Accepted two-Mac smoke evidence SHALL exist before BEAM Runtime Endpoint transport is promoted as the source-dev default.
+First-party Orchard Controller and Node Agent source-dev services SHALL use BEAM Distribution as the default live Controller-to-Node Agent Runtime Endpoint transport when the endpoint is an admitted first-party Orchard service.
+Source-dev split-role `bin/dev-controller` and `bin/dev-node-agent` SHALL default to BEAM Runtime Endpoint transport when `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` is unset.
+Source-dev gRPC compatibility remains available on port `50071` through explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` opt-out.
+Accepted two-Mac smoke evidence SHALL remain recorded before and after BEAM Runtime Endpoint transport is promoted as the source-dev default.
 The accepted smoke requires Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
-When BEAM Runtime Endpoint transport is explicitly selected, Orchard MUST NOT retry the same request through gRPC compatibility as an automatic fallback.
+When BEAM Runtime Endpoint transport is selected, Orchard MUST NOT retry the same request through gRPC compatibility as an automatic fallback.
 Console live runtime diagnostics SHALL use the configured Runtime Endpoint target list.
 Explicit BEAM Runtime Endpoint targets SHALL take precedence over legacy gRPC runtime client targets for Console probes.
 Production BEAM Distribution MUST be explicitly enabled, identity-bound, network-restricted, and fail closed when required admission configuration is missing.

@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # bin/dev-controller — Source-dev controller role startup for Orchard.
-# Creates/migrates the dev DB, sets the dev gRPC target port, starts Phoenix.
-# Use ORCHARD_RUNTIME_CLIENT_TARGETS for gRPC compatibility targets.
-# Use ORCHARD_RUNTIME_ENDPOINT_TARGETS with ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
-# for split-role BEAM Runtime Endpoint targets.
+# Creates/migrates the dev DB, sets the dev runtime port, starts Phoenix.
+# Defaults to split-role BEAM Runtime Endpoint transport.
+# Use ORCHARD_RUNTIME_ENDPOINT_TARGETS for BEAM Runtime Endpoint targets.
+# Use ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc with ORCHARD_RUNTIME_CLIENT_TARGETS
+# for gRPC compatibility targets.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
