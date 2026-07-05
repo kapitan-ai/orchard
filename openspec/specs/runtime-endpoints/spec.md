@@ -195,7 +195,7 @@ Packaged and release runtime transport promotion SHALL remain a separate future 
 ### Requirement: Source-dev BEAM Split-role Bootstrap
 Orchard SHALL support Source-dev BEAM Runtime Endpoint mode first for the split-role `bin/dev-controller` and `bin/dev-node-agent` entrypoints.
 When Source-dev BEAM mode is selected, both split-role processes SHALL start as named distributed BEAM nodes before Runtime Endpoint work is attempted.
-All-in-one `bin/dev` SHALL remain on the current gRPC compatibility default in this change.
+All-in-one `bin/dev` SHALL remain on the gRPC compatibility default.
 All-in-one `bin/dev` SHALL reject explicit Source-dev BEAM mode before starting Mix.
 This refines the source-dev BEAM rollout rules in `SPEC.md` §1.2 and §7.5.
 
@@ -306,20 +306,21 @@ This refines the source-dev transport rules in `SPEC.md` §1.2 and §7.5.
 - **THEN** Source-dev BEAM target configuration is not required for that compatibility run
 
 ### Requirement: Source-dev BEAM Smoke Evidence Gate
-Orchard SHALL require durable two-Mac Source-dev BEAM smoke evidence before BEAM Runtime Endpoint transport is promoted as the source-dev default.
+Orchard SHALL gate Runtime Endpoint transport default promotions on durable two-Mac Source-dev BEAM smoke evidence.
+The split-role source-dev BEAM default promotion executed after that evidence gate passed and is recorded in `docs/decisions/0001-runtime-endpoints-beam-first.md`.
+Future Runtime Endpoint transport default promotions, such as packaged or release runtime transport, SHALL remain gated on the same accepted smoke evidence requirement.
 The evidence SHALL be recorded in a sanitized durable repo document such as `docs/investigations/source-dev-beam-smoke-<date>.md`.
 The evidence SHALL include date, commit, sanitized hosts, commands, controller and node-agent BEAM node names, remote Runtime Endpoint RPC evidence, Console Nodes reachability for local and remote Node Agents, `GET /v1/models` returning `200`, and `POST /v1/chat/completions` completing through Console Playground or an equivalent API request.
 The evidence SHALL NOT include cookie material, credentials, raw local evidence logs, local tool session identifiers, or machine-specific filesystem paths.
-Default promotion SHALL be proposed separately after the evidence gate passes.
 This refines the accepted smoke language in `SPEC.md` §1.2 and §7.5.
 
 #### Scenario: Smoke evidence is complete
 - **WHEN** a two-Mac Source-dev BEAM smoke run records all required evidence in durable repo documentation
-- **THEN** Orchard may consider a separate change that promotes BEAM Runtime Endpoint transport as the source-dev default
+- **THEN** Orchard may consider a separate change that promotes a Runtime Endpoint transport default
 
-#### Scenario: Smoke evidence is absent
-- **WHEN** no durable two-Mac Source-dev BEAM smoke evidence exists for the implementation commit
-- **THEN** Orchard keeps the source-dev default on the gRPC compatibility path
+#### Scenario: Smoke evidence is absent for a proposed promotion
+- **WHEN** no durable two-Mac Source-dev BEAM smoke evidence exists for a proposed Runtime Endpoint transport default promotion
+- **THEN** that promotion does not proceed and the current default remains unchanged
 
 ### Requirement: Source-dev BEAM Scope Boundaries
 Source-dev BEAM Operating Model behavior SHALL NOT make BEAM Distribution durable cluster truth.
@@ -348,7 +349,7 @@ This changes the source-dev default transport language currently described along
 
 #### Scenario: Explicit gRPC opt-out preserved
 - **WHEN** `bin/dev-controller` or `bin/dev-node-agent` starts with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`
-- **THEN** the process configures the gRPC compatibility transport exactly as before this change
+- **THEN** the process configures the gRPC compatibility transport instead of the BEAM Runtime Endpoint default
 
 ### Requirement: BEAM Mode Quiesces the Legacy gRPC Client Surface
 When the BEAM Runtime Endpoint transport is selected, the controller SHALL NOT configure a default legacy gRPC runtime client target.
