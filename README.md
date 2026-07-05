@@ -7,32 +7,40 @@
 
 **Your LLMs. Your hardware. Your rules.**
 
-Orchard is a sovereign on-prem LLM orchestration platform for 1–4 Apple Silicon macOS machines. It runs inference on your own hardware, behind your own firewall, with no cloud dependency.
+Orchard is a sovereign on-prem LLM orchestration platform for 1–4 Apple Silicon
+macOS machines. It runs inference on your own hardware, behind your own
+firewall, with no cloud dependency.
 
-## Where to start
+## What Orchard does
 
-- [`SPEC.md`](SPEC.md) is the normative build contract.
-- [`docs/README.md`](docs/README.md) is the collaborator docs hub.
-- [`docs/architecture.md`](docs/architecture.md) maps the repo and runtime boundaries.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) covers human collaboration workflow.
-- [`docs/local-dev.md`](docs/local-dev.md) covers source-dev setup.
-- [`packaging/pkg/README.md`](packaging/pkg/README.md) covers the current PKG runbook.
+- Orchestrates LLM inference across 1–4 Mac nodes using
+  [MLX](https://github.com/ml-explore/mlx), Apple Silicon's native ML stack.
+- Exposes OpenAI-compatible APIs: `/v1/responses` as the canonical abstraction,
+  `/v1/chat/completions` as a compatibility facade, both with SSE streaming.
+- Governs access with multi-tenant RBAC, API Tokens, API Clients, quotas, and
+  audit logs.
+- Ships as a native macOS PKG with launchd services — no Kubernetes, no
+  containers required.
+- Uses Postgres as the sole persistence and coordination layer (external
+  Postgres today; a managed local mode is planned).
 
-## Target product capabilities
+## Status
 
-Defined by `SPEC.md`, Orchard is being built to:
+Pre-release. Orchard is built from a normative contract
+([`SPEC.md`](SPEC.md)); features land as spec-traced slices.
 
-- orchestrate LLM inference across 1–4 Mac nodes using [MLX](https://github.com/ml-explore/mlx);
-- expose OpenAI-compatible APIs with `/v1/responses` as the canonical abstraction and `/v1/chat/completions` as a compatibility facade;
-- support multi-tenant RBAC, API Token and API Client scoping, quotas, and audit logs;
-- ship as native macOS PKG/DMG media with launchd services and no Kubernetes requirement;
-- support managed Postgres in a future local-container mode while also supporting external Postgres.
+Working today: authenticated `/v1/models`, `/v1/chat/completions` with SSE, a
+bounded `/v1/responses` slice, tenant-direct API Tokens, and bulk API Client
+provisioning for service-account-owned tokens. On the operations side,
+`orchardctl` provides node admission review, node lifecycle previews and
+execution (cordon, drain, maintenance, decommission), request diagnostics with
+scheduler explanations, read-only cluster and HA-lite control-plane status, and
+redacted support bundle creation, alongside a Console UI for the same
+cluster-management surfaces.
 
-Current packaged controller-bearing installs require external Postgres. Managed
-Postgres is not available in current builds; the shipped
-`orchard-managed-postgres` helper is an operator-safe guard that prints external
-database setup guidance and exits non-zero for operational invocations. DMG
-media remains reserved for future work.
+Not yet operator-usable: multi-node cluster bootstrap and join, the multi-node
+scheduler, and managed Postgres (packaged controller installs require an
+external database).
 
 ## Architecture
 
@@ -51,8 +59,8 @@ Clients (SDKs / curl / apps)
    Runtime Endpoint Interface
         │
    Runtime Endpoint adapter(s)
-   ├── first-party BEAM adapter (split-role source-dev default)
-   └── gRPC compatibility adapter (explicit opt-out)
+   ├── first-party BEAM adapter
+   └── gRPC compatibility adapter
         │
    Node Agent Runtime Endpoint(s)
    ├── Model cache + verification
@@ -62,19 +70,22 @@ Clients (SDKs / curl / apps)
      Postgres (sole persistence + coordination layer)
 ```
 
-**Key design rules:**
+**Design rules:**
 
-- All durable state lives in Postgres.
-- Controller runtime execution uses the Runtime Endpoint Interface.
-- The current `NodeRuntimeService` gRPC path is a compatibility adapter, not the durable domain contract.
-- First-party BEAM communication is the split-role source-dev default behind explicit guardrails and must not become durable cluster truth.
-- Split-role source dev uses BEAM by default through `bin/dev-controller` and `bin/dev-node-agent`.
-- Set `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` only when intentionally opting into the gRPC compatibility adapter.
-- All-in-one `bin/dev` remains the single-host gRPC default and rejects explicit BEAM mode.
-- Source-dev BEAM mode does not automatically retry a failed request through gRPC compatibility.
+- All durable state lives in Postgres — no separate message broker or cache to
+  operate.
+- Controller-to-node communication goes through the Runtime Endpoint
+  Interface, with a first-party BEAM adapter and a gRPC compatibility adapter.
 - Workers are local to node agents and are never exposed on the network.
-- Token streams always pass through the controller for governance and accounting.
-- HA-lite only: exactly one active leader, active/standby via Postgres advisory locks, no active/active consensus.
+- Token streams always pass through the controller for governance and
+  accounting.
+- HA-lite only: exactly one active leader, active/standby via Postgres
+  advisory locks, no active/active consensus.
+
+Transport defaults and guardrails for source development are documented in
+[`docs/local-dev.md`](docs/local-dev.md);
+[`docs/architecture.md`](docs/architecture.md) maps the repo and runtime
+boundaries.
 
 ## Tech stack
 
@@ -83,141 +94,72 @@ Clients (SDKs / curl / apps)
 | Language | Elixir/OTP (umbrella app) |
 | Database | Postgres |
 | Inference | MLX-LM runtime adapter managed by the node agent |
-| Runtime endpoint transport | Runtime Endpoint Interface with first-party BEAM as the split-role source-dev default and gRPC as the explicit opt-out compatibility adapter |
-| APIs | Phoenix/Plug (loopback HTTP in source dev; HTTPS + SSE in packaged installs) |
-| Packaging | DMG, PKG, launchd |
+| Runtime endpoint transport | Runtime Endpoint Interface (first-party BEAM adapter; gRPC compatibility adapter) |
+| APIs | Phoenix/Plug with SSE streaming |
+| Packaging | PKG + launchd (DMG reserved for future work) |
 | CLI | `orchardctl` |
 | Toolchain | mise-pinned Erlang/OTP, Elixir, Python, uv, Node.js, npm, and OpenSpec |
 
-### Current transport behavior
+## Deployment modes
 
-- **Source dev:** controller runs on loopback HTTP (`127.0.0.1:4000`); CORS
-  disabled unless explicitly configured
-- **Packaged installs:** controller defaults to degraded loopback HTTP
-  (`ORCHARD_TRANSPORT_MODE=plain_http_localhost`) until an operator selects
-  `direct_https` or `reverse_proxy`; legacy `ORCHARD_TLS_*` variables are
-  one-release compatibility shims
-- **Provider-neutral TLS:** the PKG installer does not generate or procure
-  production certificates by default. Operators can use reverse-proxy TLS
-  termination, direct HTTPS with operator cert/key paths, proprietary/paid CAs,
-  internal PKI or air-gapped HTTPS, or explicit local-CA helper output from
-  `orchardctl tls init` for dev-lab bootstrap.
-- **Forwarded headers:** reverse-proxy mode trusts `x-forwarded-*` only from
-  loopback by default; non-loopback proxy binds require `ORCHARD_TRUSTED_PROXIES`.
-- **CORS:** explicit origin allowlist via `ORCHARD_CORS_ORIGINS` (empty =
-  disabled)
+1. **All-in-one** — a single Mac runs everything: controller, node agent, and
+   worker.
+2. **Controller + workers** — one Mac as the control plane, 1–3 Macs as worker
+   nodes.
+3. **HA-lite** — up to 2 controllers with exactly 1 active leader, still within
+   the overall 1–4 Mac limit, with operator-managed endpoint failover.
 
-See [docs/tooling.md](docs/tooling.md) for required local toolchain setup,
-[docs/local-dev.md](docs/local-dev.md) for dev setup, and
-[packaging/pkg/README.md](packaging/pkg/README.md) for operator transport
-configuration, including nginx/Caddy/Traefik snippets.
+All controller-bearing installs currently require an external Postgres
+database. The macOS PKG uses a universal payload with role selection
+(`all`, `controller`, or `node-agent`) at install time; see
+[`packaging/pkg/README.md`](packaging/pkg/README.md) for the operator runbook.
 
-### Building releases
+### Transport and TLS
 
-For distribution or testing the packaged installer:
+Packaged installs start on degraded loopback HTTP until an operator selects
+direct HTTPS or reverse-proxy mode. TLS is provider-neutral: bring
+reverse-proxy termination, operator-supplied certificates, internal PKI, or
+the local-CA helper (`orchardctl tls init`) for dev-lab bootstrap. CORS is an
+explicit origin allowlist, disabled by default. Full transport configuration,
+including nginx/Caddy/Traefik snippets, is in
+[`packaging/pkg/README.md`](packaging/pkg/README.md).
+
+### Building the installer
 
 ```bash
 mise exec -- ./scripts/build-pkg.sh
 ```
 
-This creates a native macOS PKG installer following the naming convention
-`Orchard-<version>-<date>-<git-sha>.pkg`. Use `--clean` for reproducible
-builds from scratch, or `--allow-dirty` for development builds.
+This produces `Orchard-<version>-<date>-<git-sha>.pkg`. Run `make setup`
+first; see [`packaging/pkg/README.md`](packaging/pkg/README.md#building-the-pkg)
+for full build documentation.
 
-**Prerequisites:** run `make setup` from the repo root, or run
-`mise trust && mise install` plus the setup commands in
-[`docs/local-dev.md`](docs/local-dev.md), before building. You also need the
-macOS packaging tools. The script validates dependencies and provides helpful
-errors if anything is missing.
+## Documentation
 
-See [packaging/pkg/README.md](packaging/pkg/README.md#building-the-pkg) for
-full build documentation.
+For operators:
 
-## Deployment modes
+- [`packaging/pkg/README.md`](packaging/pkg/README.md) — install, roles,
+  transport, and TLS runbook.
 
-These are the target product topologies defined by `SPEC.md`:
+For contributors:
 
-1. **All-in-one** — single Mac runs everything (controller + node agent + worker + managed Postgres)
-2. **Controller + workers** — 1 Mac as control plane, 1–3 Macs as worker nodes; Postgres is either managed on the controller host or operator-managed externally
-3. **HA-lite** — up to 2 controllers with exactly 1 active leader, still within the overall 1–4 Mac deployment limit, with operator-managed endpoint failover
-
-Current packaged controller-bearing installs require External Database Mode
-until Managed Database Mode is implemented and enabled; the managed Postgres
-helper is a guard only.
-
-The macOS PKG uses a universal payload with role selection at install time. Seed `/Library/Application Support/Orchard/support/.install-role.request` with `all`, `controller`, or `node-agent` before running `installer`; the installed marker is `/Library/Application Support/Orchard/support/.install-role`. Source development has matching split-role scripts: `bin/dev-controller` for the controller host and `bin/dev-node-agent` for worker hosts.
-
-## Roadmap
-
-| Milestone | Scope |
-|-----------|-------|
-| M0 | Skeleton and packaging foundation (umbrella, Postgres, launchd, `/health/live`, `/health/ready`) |
-| M1 | Single-node inference MVP (`GET /v1/models`, `POST /v1/chat/completions`, SSE streaming, MLX worker; compatibility-first while the internal canonical abstraction remains Responses-based) |
-| M2 | Responses API and governance core (public `POST /v1/responses`, tenants, API Tokens, API Clients, quotas, audit, idempotency) |
-| M3 | Node lifecycle and cluster join (bootstrap/cert join, heartbeats, pools, cordon/drain/maintenance) |
-| M4 | Multi-node scheduler and placements (tiered scoring, queueing, `EnsureModelLoaded`, pre-first-token retry) |
-| M5 | Observability and diagnostics (Prometheus, OTel tracing, structured logs, support bundles) |
-| M6 | Security hardening and air-gap (mTLS, cert renewal, retention modes, offline import/install) |
-| M7 | Upgrade safety and HA-lite controller (leadership locks, migration ownership, rolling upgrades, `orchardctl upgrade plan`) |
-
-## Status
-
-Pre-release.
-Building from spec.
-The current source tree includes authenticated
-`/v1/models`, `/v1/chat/completions`, a bounded `/v1/responses` slice, tenant-direct API Tokens, and bulk API Client provisioning for service-account-owned API Tokens.
-Full M2 quota behavior remains in progress.
-An initial cluster-admin `/admin/v1` node-admission surface (candidate review, rejection, rejection clearance, and admission) is present ahead of its M3 milestone, but is not yet operator-usable because cluster bootstrap and first-admin credential provisioning are not yet implemented.
-The roadmap and target behavior are governed by `SPEC.md` §14.
-
-Some SPEC-required CLI paths are present before their milestone implementation:
-`orchardctl cluster init` and `orchardctl node join` return command-specific deferred-status errors with the current supported path.
-`orchardctl requests inspect <request-id>` is implemented for local controller request diagnostics with stable human and JSON scheduler-explanation output.
-`orchardctl cluster status [--json]` is implemented for read-only cluster and HA-lite control-plane status, emitting the shared `HALiteStatus` payload and a HA-lite summary in `--json` mode with no leadership-transfer or failover actions.
-`orchardctl nodes inspect`,
-`orchardctl nodes pending`, `orchardctl nodes admit`, and
-`orchardctl nodes reject` are implemented for the current node-admission-review
-slice, with stable JSON and human output, `--dry-run` previews, and
-`--yes`/`--reason` execution gating. `orchardctl nodes cordon`,
-`orchardctl nodes uncordon`, `orchardctl nodes drain`,
-`orchardctl nodes maintenance`, `orchardctl nodes resume`, and
-`orchardctl nodes decommission` add node lifecycle previews and execution on the
-shared Action Preview contract, gated by `--yes`, `--acknowledge`, and
-`--typed-node-id`; `orchardctl nodes maintenance` previews only, with its
-`draining -> maintenance` execution deferred until drain completion can be
-verified. `orchardctl support bundle create`
-creates a local diagnostic `.tar.gz` with bounded redacted logs, redacted
-config, service status, node snapshots, shared cluster-management node
-status, and request summaries.
-
-## Spec
-
-[`SPEC.md`](SPEC.md) is the normative build contract — every implementation decision traces back to it.
-
-## Contributing And Workflow
-
-This repository is the collaborator-facing source of truth for Orchard.
-Historical coordination/workbench notes may inform work, but active guidance
-must be rewritten into this repo before it counts as Orchard truth.
-
-- [`SPEC.md`](SPEC.md) is the top-level normative build contract.
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) explains human collaboration workflow.
-- [`AGENTS.md`](AGENTS.md) is the canonical automation and agent workflow guide; [`CLAUDE.md`](CLAUDE.md) imports it for Claude Code.
-- [`docs/glossary/CONTEXT.md`](docs/glossary/CONTEXT.md) defines Orchard's shared product language.
-- [`docs/README.md`](docs/README.md) is the collaborator docs hub.
-- [`docs/architecture.md`](docs/architecture.md) explains repo and runtime boundaries.
-- [`docs/tooling.md`](docs/tooling.md) explains the required mise toolchain and local accelerator tools.
-- [`docs/local-dev.md`](docs/local-dev.md) explains source development setup and smoke checks.
-- [`docs/process.md`](docs/process.md) explains artifact lifecycle and review gates.
-- [`openspec/README.md`](openspec/README.md) explains the initialized OpenSpec
-  change workflow subordinate to `SPEC.md`.
-
-Active local `goals/<slug>/` packages are transient execution scaffolding and
-are ignored by default.
+- [`SPEC.md`](SPEC.md) — the normative build contract; every implementation
+  decision traces back to it, and it governs the roadmap and target behavior.
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — human collaboration workflow.
+- [`AGENTS.md`](AGENTS.md) — the canonical automation and agent workflow guide
+  ([`CLAUDE.md`](CLAUDE.md) imports it for Claude Code).
+- [`docs/README.md`](docs/README.md) — the collaborator docs hub, including
+  architecture, tooling, local development, process, and the product glossary.
+- [`openspec/README.md`](openspec/README.md) — the OpenSpec change workflow
+  subordinate to `SPEC.md`.
 
 ## Background
 
-Orchard is a ground-up rewrite of [Kapitan Orchard](https://github.com/najibninaba/kapitan-orchard) (v1: Rust + Kafka + Redis + Tauri). The rewrite replaces the distributed streaming architecture with Elixir/OTP + Postgres for simpler operations, better fault tolerance, and native macOS integration.
+Orchard is a ground-up rewrite of
+[Kapitan Orchard](https://github.com/najibninaba/kapitan-orchard)
+(v1: Rust + Kafka + Redis + Tauri). The rewrite replaces the distributed
+streaming architecture with Elixir/OTP + Postgres for simpler operations,
+better fault tolerance, and native macOS integration.
 
 ## License
 
