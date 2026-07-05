@@ -1593,6 +1593,7 @@ def test_get_status_includes_memory_budget_fields() -> None:
                 "estimated_headroom_bytes": 5_731_516_544,
                 "kv_cache_bytes_per_token": 16_384,
                 "prefill_workspace_bytes_per_token": 2_048,
+                "recommended_context_tokens": 131_072,
             }
         )
     )
@@ -1603,6 +1604,7 @@ def test_get_status_includes_memory_budget_fields() -> None:
     assert status.memory_budget.target_working_set_bytes == 6_000_000_000
     assert status.memory_budget.estimated_headroom_bytes == 5_731_516_544
     assert status.memory_budget.prefill_workspace_bytes_per_token == 2_048
+    assert status.memory_budget.recommended_context_tokens == 131_072
 
 
 def test_get_status_degrades_invalid_memory_budget_status() -> None:
@@ -1633,6 +1635,7 @@ def test_get_status_downgrades_invalid_memory_budget_uint64_fields() -> None:
                 "estimated_headroom_bytes": 2**64 - 1,
                 "kv_cache_bytes_per_token": 16_384,
                 "prefill_workspace_bytes_per_token": None,
+                "recommended_context_tokens": 131_072,
             }
         )
     )
@@ -1652,6 +1655,7 @@ def test_get_status_downgrades_invalid_memory_budget_uint64_fields() -> None:
     assert status.memory_budget.estimated_headroom_bytes == 0
     assert status.memory_budget.kv_cache_bytes_per_token == 0
     assert status.memory_budget.prefill_workspace_bytes_per_token == 0
+    assert status.memory_budget.recommended_context_tokens == 0
     assert status.memory_budget.utilization == 0.0
 
 
@@ -1674,6 +1678,7 @@ def test_get_status_downgrades_non_finite_memory_budget_utilization(utilization:
                 "estimated_headroom_bytes": 5_731_516_544,
                 "kv_cache_bytes_per_token": 16_384,
                 "prefill_workspace_bytes_per_token": 2_048,
+                "recommended_context_tokens": 131_072,
             }
         )
     )
@@ -1708,6 +1713,7 @@ def test_get_status_downgrades_huge_integer_memory_budget_utilization_without_ra
                 "estimated_headroom_bytes": 5_731_516_544,
                 "kv_cache_bytes_per_token": 16_384,
                 "prefill_workspace_bytes_per_token": 2_048,
+                "recommended_context_tokens": 131_072,
             }
         )
     )
@@ -1741,6 +1747,7 @@ def test_get_status_downgrades_memory_budget_missing_required_numeric_field() ->
                 "estimated_headroom_bytes": 5_731_516_544,
                 "kv_cache_bytes_per_token": 16_384,
                 "prefill_workspace_bytes_per_token": 2_048,
+                "recommended_context_tokens": 131_072,
             }
         )
     )

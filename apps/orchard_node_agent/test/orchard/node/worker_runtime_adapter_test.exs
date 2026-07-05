@@ -98,7 +98,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
           resident_memory_bytes: 2_048_000,
           estimated_headroom_bytes: 5_731_516_544,
           kv_cache_bytes_per_token: 16_384,
-          prefill_workspace_bytes_per_token: 2_048
+          prefill_workspace_bytes_per_token: 2_048,
+          recommended_context_tokens: 131_072
         },
         prefix_cache: %WorkerPrefixCacheStatus{
           implementation: "kv",
@@ -344,6 +345,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       assert status.memory_budget.status_code == "ok"
       assert status.memory_budget.target_working_set_bytes == 6_000_000_000
       assert status.memory_budget.estimated_headroom_bytes == 5_731_516_544
+      assert status.memory_budget.recommended_context_tokens == 131_072
       assert status.prefix_cache_status.implementation == "kv"
       assert status.prefix_cache_status.enabled == true
       assert status.prefix_cache_status.entry_count == 2

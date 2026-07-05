@@ -44,6 +44,7 @@ _MEMORY_BUDGET_UINT64_FIELDS = (
     "estimated_headroom_bytes",
     "kv_cache_bytes_per_token",
     "prefill_workspace_bytes_per_token",
+    "recommended_context_tokens",
 )
 _MEMORY_BUDGET_FLOAT_FIELDS = ("utilization",)
 _INVALID_MEMORY_BUDGET_NUMERIC_MESSAGE = "memory budget status contained invalid numeric fields"
@@ -225,6 +226,7 @@ def _memory_budget_status_response(
         prefill_workspace_bytes_per_token=_status_uint64(
             memory_budget.get("prefill_workspace_bytes_per_token")
         ),
+        recommended_context_tokens=_status_uint64(memory_budget.get("recommended_context_tokens")),
     )
 
 

@@ -70,6 +70,8 @@ defmodule Orchard.Cluster.V1.RuntimeMemoryBudget do
     type: :uint64,
     json_name: "prefillWorkspaceBytesPerToken"
   )
+
+  field(:recommended_context_tokens, 16, type: :uint64, json_name: "recommendedContextTokens")
 end
 
 defmodule Orchard.Cluster.V1.RuntimePrefixCacheStatus do

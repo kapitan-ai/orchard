@@ -363,7 +363,8 @@ defmodule OrchardNodeAgentTest do
            resident_memory_bytes: 2_048_000,
            estimated_headroom_bytes: 5_731_516_544,
            kv_cache_bytes_per_token: 16_384,
-           prefill_workspace_bytes_per_token: 2_048
+           prefill_workspace_bytes_per_token: 2_048,
+           recommended_context_tokens: 131_072
          },
          prefix_cache_status: %{
            implementation: "kv",
@@ -502,7 +503,8 @@ defmodule OrchardNodeAgentTest do
            resident_memory_bytes: 2_048_000,
            estimated_headroom_bytes: 3_870_000_000,
            kv_cache_bytes_per_token: 16_384,
-           prefill_workspace_bytes_per_token: 2_048
+           prefill_workspace_bytes_per_token: 2_048,
+           recommended_context_tokens: 131_072
          },
          prefix_cache_status: %{
            implementation: "kv",
@@ -636,7 +638,8 @@ defmodule OrchardNodeAgentTest do
            resident_memory_bytes: 2_048_000,
            estimated_headroom_bytes: 3_870_000_000,
            kv_cache_bytes_per_token: 16_384,
-           prefill_workspace_bytes_per_token: 2_048
+           prefill_workspace_bytes_per_token: 2_048,
+           recommended_context_tokens: 131_072
          }
        }}
     end
@@ -756,7 +759,8 @@ defmodule OrchardNodeAgentTest do
            resident_memory_bytes: 2_048_000,
            estimated_headroom_bytes: 3_870_000_000,
            kv_cache_bytes_per_token: 16_384,
-           prefill_workspace_bytes_per_token: 2_048
+           prefill_workspace_bytes_per_token: 2_048,
+           recommended_context_tokens: 131_072
          },
          prefix_cache_status: prefix_cache_status_for(adapter_state)
        }}
@@ -1872,6 +1876,7 @@ defmodule OrchardNodeAgentTest do
         assert budget.status_code == "ok"
         assert budget.target_working_set_bytes == 6_000_000_000
         assert budget.estimated_headroom_bytes == 5_731_516_544
+        assert budget.recommended_context_tokens == 131_072
       end)
     end)
   end
@@ -5319,6 +5324,7 @@ defmodule OrchardNodeAgentTest do
           assert budget.estimated_headroom_bytes == 0
           assert budget.kv_cache_bytes_per_token == 0
           assert budget.prefill_workspace_bytes_per_token == 0
+          assert budget.recommended_context_tokens == 0
         end)
       end
     )

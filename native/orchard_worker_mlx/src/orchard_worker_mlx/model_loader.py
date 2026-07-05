@@ -228,6 +228,7 @@ class MemoryBudgetStatus:
     estimated_headroom_bytes: int = 0
     kv_cache_bytes_per_token: int = 0
     prefill_workspace_bytes_per_token: int = 0
+    recommended_context_tokens: int = 0
 
 
 DEFAULT_GENERATION_RUNTIME_CONFIG = GenerationRuntimeConfig()
@@ -1000,6 +1001,30 @@ def _is_positive_uint64(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and 0 < value <= _UINT64_MAX
 
 
+def _recommended_context_tokens(
+    max_context_tokens: int | None,
+    estimated_headroom_bytes: int,
+    kv_cache_bytes_per_token: int,
+) -> int:
+    try:
+        if estimated_headroom_bytes <= 0 or kv_cache_bytes_per_token <= 0:
+            return 0
+
+        memory_cap = estimated_headroom_bytes // kv_cache_bytes_per_token
+        if memory_cap <= 0:
+            return 0
+
+        if max_context_tokens is None:
+            return memory_cap
+
+        if max_context_tokens <= 0:
+            return 0
+
+        return min(max_context_tokens, memory_cap)
+    except Exception:
+        return 0
+
+
 def _extract_working_set_size_bytes(device_info: Mapping[str, Any]) -> int | None:
     """Extract and normalize working-set size from MLX device info.
 
@@ -1033,8 +1058,10 @@ def _compute_memory_budget_status(
 ) -> MemoryBudgetStatus:
     """Compute an observe-only working-set budget snapshot.
 
-    This helper is fail-open by design — any missing/invalid MLX device-info
+    This helper is fail-open by design - any missing/invalid MLX device-info
     signal produces an unavailable status rather than failing model load.
+    The context recommendation uses KV-cache bytes per token only because
+    prefill workspace is transient scratch rather than persistent context cost.
     """
     mode = memory_budget_config.mode
     utilization = memory_budget_config.utilization
@@ -1156,6 +1183,11 @@ def _compute_memory_budget_status(
         target_working_set_bytes - (resident_for_headroom + overhead_bytes),
         0,
     )
+    recommended_context_tokens = _recommended_context_tokens(
+        manifest.max_context_tokens,
+        estimated_headroom_bytes,
+        kv_cache_bytes_per_token,
+    )
 
     return MemoryBudgetStatus(
         mode=mode,
@@ -1172,6 +1204,7 @@ def _compute_memory_budget_status(
         estimated_headroom_bytes=estimated_headroom_bytes,
         kv_cache_bytes_per_token=kv_cache_bytes_per_token,
         prefill_workspace_bytes_per_token=prefill_workspace_bytes_per_token,
+        recommended_context_tokens=recommended_context_tokens,
     )
 
 

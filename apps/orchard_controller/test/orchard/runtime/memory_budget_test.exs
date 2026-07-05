@@ -16,13 +16,15 @@ defmodule Orchard.Runtime.MemoryBudgetTest do
           resident_memory_bytes: 4,
           estimated_headroom_bytes: 6,
           kv_cache_bytes_per_token: 1,
-          prefill_workspace_bytes_per_token: 2
+          prefill_workspace_bytes_per_token: 2,
+          recommended_context_tokens: 6
         })
 
       assert normalized.admission_tier == :headroom_ok
       assert normalized.model_ref == "mlx@v1"
       assert normalized.status_code == "ok"
       assert normalized.target_working_set_bytes == 10
+      assert normalized.recommended_context_tokens == 6
     end
 
     test "SPEC 7.5.3 treats absent telemetry as headroom_unknown" do
@@ -97,7 +99,8 @@ defmodule Orchard.Runtime.MemoryBudgetTest do
           source: String.duplicate("source", 20),
           budget_available: false,
           headroom_available: false,
-          estimated_headroom_bytes: 18_446_744_073_709_551_615
+          estimated_headroom_bytes: 18_446_744_073_709_551_615,
+          recommended_context_tokens: 18_446_744_073_709_551_615
         })
 
       assert byte_size(normalized.model_ref) == 160
@@ -106,6 +109,7 @@ defmodule Orchard.Runtime.MemoryBudgetTest do
       assert byte_size(normalized.status_message) == 240
       assert byte_size(normalized.source) == 80
       assert normalized.estimated_headroom_bytes == 18_446_744_073_709_551_615
+      assert normalized.recommended_context_tokens == 18_446_744_073_709_551_615
       assert normalized.admission_tier == :headroom_unknown
     end
   end
@@ -122,6 +126,7 @@ defmodule Orchard.Runtime.MemoryBudgetTest do
           estimated_headroom_bytes: 23,
           kv_cache_bytes_per_token: 2,
           prefill_workspace_bytes_per_token: 3,
+          recommended_context_tokens: 23,
           overhead_bytes: 99,
           status_message: "not persisted"
         })
@@ -138,6 +143,7 @@ defmodule Orchard.Runtime.MemoryBudgetTest do
              }
 
       refute Map.has_key?(fields, :selected_memory_overhead_bytes)
+      refute Map.has_key?(fields, :selected_memory_recommended_context_tokens)
       refute Map.has_key?(fields, :selected_memory_status_message)
     end
 

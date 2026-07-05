@@ -147,7 +147,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapter do
       resident_memory_bytes: Map.get(budget, :resident_memory_bytes, 0),
       estimated_headroom_bytes: Map.get(budget, :estimated_headroom_bytes, 0),
       kv_cache_bytes_per_token: Map.get(budget, :kv_cache_bytes_per_token, 0),
-      prefill_workspace_bytes_per_token: Map.get(budget, :prefill_workspace_bytes_per_token, 0)
+      prefill_workspace_bytes_per_token: Map.get(budget, :prefill_workspace_bytes_per_token, 0),
+      recommended_context_tokens: Map.get(budget, :recommended_context_tokens, 0)
     }
   end
 

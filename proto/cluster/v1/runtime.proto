@@ -75,6 +75,9 @@ message RuntimeMemoryBudget {
   uint64 estimated_headroom_bytes = 13;
   uint64 kv_cache_bytes_per_token = 14;
   uint64 prefill_workspace_bytes_per_token = 15;
+  // Memory-policy-derived context recommendation. Observe-only and non-gating;
+  // 0 means unknown or not computable. Never overrides catalog max_context_tokens.
+  uint64 recommended_context_tokens = 16;
 }
 
 // Observe-only aggregate prefix-cache snapshot for one loaded runtime/model.

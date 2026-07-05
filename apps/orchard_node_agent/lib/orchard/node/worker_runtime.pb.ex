@@ -43,6 +43,8 @@ defmodule Orchard.Node.Worker.V1.WorkerMemoryBudgetStatus do
     type: :uint64,
     json_name: "prefillWorkspaceBytesPerToken"
   )
+
+  field(:recommended_context_tokens, 15, type: :uint64, json_name: "recommendedContextTokens")
 end
 
 defmodule Orchard.Node.Worker.V1.WorkerPrefixCacheStatus do

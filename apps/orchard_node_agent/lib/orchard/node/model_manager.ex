@@ -72,7 +72,8 @@ defmodule Orchard.Node.ModelManager do
     :resident_memory_bytes,
     :estimated_headroom_bytes,
     :kv_cache_bytes_per_token,
-    :prefill_workspace_bytes_per_token
+    :prefill_workspace_bytes_per_token,
+    :recommended_context_tokens
   ]
   @memory_budget_float_fields [:utilization]
   @invalid_memory_budget_numeric_message "memory budget status contained invalid numeric fields"
@@ -1437,7 +1438,8 @@ defmodule Orchard.Node.ModelManager do
         estimated_headroom_bytes: budget_uint64(budget[:estimated_headroom_bytes]),
         kv_cache_bytes_per_token: budget_uint64(budget[:kv_cache_bytes_per_token]),
         prefill_workspace_bytes_per_token:
-          budget_uint64(budget[:prefill_workspace_bytes_per_token])
+          budget_uint64(budget[:prefill_workspace_bytes_per_token]),
+        recommended_context_tokens: budget_uint64(budget[:recommended_context_tokens])
       }
     end
   end
@@ -1494,7 +1496,8 @@ defmodule Orchard.Node.ModelManager do
       resident_memory_bytes: 0,
       estimated_headroom_bytes: 0,
       kv_cache_bytes_per_token: 0,
-      prefill_workspace_bytes_per_token: 0
+      prefill_workspace_bytes_per_token: 0,
+      recommended_context_tokens: 0
     }
   end
 

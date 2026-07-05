@@ -423,7 +423,8 @@ defmodule OrchardConsole.RuntimeTest do
                  resident_memory_bytes: 0,
                  estimated_headroom_bytes: 0,
                  kv_cache_bytes_per_token: 16,
-                 prefill_workspace_bytes_per_token: 8
+                 prefill_workspace_bytes_per_token: 8,
+                 recommended_context_tokens: 2_048
                }
              ]
            })},
@@ -444,7 +445,8 @@ defmodule OrchardConsole.RuntimeTest do
                  target_working_set_bytes: 45_000,
                  resident_memory_bytes: 0,
                  kv_cache_bytes_per_token: 16,
-                 prefill_workspace_bytes_per_token: 8
+                 prefill_workspace_bytes_per_token: 8,
+                 recommended_context_tokens: 2_048
                } = budget
              ] = snapshot.runtime_memory_budgets
 
@@ -506,7 +508,8 @@ defmodule OrchardConsole.RuntimeTest do
                  headroom_available: nil,
                  status_code: "ok",
                  status_message: nil,
-                 target_working_set_bytes: nil
+                 target_working_set_bytes: nil,
+                 recommended_context_tokens: nil
                }
              ] = snapshot.runtime_memory_budgets
     end
@@ -555,7 +558,8 @@ defmodule OrchardConsole.RuntimeTest do
                  target_working_set_bytes: nil,
                  resident_memory_bytes: nil,
                  kv_cache_bytes_per_token: nil,
-                 prefill_workspace_bytes_per_token: nil
+                 prefill_workspace_bytes_per_token: nil,
+                 recommended_context_tokens: nil
                },
                %{
                  display_state: :invalid,
@@ -583,7 +587,8 @@ defmodule OrchardConsole.RuntimeTest do
             target_working_set_bytes: index,
             resident_memory_bytes: 0,
             kv_cache_bytes_per_token: 0,
-            prefill_workspace_bytes_per_token: 0
+            prefill_workspace_bytes_per_token: 0,
+            recommended_context_tokens: 0
           }
         end)
 
