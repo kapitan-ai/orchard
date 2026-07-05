@@ -122,7 +122,6 @@ defmodule OrchardCLI.Commands.Cluster do
 
   defp encode_json(payload), do: Jason.encode!(payload, pretty: true)
 
-  defp format_unknown_flag(flag) when is_atom(flag), do: "--#{Atom.to_string(flag)}"
   defp format_unknown_flag(flag), do: to_string(flag)
 
   defp group_usage do
