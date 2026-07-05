@@ -10,13 +10,13 @@ orchard_source_dev_beam_bootstrap() {
   local transport
   transport="$(orchard_source_dev_beam_trim "${ORCHARD_RUNTIME_ENDPOINT_TRANSPORT:-}")"
   case "$transport" in
-    ""|grpc)
+    ""|beam)
+      export ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="beam"
+      ;;
+    grpc)
       export ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="grpc"
       export ORCHARD_SOURCE_DEV_ROLE="$role"
       return 0
-      ;;
-    beam)
-      export ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="beam"
       ;;
     *)
       echo "error: ORCHARD_RUNTIME_ENDPOINT_TRANSPORT must be grpc|beam, got: $transport" >&2

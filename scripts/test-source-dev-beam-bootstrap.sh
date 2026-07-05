@@ -150,11 +150,15 @@ SH
 
 chmod +x "$DEFAULT_TOOLS/epmd" "$DEFAULT_TOOLS/lsof"
 
-# A: unset or grpc mode is a no-op for IEx distribution args.
-assert_succeeds "$TMP_ROOT/a0.out" run_helper controller "$TMP_ROOT/repo-a0"
-assert_grep 'transport=grpc' "$TMP_ROOT/a0.out"
-assert_grep 'node=unset' "$TMP_ROOT/a0.out"
-assert_grep 'args=' "$TMP_ROOT/a0.out"
+# A: unset split-role transport defaults to BEAM; explicit grpc is the no-BEAM opt-out.
+assert_succeeds "$TMP_ROOT/a0-controller.out" run_helper controller "$TMP_ROOT/repo-a0-controller"
+assert_grep 'transport=beam' "$TMP_ROOT/a0-controller.out"
+assert_grep 'node=orchard_controller@127.0.0.1' "$TMP_ROOT/a0-controller.out"
+assert_grep '--name orchard_controller@127.0.0.1' "$TMP_ROOT/a0-controller.out"
+assert_succeeds "$TMP_ROOT/a0-node.out" run_helper node_agent "$TMP_ROOT/repo-a0-node"
+assert_grep 'transport=beam' "$TMP_ROOT/a0-node.out"
+assert_grep 'node=orchard_node_agent@127.0.0.1' "$TMP_ROOT/a0-node.out"
+assert_grep '--name orchard_node_agent@127.0.0.1' "$TMP_ROOT/a0-node.out"
 assert_succeeds "$TMP_ROOT/a.out" run_helper controller "$TMP_ROOT/repo-a" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
 assert_grep 'transport=grpc' "$TMP_ROOT/a.out"
 assert_grep 'node=unset' "$TMP_ROOT/a.out"
@@ -376,45 +380,33 @@ CONTROLLER_REPO="$TMP_ROOT/controller-entrypoint"
 mkdir -p "$CONTROLLER_REPO"
 : > "$TMP_ROOT/i-controller-mix.log"
 assert_succeeds "$TMP_ROOT/i-controller.out" \
-  env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/i-controller-mix.log" IEX_ARG_LOG="$TMP_ROOT/i-controller-iex.log" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam ORCHARD_RUNTIME_ENDPOINT_TARGETS=orchard_node_agent@127.0.0.1 "$ENTRYPOINT_REPO/bin/dev-controller"
+  env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/i-controller-mix.log" IEX_ARG_LOG="$TMP_ROOT/i-controller-iex.log" ORCHARD_RUNTIME_ENDPOINT_TARGETS=orchard_node_agent@127.0.0.1 "$ENTRYPOINT_REPO/bin/dev-controller"
 assert_grep 'mix called: ecto.create --quiet' "$TMP_ROOT/i-controller-mix.log"
 assert_grep 'mix called: ecto.migrate --quiet' "$TMP_ROOT/i-controller-mix.log"
 assert_grep 'ERL_EPMD_ADDRESS=127.0.0.1' "$TMP_ROOT/i-controller-iex.log"
 assert_grep '--name orchard_controller@127.0.0.1 --erl -kernel inet_dist_use_interface {127,0,0,1} inet_dist_listen_min 52171 inet_dist_listen_max 52171 -S mix phx.server' "$TMP_ROOT/i-controller-iex.log"
 assert_grep 'BEAM cookie file:' "$TMP_ROOT/i-controller.out"
+assert_no_grep 'Runtime client targets: 127.0.0.1:50071' "$TMP_ROOT/i-controller.out"
 
 : > "$TMP_ROOT/i-node-mix.log"
 assert_succeeds "$TMP_ROOT/i-node.out" \
-  env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/i-node-mix.log" IEX_ARG_LOG="$TMP_ROOT/i-node-iex.log" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam "$ENTRYPOINT_REPO/bin/dev-node-agent"
+  env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/i-node-mix.log" IEX_ARG_LOG="$TMP_ROOT/i-node-iex.log" "$ENTRYPOINT_REPO/bin/dev-node-agent"
 assert_grep 'ERL_EPMD_ADDRESS=127.0.0.1' "$TMP_ROOT/i-node-iex.log"
 assert_grep '--name orchard_node_agent@127.0.0.1 --erl -kernel inet_dist_use_interface {127,0,0,1} inet_dist_listen_min 52172 inet_dist_listen_max 52172 -S mix run --no-halt' "$TMP_ROOT/i-node-iex.log"
 
-# J: split-role gRPC entrypoints do not require BEAM IEx args.
-GRPC_ENTRYPOINT_REPO="$TMP_ROOT/grpc-entrypoint-repo"
-mkdir -p "$GRPC_ENTRYPOINT_REPO/bin/lib" "$GRPC_ENTRYPOINT_REPO/apps/orchard_controller" "$GRPC_ENTRYPOINT_REPO/apps/orchard_node_agent"
-cp "$REPO_ROOT/bin/dev-controller" "$GRPC_ENTRYPOINT_REPO/bin/dev-controller"
-cp "$REPO_ROOT/bin/dev-node-agent" "$GRPC_ENTRYPOINT_REPO/bin/dev-node-agent"
-chmod +x "$GRPC_ENTRYPOINT_REPO/bin/dev-controller" "$GRPC_ENTRYPOINT_REPO/bin/dev-node-agent"
-: > "$GRPC_ENTRYPOINT_REPO/mix.exs"
-cat > "$GRPC_ENTRYPOINT_REPO/bin/lib/source-dev-beam.sh" <<'SH'
-#!/usr/bin/env bash
-orchard_source_dev_beam_bootstrap() {
-  export ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
-  export ORCHARD_SOURCE_DEV_ROLE="$1"
-}
-SH
-
+# J: explicit split-role gRPC opt-out entrypoints do not require BEAM IEx args.
 : > "$TMP_ROOT/j-controller-mix.log"
 assert_succeeds "$TMP_ROOT/j-controller.out" \
-  env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/j-controller-mix.log" IEX_ARG_LOG="$TMP_ROOT/j-controller-iex.log" "$GRPC_ENTRYPOINT_REPO/bin/dev-controller"
+  env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/j-controller-mix.log" IEX_ARG_LOG="$TMP_ROOT/j-controller-iex.log" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc "$ENTRYPOINT_REPO/bin/dev-controller"
 assert_grep 'mix called: ecto.create --quiet' "$TMP_ROOT/j-controller-mix.log"
 assert_grep '-S mix phx.server' "$TMP_ROOT/j-controller-iex.log"
 assert_no_grep '--name' "$TMP_ROOT/j-controller-iex.log"
 assert_no_grep '--erl' "$TMP_ROOT/j-controller-iex.log"
+assert_grep 'Runtime client targets: 127.0.0.1:50071' "$TMP_ROOT/j-controller.out"
 
 : > "$TMP_ROOT/j-node-mix.log"
 assert_succeeds "$TMP_ROOT/j-node.out" \
-  env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/j-node-mix.log" IEX_ARG_LOG="$TMP_ROOT/j-node-iex.log" "$GRPC_ENTRYPOINT_REPO/bin/dev-node-agent"
+  env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/j-node-mix.log" IEX_ARG_LOG="$TMP_ROOT/j-node-iex.log" ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc "$ENTRYPOINT_REPO/bin/dev-node-agent"
 assert_grep '-S mix run --no-halt' "$TMP_ROOT/j-node-iex.log"
 assert_no_grep '--name' "$TMP_ROOT/j-node-iex.log"
 assert_no_grep '--erl' "$TMP_ROOT/j-node-iex.log"
