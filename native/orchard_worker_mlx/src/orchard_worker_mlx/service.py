@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 # Default TTL for cancel tombstones (seconds).
 _DEFAULT_CANCEL_TOMBSTONE_TTL_S = 60.0
 _DEFAULT_ACTIVE_CANCEL_ENTRY_WARNING_AGE_S = 600.0
+_DEFAULT_MEMORY_PRESSURE_CHECK_INTERVAL_S = 1.0
+_DEFAULT_MEMORY_PRESSURE_ABORT_COOLDOWN_S = 5.0
+_MEMORY_PRESSURE_ABORT_CODE = "memory_pressure_abort"
 _DEFAULT_GRPC_WORKER_HEADROOM = 2
 _DEFAULT_GRPC_WORKERS_MIN = 4
 _UINT32_MAX = 4_294_967_295
@@ -93,6 +96,25 @@ class CancelEntry:
     expires_at_monotonic: float | None = None
     started_at_monotonic: float | None = None
     stale_warning_emitted: bool = False
+    memory_pressure_aborted: bool = False
+
+
+def _default_memory_pressure_sampler() -> Callable[[], int | None] | None:
+    """Resolve ``mx.get_active_memory`` lazily; return ``None`` when unavailable.
+
+    Mirrors the fail-open MLX seam resolution used by
+    ``generation._default_generation_deps`` so environments without MLX simply
+    disable memory-pressure enforcement.
+    """
+    try:
+        import mlx.core as mx
+    except ImportError:
+        return None
+
+    probe = getattr(mx, "get_active_memory", None)
+    if callable(probe):
+        return probe
+    return None
 
 
 def _status_bool(value: Any) -> bool:
@@ -423,6 +445,33 @@ def _score_prefix_cache_response(payload: Any) -> runtime_pb2.ScorePrefixCacheRe
 
 
 class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer):
+    """gRPC servicer for one worker process.
+
+    Memory budget enforcement policy (``--memory-budget-mode=enforce``):
+
+    - The pressure signal is a fail-open live memory sample (``memory_sampler``,
+      ``mx.get_active_memory`` by default) compared against the loaded session's
+      ``target_working_set_bytes`` from the backend memory-budget status. A
+      breach means the sampled active memory exceeds the target.
+    - Checks run inside the ``Generate`` event-consuming loop only — pressure
+      only matters while generations are active, and every active generation
+      (stream or batch) flows through a ``Generate`` loop — rate-limited to one
+      check per ``memory_pressure_check_interval_s`` across all requests. No
+      background thread is used.
+    - On breach the servicer sets every active-phase cancel event (reusing the
+      client-cancel machinery), so all active generations abort. The model
+      session stays loaded; no unload path is touched.
+    - Aborted requests terminate with the distinct failure code
+      ``memory_pressure_abort`` (retryable) so operators can tell enforcement
+      aborts from client cancels, which keep the ``cancelled`` code.
+    - Hysteresis: after an enforcement abort, re-aborting is suppressed for
+      ``memory_pressure_abort_cooldown_s`` so a slowly-draining working set
+      does not abort every new request in a tight loop.
+    - Fail-open: when the mode is not ``enforce``, the budget target is
+      unavailable, or the memory sample is missing/invalid/raises, no request
+      is ever aborted.
+    """
+
     def __init__(
         self,
         backend: Backend,
@@ -431,6 +480,9 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         clock: Callable[[], float] = time.monotonic,
         cancel_tombstone_ttl_s: float = _DEFAULT_CANCEL_TOMBSTONE_TTL_S,
         active_cancel_entry_warning_age_s: float = _DEFAULT_ACTIVE_CANCEL_ENTRY_WARNING_AGE_S,
+        memory_sampler: Callable[[], int | None] | None = None,
+        memory_pressure_check_interval_s: float = _DEFAULT_MEMORY_PRESSURE_CHECK_INTERVAL_S,
+        memory_pressure_abort_cooldown_s: float = _DEFAULT_MEMORY_PRESSURE_ABORT_COOLDOWN_S,
     ) -> None:
         self._backend = backend
         self._prefix_cache_config = prefix_cache_config
@@ -439,6 +491,13 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         self._clock = clock
         self._cancel_tombstone_ttl_s = cancel_tombstone_ttl_s
         self._active_cancel_entry_warning_age_s = active_cancel_entry_warning_age_s
+        self._memory_sampler = (
+            memory_sampler if memory_sampler is not None else _default_memory_pressure_sampler()
+        )
+        self._memory_pressure_check_interval_s = memory_pressure_check_interval_s
+        self._memory_pressure_abort_cooldown_s = memory_pressure_abort_cooldown_s
+        self._next_memory_pressure_check_at = -math.inf
+        self._last_memory_pressure_abort_at = -math.inf
 
     def GetStatus(
         self, request: worker_runtime_pb2.WorkerStatusRequest, context: grpc.ServicerContext
@@ -672,6 +731,7 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
             backend_iterator = self._backend.generate(request, cancel_event)
             try:
                 for backend_event in backend_iterator:
+                    self._maybe_enforce_memory_pressure()
                     try:
                         proto_event = build_inference_event(backend_event)
                     except BackendError as conv_exc:
@@ -683,6 +743,7 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
                             terminal_emitted = True
                         break
 
+                    proto_event = self._replace_memory_abort_terminal(proto_event, entry)
                     yield proto_event
 
                     if _is_terminal_proto_event(proto_event):
@@ -777,6 +838,119 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
                     rid,
                 )
                 entry.stale_warning_emitted = True
+
+    def _maybe_enforce_memory_pressure(self) -> None:
+        """Rate-limited enforce-mode pressure check; fail-open on any gap.
+
+        See the class docstring for the full enforcement policy.
+        """
+        now = self._clock()
+        with self._lock:
+            if now < self._next_memory_pressure_check_at:
+                return
+            self._next_memory_pressure_check_at = now + self._memory_pressure_check_interval_s
+
+        target_bytes = self._memory_pressure_target_bytes()
+        if target_bytes is None:
+            return
+
+        sampled_bytes = self._sampled_memory_bytes_fail_open()
+        if sampled_bytes is None or sampled_bytes <= target_bytes:
+            return
+
+        self._abort_active_generations_for_memory_pressure(sampled_bytes, target_bytes)
+
+    def _memory_pressure_target_bytes(self) -> int | None:
+        """Target working-set bytes when enforce mode is actionable, else ``None``."""
+        try:
+            status = self._backend.status()
+        except Exception:
+            return None
+
+        if not isinstance(status, dict):
+            return None
+
+        memory_budget = status.get("memory_budget")
+        if not isinstance(memory_budget, dict):
+            return None
+        if _status_string(memory_budget.get("mode")) != "enforce":
+            return None
+        if not _status_bool(memory_budget.get("budget_available")):
+            return None
+
+        target_bytes = memory_budget.get("target_working_set_bytes")
+        if not _valid_status_uint64(target_bytes) or target_bytes <= 0:
+            return None
+        return target_bytes
+
+    def _sampled_memory_bytes_fail_open(self) -> int | None:
+        """Best-effort live memory sample; ``None`` on any invalid result."""
+        sampler = self._memory_sampler
+        if sampler is None:
+            return None
+
+        try:
+            sampled = sampler()
+        except Exception:
+            return None
+
+        if not _valid_status_uint64(sampled):
+            return None
+        return sampled
+
+    def _abort_active_generations_for_memory_pressure(
+        self, sampled_bytes: int, target_bytes: int
+    ) -> None:
+        """Set every active-phase cancel event; keep the model loaded."""
+        now = self._clock()
+        with self._lock:
+            if now - self._last_memory_pressure_abort_at < self._memory_pressure_abort_cooldown_s:
+                return
+
+            aborted_request_ids = [
+                request_id
+                for request_id, entry in self._cancel_entries.items()
+                if entry.phase == "active" and not entry.event.is_set()
+            ]
+            for request_id in aborted_request_ids:
+                aborted_entry = self._cancel_entries[request_id]
+                aborted_entry.memory_pressure_aborted = True
+                aborted_entry.event.set()
+
+            if not aborted_request_ids:
+                return
+            self._last_memory_pressure_abort_at = now
+
+        logger.warning(
+            "memory budget enforcement aborted %d active generation(s): "
+            "sampled_active_memory_bytes=%d target_working_set_bytes=%d request_ids=%s",
+            len(aborted_request_ids),
+            sampled_bytes,
+            target_bytes,
+            sorted(aborted_request_ids),
+        )
+
+    def _replace_memory_abort_terminal(
+        self,
+        proto_event: events_pb2.InferenceEvent,
+        entry: CancelEntry,
+    ) -> events_pb2.InferenceEvent:
+        """Give enforcement-aborted requests a terminal distinct from client cancels."""
+        if proto_event.WhichOneof("event") != "failed":
+            return proto_event
+        if proto_event.failed.code != "cancelled":
+            return proto_event
+
+        with self._lock:
+            memory_pressure_aborted = entry.memory_pressure_aborted
+        if not memory_pressure_aborted:
+            return proto_event
+
+        return build_failed_event(
+            _MEMORY_PRESSURE_ABORT_CODE,
+            "request aborted by memory budget enforcement under memory pressure",
+            True,
+        )
 
 
 def _derive_server_max_workers(generation_config: Any | None) -> int:

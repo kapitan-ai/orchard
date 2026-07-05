@@ -120,9 +120,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--memory-budget-mode",
-        choices=["disabled", "observe"],
+        choices=["disabled", "observe", "enforce"],
         default="observe",
-        help="memory-budget mode (default: observe; enforce is not yet supported)",
+        help=(
+            "memory-budget mode (default: observe; enforce aborts active "
+            "generations without unloading the model when the sampled working "
+            "set exceeds the budget target)"
+        ),
     )
     parser.add_argument(
         "--memory-budget-utilization",

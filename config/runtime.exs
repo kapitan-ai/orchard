@@ -1125,8 +1125,8 @@ if config_env() == :prod do
               (fn ->
                  mode = System.get_env("ORCHARD_WORKER_MEMORY_BUDGET_MODE") || "observe"
 
-                 unless mode in ["disabled", "observe"] do
-                   raise "ORCHARD_WORKER_MEMORY_BUDGET_MODE must be disabled|observe (enforce not yet supported), got: #{inspect(mode)}"
+                 unless mode in ["disabled", "observe", "enforce"] do
+                   raise "ORCHARD_WORKER_MEMORY_BUDGET_MODE must be disabled|observe|enforce, got: #{inspect(mode)}"
                  end
 
                  mode

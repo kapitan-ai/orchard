@@ -34,11 +34,20 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     end
   end
 
-  test "runtime.exs rejects unsupported ORCHARD_WORKER_MEMORY_BUDGET_MODE=enforce in prod" do
+  test "runtime.exs accepts ORCHARD_WORKER_MEMORY_BUDGET_MODE=enforce in prod" do
+    runtime =
+      read_runtime_config!(%{"ORCHARD_WORKER_MEMORY_BUDGET_MODE" => "enforce"})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:worker_memory_budget_mode] == "enforce"
+  end
+
+  test "runtime.exs rejects invalid ORCHARD_WORKER_MEMORY_BUDGET_MODE in prod" do
     assert_raise RuntimeError,
-                 ~r/ORCHARD_WORKER_MEMORY_BUDGET_MODE must be disabled\|observe \(enforce not yet supported\)/,
+                 ~r/ORCHARD_WORKER_MEMORY_BUDGET_MODE must be disabled\|observe\|enforce/,
                  fn ->
-                   read_runtime_config!(%{"ORCHARD_WORKER_MEMORY_BUDGET_MODE" => "enforce"})
+                   read_runtime_config!(%{"ORCHARD_WORKER_MEMORY_BUDGET_MODE" => "aggressive"})
                  end
   end
 

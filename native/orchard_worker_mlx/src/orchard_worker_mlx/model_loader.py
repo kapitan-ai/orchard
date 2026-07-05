@@ -86,7 +86,7 @@ DEFAULT_PREFIX_CACHE_LOAD_CONFIG = PrefixCacheLoadConfig()
 # ---------------------------------------------------------------------------
 
 _VALID_GENERATION_MODES = frozenset({"stream", "batch"})
-_VALID_MEMORY_BUDGET_MODES = frozenset({"disabled", "observe"})
+_VALID_MEMORY_BUDGET_MODES = frozenset({"disabled", "observe", "enforce"})
 DEFAULT_AUTO_CONCURRENCY_REQUEST_BUDGET_BYTES = 2 * 1024 * 1024 * 1024
 
 
@@ -180,9 +180,12 @@ def _positive_int_or_none(value: int | None) -> int | None:
 class MemoryBudgetConfig:
     """Process-scoped memory-budget config.
 
-    This is carried from CLI -> service -> backend -> loader/session. The
-    unsupported "enforce" mode is intentionally rejected until memory-budget
-    enforcement is implemented.
+    This is carried from CLI -> service -> backend -> loader/session.
+    "disabled" skips budget computation, "observe" publishes the budget
+    snapshot without acting on it, and "enforce" additionally lets the
+    service abort active generations (without unloading the model) when the
+    sampled working set exceeds ``target_working_set_bytes``; see
+    ``service.WorkerRuntimeServicer`` for the enforcement policy.
     """
 
     mode: str = "observe"
@@ -1056,7 +1059,7 @@ def _compute_memory_budget_status(
     deps: MLXDeps,
     memory_budget_config: MemoryBudgetConfig,
 ) -> MemoryBudgetStatus:
-    """Compute an observe-only working-set budget snapshot.
+    """Compute a working-set budget snapshot for the configured mode.
 
     This helper is fail-open by design - any missing/invalid MLX device-info
     signal produces an unavailable status rather than failing model load.

@@ -1174,11 +1174,13 @@ def test_generation_runtime_config_resolves_auto_concurrency_from_memory_budget(
     )
 
 
+def test_memory_budget_config_accepts_enforce_mode() -> None:
+    assert MemoryBudgetConfig(mode="enforce").mode == "enforce"
+
+
 def test_memory_budget_config_validation() -> None:
     with pytest.raises(ValueError):
         MemoryBudgetConfig(mode="invalid")
-    with pytest.raises(ValueError):
-        MemoryBudgetConfig(mode="enforce")
     with pytest.raises(ValueError):
         MemoryBudgetConfig(utilization=0)
     with pytest.raises(ValueError):

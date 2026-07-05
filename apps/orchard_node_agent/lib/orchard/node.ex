@@ -218,8 +218,7 @@ defmodule Orchard.Node do
 
   def worker_memory_budget_mode do
     case runtime_value(:worker_memory_budget_mode, @default_worker_memory_budget_mode) do
-      mode when mode in ["disabled", "observe"] -> mode
-      "enforce" -> raise "worker_memory_budget_mode=enforce is not supported yet"
+      mode when mode in ["disabled", "observe", "enforce"] -> mode
       other -> raise "invalid worker_memory_budget_mode: #{inspect(other)}"
     end
   end
