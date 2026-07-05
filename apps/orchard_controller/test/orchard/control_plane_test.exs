@@ -51,7 +51,10 @@ defmodule Orchard.ControlPlaneTest do
       Application.put_env(:orchard_controller, :control_plane,
         role: :leader,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn -> raise DBConnection.ConnectionError, message: "db down" end
+        ha_lite_status_provider: fn ->
+          raise DBConnection.ConnectionError,
+            message: "password authentication failed for user orchard_admin at db.internal:5432"
+        end
       )
 
       status = ControlPlane.read_only_status()
@@ -64,7 +67,12 @@ defmodule Orchard.ControlPlaneTest do
       assert status.lock_age_ms == nil
       assert status.last_renewed_at == nil
       assert status.standby_write_path_behavior == "unknown"
-      assert status.last_observed_leadership_error =~ "db down"
+
+      assert status.last_observed_leadership_error ==
+               "advisory_lock_read_failed: db_connection_error"
+
+      refute status.last_observed_leadership_error =~ "orchard_admin"
+      refute status.last_observed_leadership_error =~ "db.internal"
     end
 
     test "SPEC Leadership status is unknown when no advisory-lock reader is configured" do
@@ -154,7 +162,9 @@ defmodule Orchard.ControlPlaneTest do
       assert status.leader_identity == nil
       assert status.advisory_lock_status == "unavailable"
       assert status.standby_write_path_behavior == "unknown"
-      assert is_binary(status.last_observed_leadership_error)
+
+      assert status.last_observed_leadership_error ==
+               "advisory_lock_read_failed: invalid_provider_status"
     end
 
     test "SPEC Leadership status demotes held-lock evidence owned by another controller" do

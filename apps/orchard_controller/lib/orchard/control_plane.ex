@@ -60,9 +60,9 @@ defmodule Orchard.ControlPlane do
       provider -> provider |> read_provider_status() |> normalize_provider_status(base_attrs)
     end
   rescue
-    exception -> unavailable_status(Exception.message(exception))
+    exception -> unavailable_status(exception)
   catch
-    kind, reason -> unavailable_status("#{kind}: #{inspect(reason)}")
+    _kind, _reason -> unavailable_status(:provider_error)
   end
 
   defp read_provider_status(provider) when is_function(provider, 0), do: provider.()
@@ -79,11 +79,11 @@ defmodule Orchard.ControlPlane do
   defp normalize_provider_status(%{} = attrs, base_attrs),
     do: attrs |> provider_advisory_lock_attrs() |> validate_provider_status(base_attrs)
 
-  defp normalize_provider_status({:error, reason}, _base_attrs),
-    do: unavailable_status(inspect(reason))
+  defp normalize_provider_status({:error, _reason}, _base_attrs),
+    do: unavailable_status(:provider_error)
 
-  defp normalize_provider_status(other, _base_attrs),
-    do: unavailable_status("unexpected provider result: #{inspect(other)}")
+  defp normalize_provider_status(_other, _base_attrs),
+    do: unavailable_status(:unexpected_provider_result)
 
   defp provider_advisory_lock_attrs(attrs) do
     Map.new(@provider_status_keys, fn key -> {key, provider_attr(attrs, key)} end)
@@ -97,7 +97,7 @@ defmodule Orchard.ControlPlane do
     |> HALiteStatus.new()
     |> case do
       {:ok, _status} -> attrs
-      {:error, reason} -> unavailable_status(inspect(reason))
+      {:error, _reason} -> unavailable_status(:invalid_provider_status)
     end
   end
 
@@ -105,15 +105,26 @@ defmodule Orchard.ControlPlane do
     Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
   end
 
-  defp unavailable_status(message) do
+  defp unavailable_status(reason) do
     %{
       advisory_lock_status: :unavailable,
       leader_identity: nil,
       lock_age_ms: nil,
       last_renewed_at: nil,
-      last_observed_leadership_error: message
+      last_observed_leadership_error: leadership_error_reason(reason)
     }
   end
+
+  defp leadership_error_reason(%DBConnection.ConnectionError{}),
+    do: "advisory_lock_read_failed: db_connection_error"
+
+  defp leadership_error_reason(:invalid_provider_status),
+    do: "advisory_lock_read_failed: invalid_provider_status"
+
+  defp leadership_error_reason(:unexpected_provider_result),
+    do: "advisory_lock_read_failed: unexpected_provider_result"
+
+  defp leadership_error_reason(_reason), do: "advisory_lock_read_failed: provider_error"
 
   defp normalize_unproven_leadership(%{deployment_mode: :ha_lite} = attrs) do
     role = normalized_role(Map.get(attrs, :controller_role, :unknown))

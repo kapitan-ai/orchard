@@ -960,7 +960,10 @@ defmodule OrchardConsole.NodesLiveTest do
       Application.put_env(:orchard_controller, :control_plane,
         role: :leader,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn -> raise DBConnection.ConnectionError, message: "db down" end
+        ha_lite_status_provider: fn ->
+          raise DBConnection.ConnectionError,
+            message: "password authentication failed for user orchard_admin at db.internal:5432"
+        end
       )
 
       {:ok, view, _html} = live(conn, "/console/nodes")
@@ -969,10 +972,11 @@ defmodule OrchardConsole.NodesLiveTest do
 
       assert card =~ "Unknown"
       assert card =~ "Unavailable"
-      assert card =~ "Leader identity"
-      assert card =~ "unknown"
+      assert card =~ ~r/<dt[^>]*>Leader identity<\/dt>\s*<dd[^>]*>\s*unknown\s*<\/dd>/
       assert card =~ "Leadership error"
-      assert card =~ "db down"
+      assert card =~ "advisory_lock_read_failed: db_connection_error"
+      refute card =~ "orchard_admin"
+      refute card =~ "db.internal"
       refute card =~ "Held"
       refute card =~ "writes allowed when authorized"
     end

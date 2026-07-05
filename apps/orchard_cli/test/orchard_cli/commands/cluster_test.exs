@@ -137,7 +137,9 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
       assert decoded["ha_lite"]["leader_identity"] == nil
       assert decoded["ha_lite"]["standby_write_path_behavior"] == "unknown"
-      assert is_binary(decoded["ha_lite"]["last_observed_leadership_error"])
+
+      assert decoded["ha_lite"]["last_observed_leadership_error"] ==
+               "advisory_lock_read_failed: invalid_provider_status"
     end
   end
 end
