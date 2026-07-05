@@ -28,6 +28,7 @@ from orchard_worker_mlx.model_loader import (
     PrefixCacheLoadConfig,
 )
 from orchard_worker_mlx.service import (
+    CancelEntry,
     WorkerRuntimeServicer,
     _derive_server_max_workers,
     build_inference_event,
@@ -294,11 +295,13 @@ def _make_servicer(
     *,
     clock_time: float = 0.0,
     ttl: float = 60.0,
+    active_warning_age: float = 600.0,
 ) -> WorkerRuntimeServicer:
     return WorkerRuntimeServicer(
         backend,
         clock=lambda: clock_time,
         cancel_tombstone_ttl_s=ttl,
+        active_cancel_entry_warning_age_s=active_warning_age,
     )
 
 
@@ -942,7 +945,6 @@ def test_cancel_mid_stream_produces_single_terminal() -> None:
     context = MagicMock()
     request = _make_request("req-mid")
 
-    # Start generate in a thread
     collected: list[Any] = []
     generate_done = threading.Event()
 
@@ -954,7 +956,6 @@ def test_cancel_mid_stream_produces_single_terminal() -> None:
     t = threading.Thread(target=run_generate)
     t.start()
 
-    # Wait for the cancel event reference to be set (backend is running)
     import time
 
     for _ in range(100):
@@ -962,7 +963,6 @@ def test_cancel_mid_stream_produces_single_terminal() -> None:
             break
         time.sleep(0.01)
 
-    # Send Cancel RPC
     servicer.Cancel(_make_cancel_request("req-mid"), context)
 
     generate_done.wait(timeout=5.0)
@@ -971,12 +971,143 @@ def test_cancel_mid_stream_produces_single_terminal() -> None:
     assert generate_done.is_set(), "Generate did not complete"
 
     kinds = [e.WhichOneof("event") for e in collected]
-    # Should have the first delta + exactly one terminal
     assert "output_text_delta" in kinds
     terminals = [k for k in kinds if k in ("completed", "failed")]
     assert len(terminals) == 1
     assert terminals[0] == "failed"
     assert collected[-1].failed.code == "cancelled"
+
+
+class CapturingContext:
+    def __init__(self, *, callback_registered: bool = True) -> None:
+        self.callback_registered = callback_registered
+        self.callback = None
+
+    def add_callback(self, callback: Any) -> bool:
+        self.callback = callback
+        return self.callback_registered
+
+
+class DisconnectBackend(SlowBackend):
+    def __init__(self, *, cancel_event_ref: list[threading.Event]) -> None:
+        super().__init__(cancel_event_ref=cancel_event_ref)
+        self.waiting = threading.Event()
+
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
+        self._cancel_event_ref.append(cancel_event)
+        yield {"kind": "output_text_delta", "delta": "first"}
+        self.waiting.set()
+        cancel_event.wait(timeout=2.0)
+        if cancel_event.is_set():
+            yield {
+                "kind": "failed",
+                "code": "cancelled",
+                "message": "request cancelled",
+                "retryable": False,
+            }
+            return
+        yield {
+            "kind": "completed",
+            "finish_reason": "FINISH_REASON_STOP",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+
+class ImmediateCancelBackend(HappyBackend):
+    def __init__(self, *, cancel_event_ref: list[threading.Event]) -> None:
+        super().__init__(events=[])
+        self._cancel_event_ref = cancel_event_ref
+
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
+        self._cancel_event_ref.append(cancel_event)
+        if cancel_event.is_set():
+            yield {
+                "kind": "failed",
+                "code": "cancelled",
+                "message": "request cancelled",
+                "retryable": False,
+            }
+            return
+        yield {
+            "kind": "completed",
+            "finish_reason": "FINISH_REASON_STOP",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+
+def test_disconnect_mid_stream_cancels_generation() -> None:
+    cancel_event_ref: list[threading.Event] = []
+    backend = DisconnectBackend(cancel_event_ref=cancel_event_ref)
+    servicer = _make_servicer(backend)
+    context = CapturingContext()
+    request = _make_request("req-disconnect")
+    collected: list[Any] = []
+    generate_done = threading.Event()
+
+    def run_generate() -> None:
+        for event in servicer.Generate(request, context):
+            collected.append(event)
+        generate_done.set()
+
+    t = threading.Thread(target=run_generate)
+    t.start()
+
+    assert backend.waiting.wait(timeout=2.0)
+    assert context.callback is not None
+    context.callback()
+
+    generate_done.wait(timeout=5.0)
+    t.join(timeout=1.0)
+
+    assert generate_done.is_set(), "Generate did not complete"
+    assert cancel_event_ref[0].is_set()
+    assert [event.WhichOneof("event") for event in collected] == [
+        "output_text_delta",
+        "failed",
+    ]
+    assert collected[-1].failed.code == "cancelled"
+
+
+def test_generate_cancelled_when_add_callback_reports_terminated() -> None:
+    cancel_event_ref: list[threading.Event] = []
+    backend = ImmediateCancelBackend(cancel_event_ref=cancel_event_ref)
+    servicer = _make_servicer(backend)
+    context = CapturingContext(callback_registered=False)
+
+    events = list(servicer.Generate(_make_request("req-terminated"), context))
+
+    assert context.callback is not None
+    assert context.callback.__self__.is_set()
+    assert cancel_event_ref == []
+    assert [event.WhichOneof("event") for event in events] == ["failed"]
+    assert events[-1].failed.code == "cancelled"
+
+
+def test_stale_active_cancel_entry_warning_is_once_per_entry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    servicer = _make_servicer(StubBackend(), clock_time=700.0, active_warning_age=600.0)
+    with servicer._lock:
+        servicer._cancel_entries["stale"] = CancelEntry(
+            event=threading.Event(),
+            phase="active",
+            started_at_monotonic=0.0,
+        )
+        servicer._cancel_entries["fresh"] = CancelEntry(
+            event=threading.Event(),
+            phase="active",
+            started_at_monotonic=200.0,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            servicer._prune_expired_tombstones()
+            servicer._prune_expired_tombstones()
+
+    messages = [record.message for record in caplog.records]
+    stale_messages = [message for message in messages if "request_id=stale" in message]
+    fresh_messages = [message for message in messages if "request_id=fresh" in message]
+    assert len(stale_messages) == 1
+    assert fresh_messages == []
 
 
 def test_generate_supports_two_concurrent_servicer_calls() -> None:

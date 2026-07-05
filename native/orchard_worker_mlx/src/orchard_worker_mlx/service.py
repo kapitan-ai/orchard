@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Default TTL for cancel tombstones (seconds).
 _DEFAULT_CANCEL_TOMBSTONE_TTL_S = 60.0
+_DEFAULT_ACTIVE_CANCEL_ENTRY_WARNING_AGE_S = 600.0
 _DEFAULT_GRPC_WORKER_HEADROOM = 2
 _DEFAULT_GRPC_WORKERS_MIN = 4
 _UINT32_MAX = 4_294_967_295
@@ -89,6 +90,8 @@ class CancelEntry:
     event: threading.Event
     phase: Literal["tombstone", "active"] = "tombstone"
     expires_at_monotonic: float | None = None
+    started_at_monotonic: float | None = None
+    stale_warning_emitted: bool = False
 
 
 def _status_bool(value: Any) -> bool:
@@ -425,6 +428,7 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         prefix_cache_config: Any | None = None,
         clock: Callable[[], float] = time.monotonic,
         cancel_tombstone_ttl_s: float = _DEFAULT_CANCEL_TOMBSTONE_TTL_S,
+        active_cancel_entry_warning_age_s: float = _DEFAULT_ACTIVE_CANCEL_ENTRY_WARNING_AGE_S,
     ) -> None:
         self._backend = backend
         self._prefix_cache_config = prefix_cache_config
@@ -432,6 +436,7 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         self._lock = threading.Lock()
         self._clock = clock
         self._cancel_tombstone_ttl_s = cancel_tombstone_ttl_s
+        self._active_cancel_entry_warning_age_s = active_cancel_entry_warning_age_s
 
     def GetStatus(
         self, request: worker_runtime_pb2.WorkerStatusRequest, context: grpc.ServicerContext
@@ -612,15 +617,24 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         with self._lock:
             self._prune_expired_tombstones()
             entry = self._cancel_entries.get(request.request_id)
+            now = self._clock()
             if entry is None:
-                entry = CancelEntry(event=threading.Event(), phase="active")
+                entry = CancelEntry(
+                    event=threading.Event(),
+                    phase="active",
+                    started_at_monotonic=now,
+                )
                 self._cancel_entries[request.request_id] = entry
             else:
                 # Tombstone -> active: reuse the (possibly set) event.
                 entry.phase = "active"
                 entry.expires_at_monotonic = None
+                entry.started_at_monotonic = now
+                entry.stale_warning_emitted = False
 
         cancel_event = entry.event
+        if context.add_callback(cancel_event.set) is False:
+            cancel_event.set()
 
         # Short-circuit if Cancel arrived before Generate.
         if cancel_event.is_set():
@@ -737,6 +751,20 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
         ]
         for rid in expired:
             del self._cancel_entries[rid]
+
+        for rid, entry in self._cancel_entries.items():
+            if (
+                entry.phase == "active"
+                and entry.started_at_monotonic is not None
+                and not entry.stale_warning_emitted
+                and now - entry.started_at_monotonic >= self._active_cancel_entry_warning_age_s
+            ):
+                logger.warning(
+                    "cancel entry active for %.1fs request_id=%s",
+                    now - entry.started_at_monotonic,
+                    rid,
+                )
+                entry.stale_warning_emitted = True
 
 
 def _derive_server_max_workers(generation_config: Any | None) -> int:
