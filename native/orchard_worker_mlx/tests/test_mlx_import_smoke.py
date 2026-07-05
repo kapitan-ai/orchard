@@ -1,22 +1,39 @@
-"""Import smoke tests for optional MLX runtime dependencies."""
+"""Import smoke tests for optional MLX runtime dependencies.
+
+The issue #57 regression guard is only exercised when the optional ``mlx`` extra
+is installed. Run it with::
+
+    mise exec -- uv run --directory native/orchard_worker_mlx --extra mlx \\
+        pytest tests/test_mlx_import_smoke.py
+
+Dependency-refresh validation MUST run this way; the default dev-only environment
+lacks the extra and the test skips.
+"""
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
+_MLX_STACK = ("mlx", "mlx_lm", "transformers", "tokenizers")
+_missing = [name for name in _MLX_STACK if importlib.util.find_spec(name) is None]
+
+pytestmark = pytest.mark.skipif(
+    bool(_missing),
+    reason=f"MLX optional extra is not installed (missing: {', '.join(_missing)})",
+)
+
 
 def test_mlx_lm_imports_with_autotokenizer_path(tmp_path: Path) -> None:
     """Issue #57: mlx_lm import must not fail during tokenizer registration."""
-    pytest.importorskip("mlx", reason="MLX optional extra is not installed")
-    pytest.importorskip("mlx_lm", reason="mlx-lm optional extra is not installed")
-    transformers = pytest.importorskip(
-        "transformers",
-        reason="transformers optional dependency is not installed",
-    )
-    tokenizers = pytest.importorskip("tokenizers", reason="tokenizers dependency is not installed")
+    importlib.import_module("mlx")
+    importlib.import_module("mlx_lm")
+    transformers = importlib.import_module("transformers")
+    tokenizers = importlib.import_module("tokenizers")
 
     tokenizer_dir = tmp_path / "tokenizer"
     tokenizer_dir.mkdir()
