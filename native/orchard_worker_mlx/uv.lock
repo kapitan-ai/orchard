@@ -663,7 +663,7 @@ requires-dist = [
     { name = "mlx-lm", marker = "extra == 'mlx'", specifier = ">=0.31.3" },
     { name = "numpy", marker = "extra == 'mlx'", specifier = ">=1.26.0" },
     { name = "protobuf", marker = "extra == 'mlx'", specifier = ">=6.33.5" },
-    { name = "transformers", marker = "extra == 'mlx'", specifier = ">=5.0.0" },
+    { name = "transformers", marker = "extra == 'mlx'", specifier = ">=5.0.0,<5.13" },
 ]
 provides-extras = ["mlx"]
 

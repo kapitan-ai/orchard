@@ -16,7 +16,9 @@ dependencies = [
 mlx = [
   "mlx>=0.31.2",
   "mlx-lm>=0.31.3",
-  "transformers>=5.0.0",
+  # Issue #57: transformers 5.13 tightens _LazyAutoMapping.register, so mlx-lm
+  # 0.31.3's string NewlineTokenizer config key fails at import. Lift once mlx-lm fixes it.
+  "transformers>=5.0.0,<5.13",
   "protobuf>=6.33.5",
   "numpy>=1.26.0",
 ]
