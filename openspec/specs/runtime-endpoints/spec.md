@@ -173,18 +173,18 @@ This changes the role of the gRPC contract currently described in `SPEC.md` sect
 - **THEN** the existing gRPC/protobuf work may be reused or evolved as an adapter protocol
 
 ### Requirement: Source-dev BEAM Primary Rollout
-Orchard SHALL treat the first-party BEAM Runtime Endpoint adapter as eligible for primary source-dev Controller-to-Node Agent transport only after accepted two-Mac smoke evidence exists.
-Until a separate promotion change selects BEAM Runtime Endpoint transport as the source-dev default, current source-dev SHALL keep the gRPC compatibility path as the default and explicit compatibility transport on port `50071`.
-This compatibility transport is not an automatic same-request fallback when BEAM mode has been explicitly selected.
+Orchard SHALL treat the first-party BEAM Runtime Endpoint adapter as promoted to the split-role source-dev Controller-to-Node Agent default, following accepted two-Mac smoke evidence for the adapter.
+The gRPC compatibility path SHALL remain available for split-role source dev only through the explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` opt-out on port `50071`, and it SHALL NOT act as an automatic same-request fallback when BEAM mode is active.
+Packaged and release runtime transport promotion SHALL remain a separate future decision that this rollout does not settle.
 
-#### Scenario: BEAM adapter has accepted smoke evidence
+#### Scenario: BEAM adapter is promoted after accepted smoke evidence
 - **WHEN** accepted two-Mac smoke evidence exists for the BEAM Runtime Endpoint adapter
-- **THEN** Orchard may promote BEAM Runtime Endpoint transport to the primary source-dev Controller-to-Node Agent path
+- **THEN** the BEAM Runtime Endpoint transport is the promoted split-role source-dev Controller-to-Node Agent default
+- **THEN** the gRPC compatibility path remains reachable only through the explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` opt-out
 
-#### Scenario: BEAM adapter has not been promoted as the source-dev default
-- **WHEN** no separate promotion change has selected BEAM Runtime Endpoint transport as the source-dev default
-- **THEN** Orchard keeps using the gRPC compatibility path by default for source-dev Controller-to-Node Agent communication
-- **THEN** BEAM-mode requests do not automatically retry through gRPC compatibility after a BEAM transport failure
+#### Scenario: Packaged runtime transport promotion stays separate
+- **WHEN** the split-role source-dev BEAM default is in effect
+- **THEN** packaged or release runtime transport promotion remains a separate future decision that this rollout does not settle
 
 #### Scenario: Source-dev smoke gate is evaluated
 - **WHEN** the accepted two-Mac source-dev smoke is run
