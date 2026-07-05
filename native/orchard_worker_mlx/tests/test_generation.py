@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import logging
 import threading
 import time
@@ -4865,6 +4866,156 @@ def test_tool_choice_none_disables_tool_call_parsing() -> None:
         "completed",
     ]
     assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+# ===========================================================================
+# Tool-call parser robustness fixtures (issue #62)
+# ===========================================================================
+
+
+def test_tool_call_arguments_with_braces_escaped_quotes_and_nesting_stream_intact() -> None:
+    """Braces, brackets, and escaped quotes inside JSON string values are safe.
+
+    The parser detects boundaries via explicit markers, not brace counting, so
+    structural characters inside string values must reach the tool parser
+    verbatim even when fragments split mid-escape-sequence.
+    """
+    argument_text = (
+        '{"query":"say \\"hi\\" {ok} [list]","filters":{"tags":["a","}"],"opts":{"deep":{"x":1}}}}'
+    )
+    seen: list[str] = []
+
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        seen.append(text)
+        return {"name": "lookup_weather", "arguments": json.loads(text)}
+
+    # Split points chosen to break mid-escape (after the backslash at index 14)
+    # and inside nested structures.
+    splits = [0, 15, 30, 52, len(argument_text)]
+    fragments = [argument_text[a:b] for a, b in zip(splits, splits[1:], strict=False)]
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        *[
+            FakeGenerationResponse(text=fragment, token=11 + i)
+            for i, fragment in enumerate(fragments)
+        ],
+        FakeGenerationResponse(text="</tool_call>", token=20, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert seen == [argument_text]
+    deltas = [
+        event["delta"]["function"].get("arguments_delta", "")
+        for event in events
+        if event["kind"] == "tool_call_delta"
+    ]
+    assert "".join(deltas) == argument_text
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+
+
+def test_tool_call_end_marker_split_across_response_chunks() -> None:
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        assert text == '{"city":"Paris"}'
+        return {"name": "lookup_weather", "arguments": text}
+
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"city":"Paris"}', token=11),
+        FakeGenerationResponse(text="</tool_", token=12),
+        FakeGenerationResponse(text="call>", token=13, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+
+
+def test_tool_call_end_marker_lookalike_prefix_is_kept_in_arguments() -> None:
+    """A buffered partial-marker prefix that never completes belongs to the arguments."""
+    expected = '{"note":"</tool_x end"}'
+
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        assert text == expected
+        return {"name": "lookup_weather", "arguments": json.loads(text)}
+
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"note":"</tool_', token=11),
+        FakeGenerationResponse(text='x end"}', token=12),
+        FakeGenerationResponse(text="</tool_call>", token=13, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    deltas = [
+        event["delta"]["function"].get("arguments_delta", "")
+        for event in events
+        if event["kind"] == "tool_call_delta"
+    ]
+    assert "".join(deltas) == expected
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+
+
+def test_tool_call_end_marker_inside_string_argument_fails_loudly() -> None:
+    """Characterization of the issue #62 hazard: end-marker text inside a JSON
+    string argument triggers premature finalization.
+
+    The parser then sees truncated JSON and the request fails with
+    tool_call_parse_failed rather than emitting a silently wrong tool call.
+    String-aware scanning is deferred until raw-brace boundary models are
+    supported; if that lands, this test should assert successful parsing of
+    the full argument text instead.
+    """
+    seen: list[str] = []
+
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        seen.append(text)
+        return {"name": "lookup_weather", "arguments": json.loads(text)}
+
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"note":"see </tool_call> tag"}', token=11),
+        FakeGenerationResponse(text="</tool_call>", token=12, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert seen == ['{"note":"see ']
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "tool_call_parse_failed"
+    assert len([event for event in events if event["kind"] in {"completed", "failed"}]) == 1
 
 
 # ===========================================================================
