@@ -295,6 +295,9 @@ defmodule Orchard.InferenceTest do
                Orchard.RuntimeEndpoint.BeamClient
 
       assert Keyword.fetch!(inference, :runtime_client_targets) == []
+
+      Application.put_env(:orchard_controller, :inference, inference)
+      assert Inference.runtime_client_targets() == []
     end
 
     test "dev.exs rejects invalid runtime endpoint transport values" do

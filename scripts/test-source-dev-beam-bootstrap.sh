@@ -388,6 +388,13 @@ assert_grep '--name orchard_controller@127.0.0.1 --erl -kernel inet_dist_use_int
 assert_grep 'BEAM cookie file:' "$TMP_ROOT/i-controller.out"
 assert_no_grep 'Runtime client targets: 127.0.0.1:50071' "$TMP_ROOT/i-controller.out"
 
+: > "$TMP_ROOT/i2-controller-mix.log"
+assert_succeeds "$TMP_ROOT/i2-controller.out" \
+  env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/i2-controller-mix.log" IEX_ARG_LOG="$TMP_ROOT/i2-controller-iex.log" ORCHARD_RUNTIME_ENDPOINT_TARGETS=orchard_node_agent@127.0.0.1 ORCHARD_RUNTIME_CLIENT_TARGETS=10.0.0.1:50071 "$ENTRYPOINT_REPO/bin/dev-controller"
+assert_grep 'Runtime endpoint transport: beam' "$TMP_ROOT/i2-controller.out"
+assert_grep 'Runtime client targets: 10.0.0.1:50071' "$TMP_ROOT/i2-controller.out"
+assert_grep '--name orchard_controller@127.0.0.1 --erl -kernel inet_dist_use_interface {127,0,0,1} inet_dist_listen_min 52171 inet_dist_listen_max 52171 -S mix phx.server' "$TMP_ROOT/i2-controller-iex.log"
+
 : > "$TMP_ROOT/i-node-mix.log"
 assert_succeeds "$TMP_ROOT/i-node.out" \
   env -i PATH="$TOOLS_I:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$TMP_ROOT/home" MIX_CALL_LOG="$TMP_ROOT/i-node-mix.log" IEX_ARG_LOG="$TMP_ROOT/i-node-iex.log" "$ENTRYPOINT_REPO/bin/dev-node-agent"

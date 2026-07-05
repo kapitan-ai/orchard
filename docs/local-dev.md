@@ -269,6 +269,7 @@ When BEAM mode is selected, BEAM configuration, guardrail, connection, identity,
 The controller does not automatically retry the same request through gRPC.
 `orchardctl env init` does not render this BEAM env surface yet.
 CLI scaffolding for these variables is deferred to a separate change.
+For a default BEAM controller launch, `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is effectively required, and startup fails early naming the variable when it is absent.
 
 | Variable | Default | Description |
 |----------|---------|-------------|

@@ -17,8 +17,7 @@ This README is orientation only. Normative behavior lives in
 - Governance persistence and lifecycle APIs for Organizations, tenant-direct API Tokens, API Clients, service-account-owned API Tokens, role bindings, and provisioning batches.
 - Request canonicalization, tokenization orchestration, admission, scheduling,
   dispatch, lifecycle persistence, and public response serialization.
-- Runtime Endpoint client adapters, including the gRPC compatibility adapter and
-  default-off first-party BEAM adapter.
+- Runtime Endpoint client adapters, including the split-role source-dev default first-party BEAM adapter and explicit opt-out gRPC compatibility adapter.
 
 ## Does not own
 
