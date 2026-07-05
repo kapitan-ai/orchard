@@ -62,7 +62,9 @@
   Note: Implemented `orchardctl requests inspect <request-id>` because `SPEC.md` §11.9 names `requests inspect` as the required CLI path while `SPEC.md` §7.3.5 requires shared scheduler explanation reason codes across CLI and the Operator API.
   Note: The command uses local controller-runtime authority, reads the same request row as the Operator API, and renders human plus JSON output through `SchedulerExplanationPresenter` and the shared scheduler explanation contract.
   Note: Broader request execution diagnostics under `requests inspect` beyond persisted scheduler explanations remain future work, so the general command name is not fully delivered by this slice.
-- [ ] 4.8 Implement `orchardctl cluster status --json` for read-only HA-lite and cluster summary status.
+- [x] 4.8 Implement `orchardctl cluster status --json` for read-only HA-lite and cluster summary status.
+  Note: This slice adds `orchardctl cluster status --json` with a shared `HALiteStatus` payload and a HA-lite-focused `summary` block for deployment mode, controller role, and advisory-lock status.
+  Node inventory and runtime reachability counts intentionally remain on the existing node and Live Cluster surfaces rather than being duplicated into this command.
 
 ## 5. Console Nodes UX
 
@@ -83,8 +85,10 @@
   Note: Public LiveView tests cover the full candidate groups, not found, legacy empty shape, invalid persisted explanation, and disconnected deferred render.
   Note: The diagnostics and components deny-list is key-based and does not inspect values, accepted because the data domain is internal scheduler metadata.
 - [ ] 5.5 Add diagnostics and support bundle entry points that use the shared support bundle contract.
-- [ ] 5.6 Add read-only HA-lite control-plane status.
-- [ ] 5.7 Verify Console UI against `docs/DESIGN.md` and `docs/brand-identity.md` with browser screenshots during implementation.
+- [x] 5.6 Add read-only HA-lite control-plane status.
+  Note: Console Nodes now includes a separate read-only HA-lite Status rail card that renders deployment mode, this-controller identity, leader identity, advisory-lock status, lock age, last renewal, write-path behavior, and sanitized leadership errors without failover or transfer controls.
+- [x] 5.7 Verify Console UI against `docs/DESIGN.md` and `docs/brand-identity.md` with browser screenshots during implementation.
+  Note: This task 5.6 slice browser-verified the HA-lite Status card after review fixes on desktop light, desktop dark, and mobile light screenshots under `tmp/screenshots/ha-lite-status-card-review-fix-*.png`.
   Note: PR #37 browser-verified the admission-review slice against `docs/DESIGN.md` and brand identity on desktop and mobile.
   PR #41 browser-verified the Console lifecycle preview slice against `docs/DESIGN.md`.
   Note: This task 5.4 slice browser-verified the request-scoped scheduler explanation panel on desktop and mobile.
