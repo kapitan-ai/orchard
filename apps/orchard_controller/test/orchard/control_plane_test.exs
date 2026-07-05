@@ -57,13 +57,13 @@ defmodule Orchard.ControlPlaneTest do
       status = ControlPlane.read_only_status()
 
       assert status.deployment_mode == "ha_lite"
-      assert status.controller_role == "leader"
+      assert status.controller_role == "unknown"
       assert status.this_controller_identity == "controller-a"
       assert status.leader_identity == nil
       assert status.advisory_lock_status == "unavailable"
       assert status.lock_age_ms == nil
       assert status.last_renewed_at == nil
-      assert status.standby_write_path_behavior == "writes_allowed_when_authorized"
+      assert status.standby_write_path_behavior == "unknown"
       assert status.last_observed_leadership_error =~ "db down"
     end
 
@@ -76,11 +76,36 @@ defmodule Orchard.ControlPlaneTest do
       status = ControlPlane.read_only_status()
 
       assert status.deployment_mode == "ha_lite"
-      assert status.controller_role == "leader"
+      assert status.controller_role == "unknown"
       assert status.this_controller_identity == "controller-a"
       assert status.leader_identity == nil
       assert status.advisory_lock_status == "unknown"
+      assert status.standby_write_path_behavior == "unknown"
       assert status.last_observed_leadership_error == nil
+    end
+
+    test "SPEC Leadership status reports leader only when advisory lock is held" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a",
+        ha_lite_status_provider: fn ->
+          %{
+            leader_identity: "controller-a",
+            advisory_lock_status: :held,
+            lock_age_ms: 400,
+            last_renewed_at: ~U[2026-07-01 00:00:00Z]
+          }
+        end
+      )
+
+      status = ControlPlane.read_only_status()
+
+      assert status.deployment_mode == "ha_lite"
+      assert status.controller_role == "leader"
+      assert status.this_controller_identity == "controller-a"
+      assert status.leader_identity == "controller-a"
+      assert status.advisory_lock_status == "held"
+      assert status.standby_write_path_behavior == "writes_allowed_when_authorized"
     end
   end
 end

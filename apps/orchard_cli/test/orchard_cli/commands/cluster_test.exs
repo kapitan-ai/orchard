@@ -98,5 +98,25 @@ defmodule OrchardCLI.Commands.ClusterTest do
       refute output =~ "failover"
       refute output =~ "transfer"
     end
+
+    test "SPEC Leadership status is unknown in JSON when advisory-lock status is unreadable" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a"
+      )
+
+      assert {:ok, output} = ClusterCmd.run(["status", "--json"])
+      decoded = Jason.decode!(output)
+
+      assert decoded["summary"] == %{
+               "deployment_mode" => "ha_lite",
+               "controller_role" => "unknown",
+               "advisory_lock_status" => "unknown"
+             }
+
+      assert decoded["ha_lite"]["controller_role"] == "unknown"
+      assert decoded["ha_lite"]["leader_identity"] == nil
+      assert decoded["ha_lite"]["standby_write_path_behavior"] == "unknown"
+    end
   end
 end

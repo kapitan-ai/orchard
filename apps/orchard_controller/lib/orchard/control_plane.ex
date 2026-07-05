@@ -31,6 +31,7 @@ defmodule Orchard.ControlPlane do
       standby_write_path_behavior: standby_write_path_behavior(role)
     }
     |> Map.merge(provider_status(config))
+    |> normalize_unproven_leadership()
     |> HALiteStatus.new!()
   end
 
@@ -78,6 +79,29 @@ defmodule Orchard.ControlPlane do
       last_observed_leadership_error: message
     }
   end
+
+  defp normalize_unproven_leadership(%{deployment_mode: :ha_lite} = attrs) do
+    role = normalized_role(Map.get(attrs, :controller_role, :unknown))
+    lock_status = normalize_lock_status(Map.get(attrs, :advisory_lock_status, :unknown))
+
+    if role == :leader and lock_status != :held do
+      attrs
+      |> Map.put(:controller_role, :unknown)
+      |> Map.put(:standby_write_path_behavior, "unknown")
+    else
+      attrs
+    end
+  end
+
+  defp normalize_unproven_leadership(attrs), do: attrs
+
+  defp normalize_lock_status(:held), do: :held
+  defp normalize_lock_status("held"), do: :held
+  defp normalize_lock_status(:not_held), do: :not_held
+  defp normalize_lock_status("not_held"), do: :not_held
+  defp normalize_lock_status(:unavailable), do: :unavailable
+  defp normalize_lock_status("unavailable"), do: :unavailable
+  defp normalize_lock_status(_status), do: :unknown
 
   defp normalized_role(:leader), do: :leader
   defp normalized_role("leader"), do: :leader

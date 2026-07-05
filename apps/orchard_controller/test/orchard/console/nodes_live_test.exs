@@ -967,13 +967,14 @@ defmodule OrchardConsole.NodesLiveTest do
 
       card = element(view, "#nodes-ha-lite-status-card") |> render()
 
-      assert card =~ "Leader"
+      assert card =~ "Unknown"
       assert card =~ "Unavailable"
       assert card =~ "Leader identity"
       assert card =~ "unknown"
       assert card =~ "Leadership error"
       assert card =~ "db down"
       refute card =~ "Held"
+      refute card =~ "writes allowed when authorized"
     end
 
     test "disconnected render defers HA-lite status until LiveView connects", %{conn: conn} do
