@@ -19,6 +19,7 @@ product/system/build contract.
 - **Current CLI limitation:** SPEC-required future paths such as `orchardctl cluster init` and `orchardctl node join` are routed by `orchardctl` but return deferred-status errors with the current supported path.
   `orchardctl requests inspect <request-id>` reads the local controller Repo and renders the persisted scheduler explanation for a request, with stable human and `--json` output from the shared Operator API presenter.
   Broader request execution diagnostics beyond persisted scheduler explanations remain future work.
+  `orchardctl cluster status` reads the local controller runtime and renders read-only cluster and HA-lite control-plane status, with a `--json` mode that emits the shared `HALiteStatus` payload plus a HA-lite summary and no leadership-transfer or failover actions.
   `orchardctl nodes inspect`, `orchardctl nodes pending`,
   `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for
   the current node-admission-review slice, with stable JSON and human output,
