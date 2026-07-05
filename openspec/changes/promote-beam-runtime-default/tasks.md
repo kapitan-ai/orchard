@@ -36,7 +36,21 @@
 
 ## 4. Validation And Acceptance
 
-- [ ] 4.1 Run the full Elixir quality workflow from the umbrella root (format, compile --warnings-as-errors, credo --strict, dialyzer, test, cover).
-- [ ] 4.2 Run strict OpenSpec validation for this change.
-- [ ] 4.3 Verify split-role BEAM default end-to-end on a single host (controller plus node-agent, default env) before PR handoff.
+- [x] 4.1 Run the full Elixir quality workflow from the umbrella root (format, compile --warnings-as-errors, credo --strict, dialyzer, test, cover).
+  - Passed `mise exec -- mix format`.
+  - Passed `mise exec -- mix compile --warnings-as-errors`.
+  - Passed `mise exec -- mix credo --strict` with zero issues.
+  - Passed `mise exec -- mix dialyzer`.
+  - `ORCHARD_TEST_NODE_AGENT_PORT=50081 mise exec -- mix test` initially failed once because the worker venv entrypoint was missing before the suite materialized it.
+  - The rerun of `ORCHARD_TEST_NODE_AGENT_PORT=50081 mise exec -- mix test` passed.
+  - Passed `ORCHARD_TEST_NODE_AGENT_PORT=50081 mise exec -- mix test --cover`.
+- [x] 4.2 Run strict OpenSpec validation for this change.
+  - Passed `OPENSPEC_TELEMETRY=0 mise exec -- npm run openspec -- validate promote-beam-runtime-default --type change --strict --no-interactive`.
+- [x] 4.3 Verify split-role BEAM default end-to-end on a single host (controller plus node-agent, default env) before PR handoff.
+  - Verified source-dev split-role launch with no `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` set on either process.
+  - Used `ORCHARD_BEAM_EPMD_PORT=43690` because default EPMD port `4369` failed local listener verification on this host before Mix started.
+  - Verified node-agent and controller logs both reported `Runtime endpoint transport: beam`.
+  - Verified the controller log did not report the implicit `Runtime client targets: 127.0.0.1:50071` line.
+  - Verified an RPC probe through `Orchard.RuntimeEndpoint.BeamClient.status/1` returned a BEAM observation for `orchard_node_agent@127.0.0.1` with `health.ready == true`.
+  - Verified cleanup left HTTP `4000`, gRPC `50071`, and nonstandard EPMD `43690` without source-dev listeners, and removed the generated same-host cookie.
 - [ ] 4.4 After merge: archive `beam-first-runtime-endpoints`, `source-dev-beam-operating-model`, and then this change, running strict validation after each sync and reviewing generated main specs for placeholder prose.
