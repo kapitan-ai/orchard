@@ -109,6 +109,16 @@ MLX extras remain opt-in because they pull the real inference stack:
 mise exec -- uv sync --directory native/orchard_worker_mlx --extra mlx
 ```
 
+The default `pytest` run above skips `tests/test_mlx_import_smoke.py` because the
+`mlx` extra is absent. When refreshing the `transformers`/`mlx-lm` pins (for
+example lifting the issue #57 `transformers<5.13` cap), exercise the import
+regression guard with the extra installed:
+
+```bash
+mise exec -- uv run --directory native/orchard_worker_mlx --extra mlx \
+  pytest tests/test_mlx_import_smoke.py
+```
+
 Package builds should run through the same toolchain:
 
 ```bash
