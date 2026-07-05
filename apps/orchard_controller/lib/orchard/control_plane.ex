@@ -24,13 +24,13 @@ defmodule Orchard.ControlPlane do
   ]
 
   @type write_path :: atom()
-  @type write_error :: :controller_standby
+  @type write_error :: :controller_standby | :controller_leadership_unproven
 
   @spec authorize_write_path(write_path()) :: :ok | {:error, write_error()}
   def authorize_write_path(_path) do
-    case configured_role() do
+    case normalized_role(configured_role()) do
       :standby -> {:error, :controller_standby}
-      "standby" -> {:error, :controller_standby}
+      :leader -> authorize_active_standby_leader()
       _role -> :ok
     end
   end
@@ -57,6 +57,13 @@ defmodule Orchard.ControlPlane do
   defp configured_role do
     control_plane_config()
     |> Keyword.get(:role, :single_controller)
+  end
+
+  defp authorize_active_standby_leader do
+    case read_only_status() do
+      %ControlPlaneStatus{deployment_mode: "active_standby", controller_role: "leader"} -> :ok
+      _status -> {:error, :controller_leadership_unproven}
+    end
   end
 
   defp control_plane_config do

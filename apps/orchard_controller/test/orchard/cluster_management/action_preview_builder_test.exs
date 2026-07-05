@@ -99,6 +99,20 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilderTest do
     assert Repo.get!(Node, node.id).state == :active
   end
 
+  test "unproven active standby leadership adds a distinct write-path blocker" do
+    Application.put_env(:orchard_controller, :control_plane,
+      role: :leader,
+      this_controller_identity: "controller-a"
+    )
+
+    node = insert_node!(state: :active)
+
+    preview = ActionPreviewBuilder.node_lifecycle(:cordon, node.id)
+
+    assert "ha_leadership_unproven" in Enum.map(preview.blockers, & &1.code)
+    assert Repo.get!(Node, node.id).state == :active
+  end
+
   defp insert_node!(attrs) do
     unique = System.unique_integer([:positive])
 

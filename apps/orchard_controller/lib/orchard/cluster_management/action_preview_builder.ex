@@ -222,6 +222,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
     case ControlPlane.authorize_write_path(write_path) do
       :ok -> blockers
       {:error, :controller_standby} -> blockers ++ [:ha_standby_write_blocked]
+      {:error, :controller_leadership_unproven} -> blockers ++ [:ha_leadership_unproven]
     end
   end
 
@@ -240,6 +241,10 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   end
 
   defp blocker_message(:ha_standby_write_blocked), do: "This controller is in standby mode."
+
+  defp blocker_message(:ha_leadership_unproven),
+    do: "This controller has not proven local leadership."
+
   defp blocker_message(:inventory_missing), do: "Registered node inventory is missing."
   defp blocker_message(:decommission_already_running), do: "Node decommission is already running."
   defp blocker_message(:drain_already_running), do: "Node drain is already running."

@@ -18,6 +18,88 @@ defmodule Orchard.ControlPlaneTest do
     :ok
   end
 
+  describe "authorize_write_path/1" do
+    test "SPEC 3.3 and M7 deny configured leader writes when advisory-lock evidence is missing" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a"
+      )
+
+      assert {:error, :controller_leadership_unproven} =
+               ControlPlane.authorize_write_path(:node_admission)
+    end
+
+    test "SPEC 3.3 and M7 deny configured leader writes when advisory-lock evidence is unavailable" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a",
+        control_plane_status_provider: fn ->
+          raise DBConnection.ConnectionError, message: "advisory-lock read failed"
+        end
+      )
+
+      assert {:error, :controller_leadership_unproven} =
+               ControlPlane.authorize_write_path(:node_admission)
+    end
+
+    test "SPEC 3.3 and M7 deny configured leader writes when advisory lock is not held" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a",
+        control_plane_status_provider: fn ->
+          %{leader_identity: "controller-b", advisory_lock_status: :not_held}
+        end
+      )
+
+      assert {:error, :controller_leadership_unproven} =
+               ControlPlane.authorize_write_path(:node_admission)
+    end
+
+    test "SPEC 3.3 and M7 deny configured leader writes when another controller holds the lock" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a",
+        control_plane_status_provider: fn ->
+          %{leader_identity: "controller-b", advisory_lock_status: :held}
+        end
+      )
+
+      assert {:error, :controller_leadership_unproven} =
+               ControlPlane.authorize_write_path(:node_admission)
+    end
+
+    test "SPEC 3.3 and M7 allow configured leader writes when this controller holds the lock" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a",
+        control_plane_status_provider: fn ->
+          %{leader_identity: "controller-a", advisory_lock_status: :held}
+        end
+      )
+
+      assert :ok = ControlPlane.authorize_write_path(:node_admission)
+    end
+
+    test "SPEC 3.3 keeps configured standby write paths denied as controller_standby" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :standby,
+        this_controller_identity: "controller-a"
+      )
+
+      assert {:error, :controller_standby} =
+               ControlPlane.authorize_write_path(:node_admission)
+    end
+
+    test "SPEC 3.3 preserves single-controller write authorization" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :single_controller,
+        this_controller_identity: "controller-a"
+      )
+
+      assert :ok = ControlPlane.authorize_write_path(:node_admission)
+    end
+  end
+
   describe "read_only_status/0" do
     test "SPEC Control-Plane Status Is Read-Only reports standby write-path behavior when standby is directly addressed" do
       Application.put_env(:orchard_controller, :control_plane,
