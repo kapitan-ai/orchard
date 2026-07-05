@@ -173,6 +173,7 @@ The roadmap and target behavior are governed by `SPEC.md` §14.
 Some SPEC-required CLI paths are present before their milestone implementation:
 `orchardctl cluster init` and `orchardctl node join` return command-specific deferred-status errors with the current supported path.
 `orchardctl requests inspect <request-id>` is implemented for local controller request diagnostics with stable human and JSON scheduler-explanation output.
+`orchardctl cluster status [--json]` is implemented for read-only cluster and HA-lite control-plane status, emitting the shared `HALiteStatus` payload and a HA-lite summary in `--json` mode with no leadership-transfer or failover actions.
 `orchardctl nodes inspect`,
 `orchardctl nodes pending`, `orchardctl nodes admit`, and
 `orchardctl nodes reject` are implemented for the current node-admission-review

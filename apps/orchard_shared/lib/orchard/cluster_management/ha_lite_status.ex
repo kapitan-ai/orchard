@@ -1,6 +1,10 @@
 defmodule Orchard.ClusterManagement.HALiteStatus do
   @moduledoc """
   Read-only HA-lite control-plane status contract.
+
+  `advisory_lock_status` is evidence about the controller advisory lock.
+  A local controller may report `controller_role` as `leader` only when the lock is `held` and `leader_identity` is absent or matches `this_controller_identity`.
+  When lock evidence is missing, unavailable, not held, or names a different leader, operator surfaces must present local leadership as `unknown`.
   """
 
   @object "cluster_management.ha_lite_status"

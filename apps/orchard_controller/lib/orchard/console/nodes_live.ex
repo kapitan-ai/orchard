@@ -11,6 +11,8 @@ defmodule OrchardConsole.NodesLive do
 
   require Logger
 
+  alias Orchard.ClusterManagement.HALiteStatus
+  alias Orchard.ControlPlane
   alias Orchard.Nodes
   alias Orchard.Nodes.AdmissionCandidate
   alias Orchard.RuntimeEndpoint.Target
@@ -244,6 +246,54 @@ defmodule OrchardConsole.NodesLive do
           </.card>
           </div>
 
+          <%!-- HA-lite Control Plane Card --%>
+          <div id="nodes-ha-lite-status-card">
+          <.card variant={:rail} padding={:sm}>
+            <:title>HA-lite Status</:title>
+            <:subtitle>{ha_lite_subtitle(@ha_lite)}</:subtitle>
+
+            <%= cond do %>
+              <% @ha_lite.status == :loading -> %>
+                <.state_message id="nodes-ha-lite-loading" kind={:loading} layout={:compact} title="Loading HA-lite status." />
+              <% @ha_lite.status == :error -> %>
+                <.state_message id="nodes-ha-lite-error" kind={:error} layout={:compact} title="HA-lite status unavailable." body={@ha_lite.message} />
+              <% true -> %>
+                <% status = @ha_lite.status_contract %>
+                <div class="space-y-4">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <.badge tone={ha_lite_deployment_tone(status.deployment_mode)}>
+                      {format_status_value(status.deployment_mode)}
+                    </.badge>
+                    <.badge tone={ha_lite_role_tone(status.controller_role)}>
+                      {format_status_value(status.controller_role)}
+                    </.badge>
+                    <.badge tone={ha_lite_lock_tone(status.advisory_lock_status)}>
+                      {format_status_value(status.advisory_lock_status)}
+                    </.badge>
+                  </div>
+
+                  <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+                    <dt class="text-slate-500 dark:text-slate-400">This controller</dt>
+                    <dd class="font-mono text-slate-900 dark:text-slate-100">{status.this_controller_identity || "unknown"}</dd>
+                    <dt class="text-slate-500 dark:text-slate-400">Leader identity</dt>
+                    <dd class="font-mono text-slate-900 dark:text-slate-100">{status.leader_identity || "unknown"}</dd>
+                    <dt class="text-slate-500 dark:text-slate-400">Lock age</dt>
+                    <dd class="font-mono text-slate-900 dark:text-slate-100">{format_lock_age(status.lock_age_ms)}</dd>
+                    <dt class="text-slate-500 dark:text-slate-400">Last renewed</dt>
+                    <dd class="font-mono text-slate-900 dark:text-slate-100">
+                      <.local_time :if={status.last_renewed_at} value={status.last_renewed_at} format={:datetime_second} />
+                      <span :if={!status.last_renewed_at}>unknown</span>
+                    </dd>
+                    <dt class="text-slate-500 dark:text-slate-400">Write paths</dt>
+                    <dd class="font-mono text-slate-900 dark:text-slate-100">{format_write_path_behavior(status.standby_write_path_behavior)}</dd>
+                    <dt :if={status.last_observed_leadership_error} class="text-slate-500 dark:text-slate-400">Leadership error</dt>
+                    <dd :if={status.last_observed_leadership_error} class="text-slate-900 dark:text-slate-100">{status.last_observed_leadership_error}</dd>
+                  </dl>
+                </div>
+            <% end %>
+          </.card>
+          </div>
+
           <%!-- Per-Target Runtime Cards --%>
           <div id="nodes-runtime-targets" class="space-y-4">
             <div :for={t <- @cluster.targets} id={"nodes-runtime-card-#{t.target_dom_id}"}>
@@ -447,12 +497,14 @@ defmodule OrchardConsole.NodesLive do
     inventory = fetch_inventory()
     pending_admissions = fetch_pending_admissions(inventory.rows)
     safe_tokenization_counters = fetch_safe_tokenization_counters()
+    ha_lite = fetch_ha_lite_status()
 
     assign(socket,
       cluster: cluster,
       inventory: inventory,
       pending_admissions: pending_admissions,
       safe_tokenization_counters: safe_tokenization_counters,
+      ha_lite: ha_lite,
       last_refreshed_at: observed_at
     )
   end
@@ -481,6 +533,11 @@ defmodule OrchardConsole.NodesLive do
         status: :loading,
         targets: [],
         summary: empty_cluster_summary(),
+        message: nil
+      },
+      ha_lite: %{
+        status: :loading,
+        status_contract: nil,
         message: nil
       },
       safe_tokenization_counters: fetch_safe_tokenization_counters(),
@@ -777,6 +834,32 @@ defmodule OrchardConsole.NodesLive do
     }
   end
 
+  defp fetch_ha_lite_status do
+    %{
+      status: :ok,
+      status_contract: ControlPlane.read_only_status(),
+      message: nil
+    }
+  rescue
+    error ->
+      Logger.warning("HA-lite status fetch failed: #{inspect(error)}")
+
+      %{
+        status: :error,
+        status_contract: nil,
+        message: "HA-lite control-plane status unavailable."
+      }
+  catch
+    kind, reason ->
+      Logger.warning("HA-lite status fetch #{kind}: #{inspect(reason)}")
+
+      %{
+        status: :error,
+        status_contract: nil,
+        message: "HA-lite control-plane status unavailable."
+      }
+  end
+
   defp fetch_safe_tokenization_counters do
     telemetry_counters_impl().snapshot()
     |> normalize_safe_tokenization_counters()
@@ -895,6 +978,22 @@ defmodule OrchardConsole.NodesLive do
 
   defp target_card_title(%{target_label: label}), do: label
 
+  defp ha_lite_subtitle(%{status: :loading}), do: "Loading read-only control-plane status."
+  defp ha_lite_subtitle(%{status: :error}), do: "Read-only control-plane status unavailable."
+
+  defp ha_lite_subtitle(%{status: :ok, status_contract: %HALiteStatus{} = status}) do
+    deployment_mode = format_status_value(status.deployment_mode)
+    controller_role = format_status_value(status.controller_role)
+
+    if deployment_mode == controller_role do
+      "#{deployment_mode} control plane"
+    else
+      "#{deployment_mode} control plane, #{controller_role}"
+    end
+  end
+
+  defp ha_lite_subtitle(_status), do: "Read-only control-plane status."
+
   # ===========================================================================
   # Badge helpers
   # ===========================================================================
@@ -999,6 +1098,18 @@ defmodule OrchardConsole.NodesLive do
   defp compatibility_tone("version_skew"), do: :warning
   defp compatibility_tone("unsupported_version"), do: :error
   defp compatibility_tone(_status), do: :neutral
+
+  defp ha_lite_deployment_tone("ha_lite"), do: :info
+  defp ha_lite_deployment_tone(_mode), do: :neutral
+
+  defp ha_lite_role_tone("leader"), do: :success
+  defp ha_lite_role_tone("standby"), do: :warning
+  defp ha_lite_role_tone(_role), do: :neutral
+
+  defp ha_lite_lock_tone("held"), do: :success
+  defp ha_lite_lock_tone("not_held"), do: :warning
+  defp ha_lite_lock_tone("unavailable"), do: :error
+  defp ha_lite_lock_tone(_status), do: :neutral
 
   # Observe-only memory telemetry display helpers.
   defp memory_budget_status_label(%{display_state: :invalid}), do: "invalid telemetry"
@@ -1113,6 +1224,7 @@ defmodule OrchardConsole.NodesLive do
   defp map_get(_map, _key), do: nil
 
   defp format_status_value(nil), do: "unknown"
+  defp format_status_value("ha_lite"), do: "HA-lite"
 
   defp format_status_value(value) when is_atom(value) do
     value
@@ -1127,6 +1239,20 @@ defmodule OrchardConsole.NodesLive do
   end
 
   defp format_status_value(value), do: to_string(value)
+
+  defp format_lock_age(nil), do: "unknown"
+  defp format_lock_age(milliseconds) when is_integer(milliseconds), do: "#{milliseconds} ms"
+  defp format_lock_age(_milliseconds), do: "unknown"
+
+  defp format_write_path_behavior("writes_return_503_controller_standby") do
+    "writes return 503 controller standby"
+  end
+
+  defp format_write_path_behavior("writes_allowed_when_authorized") do
+    "writes allowed when authorized"
+  end
+
+  defp format_write_path_behavior(value), do: format_status_value(value)
 
   defp format_pending_target(%{target_ref: target}) when is_binary(target) and target != "",
     do: target
