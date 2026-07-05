@@ -112,6 +112,8 @@ defmodule OrchardCLI.Commands.Cluster do
   defp format_timestamp(%DateTime{} = timestamp), do: DateTime.to_iso8601(timestamp)
   defp format_timestamp(timestamp), do: to_string(timestamp)
 
+  defp format_status_value("ha_lite"), do: "HA-lite"
+
   defp format_status_value(value) when is_binary(value) do
     value
     |> String.replace("_", " ")

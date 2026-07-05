@@ -92,7 +92,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:ok, output} = ClusterCmd.run(["status"])
 
       assert output =~ "Role: standby"
-      assert output =~ "Deployment: ha lite"
+      assert output =~ "Deployment: HA-lite"
       refute output =~ "HA-lite: standby"
       assert output =~ "Advisory lock: unknown"
       assert output =~ "Write paths: writes return 503 controller standby"
