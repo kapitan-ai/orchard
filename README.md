@@ -35,7 +35,7 @@ provisioning for service-account-owned tokens. On the operations side,
 `orchardctl` provides node admission review, node lifecycle previews and
 execution (cordon, drain, decommission; maintenance previews only), request
 diagnostics with
-scheduler explanations, read-only cluster and HA-lite control-plane status, and
+scheduler explanations, read-only cluster and control-plane status, and
 redacted support bundle creation, alongside a Console UI for the same
 cluster-management surfaces.
 
@@ -80,7 +80,7 @@ Clients (SDKs / curl / apps)
 - Workers are local to node agents and are never exposed on the network.
 - Token streams always pass through the controller for governance and
   accounting.
-- HA-lite only: exactly one active leader, active/standby via Postgres
+- Active/Standby only: exactly one active leader, active/standby via Postgres
   advisory locks, no active/active consensus.
 
 Transport defaults and guardrails for source development are documented in
@@ -107,7 +107,7 @@ boundaries.
    worker.
 2. **Controller + workers** — one Mac as the control plane, 1–3 Macs as worker
    nodes.
-3. **HA-lite** — up to 2 controllers with exactly 1 active leader, still within
+3. **Active/Standby** — up to 2 controllers with exactly 1 active leader, still within
    the overall 1–4 Mac limit, with operator-managed endpoint failover.
 
 All controller-bearing installs currently require an external Postgres

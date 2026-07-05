@@ -1,6 +1,6 @@
 ## Context
 
-Orchard targets one to four Apple Silicon macOS nodes, with all durable state in Postgres and HA-lite coordination through a Postgres advisory lock.
+Orchard targets one to four Apple Silicon macOS nodes, with all durable state in Postgres and Active/Standby coordination through a Postgres advisory lock.
 `SPEC.md` §4 defines a managed node lifecycle from `provisioned` through `removed`, with explicit Admin API admission before a node can become `active`.
 `SPEC.md` §4.5 says health is orthogonal to lifecycle state.
 `SPEC.md` §5.5 says scheduler eligibility depends on lifecycle, health, pool policy, model/runtime support, memory, concurrency, placements, and circuit breakers.
@@ -20,13 +20,13 @@ The pre-implementation source tree had useful foundations but did not yet implem
 - Keep CLI, Console, Operator API, and Admin API behavior consistent enough that automation and human review speak the same language.
 - Make risky node actions reviewable before execution, especially drain, maintenance, resume, and decommission.
 - Let support and diagnostic workflows collect useful evidence without leaking secrets or collapsing local evidence logs into product truth.
-- Show HA-lite leadership and advisory-lock status as read-only status first.
+- Show Active/Standby leadership and advisory-lock status as read-only status first.
 
 ## Non-Goals
 
 - Do not include product code in this OpenSpec-only change package; implementation tasks below are future slices.
 - Do not define active/active controller behavior.
-- Do not add HA-lite failover, leadership transfer, or standby mutation actions.
+- Do not add Active/Standby failover, leadership transfer, or standby mutation actions.
 - Do not change scheduler ranking policy or dispatch behavior beyond explanation vocabulary.
 - Do not make local research outputs product truth.
 - Do not commit raw prompt exports, local context stores, tool identifiers, credentials, DSNs, or transient evidence logs.
@@ -48,7 +48,7 @@ These UX conclusions are subordinate to `SPEC.md`, `docs/brand-identity.md`, `do
 | Scheduler explanations use fixed reason codes shared by API, CLI, Console, support bundles, and tests. | `SPEC.md` §5.5, §7.3.5, §9.1 | Durable codes make automation and support analysis possible. |
 | Node actions expose preview, eligibility, blockers, and consequences before mutation. | `SPEC.md` §4.4, §4.8, §7.3, §7.4, §13.4 | Cordon, drain, maintenance, resume, and decommission can affect live work. |
 | Support bundle creation has shared CLI and Console semantics, including scope and redaction manifest. | `SPEC.md` §7.3, §9, §10.2, §11.9, current support bundle CLI | Operators need one evidence artifact, not separate Console-only and CLI-only formats. |
-| HA-lite starts read-only in Console and CLI. | `SPEC.md` §3.3, §12.6, §13.3 | Leadership and lock state are high-risk control-plane facts and mutating actions need a separate design. |
+| Control-plane status starts read-only in Console and CLI. | `SPEC.md` §3.3, §12.6, §13.3 | Leadership and lock state are high-risk control-plane facts and mutating actions need a separate design. |
 
 ## UX Model
 
@@ -127,7 +127,7 @@ Scheduling values should be derived from fixed reason codes rather than a free-t
 Warnings answer operator attention needs that do not by themselves decide lifecycle or scheduling.
 Warnings include degraded health causes, swap pressure, thermal pressure, low disk, old metadata, and observe-only telemetry risks.
 
-HA-lite answers which controller is leader, whether this controller is leader or standby, lock age, last renew time, and write-path behavior.
+Control-plane status answers which controller is leader, whether this controller is leader or standby, lock age, last renew time, and write-path behavior.
 This status is read-only in this foundation.
 
 ## Reason-Code Vocabulary
@@ -208,7 +208,6 @@ Support bundle and diagnostics scope codes should include:
 - `scheduler_decision`
 - `runtime_endpoint`
 - `control_plane`
-- `ha_lite`
 
 These vocabularies are intentionally small enough for tests and docs to lock down.
 Future implementation may add codes, but it should not replace accepted codes without a SPEC reconciliation.
@@ -250,9 +249,9 @@ Request and scheduler-decision scopes should include sanitized metadata only and
 Console-triggered bundles should produce the same v2 archive format as `orchardctl support bundle create`.
 Console may add a guided wizard, but it must not create a separate support artifact contract.
 
-## HA-Lite Read-Only Status
+## Control-Plane Read-Only Status
 
-The first HA-lite UX should show read-only control-plane state.
+The first control-plane UX should show read-only control-plane state.
 At minimum it should show deployment mode, this controller identity, leader identity when known, advisory-lock status, lock age, last renewal, standby write-path behavior, and last observed leadership error.
 
 Standby controllers must make write-path limits obvious.
@@ -271,7 +270,7 @@ Alternative: build Console first and let CLI follow.
 That risks mismatched vocabulary and makes automated operations weaker.
 The contract should define shared semantics first, then allow UI-specific presentation differences.
 
-Alternative: include HA-lite failover actions now.
+Alternative: include Active/Standby failover actions now.
 That increases risk before the read-only status model and permission/audit contract are stable.
 
 ## Migration Plan
@@ -281,7 +280,7 @@ That increases risk before the read-only status model and permission/audit contr
 3. Update the node persistence model so first-observed nodes do not become `active` without explicit admission.
 4. Add rejected-admission decision metadata and audit handling.
 5. Add CLI parity commands and JSON contracts for list, detail, admission, rejection, actions, explanations, and support bundles.
-6. Add Console pending admission, detail drill-in, action preview dialogs, diagnostics entry points, and HA-lite read-only status.
+6. Add Console pending admission, detail drill-in, action preview dialogs, diagnostics entry points, and control-plane read-only status.
 7. Add scheduler explanation persistence and rendering using fixed reason-code vocabularies.
 8. Add tests that cite the accepted SPEC sections and verify CLI/Console parity.
 9. Run the applicable Elixir quality workflow for implementation slices.

@@ -29,7 +29,7 @@ Supported deployment modes:
    * 1–3 Macs run node agent + local workers
    * Postgres is either managed on controller host or external
 
-3. **HA-lite control plane**
+3. **Active/Standby control plane**
 
    * 2 controller instances maximum
    * exactly 1 active leader at a time
@@ -224,7 +224,7 @@ The controller SHALL be a Phoenix/Plug HTTP service plus Runtime Endpoint client
 * Postgres reachable
 * migrations current
 * model/tenant/key caches loaded
-* if HA-lite enabled: instance is leader for write paths
+* if Active/Standby mode enabled: instance is leader for write paths
 
 ### 3.2 OTP supervision tree
 
@@ -259,7 +259,7 @@ Orchard.Application
 The controller SHALL support:
 
 * **single-controller mode**: one instance, always leader
-* **HA-lite mode**: up to two controller instances, one leader
+* **Active/Standby mode**: up to two controller instances, one leader
 
 Leader election SHALL use a **Postgres advisory lock**. Advisory locks are application-defined and support transaction/session scoping, which is sufficient for exclusive scheduler and migration ownership in this design. ([PostgreSQL][4])
 
@@ -616,7 +616,7 @@ They SHALL NOT be represented as `provisioned` unless an admin-created placehold
 They SHALL NOT be represented as `registered` unless `RegisterNode` or equivalent trust proof has completed.
 They SHALL NOT be represented as `active`, considered schedulable, or allowed to publish queue capacity.
 Candidate metadata is untrusted operator-review evidence and SHALL be sanitized, bounded, and insufficient by itself for scheduling, dispatch, trust establishment, or Node identity ownership.
-In HA-lite mode, creating candidates, rejecting candidates, clearing rejection, admitting nodes, and writing the related audit events are leader-only write paths.
+In Active/Standby mode, creating candidates, rejecting candidates, clearing rejection, admitting nodes, and writing the related audit events are leader-only write paths.
 
 ### 4.2 Node lifecycle states
 
@@ -1945,7 +1945,7 @@ Action execution SHALL revalidate permissions, leadership and write-path availab
 
 `POST /ops/v1/support-bundles` SHALL produce the `orchard.support_bundle.v2` format for cluster-management evidence.
 Support Bundle v2 SHALL include bundle format, generated time, Orchard version, scope, included sections, omitted sections, redaction manifest, max log bytes, and relevant SPEC references.
-Supported scopes SHALL include `cluster`, `node`, `request`, `scheduler_decision`, `runtime_endpoint`, `control_plane`, and `ha_lite`.
+Supported scopes SHALL include `cluster`, `node`, `request`, `scheduler_decision`, `runtime_endpoint`, `control_plane`.
 v1 compatibility MAY remain only if it is documented separately and does not satisfy or weaken v2 manifest or redaction requirements.
 
 #### 7.3.2 Node drain request example
@@ -3053,7 +3053,7 @@ Both references MAY later become null through retention cleanup, because decisio
 Audit log `scope` SHALL distinguish tenant-scoped and cluster-scoped governance events.
 Tenant-scoped audit events SHALL set `scope = 'tenant'` and a non-null `tenant_id`.
 Cluster-scoped audit events SHALL set `scope = 'cluster'` and a null `tenant_id`.
-Node admission candidate review, node admission rejection, rejection clearance, admission after rejection, node decommission, HA-lite status-affecting writes, and cluster-scoped support bundle generation SHALL use cluster-scoped audit events unless a future accepted contract makes them tenant-owned.
+Node admission candidate review, node admission rejection, rejection clearance, admission after rejection, node decommission, Active/Standby status-affecting writes, and cluster-scoped support bundle generation SHALL use cluster-scoped audit events unless a future accepted contract makes them tenant-owned.
 Audit log `actor_type` SHALL identify the provenance class of the action.
 `operator` represents operator and admin product surfaces such as Orchard Console, Orchard CLI, Operator API, and Admin API actions.
 `actor_id` MAY be null for `system` actions and for local operator actions before Orchard has an authenticated first-class operator identity.
@@ -3907,7 +3907,7 @@ Migration ownership SHALL be protected by advisory lock.
 5. run migrations
 6. wait for readiness
 
-**HA-lite deployment**
+**Active/Standby deployment**
 
 1. ensure standby present
 2. upgrade standby
@@ -4087,7 +4087,7 @@ Acceptance:
 * internal gRPC rejects non-mTLS clients
 * air-gapped installation completes with no internet access
 
-### Milestone 7 - Upgrade safety and HA-lite controller
+### Milestone 7 - Upgrade safety and Active/Standby controller
 
 Deliver:
 

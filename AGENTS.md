@@ -90,7 +90,7 @@ Rules:
 - **APIs**: `/v1/responses` (canonical abstraction), `/v1/chat/completions` (compatibility facade)
 - **Internal comms**: gRPC over mTLS
 - **Packaging**: native macOS DMG/PKG + launchd
-- **Clustering**: Postgres advisory locks + gRPC heartbeats (HA-lite)
+- **Clustering**: Postgres advisory locks + gRPC heartbeats (Active/Standby control plane)
 - **Inference**: MLX-LM runtime adapter managed by the node agent (Apple Silicon native)
 
 ## Milestones
@@ -104,7 +104,7 @@ Rules:
 | M4 | Multi-node scheduler and placements |
 | M5 | Observability and diagnostics |
 | M6 | Security hardening and air-gap |
-| M7 | Upgrade safety and HA-lite controller |
+| M7 | Upgrade safety and Active/Standby controller |
 
 ## Conventions
 

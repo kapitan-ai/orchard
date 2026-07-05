@@ -70,7 +70,7 @@ Admission decision history SHALL be append-only.
 Admission decision rows SHOULD reference a candidate or Node when created if that row exists.
 Admission decision rows MAY later have null candidate and Node references after retention cleanup, because bounded snapshot fields preserve the durable decision record.
 Candidate and decision metadata SHALL be sanitized and MUST NOT include plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw local evidence logs, local tool session identifiers, or machine-specific prompt exports.
-Node Admission candidate review, rejection, rejection clearance, admission after rejection, decommission, HA-lite write-path decisions, and cluster-scoped support bundle generation SHALL use cluster-scoped audit events with no tenant id.
+Node Admission candidate review, rejection, rejection clearance, admission after rejection, decommission, Active/Standby write-path decisions, and cluster-scoped support bundle generation SHALL use cluster-scoped audit events with no tenant id.
 Candidate review queries SHALL have indexes for admission category and recent observation time.
 Recent-observation indexes SHALL order candidates without an observation timestamp after candidates with observed timestamps.
 Decision review queries SHALL have indexes by candidate, node, and audit log reference.
@@ -113,7 +113,7 @@ This refines `SPEC.md` §8.1 through §8.5.
 
 ### Requirement: Cluster Status Separates Signal Categories
 Orchard Console, CLI, Operator API, and Admin API SHALL present node and cluster status as separate signal categories rather than a single combined status badge.
-The categories SHALL include lifecycle, admission, health, heartbeat freshness, transport reachability, runtime readiness, compatibility, scheduling eligibility, warnings, and HA-lite control-plane status when available.
+The categories SHALL include lifecycle, admission, health, heartbeat freshness, transport reachability, runtime readiness, compatibility, scheduling eligibility, warnings, and control-plane status when available.
 Health SHALL remain orthogonal to lifecycle state.
 Runtime readiness SHALL remain distinct from transport reachability.
 Compatibility warnings SHALL remain distinct from scheduler eligibility.
@@ -159,7 +159,7 @@ This refines `SPEC.md` §5.5, §5.7, §5.8, §5.10, and §7.3.5.
 - **AND** skipped candidates are not reported as rejected candidates
 
 ### Requirement: CLI And Console Expose Equivalent Cluster Management Semantics
-Orchard CLI and Orchard Console SHALL expose equivalent cluster-management semantics for node list, node detail, pending admission review, admission, lifecycle action previews, scheduler explanations, diagnostics, support bundle creation, and HA-lite read-only status.
+Orchard CLI and Orchard Console SHALL expose equivalent cluster-management semantics for node list, node detail, pending admission review, admission, lifecycle action previews, scheduler explanations, diagnostics, support bundle creation, and control-plane read-only status.
 CLI output MAY differ visually from Console, but JSON output SHALL preserve the same status categories and reason-code arrays.
 Console copy SHALL not invent meanings that are absent from the shared domain contract.
 This refines `SPEC.md` §7.3, §7.4, §11.8, and §11.9.
@@ -216,7 +216,7 @@ This change SHALL define `orchard.support_bundle.v2` for shared Console and CLI 
 The fields required by this change SHALL be mandatory for the v2 contract.
 Any v1 compatibility behavior SHALL be documented separately and SHALL NOT weaken the v2 manifest or redaction requirements.
 The support bundle manifest SHALL include bundle format, generated time, Orchard version, scope, included sections, omitted sections, redaction manifest, max log bytes, and relevant SPEC references.
-Supported scopes SHALL include `cluster`, `node`, `request`, `scheduler_decision`, `runtime_endpoint`, `control_plane`, and `ha_lite`.
+Supported scopes SHALL include `cluster`, `node`, `request`, `scheduler_decision`, `runtime_endpoint`, `control_plane`.
 Scoped bundles SHALL include only evidence relevant to the selected scope and SHALL record omitted sections.
 Request and scheduler-decision scopes SHALL include sanitized metadata only.
 Support bundles MUST NOT include plaintext secrets, credentials, DSNs, prompt bodies, response bodies, raw token sequences, raw local evidence logs, local tool session identifiers, or machine-specific prompt exports.
@@ -233,19 +233,19 @@ This refines `SPEC.md` §7.3, §9, §10.2, §11.8, and §11.9.
 - **THEN** the redaction manifest may include redaction classes and counts
 - **AND** the redaction manifest does not include the secret values that were redacted
 
-### Requirement: HA-Lite Status Is Read-Only In The First Cluster UX
-Orchard SHALL expose HA-lite control-plane status as read-only cluster status before any mutating HA-lite control action is introduced.
+### Requirement: Control-Plane Status Is Read-Only In The First Cluster UX
+Orchard SHALL expose control-plane status as read-only cluster status before any mutating Active/Standby control action is introduced.
 The read-only status SHALL include deployment mode, this controller identity when known, leader identity when known, advisory-lock status, lock age, last renewal timestamp, standby write-path behavior, and last observed leadership error when available.
 Console and CLI SHALL NOT expose leadership transfer, failover, or standby mutation actions under this foundation change.
 This refines `SPEC.md` §3.3, §12.6, and §13.3.
 
 #### Scenario: Standby controller is directly addressed
-- **WHEN** an operator views HA-lite status from a standby controller
+- **WHEN** an operator views Active/Standby control-plane status from a standby controller
 - **THEN** Orchard shows that the controller is standby when known
 - **AND** Orchard explains that write paths return `503 controller_standby` when directly addressed
 - **AND** Orchard does not offer a failover action in this foundation change
 
 #### Scenario: Leadership status is unavailable
 - **WHEN** advisory-lock status cannot be read
-- **THEN** Orchard shows HA-lite status as unknown or unavailable
+- **THEN** Orchard shows control-plane status as unknown or unavailable
 - **AND** Orchard does not infer leadership from local process state alone
