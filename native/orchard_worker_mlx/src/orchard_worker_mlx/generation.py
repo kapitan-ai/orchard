@@ -291,6 +291,70 @@ class _BatchRequestState:
 _WAIT_NEXT_TIMEOUT = object()
 
 
+def _is_int_uid_list(value: Any) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(uid, int) for uid in value)
+
+
+def _slot_at(slots: Any, index: int, default: Any) -> Any:
+    if isinstance(slots, list) and index < len(slots):
+        return slots[index]
+    return default
+
+
+def _processor_slot_at(slots: Any, index: int) -> Any:
+    slot = _slot_at(slots, index, [])
+    if slot is None:
+        return []
+    return slot
+
+
+def _batch_row_state_drifted(batch: Any, samplers: list[Any], processors: list[Any]) -> bool:
+    current_samplers = getattr(batch, "samplers", None)
+    current_processors = getattr(batch, "logits_processors", None)
+    if not isinstance(current_samplers, list) or len(current_samplers) != len(samplers):
+        return True
+    if not isinstance(current_processors, list) or len(current_processors) != len(processors):
+        return True
+    sampler_drifted = any(
+        current is not rebuilt for current, rebuilt in zip(current_samplers, samplers, strict=True)
+    )
+    processor_drifted = any(
+        current is not rebuilt
+        for current, rebuilt in zip(current_processors, processors, strict=True)
+    )
+    return sampler_drifted or processor_drifted
+
+
+def _realign_batch_row_state(
+    batch: Any,
+    row_state_by_uid: dict[int, tuple[Any, list[Any]]],
+) -> bool:
+    uids = getattr(batch, "uids", None)
+    if not _is_int_uid_list(uids):
+        return False
+
+    rebuilt_samplers: list[Any] = []
+    rebuilt_processors: list[Any] = []
+    current_samplers = getattr(batch, "samplers", None)
+    current_processors = getattr(batch, "logits_processors", None)
+
+    for index, uid in enumerate(uids):
+        row_state = row_state_by_uid.get(uid)
+        if row_state is None:
+            rebuilt_samplers.append(_slot_at(current_samplers, index, None))
+            rebuilt_processors.append(_processor_slot_at(current_processors, index))
+            continue
+
+        sampler, processors = row_state
+        rebuilt_samplers.append(sampler)
+        rebuilt_processors.append(processors or [])
+
+    drifted = _batch_row_state_drifted(batch, rebuilt_samplers, rebuilt_processors)
+    batch.samplers = rebuilt_samplers
+    batch.logits_processors = rebuilt_processors
+    return drifted
+
+
 class _BatchRequestStream:
     """Per-request stream view over a shared BatchGenerator runtime."""
 
@@ -439,6 +503,7 @@ class BatchGeneratorRuntime:
         self._detokenizer_factory = self._build_detokenizer_factory(session.tokenizer)
         self._batch_generator_closed = False
         self._closed_batch_generator_refs: dict[int, weakref.ReferenceType[Any]] = {}
+        self._row_drift_warned = False
         self.stop_token_ids: frozenset[int] = frozenset(getattr(session, "eos_token_ids", ()))
 
         self._reset_requested: str | None = None
@@ -757,6 +822,27 @@ class BatchGeneratorRuntime:
             self._cv.notify_all()
         return True
 
+    def _realign_batch_generator_rows(
+        self,
+        row_state_by_uid: dict[int, tuple[Any, list[Any]]],
+    ) -> None:
+        try:
+            drifted = False
+            for batch_attr in ("_prompt_batch", "_generation_batch"):
+                batch = getattr(self._batch_generator, batch_attr, None)
+                if batch is None:
+                    continue
+                drifted = _realign_batch_row_state(batch, row_state_by_uid) or drifted
+        except Exception:
+            logger.debug("batch row-state realignment failed; continuing", exc_info=True)
+            return
+
+        if drifted and not self._row_drift_warned:
+            self._row_drift_warned = True
+            logger.warning(
+                "batch generator positional row state drifted; realigned from uid registry"
+            )
+
     def _run_loop(self) -> None:
         while True:
             pending_states: list[_BatchRequestState] = []
@@ -884,8 +970,13 @@ class BatchGeneratorRuntime:
                 if self._reset_requested is not None:
                     perform_reset = True
                     has_active = False
+                    row_state_by_uid: dict[int, tuple[Any, list[Any]]] = {}
                 else:
                     has_active = bool(self._active_by_uid)
+                    row_state_by_uid = {
+                        uid: (state.sampler, state.logits_processors)
+                        for uid, state in self._active_by_uid.items()
+                    }
 
             if perform_reset:
                 self._perform_requested_reset()
@@ -893,6 +984,8 @@ class BatchGeneratorRuntime:
 
             if not has_active:
                 continue
+
+            self._realign_batch_generator_rows(row_state_by_uid)
 
             try:
                 responses = self._batch_generator.next()

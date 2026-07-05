@@ -527,6 +527,292 @@ def test_batch_generator_runtime_streams_through_generate_events() -> None:
     assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
 
 
+def test_batch_generator_runtime_realigns_row_state_before_next() -> None:
+    class _MisalignedRowStateBatchGenerator:
+        instances: list[_MisalignedRowStateBatchGenerator] = []
+
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self._next_uid = 0
+            self._next_calls = 0
+            self.samplers_by_uid: dict[int, Any] = {}
+            self._generation_batch = SimpleNamespace(uids=[], samplers=[], logits_processors=[])
+            self.captured_rows: list[tuple[list[Any], list[Any]]] = []
+            self.__class__.instances.append(self)
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+            **_kwargs: Any,
+        ) -> list[int]:
+            del prompts, max_tokens, caches, logits_processors
+            inserted_samplers = samplers or []
+            uids = list(range(self._next_uid, self._next_uid + len(inserted_samplers)))
+            self._next_uid += len(inserted_samplers)
+            for uid, sampler in zip(uids, inserted_samplers, strict=True):
+                self.samplers_by_uid[uid] = sampler
+
+            if uids == [0]:
+                self._generation_batch.uids = [0]
+                self._generation_batch.samplers = [self.samplers_by_uid[0]]
+                self._generation_batch.logits_processors = [[]]
+            elif uids == [1]:
+                self._generation_batch.uids = [0, 1]
+                self._generation_batch.samplers = [
+                    self.samplers_by_uid[1],
+                    self.samplers_by_uid[0],
+                ]
+                self._generation_batch.logits_processors = [None, ["stale"]]
+
+            return uids
+
+        def next(self) -> tuple[list[Any], list[Any]]:
+            self._next_calls += 1
+            self.captured_rows.append(
+                (
+                    list(self._generation_batch.samplers),
+                    list(self._generation_batch.logits_processors),
+                )
+            )
+            if self._next_calls == 1:
+                return ([], [_batch_response(0, token=11, finish_reason=None)])
+            if self._generation_batch.uids != [0, 1]:
+                return ([], [])
+            return (
+                [],
+                [
+                    _batch_response(0, token=12, finish_reason="stop"),
+                    _batch_response(1, token=21, finish_reason="stop"),
+                ],
+            )
+
+        def close(self) -> None:
+            return None
+
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_MisalignedRowStateBatchGenerator),
+    )
+    sampler_a = object()
+    sampler_b = object()
+
+    try:
+        stream_a = runtime.stream_generate(
+            session.model,
+            session.tokenizer,
+            [1, 2, 3],
+            max_tokens=2,
+            sampler=sampler_a,
+        )
+        assert next(stream_a).text == "A"
+        stream_b = runtime.stream_generate(
+            session.model,
+            session.tokenizer,
+            [4, 5, 6],
+            max_tokens=1,
+            sampler=sampler_b,
+        )
+        assert [chunk.text for chunk in stream_b] == ["X"]
+        assert [chunk.text for chunk in stream_a] == ["B"]
+        generator = _MisalignedRowStateBatchGenerator.instances[0]
+    finally:
+        runtime.close()
+
+    assert generator.captured_rows[-1] == ([sampler_a, sampler_b], [[], []])
+
+
+def test_batch_generator_runtime_row_realign_fail_open_without_uids() -> None:
+    class _NoUidBatchGenerator:
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self._next_uid = 0
+            self._generation_batch = SimpleNamespace(samplers=[object()])
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+            **_kwargs: Any,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            uids = list(range(self._next_uid, self._next_uid + len(prompts)))
+            self._next_uid += len(prompts)
+            return uids
+
+        def next(self) -> tuple[list[Any], list[Any]]:
+            return ([], [_batch_response(0, token=11, finish_reason="stop")])
+
+        def close(self) -> None:
+            return None
+
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_NoUidBatchGenerator),
+    )
+
+    try:
+        events = _collect_events(
+            session, _make_fake_request(max_output_tokens=1), runtime.generation_deps()
+        )
+    finally:
+        runtime.close()
+
+    assert [event["kind"] for event in events] == ["output_text_delta", "completed"]
+
+
+def test_batch_generator_runtime_row_realign_keeps_unregistered_uid_slot() -> None:
+    class _UnregisteredUidBatchGenerator:
+        instances: list[_UnregisteredUidBatchGenerator] = []
+
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self.extra_sampler = object()
+            self.extra_processors = [object()]
+            self._generation_batch = SimpleNamespace(uids=[], samplers=[], logits_processors=[])
+            self.captured_samplers: list[Any] = []
+            self.captured_processors: list[Any] = []
+            self.__class__.instances.append(self)
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+            **_kwargs: Any,
+        ) -> list[int]:
+            del prompts, max_tokens, caches, logits_processors
+            sampler = (samplers or [None])[0]
+            self._generation_batch.uids = [0, 999]
+            self._generation_batch.samplers = [object(), self.extra_sampler]
+            self._generation_batch.logits_processors = [None, self.extra_processors]
+            self.registered_sampler = sampler
+            return [0]
+
+        def next(self) -> tuple[list[Any], list[Any]]:
+            self.captured_samplers = list(self._generation_batch.samplers)
+            self.captured_processors = list(self._generation_batch.logits_processors)
+            return ([], [_batch_response(0, token=11, finish_reason="stop")])
+
+        def close(self) -> None:
+            return None
+
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_UnregisteredUidBatchGenerator),
+    )
+    sampler = object()
+
+    try:
+        stream = runtime.stream_generate(
+            session.model,
+            session.tokenizer,
+            [1, 2, 3],
+            max_tokens=1,
+            sampler=sampler,
+        )
+        assert [chunk.text for chunk in stream] == ["A"]
+        generator = _UnregisteredUidBatchGenerator.instances[0]
+    finally:
+        runtime.close()
+
+    assert generator.captured_samplers == [sampler, generator.extra_sampler]
+    assert generator.captured_processors == [[], generator.extra_processors]
+
+
+def test_batch_generator_runtime_row_drift_warning_fires_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _RepeatedDriftBatchGenerator:
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self._next_calls = 0
+            self.wrong_sampler = object()
+            self._generation_batch = SimpleNamespace(uids=[], samplers=[], logits_processors=[])
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+            **_kwargs: Any,
+        ) -> list[int]:
+            del prompts, max_tokens, caches, logits_processors
+            self._generation_batch.uids = [0]
+            self._generation_batch.samplers = [self.wrong_sampler]
+            self._generation_batch.logits_processors = [None]
+            return [0]
+
+        def next(self) -> tuple[list[Any], list[Any]]:
+            self._next_calls += 1
+            self._generation_batch.samplers = [self.wrong_sampler]
+            self._generation_batch.logits_processors = [None]
+            if self._next_calls == 1:
+                return ([], [_batch_response(0, token=11, finish_reason=None)])
+            return ([], [_batch_response(0, token=12, finish_reason="stop")])
+
+        def close(self) -> None:
+            return None
+
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_RepeatedDriftBatchGenerator),
+    )
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="orchard_worker_mlx.generation"):
+            events = _collect_events(
+                session,
+                _make_fake_request(max_output_tokens=2),
+                runtime.generation_deps(),
+            )
+    finally:
+        runtime.close()
+
+    assert [event["kind"] for event in events] == [
+        "output_text_delta",
+        "output_text_delta",
+        "completed",
+    ]
+    warning_records = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "positional row state drifted" in record.getMessage()
+    ]
+    assert len(warning_records) == 1
+
+
 def test_batch_generator_runtime_builds_batch_generator_with_0_31_3_contract() -> None:
     _InsertProgressOnlyBatchGenerator.instances = []
     session = _make_fake_session(eos_token_ids=(12, 13), prefill_step_size=4096)
