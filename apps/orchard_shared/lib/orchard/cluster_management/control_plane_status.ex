@@ -1,16 +1,16 @@
-defmodule Orchard.ClusterManagement.HALiteStatus do
+defmodule Orchard.ClusterManagement.ControlPlaneStatus do
   @moduledoc """
-  Read-only HA-lite control-plane status contract.
+  Read-only control-plane status contract.
 
   `advisory_lock_status` is evidence about the controller advisory lock.
   A local controller may report `controller_role` as `leader` only when the lock is `held` and `leader_identity` is absent or matches `this_controller_identity`.
   When lock evidence is missing, unavailable, not held, or names a different leader, operator surfaces must present local leadership as `unknown`.
   """
 
-  @object "cluster_management.ha_lite_status"
-  @contract_version "orchard.cluster_management.ha_lite_status.v1"
+  @object "cluster_management.control_plane_status"
+  @contract_version "orchard.cluster_management.control_plane_status.v1"
 
-  @deployment_modes ~w(single_controller ha_lite unknown)
+  @deployment_modes ~w(single_controller active_standby unknown)
   @controller_roles ~w(leader standby single_controller unknown)
   @lock_statuses ~w(held not_held unavailable unknown)
 
@@ -68,7 +68,7 @@ defmodule Orchard.ClusterManagement.HALiteStatus do
   def new!(attrs) do
     case new(attrs) do
       {:ok, status} -> status
-      {:error, reason} -> raise ArgumentError, "invalid HA-lite status: #{inspect(reason)}"
+      {:error, reason} -> raise ArgumentError, "invalid control-plane status: #{inspect(reason)}"
     end
   end
 

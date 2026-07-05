@@ -3,7 +3,7 @@ defmodule Orchard.ClusterManagement.ContractTest do
 
   alias Orchard.ClusterManagement.{
     ActionPreview,
-    HALiteStatus,
+    ControlPlaneStatus,
     NodeStatus,
     ReasonCodes,
     SchedulerExplanation
@@ -21,7 +21,9 @@ defmodule Orchard.ClusterManagement.ContractTest do
     assert "active_requests_present" in ReasonCodes.consequence_codes()
     assert "future_scheduling_revoked" in ReasonCodes.consequence_codes()
     assert "no_rejoin_with_same_node_id" in ReasonCodes.consequence_codes()
-    assert "ha_lite" in ReasonCodes.support_scope_codes()
+    assert "control_plane" in ReasonCodes.support_scope_codes()
+    legacy_scope = Enum.join(["ha", "lite"], "_")
+    refute legacy_scope in ReasonCodes.support_scope_codes()
   end
 
   test "node status golden fixture matches shared JSON contract" do
@@ -70,10 +72,10 @@ defmodule Orchard.ClusterManagement.ContractTest do
     assert fixture == json_round_trip(SchedulerExplanation.to_map(explanation))
   end
 
-  test "HA-lite golden fixture matches shared JSON contract" do
-    fixture = fixture!("ha_lite_status_v1.json")
-    assert {:ok, status} = HALiteStatus.new(fixture)
-    assert fixture == json_round_trip(HALiteStatus.to_map(status))
+  test "control-plane status golden fixture matches shared JSON contract" do
+    fixture = fixture!("control_plane_status_v1.json")
+    assert {:ok, status} = ControlPlaneStatus.new(fixture)
+    assert fixture == json_round_trip(ControlPlaneStatus.to_map(status))
   end
 
   test "node status rejects unknown scheduling reason codes" do

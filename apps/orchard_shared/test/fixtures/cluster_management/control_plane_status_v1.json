@@ -1,7 +1,7 @@
 {
-  "object": "cluster_management.ha_lite_status",
-  "contract_version": "orchard.cluster_management.ha_lite_status.v1",
-  "deployment_mode": "ha_lite",
+  "object": "cluster_management.control_plane_status",
+  "contract_version": "orchard.cluster_management.control_plane_status.v1",
+  "deployment_mode": "active_standby",
   "this_controller_identity": "controller-a",
   "controller_role": "standby",
   "leader_identity": "controller-b",
