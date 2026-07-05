@@ -6,6 +6,14 @@ defmodule Orchard.ControlPlane do
 
   alias Orchard.ClusterManagement.HALiteStatus
 
+  @provider_status_keys [
+    :leader_identity,
+    :advisory_lock_status,
+    :lock_age_ms,
+    :last_renewed_at,
+    :last_observed_leadership_error
+  ]
+
   @type write_path :: atom()
   @type write_error :: :controller_standby
 
@@ -63,12 +71,21 @@ defmodule Orchard.ControlPlane do
   defp read_provider_status(provider),
     do: {:error, {:invalid_ha_lite_status_provider, inspect(provider)}}
 
-  defp normalize_provider_status({:ok, %{} = attrs}), do: attrs
-  defp normalize_provider_status(%{} = attrs), do: attrs
+  defp normalize_provider_status({:ok, %{} = attrs}), do: provider_advisory_lock_attrs(attrs)
+  defp normalize_provider_status(%{} = attrs), do: provider_advisory_lock_attrs(attrs)
   defp normalize_provider_status({:error, reason}), do: unavailable_status(inspect(reason))
 
   defp normalize_provider_status(other),
     do: unavailable_status("unexpected provider result: #{inspect(other)}")
+
+  defp provider_advisory_lock_attrs(attrs) do
+    Map.new(@provider_status_keys, fn key -> {key, provider_attr(attrs, key)} end)
+    |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp provider_attr(attrs, key) do
+    Map.get(attrs, key) || Map.get(attrs, Atom.to_string(key))
+  end
 
   defp unavailable_status(message) do
     %{
