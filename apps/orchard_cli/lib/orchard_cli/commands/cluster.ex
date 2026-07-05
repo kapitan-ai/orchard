@@ -129,8 +129,8 @@ defmodule OrchardCLI.Commands.Cluster do
     Usage: orchardctl cluster <command>
 
     Commands:
-      cluster init     Initialize controller-side cluster bootstrap state (SPEC.md 11.9).
-      cluster status   Show read-only cluster and HA-lite control-plane status.
+      init     Initialize controller-side cluster bootstrap state (SPEC.md 11.9).
+      status   Show read-only cluster and HA-lite control-plane status.
     """
     |> String.trim()
   end

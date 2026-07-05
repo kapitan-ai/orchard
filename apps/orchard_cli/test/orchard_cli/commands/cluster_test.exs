@@ -22,8 +22,8 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:error, message, 1} = ClusterCmd.run([])
 
       assert message =~ "orchardctl cluster"
-      assert message =~ "cluster init"
-      assert message =~ "cluster status"
+      assert message =~ "init"
+      assert message =~ "status"
     end
 
     test "status --help returns status usage" do
