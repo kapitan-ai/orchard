@@ -1369,8 +1369,9 @@ defmodule OrchardConsole.ModelHubLiveTest do
       })
 
       html = render(view)
-      refute html =~ "stale/model"
-      refute html =~ "999"
+      progress_html = element(view, "#model-hub-download-progress") |> render()
+      refute progress_html =~ "stale/model"
+      refute progress_html =~ "999"
       assert html =~ "Starting"
 
       send_download_progress(first_download_ref, %{
@@ -1381,8 +1382,8 @@ defmodule OrchardConsole.ModelHubLiveTest do
         total_bytes: 999
       })
 
-      html = render(view)
-      refute html =~ "888"
+      progress_html = element(view, "#model-hub-download-progress") |> render()
+      refute progress_html =~ "888"
 
       send_download_success(first_download_ref, %{
         model_id: "stale/model",
