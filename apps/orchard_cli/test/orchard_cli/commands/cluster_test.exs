@@ -41,11 +41,11 @@ defmodule OrchardCLI.Commands.ClusterTest do
   end
 
   describe "status" do
-    test "SPEC CLI/Console parity emits read-only HA-lite JSON status" do
+    test "SPEC CLI/Console parity emits read-only control-plane JSON status" do
       Application.put_env(:orchard_controller, :control_plane,
         role: :standby,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           %{
             leader_identity: "controller-b",
             advisory_lock_status: :not_held,
@@ -62,38 +62,38 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert decoded["contract_version"] == "orchard.cluster_management.cluster_status.v1"
 
       assert decoded["summary"] == %{
-               "deployment_mode" => "ha_lite",
+               "deployment_mode" => "active_standby",
                "controller_role" => "standby",
                "advisory_lock_status" => "not_held"
              }
 
-      assert decoded["ha_lite"]["object"] == "cluster_management.ha_lite_status"
-      assert decoded["ha_lite"]["deployment_mode"] == "ha_lite"
-      assert decoded["ha_lite"]["this_controller_identity"] == "controller-a"
-      assert decoded["ha_lite"]["controller_role"] == "standby"
-      assert decoded["ha_lite"]["leader_identity"] == "controller-b"
-      assert decoded["ha_lite"]["advisory_lock_status"] == "not_held"
-      assert decoded["ha_lite"]["lock_age_ms"] == 1_200
-      assert decoded["ha_lite"]["last_renewed_at"] == "2026-07-01T00:00:00Z"
+      assert decoded["control_plane"]["object"] == "cluster_management.control_plane_status"
+      assert decoded["control_plane"]["deployment_mode"] == "active_standby"
+      assert decoded["control_plane"]["this_controller_identity"] == "controller-a"
+      assert decoded["control_plane"]["controller_role"] == "standby"
+      assert decoded["control_plane"]["leader_identity"] == "controller-b"
+      assert decoded["control_plane"]["advisory_lock_status"] == "not_held"
+      assert decoded["control_plane"]["lock_age_ms"] == 1_200
+      assert decoded["control_plane"]["last_renewed_at"] == "2026-07-01T00:00:00Z"
 
-      assert decoded["ha_lite"]["standby_write_path_behavior"] ==
+      assert decoded["control_plane"]["standby_write_path_behavior"] ==
                "writes_return_503_controller_standby"
 
-      assert decoded["ha_lite"]["last_observed_leadership_error"] == nil
+      assert decoded["control_plane"]["last_observed_leadership_error"] == nil
     end
 
     test "human output explains directly addressed standby write paths without failover actions" do
       Application.put_env(:orchard_controller, :control_plane,
         role: :standby,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn -> %{advisory_lock_status: :unknown} end
+        control_plane_status_provider: fn -> %{advisory_lock_status: :unknown} end
       )
 
       assert {:ok, output} = ClusterCmd.run(["status"])
 
       assert output =~ "Role: standby"
-      assert output =~ "Deployment: HA-lite"
-      refute output =~ "HA-lite: standby"
+      assert output =~ "Deployment: Active/Standby"
+      refute output =~ "Active/Standby: standby"
       assert output =~ "Advisory lock: unknown"
       assert output =~ "Write paths: writes return 503 controller standby"
       refute output =~ "failover"
@@ -110,36 +110,36 @@ defmodule OrchardCLI.Commands.ClusterTest do
       decoded = Jason.decode!(output)
 
       assert decoded["summary"] == %{
-               "deployment_mode" => "ha_lite",
+               "deployment_mode" => "active_standby",
                "controller_role" => "unknown",
                "advisory_lock_status" => "unknown"
              }
 
-      assert decoded["ha_lite"]["controller_role"] == "unknown"
-      assert decoded["ha_lite"]["leader_identity"] == nil
-      assert decoded["ha_lite"]["standby_write_path_behavior"] == "unknown"
+      assert decoded["control_plane"]["controller_role"] == "unknown"
+      assert decoded["control_plane"]["leader_identity"] == nil
+      assert decoded["control_plane"]["standby_write_path_behavior"] == "unknown"
     end
 
     test "SPEC CLI/Console parity degrades malformed provider status to unavailable JSON" do
       Application.put_env(:orchard_controller, :control_plane,
         role: :leader,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn -> %{advisory_lock_status: "flaky"} end
+        control_plane_status_provider: fn -> %{advisory_lock_status: "flaky"} end
       )
 
       assert {:ok, output} = ClusterCmd.run(["status", "--json"])
       decoded = Jason.decode!(output)
 
       assert decoded["summary"] == %{
-               "deployment_mode" => "ha_lite",
+               "deployment_mode" => "active_standby",
                "controller_role" => "unknown",
                "advisory_lock_status" => "unavailable"
              }
 
-      assert decoded["ha_lite"]["leader_identity"] == nil
-      assert decoded["ha_lite"]["standby_write_path_behavior"] == "unknown"
+      assert decoded["control_plane"]["leader_identity"] == nil
+      assert decoded["control_plane"]["standby_write_path_behavior"] == "unknown"
 
-      assert decoded["ha_lite"]["last_observed_leadership_error"] ==
+      assert decoded["control_plane"]["last_observed_leadership_error"] ==
                "advisory_lock_read_failed: invalid_provider_status"
     end
 
@@ -147,7 +147,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       Application.put_env(:orchard_controller, :control_plane,
         role: :standby,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           %{
             leader_identity: "controller-b",
             advisory_lock_status: :not_held,
@@ -160,7 +160,7 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert {:ok, output} = ClusterCmd.run(["status", "--json"])
       decoded = Jason.decode!(output)
 
-      assert decoded["ha_lite"]["last_observed_leadership_error"] ==
+      assert decoded["control_plane"]["last_observed_leadership_error"] ==
                "advisory_lock_read_failed: provider_reported_error"
 
       refute output =~ "orchard_admin"

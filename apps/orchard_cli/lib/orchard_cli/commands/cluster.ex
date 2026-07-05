@@ -1,7 +1,7 @@
 defmodule OrchardCLI.Commands.Cluster do
   @moduledoc false
 
-  alias Orchard.ClusterManagement.HALiteStatus
+  alias Orchard.ClusterManagement.ControlPlaneStatus
   alias Orchard.ControlPlane
   alias OrchardCLI.Commands.Deferred
 
@@ -66,13 +66,13 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp render_status(%HALiteStatus{} = status, true),
+  defp render_status(%ControlPlaneStatus{} = status, true),
     do: status |> cluster_status_map() |> encode_json()
 
-  defp render_status(%HALiteStatus{} = status, false), do: render_status_text(status)
+  defp render_status(%ControlPlaneStatus{} = status, false), do: render_status_text(status)
 
-  defp cluster_status_map(%HALiteStatus{} = status) do
-    ha_lite = HALiteStatus.to_map(status)
+  defp cluster_status_map(%ControlPlaneStatus{} = status) do
+    control_plane = ControlPlaneStatus.to_map(status)
 
     %{
       object: @cluster_status_object,
@@ -82,11 +82,11 @@ defmodule OrchardCLI.Commands.Cluster do
         controller_role: status.controller_role,
         advisory_lock_status: status.advisory_lock_status
       },
-      ha_lite: ha_lite
+      control_plane: control_plane
     }
   end
 
-  defp render_status_text(%HALiteStatus{} = status) do
+  defp render_status_text(%ControlPlaneStatus{} = status) do
     [
       "Role: #{format_status_value(status.controller_role)}",
       "Deployment: #{format_status_value(status.deployment_mode)}",
@@ -112,7 +112,7 @@ defmodule OrchardCLI.Commands.Cluster do
   defp format_timestamp(%DateTime{} = timestamp), do: DateTime.to_iso8601(timestamp)
   defp format_timestamp(timestamp), do: to_string(timestamp)
 
-  defp format_status_value("ha_lite"), do: "HA-lite"
+  defp format_status_value("active_standby"), do: "Active/Standby"
 
   defp format_status_value(value) when is_binary(value) do
     value
@@ -132,7 +132,7 @@ defmodule OrchardCLI.Commands.Cluster do
 
     Commands:
       init     Initialize controller-side cluster bootstrap state (SPEC.md 11.9).
-      status   Show read-only cluster and HA-lite control-plane status.
+      status   Show read-only cluster and Active/Standby control-plane status.
     """
     |> String.trim()
   end
@@ -141,7 +141,7 @@ defmodule OrchardCLI.Commands.Cluster do
     """
     Usage: orchardctl cluster status [--json]
 
-    Show read-only cluster status, including the HA-lite control-plane signal category.
+    Show read-only cluster status, including the Active/Standby control-plane signal category.
 
     Options:
       --json   Emit stable JSON for automation.
