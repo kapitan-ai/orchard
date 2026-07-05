@@ -1,7 +1,7 @@
 defmodule Orchard.ControlPlaneTest do
   use ExUnit.Case, async: false
 
-  alias Orchard.ClusterManagement.HALiteStatus
+  alias Orchard.ClusterManagement.ControlPlaneStatus
   alias Orchard.ControlPlane
 
   setup do
@@ -19,11 +19,11 @@ defmodule Orchard.ControlPlaneTest do
   end
 
   describe "read_only_status/0" do
-    test "SPEC HA-lite Status Is Read-Only reports standby write-path behavior when standby is directly addressed" do
+    test "SPEC Control-Plane Status Is Read-Only reports standby write-path behavior when standby is directly addressed" do
       Application.put_env(:orchard_controller, :control_plane,
         role: :standby,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           %{
             leader_identity: "controller-b",
             advisory_lock_status: :not_held,
@@ -35,8 +35,8 @@ defmodule Orchard.ControlPlaneTest do
 
       status = ControlPlane.read_only_status()
 
-      assert %HALiteStatus{} = status
-      assert status.deployment_mode == "ha_lite"
+      assert %ControlPlaneStatus{} = status
+      assert status.deployment_mode == "active_standby"
       assert status.this_controller_identity == "controller-a"
       assert status.controller_role == "standby"
       assert status.leader_identity == "controller-b"
@@ -51,7 +51,7 @@ defmodule Orchard.ControlPlaneTest do
       Application.put_env(:orchard_controller, :control_plane,
         role: :leader,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           raise DBConnection.ConnectionError,
             message: "password authentication failed for user orchard_admin at db.internal:5432"
         end
@@ -59,7 +59,7 @@ defmodule Orchard.ControlPlaneTest do
 
       status = ControlPlane.read_only_status()
 
-      assert status.deployment_mode == "ha_lite"
+      assert status.deployment_mode == "active_standby"
       assert status.controller_role == "unknown"
       assert status.this_controller_identity == "controller-a"
       assert status.leader_identity == nil
@@ -83,7 +83,7 @@ defmodule Orchard.ControlPlaneTest do
 
       status = ControlPlane.read_only_status()
 
-      assert status.deployment_mode == "ha_lite"
+      assert status.deployment_mode == "active_standby"
       assert status.controller_role == "unknown"
       assert status.this_controller_identity == "controller-a"
       assert status.leader_identity == nil
@@ -96,7 +96,7 @@ defmodule Orchard.ControlPlaneTest do
       Application.put_env(:orchard_controller, :control_plane,
         role: :leader,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           %{
             leader_identity: "controller-a",
             advisory_lock_status: :held,
@@ -108,7 +108,7 @@ defmodule Orchard.ControlPlaneTest do
 
       status = ControlPlane.read_only_status()
 
-      assert status.deployment_mode == "ha_lite"
+      assert status.deployment_mode == "active_standby"
       assert status.controller_role == "leader"
       assert status.this_controller_identity == "controller-a"
       assert status.leader_identity == "controller-a"
@@ -120,9 +120,9 @@ defmodule Orchard.ControlPlaneTest do
       Application.put_env(:orchard_controller, :control_plane,
         role: :leader,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           %{
-            deployment_mode: "ha_lite",
+            deployment_mode: "active_standby",
             this_controller_identity: "provider-controller",
             controller_role: "leader",
             leader_identity: "controller-b",
@@ -134,7 +134,7 @@ defmodule Orchard.ControlPlaneTest do
 
       status = ControlPlane.read_only_status()
 
-      assert status.deployment_mode == "ha_lite"
+      assert status.deployment_mode == "active_standby"
       assert status.controller_role == "unknown"
       assert status.this_controller_identity == "controller-a"
       assert status.leader_identity == "controller-b"
@@ -146,7 +146,7 @@ defmodule Orchard.ControlPlaneTest do
       Application.put_env(:orchard_controller, :control_plane,
         role: :leader,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           %{
             leader_identity: "controller-a",
             advisory_lock_status: "flaky"
@@ -156,7 +156,7 @@ defmodule Orchard.ControlPlaneTest do
 
       status = ControlPlane.read_only_status()
 
-      assert status.deployment_mode == "ha_lite"
+      assert status.deployment_mode == "active_standby"
       assert status.controller_role == "unknown"
       assert status.this_controller_identity == "controller-a"
       assert status.leader_identity == nil
@@ -171,7 +171,7 @@ defmodule Orchard.ControlPlaneTest do
       Application.put_env(:orchard_controller, :control_plane,
         role: :standby,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           %{
             leader_identity: "controller-b",
             advisory_lock_status: :not_held,
@@ -197,7 +197,7 @@ defmodule Orchard.ControlPlaneTest do
       Application.put_env(:orchard_controller, :control_plane,
         role: :leader,
         this_controller_identity: "controller-a",
-        ha_lite_status_provider: fn ->
+        control_plane_status_provider: fn ->
           %{
             leader_identity: "controller-b",
             advisory_lock_status: :held,
@@ -208,7 +208,7 @@ defmodule Orchard.ControlPlaneTest do
 
       status = ControlPlane.read_only_status()
 
-      assert status.deployment_mode == "ha_lite"
+      assert status.deployment_mode == "active_standby"
       assert status.controller_role == "unknown"
       assert status.this_controller_identity == "controller-a"
       assert status.leader_identity == "controller-b"

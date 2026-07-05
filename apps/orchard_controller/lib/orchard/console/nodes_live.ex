@@ -11,7 +11,7 @@ defmodule OrchardConsole.NodesLive do
 
   require Logger
 
-  alias Orchard.ClusterManagement.HALiteStatus
+  alias Orchard.ClusterManagement.ControlPlaneStatus
   alias Orchard.ControlPlane
   alias Orchard.Nodes
   alias Orchard.Nodes.AdmissionCandidate
@@ -246,28 +246,28 @@ defmodule OrchardConsole.NodesLive do
           </.card>
           </div>
 
-          <%!-- HA-lite Control Plane Card --%>
-          <div id="nodes-ha-lite-status-card">
+          <%!-- Control Plane Card --%>
+          <div id="nodes-control-plane-status-card">
           <.card variant={:rail} padding={:sm}>
-            <:title>HA-lite Status</:title>
-            <:subtitle>{ha_lite_subtitle(@ha_lite)}</:subtitle>
+            <:title>Control Plane</:title>
+            <:subtitle>{control_plane_subtitle(@control_plane)}</:subtitle>
 
             <%= cond do %>
-              <% @ha_lite.status == :loading -> %>
-                <.state_message id="nodes-ha-lite-loading" kind={:loading} layout={:compact} title="Loading HA-lite status." />
-              <% @ha_lite.status == :error -> %>
-                <.state_message id="nodes-ha-lite-error" kind={:error} layout={:compact} title="HA-lite status unavailable." body={@ha_lite.message} />
+              <% @control_plane.status == :loading -> %>
+                <.state_message id="nodes-control-plane-loading" kind={:loading} layout={:compact} title="Loading control-plane status." />
+              <% @control_plane.status == :error -> %>
+                <.state_message id="nodes-control-plane-error" kind={:error} layout={:compact} title="Control-plane status unavailable." body={@control_plane.message} />
               <% true -> %>
-                <% status = @ha_lite.status_contract %>
+                <% status = @control_plane.status_contract %>
                 <div class="space-y-4">
                   <div class="flex flex-wrap items-center gap-2">
-                    <.badge tone={ha_lite_deployment_tone(status.deployment_mode)}>
+                    <.badge tone={control_plane_deployment_tone(status.deployment_mode)}>
                       {format_status_value(status.deployment_mode)}
                     </.badge>
-                    <.badge tone={ha_lite_role_tone(status.controller_role)}>
+                    <.badge tone={control_plane_role_tone(status.controller_role)}>
                       {format_status_value(status.controller_role)}
                     </.badge>
-                    <.badge tone={ha_lite_lock_tone(status.advisory_lock_status)}>
+                    <.badge tone={control_plane_lock_tone(status.advisory_lock_status)}>
                       {format_status_value(status.advisory_lock_status)}
                     </.badge>
                   </div>
@@ -497,14 +497,14 @@ defmodule OrchardConsole.NodesLive do
     inventory = fetch_inventory()
     pending_admissions = fetch_pending_admissions(inventory.rows)
     safe_tokenization_counters = fetch_safe_tokenization_counters()
-    ha_lite = fetch_ha_lite_status()
+    control_plane = fetch_control_plane_status()
 
     assign(socket,
       cluster: cluster,
       inventory: inventory,
       pending_admissions: pending_admissions,
       safe_tokenization_counters: safe_tokenization_counters,
-      ha_lite: ha_lite,
+      control_plane: control_plane,
       last_refreshed_at: observed_at
     )
   end
@@ -535,7 +535,7 @@ defmodule OrchardConsole.NodesLive do
         summary: empty_cluster_summary(),
         message: nil
       },
-      ha_lite: %{
+      control_plane: %{
         status: :loading,
         status_contract: nil,
         message: nil
@@ -834,7 +834,7 @@ defmodule OrchardConsole.NodesLive do
     }
   end
 
-  defp fetch_ha_lite_status do
+  defp fetch_control_plane_status do
     %{
       status: :ok,
       status_contract: ControlPlane.read_only_status(),
@@ -842,21 +842,21 @@ defmodule OrchardConsole.NodesLive do
     }
   rescue
     error ->
-      Logger.warning("HA-lite status fetch failed: #{inspect(error)}")
+      Logger.warning("Control-plane status fetch failed: #{inspect(error)}")
 
       %{
         status: :error,
         status_contract: nil,
-        message: "HA-lite control-plane status unavailable."
+        message: "Control-plane status unavailable."
       }
   catch
     kind, reason ->
-      Logger.warning("HA-lite status fetch #{kind}: #{inspect(reason)}")
+      Logger.warning("Control-plane status fetch #{kind}: #{inspect(reason)}")
 
       %{
         status: :error,
         status_contract: nil,
-        message: "HA-lite control-plane status unavailable."
+        message: "Control-plane status unavailable."
       }
   end
 
@@ -978,10 +978,12 @@ defmodule OrchardConsole.NodesLive do
 
   defp target_card_title(%{target_label: label}), do: label
 
-  defp ha_lite_subtitle(%{status: :loading}), do: "Loading read-only control-plane status."
-  defp ha_lite_subtitle(%{status: :error}), do: "Read-only control-plane status unavailable."
+  defp control_plane_subtitle(%{status: :loading}), do: "Loading read-only control-plane status."
 
-  defp ha_lite_subtitle(%{status: :ok, status_contract: %HALiteStatus{} = status}) do
+  defp control_plane_subtitle(%{status: :error}),
+    do: "Read-only control-plane status unavailable."
+
+  defp control_plane_subtitle(%{status: :ok, status_contract: %ControlPlaneStatus{} = status}) do
     deployment_mode = format_status_value(status.deployment_mode)
     controller_role = format_status_value(status.controller_role)
 
@@ -992,7 +994,7 @@ defmodule OrchardConsole.NodesLive do
     end
   end
 
-  defp ha_lite_subtitle(_status), do: "Read-only control-plane status."
+  defp control_plane_subtitle(_status), do: "Read-only control-plane status."
 
   # ===========================================================================
   # Badge helpers
@@ -1099,17 +1101,17 @@ defmodule OrchardConsole.NodesLive do
   defp compatibility_tone("unsupported_version"), do: :error
   defp compatibility_tone(_status), do: :neutral
 
-  defp ha_lite_deployment_tone("ha_lite"), do: :info
-  defp ha_lite_deployment_tone(_mode), do: :neutral
+  defp control_plane_deployment_tone("active_standby"), do: :info
+  defp control_plane_deployment_tone(_mode), do: :neutral
 
-  defp ha_lite_role_tone("leader"), do: :success
-  defp ha_lite_role_tone("standby"), do: :warning
-  defp ha_lite_role_tone(_role), do: :neutral
+  defp control_plane_role_tone("leader"), do: :success
+  defp control_plane_role_tone("standby"), do: :warning
+  defp control_plane_role_tone(_role), do: :neutral
 
-  defp ha_lite_lock_tone("held"), do: :success
-  defp ha_lite_lock_tone("not_held"), do: :warning
-  defp ha_lite_lock_tone("unavailable"), do: :error
-  defp ha_lite_lock_tone(_status), do: :neutral
+  defp control_plane_lock_tone("held"), do: :success
+  defp control_plane_lock_tone("not_held"), do: :warning
+  defp control_plane_lock_tone("unavailable"), do: :error
+  defp control_plane_lock_tone(_status), do: :neutral
 
   # Observe-only memory telemetry display helpers.
   defp memory_budget_status_label(%{display_state: :invalid}), do: "invalid telemetry"
@@ -1224,7 +1226,7 @@ defmodule OrchardConsole.NodesLive do
   defp map_get(_map, _key), do: nil
 
   defp format_status_value(nil), do: "unknown"
-  defp format_status_value("ha_lite"), do: "HA-lite"
+  defp format_status_value("active_standby"), do: "Active/Standby"
 
   defp format_status_value(value) when is_atom(value) do
     value
