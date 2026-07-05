@@ -610,6 +610,7 @@ defmodule OrchardConsole.NodesLiveTest do
 
   setup do
     previous = Application.get_env(:orchard_controller, :console, [])
+    previous_control_plane = Application.get_env(:orchard_controller, :control_plane)
 
     Application.put_env(
       :orchard_controller,
@@ -621,7 +622,17 @@ defmodule OrchardConsole.NodesLiveTest do
       )
     )
 
-    on_exit(fn -> Application.put_env(:orchard_controller, :console, previous) end)
+    Application.put_env(:orchard_controller, :control_plane, role: :single_controller)
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :console, previous)
+
+      if is_nil(previous_control_plane) do
+        Application.delete_env(:orchard_controller, :control_plane)
+      else
+        Application.put_env(:orchard_controller, :control_plane, previous_control_plane)
+      end
+    end)
 
     Sandbox.mode(Repo, {:shared, self()})
     :ok
@@ -641,6 +652,7 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "Admission Review"
       assert html =~ "Registered Nodes"
       assert html =~ "Live Cluster"
+      assert html =~ "HA-lite Status"
     end
 
     test "renders nodes page with section titles", %{conn: conn} do
@@ -649,6 +661,7 @@ defmodule OrchardConsole.NodesLiveTest do
       assert html =~ "Inventory Summary"
       assert html =~ "Registered Nodes"
       assert html =~ "Live Cluster"
+      assert html =~ "HA-lite Status"
     end
 
     test "opts into workspace shell while keeping registered nodes primary", %{conn: conn} do
@@ -665,6 +678,11 @@ defmodule OrchardConsole.NodesLiveTest do
       assert cluster =~ ~s(id="nodes-cluster-summary")
       assert cluster =~ "xl:grid-cols-2"
       refute cluster =~ "xl:grid-cols-6"
+
+      ha_lite = element(view, "#nodes-ha-lite-status-card") |> render()
+      assert ha_lite =~ "bg-slate-100/70"
+      assert ha_lite =~ "HA-lite Status"
+      refute ha_lite =~ "nodes-cluster-summary"
 
       counters = element(view, "#nodes-safe-tokenization-telemetry-card") |> render()
       assert counters =~ "bg-slate-50"
@@ -896,6 +914,74 @@ defmodule OrchardConsole.NodesLiveTest do
 
       assert html =~ "No nodes registered yet."
       assert html =~ "nodes-empty-state"
+    end
+  end
+
+  # ---------------------------------------------------------------------------
+  # HA-lite status
+  # ---------------------------------------------------------------------------
+
+  describe "HA-lite control-plane status" do
+    test "SPEC HA-lite Status Is Read-Only renders directly addressed standby behavior", %{
+      conn: conn
+    } do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :standby,
+        this_controller_identity: "controller-a",
+        ha_lite_status_provider: fn ->
+          %{
+            leader_identity: "controller-b",
+            advisory_lock_status: :not_held,
+            lock_age_ms: 1_200,
+            last_renewed_at: ~U[2026-07-01 00:00:00Z]
+          }
+        end
+      )
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      card = element(view, "#nodes-ha-lite-status-card") |> render()
+
+      assert card =~ "HA-lite Status"
+      assert card =~ "Standby"
+      assert card =~ "Ha lite"
+      assert card =~ "Not held"
+      assert card =~ "controller-a"
+      assert card =~ "controller-b"
+      assert card =~ "1200 ms"
+      assert card =~ "writes return 503 controller standby"
+      refute card =~ "Failover"
+      refute card =~ "Transfer"
+    end
+
+    test "SPEC Leadership status is unavailable does not infer leadership from local role", %{
+      conn: conn
+    } do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a",
+        ha_lite_status_provider: fn -> raise DBConnection.ConnectionError, message: "db down" end
+      )
+
+      {:ok, view, _html} = live(conn, "/console/nodes")
+
+      card = element(view, "#nodes-ha-lite-status-card") |> render()
+
+      assert card =~ "Leader"
+      assert card =~ "Unavailable"
+      assert card =~ "Leader identity"
+      assert card =~ "unknown"
+      assert card =~ "Leadership error"
+      assert card =~ "db down"
+      refute card =~ "Held"
+    end
+
+    test "disconnected render defers HA-lite status until LiveView connects", %{conn: conn} do
+      conn = get(conn, "/console/nodes")
+      body = html_response(conn, 200)
+
+      assert body =~ "nodes-ha-lite-status-card"
+      assert body =~ "Loading HA-lite status."
     end
   end
 
