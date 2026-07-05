@@ -118,5 +118,26 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert decoded["ha_lite"]["leader_identity"] == nil
       assert decoded["ha_lite"]["standby_write_path_behavior"] == "unknown"
     end
+
+    test "SPEC CLI/Console parity degrades malformed provider status to unavailable JSON" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a",
+        ha_lite_status_provider: fn -> %{advisory_lock_status: "flaky"} end
+      )
+
+      assert {:ok, output} = ClusterCmd.run(["status", "--json"])
+      decoded = Jason.decode!(output)
+
+      assert decoded["summary"] == %{
+               "deployment_mode" => "ha_lite",
+               "controller_role" => "unknown",
+               "advisory_lock_status" => "unavailable"
+             }
+
+      assert decoded["ha_lite"]["leader_identity"] == nil
+      assert decoded["ha_lite"]["standby_write_path_behavior"] == "unknown"
+      assert is_binary(decoded["ha_lite"]["last_observed_leadership_error"])
+    end
   end
 end

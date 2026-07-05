@@ -31,14 +31,16 @@ defmodule Orchard.ControlPlane do
     config = control_plane_config()
     role = normalized_role(Keyword.get(config, :role, :single_controller))
 
-    %{
+    base_attrs = %{
       deployment_mode: deployment_mode(role),
       this_controller_identity: Keyword.get(config, :this_controller_identity),
       controller_role: role,
       advisory_lock_status: :unknown,
       standby_write_path_behavior: standby_write_path_behavior(role)
     }
-    |> Map.merge(provider_status(config))
+
+    base_attrs
+    |> Map.merge(provider_status(config, base_attrs))
     |> normalize_unproven_leadership()
     |> HALiteStatus.new!()
   end
@@ -52,10 +54,10 @@ defmodule Orchard.ControlPlane do
     Application.get_env(:orchard_controller, :control_plane, [])
   end
 
-  defp provider_status(config) do
+  defp provider_status(config, base_attrs) do
     case Keyword.get(config, :ha_lite_status_provider) do
       nil -> %{}
-      provider -> provider |> read_provider_status() |> normalize_provider_status()
+      provider -> provider |> read_provider_status() |> normalize_provider_status(base_attrs)
     end
   rescue
     exception -> unavailable_status(Exception.message(exception))
@@ -71,16 +73,32 @@ defmodule Orchard.ControlPlane do
   defp read_provider_status(provider),
     do: {:error, {:invalid_ha_lite_status_provider, inspect(provider)}}
 
-  defp normalize_provider_status({:ok, %{} = attrs}), do: provider_advisory_lock_attrs(attrs)
-  defp normalize_provider_status(%{} = attrs), do: provider_advisory_lock_attrs(attrs)
-  defp normalize_provider_status({:error, reason}), do: unavailable_status(inspect(reason))
+  defp normalize_provider_status({:ok, %{} = attrs}, base_attrs),
+    do: attrs |> provider_advisory_lock_attrs() |> validate_provider_status(base_attrs)
 
-  defp normalize_provider_status(other),
+  defp normalize_provider_status(%{} = attrs, base_attrs),
+    do: attrs |> provider_advisory_lock_attrs() |> validate_provider_status(base_attrs)
+
+  defp normalize_provider_status({:error, reason}, _base_attrs),
+    do: unavailable_status(inspect(reason))
+
+  defp normalize_provider_status(other, _base_attrs),
     do: unavailable_status("unexpected provider result: #{inspect(other)}")
 
   defp provider_advisory_lock_attrs(attrs) do
     Map.new(@provider_status_keys, fn key -> {key, provider_attr(attrs, key)} end)
     |> Map.reject(fn {_key, value} -> is_nil(value) end)
+  end
+
+  defp validate_provider_status(attrs, base_attrs) do
+    base_attrs
+    |> Map.merge(attrs)
+    |> normalize_unproven_leadership()
+    |> HALiteStatus.new()
+    |> case do
+      {:ok, _status} -> attrs
+      {:error, reason} -> unavailable_status(inspect(reason))
+    end
   end
 
   defp provider_attr(attrs, key) do

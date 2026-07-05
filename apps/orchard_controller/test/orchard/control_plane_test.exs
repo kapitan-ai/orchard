@@ -133,5 +133,28 @@ defmodule Orchard.ControlPlaneTest do
       assert status.advisory_lock_status == "not_held"
       assert status.standby_write_path_behavior == "unknown"
     end
+
+    test "SPEC Leadership status is unavailable when provider emits out-of-vocabulary lock status" do
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a",
+        ha_lite_status_provider: fn ->
+          %{
+            leader_identity: "controller-a",
+            advisory_lock_status: "flaky"
+          }
+        end
+      )
+
+      status = ControlPlane.read_only_status()
+
+      assert status.deployment_mode == "ha_lite"
+      assert status.controller_role == "unknown"
+      assert status.this_controller_identity == "controller-a"
+      assert status.leader_identity == nil
+      assert status.advisory_lock_status == "unavailable"
+      assert status.standby_write_path_behavior == "unknown"
+      assert is_binary(status.last_observed_leadership_error)
+    end
   end
 end
