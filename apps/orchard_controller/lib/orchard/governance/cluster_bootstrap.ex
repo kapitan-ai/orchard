@@ -188,7 +188,7 @@ defmodule Orchard.Governance.ClusterBootstrap do
   defp recovery_client_name(opts) do
     case Keyword.fetch(opts, :client_name) do
       {:ok, name} -> name
-      :error -> "#{@default_client_name}-recovery-#{System.unique_integer([:positive])}"
+      :error -> "#{@default_client_name}-recovery-#{Ecto.UUID.generate()}"
     end
   end
 

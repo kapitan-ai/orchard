@@ -58,6 +58,32 @@ defmodule Orchard.Governance.ClusterBootstrapTest do
       assert audit_log.actor_id == "break-glass"
       assert audit_log.payload["recovery"] == true
     end
+
+    test "default recovery name uses a durable unique UUID suffix" do
+      existing_name = "orchard-bootstrap-admin-recovery-00000000-0000-0000-0000-000000000001"
+
+      assert {:ok, _existing} =
+               %ServiceAccount{}
+               |> ServiceAccount.changeset(%{
+                 tenant_id: Orchard.Governance.legacy_tenant_id(),
+                 name: existing_name,
+                 owner_contact: "existing-operator",
+                 purpose: "cluster_admin_bootstrap"
+               })
+               |> Repo.insert()
+
+      assert {:ok, _first} = ClusterBootstrap.mint_first_admin(client_name: "bootstrap-primary")
+      assert {:ok, recovery} = ClusterBootstrap.mint_recovery_admin(actor_id: "break-glass")
+
+      api_client = Repo.get!(ServiceAccount, recovery.api_client_id)
+
+      assert api_client.name != existing_name
+      assert String.starts_with?(api_client.name, "orchard-bootstrap-admin-recovery-")
+
+      suffix = String.replace_prefix(api_client.name, "orchard-bootstrap-admin-recovery-", "")
+      assert {:ok, _uuid} = Ecto.UUID.cast(suffix)
+      assert recovery.recovery? == true
+    end
   end
 
   describe "leader-only write gate" do

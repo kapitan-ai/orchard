@@ -95,12 +95,24 @@ defmodule OrchardCLI.Commands.ClusterTest do
 
       assert {:ok, _message} = ClusterCmd.run(["init", "--output", first_output])
 
+      existing_name = "orchard-bootstrap-admin-recovery-00000000-0000-0000-0000-000000000001"
+
+      assert {:ok, _existing} =
+               %ServiceAccount{}
+               |> ServiceAccount.changeset(%{
+                 tenant_id: Orchard.Governance.legacy_tenant_id(),
+                 name: existing_name,
+                 owner_contact: "existing-operator",
+                 purpose: "cluster_admin_bootstrap"
+               })
+               |> Repo.insert()
+
       assert {:error, blocked_message, 2} =
                ClusterCmd.run(["init", "--output", blocked_output, "--force-new-admin"])
 
       assert blocked_message =~ "--force-new-admin requires --yes"
       refute File.exists?(blocked_output)
-      assert Repo.aggregate(ServiceAccount, :count, :id) == 1
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 2
 
       assert {:ok, recovery_message} =
                ClusterCmd.run([
@@ -114,9 +126,16 @@ defmodule OrchardCLI.Commands.ClusterTest do
       recovery = Jason.decode!(File.read!(recovery_output))
       token = Map.fetch!(recovery, "api_token")
 
+      api_client = Repo.get!(ServiceAccount, Map.fetch!(recovery, "api_client_id"))
+
       assert recovery_message =~ "Recovery credential: yes"
       refute recovery_message =~ token
-      assert Repo.aggregate(ServiceAccount, :count, :id) == 2
+      assert api_client.name != existing_name
+      assert String.starts_with?(api_client.name, "orchard-bootstrap-admin-recovery-")
+
+      suffix = String.replace_prefix(api_client.name, "orchard-bootstrap-admin-recovery-", "")
+      assert {:ok, _uuid} = Ecto.UUID.cast(suffix)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 3
       assert Repo.aggregate(ApiKey, :count, :id) == 2
       assert Repo.aggregate(RoleBinding, :count, :id) == 2
     end
