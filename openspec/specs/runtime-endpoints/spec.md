@@ -2,7 +2,7 @@
 
 ## Purpose
 Define how Orchard models, observes, and communicates with the execution targets that serve inference work.
-A Runtime Endpoint is the transport-independent boundary between the Controller and node-local execution, with the first-party Node Agent as the v1 endpoint, BEAM Distribution as the promoted default split-role source-dev transport, and gRPC retained as a compatibility adapter.
+A Runtime Endpoint is the transport-independent boundary between the Controller and node-local execution, with the first-party Node Agent as the v1 endpoint, BEAM Distribution as the promoted default split-role source-dev and packaged external-sites transport, and gRPC retained as a compatibility adapter.
 These requirements govern the Runtime Endpoint Interface, transport selection and guardrails, observations and placement capacity, and the source-dev operating model.
 
 ## Requirements
@@ -175,22 +175,48 @@ This changes the role of the gRPC contract currently described in `SPEC.md` sect
 ### Requirement: Source-dev BEAM Primary Rollout
 Orchard SHALL treat the first-party BEAM Runtime Endpoint adapter as promoted to the split-role source-dev Controller-to-Node Agent default, following accepted two-Mac smoke evidence for the adapter.
 The gRPC compatibility path SHALL remain available for split-role source dev only through the explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` opt-out on port `50071`, and it SHALL NOT act as an automatic same-request fallback when BEAM mode is active.
-Packaged and release runtime transport promotion SHALL remain a separate future decision that this rollout does not settle.
 
 #### Scenario: BEAM adapter is promoted after accepted smoke evidence
 - **WHEN** accepted two-Mac smoke evidence exists for the BEAM Runtime Endpoint adapter
 - **THEN** the BEAM Runtime Endpoint transport is the promoted split-role source-dev Controller-to-Node Agent default
 - **THEN** the gRPC compatibility path remains reachable only through the explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` opt-out
 
-#### Scenario: Packaged runtime transport promotion stays separate
-- **WHEN** the split-role source-dev BEAM default is in effect
-- **THEN** packaged or release runtime transport promotion remains a separate future decision that this rollout does not settle
-
 #### Scenario: Source-dev smoke gate is evaluated
 - **WHEN** the accepted two-Mac source-dev smoke is run
 - **THEN** Console Nodes shows local and remote Node Agents reachable
 - **THEN** `GET /v1/models` returns `200`
 - **THEN** `POST /v1/chat/completions` completes through the Console Playground or an equivalent API request
+
+### Requirement: Packaged BEAM External-sites Runtime Default
+Packaged controller releases SHALL default to BEAM Runtime Endpoint transport when `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` is unset.
+Packaged controller releases SHALL require `ORCHARD_RUNTIME_ENDPOINT_TARGETS` with BEAM node-name targets in BEAM mode.
+Packaged controller releases SHALL reject remote BEAM targets when `ORCHARD_BEAM_NODE_NAME` uses a loopback controller host.
+Packaged controller releases SHALL treat `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` as the explicit compatibility fallback and SHALL use `ORCHARD_RUNTIME_CLIENT_TARGETS` only in that fallback mode.
+Packaged node-agent releases SHALL start as BEAM-reachable node agents in BEAM mode and SHALL disable BEAM distribution in explicit gRPC fallback mode.
+Packaged BEAM cookie provisioning SHALL be operator-managed and SHALL use a root-owned mode `0600` shared cookie file.
+Node join, admission, certificate bundle, and generated config bundle flows SHALL remain deferred for this packaged external-sites phase.
+
+#### Scenario: Packaged controller default uses BEAM
+- **WHEN** an Orchard controller release starts without `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT`
+- **THEN** it treats BEAM as the Runtime Endpoint transport
+- **THEN** it requires `ORCHARD_RUNTIME_ENDPOINT_TARGETS` to contain one or more `orchard_node_agent@<worker-ipv4>` BEAM targets
+- **THEN** the legacy gRPC runtime client target surface is not configured as the active scheduling path
+
+#### Scenario: Packaged remote targets require non-loopback controller identity
+- **WHEN** a packaged controller starts in BEAM mode with a remote `orchard_node_agent@<worker-ipv4>` target
+- **AND** `ORCHARD_BEAM_NODE_NAME` still uses `orchard_controller@127.0.0.1`
+- **THEN** Orchard rejects startup before treating the remote target as schedulable
+
+#### Scenario: Packaged node agent starts with BEAM identity
+- **WHEN** an Orchard node-agent release starts in default packaged mode
+- **THEN** it starts with BEAM distribution enabled
+- **THEN** its BEAM node name uses the `orchard_node_agent@<worker-ipv4>` service and host form
+- **THEN** it reads shared cookie material from `ORCHARD_BEAM_COOKIE_FILE` or the packaged default cookie path
+
+#### Scenario: Packaged gRPC fallback is explicit
+- **WHEN** a packaged operator sets `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`
+- **THEN** Orchard uses the legacy gRPC compatibility target configuration
+- **THEN** packaged BEAM release identity and cookie settings are not required for that fallback run
 
 ### Requirement: Source-dev BEAM Split-role Bootstrap
 Orchard SHALL support Source-dev BEAM Runtime Endpoint mode first for the split-role `bin/dev-controller` and `bin/dev-node-agent` entrypoints.
@@ -308,7 +334,8 @@ This refines the source-dev transport rules in `SPEC.md` §1.2 and §7.5.
 ### Requirement: Source-dev BEAM Smoke Evidence Gate
 Orchard SHALL gate Runtime Endpoint transport default promotions on durable two-Mac Source-dev BEAM smoke evidence.
 The split-role source-dev BEAM default promotion executed after that evidence gate passed and is recorded in `docs/decisions/0001-runtime-endpoints-beam-first.md`.
-Future Runtime Endpoint transport default promotions, such as packaged or release runtime transport, SHALL remain gated on the same accepted smoke evidence requirement.
+The packaged external-sites BEAM default promotion SHALL rely on the same accepted smoke evidence requirement and SHALL record package-specific validation in its promotion pull request.
+Future Runtime Endpoint transport default promotions beyond the accepted source-dev and packaged external-sites defaults SHALL remain gated on the same accepted smoke evidence requirement.
 The evidence SHALL be recorded durably in sanitized form in the accepting change package, decision record, or promotion pull request; standalone investigation or evidence documents SHALL NOT be committed to the repository.
 The evidence SHALL include date, commit, sanitized hosts, commands, controller and node-agent BEAM node names, remote Runtime Endpoint RPC evidence, Console Nodes reachability for local and remote Node Agents, `GET /v1/models` returning `200`, and `POST /v1/chat/completions` completing through Console Playground or an equivalent API request.
 The evidence SHALL NOT include cookie material, credentials, raw local evidence logs, local tool session identifiers, or machine-specific filesystem paths.
@@ -353,16 +380,18 @@ This changes the source-dev default transport language currently described along
 
 ### Requirement: BEAM Mode Quiesces the Legacy gRPC Client Surface
 When the BEAM Runtime Endpoint transport is selected, the controller SHALL NOT configure a default legacy gRPC runtime client target.
-The implicit `127.0.0.1:50071` runtime client target SHALL be absent in BEAM mode unless `ORCHARD_RUNTIME_CLIENT_TARGETS` is explicitly set for deliberate gRPC comparison.
-Explicitly set `ORCHARD_RUNTIME_CLIENT_TARGETS` values SHALL continue to configure only the gRPC compatibility surface.
+The implicit `127.0.0.1:50071` or packaged `127.0.0.1:50061` runtime client target SHALL be absent from active scheduling in BEAM mode.
+Explicitly set `ORCHARD_RUNTIME_CLIENT_TARGETS` values SHALL remain scoped to the gRPC compatibility surface and SHALL NOT become active Runtime Endpoint targets while BEAM Runtime Endpoint targets are configured.
+Operators and contributors SHALL select `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` when they intend to use the gRPC compatibility path.
 
 #### Scenario: BEAM mode without explicit gRPC targets
 - **WHEN** the controller starts in BEAM mode without `ORCHARD_RUNTIME_CLIENT_TARGETS` set
 - **THEN** no legacy gRPC runtime client target is configured or logged as active
 
-#### Scenario: Deliberate comparison targets remain possible
+#### Scenario: Explicit gRPC compatibility requires transport opt-out
 - **WHEN** the controller starts in BEAM mode with `ORCHARD_RUNTIME_CLIENT_TARGETS` explicitly set
-- **THEN** the explicit gRPC targets are configured for comparison while BEAM remains the active Runtime Endpoint transport
+- **THEN** BEAM Runtime Endpoint targets remain the active scheduling surface
+- **THEN** the explicit gRPC targets are not merged into the active Runtime Endpoint target list
 
 ### Requirement: All-in-one Source Dev Remains Single-host gRPC Loopback
 All-in-one `bin/dev` SHALL keep its single-host gRPC loopback default and SHALL reject explicit BEAM mode with a clear error.
@@ -371,4 +400,3 @@ Split-role scripts SHALL remain the only supported source-dev BEAM entry points.
 #### Scenario: All-in-one rejects explicit BEAM mode
 - **WHEN** `bin/dev` starts with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`
 - **THEN** startup fails with a clear error directing the operator to the split-role scripts
-

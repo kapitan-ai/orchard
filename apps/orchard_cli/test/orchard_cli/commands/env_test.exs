@@ -159,7 +159,7 @@ defmodule OrchardCLI.Commands.EnvTest do
       assert summary =~ "node-agent.env"
       assert summary =~ "created"
       assert summary =~ "SECRET_KEY_BASE generated"
-      assert summary =~ "DATABASE_URL generated for local PostgreSQL"
+      assert summary =~ "DATABASE_URL left for operator-managed external PostgreSQL"
 
       # Verify files exist
       controller_env = Path.join([support_root, "config", "controller.env"])
@@ -171,15 +171,32 @@ defmodule OrchardCLI.Commands.EnvTest do
       controller_content = File.read!(controller_env)
 
       assert controller_content =~
-               "DATABASE_URL=\"ecto://orchard_test_user@localhost:5432/orchard_controller\""
+               "# DATABASE_URL=\"ecto://USER:PASSWORD@postgres.example.internal:5432/orchard_controller?ssl=true\""
 
       assert controller_content =~ "SECRET_KEY_BASE=\"#{expected_secret_key_base()}\""
-      refute controller_content =~ ~r/^# DATABASE_URL=/m
+      refute controller_content =~ ~r/^DATABASE_URL=/m
       refute controller_content =~ ~r/^# SECRET_KEY_BASE=/m
       assert controller_content =~ "ORCHARD_TRANSPORT_MODE=\"plain_http_localhost\""
       assert controller_content =~ "ORCHARD_TRUSTED_PROXIES=\"127.0.0.1/32,::1/128\""
       assert controller_content =~ "ORCHARD_TLS_CERTFILE=\"/path/to/server.crt\""
-      assert controller_content =~ "ORCHARD_RUNTIME_CLIENT_TARGETS"
+      assert controller_content =~ ~r/^ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="beam"$/m
+      assert controller_content =~ ~r/^ORCHARD_BEAM_NODE_NAME="orchard_controller@127\.0\.0\.1"$/m
+      assert controller_content =~ "ORCHARD_BEAM_COOKIE_FILE="
+      assert controller_content =~ "config/beam.cookie"
+      assert controller_content =~ "sudo install -d -o root -g wheel -m 0750"
+      assert controller_content =~ "openssl rand -base64 48"
+      assert controller_content =~ "sudo chmod 0600"
+      assert controller_content =~ "ORCHARD_BEAM_EPMD_PORT=\"4369\""
+      assert controller_content =~ "ORCHARD_BEAM_DIST_PORT_MIN=\"52171\""
+      assert controller_content =~ "ORCHARD_BEAM_DIST_PORT_MAX=\"52171\""
+      assert controller_content =~ "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
+      assert controller_content =~ "orchard_node_agent@10.0.0.21"
+      assert controller_content =~ "Use BEAM node names, not gRPC host:port"
+      assert controller_content =~ "gRPC compatibility fallback"
+
+      assert controller_content =~
+               "ORCHARD_RUNTIME_CLIENT_TARGETS=\"10.0.0.21:50061,10.0.0.22:50061\""
+
       assert controller_content =~ "ORCHARD_PUBLIC_HOST=\"replace-with-lan-or-tailscale-host\""
       assert controller_content =~ "ORCHARD_TOKENIZER_EXECUTABLE="
       assert controller_content =~ "Application Support"
@@ -191,8 +208,20 @@ defmodule OrchardCLI.Commands.EnvTest do
       refute File.exists?(Path.join([support_root, "public", "endpoint.json"]))
 
       node_agent_content = File.read!(node_agent_env)
-      assert node_agent_content =~ "ORCHARD_NODE_AGENT_LISTEN_HOST"
-      assert node_agent_content =~ "ORCHARD_NODE_AGENT_LISTEN_PORT=\"50061\""
+      assert node_agent_content =~ ~r/^ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="beam"$/m
+      assert node_agent_content =~ ~r/^ORCHARD_BEAM_NODE_NAME="orchard_node_agent@127\.0\.0\.1"$/m
+      assert node_agent_content =~ "ORCHARD_BEAM_COOKIE_FILE="
+      assert node_agent_content =~ "config/beam.cookie"
+      assert node_agent_content =~ "root-owned and mode 0600"
+      assert node_agent_content =~ "same cookie contents"
+      assert node_agent_content =~ "ORCHARD_BEAM_EPMD_PORT=\"4369\""
+      assert node_agent_content =~ "ORCHARD_BEAM_DIST_PORT_MIN=\"52172\""
+      assert node_agent_content =~ "ORCHARD_BEAM_DIST_PORT_MAX=\"52172\""
+      assert node_agent_content =~ ~r/^ORCHARD_NODE_AGENT_LISTEN_HOST="127\.0\.0\.1"$/m
+      assert node_agent_content =~ ~r/^# ORCHARD_NODE_AGENT_LISTEN_HOST="0\.0\.0\.0"$/m
+      assert node_agent_content =~ ~r/^ORCHARD_NODE_AGENT_LISTEN_PORT="50061"$/m
+      assert node_agent_content =~ "trusted private network or VPN"
+      assert node_agent_content =~ "firewall"
       assert node_agent_content =~ "ORCHARD_WORKER_EXECUTABLE="
       assert node_agent_content =~ "ORCHARD_NODE_DISPLAY_NAME="
       assert node_agent_content =~ "Pending M3 join flow"
@@ -261,6 +290,8 @@ defmodule OrchardCLI.Commands.EnvTest do
       refute File.exists?(Path.join(config_dir, "node-agent.env"))
 
       content = File.read!(controller_env)
+      assert content =~ "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
+      assert content =~ "ORCHARD_BEAM_NODE_NAME=\"orchard_controller@127.0.0.1\""
       assert content =~ "ORCHARD_RUNTIME_CLIENT_TARGETS"
       assert content =~ "ORCHARD_PUBLIC_HOST=\"replace-with-lan-or-tailscale-host\""
       refute content =~ "ORCHARD_NODE_AGENT_LISTEN_HOST"
@@ -289,6 +320,10 @@ defmodule OrchardCLI.Commands.EnvTest do
         Path.join([support_root, "config", "node-agent.env"])
         |> File.read!()
 
+      assert content =~ "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=\"beam\""
+      assert content =~ "ORCHARD_BEAM_NODE_NAME=\"orchard_node_agent@127.0.0.1\""
+      assert content =~ "ORCHARD_BEAM_COOKIE_FILE="
+      assert content =~ "ORCHARD_BEAM_EPMD_PORT=\"4369\""
       assert content =~ "ORCHARD_NODE_AGENT_LISTEN_HOST"
       assert content =~ "ORCHARD_NODE_AGENT_LISTEN_PORT=\"50061\""
       assert content =~ "Pending M3 join flow"
@@ -298,18 +333,21 @@ defmodule OrchardCLI.Commands.EnvTest do
     end
   end
 
-  test "init writes commented database URL when postgres is not detected" do
+  test "init leaves external database URL for operator setup and never runs createdb" do
     tmp_dir =
       System.tmp_dir!()
-      |> Path.join("orchard_env_no_pg_#{System.unique_integer([:positive])}")
+      |> Path.join("orchard_env_external_pg_#{System.unique_integer([:positive])}")
 
     try do
       support_root = setup_support_root(tmp_dir)
+      parent = self()
 
       runtime =
         test_runtime(%{
-          find_executable: fn _ -> nil end,
-          detect_postgresql: fn -> :error end
+          cmd: fn command, args, _opts ->
+            send(parent, {:unexpected_cmd, command, args})
+            {:error, 1, "unexpected command"}
+          end
         })
 
       assert {:ok, summary} = Env.run(["init", "--support-root", support_root], runtime)
@@ -319,77 +357,11 @@ defmodule OrchardCLI.Commands.EnvTest do
         |> File.read!()
 
       assert controller_content =~
-               "# DATABASE_URL=\"ecto://USER@localhost:5432/orchard_controller\""
+               "# DATABASE_URL=\"ecto://USER:PASSWORD@postgres.example.internal:5432/orchard_controller?ssl=true\""
 
       assert controller_content =~ "SECRET_KEY_BASE=\"#{expected_secret_key_base()}\""
-      assert summary =~ "PostgreSQL executable not detected"
-    after
-      File.rm_rf!(tmp_dir)
-    end
-  end
-
-  test "init treats createdb already exists as non-fatal" do
-    tmp_dir =
-      System.tmp_dir!()
-      |> Path.join("orchard_env_exists_#{System.unique_integer([:positive])}")
-
-    try do
-      support_root = setup_support_root(tmp_dir)
-
-      runtime =
-        test_runtime(%{
-          cmd: fn
-            command, ["-U", "orchard_test_user", "orchard_controller"], _opts ->
-              if Path.basename(command) == "createdb" do
-                {:error, 1, "database \"orchard_controller\" already exists"}
-              else
-                {:error, 1, "unsupported command"}
-              end
-
-            _command, _args, _opts ->
-              {:error, 1, "unsupported command"}
-          end
-        })
-
-      assert {:ok, summary} = Env.run(["init", "--support-root", support_root], runtime)
-      assert summary =~ "Database orchard_controller already exists"
-    after
-      File.rm_rf!(tmp_dir)
-    end
-  end
-
-  test "init treats createdb failure as non-fatal" do
-    tmp_dir =
-      System.tmp_dir!()
-      |> Path.join("orchard_env_createdb_fail_#{System.unique_integer([:positive])}")
-
-    try do
-      support_root = setup_support_root(tmp_dir)
-
-      runtime =
-        test_runtime(%{
-          cmd: fn
-            command, ["-U", "orchard_test_user", "orchard_controller"], _opts ->
-              if Path.basename(command) == "createdb" do
-                {:error, 2, "permission denied"}
-              else
-                {:error, 1, "unsupported command"}
-              end
-
-            _command, _args, _opts ->
-              {:error, 1, "unsupported command"}
-          end
-        })
-
-      assert {:ok, summary} = Env.run(["init", "--support-root", support_root], runtime)
-      assert summary =~ "Database auto-create failed"
-
-      controller_content =
-        Path.join([support_root, "config", "controller.env"])
-        |> File.read!()
-
-      assert controller_content =~
-               "DATABASE_URL=\"ecto://orchard_test_user@localhost:5432/orchard_controller\""
+      assert summary =~ "DATABASE_URL left for operator-managed external PostgreSQL"
+      refute_received {:unexpected_cmd, _command, _args}
     after
       File.rm_rf!(tmp_dir)
     end
@@ -421,7 +393,7 @@ defmodule OrchardCLI.Commands.EnvTest do
         })
 
       {:ok, _} = Env.run(["init", "--support-root", support_root], runtime)
-      assert_received :createdb_called
+      refute_received :createdb_called
 
       assert {:ok, summary} = Env.run(["init", "--support-root", support_root], runtime)
       refute_received :createdb_called

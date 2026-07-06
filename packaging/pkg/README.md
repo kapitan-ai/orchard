@@ -32,6 +32,88 @@ Before starting the controller for the first time:
 3. Create `controller.env` with the required variables (see below).
 4. Run release migrations (see below).
 
+## Packaged External-Sites Multi-Mac First Cut
+
+The first external-sites packaged cut supports one controller Mac and one or more node-agent Macs on a trusted private network or VPN.
+It uses operator-managed external PostgreSQL and BEAM Runtime Endpoint transport as the packaged multi-Mac happy path.
+gRPC remains available only as an explicit compatibility fallback.
+Managed Postgres, node admission/certificate bootstrap, and `orchardctl node join` remain out of scope for this cut.
+
+Network prerequisites:
+
+- The controller Mac and each node-agent Mac can reach one another over EPMD TCP `4369` or the shared `ORCHARD_BEAM_EPMD_PORT`.
+- The controller Mac can reach each node-agent Mac on the configured BEAM distribution ports.
+- Defaults are controller TCP `52171` and node-agent TCP `52172`.
+- Use the same root-owned mode `0600` `ORCHARD_BEAM_COOKIE_FILE` contents on every participating Mac.
+- Do not expose BEAM EPMD, BEAM distribution ports, or node-agent gRPC directly to the public internet.
+- The controller Mac can reach the external PostgreSQL server.
+
+Provision the BEAM cookie once, then copy the same file contents to each participating Mac through an operator-controlled secure channel:
+
+```bash
+sudo install -d -o root -g wheel -m 0750 '/Library/Application Support/Orchard/config'
+openssl rand -base64 48 | sudo tee '/Library/Application Support/Orchard/config/beam.cookie' >/dev/null
+sudo chown root:wheel '/Library/Application Support/Orchard/config/beam.cookie'
+sudo chmod 0600 '/Library/Application Support/Orchard/config/beam.cookie'
+```
+
+Controller host sequence:
+
+1. Seed `.install-role.request` with `controller` or `all` before installing the PKG.
+2. Install the universal PKG.
+3. Run `sudo orchardctl env init --service controller` for a controller-only host, or `sudo orchardctl env init --service all` for an all-in-one host.
+4. Edit `/Library/Application Support/Orchard/config/controller.env`.
+5. Set `DATABASE_URL` for operator-managed external PostgreSQL, for example `ecto://USER:PASSWORD@postgres.example.internal:5432/orchard_controller?ssl=true`.
+6. Keep the generated `SECRET_KEY_BASE` unless intentionally rotating it.
+7. Keep `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="beam"`.
+8. Set `ORCHARD_BEAM_NODE_NAME` to `orchard_controller@<controller-ipv4>`.
+   The controller rejects remote BEAM targets when its node name still uses a loopback host.
+9. Provision `ORCHARD_BEAM_COOKIE_FILE` with the same root-owned mode `0600` cookie file used by every node-agent Mac.
+10. Set `ORCHARD_RUNTIME_ENDPOINT_TARGETS` to comma-separated node-agent BEAM node names, for example `orchard_node_agent@10.0.0.21,orchard_node_agent@10.0.0.22`.
+11. Set `ORCHARD_BEAM_EPMD_PORT`, `ORCHARD_BEAM_DIST_PORT_MIN`, and `ORCHARD_BEAM_DIST_PORT_MAX` only when the defaults conflict with local services or firewall policy.
+12. Configure `ORCHARD_TRANSPORT_MODE`, `ORCHARD_PUBLIC_HOST`, and related transport values for direct HTTPS, reverse proxy, or explicit local generated HTTPS.
+13. Run `sudo orchardctl migrate`.
+14. Run `sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json`.
+15. Store the One-time Secret Output on protected removable media or another operator-controlled secure location.
+16. Run `sudo orchardctl start`.
+17. Verify with `orchardctl status`.
+
+Node-agent host sequence:
+
+1. Seed `.install-role.request` with `node-agent` before installing the PKG.
+2. Install the universal PKG.
+3. Run `sudo orchardctl env init --service node-agent`.
+4. Edit `/Library/Application Support/Orchard/config/node-agent.env`.
+5. Keep `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="beam"`.
+6. Set `ORCHARD_BEAM_NODE_NAME` to `orchard_node_agent@<worker-ipv4>`.
+7. Provision `ORCHARD_BEAM_COOKIE_FILE` with the same root-owned mode `0600` cookie file used by the controller Mac.
+8. Keep `ORCHARD_NODE_AGENT_LISTEN_HOST="127.0.0.1"` unless intentionally using the gRPC compatibility fallback.
+9. Set `ORCHARD_NODE_DISPLAY_NAME` and worker backend settings for the host.
+10. Run `sudo orchardctl start`.
+11. Verify with `orchardctl status` and the node-agent launchd log at `/Library/Application Support/Orchard/logs/node-agent.log`.
+
+Verification:
+
+- On each host, `orchardctl status` should show the role-selected service state.
+- On the controller, readiness should report PostgreSQL reachable and migrations current.
+- On the controller, Runtime Endpoint target configuration should match each remote node-agent BEAM node name in `ORCHARD_RUNTIME_ENDPOINT_TARGETS`.
+- After admin credentials, tenant/API access, model import, and model activation are configured, use `/v1/models` and a single chat completion request as the external-site API smoke test.
+
+gRPC compatibility fallback:
+
+- Set `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="grpc"` on the controller and node-agent hosts.
+- Configure node-agent `ORCHARD_NODE_AGENT_LISTEN_HOST` and `ORCHARD_NODE_AGENT_LISTEN_PORT` for a trusted private network or VPN.
+- Configure controller `ORCHARD_RUNTIME_CLIENT_TARGETS` with comma-separated node-agent `host:port` values.
+- Use this path only for compatibility or diagnostic fallback, not as the packaged happy path.
+
+Explicit deferrals:
+
+- `orchardctl node join` remains a deferred M3 node lifecycle path.
+- Node admission, certificate bootstrap, and first-party mTLS between controller and node-agent Macs remain future work.
+- BEAM cookie provisioning is operator-managed in this phase and must produce a root-owned mode `0600` file.
+- The PKG does not generate admission bundles, node certificates, or join-time config bundles.
+- Managed Postgres is unavailable in this build.
+
 ## Install Role Selection
 
 Orchard ships a **universal PKG payload**. The install role controls which
@@ -197,9 +279,10 @@ ORCHARD_TOKENIZER_EXECUTABLE=/Library/Application Support/Orchard/native/orchard
 Use `orchardctl env init` (below) to generate correctly-quoted templates.
 You can target a specific role template with `--service controller`,
 `--service node-agent`, or keep `--service all` for both files. Generated
-templates include role-aware guidance comments (for controller runtime targets /
-public host / tokenizer path, and for node-agent listen host+port / identity /
-worker path, plus clearly marked M3 join placeholders).
+templates include role-aware guidance comments for controller BEAM Runtime
+Endpoint targets, public host, tokenizer path, node-agent BEAM node identity,
+cookie path, EPMD/distribution ports, gRPC compatibility settings, worker path,
+and clearly marked M3 join placeholders.
 
 ### Controller env file lifecycle
 
@@ -215,14 +298,22 @@ This creates `controller.env` and `node-agent.env` under
 - Shell-safe quoted values (handles the space in `Application Support`)
 - Auto-detected absolute paths to packaged tokenizer and worker executables
   (uses `.venv/bin/` entrypoints directly — no `uv` or PATH dependency)
-- Placeholder comments for required secrets (`DATABASE_URL`, `SECRET_KEY_BASE`)
+- A generated `SECRET_KEY_BASE`
+- A commented external PostgreSQL `DATABASE_URL` placeholder
+- BEAM Runtime Endpoint transport, node-name, cookie-file, EPMD, and distribution-port templates
+- BEAM controller target comments for remote node-agent Macs
+- A node-agent gRPC listener template that starts on loopback and is documented as compatibility/fallback only
 
-Then fill in the required secrets:
+Then fill in the required external database and runtime target values:
 
 ```bash
 sudo vi '/Library/Application Support/Orchard/config/controller.env'
-# Uncomment and set DATABASE_URL and SECRET_KEY_BASE
+# Uncomment and set DATABASE_URL.
+# Set ORCHARD_RUNTIME_ENDPOINT_TARGETS when using remote node-agent Macs.
+# Provision ORCHARD_BEAM_COOKIE_FILE with the same root-owned mode 0600 cookie on every Mac.
 ```
+
+Leave the generated `SECRET_KEY_BASE` in place unless intentionally rotating it.
 
 Then run migrations through the packaged CLI:
 
@@ -234,9 +325,13 @@ sudo orchardctl migrate
 
 ```bash
 sudo tee '/Library/Application Support/Orchard/config/controller.env' >/dev/null <<'EOF'
-DATABASE_URL="postgres://USER:PASSWORD@HOST:5432/DB_NAME"
+DATABASE_URL="ecto://USER:PASSWORD@postgres.example.internal:5432/orchard_controller?ssl=true"
 SECRET_KEY_BASE="<generate-with-mix-phx-gen-secret>"
 ORCHARD_TOKENIZER_EXECUTABLE="/Library/Application Support/Orchard/native/orchard_tokenizer/.venv/bin/orchard-tokenizer"
+ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="beam"
+ORCHARD_RUNTIME_ENDPOINT_TARGETS="orchard_node_agent@10.0.0.21"
+ORCHARD_BEAM_NODE_NAME="orchard_controller@10.0.0.10"
+ORCHARD_BEAM_COOKIE_FILE="/Library/Application Support/Orchard/config/beam.cookie"
 EOF
 sudo chown root:wheel '/Library/Application Support/Orchard/config/controller.env'
 sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
@@ -256,6 +351,13 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
 | `ORCHARD_CONSOLE_ENABLED` | `false` | Enable the operator console UI |
 | `ORCHARD_CONSOLE_USERNAME` | — | Console Basic Auth username (required when console enabled) |
 | `ORCHARD_CONSOLE_PASSWORD` | — | Console Basic Auth password (required when console enabled) |
+| `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` | `beam` | Runtime Endpoint transport. Use `grpc` only for compatibility fallback. |
+| `ORCHARD_RUNTIME_ENDPOINT_TARGETS` | required for BEAM multi-Mac | Comma-separated node-agent BEAM node names such as `orchard_node_agent@10.0.0.21`. |
+| `ORCHARD_BEAM_NODE_NAME` | `orchard_controller@127.0.0.1` | Controller BEAM node name. Use `orchard_controller@<controller-ipv4>` for multi-Mac; remote BEAM targets are rejected while this remains loopback. |
+| `ORCHARD_BEAM_COOKIE_FILE` | `/Library/Application Support/Orchard/config/beam.cookie` | Root-owned mode `0600` BEAM cookie file shared across controller and node-agent Macs. |
+| `ORCHARD_BEAM_EPMD_PORT` | `4369` | EPMD port. Set the same override on every Mac when needed. |
+| `ORCHARD_BEAM_DIST_PORT_MIN` / `ORCHARD_BEAM_DIST_PORT_MAX` | `52171` | Controller BEAM distribution port range. |
+| `ORCHARD_RUNTIME_CLIENT_TARGETS` | unset | gRPC compatibility fallback only. Comma-separated node-agent `host:port` values. |
 | `POOL_SIZE` | `10` | Ecto connection pool size |
 | `ECTO_IPV6` | — | Set to `true` for IPv6 socket options |
 
@@ -1022,22 +1124,11 @@ controller-bearing installs (`all` or `controller`):
 1. Provide or verify the Orchard license through the supported licensing path;
    do not place license keys in shell history, logs, package payloads, or MDM
    command arguments.
-2. Run `sudo orchardctl env init` and fill in required database/runtime values.
-3. Run `sudo orchardctl migrate`.
-4. Run `sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json`.
+2. Run `sudo orchardctl env init --service controller` for controller-only hosts, or `sudo orchardctl env init --service all` for all-in-one hosts.
+3. Edit `controller.env` with external `DATABASE_URL`, the generated or deliberately rotated `SECRET_KEY_BASE`, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings.
+4. Run `sudo orchardctl migrate`.
+5. Run `sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json`.
    This mints the first cluster-admin API Client credential as One-time Secret Output.
-5. Create an Organization and API Token before making public `/v1` API calls.
-   Tenant-direct API Tokens remain supported for manual/bootstrap use and the token is printed once:
-   ```bash
-   sudo orchardctl tenants create --slug default --name "Default"
-   sudo orchardctl api-keys create --tenant-id <tenant-id> --name "Primary"
-   ```
-   For internal developers, applications, coding agents, or automation clients, use bulk API Client provisioning instead:
-   ```bash
-   sudo orchardctl api-clients bulk-provision --dry-run --file /path/to/api-clients.csv
-   sudo orchardctl api-clients bulk-provision --apply --file /path/to/api-clients.csv --output /secure/path/api-client-tokens.csv
-   ```
-   The input CSV requires `organization`, `api_client`, `owner_contact`, and `key_name`, and the output CSV is One-time Secret Output containing the new API Tokens.
 6. Run `sudo orchardctl transport enable-local-https --host HOST` for the local
    generated-CA direct HTTPS path, or configure an operator-managed direct HTTPS
    certificate/reverse-proxy transport before starting services.
@@ -1047,9 +1138,27 @@ controller-bearing installs (`all` or `controller`):
 8. Run `sudo orchardctl start`.
 9. Verify with `orchardctl status`.
 
-For `node-agent` role installs, run `sudo orchardctl env init`, fill in the
-node-agent environment, then run `sudo orchardctl start` and verify with
-`orchardctl status`.
+Before making public `/v1` API calls, create an Organization and API Token.
+Tenant-direct API Tokens remain supported for manual/bootstrap use and the token is printed once:
+
+```bash
+sudo orchardctl tenants create --slug default --name "Default"
+sudo orchardctl api-keys create --tenant-id <tenant-id> --name "Primary"
+```
+
+For internal developers, applications, coding agents, or automation clients, use bulk API Client provisioning instead:
+
+```bash
+sudo orchardctl api-clients bulk-provision --dry-run --file /path/to/api-clients.csv
+sudo orchardctl api-clients bulk-provision --apply --file /path/to/api-clients.csv --output /secure/path/api-client-tokens.csv
+```
+
+The input CSV requires `organization`, `api_client`, `owner_contact`, and `key_name`.
+The output CSV is One-time Secret Output containing the new API Tokens.
+
+For `node-agent` role installs, run `sudo orchardctl env init --service node-agent`, fill in `node-agent.env` with `ORCHARD_BEAM_NODE_NAME`, `ORCHARD_BEAM_COOKIE_FILE`, EPMD/distribution ports, node display name, and worker settings, then run `sudo orchardctl start` and verify with `orchardctl status`.
+The generated gRPC listener starts on loopback and is only for compatibility/fallback mode.
+Change it to a private interface address or `0.0.0.0` only when explicitly using `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="grpc"` and the node-agent Mac is protected by a trusted private network or VPN and firewall rules.
 
 `orchardctl cluster init` mints the first cluster-admin API Client credential as
 a local, one-shot, audited controller-host operation after migrations are
@@ -1130,6 +1239,14 @@ The script exports `ORCHARD_BUILD_CHANNEL=trial` when the variable is unset. If 
 | `--allow-dirty` | Supported dev-build escape hatch when your tree is not clean (adds `-dirty` to the git SHA segment) |
 | `--stage-only` | Stage the payload, verify Python venv closure, optionally payload-sign Mach-O files, print `STAGING_BASE=<path>`, and skip `pkgbuild` |
 | `output_dir` | Custom output directory (default: `./artifacts/pkg-builds/YYYY-MM-DD/`) |
+
+### Source Exposure Posture
+
+Current PKG builds use a bytecode/deterrence posture.
+Elixir components ship as releases and native helpers are staged through non-editable packaging virtualenv entrypoints.
+The build script verifies that duplicate native helper source trees are not staged under `native/orchard_tokenizer/src`, `native/orchard_tokenizer/tests`, `native/orchard_worker_mlx/src`, `native/orchard_worker_mlx/tests`, or `native/orchard_worker_mlx/proto`.
+This reduces obvious payload source exposure, but it does not provide compiled source protection.
+Compiled protection and stronger obfuscation remain later release-hardening targets.
 
 ### Dev PKG path (no signing/notarization/stapling)
 

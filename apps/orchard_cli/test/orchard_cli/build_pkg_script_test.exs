@@ -72,6 +72,27 @@ defmodule OrchardCLI.BuildPkgScriptTest do
     refute plist_section =~ "com.orchard.postgres.plist"
   end
 
+  test "package build stages native venvs without duplicate helper source trees" do
+    script = File.read!(@script_path)
+
+    assert script =~ "copy_packaging_venv_only"
+    assert script =~ "assert_no_staged_native_sources"
+    assert script =~ ".venv/bin/orchard-tokenizer"
+    assert script =~ ".venv/bin/orchard-worker-mlx"
+
+    for path <- [
+          "native/orchard_tokenizer/src",
+          "native/orchard_tokenizer/tests",
+          "native/orchard_worker_mlx/src",
+          "native/orchard_worker_mlx/tests",
+          "native/orchard_worker_mlx/proto"
+        ] do
+      assert script =~ path
+    end
+
+    refute script =~ "tar --exclude './.venv' -cf - ."
+  end
+
   test "package uninstall runbook deletes shipped wrapper commands" do
     readme = File.read!(@pkg_readme)
     delete_section = section_between(readme, "delete: [", "]")
@@ -84,6 +105,15 @@ defmodule OrchardCLI.BuildPkgScriptTest do
         ] do
       assert delete_section =~ "/Library/Application Support/Orchard/bin/#{wrapper}"
     end
+  end
+
+  test "package runbook describes source exposure as deterrence only" do
+    readme = File.read!(@pkg_readme)
+
+    assert readme =~ "bytecode/deterrence"
+    assert readme =~ "does not provide compiled source protection"
+    assert readme =~ "duplicate native helper source trees are not staged"
+    refute readme =~ "accepted source exposure risk"
   end
 
   defp index_of(haystack, needle) do

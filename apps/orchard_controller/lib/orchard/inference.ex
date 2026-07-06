@@ -202,13 +202,24 @@ defmodule Orchard.Inference do
   def tokenizer_executable, do: config()[:tokenizer_executable]
 
   @spec runtime_client_target() :: keyword() | nil
-  def runtime_client_target, do: config()[:runtime_client_target]
+  def runtime_client_target do
+    case config()[:runtime_endpoint_targets] do
+      targets when is_list(targets) and targets != [] -> nil
+      _other -> config()[:runtime_client_target]
+    end
+  end
 
   @spec runtime_client_targets() :: [keyword()]
   def runtime_client_targets do
-    case config()[:runtime_client_targets] do
-      targets when is_list(targets) and targets != [] -> dedup_targets(targets)
-      _ -> runtime_client_target_fallback(runtime_client_target())
+    case config()[:runtime_endpoint_targets] do
+      targets when is_list(targets) and targets != [] ->
+        []
+
+      _other ->
+        case config()[:runtime_client_targets] do
+          targets when is_list(targets) and targets != [] -> dedup_targets(targets)
+          _ -> runtime_client_target_fallback(runtime_client_target())
+        end
     end
   end
 

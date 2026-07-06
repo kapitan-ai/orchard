@@ -214,9 +214,7 @@ defmodule OrchardCLI.Commands.Env do
     content = render_env(:controller, support_root, controller_settings)
     ShellEnv.write_file(target_path, content)
 
-    notes = controller_settings.notes ++ maybe_create_database(runtime, controller_settings)
-
-    %{status: status, notes: notes}
+    %{status: status, notes: controller_settings.notes}
   end
 
   defp write_rendered_env(:node_agent, target_path, support_root, hostname, _runtime, status) do
@@ -241,6 +239,8 @@ defmodule OrchardCLI.Commands.Env do
 
     # ── Required ──────────────────────────────────────────────────────
 
+    # Operator-managed external PostgreSQL is required for packaged controller installs.
+    # Managed Postgres is unavailable in this build.
     #{controller_settings.database_url_line}
     SECRET_KEY_BASE=#{shell_quote(controller_settings.secret_key_base)}
 
@@ -272,10 +272,42 @@ defmodule OrchardCLI.Commands.Env do
     # ORCHARD_TLS_KEYFILE="/path/to/server.key"
     # ORCHARD_TLS_CACERTFILE="/path/to/ca.crt"
 
-    # Controller gRPC runtime targets for worker placement.
-    # Comma-separated host:port entries (example: "10.0.0.21:50061,10.0.0.22:50061").
-    # Leave unset for single-node/all-in-one installs.
-    # ORCHARD_RUNTIME_CLIENT_TARGETS="replace-with-host:port,host:port"
+    # ── Runtime Endpoint: BEAM-first packaged multi-Mac ───────────────
+
+    # BEAM Runtime Endpoint is the packaged multi-Mac happy path.
+    # Leave this as beam unless intentionally opting into gRPC compatibility.
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="beam"
+
+    # Controller BEAM node name. Replace 127.0.0.1 with this Mac's private
+    # IPv4 address for multi-Mac installs. Remote BEAM targets are rejected
+    # when the controller node name still uses a loopback host.
+    ORCHARD_BEAM_NODE_NAME="orchard_controller@127.0.0.1"
+
+    # Shared BEAM cookie file. Provision the same owner-only file on every
+    # controller and node-agent Mac before starting services.
+    # Example:
+    # sudo install -d -o root -g wheel -m 0750 #{shell_quote(Path.join([support_root, "config"]))}
+    # openssl rand -base64 48 | sudo tee #{shell_quote(Path.join([support_root, "config", "beam.cookie"]))} >/dev/null
+    # sudo chown root:wheel #{shell_quote(Path.join([support_root, "config", "beam.cookie"]))}
+    # sudo chmod 0600 #{shell_quote(Path.join([support_root, "config", "beam.cookie"]))}
+    ORCHARD_BEAM_COOKIE_FILE=#{shell_quote(Path.join([support_root, "config", "beam.cookie"]))}
+
+    # Controller target node names. Use BEAM node names, not gRPC host:port
+    # targets. Replace with the private IPv4 address for each node-agent Mac.
+    # ORCHARD_RUNTIME_ENDPOINT_TARGETS="orchard_node_agent@10.0.0.21,orchard_node_agent@10.0.0.22"
+    # For an all-in-one host with the packaged node-agent service:
+    # ORCHARD_RUNTIME_ENDPOINT_TARGETS="orchard_node_agent@127.0.0.1"
+
+    # EPMD and BEAM distribution ports. If another EPMD owns 4369, set the
+    # same nonstandard ORCHARD_BEAM_EPMD_PORT on every participating Mac.
+    ORCHARD_BEAM_EPMD_PORT="4369"
+    ORCHARD_BEAM_DIST_PORT_MIN="52171"
+    ORCHARD_BEAM_DIST_PORT_MAX="52171"
+
+    # gRPC compatibility fallback. Use only when intentionally opting out of
+    # BEAM by setting ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="grpc" on controller
+    # and node-agent hosts.
+    # ORCHARD_RUNTIME_CLIENT_TARGETS="10.0.0.21:50061,10.0.0.22:50061"
 
     # Browser-facing host for LiveView websocket origin checks.
     # Set to the LAN/Tailscale hostname or IP operators use in the browser URL.
@@ -300,15 +332,40 @@ defmodule OrchardCLI.Commands.Env do
     # This file is sourced as POSIX shell. All values with spaces MUST be quoted.
     # See: packaging/pkg/README.md
 
-    # ── Node Agent Network ────────────────────────────────────────────
+    # ── Runtime Endpoint: BEAM-first packaged multi-Mac ───────────────
 
-    # Node-agent bind host. Default runtime behavior is loopback-only.
-    # Set 0.0.0.0 when this node must be reachable by a remote controller.
+    # BEAM Runtime Endpoint is the packaged multi-Mac happy path.
+    # Leave this as beam unless intentionally opting into gRPC compatibility.
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="beam"
+
+    # Node-agent BEAM node name. Replace 127.0.0.1 with this Mac's private
+    # IPv4 address for multi-Mac installs.
+    ORCHARD_BEAM_NODE_NAME="orchard_node_agent@127.0.0.1"
+
+    # Shared BEAM cookie file. Use the same owner-only file as the controller.
+    # The file must be root-owned and mode 0600 before the service starts.
+    # Copy the same cookie contents to every participating Mac.
+    ORCHARD_BEAM_COOKIE_FILE=#{shell_quote(Path.join([support_root, "config", "beam.cookie"]))}
+
+    # EPMD and BEAM distribution ports. If another EPMD owns 4369, set the
+    # same nonstandard ORCHARD_BEAM_EPMD_PORT on every participating Mac.
+    ORCHARD_BEAM_EPMD_PORT="4369"
+    ORCHARD_BEAM_DIST_PORT_MIN="52172"
+    ORCHARD_BEAM_DIST_PORT_MAX="52172"
+
+    # ── gRPC Compatibility Listener ───────────────────────────────────
+
+    # Node-agent gRPC bind host.
+    # Default is loopback so first start does not expose unauthenticated gRPC.
+    # Change to a private interface address or 0.0.0.0 only when explicitly
+    # running the gRPC compatibility path on a trusted private network or VPN
+    # with firewall controls. Do not expose this port to the public internet.
+    ORCHARD_NODE_AGENT_LISTEN_HOST="127.0.0.1"
     # ORCHARD_NODE_AGENT_LISTEN_HOST="0.0.0.0"
 
-    # Node-agent gRPC listen port.
+    # Node-agent gRPC listen port for compatibility/fallback mode.
     # Packaged default is 50061 (source-dev scripts typically use 50071).
-    # ORCHARD_NODE_AGENT_LISTEN_PORT="50061"
+    ORCHARD_NODE_AGENT_LISTEN_PORT="50061"
 
     # ── Node Identity ─────────────────────────────────────────────────
 
@@ -334,131 +391,16 @@ defmodule OrchardCLI.Commands.Env do
 
   defp build_controller_settings(runtime) do
     secret_key_base = generate_secret_key_base(runtime)
-    user_result = resolve_current_user(runtime)
-    postgresql_result = detect_postgresql(runtime)
 
-    case {user_result, postgresql_result} do
-      {{:ok, username}, {:ok, _postgres_path}} ->
-        database_url = "ecto://#{username}@localhost:5432/#{@default_db_name}"
-
-        %{
-          secret_key_base: secret_key_base,
-          database_url: database_url,
-          database_url_line: "DATABASE_URL=#{shell_quote(database_url)}",
-          notes: [
-            "SECRET_KEY_BASE generated.",
-            "DATABASE_URL generated for local PostgreSQL."
-          ]
-        }
-
-      {{:error, :unknown_user}, _} ->
-        %{
-          secret_key_base: secret_key_base,
-          database_url: nil,
-          database_url_line: "# DATABASE_URL=\"ecto://USER@localhost:5432/#{@default_db_name}\"",
-          notes: [
-            "SECRET_KEY_BASE generated.",
-            "Could not resolve current user; DATABASE_URL left commented for manual setup."
-          ]
-        }
-
-      _ ->
-        %{
-          secret_key_base: secret_key_base,
-          database_url: nil,
-          database_url_line: "# DATABASE_URL=\"ecto://USER@localhost:5432/#{@default_db_name}\"",
-          notes: [
-            "SECRET_KEY_BASE generated.",
-            "PostgreSQL executable not detected; DATABASE_URL left commented for manual setup."
-          ]
-        }
-    end
-  end
-
-  defp resolve_current_user(runtime) do
-    current_user_fn = Map.fetch!(runtime, :current_user)
-
-    case current_user_fn.() do
-      {:ok, user} when is_binary(user) ->
-        user = String.trim(user)
-
-        if user == "" do
-          {:error, :unknown_user}
-        else
-          {:ok, user}
-        end
-
-      _ ->
-        {:error, :unknown_user}
-    end
-  end
-
-  defp detect_postgresql(runtime) do
-    case Map.get(runtime, :detect_postgresql) do
-      detector when is_function(detector, 0) ->
-        detector.()
-
-      _ ->
-        finder = Map.fetch!(runtime, :find_executable)
-
-        homebrew_candidates =
-          Path.wildcard("/opt/homebrew/opt/postgresql*/bin/psql") ++
-            Path.wildcard("/usr/local/opt/postgresql*/bin/psql")
-
-        case Enum.find(homebrew_candidates, &executable?/1) || finder.("psql") do
-          nil -> :error
-          path -> {:ok, path}
-        end
-    end
-  end
-
-  defp maybe_create_database(_runtime, %{database_url: nil}), do: []
-
-  defp maybe_create_database(runtime, %{database_url: _database_url}) do
-    finder = Map.fetch!(runtime, :find_executable)
-
-    with {:ok, username} <- resolve_current_user(runtime),
-         createdb_path when is_binary(createdb_path) <- detect_createdb(finder) do
-      run_createdb(runtime, createdb_path, username)
-    else
-      {:error, :unknown_user} ->
-        ["Could not resolve current user for createdb; database auto-create skipped."]
-
-      nil ->
-        ["createdb not found; database auto-create skipped."]
-
-      _ ->
-        ["createdb invocation skipped due to unsupported runtime command configuration."]
-    end
-  end
-
-  defp run_createdb(runtime, createdb_path, username) do
-    cmd = Map.fetch!(runtime, :cmd)
-    args = ["-U", username, @default_db_name]
-
-    case cmd.(createdb_path, args, stderr_to_stdout: true) do
-      {:ok, _output} ->
-        ["Database #{@default_db_name} created (or already available)."]
-
-      {:error, _status, output} ->
-        createdb_error_note(output)
-    end
-  end
-
-  defp createdb_error_note(output) do
-    if String.contains?(String.downcase(output), "already exists") do
-      ["Database #{@default_db_name} already exists."]
-    else
-      ["Database auto-create failed; continue after creating #{@default_db_name} manually."]
-    end
-  end
-
-  defp detect_createdb(finder) do
-    homebrew_candidates =
-      Path.wildcard("/opt/homebrew/opt/postgresql*/bin/createdb") ++
-        Path.wildcard("/usr/local/opt/postgresql*/bin/createdb")
-
-    Enum.find(homebrew_candidates, &executable?/1) || finder.("createdb")
+    %{
+      secret_key_base: secret_key_base,
+      database_url_line:
+        "# DATABASE_URL=\"ecto://USER:PASSWORD@postgres.example.internal:5432/#{@default_db_name}?ssl=true\"",
+      notes: [
+        "SECRET_KEY_BASE generated.",
+        "DATABASE_URL left for operator-managed external PostgreSQL."
+      ]
+    }
   end
 
   defp generate_secret_key_base(runtime) do
@@ -550,59 +492,8 @@ defmodule OrchardCLI.Commands.Env do
   defp default_runtime do
     %{
       hostname: fn -> :inet.gethostname() end,
-      current_user: &default_current_user/0,
-      find_executable: &System.find_executable/1,
-      cmd: &default_cmd/3,
       strong_rand_bytes: &:crypto.strong_rand_bytes/1
     }
-  end
-
-  defp default_current_user do
-    sudo_user = System.get_env("SUDO_USER")
-    user = System.get_env("USER")
-
-    cond do
-      present?(sudo_user) -> {:ok, String.trim(sudo_user)}
-      present?(user) -> {:ok, String.trim(user)}
-      true -> fallback_current_user()
-    end
-  end
-
-  defp fallback_current_user do
-    case default_cmd("id", ["-un"], stderr_to_stdout: true) do
-      {:ok, output} -> normalize_resolved_user(output)
-      _ -> {:error, :unknown_user}
-    end
-  end
-
-  defp normalize_resolved_user(output) do
-    value = String.trim(output)
-
-    if value == "" do
-      {:error, :unknown_user}
-    else
-      {:ok, value}
-    end
-  end
-
-  defp present?(value), do: is_binary(value) and String.trim(value) != ""
-
-  defp default_cmd(command, args, opts) do
-    {stderr_to_stdout, system_opts} = Keyword.pop(opts, :stderr_to_stdout, false)
-
-    try do
-      {output, status} =
-        System.cmd(command, args, [{:stderr_to_stdout, stderr_to_stdout} | system_opts])
-
-      if status == 0 do
-        {:ok, output}
-      else
-        {:error, status, output}
-      end
-    rescue
-      _ ->
-        {:error, 127, "command failed: #{command}"}
-    end
   end
 
   # ── Usage Text ──────────────────────────────────────────────────────
