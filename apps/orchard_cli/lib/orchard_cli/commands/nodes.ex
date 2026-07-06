@@ -463,6 +463,7 @@ defmodule OrchardCLI.Commands.Nodes do
   defp action_name(:cordon), do: "node cordon"
   defp action_name(:uncordon), do: "node uncordon"
   defp action_name(:drain), do: "node drain"
+  defp action_name(:cancel_drain), do: "node cancel drain"
   defp action_name(:maintenance), do: "node maintenance"
   defp action_name(:resume), do: "node resume"
   defp action_name(:decommission), do: "node decommission"
@@ -490,6 +491,7 @@ defmodule OrchardCLI.Commands.Nodes do
 
   defp human_reason(:decommission_already_running), do: "node decommission is already running."
   defp human_reason(:drain_already_running), do: "node drain is already running."
+  defp human_reason(:drain_not_running), do: "node drain is not running."
   defp human_reason(:inventory_missing), do: "registered node inventory is missing."
 
   defp human_reason(:lifecycle_transition_invalid),
@@ -626,6 +628,7 @@ defmodule OrchardCLI.Commands.Nodes do
   defp lifecycle_result_label("node_lifecycle.cordoned"), do: "Cordoned"
   defp lifecycle_result_label("node_lifecycle.uncordoned"), do: "Uncordoned"
   defp lifecycle_result_label("node_lifecycle.drain_started"), do: "Started drain for"
+  defp lifecycle_result_label("node_lifecycle.drain_cancelled"), do: "Cancelled drain for"
   defp lifecycle_result_label("node_lifecycle.maintenance_entered"), do: "Moved to maintenance"
   defp lifecycle_result_label("node_lifecycle.resumed"), do: "Resumed"
 
@@ -637,6 +640,7 @@ defmodule OrchardCLI.Commands.Nodes do
   defp lifecycle_command_action("cordon"), do: {:ok, :cordon}
   defp lifecycle_command_action("uncordon"), do: {:ok, :uncordon}
   defp lifecycle_command_action("drain"), do: {:ok, :drain}
+  defp lifecycle_command_action("cancel-drain"), do: {:ok, :cancel_drain}
   defp lifecycle_command_action("maintenance"), do: {:ok, :maintenance}
   defp lifecycle_command_action("resume"), do: {:ok, :resume}
   defp lifecycle_command_action("decommission"), do: {:ok, :decommission}
@@ -752,6 +756,7 @@ defmodule OrchardCLI.Commands.Nodes do
         "  cordon   Stop scheduling new work to an active node",
         "  uncordon Allow scheduling to a cordoned node",
         "  drain    Start draining an active or cordoned node",
+        "  cancel-drain Stop an in-progress drain and leave the node cordoned",
         "  maintenance Move a draining node into maintenance",
         "  resume   Resume a maintenance node",
         "  decommission Start decommissioning a node"
@@ -830,6 +835,13 @@ defmodule OrchardCLI.Commands.Nodes do
       "drain",
       "Previews or starts draining an active or cordoned node.",
       "Execution requires --yes, --acknowledge, and a preview with no blockers."
+    )
+  end
+
+  defp lifecycle_usage(:cancel_drain) do
+    lifecycle_usage(
+      "cancel-drain",
+      "Previews or cancels an in-progress drain and leaves the node cordoned."
     )
   end
 

@@ -419,6 +419,10 @@ _Avoid_: Drain, Maintenance
 An operator action that cordons a Node and waits for active requests to finish or be cancelled by policy.
 _Avoid_: Cordon only, Decommission
 
+**Cancel Drain**:
+An operator action that stops waiting for a drain to quiesce while the Node remains cordoned and unschedulable.
+_Avoid_: Uncordon, Drain completion
+
 **Maintenance**:
 An unschedulable Node Lifecycle State for upgrades or diagnostics.
 _Avoid_: Decommission, Node Health

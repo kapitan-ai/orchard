@@ -376,6 +376,41 @@ defmodule OrchardConsole.NodeDetailLiveTest do
       assert render(view) =~ "Resolve blockers and confirm the preview before executing."
     end
 
+    test "OpenSpec cancel drain preview executes to cordoned", %{conn: conn} do
+      node =
+        insert_node!(%{
+          display_name: "cancel-drain-detail-node",
+          state: :draining,
+          health: :healthy
+        })
+
+      {:ok, view, _html} = live(conn, "/console/nodes/#{node.id}")
+
+      view
+      |> element("#node-detail-open-lifecycle-cancel_drain")
+      |> render_click()
+
+      html = render(view)
+      assert html =~ "Cancel Drain Preview"
+      assert html =~ "node_lifecycle.drain_cancelled"
+      assert html =~ "Draining"
+      assert html =~ "Cordoned"
+      assert has_element?(view, "#action-submit[disabled]")
+
+      attrs = %{"action" => %{"confirmed" => "true"}}
+
+      view
+      |> form("#node-action-form", attrs)
+      |> render_change()
+
+      view
+      |> form("#node-action-form", attrs)
+      |> render_submit()
+
+      assert Repo.get!(Node, node.id).state == :cordoned
+      assert render(view) =~ "Node drain cancelled."
+    end
+
     test "previews maintenance but keeps execution blocked until drain completion is verified", %{
       conn: conn
     } do

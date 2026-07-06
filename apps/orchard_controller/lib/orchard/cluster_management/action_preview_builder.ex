@@ -63,6 +63,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
              :cordon,
              :uncordon,
              :drain,
+             :cancel_drain,
              :maintenance,
              :resume,
              :decommission
@@ -114,6 +115,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
              :cordon,
              :uncordon,
              :drain,
+             :cancel_drain,
              :maintenance,
              :resume,
              :decommission
@@ -248,6 +250,7 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilder do
   defp blocker_message(:inventory_missing), do: "Registered node inventory is missing."
   defp blocker_message(:decommission_already_running), do: "Node decommission is already running."
   defp blocker_message(:drain_already_running), do: "Node drain is already running."
+  defp blocker_message(:drain_not_running), do: "Node drain is not running."
 
   defp blocker_message(:lifecycle_transition_invalid),
     do: "Node lifecycle state does not allow this action."

@@ -65,7 +65,8 @@
 - [x] 4.8 Implement `orchardctl cluster status --json` for read-only control-plane status and cluster summary status.
   Note: This slice adds `orchardctl cluster status --json` with a shared `ControlPlaneStatus` payload and a control-plane-focused `summary` block for deployment mode, controller role, and advisory-lock status.
   Node inventory and runtime reachability counts intentionally remain on the existing node and Live Cluster surfaces rather than being duplicated into this command.
-- [ ] 4.9 Implement the `cancel_drain` lifecycle action per ADR 0009 and `SPEC.md` §4.3/§4.4: allowed only from `draining`, target `cordoned`, with dry-run preview, confirmation, `drain_not_running` blocker for non-draining states, audit, CLI command, and Console action panel pickup.
+- [x] 4.9 Implement the `cancel_drain` lifecycle action per ADR 0009 and `SPEC.md` §4.3/§4.4: allowed only from `draining`, target `cordoned`, with dry-run preview, confirmation, `drain_not_running` blocker for non-draining states, audit, CLI command, and Console action panel pickup.
+  Note: This slice adds `cancel_drain` as a shared lifecycle action, `orchardctl nodes cancel-drain`, Console action-panel copy, `drain_not_running` preview and execution blockers, mutation-time revalidation, audit coverage, and the Cancel Drain glossary term.
   Note: cancel drain stops waiting for active-request quiescence and leaves the node unschedulable as `cordoned`; it certifies no drain completion and does not weaken the `drain_completion_unverified` gate on `maintenance`.
 
 ## 5. Console Nodes UX

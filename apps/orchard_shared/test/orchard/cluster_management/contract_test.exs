@@ -15,6 +15,7 @@ defmodule Orchard.ClusterManagement.ContractTest do
     assert "node_not_active" in ReasonCodes.scheduler_rejection_codes()
     assert "lower_tier_not_considered" in ReasonCodes.scheduler_skip_codes()
     assert "node_not_pending_admission" in ReasonCodes.action_blocker_codes()
+    assert "drain_not_running" in ReasonCodes.action_blocker_codes()
     assert "lifecycle_transition_invalid" in ReasonCodes.action_blocker_codes()
     assert "node_unhealthy" in ReasonCodes.action_blocker_codes()
     assert "requires_reason" in ReasonCodes.confirmation_requirement_codes()
