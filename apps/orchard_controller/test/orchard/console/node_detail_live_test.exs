@@ -7,6 +7,8 @@ defmodule OrchardConsole.NodeDetailLiveTest.RuntimeMemoryBudgetStub do
     recommended_context_tokens =
       :persistent_term.get({__MODULE__, :recommended_context_tokens}, 24_576)
 
+    truncated_count = :persistent_term.get({__MODULE__, :truncated_count}, 0)
+
     [
       %{
         target: [host: "127.0.0.1", port: 50_071],
@@ -34,7 +36,7 @@ defmodule OrchardConsole.NodeDetailLiveTest.RuntimeMemoryBudgetStub do
             recommended_context_tokens: recommended_context_tokens
           }
         ],
-        runtime_memory_budgets_truncated_count: 0,
+        runtime_memory_budgets_truncated_count: truncated_count,
         runtime_prefix_cache_statuses: []
       }
     ]
@@ -76,6 +78,10 @@ defmodule OrchardConsole.NodeDetailLiveTest do
 
       :persistent_term.erase(
         {OrchardConsole.NodeDetailLiveTest.RuntimeMemoryBudgetStub, :recommended_context_tokens}
+      )
+
+      :persistent_term.erase(
+        {OrchardConsole.NodeDetailLiveTest.RuntimeMemoryBudgetStub, :truncated_count}
       )
 
       Application.put_env(:orchard_controller, :control_plane, previous_control_plane)
@@ -145,6 +151,34 @@ defmodule OrchardConsole.NodeDetailLiveTest do
       assert html =~ "Recommended Context"
       assert html =~ "unknown"
       refute html =~ "Recommended Context</span><span class=\"font-mono\">0"
+    end
+
+    test "surfaces truncated memory budget rows in the telemetry card", %{conn: conn} do
+      node =
+        insert_node!(%{
+          display_name: "detail-budget-node",
+          state: :active,
+          health: :healthy
+        })
+
+      create_model!(%{model_id: "test-model", version: "v1", max_context_tokens: 32_768})
+
+      :persistent_term.put(
+        {OrchardConsole.NodeDetailLiveTest.RuntimeMemoryBudgetStub, :node_id},
+        node.id
+      )
+
+      :persistent_term.put(
+        {OrchardConsole.NodeDetailLiveTest.RuntimeMemoryBudgetStub, :truncated_count},
+        2
+      )
+
+      put_runtime_stub(OrchardConsole.NodeDetailLiveTest.RuntimeMemoryBudgetStub)
+
+      {:ok, _view, html} = live(conn, "/console/nodes/#{node.id}")
+
+      assert html =~ "node-detail-memory-budget-truncation"
+      assert html =~ "2 additional memory budget row(s) truncated upstream."
     end
 
     test "renders candidate evidence without exposing direct admit", %{conn: conn} do

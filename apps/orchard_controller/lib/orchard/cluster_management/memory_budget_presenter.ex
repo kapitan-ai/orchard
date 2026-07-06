@@ -5,6 +5,8 @@ defmodule Orchard.ClusterManagement.MemoryBudgetPresenter do
 
   alias Orchard.Models
 
+  @probe_timeout_ms 2_000
+
   @type memory_budget_block :: %{
           runtime_memory_budgets: [map()],
           runtime_memory_budgets_truncated_count: non_neg_integer()
@@ -12,7 +14,7 @@ defmodule Orchard.ClusterManagement.MemoryBudgetPresenter do
 
   @spec for_node(map() | struct(), module()) :: memory_budget_block() | nil
   def for_node(node, runtime_impl \\ OrchardConsole.Runtime) do
-    runtime_impl.cluster_snapshot()
+    runtime_impl.cluster_snapshot(timeout: @probe_timeout_ms)
     |> Enum.find(&runtime_snapshot_matches_node?(&1, node))
     |> memory_budget_from_snapshot()
   rescue
@@ -23,13 +25,29 @@ defmodule Orchard.ClusterManagement.MemoryBudgetPresenter do
 
   defp runtime_snapshot_matches_node?(snapshot, node) when is_map(snapshot) do
     metadata = map_value(snapshot, :node_metadata)
+    snapshot_node_id = metadata_value(metadata, :node_id)
+    node_id = node_value(node, :id)
 
-    metadata_value(metadata, :node_id) == node_value(node, :id) or
-      metadata_value(metadata, :display_name) == node_value(node, :display_name) or
-      metadata_value(metadata, :hostname) == node_value(node, :hostname)
+    if present?(snapshot_node_id) and present?(node_id) do
+      snapshot_node_id == node_id
+    else
+      matches_field?(metadata, node, :display_name) or
+        matches_field?(metadata, node, :hostname)
+    end
   end
 
   defp runtime_snapshot_matches_node?(_snapshot, _node), do: false
+
+  defp matches_field?(metadata, node, key) do
+    snapshot_value = metadata_value(metadata, key)
+    node_value = node_value(node, key)
+
+    present?(snapshot_value) and present?(node_value) and snapshot_value == node_value
+  end
+
+  defp present?(value) when is_binary(value), do: String.trim(value) != ""
+  defp present?(nil), do: false
+  defp present?(_value), do: true
 
   defp memory_budget_from_snapshot(nil), do: nil
 

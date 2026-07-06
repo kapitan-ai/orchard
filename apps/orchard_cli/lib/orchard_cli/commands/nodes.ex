@@ -537,19 +537,18 @@ defmodule OrchardCLI.Commands.Nodes do
   defp render_node(node, false) do
     status = node.status
 
-    Enum.join(
-      [
-        "Node #{node.id}",
-        "Display name: #{node.display_name}",
-        "Hostname: #{node.hostname}",
-        "State: #{node.state}",
-        "Health: #{node.health}",
-        "Admission: #{get_in(status, [:admission, :category])}",
-        "Scheduling: #{format_scheduling(get_in(status, [:scheduling]))}",
-        format_memory_budget(node[:memory_budget])
-      ],
-      "\n"
-    )
+    [
+      "Node #{node.id}",
+      "Display name: #{node.display_name}",
+      "Hostname: #{node.hostname}",
+      "State: #{node.state}",
+      "Health: #{node.health}",
+      "Admission: #{get_in(status, [:admission, :category])}",
+      "Scheduling: #{format_scheduling(get_in(status, [:scheduling]))}",
+      format_memory_budget(node[:memory_budget])
+    ]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
   end
 
   defp render_pending(%{data: []}, false), do: "No admission candidates pending review."
@@ -626,13 +625,22 @@ defmodule OrchardCLI.Commands.Nodes do
 
   defp format_memory_budget(nil), do: nil
 
-  defp format_memory_budget(%{runtime_memory_budgets: budgets}) do
+  defp format_memory_budget(%{runtime_memory_budgets: budgets} = memory_budget) do
     rows = Enum.map_join(budgets, "\n", &format_memory_budget_row/1)
 
-    "Memory budget:\n" <> rows
+    ["Memory budget:\n" <> rows, format_truncation_notice(memory_budget)]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.join("\n")
   end
 
   defp format_memory_budget(_memory_budget), do: nil
+
+  defp format_truncation_notice(%{runtime_memory_budgets_truncated_count: count})
+       when is_integer(count) and count > 0 do
+    "  Note: #{count} additional memory budget row(s) truncated upstream."
+  end
+
+  defp format_truncation_notice(_memory_budget), do: nil
 
   defp format_memory_budget_row(budget) do
     Enum.join(

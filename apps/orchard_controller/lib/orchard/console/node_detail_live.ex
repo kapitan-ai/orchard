@@ -413,6 +413,13 @@ defmodule OrchardConsole.NodeDetailLive do
                       </div>
                     </dl>
                   </div>
+                  <p
+                    :if={memory_budget_truncated_count(@memory_budget) > 0}
+                    id="node-detail-memory-budget-truncation"
+                    class="text-sm text-amber-700 dark:text-amber-400"
+                  >
+                    Note: {memory_budget_truncated_count(@memory_budget)} additional memory budget row(s) truncated upstream.
+                  </p>
                 </div>
               </.card>
             </div>
@@ -1004,6 +1011,12 @@ defmodule OrchardConsole.NodeDetailLive do
 
   defp memory_budget_headroom_label(%{headroom_available: true}), do: "estimate reported"
   defp memory_budget_headroom_label(_budget), do: "estimate unavailable"
+
+  defp memory_budget_truncated_count(%{runtime_memory_budgets_truncated_count: count})
+       when is_integer(count) and count > 0,
+       do: count
+
+  defp memory_budget_truncated_count(_memory_budget), do: 0
 
   defp format_positive_integer(value) when is_integer(value) and value > 0,
     do: Integer.to_string(value)

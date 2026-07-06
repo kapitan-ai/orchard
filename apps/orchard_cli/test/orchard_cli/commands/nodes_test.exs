@@ -7,6 +7,8 @@ defmodule OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub do
     recommended_context_tokens =
       :persistent_term.get({__MODULE__, :recommended_context_tokens}, 24_576)
 
+    truncated_count = :persistent_term.get({__MODULE__, :truncated_count}, 0)
+
     [
       %{
         target: [host: "127.0.0.1", port: 50_071],
@@ -42,7 +44,7 @@ defmodule OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub do
             recommended_context_tokens: recommended_context_tokens
           }
         ],
-        runtime_memory_budgets_truncated_count: 0,
+        runtime_memory_budgets_truncated_count: truncated_count,
         runtime_prefix_cache_statuses: []
       }
     ]
@@ -113,6 +115,10 @@ defmodule OrchardCLI.Commands.NodesTest do
 
       :persistent_term.erase(
         {OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub, :recommended_context_tokens}
+      )
+
+      :persistent_term.erase(
+        {OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub, :truncated_count}
       )
 
       :persistent_term.erase({OrchardCLI.Commands.NodesTest.RuntimeNoMemoryBudgetStub, :node_id})
@@ -389,6 +395,28 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert output =~ "Max context tokens: 32768"
       assert output =~ "Recommended context tokens: unknown"
       refute output =~ "Recommended context tokens: 0"
+    end
+
+    test "human output surfaces truncated memory budget rows" do
+      node = insert_node!(display_name: "budget-node", state: :active, health: :healthy)
+      insert_model!(model_id: "test-model", version: "v1", max_context_tokens: 32_768)
+
+      :persistent_term.put(
+        {OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub, :node_id},
+        node.id
+      )
+
+      :persistent_term.put(
+        {OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub, :truncated_count},
+        3
+      )
+
+      put_runtime_stub(OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub)
+
+      assert {:ok, output} = NodesCmd.run(["inspect", node.id])
+
+      assert output =~ "Memory budget:"
+      assert output =~ "Note: 3 additional memory budget row(s) truncated upstream."
     end
 
     test "json output omits memory budget when no Runtime Endpoint budget is available" do
