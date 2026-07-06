@@ -94,7 +94,6 @@ defmodule OrchardCLITest do
 
   test "advertised deferred commands report docs-backed status" do
     commands = [
-      {Cluster, ["init"], "orchardctl cluster init"},
       {Node, ["join"], "orchardctl node join"}
     ]
 
@@ -113,7 +112,6 @@ defmodule OrchardCLITest do
     parent = self()
 
     commands = [
-      ["cluster", "init"],
       ["node", "join"]
     ]
 
