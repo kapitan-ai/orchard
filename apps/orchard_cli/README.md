@@ -14,8 +14,11 @@ This README is orientation only. Normative CLI requirements live in
 - Read-only cluster status through `cluster status`, with a `--json` mode that
   emits the shared `ControlPlaneStatus` payload plus an Active/Standby-focused summary of
   deployment mode, controller role, and advisory-lock status.
+- First cluster-admin provisioning through `cluster init`, minting the bootstrap
+  admin API Client credential with required One-time Secret Output (`--output`),
+  `--json`, `--client-name`, and `--force-new-admin`/`--yes` recovery minting.
 - SPEC-required future command paths that return explicit deferred status until
-  their milestones land: `cluster init` and `node join`.
+  their milestones land: `node join`.
 - Node-admission-review commands (`nodes inspect`, `nodes pending`,
   `nodes admit`, `nodes reject`) with stable JSON and human output, `--dry-run`
   previews, and `--yes`/`--reason` execution gating.
@@ -40,10 +43,21 @@ This README is orientation only. Normative CLI requirements live in
 
 ## Current command status
 
-The deferred paths above are advertised by `orchardctl`, exit non-zero when
-run, and print command-specific usage, `SPEC.md` traceability, and the current
-supported source-dev or packaged workflow. `--help` for the same paths is
+The deferred path above is advertised by `orchardctl`, exits non-zero when
+run, and prints command-specific usage, `SPEC.md` traceability, and the current
+supported source-dev or packaged workflow. `--help` for the same path is
 side-effect free.
+
+`orchardctl cluster init` mints the first cluster-admin API Client credential as
+a local, one-shot, audited controller-host operation behind the leader-only
+write gate. It requires a `--output` path for One-time Secret Output with
+preflight; the token is written only to that file (never stdout) and only its
+hash and prefix persist. It refuses with a stable `cluster_already_initialized`
+error once an enabled cluster-scoped admin exists, `--force-new-admin --yes`
+mints an additional recovery admin without mutating existing credentials, and
+`--client-name` overrides the default bootstrap client name. Successful output
+directs operators to provision named admin API Clients and then revoke the
+bootstrap credential; `--json` emits the same contract for automation.
 
 `orchardctl requests inspect <request-id>` reads the local controller Repo and renders the persisted scheduler explanation for the request.
 Use `--json` for the same stable explanation map exposed by the Operator API presenter.

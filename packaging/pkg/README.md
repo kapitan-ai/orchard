@@ -1049,10 +1049,18 @@ For `node-agent` role installs, run `sudo orchardctl env init`, fill in the
 node-agent environment, then run `sudo orchardctl start` and verify with
 `orchardctl status`.
 
-Do not use the deferred cluster-bootstrap CLI paths for current PKG bootstrap:
-`orchardctl cluster init` and `orchardctl node join` return deferred status in
-this build. Role selection, env generation, service start, and
-`orchardctl status` are the supported path.
+`orchardctl cluster init` mints the first cluster-admin API Client credential as
+a local, one-shot, audited controller-host operation after migrations are
+applied. It requires a `--output` One-time Secret Output path (the token is
+written only to that file, never stdout), refuses a second init with
+`cluster_already_initialized`, and supports `--force-new-admin --yes` recovery
+minting, `--client-name`, and `--json`. It is credential-only: TLS material and
+role/service setup remain separate, and `postinstall` never seeds admin
+credentials.
+
+`orchardctl node join` remains a deferred cluster-bootstrap CLI path and returns
+deferred status in this build. Role selection, env generation, service start,
+and `orchardctl status` are the supported path for node bring-up.
 
 This deferred bootstrap ensures services start with valid environment and TLS
 configuration rather than crash-looping with missing setup.
