@@ -27,6 +27,11 @@ commit raw prompt exports, local execution evidence, active goal packages,
 interview JSON, annotation state, tool session identifiers, credentials, DSNs,
 or machine-specific paths.
 
+Investigation notes, smoke evidence documents, and slice plans are transient:
+do not commit them as standalone repo documents. Promote their durable
+conclusions into `SPEC.md`, docs, decisions, tests, or code, and record
+execution evidence in the relevant pull request or issue.
+
 Durable conclusions belong in this repo: `SPEC.md`, `docs/**`,
 `docs/decisions/**`, tests, code, or approved OpenSpec materials.
 

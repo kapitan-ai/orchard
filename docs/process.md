@@ -32,6 +32,7 @@ For durable decisions, see [`decisions/README.md`](decisions/README.md).
 | Idea or issue | GitHub issue, PR note, local scratch | Commit only if standalone and useful |
 | Local goal package | `goals/<slug>/` | Ignored; not committed by default |
 | Local context/evidence | `.codex/`, `.claude/`, local evidence dirs, and logs | Ignored unless sanitized and promoted |
+| Investigation or smoke evidence | PR/issue comments and decision records | Never committed as standalone docs; promote durable conclusions |
 | OpenSpec proposed change | `openspec/changes/<change-id>/` | Commit when ready for collaborator review |
 | Shared product language | `docs/glossary/CONTEXT.md` | Commit when standalone and aligned with `SPEC.md` |
 | Durable decision | `docs/decisions/**` | Commit when standalone and product-relevant |

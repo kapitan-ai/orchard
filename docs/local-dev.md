@@ -255,7 +255,7 @@ Do not rely on automatic gRPC fallback when BEAM mode is selected.
 #### Source-dev BEAM Runtime Endpoint Split-role Mode
 
 Source dev defaults to BEAM Runtime Endpoint mode for split-role launches through `bin/dev-controller` and `bin/dev-node-agent`.
-Accepted two-Mac smoke evidence is recorded in `docs/investigations/source-dev-beam-smoke-2026-06-27.md`, and the BEAM default was promoted on 2026-07-05.
+Accepted two-Mac smoke evidence is summarized in `docs/decisions/0001-runtime-endpoints-beam-first.md`, and the BEAM default was promoted on 2026-07-05.
 Leave `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT` unset or set it to `beam` for the default split-role BEAM path.
 Set `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` only when intentionally opting into the gRPC compatibility path on port `50071`.
 All-in-one `bin/dev` intentionally rejects explicit BEAM mode and remains the single-host gRPC default.
@@ -650,8 +650,8 @@ It should not fall back to gRPC.
 6. Playground inference should attribute requests to specific nodes when the scheduler has multiple eligible targets.
 7. Killing the remote node-agent should transition its health to degraded or unreachable.
 
-Do not create `docs/investigations/source-dev-beam-smoke-<date>.md` unless a real two-Mac BEAM smoke has actually been run.
-When that evidence is added, sanitize host labels, commands, node names, pass/fail status, and Runtime Endpoint RPC evidence.
+Do not commit smoke evidence notes or investigation documents; record smoke evidence in the promoting pull request, issue, or decision record, and only for smokes that actually ran.
+When recording that evidence, sanitize host labels, commands, node names, pass/fail status, and Runtime Endpoint RPC evidence.
 The evidence must not include cookie material, credentials, raw logs, prompt exports, local tool session identifiers, DSNs, or machine-specific filesystem paths.
 BEAM split-role default promotion was accepted on 2026-07-05 after the smoke evidence gate passed.
 

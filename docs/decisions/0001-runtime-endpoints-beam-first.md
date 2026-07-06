@@ -39,7 +39,9 @@ Placement Capacity is a first-class Runtime Endpoint observation and must be exp
 Unknown, malformed, duplicate, or nonmatching Placement Capacity must not prove eligibility for an active loaded placement.
 
 The BEAM Runtime Endpoint adapter is the primary source-dev Controller-to-Node Agent path for split-role `bin/dev-controller` and `bin/dev-node-agent` launches after accepted two-Mac smoke evidence and explicit promotion.
-The accepted smoke evidence is recorded in `docs/investigations/source-dev-beam-smoke-2026-06-27.md`.
+The accepted 2026-06-27 two-Mac smoke evidence is summarized here as the durable gate record.
+That run tested base commit `995879a13710` with a controller plus local node-agent on one Mac and a remote node-agent on a second Mac, using three named BEAM nodes with sanitized RFC 5737 address literals, EPMD port `43690`, owner-only shared cookie files verified by digest, and the stub worker backend.
+Both Runtime Endpoint targets were reachable through `BeamClient.connect/1` and `BeamClient.status/2` with `availability: :available`; Console Nodes reported two configured and two reachable targets with healthy runtime cards; `GET /v1/models` returned `200`; and `POST /v1/chat/completions` completed with dispatch outcome `ok` using `mlx-community/Llama-3.2-1B-Instruct-4bit`.
 The 2026-07-05 refresh on `main` 3454423 revalidated BEAM transport, observation, admission, lifecycle actions, and multi-node scheduler explanations against a real remote node-agent.
 The 2026-07-05 promotion makes split-role source dev behave as if `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam` when the variable is unset.
 Current split-role source dev continues to expose the gRPC Compatibility Adapter on port `50071` only through explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` opt-out.
@@ -53,8 +55,9 @@ When BEAM Runtime Endpoint mode is selected, BEAM connection failure must fail v
 gRPC remains an explicitly selected compatibility mode, not an implicit fallback behind BEAM mode.
 Promotion starts with split-role `bin/dev-controller` and `bin/dev-node-agent` before changing all-in-one `bin/dev`.
 The accepted smoke gate requires remote BEAM Runtime Endpoint RPC evidence, Console Nodes to show local and remote Node Agents reachable, `GET /v1/models` to return `200`, and `POST /v1/chat/completions` to complete through the Console Playground or an equivalent API request.
-Before flipping source-dev defaults, keep durable smoke evidence in a sanitized repo document such as `docs/investigations/source-dev-beam-smoke-<date>.md`, including date, commit, sanitized hosts, commands, target node names, pass/fail checklist, and remote Runtime Endpoint RPC evidence.
-The committed evidence must not include cookie material, credentials, raw local evidence logs, local tool session identifiers, or machine-specific filesystem paths.
+Before flipping source-dev defaults, record durable smoke evidence in sanitized form in the accepting change package, decision record, or promotion pull request, including date, commit, sanitized hosts, commands, target node names, pass/fail checklist, and remote Runtime Endpoint RPC evidence.
+Standalone investigation or evidence documents are not committed to the repo; durable conclusions are promoted into decisions, specs, docs, or tests instead.
+The recorded evidence must not include cookie material, credentials, raw local evidence logs, local tool session identifiers, or machine-specific filesystem paths.
 Console Nodes live diagnostics use the configured Runtime Endpoint target list, so explicit BEAM Runtime Endpoint targets take precedence over legacy gRPC runtime client targets during that smoke.
 Do not remove gRPC compatibility before BEAM Runtime Endpoint transport is explicitly promoted after that smoke.
 
