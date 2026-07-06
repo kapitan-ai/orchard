@@ -619,6 +619,140 @@ if config_env() == :prod do
 
   config :orchard_shared, :licensing, licensing_config
 
+  runtime_endpoint_transport = fn env_name, default ->
+    case System.get_env(env_name) do
+      nil ->
+        default
+
+      value ->
+        case String.trim(value) do
+          "" -> default
+          "beam" -> :beam
+          "grpc" -> :grpc
+          other -> raise "#{env_name} must be beam|grpc, got: #{inspect(other)}"
+        end
+    end
+  end
+
+  beam_service_host = fn value, env_name ->
+    case value |> to_string() |> String.split("@") do
+      [service, host] when service != "" and host != "" ->
+        {service, host}
+
+      _other ->
+        raise "#{env_name} has invalid BEAM node-name segment #{inspect(value)}"
+    end
+  end
+
+  validate_beam_service_name = fn service, env_name, segment ->
+    unless String.match?(service, ~r/^[A-Za-z0-9_.-]+$/) do
+      raise "#{env_name} has invalid BEAM service name in segment #{inspect(segment)}"
+    end
+  end
+
+  parse_beam_ipv4 = fn host, env_name, segment ->
+    case :inet.parse_ipv4strict_address(String.to_charlist(host)) do
+      {:ok, {0, 0, 0, 0}} ->
+        raise "#{env_name} must not use unspecified or wildcard BEAM hosts, got segment #{inspect(segment)}"
+
+      {:ok, ip} ->
+        ip
+
+      {:error, _reason} ->
+        raise "#{env_name} requires IPv4-literal BEAM hosts, got segment #{inspect(segment)}"
+    end
+  end
+
+  beam_target = fn segment, env_name ->
+    {service, host} = beam_service_host.(segment, env_name)
+    validate_beam_service_name.(service, env_name, segment)
+
+    unless service == "orchard_node_agent" do
+      raise "#{env_name} has unsupported BEAM target service in segment #{inspect(segment)}"
+    end
+
+    parse_beam_ipv4.(host, env_name, segment)
+
+    %{
+      transport: :beam,
+      address: "#{service}@#{host}",
+      metadata: %{packaged: true}
+    }
+  end
+
+  beam_targets = fn env_name, required? ->
+    targets =
+      env_csv.(env_name, [])
+      |> Enum.map(&beam_target.(&1, env_name))
+
+    if required? and targets == [] do
+      raise "#{env_name} must include at least one BEAM target when ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam"
+    end
+
+    targets
+  end
+
+  beam_allowed_cidrs = fn targets, env_name ->
+    targets
+    |> Enum.map(fn %{address: address} ->
+      {_service, host} = beam_service_host.(address, env_name)
+      ip = parse_beam_ipv4.(host, env_name, address)
+      {ip, "#{host}/32"}
+    end)
+    |> Enum.uniq_by(fn {ip, _cidr} -> ip end)
+    |> Enum.map(fn {_ip, cidr} -> cidr end)
+  end
+
+  local_beam_config = fn role, targets ->
+    node_name =
+      env_optional_string.("ORCHARD_BEAM_NODE_NAME") ||
+        case role do
+          :controller -> "orchard_controller@127.0.0.1"
+          :node_agent -> "orchard_node_agent@127.0.0.1"
+        end
+
+    {service, host} = beam_service_host.(node_name, "ORCHARD_BEAM_NODE_NAME")
+    validate_beam_service_name.(service, "ORCHARD_BEAM_NODE_NAME", node_name)
+    local_ip = parse_beam_ipv4.(host, "ORCHARD_BEAM_NODE_NAME", node_name)
+
+    case role do
+      :controller ->
+        unless String.starts_with?(service, "orchard_controller") do
+          raise "ORCHARD_BEAM_NODE_NAME local controller BEAM node service must start with orchard_controller"
+        end
+
+        remote_target? =
+          Enum.any?(targets, fn %{address: address} ->
+            {_service, target_host} =
+              beam_service_host.(address, "ORCHARD_RUNTIME_ENDPOINT_TARGETS")
+
+            target_host
+            |> parse_beam_ipv4.("ORCHARD_RUNTIME_ENDPOINT_TARGETS", address)
+            |> then(&(not loopback_ip?.(&1)))
+          end)
+
+        if remote_target? and loopback_ip?.(local_ip) do
+          raise "ORCHARD_BEAM_NODE_NAME controller host must not be loopback when ORCHARD_RUNTIME_ENDPOINT_TARGETS includes remote BEAM targets"
+        end
+
+      :node_agent ->
+        unless service == "orchard_node_agent" do
+          raise "ORCHARD_BEAM_NODE_NAME node-agent BEAM node service must be exactly orchard_node_agent"
+        end
+    end
+
+    [
+      enabled: true,
+      node_name: node_name,
+      cookie_file:
+        env_optional_string.("ORCHARD_BEAM_COOKIE_FILE") ||
+          Path.join([orchard_support_root, "config", "beam.cookie"]),
+      listen_host: host,
+      admitted_services: ["orchard_node_agent"],
+      allowed_cidrs: beam_allowed_cidrs.(targets, "ORCHARD_RUNTIME_ENDPOINT_TARGETS")
+    ]
+  end
+
   config :orchard_controller,
          :upgrade_preflight,
          backup_manifest_path:
@@ -635,6 +769,50 @@ if config_env() == :prod do
       secret_key_base =
         System.get_env("SECRET_KEY_BASE") ||
           raise "environment variable SECRET_KEY_BASE is missing for Orchard controller releases"
+
+      runtime_endpoint_transport_mode =
+        runtime_endpoint_transport.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT", :beam)
+
+      runtime_endpoint_targets =
+        case runtime_endpoint_transport_mode do
+          :beam -> beam_targets.("ORCHARD_RUNTIME_ENDPOINT_TARGETS", true)
+          :grpc -> []
+        end
+
+      runtime_endpoint_inference_config =
+        case runtime_endpoint_targets do
+          [] ->
+            []
+
+          targets ->
+            [
+              runtime_endpoint_client_impl: Orchard.RuntimeEndpoint.BeamClient,
+              runtime_endpoint_targets: targets
+            ]
+        end
+
+      runtime_client_targets =
+        case runtime_endpoint_transport_mode do
+          :beam -> []
+          :grpc -> parse_runtime_targets.("ORCHARD_RUNTIME_CLIENT_TARGETS")
+        end
+
+      runtime_client_target =
+        case runtime_endpoint_transport_mode do
+          :beam ->
+            nil
+
+          :grpc ->
+            [
+              host: System.get_env("ORCHARD_RUNTIME_CLIENT_HOST") || "127.0.0.1",
+              port: env_int.("ORCHARD_RUNTIME_CLIENT_PORT", "50061")
+            ]
+        end
+
+      if runtime_endpoint_transport_mode == :beam do
+        config :orchard_controller, :runtime_endpoint,
+          beam: local_beam_config.(:controller, runtime_endpoint_targets)
+      end
 
       # --- Console configuration ---
       console_enabled? = env_bool.("ORCHARD_CONSOLE_ENABLED", false)
@@ -804,11 +982,8 @@ if config_env() == :prod do
             artifacts_root:
               System.get_env("ORCHARD_ARTIFACTS_ROOT") ||
                 Path.join(orchard_support_root, "bundles"),
-            runtime_client_target: [
-              host: System.get_env("ORCHARD_RUNTIME_CLIENT_HOST") || "127.0.0.1",
-              port: env_int.("ORCHARD_RUNTIME_CLIENT_PORT", "50061")
-            ],
-            runtime_client_targets: parse_runtime_targets.("ORCHARD_RUNTIME_CLIENT_TARGETS"),
+            runtime_client_target: runtime_client_target,
+            runtime_client_targets: runtime_client_targets,
             request_timeout_ms: env_int.("ORCHARD_REQUEST_TIMEOUT_MS", "120000"),
             model_load_timeout_ms: env_int.("ORCHARD_MODEL_LOAD_TIMEOUT_MS", "120000"),
             node_freshness_threshold_ms: env_int.("ORCHARD_NODE_FRESHNESS_THRESHOLD_MS", "30000"),
@@ -881,6 +1056,7 @@ if config_env() == :prod do
               enabled: env_bool.("ORCHARD_MEMORY_ADMISSION_ENABLED", false)
             ]
           )
+          |> Keyword.merge(runtime_endpoint_inference_config)
 
       controller_hf_token =
         env_optional_string.("ORCHARD_HF_TOKEN") || env_optional_string.("HF_TOKEN")

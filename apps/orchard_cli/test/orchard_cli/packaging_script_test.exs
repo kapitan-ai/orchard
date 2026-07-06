@@ -3,6 +3,7 @@ defmodule OrchardCLI.PackagingScriptTest do
 
   @repo_root Path.expand("../../../..", __DIR__)
   @controller_wrapper Path.join(@repo_root, "packaging/pkg/bin/orchard-controller")
+  @node_agent_wrapper Path.join(@repo_root, "packaging/pkg/bin/orchard-node-agent")
   @managed_postgres_wrapper Path.join(@repo_root, "packaging/pkg/bin/orchard-managed-postgres")
   @postinstall Path.join(@repo_root, "packaging/pkg/scripts/postinstall")
 
@@ -283,15 +284,25 @@ defmodule OrchardCLI.PackagingScriptTest do
       assert output =~
                "1. Provide or verify the Orchard license using the supported license activation path."
 
-      assert output =~ "2. Run: sudo orchardctl env init"
-      assert output =~ "3. Run: sudo orchardctl migrate"
+      assert output =~ "2. Run: sudo orchardctl env init --service controller"
 
       assert output =~
-               "4. Configure transport before start. For local generated HTTPS run: sudo orchardctl transport enable-local-https --host HOST; for reverse proxy or external certificates follow the package README."
+               "3. Edit controller.env with external DATABASE_URL, SECRET_KEY_BASE, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings."
 
-      assert output =~ "5. Optional Console: sudo orchardctl console enable"
-      assert output =~ "6. Run: sudo orchardctl start"
-      assert output =~ "7. Verify: orchardctl status"
+      assert output =~
+               "Create the BEAM cookie as root-owned mode 0600, and copy the same cookie contents to every node-agent Mac."
+
+      assert output =~ "4. Run: sudo orchardctl migrate"
+
+      assert output =~
+               "5. Run: sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json"
+
+      assert output =~
+               "6. Configure transport before start. For local generated HTTPS run: sudo orchardctl transport enable-local-https --host HOST; for reverse proxy or external certificates follow the package README."
+
+      assert output =~ "7. Optional Console: sudo orchardctl console enable"
+      assert output =~ "8. Run: sudo orchardctl start"
+      assert output =~ "9. Verify: orchardctl status"
       refute output =~ "Run next: sudo orchardctl start"
       refute output =~ "Then run: sudo orchardctl start"
     end)
@@ -305,12 +316,50 @@ defmodule OrchardCLI.PackagingScriptTest do
 
       assert output =~ "node-agent launchd service(s) were installed but not started."
       assert output =~ "Next steps for first-run setup:"
-      assert output =~ "2. Run: sudo orchardctl env init"
-      assert output =~ "3. Run: sudo orchardctl start"
-      assert output =~ "4. Verify: orchardctl status"
+      assert output =~ "2. Run: sudo orchardctl env init --service node-agent"
+
+      assert output =~
+               "3. Edit node-agent.env with ORCHARD_BEAM_NODE_NAME, ORCHARD_BEAM_COOKIE_FILE, EPMD/distribution ports, node display name, and worker settings."
+
+      assert output =~
+               "Create the BEAM cookie as root-owned mode 0600, and copy the same cookie contents to the controller Mac."
+
+      assert output =~
+               "Keep gRPC listener settings loopback unless intentionally using ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc compatibility fallback."
+
+      assert output =~ "4. Run: sudo orchardctl start"
+      assert output =~ "5. Verify: orchardctl status"
       refute output =~ "orchardctl migrate"
+      refute output =~ "orchardctl cluster init"
       refute output =~ "transport enable-local-https"
       refute output =~ "console enable"
+    end)
+  end
+
+  test "postinstall all-role guidance includes node-agent env review before start" do
+    with_temp_postinstall(fn %{script: script, request_path: request_path} = ctx ->
+      File.write!(request_path, "all\n")
+
+      assert {output, 0} = run_script(script, ctx)
+
+      assert output =~
+               "controller and node-agent launchd service(s) were installed but not started."
+
+      assert output =~ "2. Run: sudo orchardctl env init --service all"
+
+      assert output =~
+               "3. Edit controller.env with external DATABASE_URL, SECRET_KEY_BASE, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings; review node-agent.env for matching BEAM node/cookie settings."
+
+      assert output =~
+               "Create the BEAM cookie as root-owned mode 0600, and copy the same cookie contents to every node-agent Mac."
+
+      assert output =~ "4. Run: sudo orchardctl migrate"
+
+      assert output =~
+               "5. Run: sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json"
+
+      assert output =~ "8. Run: sudo orchardctl start"
+      assert output =~ "9. Verify: orchardctl status"
     end)
   end
 
@@ -334,7 +383,7 @@ defmodule OrchardCLI.PackagingScriptTest do
         assert output =~ "Next steps for first-run setup:"
         assert output =~ "Configure transport before start"
         assert output =~ "for reverse proxy or external certificates follow the package README"
-        assert output =~ "6. Run: sudo orchardctl start"
+        assert output =~ "8. Run: sudo orchardctl start"
       end)
     end
   end
@@ -463,7 +512,7 @@ defmodule OrchardCLI.PackagingScriptTest do
 
         refute output =~ "Configure transport before starting controller services"
         assert output =~ "Next steps for first-run setup:"
-        assert output =~ "6. Run: sudo orchardctl start"
+        assert output =~ "8. Run: sudo orchardctl start"
       end)
     end
   end
@@ -728,6 +777,308 @@ defmodule OrchardCLI.PackagingScriptTest do
       assert output =~ "fake console enabled=true"
       refute output =~ "operator"
       refute output =~ "super-secret-console-password"
+    end)
+  end
+
+  test "controller wrapper configures BEAM release distribution by default" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+        ORCHARD_BEAM_NODE_NAME=orchard_controller@10.0.0.10
+        ORCHARD_BEAM_COOKIE_FILE="#{ctx.cookie_file}"
+        ORCHARD_BEAM_EPMD_PORT=43690
+        ORCHARD_BEAM_DIST_PORT_MIN=52200
+        ORCHARD_BEAM_DIST_PORT_MAX=52201
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"}
+               ])
+
+      assert output =~ "orchard-controller: Runtime Endpoint transport beam"
+      assert output =~ "orchard-controller: BEAM node name orchard_controller@10.0.0.10"
+      assert output =~ "orchard-controller: BEAM EPMD port 43690"
+      assert output =~ "fake release distribution=name"
+      assert output =~ "fake release node=orchard_controller@10.0.0.10"
+      assert output =~ "fake release cookie=set"
+      assert output =~ "fake epmd port=43690"
+      assert output =~ "inet_dist_use_interface {10,0,0,10}"
+      assert output =~ "inet_dist_listen_min 52200"
+      assert output =~ "inet_dist_listen_max 52201"
+      refute output =~ "fixture-cookie"
+    end)
+  end
+
+  test "controller wrapper makes BEAM release identity authoritative over inherited env" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+        ORCHARD_BEAM_NODE_NAME=orchard_controller@10.0.0.10
+        ORCHARD_BEAM_COOKIE_FILE="#{ctx.cookie_file}"
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"RELEASE_DISTRIBUTION", "none"},
+                 {"RELEASE_NODE", "wrong@10.0.0.99"}
+               ])
+
+      assert output =~ "fake release distribution=name"
+      assert output =~ "fake release node=orchard_controller@10.0.0.10"
+      refute output =~ "wrong@10.0.0.99"
+    end)
+  end
+
+  test "controller wrapper demotes gRPC compatibility fallback to non-distributed release" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"}
+               ])
+
+      assert output =~ "Runtime Endpoint transport grpc"
+      assert output =~ "compatibility fallback"
+      assert output =~ "fake release distribution=none"
+      assert output =~ "fake release node="
+      assert output =~ "fake release cookie=unset"
+    end)
+  end
+
+  test "controller wrapper makes gRPC fallback authoritative over inherited release env" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 0} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"RELEASE_DISTRIBUTION", "name"},
+                 {"RELEASE_NODE", "wrong@10.0.0.99"},
+                 {"RELEASE_COOKIE", "inherited-cookie"},
+                 {"ERL_EPMD_PORT", "43699"},
+                 {"ERL_AFLAGS", "-name wrong@10.0.0.99 -setcookie inherited-cookie"}
+               ])
+
+      assert output =~ "fake release distribution=none"
+      assert output =~ "fake release node="
+      assert output =~ "fake release cookie=unset"
+      assert output =~ "fake epmd port="
+      assert output =~ "fake erl aflags=\n"
+      refute output =~ "wrong@10.0.0.99"
+      refute output =~ "inherited-cookie"
+    end)
+  end
+
+  test "controller wrapper rejects non-root-owned BEAM cookie before release start" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+        ORCHARD_BEAM_NODE_NAME=orchard_controller@10.0.0.10
+        ORCHARD_BEAM_COOKIE_FILE="#{ctx.cookie_file}"
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"COOKIE_STAT_UID", "501"}
+               ])
+
+      assert output =~ "ORCHARD_BEAM_COOKIE_FILE must be root-owned"
+      refute output =~ "fake orchard_controller start"
+    end)
+  end
+
+  test "controller wrapper rejects group-readable BEAM cookie before release start" do
+    with_temp_controller_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "controller.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+        ORCHARD_BEAM_NODE_NAME=orchard_controller@10.0.0.10
+        ORCHARD_BEAM_COOKIE_FILE="#{ctx.cookie_file}"
+        ORCHARD_CONSOLE_ENABLED=false
+        """
+      )
+
+      assert {output, 78} =
+               run_controller_wrapper(script, ctx, [
+                 {"CONTROLLER_ENV_STAT_UID", "0"},
+                 {"CONTROLLER_ENV_STAT_MODE", "600"},
+                 {"COOKIE_STAT_MODE", "640"}
+               ])
+
+      assert output =~ "ORCHARD_BEAM_COOKIE_FILE must be owner-only"
+      refute output =~ "fake orchard_controller start"
+    end)
+  end
+
+  test "node-agent wrapper configures BEAM release distribution by default" do
+    with_temp_node_agent_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "node-agent.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+        ORCHARD_BEAM_NODE_NAME=orchard_node_agent@10.0.0.21
+        ORCHARD_BEAM_COOKIE_FILE="#{ctx.cookie_file}"
+        ORCHARD_BEAM_EPMD_PORT=43690
+        ORCHARD_BEAM_DIST_PORT_MIN=52210
+        ORCHARD_BEAM_DIST_PORT_MAX=52210
+        """
+      )
+
+      assert {output, 0} = run_node_agent_wrapper(script, ctx)
+
+      assert output =~ "orchard-node-agent: Runtime Endpoint transport beam"
+      assert output =~ "orchard-node-agent: BEAM node name orchard_node_agent@10.0.0.21"
+      assert output =~ "fake release distribution=name"
+      assert output =~ "fake release node=orchard_node_agent@10.0.0.21"
+      assert output =~ "fake release cookie=set"
+      assert output =~ "fake epmd port=43690"
+      assert output =~ "inet_dist_use_interface {10,0,0,21}"
+      assert output =~ "inet_dist_listen_min 52210"
+      refute output =~ "fixture-cookie"
+    end)
+  end
+
+  test "node-agent wrapper makes BEAM release identity authoritative over inherited env" do
+    with_temp_node_agent_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "node-agent.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+        ORCHARD_BEAM_NODE_NAME=orchard_node_agent@10.0.0.21
+        ORCHARD_BEAM_COOKIE_FILE="#{ctx.cookie_file}"
+        """
+      )
+
+      assert {output, 0} =
+               run_node_agent_wrapper(script, ctx, [
+                 {"RELEASE_DISTRIBUTION", "none"},
+                 {"RELEASE_NODE", "wrong@10.0.0.99"}
+               ])
+
+      assert output =~ "fake release distribution=name"
+      assert output =~ "fake release node=orchard_node_agent@10.0.0.21"
+      refute output =~ "wrong@10.0.0.99"
+    end)
+  end
+
+  test "node-agent wrapper makes gRPC fallback authoritative over inherited release env" do
+    with_temp_node_agent_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "node-agent.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc
+        """
+      )
+
+      assert {output, 0} =
+               run_node_agent_wrapper(script, ctx, [
+                 {"RELEASE_DISTRIBUTION", "name"},
+                 {"RELEASE_NODE", "wrong@10.0.0.99"},
+                 {"RELEASE_COOKIE", "inherited-cookie"},
+                 {"ERL_EPMD_PORT", "43699"},
+                 {"ERL_AFLAGS", "-name wrong@10.0.0.99 -setcookie inherited-cookie"}
+               ])
+
+      assert output =~ "Runtime Endpoint transport grpc"
+      assert output =~ "compatibility fallback"
+      assert output =~ "fake release distribution=none"
+      assert output =~ "fake release node="
+      assert output =~ "fake release cookie=unset"
+      assert output =~ "fake epmd port="
+      assert output =~ "fake erl aflags=\n"
+      refute output =~ "wrong@10.0.0.99"
+      refute output =~ "inherited-cookie"
+    end)
+  end
+
+  test "node-agent wrapper rejects non-root-owned BEAM cookie before release start" do
+    with_temp_node_agent_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "node-agent.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+        ORCHARD_BEAM_NODE_NAME=orchard_node_agent@10.0.0.21
+        ORCHARD_BEAM_COOKIE_FILE="#{ctx.cookie_file}"
+        """
+      )
+
+      assert {output, 78} =
+               run_node_agent_wrapper(script, ctx, [{"COOKIE_STAT_UID", "501"}])
+
+      assert output =~ "ORCHARD_BEAM_COOKIE_FILE must be root-owned"
+      refute output =~ "fake orchard_node_agent start"
+    end)
+  end
+
+  test "node-agent wrapper rejects group-readable BEAM cookie before release start" do
+    with_temp_node_agent_wrapper(fn %{script: script} = ctx ->
+      File.write!(
+        Path.join([ctx.root, "config", "node-agent.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+        ORCHARD_BEAM_NODE_NAME=orchard_node_agent@10.0.0.21
+        ORCHARD_BEAM_COOKIE_FILE="#{ctx.cookie_file}"
+        """
+      )
+
+      assert {output, 78} =
+               run_node_agent_wrapper(script, ctx, [{"COOKIE_STAT_MODE", "640"}])
+
+      assert output =~ "ORCHARD_BEAM_COOKIE_FILE must be owner-only"
+      refute output =~ "fake orchard_node_agent start"
+    end)
+  end
+
+  test "node-agent wrapper rejects missing BEAM cookie before release start" do
+    with_temp_node_agent_wrapper(fn %{script: script} = ctx ->
+      missing_cookie = Path.join([ctx.root, "config", "missing.cookie"])
+
+      File.write!(
+        Path.join([ctx.root, "config", "node-agent.env"]),
+        """
+        ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
+        ORCHARD_BEAM_NODE_NAME=orchard_node_agent@10.0.0.21
+        ORCHARD_BEAM_COOKIE_FILE="#{missing_cookie}"
+        """
+      )
+
+      assert {output, 78} = run_node_agent_wrapper(script, ctx)
+      assert output =~ "ORCHARD_BEAM_COOKIE_FILE must point to an existing regular file"
+      refute output =~ "fake orchard_node_agent start"
     end)
   end
 
@@ -1080,7 +1431,7 @@ defmodule OrchardCLI.PackagingScriptTest do
                  {"ORCHARD_TRANSPORT_MODE", "direct_https"},
                  {"ORCHARD_TLS_CERTFILE", certfile},
                  {"ORCHARD_TLS_KEYFILE", keyfile},
-                 {"PATH", fake_bin <> ":" <> System.get_env("PATH", "")}
+                 {"PATH", fake_bin <> ":" <> ctx.fake_bin <> ":" <> System.get_env("PATH", "")}
                ])
 
       assert output =~ "TLS certificate is not valid yet"
@@ -1273,14 +1624,17 @@ defmodule OrchardCLI.PackagingScriptTest do
     script = Path.join(tmp_dir, "orchard-controller")
     fake_bin = Path.join(tmp_dir, "fake-bin")
     release_bin = Path.join([root, "releases", "orchard_controller", "bin"])
+    cookie_file = Path.join([root, "config", "beam.cookie"])
 
-    ctx = %{fake_bin: fake_bin, root: root, script: script}
+    ctx = %{cookie_file: cookie_file, fake_bin: fake_bin, root: root, script: script}
 
     try do
       File.mkdir_p!(Path.join(root, "config"))
       File.mkdir_p!(Path.join(root, "config/tls"))
       File.mkdir_p!(fake_bin)
       File.mkdir_p!(release_bin)
+      File.write!(cookie_file, "fixture-cookie\n")
+      File.chmod!(cookie_file, 0o600)
 
       release = Path.join(release_bin, "orchard_controller")
 
@@ -1288,6 +1642,15 @@ defmodule OrchardCLI.PackagingScriptTest do
       #!/bin/sh
       printf 'fake orchard_controller %s\\n' "$*"
       printf 'fake console enabled=%s\\n' "${ORCHARD_CONSOLE_ENABLED:-}"
+      printf 'fake release distribution=%s\\n' "${RELEASE_DISTRIBUTION:-}"
+      printf 'fake release node=%s\\n' "${RELEASE_NODE:-}"
+      if [ -n "${RELEASE_COOKIE:-}" ]; then
+        printf 'fake release cookie=set\\n'
+      else
+        printf 'fake release cookie=unset\\n'
+      fi
+      printf 'fake epmd port=%s\\n' "${ERL_EPMD_PORT:-}"
+      printf 'fake erl aflags=%s\\n' "${ERL_AFLAGS:-}"
       exit 0
       """)
 
@@ -1316,6 +1679,7 @@ defmodule OrchardCLI.PackagingScriptTest do
   defp write_fake_controller_stat!(ctx) do
     controller_env = Path.join([ctx.root, "config", "controller.env"])
     console_env = Path.join([ctx.root, "config", "console.env"])
+    cookie_file = ctx.cookie_file
 
     File.write!(Path.join(ctx.fake_bin, "stat"), """
     #!/bin/sh
@@ -1332,6 +1696,11 @@ defmodule OrchardCLI.PackagingScriptTest do
       exit 0
     fi
 
+    if [ "$1" = "-f" ] && [ "$2" = "%u:%Lp" ] && [ "$3" = "#{cookie_file}" ]; then
+      printf '%s:%s\n' "${COOKIE_STAT_UID:-0}" "${COOKIE_STAT_MODE:-600}"
+      exit 0
+    fi
+
     /usr/bin/stat "$@"
     """)
 
@@ -1344,7 +1713,100 @@ defmodule OrchardCLI.PackagingScriptTest do
   end
 
   defp run_controller_wrapper_shell(script, command) do
-    System.cmd("sh", ["-c", command, "sh", script], stderr_to_stdout: true)
+    fake_bin = Path.join(Path.dirname(script), "fake-bin")
+
+    System.cmd("sh", ["-c", command, "sh", script],
+      env: [{"PATH", fake_bin <> ":" <> System.get_env("PATH", "")}],
+      stderr_to_stdout: true
+    )
+  end
+
+  defp with_temp_node_agent_wrapper(fun) do
+    tmp_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-agent-wrapper-test-#{System.unique_integer([:positive])}"
+      )
+
+    root = Path.join(tmp_dir, "Application Support/Orchard")
+    script = Path.join(tmp_dir, "orchard-node-agent")
+    fake_bin = Path.join(tmp_dir, "fake-bin")
+    release_bin = Path.join([root, "releases", "orchard_node_agent", "bin"])
+    cookie_file = Path.join([root, "config", "beam.cookie"])
+
+    ctx = %{cookie_file: cookie_file, fake_bin: fake_bin, root: root, script: script}
+
+    try do
+      File.mkdir_p!(Path.join(root, "config"))
+      File.mkdir_p!(fake_bin)
+      File.mkdir_p!(release_bin)
+      File.write!(cookie_file, "fixture-cookie\n")
+      File.chmod!(cookie_file, 0o600)
+
+      release = Path.join(release_bin, "orchard_node_agent")
+
+      File.write!(release, """
+      #!/bin/sh
+      printf 'fake orchard_node_agent %s\\n' "$*"
+      printf 'fake release distribution=%s\\n' "${RELEASE_DISTRIBUTION:-}"
+      printf 'fake release node=%s\\n' "${RELEASE_NODE:-}"
+      if [ -n "${RELEASE_COOKIE:-}" ]; then
+        printf 'fake release cookie=set\\n'
+      else
+        printf 'fake release cookie=unset\\n'
+      fi
+      printf 'fake epmd port=%s\\n' "${ERL_EPMD_PORT:-}"
+      printf 'fake erl aflags=%s\\n' "${ERL_AFLAGS:-}"
+      exit 0
+      """)
+
+      File.chmod!(release, 0o755)
+      write_fake_node_agent_stat!(ctx)
+      write_test_node_agent_wrapper!(ctx)
+      fun.(ctx)
+    after
+      File.rm_rf(tmp_dir)
+    end
+  end
+
+  defp write_test_node_agent_wrapper!(ctx) do
+    content =
+      @node_agent_wrapper
+      |> File.read!()
+      |> String.replace(
+        ~s(ORCHARD_ROOT="/Library/Application Support/Orchard"),
+        ~s(ORCHARD_ROOT="#{ctx.root}")
+      )
+
+    File.write!(ctx.script, content)
+    File.chmod!(ctx.script, 0o755)
+  end
+
+  defp write_fake_node_agent_stat!(ctx) do
+    node_agent_env = Path.join([ctx.root, "config", "node-agent.env"])
+    cookie_file = ctx.cookie_file
+
+    File.write!(Path.join(ctx.fake_bin, "stat"), """
+    #!/bin/sh
+    if [ "$1" = "-f" ] && [ "$2" = "%u:%Lp" ] && [ "$3" = "#{node_agent_env}" ]; then
+      printf '%s:%s\n' "${NODE_AGENT_ENV_STAT_UID:-0}" "${NODE_AGENT_ENV_STAT_MODE:-600}"
+      exit 0
+    fi
+
+    if [ "$1" = "-f" ] && [ "$2" = "%u:%Lp" ] && [ "$3" = "#{cookie_file}" ]; then
+      printf '%s:%s\n' "${COOKIE_STAT_UID:-0}" "${COOKIE_STAT_MODE:-600}"
+      exit 0
+    fi
+
+    /usr/bin/stat "$@"
+    """)
+
+    File.chmod!(Path.join(ctx.fake_bin, "stat"), 0o755)
+  end
+
+  defp run_node_agent_wrapper(script, ctx, extra_env \\ []) do
+    env = [{"PATH", ctx.fake_bin <> ":" <> System.get_env("PATH", "")}] ++ extra_env
+    System.cmd("sh", [script, "start"], env: env, stderr_to_stdout: true)
   end
 
   defp with_temp_postinstall(fun) do

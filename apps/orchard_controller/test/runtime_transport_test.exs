@@ -505,6 +505,7 @@ defmodule Orchard.RuntimeTransportTest do
     base = %{
       "DATABASE_URL" => "ecto://postgres:postgres@localhost/orchard_config_eval",
       "MIX_RELEASE_NAME" => nil,
+      "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "grpc",
       "ORCHARD_SUPPORT_ROOT" => support_root,
       "RELEASE_NAME" => "orchard_controller",
       "SECRET_KEY_BASE" => String.duplicate("runtime-secret", 8)

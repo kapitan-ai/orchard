@@ -440,7 +440,7 @@ copy_tree_without_metadata() {
     COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 cp -X -R "$1" "$2"
 }
 
-copy_native_helper_without_source_venv() {
+copy_packaging_venv_only() {
     local src="$1"
     local dest_parent="$2"
     local helper_name
@@ -449,13 +449,13 @@ copy_native_helper_without_source_venv() {
 
     rm -rf "$dest"
     mkdir -p "$dest"
-    (
-        cd "$src"
-        COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 tar --exclude './.venv' -cf - .
-    ) | (
-        cd "$dest"
-        COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 tar -xf -
-    )
+
+    if [[ ! -d "$src/.venv-pkg" ]]; then
+        log_error "Missing packaging venv for native helper: $src/.venv-pkg"
+        return 1
+    fi
+
+    copy_tree_without_metadata "$src/.venv-pkg" "$dest/"
 }
 
 pkgbuild_without_metadata() {
@@ -1367,6 +1367,8 @@ validate_pkg_payload() {
         "./Library/Application Support/Orchard/releases/orchard_cli/bin/orchard_cli"
         "./Library/Application Support/Orchard/releases/orchard_controller/bin/orchard_controller"
         "./Library/Application Support/Orchard/releases/orchard_node_agent/bin/orchard_node_agent"
+        "./Library/Application Support/Orchard/native/orchard_tokenizer/.venv/bin/orchard-tokenizer"
+        "./Library/Application Support/Orchard/native/orchard_worker_mlx/.venv/bin/orchard-worker-mlx"
     )
     local entry
 
@@ -1593,6 +1595,7 @@ fi
 stage_packaging_venv() {
     local helper_dir="$1"
     local staged_helper="$STAGING/native/$helper_dir"
+    local entrypoint
 
     rm -rf "$staged_helper/.venv"
     if [[ ! -d "$staged_helper/.venv-pkg" ]]; then
@@ -1600,14 +1603,53 @@ stage_packaging_venv() {
         exit 1
     fi
     mv "$staged_helper/.venv-pkg" "$staged_helper/.venv"
+
+    case "$helper_dir" in
+        orchard_tokenizer) entrypoint="$staged_helper/.venv/bin/orchard-tokenizer" ;;
+        orchard_worker_mlx) entrypoint="$staged_helper/.venv/bin/orchard-worker-mlx" ;;
+        *)
+            log_error "Unknown native helper for staged entrypoint validation: $helper_dir"
+            exit 1
+            ;;
+    esac
+
+    if [[ ! -x "$entrypoint" ]]; then
+        log_error "Missing executable staged native entrypoint: $entrypoint"
+        exit 1
+    fi
+}
+
+assert_no_staged_native_sources() {
+    local disallowed_paths=(
+        "native/orchard_tokenizer/src"
+        "native/orchard_tokenizer/tests"
+        "native/orchard_worker_mlx/src"
+        "native/orchard_worker_mlx/tests"
+        "native/orchard_worker_mlx/proto"
+    )
+    local rel_path
+    local status=0
+
+    for rel_path in "${disallowed_paths[@]}"; do
+        if [[ -e "$STAGING/$rel_path" ]]; then
+            log_error "Duplicate native helper source path staged: $rel_path"
+            status=1
+        fi
+    done
+
+    return "$status"
 }
 
 # Copy native components
 log_info "Copying native components..."
-copy_native_helper_without_source_venv "$REPO_ROOT/native/orchard_tokenizer" "$STAGING/native"
+copy_packaging_venv_only "$REPO_ROOT/native/orchard_tokenizer" "$STAGING/native"
 stage_packaging_venv "orchard_tokenizer"
-copy_native_helper_without_source_venv "$REPO_ROOT/native/orchard_worker_mlx" "$STAGING/native"
+copy_packaging_venv_only "$REPO_ROOT/native/orchard_worker_mlx" "$STAGING/native"
 stage_packaging_venv "orchard_worker_mlx"
+if ! assert_no_staged_native_sources; then
+    log_error "Native helper source deterrence guard failed"
+    exit 1
+fi
 
 log_info "Materializing staged Python venv interpreters..."
 if ! COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 "$REPO_ROOT/scripts/materialize-staged-venv-interpreters.sh" "$STAGING/native"; then

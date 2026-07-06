@@ -236,6 +236,20 @@ defmodule Orchard.InferenceTest do
                }
              ] = Inference.runtime_endpoint_targets()
     end
+
+    test "explicit Runtime Endpoint targets suppress legacy gRPC target fallback" do
+      put_inference(
+        runtime_client_target: [host: "127.0.0.1", port: 50_061],
+        runtime_client_targets: [[host: "10.0.0.1", port: 50_061]],
+        runtime_endpoint_targets: [
+          %{transport: :beam, address: "orchard_node_agent@127.0.0.1"}
+        ]
+      )
+
+      assert Inference.runtime_client_target() == nil
+      assert Inference.runtime_client_targets() == []
+      assert [%Target{transport: :beam}] = Inference.runtime_endpoint_targets()
+    end
   end
 
   describe "source-dev runtime endpoint transport config" do
@@ -391,6 +405,134 @@ defmodule Orchard.InferenceTest do
           "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
           "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1",
           "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@localhost"
+        })
+      end
+    end
+  end
+
+  describe "packaged runtime endpoint transport config" do
+    test "runtime.exs defaults controller releases to BEAM Runtime Endpoint targets" do
+      controller_config =
+        read_runtime_controller_config!(%{
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => nil,
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" =>
+            "orchard_node_agent@127.0.0.1,orchard_node_agent@10.0.0.2",
+          "ORCHARD_RUNTIME_CLIENT_TARGETS" => "10.0.0.1:50061",
+          "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@10.0.0.10",
+          "ORCHARD_BEAM_COOKIE_FILE" => "/Library/Application Support/Orchard/config/beam.cookie"
+        })
+
+      inference = Keyword.fetch!(controller_config, :inference)
+
+      assert Keyword.fetch!(inference, :runtime_endpoint_client_impl) ==
+               Orchard.RuntimeEndpoint.BeamClient
+
+      assert [
+               %{
+                 transport: :beam,
+                 address: "orchard_node_agent@127.0.0.1",
+                 metadata: %{packaged: true}
+               },
+               %{
+                 transport: :beam,
+                 address: "orchard_node_agent@10.0.0.2",
+                 metadata: %{packaged: true}
+               }
+             ] = Keyword.fetch!(inference, :runtime_endpoint_targets)
+
+      assert Keyword.fetch!(inference, :runtime_client_targets) == []
+      assert Keyword.fetch!(inference, :runtime_client_target) == nil
+
+      assert Keyword.fetch!(controller_config, :runtime_endpoint)[:beam] == [
+               enabled: true,
+               node_name: "orchard_controller@10.0.0.10",
+               cookie_file: "/Library/Application Support/Orchard/config/beam.cookie",
+               listen_host: "10.0.0.10",
+               admitted_services: ["orchard_node_agent"],
+               allowed_cidrs: ["127.0.0.1/32", "10.0.0.2/32"]
+             ]
+    end
+
+    test "runtime.exs treats blank packaged BEAM node and cookie env as defaults" do
+      support_root = Path.join(System.tmp_dir!(), "orchard-runtime-config-test")
+
+      controller_config =
+        read_runtime_controller_config!(%{
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1",
+          "ORCHARD_BEAM_NODE_NAME" => "",
+          "ORCHARD_BEAM_COOKIE_FILE" => ""
+        })
+
+      assert Keyword.fetch!(controller_config, :runtime_endpoint)[:beam] == [
+               enabled: true,
+               node_name: "orchard_controller@127.0.0.1",
+               cookie_file: Path.join([support_root, "config", "beam.cookie"]),
+               listen_host: "127.0.0.1",
+               admitted_services: ["orchard_node_agent"],
+               allowed_cidrs: ["127.0.0.1/32"]
+             ]
+    end
+
+    test "runtime.exs requires BEAM targets for packaged controller BEAM mode" do
+      assert_raise RuntimeError,
+                   ~r/ORCHARD_RUNTIME_ENDPOINT_TARGETS.*at least one BEAM target/,
+                   fn ->
+                     read_runtime_controller_config!(%{
+                       "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+                       "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => nil
+                     })
+                   end
+    end
+
+    test "runtime.exs rejects remote packaged BEAM targets with loopback controller node name" do
+      assert_raise RuntimeError,
+                   ~r/controller host must not be loopback.*remote BEAM targets/,
+                   fn ->
+                     read_runtime_controller_config!(%{
+                       "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+                       "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@10.0.0.2",
+                       "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@127.0.0.1"
+                     })
+                   end
+    end
+
+    test "runtime.exs packaged gRPC fallback uses legacy host port targets only when requested" do
+      inference =
+        read_runtime_controller_inference!(%{
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "grpc",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1",
+          "ORCHARD_RUNTIME_CLIENT_TARGETS" => "10.0.0.1:50061"
+        })
+
+      refute Keyword.has_key?(inference, :runtime_endpoint_client_impl)
+      refute Keyword.has_key?(inference, :runtime_endpoint_targets)
+
+      assert Keyword.fetch!(inference, :runtime_client_targets) == [
+               [host: "10.0.0.1", port: 50_061]
+             ]
+
+      assert Keyword.fetch!(inference, :runtime_client_target) == [
+               host: "127.0.0.1",
+               port: 50_061
+             ]
+    end
+
+    test "runtime.exs rejects packaged BEAM targets with hostnames" do
+      assert_raise RuntimeError, ~r/requires IPv4-literal BEAM hosts/, fn ->
+        read_runtime_controller_config!(%{
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@worker.local"
+        })
+      end
+    end
+
+    test "runtime.exs rejects packaged local BEAM node services with invalid characters" do
+      assert_raise RuntimeError, ~r/ORCHARD_BEAM_NODE_NAME has invalid BEAM service name/, fn ->
+        read_runtime_controller_config!(%{
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => "orchard_node_agent@127.0.0.1",
+          "ORCHARD_BEAM_NODE_NAME" => "orchard_controller!@127.0.0.1"
         })
       end
     end
@@ -914,6 +1056,7 @@ defmodule Orchard.InferenceTest do
       "DATABASE_URL" => "ecto://postgres:postgres@localhost/orchard_config_eval",
       "MIX_RELEASE_NAME" => nil,
       "ORCHARD_SUPPORT_ROOT" => support_root,
+      "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "grpc",
       "ORCHARD_TRANSPORT_MODE" => "reverse_proxy",
       "RELEASE_NAME" => "orchard_controller",
       "SECRET_KEY_BASE" => String.duplicate("runtime-secret", 8)

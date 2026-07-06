@@ -56,7 +56,7 @@ Public clients
   -> Controller (Phoenix/Elixir public APIs, Console, admission, scheduling)
      -> Postgres for durable state and coordination
      -> Runtime Endpoint Interface
-        -> first-party BEAM adapter as the split-role source-dev default
+        -> first-party BEAM adapter as the split-role source-dev and packaged external-sites default
         -> gRPC compatibility adapter as the explicit opt-out path
         -> future external/provider adapters
      -> Node Agent(s)
@@ -70,7 +70,7 @@ Core design rules from `SPEC.md`:
 - token streams pass through the controller;
 - the Controller dispatches model runtime work through the Runtime Endpoint Interface;
 - the current `NodeRuntimeService` gRPC/protobuf path is a compatibility adapter, not the durable domain contract;
-- first-party BEAM communication is the split-role source-dev default behind explicit guardrails;
+- first-party BEAM communication is the split-role source-dev and packaged external-sites default behind explicit guardrails;
 - split-role source dev uses BEAM by default through `bin/dev-controller` and `bin/dev-node-agent` launches;
 - gRPC remains available as an explicit opt-out compatibility adapter with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`;
 - all-in-one `bin/dev` remains the single-host gRPC default and rejects explicit BEAM mode;
