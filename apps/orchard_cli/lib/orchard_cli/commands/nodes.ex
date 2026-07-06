@@ -484,6 +484,10 @@ defmodule OrchardCLI.Commands.Nodes do
   defp human_reason(:admission_not_pending), do: "admission is not pending."
   defp human_reason(:admission_rejected), do: "admission rejection must be cleared first."
   defp human_reason(:controller_standby), do: "this controller is in standby mode."
+
+  defp human_reason(:controller_leadership_unproven),
+    do: "this controller has not proven local leadership."
+
   defp human_reason(:decommission_already_running), do: "node decommission is already running."
   defp human_reason(:drain_already_running), do: "node drain is already running."
   defp human_reason(:inventory_missing), do: "registered node inventory is missing."
