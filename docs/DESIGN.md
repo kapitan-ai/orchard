@@ -502,7 +502,8 @@ Consequence acknowledgement controls default to unacknowledged and name the cons
 The execute control stays disabled until every confirmation requirement is satisfied, and satisfying requirements never bypasses blockers.
 When one page offers several previewable actions, show one open preview panel at a time so review context stays unambiguous.
 
-Node detail drill-ins keep lifecycle, admission, health, freshness, transport, runtime, compatibility, scheduling, and warnings in labeled groups instead of flattening them into a generic table.
+Node detail drill-ins keep lifecycle, admission, health, freshness, transport, runtime, compatibility, scheduling, warnings, and observe-only memory telemetry in labeled groups instead of flattening them into a generic table.
+The memory telemetry group renders only when runtime memory-budget data is present, stays labeled as observe-only and non-gating, and fails open to omission when no budget is reported.
 Use `<.detail_grid>`, `<.detail_field>`, and compact status badges for grouped facts.
 Source and compatibility badges should stay close to the identity or inventory field they qualify.
 
