@@ -148,6 +148,71 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert Repo.aggregate(RoleBinding, :count, :id) == 0
       assert Repo.aggregate(AuditLog, :count, :id) == 0
     end
+
+    test "--help combined with other flags prints usage without minting", %{tmp_dir: tmp_dir} do
+      output_path = Path.join(tmp_dir, "admin.json")
+
+      assert {:ok, message} = ClusterCmd.run(["init", "--output", output_path, "--help"])
+
+      assert message =~ "orchardctl cluster init"
+      assert message =~ "--output"
+      refute File.exists?(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+    end
+
+    test "recovery mint with a duplicate --client-name renders a clean error", %{tmp_dir: tmp_dir} do
+      first_output = Path.join(tmp_dir, "first-admin.json")
+      recovery_output = Path.join(tmp_dir, "recovery-admin.json")
+
+      assert {:ok, _message} =
+               ClusterCmd.run(["init", "--output", first_output, "--client-name", "dup-admin"])
+
+      assert {:error, message, 1} =
+               ClusterCmd.run([
+                 "init",
+                 "--output",
+                 recovery_output,
+                 "--json",
+                 "--client-name",
+                 "dup-admin",
+                 "--force-new-admin",
+                 "--yes"
+               ])
+
+      decoded = Jason.decode!(message)
+
+      assert decoded["object"] == "error"
+      assert decoded["code"] == "cluster_init_invalid"
+      assert decoded["errors"] != []
+      refute File.exists?(recovery_output)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 1
+      assert Repo.aggregate(ApiKey, :count, :id) == 1
+    end
+
+    test "first mint colliding with a disabled service account renders a clean error", %{
+      tmp_dir: tmp_dir
+    } do
+      {:ok, _disabled} =
+        %ServiceAccount{}
+        |> ServiceAccount.changeset(%{
+          tenant_id: Orchard.Governance.legacy_tenant_id(),
+          name: "orchard-bootstrap-admin",
+          owner_contact: "prior-admin",
+          purpose: "cluster_admin_bootstrap",
+          disabled_at: DateTime.truncate(DateTime.utc_now(), :microsecond)
+        })
+        |> Repo.insert()
+
+      output_path = Path.join(tmp_dir, "admin.json")
+
+      assert {:error, message, 1} = ClusterCmd.run(["init", "--output", output_path])
+
+      assert message =~ "cluster_init_invalid"
+      refute File.exists?(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 1
+      assert Repo.aggregate(ApiKey, :count, :id) == 0
+      assert Repo.aggregate(RoleBinding, :count, :id) == 0
+    end
   end
 
   describe "status" do

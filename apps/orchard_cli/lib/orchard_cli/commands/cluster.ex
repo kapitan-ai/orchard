@@ -4,6 +4,7 @@ defmodule OrchardCLI.Commands.Cluster do
   alias Orchard.ClusterManagement.ControlPlaneStatus
   alias Orchard.ControlPlane
   alias Orchard.Governance.ClusterBootstrap
+  alias OrchardCLI.Commands.GovernanceHelpers
 
   @cluster_status_object "cluster_management.cluster_status"
   @cluster_status_contract_version "orchard.cluster_management.cluster_status.v1"
@@ -32,6 +33,9 @@ defmodule OrchardCLI.Commands.Cluster do
          {:ok, message} <- write_output_and_render(result, output_path, opts) do
       {:ok, message}
     else
+      {:help, usage} ->
+        {:ok, usage}
+
       {:error, message, code} ->
         {:error, message, code}
 
@@ -248,6 +252,23 @@ defmodule OrchardCLI.Commands.Cluster do
       ],
       "\n"
     )
+  end
+
+  defp init_error(%Ecto.Changeset{} = changeset, true) do
+    {:error,
+     Jason.encode!(
+       %{
+         object: "error",
+         code: "cluster_init_invalid",
+         errors: GovernanceHelpers.format_changeset_errors(changeset)
+       },
+       pretty: true
+     ), 1}
+  end
+
+  defp init_error(%Ecto.Changeset{} = changeset, false) do
+    detail = changeset |> GovernanceHelpers.format_changeset_errors() |> Enum.join("; ")
+    {:error, "Error: cluster_init_invalid: #{detail}", 1}
   end
 
   defp init_error(reason, true) when is_atom(reason) do
