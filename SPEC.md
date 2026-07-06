@@ -3808,6 +3808,15 @@ Lifecycle execution SHALL enforce the preview's confirmation requirements, inclu
 Node lifecycle CLI commands use the same local controller-runtime authority boundary as node-admission CLI commands and SHALL enforce the same leader-only write-path, mutation-time revalidation, cluster-scoped audit, and shared-presenter semantics.
 Manual `draining -> maintenance` execution SHALL remain blocked with a `drain_completion_unverified` blocker until drain completion can be verified.
 
+`orchardctl cluster init` SHALL mint the first cluster-admin credential as a local, one-shot, audited controller-host operation.
+It SHALL create a service-account-owned API Client holding a cluster-scoped `admin` RoleBinding and an API Token whose secret is emitted exactly once through a required operator-chosen `--output` path with preflight, persisting only the token hash and prefix.
+It SHALL refuse with a stable `cluster_already_initialized` error when an enabled cluster-scoped `admin` RoleBinding already exists.
+An explicit `--force-new-admin` recovery flag SHALL mint an additional admin credential without resetting, deleting, or mutating existing credentials, and SHALL require confirmation and record a cluster-scoped audit event.
+`orchardctl cluster init` uses the same local controller-runtime authority boundary and leader-only write-path gate as node-admission CLI commands.
+First-admin provisioning is a local controller-host CLI operation, not an Admin API endpoint; Bootstrap Tokens remain scoped to node join only per §10.1.
+`orchardctl cluster init` is credential-only: TLS material remains provisioned separately per §11.4, and PKG `postinstall` SHALL NOT seed admin credentials.
+Successful initialization output SHOULD direct operators to provision named admin API Clients and then revoke the bootstrap credential.
+
 `orchardctl requests inspect` SHALL render a request's persisted scheduler explanation through the shared scheduler explanation reason-code contract in stable human and JSON forms.
 Broader request execution diagnostics beyond persisted scheduler explanations remain future work.
 

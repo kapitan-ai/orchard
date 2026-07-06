@@ -13,3 +13,5 @@ It also makes API Client disablement the single kill switch for service-account-
 
 The first Admin API admission slice may seed admin credentials in tests and local setup code.
 The operator-facing first-admin and cluster bootstrap workflow remains a separate `orchardctl cluster init`, bootstrap-token, or provisioning slice.
+
+Amended 2026-07-06: the deferred first-admin workflow is now decided as local `orchardctl cluster init`, with the bootstrap-token and network-provisioning alternatives rejected; see ADR 0011.
