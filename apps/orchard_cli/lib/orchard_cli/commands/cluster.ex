@@ -25,22 +25,28 @@ defmodule OrchardCLI.Commands.Cluster do
   defp run_init(["--help"]), do: {:ok, init_usage()}
 
   defp run_init(args) do
-    with {:ok, opts} <- parse_init_args(args),
-         {:ok, output_path} <- fetch_required_output(opts),
+    case parse_init_args(args) do
+      {:ok, opts} -> run_init_parsed(opts)
+      {:help, usage} -> {:ok, usage}
+      {:error, message, code} -> {:error, message, code}
+    end
+  end
+
+  defp run_init_parsed(opts) do
+    json? = Keyword.get(opts, :json, false)
+
+    with {:ok, output_path} <- fetch_required_output(opts),
          :ok <- preflight_output(output_path),
          :ok <- confirm_recovery(opts),
          {:ok, result} <- mint_admin(opts),
-         {:ok, message} <- write_output_and_render(result, output_path, opts) do
+         {:ok, message} <- write_output_and_render(result, output_path, json?) do
       {:ok, message}
     else
-      {:help, usage} ->
-        {:ok, usage}
-
-      {:error, message, code} ->
-        {:error, message, code}
+      {:error, code, message, exit_code} ->
+        render_init_error(code, message, exit_code, json?)
 
       {:error, reason} ->
-        init_error(reason, Keyword.get(parse_init_args_best_effort(args), :json, false))
+        init_error(reason, json?)
     end
   end
 
@@ -67,15 +73,9 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp parse_init_args_best_effort(args) do
-    case OptionParser.parse(args, strict: [json: :boolean]) do
-      {opts, _rest, _invalid} -> opts
-    end
-  end
-
   defp fetch_required_output(opts) do
     case Keyword.get(opts, :output) do
-      nil -> {:error, "Error: missing required option: --output\n\n#{init_usage()}", 1}
+      nil -> {:error, :missing_output, "missing required option: --output", 1}
       path -> {:ok, Path.expand(path)}
     end
   end
@@ -85,10 +85,10 @@ defmodule OrchardCLI.Commands.Cluster do
 
     cond do
       File.exists?(path) or match?({:ok, _stat}, File.lstat(path)) ->
-        {:error, "Error: output path already exists: #{path}", 1}
+        {:error, :output_path_exists, "output path already exists: #{path}", 1}
 
       not File.dir?(parent) ->
-        {:error, "Error: output parent directory does not exist: #{parent}", 1}
+        {:error, :output_parent_missing, "output parent directory does not exist: #{parent}", 1}
 
       true ->
         preflight_output_parent(path, parent)
@@ -104,9 +104,8 @@ defmodule OrchardCLI.Commands.Cluster do
         verify_preflight_probe_closed(File.close(file), probe, parent)
 
       {:error, reason} ->
-        {:error,
-         "Error: output parent directory is not writable: #{parent}: #{format_file_error(reason)}",
-         1}
+        {:error, :output_parent_not_writable,
+         "output parent directory is not writable: #{parent}: #{format_file_error(reason)}", 1}
     end
   end
 
@@ -118,14 +117,15 @@ defmodule OrchardCLI.Commands.Cluster do
         :ok
 
       {:error, _reason} ->
-        {:error, "Error: output parent directory is not writable: #{parent}", 1}
+        {:error, :output_parent_not_writable,
+         "output parent directory is not writable: #{parent}", 1}
     end
   end
 
   defp confirm_recovery(opts) do
     if Keyword.get(opts, :force_new_admin, false) and not Keyword.get(opts, :yes, false) do
-      {:error,
-       "Error: --force-new-admin requires --yes before minting a recovery admin credential.", 2}
+      {:error, :recovery_confirmation_required,
+       "--force-new-admin requires --yes before minting a recovery admin credential.", 2}
     else
       :ok
     end
@@ -150,20 +150,27 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp write_output_and_render(result, output_path, opts) do
+  defp write_output_and_render(result, output_path, json?) do
     case write_output(output_path, result) do
       :ok ->
-        {:ok, render_init_success(result, output_path, Keyword.get(opts, :json, false))}
+        {:ok, render_init_success(result, output_path, json?, [])}
 
-      {:error, message, code} ->
+      {:ok, {:tmp_cleanup_failed, tmp_path}} ->
+        {:ok, render_init_success(result, output_path, json?, [tmp_leftover_warning(tmp_path)])}
+
+      {:error, message} ->
         _ =
           ClusterBootstrap.mark_output_failed(result, %{
             "reason" => message,
             "api_token_prefix" => result.api_token_prefix
           })
 
-        {:error, message, code}
+        {:error, :one_time_secret_output_failed, message, 1}
     end
+  end
+
+  defp tmp_leftover_warning(tmp_path) do
+    "credential was written but the temporary secret file #{tmp_path} could not be removed; delete it manually."
   end
 
   defp write_output(path, result) do
@@ -183,16 +190,17 @@ defmodule OrchardCLI.Commands.Cluster do
       )
 
     with :ok <- write_exclusive_file(tmp_path, payload),
-         :ok <- File.ln(tmp_path, path),
-         :ok <- cleanup_tmp(tmp_path) do
-      :ok
+         :ok <- File.ln(tmp_path, path) do
+      case cleanup_tmp(tmp_path) do
+        :ok -> :ok
+        {:error, _reason} -> {:ok, {:tmp_cleanup_failed, tmp_path}}
+      end
     else
       {:error, reason} ->
         File.rm(tmp_path)
 
         {:error,
-         "Error: cluster init minted a credential but One-time Secret Output failed: #{format_file_error(reason)}",
-         1}
+         "cluster init minted a credential but One-time Secret Output failed: #{format_file_error(reason)}"}
     end
   end
 
@@ -220,39 +228,57 @@ defmodule OrchardCLI.Commands.Cluster do
     end
   end
 
-  defp render_init_success(result, output_path, true) do
-    Jason.encode!(
-      %{
-        object: @cluster_init_object,
-        contract_version: @cluster_init_contract_version,
-        api_client_id: result.api_client_id,
-        api_token_id: result.api_token_id,
-        api_token_prefix: result.api_token_prefix,
-        recovery: result.recovery?,
-        output_path: output_path,
-        next_steps: [
-          "Provision named admin API Clients for regular operators.",
-          "Revoke this bootstrap credential after named admin access is verified."
-        ]
-      },
-      pretty: true
-    )
+  defp render_init_success(result, output_path, true, warnings) do
+    base = %{
+      object: @cluster_init_object,
+      contract_version: @cluster_init_contract_version,
+      api_client_id: result.api_client_id,
+      api_token_id: result.api_token_id,
+      api_token_prefix: result.api_token_prefix,
+      recovery: result.recovery?,
+      output_path: output_path,
+      next_steps: [
+        "Provision named admin API Clients for regular operators.",
+        "Revoke this bootstrap credential after named admin access is verified."
+      ]
+    }
+
+    base
+    |> maybe_put_warnings(warnings)
+    |> Jason.encode!(pretty: true)
   end
 
-  defp render_init_success(result, output_path, false) do
-    Enum.join(
-      [
-        "Cluster admin credential minted.",
-        "One-time Secret Output: #{output_path}",
-        "API Client ID: #{result.api_client_id}",
-        "API Token ID: #{result.api_token_id}",
-        "API Token prefix: #{result.api_token_prefix}",
-        "Recovery credential: #{if(result.recovery?, do: "yes", else: "no")}",
-        "Next: provision named admin API Clients for regular operators, verify access, then revoke this bootstrap credential."
-      ],
-      "\n"
-    )
+  defp render_init_success(result, output_path, false, warnings) do
+    lines = [
+      "Cluster admin credential minted.",
+      "One-time Secret Output: #{output_path}",
+      "API Client ID: #{result.api_client_id}",
+      "API Token ID: #{result.api_token_id}",
+      "API Token prefix: #{result.api_token_prefix}",
+      "Recovery credential: #{if(result.recovery?, do: "yes", else: "no")}",
+      "Next: provision named admin API Clients for regular operators, verify access, then revoke this bootstrap credential."
+    ]
+
+    (lines ++ Enum.map(warnings, &"Warning: #{&1}"))
+    |> Enum.join("\n")
   end
+
+  defp maybe_put_warnings(base, []), do: base
+  defp maybe_put_warnings(base, warnings), do: Map.put(base, :warnings, warnings)
+
+  defp render_init_error(code, message, exit_code, true) do
+    {:error,
+     Jason.encode!(%{object: "error", code: Atom.to_string(code), message: message},
+       pretty: true
+     ), exit_code}
+  end
+
+  defp render_init_error(code, message, exit_code, false) do
+    {:error, append_usage(code, "Error: #{message}"), exit_code}
+  end
+
+  defp append_usage(:missing_output, text), do: text <> "\n\n" <> init_usage()
+  defp append_usage(_code, text), do: text
 
   defp init_error(%Ecto.Changeset{} = changeset, true) do
     {:error,

@@ -149,6 +149,50 @@ defmodule OrchardCLI.Commands.ClusterTest do
       assert Repo.aggregate(AuditLog, :count, :id) == 0
     end
 
+    test "SPEC.md §11.9 --json missing --output emits a stable JSON error object" do
+      assert {:error, message, 1} = ClusterCmd.run(["init", "--json"])
+
+      decoded = Jason.decode!(message)
+
+      assert decoded["object"] == "error"
+      assert decoded["code"] == "missing_output"
+      assert decoded["message"] =~ "--output"
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+    end
+
+    test "SPEC.md §11.9 --json existing output path emits a stable JSON error object", %{
+      tmp_dir: tmp_dir
+    } do
+      output_path = Path.join(tmp_dir, "admin.json")
+      File.write!(output_path, "existing")
+
+      assert {:error, message, 1} = ClusterCmd.run(["init", "--output", output_path, "--json"])
+
+      decoded = Jason.decode!(message)
+
+      assert decoded["object"] == "error"
+      assert decoded["code"] == "output_path_exists"
+      assert decoded["message"] =~ "already exists"
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+    end
+
+    test "SPEC.md §11.9 --json force-new-admin without --yes emits a stable JSON error object", %{
+      tmp_dir: tmp_dir
+    } do
+      output_path = Path.join(tmp_dir, "recovery.json")
+
+      assert {:error, message, 2} =
+               ClusterCmd.run(["init", "--output", output_path, "--json", "--force-new-admin"])
+
+      decoded = Jason.decode!(message)
+
+      assert decoded["object"] == "error"
+      assert decoded["code"] == "recovery_confirmation_required"
+      assert decoded["message"] =~ "--yes"
+      refute File.exists?(output_path)
+      assert Repo.aggregate(ServiceAccount, :count, :id) == 0
+    end
+
     test "--help combined with other flags prints usage without minting", %{tmp_dir: tmp_dir} do
       output_path = Path.join(tmp_dir, "admin.json")
 
