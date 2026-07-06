@@ -173,6 +173,7 @@ Action preview blocker codes should include these initial stable values:
 - `node_unhealthy`
 - `inventory_missing`
 - `drain_already_running`
+- `drain_not_running`
 - `decommission_already_running`
 - `maintenance_requires_drain`
 - `drain_completion_unverified`
