@@ -2064,6 +2064,7 @@ class MemoryBudgetBackend(HappyBackend):
         self.target_working_set_bytes = target_working_set_bytes
         self.max_deltas = max_deltas
         self.unload_calls = 0
+        self.generate_calls = 0
 
     def unload_model(self) -> None:
         self.unload_calls += 1
@@ -2084,6 +2085,7 @@ class MemoryBudgetBackend(HappyBackend):
 
     def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
         del request
+        self.generate_calls += 1
         for index in range(self.max_deltas):
             if cancel_event.is_set():
                 yield {
@@ -2118,11 +2120,25 @@ def _make_memory_pressure_servicer(
     )
 
 
+def test_enforce_preflight_breach_aborts_before_backend_prefill() -> None:
+    backend = MemoryBudgetBackend()
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=lambda: 2_000)
+
+    events = list(servicer.Generate(_make_request("req-preflight"), MagicMock()))
+
+    assert [event.WhichOneof("event") for event in events] == ["failed"]
+    assert events[0].failed.code == "memory_pressure_abort"
+    assert events[0].failed.retryable is True
+    assert backend.generate_calls == 0
+    assert backend._active is False
+
+
 def test_enforce_breach_aborts_all_active_generations_with_distinct_terminal(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     backend = MemoryBudgetBackend()
-    servicer = _make_memory_pressure_servicer(backend, memory_sampler=lambda: 2_000)
+    samples = iter([100, 2_000])
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=lambda: next(samples))
     other_entry = CancelEntry(
         event=threading.Event(),
         phase="active",
@@ -2163,6 +2179,23 @@ def test_observe_mode_never_aborts_under_identical_pressure() -> None:
     servicer = _make_memory_pressure_servicer(backend, memory_sampler=sampler)
 
     events = list(servicer.Generate(_make_request("req-observe"), MagicMock()))
+
+    kinds = [event.WhichOneof("event") for event in events]
+    assert kinds == ["output_text_delta"] * 3 + ["completed"]
+    assert sampler_calls == []
+
+
+def test_disabled_mode_never_aborts_under_identical_pressure() -> None:
+    backend = MemoryBudgetBackend(mode="disabled")
+    sampler_calls: list[int] = []
+
+    def sampler() -> int:
+        sampler_calls.append(1)
+        return 2_000
+
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=sampler)
+
+    events = list(servicer.Generate(_make_request("req-disabled"), MagicMock()))
 
     kinds = [event.WhichOneof("event") for event in events]
     assert kinds == ["output_text_delta"] * 3 + ["completed"]
