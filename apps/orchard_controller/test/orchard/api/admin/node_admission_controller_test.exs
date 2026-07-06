@@ -400,6 +400,50 @@ defmodule Orchard.API.Admin.NodeAdmissionControllerTest do
       assert body["inventory"]["__orchard_snapshot_truncation__"] == marker
     end
 
+    test "unproven controller leadership fails closed before mutation or audit writes" do
+      token = admin_token!("admin-node-admission-unproven-leader")
+      candidate = insert_candidate!()
+      previous = Application.get_env(:orchard_controller, :control_plane)
+
+      Application.put_env(:orchard_controller, :control_plane,
+        role: :leader,
+        this_controller_identity: "controller-a"
+      )
+
+      on_exit(fn ->
+        if is_nil(previous) do
+          Application.delete_env(:orchard_controller, :control_plane)
+        else
+          Application.put_env(:orchard_controller, :control_plane, previous)
+        end
+      end)
+
+      conn =
+        admin_json(
+          :post,
+          "/admin/v1/node-admission/candidates/#{candidate.id}/reject",
+          token,
+          %{"reason" => "unproven leadership should not mutate"}
+        )
+
+      assert conn.status == 503
+
+      assert Jason.decode!(conn.resp_body)["error"]["code"] ==
+               "controller_leadership_unproven"
+
+      assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
+
+      assert Repo.aggregate(
+               from(audit_log in AuditLog,
+                 where:
+                   audit_log.target_type == "node_admission_candidate" and
+                     audit_log.target_id == ^candidate.id
+               ),
+               :count,
+               :id
+             ) == 0
+    end
+
     test "controller standby fails closed before mutation or audit writes" do
       token = admin_token!("admin-node-admission-standby")
       candidate = insert_candidate!()

@@ -55,6 +55,7 @@ defmodule Orchard.ClusterManagement.ReasonCodes do
     drain_completion_unverified
     lifecycle_transition_invalid
     ha_standby_write_blocked
+    ha_leadership_unproven
     cluster_lock_unavailable
     version_incompatible
     pool_required

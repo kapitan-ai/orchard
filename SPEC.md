@@ -277,6 +277,11 @@ Standby controller behavior:
 * SHALL return `503 controller_standby` for write paths if directly addressed
 * SHALL not schedule, dispatch, or mutate cluster runtime state
 
+Leader controller behavior:
+
+* A configured Active/Standby leader that cannot prove current advisory-lock ownership — leadership evidence unavailable, the lock not held, or the lock held by another controller identity — SHALL fail closed on write paths with `503 controller_leadership_unproven`, a reason distinct from `controller_standby`.
+* Single-controller deployments are unaffected.
+
 ### 3.4 Canonical request model
 
 All public inference requests SHALL normalize into one internal struct:

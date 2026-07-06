@@ -161,6 +161,15 @@ defmodule Orchard.API.Admin.NodeAdmissionController do
     )
   end
 
+  defp send_error(conn, :controller_leadership_unproven) do
+    AdminErrorHelpers.send_error(
+      conn,
+      :service_unavailable,
+      "controller_leadership_unproven",
+      "This controller has not proven local leadership."
+    )
+  end
+
   defp send_error(conn, reason)
        when reason in [
               :admission_not_pending,

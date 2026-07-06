@@ -1022,6 +1022,10 @@ defmodule OrchardConsole.NodeDetailLive do
   defp lifecycle_success_message(:decommission), do: "Node decommission started."
 
   defp error_message(:controller_standby), do: "This controller is in standby mode."
+
+  defp error_message(:controller_leadership_unproven),
+    do: "This controller has not proven local leadership."
+
   defp error_message(:candidate_not_found), do: "Node admission candidate was not found."
   defp error_message(:node_not_found), do: "Node was not found."
   defp error_message(:reason_required), do: "A nonblank rejection reason is required."

@@ -371,6 +371,53 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert Repo.get!(Node, node.id).state == :admitted
     end
 
+    test "yes execution surfaces a friendly message when leadership is lost after preview" do
+      node = insert_node!(state: :registered, display_name: "admit-leadership-unproven-node")
+
+      with_leadership_lost_after_preview(fn ->
+        assert {:error, message, 1} =
+                 NodesCmd.run([
+                   "admit",
+                   node.id,
+                   "--yes",
+                   "--trust-evidence-ref",
+                   "registration-audit:test",
+                   "--pool-id",
+                   Ecto.UUID.generate(),
+                   "--routing-policy-id",
+                   Ecto.UUID.generate()
+                 ])
+
+        assert message == "Error: this controller has not proven local leadership."
+      end)
+
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "yes json execution surfaces the leadership error code after preview" do
+      node = insert_node!(state: :registered, display_name: "admit-leadership-unproven-json-node")
+
+      with_leadership_lost_after_preview(fn ->
+        assert {:error, json, 1} =
+                 NodesCmd.run([
+                   "admit",
+                   node.id,
+                   "--yes",
+                   "--json",
+                   "--trust-evidence-ref",
+                   "registration-audit:test",
+                   "--pool-id",
+                   Ecto.UUID.generate(),
+                   "--routing-policy-id",
+                   Ecto.UUID.generate()
+                 ])
+
+        assert Jason.decode!(json)["code"] == "controller_leadership_unproven"
+      end)
+
+      assert Repo.get!(Node, node.id).state == :registered
+    end
+
     test "dry-run degrades to a not-found preview when the controller repo is unavailable" do
       node = insert_node!(state: :registered, display_name: "admit-dry-run-repo-off")
 
@@ -688,6 +735,36 @@ defmodule OrchardCLI.Commands.NodesTest do
       fun.()
     after
       Process.register(repo_pid, Repo)
+    end
+  end
+
+  defp with_leadership_lost_after_preview(fun) do
+    identity = "controller-#{System.unique_integer([:positive])}"
+    {:ok, calls} = Agent.start_link(fn -> 0 end)
+
+    provider = fn ->
+      observed = Agent.get_and_update(calls, fn count -> {count + 1, count + 1} end)
+      lock_status = if observed <= 1, do: :held, else: :not_held
+      %{advisory_lock_status: lock_status, leader_identity: identity}
+    end
+
+    previous = Application.get_env(:orchard_controller, :control_plane)
+
+    Application.put_env(:orchard_controller, :control_plane,
+      role: :leader,
+      this_controller_identity: identity,
+      control_plane_status_provider: provider
+    )
+
+    try do
+      fun.()
+    after
+      Agent.stop(calls)
+
+      case previous do
+        nil -> Application.delete_env(:orchard_controller, :control_plane)
+        config -> Application.put_env(:orchard_controller, :control_plane, config)
+      end
     end
   end
 
