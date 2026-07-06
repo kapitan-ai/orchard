@@ -11,9 +11,10 @@ defmodule Orchard.Nodes.Lifecycle do
   alias Orchard.SchemaSupport
 
   @typedoc "Supported operator lifecycle actions for admitted node inventory."
-  @type action :: :cordon | :uncordon | :drain | :maintenance | :resume | :decommission
+  @type action ::
+          :cordon | :uncordon | :drain | :cancel_drain | :maintenance | :resume | :decommission
 
-  @actions [:cordon, :uncordon, :drain, :maintenance, :resume, :decommission]
+  @actions [:cordon, :uncordon, :drain, :cancel_drain, :maintenance, :resume, :decommission]
 
   @action_specs %{
     cordon: %{
@@ -42,6 +43,14 @@ defmodule Orchard.Nodes.Lifecycle do
         :requires_drain_consequence_acknowledgement
       ],
       consequence_codes: [:existing_requests_continue_until_deadline]
+    },
+    cancel_drain: %{
+      allowed_states: [:draining],
+      target_state: :cordoned,
+      preview_action: "node_lifecycle.cancel_drain",
+      audit_action: "node_lifecycle.drain_cancelled",
+      confirmation_requirements: [:requires_yes_flag],
+      consequence_codes: []
     },
     maintenance: %{
       allowed_states: [:draining],
@@ -157,6 +166,9 @@ defmodule Orchard.Nodes.Lifecycle do
 
   defp add_disallowed_state_blocker(blockers, :drain, _state),
     do: blockers ++ [:lifecycle_transition_invalid]
+
+  defp add_disallowed_state_blocker(blockers, :cancel_drain, _state),
+    do: blockers ++ [:drain_not_running]
 
   defp add_disallowed_state_blocker(blockers, :maintenance, _state),
     do: blockers ++ [:maintenance_requires_drain]

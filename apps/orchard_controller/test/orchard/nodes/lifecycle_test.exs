@@ -35,6 +35,7 @@ defmodule Orchard.Nodes.LifecycleTest do
       {:cordon, :active, :cordoned, "node_lifecycle.cordoned"},
       {:uncordon, :cordoned, :active, "node_lifecycle.uncordoned"},
       {:drain, :cordoned, :draining, "node_lifecycle.drain_started"},
+      {:cancel_drain, :draining, :cordoned, "node_lifecycle.drain_cancelled"},
       {:resume, :maintenance, :active, "node_lifecycle.resumed"},
       {:decommission, :admitted, :decommissioning, "node_lifecycle.decommission_started"},
       {:decommission, :draining, :decommissioning, "node_lifecycle.decommission_started"}
@@ -83,6 +84,29 @@ defmodule Orchard.Nodes.LifecycleTest do
       assert {:error, ^reason} = Lifecycle.execute(action, node.id)
       assert Repo.get!(Node, node.id).state == state
     end
+  end
+
+  test "OpenSpec cancel drain scenario reports drain_not_running outside draining" do
+    for state <- [:active, :cordoned, :maintenance] do
+      node = insert_node!(state: state, display_name: "cancel-drain-not-running-#{state}")
+
+      assert Lifecycle.blocker_codes(:cancel_drain, node) == [:drain_not_running]
+      assert {:error, :drain_not_running} = Lifecycle.execute(:cancel_drain, node.id)
+      assert Repo.get!(Node, node.id).state == state
+    end
+  end
+
+  test "OpenSpec drain completes between preview and execution revalidates cancel drain" do
+    node = insert_node!(state: :draining)
+
+    assert Lifecycle.blocker_codes(:cancel_drain, node) == []
+
+    node
+    |> Ecto.Changeset.change(state: :cordoned)
+    |> Repo.update!()
+
+    assert {:error, :drain_not_running} = Lifecycle.execute(:cancel_drain, node.id)
+    assert Repo.get!(Node, node.id).state == :cordoned
   end
 
   test "SPEC.md §4.4 resume blocks unhealthy and unreachable nodes" do

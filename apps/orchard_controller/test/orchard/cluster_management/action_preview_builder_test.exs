@@ -78,6 +78,19 @@ defmodule Orchard.ClusterManagement.ActionPreviewBuilderTest do
     assert Repo.get!(Node, node.id).state == :draining
   end
 
+  test "OpenSpec cancel drain preview reports drain_not_running blocker message" do
+    node = insert_node!(state: :active)
+
+    preview = ActionPreviewBuilder.node_lifecycle(:cancel_drain, node.id)
+    map = ActionPreview.to_map(preview)
+
+    assert map.action == "node_lifecycle.cancel_drain"
+    assert [%{code: "drain_not_running", message: message}] = map.blockers
+    assert message == "Node drain is not running."
+    assert map.expected_transition == %{from: "active", to: "cordoned"}
+    assert Repo.get!(Node, node.id).state == :active
+  end
+
   test "missing lifecycle target returns a node_not_found preview" do
     node_id = Ecto.UUID.generate()
 

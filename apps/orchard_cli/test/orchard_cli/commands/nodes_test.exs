@@ -46,6 +46,7 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert msg =~ "cordon"
       assert msg =~ "uncordon"
       assert msg =~ "drain"
+      assert msg =~ "cancel-drain"
       assert msg =~ "maintenance"
       assert msg =~ "resume"
       assert msg =~ "decommission"
@@ -94,7 +95,7 @@ defmodule OrchardCLI.Commands.NodesTest do
     end
 
     test "lifecycle --help with a node id prints usage to stdout with success" do
-      for command <- ~w(cordon uncordon drain maintenance resume decommission) do
+      for command <- ~w(cordon uncordon drain cancel-drain maintenance resume decommission) do
         assert {:ok, msg} = NodesCmd.run([command, Ecto.UUID.generate(), "--help"])
         assert msg =~ "orchardctl nodes #{command}"
       end
@@ -628,6 +629,33 @@ defmodule OrchardCLI.Commands.NodesTest do
       decoded = Jason.decode!(output)
       assert Enum.map(decoded["blockers"], & &1["code"]) == ["node_not_admitted"]
       assert Repo.get!(Node, node.id).state == :registered
+    end
+
+    test "OpenSpec cancel drain CLI dry-run and execute JSON use shared lifecycle semantics" do
+      preview_node = insert_node!(state: :draining, display_name: "cancel-drain-preview-node")
+
+      assert {:ok, preview_output} =
+               NodesCmd.run(["cancel-drain", preview_node.id, "--dry-run", "--json"])
+
+      preview = Jason.decode!(preview_output)
+      assert preview["object"] == "cluster_management.action_preview"
+      assert preview["action"] == "node_lifecycle.cancel_drain"
+      assert preview["blockers"] == []
+      assert preview["confirmation_requirements"] == ["requires_yes_flag"]
+      assert preview["expected_transition"] == %{"from" => "draining", "to" => "cordoned"}
+      assert Repo.get!(Node, preview_node.id).state == :draining
+
+      execute_node = insert_node!(state: :draining, display_name: "cancel-drain-execute-node")
+
+      assert {:ok, execute_output} =
+               NodesCmd.run(["cancel-drain", execute_node.id, "--yes", "--json"])
+
+      executed = Jason.decode!(execute_output)
+      assert executed["object"] == "node_lifecycle_action_result"
+      assert executed["action"] == "node_lifecycle.drain_cancelled"
+      assert executed["node"]["state"] == "cordoned"
+      assert executed["audit_log"]["scope"] == "cluster"
+      assert Repo.get!(Node, execute_node.id).state == :cordoned
     end
 
     test "SPEC.md §4.4 maintenance execution stays blocked while drain completion is unverified" do
