@@ -24,6 +24,10 @@ product/system/build contract.
   `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for
   the current node-admission-review slice, with stable JSON and human output,
   `--dry-run` previews, and `--yes`/`--reason` execution gating.
+  `orchardctl nodes inspect` also surfaces an observe-only runtime
+  memory-budget block, at parity with the Console node-detail memory telemetry
+  group, when a matching Runtime Endpoint snapshot reports memory-budget
+  telemetry and failing open to omission otherwise.
   `orchardctl nodes cordon`, `orchardctl nodes uncordon`,
   `orchardctl nodes drain`, `orchardctl nodes cancel-drain`,
   `orchardctl nodes maintenance`, `orchardctl nodes resume`, and

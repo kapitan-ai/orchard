@@ -7,7 +7,13 @@ defmodule OrchardConsole.NodeDetailLive do
 
   require Logger
 
-  alias Orchard.ClusterManagement.{ActionPreview, ActionPreviewBuilder, StatusBuilder}
+  alias Orchard.ClusterManagement.{
+    ActionPreview,
+    ActionPreviewBuilder,
+    MemoryBudgetPresenter,
+    StatusBuilder
+  }
+
   alias Orchard.ControlPlane
   alias Orchard.Nodes
   alias Orchard.Nodes.{AdmissionCandidate, Lifecycle, Node}
@@ -33,6 +39,7 @@ defmodule OrchardConsole.NodeDetailLive do
        record: nil,
        status: nil,
        latest_decision: nil,
+       memory_budget: nil,
        action: nil,
        refresh_timer: nil,
        message: nil
@@ -354,6 +361,69 @@ defmodule OrchardConsole.NodeDetailLive do
               </.status_group>
             </div>
 
+            <div :if={@memory_budget} id="node-detail-memory-budget">
+              <.card>
+                <:title>Memory Telemetry</:title>
+                <:subtitle>Observe-only memory-budget diagnostics. This section is non-gating.</:subtitle>
+                <div class="space-y-3">
+                  <div
+                    :for={budget <- @memory_budget.runtime_memory_budgets}
+                    class="rounded-lg border border-slate-200 bg-slate-50/60 p-3 dark:border-slate-700 dark:bg-slate-900/50"
+                  >
+                    <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <span class="font-mono text-sm text-slate-900 dark:text-slate-100">
+                        {budget[:model_ref] || "unknown model"}
+                      </span>
+                      <.badge tone={memory_budget_status_tone(budget)}>
+                        {memory_budget_status_label(budget)}
+                      </.badge>
+                    </div>
+                    <dl class="grid gap-2 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                      <div>
+                        <dt class="text-slate-500 dark:text-slate-400">Mode</dt>
+                        <dd class="font-mono text-slate-900 dark:text-slate-100">{budget[:mode] || "unknown"}</dd>
+                      </div>
+                      <div>
+                        <dt class="text-slate-500 dark:text-slate-400">Working Set</dt>
+                        <dd class="font-mono text-slate-900 dark:text-slate-100">{memory_budget_working_set_label(budget)}</dd>
+                      </div>
+                      <div>
+                        <dt class="text-slate-500 dark:text-slate-400">Headroom</dt>
+                        <dd class="font-mono text-slate-900 dark:text-slate-100">{memory_budget_headroom_label(budget)}</dd>
+                      </div>
+                      <div>
+                        <dt class="text-slate-500 dark:text-slate-400">KV Cache Bytes/Token</dt>
+                        <dd class="font-mono text-slate-900 dark:text-slate-100">{format_positive_integer(budget[:kv_cache_bytes_per_token])}</dd>
+                      </div>
+                      <div>
+                        <dt class="text-slate-500 dark:text-slate-400">Max Context</dt>
+                        <dd class="font-mono text-slate-900 dark:text-slate-100">{format_positive_integer(budget[:max_context_tokens])}</dd>
+                      </div>
+                      <div>
+                        <dt class="text-slate-500 dark:text-slate-400">Recommended Context</dt>
+                        <dd class="font-mono text-slate-900 dark:text-slate-100">{format_positive_integer(budget[:recommended_context_tokens])}</dd>
+                      </div>
+                      <div>
+                        <dt class="text-slate-500 dark:text-slate-400">Resident</dt>
+                        <dd class="font-mono text-slate-900 dark:text-slate-100">{format_positive_integer(budget[:resident_memory_bytes])}</dd>
+                      </div>
+                      <div>
+                        <dt class="text-slate-500 dark:text-slate-400">Prefill Bytes/Token</dt>
+                        <dd class="font-mono text-slate-900 dark:text-slate-100">{format_positive_integer(budget[:prefill_workspace_bytes_per_token])}</dd>
+                      </div>
+                    </dl>
+                  </div>
+                  <p
+                    :if={memory_budget_truncated_count(@memory_budget) > 0}
+                    id="node-detail-memory-budget-truncation"
+                    class="text-sm text-amber-700 dark:text-amber-400"
+                  >
+                    Note: {memory_budget_truncated_count(@memory_budget)} additional memory budget row(s) truncated upstream.
+                  </p>
+                </div>
+              </.card>
+            </div>
+
             <div id="node-detail-warnings-card">
               <.card>
                 <:title>Warnings</:title>
@@ -444,6 +514,7 @@ defmodule OrchardConsole.NodeDetailLive do
           record: node,
           status: status,
           latest_decision: latest_decision,
+          memory_budget: MemoryBudgetPresenter.for_node(node, runtime_impl()),
           message: nil
         )
         |> refresh_open_action()
@@ -454,6 +525,7 @@ defmodule OrchardConsole.NodeDetailLive do
           record: nil,
           status: nil,
           latest_decision: nil,
+          memory_budget: nil,
           action: nil,
           message: "The requested node inventory row was not found."
         )
@@ -481,6 +553,7 @@ defmodule OrchardConsole.NodeDetailLive do
           record: candidate,
           status: status,
           latest_decision: latest_decision,
+          memory_budget: nil,
           message: nil
         )
         |> refresh_open_action()
@@ -491,6 +564,7 @@ defmodule OrchardConsole.NodeDetailLive do
           record: nil,
           status: nil,
           latest_decision: nil,
+          memory_budget: nil,
           action: nil,
           message: "The requested admission candidate was not found."
         )
@@ -511,6 +585,7 @@ defmodule OrchardConsole.NodeDetailLive do
       record: nil,
       status: nil,
       latest_decision: nil,
+      memory_budget: nil,
       action: nil,
       message: "Node detail could not be loaded."
     )
@@ -906,6 +981,52 @@ defmodule OrchardConsole.NodeDetailLive do
   defp blank?(_value), do: false
 
   defp truthy?(value), do: value in [true, "true", "on", "1", 1]
+
+  defp memory_budget_status_tone(%{display_state: :invalid}), do: :error
+  defp memory_budget_status_tone(%{status_code: "ok"}), do: :success
+  defp memory_budget_status_tone(%{status_code: "disabled"}), do: :neutral
+  defp memory_budget_status_tone(_budget), do: :warning
+
+  defp memory_budget_status_label(%{display_state: :invalid}), do: "invalid telemetry"
+
+  defp memory_budget_status_label(%{status_code: code, status_message: message}) do
+    case message do
+      nil -> code
+      "" -> code
+      _ -> "#{code} (#{message})"
+    end
+  end
+
+  defp memory_budget_status_label(_budget), do: "unreported"
+
+  defp memory_budget_working_set_label(%{
+         budget_available: true,
+         target_working_set_bytes: bytes
+       })
+       when is_integer(bytes) and bytes > 0,
+       do: Integer.to_string(bytes)
+
+  defp memory_budget_working_set_label(%{budget_available: true}), do: "reported"
+  defp memory_budget_working_set_label(_budget), do: "unknown"
+
+  defp memory_budget_headroom_label(%{headroom_available: true}), do: "estimate reported"
+  defp memory_budget_headroom_label(_budget), do: "estimate unavailable"
+
+  defp memory_budget_truncated_count(%{runtime_memory_budgets_truncated_count: count})
+       when is_integer(count) and count > 0,
+       do: count
+
+  defp memory_budget_truncated_count(_memory_budget), do: 0
+
+  defp format_positive_integer(value) when is_integer(value) and value > 0,
+    do: Integer.to_string(value)
+
+  defp format_positive_integer(_value), do: "unknown"
+
+  defp runtime_impl do
+    Application.get_env(:orchard_controller, :console, [])[:runtime_impl] ||
+      OrchardConsole.Runtime
+  end
 
   defp lifecycle_tone("active"), do: :success
   defp lifecycle_tone(state) when state in ["cordoned", "draining", "maintenance"], do: :warning

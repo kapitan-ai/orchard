@@ -16,6 +16,8 @@ defmodule OrchardConsole.Runtime do
   alias Orchard.Runtime.PrefixCacheStatus
   alias Orchard.RuntimeEndpoint.{Observation, Placement, Target}
 
+  @cluster_snapshot_timeout_buffer_ms 500
+
   @type worker_state :: :starting | :idle | :busy | :stopping | :failed | :stopped | :unknown
 
   @type loaded_model :: %{model_id: String.t(), version: String.t()}
@@ -114,6 +116,9 @@ defmodule OrchardConsole.Runtime do
   Probes all configured runtime targets and returns an ordered list of snapshots.
 
   Each entry corresponds to one target from `Inference.runtime_endpoint_targets/0`.
+  Targets are probed concurrently and results are returned in target order, so an
+  unreachable target costs at most one bounded timeout rather than cumulative
+  sequential waits.
   Successful probes trigger best-effort `observe_status/3` via the existing
   `snapshot/1` path, including queue capacity refresh.
   Per-target failures are isolated - one failed target never aborts the cluster
@@ -122,7 +127,8 @@ defmodule OrchardConsole.Runtime do
   Options:
   - `:targets` - explicit ordered target list (default: `Inference.runtime_endpoint_targets/0`)
   - `:observed_at` - shared timestamp for all probes (default: `DateTime.utc_now()`)
-  - `:timeout` - forwarded to each `snapshot/1` call
+  - `:timeout` - per-target `snapshot/1` timeout; also bounds the concurrent probe
+    wait. When absent, probes wait for the client default with no extra bound.
   """
   @spec cluster_snapshot() :: [cluster_target_snapshot()]
   def cluster_snapshot, do: cluster_snapshot([])
@@ -133,10 +139,25 @@ defmodule OrchardConsole.Runtime do
     observed_at = Keyword.get(opts, :observed_at, DateTime.utc_now())
     timeout = opts[:timeout]
 
-    Enum.map(targets, fn target ->
-      probe_target(target, observed_at, timeout)
-    end)
+    targets
+    |> Task.async_stream(fn target -> probe_target(target, observed_at, timeout) end,
+      ordered: true,
+      max_concurrency: max(length(targets), 1),
+      timeout: cluster_snapshot_task_timeout(timeout),
+      on_timeout: :kill_task
+    )
+    |> Enum.zip(targets)
+    |> Enum.map(&resolve_probe_result/1)
   end
+
+  defp resolve_probe_result({{:ok, snapshot}, _target}), do: snapshot
+  defp resolve_probe_result({{:exit, _reason}, target}), do: probe_target_error_snapshot(target)
+
+  defp cluster_snapshot_task_timeout(timeout) when is_integer(timeout) and timeout > 0 do
+    timeout + @cluster_snapshot_timeout_buffer_ms
+  end
+
+  defp cluster_snapshot_task_timeout(_timeout), do: :infinity
 
   defp probe_target(target, observed_at, timeout) do
     snapshot_opts =
