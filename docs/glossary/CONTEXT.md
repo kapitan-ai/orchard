@@ -96,7 +96,7 @@ A Postgres coordination lock used by Orchard for exclusive leadership and owners
 _Avoid_: Distributed lock service
 
 **Leader-only Write Path**:
-A mutating operation that may execute only on the Active Leader in Active/Standby mode and must fail closed on a Standby Controller.
+A mutating operation that may execute only on the Active Leader in Active/Standby mode and must fail closed on a Standby Controller, and also on a configured leader that cannot prove it currently holds the advisory lock.
 Examples include node admission rejection, rejection clearance, admission, decommissioning, and the related cluster-scoped audit events.
 _Avoid_: best-effort write, local-controller write
 
