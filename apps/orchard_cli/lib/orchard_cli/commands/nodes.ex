@@ -4,7 +4,15 @@ defmodule OrchardCLI.Commands.Nodes do
   """
 
   alias Orchard.API.Admin.NodeAdmissionPresenter
-  alias Orchard.ClusterManagement.{ActionPreview, ActionPreviewBuilder, NodeStatus, StatusBuilder}
+
+  alias Orchard.ClusterManagement.{
+    ActionPreview,
+    ActionPreviewBuilder,
+    MemoryBudgetPresenter,
+    NodeStatus,
+    StatusBuilder
+  }
+
   alias Orchard.ControlPlane
   alias Orchard.Nodes
   alias Orchard.Nodes.AdmissionCandidate
@@ -41,7 +49,7 @@ defmodule OrchardCLI.Commands.Nodes do
   defp run_inspect(args) do
     with {:ok, %{id: node_id, json?: json?}} <- parse_inspect_args(args),
          {:ok, node} <- guarded_fetch_node(node_id) do
-      output = NodeAdmissionPresenter.node(node)
+      output = node |> NodeAdmissionPresenter.node() |> with_memory_budget()
       {:ok, render_node(output, json?)}
     else
       {:error, :node_not_found} -> {:error, "Error: node not found.", 1}
@@ -537,7 +545,8 @@ defmodule OrchardCLI.Commands.Nodes do
         "State: #{node.state}",
         "Health: #{node.health}",
         "Admission: #{get_in(status, [:admission, :category])}",
-        "Scheduling: #{format_scheduling(get_in(status, [:scheduling]))}"
+        "Scheduling: #{format_scheduling(get_in(status, [:scheduling]))}",
+        format_memory_budget(node[:memory_budget])
       ],
       "\n"
     )
@@ -605,6 +614,56 @@ defmodule OrchardCLI.Commands.Nodes do
        ) do
     "#{lifecycle_result_label(action)} node #{node.id}. State: #{node.state}."
   end
+
+  defp with_memory_budget(node) do
+    runtime_impl = Application.get_env(:orchard_controller, :console, [])[:runtime_impl]
+
+    case MemoryBudgetPresenter.for_node(node, runtime_impl || OrchardConsole.Runtime) do
+      nil -> node
+      memory_budget -> Map.put(node, :memory_budget, memory_budget)
+    end
+  end
+
+  defp format_memory_budget(nil), do: nil
+
+  defp format_memory_budget(%{runtime_memory_budgets: budgets}) do
+    rows = Enum.map_join(budgets, "\n", &format_memory_budget_row/1)
+
+    "Memory budget:\n" <> rows
+  end
+
+  defp format_memory_budget(_memory_budget), do: nil
+
+  defp format_memory_budget_row(budget) do
+    Enum.join(
+      [
+        "  Model: #{budget[:model_ref] || "unknown model"}",
+        "  Mode: #{budget[:mode] || "unknown"}",
+        "  Status: #{format_budget_status(budget)}",
+        "  Target working set: #{format_integer_or_unknown(budget[:target_working_set_bytes])}",
+        "  Headroom: #{format_headroom(budget)}",
+        "  KV cache bytes/token: #{format_integer_or_unknown(budget[:kv_cache_bytes_per_token])}",
+        "  Max context tokens: #{format_integer_or_unknown(budget[:max_context_tokens])}",
+        "  Recommended context tokens: #{format_integer_or_unknown(budget[:recommended_context_tokens])}"
+      ],
+      "\n"
+    )
+  end
+
+  defp format_budget_status(%{status_code: code, status_message: message})
+       when is_binary(message) and message != "",
+       do: "#{code} (#{message})"
+
+  defp format_budget_status(%{status_code: code}) when is_binary(code), do: code
+  defp format_budget_status(_budget), do: "unreported"
+
+  defp format_headroom(%{headroom_available: true}), do: "estimate reported"
+  defp format_headroom(_budget), do: "estimate unavailable"
+
+  defp format_integer_or_unknown(value) when is_integer(value) and value > 0,
+    do: Integer.to_string(value)
+
+  defp format_integer_or_unknown(_value), do: "unknown"
 
   defp encode_json(payload), do: Jason.encode!(payload, pretty: true)
 

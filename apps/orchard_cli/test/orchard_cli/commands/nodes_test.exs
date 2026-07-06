@@ -1,3 +1,79 @@
+defmodule OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub do
+  @moduledoc false
+
+  def cluster_snapshot(_opts \\ []) do
+    node_id = :persistent_term.get({__MODULE__, :node_id})
+
+    recommended_context_tokens =
+      :persistent_term.get({__MODULE__, :recommended_context_tokens}, 24_576)
+
+    [
+      %{
+        target: [host: "127.0.0.1", port: 50_071],
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [%{model_id: "test-model", version: "v1"}],
+        active_request_count: 0,
+        node_metadata: %{
+          node_id: node_id,
+          display_name: "budget-node",
+          hostname: "budget-node.local",
+          listen_host: "127.0.0.1",
+          listen_port: 50_071,
+          agent_version: "0.1.0",
+          worker_backend: "mlx_lm"
+        },
+        runtime_health: %{ready: true, health_code: "ok", health_message: nil},
+        supports_prompt_token_ids: true,
+        runtime_memory_budgets: [
+          %{
+            display_state: :observed,
+            model_ref: "test-model@v1",
+            mode: "observe",
+            budget_available: true,
+            headroom_available: true,
+            status_code: "ok",
+            status_message: "within budget",
+            target_working_set_bytes: 12_884_901_888,
+            resident_memory_bytes: 8_589_934_592,
+            kv_cache_bytes_per_token: 16_384,
+            prefill_workspace_bytes_per_token: 2_048,
+            recommended_context_tokens: recommended_context_tokens
+          }
+        ],
+        runtime_memory_budgets_truncated_count: 0,
+        runtime_prefix_cache_statuses: []
+      }
+    ]
+  end
+end
+
+defmodule OrchardCLI.Commands.NodesTest.RuntimeNoMemoryBudgetStub do
+  @moduledoc false
+
+  def cluster_snapshot(_opts \\ []) do
+    node_id = :persistent_term.get({__MODULE__, :node_id})
+
+    [
+      %{
+        target: [host: "127.0.0.1", port: 50_071],
+        status: :ok,
+        message: nil,
+        worker_state: :idle,
+        loaded_models: [],
+        active_request_count: 0,
+        node_metadata: %{node_id: node_id, display_name: "no-budget-node"},
+        runtime_health: %{ready: true, health_code: "ok", health_message: nil},
+        supports_prompt_token_ids: true,
+        runtime_memory_budgets: [],
+        runtime_memory_budgets_truncated_count: 0,
+        runtime_prefix_cache_statuses: []
+      }
+    ]
+  end
+end
+
 defmodule OrchardCLI.Commands.NodesTest.FailingAuditLog do
   @moduledoc false
 
@@ -19,14 +95,29 @@ defmodule OrchardCLI.Commands.NodesTest do
   alias Ecto.Adapters.SQL.Sandbox
   alias Orchard.ClusterManagement.StatusBuilder
   alias Orchard.Governance.AuditLog
+  alias Orchard.Models.Model
   alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
   alias Orchard.Repo
   alias OrchardCLI.Commands.Nodes, as: NodesCmd
   alias OrchardCLI.Commands.NodesTest.FailingAuditLog
 
   setup do
+    previous_console = Application.get_env(:orchard_controller, :console, [])
+
     :ok = Sandbox.checkout(Repo)
     Sandbox.mode(Repo, {:shared, self()})
+
+    on_exit(fn ->
+      Application.put_env(:orchard_controller, :console, previous_console)
+      :persistent_term.erase({OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub, :node_id})
+
+      :persistent_term.erase(
+        {OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub, :recommended_context_tokens}
+      )
+
+      :persistent_term.erase({OrchardCLI.Commands.NodesTest.RuntimeNoMemoryBudgetStub, :node_id})
+    end)
+
     :ok
   end
 
@@ -216,6 +307,104 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert decoded["status"]["object"] == "cluster_management.node_status"
       assert decoded["status"]["admission"]["category"] == "pending_registered"
       assert decoded["status"]["scheduling"]["reason_codes"] == ["node_not_admitted"]
+    end
+
+    test "SPEC.md §7.5.3 json output renders runtime memory budget data" do
+      node = insert_node!(display_name: "budget-node", state: :active, health: :healthy)
+      insert_model!(model_id: "test-model", version: "v1", max_context_tokens: 32_768)
+
+      :persistent_term.put(
+        {OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub, :node_id},
+        node.id
+      )
+
+      put_runtime_stub(OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub)
+
+      assert {:ok, output} = NodesCmd.run(["inspect", node.id, "--json"])
+      decoded = Jason.decode!(output)
+
+      assert %{
+               "runtime_memory_budgets" => [budget],
+               "runtime_memory_budgets_truncated_count" => 0
+             } = decoded["memory_budget"]
+
+      assert budget["model_ref"] == "test-model@v1"
+      assert budget["mode"] == "observe"
+      assert budget["status_code"] == "ok"
+      assert budget["status_message"] == "within budget"
+      assert budget["target_working_set_bytes"] == 12_884_901_888
+      assert budget["resident_memory_bytes"] == 8_589_934_592
+      assert budget["kv_cache_bytes_per_token"] == 16_384
+      assert budget["prefill_workspace_bytes_per_token"] == 2_048
+      assert budget["recommended_context_tokens"] == 24_576
+      assert budget["max_context_tokens"] == 32_768
+    end
+
+    test "json output renders zero recommended context tokens as unknown" do
+      node = insert_node!(display_name: "budget-node", state: :active, health: :healthy)
+      insert_model!(model_id: "test-model", version: "v1", max_context_tokens: 32_768)
+
+      :persistent_term.put(
+        {OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub, :node_id},
+        node.id
+      )
+
+      :persistent_term.put(
+        {OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub, :recommended_context_tokens},
+        0
+      )
+
+      put_runtime_stub(OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub)
+
+      assert {:ok, output} = NodesCmd.run(["inspect", node.id, "--json"])
+      decoded = Jason.decode!(output)
+      [budget] = get_in(decoded, ["memory_budget", "runtime_memory_budgets"])
+
+      assert budget["recommended_context_tokens"] == nil
+      assert budget["max_context_tokens"] == 32_768
+    end
+
+    test "human output renders memory budget with unknown zero recommendation" do
+      node = insert_node!(display_name: "budget-node", state: :active, health: :healthy)
+      insert_model!(model_id: "test-model", version: "v1", max_context_tokens: 32_768)
+
+      :persistent_term.put(
+        {OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub, :node_id},
+        node.id
+      )
+
+      :persistent_term.put(
+        {OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub, :recommended_context_tokens},
+        0
+      )
+
+      put_runtime_stub(OrchardCLI.Commands.NodesTest.RuntimeMemoryBudgetStub)
+
+      assert {:ok, output} = NodesCmd.run(["inspect", node.id])
+
+      assert output =~ "Memory budget:"
+      assert output =~ "Model: test-model@v1"
+      assert output =~ "Status: ok (within budget)"
+      assert output =~ "KV cache bytes/token: 16384"
+      assert output =~ "Max context tokens: 32768"
+      assert output =~ "Recommended context tokens: unknown"
+      refute output =~ "Recommended context tokens: 0"
+    end
+
+    test "json output omits memory budget when no Runtime Endpoint budget is available" do
+      node = insert_node!(display_name: "no-budget-node", state: :active, health: :healthy)
+
+      :persistent_term.put(
+        {OrchardCLI.Commands.NodesTest.RuntimeNoMemoryBudgetStub, :node_id},
+        node.id
+      )
+
+      put_runtime_stub(OrchardCLI.Commands.NodesTest.RuntimeNoMemoryBudgetStub)
+
+      assert {:ok, output} = NodesCmd.run(["inspect", node.id, "--json"])
+      decoded = Jason.decode!(output)
+
+      refute Map.has_key?(decoded, "memory_budget")
     end
 
     test "missing node reports not found" do
@@ -817,6 +1006,40 @@ defmodule OrchardCLI.Commands.NodesTest do
     %Node{}
     |> Node.changeset(merged)
     |> Repo.insert!()
+  end
+
+  defp insert_model!(attrs) do
+    unique = System.unique_integer([:positive])
+
+    defaults = %{
+      model_id: "model-#{unique}",
+      version: "v1",
+      state: :active,
+      format: "mlx",
+      capabilities: ["chat"],
+      tokenizer: %{"kind" => "huggingface_tokenizer_json"},
+      artifact_uri: "file:///tmp/orchard-test-model-#{unique}",
+      artifact_sha256: String.duplicate("a", 64),
+      artifact_size_bytes: 1_024,
+      resident_memory_bytes: 2_048,
+      kv_cache_bytes_per_token: 16,
+      prefill_workspace_bytes_per_token: 8,
+      max_context_tokens: 32_768,
+      runtime_requirements: %{"adapter" => "mlx_lm"}
+    }
+
+    %Model{}
+    |> Model.changeset(Map.merge(defaults, Map.new(attrs)))
+    |> Repo.insert!()
+  end
+
+  defp put_runtime_stub(stub) do
+    Application.put_env(
+      :orchard_controller,
+      :console,
+      Application.get_env(:orchard_controller, :console, [])
+      |> Keyword.put(:runtime_impl, stub)
+    )
   end
 
   defp insert_candidate!(attrs \\ []) do
