@@ -13,7 +13,7 @@ This change defines the operator-facing UX contract before implementation so the
 - Require Console, CLI, Operator API, and Admin API surfaces to keep lifecycle, health, freshness, transport reachability, runtime readiness, compatibility, scheduling, and warnings distinct.
 - Define fixed operator-facing reason-code vocabularies for scheduler explanations and node action previews.
 - Require CLI and Console parity for node list, node detail, admission review, action eligibility, scheduler explanation, diagnostics, support bundle creation, and control-plane read-only status.
-- Define a safe action model for eligibility-changing and destructive node operations: cordon, uncordon, drain, maintenance, resume, admit, reject pending admission, and decommission.
+- Define a safe action model for eligibility-changing and destructive node operations: cordon, uncordon, drain, cancel drain, maintenance, resume, admit, reject pending admission, and decommission.
 - Define support bundle and diagnostics expectations, including scope selection, redaction manifest, and shared CLI/Console behavior.
 - Keep Active/Standby leadership and lock status read-only in this foundation change, with mutating failover or leadership actions deferred to a later accepted change.
 - Exclude product code implementation from this change package.
