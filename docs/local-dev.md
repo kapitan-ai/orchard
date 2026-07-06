@@ -554,7 +554,7 @@ ORCHARD_RUNTIME_CLIENT_TARGETS="127.0.0.1:50071,<remote-tailscale-ip>:50071" \
 
 The local node-agent still binds to `127.0.0.1:50071`.
 The controller targets both local and remote gRPC nodes.
-The scheduler auto-selects `MultiNode` when it sees more than one target.
+The scheduler auto-selects `MultiNode` whenever at least one target is configured.
 Use a Tailscale IPv4 address such as `100.x.y.z` in the target list.
 IPv6 addresses are not supported in the gRPC compatibility target list.
 
