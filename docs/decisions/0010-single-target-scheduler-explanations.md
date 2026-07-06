@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Resolves GitHub issue #49 once accepted.
+Accepted. Implementation of the predicate change closes GitHub issue #49.
 
 ## Context
 
@@ -14,13 +14,17 @@ Code reading shows MultiNode with one candidate is neither expensive nor diverge
 
 SPEC.md §7.3.5 defines no single-node exemption and states: "Scheduler explanation generation, validation, and persistence are observational. An invalid or unbuildable explanation SHALL NOT fail, block, or alter the user's inference request."
 
+External prior art supports uniform scheduler diagnostics rather than gating them on cluster size. Kubernetes evaluates candidates through the same scheduling-framework phases and emits `FailedScheduling` events even when only one node is available. Nomad's `alloc status -verbose` exposes evaluated-node counts, rejections, and placement metrics, including single-evaluated-node cases. Operators expect the scheduler to explain its decision whenever a real runtime target exists.
+
 ## Decision
 
 Make explanation coverage uniform: select MultiNode whenever any runtime target exists (predicate becomes non-empty `runtime_client_targets()`), keeping SingleNode as the no-target fallback and MultiNode's degradation path. Empty explanation panels in the smallest real deployment read as a defect; since the single-candidate placement outcome is equivalent and the cost negligible, uniform observability wins over documenting the threshold, which would enshrine a transport inconsistency the BEAM path already contradicts.
 
 ## Consequences
 
-Single-target gRPC deployments gain persisted explanations and runtime observations at a small per-request DB cost. Saturation on that path reports `cluster_busy` rather than `model_busy`; a target whose node is not yet admitted still yields no explanation via fallback, which is correct — there are no lifecycle-managed candidates to explain. Scheduler-selection tests need updating for the new predicate.
+Single-target gRPC deployments gain persisted explanations and runtime observations at a small per-request DB cost. Saturation on that path reports `cluster_busy` rather than `model_busy`; a target whose node is not yet admitted still yields no explanation via fallback, which is correct — there are no lifecycle-managed candidates to explain. Scheduler-selection tests need updating for the new predicate, and must cover both a single configured legacy gRPC target and duplicate legacy targets that deduplicate to one, because the predicate is "any normalized runtime client target exists", not "more than one distinct target exists".
+
+The glossary entry for Model Busy currently reads "runtime or single-node scheduler outcome"; when the implementation lands, that entry must be sharpened to reflect that Model Busy remains reachable only via the no-target fallback path, while configured-target saturation reports Cluster Busy uniformly.
 
 ## SPEC.md impact
 

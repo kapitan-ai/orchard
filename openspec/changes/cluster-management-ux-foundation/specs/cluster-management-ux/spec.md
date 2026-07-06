@@ -210,6 +210,32 @@ This refines `SPEC.md` §4.4, §4.8, §7.3, §7.4, §12.7, §13.4, and §13.7.
 - **THEN** Orchard revalidates the action at execution time
 - **AND** Orchard does not execute the stale preview as if the node still had no active requests
 
+### Requirement: Cancel Drain Provides A Draining Recovery Path
+Orchard SHALL provide a `cancel_drain` node action that transitions a node from `draining` to `cordoned`.
+Cancel drain SHALL stop further waiting for active-request quiescence and SHALL leave the node unschedulable as `cordoned`.
+Cancel drain SHALL NOT certify drain completion and SHALL NOT weaken the `drain_completion_unverified` blocker on manual `draining -> maintenance` execution.
+Cancel drain SHALL NOT restore, replay, or migrate back work that completed, was cancelled, or quiesced while the drain ran.
+Cancel drain SHALL be allowed only from `draining`; execution from any other lifecycle state SHALL produce a `drain_not_running` blocker.
+Cancel drain SHALL use the shared action preview, confirmation, blocker, audit, and mutation-time revalidation vocabulary defined for other lifecycle actions.
+This refines `SPEC.md` §4.3, §4.4, and §4.8 per ADR 0009.
+
+#### Scenario: Operator cancels a drain that no longer needs to run
+- **WHEN** an operator executes `cancel_drain` on a node in `draining`
+- **THEN** Orchard transitions the node to `cordoned`
+- **AND** the node remains excluded from scheduling until a separate `uncordon` action
+- **AND** Orchard records a cluster-scoped audit event for the cancellation
+
+#### Scenario: Cancel drain on a node that is not draining
+- **WHEN** an operator previews or executes `cancel_drain` on a node that is not in `draining`
+- **THEN** Orchard reports a `drain_not_running` blocker
+- **AND** Orchard does not mutate the node
+
+#### Scenario: Drain completes between preview and execution
+- **WHEN** an operator previews `cancel_drain` for a draining node
+- **AND** the node leaves `draining` before the operator confirms execution
+- **THEN** Orchard revalidates at execution time and reports `drain_not_running`
+- **AND** Orchard does not execute the stale preview
+
 ### Requirement: Diagnostics And Support Bundles Share One Artifact Contract
 Console-triggered support bundles and `orchardctl support bundle create` SHALL use one shared support bundle artifact contract.
 This change SHALL define `orchard.support_bundle.v2` for shared Console and CLI cluster-management support bundles.

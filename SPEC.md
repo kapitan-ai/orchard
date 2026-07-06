@@ -644,6 +644,7 @@ cordoned    -> active
 
 active      -> draining
 cordoned    -> draining
+draining    -> cordoned
 draining    -> maintenance
 maintenance -> active
 
@@ -681,6 +682,11 @@ decommissioning -> removed
 
   * trigger: operator/admin action
   * effect: no new requests, wait until `active_request_count == 0`
+
+* `draining -> cordoned`
+
+  * trigger: operator/admin action (cancel drain)
+  * effect: stop waiting for active-request quiescence; node remains unschedulable as `cordoned`; work already completed, cancelled, or quiesced during the drain is not restored; no drain completion is certified
 
 * `draining -> maintenance`
 
