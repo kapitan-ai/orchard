@@ -394,6 +394,59 @@ defmodule Orchard.Inference.RequestOrchestratorTest.StubFunctionClauseRuntimeCli
   end
 end
 
+defmodule Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient do
+  @moduledoc false
+
+  alias Orchard.InferenceEvent
+  alias Orchard.RuntimeEndpoint.Operation
+
+  def connect(target), do: {:ok, target}
+
+  def status(target, _opts) do
+    address = target.address
+    key = {Keyword.fetch!(address, :host), Keyword.fetch!(address, :port)}
+
+    case Process.get({__MODULE__, key}) do
+      nil -> {:error, :unavailable}
+      response -> {:ok, response}
+    end
+  end
+
+  def ensure_model_loaded(_channel, %Operation.EnsureModelLoadedRequest{}, _opts),
+    do:
+      {:ok,
+       %Operation.EnsureModelLoadedResult{
+         already_loaded: false,
+         placement_state: :loaded,
+         worker_supports_prompt_token_ids: true
+       }}
+
+  def unload_model(_channel, %Operation.UnloadModelRequest{}, _opts),
+    do: {:ok, %Operation.Ack{ok: true}}
+
+  def execute_inference(_channel, %Operation.ExecuteRequest{} = request, opts) do
+    owner = Keyword.fetch!(opts, :owner)
+    stream_ref = make_ref()
+
+    send(
+      owner,
+      {:runtime_endpoint_event, stream_ref, request.request_id,
+       InferenceEvent.completed(:finish_reason_stop, %InferenceEvent.Usage{})}
+    )
+
+    send(owner, {:runtime_endpoint_done, stream_ref, :ok})
+
+    {:ok, stream_ref}
+  end
+
+  def cancel_inference(_channel, %Operation.CancelRequest{}, _opts), do: :ok
+
+  def disconnect(_channel), do: :ok
+
+  def score_prefix_cache(_target, _request, _opts),
+    do: {:ok, %{status_code: "unavailable", score_tier: "unknown"}}
+end
+
 defmodule Orchard.Inference.RequestOrchestratorTest.StubLiveCapacityScheduler do
   @behaviour Orchard.Scheduler.SingleNode
 
@@ -656,6 +709,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheScheduler
   alias Orchard.Inference.RequestOrchestratorTest.StubPrefixCacheUnavailableScheduler
+  alias Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointClient
 
   alias Orchard.API.Ops.SchedulerExplanationPresenter
   alias Orchard.ArtifactBundle
@@ -666,6 +720,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.ModelManager
+  alias Orchard.Nodes.Node, as: InventoryNode
   alias Orchard.Requests
   alias Orchard.Requests.Idempotency
   alias Orchard.Requests.RequestServer
@@ -839,6 +894,36 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     assert request.scheduler_decision["candidate_count"] == 2
     assert request.scheduler_decision["selected_tier"] == "loaded"
     assert request.scheduler_decision["node_id"] == scheduled_node_id()
+  end
+
+  test "SPEC.md §7.3.5 execute/3 persists scheduler explanation for one legacy target",
+       %{bundle: bundle} do
+    target = [host: "10.0.0.1", port: 50_061]
+    node = insert_runtime_node!(target)
+
+    put_auto_runtime_endpoint_scheduler_config([target])
+    stub_runtime_status(target, runtime_status(node.id, target))
+
+    model = create_active_model!(bundle, "request-orchestrator-single-target-explanation")
+
+    canonical =
+      canonical_request("request-orchestrator-single-target-explanation", stream?: false)
+
+    assert {:ok, ^canonical, events} = RequestOrchestrator.execute(canonical, model)
+    assert Enum.any?(events, &InferenceEvent.terminal?/1)
+
+    request = Requests.get_request_by_public_id(canonical.public_id)
+    decision = request.scheduler_decision
+
+    assert decision["strategy"] == "multi_node"
+    assert decision["candidate_count"] == 1
+    assert decision["selected_tier"] == "cold"
+    assert decision["node_id"] == node.id
+
+    assert {:ok, explanation} = SchedulerExplanationPresenter.show(request)
+    assert explanation.selected_node_id == node.id
+    assert [%{node_id: node_id}] = explanation.scored_candidates
+    assert node_id == node.id
   end
 
   test "SPEC.md §7.3.5 execute/3 fails open and completes dispatch when the scheduler explanation is invalid",
@@ -2978,6 +3063,66 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     Application.put_env(:orchard_controller, :inference, inference)
   end
 
+  defp put_auto_runtime_endpoint_scheduler_config(targets) do
+    inference =
+      Application.fetch_env!(:orchard_controller, :inference)
+      |> Keyword.merge(
+        runtime_client_targets: targets,
+        runtime_endpoint_targets: [],
+        runtime_endpoint_client_impl: StubRuntimeEndpointClient,
+        scheduler_impl: nil
+      )
+
+    Application.put_env(:orchard_controller, :inference, inference)
+  end
+
+  defp insert_runtime_node!(target) do
+    unique = System.unique_integer([:positive])
+
+    attrs = %{
+      id: Ecto.UUID.generate(),
+      hostname: "single-target-#{unique}.local",
+      display_name: "single-target-#{unique}",
+      advertise_addr: Keyword.fetch!(target, :host),
+      rpc_port: Keyword.fetch!(target, :port),
+      state: :active,
+      health: :healthy,
+      capabilities: %{},
+      last_heartbeat_at: DateTime.utc_now()
+    }
+
+    %InventoryNode{}
+    |> InventoryNode.changeset(attrs)
+    |> Repo.insert!()
+  end
+
+  defp stub_runtime_status(target, response) do
+    key = {Keyword.fetch!(target, :host), Keyword.fetch!(target, :port)}
+    Process.put({StubRuntimeEndpointClient, key}, response)
+  end
+
+  defp runtime_status(node_id, target) do
+    %{
+      node_metadata: %{
+        node_id: node_id,
+        display_name: "single-target-node",
+        hostname: "single-target-node.local",
+        agent_version: "0.1.0",
+        listen_host: Keyword.fetch!(target, :host),
+        listen_port: Keyword.fetch!(target, :port),
+        worker_backend: "mlx"
+      },
+      runtime_health: %{ready: true, health_code: "ok", health_message: "ready"},
+      loaded_models: [],
+      active_request_count: 0,
+      max_concurrency: 4,
+      runtime_memory_budgets: [],
+      runtime_prefix_cache_statuses: [],
+      runtime_model_placements: [],
+      supports_prompt_token_ids: false
+    }
+  end
+
   defp runtime_client_target_map do
     runtime_target = Orchard.Inference.runtime_client_target()
 
@@ -3012,7 +3157,8 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
       Application.fetch_env!(:orchard_controller, :inference)
       |> Keyword.merge(
         runtime_endpoint_client_impl:
-          Orchard.Inference.RequestOrchestratorTest.StubFunctionClauseRuntimeClient
+          Orchard.Inference.RequestOrchestratorTest.StubFunctionClauseRuntimeClient,
+        scheduler_impl: Orchard.Scheduler.SingleNode
       )
 
     Application.put_env(:orchard_controller, :inference, inference)
