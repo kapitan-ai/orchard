@@ -20,11 +20,14 @@ This README is orientation only. Normative CLI requirements live in
   `nodes admit`, `nodes reject`) with stable JSON and human output, `--dry-run`
   previews, and `--yes`/`--reason` execution gating.
 - Node lifecycle commands (`nodes cordon`, `nodes uncordon`, `nodes drain`,
-  `nodes maintenance`, `nodes resume`, `nodes decommission`) on the shared
-  Action Preview contract, with `--dry-run`/`--json` previews and `--yes`,
-  `--acknowledge`, and `--typed-node-id` execution gating. `nodes maintenance`
-  previews only; its `draining -> maintenance` execution stays blocked until
-  drain completion can be verified.
+  `nodes cancel-drain`, `nodes maintenance`, `nodes resume`,
+  `nodes decommission`) on the shared Action Preview contract, with
+  `--dry-run`/`--json` previews and `--yes`, `--acknowledge`, and
+  `--typed-node-id` execution gating. `nodes cancel-drain` stops an in-progress
+  drain and leaves the node `cordoned`; it is allowed only from `draining` and
+  otherwise reports a `drain_not_running` blocker. `nodes maintenance` previews
+  only; its `draining -> maintenance` execution stays blocked until drain
+  completion can be verified.
 - Request diagnostics through `requests inspect <request-id>`, including stable
   human and JSON scheduler-explanation output from the shared Operator API
   presenter and scheduler explanation contract.

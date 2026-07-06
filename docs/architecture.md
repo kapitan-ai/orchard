@@ -25,12 +25,15 @@ product/system/build contract.
   the current node-admission-review slice, with stable JSON and human output,
   `--dry-run` previews, and `--yes`/`--reason` execution gating.
   `orchardctl nodes cordon`, `orchardctl nodes uncordon`,
-  `orchardctl nodes drain`, `orchardctl nodes maintenance`,
-  `orchardctl nodes resume`, and `orchardctl nodes decommission` add node
-  lifecycle previews and execution on the shared Action Preview contract, gated
-  by `--yes`, `--acknowledge`, and `--typed-node-id`; `orchardctl nodes
-  maintenance` previews only, with its `draining -> maintenance` execution
-  deferred until drain completion can be verified.
+  `orchardctl nodes drain`, `orchardctl nodes cancel-drain`,
+  `orchardctl nodes maintenance`, `orchardctl nodes resume`, and
+  `orchardctl nodes decommission` add node lifecycle previews and execution on
+  the shared Action Preview contract, gated by `--yes`, `--acknowledge`, and
+  `--typed-node-id`; `orchardctl nodes cancel-drain` stops an in-progress drain
+  and holds the node `cordoned`, allowed only from `draining` and otherwise
+  reporting a `drain_not_running` blocker; `orchardctl nodes maintenance`
+  previews only, with its `draining -> maintenance` execution deferred until
+  drain completion can be verified.
   `orchardctl support bundle create` creates a local diagnostic archive
   with bounded redacted logs, redacted config, service status, node snapshots,
   shared cluster-management node status, and request summaries.
