@@ -242,7 +242,7 @@ Stream mode reports max concurrency as `1` at both node and placement levels.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ORCHARD_RUNTIME_CLIENT_HOST` | `127.0.0.1` | Controller’s local gRPC target host |
-| `ORCHARD_RUNTIME_CLIENT_TARGETS` | _(empty)_ | Comma-separated `host:port` list for multi-node scheduling. When set with >1 target, the scheduler auto-selects `MultiNode`. |
+| `ORCHARD_RUNTIME_CLIENT_TARGETS` | _(empty)_ | Comma-separated `host:port` list for multi-node scheduling. When set with at least one target, the scheduler auto-selects `MultiNode`. |
 
 These env vars configure only the gRPC compatibility target path.
 Split-role source-dev defaults to BEAM Runtime Endpoint mode and uses a separate Runtime Endpoint env surface, not `ORCHARD_RUNTIME_CLIENT_TARGETS`.
