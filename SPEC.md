@@ -1490,10 +1490,10 @@ The worker-side `memory_budget_mode` (`ORCHARD_WORKER_MEMORY_BUDGET_MODE`) is
   `memory_pressure_abort` terminal so operators can distinguish enforcement from
   other failures. Enforcement applies cooldown hysteresis between abort sweeps,
   and every enforcement gate is fail-open: an unavailable, missing, or failed
-  memory sample SHALL NOT fail a generation on its own. Pressure is sampled per
-  backend decode event only; prefill is not interruptible, so a request already
-  in prefill is not aborted mid-prefill. Admission-time memory gating is deferred
-  follow-up work (issue #68).
+  memory sample SHALL NOT fail a generation on its own. Pressure is sampled at
+  admission before backend prefill starts and per backend decode event. Prefill
+  is not interruptible, so a request already in prefill is not aborted
+  mid-prefill.
 
 ### 6.5 Model import
 

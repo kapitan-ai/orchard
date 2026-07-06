@@ -453,10 +453,11 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
       ``mx.get_active_memory`` by default) compared against the loaded session's
       ``target_working_set_bytes`` from the backend memory-budget status. A
       breach means the sampled active memory exceeds the target.
-    - Checks run inside the ``Generate`` event-consuming loop only — pressure
-      only matters while generations are active, and every active generation
-      (stream or batch) flows through a ``Generate`` loop — rate-limited to one
-      check per ``memory_pressure_check_interval_s`` across all requests. No
+    - Checks run after ``start_generation`` before backend prefill and inside
+      the ``Generate`` event-consuming loop. Pressure only matters while
+      generations are active, and every active generation (stream or batch)
+      flows through a ``Generate`` loop. Checks are rate-limited to one check
+      per ``memory_pressure_check_interval_s`` across all requests. No
       background thread is used.
     - On breach the servicer sets every active-phase cancel event (reusing the
       client-cancel machinery), so all active generations abort. The model
@@ -727,6 +728,13 @@ class WorkerRuntimeServicer(worker_runtime_pb2_grpc.WorkerRuntimeServiceServicer
                     self._backend.record_fingerprint(fingerprint)
                 except Exception:
                     pass
+
+            self._maybe_enforce_memory_pressure()
+            if cancel_event.is_set():
+                proto_event = build_failed_event("cancelled", "request cancelled", False)
+                yield self._replace_memory_abort_terminal(proto_event, entry)
+                terminal_emitted = True
+                return
 
             backend_iterator = self._backend.generate(request, cancel_event)
             try:
