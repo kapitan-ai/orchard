@@ -70,7 +70,7 @@ defmodule Orchard.InferenceTest do
 
     assert Inference.request_supervisor() == Orchard.Requests.Supervisor
     assert Inference.tokenizer_client() == Orchard.Tokenizer.Client
-    assert Inference.scheduler() == Orchard.Scheduler.SingleNode
+    assert Inference.scheduler() == Orchard.Scheduler.MultiNode
   end
 
   @tag :db
@@ -795,8 +795,8 @@ defmodule Orchard.InferenceTest do
   end
 
   describe "scheduler auto-selection" do
-    test "defaults to SingleNode when plural targets are absent" do
-      put_inference(runtime_client_targets: [])
+    test "defaults to SingleNode when legacy plural targets and singular target are absent" do
+      put_inference(runtime_client_targets: [], runtime_client_target: nil)
       assert Inference.scheduler() == SingleNode
     end
 
@@ -812,7 +812,7 @@ defmodule Orchard.InferenceTest do
       assert Inference.scheduler() == MultiNode
     end
 
-    test "deduplicated plural targets that collapse to one still use SingleNode" do
+    test "SPEC.md §7.3.5 deduplicated legacy targets that collapse to one use MultiNode" do
       put_inference(
         runtime_client_targets: [
           [host: "10.0.0.1", port: 50_061],
@@ -821,7 +821,7 @@ defmodule Orchard.InferenceTest do
         scheduler_impl: nil
       )
 
-      assert Inference.scheduler() == SingleNode
+      assert Inference.scheduler() == MultiNode
     end
 
     test "SPEC.md §7.5 explicit Runtime Endpoint targets use endpoint-aware scheduling when singular" do

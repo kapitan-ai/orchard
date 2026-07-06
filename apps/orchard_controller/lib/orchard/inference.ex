@@ -283,7 +283,7 @@ defmodule Orchard.Inference do
       explicit_runtime_endpoint_targets?() ->
         Orchard.Scheduler.MultiNode
 
-      length(runtime_client_targets()) > 1 ->
+      runtime_client_targets() != [] ->
         Orchard.Scheduler.MultiNode
 
       true ->
