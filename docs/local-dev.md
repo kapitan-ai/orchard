@@ -267,8 +267,10 @@ The BEAM source-dev env surface is separate from the legacy gRPC compatibility t
 `ORCHARD_RUNTIME_CLIENT_TARGETS` does not configure BEAM targets.
 When BEAM mode is selected, BEAM configuration, guardrail, connection, identity, and Runtime Endpoint RPC failures fail visibly.
 The controller does not automatically retry the same request through gRPC.
-`orchardctl env init` does not render this BEAM env surface yet.
-CLI scaffolding for these variables is deferred to a separate change.
+`orchardctl env init` renders this BEAM env surface in the packaged
+`controller.env` and `node-agent.env` templates, but source-dev split-role
+launches still set these variables directly in the shell rather than through
+generated env files.
 For a default BEAM controller launch, `ORCHARD_RUNTIME_ENDPOINT_TARGETS` is effectively required, and startup fails early naming the variable when it is absent.
 
 | Variable | Default | Description |
@@ -1087,7 +1089,7 @@ mise exec -- iex -S mix phx.server
 - Public `/v1/*` API routes require Bearer API Tokens.
   Tenant-direct API Tokens remain supported, and service-account-owned API Tokens require an enabled API Client with tenant-scoped `inference_client` access.
   Full quota policy remains incomplete
-- Multi-node is supported for source-dev testing only (production/packaged multi-node — M4)
+- Multi-node is supported for source-dev testing and the packaged external-sites multi-Mac BEAM cut documented in the [packaging README](../packaging/pkg/README.md#packaged-external-sites-multi-mac-first-cut); broader production multi-node scheduling remains M4
 - Split-role BEAM Runtime Endpoint mode is the default for `bin/dev-controller` and `bin/dev-node-agent`
 - All-in-one `bin/dev` rejects explicit `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam`
 - gRPC compatibility remains available for split-role source dev only through `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`
