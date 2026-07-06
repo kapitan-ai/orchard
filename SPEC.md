@@ -2071,7 +2071,7 @@ Response example:
 ```
 
 Scheduler explanations SHALL expose stable reason codes for selected, rejected, and skipped candidates.
-Scheduler explanations are produced whenever at least one runtime target is configured.
+Scheduler explanations are produced whenever at least one runtime target is configured and the scheduler evaluates lifecycle-managed candidates; the no-candidate fallback path emits no explanation.
 Reason codes SHALL be shared by Operator API, CLI, Console, support bundles, and tests.
 Human-readable explanation text MAY be included, but it SHALL be supplemental to machine-readable reason codes.
 Rejected candidates SHALL include at least one stable rejection reason code.
