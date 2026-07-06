@@ -226,6 +226,36 @@ def test_main_passes_generation_and_memory_config_to_serve(monkeypatch) -> None:
     assert memory_budget_config.overhead_bytes == 268_435_456
 
 
+def test_main_accepts_enforce_memory_budget_mode(monkeypatch) -> None:
+    from orchard_worker_mlx import cli
+
+    captured: dict[str, object] = {}
+
+    def fake_serve(socket_path: str, backend: str, **kwargs: object) -> None:
+        captured["socket_path"] = socket_path
+        captured["backend"] = backend
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli, "serve", fake_serve)
+
+    assert (
+        cli.main(
+            [
+                "--socket-path",
+                "/tmp/orchard-worker.sock",
+                "--backend",
+                "mlx",
+                "--memory-budget-mode",
+                "enforce",
+            ]
+        )
+        == 0
+    )
+
+    memory_budget_config = captured["memory_budget_config"]
+    assert memory_budget_config.mode == "enforce"
+
+
 def test_main_rejects_stub_backend_with_batch_mode(monkeypatch) -> None:
     from orchard_worker_mlx import cli
 
@@ -322,7 +352,7 @@ def test_main_rejects_invalid_generation_and_memory_config(monkeypatch) -> None:
                 "--socket-path",
                 "/tmp/orchard-worker.sock",
                 "--memory-budget-mode",
-                "enforce",
+                "aggressive",
             ]
         )
 

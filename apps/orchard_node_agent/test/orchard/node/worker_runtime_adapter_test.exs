@@ -98,7 +98,8 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
           resident_memory_bytes: 2_048_000,
           estimated_headroom_bytes: 5_731_516_544,
           kv_cache_bytes_per_token: 16_384,
-          prefill_workspace_bytes_per_token: 2_048
+          prefill_workspace_bytes_per_token: 2_048,
+          recommended_context_tokens: 131_072
         },
         prefix_cache: %WorkerPrefixCacheStatus{
           implementation: "kv",
@@ -344,6 +345,7 @@ defmodule Orchard.Node.WorkerRuntimeAdapterTest do
       assert status.memory_budget.status_code == "ok"
       assert status.memory_budget.target_working_set_bytes == 6_000_000_000
       assert status.memory_budget.estimated_headroom_bytes == 5_731_516_544
+      assert status.memory_budget.recommended_context_tokens == 131_072
       assert status.prefix_cache_status.implementation == "kv"
       assert status.prefix_cache_status.enabled == true
       assert status.prefix_cache_status.entry_count == 2
@@ -802,7 +804,7 @@ defmodule Orchard.NodeTest do
     assert Node.effective_worker_request_limit() == 3
   end
 
-  test "worker_memory_budget_mode rejects unsupported enforce mode", %{
+  test "worker_memory_budget_mode accepts enforce mode and rejects unknown modes", %{
     previous_runtime: previous_runtime
   } do
     Application.put_env(
@@ -811,7 +813,15 @@ defmodule Orchard.NodeTest do
       Keyword.merge(previous_runtime, worker_memory_budget_mode: "enforce")
     )
 
-    assert_raise RuntimeError, "worker_memory_budget_mode=enforce is not supported yet", fn ->
+    assert Node.worker_memory_budget_mode() == "enforce"
+
+    Application.put_env(
+      :orchard_node_agent,
+      :runtime,
+      Keyword.merge(previous_runtime, worker_memory_budget_mode: "aggressive")
+    )
+
+    assert_raise RuntimeError, ~r/invalid worker_memory_budget_mode/, fn ->
       Node.worker_memory_budget_mode()
     end
   end

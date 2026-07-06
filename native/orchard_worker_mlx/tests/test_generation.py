@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gc
+import json
 import logging
 import threading
 import time
@@ -101,12 +102,16 @@ def _make_fake_request(
     tools_json: bytes | str = b"",
     tool_choice_json: bytes | str = b"",
     prompt_token_ids: list[int] | None = None,
+    return_token_ids: bool = False,
+    return_logprobs: bool = False,
 ) -> Any:
     """Create a minimal fake ExecuteInferenceRequest."""
     request = MagicMock()
     request.rendered_prompt_utf8 = prompt
     request.input_tokens = input_tokens
     request.prompt_token_ids = prompt_token_ids or []
+    request.return_token_ids = return_token_ids
+    request.return_logprobs = return_logprobs
     params = MagicMock()
     params.max_output_tokens = max_output_tokens
     params.temperature = temperature
@@ -124,6 +129,7 @@ def _make_deps(
     stream_generate: Any = None,
     make_prompt_cache: Any = None,
     trim_prompt_cache: Any = None,
+    synchronize: Callable[[], None] | None = None,
 ) -> GenerationDeps:
     """Create GenerationDeps that yields the given responses."""
     responses = responses or []
@@ -139,7 +145,17 @@ def _make_deps(
         make_sampler=fake_make_sampler,
         make_prompt_cache=make_prompt_cache,
         trim_prompt_cache=trim_prompt_cache,
+        synchronize=synchronize,
     )
+
+
+def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        threading.Event().wait(0.01)
+    return predicate()
 
 
 def _collect_events(
@@ -376,6 +392,8 @@ class _AttributionBatchGenerator:
 
 
 class _FakeBatchGenerator:
+    response_includes_logprobs = False
+
     def __init__(self, _model: Any, **_kwargs: Any) -> None:
         self._next_uid = 0
         self._active: list[dict[str, Any]] = []
@@ -429,18 +447,17 @@ class _FakeBatchGenerator:
             item["index"] = index
 
             cache_snapshot = [f"cache-{uid}"]
-            responses.append(
-                type(
-                    "BatchResp",
-                    (),
-                    {
-                        "uid": uid,
-                        "token": token,
-                        "finish_reason": finish_reason,
-                        "prompt_cache": (lambda snap=cache_snapshot: snap),
-                    },
-                )()
-            )
+            attrs = {
+                "uid": uid,
+                "token": token,
+                "finish_reason": finish_reason,
+                "prompt_cache": (lambda snap=cache_snapshot: snap),
+            }
+            if self.response_includes_logprobs:
+                logprobs = [0.0] * 32
+                logprobs[token] = token / 100.0
+                attrs["logprobs"] = logprobs
+            responses.append(type("BatchResp", (), attrs)())
 
             if finish_reason is None:
                 survivors.append(item)
@@ -524,6 +541,427 @@ def test_batch_generator_runtime_streams_through_generate_events() -> None:
     assert deltas == ["A", "B"]
     assert events[-1]["kind"] == "completed"
     assert events[-1]["finish_reason"] == "FINISH_REASON_STOP"
+
+
+class _LogprobsBatchGenerator(_FakeBatchGenerator):
+    response_includes_logprobs = True
+
+
+def test_batch_generator_runtime_opt_in_off_emits_no_token_delta_events() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+    request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    assert [event["kind"] for event in events].count("token_delta") == 0
+
+
+def test_batch_generator_runtime_return_token_ids_emits_ordered_token_deltas() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+    request = _make_fake_request(
+        input_tokens=3,
+        max_output_tokens=2,
+        return_token_ids=True,
+    )
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    token_deltas = [event for event in events if event["kind"] == "token_delta"]
+    assert [event["token_ids"] for event in token_deltas] == [[11], [12]]
+    assert [event.get("logprobs", []) for event in token_deltas] == [[], []]
+
+
+def test_batch_generator_runtime_return_logprobs_aligns_with_token_ids() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_LogprobsBatchGenerator),
+    )
+    request = _make_fake_request(
+        input_tokens=3,
+        max_output_tokens=2,
+        return_logprobs=True,
+    )
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    token_deltas = [event for event in events if event["kind"] == "token_delta"]
+    assert [event["token_ids"] for event in token_deltas] == [[11], [12]]
+    assert [event["logprobs"] for event in token_deltas] == [[0.11], [0.12]]
+
+
+def test_batch_generator_runtime_missing_logprobs_fail_open() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+    request = _make_fake_request(
+        input_tokens=3,
+        max_output_tokens=2,
+        return_logprobs=True,
+    )
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    token_deltas = [event for event in events if event["kind"] == "token_delta"]
+    assert [event["token_ids"] for event in token_deltas] == [[11], [12]]
+    assert [event.get("logprobs", []) for event in token_deltas] == [[], []]
+    assert events[-1]["kind"] == "completed"
+
+
+def test_batch_generator_runtime_emits_no_token_delta_after_terminal() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+    request = _make_fake_request(
+        input_tokens=3,
+        max_output_tokens=2,
+        return_token_ids=True,
+    )
+
+    try:
+        events = _collect_events(session, request, runtime.generation_deps())
+    finally:
+        runtime.close()
+
+    terminal_index = next(
+        index for index, event in enumerate(events) if event["kind"] == "completed"
+    )
+    assert all(event["kind"] != "token_delta" for event in events[terminal_index + 1 :])
+
+
+def test_batch_generator_runtime_realigns_row_state_before_next() -> None:
+    class _MisalignedRowStateBatchGenerator:
+        instances: list[_MisalignedRowStateBatchGenerator] = []
+
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self._next_uid = 0
+            self._next_calls = 0
+            self.samplers_by_uid: dict[int, Any] = {}
+            self._generation_batch = SimpleNamespace(uids=[], samplers=[], logits_processors=[])
+            self.captured_rows: list[tuple[list[Any], list[Any]]] = []
+            self.__class__.instances.append(self)
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+            **_kwargs: Any,
+        ) -> list[int]:
+            del prompts, max_tokens, caches, logits_processors
+            inserted_samplers = samplers or []
+            uids = list(range(self._next_uid, self._next_uid + len(inserted_samplers)))
+            self._next_uid += len(inserted_samplers)
+            for uid, sampler in zip(uids, inserted_samplers, strict=True):
+                self.samplers_by_uid[uid] = sampler
+
+            if uids == [0]:
+                self._generation_batch.uids = [0]
+                self._generation_batch.samplers = [self.samplers_by_uid[0]]
+                self._generation_batch.logits_processors = [[]]
+            elif uids == [1]:
+                self._generation_batch.uids = [0, 1]
+                self._generation_batch.samplers = [
+                    self.samplers_by_uid[1],
+                    self.samplers_by_uid[0],
+                ]
+                self._generation_batch.logits_processors = [None, ["stale"]]
+
+            return uids
+
+        def next(self) -> tuple[list[Any], list[Any]]:
+            self._next_calls += 1
+            self.captured_rows.append(
+                (
+                    list(self._generation_batch.samplers),
+                    list(self._generation_batch.logits_processors),
+                )
+            )
+            if self._next_calls == 1:
+                return ([], [_batch_response(0, token=11, finish_reason=None)])
+            if self._generation_batch.uids != [0, 1]:
+                return ([], [])
+            return (
+                [],
+                [
+                    _batch_response(0, token=12, finish_reason="stop"),
+                    _batch_response(1, token=21, finish_reason="stop"),
+                ],
+            )
+
+        def close(self) -> None:
+            return None
+
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_MisalignedRowStateBatchGenerator),
+    )
+    sampler_a = object()
+    sampler_b = object()
+
+    try:
+        stream_a = runtime.stream_generate(
+            session.model,
+            session.tokenizer,
+            [1, 2, 3],
+            max_tokens=2,
+            sampler=sampler_a,
+        )
+        assert next(stream_a).text == "A"
+        stream_b = runtime.stream_generate(
+            session.model,
+            session.tokenizer,
+            [4, 5, 6],
+            max_tokens=1,
+            sampler=sampler_b,
+        )
+        assert [chunk.text for chunk in stream_b] == ["X"]
+        assert [chunk.text for chunk in stream_a] == ["B"]
+        generator = _MisalignedRowStateBatchGenerator.instances[0]
+    finally:
+        runtime.close()
+
+    assert generator.captured_rows[-1] == ([sampler_a, sampler_b], [[], []])
+
+
+def test_batch_generator_runtime_row_realign_fail_open_without_uids() -> None:
+    class _NoUidBatchGenerator:
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self._next_uid = 0
+            self._generation_batch = SimpleNamespace(samplers=[object()])
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+            **_kwargs: Any,
+        ) -> list[int]:
+            del max_tokens, caches, samplers, logits_processors
+            uids = list(range(self._next_uid, self._next_uid + len(prompts)))
+            self._next_uid += len(prompts)
+            return uids
+
+        def next(self) -> tuple[list[Any], list[Any]]:
+            return ([], [_batch_response(0, token=11, finish_reason="stop")])
+
+        def close(self) -> None:
+            return None
+
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_NoUidBatchGenerator),
+    )
+
+    try:
+        events = _collect_events(
+            session, _make_fake_request(max_output_tokens=1), runtime.generation_deps()
+        )
+    finally:
+        runtime.close()
+
+    assert [event["kind"] for event in events] == ["output_text_delta", "completed"]
+
+
+def test_batch_generator_runtime_row_realign_keeps_unregistered_uid_slot() -> None:
+    class _UnregisteredUidBatchGenerator:
+        instances: list[_UnregisteredUidBatchGenerator] = []
+
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self.extra_sampler = object()
+            self.extra_processors = [object()]
+            self._generation_batch = SimpleNamespace(uids=[], samplers=[], logits_processors=[])
+            self.captured_samplers: list[Any] = []
+            self.captured_processors: list[Any] = []
+            self.__class__.instances.append(self)
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+            **_kwargs: Any,
+        ) -> list[int]:
+            del prompts, max_tokens, caches, logits_processors
+            sampler = (samplers or [None])[0]
+            self._generation_batch.uids = [0, 999]
+            self._generation_batch.samplers = [object(), self.extra_sampler]
+            self._generation_batch.logits_processors = [None, self.extra_processors]
+            self.registered_sampler = sampler
+            return [0]
+
+        def next(self) -> tuple[list[Any], list[Any]]:
+            self.captured_samplers = list(self._generation_batch.samplers)
+            self.captured_processors = list(self._generation_batch.logits_processors)
+            return ([], [_batch_response(0, token=11, finish_reason="stop")])
+
+        def close(self) -> None:
+            return None
+
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_UnregisteredUidBatchGenerator),
+    )
+    sampler = object()
+
+    try:
+        stream = runtime.stream_generate(
+            session.model,
+            session.tokenizer,
+            [1, 2, 3],
+            max_tokens=1,
+            sampler=sampler,
+        )
+        assert [chunk.text for chunk in stream] == ["A"]
+        generator = _UnregisteredUidBatchGenerator.instances[0]
+    finally:
+        runtime.close()
+
+    assert generator.captured_samplers == [sampler, generator.extra_sampler]
+    assert generator.captured_processors == [[], generator.extra_processors]
+
+
+def test_batch_generator_runtime_row_drift_warning_fires_once(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _RepeatedDriftBatchGenerator:
+        def __init__(self, _model: Any, **_kwargs: Any) -> None:
+            self._next_calls = 0
+            self.wrong_sampler = object()
+            self._generation_batch = SimpleNamespace(uids=[], samplers=[], logits_processors=[])
+
+        def insert(
+            self,
+            prompts: list[list[int]],
+            max_tokens: list[int],
+            caches: list[Any] | None = None,
+            samplers: list[Any] | None = None,
+            logits_processors: list[Any] | None = None,
+            **_kwargs: Any,
+        ) -> list[int]:
+            del prompts, max_tokens, caches, logits_processors
+            self._generation_batch.uids = [0]
+            self._generation_batch.samplers = [self.wrong_sampler]
+            self._generation_batch.logits_processors = [None]
+            return [0]
+
+        def next(self) -> tuple[list[Any], list[Any]]:
+            self._next_calls += 1
+            self._generation_batch.samplers = [self.wrong_sampler]
+            self._generation_batch.logits_processors = [None]
+            if self._next_calls == 1:
+                return ([], [_batch_response(0, token=11, finish_reason=None)])
+            return ([], [_batch_response(0, token=12, finish_reason="stop")])
+
+        def close(self) -> None:
+            return None
+
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_RepeatedDriftBatchGenerator),
+    )
+
+    try:
+        with caplog.at_level(logging.WARNING, logger="orchard_worker_mlx.generation"):
+            events = _collect_events(
+                session,
+                _make_fake_request(max_output_tokens=2),
+                runtime.generation_deps(),
+            )
+    finally:
+        runtime.close()
+
+    assert [event["kind"] for event in events] == [
+        "output_text_delta",
+        "output_text_delta",
+        "completed",
+    ]
+    warning_records = [
+        record
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+        and "positional row state drifted" in record.getMessage()
+    ]
+    assert len(warning_records) == 1
 
 
 def test_batch_generator_runtime_builds_batch_generator_with_0_31_3_contract() -> None:
@@ -956,10 +1394,10 @@ def test_batch_prefill_attribution_interleaved_insert_sets_do_not_bleed() -> Non
         stream_b = _queue_batch_stream(runtime, [4, 5, 6])
         assert [chunk.text for chunk in stream_b] == ["X"]
         assert [chunk.text for chunk in stream_a] == ["B"]
+        generator = cast(_InterleavedInsertSetBatchGenerator, runtime._batch_generator)
     finally:
         runtime.close()
 
-    generator = cast(_InterleavedInsertSetBatchGenerator, runtime._batch_generator)
     assert generator.insert_sizes == [1, 1]
     assert calls == 4
     assert session.memory_budget_status.prefill_workspace_bytes_per_token == 300
@@ -1981,6 +2419,67 @@ def test_batch_generator_runtime_releases_detokenizer_after_terminal_service_bre
     runtime.close()
 
 
+def test_batch_generator_runtime_close_drops_load_scope_aliases() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    runtime.close()
+    gc.collect()
+
+    assert runtime._session is None
+    assert runtime._batch_generator is None
+    assert runtime._detokenizer_factory is None
+
+
+def test_batch_generator_runtime_tokenizer_fails_after_close() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    runtime.close()
+
+    with pytest.raises(BackendError) as exc_info:
+        _ = runtime.tokenizer
+
+    assert exc_info.value.code == "generation_failed"
+    assert "batch runtime is closed" in exc_info.value.message
+
+
+def test_batch_generator_runtime_double_close_keeps_aliases_dropped() -> None:
+    session = _make_fake_session()
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    runtime.close()
+    runtime.close()
+
+    assert runtime._session is None
+    assert runtime._batch_generator is None
+    assert runtime._detokenizer_factory is None
+
+
 def test_batch_generator_runtime_close_raises_if_pump_cannot_stop_after_generator_close() -> None:
     tracker = _WiredLimitTracker()
     session = _make_fake_session(
@@ -2027,6 +2526,9 @@ def test_batch_generator_runtime_close_raises_if_pump_cannot_stop_after_generato
 
     assert exc_info.value.code == "batch_runtime_close_timeout"
     assert runtime._pump.is_alive() is True
+    assert runtime._session is session
+    assert runtime._batch_generator is generator
+    assert callable(runtime._detokenizer_factory)
     assert generator.close_called is True
     assert tracker.enter_count == 0
     assert tracker.exit_count == 0
@@ -2291,28 +2793,93 @@ def test_batch_runtime_zero_token_early_exit_does_not_clear_session_cache() -> N
     runtime.close()
 
 
-def test_batch_runtime_does_not_clear_session_cache_per_request() -> None:
-    clear_mock = MagicMock(name="clear_cache")
-    session = _make_fake_session(clear_cache=clear_mock)
+def test_batch_runtime_clears_once_when_runtime_goes_idle() -> None:
+    calls: list[str] = []
+
+    def synchronize() -> None:
+        calls.append("synchronize")
+
+    def clear_cache() -> None:
+        calls.append("clear")
+
+    session = _make_fake_session(clear_cache=clear_cache)
     session.tokenizer = _ToyTokenizer()
     runtime = BatchGeneratorRuntime(
         session,
         generation_deps=GenerationDeps(
             stream_generate=lambda *_args, **_kwargs: iter([]),
             make_sampler=lambda **_kw: MagicMock(),
+            synchronize=synchronize,
         ),
         batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
     )
 
-    request = _make_fake_request(input_tokens=3, max_output_tokens=2)
-    events = list(
-        generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+    try:
+        request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+        events = list(
+            generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+        )
+
+        assert events[-1]["kind"] == "completed"
+        assert _wait_until(lambda: calls == ["synchronize", "clear"])
+        threading.Event().wait(0.05)
+        assert calls == ["synchronize", "clear"]
+    finally:
+        runtime.close()
+
+
+def test_batch_runtime_does_not_clear_while_request_is_active() -> None:
+    calls: list[str] = []
+    session = _make_fake_session(clear_cache=lambda: calls.append("clear"))
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            synchronize=lambda: calls.append("synchronize"),
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_NeverFinishingBatchGenerator),
     )
 
-    assert events[-1]["kind"] == "completed"
-    clear_mock.assert_not_called()
+    request = _make_fake_request(input_tokens=3, max_output_tokens=32)
+    iterator = generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
 
-    runtime.close()
+    try:
+        first_event = next(iterator)
+        assert first_event["kind"] == "output_text_delta"
+        assert _wait_until(lambda: bool(runtime._active_by_uid))
+        threading.Event().wait(0.05)
+        assert calls == []
+    finally:
+        cast(Any, iterator).close()
+        runtime.close()
+
+
+def test_batch_runtime_idle_clear_is_fail_open_without_sync_or_clear_cache() -> None:
+    session = _make_fake_session()
+    del session.clear_cache
+    session.tokenizer = _ToyTokenizer()
+    runtime = BatchGeneratorRuntime(
+        session,
+        generation_deps=GenerationDeps(
+            stream_generate=lambda *_args, **_kwargs: iter([]),
+            make_sampler=lambda **_kw: MagicMock(),
+            synchronize=None,
+        ),
+        batch_deps=BatchGenerationDeps(batch_generator_cls=_FakeBatchGenerator),
+    )
+
+    try:
+        request = _make_fake_request(input_tokens=3, max_output_tokens=2)
+        events = list(
+            generate_events(session, request, threading.Event(), deps=runtime.generation_deps())
+        )
+
+        assert events[-1]["kind"] == "completed"
+        assert _wait_until(lambda: not runtime._idle_cache_clear_needed)
+    finally:
+        runtime.close()
 
 
 def test_batch_generator_runtime_generator_close_marks_request_cancelled_not_local_close() -> None:
@@ -2941,6 +3508,71 @@ def test_basic_generation_emits_deltas_and_completed() -> None:
         completed["usage"]["output_tokens"] == 3
     )  # all 3 responses counted (incl. empty-text terminal)
     assert completed["usage"]["total_tokens"] == 8
+
+
+def test_non_batch_token_delta_opt_in_does_not_forward_unknown_kwargs() -> None:
+    calls: list[list[int]] = []
+
+    def strict_stream_generate(
+        model,
+        tokenizer,
+        prompt_ids,
+        *,
+        max_tokens,
+        sampler,
+        prefill_step_size,
+        prompt_progress_callback,
+    ):
+        del model, tokenizer, max_tokens, sampler, prefill_step_size, prompt_progress_callback
+        calls.append(list(prompt_ids))
+        yield SimpleNamespace(text="A", token=11, finish_reason=None, logprob=-0.11)
+        yield SimpleNamespace(text="B", token=12, finish_reason="stop", logprob=-0.12)
+
+    session = _make_fake_session()
+    request = _make_fake_request(
+        input_tokens=3,
+        return_token_ids=True,
+        return_logprobs=True,
+    )
+    deps = _make_deps(stream_generate=strict_stream_generate)
+
+    events = _collect_events(session, request, deps)
+
+    assert calls == [[1, 2, 3]]
+    token_deltas = [event for event in events if event["kind"] == "token_delta"]
+    assert [event["token_ids"] for event in token_deltas] == [[11], [12]]
+    assert [event["logprobs"] for event in token_deltas] == [[-0.11], [-0.12]]
+
+
+def test_non_batch_token_delta_extracts_indexed_logprobs_vector() -> None:
+    def strict_stream_generate(
+        model,
+        tokenizer,
+        prompt_ids,
+        *,
+        max_tokens,
+        sampler,
+        prefill_step_size,
+        prompt_progress_callback,
+    ):
+        del model, tokenizer, prompt_ids, max_tokens, sampler, prefill_step_size
+        del prompt_progress_callback
+        first_logprobs = [0.0] * 32
+        first_logprobs[11] = -1.25
+        second_logprobs = [0.0] * 32
+        second_logprobs[12] = -1.5
+        yield SimpleNamespace(text="A", token=11, finish_reason=None, logprobs=first_logprobs)
+        yield SimpleNamespace(text="B", token=12, finish_reason="stop", logprobs=second_logprobs)
+
+    session = _make_fake_session()
+    request = _make_fake_request(input_tokens=3, return_logprobs=True)
+    deps = _make_deps(stream_generate=strict_stream_generate)
+
+    events = _collect_events(session, request, deps)
+
+    token_deltas = [event for event in events if event["kind"] == "token_delta"]
+    assert [event["token_ids"] for event in token_deltas] == [[11], [12]]
+    assert [event["logprobs"] for event in token_deltas] == [[-1.25], [-1.5]]
 
 
 def test_input_tokens_from_request_not_retokenized() -> None:
@@ -4868,6 +5500,156 @@ def test_tool_choice_none_disables_tool_call_parsing() -> None:
 
 
 # ===========================================================================
+# Tool-call parser robustness fixtures (issue #62)
+# ===========================================================================
+
+
+def test_tool_call_arguments_with_braces_escaped_quotes_and_nesting_stream_intact() -> None:
+    """Braces, brackets, and escaped quotes inside JSON string values are safe.
+
+    The parser detects boundaries via explicit markers, not brace counting, so
+    structural characters inside string values must reach the tool parser
+    verbatim even when fragments split mid-escape-sequence.
+    """
+    argument_text = (
+        '{"query":"say \\"hi\\" {ok} [list]","filters":{"tags":["a","}"],"opts":{"deep":{"x":1}}}}'
+    )
+    seen: list[str] = []
+
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        seen.append(text)
+        return {"name": "lookup_weather", "arguments": json.loads(text)}
+
+    # Split points chosen to break mid-escape (after the backslash at index 14)
+    # and inside nested structures.
+    splits = [0, 15, 30, 52, len(argument_text)]
+    fragments = [argument_text[a:b] for a, b in zip(splits, splits[1:], strict=False)]
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        *[
+            FakeGenerationResponse(text=fragment, token=11 + i)
+            for i, fragment in enumerate(fragments)
+        ],
+        FakeGenerationResponse(text="</tool_call>", token=20, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert seen == [argument_text]
+    deltas = [
+        event["delta"]["function"].get("arguments_delta", "")
+        for event in events
+        if event["kind"] == "tool_call_delta"
+    ]
+    assert "".join(deltas) == argument_text
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+
+
+def test_tool_call_end_marker_split_across_response_chunks() -> None:
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        assert text == '{"city":"Paris"}'
+        return {"name": "lookup_weather", "arguments": text}
+
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"city":"Paris"}', token=11),
+        FakeGenerationResponse(text="</tool_", token=12),
+        FakeGenerationResponse(text="call>", token=13, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+
+
+def test_tool_call_end_marker_lookalike_prefix_is_kept_in_arguments() -> None:
+    """A buffered partial-marker prefix that never completes belongs to the arguments."""
+    expected = '{"note":"</tool_x end"}'
+
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        assert text == expected
+        return {"name": "lookup_weather", "arguments": json.loads(text)}
+
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"note":"</tool_', token=11),
+        FakeGenerationResponse(text='x end"}', token=12),
+        FakeGenerationResponse(text="</tool_call>", token=13, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    deltas = [
+        event["delta"]["function"].get("arguments_delta", "")
+        for event in events
+        if event["kind"] == "tool_call_delta"
+    ]
+    assert "".join(deltas) == expected
+    assert events[-1]["kind"] == "completed"
+    assert events[-1]["finish_reason"] == "FINISH_REASON_TOOL_CALLS"
+
+
+def test_tool_call_end_marker_inside_string_argument_fails_loudly() -> None:
+    """Characterization of the issue #62 hazard: end-marker text inside a JSON
+    string argument triggers premature finalization.
+
+    The parser then sees truncated JSON and the request fails with
+    tool_call_parse_failed rather than emitting a silently wrong tool call.
+    String-aware scanning is deferred until raw-brace boundary models are
+    supported; if that lands, this test should assert successful parsing of
+    the full argument text instead.
+    """
+    seen: list[str] = []
+
+    def parser(text: str, tools: Any) -> dict[str, Any]:
+        seen.append(text)
+        return {"name": "lookup_weather", "arguments": json.loads(text)}
+
+    responses = [
+        FakeGenerationResponse(text="<tool_call>", token=10),
+        FakeGenerationResponse(text='{"note":"see </tool_call> tag"}', token=11),
+        FakeGenerationResponse(text="</tool_call>", token=12, finish_reason="stop"),
+    ]
+    session = _make_fake_session(
+        tool_calling={"supported": True, "parser_type": "json_tools"},
+        tool_parser=parser,
+        tool_call_start="<tool_call>",
+        tool_call_end="</tool_call>",
+    )
+    request = _make_fake_request(tools_json=_tool_call_tools_json())
+
+    events = _collect_events(session, request, _make_deps(responses))
+
+    assert seen == ['{"note":"see ']
+    assert events[-1]["kind"] == "failed"
+    assert events[-1]["code"] == "tool_call_parse_failed"
+    assert len([event for event in events if event["kind"] in {"completed", "failed"}]) == 1
+
+
+# ===========================================================================
 # Prefill progress callback bridge (Task 5)
 # ===========================================================================
 
@@ -5363,6 +6145,53 @@ def test_clear_cache_called_on_completed() -> None:
 
     _collect_events(session, request, deps)
     clear_mock.assert_called()
+
+
+def test_stream_finally_synchronizes_before_clear() -> None:
+    calls: list[str] = []
+    responses = [
+        FakeGenerationResponse(text="Hi", token=10, finish_reason="stop"),
+    ]
+    session = _make_fake_session(clear_cache=lambda: calls.append("clear"))
+    request = _make_fake_request()
+    deps = _make_deps(responses, synchronize=lambda: calls.append("synchronize"))
+
+    _collect_events(session, request, deps)
+
+    assert calls == ["synchronize", "clear"]
+
+
+def test_stream_finally_clears_when_synchronize_raises() -> None:
+    calls: list[str] = []
+    responses = [
+        FakeGenerationResponse(text="Hi", token=10, finish_reason="stop"),
+    ]
+
+    def synchronize() -> None:
+        calls.append("synchronize")
+        raise RuntimeError("sync boom")
+
+    session = _make_fake_session(clear_cache=lambda: calls.append("clear"))
+    request = _make_fake_request()
+    deps = _make_deps(responses, synchronize=synchronize)
+
+    _collect_events(session, request, deps)
+
+    assert calls == ["synchronize", "clear"]
+
+
+def test_stream_finally_without_synchronize_still_clears_fail_open() -> None:
+    clear_mock = MagicMock(name="clear_cache")
+    responses = [
+        FakeGenerationResponse(text="Hi", token=10, finish_reason="stop"),
+    ]
+    session = _make_fake_session(clear_cache=clear_mock)
+    request = _make_fake_request()
+    deps = _make_deps(responses, synchronize=None)
+
+    _collect_events(session, request, deps)
+
+    clear_mock.assert_called_once()
 
 
 def test_clear_cache_called_on_cancel() -> None:

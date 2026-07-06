@@ -25,6 +25,7 @@ defmodule Orchard.Runtime.MemoryBudget do
           required(:estimated_headroom_bytes) => non_neg_integer() | nil,
           required(:kv_cache_bytes_per_token) => non_neg_integer() | nil,
           required(:prefill_workspace_bytes_per_token) => non_neg_integer() | nil,
+          required(:recommended_context_tokens) => non_neg_integer() | nil,
           required(:admission_tier) => admission_tier()
         }
 
@@ -51,7 +52,8 @@ defmodule Orchard.Runtime.MemoryBudget do
     :resident_memory_bytes,
     :estimated_headroom_bytes,
     :kv_cache_bytes_per_token,
-    :prefill_workspace_bytes_per_token
+    :prefill_workspace_bytes_per_token,
+    :recommended_context_tokens
   ]
 
   @doc """
@@ -84,7 +86,8 @@ defmodule Orchard.Runtime.MemoryBudget do
       estimated_headroom_bytes: normalize_uint64(value(budget, :estimated_headroom_bytes)),
       kv_cache_bytes_per_token: normalize_uint64(value(budget, :kv_cache_bytes_per_token)),
       prefill_workspace_bytes_per_token:
-        normalize_uint64(value(budget, :prefill_workspace_bytes_per_token))
+        normalize_uint64(value(budget, :prefill_workspace_bytes_per_token)),
+      recommended_context_tokens: normalize_uint64(value(budget, :recommended_context_tokens))
     }
 
     normalized =
@@ -110,6 +113,7 @@ defmodule Orchard.Runtime.MemoryBudget do
       estimated_headroom_bytes: nil,
       kv_cache_bytes_per_token: nil,
       prefill_workspace_bytes_per_token: nil,
+      recommended_context_tokens: nil,
       admission_tier: :headroom_unknown
     }
   end

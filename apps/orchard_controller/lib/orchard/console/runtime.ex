@@ -48,7 +48,8 @@ defmodule OrchardConsole.Runtime do
           target_working_set_bytes: non_neg_integer() | nil,
           resident_memory_bytes: non_neg_integer() | nil,
           kv_cache_bytes_per_token: non_neg_integer() | nil,
-          prefill_workspace_bytes_per_token: non_neg_integer() | nil
+          prefill_workspace_bytes_per_token: non_neg_integer() | nil,
+          recommended_context_tokens: non_neg_integer() | nil
         }
 
   @type snapshot :: %{
@@ -506,7 +507,9 @@ defmodule OrchardConsole.Runtime do
       kv_cache_bytes_per_token:
         normalize_budget_integer(Map.get(budget, :kv_cache_bytes_per_token)),
       prefill_workspace_bytes_per_token:
-        normalize_budget_integer(Map.get(budget, :prefill_workspace_bytes_per_token))
+        normalize_budget_integer(Map.get(budget, :prefill_workspace_bytes_per_token)),
+      recommended_context_tokens:
+        normalize_budget_integer(Map.get(budget, :recommended_context_tokens))
     }
   end
 
@@ -522,7 +525,8 @@ defmodule OrchardConsole.Runtime do
       target_working_set_bytes: nil,
       resident_memory_bytes: nil,
       kv_cache_bytes_per_token: nil,
-      prefill_workspace_bytes_per_token: nil
+      prefill_workspace_bytes_per_token: nil,
+      recommended_context_tokens: nil
     }
   end
 

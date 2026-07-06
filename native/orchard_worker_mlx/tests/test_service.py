@@ -28,6 +28,7 @@ from orchard_worker_mlx.model_loader import (
     PrefixCacheLoadConfig,
 )
 from orchard_worker_mlx.service import (
+    CancelEntry,
     WorkerRuntimeServicer,
     _derive_server_max_workers,
     build_inference_event,
@@ -294,11 +295,13 @@ def _make_servicer(
     *,
     clock_time: float = 0.0,
     ttl: float = 60.0,
+    active_warning_age: float = 600.0,
 ) -> WorkerRuntimeServicer:
     return WorkerRuntimeServicer(
         backend,
         clock=lambda: clock_time,
         cancel_tombstone_ttl_s=ttl,
+        active_cancel_entry_warning_age_s=active_warning_age,
     )
 
 
@@ -804,6 +807,31 @@ def test_build_inference_event_usage_happy_path() -> None:
     assert event.usage.usage.total_tokens == 15
 
 
+def test_build_inference_event_token_delta_happy_path() -> None:
+    event = build_inference_event(
+        {"kind": "token_delta", "token_ids": [11, 12], "logprobs": [-0.5, -0.25]}
+    )
+
+    assert event.WhichOneof("event") == "token_delta"
+    assert list(event.token_delta.token_ids) == [11, 12]
+    assert list(event.token_delta.logprobs) == pytest.approx([-0.5, -0.25])
+
+
+def test_build_inference_event_token_delta_allows_empty_logprobs() -> None:
+    event = build_inference_event({"kind": "token_delta", "token_ids": [11]})
+
+    assert event.WhichOneof("event") == "token_delta"
+    assert list(event.token_delta.token_ids) == [11]
+    assert list(event.token_delta.logprobs) == []
+
+
+def test_build_inference_event_rejects_misaligned_token_delta_logprobs() -> None:
+    with pytest.raises(BackendError) as exc_info:
+        build_inference_event({"kind": "token_delta", "token_ids": [11, 12], "logprobs": [-0.5]})
+
+    assert "align" in exc_info.value.message
+
+
 def test_build_inference_event_tool_call_delta_happy_path() -> None:
     event = build_inference_event(
         {
@@ -942,7 +970,6 @@ def test_cancel_mid_stream_produces_single_terminal() -> None:
     context = MagicMock()
     request = _make_request("req-mid")
 
-    # Start generate in a thread
     collected: list[Any] = []
     generate_done = threading.Event()
 
@@ -954,7 +981,6 @@ def test_cancel_mid_stream_produces_single_terminal() -> None:
     t = threading.Thread(target=run_generate)
     t.start()
 
-    # Wait for the cancel event reference to be set (backend is running)
     import time
 
     for _ in range(100):
@@ -962,7 +988,6 @@ def test_cancel_mid_stream_produces_single_terminal() -> None:
             break
         time.sleep(0.01)
 
-    # Send Cancel RPC
     servicer.Cancel(_make_cancel_request("req-mid"), context)
 
     generate_done.wait(timeout=5.0)
@@ -971,12 +996,143 @@ def test_cancel_mid_stream_produces_single_terminal() -> None:
     assert generate_done.is_set(), "Generate did not complete"
 
     kinds = [e.WhichOneof("event") for e in collected]
-    # Should have the first delta + exactly one terminal
     assert "output_text_delta" in kinds
     terminals = [k for k in kinds if k in ("completed", "failed")]
     assert len(terminals) == 1
     assert terminals[0] == "failed"
     assert collected[-1].failed.code == "cancelled"
+
+
+class CapturingContext:
+    def __init__(self, *, callback_registered: bool = True) -> None:
+        self.callback_registered = callback_registered
+        self.callback = None
+
+    def add_callback(self, callback: Any) -> bool:
+        self.callback = callback
+        return self.callback_registered
+
+
+class DisconnectBackend(SlowBackend):
+    def __init__(self, *, cancel_event_ref: list[threading.Event]) -> None:
+        super().__init__(cancel_event_ref=cancel_event_ref)
+        self.waiting = threading.Event()
+
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
+        self._cancel_event_ref.append(cancel_event)
+        yield {"kind": "output_text_delta", "delta": "first"}
+        self.waiting.set()
+        cancel_event.wait(timeout=2.0)
+        if cancel_event.is_set():
+            yield {
+                "kind": "failed",
+                "code": "cancelled",
+                "message": "request cancelled",
+                "retryable": False,
+            }
+            return
+        yield {
+            "kind": "completed",
+            "finish_reason": "FINISH_REASON_STOP",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+
+class ImmediateCancelBackend(HappyBackend):
+    def __init__(self, *, cancel_event_ref: list[threading.Event]) -> None:
+        super().__init__(events=[])
+        self._cancel_event_ref = cancel_event_ref
+
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
+        self._cancel_event_ref.append(cancel_event)
+        if cancel_event.is_set():
+            yield {
+                "kind": "failed",
+                "code": "cancelled",
+                "message": "request cancelled",
+                "retryable": False,
+            }
+            return
+        yield {
+            "kind": "completed",
+            "finish_reason": "FINISH_REASON_STOP",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+
+def test_disconnect_mid_stream_cancels_generation() -> None:
+    cancel_event_ref: list[threading.Event] = []
+    backend = DisconnectBackend(cancel_event_ref=cancel_event_ref)
+    servicer = _make_servicer(backend)
+    context = CapturingContext()
+    request = _make_request("req-disconnect")
+    collected: list[Any] = []
+    generate_done = threading.Event()
+
+    def run_generate() -> None:
+        for event in servicer.Generate(request, context):
+            collected.append(event)
+        generate_done.set()
+
+    t = threading.Thread(target=run_generate)
+    t.start()
+
+    assert backend.waiting.wait(timeout=2.0)
+    assert context.callback is not None
+    context.callback()
+
+    generate_done.wait(timeout=5.0)
+    t.join(timeout=1.0)
+
+    assert generate_done.is_set(), "Generate did not complete"
+    assert cancel_event_ref[0].is_set()
+    assert [event.WhichOneof("event") for event in collected] == [
+        "output_text_delta",
+        "failed",
+    ]
+    assert collected[-1].failed.code == "cancelled"
+
+
+def test_generate_cancelled_when_add_callback_reports_terminated() -> None:
+    cancel_event_ref: list[threading.Event] = []
+    backend = ImmediateCancelBackend(cancel_event_ref=cancel_event_ref)
+    servicer = _make_servicer(backend)
+    context = CapturingContext(callback_registered=False)
+
+    events = list(servicer.Generate(_make_request("req-terminated"), context))
+
+    assert context.callback is not None
+    assert context.callback.__self__.is_set()
+    assert cancel_event_ref == []
+    assert [event.WhichOneof("event") for event in events] == ["failed"]
+    assert events[-1].failed.code == "cancelled"
+
+
+def test_stale_active_cancel_entry_warning_is_once_per_entry(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    servicer = _make_servicer(StubBackend(), clock_time=700.0, active_warning_age=600.0)
+    with servicer._lock:
+        servicer._cancel_entries["stale"] = CancelEntry(
+            event=threading.Event(),
+            phase="active",
+            started_at_monotonic=0.0,
+        )
+        servicer._cancel_entries["fresh"] = CancelEntry(
+            event=threading.Event(),
+            phase="active",
+            started_at_monotonic=200.0,
+        )
+
+        with caplog.at_level(logging.WARNING):
+            servicer._prune_expired_tombstones()
+            servicer._prune_expired_tombstones()
+
+    messages = [record.message for record in caplog.records]
+    stale_messages = [message for message in messages if "request_id=stale" in message]
+    fresh_messages = [message for message in messages if "request_id=fresh" in message]
+    assert len(stale_messages) == 1
+    assert fresh_messages == []
 
 
 def test_generate_supports_two_concurrent_servicer_calls() -> None:
@@ -1437,6 +1593,7 @@ def test_get_status_includes_memory_budget_fields() -> None:
                 "estimated_headroom_bytes": 5_731_516_544,
                 "kv_cache_bytes_per_token": 16_384,
                 "prefill_workspace_bytes_per_token": 2_048,
+                "recommended_context_tokens": 131_072,
             }
         )
     )
@@ -1447,6 +1604,7 @@ def test_get_status_includes_memory_budget_fields() -> None:
     assert status.memory_budget.target_working_set_bytes == 6_000_000_000
     assert status.memory_budget.estimated_headroom_bytes == 5_731_516_544
     assert status.memory_budget.prefill_workspace_bytes_per_token == 2_048
+    assert status.memory_budget.recommended_context_tokens == 131_072
 
 
 def test_get_status_degrades_invalid_memory_budget_status() -> None:
@@ -1477,6 +1635,7 @@ def test_get_status_downgrades_invalid_memory_budget_uint64_fields() -> None:
                 "estimated_headroom_bytes": 2**64 - 1,
                 "kv_cache_bytes_per_token": 16_384,
                 "prefill_workspace_bytes_per_token": None,
+                "recommended_context_tokens": 131_072,
             }
         )
     )
@@ -1496,6 +1655,7 @@ def test_get_status_downgrades_invalid_memory_budget_uint64_fields() -> None:
     assert status.memory_budget.estimated_headroom_bytes == 0
     assert status.memory_budget.kv_cache_bytes_per_token == 0
     assert status.memory_budget.prefill_workspace_bytes_per_token == 0
+    assert status.memory_budget.recommended_context_tokens == 0
     assert status.memory_budget.utilization == 0.0
 
 
@@ -1518,6 +1678,7 @@ def test_get_status_downgrades_non_finite_memory_budget_utilization(utilization:
                 "estimated_headroom_bytes": 5_731_516_544,
                 "kv_cache_bytes_per_token": 16_384,
                 "prefill_workspace_bytes_per_token": 2_048,
+                "recommended_context_tokens": 131_072,
             }
         )
     )
@@ -1552,6 +1713,7 @@ def test_get_status_downgrades_huge_integer_memory_budget_utilization_without_ra
                 "estimated_headroom_bytes": 5_731_516_544,
                 "kv_cache_bytes_per_token": 16_384,
                 "prefill_workspace_bytes_per_token": 2_048,
+                "recommended_context_tokens": 131_072,
             }
         )
     )
@@ -1585,6 +1747,7 @@ def test_get_status_downgrades_memory_budget_missing_required_numeric_field() ->
                 "estimated_headroom_bytes": 5_731_516_544,
                 "kv_cache_bytes_per_token": 16_384,
                 "prefill_workspace_bytes_per_token": 2_048,
+                "recommended_context_tokens": 131_072,
             }
         )
     )
@@ -1876,3 +2039,296 @@ def test_load_model_backend_error_ack_message_format() -> None:
     )
     # Verify exact code is preserved
     assert ack.message.startswith("manifest_not_found:")
+
+
+# ---------------------------------------------------------------------------
+# Memory budget "enforce" mode: pressure-driven abort without unload
+# ---------------------------------------------------------------------------
+
+
+class MemoryBudgetBackend(HappyBackend):
+    """Streams deltas until cancelled and reports a configurable memory budget."""
+
+    def __init__(
+        self,
+        *,
+        mode: str = "enforce",
+        budget_available: bool = True,
+        target_working_set_bytes: int = 1_000,
+        max_deltas: int = 3,
+    ) -> None:
+        super().__init__(events=[])
+        self._loaded = True
+        self.mode = mode
+        self.budget_available = budget_available
+        self.target_working_set_bytes = target_working_set_bytes
+        self.max_deltas = max_deltas
+        self.unload_calls = 0
+
+    def unload_model(self) -> None:
+        self.unload_calls += 1
+        super().unload_model()
+
+    def status(self) -> BackendStatus:
+        status = BackendStatus(
+            loaded=self._loaded,
+            active_request_count=int(self._active),
+            max_concurrency=1,
+        )
+        status["memory_budget"] = {
+            "mode": self.mode,
+            "budget_available": self.budget_available,
+            "target_working_set_bytes": self.target_working_set_bytes,
+        }
+        return status
+
+    def generate(self, request: Any, cancel_event: threading.Event) -> Iterator[dict[str, Any]]:
+        del request
+        for index in range(self.max_deltas):
+            if cancel_event.is_set():
+                yield {
+                    "kind": "failed",
+                    "code": "cancelled",
+                    "message": "request cancelled",
+                    "retryable": False,
+                }
+                return
+            yield {"kind": "output_text_delta", "delta": f"chunk-{index}"}
+        yield {
+            "kind": "completed",
+            "finish_reason": "FINISH_REASON_STOP",
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+        }
+
+
+def _make_memory_pressure_servicer(
+    backend: Backend,
+    *,
+    memory_sampler: Any,
+    clock: Any = None,
+    check_interval_s: float = 0.0,
+    cooldown_s: float = 60.0,
+) -> WorkerRuntimeServicer:
+    return WorkerRuntimeServicer(
+        backend,
+        clock=clock if clock is not None else lambda: 0.0,
+        memory_sampler=memory_sampler,
+        memory_pressure_check_interval_s=check_interval_s,
+        memory_pressure_abort_cooldown_s=cooldown_s,
+    )
+
+
+def test_enforce_breach_aborts_all_active_generations_with_distinct_terminal(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    backend = MemoryBudgetBackend()
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=lambda: 2_000)
+    other_entry = CancelEntry(
+        event=threading.Event(),
+        phase="active",
+        started_at_monotonic=0.0,
+    )
+    with servicer._lock:
+        servicer._cancel_entries["req-other"] = other_entry
+
+    with caplog.at_level(logging.WARNING):
+        events = list(servicer.Generate(_make_request("req-enforce"), MagicMock()))
+
+    assert [event.WhichOneof("event") for event in events] == ["output_text_delta", "failed"]
+    assert events[-1].failed.code == "memory_pressure_abort"
+    assert events[-1].failed.retryable is True
+    assert other_entry.event.is_set()
+    assert other_entry.memory_pressure_aborted is True
+
+    warnings = [
+        record.message
+        for record in caplog.records
+        if "memory budget enforcement aborted" in record.message
+    ]
+    assert len(warnings) == 1
+    assert "sampled_active_memory_bytes=2000" in warnings[0]
+    assert "target_working_set_bytes=1000" in warnings[0]
+    assert "req-enforce" in warnings[0]
+    assert "req-other" in warnings[0]
+
+
+def test_observe_mode_never_aborts_under_identical_pressure() -> None:
+    backend = MemoryBudgetBackend(mode="observe")
+    sampler_calls: list[int] = []
+
+    def sampler() -> int:
+        sampler_calls.append(1)
+        return 2_000
+
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=sampler)
+
+    events = list(servicer.Generate(_make_request("req-observe"), MagicMock()))
+
+    kinds = [event.WhichOneof("event") for event in events]
+    assert kinds == ["output_text_delta"] * 3 + ["completed"]
+    assert sampler_calls == []
+
+
+def test_enforce_fails_open_when_memory_sampler_raises() -> None:
+    backend = MemoryBudgetBackend()
+
+    def raising_sampler() -> int:
+        raise RuntimeError("sample boom")
+
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=raising_sampler)
+
+    events = list(servicer.Generate(_make_request("req-sampler-raises"), MagicMock()))
+
+    assert events[-1].WhichOneof("event") == "completed"
+
+
+def test_enforce_fails_open_when_budget_target_unavailable() -> None:
+    backend = MemoryBudgetBackend(budget_available=False, target_working_set_bytes=0)
+    sampler_calls: list[int] = []
+
+    def sampler() -> int:
+        sampler_calls.append(1)
+        return 2_000
+
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=sampler)
+
+    events = list(servicer.Generate(_make_request("req-no-target"), MagicMock()))
+
+    assert events[-1].WhichOneof("event") == "completed"
+    assert sampler_calls == []
+
+
+def test_model_stays_loaded_after_memory_pressure_abort() -> None:
+    backend = MemoryBudgetBackend()
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=lambda: 2_000)
+
+    events = list(servicer.Generate(_make_request("req-loaded"), MagicMock()))
+
+    assert events[-1].failed.code == "memory_pressure_abort"
+    assert backend.unload_calls == 0
+    assert backend.status()["loaded"] is True
+
+
+def test_memory_pressure_abort_cooldown_prevents_immediate_reabort() -> None:
+    clock_state = {"now": 0.0}
+    backend = MemoryBudgetBackend()
+    servicer = _make_memory_pressure_servicer(
+        backend,
+        memory_sampler=lambda: 2_000,
+        clock=lambda: clock_state["now"],
+        cooldown_s=10.0,
+    )
+
+    first = list(servicer.Generate(_make_request("req-first"), MagicMock()))
+    assert first[-1].failed.code == "memory_pressure_abort"
+
+    clock_state["now"] = 1.0
+    second = list(servicer.Generate(_make_request("req-second"), MagicMock()))
+    assert second[-1].WhichOneof("event") == "completed"
+
+    clock_state["now"] = 20.0
+    third = list(servicer.Generate(_make_request("req-third"), MagicMock()))
+    assert third[-1].failed.code == "memory_pressure_abort"
+
+
+def test_memory_pressure_check_is_rate_limited() -> None:
+    backend = MemoryBudgetBackend(max_deltas=5)
+    sampler_calls: list[int] = []
+
+    def sampler() -> int:
+        sampler_calls.append(1)
+        return 100
+
+    servicer = _make_memory_pressure_servicer(
+        backend,
+        memory_sampler=sampler,
+        check_interval_s=60.0,
+    )
+
+    events = list(servicer.Generate(_make_request("req-rate"), MagicMock()))
+
+    assert events[-1].WhichOneof("event") == "completed"
+    assert len(sampler_calls) == 1
+
+
+def test_client_cancel_keeps_cancelled_code_under_enforce_mode() -> None:
+    """A pre-set client cancel must not be relabeled as a memory-pressure abort."""
+    backend = MemoryBudgetBackend()
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=lambda: 100)
+
+    servicer.Cancel(_make_cancel_request("req-client-cancel"), MagicMock())
+    events = list(servicer.Generate(_make_request("req-client-cancel"), MagicMock()))
+
+    assert events[-1].failed.code == "cancelled"
+
+
+class RaisingStatusBackend(MemoryBudgetBackend):
+    """Raises from status() to exercise the fail-open pressure-check path."""
+
+    def status(self) -> BackendStatus:
+        raise RuntimeError("status boom")
+
+
+class NonDictStatusBackend(MemoryBudgetBackend):
+    """Returns a non-dict status payload."""
+
+    def status(self) -> Any:
+        return None
+
+
+@pytest.mark.parametrize(
+    "backend",
+    [
+        RaisingStatusBackend(),
+        NonDictStatusBackend(),
+        MemoryBudgetBackend(budget_available=True, target_working_set_bytes=0),
+    ],
+    ids=["status_raises", "status_not_dict", "target_zero"],
+)
+def test_enforce_fails_open_on_unusable_budget_status(backend: Any) -> None:
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=lambda: 2_000)
+
+    events = list(servicer.Generate(_make_request("req-fail-open"), MagicMock()))
+
+    assert events[-1].WhichOneof("event") == "completed"
+
+
+@pytest.mark.parametrize(
+    "sampler",
+    [lambda: "lots", lambda: None, lambda: -1, lambda: True],
+    ids=["str", "none", "negative", "bool"],
+)
+def test_enforce_fails_open_on_invalid_memory_sample(sampler: Any) -> None:
+    backend = MemoryBudgetBackend()
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=sampler)
+
+    events = list(servicer.Generate(_make_request("req-bad-sample"), MagicMock()))
+
+    assert events[-1].WhichOneof("event") == "completed"
+
+
+def test_enforce_fails_open_when_no_sampler_available() -> None:
+    backend = MemoryBudgetBackend()
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=lambda: 2_000)
+    servicer._memory_sampler = None
+
+    events = list(servicer.Generate(_make_request("req-no-sampler"), MagicMock()))
+
+    assert events[-1].WhichOneof("event") == "completed"
+
+
+def test_memory_pressure_abort_without_active_entries_keeps_cooldown_unarmed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    backend = MemoryBudgetBackend()
+    servicer = _make_memory_pressure_servicer(backend, memory_sampler=lambda: 2_000)
+
+    with caplog.at_level(logging.WARNING):
+        servicer._abort_active_generations_for_memory_pressure(2_000, 1_000)
+
+    assert not [
+        record for record in caplog.records if "memory budget enforcement" in record.message
+    ]
+
+    events = list(servicer.Generate(_make_request("req-after-noop"), MagicMock()))
+    assert events[-1].failed.code == "memory_pressure_abort"

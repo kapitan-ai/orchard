@@ -41,9 +41,17 @@ Prefill progress bridging (Task 5):
     during prefill with ``(processed_tokens, total_tokens)``.  This module
     bridges the synchronous callback into yielded ``progress`` events by
     queuing updates in a request-local deque and draining them before each
-    token delta.  Prefill cancel is NOT cleanly interruptible — upstream
-    ``generate_step()`` has no cancel hook; cancellation applies only after
+    token delta.  Prefill cancel is NOT cleanly interruptible; upstream
+    ``generate_step()`` has no cancel hook.  Cancellation applies only after
     control returns from prefill (i.e., during decode).
+
+MLX cache hygiene policy:
+    Stream mode calls ``mx.synchronize()`` then ``session.clear_cache()`` once
+    per request from ``generate_events()`` ``finally``.  Shared batch mode does
+    not clear per request; it synchronizes then clears only on busy-to-idle
+    transitions, while no request is pending or active.  Load and unload paths
+    already clear in ``model_loader.py``.  Synchronizing before clearing follows
+    oMLX prior art and avoids racing in-flight Metal command buffers.
 """
 
 from __future__ import annotations
@@ -145,6 +153,7 @@ class GenerationDeps:
     trim_prompt_cache: Callable[[Any, int], Any] | None = None
     wired_limit: Callable[[int], Any] | None = None
     current_memory_bytes: Callable[[], int | None] | None = None
+    synchronize: Callable[[], None] | None = None
     supports_orchard_stop_sequences: bool = True
     uses_shared_batch_runtime: bool = False
 
@@ -186,6 +195,7 @@ def _default_generation_deps() -> GenerationDeps:
     _trim_prompt_cache: Callable[[Any, int], Any] | None = None
     _wired_limit: Callable[[int], Any] | None = None
     _current_memory_bytes: Callable[[], int | None] | None = None
+    _synchronize: Callable[[], None] | None = None
     try:
         from mlx_lm.models.cache import (
             make_prompt_cache as _make,
@@ -203,6 +213,9 @@ def _default_generation_deps() -> GenerationDeps:
         import mlx.core as mx
 
         _wired_limit = _build_wired_limit_context(mx)
+        maybe_synchronize = getattr(mx, "synchronize", None)
+        if callable(maybe_synchronize):
+            _synchronize = cast(Callable[[], None], maybe_synchronize)
         maybe_memory_probe = getattr(mx, "get_active_memory", None)
         if callable(maybe_memory_probe):
             _current_memory_bytes = cast(Callable[[], int | None], maybe_memory_probe)
@@ -216,6 +229,7 @@ def _default_generation_deps() -> GenerationDeps:
         trim_prompt_cache=_trim_prompt_cache,
         wired_limit=_wired_limit,
         current_memory_bytes=_current_memory_bytes,
+        synchronize=_synchronize,
         supports_orchard_stop_sequences=True,
         uses_shared_batch_runtime=False,
     )
@@ -276,7 +290,7 @@ class _BatchRequestState:
     prompt_cache: Any | None
     logits_processors: list[Any]
     progress_callback: Callable[[int, int], None] | None
-    events: deque[tuple[int, str | None]] = field(default_factory=deque)
+    events: deque[tuple[int, str | None, float | None]] = field(default_factory=deque)
     progress_events: deque[tuple[int, int]] = field(default_factory=deque)
     last_prefill_progress: tuple[int, int] | None = None
     uid: int | None = None
@@ -289,6 +303,70 @@ class _BatchRequestState:
 
 
 _WAIT_NEXT_TIMEOUT = object()
+
+
+def _is_int_uid_list(value: Any) -> bool:
+    return isinstance(value, list) and bool(value) and all(isinstance(uid, int) for uid in value)
+
+
+def _slot_at(slots: Any, index: int, default: Any) -> Any:
+    if isinstance(slots, list) and index < len(slots):
+        return slots[index]
+    return default
+
+
+def _processor_slot_at(slots: Any, index: int) -> Any:
+    slot = _slot_at(slots, index, [])
+    if slot is None:
+        return []
+    return slot
+
+
+def _batch_row_state_drifted(batch: Any, samplers: list[Any], processors: list[Any]) -> bool:
+    current_samplers = getattr(batch, "samplers", None)
+    current_processors = getattr(batch, "logits_processors", None)
+    if not isinstance(current_samplers, list) or len(current_samplers) != len(samplers):
+        return True
+    if not isinstance(current_processors, list) or len(current_processors) != len(processors):
+        return True
+    sampler_drifted = any(
+        current is not rebuilt for current, rebuilt in zip(current_samplers, samplers, strict=True)
+    )
+    processor_drifted = any(
+        current is not rebuilt
+        for current, rebuilt in zip(current_processors, processors, strict=True)
+    )
+    return sampler_drifted or processor_drifted
+
+
+def _realign_batch_row_state(
+    batch: Any,
+    row_state_by_uid: dict[int, tuple[Any, list[Any]]],
+) -> bool:
+    uids = getattr(batch, "uids", None)
+    if not _is_int_uid_list(uids):
+        return False
+
+    rebuilt_samplers: list[Any] = []
+    rebuilt_processors: list[Any] = []
+    current_samplers = getattr(batch, "samplers", None)
+    current_processors = getattr(batch, "logits_processors", None)
+
+    for index, uid in enumerate(uids):
+        row_state = row_state_by_uid.get(uid)
+        if row_state is None:
+            rebuilt_samplers.append(_slot_at(current_samplers, index, None))
+            rebuilt_processors.append(_processor_slot_at(current_processors, index))
+            continue
+
+        sampler, processors = row_state
+        rebuilt_samplers.append(sampler)
+        rebuilt_processors.append(processors or [])
+
+    drifted = _batch_row_state_drifted(batch, rebuilt_samplers, rebuilt_processors)
+    batch.samplers = rebuilt_samplers
+    batch.logits_processors = rebuilt_processors
+    return drifted
 
 
 class _BatchRequestStream:
@@ -353,7 +431,7 @@ class _BatchRequestStream:
                         cb(processed, total)
                     continue
 
-                _, token, finish_reason = payload_tuple
+                _, token, finish_reason, logprob = payload_tuple
 
                 suppress_terminal_stop_token = (
                     finish_reason == "stop" and token in self._stop_token_ids
@@ -373,7 +451,12 @@ class _BatchRequestStream:
                     self._terminal_returned = True
                     self._runtime.finalize_request(self._request_id)
                     self._release_detokenizer()
-                return SimpleNamespace(text=text, token=token, finish_reason=finish_reason)
+                return SimpleNamespace(
+                    text=text,
+                    token=token,
+                    finish_reason=finish_reason,
+                    logprob=logprob,
+                )
         except Exception:
             self._runtime.finalize_request(self._request_id)
             self._release_detokenizer()
@@ -411,7 +494,12 @@ _BATCH_RUNTIME_CLOSE_TIMEOUT_S = 1.0
 
 
 class BatchGeneratorRuntime:
-    """Shared request-time BatchGenerator runtime for one loaded model session."""
+    """Shared request-time BatchGenerator runtime for one loaded model session.
+
+    Batch cache hygiene is runtime-scoped: synchronize then clear only when the
+    pump observes a busy-to-idle transition, never while requests are active or
+    pending.
+    """
 
     def __init__(
         self,
@@ -439,6 +527,8 @@ class BatchGeneratorRuntime:
         self._detokenizer_factory = self._build_detokenizer_factory(session.tokenizer)
         self._batch_generator_closed = False
         self._closed_batch_generator_refs: dict[int, weakref.ReferenceType[Any]] = {}
+        self._row_drift_warned = False
+        self._idle_cache_clear_needed = False
         self.stop_token_ids: frozenset[int] = frozenset(getattr(session, "eos_token_ids", ()))
 
         self._reset_requested: str | None = None
@@ -463,7 +553,10 @@ class BatchGeneratorRuntime:
 
     @property
     def tokenizer(self) -> Any:
-        return self._session.tokenizer
+        session = self._session
+        if session is None:
+            raise BackendError("generation_failed", "batch runtime is closed", False)
+        return session.tokenizer
 
     def generation_deps(self) -> GenerationDeps:
         return GenerationDeps(
@@ -473,12 +566,16 @@ class BatchGeneratorRuntime:
             trim_prompt_cache=self._generation_deps.trim_prompt_cache,
             wired_limit=self._generation_deps.wired_limit,
             current_memory_bytes=self._generation_deps.current_memory_bytes,
+            synchronize=self._generation_deps.synchronize,
             supports_orchard_stop_sequences=False,
             uses_shared_batch_runtime=True,
         )
 
     def acquire_detokenizer(self) -> Any:
-        detokenizer = self._detokenizer_factory()
+        factory = self._detokenizer_factory
+        if factory is None:
+            raise BackendError("generation_failed", "batch runtime is closed", False)
+        detokenizer = factory()
         self._validate_detokenizer(detokenizer)
 
         detokenizer_id = id(detokenizer)
@@ -496,6 +593,11 @@ class BatchGeneratorRuntime:
     def release_detokenizer(self, detokenizer: Any) -> None:
         with self._detokenizer_lock:
             self._active_detokenizer_ids.discard(id(detokenizer))
+
+    def _drop_load_scope_aliases_locked(self) -> None:
+        self._session = None
+        self._batch_generator = None
+        self._detokenizer_factory = None
 
     def stream_generate(
         self,
@@ -537,6 +639,7 @@ class BatchGeneratorRuntime:
 
         with self._cv:
             self._batch_generator_closed = True
+            self._drop_load_scope_aliases_locked()
 
     def wait_next(
         self,
@@ -553,8 +656,8 @@ class BatchGeneratorRuntime:
                     return state, ("progress", processed, total)
 
                 if state.events:
-                    token, finish_reason = state.events.popleft()
-                    return state, ("token", token, finish_reason)
+                    token, finish_reason, logprob = state.events.popleft()
+                    return state, ("token", token, finish_reason, logprob)
 
                 if state.error is not None:
                     raise state.error
@@ -630,6 +733,7 @@ class BatchGeneratorRuntime:
             self._requests_by_id[request_id] = request_state
             self._pending_by_id[request_id] = request_state
             self._pending_request_ids.append(request_id)
+            self._idle_cache_clear_needed = True
             self._cv.notify_all()
 
         try:
@@ -745,6 +849,27 @@ class BatchGeneratorRuntime:
             self._cv.notify_all()
         return True
 
+    def _realign_batch_generator_rows(
+        self,
+        row_state_by_uid: dict[int, tuple[Any, list[Any]]],
+    ) -> None:
+        try:
+            drifted = False
+            for batch_attr in ("_prompt_batch", "_generation_batch"):
+                batch = getattr(self._batch_generator, batch_attr, None)
+                if batch is None:
+                    continue
+                drifted = _realign_batch_row_state(batch, row_state_by_uid) or drifted
+        except Exception:
+            logger.debug("batch row-state realignment failed; continuing", exc_info=True)
+            return
+
+        if drifted and not self._row_drift_warned:
+            self._row_drift_warned = True
+            logger.warning(
+                "batch generator positional row state drifted; realigned from uid registry"
+            )
+
     def _run_loop(self) -> None:
         while True:
             pending_states: list[_BatchRequestState] = []
@@ -757,6 +882,13 @@ class BatchGeneratorRuntime:
                     and not self._pending_request_ids
                     and not self._active_by_uid
                 ):
+                    if self._idle_cache_clear_needed:
+                        self._idle_cache_clear_needed = False
+                        _synchronize_then_clear_session_cache(
+                            self._session,
+                            self._generation_deps.synchronize,
+                        )
+                        continue
                     self._cv.wait()
 
                 if self._closed:
@@ -872,8 +1004,13 @@ class BatchGeneratorRuntime:
                 if self._reset_requested is not None:
                     perform_reset = True
                     has_active = False
+                    row_state_by_uid: dict[int, tuple[Any, list[Any]]] = {}
                 else:
                     has_active = bool(self._active_by_uid)
+                    row_state_by_uid = {
+                        uid: (state.sampler, state.logits_processors)
+                        for uid, state in self._active_by_uid.items()
+                    }
 
             if perform_reset:
                 self._perform_requested_reset()
@@ -881,6 +1018,8 @@ class BatchGeneratorRuntime:
 
             if not has_active:
                 continue
+
+            self._realign_batch_generator_rows(row_state_by_uid)
 
             try:
                 responses = self._batch_generator.next()
@@ -1253,7 +1392,9 @@ class BatchGeneratorRuntime:
             pre_finalize_insert_set_id = state.insert_set_id
 
             if not state.closed:
-                state.events.append((token, finish_reason))
+                state.events.append(
+                    (token, finish_reason, _batch_response_token_logprob(response, token))
+                )
 
             if pre_finalize_open and pre_finalize_insert_set_id is not None:
                 candidate = self._stage_prefill_attribution_finalize_locked(
@@ -1345,6 +1486,7 @@ class BatchGeneratorRuntime:
         if not isinstance(pump, threading.Thread) or not pump.is_alive():
             with self._cv:
                 self._batch_generator_closed = True
+                self._drop_load_scope_aliases_locked()
 
     def _seconds_until_next_deadline_locked(self, now: float) -> float:
         deadlines = [
@@ -1630,6 +1772,29 @@ def _response_token_id(response: Any) -> int | None:
     return token
 
 
+def _batch_response_token_logprob(response: Any, token: int) -> float | None:
+    logprob = getattr(response, "logprob", None)
+    if isinstance(logprob, float):
+        return logprob
+
+    try:
+        logprobs = response.logprobs
+    except Exception:
+        return None
+
+    if logprobs is None:
+        return None
+
+    try:
+        return float(logprobs[token])
+    except Exception:
+        return None
+
+
+def _request_bool_flag(request: Any, field: str) -> bool:
+    return getattr(request, field, False) is True
+
+
 def _close_stream(stream: Any, *, cancelled: bool = True) -> None:
     """Best-effort close of a stream_generate iterator."""
     close = getattr(stream, "close", None)
@@ -1825,8 +1990,21 @@ def _finalize_prefill_workspace_probe_fail_open(
     _update_session_prefill_workspace_bytes_per_token_high_water(session, sampled)
 
 
-def _safe_clear_session_cache(session: Any) -> None:
-    """Best-effort post-generation memory cleanup."""
+def _synchronize_then_clear_session_cache(
+    session: Any,
+    synchronize: Callable[[], None] | None,
+) -> None:
+    """Best-effort request-boundary MLX cache cleanup.
+
+    Synchronize before clear to avoid racing in-flight Metal command buffers.
+    Both operations are fail-open and synchronize failure must not skip clear.
+    """
+    if synchronize is not None:
+        try:
+            synchronize()
+        except Exception:
+            pass
+
     clear_fn = getattr(session, "clear_cache", None)
     if callable(clear_fn):
         try:
@@ -2093,6 +2271,7 @@ def generate_events(
     - ``{"kind": "progress", "stage": "prefill", "message": "..."}``
     - ``{"kind": "output_text_delta", "delta": "..."}``
     - ``{"kind": "tool_call_delta", ...}``
+    - ``{"kind": "token_delta", "token_ids": [...], "logprobs": [...]}``
     - ``{"kind": "completed", "finish_reason": "...", "usage": {...}}``
     - ``{"kind": "failed", "code": "...", ...}``  (via ``cancelled_event()``)
 
@@ -2123,6 +2302,8 @@ def generate_events(
     prompt_text = None if prompt_ids is not None else _decode_prompt(request.rendered_prompt_utf8)
     stop_sequences = _normalize_stop_sequences(params)
     cache_affinity_fingerprint = getattr(request, "cache_affinity_fingerprint", "")
+    return_logprobs = _request_bool_flag(request, "return_logprobs")
+    return_token_ids = _request_bool_flag(request, "return_token_ids") or return_logprobs
 
     prompt_tokens = 0
     lookup_result = _CacheLookupResult(status=_LOOKUP_DISABLED)
@@ -2243,6 +2424,15 @@ def generate_events(
 
                 finish_reason = response.finish_reason
                 token_id = _response_token_id(response)
+                if return_token_ids and token_id is not None:
+                    token_delta: dict[str, Any] = {
+                        "kind": "token_delta",
+                        "token_ids": [token_id],
+                    }
+                    logprob = _batch_response_token_logprob(response, token_id)
+                    if return_logprobs and logprob is not None:
+                        token_delta["logprobs"] = [logprob]
+                    yield token_delta
                 orchard_eos = (
                     token_id is not None
                     and bool(eos_ids)
@@ -2416,7 +2606,7 @@ def generate_events(
             final_stats=_safe_stats(getattr(session, "prefix_cache", None)),
         )
         if not deps.uses_shared_batch_runtime:
-            _safe_clear_session_cache(session)
+            _synchronize_then_clear_session_cache(session, deps.synchronize)
 
 
 # ---------------------------------------------------------------------------

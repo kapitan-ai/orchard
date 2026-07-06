@@ -28,7 +28,10 @@ if _version_not_supported:
 
 
 class NodeRuntimeServiceStub(object):
-    """Missing associated documentation comment in .proto file."""
+    """Compatibility transport for Runtime Endpoint operations.
+    The transport-independent Runtime Endpoint Interface is the Controller
+    domain contract for runtime execution.
+    """
 
     def __init__(self, channel):
         """Constructor.
@@ -69,7 +72,10 @@ class NodeRuntimeServiceStub(object):
 
 
 class NodeRuntimeServiceServicer(object):
-    """Missing associated documentation comment in .proto file."""
+    """Compatibility transport for Runtime Endpoint operations.
+    The transport-independent Runtime Endpoint Interface is the Controller
+    domain contract for runtime execution.
+    """
 
     def GetStatus(self, request, context):
         """Missing associated documentation comment in .proto file."""
@@ -153,7 +159,10 @@ def add_NodeRuntimeServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class NodeRuntimeService(object):
-    """Missing associated documentation comment in .proto file."""
+    """Compatibility transport for Runtime Endpoint operations.
+    The transport-independent Runtime Endpoint Interface is the Controller
+    domain contract for runtime execution.
+    """
 
     @staticmethod
     def GetStatus(request,

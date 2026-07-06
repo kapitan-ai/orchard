@@ -60,6 +60,7 @@ class BackendMemoryBudgetStatus(TypedDict):
     estimated_headroom_bytes: int
     kv_cache_bytes_per_token: int
     prefill_workspace_bytes_per_token: int
+    recommended_context_tokens: int
 
 
 class BackendPrefixCacheStatus(TypedDict):
@@ -408,6 +409,7 @@ class MLXBackend:
                     estimated_headroom_bytes=budget.estimated_headroom_bytes,
                     kv_cache_bytes_per_token=budget.kv_cache_bytes_per_token,
                     prefill_workspace_bytes_per_token=budget.prefill_workspace_bytes_per_token,
+                    recommended_context_tokens=budget.recommended_context_tokens,
                 )
             return status
 

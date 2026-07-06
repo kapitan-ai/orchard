@@ -1463,7 +1463,26 @@ slice: it is a lower-bound/payload-size estimate derived from bundle artifacts
 index metadata is unavailable). It is not a runtime memory probe. This metadata
 remains observe-only and SHALL NOT gate readiness, request admission, model
 admission, scheduler eligibility, hosted-tool eligibility, or
-`memory_budget_mode` enforcement.
+`memory_budget_mode` enforcement. (`resident_memory_bytes` remains observe-only
+regardless of `memory_budget_mode`; the worker-side enforce path below samples a
+live memory signal rather than this static field.)
+
+The worker-side `memory_budget_mode` (`ORCHARD_WORKER_MEMORY_BUDGET_MODE`) is
+`disabled`, `observe` (default), or `enforce`:
+
+* `disabled` — no memory-budget observation or enforcement.
+* `observe` — publishes observe-only memory-budget telemetry only; no
+  enforcement.
+* `enforce` — in addition to observing, the worker samples a live memory signal
+  and, under sustained memory pressure, aborts ALL active generations without
+  unloading the model. Each aborted generation ends with a distinct retryable
+  `memory_pressure_abort` terminal so operators can distinguish enforcement from
+  other failures. Enforcement applies cooldown hysteresis between abort sweeps,
+  and every enforcement gate is fail-open: an unavailable, missing, or failed
+  memory sample SHALL NOT fail a generation on its own. Pressure is sampled per
+  backend decode event only; prefill is not interruptible, so a request already
+  in prefill is not aborted mid-prefill. Admission-time memory gating is deferred
+  follow-up work (issue #68).
 
 ### 6.5 Model import
 
@@ -1704,6 +1723,8 @@ Unsupported request fields SHALL return `400 unsupported_parameter`. Explicitly 
 * platform-hosted or server-executed tools in chat completions
 * `json_schema`
 * `parallel_tool_calls=true`
+
+The internal runtime `TokenDelta` capability (§7.5.3 internal token-streaming wire semantics) SHALL NOT expose `logprobs` or `top_logprobs` on the public `/v1` API in v1; the restriction above remains in force regardless of that internal capability.
 
 Non-streaming response rules:
 
@@ -2356,6 +2377,7 @@ message RuntimeMemoryBudget {
   uint64 estimated_headroom_bytes = 13;
   uint64 kv_cache_bytes_per_token = 14;
   uint64 prefill_workspace_bytes_per_token = 15;
+  uint64 recommended_context_tokens = 16;
 }
 
 message RuntimePrefixCacheStatus {
@@ -2482,6 +2504,8 @@ message ExecuteInferenceRequest {
   bytes metadata_json = 9;
   string cache_affinity_fingerprint = 10;
   repeated uint32 prompt_token_ids = 11;
+  bool return_token_ids = 12;
+  bool return_logprobs = 13;
 }
 
 message InferenceEvent {
@@ -2493,7 +2517,13 @@ message InferenceEvent {
     Completed completed = 5;
     Failed failed = 6;
     Progress progress = 7;
+    TokenDelta token_delta = 8;
   }
+}
+
+message TokenDelta {
+  repeated uint32 token_ids = 1;
+  repeated float logprobs = 2;
 }
 
 message ToolCallDelta {
@@ -2528,6 +2558,16 @@ Internal tool-calling wire semantics:
 * tool-call deltas SHALL preserve zero-based call index and append-only argument fragments in arrival order
 * if a request completes successfully after emitting one or more tool-call deltas, the terminal `Completed.finish_reason` SHALL be `FINISH_REASON_TOOL_CALLS`
 
+Internal token-streaming wire semantics:
+
+* `ExecuteInferenceRequest.return_token_ids` and `ExecuteInferenceRequest.return_logprobs` are opt-in internal runtime capabilities; both default to false (omitted) and gate emission of `TokenDelta`
+* `TokenDelta` SHALL be emitted only when the request opts in; when neither flag is set no `TokenDelta` is emitted and behavior is unchanged
+* `TokenDelta.token_ids` carries raw sampled token IDs; `TokenDelta.logprobs`, when requested and available, aligns index-wise with `token_ids`
+* raw sampled `TokenDelta.token_ids` MAY NOT align 1:1 with detokenized `OutputTextDelta` text deltas
+* `TokenDelta` SHALL NOT be emitted after the terminal `Completed`/`Failed` event
+* token-ID and logprob emission is fail-open: an unavailable or failed logprob source SHALL degrade to omitted `logprobs` and SHALL NOT fail the generation
+* this is an internal runtime wire capability only; it is NOT exposed through the public `/v1` API, and the §7.2.4 public-API restriction on `logprobs`/`top_logprobs` remains in force in v1
+
 Hosted-tool capability/readiness wire semantics:
 
 * `StatusResponse.hosted_tool_capabilities` SHALL describe static hosted-tool advertisement only; it SHALL NOT be used to imply current readiness
@@ -2544,9 +2584,10 @@ Runtime memory-budget wire semantics:
 * `RuntimeMemoryBudget.status_code` values in this slice are: `ok`, `disabled`, `device_info_unavailable`, `device_info_invalid`, `resident_memory_unavailable`, `compute_failed`, `invalid_status`
 * `RuntimeMemoryBudget.resident_memory_bytes` is copied from static manifest-derived model metadata; it is a lower-bound/payload-size estimate, not a runtime memory probe
 * positive resident-memory metadata MAY make `status_code = ok` and `headroom_available = true` when the observe-only arithmetic has enough inputs; when `memory_admission.enabled = true`, that exact positive observation MAY be used by `Orchard.Scheduler.MultiNode` only as a non-gating, non-excluding ranking preference below loadedness, requested-placement active request count when known, health, live prefix-cache fingerprint match, historical cache affinity, and any enabled safe-tokenization capable-worker preference
-* neither `RuntimeMemoryBudget.status_code` nor `RuntimeMemoryBudget.resident_memory_bytes` is an enforcement input in this slice; they SHALL NOT alter readiness, request admission rejection, model admission, scheduler eligibility, hosted-tool eligibility, public error contracts, queue ordering, or `memory_budget_mode` enforcement
+* neither `RuntimeMemoryBudget.status_code` nor `RuntimeMemoryBudget.resident_memory_bytes` is an enforcement input; they remain observe-only and SHALL NOT alter readiness, request admission rejection, model admission, scheduler eligibility, hosted-tool eligibility, public error contracts, or queue ordering. The worker-side `memory_budget_mode = enforce` path (see §6.4) samples a live memory signal rather than these observe-only fields, so its abort behavior is not driven by `status_code` or `resident_memory_bytes`
 * absent, empty, stale, malformed, disabled, unavailable, invalid, device-info-failed, compute-failed, non-`ok`, or `headroom_available != true` memory telemetry SHALL be rank-neutral and fail open
 * `estimated_headroom_bytes` SHALL NOT be used as a threshold, continuous score, request-rejection input, or operator-tunable memory admission knob in this slice
+* `RuntimeMemoryBudget.recommended_context_tokens` is an advisory, observe-only, memory-policy-derived context recommendation; `0` means unknown or not computable. It is computed fail-open as `min(catalog max_context_tokens, estimated_headroom_bytes / kv_cache_bytes_per_token)` and SHALL NOT override or gate the catalog `max_context_tokens`, request admission, model admission, scheduler eligibility, queue ordering, or `memory_budget_mode` enforcement
 * scheduler memory eligibility SHALL continue to use the scheduler/model/node inputs defined elsewhere in this spec; Phase 4E promotes only the hard-coded `status_code = ok` plus `headroom_available = true` case to a non-excluding scheduler-ranking preference
 
 Runtime prefix-cache observation semantics:

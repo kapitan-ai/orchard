@@ -1174,11 +1174,13 @@ def test_generation_runtime_config_resolves_auto_concurrency_from_memory_budget(
     )
 
 
+def test_memory_budget_config_accepts_enforce_mode() -> None:
+    assert MemoryBudgetConfig(mode="enforce").mode == "enforce"
+
+
 def test_memory_budget_config_validation() -> None:
     with pytest.raises(ValueError):
         MemoryBudgetConfig(mode="invalid")
-    with pytest.raises(ValueError):
-        MemoryBudgetConfig(mode="enforce")
     with pytest.raises(ValueError):
         MemoryBudgetConfig(utilization=0)
     with pytest.raises(ValueError):
@@ -1247,6 +1249,78 @@ def test_load_session_computes_memory_budget_status(writable_bundle: Path) -> No
     assert status.estimated_headroom_bytes == 5_997_852_000
     assert status.kv_cache_bytes_per_token == 16_384
     assert status.prefill_workspace_bytes_per_token == 2_048
+    assert status.recommended_context_tokens == 4_096
+
+
+def test_load_session_recommends_memory_capped_context_when_catalog_max_is_null(
+    writable_bundle: Path,
+) -> None:
+    manifest_path = writable_bundle / "manifest.json"
+    data = json.loads(manifest_path.read_text())
+    data["max_context_tokens"] = None
+    manifest_path.write_text(json.dumps(data))
+    deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": 8_000_000_000})
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+        memory_budget_config=MemoryBudgetConfig(
+            mode="observe",
+            utilization=0.75,
+            overhead_bytes=100_000,
+        ),
+    )
+
+    assert session.memory_budget_status.recommended_context_tokens == 366_079
+
+
+def test_load_session_reports_unknown_context_recommendation_without_kv_cost(
+    writable_bundle: Path,
+) -> None:
+    manifest_path = writable_bundle / "manifest.json"
+    data = json.loads(manifest_path.read_text())
+    data.pop("kv_cache_bytes_per_token", None)
+    manifest_path.write_text(json.dumps(data))
+    deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": 8_000_000_000})
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+        memory_budget_config=MemoryBudgetConfig(
+            mode="observe",
+            utilization=0.75,
+            overhead_bytes=100_000,
+        ),
+    )
+
+    assert session.memory_budget_status.status_code == "ok"
+    assert session.memory_budget_status.recommended_context_tokens == 0
+
+
+def test_load_session_reports_unknown_context_recommendation_without_headroom(
+    writable_bundle: Path,
+) -> None:
+    deps = _make_fake_deps(device_info_result={"max_recommended_working_set_size": 8_000_000_000})
+
+    session = load_session(
+        model_id="test-org/tiny-llm",
+        version="mlx-q4-v1",
+        model_path=str(writable_bundle),
+        deps=deps,
+        memory_budget_config=MemoryBudgetConfig(
+            mode="observe",
+            utilization=0.75,
+            overhead_bytes=6_000_000_000,
+        ),
+    )
+
+    assert session.memory_budget_status.status_code == "ok"
+    assert session.memory_budget_status.estimated_headroom_bytes == 0
+    assert session.memory_budget_status.recommended_context_tokens == 0
 
 
 def test_load_session_memory_budget_disabled_skips_device_info(writable_bundle: Path) -> None:
@@ -1304,6 +1378,7 @@ def test_load_session_memory_budget_handles_missing_device_info(writable_bundle:
     assert session.memory_budget_status.status_code == "device_info_unavailable"
     assert session.memory_budget_status.budget_available is False
     assert session.memory_budget_status.headroom_available is False
+    assert session.memory_budget_status.recommended_context_tokens == 0
 
 
 def test_load_session_memory_budget_handles_invalid_device_info(writable_bundle: Path) -> None:
