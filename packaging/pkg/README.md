@@ -1024,7 +1024,9 @@ controller-bearing installs (`all` or `controller`):
    command arguments.
 2. Run `sudo orchardctl env init` and fill in required database/runtime values.
 3. Run `sudo orchardctl migrate`.
-4. Create an Organization and API Token before making public `/v1` API calls.
+4. Run `sudo orchardctl cluster init --output /secure/path/bootstrap-admin.json`.
+   This mints the first cluster-admin API Client credential as One-time Secret Output.
+5. Create an Organization and API Token before making public `/v1` API calls.
    Tenant-direct API Tokens remain supported for manual/bootstrap use and the token is printed once:
    ```bash
    sudo orchardctl tenants create --slug default --name "Default"
@@ -1036,26 +1038,35 @@ controller-bearing installs (`all` or `controller`):
    sudo orchardctl api-clients bulk-provision --apply --file /path/to/api-clients.csv --output /secure/path/api-client-tokens.csv
    ```
    The input CSV requires `organization`, `api_client`, `owner_contact`, and `key_name`, and the output CSV is One-time Secret Output containing the new API Tokens.
-5. Run `sudo orchardctl transport enable-local-https --host HOST` for the local
+6. Run `sudo orchardctl transport enable-local-https --host HOST` for the local
    generated-CA direct HTTPS path, or configure an operator-managed direct HTTPS
    certificate/reverse-proxy transport before starting services.
-6. Optional, when browser Console access is desired: run
+7. Optional, when browser Console access is desired: run
    `sudo orchardctl console enable` and enter credentials only through the
    interactive prompt.
-7. Run `sudo orchardctl start`.
-8. Verify with `orchardctl status`.
+8. Run `sudo orchardctl start`.
+9. Verify with `orchardctl status`.
 
 For `node-agent` role installs, run `sudo orchardctl env init`, fill in the
 node-agent environment, then run `sudo orchardctl start` and verify with
 `orchardctl status`.
 
-Do not use the deferred cluster-bootstrap CLI paths for current PKG bootstrap:
-`orchardctl cluster init` and `orchardctl node join` return deferred status in
-this build. Role selection, env generation, service start, and
-`orchardctl status` are the supported path.
+`orchardctl cluster init` mints the first cluster-admin API Client credential as
+a local, one-shot, audited controller-host operation after migrations are
+applied. It requires a `--output` One-time Secret Output path (the token is
+written only to that file, never stdout), refuses a second init with
+`cluster_already_initialized`, and supports `--force-new-admin --yes` recovery
+minting, `--client-name`, and `--json`. It is credential-only: TLS material and
+role/service setup remain separate, and `postinstall` never seeds admin
+credentials.
 
-This deferred bootstrap ensures services start with valid environment and TLS
-configuration rather than crash-looping with missing setup.
+`orchardctl node join` remains a deferred cluster-bootstrap CLI path and returns
+deferred status in this build. Role selection, env generation, service start,
+and `orchardctl status` are the supported path for node bring-up.
+
+The deferred node join path keeps node admission out of this build while services
+start with valid environment and TLS configuration rather than crash-looping with
+missing setup.
 
 `orchardctl requests inspect <request-id>` reads the local controller Repo and
 renders the persisted scheduler explanation for a request, with stable human and

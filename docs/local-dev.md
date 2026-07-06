@@ -530,8 +530,8 @@ Single-node all-in-one remains available through `bin/dev`.
 Use the BEAM Runtime Endpoint flow for the default split-role source-dev cluster path.
 Use the gRPC compatibility flow only when you intentionally opt out with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` or need side-by-side comparison.
 
-`orchardctl cluster init` and `orchardctl node join` are SPEC-required future node-lifecycle commands.
-In this build they return deferred status.
+`orchardctl cluster init` mints the first cluster-admin API Client credential as a local, one-shot, audited controller-host operation behind the leader-only write gate, requiring a `--output` One-time Secret Output path (the token is written only to that file, never stdout), refusing a second init with `cluster_already_initialized`, and supporting `--force-new-admin --yes` recovery minting, `--client-name`, and `--json`.
+`orchardctl node join` is a SPEC-required future node-lifecycle command; in this build it returns deferred status.
 `orchardctl cluster status [--json]` is implemented for read-only cluster and control-plane status, with the shared `ControlPlaneStatus` payload and a control-plane summary in `--json` mode.
 `orchardctl nodes inspect`, `orchardctl nodes pending`, `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for the current node-admission-review slice, with stable JSON and human output, `--dry-run` previews, and `--yes`/`--reason` execution gating.
 `orchardctl nodes inspect` also renders an observe-only runtime memory-budget block in both human and `--json` output when the matching Runtime Endpoint snapshot reports memory-budget telemetry, and fails open by omitting the block when none is available.
