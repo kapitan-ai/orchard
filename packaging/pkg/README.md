@@ -32,6 +32,56 @@ Before starting the controller for the first time:
 3. Create `controller.env` with the required variables (see below).
 4. Run release migrations (see below).
 
+### Local two-Mac rehearsal PostgreSQL setup
+
+For the current packaged two-Mac rehearsal, prefer a Homebrew-managed PostgreSQL 16 server on the controller Mac, bound to loopback.
+This still counts as operator-managed external PostgreSQL because Orchard does not install, bootstrap, or supervise it.
+It avoids exposing Postgres to the worker Mac, and it matches the current packaged BEAM topology where only the controller Mac needs database access.
+
+Install and start PostgreSQL on the controller Mac:
+
+```bash
+brew install postgresql@16
+brew services start postgresql@16
+/opt/homebrew/opt/postgresql@16/bin/pg_isready -h 127.0.0.1 -p 5432
+```
+
+If Homebrew is installed somewhere other than `/opt/homebrew`, replace `/opt/homebrew` with `$(brew --prefix)`.
+Create an Orchard database user and database without placing the password in shell history:
+
+```bash
+$(brew --prefix)/opt/postgresql@16/bin/createuser --pwprompt orchard
+$(brew --prefix)/opt/postgresql@16/bin/createdb -O orchard orchard_controller
+$(brew --prefix)/opt/postgresql@16/bin/psql "postgresql://orchard@127.0.0.1:5432/orchard_controller" -c 'select 1'
+```
+
+Set the packaged controller DSN to loopback in `/Library/Application Support/Orchard/config/controller.env`.
+URL-encode any special characters in the password.
+For a local lab loopback database, omit TLS or set `ssl=false`; use TLS for a PostgreSQL host reached over a private LAN, VPN, or Tailscale network.
+
+```bash
+DATABASE_URL="ecto://orchard:URL_ENCODED_PASSWORD@127.0.0.1:5432/orchard_controller?ssl=false"
+```
+
+The worker Mac does not need direct PostgreSQL reachability in the packaged BEAM first cut.
+Do not point node-agent env files at Postgres.
+If a separate PostgreSQL host is required, restrict it to the controller Mac's private IP or VPN IP in PostgreSQL `listen_addresses`, `pg_hba.conf`, and host firewall rules rather than opening `0.0.0.0/0`.
+Use PostgreSQL 16 or newer, require password authentication, and prefer TLS for any non-loopback database connection.
+
+Operational notes:
+
+- `brew services start postgresql@16` is convenient for local rehearsal and restarts PostgreSQL when the owning user logs in.
+- It is not a substitute for Orchard Managed Database Mode, boot-before-login service management, backup automation, or production hardening.
+- Back up rehearsal state with `pg_dump` or `pg_dumpall` before deleting the Homebrew data directory.
+- Homebrew's default PostgreSQL 16 data directory on Apple Silicon is usually `/opt/homebrew/var/postgresql@16`.
+
+Fallback local container path:
+
+Use the container path only when an organization-approved local container runtime is already part of the operator environment.
+Run `postgres:16` or a PostgreSQL 16+ equivalent with a persistent named volume, `POSTGRES_USER=orchard`, `POSTGRES_DB=orchard_controller`, a generated password, and a loopback-only port binding such as `127.0.0.1:5432:5432`.
+The container must publish Postgres only on loopback for the two-Mac rehearsal.
+The chosen container runtime must be running before its restart policy can bring the database back after a reboot or logout.
+
 ## Packaged External-Sites Multi-Mac First Cut
 
 The first external-sites packaged cut supports one controller Mac and one or more node-agent Macs on a trusted private network or VPN.
