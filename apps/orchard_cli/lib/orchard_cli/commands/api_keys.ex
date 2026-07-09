@@ -6,6 +6,7 @@ defmodule OrchardCLI.Commands.ApiKeys do
   alias Ecto.Changeset
   alias Orchard.Governance
   alias OrchardCLI.Commands.GovernanceHelpers
+  alias OrchardCLI.RepoRuntime
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(args) do
@@ -108,6 +109,10 @@ defmodule OrchardCLI.Commands.ApiKeys do
   end
 
   defp create_api_key(tenant_id, name) do
+    RepoRuntime.run(fn -> do_create_api_key(tenant_id, name) end)
+  end
+
+  defp do_create_api_key(tenant_id, name) do
     case Governance.create_api_key(tenant_id, %{name: name}) do
       {:ok, %{api_key: api_key, token: token}} ->
         {:ok,
@@ -134,6 +139,10 @@ defmodule OrchardCLI.Commands.ApiKeys do
   end
 
   defp revoke_api_key(api_key_id) do
+    RepoRuntime.run(fn -> do_revoke_api_key(api_key_id) end)
+  end
+
+  defp do_revoke_api_key(api_key_id) do
     case Governance.revoke_api_key(api_key_id) do
       {:ok, api_key} ->
         {:ok,

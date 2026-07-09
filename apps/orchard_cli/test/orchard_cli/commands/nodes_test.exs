@@ -448,12 +448,15 @@ defmodule OrchardCLI.Commands.NodesTest do
       refute message =~ "----"
     end
 
-    test "degrades to not found when the controller repo is unavailable" do
+    test "reports database unavailable when the controller repo is unavailable" do
       node = insert_node!(display_name: "inspect-repo-off-node")
 
       with_repo_unavailable(fn ->
         assert {:error, message, 1} = NodesCmd.run(["inspect", node.id, "--json"])
-        assert message =~ "node not found"
+        decoded = Jason.decode!(message)
+
+        assert decoded["code"] == "database_unavailable"
+        assert decoded["message"] =~ "database is unavailable"
       end)
     end
   end
@@ -508,15 +511,15 @@ defmodule OrchardCLI.Commands.NodesTest do
       refute output =~ "admitted"
     end
 
-    test "degrades to empty review when the controller repo is unavailable" do
+    test "reports database unavailable when the controller repo is unavailable" do
       insert_candidate!()
 
       with_repo_unavailable(fn ->
-        assert {:ok, output} = NodesCmd.run(["pending"])
-        assert output =~ "No admission candidates pending review."
+        assert {:error, output, 1} = NodesCmd.run(["pending"])
+        assert output =~ "database is unavailable"
 
-        assert {:ok, json} = NodesCmd.run(["pending", "--json"])
-        assert Jason.decode!(json)["data"] == []
+        assert {:error, json, 1} = NodesCmd.run(["pending", "--json"])
+        assert Jason.decode!(json)["code"] == "database_unavailable"
       end)
     end
   end
@@ -636,16 +639,15 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert Repo.get!(Node, node.id).state == :registered
     end
 
-    test "dry-run degrades to a not-found preview when the controller repo is unavailable" do
+    test "dry-run reports database unavailable when the controller repo is unavailable" do
       node = insert_node!(state: :registered, display_name: "admit-dry-run-repo-off")
 
       with_repo_unavailable(fn ->
-        assert {:ok, output} = NodesCmd.run(["admit", node.id, "--dry-run", "--json"])
+        assert {:error, output, 1} = NodesCmd.run(["admit", node.id, "--dry-run", "--json"])
         decoded = Jason.decode!(output)
 
-        assert decoded["action"] == "node_admission.admit"
-        assert decoded["target"] == %{"type" => "node", "id" => node.id}
-        assert Enum.map(decoded["blockers"], & &1["code"]) == ["node_not_found"]
+        assert decoded["code"] == "database_unavailable"
+        assert decoded["message"] =~ "database is unavailable"
       end)
 
       assert Repo.get!(Node, node.id).state == :registered
@@ -714,16 +716,15 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
     end
 
-    test "dry-run degrades to a not-found preview when the controller repo is unavailable" do
+    test "dry-run reports database unavailable when the controller repo is unavailable" do
       candidate = insert_candidate!()
 
       with_repo_unavailable(fn ->
-        assert {:ok, output} = NodesCmd.run(["reject", candidate.id, "--dry-run", "--json"])
+        assert {:error, output, 1} = NodesCmd.run(["reject", candidate.id, "--dry-run", "--json"])
         decoded = Jason.decode!(output)
 
-        assert decoded["action"] == "node_admission.reject"
-        assert decoded["target"] == %{"type" => "node", "id" => candidate.id}
-        assert Enum.map(decoded["blockers"], & &1["code"]) == ["node_not_found"]
+        assert decoded["code"] == "database_unavailable"
+        assert decoded["message"] =~ "database is unavailable"
       end)
 
       assert Repo.get!(AdmissionCandidate, candidate.id).admission_category == :pending_observed
@@ -899,16 +900,15 @@ defmodule OrchardCLI.Commands.NodesTest do
       assert Repo.get!(Node, node.id).state == :draining
     end
 
-    test "dry-run degrades to a not-found preview when the controller repo is unavailable" do
+    test "dry-run reports database unavailable when the controller repo is unavailable" do
       node = insert_node!(state: :active, display_name: "cordon-dry-run-repo-off")
 
       with_repo_unavailable(fn ->
-        assert {:ok, output} = NodesCmd.run(["cordon", node.id, "--dry-run", "--json"])
+        assert {:error, output, 1} = NodesCmd.run(["cordon", node.id, "--dry-run", "--json"])
         decoded = Jason.decode!(output)
 
-        assert decoded["action"] == "node_lifecycle.cordon"
-        assert decoded["target"] == %{"type" => "node", "id" => node.id}
-        assert Enum.map(decoded["blockers"], & &1["code"]) == ["node_not_found"]
+        assert decoded["code"] == "database_unavailable"
+        assert decoded["message"] =~ "database is unavailable"
       end)
 
       assert Repo.get!(Node, node.id).state == :active

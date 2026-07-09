@@ -6,6 +6,7 @@ defmodule OrchardCLI.Commands.Tenants do
   alias Ecto.Changeset
   alias Orchard.Governance
   alias OrchardCLI.Commands.GovernanceHelpers
+  alias OrchardCLI.RepoRuntime
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(args) do
@@ -55,6 +56,10 @@ defmodule OrchardCLI.Commands.Tenants do
   end
 
   defp create_tenant(slug, name) do
+    RepoRuntime.run(fn -> do_create_tenant(slug, name) end)
+  end
+
+  defp do_create_tenant(slug, name) do
     case Governance.create_tenant(%{slug: slug, name: name}) do
       {:ok, tenant} ->
         {:ok,

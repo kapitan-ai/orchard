@@ -17,12 +17,13 @@ defmodule OrchardCLI.Commands.Nodes do
   alias Orchard.Nodes
   alias Orchard.Nodes.AdmissionCandidate
   alias Orchard.Nodes.Lifecycle
+  alias OrchardCLI.RepoRuntime
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(args) do
     case args do
-      ["list"] -> run_list()
-      ["list", "--json"] -> run_list_json()
+      ["list"] -> RepoRuntime.run(fn -> run_list() end)
+      ["list", "--json"] -> RepoRuntime.run(fn -> run_list_json() end, json: true)
       ["list", "--help"] -> {:ok, list_usage()}
       ["help"] -> {:ok, group_usage()}
       ["--help"] -> {:ok, group_usage()}
@@ -47,14 +48,15 @@ defmodule OrchardCLI.Commands.Nodes do
   defp run_inspect(["help"]), do: {:ok, inspect_usage()}
 
   defp run_inspect(args) do
-    with {:ok, %{id: node_id, json?: json?}} <- parse_inspect_args(args),
-         {:ok, node} <- guarded_fetch_node(node_id) do
-      output = node |> NodeAdmissionPresenter.node() |> with_memory_budget()
-      {:ok, render_node(output, json?)}
-    else
-      {:error, :node_not_found} -> {:error, "Error: node not found.", 1}
-      {:help, usage} -> {:ok, usage}
-      {:error, message, code} -> {:error, message, code}
+    case parse_inspect_args(args) do
+      {:ok, %{id: node_id, json?: json?}} ->
+        RepoRuntime.run(fn -> inspect_node(node_id, json?) end, json: json?)
+
+      {:help, usage} ->
+        {:ok, usage}
+
+      {:error, message, code} ->
+        {:error, message, code}
     end
   end
 
@@ -64,8 +66,13 @@ defmodule OrchardCLI.Commands.Nodes do
   defp run_pending(args) do
     case parse_pending_args(args) do
       {:ok, %{json?: json?}} ->
-        output = NodeAdmissionPresenter.list_candidates(guarded_pending_candidates())
-        {:ok, render_pending(output, json?)}
+        RepoRuntime.run(
+          fn ->
+            output = NodeAdmissionPresenter.list_candidates(pending_candidates())
+            {:ok, render_pending(output, json?)}
+          end,
+          json: json?
+        )
 
       {:help, usage} ->
         {:ok, usage}
@@ -81,23 +88,16 @@ defmodule OrchardCLI.Commands.Nodes do
   defp run_admit(args) do
     case parse_admit_args(args) do
       {:ok, %{dry_run?: true} = opts} ->
-        preview =
-          guarded_preview(
-            fn -> ActionPreviewBuilder.admit_node(opts.id, opts.attrs) end,
-            :admit,
-            opts.id
-          )
-
-        {:ok, render_preview(preview, opts.json?)}
+        RepoRuntime.run(
+          fn ->
+            preview = ActionPreviewBuilder.admit_node(opts.id, opts.attrs)
+            {:ok, render_preview(preview, opts.json?)}
+          end,
+          json: opts.json?
+        )
 
       {:ok, opts} ->
-        preview = ActionPreviewBuilder.admit_node(opts.id, opts.attrs)
-
-        if preview_blocked?(preview) or not opts.yes? do
-          confirmation_error(preview, opts, :admit)
-        else
-          execute_admit(opts)
-        end
+        RepoRuntime.run(fn -> preview_and_execute_admit(opts) end, json: opts.json?)
 
       {:help, usage} ->
         {:ok, usage}
@@ -113,23 +113,16 @@ defmodule OrchardCLI.Commands.Nodes do
   defp run_reject(args) do
     case parse_reject_args(args) do
       {:ok, %{dry_run?: true} = opts} ->
-        preview =
-          guarded_preview(
-            fn -> ActionPreviewBuilder.reject_admission(opts.id, opts.attrs) end,
-            :reject,
-            opts.id
-          )
-
-        {:ok, render_preview(preview, opts.json?)}
+        RepoRuntime.run(
+          fn ->
+            preview = ActionPreviewBuilder.reject_admission(opts.id, opts.attrs)
+            {:ok, render_preview(preview, opts.json?)}
+          end,
+          json: opts.json?
+        )
 
       {:ok, opts} ->
-        preview = ActionPreviewBuilder.reject_admission(opts.id, opts.attrs)
-
-        if preview_blocked?(preview) or not opts.yes? or reason_missing?(opts.attrs) do
-          confirmation_error(preview, opts, :reject)
-        else
-          execute_reject(opts)
-        end
+        RepoRuntime.run(fn -> preview_and_execute_reject(opts) end, json: opts.json?)
 
       {:help, usage} ->
         {:ok, usage}
@@ -145,22 +138,16 @@ defmodule OrchardCLI.Commands.Nodes do
   defp run_lifecycle(action, args) do
     case parse_lifecycle_args(action, args) do
       {:ok, %{dry_run?: true} = opts} ->
-        preview =
-          guarded_preview(
-            fn -> ActionPreviewBuilder.node_lifecycle(action, opts.id, opts.attrs) end,
-            action,
-            opts.id
-          )
-
-        {:ok, render_preview(preview, opts.json?)}
+        RepoRuntime.run(
+          fn ->
+            preview = ActionPreviewBuilder.node_lifecycle(action, opts.id, opts.attrs)
+            {:ok, render_preview(preview, opts.json?)}
+          end,
+          json: opts.json?
+        )
 
       {:ok, opts} ->
-        preview = ActionPreviewBuilder.node_lifecycle(action, opts.id, opts.attrs)
-
-        case lifecycle_confirmation_error(preview, opts) do
-          nil -> execute_lifecycle(opts)
-          message -> confirmation_error(preview, opts, action, message)
-        end
+        RepoRuntime.run(fn -> preview_and_execute_lifecycle(action, opts) end, json: opts.json?)
 
       {:help, usage} ->
         {:ok, usage}
@@ -202,39 +189,50 @@ defmodule OrchardCLI.Commands.Nodes do
     end
   end
 
-  defp guarded_fetch_node(node_id) do
-    guarded_read(fn -> Nodes.fetch_node(node_id) end, {:error, :node_not_found})
-  end
+  defp inspect_node(node_id, json?) do
+    case fetch_node(node_id) do
+      {:ok, node} ->
+        output = node |> NodeAdmissionPresenter.node() |> with_memory_budget()
+        {:ok, render_node(output, json?)}
 
-  defp guarded_pending_candidates do
-    guarded_read(
-      fn ->
-        Nodes.list_admission_candidates(
-          admission_category: AdmissionCandidate.review_categories()
-        )
-      end,
-      []
-    )
-  end
-
-  defp guarded_preview(build_fun, action, target_id) do
-    guarded_read(build_fun, ActionPreviewBuilder.not_found_preview(action, target_id))
-  end
-
-  defp guarded_read(fun, fallback) do
-    if repo_available?() do
-      fun.()
-    else
-      fallback
+      {:error, :node_not_found} ->
+        {:error, "Error: node not found.", 1}
     end
-  rescue
-    _exception in [DBConnection.ConnectionError, DBConnection.OwnershipError, Postgrex.Error] ->
-      fallback
   end
 
-  defp repo_available? do
-    pid = Process.whereis(Orchard.Repo)
-    is_pid(pid) and Process.alive?(pid)
+  defp preview_and_execute_admit(opts) do
+    preview = ActionPreviewBuilder.admit_node(opts.id, opts.attrs)
+
+    if preview_blocked?(preview) or not opts.yes? do
+      confirmation_error(preview, opts, :admit)
+    else
+      execute_admit(opts)
+    end
+  end
+
+  defp preview_and_execute_reject(opts) do
+    preview = ActionPreviewBuilder.reject_admission(opts.id, opts.attrs)
+
+    if preview_blocked?(preview) or not opts.yes? or reason_missing?(opts.attrs) do
+      confirmation_error(preview, opts, :reject)
+    else
+      execute_reject(opts)
+    end
+  end
+
+  defp preview_and_execute_lifecycle(action, opts) do
+    preview = ActionPreviewBuilder.node_lifecycle(action, opts.id, opts.attrs)
+
+    case lifecycle_confirmation_error(preview, opts) do
+      nil -> execute_lifecycle(opts)
+      message -> confirmation_error(preview, opts, action, message)
+    end
+  end
+
+  defp fetch_node(node_id), do: Nodes.fetch_node(node_id)
+
+  defp pending_candidates do
+    Nodes.list_admission_candidates(admission_category: AdmissionCandidate.review_categories())
   end
 
   defp parse_inspect_args(args) do
@@ -713,9 +711,6 @@ defmodule OrchardCLI.Commands.Nodes do
   defp lifecycle_command_action("decommission"), do: {:ok, :decommission}
   defp lifecycle_command_action(_command), do: :error
 
-  # NOTE: list_nodes/0 and summary/0 gracefully degrade to []/zero when the
-  # repo is unavailable. The CLI cannot distinguish "no nodes" from "DB down".
-  # This is consistent with the console and health endpoint behavior.
   defp run_list do
     nodes = Nodes.list_nodes()
     summary = Nodes.summary()

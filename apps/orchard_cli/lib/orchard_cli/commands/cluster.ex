@@ -5,6 +5,7 @@ defmodule OrchardCLI.Commands.Cluster do
   alias Orchard.ControlPlane
   alias Orchard.Governance.ClusterBootstrap
   alias OrchardCLI.Commands.GovernanceHelpers
+  alias OrchardCLI.RepoRuntime
 
   @cluster_status_object "cluster_management.cluster_status"
   @cluster_status_contract_version "orchard.cluster_management.cluster_status.v1"
@@ -136,12 +137,20 @@ defmodule OrchardCLI.Commands.Cluster do
       [actor_id: "local-orchardctl"]
       |> maybe_put_client_name(opts)
 
+    RepoRuntime.with_repo(fn -> do_mint_admin(opts, mint_opts) end)
+    |> unwrap_mint_admin()
+  end
+
+  defp do_mint_admin(opts, mint_opts) do
     if Keyword.get(opts, :force_new_admin, false) do
       ClusterBootstrap.mint_recovery_admin(mint_opts)
     else
       ClusterBootstrap.mint_first_admin(mint_opts)
     end
   end
+
+  defp unwrap_mint_admin({:ok, result}), do: result
+  defp unwrap_mint_admin({:error, reason}), do: {:error, reason}
 
   defp maybe_put_client_name(mint_opts, opts) do
     case Keyword.fetch(opts, :client_name) do
@@ -159,15 +168,40 @@ defmodule OrchardCLI.Commands.Cluster do
         {:ok, render_init_success(result, output_path, json?, [tmp_leftover_warning(tmp_path)])}
 
       {:error, message} ->
-        _ =
-          ClusterBootstrap.mark_output_failed(result, %{
-            "reason" => message,
-            "api_token_prefix" => result.api_token_prefix
-          })
+        message =
+          [message, output_failed_persistence_warning(mark_output_failed(result, message))]
+          |> Enum.reject(&is_nil/1)
+          |> Enum.join("\n")
 
         {:error, :one_time_secret_output_failed, message, 1}
     end
   end
+
+  defp mark_output_failed(result, message) do
+    RepoRuntime.with_repo(fn ->
+      ClusterBootstrap.mark_output_failed(result, %{
+        "reason" => message,
+        "api_token_prefix" => result.api_token_prefix
+      })
+    end)
+  end
+
+  defp output_failed_persistence_warning({:ok, {:ok, _result}}), do: nil
+
+  defp output_failed_persistence_warning({:ok, {:error, reason}}) do
+    "Failed to record output_failed status/audit: #{format_persistence_error(reason)}"
+  end
+
+  defp output_failed_persistence_warning({:error, {:database_unavailable, message}}) do
+    "Failed to record output_failed status/audit: #{message}"
+  end
+
+  defp format_persistence_error(%Ecto.Changeset{} = changeset) do
+    changeset.errors |> inspect()
+  end
+
+  defp format_persistence_error(reason) when is_atom(reason), do: Atom.to_string(reason)
+  defp format_persistence_error(reason), do: inspect(reason)
 
   defp tmp_leftover_warning(tmp_path) do
     "credential was written but the temporary secret file #{tmp_path} could not be removed; delete it manually."
@@ -297,6 +331,10 @@ defmodule OrchardCLI.Commands.Cluster do
     {:error, "Error: cluster_init_invalid: #{detail}", 1}
   end
 
+  defp init_error({:database_unavailable, _message} = reason, json?) do
+    RepoRuntime.command_error(reason, json?)
+  end
+
   defp init_error(reason, true) when is_atom(reason) do
     {:error, Jason.encode!(%{object: "error", code: Atom.to_string(reason)}, pretty: true), 1}
   end
@@ -317,8 +355,13 @@ defmodule OrchardCLI.Commands.Cluster do
   defp run_status(args) do
     case parse_status_args(args) do
       {:ok, %{json?: json?}} ->
-        status = ControlPlane.read_only_status()
-        {:ok, render_status(status, json?)}
+        RepoRuntime.run(
+          fn ->
+            status = ControlPlane.read_only_status()
+            {:ok, render_status(status, json?)}
+          end,
+          json: json?
+        )
 
       {:help, usage} ->
         {:ok, usage}

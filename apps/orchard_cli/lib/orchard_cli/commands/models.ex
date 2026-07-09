@@ -10,6 +10,7 @@ defmodule OrchardCLI.Commands.Models do
 
   alias Orchard.Models
   alias Orchard.Models.Importer
+  alias OrchardCLI.RepoRuntime
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(["import" | rest]) do
@@ -28,18 +29,7 @@ defmodule OrchardCLI.Commands.Models do
   end
 
   def run(["list"]) do
-    models = Models.list_active_models()
-
-    if models == [] do
-      {:ok, "No active models."}
-    else
-      lines =
-        Enum.map_join(models, "\n", fn model ->
-          "#{model.model_id}@#{model.version}  state=#{model.state}  format=#{model.format}"
-        end)
-
-      {:ok, lines}
-    end
+    RepoRuntime.run(fn -> list_active_models() end)
   end
 
   def run(["delete" | rest]), do: run_delete(rest)
@@ -49,6 +39,26 @@ defmodule OrchardCLI.Commands.Models do
   end
 
   defp run_import(source_path, opts) do
+    RepoRuntime.run(fn -> do_run_import(source_path, opts) end)
+  end
+
+  defp list_active_models do
+    Models.list_active_models()
+    |> render_active_models()
+  end
+
+  defp render_active_models([]), do: {:ok, "No active models."}
+
+  defp render_active_models(models) do
+    lines =
+      Enum.map_join(models, "\n", fn model ->
+        "#{model.model_id}@#{model.version}  state=#{model.state}  format=#{model.format}"
+      end)
+
+    {:ok, lines}
+  end
+
+  defp do_run_import(source_path, opts) do
     artifacts_root = Importer.default_artifacts_root()
 
     import_opts = [
@@ -90,13 +100,7 @@ defmodule OrchardCLI.Commands.Models do
   defp run_delete([identity]) do
     case parse_model_identity(identity) do
       {:ok, %{model_id: model_id, version: version}} ->
-        case Models.get_model_by_identity(model_id, version) do
-          nil ->
-            {:error, "Error: model not found: #{identity}", 1}
-
-          model ->
-            handle_delete_result(Models.delete_model(model.id), identity)
-        end
+        RepoRuntime.run(fn -> do_run_delete(model_id, version, identity) end)
 
       :error ->
         {:error,
@@ -106,6 +110,16 @@ defmodule OrchardCLI.Commands.Models do
 
   defp run_delete(_args) do
     {:error, "Error: expected exactly one model identity\n#{delete_usage()}", 1}
+  end
+
+  defp do_run_delete(model_id, version, identity) do
+    case Models.get_model_by_identity(model_id, version) do
+      nil ->
+        {:error, "Error: model not found: #{identity}", 1}
+
+      model ->
+        handle_delete_result(Models.delete_model(model.id), identity)
+    end
   end
 
   defp handle_delete_result({:ok, model}, _identity) do

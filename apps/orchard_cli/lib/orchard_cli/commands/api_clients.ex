@@ -5,6 +5,7 @@ defmodule OrchardCLI.Commands.ApiClients do
 
   alias Orchard.Governance
   alias Orchard.Governance.ApiClientProvisioning
+  alias OrchardCLI.RepoRuntime
 
   @output_headers ~w(
     organization
@@ -249,13 +250,25 @@ defmodule OrchardCLI.Commands.ApiClients do
   end
 
   defp execute_bulk(:dry_run, rows, csv, _output_path, opts) do
+    RepoRuntime.run(fn -> do_execute_bulk(:dry_run, rows, csv, nil, opts) end,
+      json: Keyword.get(opts, :json, false)
+    )
+  end
+
+  defp execute_bulk(:apply, rows, csv, output_path, opts) do
+    RepoRuntime.run(fn -> do_execute_bulk(:apply, rows, csv, output_path, opts) end,
+      json: Keyword.get(opts, :json, false)
+    )
+  end
+
+  defp do_execute_bulk(:dry_run, rows, csv, _output_path, opts) do
     case governance().bulk_validate_api_clients(rows, provisioning_opts(csv, opts)) do
       {:ok, plan} -> {:ok, render_dry_run(plan, Keyword.get(opts, :json, false))}
       {:error, errors} -> {:error, format_validation_errors(errors), 1}
     end
   end
 
-  defp execute_bulk(:apply, rows, csv, output_path, opts) do
+  defp do_execute_bulk(:apply, rows, csv, output_path, opts) do
     case governance().bulk_apply_api_clients(rows, provisioning_opts(csv, opts)) do
       {:ok, result} ->
         case write_output(output_path, result.output_rows) do

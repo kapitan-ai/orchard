@@ -149,12 +149,15 @@ defmodule OrchardCLI.Commands.RequestsTest do
       assert details =~ "not_a_scheduler_code"
     end
 
-    test "degrades to scheduler explanation not found when the controller repo is unavailable" do
+    test "reports database unavailable when the controller repo is unavailable" do
       request = persist_valid_explanation!("resp_cli_repo_unavailable_explanation")
 
       with_repo_unavailable(fn ->
         assert {:error, output, 1} = RequestsCmd.run(["inspect", request.public_id, "--json"])
-        assert Jason.decode!(output)["code"] == "scheduler_explanation_not_found"
+        decoded = Jason.decode!(output)
+
+        assert decoded["code"] == "database_unavailable"
+        assert decoded["message"] =~ "database is unavailable"
       end)
     end
   end
