@@ -3,6 +3,7 @@ defmodule OrchardCLI.Commands.Requests do
 
   alias Orchard.API.Ops.SchedulerExplanationPresenter
   alias Orchard.Requests
+  alias OrchardCLI.RepoRuntime
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
   def run(args) do
@@ -26,13 +27,18 @@ defmodule OrchardCLI.Commands.Requests do
   end
 
   defp inspect_request(%{request_id: request_id, json?: json?}) do
-    with {:ok, request} <- guarded_fetch_request(request_id),
-         {:ok, explanation} <- SchedulerExplanationPresenter.show(request) do
-      {:ok, render_explanation(explanation, json?)}
-    else
-      {:error, :scheduler_explanation_not_found} -> explanation_not_found(json?)
-      {:error, reason} -> invalid_explanation(reason, json?)
-    end
+    RepoRuntime.run(
+      fn ->
+        with {:ok, request} <- fetch_request(request_id),
+             {:ok, explanation} <- SchedulerExplanationPresenter.show(request) do
+          {:ok, render_explanation(explanation, json?)}
+        else
+          {:error, :scheduler_explanation_not_found} -> explanation_not_found(json?)
+          {:error, reason} -> invalid_explanation(reason, json?)
+        end
+      end,
+      json: json?
+    )
   end
 
   defp parse_inspect_args(args) do
@@ -52,23 +58,11 @@ defmodule OrchardCLI.Commands.Requests do
     end
   end
 
-  defp guarded_fetch_request(request_id) do
-    if repo_available?() do
-      case Requests.get_request_by_public_id(request_id) do
-        nil -> {:error, :scheduler_explanation_not_found}
-        request -> {:ok, request}
-      end
-    else
-      {:error, :scheduler_explanation_not_found}
+  defp fetch_request(request_id) do
+    case Requests.get_request_by_public_id(request_id) do
+      nil -> {:error, :scheduler_explanation_not_found}
+      request -> {:ok, request}
     end
-  rescue
-    _exception in [DBConnection.ConnectionError, DBConnection.OwnershipError, Postgrex.Error] ->
-      {:error, :scheduler_explanation_not_found}
-  end
-
-  defp repo_available? do
-    pid = Process.whereis(Orchard.Repo)
-    is_pid(pid) and Process.alive?(pid)
   end
 
   defp render_explanation(explanation, true), do: encode_json(explanation)
