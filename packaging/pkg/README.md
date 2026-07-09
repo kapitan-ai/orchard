@@ -272,6 +272,14 @@ use the same database configuration as the controller:
 
 Format: plain `KEY=value` lines. Comments (`#`) and blank lines are fine.
 
+DB-backed CLI commands (for example `orchardctl nodes`, `models`, `requests`,
+`cluster status`, `cluster init`, `tenants`, `api-keys`, and `api-clients`)
+start the controller Repo on demand, so they must run as root (`sudo`) to read
+`controller.env` and its `DATABASE_URL`. When the database is unreachable or
+`DATABASE_URL` is unset, these commands fail with a `database_unavailable`
+error and remediation guidance rather than returning empty or "not found"
+output.
+
 Primary use case: operational rollback of the worker backend without editing
 launchd plists or global environment.
 
@@ -423,6 +431,7 @@ not overwritten during package upgrades.
 | Controller crash-loops with `DATABASE_URL is missing` | `controller.env` absent or ignored | Create the file with correct ownership/permissions |
 | Readiness reports `postgres_reachable: false` | Wrong DB URL, DB not running, or DB does not exist | Verify with `psql "$DATABASE_URL" -c 'select 1'` |
 | Readiness reports `migrations_current: false` (with DB reachable) | Migrations not run | Run `sudo orchardctl migrate` |
+| DB-backed CLI command fails with `database_unavailable` | Command run without `sudo`, `DATABASE_URL` unset, DB unreachable, or migrations pending | Re-run with `sudo`; verify `DATABASE_URL` in `controller.env` and `psql "$DATABASE_URL" -c 'select 1'`; run `sudo orchardctl migrate` if pending |
 | `WARNING: ignoring env file` in controller.log | File not root-owned or has group/world permission bits | `sudo chown root:wheel <file> && sudo chmod 600 <file>` |
 
 ## Upgrade Preflight
