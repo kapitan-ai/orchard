@@ -3,6 +3,49 @@ defmodule OrchardCLI.BuildPkgScriptTest do
 
   @script_path Path.expand("../../../../scripts/build-pkg.sh", __DIR__)
   @pkg_readme Path.expand("../../../../packaging/pkg/README.md", __DIR__)
+  @lifecycle_contract Path.expand("../../../../packaging/service-lifecycle.json", __DIR__)
+  @app_builder Path.expand("../../../../scripts/build-app.sh", __DIR__)
+  @pkg_postinstall Path.expand("../../../../packaging/pkg/scripts/postinstall", __DIR__)
+  @repo_root Path.expand("../../../..", __DIR__)
+
+  test "app and PKG packaging share lifecycle roles paths plists and wrappers" do
+    contract = @lifecycle_contract |> File.read!() |> Jason.decode!()
+    pkg_script = File.read!(@script_path)
+    app_builder = File.read!(@app_builder)
+    pkg_postinstall = File.read!(@pkg_postinstall)
+
+    pkg_path_links =
+      section_between(
+        pkg_postinstall,
+        "# 4. Symlink wrappers into PATH (/usr/local/bin)",
+        "# 5. Install role-selected launchd plists"
+      )
+
+    assert Map.keys(contract["roles"]) |> Enum.sort() == ["all", "controller", "node-agent"]
+
+    assert pkg_script =~
+             ~s(PAYLOAD_ROOT_REL="#{String.trim_leading(contract["support_root"], "/")}")
+
+    assert app_builder =~ "packaging/service-lifecycle.json"
+
+    contract["roles"]
+    |> Map.values()
+    |> List.flatten()
+    |> Enum.uniq()
+    |> Enum.each(fn label ->
+      assert pkg_script =~ ~s("#{label}.plist")
+      assert File.regular?(Path.join(@repo_root, "packaging/launchd/#{label}.plist"))
+    end)
+
+    Enum.each(contract["command_links"], fn {command, installed_path} ->
+      assert pkg_script =~ ~s("#{command}")
+      assert File.regular?(Path.join(@repo_root, "packaging/pkg/bin/#{command}"))
+      assert installed_path == "/usr/local/bin/#{command}"
+      assert pkg_path_links =~ command
+    end)
+
+    refute Map.has_key?(contract["command_links"], "orchard-managed-postgres")
+  end
 
   test "build channel allowlist is explicit and rejects deprecated guard" do
     script = File.read!(@script_path)

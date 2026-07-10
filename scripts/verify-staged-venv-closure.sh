@@ -135,6 +135,8 @@ def product_roots() -> list[pathlib.Path]:
             roots.append(candidate)
     if root.name == "Orchard" and root.parent.name == "Application Support" and root.parent.parent.name == "Library":
         roots.append(root)
+    if all((root / component).is_dir() for component in ("releases", "native", "share")):
+        roots.append(root)
     return roots
 
 

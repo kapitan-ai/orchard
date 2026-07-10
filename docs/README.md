@@ -51,8 +51,8 @@ large spec sections.
   build/operator runbook.
 - [`../packaging/container/postgres/README.md`](../packaging/container/postgres/README.md)
   — managed Postgres current-build status and guard behavior.
-- [`../packaging/dmg/README.md`](../packaging/dmg/README.md) — reserved future
-  DMG media notes.
+- [`../packaging/dmg/README.md`](../packaging/dmg/README.md) — `Orchard.app` DMG
+  assembly, app-owned service lifecycle, signing, and Amore handoff runbook.
 
 ### I need to make a durable decision
 

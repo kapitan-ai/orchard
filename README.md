@@ -97,7 +97,7 @@ boundaries.
 | Inference | MLX-LM runtime adapter managed by the node agent |
 | Runtime endpoint transport | Runtime Endpoint Interface (first-party BEAM adapter; gRPC compatibility adapter) |
 | APIs | Phoenix/Plug with SSE streaming |
-| Packaging | PKG + launchd (DMG reserved for future work) |
+| Packaging | `Orchard.app` DMG (app-owned service lifecycle) + PKG + launchd |
 | CLI | `orchardctl` |
 | Toolchain | mise-pinned Erlang/OTP, Elixir, Python, uv, Node.js, npm, and OpenSpec |
 

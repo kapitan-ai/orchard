@@ -92,7 +92,7 @@ Core design rules from `SPEC.md`:
 | `native/orchard_tokenizer/` | Python helper for prompt rendering, exact token counts, and safe-tokenization support. |
 | `native/orchard_worker_mlx/` | Python MLX worker runtime package and node-agent ↔ worker proto. |
 | `proto/cluster/v1/` | Current gRPC compatibility transport and future-adapter proto source for Controller ↔ node-agent runtime operations. |
-| `packaging/` | PKG, launchd, reserved DMG/container assets, signing/build runbooks. |
+| `packaging/` | `Orchard.app` DMG with app-owned service lifecycle, PKG, launchd, signing/build runbooks. |
 | `docs/` | Contributor-facing orientation, tooling, process, design, and durable decisions subordinate to `SPEC.md`. |
 
 Use [`glossary/CONTEXT.md`](glossary/CONTEXT.md) as the shared vocabulary glossary.

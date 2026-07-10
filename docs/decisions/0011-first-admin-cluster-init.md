@@ -24,7 +24,7 @@ Fixed contract points:
 * One-time secret output: required operator-chosen `--output` path with preflight per the §7.4.4 pattern; only the token hash and prefix persist.
 * Leader-only write gate: same boundary as node-admission and lifecycle CLI commands, so the command is Active/Standby-safe from day one.
 * No default token expiry: rotation is encouraged through post-setup output guidance (provision named admin API Clients, then revoke the bootstrap credential) rather than a forced expiry that could brick the admin path on an appliance. This follows the ADR 0002 precedent of encouraging, not requiring, expiry.
-* Credential-only scope: TLS material remains provisioned separately (`orchardctl tls init` local-CA helper or operator-provided material per §11.4), and this slice ships CLI-only with the §11.3 bootstrap UI deferred.
+* Credential-only scope: TLS material remains provisioned separately (`orchardctl tls init` local-CA helper or operator-provided material per §11.4), and this slice ships CLI-only with any first-admin bootstrap UI deferred.
 
 Alternatives rejected:
 
