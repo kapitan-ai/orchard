@@ -16,6 +16,7 @@ MOUNT_POINT=""
 ATTACHED_DEVICE=""
 MOUNTED=false
 SUCCEEDED=false
+ARTIFACT_VERIFIED=false
 
 usage() {
   printf 'Usage: %s (--ad-hoc | --identity IDENTITY --notary-profile PROFILE) --input APP --output DMG [--publish-draft --release-notes-file PATH] [--dry-run]\n' "$0"
@@ -52,7 +53,8 @@ cleanup() {
   if [[ -n "$TMP_ROOT" && -d "$TMP_ROOT" ]]; then
     rm -rf "$TMP_ROOT"
   fi
-  if [[ "$SUCCEEDED" != "true" && "$detach_failed" != "true" && -n "$OUTPUT" ]]; then
+  if [[ "$SUCCEEDED" != "true" && "$ARTIFACT_VERIFIED" != "true" && \
+    "$detach_failed" != "true" && -n "$OUTPUT" ]]; then
     rm -f \
       "$OUTPUT" \
       "$OUTPUT.sha256" \
@@ -264,6 +266,7 @@ if ! detach_image; then
   printf 'build-dmg: failed to detach mounted DMG device: %s\n' "$ATTACHED_DEVICE" >&2
   exit 1
 fi
+ARTIFACT_VERIFIED=true
 if [[ "$VERIFY_MODE" == "developer-id" ]]; then
   xcrun stapler validate "$OUTPUT"
 fi

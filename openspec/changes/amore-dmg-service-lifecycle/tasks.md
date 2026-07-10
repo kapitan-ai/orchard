@@ -44,5 +44,5 @@
 - [x] 6.3 Run `swift test --package-path packaging/app`, `scripts/test-app-service-lifecycle.sh`, the app-assembly/signing/DMG integration test, and existing PKG packaging tests.
 - [x] 6.4 Run the applicable full Elixir, native, formatting, linting, typing, test, and coverage workflows from `AGENTS.md`.
 - [x] 6.5 Verify the local built app with `plutil` and `codesign`; verify the DMG with `hdiutil` and mounted-app checks; run `spctl` and stapler validation only against a Developer ID signed and notarized artifact.
-- [ ] 6.6 Run independent design and implementation review plus the configured automated validation pipeline until clean.
-- [ ] 6.7 Commit, push, open a review-ready pull request, and record the exact root-authorization condition for the later real two-Mac install plus MLX generation smoke.
+- [x] 6.6 Run independent design and implementation review plus the configured automated validation pipeline until clean.
+- [x] 6.7 Commit, push, open a review-ready pull request, and record the exact root-authorization condition for the later real two-Mac install plus MLX generation smoke.

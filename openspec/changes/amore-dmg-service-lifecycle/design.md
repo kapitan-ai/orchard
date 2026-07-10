@@ -140,7 +140,8 @@ The local Amore smoke verifies actual DMG assembly and mounting when Amore is in
 
 PKG remains supported and unchanged as an operator-driven, offline, and compatibility installer.
 The app and PKG share source payload inputs and contract tests, not lifecycle implementation, until app behavior proves parity.
-The real two-Mac PKG or app install plus MLX generation smoke becomes eligible only after the app path passes sandboxed lifecycle, rollback, signature preservation, and mounted-DMG validation and a human authorizes root installation on both Macs.
+The real two-Mac app install plus MLX generation smoke becomes eligible only after the app path passes sandboxed lifecycle, rollback, signature preservation, and mounted-DMG validation, an approved Developer ID identity and notary profile produce a signed, notarized, stapled DMG that passes Gatekeeper, and Najib explicitly authorizes sudo or Touch ID root installation on both Macs.
+At that point, the smoke SHALL exercise app-owned install, update, and uninstall parity before MLX generation; the parallel PKG smoke remains separately available under the same explicit root-authorization gate.
 The documented system invocation is `sudo /Applications/Orchard.app/Contents/Helpers/orchard-service <operation>` until a separately approved native authorization UI or privileged-helper protocol exists.
 
 ## Durable Decision

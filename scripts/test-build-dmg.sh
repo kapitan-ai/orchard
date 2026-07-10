@@ -12,6 +12,7 @@ DMG="$TMP_ROOT/Orchard.dmg"
 RELEASE_NOTES="$TMP_ROOT/release notes.md"
 REAL_AMORE="${ORCHARD_TEST_REAL_AMORE:-0}"
 REAL_HDIUTIL="$(command -v hdiutil)"
+REAL_SHASUM="$(command -v shasum)"
 HDITOOL_DIR="$TMP_ROOT/tools"
 mkdir -p "$HDITOOL_DIR"
 cat > "$HDITOOL_DIR/hdiutil" <<'HDITOOL'
@@ -29,6 +30,16 @@ fi
 exec "$ORCHARD_TEST_REAL_HDIUTIL" "$@"
 HDITOOL
 chmod +x "$HDITOOL_DIR/hdiutil"
+cat > "$HDITOOL_DIR/shasum" <<'SHATOOL'
+#!/bin/bash
+set -euo pipefail
+last_argument="${!#:-}"
+if [[ "${ORCHARD_TEST_FAIL_SHA:-0}" == "1" && "$last_argument" == *.dmg ]]; then
+  exit 97
+fi
+exec "$ORCHARD_TEST_REAL_SHASUM" "$@"
+SHATOOL
+chmod +x "$HDITOOL_DIR/shasum"
 mkdir -p \
   "$PAYLOAD/releases" \
   "$PAYLOAD/native" \
@@ -121,6 +132,7 @@ fi
 
 PATH="$HDITOOL_DIR:$PATH" \
 ORCHARD_TEST_REAL_HDIUTIL="$REAL_HDIUTIL" \
+ORCHARD_TEST_REAL_SHASUM="$REAL_SHASUM" \
 ORCHARD_AMORE_BIN="$FAKE_AMORE" \
   "$REPO_ROOT/scripts/build-dmg.sh" \
   --ad-hoc \
@@ -187,6 +199,24 @@ if [[ "$REAL_AMORE" != "1" ]]; then
     --input "$APP" \
     --output "$TMP_ROOT/Quoted.dmg" >/dev/null
   test -f "$TMP_ROOT/Quoted.dmg"
+
+  if PATH="$HDITOOL_DIR:$PATH" \
+    ORCHARD_TEST_REAL_HDIUTIL="$REAL_HDIUTIL" \
+    ORCHARD_TEST_REAL_SHASUM="$REAL_SHASUM" \
+    ORCHARD_TEST_FAIL_SHA=1 \
+    ORCHARD_AMORE_BIN="$FAKE_AMORE" \
+    "$REPO_ROOT/scripts/build-dmg.sh" \
+    --ad-hoc \
+    --release-notes-file "$RELEASE_NOTES" \
+    --input "$APP" \
+    --output "$TMP_ROOT/FailedAfterVerify.dmg" \
+    > "$TMP_ROOT/failed-after-verify.out" 2>&1; then
+    printf 'test-build-dmg: post-verification failure unexpectedly passed\n' >&2
+    exit 1
+  fi
+  test -f "$TMP_ROOT/FailedAfterVerify.dmg"
+  test -f "$TMP_ROOT/FailedAfterVerify.dmg.before-signing-manifest.json"
+  test -f "$TMP_ROOT/FailedAfterVerify.dmg.after-signing-manifest.json"
 fi
 
 printf 'DMG handoff integration test passed\n'
