@@ -1316,7 +1316,7 @@ defmodule OrchardCLI.Commands.License do
       --support-root PATH   Support root directory
                             (default precedence: --support-root, then
                              $ORCHARD_SUPPORT_ROOT, else current environment licensing config)
-      --json                Print a stable support/Jamf automation JSON payload
+      --json                Print a stable support/automation JSON payload
     """
     |> String.trim()
   end

@@ -3,7 +3,7 @@
 ### Trust boundary
 
 First-admin minting runs under the ADR 0006 local controller-runtime authority boundary: local OS access to `orchardctl` on the controller host is operator context, no bearer token exists yet, and the leader-only write gate plus cluster-scoped audit apply exactly as they do for node-admission commands.
-A network bootstrap endpoint was rejected (unauthenticated mint surface, fresh-install race window, reset procedure that needs local disk authority anyway); installer seeding was rejected (external Postgres is configured after install, §11.4 forbids installer-generated trust material, unattended MDM installs would scatter secrets); environment seeding was rejected (long-lived plaintext in launchd env files).
+A network bootstrap endpoint was rejected (unauthenticated mint surface, fresh-install race window, reset procedure that needs local disk authority anyway); installer seeding was rejected (external Postgres is configured after install, §11.4 forbids installer-generated trust material, unattended installs would scatter secrets); environment seeding was rejected (long-lived plaintext in launchd env files).
 Prior art: kubeadm local `admin.conf`, k3s server-local token, Nomad one-shot `acl bootstrap`, Vault init-then-revoke-root guidance.
 
 ### One-shot guard race
