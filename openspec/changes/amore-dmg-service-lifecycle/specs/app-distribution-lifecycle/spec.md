@@ -9,6 +9,16 @@ Orchard's interactive DMG in `SPEC.md` §11.3 SHALL contain a real signed `Orcha
 - **WHEN** an operator mounts an Orchard DMG
 - **THEN** the mounted image contains a verifiable `Orchard.app` whose embedded service payload can be inspected without requiring the PKG artifact
 
+### Requirement: Release Metadata Is Verifiable Without Rewriting The DMG
+
+The Orchard release distribution set SHALL place release notes, a SHA-256 checksum, and before/after app-signing manifests alongside the Amore-produced DMG.
+Orchard SHALL NOT rewrite the DMG after Amore has assembled or notarized it to inject metadata.
+
+#### Scenario: Operator receives a release distribution set
+
+- **WHEN** Orchard marks a DMG distribution set ready
+- **THEN** the set contains the DMG, release notes, its SHA-256 checksum, and the app-signing manifests used to prove nested signature preservation
+
 ### Requirement: App Owns A Root-Authorized Service Lifecycle
 
 `Orchard.app` SHALL own a lifecycle interface for role-aware install, update, uninstall, and status operations, and system-root mutation SHALL require effective root privileges with effective user id 0.

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "support_root": "/Library/Application Support/Orchard",
+  "launch_daemon_directory": "/Library/LaunchDaemons",
+  "package_receipt": "com.orchard.pkg",
+  "sandbox_receipt_directory": "/var/db/orchard-pkg-receipts",
+  "roles": {
+    "all": [
+      "com.orchard.controller",
+      "com.orchard.node-agent"
+    ],
+    "controller": [
+      "com.orchard.controller"
+    ],
+    "node-agent": [
+      "com.orchard.node-agent"
+    ]
+  },
+  "command_links": {
+    "orchard-controller": "/usr/local/bin/orchard-controller",
+    "orchard-node-agent": "/usr/local/bin/orchard-node-agent",
+    "orchardctl": "/usr/local/bin/orchardctl"
+  },
+  "app_owned_directories": [
+    "bin",
+    "native",
+    "releases",
+    "share",
+    "support/openssl"
+  ],
+  "retained_directories": [
+    "config",
+    "data",
+    "models",
+    "bundles",
+    "logs",
+    "support"
+  ],
+  "app_owned_support_entries": [
+    ".app-install-complete",
+    ".app-launchd-state.json",
+    ".app-ownership-intent.json",
+    ".app-transaction",
+    ".install-role",
+    ".install-role.request"
+  ]
+}

@@ -1,5 +1,10 @@
 # PKG Packaging and Operator Runbook
 
+The PKG remains a supported, separate ownership path for root-authorized, offline, and manual deployment while the Orchard.app DMG path proves lifecycle parity.
+Do not layer app-owned service mutations over a host with the `com.orchard.pkg` receipt.
+The app lifecycle refuses that takeover and keeps the PKG's role selection, launchd labels, wrapper sources, and installed-path policy aligned through `packaging/service-lifecycle.json` and contract tests.
+See `packaging/dmg/README.md` for the app-owned path.
+
 Current packaged installs use a universal PKG payload with role selection for
 `all`, `controller`, and `node-agent` hosts. Controller-bearing installs require
 an **external PostgreSQL** server today; managed Postgres is not available in

@@ -261,6 +261,24 @@ Rules:
   `docs/tooling.md`, this guide, and the relevant project config.
 - Native helper changes SHOULD include tests for both protocol correctness and failure handling.
 
+### Swift/macOS app workflow
+
+For code under `packaging/app/`, use the host Xcode Command Line Tools and Swift toolchain required by the package manifest.
+Run these from the umbrella root:
+
+1. `xcrun swift-format format --in-place --recursive packaging/app/Sources packaging/app/Tests`
+2. `xcrun swift-format lint --recursive packaging/app/Sources packaging/app/Tests`
+3. `swift build --package-path packaging/app`
+4. `swift test --package-path packaging/app`
+5. `swift test --package-path packaging/app --enable-code-coverage`
+6. `scripts/test-app-service-lifecycle.sh`
+7. `scripts/test-build-app.sh`
+8. `scripts/test-app-signing.sh`
+9. `scripts/test-build-dmg.sh`
+
+Run `ORCHARD_TEST_REAL_AMORE=1 scripts/test-build-dmg.sh` only for the credential-free local Amore assembly smoke.
+Developer ID signing, notarization, stapling, publication, and system-root lifecycle mutations remain explicit credential or authorization gates.
+
 ### Coverage expectations
 
 - Run coverage for the changed surface before handoff.

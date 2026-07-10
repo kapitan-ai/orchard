@@ -3695,14 +3695,15 @@ Required launchd properties:
 * restart throttling enabled
 * dedicated non-root service user preferred
 
-### 11.3 DMG contents
+### 11.3 DMG And Release Distribution Contents
 
 DMG SHALL include:
 
 * `Orchard.app` as the primary interactive install artifact
 * `Orchard.pkg` optional as a compatibility or offline/manual artifact
-* release notes
-* checksums/signature metadata
+
+The release distribution set SHALL place release notes, a DMG SHA-256 checksum, and the before/after app-signing manifests alongside the DMG.
+These sidecars remain outside the DMG because Amore owns final image assembly and notarization, and changing the image afterward would invalidate that outer trust boundary.
 
 The app bundle SHALL be verified before DMG assembly.
 The mounted DMG SHALL be verified after assembly, and nested code signatures and entitlement digests SHALL match the verified input app.

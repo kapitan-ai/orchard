@@ -98,6 +98,24 @@ mise exec -- uv run --directory native/orchard_worker_mlx pytest
 mise exec -- uv run --directory native/orchard_worker_mlx pytest --cov
 ```
 
+Swift and macOS app validation use the host Xcode Command Line Tools because Apple platform signing and packaging tools are outside mise:
+
+```bash
+xcrun swift-format format --in-place --recursive packaging/app/Sources packaging/app/Tests
+xcrun swift-format lint --recursive packaging/app/Sources packaging/app/Tests
+swift build --package-path packaging/app
+swift test --package-path packaging/app
+swift test --package-path packaging/app --enable-code-coverage
+scripts/test-app-service-lifecycle.sh
+scripts/test-build-app.sh
+scripts/test-app-signing.sh
+scripts/test-build-dmg.sh
+```
+
+The last command uses the deterministic local Amore substitute by default.
+Set `ORCHARD_TEST_REAL_AMORE=1` only for the credential-free local Amore DMG assembly smoke.
+Developer ID signing, notarization, stapling, draft publication, and system-root lifecycle changes require their separately documented credentials or interactive authorization.
+
 Static typing for native packages should be run through package-pinned dev
 dependencies once configured. Do not make a floating `uvx ty` invocation a
 required gate; add `ty` to the relevant `pyproject.toml` first, then run it as
