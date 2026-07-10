@@ -266,10 +266,10 @@ if ! detach_image; then
   printf 'build-dmg: failed to detach mounted DMG device: %s\n' "$ATTACHED_DEVICE" >&2
   exit 1
 fi
-ARTIFACT_VERIFIED=true
 if [[ "$VERIFY_MODE" == "developer-id" ]]; then
   xcrun stapler validate "$OUTPUT"
 fi
+ARTIFACT_VERIFIED=true
 DMG_SHA256="$(shasum -a 256 "$OUTPUT" | awk '{print $1}')"
 printf '%s  %s\n' "$DMG_SHA256" "$(basename "$OUTPUT")" > "$OUTPUT.sha256"
 if [[ -f "$RELEASE_NOTES_FILE" ]]; then
