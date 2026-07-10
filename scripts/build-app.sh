@@ -75,7 +75,7 @@ while IFS= read -r payload_symlink; do
   link_target="$(readlink "$payload_symlink")"
   if [[ "$link_target" == /* ]]; then
     printf 'build-app: payload symlink target must be relative: %s\n' \
-      "${payload_symlink#$PAYLOAD_ROOT/}" >&2
+      "${payload_symlink#"$PAYLOAD_ROOT"/}" >&2
     exit 65
   fi
   resolved_target="$(realpath "$payload_symlink" 2>/dev/null || true)"
@@ -83,7 +83,7 @@ while IFS= read -r payload_symlink; do
     "$PAYLOAD_ROOT_CANON"/*) ;;
     *)
       printf 'build-app: payload symlink escapes payload: %s\n' \
-        "${payload_symlink#$PAYLOAD_ROOT/}" >&2
+        "${payload_symlink#"$PAYLOAD_ROOT"/}" >&2
       exit 65
       ;;
   esac
@@ -128,7 +128,7 @@ ditto --norsrc --noextattr \
 SYMLINK_RECORDS="$(
   while IFS= read -r -d '' symlink; do
     jq -cn \
-      --arg path "${symlink#$CONTENTS/Resources/payload/}" \
+      --arg path "${symlink#"$CONTENTS"/Resources/payload/}" \
       --arg target "$(readlink "$symlink")" \
       '{path:$path,target:$target}'
   done < <(find -P "$CONTENTS/Resources/payload" -type l -print0) |

@@ -85,12 +85,12 @@ while IFS= read -r -d '' symlink; do
   case "$symlink" in
     "$PAYLOAD"/*)
       jq -cn \
-        --arg path "${symlink#$PAYLOAD/}" \
+        --arg path "${symlink#"$PAYLOAD"/}" \
         --arg target "$(readlink "$symlink")" \
         '{path:$path,target:$target}' >> "$ACTUAL_SYMLINKS"
       ;;
     *)
-      printf 'verify-app-signing: unexpected app symlink: %s\n' "${symlink#$APP/}" >&2
+      printf 'verify-app-signing: unexpected app symlink: %s\n' "${symlink#"$APP"/}" >&2
       exit 1
       ;;
   esac
@@ -203,7 +203,7 @@ record_path() {
 
 while IFS= read -r path; do
   [[ -n "$path" ]] || continue
-  record_path "$path" "${path#$APP/}" "$(entitlements_class_for "$path")"
+  record_path "$path" "${path#"$APP"/}" "$(entitlements_class_for "$path")"
 done < "$MACHO_LIST"
 
 record_path "$APP" "." "default"
