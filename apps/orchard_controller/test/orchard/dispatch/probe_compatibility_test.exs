@@ -654,6 +654,28 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
     end
   end
 
+  describe "authenticated observation rejection" do
+    test "aborts dispatch without recording a transport failure", ctx do
+      insert_target_node!(ctx.schedule.runtime_client_target)
+      configure_stub(%{status: {:error, :authenticated_observation_rejected}})
+
+      assert {:error, {:dispatch_failed, :authenticated_observation_rejected}} =
+               RequestDispatcher.dispatch(ctx.schedule, ctx.execute, ctx.model_load,
+                 client_impl: @stub_client
+               )
+
+      refute_received {:ensure_model_loaded_called, _request}
+
+      unchanged =
+        Repo.get_by!(Node,
+          advertise_addr: Keyword.fetch!(ctx.schedule.runtime_client_target, :host),
+          rpc_port: Keyword.fetch!(ctx.schedule.runtime_client_target, :port)
+        )
+
+      assert unchanged.health == :healthy
+    end
+  end
+
   describe "Sentry cancellation enrichment" do
     test "cancellation calls runtime endpoint cancel with opts", ctx do
       configure_stub(%{execute: :accepted_until_cancel})

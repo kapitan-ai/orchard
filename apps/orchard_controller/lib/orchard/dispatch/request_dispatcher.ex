@@ -418,6 +418,9 @@ defmodule Orchard.Dispatch.RequestDispatcher do
       {:ok, response} ->
         resolve_probe_status(response, target, model_load_request, on_node_resolved, metrics)
 
+      {:error, :authenticated_observation_rejected} ->
+        {:error, :authenticated_observation_rejected, metrics}
+
       {:error, reason} ->
         mark_transport_failure(target, reason)
         {:ok, model_load_request, metrics}
