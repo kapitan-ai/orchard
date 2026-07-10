@@ -458,9 +458,7 @@ defmodule Orchard.Scheduler.MultiNode do
          |> maybe_put_model_placement_capacity(
            model_placement_capacity_for(observation, request.model_ref, loaded_model?)
          )
-         |> maybe_put_prefix_cache_status(
-           prefix_cache_status_for(observation, request.model_ref)
-         )
+         |> maybe_put_prefix_cache_status(prefix_cache_status_for(observation, request.model_ref))
          |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))}
     end
   end

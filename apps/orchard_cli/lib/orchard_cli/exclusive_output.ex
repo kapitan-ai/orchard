@@ -27,8 +27,7 @@ defmodule OrchardCLI.ExclusiveOutput do
     path = Path.expand(path)
     parent = Path.dirname(path)
 
-    with :ok <- ensure_private_parent(parent),
-         {:ok, parent_stat} <- validate_parent_directory(parent),
+    with {:ok, parent_stat} <- validate_parent_directory(parent),
          {:error, :enoent} <- File.lstat(path) do
       reserve_private_inode(parent, parent_stat.uid, path)
     else
@@ -138,23 +137,6 @@ defmodule OrchardCLI.ExclusiveOutput do
 
       {:error, reason} ->
         {:error, reason}
-    end
-  end
-
-  defp ensure_private_parent(parent) do
-    case File.lstat(parent) do
-      {:ok, _stat} -> :ok
-      {:error, :enoent} -> create_private_parent(parent)
-      {:error, reason} -> {:error, reason}
-    end
-  end
-
-  defp create_private_parent(parent) do
-    grandparent = Path.dirname(parent)
-
-    with :ok <- ensure_private_parent(grandparent),
-         :ok <- File.mkdir(parent) do
-      File.chmod(parent, @directory_mode)
     end
   end
 

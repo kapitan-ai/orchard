@@ -269,7 +269,7 @@ defmodule Orchard.Inference do
       Enum.any?(configured_runtime_endpoint_targets(), fn configured ->
         configured.transport == normalized.transport and
           configured.address == normalized.address and
-          configured.node_id == normalized.node_id
+          (is_nil(configured.node_id) or configured.node_id == normalized.node_id)
       end)
   end
 

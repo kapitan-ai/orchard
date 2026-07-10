@@ -144,15 +144,32 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
   end
 
   defp confirm_published_enrollment(output, published, enrollment_id) do
-    case NodeEnrollments.mark_issued(enrollment_id,
-           actor_id: "local-orchardctl",
-           actor_type: "operator"
-         ) do
+    case mark_published_issued(enrollment_id) do
       {:ok, _issued} ->
         publication_success(published.path, enrollment_id)
 
       {:error, _reason} ->
         reconcile_ambiguous_confirmation(output, published, enrollment_id)
+    end
+  end
+
+  defp mark_published_issued(enrollment_id) do
+    case publication_confirmation_checkpoint() do
+      :ok ->
+        NodeEnrollments.mark_issued(enrollment_id,
+          actor_id: "local-orchardctl",
+          actor_type: "operator"
+        )
+
+      {:error, _reason} = error ->
+        error
+    end
+  end
+
+  defp publication_confirmation_checkpoint do
+    case Application.get_env(:orchard_cli, :node_enrollment_publication_fault_injector) do
+      injector when is_function(injector, 1) -> injector.(:before_mark_issued)
+      _other -> :ok
     end
   end
 

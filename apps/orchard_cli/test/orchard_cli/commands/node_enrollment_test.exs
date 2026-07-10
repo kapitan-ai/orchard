@@ -30,6 +30,45 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest.PendingObservationOutput do
   def release(reservation), do: ExclusiveOutput.release(reservation)
 end
 
+defmodule OrchardCLI.Commands.NodeEnrollmentTest.CleanupFailureOutput do
+  @moduledoc false
+
+  @behaviour OrchardCLI.ExclusiveOutput
+
+  alias OrchardCLI.ExclusiveOutput
+
+  def reserve(path), do: ExclusiveOutput.reserve(path)
+  def publish(reservation, contents), do: ExclusiveOutput.publish(reservation, contents)
+  def release(_reservation), do: {:error, :simulated_cleanup_failure}
+end
+
+defmodule OrchardCLI.Commands.NodeEnrollmentTest.ConcurrentFailureOutput do
+  @moduledoc false
+
+  @behaviour OrchardCLI.ExclusiveOutput
+
+  alias Orchard.NodeEnrollments
+  alias Orchard.Nodes.Enrollment
+  alias Orchard.Repo
+  alias OrchardCLI.ExclusiveOutput
+
+  def reserve(path), do: ExclusiveOutput.reserve(path)
+
+  def publish(reservation, contents) do
+    with {:ok, published} <- ExclusiveOutput.publish(reservation, contents),
+         %Enrollment{id: enrollment_id} <- Repo.one!(Enrollment),
+         {:ok, _failed} <-
+           NodeEnrollments.mark_output_failed(enrollment_id,
+             actor_id: "concurrent-reconciler",
+             actor_type: "system"
+           ) do
+      {:ok, published}
+    end
+  end
+
+  def release(_reservation), do: {:error, :simulated_cleanup_failure}
+end
+
 defmodule OrchardCLI.Commands.NodeEnrollmentTest do
   use ExUnit.Case, async: false
 
@@ -43,6 +82,8 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
   alias Orchard.NodeTrust
   alias Orchard.NodeTrust.PKI
   alias Orchard.Repo
+  alias OrchardCLI.Commands.NodeEnrollmentTest.CleanupFailureOutput
+  alias OrchardCLI.Commands.NodeEnrollmentTest.ConcurrentFailureOutput
   alias OrchardCLI.Commands.NodeEnrollmentTest.PendingObservationOutput
   alias OrchardCLI.Commands.NodeEnrollmentTest.PublicationFailureOutput
   alias OrchardCLI.Commands.Nodes
@@ -65,6 +106,8 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
       control_plane: Application.get_env(:orchard_controller, :control_plane),
       node_trust: Application.get_env(:orchard_controller, :node_trust),
       output_impl: Application.get_env(:orchard_cli, :node_enrollment_output_impl),
+      publication_fault:
+        Application.get_env(:orchard_cli, :node_enrollment_publication_fault_injector),
       support_root: System.get_env("ORCHARD_SUPPORT_ROOT")
     }
 
@@ -74,6 +117,7 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
     Application.put_env(:orchard_controller, :control_plane, role: :single_controller)
     Application.put_env(:orchard_controller, :node_trust, root: trust_root)
     Application.delete_env(:orchard_cli, :node_enrollment_output_impl)
+    Application.delete_env(:orchard_cli, :node_enrollment_publication_fault_injector)
 
     on_exit(fn ->
       File.rm_rf!(root)
@@ -81,6 +125,12 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
       restore_app_env(:orchard_controller, :control_plane, previous.control_plane)
       restore_app_env(:orchard_controller, :node_trust, previous.node_trust)
       restore_app_env(:orchard_cli, :node_enrollment_output_impl, previous.output_impl)
+
+      restore_app_env(
+        :orchard_cli,
+        :node_enrollment_publication_fault_injector,
+        previous.publication_fault
+      )
     end)
 
     assert {:ok, trust} =
@@ -238,6 +288,54 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
     assert_no_enrollment_mutation()
   end
 
+  test "ambiguous confirmation keeps publication pending when cleanup cannot be proven", %{
+    root: root
+  } do
+    output_path = Path.join(root, "ambiguous-pending.json")
+    Application.put_env(:orchard_cli, :node_enrollment_output_impl, CleanupFailureOutput)
+    fail_publication_confirmation()
+
+    assert {:error, message, 1} =
+             Nodes.run(["enrollment", "create", "--output", output_path])
+
+    assert message =~ "remains non-redeemable pending reconciliation"
+    assert Repo.one!(Enrollment).state == :pending_publication
+    assert enrollment_audit_actions() == ["node_enrollment.publication_pending"]
+  end
+
+  test "ambiguous cleanup accepts a concurrent output_failed reconciliation", %{root: root} do
+    output_path = Path.join(root, "concurrently-failed.json")
+    Application.put_env(:orchard_cli, :node_enrollment_output_impl, ConcurrentFailureOutput)
+
+    assert {:error, message, 1} =
+             Nodes.run(["enrollment", "create", "--output", output_path])
+
+    assert message =~ "is output_failed"
+    assert Repo.one!(Enrollment).state == :output_failed
+
+    assert enrollment_audit_actions() == [
+             "node_enrollment.publication_pending",
+             "node_enrollment.output_failed"
+           ]
+  end
+
+  test "ambiguous confirmation marks output_failed only after successful cleanup", %{root: root} do
+    output_path = Path.join(root, "cleaned-before-failure.json")
+    fail_publication_confirmation()
+
+    assert {:error, message, 1} =
+             Nodes.run(["enrollment", "create", "--output", output_path])
+
+    assert message =~ "marked output_failed"
+    refute File.exists?(output_path)
+    assert Repo.one!(Enrollment).state == :output_failed
+
+    assert enrollment_audit_actions() == [
+             "node_enrollment.publication_pending",
+             "node_enrollment.output_failed"
+           ]
+  end
+
   test "OpenSpec task 2.3 marks a post-commit publication failure without exposing the token", %{
     root: root
   } do
@@ -275,6 +373,24 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
       refute inspect(audit.payload) =~ "orch_enr_"
       refute Map.has_key?(audit.payload, "token")
     end)
+  end
+
+  defp fail_publication_confirmation do
+    Application.put_env(
+      :orchard_cli,
+      :node_enrollment_publication_fault_injector,
+      fn :before_mark_issued -> {:error, :simulated_confirmation_failure} end
+    )
+  end
+
+  defp enrollment_audit_actions do
+    Repo.all(
+      from(audit in AuditLog,
+        where: like(audit.action, "node_enrollment.%"),
+        order_by: [asc: audit.id],
+        select: audit.action
+      )
+    )
   end
 
   defp configure_https_endpoint!(support_root) do

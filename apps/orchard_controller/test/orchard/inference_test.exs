@@ -227,6 +227,41 @@ defmodule Orchard.InferenceTest do
       assert [%Target{transport: :grpc_compat}] = Inference.runtime_endpoint_targets()
     end
 
+    test "static compatibility target permits observed identity enrichment only when unpinned" do
+      observed_node_id = "550e8400-e29b-41d4-a716-446655440000"
+
+      put_inference(
+        allow_static_runtime_target_fallback: true,
+        runtime_client_targets: [[host: "10.0.0.2", port: 50_062]]
+      )
+
+      assert Inference.static_runtime_target?(
+               Target.grpc_compat(%{
+                 host: "10.0.0.2",
+                 port: 50_062,
+                 node_id: observed_node_id
+               })
+             )
+
+      put_inference(
+        runtime_endpoint_targets: [
+          Target.grpc_compat(%{
+            host: "10.0.0.2",
+            port: 50_062,
+            node_id: "550e8400-e29b-41d4-a716-446655440001"
+          })
+        ]
+      )
+
+      refute Inference.static_runtime_target?(
+               Target.grpc_compat(%{
+                 host: "10.0.0.2",
+                 port: 50_062,
+                 node_id: observed_node_id
+               })
+             )
+    end
+
     test "defaults to gRPC compatibility targets from legacy runtime client config" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
 

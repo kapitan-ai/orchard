@@ -3030,11 +3030,17 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   defp put_multi_node_scheduler_config do
     inference =
       Application.fetch_env!(:orchard_controller, :inference)
-      |> Keyword.merge(
+
+    primary_target = Keyword.fetch!(inference, :runtime_client_target)
+
+    inference =
+      Keyword.merge(inference,
+        allow_static_runtime_target_fallback: true,
         runtime_client_targets: [
-          [host: "127.0.0.1", port: 50_071],
+          primary_target,
           [host: "127.0.0.2", port: 50_072]
         ],
+        runtime_endpoint_targets: [],
         scheduler_impl: Orchard.Inference.RequestOrchestratorTest.StubMultiNodeScheduler
       )
 
@@ -3052,10 +3058,14 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
   end
 
   defp put_runtime_endpoint_target_scheduler_config do
+    inference = Application.fetch_env!(:orchard_controller, :inference)
+    primary_target = Keyword.fetch!(inference, :runtime_client_target)
+
     inference =
-      Application.fetch_env!(:orchard_controller, :inference)
-      |> Keyword.merge(
-        runtime_client_targets: [[host: "127.0.0.1", port: 50_071]],
+      Keyword.merge(inference,
+        allow_static_runtime_target_fallback: true,
+        runtime_client_targets: [primary_target],
+        runtime_endpoint_targets: [],
         scheduler_impl:
           Orchard.Inference.RequestOrchestratorTest.StubRuntimeEndpointTargetScheduler
       )
