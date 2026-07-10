@@ -92,7 +92,8 @@ The chosen container runtime must be running before its restart policy can bring
 The first external-sites packaged cut supports one controller Mac and one or more node-agent Macs on a trusted private network or VPN.
 It uses operator-managed external PostgreSQL and BEAM Runtime Endpoint transport as the packaged multi-Mac happy path.
 gRPC remains available only as an explicit compatibility fallback.
-Managed Postgres, node admission/certificate bootstrap, and `orchardctl node join` remain out of scope for this cut.
+Managed Postgres remains out of scope for this cut.
+Secure Node Enrollment is available through a local controller-host bundle, `orchardctl node join`, explicit admission, and the certificate-backed gRPC compatibility path.
 
 Network prerequisites:
 
@@ -163,10 +164,8 @@ gRPC compatibility fallback:
 
 Explicit deferrals:
 
-- `orchardctl node join` remains a deferred M3 node lifecycle path.
-- Node admission, certificate bootstrap, and first-party mTLS between controller and node-agent Macs remain future work.
 - BEAM cookie provisioning is operator-managed in this phase and must produce a root-owned mode `0600` file.
-- The PKG does not generate admission bundles, node certificates, or join-time config bundles.
+- Production BEAM credential hardening remains future work and the shared BEAM cookie must not be treated as Node identity.
 - Managed Postgres is unavailable in this build.
 
 ## Install Role Selection
@@ -1233,13 +1232,12 @@ minting, `--client-name`, and `--json`. It is credential-only: TLS material and
 role/service setup remain separate, and `postinstall` never seeds admin
 credentials.
 
-`orchardctl node join` remains a deferred cluster-bootstrap CLI path and returns
-deferred status in this build. Role selection, env generation, service start,
-and `orchardctl status` are the supported path for node bring-up.
-
-The deferred node join path keeps node admission out of this build while services
-start with valid environment and TLS configuration rather than crash-looping with
-missing setup.
+`orchardctl nodes enrollment create --output PATH` creates an owner-only,
+single-Node Enrollment bundle on the active controller host.
+Transfer that bundle through an operator-controlled secure channel, then run
+`orchardctl node join --enrollment-bundle PATH` on the node-agent host.
+The joined Node remains non-schedulable until an operator reviews and explicitly
+admits it with the existing pending-admission commands.
 
 `orchardctl requests inspect <request-id>` reads the local controller Repo and
 renders the persisted scheduler explanation for a request, with stable human and

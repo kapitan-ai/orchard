@@ -101,6 +101,30 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:worker_memory_budget_overhead_bytes] == 1_073_741_824
   end
 
+  test "runtime.exs preserves packaged BEAM default without requiring gRPC identity" do
+    runtime =
+      read_runtime_config!(%{})
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:grpc_security] == :plaintext_compatibility
+  end
+
+  test "runtime.exs requires enrolled mTLS for packaged gRPC compatibility mode" do
+    identity_root = Path.join(System.tmp_dir!(), "orchard-runtime-node-identity")
+
+    runtime =
+      read_runtime_config!(%{
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "grpc",
+        "ORCHARD_NODE_IDENTITY_ROOT" => identity_root
+      })
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:grpc_security] == :mutual_tls
+    assert runtime[:node_identity_root] == identity_root
+  end
+
   test "runtime.exs defaults stub backend generation to stream in prod" do
     runtime =
       read_runtime_config!(%{"ORCHARD_WORKER_BACKEND" => "stub"})

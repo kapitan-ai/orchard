@@ -74,6 +74,7 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
 
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest}
   alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.Inference
   alias Orchard.InferenceEvent
   alias Orchard.RuntimeEndpoint.Operation
 
@@ -165,7 +166,7 @@ defmodule Orchard.Dispatch.DispatchParityDriftTest do
     %{
       strategy: :single_node,
       request_id: request_id,
-      runtime_client_target: [host: "127.0.0.1", port: 59_999],
+      runtime_client_target: Inference.runtime_client_target(),
       request_timeout_ms: 5_000,
       model_load_timeout_ms: 5_000
     }

@@ -3,8 +3,8 @@ defmodule Orchard.Nodes.Node do
   Ecto schema for persistent node inventory entries.
 
   Maps to the `nodes` table with SPEC-aligned `node_state` and `node_health`
-  enums. Represents a discovered node-agent that has reported its identity
-  via a successful `GetStatus` RPC.
+  enums. Represents provisioned placeholders as well as node-agents that have
+  reported inventory.
   """
 
   use Ecto.Schema
@@ -52,6 +52,29 @@ defmodule Orchard.Nodes.Node do
 
   @spec health_values() :: [atom()]
   def health_values, do: @health_values
+
+  @spec provisioning_changeset(struct(), map()) :: Ecto.Changeset.t()
+  def provisioning_changeset(node, attrs) do
+    node
+    |> cast(attrs, [
+      :id,
+      :display_name,
+      :state,
+      :health,
+      :capabilities,
+      :tool_readiness
+    ])
+    |> validate_required([
+      :display_name,
+      :state,
+      :health,
+      :capabilities,
+      :tool_readiness
+    ])
+    |> validate_length(:display_name, min: 1)
+    |> validate_tool_readiness_contract()
+    |> unique_constraint(:display_name)
+  end
 
   @spec changeset(struct(), map()) :: Ecto.Changeset.t()
   def changeset(node, attrs) do

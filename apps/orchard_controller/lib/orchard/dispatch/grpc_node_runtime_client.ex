@@ -34,17 +34,21 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   Target is `[host: host, port: port]` from config.
   Returns `{:ok, channel}` or `{:error, reason}`.
   """
-  @spec connect(keyword()) :: {:ok, GRPC.Channel.t()} | {:error, term()}
-  def connect(target) do
+  @spec connect(keyword(), keyword()) :: {:ok, GRPC.Channel.t()} | {:error, term()}
+  def connect(target, opts \\ []) do
     host = Keyword.fetch!(target, :host)
     port = Keyword.fetch!(target, :port)
     address = "#{host}:#{port}"
+    connect_opts = credential_option(Keyword.get(opts, :cred))
 
-    case GRPC.Stub.connect(address) do
+    case GRPC.Stub.connect(address, connect_opts) do
       {:ok, channel} -> {:ok, channel}
       {:error, reason} -> {:error, {:connect_failed, reason}}
     end
   end
+
+  defp credential_option(nil), do: []
+  defp credential_option(%GRPC.Credential{} = credential), do: [cred: credential]
 
   @doc "Disconnect a gRPC channel best-effort and return `:ok`."
   @spec disconnect(GRPC.Channel.t()) :: :ok
@@ -152,9 +156,23 @@ defmodule Orchard.Dispatch.GrpcNodeRuntimeClient do
   end
 
   @doc "Score prefix-cache residency on a target. Always fail-open."
-  @spec score_prefix_cache(keyword(), ScorePrefixCacheRequest.t(), keyword()) ::
+  @spec score_prefix_cache(keyword() | GRPC.Channel.t(), ScorePrefixCacheRequest.t(), keyword()) ::
           {:ok, ScorePrefixCacheResponse.t()}
-  def score_prefix_cache(target, %ScorePrefixCacheRequest{} = request, opts \\ []) do
+  def score_prefix_cache(target_or_channel, request, opts \\ [])
+
+  def score_prefix_cache(%GRPC.Channel{} = channel, %ScorePrefixCacheRequest{} = request, opts) do
+    timeout = Keyword.get(opts, :timeout, @rpc_timeout_ms)
+
+    case NodeRuntimeService.Stub.score_prefix_cache(channel, request, timeout: timeout) do
+      {:ok, %ScorePrefixCacheResponse{} = response} ->
+        {:ok, normalize_score_response(response)}
+
+      {:error, reason} ->
+        {:ok, normalize_score_transport_error(reason)}
+    end
+  end
+
+  def score_prefix_cache(target, %ScorePrefixCacheRequest{} = request, opts) do
     timeout = Keyword.get(opts, :timeout, @rpc_timeout_ms)
 
     case connect(target) do

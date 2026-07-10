@@ -36,6 +36,7 @@ defmodule Orchard.Config.M1RuntimeDefaults do
       artifacts_root: Path.join(root, "bundles"),
       runtime_client_target: [host: @default_runtime_host, port: @default_runtime_port],
       runtime_client_targets: [],
+      allow_static_runtime_target_fallback: false,
       request_timeout_ms: @default_request_timeout_ms,
       model_load_timeout_ms: @default_model_load_timeout_ms,
       node_freshness_threshold_ms: 30_000,
@@ -76,6 +77,8 @@ defmodule Orchard.Config.M1RuntimeDefaults do
     [
       node_id: nil,
       node_identity_path: Path.join([root, "data", "node-id"]),
+      node_identity_root: Path.join([root, "config", "node-identity"]),
+      grpc_security: :plaintext_compatibility,
       display_name: nil,
       listen_address: [host: @default_runtime_host, port: @default_runtime_port],
       models_root: Path.join(root, "models"),

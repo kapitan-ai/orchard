@@ -48,6 +48,12 @@ defmodule Orchard.API.Router do
     get("/health/ready", Orchard.API.HealthController, :ready)
   end
 
+  scope "/bootstrap/v1", Orchard.API.Bootstrap do
+    pipe_through(:api)
+
+    post("/node-enrollments/:id/redeem", NodeEnrollmentController, :redeem)
+  end
+
   scope "/v1", Orchard.API do
     pipe_through(:authenticated_api)
 

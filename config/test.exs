@@ -42,6 +42,7 @@ config :orchard_controller,
       tokenizer_executable:
         Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
       runtime_client_target: [host: "127.0.0.1", port: test_node_agent_port],
+      allow_static_runtime_target_fallback: true,
       request_timeout_ms: 5_000,
       model_load_timeout_ms: 5_000
     ),

@@ -9,7 +9,7 @@ defmodule Orchard.Node.Supervisor do
 
   use Supervisor
 
-  alias Orchard.Node.{Endpoint, ModelManager, WorkerSupervisor}
+  alias Orchard.Node.{Endpoint, ModelManager, RuntimeTLS, WorkerSupervisor}
 
   @grpc_server_id Orchard.Node.GRPCServer
 
@@ -40,8 +40,17 @@ defmodule Orchard.Node.Supervisor do
       endpoint: Endpoint,
       port: listen_address[:port] || raise("missing orchard_node_agent listen port"),
       start_server: true,
-      adapter_opts: [ip: listen_ip(listen_address[:host])]
+      adapter_opts: grpc_adapter_opts(listen_address)
     ]
+  end
+
+  defp grpc_adapter_opts(listen_address) do
+    opts = [ip: listen_ip(listen_address[:host])]
+
+    case RuntimeTLS.server_credential() do
+      :plaintext_compatibility -> opts
+      {:ok, credential} -> Keyword.put(opts, :cred, credential)
+    end
   end
 
   defp listen_ip({_, _, _, _} = ip), do: ip

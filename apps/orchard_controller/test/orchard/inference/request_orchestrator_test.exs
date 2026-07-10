@@ -3136,6 +3136,7 @@ defmodule Orchard.Inference.RequestOrchestratorTest do
     inference =
       Application.fetch_env!(:orchard_controller, :inference)
       |> Keyword.merge(
+        runtime_endpoint_targets: [[host: "127.0.0.1", port: 1]],
         scheduler_impl: Orchard.Inference.RequestOrchestratorTest.StubUnreachableScheduler
       )
 

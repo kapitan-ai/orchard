@@ -17,6 +17,8 @@ defmodule OrchardCLI.Commands.Nodes do
   alias Orchard.Nodes
   alias Orchard.Nodes.AdmissionCandidate
   alias Orchard.Nodes.Lifecycle
+  alias OrchardCLI.Commands.NodeEnrollment
+  alias OrchardCLI.Commands.NodeTrust, as: NodeTrustCommand
   alias OrchardCLI.RepoRuntime
 
   @spec run([String.t()]) :: OrchardCLI.command_result()
@@ -32,6 +34,8 @@ defmodule OrchardCLI.Commands.Nodes do
     end
   end
 
+  defp run_command("enrollment", rest), do: NodeEnrollment.run(rest)
+  defp run_command("trust", rest), do: NodeTrustCommand.run(rest)
   defp run_command("inspect", rest), do: run_inspect(rest)
   defp run_command("pending", rest), do: run_pending(rest)
   defp run_command("admit", rest), do: run_admit(rest)
@@ -810,6 +814,8 @@ defmodule OrchardCLI.Commands.Nodes do
         "Usage: orchardctl nodes <command>",
         "",
         "Commands:",
+        "  enrollment Create a local Node Enrollment bundle",
+        "  trust      Initialize protected internal Node trust",
         "  list     List registered nodes",
         "  inspect  Inspect one node",
         "  pending  Review pending or rejected node admission candidates",

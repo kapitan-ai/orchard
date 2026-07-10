@@ -22,7 +22,7 @@ defmodule OrchardCLI.MixProject do
   def application do
     [
       mod: {OrchardCLI.Application, []},
-      extra_applications: [:logger]
+      extra_applications: [:crypto, :logger, :public_key]
     ]
   end
 
@@ -32,7 +32,8 @@ defmodule OrchardCLI.MixProject do
       {:nimble_csv, "~> 1.2"},
       {:req, "~> 0.5"},
       {:orchard_shared, in_umbrella: true},
-      {:orchard_controller, in_umbrella: true}
+      {:orchard_controller, in_umbrella: true},
+      {:orchard_node_agent, in_umbrella: true, only: :test, runtime: false}
     ]
   end
 end

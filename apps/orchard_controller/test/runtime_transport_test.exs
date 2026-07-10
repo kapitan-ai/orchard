@@ -26,6 +26,23 @@ defmodule Orchard.RuntimeTransportTest do
     {:ok, support_root: tmp_root}
   end
 
+  test "OpenSpec task 2.10 production config supplies a protected NodeTrust root", %{
+    support_root: support_root
+  } do
+    config = read_controller_config!(support_root, %{})
+
+    assert config[:node_trust] == [
+             root: Path.join([support_root, "config", "node-trust"])
+           ]
+
+    override_root = Path.join(support_root, "custom-node-trust")
+
+    overridden =
+      read_controller_config!(support_root, %{"ORCHARD_NODE_TRUST_ROOT" => override_root})
+
+    assert overridden[:node_trust] == [root: override_root]
+  end
+
   test "SPEC 10.7: ORCHARD_TRANSPORT_MODE=plain_http_localhost wins over legacy TLS envs", %{
     support_root: support_root
   } do

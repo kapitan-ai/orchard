@@ -236,13 +236,43 @@ defmodule Orchard.Dispatch.RequestDispatcher do
   # -- Private ---------------------------------------------------------------
 
   defp dispatch_after_preensure_gate(%{client: client, target: target} = context) do
-    case client.connect(target) do
-      {:ok, channel} ->
-        dispatch_with_channel(Map.put(context, :channel, channel))
+    case authorize_dispatch_target(target) do
+      :ok ->
+        case client.connect(target) do
+          {:ok, channel} ->
+            dispatch_with_channel(Map.put(context, :channel, channel))
 
-      {:error, reason} ->
-        handle_dispatch_connect_failure(target, reason, context.metrics)
+          {:error, reason} ->
+            handle_dispatch_connect_failure(target, reason, context.metrics)
+        end
+
+      {:error, :runtime_target_not_active} ->
+        handle_dispatch_result(
+          {:error, {:dispatch_failed, :node_not_active}},
+          context.metrics,
+          target
+        )
+
+      {:error, :node_inventory_unavailable} ->
+        handle_dispatch_result(
+          {:error, {:dispatch_failed, :node_inventory_unavailable}},
+          context.metrics,
+          target
+        )
     end
+  end
+
+  defp authorize_dispatch_target(%Target{} = target) do
+    cond do
+      activation_probe_target?(target) -> {:error, :runtime_target_not_active}
+      Inference.static_runtime_target?(target) -> :ok
+      true -> Orchard.Nodes.authorize_inference_target(target)
+    end
+  end
+
+  defp activation_probe_target?(%Target{metadata: metadata}) do
+    Map.get(metadata, :authorization) == :activation_probe or
+      Map.get(metadata, "authorization") == "activation_probe"
   end
 
   defp dispatch_with_channel(%{client: client, channel: channel} = context) do

@@ -34,12 +34,18 @@ It does not yet provide an app setup wizard.
 
 The packaged CLI provides `orchardctl init`, with `orchardctl first-run` as an alias, as a guided command sequencer for license validation, env-template generation, migration, local HTTPS, optional Console enablement, service start, and status.
 The sequencer stops at a failed step and prints a resume command.
-It does not collect an external Postgres DSN, edit BEAM identity or target values, create Node trust, distribute a shared cookie, import a model to remote Macs, or replace the separate `orchardctl cluster init` first-admin operation.
+It does not collect an external Postgres DSN, edit BEAM identity or target values, automatically create Node trust, distribute a shared cookie, import a model to remote Macs, or replace the separate `orchardctl cluster init` first-admin operation.
 
-The current packaged multi-Mac path is a first-cut private-network deployment and rehearsal path.
-It uses manually distributed shared BEAM cookie material and an explicit Controller target list.
-`orchardctl node join`, Bootstrap Token exchange, Node Certificate issuance, and certificate-backed registration remain unfinished.
-Admission review surfaces exist, but an observed unregistered endpoint cannot be admitted merely because it is reachable.
+After migrations on a Controller host, an operator initializes the distinct internal Node trust authority with `orchardctl nodes trust init`.
+The command is local, leader-gated, idempotent, and reports only stable public identifiers and the runtime CA SPKI fingerprint.
+It stores protected material under the support-root `config/node-trust` directory by default, with `ORCHARD_NODE_TRUST_ROOT` as an explicit path override.
+It does not print or export CA or Controller private key material.
+
+The current packaged multi-Mac path remains a first-cut private-network deployment and rehearsal path.
+The packaged BEAM-first end state still uses manually distributed shared BEAM cookie material and an explicit Controller target list.
+The secure enrollment tracer now provides owner-only Node Enrollment Bundles, pinned HTTPS Bootstrap Token redemption, protected local Node identity, Node Certificate issuance, certificate-backed registration, explicit audited admission, and authenticated gRPC compatibility activation.
+For a remote gRPC compatibility Node, `ORCHARD_NODE_AGENT_ADVERTISE_HOST` must name the Controller-reachable private address because a wildcard listen address is never persisted as a target.
+Registration remains pending and non-schedulable until explicit admission, and admission remains non-schedulable until a fresh healthy identity-matched authenticated observation.
 
 The authoritative current command details are in:
 
@@ -296,6 +302,7 @@ This shaping slice does not mirror the journey into `SPEC.md`.
 One narrow contradiction does require reconciliation now.
 `SPEC.md` §10.6 previously tied the internal Controller CA to `orchardctl cluster init`, while ADR 0011 and `SPEC.md` §11.9 define that command as credential-only.
 Internal Node trust initialization or CA import must therefore be a distinct explicit operation.
+The production local initialization entry point is `orchardctl nodes trust init`; it remains separate from public HTTPS configuration and the credential-only `orchardctl cluster init` operation.
 
 No tactical `docs/DESIGN.md` update is needed until the app-guided setup slice defines reusable onboarding, progress, and recovery components.
 No new ADR is needed until Orchard chooses a durable production BEAM credential mechanism or another hard-to-reverse transport-specific trust decision.

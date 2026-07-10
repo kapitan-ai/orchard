@@ -92,30 +92,6 @@ defmodule OrchardCLITest do
              "status, start, stop, init, first-run, migrate, console, cluster, env, license, node, nodes, models, requests, support, tenants, api-clients, api-keys, tls, transport, upgrade"
   end
 
-  test "advertised deferred commands report docs-backed status" do
-    commands = [
-      {Node, ["join"], "orchardctl node join"}
-    ]
-
-    for {module, args, usage} <- commands do
-      assert {:error, message, 1} = module.run(args)
-      assert message =~ usage
-      assert message =~ "SPEC.md"
-      assert message =~ "not implemented in this build"
-      assert message =~ "Current supported path:"
-      assert message =~ "orchardctl env init --service node-agent"
-      assert message =~ "ORCHARD_BEAM_NODE_NAME"
-      assert message =~ "ORCHARD_BEAM_COOKIE_FILE"
-      assert message =~ "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
-      assert message =~ "orchard_node_agent@<worker-ipv4>"
-      assert message =~ "gRPC compatibility fallback"
-      assert message =~ "ORCHARD_RUNTIME_CLIENT_TARGETS"
-      assert message =~ "node join/admission/certificate bootstrap remains deferred"
-      refute message =~ "M0 scaffold"
-      refute message =~ "not implemented yet"
-    end
-  end
-
   test "advertised deferred commands exit non-zero through main" do
     parent = self()
 

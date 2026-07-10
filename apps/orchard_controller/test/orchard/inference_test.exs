@@ -64,6 +64,7 @@ defmodule Orchard.InferenceTest do
     :ok
   end
 
+  @tag :db
   test "inference module exposes configured seams and subtree" do
     assert is_pid(Process.whereis(Orchard.Inference))
     assert is_pid(Process.whereis(Orchard.Requests.Supervisor))
@@ -211,6 +212,21 @@ defmodule Orchard.InferenceTest do
   end
 
   describe "runtime_endpoint_targets/0" do
+    @describetag :db
+    test "configured static targets require explicit compatibility opt-in" do
+      put_inference(
+        allow_static_runtime_target_fallback: false,
+        runtime_client_target: [host: "10.0.0.1", port: 50_061],
+        runtime_client_targets: [[host: "10.0.0.2", port: 50_062]]
+      )
+
+      assert Inference.runtime_endpoint_targets() == []
+
+      put_inference(allow_static_runtime_target_fallback: true)
+
+      assert [%Target{transport: :grpc_compat}] = Inference.runtime_endpoint_targets()
+    end
+
     test "defaults to gRPC compatibility targets from legacy runtime client config" do
       put_inference(runtime_client_targets: [[host: "10.0.0.1", port: 50_061]])
 
@@ -937,6 +953,7 @@ defmodule Orchard.InferenceTest do
   end
 
   describe "scheduler auto-selection" do
+    @describetag :db
     test "defaults to SingleNode when legacy plural targets and singular target are absent" do
       put_inference(runtime_client_targets: [], runtime_client_target: nil)
       assert Inference.scheduler() == SingleNode

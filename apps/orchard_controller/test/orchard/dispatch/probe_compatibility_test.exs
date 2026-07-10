@@ -129,6 +129,7 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
   }
 
   alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.Inference
   alias Orchard.Inference.QueueManager
   alias Orchard.Nodes.Node
   alias Orchard.RuntimeEndpoint.{Operation, Target}
@@ -141,12 +142,14 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
 
   setup do
     start_supervised!({Registry, keys: :duplicate, name: @stub_client.registry_name()})
+    runtime_client_target = Inference.runtime_client_target()
+    configure_static_compatibility_targets(runtime_client_target)
 
     %{
       schedule: %{
         strategy: :single_node,
         request_id: "req-probe-test",
-        runtime_client_target: [host: "127.0.0.1", port: 59_999],
+        runtime_client_target: runtime_client_target,
         request_timeout_ms: 5_000,
         model_load_timeout_ms: 5_000
       },
@@ -164,6 +167,27 @@ defmodule Orchard.Dispatch.ProbeCompatibilityTest do
         version: "v1"
       }
     }
+  end
+
+  defp configure_static_compatibility_targets(runtime_client_target) do
+    previous = Application.fetch_env!(:orchard_controller, :inference)
+
+    targets = [
+      Target.grpc_compat(runtime_client_target),
+      Target.beam(@valid_uuid, address: :"orchard_node_agent@127.0.0.1"),
+      Target.beam(@valid_uuid,
+        id: "beam:#{@valid_uuid}:localhost",
+        address: :orchard_node_agent@localhost
+      )
+    ]
+
+    Application.put_env(
+      :orchard_controller,
+      :inference,
+      Keyword.put(previous, :runtime_endpoint_targets, targets)
+    )
+
+    on_exit(fn -> Application.put_env(:orchard_controller, :inference, previous) end)
   end
 
   defp configure_stub(overrides) do

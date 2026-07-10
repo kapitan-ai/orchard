@@ -92,7 +92,7 @@ defmodule Orchard.Scheduler.MultiNode do
     targets = Inference.runtime_endpoint_targets()
 
     if targets == [] do
-      fallback_schedule(request, targets, opts)
+      {:error, :no_active_nodes}
     else
       schedule_multi(request, targets, opts)
     end

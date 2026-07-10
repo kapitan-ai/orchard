@@ -14,6 +14,7 @@ defmodule Orchard.Node.Identity do
 
   require Logger
 
+  alias Orchard.Node.RuntimeTLS
   alias Orchard.NodeIdentityFile
 
   @uuid_regex ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
@@ -29,14 +30,40 @@ defmodule Orchard.Node.Identity do
   @spec ensure_identity!() :: String.t()
   def ensure_identity! do
     runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
-    node_id = resolve_identity!(runtime)
-
-    # Write resolved identity back into Application env for runtime reads
-    updated_runtime = Keyword.put(runtime, :node_id, node_id)
+    {node_id, updated_runtime} = resolve_runtime_identity!(runtime)
     Application.put_env(:orchard_node_agent, :runtime, updated_runtime)
 
     Logger.info("Node identity resolved: #{node_id}")
     node_id
+  end
+
+  defp resolve_runtime_identity!(runtime) do
+    case RuntimeTLS.load(runtime) do
+      :plaintext_compatibility ->
+        node_id = resolve_identity!(runtime)
+        {node_id, Keyword.put(runtime, :node_id, node_id)}
+
+      {:ok, identity} ->
+        ensure_configured_identity_matches!(runtime[:node_id], identity.node_id)
+
+        updated =
+          runtime
+          |> Keyword.put(:node_id, identity.node_id)
+          |> Keyword.put(:runtime_tls_identity, identity)
+
+        {identity.node_id, updated}
+
+      {:error, reason} ->
+        raise "Node Runtime TLS identity invalid: #{reason}"
+    end
+  end
+
+  defp ensure_configured_identity_matches!(nil, _node_id), do: :ok
+  defp ensure_configured_identity_matches!("", _node_id), do: :ok
+  defp ensure_configured_identity_matches!(node_id, node_id), do: :ok
+
+  defp ensure_configured_identity_matches!(_configured, _persisted) do
+    raise "Configured Node id does not match the registered Runtime TLS identity"
   end
 
   @doc false

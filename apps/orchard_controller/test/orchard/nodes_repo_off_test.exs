@@ -10,7 +10,7 @@ defmodule Orchard.NodesRepoOffTest do
 
   use ExUnit.Case, async: false
 
-  alias Orchard.Nodes
+  alias Orchard.{Inference, Nodes}
   import Orchard.TestSupport.RepoHelpers
 
   test "graceful degradation when repo name is unregistered" do
@@ -18,6 +18,12 @@ defmodule Orchard.NodesRepoOffTest do
       refute is_pid(Process.whereis(Orchard.Repo))
 
       assert Nodes.list_nodes() == []
+
+      assert Nodes.activation_probe_runtime_endpoint_targets() ==
+               {:error, :node_inventory_unavailable}
+
+      assert Nodes.active_runtime_endpoint_targets() == {:error, :node_inventory_unavailable}
+      assert Inference.runtime_endpoint_targets() == []
 
       summary = Nodes.summary()
       assert summary.total == 0

@@ -496,6 +496,8 @@ default_node_runtime = fn root ->
   [
     node_id: nil,
     node_identity_path: Path.join([root, "data", "node-id"]),
+    node_identity_root: Path.join([root, "config", "node-identity"]),
+    grpc_security: :plaintext_compatibility,
     display_name: nil,
     listen_address: [host: "127.0.0.1", port: 50_061],
     models_root: Path.join(root, "models"),
@@ -618,6 +620,11 @@ if config_env() == :prod do
     |> Keyword.put(:enforcement_mode, license_enforcement_mode)
 
   config :orchard_shared, :licensing, licensing_config
+
+  config :orchard_controller, :node_trust,
+    root:
+      System.get_env("ORCHARD_NODE_TRUST_ROOT") ||
+        Path.join([orchard_support_root, "config", "node-trust"])
 
   runtime_endpoint_transport = fn env_name, default ->
     case System.get_env(env_name) do
@@ -984,6 +991,8 @@ if config_env() == :prod do
                 Path.join(orchard_support_root, "bundles"),
             runtime_client_target: runtime_client_target,
             runtime_client_targets: runtime_client_targets,
+            allow_static_runtime_target_fallback:
+              env_bool.("ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK", false),
             request_timeout_ms: env_int.("ORCHARD_REQUEST_TIMEOUT_MS", "120000"),
             model_load_timeout_ms: env_int.("ORCHARD_MODEL_LOAD_TIMEOUT_MS", "120000"),
             node_freshness_threshold_ms: env_int.("ORCHARD_NODE_FRESHNESS_THRESHOLD_MS", "30000"),
@@ -1201,6 +1210,14 @@ if config_env() == :prod do
         enable_db_checks: true
 
     "orchard_node_agent" ->
+      node_runtime_endpoint_transport =
+        runtime_endpoint_transport.("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT", :beam)
+
+      grpc_security =
+        if node_runtime_endpoint_transport == :grpc,
+          do: :mutual_tls,
+          else: :plaintext_compatibility
+
       config :orchard_node_agent,
         runtime:
           Keyword.merge(
@@ -1209,6 +1226,10 @@ if config_env() == :prod do
             node_identity_path:
               System.get_env("ORCHARD_NODE_IDENTITY_PATH") ||
                 Path.join([orchard_support_root, "data", "node-id"]),
+            node_identity_root:
+              System.get_env("ORCHARD_NODE_IDENTITY_ROOT") ||
+                Path.join([orchard_support_root, "config", "node-identity"]),
+            grpc_security: grpc_security,
             display_name: System.get_env("ORCHARD_NODE_DISPLAY_NAME"),
             listen_address: [
               host: System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1",

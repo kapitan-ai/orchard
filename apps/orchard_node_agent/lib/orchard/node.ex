@@ -72,6 +72,8 @@ defmodule Orchard.Node do
   # --- Existing config helpers ---
 
   def listen_address, do: runtime_config()[:listen_address]
+  def node_identity_root, do: runtime_config()[:node_identity_root]
+  def grpc_security, do: runtime_config()[:grpc_security] || :plaintext_compatibility
   def listen_host, do: listen_address()[:host]
   def listen_port, do: listen_address()[:port]
   def models_root, do: runtime_config()[:models_root]

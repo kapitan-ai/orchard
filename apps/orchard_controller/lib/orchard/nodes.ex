@@ -12,19 +12,31 @@ defmodule Orchard.Nodes do
 
   require Logger
 
+  alias Orchard.ControlPlane
   alias Orchard.Governance
   alias Orchard.Governance.AuditLog
-  alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Node}
+  alias Orchard.Nodes.{AdmissionCandidate, AdmissionDecision, Enrollment, Node}
   alias Orchard.Nodes.ToolCapability
   alias Orchard.Nodes.ToolReadiness
   alias Orchard.Repo
-  alias Orchard.RuntimeEndpoint.{ModelRef, Observation, Placement, PlacementCapacity, Target}
+
+  alias Orchard.RuntimeEndpoint.{
+    AuthenticatedPeer,
+    ModelRef,
+    Observation,
+    Placement,
+    PlacementCapacity,
+    Target
+  }
+
   alias Orchard.SchemaSupport
+  alias Orchard.TransportTLS.CertificateIdentity
 
   @snapshot_entry_limit 40
   @snapshot_max_depth 4
   @snapshot_string_limit_bytes 512
   @snapshot_truncation_key "__orchard_snapshot_truncation__"
+  @authenticated_observation_future_skew_ms 5_000
 
   # -- Read APIs --
 
@@ -129,6 +141,58 @@ defmodule Orchard.Nodes do
     _ -> []
   end
 
+  @doc "Returns certificate-backed targets for status-only activation probes."
+  @spec activation_probe_runtime_endpoint_targets() ::
+          {:ok, [Target.t()]} | {:error, :node_inventory_unavailable}
+  def activation_probe_runtime_endpoint_targets do
+    trusted_runtime_endpoint_targets_for_states([:admitted])
+  end
+
+  @doc "Returns certificate-backed targets authorized for inference and dispatch."
+  @spec active_runtime_endpoint_targets() ::
+          {:ok, [Target.t()]} | {:error, :node_inventory_unavailable}
+  def active_runtime_endpoint_targets do
+    trusted_runtime_endpoint_targets_for_states([:active])
+  end
+
+  @spec authorize_inference_target(Target.t()) ::
+          :ok | {:error, :runtime_target_not_active | :node_inventory_unavailable}
+  def authorize_inference_target(%Target{} = target) do
+    case active_runtime_endpoint_targets() do
+      {:ok, targets} ->
+        if Enum.any?(targets, &(&1 == Target.normalize(target))) do
+          :ok
+        else
+          {:error, :runtime_target_not_active}
+        end
+
+      {:error, :node_inventory_unavailable} = error ->
+        error
+    end
+  end
+
+  defp trusted_runtime_endpoint_targets_for_states(states) do
+    if repo_available?() do
+      targets =
+        Node
+        |> join(:inner, [node], enrollment in Enrollment, on: enrollment.node_id == node.id)
+        |> where([node, _enrollment], node.state in ^states)
+        |> where([_node, enrollment], enrollment.state == :consumed)
+        |> where([_node, enrollment], enrollment.certificate_issuance_outcome == :issued)
+        |> where([_node, enrollment], not is_nil(enrollment.certificate_identifier))
+        |> order_by([node, _enrollment], asc: node.id)
+        |> select([node, enrollment], {node, enrollment})
+        |> Repo.all()
+        |> Enum.flat_map(&trusted_runtime_endpoint_target/1)
+
+      {:ok, targets}
+    else
+      {:error, :node_inventory_unavailable}
+    end
+  rescue
+    _ -> {:error, :node_inventory_unavailable}
+  end
+
   @spec unreachable_threshold_ms() :: pos_integer()
   def unreachable_threshold_ms do
     Orchard.Inference.node_unreachable_threshold_ms()
@@ -219,8 +283,8 @@ defmodule Orchard.Nodes do
 
   First observations that do not match a trusted node create or update a
   Runtime Endpoint Admission Candidate and return `:noop`.
-  Updates preserve admin-managed lifecycle except for `admitted -> active`
-  after a fresh healthy observation.
+  Updates preserve admin-managed lifecycle. The separate authenticated
+  observation seam owns `admitted -> active` transitions.
   Successful eligible observations also refresh source-scoped queue capacity
   from aggregate endpoint capacity and loaded placement statuses.
   Fresh invalid metadata, identity conflicts, ineligible nodes, and target
@@ -261,6 +325,42 @@ defmodule Orchard.Nodes do
       end
     else
       :noop
+    end
+  rescue
+    _ -> :noop
+  end
+
+  @doc """
+  Applies an authenticated Runtime Endpoint observation to trusted inventory.
+
+  The peer identity must come from transport certificate verification and
+  contain the certificate-bound Node ID plus its issued certificate identifier.
+  The target, reported identity, persisted Node, and consumed enrollment are
+  revalidated under row locks before any lifecycle update.
+  """
+  @spec observe_authenticated_status(
+          Target.t(),
+          map() | struct(),
+          DateTime.t(),
+          AuthenticatedPeer.t()
+        ) ::
+          {:ok, Node.t()} | :noop
+  def observe_authenticated_status(target, status_response, observed_at, peer_identity) do
+    with true <- repo_available?(),
+         :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
+         {:ok, peer_identity} <- normalize_authenticated_peer_identity(peer_identity),
+         true <- authenticated_healthy_status?(status_response),
+         {:ok, observation} <- normalize_observation(target, status_response, observed_at),
+         true <- observation.id == peer_identity.node_id do
+      handle_observation_result(
+        target,
+        observed_at,
+        execute_authenticated_observe(target, observation, peer_identity),
+        status_response,
+        []
+      )
+    else
+      _other -> :noop
     end
   rescue
     _ -> :noop
@@ -372,6 +472,19 @@ defmodule Orchard.Nodes do
     end)
     |> unwrap_transaction_result()
   end
+
+  @doc """
+  Ensures a registered Node is visible in pending admission review.
+
+  Enrollment callers use this after the allocated Node reaches `:registered`.
+  """
+  @spec ensure_pending_admission_candidate(Node.t()) ::
+          {:ok, AdmissionCandidate.t()} | {:error, term()}
+  def ensure_pending_admission_candidate(%Node{state: :registered} = node) do
+    get_or_create_candidate_for_node(node)
+  end
+
+  def ensure_pending_admission_candidate(%Node{}), do: {:error, :node_not_registered}
 
   @doc """
   Returns shared action-preview blocker codes for node admission.
@@ -1008,6 +1121,31 @@ defmodule Orchard.Nodes do
       {:noop, :constraint_conflict}
   end
 
+  defp execute_authenticated_observe(target, observation, peer_identity) do
+    Repo.transaction(fn ->
+      with %Enrollment{} = enrollment <- lock_authenticated_enrollment(peer_identity),
+           %Node{} = node <- lock_authenticated_node(peer_identity.node_id),
+           :ok <- ensure_authenticated_enrollment(enrollment, peer_identity),
+           :ok <- ensure_authenticated_node(node, observation, peer_identity),
+           :ok <- ensure_authenticated_target(target, node, enrollment),
+           true <- authenticated_healthy_observation?(observation),
+           true <- fresh_authenticated_observation?(observation.last_heartbeat_at),
+           :ok <- ensure_fresh_observation(%{existing_by_id: node}, observation) do
+        update_authenticated_observation(node, observation)
+      else
+        _reason -> Repo.rollback(:authenticated_observation_rejected)
+      end
+    end)
+    |> case do
+      {:ok, node} -> {:ok, node}
+      {:error, reason} -> {:noop, reason}
+    end
+  rescue
+    error in Ecto.ConstraintError ->
+      Logger.debug("Authenticated node observation conflicted: #{inspect(error.constraint)}")
+      {:noop, :constraint_conflict}
+  end
+
   defp load_conflicting_nodes(observation) do
     Node
     |> where(^conflicting_node_filter(observation))
@@ -1094,7 +1232,7 @@ defmodule Orchard.Nodes do
     |> Node.changeset(
       observation
       |> Map.delete(:id)
-      |> Map.put(:state, observed_state(existing, observation))
+      |> Map.put(:state, existing.state)
     )
     |> Repo.update!()
   end
@@ -1104,8 +1242,22 @@ defmodule Orchard.Nodes do
     :candidate_persisted
   end
 
-  defp observed_state(%Node{state: :admitted}, %{health: :healthy}), do: :active
-  defp observed_state(%Node{} = existing, _observation), do: existing.state
+  defp update_authenticated_observation(%Node{} = node, observation) do
+    node
+    |> Node.changeset(
+      observation
+      |> Map.delete(:id)
+      |> Map.put(:state, authenticated_observed_state(node))
+    )
+    |> Repo.update()
+    |> case do
+      {:ok, updated} -> updated
+      {:error, _changeset} -> Repo.rollback(:authenticated_observation_rejected)
+    end
+  end
+
+  defp authenticated_observed_state(%Node{state: :admitted}), do: :active
+  defp authenticated_observed_state(%Node{state: state}), do: state
 
   defp upsert_observed_admission_candidate(observation) do
     attrs = observed_candidate_attrs(observation)
@@ -1810,6 +1962,201 @@ defmodule Orchard.Nodes do
   end
 
   # -- Helpers --
+
+  defp trusted_runtime_endpoint_target({%Node{} = node, %Enrollment{} = enrollment}) do
+    with {:ok, address} <- trusted_connection_address(node),
+         {:ok, certificate} <- enrollment_certificate_binding(enrollment) do
+      [
+        Target.grpc_compat(
+          Keyword.merge(address,
+            node_id: node.id,
+            metadata:
+              Map.merge(certificate, %{
+                authorization: runtime_target_authorization(node.state),
+                enrollment_id: enrollment.id,
+                source: :trusted_node_inventory
+              })
+          )
+        )
+      ]
+    else
+      _other -> []
+    end
+  end
+
+  defp runtime_target_authorization(:admitted), do: :activation_probe
+  defp runtime_target_authorization(:active), do: :inference_dispatch
+
+  defp trusted_connection_address(%Node{connect_host: host, connect_port: port})
+       when is_binary(host) and host != "" and is_integer(port) and port in 1..65_535,
+       do: {:ok, [host: host, port: port]}
+
+  defp trusted_connection_address(%Node{advertise_addr: host, rpc_port: port})
+       when is_binary(host) and host not in ["", "0.0.0.0", "::"] and is_integer(port) and
+              port in 1..65_535,
+       do: {:ok, [host: host, port: port]}
+
+  defp trusted_connection_address(_node), do: :error
+
+  defp enrollment_certificate_binding(%Enrollment{} = enrollment) do
+    result = enrollment.certificate_result
+    certificate_pem = map_get(result, :node_certificate_pem)
+    stored_serial = map_get(result, :certificate_serial)
+    stored_node_uri = map_get(result, :node_uri_san)
+    runtime_trust_spki = map_get(result, :runtime_trust_spki_sha256)
+
+    expected_node_uri =
+      "urn:orchard:cluster:#{enrollment.cluster_id}:node:#{enrollment.node_id}"
+
+    with true <- non_empty?(enrollment.certificate_identifier),
+         true <- is_binary(certificate_pem),
+         {:ok, certificate} <- CertificateIdentity.from_pem(certificate_pem),
+         true <- certificate.serial == stored_serial,
+         true <- certificate.uri_sans == [expected_node_uri],
+         true <- stored_node_uri == expected_node_uri,
+         true <- non_empty?(runtime_trust_spki) do
+      {:ok,
+       %{
+         certificate_identifier: enrollment.certificate_identifier,
+         certificate_serial: certificate.serial,
+         certificate_fingerprint: certificate.fingerprint,
+         node_uri_san: expected_node_uri,
+         runtime_trust_spki_sha256: runtime_trust_spki
+       }}
+    else
+      _other -> {:error, :invalid_enrollment_certificate_binding}
+    end
+  end
+
+  defp authenticated_peer_binding(%AuthenticatedPeer{} = peer) do
+    %{
+      certificate_identifier: peer.certificate_identifier,
+      certificate_serial: peer.certificate_serial,
+      certificate_fingerprint: peer.certificate_fingerprint,
+      node_uri_san: peer.node_uri_san,
+      runtime_trust_spki_sha256: peer.runtime_trust_spki_sha256
+    }
+  end
+
+  defp normalize_authenticated_peer_identity(%AuthenticatedPeer{scheme: :mtls} = peer) do
+    identifiers = [peer.node_id, peer.enrollment_id]
+
+    valid =
+      Enum.all?(identifiers, &match?({:ok, _uuid}, Ecto.UUID.cast(&1))) and
+        Enum.all?(
+          [
+            peer.node_uri_san,
+            peer.certificate_identifier,
+            peer.certificate_serial,
+            peer.certificate_fingerprint,
+            peer.runtime_trust_spki_sha256
+          ],
+          &non_empty?/1
+        )
+
+    if valid, do: {:ok, peer}, else: :error
+  end
+
+  defp normalize_authenticated_peer_identity(_peer_identity), do: :error
+
+  defp lock_authenticated_enrollment(peer) do
+    Enrollment
+    |> where([enrollment], enrollment.id == ^peer.enrollment_id)
+    |> where([enrollment], enrollment.node_id == ^peer.node_id)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp lock_authenticated_node(node_id) do
+    Node
+    |> where([node], node.id == ^node_id)
+    |> lock("FOR UPDATE")
+    |> Repo.one()
+  end
+
+  defp ensure_authenticated_enrollment(
+         %Enrollment{node_id: node_id, state: :consumed, certificate_issuance_outcome: :issued} =
+           enrollment,
+         %AuthenticatedPeer{node_id: node_id} = peer
+       ) do
+    with {:ok, binding} <- enrollment_certificate_binding(enrollment),
+         true <- authenticated_peer_binding(peer) == binding do
+      :ok
+    else
+      _other -> :error
+    end
+  end
+
+  defp ensure_authenticated_enrollment(_enrollment, _peer_identity), do: :error
+
+  defp ensure_authenticated_node(
+         %Node{id: node_id, state: state},
+         %{id: node_id},
+         %AuthenticatedPeer{node_id: node_id}
+       )
+       when state in [:admitted, :active],
+       do: :ok
+
+  defp ensure_authenticated_node(_node, _observation, _peer_identity), do: :error
+
+  defp ensure_authenticated_target(%Target{} = target, node, enrollment) do
+    case trusted_runtime_endpoint_target({node, enrollment}) do
+      [expected] ->
+        if target_identity(expected) == target_identity(target), do: :ok, else: :error
+
+      _other ->
+        :error
+    end
+  end
+
+  defp ensure_authenticated_target(_target, _node, _enrollment), do: :error
+
+  defp target_identity(%Target{} = target) do
+    metadata = target.metadata
+
+    {
+      target.id,
+      target.transport,
+      target.node_id,
+      target.address,
+      metadata_value(metadata, :source),
+      metadata_value(metadata, :enrollment_id),
+      metadata_value(metadata, :certificate_identifier),
+      metadata_value(metadata, :certificate_serial),
+      metadata_value(metadata, :certificate_fingerprint),
+      metadata_value(metadata, :node_uri_san),
+      metadata_value(metadata, :runtime_trust_spki_sha256)
+    }
+  end
+
+  defp authenticated_healthy_status?(status_response) do
+    case extract_runtime_health(status_response) do
+      %{} = health ->
+        map_get(health, :ready) == true and
+          not non_empty?(map_get(health, :health_code)) and
+          not non_empty?(map_get(health, :health_message))
+
+      _other ->
+        false
+    end
+  end
+
+  defp authenticated_healthy_observation?(%{health: :healthy}), do: true
+  defp authenticated_healthy_observation?(_observation), do: false
+
+  defp fresh_authenticated_observation?(%DateTime{} = observed_at) do
+    now = DateTime.utc_now()
+
+    cutoff =
+      DateTime.add(now, -Orchard.Inference.node_freshness_threshold_ms(), :millisecond)
+
+    future_limit = DateTime.add(now, @authenticated_observation_future_skew_ms, :millisecond)
+
+    DateTime.compare(observed_at, cutoff) in [:eq, :gt] and
+      DateTime.compare(observed_at, future_limit) in [:lt, :eq]
+  end
+
+  defp fresh_authenticated_observation?(_observed_at), do: false
 
   defp repo_available? do
     pid = Process.whereis(Orchard.Repo)

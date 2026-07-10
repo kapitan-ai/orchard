@@ -68,6 +68,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
 
   alias Orchard.Cluster.V1.{EnsureModelLoadedRequest, ExecuteInferenceRequest}
   alias Orchard.Dispatch.RequestDispatcher
+  alias Orchard.Inference
   alias Orchard.RuntimeEndpoint.Operation
 
   @stub_client Orchard.Dispatch.DispatchCapabilityGateTest.StubClient
@@ -244,7 +245,7 @@ defmodule Orchard.Dispatch.DispatchCapabilityGateTest do
     %{
       strategy: :single_node,
       request_id: request_id,
-      runtime_client_target: [host: "127.0.0.1", port: 59_999],
+      runtime_client_target: Inference.runtime_client_target(),
       request_timeout_ms: 5_000,
       model_load_timeout_ms: 5_000
     }

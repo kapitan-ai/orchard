@@ -384,6 +384,7 @@ config :orchard_controller,
         controller_inference_defaults,
         runtime_client_target: dev_runtime_client_target,
         runtime_client_targets: dev_runtime_targets,
+        allow_static_runtime_target_fallback: true,
         tokenizer_executable:
           System.get_env("ORCHARD_TOKENIZER_EXECUTABLE") ||
             Path.join([repo_root, "native", "orchard_tokenizer", "bin", "orchard-tokenizer"]),
