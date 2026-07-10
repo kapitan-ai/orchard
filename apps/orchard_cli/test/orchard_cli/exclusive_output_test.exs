@@ -80,6 +80,18 @@ defmodule OrchardCLI.ExclusiveOutputTest do
     refute File.exists?(path)
   end
 
+  test "reservation creates a missing parent as an owner-only directory", %{root: root} do
+    parent = Path.join([root, "created", "nested"])
+    path = Path.join(parent, "node-enrollment.json")
+
+    assert {:ok, reservation} = ExclusiveOutput.reserve(path)
+    assert (File.stat!(parent).mode &&& 0o777) == 0o700
+    assert {:ok, published} = ExclusiveOutput.publish(reservation, "sensitive-bundle\n")
+    assert (File.stat!(path).mode &&& 0o777) == 0o600
+    assert File.read!(path) == "sensitive-bundle\n"
+    assert published.inode == File.stat!(path).inode
+  end
+
   defp trace_sync_calls do
     :erlang.trace_pattern({:file, :sync, 1}, true, [:call_count])
 

@@ -47,6 +47,7 @@ defmodule Orchard.NodeTrust.Store do
   def load_current(root) do
     with :ok <- validate_private_directory(root),
          {:ok, root_stat} <- File.stat(root),
+         :ok <- verify_current_owner(root, root_stat.uid),
          {:ok, generation_id} <- read_current(root, root_stat.uid),
          generation_root = Path.join([root, "generations", generation_id]),
          :ok <- validate_private_directory(generation_root, root_stat.uid),
