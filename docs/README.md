@@ -47,6 +47,7 @@ large spec sections.
 
 ### I want to package or install Orchard
 
+- [`operator-journey.md`](operator-journey.md) - current and target operator journeys, friction baseline, recovery points, and ordered improvement slices.
 - [`../packaging/pkg/README.md`](../packaging/pkg/README.md) — current PKG
   build/operator runbook.
 - [`../packaging/container/postgres/README.md`](../packaging/container/postgres/README.md)
