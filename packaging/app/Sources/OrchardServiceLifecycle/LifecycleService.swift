@@ -123,7 +123,6 @@ public final class LifecycleService {
       loadedServices: previouslyLoaded
     )
     let restoredServices = try commit(
-      invocation: invocation,
       role: role,
       paths: paths,
       transaction: transaction,
@@ -218,7 +217,6 @@ public final class LifecycleService {
   }
 
   func commit(
-    invocation: LifecycleInvocation,
     role: InstallRole,
     paths: LifecyclePaths,
     transaction: LifecycleTransaction,
@@ -248,12 +246,7 @@ public final class LifecycleService {
       try removeIfPresent(paths.roleRequest)
 
       let selectedServices = Set(contract.roles[role.rawValue] ?? [])
-      let restoredServices: Set<String>
-      if invocation.operation == .update {
-        restoredServices = previouslyLoaded.intersection(selectedServices)
-      } else {
-        restoredServices = []
-      }
+      let restoredServices = previouslyLoaded.intersection(selectedServices)
       try normalizeInstallation(at: paths, transaction: transaction)
       try injectFailure(at: .afterRoleMarker)
       try setLoadedServices(restoredServices, at: paths)

@@ -552,6 +552,36 @@ final class LifecycleServiceTests: XCTestCase {
       ))
   }
 
+  func testReinstallRestoresPreviouslyLoadedInRoleServices() throws {
+    let fixture = try makeFixture()
+    let service = LifecycleService(
+      contract: fixture.contract,
+      payloadRoot: fixture.payload
+    )
+    let install = try LifecycleInvocation.parse(
+      arguments: ["install", "--role", "all", "--root", fixture.root.path],
+      effectiveUserID: 501
+    )
+    _ = try service.execute(install)
+
+    try write(
+      "{\"loaded_services\":[\"com.orchard.controller\",\"com.orchard.node-agent\"]}",
+      to: relocated(
+        root: fixture.root,
+        absolutePath: "/Library/Application Support/Orchard/support/.app-launchd-state.json"
+      )
+    )
+
+    let reinstall = try LifecycleInvocation.parse(
+      arguments: ["install", "--role", "controller", "--root", fixture.root.path],
+      effectiveUserID: 501
+    )
+    let result = try service.execute(reinstall)
+
+    XCTAssertEqual(result.status.role, .controller)
+    XCTAssertEqual(result.status.loadedServices, ["com.orchard.controller"])
+  }
+
   func testFailedUpdateRollsBackPayloadRolePlistsAndLoadedServices() throws {
     let fixture = try makeFixture()
     let installService = LifecycleService(

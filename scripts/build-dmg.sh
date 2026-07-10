@@ -40,17 +40,19 @@ detach_image() {
 }
 
 cleanup() {
+  local detach_failed=false
   if [[ "$MOUNTED" == "true" ]]; then
     if ! detach_image; then
-      printf 'build-dmg: failed to detach %s; preserving %s for recovery\n' \
-        "${ATTACHED_DEVICE:-unknown-device}" "$TMP_ROOT" >&2
+      detach_failed=true
+      printf 'build-dmg: failed to detach %s; preserving %s and %s for recovery\n' \
+        "${ATTACHED_DEVICE:-unknown-device}" "$TMP_ROOT" "${OUTPUT:-unknown-output}" >&2
       TMP_ROOT=""
     fi
   fi
   if [[ -n "$TMP_ROOT" && -d "$TMP_ROOT" ]]; then
     rm -rf "$TMP_ROOT"
   fi
-  if [[ "$SUCCEEDED" != "true" && -n "$OUTPUT" ]]; then
+  if [[ "$SUCCEEDED" != "true" && "$detach_failed" != "true" && -n "$OUTPUT" ]]; then
     rm -f \
       "$OUTPUT" \
       "$OUTPUT.sha256" \
