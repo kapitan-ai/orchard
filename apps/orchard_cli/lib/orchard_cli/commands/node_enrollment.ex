@@ -289,6 +289,7 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
     case output.reserve(path) do
       {:ok, reservation} -> {:ok, reservation}
       {:error, :eexist} -> {:error, :output_exists}
+      {:error, :parent_not_owner_only} -> {:error, :output_parent_not_owner_only}
       {:error, reason} -> {:error, {:output_preflight_failed, reason}}
     end
   end
@@ -321,6 +322,12 @@ defmodule OrchardCLI.Commands.NodeEnrollment do
 
   defp command_error(:output_exists) do
     {:error, "Error: output path already exists; refusing to overwrite it.", 1}
+  end
+
+  defp command_error(:output_parent_not_owner_only) do
+    {:error,
+     "Error: output directory must be owner-only; run `chmod 700` on it (or choose an owner-only directory) before retrying.",
+     1}
   end
 
   defp command_error({:output_preflight_failed, reason}) do

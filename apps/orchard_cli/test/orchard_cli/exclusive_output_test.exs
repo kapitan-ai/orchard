@@ -76,7 +76,7 @@ defmodule OrchardCLI.ExclusiveOutputTest do
     path = Path.join(root, "node-enrollment.json")
     File.chmod!(root, 0o755)
 
-    assert {:error, :eacces} = ExclusiveOutput.reserve(path)
+    assert {:error, :parent_not_owner_only} = ExclusiveOutput.reserve(path)
     refute File.exists?(path)
   end
 

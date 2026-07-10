@@ -166,6 +166,23 @@ defmodule OrchardCLI.Commands.NodeEnrollmentTest do
     assert_no_enrollment_mutation()
   end
 
+  test "OpenSpec task 2.3 explains how to remediate a non-owner-only output directory", %{
+    root: root
+  } do
+    output_dir = Path.join(root, "shared-output")
+    File.mkdir_p!(output_dir)
+    File.chmod!(output_dir, 0o755)
+    output_path = Path.join(output_dir, "enrollment.json")
+
+    assert {:error, message, 1} =
+             Nodes.run(["enrollment", "create", "--output", output_path])
+
+    assert message =~ "owner-only"
+    assert message =~ "chmod 700"
+    refute File.exists?(output_path)
+    assert_no_enrollment_mutation()
+  end
+
   test "OpenSpec task 2.3 rejects expiry above 24 hours before mutation", %{root: root} do
     output_path = Path.join(root, "too-long-enrollment.json")
 

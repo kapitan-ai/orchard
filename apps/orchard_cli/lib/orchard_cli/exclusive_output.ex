@@ -22,7 +22,7 @@ defmodule OrchardCLI.ExclusiveOutput do
   @callback publish(term(), iodata()) :: {:ok, term()} | {:error, term()}
   @callback release(term()) :: :ok | {:error, term()}
 
-  @spec reserve(String.t()) :: {:ok, t()} | {:error, File.posix()}
+  @spec reserve(String.t()) :: {:ok, t()} | {:error, File.posix() | :parent_not_owner_only}
   def reserve(path) when is_binary(path) do
     path = Path.expand(path)
     parent = Path.dirname(path)
@@ -160,13 +160,17 @@ defmodule OrchardCLI.ExclusiveOutput do
 
   defp validate_parent_directory(path) do
     with {:ok, stat} <- File.stat(path),
-         true <- stat.type == :directory,
-         true <- band(stat.mode, 0o077) == 0 do
+         :ok <- ensure_directory(stat),
+         :ok <- ensure_owner_only(stat.mode) do
       {:ok, stat}
-    else
-      {:error, reason} -> {:error, reason}
-      false -> {:error, :eacces}
     end
+  end
+
+  defp ensure_directory(%{type: :directory}), do: :ok
+  defp ensure_directory(_stat), do: {:error, :enotdir}
+
+  defp ensure_owner_only(mode) do
+    if band(mode, 0o077) == 0, do: :ok, else: {:error, :parent_not_owner_only}
   end
 
   defp validate_private_regular_file(path, expected_uid) do
