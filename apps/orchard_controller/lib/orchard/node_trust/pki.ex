@@ -340,14 +340,17 @@ defmodule Orchard.NodeTrust.PKI do
 
   defp certificate_validity(now, lifetime_seconds) do
     validity(
-      notBefore: general_time(DateTime.add(now, -60, :second)),
-      notAfter: general_time(DateTime.add(now, lifetime_seconds, :second))
+      notBefore: validity_time(DateTime.add(now, -60, :second)),
+      notAfter: validity_time(DateTime.add(now, lifetime_seconds, :second))
     )
   end
 
-  defp general_time(datetime) do
-    value = Calendar.strftime(datetime, "%Y%m%d%H%M%SZ")
-    {:generalTime, String.to_charlist(value)}
+  defp validity_time(datetime) when datetime.year < 2050 do
+    {:utcTime, String.to_charlist(Calendar.strftime(datetime, "%y%m%d%H%M%SZ"))}
+  end
+
+  defp validity_time(datetime) do
+    {:generalTime, String.to_charlist(Calendar.strftime(datetime, "%Y%m%d%H%M%SZ"))}
   end
 
   defp subject_key_identifier(key) do

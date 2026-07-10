@@ -357,8 +357,8 @@ defmodule Orchard.NodeEnrollment.PKI do
         issuer: otp_tbs_certificate(ca_tbs, :subject),
         validity:
           validity(
-            notBefore: general_time(DateTime.add(now, -60, :second)),
-            notAfter: general_time(not_after)
+            notBefore: validity_time(DateTime.add(now, -60, :second)),
+            notAfter: validity_time(not_after)
           ),
         subject: distinguished_name(csr.node_uri_san),
         subjectPublicKeyInfo:
@@ -487,6 +487,18 @@ defmodule Orchard.NodeEnrollment.PKI do
   end
 
   defp certificate_time({:generalTime, value}), do: List.to_string(value)
+
+  defp certificate_time({:utcTime, value}) do
+    case List.to_string(value) do
+      <<year::binary-size(2), rest::binary>> = utc when byte_size(utc) == 13 ->
+        century = if String.to_integer(year) < 50, do: "20", else: "19"
+        century <> year <> rest
+
+      _other ->
+        nil
+    end
+  end
+
   defp certificate_time(_value), do: nil
 
   defp valid_node_extensions?(tbs, expected_uri) do
@@ -605,7 +617,11 @@ defmodule Orchard.NodeEnrollment.PKI do
     der
   end
 
-  defp general_time(datetime) do
+  defp validity_time(datetime) when datetime.year < 2050 do
+    {:utcTime, String.to_charlist(Calendar.strftime(datetime, "%y%m%d%H%M%SZ"))}
+  end
+
+  defp validity_time(datetime) do
     {:generalTime, String.to_charlist(Calendar.strftime(datetime, "%Y%m%d%H%M%SZ"))}
   end
 end

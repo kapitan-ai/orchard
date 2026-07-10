@@ -48,13 +48,24 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
   @impl true
   def handle_info(:probe, state) do
+    safe_run_once()
+    schedule_probe(state.interval)
+    {:noreply, state}
+  end
+
+  defp safe_run_once do
     case run_once() do
       {:ok, _results} -> :ok
       {:error, _reason} -> :ok
     end
-
-    schedule_probe(state.interval)
-    {:noreply, state}
+  rescue
+    exception ->
+      Logger.debug("Activation status probe crashed: #{Exception.message(exception)}")
+      :ok
+  catch
+    kind, reason ->
+      Logger.debug("Activation status probe aborted: #{inspect({kind, reason})}")
+      :ok
   end
 
   defp probe_target(target, client, timeout) do

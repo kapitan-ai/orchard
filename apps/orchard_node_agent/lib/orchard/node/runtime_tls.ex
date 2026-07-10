@@ -54,6 +54,7 @@ defmodule Orchard.Node.RuntimeTLS do
 
     with :ok <- validate_directory(root),
          {:ok, root_stat} <- File.stat(root),
+         :ok <- verify_running_owner(root, root_stat.uid),
          {:ok, generation_id} <- read_current(root, root_stat.uid),
          generation_root = Path.join([root, "generations", generation_id]),
          :ok <- validate_directory(generation_root, root_stat.uid),
@@ -173,6 +174,35 @@ defmodule Orchard.Node.RuntimeTLS do
         non_empty?(binding.runtime_trust_spki_sha256)
 
     if valid, do: {:ok, binding}, else: {:error, :node_runtime_tls_identity_invalid}
+  end
+
+  defp verify_running_owner(root, root_uid) do
+    probe = Path.join(root, ".owner-probe-#{probe_token()}")
+
+    result =
+      with :ok <- write_probe(probe),
+           {:ok, stat} <- File.stat(probe),
+           true <- stat.uid == root_uid do
+        :ok
+      else
+        _other -> {:error, :node_runtime_tls_identity_invalid}
+      end
+
+    File.rm(probe)
+    result
+  end
+
+  defp write_probe(path) do
+    with :ok <- File.write(path, "owner"),
+         :ok <- File.chmod(path, @file_mode) do
+      :ok
+    else
+      _error -> {:error, :node_runtime_tls_identity_invalid}
+    end
+  end
+
+  defp probe_token do
+    16 |> :crypto.strong_rand_bytes() |> Base.encode16(case: :lower)
   end
 
   defp validate_files(paths, expected_uid) do
