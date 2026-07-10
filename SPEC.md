@@ -3658,7 +3658,7 @@ Apple recommends notarization for directly distributed macOS software, and signe
 Required installed artifacts:
 
 ```text
-/Applications/Orchard.app                    # tray/menu app
+/Applications/Orchard.app                    # app-owned install and tray surface
 /usr/local/bin/orchardctl                           # CLI
 /Library/Application Support/Orchard/
   config/
@@ -3699,12 +3699,36 @@ Required launchd properties:
 
 DMG SHALL include:
 
-* `Orchard.pkg`
-* `Orchard Installer.app` optional bootstrap UI
+* `Orchard.app` as the primary interactive install artifact
+* `Orchard.pkg` optional as a compatibility or offline/manual artifact
 * release notes
 * checksums/signature metadata
 
-### 11.4 PKG behavior
+The app bundle SHALL be verified before DMG assembly.
+The mounted DMG SHALL be verified after assembly, and nested code signatures and entitlement digests SHALL match the verified input app.
+An outer distribution tool that changes nested code or entitlements SHALL cause the release handoff to fail closed.
+Amore SHALL be the current outer DMG assembly, notarization, stapling, hosting, and publication integration.
+Orchard SHALL feature-detect the required Amore CLI surface and SHALL keep nested signing and verification under Orchard control.
+
+### 11.4 Root-Authorized Service Lifecycle And PKG Behavior
+
+`Orchard.app` SHALL own a service lifecycle interface for role-aware install, update, uninstall, and status operations.
+System-root install, update, and uninstall operations SHALL require effective root privileges with effective user id 0.
+Validation against a non-system root SHALL relocate every installed path and SHALL simulate launchd effects without mutating the host installation.
+
+App-owned install and update SHALL preflight the payload and target before stopping services.
+If a failure occurs after mutation begins, Orchard SHALL restore the prior app-owned payload, command links, launchd plists, role marker, and loaded-service state before returning failure.
+Install and update SHALL preserve operator-owned `config`, `data`, `models`, `bundles`, `logs`, and support-bundle contents.
+Default uninstall SHALL remove app-owned payloads, installed commands and links, launchd plists, and install markers while retaining those operator-owned paths.
+Destructive purge behavior is not part of the v1 app lifecycle contract.
+The app lifecycle SHALL preserve complete existing TLS state, SHALL reject partial TLS state before mutation, SHALL NOT generate or trust production TLS material, and SHALL NOT mutate system trust stores.
+The first app lifecycle slice SHALL refuse system-root install, update, or uninstall while a `com.orchard.pkg` receipt exists so it cannot leave PKG ownership metadata inconsistent.
+
+Orchard SHALL sign nested Mach-O libraries and executables with their required entitlements before signing app helpers, the main app executable, and the outer app bundle.
+Orchard SHALL verify the nested payload and final app bundle before handing the app to the DMG distribution layer.
+
+PKG remains a supported parallel path for privileged local installation, repeatable operator-driven workflows, and offline/manual distribution.
+App and PKG artifacts SHALL use compatible role values, installed paths, launchd labels, and retained-state semantics.
 
 PKG SHALL support:
 
@@ -3961,7 +3985,7 @@ Migration ownership SHALL be protected by advisory lock.
 
 1. stop public traffic or accept brief outage
 2. backup config + DB
-3. install new PKG
+3. run the app-owned update lifecycle or install the new PKG
 4. start controller
 5. run migrations
 6. wait for readiness
@@ -3981,7 +4005,7 @@ For each node:
 
 1. cordon
 2. drain
-3. install package
+3. run the app-owned update lifecycle or install the package
 4. restart node agent
 5. verify heartbeat + status sync
 6. uncordon
@@ -4031,6 +4055,8 @@ Acceptance:
 
 * controller starts on macOS
 * node agent starts on macOS
+* `Orchard.app` assembles as a valid app bundle and passes sandboxed service-lifecycle rollback and retention tests
+* the verified app assembles into a mountable DMG without nested signature or entitlement drift
 * PKG installs launchd services correctly
 
 ### Milestone 1 - Single-node inference MVP
