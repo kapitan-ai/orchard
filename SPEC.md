@@ -3540,9 +3540,11 @@ Certificate-backed node lifecycle RPC and current gRPC compatibility transports 
 
 * TLS 1.3
 * mutual TLS
-* controller CA generated at cluster init or imported by admin
+* controller CA generated through an explicit node-trust initialization operation or imported by admin
 * SAN validation against node id / controller id
 * certificate renewal before expiry
+
+The internal node-trust initialization operation SHALL remain separate from `orchardctl cluster init`, which is credential-only per §11.9.
 
 Node cert lifetime default:
 

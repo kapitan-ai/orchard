@@ -139,6 +139,9 @@ for full build documentation.
 
 For operators:
 
+- [`docs/operator-journey.md`](docs/operator-journey.md) — current and target
+  operator journeys, friction baseline, recovery points, and ordered
+  improvement slices.
 - [`packaging/pkg/README.md`](packaging/pkg/README.md) — install, roles,
   transport, and TLS runbook.
 

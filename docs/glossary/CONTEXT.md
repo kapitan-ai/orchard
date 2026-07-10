@@ -626,6 +626,11 @@ _Avoid_: Public API transport, Trusted Proxy
 A time-limited or one-time Node join credential used before certificate trust is established.
 _Avoid_: API Key, Node Certificate
 
+**Node Enrollment Bundle**:
+A per-Node, versioned, short-lived bootstrap artifact containing Controller and cluster identity, a Controller trust pin, and one one-time Bootstrap Token.
+It is sensitive One-time Secret Output but is not durable Node identity, Node Admission, or runtime transport authority.
+_Avoid_: BEAM cookie bundle, admission bundle, worker credential bundle, Node Certificate, cluster-admin credential
+
 **Node Certificate**:
 A Node identity certificate used for internal RPC trust and renewal.
 _Avoid_: Bootstrap Token, API Key, Public HTTPS certificate
@@ -674,3 +679,11 @@ _Avoid_: LaunchDaemon, system service
 **Tray/Menu Bar App**:
 The local macOS app for status, onboarding, logs, and support-bundle entry.
 _Avoid_: Orchard Console, LaunchDaemon
+
+**Install Role**:
+The app or package lifecycle selection that determines whether one Mac installs and manages the `all`, `controller`, or `node-agent` service set.
+_Avoid_: RBAC Role, Access Level, Node Lifecycle State
+
+**Node Enrollment**:
+The identity bootstrap process that uses a Node Enrollment Bundle to move one provisioned Node to registered state through Controller validation and Node Certificate issuance.
+_Avoid_: Node Admission, Runtime Endpoint discovery, Worker Runtime enrollment
