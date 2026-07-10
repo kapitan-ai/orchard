@@ -24,6 +24,7 @@ defmodule Orchard.NodeEnrollments do
   @resume_window_seconds 600
   @pending_publication_stale_after_seconds 300
   @pending_publication_reconcile_limit 100
+  @max_csr_pem_bytes 16_384
 
   @type creation_result :: %{
           bootstrap_token: String.t(),
@@ -136,10 +137,18 @@ defmodule Orchard.NodeEnrollments do
 
   defp redeem_locked(enrollment, node, request, now, opts) do
     with :ok <- validate_redemption_bindings(enrollment, request),
-         true <- EnrollmentToken.verify(request.token, enrollment.token_hash) do
+         true <- EnrollmentToken.verify(request.token, enrollment.token_hash),
+         {:ok, request} <- authorize_redemption_csr(enrollment, request) do
       redeem_state(enrollment, node, request, now, opts)
     else
       _reason -> Repo.rollback(:node_enrollment_rejected)
+    end
+  end
+
+  defp authorize_redemption_csr(enrollment, request) do
+    case PKI.verify_csr(request.csr_pem, enrollment.cluster_id, enrollment.node_id) do
+      {:ok, csr} -> {:ok, Map.put(request, :csr, csr)}
+      _reason -> {:error, :node_enrollment_rejected}
     end
   end
 
@@ -342,13 +351,12 @@ defmodule Orchard.NodeEnrollments do
          {:ok, controller_id} <- cast_required_uuid(value(attrs, :controller_id)),
          token when is_binary(token) <- value(attrs, :token),
          csr_pem when is_binary(csr_pem) <- value(attrs, :csr_pem),
-         {:ok, csr} <- PKI.verify_csr(csr_pem, cluster_id, node_id),
+         true <- valid_csr_pem_size?(csr_pem),
          {:ok, runtime_endpoint} <- normalize_runtime_endpoint(value(attrs, :runtime_endpoint)) do
       {:ok,
        %{
          cluster_id: cluster_id,
          controller_id: controller_id,
-         csr: csr,
          csr_pem: csr_pem,
          node_id: node_id,
          runtime_endpoint: runtime_endpoint,
@@ -358,6 +366,8 @@ defmodule Orchard.NodeEnrollments do
       _reason -> {:error, :node_enrollment_rejected}
     end
   end
+
+  defp valid_csr_pem_size?(csr_pem), do: byte_size(csr_pem) in 1..@max_csr_pem_bytes
 
   defp normalize_runtime_endpoint(endpoint) when is_map(endpoint) do
     host = value(endpoint, :host)
@@ -415,36 +425,55 @@ defmodule Orchard.NodeEnrollments do
   end
 
   defp reconcile_pending_transaction(cutoff, now, limit) do
-    Repo.transaction(fn ->
-      enrollments =
-        Enrollment
-        |> where([enrollment], enrollment.state == :pending_publication)
-        |> where([enrollment], enrollment.issued_at <= ^cutoff)
-        |> order_by([enrollment], asc: enrollment.issued_at, asc: enrollment.id)
-        |> limit(^limit)
-        |> lock("FOR UPDATE SKIP LOCKED")
-        |> Repo.all()
+    reconciled =
+      cutoff
+      |> stale_pending_enrollment_ids(limit)
+      |> Enum.count(&reconcile_pending_enrollment(&1, cutoff, now))
 
-      Enum.each(enrollments, &reconcile_pending_enrollment(&1, now))
-
-      %{reconciled: length(enrollments)}
-    end)
-    |> unwrap_transaction()
+    {:ok, %{reconciled: reconciled}}
   end
 
-  defp reconcile_pending_enrollment(enrollment, now) do
-    with {:ok, failed} <- fail_pending_enrollment(enrollment, now),
-         {:ok, _audit} <-
-           insert_output_failed_audit(failed,
-             actor_type: "system",
-             actor_id: "pending-publication-reconciler",
-             now: now,
-             reason: "publication_confirmation_timeout"
-           ) do
-      :ok
-    else
-      {:error, reason} -> Repo.rollback(reason)
+  defp stale_pending_enrollment_ids(cutoff, limit) do
+    Enrollment
+    |> where([enrollment], enrollment.state == :pending_publication)
+    |> where([enrollment], enrollment.issued_at <= ^cutoff)
+    |> order_by([enrollment], asc: enrollment.issued_at, asc: enrollment.id)
+    |> limit(^limit)
+    |> select([enrollment], enrollment.id)
+    |> Repo.all()
+  end
+
+  defp reconcile_pending_enrollment(id, cutoff, now) do
+    Repo.transaction(fn ->
+      with %Enrollment{} = enrollment <- lock_stale_pending_enrollment(id, cutoff),
+           {:ok, failed} <- fail_pending_enrollment(enrollment, now),
+           {:ok, _audit} <-
+             insert_output_failed_audit(failed,
+               actor_type: "system",
+               actor_id: "pending-publication-reconciler",
+               now: now,
+               reason: "publication_confirmation_timeout"
+             ) do
+        :ok
+      else
+        _reason -> Repo.rollback(:pending_publication_reconcile_failed)
+      end
+    end)
+    |> case do
+      {:ok, :ok} -> true
+      {:error, _reason} -> false
     end
+  rescue
+    _error in [Ecto.StaleEntryError, Ecto.ConstraintError] -> false
+  end
+
+  defp lock_stale_pending_enrollment(id, cutoff) do
+    Enrollment
+    |> where([enrollment], enrollment.id == ^id)
+    |> where([enrollment], enrollment.state == :pending_publication)
+    |> where([enrollment], enrollment.issued_at <= ^cutoff)
+    |> lock("FOR UPDATE SKIP LOCKED")
+    |> Repo.one()
   end
 
   defp fail_pending_enrollment(enrollment, now) do

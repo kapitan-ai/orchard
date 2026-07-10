@@ -142,9 +142,7 @@ defmodule OrchardCLI.NodeIdentity.Store do
          :ok <- publish_current(root, material.generation_id, mode) do
       {:ok, material}
     else
-      _reason ->
-        File.rm_rf(staging_root)
-        {:error, :node_identity_storage_failed}
+      _reason -> cleanup_publish_failure(root, material)
     end
   rescue
     _error -> cleanup_publish_failure(root, material)
@@ -541,7 +539,20 @@ defmodule OrchardCLI.NodeIdentity.Store do
     |> Path.join(".staging-#{material.generation_id}")
     |> File.rm_rf()
 
+    unless current_points_to_generation?(root, material.generation_id) do
+      [root, "generations", material.generation_id]
+      |> Path.join()
+      |> File.rm_rf()
+    end
+
     {:error, :node_identity_storage_failed}
+  end
+
+  defp current_points_to_generation?(root, generation_id) do
+    case File.read(Path.join(root, "current")) do
+      {:ok, contents} -> String.trim(contents) == generation_id
+      _result -> false
+    end
   end
 
   defp sync_directory(path) do
