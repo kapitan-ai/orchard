@@ -110,6 +110,25 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:grpc_security] == :plaintext_compatibility
   end
 
+  test "runtime.exs rejects plaintext gRPC bound to a non-loopback listen host" do
+    assert_raise RuntimeError, ~r/exposes an unauthenticated plaintext gRPC/, fn ->
+      read_runtime_config!(%{"ORCHARD_NODE_AGENT_LISTEN_HOST" => "0.0.0.0"})
+    end
+  end
+
+  test "runtime.exs allows a non-loopback listen host under gRPC mutual TLS" do
+    runtime =
+      read_runtime_config!(%{
+        "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "grpc",
+        "ORCHARD_NODE_AGENT_LISTEN_HOST" => "0.0.0.0"
+      })
+      |> Keyword.fetch!(:orchard_node_agent)
+      |> Keyword.fetch!(:runtime)
+
+    assert runtime[:grpc_security] == :mutual_tls
+    assert runtime[:listen_address][:host] == "0.0.0.0"
+  end
+
   test "runtime.exs requires enrolled mTLS for packaged gRPC compatibility mode" do
     identity_root = Path.join(System.tmp_dir!(), "orchard-runtime-node-identity")
 

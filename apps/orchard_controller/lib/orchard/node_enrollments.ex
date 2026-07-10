@@ -697,8 +697,8 @@ defmodule Orchard.NodeEnrollments do
     end
   end
 
-  defp normalize_map(nil), do: %{}
   defp normalize_map(value) when is_map(value), do: value
+  defp normalize_map(_value), do: %{}
 
   defp unwrap_transaction({:ok, result}), do: {:ok, result}
   defp unwrap_transaction({:error, reason}), do: {:error, reason}

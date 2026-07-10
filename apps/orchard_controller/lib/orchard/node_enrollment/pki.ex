@@ -3,6 +3,8 @@ defmodule Orchard.NodeEnrollment.PKI do
 
   require Record
 
+  alias Orchard.PKI.CertificateValidity
+
   Record.defrecord(
     :certification_request,
     :CertificationRequest,
@@ -455,13 +457,13 @@ defmodule Orchard.NodeEnrollment.PKI do
          now
        ) do
     certificate_path_valid?(node_der, node_tbs, ca_der, ca_tbs, ca_material) and
-      certificate_valid_now?(ca_tbs, now) and
+      CertificateValidity.current?(ca_tbs, now) and
       ca_material.public_key_fingerprint == Map.fetch!(attrs, :runtime_trust_spki_sha256) and
       valid_ca_extensions?(ca_tbs)
   end
 
   defp valid_node_certificate?(node_material, node_tbs, expected_uri, identity, attrs, now) do
-    certificate_valid_now?(node_tbs, now) and
+    CertificateValidity.current?(node_tbs, now) and
       node_material.public_key_fingerprint == Map.fetch!(attrs, :public_key_fingerprint) and
       valid_node_extensions?(node_tbs, expected_uri) and
       otp_tbs_certificate(node_tbs, :serialNumber) == identity.serial and
@@ -475,31 +477,6 @@ defmodule Orchard.NodeEnrollment.PKI do
       otp_tbs_certificate(node_tbs, :issuer) == otp_tbs_certificate(ca_tbs, :subject) and
       otp_tbs_certificate(ca_tbs, :issuer) == otp_tbs_certificate(ca_tbs, :subject)
   end
-
-  defp certificate_valid_now?(tbs, now) do
-    certificate_validity = otp_tbs_certificate(tbs, :validity)
-    not_before = certificate_time(validity(certificate_validity, :notBefore))
-    not_after = certificate_time(validity(certificate_validity, :notAfter))
-    current = Calendar.strftime(now, "%Y%m%d%H%M%SZ")
-
-    is_binary(not_before) and is_binary(not_after) and
-      not_before <= current and current < not_after
-  end
-
-  defp certificate_time({:generalTime, value}), do: List.to_string(value)
-
-  defp certificate_time({:utcTime, value}) do
-    case List.to_string(value) do
-      <<year::binary-size(2), rest::binary>> = utc when byte_size(utc) == 13 ->
-        century = if String.to_integer(year) < 50, do: "20", else: "19"
-        century <> year <> rest
-
-      _other ->
-        nil
-    end
-  end
-
-  defp certificate_time(_value), do: nil
 
   defp valid_node_extensions?(tbs, expected_uri) do
     extensions = otp_tbs_certificate(tbs, :extensions)

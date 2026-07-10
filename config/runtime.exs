@@ -132,6 +132,13 @@ loopback_ip? = fn
   _other -> false
 end
 
+loopback_listen_host? = fn host ->
+  case :inet.parse_address(String.to_charlist(host)) do
+    {:ok, ip_tuple} -> loopback_ip?.(ip_tuple)
+    {:error, _reason} -> host == "localhost"
+  end
+end
+
 parse_trusted_proxy_cidr! = fn cidr ->
   with [ip_string, prefix_string] <- String.split(cidr, "/", parts: 2),
        {:ok, ip_tuple} <- :inet.parse_address(String.to_charlist(ip_string)),
@@ -1218,6 +1225,13 @@ if config_env() == :prod do
           do: :mutual_tls,
           else: :plaintext_compatibility
 
+      node_agent_listen_host = System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1"
+
+      if grpc_security == :plaintext_compatibility and
+           not loopback_listen_host?.(node_agent_listen_host) do
+        raise "ORCHARD_NODE_AGENT_LISTEN_HOST=#{node_agent_listen_host} exposes an unauthenticated plaintext gRPC runtime endpoint on a non-loopback interface; set ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc for mutual TLS or bind the node agent to a loopback host"
+      end
+
       config :orchard_node_agent,
         runtime:
           Keyword.merge(
@@ -1232,7 +1246,7 @@ if config_env() == :prod do
             grpc_security: grpc_security,
             display_name: System.get_env("ORCHARD_NODE_DISPLAY_NAME"),
             listen_address: [
-              host: System.get_env("ORCHARD_NODE_AGENT_LISTEN_HOST") || "127.0.0.1",
+              host: node_agent_listen_host,
               port: env_int.("ORCHARD_NODE_AGENT_LISTEN_PORT", "50061")
             ],
             models_root:

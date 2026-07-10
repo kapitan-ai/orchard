@@ -3,6 +3,8 @@ defmodule Orchard.NodeTrust.PKI do
 
   require Record
 
+  alias Orchard.PKI.CertificateValidity
+
   Record.defrecord(
     :otp_certificate,
     :OTPCertificate,
@@ -133,8 +135,8 @@ defmodule Orchard.NodeTrust.PKI do
     _kind, _reason -> {:error, :node_trust_pki_generation_failed}
   end
 
-  @spec valid_material?(map()) :: boolean()
-  def valid_material?(material) do
+  @spec valid_material?(map(), DateTime.t()) :: boolean()
+  def valid_material?(material, now \\ DateTime.utc_now()) do
     decoded = decode_material(material)
 
     [
@@ -143,6 +145,7 @@ defmodule Orchard.NodeTrust.PKI do
       private_keys_match_certificates?(decoded),
       certificate_signatures_valid?(decoded),
       certificate_extensions_valid?(material, decoded),
+      certificates_current?(decoded, now),
       fingerprints_valid?(material, decoded),
       decoded.controller_public_key != decoded.ca_public_key
     ]
@@ -194,6 +197,11 @@ defmodule Orchard.NodeTrust.PKI do
         decoded.controller_der,
         Map.fetch!(material, :controller_uri_san)
       )
+  end
+
+  defp certificates_current?(decoded, now) do
+    CertificateValidity.current?(certificate_tbs(decoded.ca_der), now) and
+      CertificateValidity.current?(certificate_tbs(decoded.controller_der), now)
   end
 
   defp fingerprints_valid?(material, decoded) do
@@ -421,9 +429,14 @@ defmodule Orchard.NodeTrust.PKI do
   end
 
   defp certificate_extensions(der) do
+    der
+    |> certificate_tbs()
+    |> otp_tbs_certificate(:extensions)
+  end
+
+  defp certificate_tbs(der) do
     certificate = :public_key.pkix_decode_cert(der, :otp)
-    tbs = otp_certificate(certificate, :tbsCertificate)
-    otp_tbs_certificate(tbs, :extensions)
+    otp_certificate(certificate, :tbsCertificate)
   end
 
   defp extension_value(extensions, oid) do
