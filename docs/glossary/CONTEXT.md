@@ -656,7 +656,7 @@ The resolved licensing mode, `off`, `warn`, or `hard`, that controls licensing c
 _Avoid_: license validity, Console-only visibility flag, Payload Capture Mode
 
 **DMG Installer**:
-The interactive macOS distribution container for Orchard installer materials.
+The interactive macOS distribution container whose primary artifact is a verified `Orchard.app` that owns the root-authorized service lifecycle; PKG remains an optional compatibility and offline/manual artifact.
 _Avoid_: PKG Installer, launchd service
 
 **PKG Installer**:

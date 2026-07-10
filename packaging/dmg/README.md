@@ -123,6 +123,9 @@ Release notes and verification metadata are sidecars instead of files injected i
 Amore owns final image assembly and notarization, so rewriting its DMG afterward would invalidate the outer distribution trust boundary.
 Developer ID mode therefore requires `--release-notes-file`; the ad hoc local smoke accepts it but does not require it.
 
+Once mounted-app verification succeeds — and, in Developer ID mode, the staple validates — Orchard retains the DMG and its sidecars even if a later checksum-write or draft-publication step fails.
+A failure before that verification point removes the partial DMG and sidecar outputs.
+
 ## Validation
 
 Run the Swift and integration workflow documented in `AGENTS.md` and `docs/tooling.md`.
