@@ -3649,7 +3649,7 @@ Default = `metadata`
 The macOS-native packaging model SHALL use:
 
 * **DMG** for interactive installs
-* **PKG** for unattended/enterprise installs
+* **PKG** for root-authorized service installs and repeatable local/offline installer flows
 
 Apple recommends notarization for directly distributed macOS software, and signed DMG or signed PKG are the preferred direct-distribution formats outside the App Store. ([Apple Developer][8])
 
@@ -3709,14 +3709,11 @@ DMG SHALL include:
 PKG SHALL support:
 
 * unattended `installer -pkg ... -target /`
-* MDM deployment
 * postinstall creation of launchd plists
 * optional managed DB enablement
 * optional controller-only or node-only install modes
 
 PKG `postinstall` SHALL NOT generate, procure, or trust production TLS certificate material by default. On a controller/all-role install with no TLS material, `postinstall` SHALL continue launchd plist installation and print supported post-install actions: configure `ORCHARD_TRANSPORT_MODE=direct_https` with operator-provided certificate/key material, run the explicit `orchardctl tls init --no-trust` local-CA helper for local/dev-lab bootstrap, or configure `ORCHARD_TRANSPORT_MODE=plain_http_localhost` for local/emergency HTTP behavior. During the one-release legacy compatibility window, `ORCHARD_TLS_CERTFILE`/`ORCHARD_TLS_KEYFILE` and `ORCHARD_TLS_DISABLED=true` MAY be accepted as shims for those modes. `postinstall` SHALL NOT mutate system trust stores.
-
-Apple’s enterprise deployment guidance supports package distribution to managed Macs. ([Apple Support][9])
 
 ### 11.5 Managed Database Mode
 
@@ -3732,7 +3729,7 @@ Implementation choice:
 
 * use Apple Containerization-based runtime, with the open-source `container` implementation acceptable as the packaged runtime interface
 
-Apple’s Containerization project is a Swift package for Linux containers on macOS using Apple Silicon virtualization, and `container` is its CLI implementation. ([Apple Open Source][10])
+Apple’s Containerization project is a Swift package for Linux containers on macOS using Apple Silicon virtualization, and `container` is its CLI implementation. ([Apple Open Source][9])
 
 ### 11.6 External Database Mode
 
@@ -4178,5 +4175,4 @@ This spec defines the v1 platform contract. The coding agent should implement it
 [6]: https://developers.openai.com/api/docs/guides/streaming-responses/ "https://developers.openai.com/api/docs/guides/streaming-responses/"
 [7]: https://opentelemetry.io/docs/languages/erlang/ "https://opentelemetry.io/docs/languages/erlang/"
 [8]: https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution "https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution"
-[9]: https://support.apple.com/en-sg/guide/deployment/dep873c25ac4/web "https://support.apple.com/en-sg/guide/deployment/dep873c25ac4/web"
-[10]: https://opensource.apple.com/projects/containerization "https://opensource.apple.com/projects/containerization"
+[9]: https://opensource.apple.com/projects/containerization "https://opensource.apple.com/projects/containerization"

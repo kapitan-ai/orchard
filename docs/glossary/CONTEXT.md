@@ -660,7 +660,7 @@ The interactive macOS distribution container for Orchard installer materials.
 _Avoid_: PKG Installer, launchd service
 
 **PKG Installer**:
-The unattended or enterprise macOS package distribution format that installs Orchard payloads and launchd plists.
+The root-authorized macOS package installer that installs Orchard payloads and launchd plists.
 _Avoid_: DMG Installer, LaunchDaemon runtime service
 
 **LaunchDaemon**:

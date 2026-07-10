@@ -203,7 +203,7 @@ The installer also always boots out and removes stale
 `com.orchard.postgres.plist` before role validation, because managed Postgres
 LaunchDaemon service mode is unsupported in this build.
 
-MDM/Jamf automation should create the same root-owned request file before
+Local automation should create the same root-owned request file before
 installing the universal PKG. Recommended request-file permissions are
 `0600 root:wheel`.
 
@@ -796,7 +796,7 @@ Default TLS file paths are relative to `ORCHARD_SUPPORT_ROOT` (default
 
 ## Reverse Proxy TLS Termination
 
-Use `reverse_proxy` when nginx, Caddy, Traefik, a load balancer, or an MDM-managed edge proxy owns public HTTPS. Orchard listens on HTTP behind that proxy and trusts forwarded headers only from configured proxy CIDRs.
+Use `reverse_proxy` when nginx, Caddy, Traefik, a load balancer, or an operator-managed edge proxy owns public HTTPS. Orchard listens on HTTP behind that proxy and trusts forwarded headers only from configured proxy CIDRs.
 
 Minimal `controller.env` for a loopback proxy on the same Mac:
 
@@ -1161,7 +1161,7 @@ The installer writes role and diagnostic markers under `support/`:
 
 | File | Purpose | Lifecycle |
 |------|---------|-----------|
-| `.install-role.request` | Transient: requested install role (`all`, `controller`, `node-agent`) | Created by operator/MDM before install, removed on postinstall success |
+| `.install-role.request` | Transient: requested install role (`all`, `controller`, `node-agent`) | Created by the operator before install, removed on postinstall success |
 | `.install-role` | Persistent: selected install role and lifecycle source of truth | Atomically written on postinstall success, preserved on upgrades unless a new request is seeded |
 | `.pkg-install-context` | Transient: install mode (fresh/upgrade) | Written by preinstall, removed on postinstall success |
 | `.pkg-install-complete` | Persistent: last successful install timestamp | Written on postinstall success, never auto-removed |
@@ -1181,7 +1181,7 @@ default `all`). After install, use this first-run sequence for
 controller-bearing installs (`all` or `controller`):
 
 1. Provide or verify the Orchard license through the supported licensing path;
-   do not place license keys in shell history, logs, package payloads, or MDM
+   do not place license keys in shell history, logs, package payloads, or
    command arguments.
 2. Run `sudo orchardctl env init --service controller` for controller-only hosts, or `sudo orchardctl env init --service all` for all-in-one hosts.
 3. Edit `controller.env` with external `DATABASE_URL`, the generated or deliberately rotated `SECRET_KEY_BASE`, BEAM Runtime Endpoint targets, BEAM cookie path, and transport settings.
@@ -1483,16 +1483,15 @@ shasum -a 256 Orchard-<version>-<date>-<sha>-signed.pkg
 
 Keep signing credentials, App Store Connect credentials, notary profile
 secrets, activation keys, and customer identifiers out of package payloads,
-casks, MDM policies, logs, and documentation examples.
+casks, deployment scripts, logs, and documentation examples.
 
-## Homebrew private cask
+## Potential Homebrew Cask
 
-A private Homebrew tap can install the same signed and notarized PKG used for
-direct downloads. The cask should pin the exact SHA-256 of the signed PKG and
-must not embed license keys, customer names, organization identifiers, or other
-customer-specific material.
+Homebrew cask distribution is not a v1 packaging requirement.
+If Orchard later adds a private tap or convenience cask, it should install the same signed and notarized PKG used for direct downloads.
+The cask should pin the exact SHA-256 of the signed PKG and must not embed license keys, customer names, organization identifiers, or other customer-specific material.
 
-Example private cask:
+Example future cask shape:
 
 ```ruby
 cask "orchard" do
@@ -1526,8 +1525,7 @@ cask "orchard" do
 end
 ```
 
-Install from the private tap according to the tap's access policy, then activate
-out-of-band:
+If this channel is added later, install from the tap according to the tap's access policy, then activate out of band:
 
 ```bash
 brew install --cask <private-tap>/orchard/orchard
@@ -1538,33 +1536,13 @@ Activation remains a separate operator step because evaluator/customer identity
 lives in the license service and local activation bundle, not in the package or
 Homebrew cask.
 
-## Jamf / managed deployment
+## Managed Device Deployment
 
-Jamf Pro and equivalent MDM tools should deploy the same signed and notarized
-PKG used for direct and Homebrew installs. Upload the signed PKG, scope it to the
-intended Macs, and use standard policy ordering for prerequisites such as the
-install role request file, database configuration, and service start workflow.
+Jamf and MDM deployment are not v1 packaging requirements.
+If they become real customer requirements later, add a dedicated change with acceptance criteria for managed-device policy ordering, secret handling, activation, and logging.
 
-Customer specificity should live in activation, not in a repackaged Orchard
-installer. Common patterns are:
-
-- a scoped post-install script that writes a protected Jamf parameter or secret
-  store value to a temporary root-readable `0600` file, runs
-  `orchardctl license activate --key-file "$key_file"`, then deletes the file;
-- an MDM-managed secret/profile that the activation script reads at runtime;
-- a signed license seed package or profile only when interactive or online
-  activation is not available.
-
-Jamf policy logs can capture script arguments and stdout/stderr. Do not hardcode
-license keys in reusable policies, package payloads, casks, or visible command
-examples. Prefer a protected parameter, secret store, or short-lived one-time
-activation handoff, and ensure scripts do not echo keys. Record only safe
-activation outcomes such as license state, license ID, expiry, and tracking
-program/reference.
-
-The distribution artifact remains generic across direct download, Homebrew, and
-Jamf. Evaluator/customer attribution and limits are enforced by license
-activation and Keygen policy/license records.
+The distribution artifact remains generic across current and future channels.
+Evaluator/customer attribution and limits are enforced by license activation and Keygen policy/license records.
 
 ## PKG Filename Policy
 
@@ -1598,7 +1576,7 @@ Orchard-0.5.0-dev-20260417-e152300.pkg
 1. **App version first**: Users see `0.5.0-dev` in both filename and `orchardctl status`
 2. **Date for sorting**: Chronological ordering when multiple builds exist
 3. **Git hash last**: Developer/support traceability without user confusion
-4. **Hyphen separators**: Tooling-friendly (URLs, MDM, Jamf, etc.)
+4. **Hyphen separators**: Tooling-friendly for URLs, shell scripts, and release automation
 
 ### Version Mismatch Clarification
 
@@ -1612,9 +1590,10 @@ This is distinct from packaging iteration numbers (previously used `v0.2.1`
 etc.) which caused confusion when the PKG claimed one version but the app
 reported another.
 
-### Enterprise Deployment
+### Local Automation
 
-For MDM/Jamf deployment automation:
+For local package automation:
+
 - Use the full traceable filename for internal tracking
 - Consider a symlink or alias `Orchard-latest-dev.pkg` for automation
 - Checksum verification is recommended for security
