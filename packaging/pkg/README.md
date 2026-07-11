@@ -160,6 +160,8 @@ gRPC compatibility fallback:
 - Set `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="grpc"` on the controller and node-agent hosts.
 - Configure node-agent `ORCHARD_NODE_AGENT_LISTEN_HOST` and `ORCHARD_NODE_AGENT_LISTEN_PORT` for a trusted private network or VPN.
 - Configure controller `ORCHARD_RUNTIME_CLIENT_TARGETS` with comma-separated node-agent `host:port` values.
+- Enroll and admit the node so the controller schedules it from trusted Node inventory; the certificate-backed gRPC path requires the issued Node Certificate, so `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT="grpc"` selects mutual TLS automatically.
+- Set `ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK="true"` only to schedule static `ORCHARD_RUNTIME_CLIENT_TARGETS` without an enrolled, admitted node; it is off by default.
 - Use this path only for compatibility or diagnostic fallback, not as the packaged happy path.
 
 Explicit deferrals:
@@ -420,6 +422,8 @@ sudo chmod 600 '/Library/Application Support/Orchard/config/controller.env'
 | `ORCHARD_BEAM_EPMD_PORT` | `4369` | EPMD port. Set the same override on every Mac when needed. |
 | `ORCHARD_BEAM_DIST_PORT_MIN` / `ORCHARD_BEAM_DIST_PORT_MAX` | `52171` | Controller BEAM distribution port range. |
 | `ORCHARD_RUNTIME_CLIENT_TARGETS` | unset | gRPC compatibility fallback only. Comma-separated node-agent `host:port` values. |
+| `ORCHARD_ALLOW_STATIC_RUNTIME_TARGET_FALLBACK` | `false` | Compatibility escape hatch. When `true`, the controller schedules `ORCHARD_RUNTIME_CLIENT_TARGETS` while no enrolled Node is admitted; the packaged happy path leaves this `false` and derives targets from trusted Node inventory. |
+| `ORCHARD_NODE_TRUST_ROOT` | `/Library/Application Support/Orchard/config/node-trust` | Controller root for internal Node trust material initialized by `orchardctl nodes trust init`; rare override when the support-root layout is intentionally changed. |
 | `POOL_SIZE` | `10` | Ecto connection pool size |
 | `ECTO_IPV6` | — | Set to `true` for IPv6 socket options |
 
@@ -662,6 +666,7 @@ operator/support diagnostics and do not affect license enforcement.
 | `ORCHARD_LICENSE_ENFORCEMENT` | `hard` for distributed channels; `off` for `dev` | Shared controller/node-agent/CLI enforcement mode: `off`, `warn`, or `hard`. Explicit values override the build-channel default for recovery. |
 | `ORCHARD_LICENSE_BUNDLE_PATH` | `/Library/Application Support/Orchard/config/licensing/current.json` | Rare Orchard-directed override for alternate support-root layouts or debugging |
 | `ORCHARD_NODE_IDENTITY_PATH` | `/Library/Application Support/Orchard/data/node-id` | Rare override when Orchard support-root layout is intentionally changed |
+| `ORCHARD_NODE_IDENTITY_ROOT` | `/Library/Application Support/Orchard/config/node-identity` | Owner-only node-agent root for the Node key, issued Node Certificate, and runtime trust persisted during `orchardctl node join`; rare override when the support-root layout is intentionally changed |
 | `ORCHARD_KEYGEN_API_BASE_URL` | `https://api.keygen.sh` | Optional Orchard-directed override for alternate provider environments |
 | `ORCHARD_KEYGEN_ACCOUNT_ID` | built-in Orchard Keygen account ID | Optional override; keep paired with matching public key |
 | `ORCHARD_KEYGEN_PUBLIC_KEY` | built-in Orchard Ed25519 verification key | Optional override; keep paired with matching account ID |
@@ -1231,6 +1236,13 @@ written only to that file, never stdout), refuses a second init with
 minting, `--client-name`, and `--json`. It is credential-only: TLS material and
 role/service setup remain separate, and `postinstall` never seeds admin
 credentials.
+
+`orchardctl nodes trust init` initializes the distinct internal Node trust
+authority on the controller host after migrations. It is local, leader-gated,
+and idempotent, stores protected material under `ORCHARD_NODE_TRUST_ROOT`, never
+prints or exports CA or Controller private key material, and is separate from
+the credential-only `orchardctl cluster init` operation. Node trust must be
+initialized before enrollment bundles can be issued.
 
 `orchardctl nodes enrollment create --output PATH` creates an owner-only,
 single-Node Enrollment bundle on the active controller host.
