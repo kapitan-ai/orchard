@@ -92,7 +92,7 @@ defmodule Orchard.Scheduler.MultiNode do
     targets = Inference.runtime_endpoint_targets()
 
     if targets == [] do
-      fallback_schedule(request, targets, opts)
+      {:error, :no_active_nodes}
     else
       schedule_multi(request, targets, opts)
     end
@@ -400,54 +400,7 @@ defmodule Orchard.Scheduler.MultiNode do
     case client.connect(target) do
       {:ok, channel} ->
         try do
-          case client.status(channel, timeout: timeout) do
-            {:ok, response} ->
-              observation = normalize_status_observation(target, response)
-
-              case BeamIdentity.resolve_candidate_node_id(target, observation) do
-                :missing ->
-                  nil
-
-                {:rejected, reason} ->
-                  Nodes.clear_target_queue_capacity_sources(
-                    observation_target(target),
-                    observed_at
-                  )
-
-                  {:rejected, reason}
-
-                {:ok, node_id} ->
-                  Nodes.observe_status(observation_target(target), observation, observed_at,
-                    reserve_unassigned_node_grants?: true,
-                    reserve_unassigned_source_grants?: true
-                  )
-
-                  loaded_model? = model_loaded?(observation, request)
-
-                  {:candidate,
-                   %{
-                     node_id: node_id,
-                     target: schedule_target(target, node_id),
-                     availability: observation.availability,
-                     loaded_model?: loaded_model?,
-                     active_request_count: observation.aggregate_active_request_count,
-                     max_concurrency: node_max_concurrency(observation),
-                     supports_prompt_token_ids: observation.supports_prompt_token_ids
-                   }
-                   |> maybe_put_model_placement_capacity(
-                     model_placement_capacity_for(observation, request.model_ref, loaded_model?)
-                   )
-                   |> maybe_put_prefix_cache_status(
-                     prefix_cache_status_for(observation, request.model_ref)
-                   )
-                   |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))}
-              end
-
-            {:error, reason} ->
-              # Persist transport-like probe failures best-effort
-              Nodes.record_transport_failure(observation_target(target), reason, observed_at)
-              nil
-          end
+          probe_status(target, client, channel, timeout, observed_at, request)
         after
           disconnect_best_effort(client, channel)
         end
@@ -456,6 +409,57 @@ defmodule Orchard.Scheduler.MultiNode do
         # Persist transport-like connect failures best-effort
         Nodes.record_transport_failure(observation_target(target), reason, observed_at)
         nil
+    end
+  end
+
+  defp probe_status(target, client, channel, timeout, observed_at, request) do
+    case client.status(channel, timeout: timeout) do
+      {:ok, response} ->
+        observation = normalize_status_observation(target, response)
+        resolve_probe_observation(target, observation, observed_at, request)
+
+      {:error, :authenticated_observation_rejected} ->
+        nil
+
+      {:error, reason} ->
+        # Persist transport-like probe failures best-effort
+        Nodes.record_transport_failure(observation_target(target), reason, observed_at)
+        nil
+    end
+  end
+
+  defp resolve_probe_observation(target, observation, observed_at, request) do
+    case BeamIdentity.resolve_candidate_node_id(target, observation) do
+      :missing ->
+        nil
+
+      {:rejected, reason} ->
+        Nodes.clear_target_queue_capacity_sources(observation_target(target), observed_at)
+        {:rejected, reason}
+
+      {:ok, node_id} ->
+        Nodes.observe_status(observation_target(target), observation, observed_at,
+          reserve_unassigned_node_grants?: true,
+          reserve_unassigned_source_grants?: true
+        )
+
+        loaded_model? = model_loaded?(observation, request)
+
+        {:candidate,
+         %{
+           node_id: node_id,
+           target: schedule_target(target, node_id),
+           availability: observation.availability,
+           loaded_model?: loaded_model?,
+           active_request_count: observation.aggregate_active_request_count,
+           max_concurrency: node_max_concurrency(observation),
+           supports_prompt_token_ids: observation.supports_prompt_token_ids
+         }
+         |> maybe_put_model_placement_capacity(
+           model_placement_capacity_for(observation, request.model_ref, loaded_model?)
+         )
+         |> maybe_put_prefix_cache_status(prefix_cache_status_for(observation, request.model_ref))
+         |> maybe_put_memory_budget(memory_budget_for(observation, request.model_ref))}
     end
   end
 

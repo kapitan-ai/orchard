@@ -6,6 +6,7 @@ defmodule Orchard.Inference do
   use Supervisor
 
   alias Orchard.Inference.{CacheAffinity, QueueManager}
+  alias Orchard.Nodes
   alias Orchard.Requests.Supervisor, as: RequestsSupervisor
   alias Orchard.RuntimeEndpoint.Target
 
@@ -242,23 +243,42 @@ defmodule Orchard.Inference do
   Returns normalized Runtime Endpoint targets for scheduler, dispatch, and
   Console live diagnostics.
 
-  Explicit `:runtime_endpoint_targets` override legacy
-  `:runtime_client_targets`, allow BEAM targets, and force endpoint-aware
-  scheduling even when only one target is configured.
+  Enrolled admitted or active inventory is authoritative when available.
+  Explicit `:runtime_endpoint_targets` override legacy `:runtime_client_targets`
+  only as a compatibility fallback when trusted inventory is empty.
   """
   @spec runtime_endpoint_targets() :: [Target.t()]
   def runtime_endpoint_targets do
-    case config()[:runtime_endpoint_targets] do
-      targets when is_list(targets) and targets != [] ->
-        targets
-        |> Enum.map(&runtime_endpoint_target/1)
-        |> Enum.uniq_by(& &1.id)
+    case Nodes.active_runtime_endpoint_targets() do
+      {:ok, []} -> runtime_target_fallback_without_admitted_nodes()
+      {:ok, targets} -> targets
+      {:error, :node_inventory_unavailable} -> []
+    end
+  end
 
-      _other ->
-        runtime_client_targets()
-        |> Enum.reject(&is_nil/1)
-        |> Enum.map(&runtime_endpoint_target/1)
-        |> Enum.uniq_by(& &1.id)
+  @spec static_runtime_target_fallback_enabled?() :: boolean()
+  def static_runtime_target_fallback_enabled? do
+    config()[:allow_static_runtime_target_fallback] == true
+  end
+
+  @spec static_runtime_target?(Target.t()) :: boolean()
+  def static_runtime_target?(%Target{} = target) do
+    normalized = Target.normalize(target)
+
+    static_runtime_target_fallback_enabled?() and
+      Enum.any?(configured_runtime_endpoint_targets(), fn configured ->
+        configured.transport == normalized.transport and
+          configured.address == normalized.address and
+          (is_nil(configured.node_id) or configured.node_id == normalized.node_id)
+      end)
+  end
+
+  @doc "Returns admitted certificate-backed targets for authenticated status probes only."
+  @spec activation_probe_runtime_endpoint_targets() :: [Target.t()]
+  def activation_probe_runtime_endpoint_targets do
+    case Nodes.activation_probe_runtime_endpoint_targets() do
+      {:ok, targets} -> targets
+      {:error, :node_inventory_unavailable} -> []
     end
   end
 
@@ -290,15 +310,54 @@ defmodule Orchard.Inference do
   end
 
   defp auto_scheduler do
+    case Nodes.active_runtime_endpoint_targets() do
+      {:ok, []} -> auto_scheduler_without_active_nodes()
+      {:ok, _targets} -> Orchard.Scheduler.MultiNode
+      {:error, :node_inventory_unavailable} -> Orchard.Scheduler.MultiNode
+    end
+  end
+
+  defp auto_scheduler_without_active_nodes do
+    case Nodes.activation_probe_runtime_endpoint_targets() do
+      {:ok, [_target | _rest]} -> Orchard.Scheduler.MultiNode
+      {:ok, []} -> configured_auto_scheduler()
+      {:error, :node_inventory_unavailable} -> Orchard.Scheduler.MultiNode
+    end
+  end
+
+  defp runtime_target_fallback_without_admitted_nodes do
+    if static_runtime_target_fallback_enabled?() do
+      case Nodes.activation_probe_runtime_endpoint_targets() do
+        {:ok, []} -> configured_runtime_endpoint_targets()
+        {:ok, [_target | _rest]} -> []
+        {:error, :node_inventory_unavailable} -> []
+      end
+    else
+      []
+    end
+  end
+
+  defp configured_auto_scheduler do
     cond do
-      explicit_runtime_endpoint_targets?() ->
-        Orchard.Scheduler.MultiNode
+      not static_runtime_target_fallback_enabled?() -> Orchard.Scheduler.MultiNode
+      explicit_runtime_endpoint_targets?() -> Orchard.Scheduler.MultiNode
+      runtime_client_targets() != [] -> Orchard.Scheduler.MultiNode
+      true -> Orchard.Scheduler.SingleNode
+    end
+  end
 
-      runtime_client_targets() != [] ->
-        Orchard.Scheduler.MultiNode
+  defp configured_runtime_endpoint_targets do
+    case config()[:runtime_endpoint_targets] do
+      targets when is_list(targets) and targets != [] ->
+        targets
+        |> Enum.map(&runtime_endpoint_target/1)
+        |> Enum.uniq_by(& &1.id)
 
-      true ->
-        Orchard.Scheduler.SingleNode
+      _other ->
+        runtime_client_targets()
+        |> Enum.reject(&is_nil/1)
+        |> Enum.map(&runtime_endpoint_target/1)
+        |> Enum.uniq_by(& &1.id)
     end
   end
 

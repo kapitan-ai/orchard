@@ -46,6 +46,12 @@ defmodule Orchard.Dispatch.DispatchTest.DisconnectRaisingClient do
   def cancel_inference(_channel, %Operation.CancelRequest{}, _opts \\ []), do: :ok
 end
 
+defmodule Orchard.Dispatch.DispatchTest.NoConnectClient do
+  @moduledoc false
+
+  def connect(_target), do: raise("activation target must not receive dispatch operations")
+end
+
 defmodule Orchard.Dispatch.DispatchTest do
   @moduledoc """
   Tests for R6: single-node dispatch and cancellation.
@@ -76,6 +82,7 @@ defmodule Orchard.Dispatch.DispatchTest do
   alias Orchard.InferenceEvent
   alias Orchard.Node
   alias Orchard.Node.ModelManager
+  alias Orchard.RuntimeEndpoint.Target
 
   @model_id "mlx-community/phi-3"
   @version "main"
@@ -189,6 +196,31 @@ defmodule Orchard.Dispatch.DispatchTest do
   end
 
   describe "RequestDispatcher" do
+    test "rejects an admitted activation-probe target before transport connection", %{
+      bundle: bundle
+    } do
+      target =
+        Target.grpc_compat(
+          host: "127.0.0.1",
+          port: 50_071,
+          node_id: Ecto.UUID.generate(),
+          metadata: %{authorization: :activation_probe, source: :trusted_node_inventory}
+        )
+
+      schedule =
+        "req-admitted-dispatch-rejected"
+        |> build_schedule()
+        |> Map.put(:runtime_endpoint_target, target)
+
+      assert {:error, {:dispatch_failed, :node_not_active}} =
+               RequestDispatcher.dispatch(
+                 schedule,
+                 execute_request("req-admitted-dispatch-rejected"),
+                 model_load_request(bundle),
+                 client_impl: Orchard.Dispatch.DispatchTest.NoConnectClient
+               )
+    end
+
     test "dispatches a request and returns all events including terminal", %{bundle: bundle} do
       schedule = build_schedule("req-dispatch-e2e")
       execute = execute_request("req-dispatch-e2e")
@@ -341,6 +373,19 @@ defmodule Orchard.Dispatch.DispatchTest do
 
     test "dispatch returns sanitized error when node connection fails" do
       # Use a target that will fail to connect — port 1 is privileged and won't have a gRPC server
+      inference = Application.fetch_env!(:orchard_controller, :inference)
+
+      Application.put_env(
+        :orchard_controller,
+        :inference,
+        Keyword.merge(inference,
+          runtime_client_target: [host: "127.0.0.1", port: 1],
+          runtime_client_targets: []
+        )
+      )
+
+      on_exit(fn -> Application.put_env(:orchard_controller, :inference, inference) end)
+
       schedule = %{
         strategy: :single_node,
         request_id: "req-connect-fail",

@@ -82,7 +82,12 @@ defmodule Orchard.Application do
 
   defp maybe_add_repo(children) do
     if Application.get_env(:orchard_controller, :start_repo, true) do
-      children ++ [Orchard.Repo]
+      children ++
+        [
+          Orchard.Repo,
+          Orchard.NodeEnrollments.PendingPublicationReconciler,
+          Orchard.RuntimeEndpoint.ActivationProbe
+        ]
     else
       children
     end

@@ -16,7 +16,7 @@ product/system/build contract.
   a target mode but is not available in current builds; the packaged
   `orchard-managed-postgres` helper is an operator-safe guard, not a runtime
   service.
-- **Current CLI limitation:** the SPEC-required future path `orchardctl node join` is routed by `orchardctl` but returns deferred-status errors with the current supported path.
+- **CLI operations:** `orchardctl nodes trust init` initializes the internal Node trust authority, `orchardctl nodes enrollment create --output PATH` issues an owner-only single-Node Enrollment Bundle from the active controller, and `orchardctl node join --enrollment-bundle PATH` redeems it with pinned controller trust, persisting the local Node identity and issued Node Certificate; the joined Node stays non-schedulable until explicit admission.
   `orchardctl cluster init` mints the first cluster-admin API Client credential as a local, one-shot, audited controller-host operation behind the leader-only write gate, delivering the token exactly once through a required `--output` One-time Secret Output path (never stdout), refusing a second init with `cluster_already_initialized`, and supporting `--force-new-admin --yes` recovery minting, `--client-name`, and `--json`.
   `orchardctl requests inspect <request-id>` reads the local controller Repo and renders the persisted scheduler explanation for a request, with stable human and `--json` output from the shared Operator API presenter.
   Broader request execution diagnostics beyond persisted scheduler explanations remain future work.

@@ -207,6 +207,9 @@ ELIXIR
 |----------|---------|-------------|
 | `ORCHARD_NODE_AGENT_LISTEN_HOST` | `127.0.0.1` | gRPC listen address. Set to `0.0.0.0` on a remote node-agent for 2-node testing. |
 | `ORCHARD_NODE_AGENT_LISTEN_PORT` | `50071` (source dev) / `50061` (packaged) | gRPC listen port |
+| `ORCHARD_NODE_AGENT_ADVERTISE_HOST` | Listen host or `127.0.0.1` | Controller-reachable host persisted during `orchardctl node join`; required when the listen host is wildcard-bound. |
+| `ORCHARD_NODE_AGENT_ADVERTISE_PORT` | Listen port | Controller-reachable gRPC compatibility port persisted during `orchardctl node join`. |
+| `ORCHARD_NODE_HOSTNAME` | Local hostname | Stable Node inventory hostname persisted during `orchardctl node join`. |
 | `ORCHARD_RUNTIME_CLIENT_PORT` | Same as listen port | Controller gRPC client port (must match listen port) |
 | `ORCHARD_MODELS_ROOT` | `tmp/dev/models` | Model artifact storage |
 | `ORCHARD_WORKER_SOCKET_DIR` | `/tmp/od-<hash>/ws` | Worker UDS directory |
@@ -533,7 +536,9 @@ Use the BEAM Runtime Endpoint flow for the default split-role source-dev cluster
 Use the gRPC compatibility flow only when you intentionally opt out with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc` or need side-by-side comparison.
 
 `orchardctl cluster init` mints the first cluster-admin API Client credential as a local, one-shot, audited controller-host operation behind the leader-only write gate, requiring a `--output` One-time Secret Output path (the token is written only to that file, never stdout), refusing a second init with `cluster_already_initialized`, and supporting `--force-new-admin --yes` recovery minting, `--client-name`, and `--json`.
-`orchardctl node join` is a SPEC-required future node-lifecycle command; in this build it returns deferred status.
+`orchardctl nodes trust init` initializes the internal Node trust authority on the controller host and is a required, idempotent, leader-gated prerequisite before any enrollment bundle can be issued; it is separate from the credential-only `orchardctl cluster init`.
+`orchardctl nodes enrollment create --output PATH` issues an owner-only, single-Node Enrollment bundle from the active controller, and `orchardctl node join --enrollment-bundle PATH` redeems it with pinned controller trust before persisting the Node identity and validated gRPC compatibility advertisement.
+Set `ORCHARD_NODE_AGENT_ADVERTISE_HOST` to a Controller-reachable private address when `ORCHARD_NODE_AGENT_LISTEN_HOST` is `0.0.0.0`; wildcard addresses fail closed and are never persisted as trusted targets.
 `orchardctl cluster status [--json]` is implemented for read-only cluster and control-plane status, with the shared `ControlPlaneStatus` payload and a control-plane summary in `--json` mode.
 `orchardctl nodes inspect`, `orchardctl nodes pending`, `orchardctl nodes admit`, and `orchardctl nodes reject` are implemented for the current node-admission-review slice, with stable JSON and human output, `--dry-run` previews, and `--yes`/`--reason` execution gating.
 `orchardctl nodes inspect` also renders an observe-only runtime memory-budget block in both human and `--json` output when the matching Runtime Endpoint snapshot reports memory-budget telemetry, and fails open by omitting the block when none is available.
@@ -921,6 +926,7 @@ When present, tracking metadata appears in:
 | `ORCHARD_LICENSE_ENFORCEMENT` | `off` (source dev/test) / `hard` (distributed packaged channels) | Node-agent startup and packaged useful-work admission mode: `off`, `warn`, `hard` |
 | `ORCHARD_LICENSE_BUNDLE_PATH` | `<support_root>/config/licensing/current.json` | Rare override for Orchard-directed alternate layouts/debugging |
 | `ORCHARD_NODE_IDENTITY_PATH` | `<support_root>/data/node-id` | Override only when Orchard support-root layout is intentionally changed |
+| `ORCHARD_NODE_IDENTITY_ROOT` | `<support_root>/config/node-identity` | Owner-only root for the Node key, issued Node Certificate, and runtime trust persisted during `orchardctl node join`; override only when the support-root layout is intentionally changed |
 | `ORCHARD_KEYGEN_API_BASE_URL` | `https://api.keygen.sh` | Optional override for Orchard-directed alternate environments |
 | `ORCHARD_KEYGEN_ACCOUNT_ID` | built-in Orchard Keygen account ID | Optional override; keep paired with matching public key |
 | `ORCHARD_KEYGEN_PUBLIC_KEY` | built-in Orchard Ed25519 verification key | Optional override; keep paired with matching account ID |

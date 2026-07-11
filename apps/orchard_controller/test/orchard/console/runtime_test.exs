@@ -6,7 +6,9 @@ defmodule OrchardConsole.RuntimeTest do
   alias OrchardConsole.Runtime
   import Orchard.TestSupport.RepoHelpers
 
-  setup do
+  setup tags do
+    Orchard.DataCase.setup_sandbox(tags)
+
     previous = Application.get_env(:orchard_controller, :console, [])
     previous_inference = Application.fetch_env!(:orchard_controller, :inference)
 
@@ -1636,8 +1638,8 @@ defmodule OrchardConsole.RuntimeTest do
     end
   end
 
-  describe "repo-off fallback" do
-    test "snapshot succeeds when Repo is unavailable during observe_status" do
+  describe "repo-off trust failure" do
+    test "snapshot fails closed when trusted inventory is unavailable" do
       # Use real Orchard.Nodes instead of StubNodes so observe_status hits the DB path
       Application.put_env(
         :orchard_controller,
@@ -1674,10 +1676,12 @@ defmodule OrchardConsole.RuntimeTest do
       )
 
       with_repo_unregistered(fn ->
-        assert {:ok, snapshot} = Runtime.snapshot()
-        assert snapshot.worker_state == :idle
-        assert snapshot.node_metadata != nil
-        assert snapshot.runtime_health != nil
+        assert {:error, snapshot} = Runtime.snapshot()
+        assert snapshot.status == :error
+        assert snapshot.code == "runtime_target_unconfigured"
+        assert snapshot.worker_state == :unknown
+        assert snapshot.node_metadata == nil
+        assert snapshot.runtime_health == nil
       end)
     end
   end

@@ -32,16 +32,18 @@ Pre-release. Orchard is built from a normative contract
 Working today: authenticated `/v1/models`, `/v1/chat/completions` with SSE, a
 bounded `/v1/responses` slice, tenant-direct API Tokens, and bulk API Client
 provisioning for service-account-owned tokens. On the operations side,
-`orchardctl` provides node admission review, node lifecycle previews and
-execution (cordon, drain, decommission; maintenance previews only), request
+`orchardctl` provides internal Node trust initialization, secure single-Node
+enrollment and join (`orchardctl nodes trust init`, `orchardctl nodes enrollment
+create`, `orchardctl node join`), node admission review, node lifecycle previews
+and execution (cordon, drain, decommission; maintenance previews only), request
 diagnostics with
 scheduler explanations, read-only cluster and control-plane status, and
 redacted support bundle creation, alongside a Console UI for the same
 cluster-management surfaces.
 
-Not yet operator-usable: multi-node cluster bootstrap and join, the multi-node
-scheduler, and managed Postgres (packaged controller installs require an
-external database).
+Not yet operator-usable: multi-node cluster bootstrap beyond the one-Controller
+one-Node enrollment tracer, the multi-node scheduler, and managed Postgres
+(packaged controller installs require an external database).
 
 ## Architecture
 

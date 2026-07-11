@@ -1173,7 +1173,7 @@ defmodule Orchard.NodesTest do
       end
     end
 
-    test "SPEC.md §4.3 admitted node becomes active after fresh healthy observation" do
+    test "SPEC.md §4.3 unauthenticated healthy observation does not activate admitted node" do
       node =
         insert_node!(%{
           state: :registered,
@@ -1197,8 +1197,8 @@ defmodule Orchard.NodesTest do
           listen_port: 9444
         })
 
-      assert {:ok, active} = Nodes.observe_status(target, status, DateTime.utc_now())
-      assert active.state == :active
+      assert {:ok, observed} = Nodes.observe_status(target, status, DateTime.utc_now())
+      assert observed.state == :admitted
     end
   end
 

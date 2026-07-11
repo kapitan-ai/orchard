@@ -5,18 +5,31 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
 
   @behaviour Orchard.RuntimeEndpoint.Client
 
-  alias Orchard.Cluster.V1.ScorePrefixCacheRequest
+  alias Orchard.Cluster.V1.{ScorePrefixCacheRequest, ScorePrefixCacheResponse}
   alias Orchard.Dispatch.GrpcNodeRuntimeClient, as: TransportClient
-  alias Orchard.RuntimeEndpoint.{GrpcCompatibilityMapper, GrpcMapping, Operation, Target}
+  alias Orchard.Nodes
 
-  defstruct [:channel, :target]
+  alias Orchard.RuntimeEndpoint.{
+    GrpcCompatibilityMapper,
+    GrpcMapping,
+    GrpcMTLS,
+    Operation,
+    Target
+  }
 
-  @type t :: %__MODULE__{channel: GRPC.Channel.t(), target: Target.t()}
+  defstruct [:channel, :target, :security]
+
+  @type t :: %__MODULE__{
+          channel: GRPC.Channel.t(),
+          target: Target.t(),
+          security: GrpcMTLS.connection_security()
+        }
 
   @impl true
   def connect(%Target{transport: :grpc_compat} = target) do
-    with {:ok, channel} <- TransportClient.connect(target.address) do
-      {:ok, %__MODULE__{channel: channel, target: target}}
+    with {:ok, security} <- GrpcMTLS.for_target(target),
+         {:ok, channel} <- connect_transport(target, security) do
+      {:ok, %__MODULE__{channel: channel, target: target, security: security}}
     end
   end
 
@@ -34,9 +47,14 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
   end
 
   @impl true
-  def status(%__MODULE__{channel: channel, target: target}, opts \\ []) do
-    with {:ok, response} <- TransportClient.status(channel, opts) do
-      {:ok, GrpcCompatibilityMapper.observation_from_status(target, response)}
+  def status(%__MODULE__{channel: channel, target: target, security: security}, opts \\ []) do
+    case TransportClient.status(channel, opts) do
+      {:ok, response} ->
+        observation = GrpcCompatibilityMapper.observation_from_status(target, response)
+        authenticated_status_result(target, observation, security)
+
+      {:error, reason} ->
+        transport_status_error(reason, security)
     end
   end
 
@@ -104,26 +122,82 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
   def score_prefix_cache(target_or_connection, request, opts \\ [])
 
   def score_prefix_cache(
-        target_or_connection,
+        %__MODULE__{} = connection,
         %Operation.PrefixCacheScoreRequest{} = request,
         opts
       ) do
-    target = target_from(target_or_connection)
-    proto_request = GrpcCompatibilityMapper.prefix_cache_score_request_to_proto(request)
+    request = GrpcCompatibilityMapper.prefix_cache_score_request_to_proto(request)
+    score_prefix_cache(connection, request, opts)
+  end
 
-    with {:ok, response} <-
-           TransportClient.score_prefix_cache(target.address, proto_request, opts) do
-      {:ok, GrpcCompatibilityMapper.prefix_cache_score_result_from_response(response)}
+  def score_prefix_cache(target, %Operation.PrefixCacheScoreRequest{} = request, opts) do
+    request = GrpcCompatibilityMapper.prefix_cache_score_request_to_proto(request)
+    score_prefix_cache(target, request, opts)
+  end
+
+  def score_prefix_cache(
+        %__MODULE__{channel: channel},
+        %ScorePrefixCacheRequest{} = request,
+        opts
+      ) do
+    map_prefix_cache_score(TransportClient.score_prefix_cache(channel, request, opts))
+  end
+
+  def score_prefix_cache(target, %ScorePrefixCacheRequest{} = request, opts) do
+    target = target_from(target)
+
+    case connect(target) do
+      {:ok, connection} ->
+        try do
+          score_prefix_cache(connection, request, opts)
+        after
+          disconnect(connection)
+        end
+
+      {:error, _reason} ->
+        {:ok,
+         GrpcCompatibilityMapper.prefix_cache_score_result_from_response(
+           %ScorePrefixCacheResponse{
+             status_code: "error",
+             status_message: "runtime endpoint unavailable",
+             score_tier: "unknown"
+           }
+         )}
     end
   end
 
-  def score_prefix_cache(target_or_connection, %ScorePrefixCacheRequest{} = request, opts) do
-    target = target_from(target_or_connection)
+  defp map_prefix_cache_score({:ok, response}) do
+    {:ok, GrpcCompatibilityMapper.prefix_cache_score_result_from_response(response)}
+  end
 
-    with {:ok, response} <- TransportClient.score_prefix_cache(target.address, request, opts) do
-      {:ok, GrpcCompatibilityMapper.prefix_cache_score_result_from_response(response)}
+  defp connect_transport(target, :plaintext_compatibility) do
+    TransportClient.connect(target.address)
+  end
+
+  defp connect_transport(target, {:mutual_tls, credential, _peer}) do
+    TransportClient.connect(target.address, cred: credential)
+  end
+
+  defp authenticated_status_result(_target, observation, :plaintext_compatibility) do
+    {:ok, observation}
+  end
+
+  defp authenticated_status_result(target, observation, {:mutual_tls, _credential, peer}) do
+    case Nodes.observe_authenticated_status(
+           target,
+           observation,
+           observation.observed_at,
+           peer
+         ) do
+      {:ok, _node} -> {:ok, observation}
+      :noop -> {:error, :authenticated_observation_rejected}
     end
   end
+
+  defp transport_status_error(reason, :plaintext_compatibility), do: {:error, reason}
+
+  defp transport_status_error(_reason, {:mutual_tls, _credential, _peer}),
+    do: {:error, :authenticated_transport_failed}
 
   defp relay_execute_stream(channel, request, owner, runtime_ref, opts) do
     relay_opts =
@@ -146,7 +220,6 @@ defmodule Orchard.RuntimeEndpoint.GrpcCompatibilityClient do
     end
   end
 
-  defp target_from(%__MODULE__{target: target}), do: target
   defp target_from(%Target{} = target), do: target
   defp target_from(target), do: GrpcCompatibilityMapper.normalize_target(target)
 end

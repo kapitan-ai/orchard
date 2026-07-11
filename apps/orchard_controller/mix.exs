@@ -21,7 +21,7 @@ defmodule OrchardController.MixProject do
   def application do
     [
       mod: {Orchard.Application, []},
-      extra_applications: [:logger, :runtime_tools]
+      extra_applications: [:crypto, :logger, :public_key, :runtime_tools]
     ]
   end
 
