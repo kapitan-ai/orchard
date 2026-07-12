@@ -3021,7 +3021,7 @@ create table beam_peer_grants (
   revoked_at timestamptz,
   inserted_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (controller_id, node_id, generation),
+  unique (cluster_id, controller_id, node_id, purpose, generation),
   check (expires_at > not_before_at),
   check (cutover_at is null or cutover_at >= not_before_at),
   check (cutover_at is null or cutover_at <= expires_at)
@@ -3444,7 +3444,7 @@ create index idx_controller_instances_status_seen
   on controller_instances(status, last_seen_at desc nulls last);
 
 create index idx_beam_peer_grants_controller_node_generation
-  on beam_peer_grants(controller_id, node_id, generation desc);
+  on beam_peer_grants(cluster_id, controller_id, node_id, purpose, generation desc);
 
 create index idx_beam_peer_grants_state_expiry
   on beam_peer_grants(state, expires_at);
