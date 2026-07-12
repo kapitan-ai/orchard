@@ -4,6 +4,7 @@
 
 Accepted.
 Source-dev split-role default promoted on 2026-07-05.
+Production identity and authorization are refined by [ADR 0012](0012-scoped-beam-peer-grants.md).
 
 ## Context
 
@@ -29,6 +30,7 @@ Use BEAM Distribution for guarded live first-party communication, monitoring, an
 Persist Runtime Endpoint Observations in Postgres for inventory, lifecycle, availability, scheduling, and operator-visible history.
 A connected BEAM node is not automatically schedulable.
 Production BEAM Distribution must be explicitly configured, identity-bound, network-restricted, and limited to admitted first-party Orchard services.
+For enrolled production services, identity-bound means exact certificate validation plus an exact Controller-to-Node BEAM Peer Grant under ADR 0012, not a shared cookie or certificate-only OTP authorization.
 External Runtime Endpoints must not join the BEAM mesh.
 
 Keep the Runtime Endpoint Interface independent of a transport protocol.

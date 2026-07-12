@@ -56,8 +56,8 @@ Public clients
   -> Controller (Phoenix/Elixir public APIs, Console, admission, scheduling)
      -> Postgres for durable state and coordination
      -> Runtime Endpoint Interface
-        -> first-party BEAM adapter as the split-role source-dev and packaged external-sites default
-        -> gRPC compatibility adapter as the explicit opt-out path
+        -> first-party BEAM adapter as the split-role source-dev default and enrolled production target
+        -> gRPC compatibility adapter as the explicit control, recovery, diagnostics, external-adapter, and opt-out path
         -> future external/provider adapters
      -> Node Agent(s)
         -> Worker Runtime subprocesses for local MLX inference
@@ -70,16 +70,34 @@ Core design rules from `SPEC.md`:
 - token streams pass through the controller;
 - the Controller dispatches model runtime work through the Runtime Endpoint Interface;
 - the current `NodeRuntimeService` gRPC/protobuf path is a compatibility adapter, not the durable domain contract;
-- first-party BEAM communication is the split-role source-dev and packaged external-sites default behind explicit guardrails;
+- first-party BEAM communication is the split-role source-dev default and the enrolled production target behind explicit guardrails;
 - split-role source dev uses BEAM by default through `bin/dev-controller` and `bin/dev-node-agent` launches;
 - gRPC remains available as an explicit opt-out compatibility adapter with `ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=grpc`;
 - all-in-one `bin/dev` remains the single-host gRPC default and rejects explicit BEAM mode;
 - source-dev BEAM mode does not automatically fall back to gRPC compatibility for the same request;
 - Console live runtime diagnostics use the same configured Runtime Endpoint target list as scheduler and dispatch, with explicit BEAM targets taking precedence over legacy gRPC runtime client targets;
 - BEAM Runtime Endpoint targets validate BEAM node-name addresses and configured node UUIDs before scheduler or dispatch trusts endpoint identity;
+- production BEAM uses OTP TLS distribution plus one scoped BEAM Peer Grant for each exact Controller-to-Node pair;
+- Node Certificates remain durable identity anchors, while BEAM Peer Grants provide bounded transport authorization and never replace Node Admission;
+- each Active/Standby Controller has a distinct identity, BEAM name, authorization root, and Peer Grant with each admitted Node;
+- a Peer Grant proves Controller-instance membership, not advisory-lock leadership, so leader-only operations remain gated by Postgres before leaving the Controller;
+- distributed Erlang membership is a high-trust code boundary rather than a per-function capability sandbox;
 - node agents are the v1 first-party Runtime Endpoint boundary;
 - worker runtimes are local subprocesses, not public services;
 - Postgres remains durable truth for inventory, lifecycle state, Runtime Endpoint Observations, scheduling, and request state.
+
+The current packaged multi-Mac first cut remains transitional.
+It still uses one manually distributed shared cookie and explicit Controller target entries until the enrolled production Peer Grant path is implemented and passes packaged acceptance.
+The source-development shared-cookie model remains separately documented and does not establish production Node identity or authorization.
+
+In the enrolled production model, Postgres stores durable Controller-instance identity and one closed-state Peer Grant record per authorized Controller-to-Node pair.
+Node Admission, its decision and audit event, and the initial `pending_delivery` grant records commit atomically before asynchronous certificate-authenticated delivery begins.
+Each Controller derives only its own pair secrets from a protected Controller-local BEAM Authorization Root, while Postgres stores the grant scope, lifecycle, and a hash rather than the plaintext secret.
+The Node retrieves the grant over certificate-authenticated control traffic, stores it in protected local identity state, and uses it with exact certificate validation to form the TLS distribution connection.
+Rotation and revocation deliberately disconnect the old connection because OTP does not expire cookies or terminate established peers when certificate, allowlist, or grant state changes.
+
+BEAM connection failure remains visible and never retries the same Runtime Endpoint operation through gRPC.
+The gRPC/mTLS path remains available for enrollment, certificate lifecycle, Peer Grant delivery and recovery, diagnostics, explicit compatibility mode, future external adapters, and operator opt-out.
 
 ## Repository map
 

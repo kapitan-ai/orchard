@@ -140,14 +140,22 @@ This refines `SPEC.md` §4.2 through §4.6, §5.5, §7.4.1, and §11.9.
 
 The enrolled product path SHALL derive Runtime Endpoint targets from trusted Node inventory rather than requiring an operator to edit a static Controller target list for each Node.
 Target derivation SHALL validate that observed endpoint identity matches the persisted Node and Node Certificate identity.
+For production first-party BEAM, a derived Runtime Endpoint target SHALL additionally require an `admitted` or `active` Node with an exact `active` Peer Grant, or an exact `staged` Peer Grant only at its scheduled cutover.
+Registered-but-unadmitted inventory, address or BEAM-name equality, certificate identity, and source-development or compatibility overrides SHALL NOT by themselves authorize a production target.
 Source-development and explicit compatibility target overrides MAY remain separately documented and SHALL NOT establish Node trust.
-This refines `SPEC.md` §1.2, §4.1, §4.6.1, §5.4, §5.5, and §7.5.
+This refines `SPEC.md` §1.2, §4.1, §4.6.1, §5.4, §5.5, §7.5, §8, and §10.6.
 
 #### Scenario: Target address alone cannot reconcile identity
 
 - **WHEN** an observed Runtime Endpoint uses the same address or target string as a provisioned or registered Node but cannot prove the matching Node Certificate identity
 - **THEN** Orchard does not reconcile the observation to that Node
 - **AND** Orchard does not publish scheduling capacity from the observation
+
+#### Scenario: Certificate identity without an active grant cannot authorize a target
+
+- **WHEN** a registered or admitted Node has valid trusted inventory and matching Node Certificate identity but no exact `active` Peer Grant, or only a `staged` grant before its scheduled cutover
+- **THEN** Orchard does not authorize a production BEAM Runtime Endpoint target for that Node
+- **AND** Orchard publishes no schedulable capacity from that endpoint
 
 ### Requirement: Runtime Controller Identity Is Bound During Enrollment
 
@@ -167,6 +175,89 @@ This refines `SPEC.md` §4.1, §7.5, §10.5, and §10.6.
 - **WHEN** a Node runtime certificate chains to the internal CA but carries a different Node-id SAN from the trusted Node record
 - **THEN** the Controller refuses the Runtime Endpoint identity
 - **AND** Orchard does not activate the Node or publish its capacity
+
+### Requirement: Production BEAM Requires Certificate Identity And A Scoped Peer Grant
+
+Production first-party BEAM Distribution SHALL use TLS distribution with exact Node and Controller Certificate identity validation plus one active BEAM Peer Grant for the exact Controller-to-Node pair.
+The Peer Grant SHALL be scoped to immutable cluster, Controller, Node, certificate, canonical BEAM-name, generation, and validity identifiers.
+A registered but unadmitted Node SHALL receive no production Peer Grant.
+Postgres SHALL retain grant scope, state, lifecycle evidence, and a secret hash but SHALL NOT retain the plaintext pair secret or a BEAM Authorization Root.
+Each Controller instance SHALL own a distinct protected authorization root and SHALL derive only its own pair secrets.
+Postgres SHALL retain durable Controller-instance identity and a grant record whose closed lifecycle state is `pending_delivery`, `staged`, `active`, `superseded`, `revoked`, `expired`, or `delivery_failed`.
+Only `active` SHALL authorize ordinary new connections, and `staged` SHALL authorize only its scheduled cutover.
+A database uniqueness constraint SHALL permit at most one active and at most one staged generation for an exact cluster, Controller, Node, and purpose scope.
+This refines `SPEC.md` §3.3, §7.5, §8, §10.5, §10.6, and §10.8 and ADR 0012.
+
+#### Scenario: Admission authorizes one exact pair
+
+- **WHEN** an administrator admits a registered Node whose Node Certificate and trusted inventory remain valid
+- **THEN** Orchard commits the admission transition, decision, audit event, and one `pending_delivery` grant record per currently eligible Controller in one Postgres transaction
+- **AND** each grant uses the exact Controller identity, Node identity, certificate scope, canonical BEAM names, generation, and validity window
+- **AND** the Node retrieves that generation only through certificate-authenticated control traffic
+- **AND** a lost delivery response can be retried only after the complete immutable scope is revalidated
+
+#### Scenario: Admission cannot persist every initial grant
+
+- **WHEN** Orchard cannot persist the admission transition, decision, audit event, and every required initial grant record atomically
+- **THEN** admission fails closed
+- **AND** Orchard retains no partial admission and no orphaned grant metadata
+
+#### Scenario: Pair material is presented for another identity
+
+- **WHEN** a peer presents a valid Orchard certificate but claims the wrong BEAM name or presents another Controller-to-Node pair secret
+- **THEN** Orchard refuses production BEAM authorization
+- **AND** Orchard publishes no authenticated Runtime Endpoint observation
+
+### Requirement: BEAM Peer Grant Lifecycle Fails Closed
+
+The initial BEAM Peer Grant validity SHALL be 30 days and normal rotation SHALL begin 7 days before expiry.
+An exact pair SHALL have at most one active generation and one staged successor.
+Rotation SHALL stage the successor at both endpoints, cut over deliberately, disconnect the old connection, and require the successor generation on reconnect.
+Revocation SHALL remove Postgres authority and Runtime Endpoint eligibility immediately and SHALL remain visibly incomplete until the connected peer is disconnected or the distribution process is restarted.
+Certificate renewal, re-admission, decommission, and Controller authorization-root loss SHALL require the reissuance or revocation behavior defined by ADR 0012.
+This refines `SPEC.md` §4.2 through §4.6, §7.5, §10.6, and §12.7.
+
+#### Scenario: Revocation occurs while the peer remains connected
+
+- **WHEN** an operator revokes an active pair grant while its distributed Erlang connection remains established
+- **THEN** Orchard immediately excludes that Runtime Endpoint from new work
+- **AND** Orchard reports revocation as incomplete until deliberate disconnect or process restart succeeds
+- **AND** Orchard does not retry failed BEAM Runtime Endpoint work through gRPC
+
+#### Scenario: Controller loses its authorization root
+
+- **WHEN** a Controller cannot recover its BEAM Authorization Root
+- **THEN** Orchard cannot rematerialize that Controller's existing pair secrets from Postgres
+- **AND** Orchard requires explicit root restoration or a new root followed by certificate-authenticated reissuance for every affected pair
+
+### Requirement: Active And Standby Controllers Use Distinct BEAM Authorization
+
+Active and Standby Controller instances SHALL use distinct stable Controller IDs, Controller Certificates, canonical BEAM names, BEAM Authorization Roots, and pair grants with each admitted Node.
+Both instances MAY maintain authenticated connections for liveness, status, and explicitly read-only diagnostics.
+Only the Active Leader SHALL originate mutating runtime operations, enforced by the Postgres advisory-lock write gate before the operation leaves the Controller.
+A Node Agent SHALL NOT treat a valid pair grant as proof that the connected Controller currently owns the advisory lock.
+This refines `SPEC.md` §3.2, §3.3, §7.5, and §10.6.
+
+#### Scenario: Standby is authenticated but is not leader
+
+- **WHEN** a Standby Controller has a valid certificate and pair grant but does not own the Postgres advisory lock
+- **THEN** it may perform allowed liveness, status, or read-only diagnostic operations
+- **AND** its Controller-side write gate refuses mutating runtime operations before they leave the Controller
+
+### Requirement: Production BEAM Is A High-Trust First-Party Boundary
+
+Production distributed Erlang SHALL be limited to signed first-party Orchard services on admitted operator-controlled Macs inside restricted private networks.
+A BEAM Peer Grant SHALL authorize membership in that high-trust relationship and SHALL NOT be described as method-level or per-function authorization.
+gRPC/mTLS SHALL remain available for enrollment, certificate lifecycle, Peer Grant delivery and recovery, diagnostics, explicit Runtime Endpoint compatibility, external adapters, and operator opt-out.
+Orchard SHALL NOT automatically retry a failed BEAM inference or Runtime Endpoint operation through gRPC.
+The Python/MLX Worker Runtime SHALL remain a Node Agent-local subprocess and SHALL receive no Node Certificate, Peer Grant, or BEAM membership.
+This refines `SPEC.md` §1.2, §7.5, §10.1, §10.5, and §10.6.
+
+#### Scenario: BEAM transport fails after operation dispatch
+
+- **WHEN** a first-party Runtime Endpoint operation fails through BEAM after dispatch begins
+- **THEN** Orchard reports a stable BEAM transport or authorization failure
+- **AND** Orchard does not replay that operation through the gRPC compatibility adapter
 
 ### Requirement: Model Distribution Uses Admitted Node Identity
 

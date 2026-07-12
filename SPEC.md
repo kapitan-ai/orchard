@@ -51,7 +51,10 @@ Supported deployment modes:
 * Accepted two-Mac smoke evidence SHALL remain recorded before and after BEAM Runtime Endpoint transport is promoted as the source-dev default.
 * When BEAM Runtime Endpoint transport is selected, Orchard MUST NOT retry the same request through gRPC compatibility as an automatic fallback.
 * Console live runtime diagnostics SHALL use the configured Runtime Endpoint target list; explicit BEAM Runtime Endpoint targets SHALL take precedence over legacy gRPC runtime client targets.
-* Production BEAM Distribution MUST be explicitly enabled, identity-bound, network-restricted, and fail closed when required admission configuration is missing.
+* Production first-party BEAM Distribution MUST use OTP TLS distribution, exact Node and Controller Certificate validation, trusted inventory, and an active Controller-to-Node BEAM Peer Grant.
+* A Node Certificate is the durable Node identity anchor; a BEAM Peer Grant is bounded transport authorization and MUST NOT be treated as Node identity.
+* Production BEAM MUST NOT use one shared cluster cookie as identity or authorization.
+* Production BEAM MUST be explicitly enabled, network-restricted, limited to admitted first-party Orchard services, and fail closed when certificate, inventory, Peer Grant, or admission state is missing or invalid.
 * BEAM Runtime Endpoint targets MUST carry a valid BEAM node-name address (`service@host`) as an atom or binary; a configured `node_id`, when present, MUST be a UUID and MUST match observed endpoint metadata before scheduler or dispatch may trust that candidate identity.
 * External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
 * All public API traffic SHALL terminate at the controller.
@@ -86,8 +89,8 @@ Supported deployment modes:
                                |           |
                      +---------v--+   +---v---------------------------+
                      | Postgres    |   | Runtime Endpoint Adapter(s) |
-                     | durable DB  |   | - current gRPC compatibility|
-                     +------------ +   | - default-off BEAM          |
+                     | durable DB  |   | - first-party BEAM          |
+                     +------------ +   | - gRPC compatibility        |
                                        | - future external/provider  |
                                        +---+-------------------------+
                                            |
@@ -276,6 +279,18 @@ Standby controller behavior:
 * MAY serve `GET /health/live`
 * SHALL return `503 controller_standby` for write paths if directly addressed
 * SHALL not schedule, dispatch, or mutate cluster runtime state
+
+Each single-controller or Active/Standby Controller instance SHALL have a durable Controller-instance record containing:
+
+* stable `controller_id` UUID
+* Controller Certificate URI SAN, certificate identifier, and fingerprint
+* canonical production Controller BEAM node name
+* BEAM Authorization Root custody reference, never the root value
+* instance status
+* first-enrolled and last-seen timestamps
+
+Controller-instance identity is durable cluster truth.
+Advisory-lock leadership is transient and SHALL NOT be conflated with Controller-instance identity.
 
 Leader controller behavior:
 
@@ -607,12 +622,16 @@ A node record SHALL include:
 * stable `node_id` UUID
 * hostname
 * advertise address
+* canonical production BEAM node name after validated private IPv4 inventory exists
 * pool membership
 * chip/memory/runtime capabilities
 * trust material reference
 * lifecycle state
 * current health
 * last heartbeat timestamp
+
+A Node's canonical production BEAM node name SHALL be null until validated private IPv4 inventory is recorded.
+Node Admission SHALL NOT authorize a Peer Grant, and no production Runtime Endpoint target or `admitted -> active` BEAM authorization SHALL proceed, while that canonical name is absent or unvalidated.
 
 Runtime Endpoint metadata MAY be observed before a trusted Node exists.
 An unreconciled first observation SHALL create or update a Runtime Endpoint Admission Candidate for admin review, not a Node row.
@@ -915,6 +934,8 @@ Node agent SHALL:
 * register with controller
 * renew node certificate
 * heartbeat every 2s
+* retrieve, protect, stage, rotate, and revoke scoped BEAM Peer Grants for admitted production connections
+* expose the first-party Runtime Endpoint through production TLS distribution after certificate and Peer Grant authorization succeeds
 * expose the current gRPC Runtime Endpoint compatibility service
 * download/verify model artifacts
 * manage worker subprocess lifecycle
@@ -1621,7 +1642,8 @@ The platform SHALL expose four API surfaces:
 4. **Runtime Endpoint and Worker Interfaces**
 
    * controller↔Runtime Endpoint Interface for model readiness, inference execution, cancellation, status, runtime telemetry, and Placement Capacity
-   * current first implementation uses the gRPC Compatibility Adapter over mTLS
+   * admitted first-party production Controller and Node Agent services use the BEAM Runtime Endpoint adapter under the production identity and authorization contract in §7.5 and §10.6
+   * the certificate-backed gRPC Compatibility Adapter remains an explicit compatibility, diagnostics, recovery, external-adapter, and operator opt-out path
    * Worker Runtime Interface remains local to the Node Agent
 
 ---
@@ -2256,6 +2278,125 @@ External Runtime Endpoints MUST NOT join the first-party BEAM mesh.
 Postgres remains durable truth for inventory, lifecycle state, Runtime Endpoint Observations, scheduling history, request state, and operator-visible status.
 BEAM Distribution MUST NOT be treated as durable cluster truth.
 
+#### 7.5.0 Production first-party BEAM identity and authorization
+
+The Production BEAM Operating Model SHALL use OTP TLS distribution with explicit peer verification on both endpoints.
+The accepting endpoint SHALL require a peer certificate.
+The Controller SHALL validate the exact Node-ID URI SAN, certificate identifier, serial, fingerprint, and internal trust authority recorded for the Node.
+The Node Agent SHALL validate the exact Controller-ID URI SAN, certificate identifier, fingerprint, and enrolled internal trust authority recorded for the Controller instance.
+TLS certificate validation is necessary but SHALL NOT be treated as complete OTP distribution authorization.
+
+Each production distribution relationship SHALL also require one active BEAM Peer Grant scoped to:
+
+* contract version and purpose
+* cluster ID
+* Controller ID and canonical Controller BEAM name
+* Controller Certificate identifier and fingerprint
+* Node ID and canonical Node BEAM name
+* Node Certificate identifier and fingerprint
+* Controller BEAM Authorization Root ID
+* grant ID and generation
+* issue, not-before, cutover, and expiry times
+
+Each Controller instance SHALL own a distinct BEAM Authorization Root containing at least 256 bits of random key material.
+The root SHALL be separate from the node-signing CA, Controller Certificate private key, database credentials, and other cluster secrets.
+It SHALL be stored in macOS Keychain or an owner-only Controller path, SHALL never be stored in Postgres, and SHALL never be delivered to a Node.
+
+The Controller SHALL derive the encoded Peer Grant secret with HMAC-SHA-256 over a versioned, length-delimited canonical encoding of the complete immutable grant scope.
+Only Controller-approved active or staged grant records may cause the encoded value to be converted to the cookie atom required by OTP.
+Externally supplied or otherwise untrusted values MUST NOT create atoms.
+
+A BEAM Peer Grant record SHALL include:
+
+* stable `grant_id` UUID and monotonically increasing pair generation
+* cluster ID, Controller ID, canonical Controller BEAM name, Controller Certificate identifier and fingerprint, and BEAM Authorization Root ID
+* Node ID, canonical Node BEAM name, and Node Certificate identifier and fingerprint
+* contract version and purpose
+* issue, not-before, cutover, and expiry timestamps
+* lifecycle state
+* delivery, activation, supersession, failure, and revocation evidence
+* SHA-256 hash of the encoded secret
+
+The closed grant lifecycle states SHALL be `pending_delivery`, `staged`, `active`, `superseded`, `revoked`, `expired`, and `delivery_failed`.
+Only `active` authorizes ordinary new connections.
+`staged` authorizes only its scheduled cutover, and all other states SHALL fail closed for new connections.
+Postgres SHALL NOT store the plaintext Peer Grant or BEAM Authorization Root.
+
+The initial Peer Grant validity SHALL default to 30 days, with normal rotation beginning 7 days before expiry.
+Only one active generation and at most one staged successor generation may exist for an exact Controller-to-Node pair.
+A database uniqueness constraint SHALL enforce at most one `active` and at most one `staged` generation per exact `(cluster_id, controller_id, node_id, purpose)` scope.
+Normal generation creation SHALL be rate-limited to no more than once per hour per pair so legitimate rotation cannot cause unbounded OTP atom creation.
+
+The Node Admission state transition, its Node Admission Decision and audit event, and one initial `pending_delivery` Peer Grant record for each currently eligible Controller instance SHALL commit in one Postgres transaction.
+If any part cannot be persisted, admission SHALL fail closed with no partial admission and no orphaned grant metadata.
+A Controller instance enrolled after Node Admission SHALL obtain its initial grant metadata through a separate leader-authorized operation that is itself atomic.
+A registered but unadmitted Node SHALL receive no production Peer Grant.
+The Node SHALL retrieve the exact Controller's authorized grant through certificate-authenticated control traffic and store it atomically in its owner-only identity root.
+Lost delivery responses SHALL return the same authorized generation and derived secret after identity, certificate, admission, generation, and expiry are revalidated.
+
+Normal rotation SHALL stage the successor on both endpoints, cut over at an agreed time, deliberately disconnect the old distribution connection, and require the successor generation on reconnect.
+Revocation SHALL update Postgres authority immediately, replace the exact-name cookie mapping, exclude the Runtime Endpoint from scheduling and queue capacity, disconnect the peer, and append a sanitized cluster-scoped audit event.
+Revocation SHALL remain visibly incomplete until disconnection succeeds or the affected distribution process is restarted.
+`net_kernel:allow/1` SHALL NOT be treated as a revocation mechanism.
+
+Node or Controller Certificate renewal SHALL require a new Peer Grant generation bound to the renewed certificate identifier and fingerprint.
+Because certificate identity and fingerprint are part of the immutable grant scope, certificate-renewal cadence necessarily drives Peer Grant rotation and a staged reconnect.
+Re-admission SHALL require a new grant ID and generation after current trust and admission requirements succeed.
+Decommission SHALL revoke every Peer Grant involving the Node, revoke the Node Certificate, disconnect the Node from every reachable Controller, and prevent reuse of the same Node ID, canonical BEAM name, certificate, or grant.
+Loss or compromise of a BEAM Authorization Root SHALL stop new authorization under that root until the root is restored or replaced and every affected pair is reissued through certificate-authenticated control traffic.
+
+Each Active/Standby Controller instance SHALL have a distinct stable Controller ID, Controller Certificate URI SAN, canonical BEAM name, BEAM Authorization Root, and Peer Grant with each admitted Node.
+Active and Standby Controllers SHALL NOT share pair grants.
+Both Controllers MAY keep authenticated distribution connections for liveness, status, and explicitly read-only diagnostics.
+Only the Active Leader may initiate inference execution, model mutation, cancellation, or lifecycle writes, enforced by the Postgres advisory-lock write gate before the operation leaves the Controller.
+A Peer Grant proves Controller-instance membership, not advisory-lock leadership.
+The Node Agent cannot cryptographically prove that a connected Controller owns the Postgres advisory lock, and Orchard MUST NOT claim otherwise through a certificate, cookie, or Node-local leader flag.
+
+Canonical production Node Agent names SHALL use `orchard_node_agent_<node-id-without-hyphens>@<private-ipv4>`.
+Canonical Controller names SHALL use `orchard_controller_<controller-id-without-hyphens>@<private-ipv4>`.
+The complete UUID SHALL be used to avoid short-ID collisions.
+The enrolled product path SHALL derive those names and targets from trusted inventory and SHALL NOT require an operator-maintained static target list.
+An address or name match alone SHALL NOT establish identity, admission, or Peer Grant authority.
+Changing the advertised address changes the canonical BEAM name and SHALL require a certificate-authenticated inventory update, a new Peer Grant, and deliberate reconnect.
+Static target overrides MAY remain for documented source-development and explicit compatibility operation, but SHALL NOT establish product trust.
+
+Distributed Erlang membership is a high-trust code boundary, not a per-function capability sandbox.
+A scoped Peer Grant reduces credential blast radius and cross-Node impersonation, but it does not restrict an authenticated peer to individual Runtime Endpoint functions.
+Production BEAM SHALL therefore be limited to signed first-party Orchard releases on operator-controlled admitted Macs inside restricted private networks.
+External providers, third-party adapters, tenant-controlled compute, and partially trusted machines SHALL remain outside the BEAM mesh.
+
+The initial stable operator-facing production BEAM failure vocabulary SHALL include:
+
+* `beam_target_not_in_trusted_inventory`
+* `beam_target_not_admitted`
+* `beam_peer_certificate_invalid`
+* `beam_peer_identity_mismatch`
+* `beam_peer_name_not_authorized`
+* `beam_peer_grant_missing`
+* `beam_peer_grant_not_active`
+* `beam_peer_grant_expired`
+* `beam_peer_grant_revoked`
+* `beam_peer_grant_generation_mismatch`
+* `beam_peer_credential_mismatch`
+* `beam_peer_disconnect_incomplete`
+* `beam_peer_rotation_incomplete`
+* `beam_distribution_disabled`
+* `beam_distribution_unavailable`
+* `beam_target_invalid`
+* `beam_target_unknown`
+* `beam_node_unavailable`
+* `beam_node_timeout`
+* `beam_rpc_failed`
+
+These failures SHALL be visible through shared operator diagnostics without exposing certificates, grant values, hashes, local paths, or raw OTP exception terms.
+The current adapter outcomes `unknown_beam_node`, `node_unavailable`, `node_timeout`, and `beam_rpc_error` SHALL normalize to `beam_target_unknown`, `beam_node_unavailable`, `beam_node_timeout`, and `beam_rpc_failed` before reaching CLI, Console, support bundles, or tests.
+Transport and liveness failures SHALL remain distinguishable from Peer Grant and certificate failures.
+When BEAM is selected, none of these failures may cause the same Runtime Endpoint operation to retry through gRPC compatibility.
+Certificate and Peer Grant recovery through the explicitly selected gRPC/mTLS control path is not an inference fallback.
+
+The gRPC/mTLS path SHALL remain available for enrollment, Node and Controller Certificate lifecycle, Peer Grant delivery and recovery, diagnostics, explicit Runtime Endpoint compatibility, future external or non-BEAM adapters, and explicit operator opt-out.
+The Python/MLX Worker Runtime SHALL remain a Node Agent-local subprocess and SHALL NOT receive Node Certificates, BEAM Peer Grants, or BEAM membership.
+
 Definitions:
 
 * **Runtime Endpoint**: the scheduler-selected execution boundary that can receive model runtime work from the Controller.
@@ -2728,6 +2869,16 @@ create type node_admission_decision_kind as enum (
   'admitted'
 );
 
+create type beam_peer_grant_state as enum (
+  'pending_delivery',
+  'staged',
+  'active',
+  'superseded',
+  'revoked',
+  'expired',
+  'delivery_failed'
+);
+
 create type worker_state as enum (
   'starting',
   'idle',
@@ -2799,6 +2950,7 @@ create table nodes (
   hostname text not null,
   display_name text not null unique,
   advertise_addr text not null,
+  canonical_beam_name text,
   rpc_port integer not null default 9444,
   state node_state not null default 'provisioned',
   health node_health not null default 'unreachable',
@@ -2817,6 +2969,62 @@ create table nodes (
   decommission_reason text,
   inserted_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
+);
+
+create table controller_instances (
+  id uuid primary key,
+  certificate_uri_san text not null unique,
+  certificate_identifier text not null,
+  certificate_fingerprint_sha256 text not null,
+  canonical_beam_name text not null unique,
+  beam_authorization_root_id uuid not null unique,
+  authorization_root_custody_ref text not null,
+  status text not null check (
+    status in ('enrolled', 'operational', 'recovery_required', 'retired')
+  ),
+  first_enrolled_at timestamptz not null,
+  last_seen_at timestamptz,
+  inserted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table beam_peer_grants (
+  id uuid primary key default gen_random_uuid(),
+  generation bigint not null check (generation > 0),
+  cluster_id uuid not null,
+  controller_id uuid not null references controller_instances(id),
+  controller_beam_name text not null,
+  controller_certificate_identifier text not null,
+  controller_certificate_fingerprint_sha256 text not null,
+  beam_authorization_root_id uuid not null,
+  node_id uuid not null references nodes(id),
+  node_beam_name text not null,
+  node_certificate_identifier text not null,
+  node_certificate_fingerprint_sha256 text not null,
+  contract_version integer not null check (contract_version > 0),
+  purpose text not null,
+  state beam_peer_grant_state not null default 'pending_delivery',
+  secret_hash bytea not null check (octet_length(secret_hash) = 32),
+  issued_at timestamptz not null,
+  not_before_at timestamptz not null,
+  cutover_at timestamptz,
+  expires_at timestamptz not null,
+  delivery_evidence jsonb not null default '{}'::jsonb,
+  activation_evidence jsonb not null default '{}'::jsonb,
+  supersession_evidence jsonb not null default '{}'::jsonb,
+  failure_evidence jsonb not null default '{}'::jsonb,
+  revocation_evidence jsonb not null default '{}'::jsonb,
+  delivered_at timestamptz,
+  activated_at timestamptz,
+  superseded_at timestamptz,
+  failed_at timestamptz,
+  revoked_at timestamptz,
+  inserted_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (cluster_id, controller_id, node_id, purpose, generation),
+  check (expires_at > not_before_at),
+  check (cutover_at is null or cutover_at >= not_before_at),
+  check (cutover_at is null or cutover_at <= expires_at)
 );
 
 create table node_heartbeats (
@@ -3095,6 +3303,13 @@ They MUST NOT contain plaintext secrets, credentials, DSNs, prompt bodies, respo
 `target_ref` and `endpoint_target` are operator-review references only and SHALL NOT prove Node identity ownership.
 No uniqueness or reconciliation decision SHALL depend on `target_ref` or `endpoint_target` alone.
 
+`controller_instances` SHALL store durable Controller membership identity and only an opaque local custody reference for the BEAM Authorization Root.
+The custody reference SHALL NOT contain the root value, a recoverable encoding of the root, credentials, or machine-specific path details exposed through operator surfaces.
+
+The immutable `beam_peer_grants` scope columns SHALL not change after insert.
+Lifecycle transitions SHALL update only state, bounded sanitized evidence, transition timestamps, and `updated_at`.
+Grant evidence SHALL NOT contain the plaintext secret, root material, certificate private keys, raw OTP exception terms, or local custody paths.
+
 `node_admission_decisions` SHALL store durable admission decisions for rejection, rejection clearance, and admission after rejection.
 A rejection SHALL write `decision = 'rejected'`, actor, decided timestamp, reason, observed identity or node reference, target reference when applicable, and `audit_log_id`.
 Clearing a rejection SHALL write `decision = 'rejection_cleared'` and a related audit event.
@@ -3221,6 +3436,27 @@ create index idx_node_admission_decisions_audit_log
   on node_admission_decisions(audit_log_id)
   where audit_log_id is not null;
 
+create unique index idx_nodes_canonical_beam_name
+  on nodes(canonical_beam_name)
+  where canonical_beam_name is not null;
+
+create index idx_controller_instances_status_seen
+  on controller_instances(status, last_seen_at desc nulls last);
+
+create index idx_beam_peer_grants_controller_node_generation
+  on beam_peer_grants(cluster_id, controller_id, node_id, purpose, generation desc);
+
+create index idx_beam_peer_grants_state_expiry
+  on beam_peer_grants(state, expires_at);
+
+create unique index idx_beam_peer_grants_one_active
+  on beam_peer_grants(cluster_id, controller_id, node_id, purpose)
+  where state = 'active';
+
+create unique index idx_beam_peer_grants_one_staged
+  on beam_peer_grants(cluster_id, controller_id, node_id, purpose)
+  where state = 'staged';
+
 create index idx_model_placements_node_state
   on model_placements(node_id, state);
 
@@ -3292,6 +3528,8 @@ create index idx_audit_logs_cluster_occurred_at
 * `node_heartbeats`: 7 days
 * `node_admission_candidates`: unresolved candidates until admin resolution; resolved candidate metadata 90 days minimum
 * `node_admission_decisions`: 365 days minimum
+* `controller_instances`: retained while enrolled or referenced by retained Peer Grant history
+* `beam_peer_grants`: pending, staged, and active records retained; terminal lifecycle history 365 days minimum
 * `request_events`: 30 days
 * `requests`: 90 days metadata minimum
 * `audit_logs`: 365 days minimum
@@ -3536,13 +3774,17 @@ Supported join modes:
 
 ### 10.6 Internal transport
 
-Certificate-backed node lifecycle RPC and current gRPC compatibility transports SHALL use:
+Certificate-backed node lifecycle RPC, production first-party BEAM Distribution, and current gRPC compatibility transports SHALL use:
 
 * TLS 1.3
 * mutual TLS
 * controller CA generated through an explicit node-trust initialization operation or imported by admin
 * SAN validation against node id / controller id
 * certificate renewal before expiry
+
+Production first-party BEAM Distribution SHALL additionally enforce the BEAM Peer Grant contract in §7.5.0.
+Certificate identity alone SHALL NOT authorize a production OTP distribution connection.
+Current source-development and packaged first-cut shared-cookie behavior SHALL remain visibly transitional until the enrolled Production BEAM Operating Model passes its required packaged acceptance.
 
 The internal node-trust initialization operation SHALL remain separate from `orchardctl cluster init`, which is credential-only per §11.9.
 
@@ -4172,7 +4414,8 @@ Deliver:
 Acceptance:
 
 * node join via bootstrap produces signed cert
-* internal gRPC rejects non-mTLS clients
+* internal gRPC compatibility rejects non-mTLS clients
+* production first-party BEAM rejects missing, expired, revoked, wrong-generation, wrong-name, wrong-certificate, and wrong-identity Peer Grant connections without automatic gRPC fallback
 * air-gapped installation completes with no internet access
 
 ### Milestone 7 - Upgrade safety and Active/Standby controller

@@ -93,9 +93,9 @@ Rules:
 - **Language**: Elixir/OTP (umbrella app)
 - **Database**: Postgres (sole persistence + coordination layer)
 - **APIs**: `/v1/responses` (canonical abstraction), `/v1/chat/completions` (compatibility facade)
-- **Internal comms**: gRPC over mTLS
+- **Internal comms**: BEAM-first Runtime Endpoints for admitted first-party services; certificate-authenticated gRPC control and compatibility paths
 - **Packaging**: native macOS DMG/PKG + launchd
-- **Clustering**: Postgres advisory locks + gRPC heartbeats (Active/Standby control plane)
+- **Clustering**: Postgres advisory locks + authenticated Runtime Endpoint observations (Active/Standby control plane)
 - **Inference**: MLX-LM runtime adapter managed by the node agent (Apple Silicon native)
 
 ## Milestones

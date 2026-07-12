@@ -167,7 +167,7 @@ gRPC compatibility fallback:
 Explicit deferrals:
 
 - BEAM cookie provisioning is operator-managed in this phase and must produce a root-owned mode `0600` file.
-- Production BEAM credential hardening remains future work and the shared BEAM cookie must not be treated as Node identity.
+- The production BEAM credential model is now defined by `SPEC.md` §7.5 and ADR 0012 as Node Certificates plus scoped BEAM Peer Grants; its implementation and packaged acceptance remain future work, and the shared BEAM cookie in this first cut must not be treated as Node identity.
 - Managed Postgres is unavailable in this build.
 
 ## Install Role Selection

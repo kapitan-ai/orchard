@@ -62,7 +62,7 @@ _Avoid_: Redis, Kafka, distributed Erlang state
 The live Orchard communication and monitoring layer between first-party Elixir services.
 The BEAM Runtime Endpoint adapter is the split-role source-dev default for first-party Controller-to-Node Agent communication.
 In split-role source-dev, it is the primary Runtime Endpoint transport, promoted on 2026-07-05 after accepted two-Mac smoke evidence.
-In packaged production, BEAM Distribution is limited to admitted first-party Orchard services.
+In packaged production, BEAM Distribution is limited to admitted first-party Orchard services and uses Node Certificates plus scoped BEAM Peer Grants.
 _Avoid_: Durable cluster truth, database replacement, public API, external provider integration
 
 **Source-dev BEAM Operating Model**:
@@ -70,6 +70,24 @@ The source-development distribution profile for first-party Controller-to-Node A
 It uses long BEAM node names with IPv4-literal hosts, explicit shared cookie material, bounded distribution networking, explicit BEAM target configuration, and no automatic gRPC fallback.
 The current implementation exposes this as the default through `bin/dev-controller` and `bin/dev-node-agent` source-dev launches while `bin/dev` remains the gRPC default.
 _Avoid_: Production BEAM security model, ambient `.erlang.cookie`, implicit fallback, durable cluster truth
+
+**Production BEAM Operating Model**:
+The enrolled first-party Controller-to-Node Agent distribution profile that combines Node Certificates, trusted inventory, and scoped BEAM Peer Grants.
+_Avoid_: Source-dev shared-cookie model, certificate-only BEAM authorization, static target list
+
+**BEAM Peer Grant**:
+A bounded transport authorization for one exact Controller instance and one admitted Node to form an OTP distribution connection.
+It is not Node identity and is invalid without the corresponding Node and Controller Certificates.
+_Avoid_: Node Certificate, Node Enrollment Bundle, shared cluster cookie, RBAC Role
+
+**BEAM Authorization Root**:
+A Controller-local secret from which that Controller derives its BEAM Peer Grant secrets.
+_Avoid_: Node-signing CA, shared cluster cookie, Node private key, database secret
+
+**High-trust BEAM Boundary**:
+The trust boundary entered when first-party Orchard services complete distributed Erlang authorization.
+It is not a per-function capability sandbox.
+_Avoid_: Runtime Endpoint Interface, protocol-isolated adapter, least-privilege RPC boundary
 
 **All-in-One Deployment**:
 A deployment topology where one Mac runs the Controller, Node Agent, Worker Runtime, and Managed Database Mode.
@@ -129,7 +147,7 @@ _Avoid_: Worker Runtime Interface, Node Lifecycle Interface, transport protocol
 
 **gRPC Compatibility Adapter**:
 The current adapter that maps Runtime Endpoint Interface semantics to `proto/cluster/v1` and `NodeRuntimeService`.
-It preserves today's gRPC/protobuf implementation while keeping the durable Controller domain contract transport-independent.
+It remains an explicit mTLS compatibility, diagnostics, external-provider, recovery, and operator opt-out path while keeping the durable Controller domain contract transport-independent.
 _Avoid_: Runtime Endpoint Interface, Worker Runtime Interface, first-party BEAM mesh
 
 **Worker Runtime Interface**:
@@ -632,8 +650,9 @@ It is sensitive One-time Secret Output but is not durable Node identity, Node Ad
 _Avoid_: BEAM cookie bundle, admission bundle, worker credential bundle, Node Certificate, cluster-admin credential
 
 **Node Certificate**:
-A Node identity certificate used for internal RPC trust and renewal.
-_Avoid_: Bootstrap Token, API Key, Public HTTPS certificate
+A Node's durable cryptographic identity anchor used for certificate-authenticated internal trust and renewal.
+It is necessary but not sufficient for production BEAM authorization.
+_Avoid_: Bootstrap Token, API Key, BEAM Peer Grant, Public HTTPS certificate
 
 **Trusted Proxy**:
 A configured reverse proxy source whose forwarded headers may be trusted in reverse-proxy transport mode.
