@@ -12,6 +12,7 @@ Current app and packaging behavior includes:
 - A local, one-shot, audited `orchardctl cluster init` first-admin credential path.
 - Console and CLI node admission review, Action Preview, rejection history, and lifecycle actions.
 - A packaged multi-Mac BEAM first cut using a manually shared root-owned cookie and explicit Controller targets.
+- A secure enrollment tracer with Node Enrollment Bundles, pinned HTTPS redemption, Node Certificates, exact Node-ID and Controller-ID SAN validation, explicit admission, and authenticated gRPC compatibility activation.
 - Local model import and lower-level worker acquisition paths without a finished controller-hosted distribution experience.
 
 The selected target contract includes Bootstrap Tokens, locally generated Node keys, controller-signed Node Certificates, explicit Node Admission, authenticated Runtime Endpoint observations, controller-hosted artifacts, guided app onboarding, and Playground inference.
@@ -32,7 +33,8 @@ Those target pieces are not all implemented.
 - This change does not make Node Admission implicit.
 - This change does not make Runtime Endpoint observation a trust proof.
 - This change does not change the packaged BEAM-first direction.
-- This change does not select a final node-bound production BEAM credential design.
+- This change selects but does not implement the node-bound production BEAM identity and authorization design.
+- This change does not enter Section 3 product implementation.
 - This change does not promise model transfer time independent of artifact size or network throughput.
 
 ## Decision 1: Use One Three-Layer Journey Document
@@ -136,7 +138,7 @@ The target join exchange is:
 The Controller never reconciles Node identity from hostname, IP address, display name, BEAM node name, or target string alone.
 The Node Agent accepts later runtime mTLS only when the Controller client certificate chains to the enrolled internal trust authority and carries the exact stable Controller-id SAN established by the bundle and registration result.
 
-## Decision 6: First Implementation Slice Is Secure Enrollment
+## Decision 6: Secure Enrollment Was The First Implementation Slice
 
 Three sequences were considered.
 
@@ -158,6 +160,9 @@ It is selected.
 The first product-code tracer covers one configured Controller and one Node Agent.
 It starts after app or PKG role installation and ends when the Node is `active` through a fresh authenticated Runtime Endpoint observation.
 It excludes model transfer, Playground, multi-Node bulk issuance, Managed Database Mode, and app UI.
+PR #87 delivered that tracer through certificate-backed gRPC compatibility activation.
+The post-merge smoke passed focused and full validation, coverage, real ephemeral HTTPS, and certificate-backed mTLS gRPC paths.
+Root-owned packaged CLI, launchd, separate release processes, restart and reconnection, and a two-Mac enrollment journey remain an explicit acceptance gap.
 
 ## First Tracer Interfaces
 
@@ -185,15 +190,14 @@ Existing admission preview and execution then move it to `admitted`.
 Dynamic target resolution derives the Runtime Endpoint from trusted Node inventory.
 A fresh healthy authenticated observation moves the Node to `active`.
 
-## Runtime Transport For The First Tracer
+## Runtime Transport For The Secure Enrollment Tracer
 
-The first certificate-authenticated Runtime Endpoint proof may extend the existing gRPC compatibility adapter with the mTLS behavior required by `SPEC.md` §10.6.
-The current adapter is not certificate-backed, so the tracer must add the Node Agent TLS listener, Controller client credentials, CA validation, and exact Node-id/controller-id SAN validation against the identities persisted during enrollment.
+The first certificate-authenticated Runtime Endpoint proof extended the existing gRPC compatibility adapter with the mTLS behavior required by `SPEC.md` §10.6.
+PR #87 added the Node Agent TLS listener, Controller client credentials, CA validation, and exact Node-ID and Controller-ID SAN validation against the identities persisted during enrollment.
 The enrollment identity, certificate, admission, and dynamic target work remain transport-independent.
 
 This tracer does not change the packaged BEAM-first direction.
-Before the enrolled product path uses BEAM in production, Orchard must define a node-bound, revocable production credential model that does not treat one cluster-wide shared cookie as Node identity.
-That transport-specific choice may require a later ADR if it introduces a hard-to-reverse security boundary.
+ADR 0012 now defines the node-bound, revocable production authorization model before the enrolled product path uses BEAM without reintroducing a cluster-wide cookie as identity.
 
 ## Registration Retry And Concurrency
 
@@ -212,6 +216,70 @@ Standby or leadership-unproven Controllers reject issuance and registration muta
 An observation that arrives before registration remains a Runtime Endpoint Admission Candidate.
 Registration may reconcile earlier candidate evidence only through the certified Node identity.
 Target-string equality is never reconciliation authority.
+
+## Decision 7: Production BEAM Uses Scoped Peer Grants
+
+Production first-party BEAM uses OTP TLS distribution plus one BEAM Peer Grant for each exact Controller-to-Node pair.
+The Node Certificate remains the durable Node identity anchor.
+The Peer Grant is bounded transport authorization and is invalid without the corresponding Node and Controller Certificates.
+
+This choice resolves an OTP 29 limitation rather than replacing certificate trust.
+TLS certificate verification can inspect the peer certificate, and `net_kernel` can restrict claimed node names, but stock OTP exposes no supported public hook that atomically correlates the certificate's Orchard Node ID, the claimed BEAM node name, and current Orchard admission state.
+OTP also always requires a cookie for distribution.
+The complete Orchard authorization decision is therefore the conjunction of exact certificate validation, an inventory-derived BEAM name, an exact per-name Peer Grant cookie, current admitted grant state, private-network policy, and explicit disconnection on revocation.
+
+Each Controller instance owns a separate BEAM Authorization Root with at least 256 bits of random key material.
+The root is separate from the node-signing CA and Controller Certificate private key, lives in protected Controller-local storage, never enters Postgres, and is never delivered to a Node.
+The Controller derives each pair secret with HMAC-SHA-256 over a versioned, length-delimited encoding of the grant's immutable Controller, Node, certificate, name, generation, and time scope.
+Postgres stores durable Controller-instance identity plus each grant's non-secret scope, closed lifecycle state, lifecycle evidence, and encoded-secret hash rather than the plaintext secret or root.
+Grant state is `pending_delivery`, `staged`, `active`, `superseded`, `revoked`, `expired`, or `delivery_failed`; only `active` authorizes ordinary new connections and `staged` authorizes only its scheduled cutover.
+
+The admission transition, decision, audit event, and one `pending_delivery` grant record per currently eligible Controller commit in one Postgres transaction or fail closed without partial admission.
+A Controller enrolled after admission obtains its grant through a separate leader-authorized atomic operation.
+The Node retrieves the authorized generation through certificate-authenticated control traffic and stores it atomically in owner-only identity state.
+Deterministic derivation makes a lost delivery response safely retryable after the identities, certificates, admission, generation, and expiry are revalidated.
+A registered but unadmitted Node receives no production Peer Grant.
+
+The initial validity is 30 days, with normal rotation beginning 7 days before expiry.
+Only one active generation and at most one staged successor generation may exist for an exact pair.
+Rotation stages the successor on both endpoints, cuts over at an agreed time, deliberately disconnects the old connection, and requires the new generation on reconnect.
+Revocation updates Postgres authority immediately, excludes the Runtime Endpoint, replaces the exact-name cookie mapping, disconnects the peer, and remains visibly incomplete until disconnection succeeds or the distribution process is restarted.
+`net_kernel:allow/1` is not a revocation mechanism because its allowlist is append-only and it does not terminate established connections.
+
+Certificate renewal creates a new Peer Grant generation bound to the renewed certificate identifier and fingerprint.
+Re-admission creates a new grant ID and generation after current trust and admission succeed.
+Decommission revokes every grant involving the Node, revokes its Node Certificate, disconnects it from every reachable Controller, and prevents identity or grant reuse.
+Loss of a Controller's BEAM Authorization Root requires explicit restoration or a new root followed by reissuance of every affected pair through certificate-authenticated control traffic.
+
+Active and Standby Controllers have distinct stable Controller IDs, Certificate URI SANs, canonical BEAM names, BEAM Authorization Roots, and grants with every admitted Node.
+Both may keep authenticated connections for liveness, status, and explicitly read-only diagnostics.
+Only the Active Leader may send mutating runtime operations, enforced by the Postgres advisory-lock write gate before the operation leaves the Controller.
+A Peer Grant proves Controller-instance membership, not advisory-lock leadership.
+The Node Agent cannot cryptographically prove that a connected Controller owns the Postgres advisory lock, and the product must not claim otherwise.
+
+The enrolled product derives canonical Node Agent and Controller BEAM names from complete stable UUIDs plus validated private IPv4 inventory.
+It derives Runtime Endpoint targets only from current trusted inventory and active or staged-for-cutover grant state.
+An address or name match alone never establishes identity or authorization.
+Static target lists and shared cookies remain limited to documented source-development and compatibility operation.
+
+Distributed Erlang membership is a high-trust code boundary, not a per-function capability sandbox.
+The current BEAM adapter uses `:rpc.call`, so a Peer Grant limits who may enter the relationship but does not constrain the admitted peer to individual Runtime Endpoint functions.
+Production BEAM is limited to signed first-party Orchard services on operator-controlled admitted Macs inside restricted private networks.
+External providers, third-party adapters, tenant-controlled compute, and partially trusted machines stay outside the BEAM mesh.
+
+gRPC/mTLS remains for enrollment, certificate lifecycle, Peer Grant delivery and recovery, diagnostics, explicit Runtime Endpoint compatibility, external adapters, and operator opt-out.
+Recovery control traffic is not permission to retry a failed BEAM Runtime Endpoint operation through gRPC.
+The Python/MLX Worker Runtime remains a Node Agent-local subprocess and never receives a Node Certificate, Peer Grant, or BEAM membership.
+
+## First Section 3 Implementation Tracer
+
+The first Section 3 product-code tracer uses one Controller and one Node Agent with real separate BEAM nodes and real TLS distribution.
+It proves that no grant exists before admission, admission authorizes one exact pair grant, certificate-authenticated delivery is retryable, the BEAM target derives from trusted inventory without a static product target, and an authenticated BEAM status observation advances `admitted -> active`.
+
+The public-interface security matrix includes wrong Node Certificate SAN or fingerprint, wrong BEAM name, wrong or another Node's pair secret, missing grant, expired grant, revoked grant, wrong generation, unadmitted Node, static target without trusted inventory, revocation while connected, incomplete disconnection, lost delivery response, lost Controller root, and BEAM failure without gRPC fallback.
+
+The tracer excludes Active/Standby failover, automated normal rotation, Controller Certificate and authorization-root rotation, multi-Node issuance, dynamic address roaming, app UI, model distribution, external Runtime Endpoints, Worker Runtime changes, and any claim of per-function BEAM sandboxing.
+The separate packaged acceptance gap covers root-owned CLI, launchd, separate releases, restart and reconnection, and a two-Mac journey.
 
 ## Model Distribution And First Inference
 
@@ -256,7 +324,7 @@ It does not create UI-only mutation paths.
 | First admin | Protect one-time output and replace bootstrap use with named credentials. | Keep initialization local, one-shot, audited, leader-gated, and credential-only. |
 | Node Enrollment | Transfer one sensitive short-lived bundle per Node. | Pin Controller identity, consume once, issue Node identity, audit, expire, revoke, and resume safely. |
 | Node Admission | Review registered identity, inventory, compatibility, pool, and policy. | Keep admission explicit and preserve decision history. |
-| Runtime transport | Protect current compatibility material and private network. | Derive targets from trusted inventory and use node-bound revocable credentials. |
+| Runtime transport | Protect current shared-cookie compatibility material and private network. | Use TLS distribution, trusted inventory, exact certificates, and scoped revocable BEAM Peer Grants without automatic gRPC fallback. |
 | Model availability | Pre-stage remote artifacts in the current build. | Import once, authorize distribution, verify on each Node, and expose progress. |
 | API credentials | Protect one-time API Token output. | Store only hashes/prefixes and expose clear rotation and revocation. |
 | Retained state | Back up config, database, models, bundles, and support state. | Preserve documented operator-owned paths and coordinate safe upgrades. |
@@ -321,6 +389,21 @@ Each slice has explicit tasks in `tasks.md`.
 
 ## Alternatives Rejected
 
+### Use Enrollment PKI Without A Scoped Peer Grant
+
+Exact certificate validation remains mandatory, but stock OTP does not atomically correlate the certificate's Orchard Node ID, the claimed BEAM name, and current admission through one supported authorization hook.
+OTP also still requires a cookie, so leaving that cookie shared preserves excessive blast radius without closing the binding gap.
+
+### Store Random Recoverable Pair Secrets
+
+Random pair credentials would require plaintext or recoverably encrypted secrets in Postgres or would make Controller restart and recovery depend on unrecoverable local state.
+Deterministic derivation preserves hash-only Postgres storage and lets each Controller rematerialize only its own authorized grants.
+
+### Build A Custom Distribution Carrier
+
+A custom carrier would add a large security-critical handshake and compatibility surface without turning distributed Erlang into a method-level authorization system.
+The selected model keeps stock OTP TLS distribution and makes Orchard's additional authorization explicit.
+
 ### Put The Shared BEAM Cookie In An Expiring Bundle
 
 This reduces manual steps but does not reduce the extracted cookie's cluster-wide authority or blast radius.
@@ -348,9 +431,9 @@ Distribution waits for an admitted authenticated Node.
 ADR 0011 and `SPEC.md` §11.9 define `orchardctl cluster init` as credential-only.
 This change resolves the contradiction by requiring explicit separate node-trust initialization or admin import.
 
-No broader `SPEC.md` journey rewrite is needed.
+ADR 0012 and `SPEC.md` §7.5 and §10.6 now select the production BEAM Peer Grant model and close the previously deferred Section 3 identity and authorization decision.
+The OpenSpec requirements and tasks define the first narrow implementation tracer without entering Section 3 product code.
 No `docs/DESIGN.md` change is needed before app-guided setup defines reusable UI patterns.
-No ADR is needed until Orchard selects a transport-specific production BEAM credential model or another hard-to-reverse security decision.
 
 ## External Grounding
 
@@ -360,5 +443,6 @@ The design borrows interaction principles without copying deployment assumptions
 - K3s secure tokens pin cluster CA identity before sending join credentials and its bootstrap tokens are describable, expiring, listable, and revocable, but Orchard does not reuse an all-powerful server token.
 - Syncthing treats device identity as cryptographic and mutual rather than hostname-based, but Orchard centralizes admission instead of requiring bilateral manual configuration.
 - Nomad separates shared gossip encryption from mTLS-secured RPC and one-shot ACL bootstrap, reinforcing that a shared transport key is not Node identity.
+- Erlang/OTP 29 documents that TLS distribution still uses cookies, that certificate verification and `net_kernel` name authorization are separate surfaces, and that revocation requires application-managed certificate and connection lifecycle.
 
 The Orchard-specific result remains subordinate to `SPEC.md` and existing ADRs.

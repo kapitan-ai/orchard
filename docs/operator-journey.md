@@ -44,6 +44,8 @@ It does not print or export CA or Controller private key material.
 The current packaged multi-Mac path remains a first-cut private-network deployment and rehearsal path.
 The packaged BEAM-first end state still uses manually distributed shared BEAM cookie material and an explicit Controller target list.
 The secure enrollment tracer now provides owner-only Node Enrollment Bundles, pinned HTTPS Bootstrap Token redemption, protected local Node identity, Node Certificate issuance, certificate-backed registration, explicit audited admission, and authenticated gRPC compatibility activation.
+The PR #87 post-merge smoke passed focused and full validation, coverage, real ephemeral HTTPS, and certificate-backed mTLS gRPC paths.
+It did not exercise the root-owned packaged CLI, launchd, separate release processes, restart and reconnection, or a two-Mac enrollment journey, so that packaged acceptance gap remains open.
 For a remote gRPC compatibility Node, `ORCHARD_NODE_AGENT_ADVERTISE_HOST` must name the Controller-reachable private address because a wildcard listen address is never persisted as a target.
 Registration remains pending and non-schedulable until explicit admission, and admission remains non-schedulable until a fresh healthy identity-matched authenticated observation.
 
@@ -184,6 +186,10 @@ It is not a claim about the current build.
 - Enrollment authenticates the Controller before sending a Bootstrap Token and authenticates the Node through a locally generated key and controller-signed Node Certificate.
 - A Node Enrollment Bundle is one-use, short-lived, per-Node, inspectable, revocable, and auditable.
 - A Node Enrollment Bundle never contains a BEAM cookie, cluster-admin credential, CA private key, Node private key, long-lived Node Certificate, database credential, or static target list.
+- Production BEAM uses the enrolled Node and Controller Certificates plus one scoped BEAM Peer Grant for each exact Controller-to-Node pair.
+- A BEAM Peer Grant is issued only after explicit Node Admission and never becomes Node identity, Node Enrollment material, or advisory-lock leadership proof.
+- Production BEAM names and targets derive from trusted inventory rather than operator-maintained target lists.
+- A failed production BEAM operation remains visible and never retries the same operation through gRPC compatibility.
 - External Postgres remains an explicit prerequisite until Managed Database Mode is implemented.
 - Setup ends with a real inference result, not merely green service processes.
 - Every failure identifies the failed boundary and offers a safe resume path.
@@ -217,10 +223,13 @@ Console offers **Add a worker** as the next action and does not imply that a hea
 7. The worker reports **Registered, awaiting administrator approval**.
 8. Console shows the registered Node, trust evidence, inventory, compatibility, and any blockers.
 9. The operator previews and approves Node Admission.
-10. The Controller derives the Runtime Endpoint target from trusted Node inventory, and a fresh healthy authenticated observation advances the Node to `active`.
-11. The operator imports a model once.
-12. Orchard distributes the verified Artifact Bundle to selected admitted Nodes and shows transfer, verification, placement, and load progress.
-13. Playground runs inference and shows the chosen Node, placement, model version, timing, and remediation when scheduling fails.
+10. The Active Leader authorizes one BEAM Peer Grant for each eligible Controller-to-Node pair.
+11. The worker retrieves the grants over certificate-authenticated control traffic and stores them in protected local identity state.
+12. The Controller derives the canonical BEAM name and Runtime Endpoint target from trusted inventory.
+13. A TLS distribution status probe using the exact certificates and Peer Grant produces a fresh healthy authenticated observation and advances the Node to `active`.
+14. The operator imports a model once.
+15. Orchard distributes the verified Artifact Bundle to selected admitted Nodes and shows transfer, verification, placement, and load progress.
+16. Playground runs inference and shows the chosen Node, placement, model version, timing, and remediation when scheduling fails.
 
 ### Target Failure And Recovery Experience
 
@@ -233,6 +242,9 @@ Target setup must distinguish at least these conditions:
 - Registration complete but admission still pending.
 - Admission rejected with preserved decision history.
 - Node Certificate issuance, storage, renewal, or revocation failure.
+- BEAM Authorization Root missing or unrecoverable.
+- BEAM Peer Grant delivery, expiry, generation, rotation, or revocation failure.
+- Peer revocation recorded but distribution disconnection incomplete.
 - Registered Node transport unreachable or runtime unhealthy.
 - External Postgres unavailable or migrations behind.
 - Model source unavailable, transfer interrupted, checksum mismatch, insufficient disk, or load failure.
@@ -273,8 +285,8 @@ Implementation PRs should validate these budgets on supported release hardware a
 
 | Order | Slice | Operator value | Completion boundary |
 |---:|---|---|---|
-| 1 | Secure one-Controller, one-Node enrollment tracer | Replaces manual identity bootstrap with a real trusted `provisioned -> registered -> admitted -> active` path and gives existing admission UX a valid input. | One short-lived per-Node bundle, local key generation, pinned Controller connection, certificate-backed registration, explicit admission, dynamic target resolution, and authenticated healthy activation all work without a shared-cookie transfer or target-list edit. |
-| 2 | Enrollment hardening and production BEAM identity binding | Makes enrollment recoverable, revocable, renewable, multi-Node capable, and compatible with the selected first-party runtime transport. | Expiry cleanup, revocation, reissue, renewal, response-loss resume, Active/Standby behavior, and a node-bound revocable production BEAM credential design are accepted and tested. |
+| 1 | Secure one-Controller, one-Node enrollment tracer | Replaces manual identity bootstrap with a real trusted `provisioned -> registered -> admitted -> active` path and gives existing admission UX a valid input. | Delivered in PR #87 through certificate-backed gRPC compatibility activation; root-owned packaged, restart, separate-release, and two-Mac acceptance remains open. |
+| 2 | Enrollment hardening and production BEAM authorization | Makes enrollment recoverable, revocable, renewable, multi-Node capable, and compatible with the selected first-party runtime transport. | BEAM Peer Grant delivery, inventory-derived names and targets, TLS distribution activation, rotation, revocation, renewal, re-admission, decommission, Active/Standby behavior, and packaged acceptance are implemented and tested. |
 | 3 | Controller-hosted model distribution | Removes per-worker model staging and makes cluster model readiness observable. | One verified Artifact Bundle import can be authorized, transferred, resumed, verified, placed, and loaded on selected admitted Nodes. |
 | 4 | First-inference Playground tracer | Turns infrastructure readiness into user-visible useful work. | Playground completes one request through an admitted active Node and exposes model, placement, selected Node, request state, and scheduler explanation. |
 | 5 | App-guided Controller and worker setup | Removes env editing and composes the stable CLI/domain operations into a coherent macOS experience. | App setup covers role authorization, prerequisite preflight, resumable progress, enrollment creation/import, admission status, model distribution progress, and first inference without UI-only mutation paths. |
@@ -283,26 +295,21 @@ Implementation PRs should validate these budgets on supported release hardware a
 
 ### First Recommended Implementation Slice
 
-The next product-code PR should implement the secure enrollment tracer in slice 1.
-It should remain CLI-first so the trust, persistence, retry, and lifecycle contracts stabilize before an app UI depends on them.
+The next product-code PR should implement the first narrow Section 3 BEAM Peer Grant tracer.
+It should remain CLI-first and cover one Controller and one Node Agent with real separate BEAM nodes and real TLS distribution.
 
-The tracer uses one Controller and one Node Agent and ends only when the Node is `active` through an authenticated Runtime Endpoint observation.
-It does not include model transfer, Playground work, multi-Node bulk issuance, or broad setup UI.
+The tracer starts from the certificate-backed `registered` Node delivered by PR #87.
+It proves that no grant exists before admission, admission authorizes one exact pair grant, the Node retrieves it over gRPC/mTLS, the Runtime Endpoint target derives from trusted inventory without a static product target, and a BEAM status observation advances `admitted -> active`.
+It must also prove wrong certificate, wrong BEAM name, wrong pair secret, wrong generation, missing, expired, and revoked grant failures, active disconnection on revocation, deterministic delivery retry, visible transport state, and no automatic gRPC Runtime Endpoint fallback.
 
-The first authenticated runtime proof may make the existing gRPC compatibility adapter certificate-backed according to `SPEC.md` §10.6 because the adapter is already a supported Runtime Endpoint path.
-The slice must add the missing mTLS listener, client credentials, CA validation, and Node-id/controller-id SAN validation rather than treating certificate backing as current behavior.
-This does not change the packaged BEAM-first direction.
-A later design must define node-bound, revocable production BEAM credentials before the enrolled product path uses BEAM without reintroducing a cluster-wide cookie as identity.
+The tracer deliberately excludes Active/Standby failover, automated normal rotation, Controller Certificate and authorization-root rotation, multi-Node issuance, app UI, model distribution, dynamic address roaming, external Runtime Endpoints, and any claim of per-function BEAM sandboxing.
+The root-owned packaged, separate-release, restart and reconnection, and two-Mac journey remains a later acceptance gate rather than evidence supplied by this contract workstream.
 
 ### Contract Impact
 
-The target journey is already supported by `SPEC.md` node trust, Node lifecycle, model distribution, packaging, Console, and milestone direction.
-This shaping slice does not mirror the journey into `SPEC.md`.
-
-One narrow contradiction does require reconciliation now.
-`SPEC.md` §10.6 previously tied the internal Controller CA to `orchardctl cluster init`, while ADR 0011 and `SPEC.md` §11.9 define that command as credential-only.
-Internal Node trust initialization or CA import must therefore be a distinct explicit operation.
-The production local initialization entry point is `orchardctl nodes trust init`; it remains separate from public HTTPS configuration and the credential-only `orchardctl cluster init` operation.
+PR #87 completed the Section 2 secure enrollment implementation while preserving the packaged acceptance gap above.
+ADR 0012 selects the hard-to-reverse production BEAM identity and authorization mechanism required before Section 3 implementation.
+`SPEC.md` now defines Node Certificates as durable identity, BEAM Peer Grants as exact pair authorization, separate Active/Standby grants, trusted inventory targets, explicit rotation and revocation, the high-trust BEAM boundary, and the retained gRPC/mTLS roles.
+The active OpenSpec package carries the first implementation tracer and later Section 3 lifecycle acceptance without implementing them in this contract workstream.
 
 No tactical `docs/DESIGN.md` update is needed until the app-guided setup slice defines reusable onboarding, progress, and recovery components.
-No new ADR is needed until Orchard chooses a durable production BEAM credential mechanism or another hard-to-reverse transport-specific trust decision.

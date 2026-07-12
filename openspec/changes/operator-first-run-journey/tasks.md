@@ -16,16 +16,21 @@
 - [x] 2.7 Derive the first authenticated Runtime Endpoint target from trusted Node inventory and advance `admitted -> active` only after a fresh healthy identity-matched observation.
 - [x] 2.8 Make the gRPC compatibility adapter certificate-backed for the first authenticated Runtime Endpoint proof by adding a Node Agent mTLS listener, Controller client credentials, CA validation, exact Node-id/controller-id SAN validation against enrollment-persisted identities, and fail-closed identity errors without changing the packaged BEAM-first end state.
 - [x] 2.9 Add public-interface tests for happy path, wrong HTTPS trust pin, wrong internal CA, wrong Node-id SAN, wrong Controller-id SAN, expired bundle, consumed bundle, revoked bundle, wrong cluster, wrong Node, concurrent redemption, crash before token consumption, crash after consumption before certificate issuance, crash after issuance before response delivery, crash before local certificate persistence, response loss with matching key/CSR resume, response loss with different key rejection, non-leader refusal, pending-admission exclusion, and authenticated activation.
-- [x] 2.10 Run the full Elixir workflow, strict OpenSpec validation, one-Controller/one-Node packaged smoke, and security review before handoff.
+- [x] 2.10 Run the full Elixir workflow, strict OpenSpec validation, security review, real ephemeral HTTPS, and certificate-backed mTLS gRPC smoke before handoff.
+- [ ] 2.11 Close the remaining packaged acceptance gap with root-owned CLI, launchd, separate Controller and Node Agent releases, restart and reconnection, and preferably two physical Macs.
 
-## 3. Enrollment Hardening And Production BEAM Identity
+## 3. Enrollment Hardening And Production BEAM Authorization
 
-- [ ] 3.1 Add list, inspect, revoke, and reissue surfaces that never reveal the Bootstrap Token secret and preserve append-only audit history.
-- [ ] 3.2 Add bounded cleanup for expired and consumed enrollment records while retaining required audit and decision evidence.
-- [ ] 3.3 Add Node Certificate renewal, explicit revocation, decommission integration, and restart-safe local credential recovery.
-- [ ] 3.4 Define and accept a node-bound, revocable production BEAM credential and authorization model that does not use one cluster-wide cookie as Node identity.
-- [ ] 3.5 Replace static product target lists with targets derived from trusted registered/admitted Node inventory while preserving explicit source-development and compatibility overrides.
-- [ ] 3.6 Validate multi-Node issuance, Active/Standby retries, controller failover, certificate rotation, rejected admission, re-admission, and decommission failure paths.
+- [x] 3.1 Define and accept ADR 0012's Node Certificate plus scoped BEAM Peer Grant authorization model, including lifecycle, Active/Standby, trust-boundary, and no-fallback rules.
+- [ ] 3.2 Implement the first one-Controller/one-Node production tracer with real separate BEAM nodes and TLS distribution, no grant before admission, one exact-pair grant after admission, retryable certificate-authenticated delivery, an inventory-derived canonical target, and authenticated `admitted -> active` observation.
+- [ ] 3.3 Add the public-interface security matrix for wrong certificate identity, wrong BEAM name, wrong or cross-Node secret, missing, expired, revoked, or wrong-generation grant, unadmitted Node, untrusted static target, connected-peer revocation, incomplete disconnection, lost delivery response, lost Controller authorization root, and BEAM failure without gRPC fallback.
+- [ ] 3.4 Generalize BEAM Authorization Root custody, deterministic HMAC derivation, hash-only Postgres persistence, owner-only Node storage, one-active/one-staged rotation, and stable lifecycle evidence beyond the first tracer.
+- [ ] 3.5 Replace static product target lists with canonical names and Runtime Endpoint targets derived only from trusted admitted Node inventory plus exact active or cutover-staged Peer Grant state while preserving explicit source-development and compatibility overrides; a registered but unadmitted Node must not yield a trusted production target.
+- [ ] 3.6 Add list, inspect, revoke, and reissue surfaces that never reveal Bootstrap Token or BEAM Peer Grant secret material and preserve append-only audit history.
+- [ ] 3.7 Add bounded cleanup for expired and consumed enrollment records while retaining required audit and decision evidence.
+- [ ] 3.8 Add Node Certificate renewal, explicit revocation, re-admission, decommission integration, authorization-root loss recovery, and restart-safe local credential recovery.
+- [ ] 3.9 Validate multi-Node issuance, distinct Active and Standby grants, controller failover, deliberate disconnect and reconnect, normal rotation, certificate rotation, rejected admission, re-admission, and decommission failure paths.
+- [ ] 3.10 Close the packaged acceptance gap with root-owned CLI, launchd, separate Controller and Node Agent releases, restart and reconnection, and preferably a two-Mac journey before certifying production BEAM authorization.
 
 ## 4. Controller-Hosted Model Distribution
 
