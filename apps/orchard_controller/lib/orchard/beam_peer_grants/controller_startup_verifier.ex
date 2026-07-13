@@ -76,5 +76,5 @@ defmodule Orchard.BeamPeerGrants.ControllerStartupVerifier do
     if Keyword.has_key?(source, key), do: Keyword.put(target, key, source[key]), else: target
   end
 
-  defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

@@ -142,7 +142,7 @@ defmodule Orchard.Node.BeamPeerGrantBootstrap do
   end
 
   defp request_fields, do: [:grant_id, :generation, :controller_id]
-  defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end
 
 defmodule Orchard.Node.BeamPeerGrantBootstrap.CookieInstaller do
@@ -173,5 +173,5 @@ defmodule Orchard.Node.BeamPeerGrantBootstrap.CookieInstaller do
 
   def install(_grant, _node_beam_name), do: {:error, :beam_peer_grant_cookie_install_failed}
 
-  defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

@@ -120,5 +120,5 @@ defmodule Orchard.RuntimeEndpoint.DistributionExpiryGuard do
   defp fail_closed, do: System.stop(1)
   @spec hard_stop() :: no_return()
   defp hard_stop, do: System.halt(1)
-  defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

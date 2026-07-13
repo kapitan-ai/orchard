@@ -128,7 +128,7 @@ defmodule Orchard.Node.BeamPeerGrantClient do
 
   defp datetime(_value), do: {:error, :beam_peer_grant_response_invalid}
 
-  defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end
 
 defmodule Orchard.Node.BeamPeerGrantClient.GRPCTransport do

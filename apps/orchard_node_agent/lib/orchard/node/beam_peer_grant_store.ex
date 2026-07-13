@@ -273,7 +273,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
   defp publish(path, grant, expected_uid) do
     temporary = path <> ".tmp-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
-    with :ok <- write_private_file(temporary, encode_persisted(grant)),
+    with :ok <- write_private_file(temporary, encode_persisted(grant), expected_uid),
          :ok <- File.ln(temporary, path) do
       File.rm(temporary)
       {:ok, grant}
@@ -342,16 +342,18 @@ defmodule Orchard.Node.BeamPeerGrantStore do
 
   defp decode_datetime(_value), do: {:error, :beam_peer_grant_store_invalid}
 
-  defp write_private_file(path, contents) do
+  defp write_private_file(path, contents, expected_uid) do
     case File.open(path, [:write, :exclusive, :binary]) do
-      {:ok, file} -> write_open_file(path, file, contents)
+      {:ok, file} -> write_open_file(path, file, contents, expected_uid)
       {:error, _reason} -> {:error, :beam_peer_grant_store_invalid}
     end
   end
 
-  defp write_open_file(path, file, contents) do
+  defp write_open_file(path, file, contents, expected_uid) do
     write_result =
       with :ok <- File.chmod(path, @file_mode),
+           {:ok, stat} <- File.lstat(path),
+           true <- stat.uid == expected_uid,
            :ok <- IO.binwrite(file, contents),
            :ok <- :file.sync(file) do
         :ok
@@ -422,6 +424,6 @@ defmodule Orchard.Node.BeamPeerGrantStore do
   defp valid_uuid?(value), do: is_binary(value) and Regex.match?(@uuid_pattern, value)
 
   defp value(map, key) when is_map(map) do
-    Map.get(map, key) || Map.get(map, Atom.to_string(key))
+    Map.get(map, key, Map.get(map, Atom.to_string(key)))
   end
 end

@@ -183,5 +183,5 @@ defmodule Orchard.RuntimeEndpoint.DistributionTLS do
     end
   end
 
-  defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

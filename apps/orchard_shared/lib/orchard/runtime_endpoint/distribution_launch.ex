@@ -351,5 +351,5 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunch do
   defp normalize_key(key) when is_atom(key), do: key
   defp normalize_key(key) when is_binary(key), do: String.to_existing_atom(key)
 
-  defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

@@ -242,6 +242,8 @@ defmodule Orchard.BeamPeerGrants do
          {:ok, local_identity} <- NodeTrust.peer_grant_runtime_generation_paths(),
          true <- local_identity.cluster_id == grant.cluster_id,
          true <- local_identity.controller_id == controller.id,
+         true <- is_binary(local_identity.runtime_trust_spki_sha256),
+         true <- is_binary(peer.runtime_trust_spki_sha256),
          true <- local_identity.runtime_trust_spki_sha256 == peer.runtime_trust_spki_sha256,
          {:ok, authorization_root} <- load_authorization_root(controller, opts),
          {:ok, secret} <- Secret.derive(Map.from_struct(grant), authorization_root.key),
@@ -496,6 +498,8 @@ defmodule Orchard.BeamPeerGrants do
          true <- peer.node_uri_san == value(result, :node_uri_san),
          true <- peer.certificate_identifier == enrollment.certificate_identifier,
          true <- peer.certificate_serial == value(result, :certificate_serial),
+         true <- is_binary(peer.runtime_trust_spki_sha256),
+         true <- is_binary(value(result, :runtime_trust_spki_sha256)),
          true <- peer.runtime_trust_spki_sha256 == value(result, :runtime_trust_spki_sha256),
          true <- is_binary(certificate_pem),
          {:ok, certificate} <- CertificateIdentity.from_pem(certificate_pem),
@@ -1038,5 +1042,5 @@ defmodule Orchard.BeamPeerGrants do
     end
   end
 
-  defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end

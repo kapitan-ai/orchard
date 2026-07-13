@@ -238,7 +238,7 @@ defmodule Orchard.Node.BeamPeerGrantPreflight do
     do: {:error, :beam_peer_credential_mismatch}
 
   defp nonempty?(value), do: is_binary(value) and value != ""
-  defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end
 
 defmodule Orchard.Node.BeamPeerGrantPreflight.NoopCookieInstaller do

@@ -252,5 +252,5 @@ defmodule Orchard.BeamPeerGrantDescriptor do
   defp valid_uuid?(value) when is_binary(value), do: Regex.match?(@uuid_pattern, value)
   defp valid_uuid?(_value), do: false
 
-  defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  defp value(map, key), do: Map.get(map, key, Map.get(map, Atom.to_string(key)))
 end
