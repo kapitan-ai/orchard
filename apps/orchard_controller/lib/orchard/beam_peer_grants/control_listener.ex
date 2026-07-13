@@ -74,9 +74,8 @@ defmodule Orchard.BeamPeerGrants.ControlListener do
   end
 
   defp private_ipv4(host) when is_binary(host) do
-    with {:ok, ip} <- BeamNodeName.private_ipv4(host) do
-      {:ok, ip}
-    else
+    case BeamNodeName.private_ipv4(host) do
+      {:ok, ip} -> {:ok, ip}
       _other -> {:error, :invalid_private_ipv4}
     end
   end
