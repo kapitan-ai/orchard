@@ -25,7 +25,7 @@ large spec sections.
 - [`tooling.md`](tooling.md) — mise/uv/npm toolchain, Makefile aliases, and
   validation commands.
 - [`local-dev.md`](local-dev.md) — source-dev setup, `make dev` / `bin/dev`,
-  split-role dev,
+  split-role dev, the BEAM Peer Grant tracer,
   smoke checks, and environment notes.
 
 ### I want to contribute code
