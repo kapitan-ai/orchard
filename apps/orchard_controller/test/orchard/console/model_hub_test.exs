@@ -1062,7 +1062,7 @@ defmodule OrchardConsole.ModelHubTest do
   end
 
   defp stub_detail do
-    unique_rev = "rev#{System.unique_integer([:positive])}"
+    unique_rev = "rev#{Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)}"
 
     %{
       repo_id: "mlx-community/test",
