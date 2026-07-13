@@ -102,6 +102,40 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert File.stat!(grant_path).uid == File.stat!(root).uid
   end
 
+  test "SPEC.md §7.5.0 install sweeps orphaned plaintext temporaries left by a crash" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-sweep-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+    delivery = delivery(identity)
+
+    assert {:ok, _stored} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+    store_root = Path.join(root, "beam-peer-grants")
+
+    orphan =
+      Path.join(store_root, "#{identity.controller_id}.json.tmp-0123456789abcdef")
+
+    File.write!(orphan, "plaintext-secret")
+    File.chmod!(orphan, 0o600)
+    assert File.exists?(orphan)
+
+    assert {:ok, _stored} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+
+    refute File.exists?(orphan)
+
+    assert File.exists?(Path.join(store_root, "#{identity.controller_id}.json"))
+  end
+
   test "SPEC.md §7.5.0 rejects an abbreviated IPv4 in a delivered grant name" do
     root =
       Path.join(

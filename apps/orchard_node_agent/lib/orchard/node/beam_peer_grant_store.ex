@@ -16,6 +16,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
   @store_directory "beam-peer-grants"
   @uuid_pattern ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
   @secret_pattern ~r/\A[A-Za-z0-9_-]{43}\z/
+  @temporary_pattern ~r/\.json\.tmp-[0-9a-f]{16}\z/
 
   @type stored_grant :: map()
 
@@ -27,6 +28,7 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     with {:ok, grant} <- validate_grant(identity, delivery, expected_node_name),
          :ok <- ensure_current(grant),
          {:ok, store_root, expected_uid} <- prepare_store(root, opts),
+         :ok <- sweep_stale_temporaries(store_root, expected_uid),
          path = grant_path(store_root, grant.controller_id),
          {:ok, stored} <- publish_or_load(path, grant, expected_uid),
          :ok <- sync_directory(store_root, opts) do
@@ -247,6 +249,27 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     else
       {:error, :eexist} -> validate_directory(path, expected_uid)
       _other -> {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp sweep_stale_temporaries(store_root, expected_uid) do
+    case File.ls(store_root) do
+      {:ok, entries} ->
+        entries
+        |> Enum.filter(&Regex.match?(@temporary_pattern, &1))
+        |> Enum.each(&remove_stale_temporary(Path.join(store_root, &1), expected_uid))
+
+        :ok
+
+      _other ->
+        {:error, :beam_peer_grant_store_invalid}
+    end
+  end
+
+  defp remove_stale_temporary(path, expected_uid) do
+    case File.lstat(path) do
+      {:ok, %{type: :regular, uid: ^expected_uid}} -> File.rm(path)
+      _other -> :ok
     end
   end
 
