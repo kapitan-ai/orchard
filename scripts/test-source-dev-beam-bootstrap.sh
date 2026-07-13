@@ -223,6 +223,45 @@ assert_grep 'cookie=unset' "$TMP_ROOT/c3-controller.out"
 assert_grep '-proto_dist inet_tls' "$TMP_ROOT/c3-controller.out"
 assert_grep "-ssl_dist_optfile $GRANT_ROOT/controller-ssl-dist.conf" "$TMP_ROOT/c3-controller.out"
 
+assert_fails_with 'peer-grant controller BEAM node service must be orchard_controller_<controller-id>' \
+  "$TMP_ROOT/c3-controller-noncanonical.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-noncanonical" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_PEER_GRANT_MODE=distributed \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_dev@10.0.0.10
+
+assert_fails_with 'peer-grant node-agent BEAM node service must be orchard_node_agent_<node-id>' \
+  "$TMP_ROOT/c3-node-uppercase.out" \
+  run_helper node_agent "$TMP_ROOT/repo-c3-node-uppercase" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR=/protected/peer-grant.json \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_node_agent_Cccccccccccc4ccc8ccccccccccccccc@10.0.0.20
+
+assert_fails_with 'peer-grant BEAM node host must be a private non-loopback RFC1918 IPv4 literal' \
+  "$TMP_ROOT/c3-controller-loopback.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-loopback" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_PEER_GRANT_MODE=distributed \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb@127.0.0.1
+
+assert_fails_with 'peer-grant BEAM node host must be a private non-loopback RFC1918 IPv4 literal' \
+  "$TMP_ROOT/c3-controller-public.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-public" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_PEER_GRANT_MODE=distributed \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb@203.0.113.10
+
 # D: explicit cookie files must exist, be non-empty, and owner-only.
 MISSING_COOKIE="$TMP_ROOT/missing.cookie"
 assert_fails_with 'ORCHARD_BEAM_COOKIE_FILE must point to an existing regular file' "$TMP_ROOT/d1.out" \

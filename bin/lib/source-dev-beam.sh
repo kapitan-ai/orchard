@@ -42,7 +42,7 @@ orchard_source_dev_beam_bootstrap() {
   local node_name node_host
   node_name="$(orchard_source_dev_beam_default_node_name "$role")"
   node_name="${ORCHARD_BEAM_NODE_NAME:-$node_name}"
-  orchard_source_dev_beam_validate_node_name "$role" "$node_name" || return $?
+  orchard_source_dev_beam_validate_node_name "$role" "$node_name" "$peer_grant_launch" || return $?
   node_host="${node_name#*@}"
   export ORCHARD_BEAM_NODE_NAME="$node_name"
 
@@ -162,7 +162,13 @@ orchard_source_dev_beam_default_node_name() {
 orchard_source_dev_beam_validate_node_name() {
   local role="$1"
   local node_name="$2"
+  local peer_grant_launch="${3:-0}"
+  local peer_grant_name_mode="$peer_grant_launch"
   local service host rest
+
+  if [[ "$role" == "node_agent" && -n "${ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR:-}" ]]; then
+    peer_grant_name_mode=1
+  fi
 
   IFS='@' read -r service host rest <<< "$node_name"
   if [[ -z "${service:-}" || -z "${host:-}" || -n "${rest:-}" ]]; then
@@ -177,15 +183,18 @@ orchard_source_dev_beam_validate_node_name() {
 
   case "$role" in
     controller)
-      if [[ "$service" != orchard_controller* ]]; then
+      if (( peer_grant_launch == 1 )) && [[ ! "$service" =~ ^orchard_controller_[0-9a-f]{32}$ ]]; then
+        echo "error: peer-grant controller BEAM node service must be orchard_controller_<controller-id>" >&2
+        return 64
+      elif (( peer_grant_launch == 0 )) && [[ "$service" != orchard_controller* ]]; then
         echo "error: controller BEAM node service must start with orchard_controller" >&2
         return 64
       fi
       ;;
     node_agent)
       if [[ -n "${ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR:-}" ]]; then
-        if [[ ! "$service" =~ ^orchard_node_agent_[0-9a-fA-F]{32}$ ]]; then
-          echo "error: grant-mode node-agent BEAM node service must be orchard_node_agent_<node-id>" >&2
+        if [[ ! "$service" =~ ^orchard_node_agent_[0-9a-f]{32}$ ]]; then
+          echo "error: peer-grant node-agent BEAM node service must be orchard_node_agent_<node-id>" >&2
           return 64
         fi
       elif [[ "$service" != orchard_node_agent ]]; then
@@ -206,6 +215,11 @@ orchard_source_dev_beam_validate_node_name() {
 
   if orchard_source_dev_beam_ip_is_unspecified "$host"; then
     echo "error: ORCHARD_BEAM_NODE_NAME host must not be an unspecified or wildcard address" >&2
+    return 64
+  fi
+
+  if (( peer_grant_name_mode == 1 )) && ! orchard_source_dev_beam_ip_is_rfc1918 "$host"; then
+    echo "error: peer-grant BEAM node host must be a private non-loopback RFC1918 IPv4 literal" >&2
     return 64
   fi
 }
@@ -267,6 +281,30 @@ if addr.version != 4:
 raise SystemExit(0 if addr.is_unspecified else 1)
 PY
     return $?
+  fi
+
+  return 1
+}
+
+orchard_source_dev_beam_ip_is_rfc1918() {
+  local host="$1"
+  local first second third fourth rest
+
+  IFS='.' read -r first second third fourth rest <<< "$host"
+  if [[ -z "${first:-}" || -z "${second:-}" || -z "${third:-}" || -z "${fourth:-}" || -n "${rest:-}" ]]; then
+    return 1
+  fi
+
+  if [[ "$first" == "10" ]]; then
+    return 0
+  fi
+
+  if [[ "$first" == "172" ]] && (( 10#$second >= 16 && 10#$second <= 31 )); then
+    return 0
+  fi
+
+  if [[ "$first" == "192" && "$second" == "168" ]]; then
+    return 0
   fi
 
   return 1
