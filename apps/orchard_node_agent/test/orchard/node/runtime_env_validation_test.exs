@@ -144,6 +144,52 @@ defmodule Orchard.Node.RuntimeEnvValidationTest do
     assert runtime[:node_identity_root] == identity_root
   end
 
+  test "runtime.exs enables production grant bootstrap only with an explicit descriptor" do
+    identity_root = Path.join(System.tmp_dir!(), "orchard-runtime-node-identity")
+    descriptor_path = Path.join(identity_root, "peer-grant-descriptor.json")
+    manifest_path = Path.join(identity_root, "launch.json")
+    node_name = "orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.0.0.20"
+
+    node_agent =
+      read_runtime_config!(%{
+        "ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR" => descriptor_path,
+        "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => manifest_path,
+        "ORCHARD_BEAM_NODE_NAME" => node_name,
+        "ORCHARD_NODE_IDENTITY_ROOT" => identity_root
+      })
+      |> Keyword.fetch!(:orchard_node_agent)
+
+    assert node_agent[:beam_peer_grants] == [
+             enabled: true,
+             identity_root: identity_root,
+             descriptor_path: descriptor_path,
+             node_beam_name: node_name,
+             manifest_path: manifest_path
+           ]
+
+    disabled =
+      read_runtime_config!(%{})
+      |> Keyword.fetch!(:orchard_node_agent)
+
+    assert disabled[:beam_peer_grants] == [enabled: false]
+  end
+
+  test "SPEC.md §7.5.0 production grant bootstrap requires its preflight launch manifest" do
+    identity_root = Path.join(System.tmp_dir!(), "orchard-runtime-node-identity")
+    descriptor_path = Path.join(identity_root, "peer-grant-descriptor.json")
+
+    assert_raise RuntimeError,
+                 ~r/ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST is required/,
+                 fn ->
+                   read_runtime_config!(%{
+                     "ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR" => descriptor_path,
+                     "ORCHARD_BEAM_NODE_NAME" =>
+                       "orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.0.0.20",
+                     "ORCHARD_NODE_IDENTITY_ROOT" => identity_root
+                   })
+                 end
+  end
+
   test "runtime.exs defaults stub backend generation to stream in prod" do
     runtime =
       read_runtime_config!(%{"ORCHARD_WORKER_BACKEND" => "stub"})

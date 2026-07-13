@@ -133,7 +133,7 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
         address: "orchard_node_agent@127.0.0.1"
       })
 
-    assert ipv4_target.address == :"orchard_node_agent@127.0.0.1"
+    assert ipv4_target.address == "orchard_node_agent@127.0.0.1"
 
     ipv6_target =
       Target.normalize(%{
@@ -142,7 +142,7 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
         address: "orchard_node_agent@::1"
       })
 
-    assert ipv6_target.address == :"orchard_node_agent@::1"
+    assert ipv6_target.address == "orchard_node_agent@::1"
   end
 
   test "BEAM target normalization keeps node_id nil unless explicitly configured" do
@@ -170,7 +170,7 @@ defmodule Orchard.RuntimeEndpoint.DomainTest do
         node_id: node_id
       })
 
-    assert target.address == :orchard_node_agent@localhost
+    assert target.address == "orchard_node_agent@localhost"
     assert target.node_id == node_id
   end
 

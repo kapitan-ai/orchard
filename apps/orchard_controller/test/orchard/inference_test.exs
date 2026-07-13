@@ -337,7 +337,7 @@ defmodule Orchard.InferenceTest do
       assert [
                %{
                  transport: :beam,
-                 address: "orchard_node_agent@127.0.0.1",
+                 address: :"orchard_node_agent@127.0.0.1",
                  metadata: %{source_dev: true}
                }
              ] = Keyword.fetch!(inference, :runtime_endpoint_targets)
@@ -481,12 +481,12 @@ defmodule Orchard.InferenceTest do
       assert [
                %{
                  transport: :beam,
-                 address: "orchard_node_agent@127.0.0.1",
+                 address: :"orchard_node_agent@127.0.0.1",
                  metadata: %{packaged: true}
                },
                %{
                  transport: :beam,
-                 address: "orchard_node_agent@10.0.0.2",
+                 address: :"orchard_node_agent@10.0.0.2",
                  metadata: %{packaged: true}
                }
              ] = Keyword.fetch!(inference, :runtime_endpoint_targets)
@@ -502,6 +502,21 @@ defmodule Orchard.InferenceTest do
                admitted_services: ["orchard_node_agent"],
                allowed_cidrs: ["127.0.0.1/32", "10.0.0.2/32"]
              ]
+    end
+
+    test "runtime.exs bounds packaged legacy BEAM target atom materialization" do
+      targets =
+        Enum.map_join(1..65, ",", fn octet ->
+          "orchard_node_agent@10.0.1.#{octet}"
+        end)
+
+      assert_raise RuntimeError, ~r/at most 64 BEAM targets/, fn ->
+        read_runtime_controller_config!(%{
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => targets,
+          "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@10.0.0.10"
+        })
+      end
     end
 
     test "runtime.exs treats blank packaged BEAM node and cookie env as defaults" do

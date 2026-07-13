@@ -87,6 +87,7 @@ defmodule Orchard.NodeTrust.PKI do
   @subject_alt_name_oid {2, 5, 29, 17}
   @subject_key_identifier_oid {2, 5, 29, 14}
   @authority_key_identifier_oid {2, 5, 29, 35}
+  @server_auth_oid {1, 3, 6, 1, 5, 5, 7, 3, 1}
   @client_auth_oid {1, 3, 6, 1, 5, 5, 7, 3, 2}
   @ca_lifetime_seconds 315_360_000
   @controller_lifetime_seconds 7_776_000
@@ -281,7 +282,7 @@ defmodule Orchard.NodeTrust.PKI do
       extension(
         extnID: @extended_key_usage_oid,
         critical: false,
-        extnValue: [@client_auth_oid]
+        extnValue: [@server_auth_oid, @client_auth_oid]
       ),
       extension(
         extnID: @subject_alt_name_oid,
@@ -423,10 +424,17 @@ defmodule Orchard.NodeTrust.PKI do
     extension_value(extensions, @basic_constraints_oid) ==
       basic_constraints(cA: false) and
       extension_value(extensions, @key_usage_oid) == [:digitalSignature] and
-      extension_value(extensions, @extended_key_usage_oid) == [@client_auth_oid] and
+      valid_controller_extended_key_usage?(extension_value(extensions, @extended_key_usage_oid)) and
       extension_value(extensions, @subject_alt_name_oid) ==
         [uniformResourceIdentifier: String.to_charlist(controller_uri)]
   end
+
+  defp valid_controller_extended_key_usage?([@client_auth_oid]), do: true
+
+  defp valid_controller_extended_key_usage?([@server_auth_oid, @client_auth_oid]),
+    do: true
+
+  defp valid_controller_extended_key_usage?(_usage), do: false
 
   defp certificate_extensions(der) do
     der

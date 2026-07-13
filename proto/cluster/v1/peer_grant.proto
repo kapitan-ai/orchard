@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package cluster.v1;
+
+// Certificate-authenticated control path used only to retrieve the exact
+// Controller-to-Node BEAM Peer Grant already created during admission.
+service ControllerPeerGrantService {
+  rpc RetrieveBeamPeerGrant(RetrieveBeamPeerGrantRequest)
+      returns (RetrieveBeamPeerGrantResponse);
+}
+
+message RetrieveBeamPeerGrantRequest {
+  string grant_id = 1;
+  uint64 generation = 2;
+  string controller_id = 3;
+}
+
+message RetrieveBeamPeerGrantResponse {
+  string grant_id = 1;
+  string cluster_id = 2;
+  string controller_id = 3;
+  string controller_beam_name = 4;
+  string controller_certificate_identifier = 5;
+  string controller_certificate_fingerprint_sha256 = 6;
+  string beam_authorization_root_id = 7;
+  string node_id = 8;
+  string node_beam_name = 9;
+  string node_certificate_identifier = 10;
+  string node_certificate_fingerprint_sha256 = 11;
+  uint32 contract_version = 12;
+  string purpose = 13;
+  uint64 generation = 14;
+  string issued_at = 15;
+  string not_before_at = 16;
+  string cutover_at = 17;
+  string expires_at = 18;
+  string encoded_secret = 19;
+  bytes secret_hash = 20;
+}

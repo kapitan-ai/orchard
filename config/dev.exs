@@ -138,13 +138,35 @@ source_dev_role =
 runtime_endpoint_transport =
   Orchard.Config.SourceDevBeam.transport!(System.get_env("ORCHARD_RUNTIME_ENDPOINT_TRANSPORT"))
 
+beam_peer_grants_enabled? =
+  env_bool.("ORCHARD_BEAM_PEER_GRANTS_ENABLED", false)
+
+beam_peer_grant_mode =
+  if beam_peer_grants_enabled? do
+    case env_optional_string.("ORCHARD_BEAM_PEER_GRANT_MODE") || "distributed" do
+      "grant_control" ->
+        :grant_control
+
+      "distributed" ->
+        :distributed
+
+      other ->
+        raise "ORCHARD_BEAM_PEER_GRANT_MODE must be grant_control|distributed, got: #{other}"
+    end
+  end
+
+if beam_peer_grants_enabled? && runtime_endpoint_transport != :beam do
+  raise "ORCHARD_BEAM_PEER_GRANTS_ENABLED requires BEAM Runtime Endpoint transport"
+end
+
 Orchard.Config.SourceDevBeam.validate_transport_role!(
   runtime_endpoint_transport,
   source_dev_role
 )
 
 beam_runtime_endpoint_targets =
-  if runtime_endpoint_transport == :beam and source_dev_role == :controller do
+  if runtime_endpoint_transport == :beam and source_dev_role == :controller and
+       not beam_peer_grants_enabled? do
     Orchard.Config.SourceDevBeam.controller_beam_targets!(
       System.get_env("ORCHARD_RUNTIME_ENDPOINT_TARGETS")
     )
@@ -157,6 +179,41 @@ beam_controller_node_name =
 
 beam_cookie_file =
   System.get_env("ORCHARD_BEAM_COOKIE_FILE") || Path.join(dev_root, "beam.cookie")
+
+beam_peer_grants_config =
+  if beam_peer_grants_enabled? do
+    control_host =
+      env_optional_string.("ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST") ||
+        raise "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST is required when production grants are enabled"
+
+    control_port =
+      env_optional_string.("ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT") ||
+        raise "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT is required when production grants are enabled"
+
+    authorization_root_path =
+      env_optional_string.("ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH") ||
+        raise "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH is required when production grants are enabled"
+
+    [
+      enabled: true,
+      mode: beam_peer_grant_mode,
+      authorization_root_path: authorization_root_path,
+      manifest_path: env_optional_string.("ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST"),
+      cookie_file: nil,
+      static_targets: [],
+      control_listener: [
+        host: control_host,
+        port: parse_port.(control_port, "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT")
+      ]
+    ]
+  else
+    [enabled: false]
+  end
+
+config :orchard_controller, :beam_peer_grants, beam_peer_grants_config
+
+config :orchard_controller, :node_trust,
+  root: System.get_env("ORCHARD_NODE_TRUST_ROOT") || Path.join(dev_root, "node-trust")
 
 runtime_endpoint_inference_config =
   if beam_runtime_endpoint_targets == [] do
@@ -279,6 +336,29 @@ memory_admission_config =
 
 node_runtime_defaults = Orchard.Config.M1RuntimeDefaults.node_runtime(dev_root)
 
+dev_node_identity_root =
+  System.get_env("ORCHARD_NODE_IDENTITY_ROOT") ||
+    Keyword.fetch!(node_runtime_defaults, :node_identity_root)
+
+beam_peer_grant_descriptor =
+  env_optional_string.("ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR")
+
+node_peer_grant_enabled? =
+  not is_nil(beam_peer_grant_descriptor) and source_dev_role == :node_agent
+
+beam_peer_grant_node_name =
+  if node_peer_grant_enabled? do
+    env_optional_string.("ORCHARD_BEAM_NODE_NAME") ||
+      raise "ORCHARD_BEAM_NODE_NAME is required when a BEAM Peer Grant descriptor is configured"
+  end
+
+beam_distribution_launch_manifest =
+  env_optional_string.("ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST")
+
+if node_peer_grant_enabled? && runtime_endpoint_transport != :beam do
+  raise "ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR requires BEAM Runtime Endpoint transport"
+end
+
 worker_socket_dir_hash =
   :crypto.hash(:sha256, repo_root)
   |> Base.url_encode64(padding: false)
@@ -399,20 +479,42 @@ config :orchard_controller,
       runtime_endpoint_inference_config
     )
 
-if beam_runtime_endpoint_targets != [] do
-  config :orchard_controller, :runtime_endpoint,
-    beam:
-      Orchard.Config.SourceDevBeam.beam_guardrail_config!(
-        beam_controller_node_name,
-        beam_cookie_file,
-        beam_runtime_endpoint_targets
-      )
+cond do
+  beam_peer_grants_enabled? && beam_peer_grant_mode == :distributed ->
+    config :orchard_controller, :runtime_endpoint,
+      beam: Orchard.Config.SourceDevBeam.peer_grant_guardrail_config!(beam_controller_node_name)
+
+  beam_runtime_endpoint_targets != [] ->
+    config :orchard_controller, :runtime_endpoint,
+      beam:
+        Orchard.Config.SourceDevBeam.beam_guardrail_config!(
+          beam_controller_node_name,
+          beam_cookie_file,
+          beam_runtime_endpoint_targets
+        )
+
+  true ->
+    :ok
 end
 
 config :orchard_node_agent,
+  beam_peer_grants:
+    if(node_peer_grant_enabled?,
+      do: [
+        enabled: true,
+        identity_root: dev_node_identity_root,
+        descriptor_path: beam_peer_grant_descriptor,
+        node_beam_name: beam_peer_grant_node_name,
+        manifest_path: beam_distribution_launch_manifest,
+        cookie_file: nil,
+        static_targets: []
+      ],
+      else: [enabled: false]
+    ),
   runtime:
     Keyword.merge(
       node_runtime_defaults,
+      node_identity_root: dev_node_identity_root,
       listen_address: [host: dev_node_agent_listen_host, port: dev_runtime_port],
       worker_executable:
         System.get_env("ORCHARD_WORKER_EXECUTABLE") ||

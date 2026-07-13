@@ -5,6 +5,7 @@ defmodule Orchard.Config.SourceDevBeam do
   @targets_env "ORCHARD_RUNTIME_ENDPOINT_TARGETS"
   @role_env "ORCHARD_SOURCE_DEV_ROLE"
   @node_name_env "ORCHARD_BEAM_NODE_NAME"
+  @max_legacy_beam_targets 64
 
   def transport!(value) do
     case optional_trimmed(value) do
@@ -48,10 +49,13 @@ defmodule Orchard.Config.SourceDevBeam do
   def validate_transport_role!(_transport, _source_dev_role), do: :ok
 
   def controller_beam_targets!(value, env_name \\ @targets_env) do
-    targets =
-      value
-      |> csv_segments()
-      |> Enum.map(&beam_target!(&1, env_name))
+    segments = csv_segments(value)
+
+    if length(segments) > @max_legacy_beam_targets do
+      raise "environment variable #{env_name} supports at most #{@max_legacy_beam_targets} BEAM targets"
+    end
+
+    targets = Enum.map(segments, &beam_target!(&1, env_name))
 
     case targets do
       [] ->
@@ -72,6 +76,23 @@ defmodule Orchard.Config.SourceDevBeam do
       listen_host: listen_host,
       admitted_services: ["orchard_node_agent"],
       allowed_cidrs: allowed_cidrs(targets)
+    ]
+  end
+
+  def peer_grant_guardrail_config!(node_name) do
+    {service, listen_host} = local_controller_service_host!(node_name)
+
+    unless Regex.match?(~r/^orchard_controller_[0-9a-f]{32}$/, service) do
+      raise "environment variable #{@node_name_env} peer-grant Controller service must be canonical orchard_controller_<controller-id>"
+    end
+
+    [
+      enabled: true,
+      node_name: node_name,
+      cookie_file: nil,
+      listen_host: listen_host,
+      admitted_services: [],
+      allowed_cidrs: []
     ]
   end
 
@@ -101,7 +122,7 @@ defmodule Orchard.Config.SourceDevBeam do
 
     %{
       transport: :beam,
-      address: "#{service}@#{host}",
+      address: String.to_atom("#{service}@#{host}"),
       metadata: %{source_dev: true}
     }
   end

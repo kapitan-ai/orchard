@@ -40,12 +40,112 @@ defmodule OrchardNodeAgentApplicationTest.RaisingLicense do
   end
 end
 
+defmodule OrchardNodeAgentApplicationTest.BootstrapIdentityLoader do
+  @moduledoc false
+
+  def load_registered_identity(_root, require_controller_certificate: true) do
+    send(:orchard_node_app_test, :application_identity_loaded)
+    {:ok, identity()}
+  end
+
+  def identity do
+    %{
+      controller_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      node_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    }
+  end
+end
+
+defmodule OrchardNodeAgentApplicationTest.BootstrapDescriptorLoader do
+  @moduledoc false
+
+  def load(_path) do
+    send(:orchard_node_app_test, :application_descriptor_loaded)
+    {:ok, descriptor()}
+  end
+
+  def descriptor do
+    %{
+      grant_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      generation: 1,
+      controller_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      control_endpoint: "10.0.0.10:50072"
+    }
+  end
+end
+
+defmodule OrchardNodeAgentApplicationTest.BootstrapGrantStore do
+  @moduledoc false
+
+  def load(_root, _identity, _node_name) do
+    send(:orchard_node_app_test, :application_grant_loaded)
+    {:ok, grant()}
+  end
+
+  def ensure_current(_grant), do: :ok
+
+  def grant do
+    %{
+      grant_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      generation: 1,
+      controller_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      node_beam_name: "orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.0.0.20"
+    }
+  end
+end
+
+defmodule OrchardNodeAgentApplicationTest.BootstrapCookieInstaller do
+  @moduledoc false
+
+  def install(grant, node_name) do
+    send(:orchard_node_app_test, {:application_peer_grant_installed, grant, node_name})
+    :ok
+  end
+end
+
+defmodule OrchardNodeAgentApplicationTest.BootstrapStartupVerifier do
+  @moduledoc false
+
+  use GenServer
+
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+  @impl true
+  def init(opts) do
+    send(:orchard_node_app_test, {:application_launch_verified, opts})
+    {:ok, opts}
+  end
+end
+
+defmodule OrchardNodeAgentApplicationTest.BootstrapExpiryGuard do
+  @moduledoc false
+
+  use GenServer
+
+  def start_link(opts), do: GenServer.start_link(__MODULE__, opts)
+
+  @impl true
+  def init(opts) do
+    send(:orchard_node_app_test, {:application_expiry_guard_started, opts})
+    {:ok, opts}
+  end
+end
+
 defmodule OrchardNodeAgentApplicationTest do
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureLog
 
-  alias Orchard.Node.LicenseEnforcer
+  alias OrchardNodeAgentApplicationTest.{
+    BootstrapCookieInstaller,
+    BootstrapDescriptorLoader,
+    BootstrapExpiryGuard,
+    BootstrapGrantStore,
+    BootstrapIdentityLoader,
+    BootstrapStartupVerifier
+  }
+
+  alias Orchard.Node.{Identity, LicenseEnforcer}
   alias Orchard.Node.SentryTelemetryBridge
   alias Orchard.SentryContext
 
@@ -58,6 +158,7 @@ defmodule OrchardNodeAgentApplicationTest do
       controller_start_endpoint: Application.get_env(:orchard_controller, :start_endpoint, true),
       controller_enable_db_checks:
         Application.get_env(:orchard_controller, :enable_db_checks, true),
+      node_agent_beam_peer_grants: Application.get_env(:orchard_node_agent, :beam_peer_grants),
       node_agent_runtime: Application.get_env(:orchard_node_agent, :runtime, []),
       shared_licensing: Application.get_env(:orchard_shared, :licensing, [])
     }
@@ -74,6 +175,7 @@ defmodule OrchardNodeAgentApplicationTest do
     Application.put_env(:orchard_controller, :start_repo, false)
     Application.put_env(:orchard_controller, :start_endpoint, false)
     Application.put_env(:orchard_controller, :enable_db_checks, false)
+    Application.put_env(:orchard_node_agent, :beam_peer_grants, enabled: false)
 
     on_exit(fn ->
       stop_controller_app()
@@ -95,6 +197,13 @@ defmodule OrchardNodeAgentApplicationTest do
       )
 
       Application.put_env(:orchard_node_agent, :runtime, previous_env.node_agent_runtime)
+
+      restore_app_env(
+        :orchard_node_agent,
+        :beam_peer_grants,
+        previous_env.node_agent_beam_peer_grants
+      )
+
       Application.put_env(:orchard_shared, :licensing, previous_env.shared_licensing)
 
       remove_sentry_handler()
@@ -111,6 +220,114 @@ defmodule OrchardNodeAgentApplicationTest do
     end)
 
     :ok
+  end
+
+  test "SPEC.md §7.5.0 production grant bootstrap precedes the Node runtime supervisor" do
+    config = [
+      enabled: true,
+      manifest_path: "/protected/launch.json",
+      descriptor_path: "/protected/peer-grant.json"
+    ]
+
+    Application.put_env(:orchard_node_agent, :beam_peer_grants, config)
+
+    assert [
+             {Orchard.Node.BeamPeerGrantStartupVerifier, verifier_opts},
+             {Orchard.RuntimeEndpoint.DistributionExpiryGuard, expiry_opts},
+             {Orchard.Node.BeamPeerGrantBootstrap, bootstrap_opts},
+             Orchard.Node.Supervisor
+           ] = Orchard.NodeAgent.Application.child_specs()
+
+    assert verifier_opts[:manifest_path] == config[:manifest_path]
+    assert expiry_opts == [manifest_path: config[:manifest_path]]
+    assert bootstrap_opts[:descriptor_path] == config[:descriptor_path]
+    assert bootstrap_opts[:retrieval] == :forbid
+
+    Application.put_env(:orchard_node_agent, :beam_peer_grants, enabled: false)
+    assert [Orchard.Node.Supervisor] = Orchard.NodeAgent.Application.child_specs()
+  end
+
+  test "SPEC.md §7.5.0 peer-grant startup derives the runtime Node id from registered identity" do
+    Process.register(self(), :orchard_node_app_test)
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-peer-grant-runtime-identity-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    Application.put_env(:orchard_node_agent, :runtime,
+      node_id: nil,
+      node_identity_path: Path.join(root, "unrelated-node-id"),
+      grpc_security: :plaintext_compatibility
+    )
+
+    Application.put_env(:orchard_node_agent, :beam_peer_grants,
+      enabled: true,
+      identity_root: "/protected/node-identity",
+      identity_loader: BootstrapIdentityLoader
+    )
+
+    assert Identity.ensure_identity!() == "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+
+    assert Application.fetch_env!(:orchard_node_agent, :runtime)[:node_id] ==
+             "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+
+    refute File.exists?(Path.join(root, "unrelated-node-id"))
+  end
+
+  test "SPEC.md §7.5.0 node-agent startup installs its admitted grant before runtime startup" do
+    Process.register(self(), :orchard_node_app_test)
+    node_name = "orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.0.0.20"
+    grant = BootstrapGrantStore.grant()
+
+    Application.put_env(:orchard_node_agent, :beam_peer_grants,
+      enabled: true,
+      startup_verifier: BootstrapStartupVerifier,
+      expiry_guard: BootstrapExpiryGuard,
+      manifest_path: "/protected/launch.json",
+      identity_root: "/protected/node-identity",
+      descriptor_path: "/protected/peer-grant.json",
+      node_beam_name: node_name,
+      identity_loader: BootstrapIdentityLoader,
+      descriptor_loader: BootstrapDescriptorLoader,
+      grant_store: BootstrapGrantStore,
+      cookie_installer: BootstrapCookieInstaller
+    )
+
+    runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
+    Application.put_env(:orchard_node_agent, :runtime, Keyword.put(runtime, :node_id, nil))
+
+    assert [
+             {BootstrapStartupVerifier, verifier_opts},
+             {BootstrapExpiryGuard, expiry_opts},
+             {Orchard.Node.BeamPeerGrantBootstrap, bootstrap_opts},
+             Orchard.Node.Supervisor
+           ] = Orchard.NodeAgent.Application.child_specs()
+
+    assert verifier_opts[:manifest_path] == "/protected/launch.json"
+    assert expiry_opts == [manifest_path: "/protected/launch.json"]
+    assert bootstrap_opts[:identity_loader] == BootstrapIdentityLoader
+    assert bootstrap_opts[:descriptor_loader] == BootstrapDescriptorLoader
+    assert bootstrap_opts[:grant_store] == BootstrapGrantStore
+    assert bootstrap_opts[:cookie_installer] == BootstrapCookieInstaller
+    assert bootstrap_opts[:identity_root] == "/protected/node-identity"
+    assert bootstrap_opts[:descriptor_path] == "/protected/peer-grant.json"
+    assert bootstrap_opts[:node_beam_name] == node_name
+
+    start_result = Application.ensure_all_started(:orchard_node_agent)
+    assert {:ok, _apps} = start_result
+    assert_receive {:application_launch_verified, _opts}
+    assert_receive {:application_expiry_guard_started, ^expiry_opts}
+    assert_receive :application_identity_loaded
+    assert_receive :application_descriptor_loaded
+    assert_receive :application_grant_loaded
+    assert_receive {:application_peer_grant_installed, ^grant, ^node_name}
+    assert is_pid(Process.whereis(Orchard.NodeAgent.Supervisor))
+    assert is_pid(Process.whereis(Orchard.Node.Supervisor))
   end
 
   test "no DSN leaves Sentry logger handler uninstalled when node-agent starts" do
@@ -287,4 +504,7 @@ defmodule OrchardNodeAgentApplicationTest do
       {:error, {:not_found, Sentry.LoggerHandler}} -> :ok
     end
   end
+
+  defp restore_app_env(app, key, nil), do: Application.delete_env(app, key)
+  defp restore_app_env(app, key, value), do: Application.put_env(app, key, value)
 end

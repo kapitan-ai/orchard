@@ -19,6 +19,9 @@ defmodule Orchard.Node.RuntimeTLS do
           required(:node_id) => String.t(),
           required(:controller_id) => String.t(),
           required(:controller_uri_san) => String.t(),
+          required(:controller_certificate_identifier) => String.t() | nil,
+          required(:controller_certificate_fingerprint) => String.t() | nil,
+          required(:controller_certfile) => String.t() | nil,
           required(:node_uri_san) => String.t(),
           required(:certificate_identifier) => String.t(),
           required(:certificate_serial) => String.t(),
@@ -49,8 +52,14 @@ defmodule Orchard.Node.RuntimeTLS do
   end
 
   @spec load_registered_identity(String.t() | nil) :: {:ok, identity()} | {:error, atom()}
-  def load_registered_identity(root) when is_binary(root) and root != "" do
+  def load_registered_identity(root), do: load_registered_identity(root, [])
+
+  @spec load_registered_identity(String.t() | nil, keyword()) ::
+          {:ok, identity()} | {:error, atom()}
+  def load_registered_identity(root, opts)
+      when is_binary(root) and root != "" and is_list(opts) do
     root = Path.expand(root)
+    require_controller? = Keyword.get(opts, :require_controller_certificate, false)
 
     with :ok <- validate_directory(root),
          {:ok, root_stat} <- File.stat(root),
@@ -58,10 +67,12 @@ defmodule Orchard.Node.RuntimeTLS do
          {:ok, generation_id} <- read_current(root, root_stat.uid),
          generation_root = Path.join([root, "generations", generation_id]),
          :ok <- validate_directory(generation_root, root_stat.uid),
-         {:ok, identity} <- read_identity(generation_root, root_stat.uid),
+         :ok <- require_controller_certificate(generation_root, root_stat.uid, opts),
+         {:ok, identity} <- read_identity(generation_root, root_stat.uid, require_controller?),
          true <- identity.generation_id == generation_id do
       {:ok, identity}
     else
+      {:error, :node_runtime_tls_identity_upgrade_required} = error -> error
       _other -> {:error, :node_runtime_tls_identity_invalid}
     end
   rescue
@@ -70,7 +81,7 @@ defmodule Orchard.Node.RuntimeTLS do
     _kind, _reason -> {:error, :node_runtime_tls_identity_invalid}
   end
 
-  def load_registered_identity(_root), do: {:error, :node_runtime_tls_identity_invalid}
+  def load_registered_identity(_root, _opts), do: {:error, :node_runtime_tls_identity_invalid}
 
   defp load_server_credential(runtime) do
     case load(runtime) do
@@ -104,13 +115,41 @@ defmodule Orchard.Node.RuntimeTLS do
     end
   end
 
-  defp read_identity(root, expected_uid) do
+  defp require_controller_certificate(root, expected_uid, opts) do
+    if Keyword.get(opts, :require_controller_certificate, false) do
+      validate_controller_certificate_presence(root, expected_uid)
+    else
+      :ok
+    end
+  end
+
+  defp validate_controller_certificate_presence(root, expected_uid) do
+    metadata_path = Path.join(root, "metadata.json")
+    controller_certfile = Path.join(root, "controller-certificate.pem")
+
+    with :ok <- validate_file(metadata_path, expected_uid),
+         {:ok, metadata_json} <- File.read(metadata_path),
+         {:ok, metadata} <- Jason.decode(metadata_json),
+         true <- non_empty?(metadata["controller_certificate_identifier"]),
+         true <- non_empty?(metadata["controller_certificate_fingerprint"]),
+         :ok <- validate_file(controller_certfile, expected_uid) do
+      :ok
+    else
+      _other -> {:error, :node_runtime_tls_identity_upgrade_required}
+    end
+  end
+
+  defp read_identity(root, expected_uid, require_controller?) do
     metadata_path = Path.join(root, "metadata.json")
     certfile = Path.join(root, "node-certificate.pem")
     keyfile = Path.join(root, "node-private-key.pem")
     cacertfile = Path.join(root, "runtime-ca-certificate.pem")
 
-    with :ok <- validate_files([metadata_path, certfile, keyfile, cacertfile], expected_uid),
+    with :ok <-
+           validate_files(
+             [metadata_path, certfile, keyfile, cacertfile],
+             expected_uid
+           ),
          {:ok, metadata_json} <- File.read(metadata_path),
          {:ok, metadata} <- Jason.decode(metadata_json),
          {:ok, certificate_pem} <- File.read(certfile),
@@ -123,15 +162,77 @@ defmodule Orchard.Node.RuntimeTLS do
          true <- ca_spki_fingerprint == binding.runtime_trust_spki_sha256,
          true <- CertificateIdentity.signed_by?(certificate_pem, ca_certificate_pem),
          true <-
-           CertificateIdentity.private_key_matches_certificate?(private_key_pem, certificate_pem) do
-      {:ok,
-       Map.merge(binding, %{
-         certificate_serial: certificate.serial,
-         certificate_fingerprint: certificate.fingerprint,
-         certfile: certfile,
-         keyfile: keyfile,
-         cacertfile: cacertfile
-       })}
+           CertificateIdentity.private_key_matches_certificate?(private_key_pem, certificate_pem),
+         {:ok, controller_binding} <-
+           controller_binding(
+             root,
+             expected_uid,
+             binding,
+             ca_certificate_pem,
+             require_controller?
+           ) do
+      binding
+      |> Map.merge(%{
+        certificate_serial: certificate.serial,
+        certificate_fingerprint: certificate.fingerprint,
+        certfile: certfile,
+        keyfile: keyfile,
+        cacertfile: cacertfile
+      })
+      |> Map.merge(controller_binding)
+      |> then(&{:ok, &1})
+    else
+      _other -> {:error, :node_runtime_tls_identity_invalid}
+    end
+  end
+
+  defp controller_binding(root, expected_uid, binding, ca_certificate_pem, require_controller?) do
+    controller_certfile = Path.join(root, "controller-certificate.pem")
+
+    complete_metadata? =
+      non_empty?(binding.controller_certificate_identifier) and
+        non_empty?(binding.controller_certificate_fingerprint)
+
+    cond do
+      complete_metadata? ->
+        validate_controller_binding(
+          controller_certfile,
+          expected_uid,
+          binding,
+          ca_certificate_pem
+        )
+
+      require_controller? ->
+        {:error, :node_runtime_tls_identity_upgrade_required}
+
+      is_nil(binding.controller_certificate_identifier) and
+        is_nil(binding.controller_certificate_fingerprint) and
+          File.lstat(controller_certfile) == {:error, :enoent} ->
+        {:ok, %{controller_certfile: nil}}
+
+      true ->
+        {:error, :node_runtime_tls_identity_invalid}
+    end
+  end
+
+  defp validate_controller_binding(
+         controller_certfile,
+         expected_uid,
+         binding,
+         ca_certificate_pem
+       ) do
+    with :ok <- validate_file(controller_certfile, expected_uid),
+         {:ok, controller_certificate_pem} <- File.read(controller_certfile),
+         {:ok, controller_certificate} <-
+           CertificateIdentity.from_pem(controller_certificate_pem),
+         true <- controller_certificate.uri_sans == [binding.controller_uri_san],
+         true <-
+           binding.controller_certificate_identifier == "serial:#{controller_certificate.serial}",
+         true <-
+           binding.controller_certificate_fingerprint == controller_certificate.fingerprint,
+         true <-
+           CertificateIdentity.signed_by?(controller_certificate_pem, ca_certificate_pem) do
+      {:ok, %{controller_certfile: controller_certfile}}
     else
       _other -> {:error, :node_runtime_tls_identity_invalid}
     end
@@ -145,6 +246,8 @@ defmodule Orchard.Node.RuntimeTLS do
       node_id: metadata["node_id"],
       controller_id: metadata["controller_id"],
       controller_uri_san: metadata["controller_uri_san"],
+      controller_certificate_identifier: metadata["controller_certificate_identifier"],
+      controller_certificate_fingerprint: metadata["controller_certificate_fingerprint"],
       node_uri_san: metadata["node_uri_san"],
       certificate_identifier: metadata["certificate_identifier"],
       runtime_trust_spki_sha256: metadata["runtime_trust_spki_sha256"]
@@ -165,15 +268,25 @@ defmodule Orchard.Node.RuntimeTLS do
       "urn:orchard:cluster:#{binding.cluster_id}:controller:#{binding.controller_id}"
 
     valid =
-      metadata["state"] == "registered" and
-        Enum.all?(identifiers, &valid_uuid?/1) and
-        binding.node_uri_san == expected_node_uri and
-        binding.controller_uri_san == expected_controller_uri and
-        certificate.uri_sans == [expected_node_uri] and
-        non_empty?(binding.certificate_identifier) and
-        non_empty?(binding.runtime_trust_spki_sha256)
+      [
+        metadata["state"] == "registered",
+        Enum.all?(identifiers, &valid_uuid?/1),
+        binding.node_uri_san == expected_node_uri,
+        binding.controller_uri_san == expected_controller_uri,
+        certificate.uri_sans == [expected_node_uri],
+        complete_node_binding?(binding)
+      ]
+      |> Enum.all?()
 
     if valid, do: {:ok, binding}, else: {:error, :node_runtime_tls_identity_invalid}
+  end
+
+  defp complete_node_binding?(binding) do
+    [
+      binding.certificate_identifier,
+      binding.runtime_trust_spki_sha256
+    ]
+    |> Enum.all?(&non_empty?/1)
   end
 
   defp verify_running_owner(root, root_uid) do

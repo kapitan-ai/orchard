@@ -1,6 +1,6 @@
 defmodule Orchard.RuntimeEndpoint.ActivationProbe do
   @moduledoc """
-  Performs leader-side status-only probes for admitted gRPC compatibility Nodes.
+  Performs leader-side status-only probes for admitted Runtime Endpoint Nodes.
   """
 
   use GenServer
@@ -9,7 +9,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
 
   alias Orchard.ControlPlane
   alias Orchard.Inference
-  alias Orchard.RuntimeEndpoint.GrpcCompatibilityClient
+  alias Orchard.RuntimeEndpoint.{BeamClient, GrpcCompatibilityClient}
 
   @default_interval_ms 5_000
   @default_timeout_ms 5_000
@@ -27,7 +27,7 @@ defmodule Orchard.RuntimeEndpoint.ActivationProbe do
     timeout = Keyword.get(opts, :timeout, @default_timeout_ms)
 
     with :ok <- ControlPlane.authorize_write_path(:node_lifecycle),
-         true <- client == GrpcCompatibilityClient do
+         true <- client in [BeamClient, GrpcCompatibilityClient] do
       results =
         Inference.activation_probe_runtime_endpoint_targets()
         |> Enum.flat_map(&probe_target(&1, client, timeout))

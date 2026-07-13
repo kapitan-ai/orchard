@@ -26,6 +26,19 @@ orchard_source_dev_beam_bootstrap() {
 
   export ORCHARD_SOURCE_DEV_ROLE="$role"
 
+  local peer_grant_mode="${ORCHARD_BEAM_PEER_GRANT_MODE:-}"
+  if [[ "$role" == "controller" && "${ORCHARD_BEAM_PEER_GRANTS_ENABLED:-}" == "true" && "$peer_grant_mode" == "grant_control" ]]; then
+    echo "==> Runtime endpoint transport: beam peer-grant control phase (Distribution disabled)" >&2
+    return 0
+  fi
+
+  local peer_grant_launch=0
+  if [[ "$role" == "controller" && "${ORCHARD_BEAM_PEER_GRANTS_ENABLED:-}" == "true" && "$peer_grant_mode" == "distributed" ]]; then
+    peer_grant_launch=1
+  elif [[ "$role" == "node_agent" && -n "${ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR:-}" && -n "${ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST:-}" ]]; then
+    peer_grant_launch=1
+  fi
+
   local node_name node_host
   node_name="$(orchard_source_dev_beam_default_node_name "$role")"
   node_name="${ORCHARD_BEAM_NODE_NAME:-$node_name}"
@@ -33,10 +46,34 @@ orchard_source_dev_beam_bootstrap() {
   node_host="${node_name#*@}"
   export ORCHARD_BEAM_NODE_NAME="$node_name"
 
-  local cookie_file
-  cookie_file="${ORCHARD_BEAM_COOKIE_FILE:-$repo_root/tmp/dev/beam.cookie}"
-  orchard_source_dev_beam_prepare_cookie "$cookie_file" "${ORCHARD_BEAM_COOKIE_FILE+x}" || return $?
-  export ORCHARD_BEAM_COOKIE_FILE="$cookie_file"
+  local cookie_file ssl_dist_optfile
+  if (( peer_grant_launch == 1 )); then
+    if [[ -n "${ORCHARD_BEAM_COOKIE_FILE+x}" ]]; then
+      echo "error: ORCHARD_BEAM_COOKIE_FILE is forbidden for peer-grant Distribution" >&2
+      return 64
+    fi
+
+    if [[ -n "${ORCHARD_RUNTIME_ENDPOINT_TARGETS:-}" ]]; then
+      echo "error: ORCHARD_RUNTIME_ENDPOINT_TARGETS is forbidden for peer-grant Distribution" >&2
+      return 64
+    fi
+
+    orchard_source_dev_beam_validate_owner_only_file \
+      "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" \
+      "${ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST:-}" || return $?
+
+    ssl_dist_optfile="${ORCHARD_BEAM_SSL_DIST_OPTFILE:-}"
+    orchard_source_dev_beam_validate_owner_only_file \
+      "ORCHARD_BEAM_SSL_DIST_OPTFILE" \
+      "$ssl_dist_optfile" || return $?
+
+    cookie_file="$repo_root/tmp/dev/beam-peer-grant-cookie/$role.cookie"
+    orchard_source_dev_beam_prepare_cookie "$cookie_file" "" || return $?
+  else
+    cookie_file="${ORCHARD_BEAM_COOKIE_FILE:-$repo_root/tmp/dev/beam.cookie}"
+    orchard_source_dev_beam_prepare_cookie "$cookie_file" "${ORCHARD_BEAM_COOKIE_FILE+x}" || return $?
+    export ORCHARD_BEAM_COOKIE_FILE="$cookie_file"
+  fi
 
   local epmd_port
   epmd_port="${ORCHARD_BEAM_EPMD_PORT:-4369}"
@@ -83,14 +120,26 @@ orchard_source_dev_beam_bootstrap() {
   orchard_source_dev_beam_prepare_home "$role" "$repo_root" "$cookie_file" || return $?
 
   # shellcheck disable=SC2034 # Consumed by caller scripts after this file is sourced.
-  ORCHARD_BEAM_IEX_ARGS=(
-    --name "$node_name"
-    --erl "-kernel inet_dist_use_interface $dist_interface inet_dist_listen_min $dist_min inet_dist_listen_max $dist_max"
-  )
+  if (( peer_grant_launch == 1 )); then
+    ORCHARD_BEAM_IEX_ARGS=(
+      --name "$node_name"
+      --erl "-proto_dist inet_tls -ssl_dist_optfile $ssl_dist_optfile -kernel inet_dist_use_interface $dist_interface inet_dist_listen_min $dist_min inet_dist_listen_max $dist_max"
+    )
+  else
+    ORCHARD_BEAM_IEX_ARGS=(
+      --name "$node_name"
+      --erl "-kernel inet_dist_use_interface $dist_interface inet_dist_listen_min $dist_min inet_dist_listen_max $dist_max"
+    )
+  fi
 
   echo "==> Runtime endpoint transport: beam" >&2
   echo "==> BEAM node name: $node_name" >&2
-  echo "==> BEAM cookie file: $cookie_file" >&2
+  if (( peer_grant_launch == 1 )); then
+    echo "==> BEAM peer-grant TLS optfile: $ssl_dist_optfile" >&2
+    echo "==> BEAM local fallback cookie is role-local and not pair authorization" >&2
+  else
+    echo "==> BEAM cookie file: $cookie_file" >&2
+  fi
   echo "==> BEAM EPMD port: $epmd_port" >&2
   echo "==> BEAM distribution port range: $dist_min..$dist_max" >&2
 }
@@ -134,9 +183,14 @@ orchard_source_dev_beam_validate_node_name() {
       fi
       ;;
     node_agent)
-      if [[ "$service" != orchard_node_agent ]]; then
-        echo "error: node-agent BEAM node service must be exactly orchard_node_agent" >&2
-        return 64
+      if [[ -n "${ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR:-}" ]]; then
+        if [[ ! "$service" =~ ^orchard_node_agent_[0-9a-fA-F]{32}$ ]]; then
+          echo "error: grant-mode node-agent BEAM node service must be orchard_node_agent_<node-id>" >&2
+          return 64
+        fi
+      elif [[ "$service" != orchard_node_agent ]]; then
+          echo "error: node-agent BEAM node service must be exactly orchard_node_agent" >&2
+          return 64
       fi
       ;;
     *)
@@ -482,6 +536,21 @@ orchard_source_dev_beam_validate_cookie_file() {
 
   if ! orchard_source_dev_beam_cookie_is_owner_only "$cookie_file"; then
     echo "error: ORCHARD_BEAM_COOKIE_FILE must be owner-only" >&2
+    return 64
+  fi
+}
+
+orchard_source_dev_beam_validate_owner_only_file() {
+  local name="$1"
+  local path="$2"
+
+  if [[ -z "$path" || "$path" != /* || ! -f "$path" || -L "$path" ]]; then
+    echo "error: $name must point to an absolute existing regular non-symlink file" >&2
+    return 64
+  fi
+
+  if ! orchard_source_dev_beam_cookie_is_owner_only "$path"; then
+    echo "error: $name must be owner-only" >&2
     return 64
   fi
 }

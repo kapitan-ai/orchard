@@ -30,11 +30,39 @@ defmodule Orchard.Node.Identity do
   @spec ensure_identity!() :: String.t()
   def ensure_identity! do
     runtime = Application.fetch_env!(:orchard_node_agent, :runtime)
-    {node_id, updated_runtime} = resolve_runtime_identity!(runtime)
+
+    {node_id, updated_runtime} =
+      case peer_grant_identity(runtime) do
+        {:ok, result} -> result
+        :disabled -> resolve_runtime_identity!(runtime)
+        {:error, reason} -> raise "BEAM Peer Grant Node identity invalid: #{reason}"
+      end
+
     Application.put_env(:orchard_node_agent, :runtime, updated_runtime)
 
     Logger.info("Node identity resolved: #{node_id}")
     node_id
+  end
+
+  defp peer_grant_identity(runtime) do
+    config = Application.get_env(:orchard_node_agent, :beam_peer_grants, [])
+
+    if Keyword.get(config, :enabled, false) do
+      loader = Keyword.get(config, :identity_loader, RuntimeTLS)
+      root = Keyword.get(config, :identity_root) || runtime[:node_identity_root]
+
+      with true <- is_binary(root) and root != "",
+           {:ok, identity} <-
+             loader.load_registered_identity(root, require_controller_certificate: true),
+           :ok <- ensure_configured_identity_matches!(runtime[:node_id], identity.node_id) do
+        {:ok, {identity.node_id, Keyword.put(runtime, :node_id, identity.node_id)}}
+      else
+        {:error, reason} -> {:error, reason}
+        _other -> {:error, :node_runtime_tls_identity_invalid}
+      end
+    else
+      :disabled
+    end
   end
 
   defp resolve_runtime_identity!(runtime) do

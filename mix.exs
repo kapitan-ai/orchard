@@ -82,6 +82,7 @@ defmodule Orchard.MixProject do
              "--elixir_out=plugins=grpc,package_prefix=Orchard:apps/orchard_shared/lib",
              "proto/cluster/v1/common.proto",
              "proto/cluster/v1/events.proto",
+             "proto/cluster/v1/peer_grant.proto",
              "proto/cluster/v1/runtime.proto"
            ],
            into: IO.stream(:stdio, :line),
@@ -96,6 +97,7 @@ defmodule Orchard.MixProject do
     [
       Path.absname("proto/cluster/v1/common.proto"),
       Path.absname("proto/cluster/v1/events.proto"),
+      Path.absname("proto/cluster/v1/peer_grant.proto"),
       Path.absname("proto/cluster/v1/runtime.proto")
     ]
   end
