@@ -223,6 +223,20 @@ assert_grep 'cookie=unset' "$TMP_ROOT/c3-controller.out"
 assert_grep '-proto_dist inet_tls' "$TMP_ROOT/c3-controller.out"
 assert_grep "-ssl_dist_optfile $GRANT_ROOT/controller-ssl-dist.conf" "$TMP_ROOT/c3-controller.out"
 
+GRANT_SPACE_ROOT="$TMP_ROOT/grant launch"
+mkdir -p "$GRANT_SPACE_ROOT"
+printf '[].\n' > "$GRANT_SPACE_ROOT/controller-ssl-dist.conf"
+chmod 600 "$GRANT_SPACE_ROOT/controller-ssl-dist.conf"
+assert_fails_with 'ORCHARD_BEAM_SSL_DIST_OPTFILE must not contain whitespace or control characters' \
+  "$TMP_ROOT/c3-controller-space-optfile.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-space-optfile" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_PEER_GRANT_MODE=distributed \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_SPACE_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb@10.0.0.10
+
 assert_fails_with 'peer-grant controller BEAM node service must be orchard_controller_<controller-id>' \
   "$TMP_ROOT/c3-controller-noncanonical.out" \
   run_helper controller "$TMP_ROOT/repo-c3-controller-noncanonical" \

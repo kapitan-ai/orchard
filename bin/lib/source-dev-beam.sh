@@ -97,6 +97,10 @@ orchard_source_dev_beam_bootstrap() {
     orchard_source_dev_beam_validate_owner_only_file \
       "ORCHARD_BEAM_SSL_DIST_OPTFILE" \
       "$ssl_dist_optfile" || return $?
+    if [[ "$ssl_dist_optfile" =~ [[:space:][:cntrl:]] ]]; then
+      echo "error: ORCHARD_BEAM_SSL_DIST_OPTFILE must not contain whitespace or control characters" >&2
+      return 64
+    fi
 
     cookie_file="$repo_root/tmp/dev/beam-peer-grant-cookie/$role.cookie"
     orchard_source_dev_beam_prepare_cookie "$cookie_file" "" || return $?
