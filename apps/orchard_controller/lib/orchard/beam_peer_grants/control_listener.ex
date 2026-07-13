@@ -5,6 +5,7 @@ defmodule Orchard.BeamPeerGrants.ControlListener do
 
   alias Orchard.BeamPeerGrants.ControlEndpoint
   alias Orchard.NodeTrust
+  alias Orchard.PrivateIpv4
   alias Orchard.TransportTLS.CertificateIdentity
 
   @spec start_link(keyword()) :: Supervisor.on_start()
@@ -73,10 +74,10 @@ defmodule Orchard.BeamPeerGrants.ControlListener do
   end
 
   defp private_ipv4(host) when is_binary(host) do
-    case :inet.parse_ipv4_address(String.to_charlist(host)) do
-      {:ok, {10, _b, _c, _d} = ip} -> {:ok, ip}
-      {:ok, {172, b, _c, _d} = ip} when b in 16..31 -> {:ok, ip}
-      {:ok, {192, 168, _c, _d} = ip} -> {:ok, ip}
+    with {:ok, ip} <- :inet.parse_ipv4_address(String.to_charlist(host)),
+         true <- PrivateIpv4.private?(ip) do
+      {:ok, ip}
+    else
       _other -> {:error, :invalid_private_ipv4}
     end
   end

@@ -194,11 +194,21 @@ beam_peer_grants_config =
       env_optional_string.("ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH") ||
         raise "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH is required when production grants are enabled"
 
+    manifest_path =
+      case beam_peer_grant_mode do
+        :distributed ->
+          env_optional_string.("ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST") ||
+            raise "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST is required in distributed mode"
+
+        :grant_control ->
+          nil
+      end
+
     [
       enabled: true,
       mode: beam_peer_grant_mode,
       authorization_root_path: authorization_root_path,
-      manifest_path: env_optional_string.("ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST"),
+      manifest_path: manifest_path,
       cookie_file: nil,
       static_targets: [],
       control_listener: [
@@ -353,7 +363,10 @@ beam_peer_grant_node_name =
   end
 
 beam_distribution_launch_manifest =
-  env_optional_string.("ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST")
+  if node_peer_grant_enabled? do
+    env_optional_string.("ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST") ||
+      raise "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST is required when a BEAM Peer Grant descriptor is configured"
+  end
 
 if node_peer_grant_enabled? && runtime_endpoint_transport != :beam do
   raise "ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR requires BEAM Runtime Endpoint transport"

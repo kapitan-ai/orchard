@@ -15,6 +15,7 @@ defmodule Orchard.BeamPeerGrants do
   alias Orchard.ControlPlane
   alias Orchard.Nodes.{Enrollment, Node}
   alias Orchard.NodeTrust
+  alias Orchard.PrivateIpv4
   alias Orchard.Repo
   alias Orchard.RuntimeEndpoint.AuthenticatedPeer
   alias Orchard.RuntimeEndpoint.Target
@@ -74,9 +75,9 @@ defmodule Orchard.BeamPeerGrants do
   def distribution_launch_material(grant_id, opts) when is_list(opts) do
     with :ok <- ControlPlane.authorize_write_path(:beam_peer_grant),
          true <- enabled?(),
-         {:ok, grant_id} <- Ecto.UUID.cast(grant_id) do
+         {:ok, grant_id} <- Ecto.UUID.cast(grant_id),
+         {:ok, opts} <- put_preloaded_authorization_root(opts) do
       Repo.transaction(fn -> distribution_launch_material_locked(grant_id, opts) end)
-      |> unwrap_distribution_launch_transaction()
     else
       _other -> {:error, :beam_distribution_launch_scope_invalid}
     end
@@ -94,12 +95,13 @@ defmodule Orchard.BeamPeerGrants do
           {:ok, target_authorization() | nil} | {:error, atom()}
   def authorize_target(%Target{} = target, opts \\ []) when is_list(opts) do
     with true <- enabled?(),
-         {:ok, grant_id} <- Ecto.UUID.cast(value(target.metadata, :grant_id)) do
+         {:ok, grant_id} <- Ecto.UUID.cast(value(target.metadata, :grant_id)),
+         {:ok, opts} <- put_preloaded_authorization_root(opts) do
       Repo.transaction(fn -> authorize_target_locked(grant_id, target, opts) end)
-      |> unwrap_authorization_transaction()
     else
       false -> {:ok, nil}
       :error -> {:error, :beam_peer_grant_missing}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -139,9 +141,9 @@ defmodule Orchard.BeamPeerGrants do
 
   def deliver(request, %AuthenticatedPeer{} = peer, opts) do
     with :ok <- ControlPlane.authorize_write_path(:beam_peer_grant_delivery),
-         {:ok, request} <- normalize_delivery_request(request) do
+         {:ok, request} <- normalize_delivery_request(request),
+         {:ok, opts} <- put_preloaded_authorization_root(opts) do
       Repo.transaction(fn -> deliver_locked(request, peer, opts) end)
-      |> unwrap_delivery_transaction()
     end
   end
 
@@ -199,7 +201,7 @@ defmodule Orchard.BeamPeerGrants do
          :ok <- run_lock_observer(opts, :controller),
          :ok <- validate_enrollment_controller(enrollment, controller),
          :ok <- validate_controller_binding(controller),
-         {:ok, authorization_root} <- load_authorization_root(controller),
+         {:ok, authorization_root} <- load_authorization_root(controller, opts),
          {:ok, node_beam_name} <- canonical_node_name(node),
          {:ok, node} <- persist_canonical_node_name(node, node_beam_name),
          attrs <-
@@ -241,7 +243,7 @@ defmodule Orchard.BeamPeerGrants do
          true <- local_identity.cluster_id == grant.cluster_id,
          true <- local_identity.controller_id == controller.id,
          true <- local_identity.runtime_trust_spki_sha256 == peer.runtime_trust_spki_sha256,
-         {:ok, authorization_root} <- load_authorization_root(controller),
+         {:ok, authorization_root} <- load_authorization_root(controller, opts),
          {:ok, secret} <- Secret.derive(Map.from_struct(grant), authorization_root.key),
          true <- secret.secret_hash == grant.secret_hash,
          :ok <- ensure_grant_current(grant, [:active], opts) do
@@ -328,9 +330,6 @@ defmodule Orchard.BeamPeerGrants do
     |> Map.put(:grant_id, grant.id)
   end
 
-  defp unwrap_distribution_launch_transaction({:ok, material}), do: {:ok, material}
-  defp unwrap_distribution_launch_transaction({:error, reason}), do: {:error, reason}
-
   defp enabled? do
     :orchard_controller
     |> Application.get_env(:beam_peer_grants, [])
@@ -413,7 +412,7 @@ defmodule Orchard.BeamPeerGrants do
          :ok <- run_lock_observer(opts, :controller),
          :ok <- validate_delivery_scope(grant, node, enrollment, controller, peer),
          :ok <- validate_controller_binding(controller),
-         {:ok, authorization_root} <- load_authorization_root(controller),
+         {:ok, authorization_root} <- load_authorization_root(controller, opts),
          {:ok, secret} <- Secret.derive(Map.from_struct(grant), authorization_root.key),
          true <- secret.secret_hash == grant.secret_hash,
          {:ok, grant} <- mark_delivered(grant, peer, now, opts) do
@@ -671,7 +670,7 @@ defmodule Orchard.BeamPeerGrants do
          :ok <- validate_target_controller_binding(target, controller),
          :ok <- validate_delivery_scope(grant, node, enrollment, controller, peer),
          :ok <- validate_controller_binding(controller),
-         {:ok, authorization_root} <- load_authorization_root(controller),
+         {:ok, authorization_root} <- load_authorization_root(controller, opts),
          {:ok, secret} <- Secret.derive(Map.from_struct(grant), authorization_root.key),
          true <- secret.secret_hash == grant.secret_hash,
          :ok <- ensure_grant_current(grant, [:active], opts) do
@@ -808,9 +807,6 @@ defmodule Orchard.BeamPeerGrants do
     end
   end
 
-  defp unwrap_authorization_transaction({:ok, authorization}), do: {:ok, authorization}
-  defp unwrap_authorization_transaction({:error, reason}), do: {:error, reason}
-
   defp validate_target_beam_name(%Grant{node_beam_name: beam_name}, %Target{address: beam_name}),
     do: :ok
 
@@ -868,9 +864,6 @@ defmodule Orchard.BeamPeerGrants do
     |> Repo.one()
   end
 
-  defp unwrap_delivery_transaction({:ok, delivery}), do: {:ok, delivery}
-  defp unwrap_delivery_transaction({:error, reason}), do: {:error, reason}
-
   defp lock_enrollment_binding(node) do
     enrollment =
       Enrollment
@@ -922,10 +915,31 @@ defmodule Orchard.BeamPeerGrants do
     end
   end
 
-  defp load_authorization_root(controller) do
-    with {:ok, path} <- authorization_root_path(),
-         {:ok, authorization_root} <- AuthorizationRootStore.load(path),
+  defp put_preloaded_authorization_root(opts) do
+    with {:ok, authorization_root} <- load_authorization_root_material() do
+      {:ok, Keyword.put(opts, :preloaded_authorization_root, authorization_root)}
+    end
+  end
+
+  defp load_authorization_root(controller, opts) do
+    with {:ok, authorization_root} <- resolve_authorization_root(opts),
          true <- authorization_root.root_id == controller.beam_authorization_root_id do
+      {:ok, authorization_root}
+    else
+      _other -> {:error, :beam_authorization_root_unavailable}
+    end
+  end
+
+  defp resolve_authorization_root(opts) do
+    case Keyword.fetch(opts, :preloaded_authorization_root) do
+      {:ok, authorization_root} -> {:ok, authorization_root}
+      :error -> load_authorization_root_material()
+    end
+  end
+
+  defp load_authorization_root_material do
+    with {:ok, path} <- authorization_root_path(),
+         {:ok, authorization_root} <- AuthorizationRootStore.load(path) do
       {:ok, authorization_root}
     else
       _other -> {:error, :beam_authorization_root_unavailable}
@@ -945,7 +959,7 @@ defmodule Orchard.BeamPeerGrants do
   defp canonical_node_name(node) do
     with host when is_binary(host) <- node.connect_host || node.advertise_addr,
          {:ok, address} <- :inet.parse_ipv4_address(String.to_charlist(host)),
-         true <- private_address?(address) do
+         true <- PrivateIpv4.private?(address) do
       compact_id = String.replace(node.id, "-", "")
       {:ok, "orchard_node_agent_#{compact_id}@#{host}"}
     else
@@ -1017,11 +1031,6 @@ defmodule Orchard.BeamPeerGrants do
       _other -> :ok
     end
   end
-
-  defp private_address?({10, _b, _c, _d}), do: true
-  defp private_address?({172, b, _c, _d}) when b in 16..31, do: true
-  defp private_address?({192, 168, _c, _d}), do: true
-  defp private_address?(_address), do: false
 
   defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))
 end

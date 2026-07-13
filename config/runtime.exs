@@ -767,7 +767,7 @@ if config_env() == :prod do
 
         valid_service? =
           if grant_descriptor,
-            do: String.match?(service, ~r/^orchard_node_agent_[0-9a-fA-F]{32}$/),
+            do: String.match?(service, ~r/^orchard_node_agent_[0-9a-f]{32}$/),
             else: service == "orchard_node_agent"
 
         unless valid_service? do

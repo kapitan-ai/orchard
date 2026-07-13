@@ -10,6 +10,7 @@ defmodule Orchard.ControllerInstances do
   alias Orchard.BeamAuthorizationRoot.Store, as: AuthorizationRootStore
   alias Orchard.ControllerInstances.ControllerInstance
   alias Orchard.{ControlPlane, NodeTrust, Repo}
+  alias Orchard.PrivateIpv4
   alias Orchard.TransportTLS.CertificateIdentity
 
   import Ecto.Query, only: [from: 2]
@@ -114,17 +115,12 @@ defmodule Orchard.ControllerInstances do
   defp private_ipv4(opts) do
     with value when is_binary(value) <- Keyword.get(opts, :private_ipv4),
          {:ok, address} <- :inet.parse_ipv4_address(String.to_charlist(value)),
-         true <- private_address?(address) do
+         true <- PrivateIpv4.private?(address) do
       {:ok, value}
     else
       _other -> {:error, :beam_controller_private_ipv4_invalid}
     end
   end
-
-  defp private_address?({10, _b, _c, _d}), do: true
-  defp private_address?({172, b, _c, _d}) when b in 16..31, do: true
-  defp private_address?({192, 168, _c, _d}), do: true
-  defp private_address?(_address), do: false
 
   defp required_path(opts, key) do
     case Keyword.get(opts, key) do
