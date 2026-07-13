@@ -97,8 +97,9 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
     assert stored.generation == delivery.generation
     assert private_mode(Path.join(root, "beam-peer-grants")) == 0o700
 
-    assert private_mode(Path.join([root, "beam-peer-grants", "#{identity.controller_id}.json"])) ==
-             0o600
+    grant_path = Path.join([root, "beam-peer-grants", "#{identity.controller_id}.json"])
+    assert private_mode(grant_path) == 0o600
+    assert File.stat!(grant_path).uid == File.stat!(root).uid
   end
 
   test "SPEC.md §7.5.0 rejects an abbreviated IPv4 in a delivered grant name" do

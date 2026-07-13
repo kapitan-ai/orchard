@@ -660,6 +660,27 @@ defmodule Orchard.BeamPeerGrantsTest do
              BeamPeerGrants.deliver(request, authenticated_peer!(node.id), now: now)
   end
 
+  test "SPEC.md §7.5.0 delivery rejects missing runtime trust SPKI bindings", %{
+    trust_root: trust_root,
+    authorization_root: authorization_root
+  } do
+    {node, grant, now} = pending_grant!(trust_root, authorization_root)
+    enrollment = Repo.one!(from(candidate in Enrollment, where: candidate.node_id == ^node.id))
+
+    enrollment
+    |> Ecto.Changeset.change(
+      certificate_result: Map.put(enrollment.certificate_result, "runtime_trust_spki_sha256", nil)
+    )
+    |> Repo.update!()
+
+    assert {:error, :beam_peer_credential_mismatch} =
+             BeamPeerGrants.deliver(
+               delivery_request(grant),
+               authenticated_peer!(node.id),
+               now: now
+             )
+  end
+
   test "SPEC.md §7.5.0 mTLS control stream is the plaintext grant boundary", %{
     trust_root: trust_root,
     authorization_root: authorization_root
