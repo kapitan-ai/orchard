@@ -109,7 +109,7 @@ The gRPC/mTLS path remains available for enrollment, certificate lifecycle, Peer
 | `apps/orchard_shared/` | Shared generated proto modules, Runtime Endpoint domain structs, helpers, licensing/build metadata. |
 | `native/orchard_tokenizer/` | Python helper for prompt rendering, exact token counts, and safe-tokenization support. |
 | `native/orchard_worker_mlx/` | Python MLX worker runtime package and node-agent ↔ worker proto. |
-| `proto/cluster/v1/` | Current gRPC compatibility transport and future-adapter proto source for Controller ↔ node-agent runtime operations. |
+| `proto/cluster/v1/` | Controller ↔ node-agent proto source: the current gRPC runtime-operations compatibility transport, the certificate-authenticated BEAM Peer Grant delivery control service, and future-adapter contracts. |
 | `packaging/` | `Orchard.app` DMG with app-owned service lifecycle, PKG, launchd, signing/build runbooks. |
 | `docs/` | Contributor-facing orientation, tooling, process, design, and durable decisions subordinate to `SPEC.md`. |
 
@@ -150,7 +150,7 @@ Scheduler and dispatch orchestration crashes after request validation terminaliz
 
 Runtime Endpoint and worker runtime contracts are separate:
 
-- `proto/cluster/v1/` describes the current controller ↔ node-agent gRPC compatibility transport.
+- `proto/cluster/v1/` describes the current controller ↔ node-agent gRPC runtime-operations compatibility transport plus the certificate-authenticated `ControllerPeerGrantService` BEAM Peer Grant delivery control path.
 - Runtime Endpoint domain structs describe the Controller-facing scheduler and dispatch contract.
 - `Orchard.RuntimeEndpoint.BeamClient` and `Orchard.Node.RuntimeEndpoint` provide the split-role source-dev default first-party BEAM adapter and Node Agent facade.
 - `native/orchard_worker_mlx/proto/` describes node-agent ↔ worker messages/services.
