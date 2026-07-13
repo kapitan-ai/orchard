@@ -50,6 +50,37 @@ defmodule Orchard.Node.BeamPeerGrantBootstrapTest do
     end
   end
 
+  defmodule StateIdentityLoader do
+    def load_registered_identity(_root, require_controller_certificate: true) do
+      {:ok,
+       %{
+         controller_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+         node_id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+       }}
+    end
+  end
+
+  defmodule StateGrantStore do
+    def load(_root, _identity, _node_name) do
+      {:ok,
+       %{
+         grant_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+         generation: 1,
+         controller_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+         controller_beam_name: "orchard_controller_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb@10.0.0.10",
+         node_beam_name: "orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.0.0.20",
+         encoded_secret: Base.url_encode64(:binary.copy(<<5>>, 32), padding: false),
+         secret_hash: :crypto.hash(:sha256, "secret")
+       }}
+    end
+
+    def ensure_current(_grant), do: :ok
+  end
+
+  defmodule StateCookieInstaller do
+    def install(_grant, _node_name), do: :ok
+  end
+
   test "SPEC.md §7.5.0 bootstraps one exact grant from an owner-only nonsecret descriptor" do
     root =
       Path.join(
@@ -178,6 +209,51 @@ defmodule Orchard.Node.BeamPeerGrantBootstrapTest do
     assert_received {:existing_grant_loaded, ^root, ^identity, ^node_name}
     assert_received {:cookie_installed, ^grant, ^node_name}
     refute_received :unexpected_grant_retrieval
+  end
+
+  test "SPEC.md §7.5.0 supervised bootstrap state excludes the plaintext grant secret" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-state-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    descriptor_path = Path.join(root, "peer-grant-descriptor.json")
+
+    File.write!(
+      descriptor_path,
+      Jason.encode!(%{
+        "grant_id" => "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        "generation" => 1,
+        "controller_id" => "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "control_endpoint" => "10.0.0.10:50072"
+      })
+    )
+
+    File.chmod!(descriptor_path, 0o600)
+
+    node_name = "orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.0.0.20"
+
+    assert {:ok, pid} =
+             GenServer.start_link(BeamPeerGrantBootstrap,
+               identity_root: root,
+               descriptor_path: descriptor_path,
+               node_beam_name: node_name,
+               identity_loader: StateIdentityLoader,
+               grant_store: StateGrantStore,
+               cookie_installer: StateCookieInstaller
+             )
+
+    assert :sys.get_state(pid) == %{
+             grant_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+             generation: 1,
+             controller_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+             node_beam_name: node_name
+           }
   end
 
   test "SPEC.md §7.5.0 distributed startup forbids late control retrieval" do

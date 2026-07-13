@@ -40,6 +40,28 @@ defmodule Orchard.BeamAuthorizationRoot.StoreTest do
              Store.load(root, uid_probe: fn _parent -> {:ok, foreign_uid} end)
   end
 
+  test "SPEC.md §7.5.0 loads an existing authorization root from a read-only parent" do
+    parent =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-beam-authorization-root-read-only-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    root = Path.join(parent, "authorization-root")
+    File.mkdir!(parent)
+    File.chmod!(parent, 0o700)
+
+    on_exit(fn ->
+      File.chmod(parent, 0o700)
+      File.rm_rf!(parent)
+    end)
+
+    assert {:ok, material} = Store.ensure(root)
+    File.chmod!(parent, 0o500)
+
+    assert {:ok, ^material} = Store.load(root)
+  end
+
   defp private_mode(path) do
     {:ok, stat} = File.stat(path)
     band(stat.mode, 0o777)

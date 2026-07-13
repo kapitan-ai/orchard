@@ -169,10 +169,10 @@ defmodule Orchard.BeamAuthorizationRoot.Store do
     end
   end
 
-  defp probe_uid(parent) do
+  defp probe_uid(_parent) do
     probe =
       Path.join(
-        parent,
+        System.tmp_dir!(),
         ".orchard-authorization-root-owner-#{Ecto.UUID.generate()}"
       )
 
@@ -183,20 +183,23 @@ defmodule Orchard.BeamAuthorizationRoot.Store do
   end
 
   defp inspect_probe(probe, file) do
-    result =
+    inspection =
       with :ok <- File.chmod(probe, @file_mode),
-           :ok <- File.close(file),
            {:ok, stat} <- File.lstat(probe),
-           true <- stat.type == :regular,
-           :ok <- File.rm(probe) do
+           true <- stat.type == :regular do
         {:ok, stat.uid}
       else
         _other -> {:error, :beam_authorization_root_storage_invalid}
       end
 
-    File.close(file)
-    File.rm(probe)
-    result
+    close_result = File.close(file)
+    remove_result = File.rm(probe)
+
+    if match?({:ok, _uid}, inspection) and close_result == :ok and remove_result == :ok do
+      inspection
+    else
+      {:error, :beam_authorization_root_storage_invalid}
+    end
   end
 
   defp validate_directory(path, owner) do
