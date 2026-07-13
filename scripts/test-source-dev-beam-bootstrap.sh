@@ -262,6 +262,46 @@ assert_fails_with 'peer-grant BEAM node host must be a private non-loopback RFC1
     ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
     ORCHARD_BEAM_NODE_NAME=orchard_controller_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb@203.0.113.10
 
+assert_fails_with 'peer-grant controller BEAM node service must be orchard_controller_<controller-id>' \
+  "$TMP_ROOT/c3-controller-truthy.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-truthy" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=1 \
+    ORCHARD_BEAM_PEER_GRANT_MODE=distributed \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_dev@10.0.0.10
+
+assert_fails_with 'peer-grant controller BEAM node service must be orchard_controller_<controller-id>' \
+  "$TMP_ROOT/c3-controller-default-mode.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-default-mode" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_dev@10.0.0.10
+
+assert_fails_with 'peer-grant controller BEAM node service must be orchard_controller_<controller-id>' \
+  "$TMP_ROOT/c3-controller-trimmed-mode.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-trimmed-mode" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=true \
+    ORCHARD_BEAM_PEER_GRANT_MODE=' distributed ' \
+    ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$GRANT_ROOT/controller-launch.json" \
+    ORCHARD_BEAM_SSL_DIST_OPTFILE="$GRANT_ROOT/controller-ssl-dist.conf" \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_dev@10.0.0.10
+
+assert_succeeds "$TMP_ROOT/c3-controller-truthy-grant-control.out" \
+  run_helper controller "$TMP_ROOT/repo-c3-controller-truthy-grant-control" \
+    ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam \
+    ORCHARD_BEAM_PEER_GRANTS_ENABLED=YES \
+    ORCHARD_BEAM_PEER_GRANT_MODE=grant_control \
+    ORCHARD_BEAM_NODE_NAME=orchard_controller_dev@203.0.113.10
+assert_grep 'beam peer-grant control phase (Distribution disabled)' \
+  "$TMP_ROOT/c3-controller-truthy-grant-control.out"
+assert_grep 'args=' "$TMP_ROOT/c3-controller-truthy-grant-control.out"
+assert_no_grep '--name' "$TMP_ROOT/c3-controller-truthy-grant-control.out"
+
 # D: explicit cookie files must exist, be non-empty, and owner-only.
 MISSING_COOKIE="$TMP_ROOT/missing.cookie"
 assert_fails_with 'ORCHARD_BEAM_COOKIE_FILE must point to an existing regular file' "$TMP_ROOT/d1.out" \

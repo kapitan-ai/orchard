@@ -26,14 +26,45 @@ orchard_source_dev_beam_bootstrap() {
 
   export ORCHARD_SOURCE_DEV_ROLE="$role"
 
-  local peer_grant_mode="${ORCHARD_BEAM_PEER_GRANT_MODE:-}"
-  if [[ "$role" == "controller" && "${ORCHARD_BEAM_PEER_GRANTS_ENABLED:-}" == "true" && "$peer_grant_mode" == "grant_control" ]]; then
+  local peer_grants_enabled=0
+  if [[ -n "${ORCHARD_BEAM_PEER_GRANTS_ENABLED+x}" ]]; then
+    case "$ORCHARD_BEAM_PEER_GRANTS_ENABLED" in
+      1|true|TRUE|yes|YES|on|ON)
+        peer_grants_enabled=1
+        ;;
+      0|false|FALSE|no|NO|off|OFF)
+        peer_grants_enabled=0
+        ;;
+      *)
+        echo "error: ORCHARD_BEAM_PEER_GRANTS_ENABLED must be a boolean, got: $ORCHARD_BEAM_PEER_GRANTS_ENABLED" >&2
+        return 64
+        ;;
+    esac
+  fi
+
+  local peer_grant_mode
+  peer_grant_mode="$(orchard_source_dev_beam_trim "${ORCHARD_BEAM_PEER_GRANT_MODE:-}")"
+  if [[ "$peer_grants_enabled" == "1" ]]; then
+    case "$peer_grant_mode" in
+      "")
+        peer_grant_mode="distributed"
+        ;;
+      grant_control|distributed)
+        ;;
+      *)
+        echo "error: ORCHARD_BEAM_PEER_GRANT_MODE must be grant_control|distributed, got: $peer_grant_mode" >&2
+        return 64
+        ;;
+    esac
+  fi
+
+  if [[ "$role" == "controller" && "$peer_grants_enabled" == "1" && "$peer_grant_mode" == "grant_control" ]]; then
     echo "==> Runtime endpoint transport: beam peer-grant control phase (Distribution disabled)" >&2
     return 0
   fi
 
   local peer_grant_launch=0
-  if [[ "$role" == "controller" && "${ORCHARD_BEAM_PEER_GRANTS_ENABLED:-}" == "true" && "$peer_grant_mode" == "distributed" ]]; then
+  if [[ "$role" == "controller" && "$peer_grants_enabled" == "1" && "$peer_grant_mode" == "distributed" ]]; then
     peer_grant_launch=1
   elif [[ "$role" == "node_agent" && -n "${ORCHARD_BEAM_PEER_GRANT_DESCRIPTOR:-}" && -n "${ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST:-}" ]]; then
     peer_grant_launch=1
