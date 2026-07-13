@@ -1,6 +1,6 @@
 defmodule Orchard.BeamPeerGrantControlApplication do
-  alias Orchard.NodeEnrollment.PKI
   alias Orchard.{BeamPeerGrants, NodeEnrollments, Nodes, NodeTrust, Repo}
+  alias Orchard.NodeEnrollment.PKI
   alias OrchardCLI.NodeIdentity.Store
 
   def run([root, ipv4]) do

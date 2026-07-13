@@ -23,7 +23,9 @@ defmodule Orchard.BeamPeerGrantTracerSetup do
       TrustPKI.generate(cluster_id, controller_id, authority_id, generation_id, now)
 
     {:ok, node_csr} = EnrollmentPKI.generate_csr(cluster_id, node_id)
-    node_certificate_identity = EnrollmentPKI.certificate_identity(enrollment_id, node_csr.csr_fingerprint)
+
+    node_certificate_identity =
+      EnrollmentPKI.certificate_identity(enrollment_id, node_csr.csr_fingerprint)
 
     {:ok, node_certificate} =
       EnrollmentPKI.issue_node_certificate(%{
@@ -192,11 +194,15 @@ defmodule Orchard.BeamPeerGrantTracerSetup do
       "NODE_NAME" => node_name,
       "NODE_TLS_OPTIONS" => node_options,
       "WRONG_GENERATION_FILE" => wrong_generation_path,
-      "WRONG_NAME" => "orchard_controller_forged_#{String.replace(controller_id, "-", "")}@#{ipv4}"
+      "WRONG_NAME" =>
+        "orchard_controller_forged_#{String.replace(controller_id, "-", "")}@#{ipv4}"
     }
 
     manifest_path = Path.join(root, "manifest.env")
-    contents = Enum.map_join(manifest, "\n", fn {key, value} -> "#{key}=#{shell_quote(value)}" end)
+
+    contents =
+      Enum.map_join(manifest, "\n", fn {key, value} -> "#{key}=#{shell_quote(value)}" end)
+
     write_private!(manifest_path, contents <> "\n")
     IO.puts(manifest_path)
   end
