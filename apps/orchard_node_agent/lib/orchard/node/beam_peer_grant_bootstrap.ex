@@ -76,9 +76,18 @@ defmodule Orchard.Node.BeamPeerGrantBootstrap do
   @impl true
   def init(opts) do
     case bootstrap(opts) do
-      {:ok, grant} -> {:ok, grant}
+      {:ok, grant} -> {:ok, installed_handle(grant)}
       {:error, reason} -> {:stop, reason}
     end
+  end
+
+  defp installed_handle(grant) do
+    %{
+      grant_id: value(grant, :grant_id),
+      generation: value(grant, :generation),
+      controller_id: value(grant, :controller_id),
+      node_beam_name: value(grant, :node_beam_name)
+    }
   end
 
   defp load_or_retrieve(store, client, root, identity, node_beam_name, descriptor, retrieval) do
