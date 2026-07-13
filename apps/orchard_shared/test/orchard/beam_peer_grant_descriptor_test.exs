@@ -28,6 +28,24 @@ defmodule Orchard.BeamPeerGrantDescriptorTest do
     assert_received {:synced, ^root}
   end
 
+  test "SPEC.md §7.5.0 rejects an abbreviated control endpoint IPv4" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-beam-peer-grant-descriptor-abbreviated-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    path = Path.join(root, "beam-peer-grant.json")
+    abbreviated = %{descriptor() | control_endpoint: "ipv4:10.1:50071"}
+
+    assert {:error, :beam_peer_grant_descriptor_invalid} =
+             BeamPeerGrantDescriptor.write(path, abbreviated)
+  end
+
   defp descriptor do
     %{
       grant_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",

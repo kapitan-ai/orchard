@@ -897,15 +897,18 @@ if config_env() == :prod do
       config :orchard_controller, :beam_peer_grants, beam_peer_grants_config
 
       runtime_endpoint_inference_config =
-        case runtime_endpoint_targets do
-          [] ->
-            []
+        case {runtime_endpoint_transport_mode, runtime_endpoint_targets} do
+          {:beam, []} ->
+            [runtime_endpoint_client_impl: Orchard.RuntimeEndpoint.BeamClient]
 
-          targets ->
+          {:beam, targets} ->
             [
               runtime_endpoint_client_impl: Orchard.RuntimeEndpoint.BeamClient,
               runtime_endpoint_targets: targets
             ]
+
+          {:grpc, _targets} ->
+            []
         end
 
       runtime_client_targets =
@@ -926,13 +929,33 @@ if config_env() == :prod do
             ]
         end
 
-      if runtime_endpoint_transport_mode == :beam do
+      if runtime_endpoint_transport_mode == :beam and
+           (not beam_peer_grants_enabled? or beam_peer_grant_mode == :distributed) do
         beam_config = local_beam_config.(:controller, runtime_endpoint_targets)
 
         beam_config =
-          if beam_peer_grants_enabled?,
-            do: Keyword.put(beam_config, :cookie_file, nil),
-            else: beam_config
+          if beam_peer_grants_enabled? do
+            {service, _host} =
+              beam_service_host.(
+                Keyword.fetch!(beam_config, :node_name),
+                "ORCHARD_BEAM_NODE_NAME"
+              )
+
+            unless String.match?(service, ~r/^orchard_controller_[0-9a-f]{32}$/) do
+              raise "ORCHARD_BEAM_NODE_NAME peer-grant Controller service must be canonical orchard_controller_<controller-id>"
+            end
+
+            [
+              enabled: true,
+              node_name: Keyword.fetch!(beam_config, :node_name),
+              cookie_file: nil,
+              listen_host: Keyword.fetch!(beam_config, :listen_host),
+              admitted_services: [],
+              allowed_cidrs: []
+            ]
+          else
+            beam_config
+          end
 
         config :orchard_controller, :runtime_endpoint, beam: beam_config
       end

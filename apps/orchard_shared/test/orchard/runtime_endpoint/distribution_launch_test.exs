@@ -71,6 +71,19 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunchTest do
              )
   end
 
+  test "SPEC.md §7.5.0 rejects an abbreviated IPv4 in a launch peer name" do
+    {root, manifest_path, attrs} = launch_fixture()
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    abbreviated = %{
+      attrs
+      | node_beam_name: "orchard_node_agent_cccccccccccc4ccc8ccccccccccccccc@10.1"
+    }
+
+    assert {:error, :beam_distribution_launch_contract_invalid} =
+             DistributionLaunch.write(manifest_path, abbreviated)
+  end
+
   defp launch_fixture do
     root =
       Path.join(

@@ -5,6 +5,8 @@ defmodule Orchard.BeamPeerGrantDescriptor do
 
   import Bitwise, only: [band: 2]
 
+  alias Orchard.RuntimeEndpoint.BeamNodeName
+
   @directory_mode 0o700
   @file_mode 0o600
   @uuid_pattern ~r/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i
@@ -235,13 +237,7 @@ defmodule Orchard.BeamPeerGrantDescriptor do
   defp valid_control_endpoint?(_endpoint), do: false
 
   defp private_ipv4?(host) do
-    case :inet.parse_ipv4_address(String.to_charlist(host)) do
-      {:ok, {127, 0, 0, 1}} -> test_loopback?()
-      {:ok, {10, _b, _c, _d}} -> true
-      {:ok, {172, b, _c, _d}} when b in 16..31 -> true
-      {:ok, {192, 168, _c, _d}} -> true
-      _other -> false
-    end
+    match?({:ok, _address}, BeamNodeName.private_ipv4(host, allow_loopback: test_loopback?()))
   end
 
   defp test_loopback?, do: Code.ensure_loaded?(Mix) and Mix.env() == :test

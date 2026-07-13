@@ -11,6 +11,7 @@ defmodule Orchard.Node.BeamPeerGrantBootstrap do
 
   alias Orchard.BeamPeerGrantDescriptor
   alias Orchard.Cluster.V1.RetrieveBeamPeerGrantRequest
+  alias Orchard.RuntimeEndpoint.BeamNodeName
 
   alias Orchard.Node.{
     BeamPeerGrantClient,
@@ -115,21 +116,9 @@ defmodule Orchard.Node.BeamPeerGrantBootstrap do
   defp validate_node_name(identity, node_beam_name) do
     node_id = value(identity, :node_id)
 
-    expected_service =
-      if is_binary(node_id), do: "orchard_node_agent_" <> String.replace(node_id, "-", "")
-
-    case String.split(node_beam_name, "@", parts: 2) do
-      [^expected_service, host] -> validate_private_ipv4(host)
-      _other -> {:error, :beam_peer_credential_mismatch}
-    end
-  end
-
-  defp validate_private_ipv4(host) do
-    case :inet.parse_ipv4_address(String.to_charlist(host)) do
-      {:ok, {10, _b, _c, _d}} -> :ok
-      {:ok, {172, b, _c, _d}} when b in 16..31 -> :ok
-      {:ok, {192, 168, _c, _d}} -> :ok
-      _other -> {:error, :beam_peer_credential_mismatch}
+    case BeamNodeName.validate(node_beam_name, "orchard_node_agent_", node_id) do
+      :ok -> :ok
+      {:error, :invalid_beam_node_name} -> {:error, :beam_peer_credential_mismatch}
     end
   end
 

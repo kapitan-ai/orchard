@@ -101,6 +101,31 @@ defmodule Orchard.Node.BeamPeerGrantStoreTest do
              0o600
   end
 
+  test "SPEC.md §7.5.0 rejects an abbreviated IPv4 in a delivered grant name" do
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orchard-node-peer-grant-abbreviated-#{System.unique_integer([:positive, :monotonic])}"
+      )
+
+    File.mkdir!(root)
+    File.chmod!(root, 0o700)
+    on_exit(fn -> File.rm_rf!(root) end)
+
+    identity = identity()
+
+    delivery =
+      identity
+      |> delivery()
+      |> Map.put(
+        :controller_beam_name,
+        "orchard_controller_bbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb@10.1"
+      )
+
+    assert {:error, :beam_peer_credential_mismatch} =
+             BeamPeerGrantStore.install(root, identity, delivery, delivery.node_beam_name)
+  end
+
   test "SPEC.md §7.5.0 first installation syncs both durable directory entries" do
     root =
       Path.join(

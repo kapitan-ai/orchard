@@ -9,6 +9,8 @@ defmodule Orchard.Node.BeamPeerGrantStore do
 
   import Bitwise, only: [band: 2]
 
+  alias Orchard.RuntimeEndpoint.BeamNodeName
+
   @directory_mode 0o700
   @file_mode 0o600
   @store_directory "beam-peer-grants"
@@ -204,24 +206,10 @@ defmodule Orchard.Node.BeamPeerGrantStore do
   end
 
   defp canonical_name?(prefix, id, name) when is_binary(name) do
-    expected_service = prefix <> String.replace(id, "-", "")
-
-    case String.split(name, "@", parts: 2) do
-      [^expected_service, host] -> private_ipv4?(host)
-      _other -> false
-    end
+    BeamNodeName.validate(name, prefix, id) == :ok
   end
 
   defp canonical_name?(_prefix, _id, _name), do: false
-
-  defp private_ipv4?(host) do
-    case :inet.parse_ipv4_address(String.to_charlist(host)) do
-      {:ok, {10, _b, _c, _d}} -> true
-      {:ok, {172, b, _c, _d}} when b in 16..31 -> true
-      {:ok, {192, 168, _c, _d}} -> true
-      _other -> false
-    end
-  end
 
   defp prepare_store(root, opts) do
     root = Path.expand(root)

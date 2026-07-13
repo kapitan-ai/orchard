@@ -304,6 +304,28 @@ defmodule Orchard.InferenceTest do
   end
 
   describe "source-dev runtime endpoint transport config" do
+    test "SPEC.md §7.5.0 peer-grant mode selects BEAM without legacy targets" do
+      inference =
+        read_dev_controller_inference!(%{
+          "ORCHARD_SOURCE_DEV_ROLE" => "controller",
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => nil,
+          "ORCHARD_RUNTIME_CLIENT_TARGETS" => nil,
+          "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+          "ORCHARD_BEAM_PEER_GRANT_MODE" => "grant_control",
+          "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.10",
+          "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+          "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => "/tmp/orchard-authorization-root"
+        })
+
+      assert Keyword.fetch!(inference, :runtime_endpoint_client_impl) ==
+               Orchard.RuntimeEndpoint.BeamClient
+
+      refute Keyword.has_key?(inference, :runtime_endpoint_targets)
+      assert Keyword.fetch!(inference, :runtime_client_targets) == []
+      assert Keyword.fetch!(inference, :runtime_client_target) == nil
+    end
+
     test "dev.exs preserves gRPC compatibility behavior when transport is unset or explicit grpc" do
       for transport <- [nil, "grpc"] do
         inference =
@@ -462,6 +484,84 @@ defmodule Orchard.InferenceTest do
   end
 
   describe "packaged runtime endpoint transport config" do
+    test "SPEC.md §7.5.0 packaged peer-grant mode selects BEAM without legacy targets" do
+      inference =
+        read_runtime_controller_inference!(%{
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => nil,
+          "ORCHARD_RUNTIME_CLIENT_TARGETS" => nil,
+          "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+          "ORCHARD_BEAM_PEER_GRANT_MODE" => "grant_control",
+          "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.10",
+          "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+          "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => "/protected/authorization-root"
+        })
+
+      assert Keyword.fetch!(inference, :runtime_endpoint_client_impl) ==
+               Orchard.RuntimeEndpoint.BeamClient
+
+      refute Keyword.has_key?(inference, :runtime_endpoint_targets)
+      assert Keyword.fetch!(inference, :runtime_client_targets) == []
+      assert Keyword.fetch!(inference, :runtime_client_target) == nil
+    end
+
+    test "SPEC.md §7.5.0 packaged grant-control mode exposes no Distribution config" do
+      controller_config =
+        read_runtime_controller_config!(%{
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => nil,
+          "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+          "ORCHARD_BEAM_PEER_GRANT_MODE" => "grant_control",
+          "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.10",
+          "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+          "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => "/protected/authorization-root"
+        })
+
+      refute Keyword.has_key?(controller_config, :runtime_endpoint)
+    end
+
+    test "SPEC.md §7.5.0 packaged distributed grants require a canonical Controller name" do
+      assert_raise RuntimeError, ~r/peer-grant Controller service must be canonical/, fn ->
+        read_runtime_controller_config!(%{
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => nil,
+          "ORCHARD_BEAM_NODE_NAME" => "orchard_controller@10.0.0.10",
+          "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+          "ORCHARD_BEAM_PEER_GRANT_MODE" => "distributed",
+          "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.10",
+          "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+          "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => "/protected/authorization-root",
+          "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => "/protected/controller-launch.json"
+        })
+      end
+    end
+
+    test "SPEC.md §7.5.0 packaged distributed grants exclude legacy guardrails" do
+      node_name = "orchard_controller_550e8400e29b41d4a716446655440000@10.0.0.10"
+
+      controller_config =
+        read_runtime_controller_config!(%{
+          "ORCHARD_RUNTIME_ENDPOINT_TRANSPORT" => "beam",
+          "ORCHARD_RUNTIME_ENDPOINT_TARGETS" => nil,
+          "ORCHARD_BEAM_NODE_NAME" => node_name,
+          "ORCHARD_BEAM_PEER_GRANTS_ENABLED" => "true",
+          "ORCHARD_BEAM_PEER_GRANT_MODE" => "distributed",
+          "ORCHARD_BEAM_PEER_GRANT_CONTROL_HOST" => "10.0.0.10",
+          "ORCHARD_BEAM_PEER_GRANT_CONTROL_PORT" => "50072",
+          "ORCHARD_BEAM_AUTHORIZATION_ROOT_PATH" => "/protected/authorization-root",
+          "ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST" => "/protected/controller-launch.json"
+        })
+
+      assert Keyword.fetch!(controller_config, :runtime_endpoint)[:beam] == [
+               enabled: true,
+               node_name: node_name,
+               cookie_file: nil,
+               listen_host: "10.0.0.10",
+               admitted_services: [],
+               allowed_cidrs: []
+             ]
+    end
+
     test "runtime.exs defaults controller releases to BEAM Runtime Endpoint targets" do
       controller_config =
         read_runtime_controller_config!(%{

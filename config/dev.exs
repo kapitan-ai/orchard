@@ -226,13 +226,13 @@ config :orchard_controller, :node_trust,
   root: System.get_env("ORCHARD_NODE_TRUST_ROOT") || Path.join(dev_root, "node-trust")
 
 runtime_endpoint_inference_config =
-  if beam_runtime_endpoint_targets == [] do
-    []
+  if runtime_endpoint_transport == :beam and source_dev_role == :controller do
+    [runtime_endpoint_client_impl: Orchard.RuntimeEndpoint.BeamClient] ++
+      if beam_runtime_endpoint_targets == [],
+        do: [],
+        else: [runtime_endpoint_targets: beam_runtime_endpoint_targets]
   else
-    [
-      runtime_endpoint_client_impl: Orchard.RuntimeEndpoint.BeamClient,
-      runtime_endpoint_targets: beam_runtime_endpoint_targets
-    ]
+    []
   end
 
 controller_inference_defaults = Orchard.Config.M1RuntimeDefaults.controller_inference(dev_root)

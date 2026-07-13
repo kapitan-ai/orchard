@@ -10,7 +10,7 @@ defmodule Orchard.Node.BeamPeerGrantPreflight do
   alias Orchard.Node.BeamPeerGrantBootstrap
   alias Orchard.Node.{BeamPeerGrantStore, RuntimeTLS}
 
-  alias Orchard.RuntimeEndpoint.{DistributionLaunch, DistributionTLS}
+  alias Orchard.RuntimeEndpoint.{BeamNodeName, DistributionLaunch, DistributionTLS}
   alias Orchard.TransportTLS.CertificateIdentity
 
   @spec retrieve_and_store(keyword()) :: {:ok, map()} | {:error, atom()}
@@ -228,25 +228,14 @@ defmodule Orchard.Node.BeamPeerGrantPreflight do
   end
 
   defp canonical_name?(prefix, id, name) when is_binary(id) and is_binary(name) do
-    expected = prefix <> String.replace(id, "-", "")
-
-    case String.split(name, "@", parts: 2) do
-      [^expected, host] -> private_ipv4(host)
-      _other -> {:error, :beam_peer_credential_mismatch}
+    case BeamNodeName.validate(name, prefix, id) do
+      :ok -> :ok
+      {:error, :invalid_beam_node_name} -> {:error, :beam_peer_credential_mismatch}
     end
   end
 
   defp canonical_name?(_prefix, _id, _name),
     do: {:error, :beam_peer_credential_mismatch}
-
-  defp private_ipv4(host) do
-    case :inet.parse_ipv4_address(String.to_charlist(host)) do
-      {:ok, {10, _b, _c, _d}} -> :ok
-      {:ok, {172, b, _c, _d}} when b in 16..31 -> :ok
-      {:ok, {192, 168, _c, _d}} -> :ok
-      _other -> {:error, :beam_peer_credential_mismatch}
-    end
-  end
 
   defp nonempty?(value), do: is_binary(value) and value != ""
   defp value(map, key), do: Map.get(map, key) || Map.get(map, Atom.to_string(key))

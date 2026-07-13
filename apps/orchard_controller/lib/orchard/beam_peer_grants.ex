@@ -15,9 +15,9 @@ defmodule Orchard.BeamPeerGrants do
   alias Orchard.ControlPlane
   alias Orchard.Nodes.{Enrollment, Node}
   alias Orchard.NodeTrust
-  alias Orchard.PrivateIpv4
   alias Orchard.Repo
   alias Orchard.RuntimeEndpoint.AuthenticatedPeer
+  alias Orchard.RuntimeEndpoint.BeamNodeName
   alias Orchard.RuntimeEndpoint.Target
   alias Orchard.TransportTLS.CertificateIdentity
 
@@ -965,8 +965,7 @@ defmodule Orchard.BeamPeerGrants do
 
   defp canonical_node_name(node) do
     with host when is_binary(host) <- node.connect_host || node.advertise_addr,
-         {:ok, address} <- :inet.parse_ipv4_address(String.to_charlist(host)),
-         true <- PrivateIpv4.private?(address) do
+         {:ok, _address} <- BeamNodeName.private_ipv4(host) do
       compact_id = String.replace(node.id, "-", "")
       {:ok, "orchard_node_agent_#{compact_id}@#{host}"}
     else

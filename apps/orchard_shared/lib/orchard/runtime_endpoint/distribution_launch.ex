@@ -5,6 +5,8 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunch do
 
   import Bitwise, only: [band: 2]
 
+  alias Orchard.RuntimeEndpoint.BeamNodeName
+
   @directory_mode 0o700
   @file_mode 0o600
   @schema_version 1
@@ -108,6 +110,7 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunch do
          true <- valid_positive_integer?(value(attrs, :generation)),
          true <- valid_positive_integer?(value(attrs, :contract_version)),
          true <- Enum.all?(@string_fields, &nonempty?(value(attrs, &1))),
+         :ok <- validate_peer_names(attrs),
          true <- is_struct(value(attrs, :not_before_at), DateTime),
          true <- is_struct(value(attrs, :expires_at), DateTime),
          :ok <- validate_file(optfile_path, owner),
@@ -142,6 +145,7 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunch do
          true <- valid_positive_integer?(value(encoded, :generation)),
          true <- valid_positive_integer?(value(encoded, :contract_version)),
          true <- Enum.all?(@string_fields, &nonempty?(value(encoded, &1))),
+         :ok <- validate_peer_names(encoded),
          {:ok, not_before_at, 0} <- DateTime.from_iso8601(value(encoded, :not_before_at)),
          {:ok, expires_at, 0} <- DateTime.from_iso8601(value(encoded, :expires_at)),
          optfile_path when is_binary(optfile_path) <- value(encoded, :optfile_path),
@@ -174,6 +178,21 @@ defmodule Orchard.RuntimeEndpoint.DistributionLaunch do
   defp decode_role("controller"), do: {:ok, :controller}
   defp decode_role("node_agent"), do: {:ok, :node_agent}
   defp decode_role(_role), do: {:error, :invalid_role}
+
+  defp validate_peer_names(manifest) do
+    with :ok <-
+           BeamNodeName.validate(
+             value(manifest, :controller_beam_name),
+             "orchard_controller_",
+             value(manifest, :controller_id)
+           ) do
+      BeamNodeName.validate(
+        value(manifest, :node_beam_name),
+        "orchard_node_agent_",
+        value(manifest, :node_id)
+      )
+    end
+  end
 
   defp verify_current_window(manifest, %DateTime{} = now) do
     if DateTime.compare(now, manifest.not_before_at) != :lt and
