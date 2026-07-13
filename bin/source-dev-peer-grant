@@ -42,6 +42,7 @@ prepare_controller_env() {
   export ORCHARD_BEAM_PEER_GRANTS_ENABLED=true
   export ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
   export ORCHARD_SOURCE_DEV_ROLE=controller
+  export ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$STATE_ROOT/controller/launch.json"
 }
 
 prepare_node_env() {
@@ -52,6 +53,7 @@ prepare_node_env() {
   unset ORCHARD_BEAM_PEER_GRANT_MODE
   export ORCHARD_RUNTIME_ENDPOINT_TRANSPORT=beam
   export ORCHARD_SOURCE_DEV_ROLE=node_agent
+  export ORCHARD_BEAM_DISTRIBUTION_LAUNCH_MANIFEST="$STATE_ROOT/node_agent/launch.json"
 }
 
 run_preflight() {

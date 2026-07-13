@@ -916,8 +916,15 @@ defmodule Orchard.BeamPeerGrants do
   end
 
   defp put_preloaded_authorization_root(opts) do
-    with {:ok, authorization_root} <- load_authorization_root_material() do
-      {:ok, Keyword.put(opts, :preloaded_authorization_root, authorization_root)}
+    # Preload off the DB lock when available; when it is not, defer to the
+    # in-transaction load so grant-scope failures (e.g. missing grant) keep
+    # precedence over the authorization-root-unavailable failure.
+    case load_authorization_root_material() do
+      {:ok, authorization_root} ->
+        {:ok, Keyword.put(opts, :preloaded_authorization_root, authorization_root)}
+
+      {:error, _reason} ->
+        {:ok, opts}
     end
   end
 
