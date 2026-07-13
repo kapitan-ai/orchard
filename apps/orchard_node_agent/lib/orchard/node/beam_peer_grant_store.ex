@@ -286,8 +286,8 @@ defmodule Orchard.Node.BeamPeerGrantStore do
     temporary = path <> ".tmp-" <> Base.encode16(:crypto.strong_rand_bytes(8), case: :lower)
 
     with :ok <- write_private_file(temporary, encode_persisted(grant)),
-         :ok <- File.ln(temporary, path),
-         :ok <- File.rm(temporary) do
+         :ok <- File.ln(temporary, path) do
+      File.rm(temporary)
       {:ok, grant}
     else
       {:error, :eexist} ->

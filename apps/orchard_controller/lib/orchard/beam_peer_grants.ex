@@ -576,7 +576,7 @@ defmodule Orchard.BeamPeerGrants do
         {0, nil}
     end
   rescue
-    _error -> {0, nil}
+    _error -> {:error, :beam_peer_grant_delivery_unavailable}
   end
 
   defp ensure_grant_current(grant, allowed_states, opts) do

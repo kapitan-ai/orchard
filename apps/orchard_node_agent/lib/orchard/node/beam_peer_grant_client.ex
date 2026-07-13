@@ -201,6 +201,7 @@ defmodule Orchard.Node.BeamPeerGrantClient.GRPCTransport do
       "beam_peer_grant_revoked" -> :beam_peer_grant_revoked
       "beam_peer_grant_expired" -> :beam_peer_grant_expired
       "beam_peer_grant_not_active" -> :beam_peer_grant_not_active
+      "beam_peer_grant_delivery_unavailable" -> :beam_peer_grant_delivery_unavailable
       "beam_peer_credential_mismatch" -> :beam_peer_credential_mismatch
       _other -> :beam_peer_grant_control_rejected
     end
